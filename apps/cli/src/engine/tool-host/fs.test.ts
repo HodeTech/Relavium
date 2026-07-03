@@ -711,8 +711,17 @@ describe('createNodeFsCapability — sensitive-read floor (credential/secret sto
     expect((await sandboxed().readFile('config', {})).content).toBe('plain-config');
   });
 
-  it('refuses every credential dotfile (.gitconfig / .git-credentials / .netrc / .npmrc / .pypirc / .pgpass) and `.relavium/`', async () => {
-    for (const f of ['.gitconfig', '.git-credentials', '.netrc', '.npmrc', '.pypirc', '.pgpass']) {
+  it('refuses every credential dotfile (.gitconfig / .git-credentials / .netrc / .npmrc / .pypirc / .pgpass / .envrc / .dockercfg) and `.relavium/`', async () => {
+    for (const f of [
+      '.gitconfig',
+      '.git-credentials',
+      '.netrc',
+      '.npmrc',
+      '.pypirc',
+      '.pgpass',
+      '.envrc', // direnv — holds `export AWS_SECRET_ACCESS_KEY=…` (2.5.D / ADR-0061 step-4 review)
+      '.dockercfg', // legacy Docker registry auth (pre-config.json)
+    ]) {
       await writeFile(join(workspace, f), 'token=secret');
       await expect(sandboxed().readFile(f, {})).rejects.toBeInstanceOf(FsScopeDeniedError);
     }

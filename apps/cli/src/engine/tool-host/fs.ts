@@ -493,6 +493,8 @@ const SENSITIVE_READ_BASENAMES: ReadonlySet<string> = new Set([
   '.npmrc', // `_authToken`
   '.pypirc',
   '.pgpass',
+  '.envrc', // direnv — an in-repo shell file that routinely holds `export AWS_SECRET_ACCESS_KEY=…` (NOT a `.env*`)
+  '.dockercfg', // legacy Docker registry auth (pre-`config.json`) — plaintext base64 `auth` credentials
 ]);
 
 /**

@@ -245,9 +245,14 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     c.handleKey('', ENTER);
     expect(c.getSnapshot().mention).toBeUndefined();
     await flush(); // read('src/index.ts') resolves
-    expect(c.getSnapshot().input.text).toBe(
-      '\n\n<file path="src/index.ts">\n// src/index.ts\n</file>',
+    // The injection is nonce-fenced (a fresh random nonce per accept), so match the structure + verify the open
+    // and close nonces are identical (an unforgeable boundary).
+    const injected = c.getSnapshot().input.text;
+    const framed = injected.match(
+      /^\n\n<file id="([0-9a-f]{32})" path="src\/index\.ts">\n\/\/ src\/index\.ts\n<\/file:([0-9a-f]{32})>$/,
     );
+    expect(framed).not.toBeNull();
+    expect(framed?.[1]).toBe(framed?.[2]); // open nonce === close nonce
   });
 
   it('`@` completion: Esc restores the typed keystrokes; a mid-word `@` stays literal (2.5.D step 4)', async () => {

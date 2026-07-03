@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { FsCapability } from '@relavium/core';
 
 /**
@@ -81,11 +83,24 @@ function clampSelection(index: number, count: number): number {
 }
 
 /**
+ * The parent of a workspace-relative directory — the last POSIX segment stripped (`'src/lib'` → `'src'`,
+ * `'src'` → `''` the workspace root, `''` → `''`). The values only ever ASCEND toward `''`, never above it (there
+ * is no literal `..` segment), so an ascend can never escape the workspace jail. Used by the `..` synthetic
+ * candidate + the backspace-to-parent shortcut.
+ */
+export function parentDir(dir: string): string {
+  if (dir.length === 0) return '';
+  const slash = dir.lastIndexOf('/');
+  return slash <= 0 ? '' : dir.slice(0, slash);
+}
+
+/**
  * Fold one keystroke into the open `@`-completion submode (the keyboard-owning contract, mirroring the `/`
  * palette): `Esc`/`Ctrl-C` cancels; `↑`/`↓` move the selection; `Enter`/`Tab` (and `/`) accept the selected
- * candidate (a directory descends, a file injects); backspace trims the filter, and backspace on an empty filter
- * cancels (dropping the `@`); a single printable code point extends the filter (a multi-char paste blob is
- * dropped, matching the other submodes); every other key is ignored (stays open).
+ * candidate (a directory descends, a file injects); backspace trims the filter, then — below the root — ASCENDS
+ * one directory (at the root, backspace on an empty filter cancels, dropping the `@`); a single printable code
+ * point extends the filter (a multi-char paste blob is dropped, matching the other submodes); every other key is
+ * ignored (stays open).
  */
 export function foldMentionKey(char: string, key: MentionKey, state: MentionState): MentionStep {
   // Esc / Ctrl-C cancels but RESTORES the literal keystrokes (`@` + filter) — canceling never silently eats text.
@@ -117,7 +132,9 @@ export function foldMentionKey(char: string, key: MentionKey, state: MentionStat
     if (state.filter.length > 0) {
       return { kind: 'state', state: { ...state, filter: state.filter.slice(0, -1), selected: 0 } };
     }
-    // Backspace PAST the filter deletes the `@` itself — restore nothing (the user is deleting through it).
+    // Backspace PAST the filter, below the root, ASCENDS one directory (competitor muscle memory — never a
+    // dead-end descent); AT the root it deletes the `@` itself (restore nothing — the user is deleting through it).
+    if (state.dir.length > 0) return { kind: 'descend', dir: parentDir(state.dir) };
     return { kind: 'close', restore: '' };
   }
   if ([...char].length === 1 && key.ctrl !== true && key.meta !== true) {
@@ -181,10 +198,14 @@ export function createMentionReader(fs: FsCapability): MentionReader {
           path: joinRelative(dir, entry.name),
         }));
       // Directories first, then case-insensitive by name — a stable, glanceable order.
-      return [...candidates].sort((a, b) => {
+      const sorted = [...candidates].sort((a, b) => {
         if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
         return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
       });
+      // Below the workspace root, offer a synthetic `..` ascend row at the very top (dir-navigation is first-class,
+      // ADR-0061) — it descends to the parent (which only ever climbs toward `''`, never above the jailed root).
+      if (dir.length === 0) return sorted;
+      return [{ name: '..', type: 'directory' as const, path: parentDir(dir) }, ...sorted];
     },
     async read(path) {
       const file = await fs.readFile(path, {});
@@ -206,14 +227,39 @@ export function estimateTokens(bytes: number): number {
 export const MENTION_TOKEN_WARN = 8000;
 
 /**
- * Format a mentioned file for injection into the user message as UNTRUSTED, user-position context. The path lands
- * inside the `path="…"` attribute, so it is stripped of the framing chars (`<` `>` `"`) AND every control code —
- * C0 (`< 0x20`, incl. newline/CR/tab), DEL, and C1 (`0x80–0x9f`) — so a crafted filename (POSIX filenames may
- * contain newlines) can neither break out of the attribute nor forge a second `<file>` frame. The content is
- * verbatim data the model must NOT treat as instructions; the `<file>` tags mark where the injected data begins /
- * ends (belt-and-suspenders — the injected bytes are already flagged untrusted regardless of the framing).
+ * The HARD cap on the content spliced into the live editor buffer (a code-unit proxy for bytes). A mentioned file
+ * up to the fs 8 MiB read cap would otherwise be inserted verbatim and re-split/re-wrapped by the multiline
+ * `PromptEditor` on every subsequent keystroke — freezing the TUI (and bloating the model context). 128 KiB keeps
+ * `@` usable for normal source files while removing the footgun; a larger file is head+tail truncated with a marker.
  */
-export function formatMentionInjection(path: string, content: string): string {
+export const MENTION_MAX_INJECT_CHARS = 128 * 1024;
+
+/** Bound the injected content to {@link MENTION_MAX_INJECT_CHARS} with a head + tail + explicit truncation marker
+ *  (mirrors the process arm's `applyOutputBounding` — keep the start and the end, elide the middle). */
+function boundInjectedContent(content: string): string {
+  if (content.length <= MENTION_MAX_INJECT_CHARS) return content;
+  const head = Math.floor(MENTION_MAX_INJECT_CHARS * 0.75);
+  const tail = MENTION_MAX_INJECT_CHARS - head;
+  const elided = content.length - head - tail;
+  return `${content.slice(0, head)}\n… [truncated ${elided} of ${content.length} chars] …\n${content.slice(content.length - tail)}`;
+}
+
+/**
+ * Format a mentioned file for injection into the user message as UNTRUSTED, user-position context. Two boundaries
+ * are made unforgeable: (1) the PATH lands inside the `path="…"` attribute, so it is stripped of the framing chars
+ * (`<` `>` `"`) AND every control code — C0 (`< 0x20`, incl. newline/CR/tab), DEL, and C1 (`0x80–0x9f`) — so a
+ * crafted filename (POSIX filenames may contain newlines) can neither break out of the attribute nor forge a tag;
+ * (2) the CONTENT is verbatim data the model must NOT treat as instructions, fenced with a per-injection random
+ * `nonce` on BOTH the open and close tags (`<file id="NONCE" …>…</file:NONCE>`), so a file whose bytes contain a
+ * literal `</file>` (or a forged `<file …>`) cannot close/forge the frame without guessing the nonce. The content
+ * is also head+tail bounded to {@link MENTION_MAX_INJECT_CHARS} so a large file cannot freeze the editor.
+ */
+/** A fresh, unguessable per-injection fence nonce (128 bits, dash-free) for {@link formatMentionInjection}. */
+export function mentionNonce(): string {
+  return randomUUID().replace(/-/g, '');
+}
+
+export function formatMentionInjection(path: string, content: string, nonce: string): string {
   const safePath = [...path]
     .filter((ch) => {
       const code = ch.codePointAt(0) ?? 0;
@@ -221,5 +267,6 @@ export function formatMentionInjection(path: string, content: string): string {
     })
     .join('')
     .replace(/[<>"]/g, '');
-  return `\n\n<file path="${safePath}">\n${content}\n</file>`;
+  const body = boundInjectedContent(content);
+  return `\n\n<file id="${nonce}" path="${safePath}">\n${body}\n</file:${nonce}>`;
 }

@@ -23,6 +23,7 @@ import {
   estimateTokens,
   foldMentionKey,
   formatMentionInjection,
+  mentionNonce,
   mentionOpensAt,
   MENTION_TOKEN_WARN,
   type MentionReader,
@@ -308,9 +309,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     if (reader === undefined) return;
     void reader.read(path).then(
       ({ content, sizeBytes }) => {
+        const injection = formatMentionInjection(path, content, mentionNonce());
         applyEditor((current) => {
           historyRef.current = resetHistoryNav(historyRef.current); // a real edit ends history navigation
-          return insertAtCursor(current, formatMentionInjection(path, content));
+          return insertAtCursor(current, injection);
         });
         if (estimateTokens(sizeBytes) > MENTION_TOKEN_WARN) {
           props.store.note(

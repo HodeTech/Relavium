@@ -31,8 +31,10 @@ import {
   estimateTokens,
   foldMentionKey,
   formatMentionInjection,
+  mentionNonce,
   mentionOpensAt,
   MENTION_TOKEN_WARN,
+  type MentionCandidate,
   type MentionReader,
   type MentionState,
 } from './mention.js';
@@ -378,19 +380,23 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const loadMentions = (active: HomeChatSession, dir: string): void => {
     const reader = active.mentionReader;
     if (reader === undefined) return;
+    // Apply a resolve ONLY if the SAME session's submode is still open on the SAME dir — a resolve from a
+    // since-closed / since-descended submode, or (after a /exit → new chat) a DIFFERENT session, is dropped
+    // (mirrors acceptMention's session-identity guard).
+    const applyIfCurrent = (candidates: readonly MentionCandidate[]): void => {
+      const open = state.mention;
+      if (
+        state.session === active &&
+        state.mode === 'chat' &&
+        open !== undefined &&
+        open.dir === dir
+      ) {
+        set({ mention: { ...open, candidates, loading: false } });
+      }
+    };
     void reader.list(dir).then(
-      (candidates) => {
-        const open = state.mention;
-        if (open !== undefined && open.dir === dir) {
-          set({ mention: { ...open, candidates, loading: false } });
-        }
-      },
-      () => {
-        const open = state.mention;
-        if (open !== undefined && open.dir === dir) {
-          set({ mention: { ...open, candidates: [], loading: false } });
-        }
-      },
+      (candidates) => applyIfCurrent(candidates),
+      () => applyIfCurrent([]),
     );
   };
   const openMention = (active: HomeChatSession): void => {
@@ -407,7 +413,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       ({ content, sizeBytes }) => {
         if (state.session !== active || state.mode !== 'chat') return; // the chat ended mid-read — drop it
         history = resetHistoryNav(history); // a real edit ends history navigation
-        set({ input: insertAtCursor(state.input, formatMentionInjection(path, content)) });
+        set({
+          input: insertAtCursor(state.input, formatMentionInjection(path, content, mentionNonce())),
+        });
         if (estimateTokens(sizeBytes) > MENTION_TOKEN_WARN) {
           active.store.note(
             `@ file is large (~${estimateTokens(sizeBytes)} tokens) — it may crowd the context`,
