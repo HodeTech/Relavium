@@ -126,6 +126,14 @@ describe('reduceChatKey', () => {
       kind: 'kill',
       motion: 'to-line-end',
     });
+    expect(reduceChatKey('', { upArrow: true }, 'hi', false)).toEqual({
+      kind: 'move',
+      motion: 'up',
+    });
+    expect(reduceChatKey('', { downArrow: true }, 'hi', false)).toEqual({
+      kind: 'move',
+      motion: 'down',
+    });
   });
 
   it('motions/edits are ignored while a turn is running (one turn at a time)', () => {
@@ -352,6 +360,21 @@ describe('cursor motions + kills (2.5.D step 2)', () => {
       text: 'ab\ncd',
       cursor: 5,
     });
+  });
+
+  it('moveCursor up/down move a visual line preserving the column, clamped to the target line length', () => {
+    const text = 'ab\ncde\nfg'; // line0 'ab' [0,2], line1 'cde' [3,6], line2 'fg' [7,9]
+    expect(moveCursor({ text, cursor: 5 }, 'up')).toEqual({ text, cursor: 2 }); // col 2 on line1 → clamped to line0 end
+    expect(moveCursor({ text, cursor: 5 }, 'down')).toEqual({ text, cursor: 9 }); // → line2, clamped to its end
+    expect(moveCursor({ text, cursor: 4 }, 'up')).toEqual({ text, cursor: 1 }); // col 1 preserved onto line0
+  });
+
+  it('moveCursor up/down are NO-OPS at the top/bottom edge (so the caller falls back to history recall)', () => {
+    const single: EditorState = { text: 'abc', cursor: 1 };
+    expect(moveCursor(single, 'up')).toBe(single); // no line above ⇒ same reference
+    expect(moveCursor(single, 'down')).toBe(single); // no line below ⇒ same reference
+    expect(moveCursor({ text: 'a\nb', cursor: 0 }, 'up')).toEqual({ text: 'a\nb', cursor: 0 }); // on the first line
+    expect(moveCursor({ text: 'a\nb', cursor: 3 }, 'down')).toEqual({ text: 'a\nb', cursor: 3 }); // on the last line
   });
 
   it('line-start at cursor 0 of a LEADING-newline buffer is a no-op (regression: lastIndexOf(-1) clamping)', () => {

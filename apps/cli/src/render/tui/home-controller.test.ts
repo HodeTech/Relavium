@@ -141,6 +141,36 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().input).toEqual({ text: 'abX\n', cursor: 4 });
   });
 
+  it('the in-Home chat recalls history with Up/Down and reverse-searches with Ctrl+R (2.5.D step 3)', async () => {
+    const made = makeSession();
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hello world');
+    c.handleKey('', ENTER); // submit records 'hello world' + starts the chat (idle store)
+    await flush();
+    expect(c.getSnapshot().mode).toBe('chat');
+
+    // Up on the empty prompt is a vertical no-op → history recall of the submitted line; Down restores the draft.
+    c.handleKey('', { upArrow: true });
+    expect(c.getSnapshot().input).toEqual({ text: 'hello world', cursor: 11 });
+    c.handleKey('', { downArrow: true });
+    expect(c.getSnapshot().input).toEqual({ text: '', cursor: 0 });
+
+    // Ctrl+R opens reverse-search; the query matches; Enter loads the matched entry into the buffer.
+    c.handleKey('r', { ctrl: true });
+    expect(c.getSnapshot().search).toEqual({ query: '', matchIndex: null });
+    type(c, 'wor');
+    expect(c.getSnapshot().search).toEqual({ query: 'wor', matchIndex: 0 });
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().search).toBeUndefined();
+    expect(c.getSnapshot().input).toEqual({ text: 'hello world', cursor: 11 });
+  });
+
   it('a non-empty submit builds a chat, transitions loading→chat, and sends the first message', async () => {
     const made = makeSession();
     const startChat = vi.fn(() => Promise.resolve(made.session));

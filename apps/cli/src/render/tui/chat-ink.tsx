@@ -11,9 +11,27 @@ import { CHAT_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { colorProps, dimProps } from './projection.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
-import { applyEditorAction, emptyEditor, reduceChatKey, type EditorState } from './chat-input.js';
+import {
+  applyEditorAction,
+  editorFromText,
+  emptyEditor,
+  reduceChatKey,
+  type EditorState,
+} from './chat-input.js';
+import {
+  EMPTY_HISTORY,
+  INITIAL_REVERSE_SEARCH,
+  foldReverseSearchKey,
+  historyNext,
+  historyPrev,
+  recordHistory,
+  resetHistoryNav,
+  type InputHistory,
+  type ReverseSearchState,
+} from './input-history.js';
 import { PaletteView } from './palette-view.js';
 import { PromptEditor } from './prompt-view.js';
+import { ReverseSearchView } from './reverse-search-view.js';
 import {
   foldPaletteKey,
   INITIAL_PALETTE_STATE,
@@ -220,6 +238,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     paletteRef.current = next;
     setPalette(next);
   };
+  // Per-session command history (2.5.D step 3): Up/Down recall, Ctrl+R reverse-searches. History is a ref (not
+  // rendered directly); the reverse-search submode is React-local + ref-shadowed like the palette (it renders a
+  // search line and must survive a coalesced stdin chunk).
+  const historyRef = useRef<InputHistory>(EMPTY_HISTORY);
+  const [search, setSearch] = useState<ReverseSearchState | undefined>(undefined);
+  const searchRef = useRef<ReverseSearchState | undefined>(undefined);
+  const applySearch = (next: ReverseSearchState | undefined): void => {
+    searchRef.current = next;
+    setSearch(next);
+  };
 
   const submit = (line: string): void => {
     // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
@@ -242,6 +270,24 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // Read `running` FRESH from the store (not the render closure) so a coalesced same-chunk event after a turn
     // settles sees the current status — matching the ref-shadow `editorRef`/`paletteRef` reads below.
     const isRunning = props.store.getSnapshot().state.status === 'running';
+    // The open Ctrl+R reverse-search owns every key (Esc/Ctrl-C cancels; Enter accepts the match; Ctrl+R steps
+    // older). Read the REF so a coalesced same-chunk event sees a just-applied close/accept. It is mutually
+    // exclusive with the palette (only one submode opens at a time) and yields to a pending approval (below).
+    const openSearch = searchRef.current;
+    if (openSearch !== undefined) {
+      const step = foldReverseSearchKey(char, key, openSearch, historyRef.current.entries);
+      if (step.kind === 'close') {
+        applySearch(undefined);
+        return;
+      }
+      if (step.kind === 'accept') {
+        applySearch(undefined);
+        applyEditor(() => editorFromText(step.text)); // load the matched entry into the buffer
+        return;
+      }
+      applySearch(step.state);
+      return;
+    }
     // The open `/` palette owns every key (Ctrl-C closes it gently). Read the REF so a coalesced same-chunk event
     // sees a just-applied close/select, not the stale render-closure value.
     const openPalette = paletteRef.current;
@@ -269,6 +315,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       applyPalette(INITIAL_PALETTE_STATE);
       return;
     }
+    // Ctrl+R opens reverse-incremental history search (idle, not mid-approval) — a keyboard-owning submode.
+    if (!approvalPending && !isRunning && key.ctrl === true && char === 'r') {
+      applySearch(INITIAL_REVERSE_SEARCH);
+      return;
+    }
     const action = reduceChatKey(char, key, editorRef.current.text, isRunning, approvalPending);
     switch (action.kind) {
       case 'cancel':
@@ -280,11 +331,30 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       case 'append':
       case 'backspace':
       case 'newline':
-      case 'move':
       case 'kill':
+        historyRef.current = resetHistoryNav(historyRef.current); // a text edit ends history navigation
         applyEditor((current) => applyEditorAction(current, action));
         return;
+      case 'move': {
+        // A vertical Up/Down move within a multi-line buffer; at the top/bottom edge (a no-op) recall history.
+        const current = editorRef.current;
+        const moved = applyEditorAction(current, action);
+        if (moved !== current || (action.motion !== 'up' && action.motion !== 'down')) {
+          applyEditor(() => moved); // a real move (vertical mid-buffer, or any horizontal/word/line motion)
+          return;
+        }
+        const recall =
+          action.motion === 'up'
+            ? historyPrev(historyRef.current, current.text)
+            : historyNext(historyRef.current);
+        if (recall !== null) {
+          historyRef.current = recall.history;
+          applyEditor(() => editorFromText(recall.text));
+        }
+        return;
+      }
       case 'submit':
+        historyRef.current = recordHistory(historyRef.current, action.line);
         applyEditor(() => emptyEditor());
         submit(action.line);
         return;
@@ -324,10 +394,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         running={running}
         mode={mode}
         approval={approval}
-        paletteOpen={palette !== undefined}
+        paletteOpen={palette !== undefined || search !== undefined}
       />
       {palette !== undefined && (
         <PaletteView commands={CHAT_PALETTE_COMMANDS} state={palette} color={color} />
+      )}
+      {search !== undefined && (
+        <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
       )}
     </Box>
   );

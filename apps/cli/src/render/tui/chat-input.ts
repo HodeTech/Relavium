@@ -17,19 +17,24 @@ export interface ChatKey {
   readonly escape?: boolean;
   readonly leftArrow?: boolean;
   readonly rightArrow?: boolean;
+  readonly upArrow?: boolean;
+  readonly downArrow?: boolean;
   readonly home?: boolean;
   readonly end?: boolean;
 }
 
 /** A cursor MOVE (no text change). A modified arrow (Ctrl/Alt) or Alt+B/F is a word motion; Home/End (or
- *  Ctrl+A/Ctrl+E) go to the start/end of the CURRENT line (multiline-aware). */
+ *  Ctrl+A/Ctrl+E) go to the start/end of the CURRENT line (multiline-aware); `up`/`down` move a visual line
+ *  within a multi-line buffer (a NO-OP at the top/bottom edge — the caller falls back to history recall there). */
 export type CursorMotion =
   | 'left'
   | 'right'
   | 'word-left'
   | 'word-right'
   | 'line-start'
-  | 'line-end';
+  | 'line-end'
+  | 'up'
+  | 'down';
 /** A KILL (delete a range): Ctrl+W deletes the word before the cursor, Ctrl+U to the line start, Ctrl+K to the
  *  line end. */
 export type KillMotion = 'word-back' | 'to-line-start' | 'to-line-end';
@@ -106,6 +111,10 @@ export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction
   const wordMod = key.ctrl === true || key.meta === true;
   if (key.leftArrow === true) return { kind: 'move', motion: wordMod ? 'word-left' : 'left' };
   if (key.rightArrow === true) return { kind: 'move', motion: wordMod ? 'word-right' : 'right' };
+  // Up/Down move a visual line within a multi-line buffer; at the top/bottom edge the move is a no-op and the
+  // chat callers fall back to history recall (the bare Home has no history, so there it is simply a no-op).
+  if (key.upArrow === true) return { kind: 'move', motion: 'up' };
+  if (key.downArrow === true) return { kind: 'move', motion: 'down' };
   if (key.home === true || (key.ctrl === true && char === 'a'))
     return { kind: 'move', motion: 'line-start' };
   if (key.end === true || (key.ctrl === true && char === 'e'))
@@ -289,6 +298,37 @@ function lineEnd(text: string, i: number): number {
   return nl === -1 ? text.length : nl;
 }
 
+/** Back off `i` to a code-point boundary if it splits a surrogate pair (a column-preserving vertical move can land
+ *  mid-pair on a line with an astral char). */
+function snapCodePoint(text: string, i: number): number {
+  if (i > 0 && i < text.length) {
+    const prev = text.charCodeAt(i - 1);
+    const cur = text.charCodeAt(i);
+    if (prev >= 0xd800 && prev <= 0xdbff && cur >= 0xdc00 && cur <= 0xdfff) return i - 1;
+  }
+  return i;
+}
+
+/**
+ * A visual-line move (`Up`/`Down`), preserving the code-unit column. Returns the SAME index (a no-op) at the
+ * top/bottom edge — there is no line above/below — so the caller falls back to history recall there.
+ */
+function verticalMove(text: string, cursor: number, dir: 'up' | 'down'): number {
+  const curStart = lineStart(text, cursor);
+  const col = cursor - curStart;
+  if (dir === 'up') {
+    if (curStart === 0) return cursor; // no line above ⇒ no-op
+    const prevStart = lineStart(text, curStart - 1); // curStart-1 is the '\n' ending the previous line
+    const prevLen = curStart - 1 - prevStart;
+    return snapCodePoint(text, prevStart + Math.min(col, prevLen));
+  }
+  const curEnd = lineEnd(text, cursor);
+  if (curEnd === text.length) return cursor; // no line below ⇒ no-op
+  const nextStart = curEnd + 1; // just after the '\n'
+  const nextLen = lineEnd(text, nextStart) - nextStart;
+  return snapCodePoint(text, nextStart + Math.min(col, nextLen));
+}
+
 /** Move the cursor per a {@link CursorMotion} (text unchanged); a no-op returns the same reference. */
 export function moveCursor(editor: EditorState, motion: CursorMotion): EditorState {
   const { text, cursor } = editor;
@@ -311,6 +351,12 @@ export function moveCursor(editor: EditorState, motion: CursorMotion): EditorSta
       break;
     case 'line-end':
       next = lineEnd(text, cursor);
+      break;
+    case 'up':
+      next = verticalMove(text, cursor, 'up');
+      break;
+    case 'down':
+      next = verticalMove(text, cursor, 'down');
       break;
   }
   return next === cursor ? editor : { text, cursor: next };

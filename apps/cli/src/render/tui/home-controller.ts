@@ -8,12 +8,24 @@ import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../ch
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import {
   applyEditorAction,
+  editorFromText,
   emptyEditor,
   insertAtCursor,
   reduceChatKey,
   type ChatKey,
   type EditorState,
 } from './chat-input.js';
+import {
+  EMPTY_HISTORY,
+  INITIAL_REVERSE_SEARCH,
+  foldReverseSearchKey,
+  historyNext,
+  historyPrev,
+  recordHistory,
+  resetHistoryNav,
+  type InputHistory,
+  type ReverseSearchState,
+} from './input-history.js';
 import type { ChatStoreController } from './chat-store.js';
 import { isPasteEnd, isPasteStart, reduceHomeKey, type HomeKey } from './home-input.js';
 import {
@@ -67,6 +79,12 @@ export interface HomeControllerState {
   /** The interactive `/` command palette — `undefined` ⇒ closed. Opens in both the bare Home (2.5.C S3c) and the
    *  in-Home chat (S3b); the command set + the run-on-select path differ by surface (see `handlePaletteKey`). */
   readonly palette: PaletteState | undefined;
+  /** The open Ctrl+R reverse-search submode of the in-Home chat (2.5.D step 3) — `undefined` ⇒ closed. Chat-only
+   *  (the bare Home has no history); mutually exclusive with the palette, yields to a pending approval. */
+  readonly search: ReverseSearchState | undefined;
+  /** A published copy of the history entries (the closure `history` is not in state) so the external render can
+   *  compute the reverse-search match; changes only on submit. */
+  readonly historyEntries: readonly string[];
   /** Transient command output in the bare Home — the `/doctor` report (2.5.C S5), rendered below the strip and
    *  cleared on the next edit/submit. Multi-line + secret-free (the doctor formatter sanitizes). `undefined` ⇒ none. */
   readonly notice: string | undefined;
@@ -112,8 +130,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     input: emptyEditor(),
     session: undefined,
     palette: undefined,
+    search: undefined,
+    historyEntries: [],
     notice: undefined,
   };
+  // Per-session command history for the in-Home chat (2.5.D step 3) — accumulates submitted lines across the Home
+  // process; Up/Down recall, Ctrl+R reverse-searches. Not persisted (a chat-resume starts fresh).
+  let history: InputHistory = EMPTY_HISTORY;
   let cancelFired = false;
   let exiting = false; // set on the clean-exit / error / signal paths — guards deferred reads of a closed db
   let tearingDown: HomeChatSession | undefined;
@@ -185,6 +208,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           snapshot: deps.homeStore.read(), // the just-finished chat now shows in the refreshed strip
           mode: 'home',
           palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
+          search: undefined, // ditto a reverse-search submode
         });
       })
       .catch(() => undefined); // a rejecting teardown (or read) must not surface as an unhandled rejection
@@ -218,6 +242,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ input: emptyEditor() }); // an empty prompt stays on the Home (no chat)
       return;
     }
+    history = recordHistory(history, trimmed); // the message that starts the chat is recallable via Up in it
     // `palette: undefined` makes the loading-state invariant explicit (the palette is never open during a build)
     // rather than only implied by the key-routing order — mirroring the `endChat` reset.
     doctorRunId += 1; // a submit invalidates any in-flight /doctor run (its report must not land on the new chat)
@@ -228,6 +253,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       pendingMessage: trimmed,
       mode: 'loading',
       palette: undefined,
+      search: undefined,
+      historyEntries: history.entries,
     });
     // Track the in-flight build so a signal (or a mid-build exit) during `loading` can reclaim its just-spawned
     // session — its MCP child / frame loop — rather than orphan it (see teardownActive).
@@ -329,11 +356,32 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
     if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
     const running = active.store.getSnapshot().state.status === 'running';
+    // The open Ctrl+R reverse-search owns every key (Esc/Ctrl-C cancels; Enter accepts the match; Ctrl+R steps
+    // older). Mutually exclusive with the palette; yields to a pending approval (only opens below when idle).
+    const openSearch = state.search;
+    if (openSearch !== undefined) {
+      const step = foldReverseSearchKey(input, key, openSearch, history.entries);
+      if (step.kind === 'close') {
+        set({ search: undefined });
+        return;
+      }
+      if (step.kind === 'accept') {
+        set({ search: undefined, input: editorFromText(step.text) }); // load the matched entry
+        return;
+      }
+      set({ search: step.state });
+      return;
+    }
     // A pending approval OWNS the keyboard (never opens the palette) — the reduceChatKey approval-intercept.
     const approvalPending = active.store.getSnapshot().approval !== undefined;
     // Open the `/` palette when idle at an EMPTY prompt (a literal '/', not a chord) — the discovery entry point.
     if (!approvalPending && shouldOpenPalette(input, key, running, state.input.text.length)) {
       set({ palette: INITIAL_PALETTE_STATE });
+      return;
+    }
+    // Ctrl+R opens reverse-incremental history search (idle, not mid-approval) — parity with `relavium chat`.
+    if (!approvalPending && !running && key.ctrl === true && input === 'r') {
+      set({ search: INITIAL_REVERSE_SEARCH });
       return;
     }
     const action = reduceChatKey(input, key, state.input.text, running, approvalPending);
@@ -347,15 +395,32 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'append':
       case 'backspace':
       case 'newline':
-      case 'move':
       case 'kill': {
+        history = resetHistoryNav(history); // a text edit ends history navigation
         const next = applyEditorAction(state.input, action);
-        if (next === state.input) return; // a no-op motion (a cursor key at a boundary) must not re-render
+        if (next === state.input) return; // a no-op edit must not re-render
         set({ input: next });
         return;
       }
+      case 'move': {
+        // A vertical Up/Down move within a multi-line buffer; at the top/bottom edge (a no-op) recall history.
+        const moved = applyEditorAction(state.input, action);
+        if (moved !== state.input) {
+          set({ input: moved }); // a real move (vertical mid-buffer, or any horizontal/word/line motion)
+          return;
+        }
+        if (action.motion !== 'up' && action.motion !== 'down') return; // a no-op horizontal motion
+        const recall =
+          action.motion === 'up' ? historyPrev(history, state.input.text) : historyNext(history);
+        if (recall !== null) {
+          history = recall.history;
+          set({ input: editorFromText(recall.text) });
+        }
+        return;
+      }
       case 'submit':
-        set({ input: emptyEditor() });
+        history = recordHistory(history, action.line);
+        set({ input: emptyEditor(), historyEntries: history.entries });
         sendChatLine(active, action.line);
         return;
       case 'cycle-mode':

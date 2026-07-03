@@ -8,9 +8,11 @@ import { sanitizeInline } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
 import { HomeView } from './home-view.js';
+import type { ReverseSearchState } from './input-history.js';
 import { PaletteView } from './palette-view.js';
 import type { PaletteState } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
+import { ReverseSearchView } from './reverse-search-view.js';
 
 /**
  * The single-ink-tree shell for the bare-invocation Home (2.5.B / ADR-0054): ONE `useInput` owner over a
@@ -39,6 +41,8 @@ function ChatRegion(
     store: ChatStoreController;
     editor: EditorState;
     palette: PaletteState | undefined;
+    search: ReverseSearchState | undefined;
+    historyEntries: readonly string[];
   }>,
 ): ReactElement {
   const { state, tick, color, mode, approval } = useSyncExternalStore(
@@ -55,10 +59,13 @@ function ChatRegion(
         running={state.status === 'running'}
         mode={mode}
         approval={approval}
-        paletteOpen={props.palette !== undefined}
+        paletteOpen={props.palette !== undefined || props.search !== undefined}
       />
       {props.palette !== undefined && (
         <PaletteView commands={CHAT_PALETTE_COMMANDS} state={props.palette} color={color} />
+      )}
+      {props.search !== undefined && (
+        <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
       )}
     </Box>
   );
@@ -75,7 +82,15 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   useInput((input, key) => controller.handleKey(input, key));
 
   if (state.mode === 'chat' && state.session !== undefined) {
-    return <ChatRegion store={state.session.store} editor={state.input} palette={state.palette} />;
+    return (
+      <ChatRegion
+        store={state.session.store}
+        editor={state.input}
+        palette={state.palette}
+        search={state.search}
+        historyEntries={state.historyEntries}
+      />
+    );
   }
   if (state.mode === 'loading') {
     return (
