@@ -42,10 +42,11 @@ knowing which provider produced it:
   retryable `LlmError` and records the failed attempt's usage so cost stays accurate
   across failover.
 - **Fatal** — not worth retrying anywhere; surface it and stop: authentication/permission
-  failures (401/403, a bad or missing key), malformed requests (400, an unsupported model
-  id, a tool schema a provider rejected), content-policy refusals, and request
-  cancellation (`AbortSignal`). A fatal error does **not** silently fall through the chain
-  to mask a real bug.
+  failures (401/403, a bad or missing key; **402** an account billing / insufficient-balance
+  problem — classified `auth` so it surfaces as `provider_auth`, never `internal`), malformed
+  requests (400, an unsupported model id, a tool schema a provider rejected), content-policy
+  refusals, and request cancellation (`AbortSignal`). A fatal error does **not** silently fall
+  through the chain to mask a real bug.
 
 The runner — not the adapter — owns the retry/fallback policy
 ([ADR-0011](../decisions/0011-internal-llm-abstraction.md)); adapters stay dumb and only

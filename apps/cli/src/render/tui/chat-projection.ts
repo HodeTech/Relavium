@@ -64,6 +64,24 @@ export function sanitizeInline(text: string): string {
 const SAFE_MESSAGE_CODES: ReadonlySet<string> = new Set(['tool_denied', 'tool_unavailable']);
 
 /**
+ * Error codes whose `errorMessage` is a PROVIDER-authored, already-redacted status line safe to render in-chat —
+ * distinct from {@link SAFE_MESSAGE_CODES} (static host-authored tool-denial labels) and justified separately.
+ * These carry the upstream provider's own error text (`provider_auth` → "402 Insufficient Balance" / "401
+ * Invalid API key", `provider_rate_limit` → "429 …", `provider_unavailable` → "503 …", `content_filter` → the
+ * moderation reason). Surfacing it is safe because the seam already scrubs secret material at the single
+ * `makeLlmError` choke point (packages/llm/src/llm-error.ts `scrubSecrets`) and the run-event carries only
+ * `{ code, message, retryable }` — never a raw vendor object — so the message is a provider STATUS line, not a
+ * prompt/model echo (the reason `tool_failed` is deliberately excluded — its message MAY carry model/MCP
+ * context). It is still terminal-sanitized here regardless (`sanitizeInline`, like every display string).
+ */
+const PROVIDER_MESSAGE_CODES: ReadonlySet<string> = new Set([
+  'provider_auth',
+  'provider_rate_limit',
+  'provider_unavailable',
+  'content_filter',
+]);
+
+/**
  * A one-line per-turn summary shown after a completed assistant turn: the stop reason (or the error code +,
  * for the vetted approval-floor codes, its secret-free reason), the turn's token usage, and its duration.
  * Secret-free — it carries only counts/codes + a whitelisted reason label, never argument text.
@@ -79,11 +97,16 @@ export function formatTurnSummary(summary: TurnSummary): string {
   let head: string;
   if (summary.errorCode === undefined) {
     head = summary.stopReason;
-  } else if (reason.length > 0 && SAFE_MESSAGE_CODES.has(summary.errorCode)) {
-    // Surface WHY a governed action was denied — the reason is the only place it reaches the user, and the turn
-    // died on it (e.g. `error: tool_denied — not allowed in ask mode (read-only)`). Unlike the run path's
-    // final-summary.ts (which renders errorMessage for every code), the chat path restricts it to the vetted
-    // approval-floor codes, since a chat turn is interactive/lower-trust.
+  } else if (
+    reason.length > 0 &&
+    (SAFE_MESSAGE_CODES.has(summary.errorCode) || PROVIDER_MESSAGE_CODES.has(summary.errorCode))
+  ) {
+    // Surface WHY the turn died — the reason is the only place it reaches the user. Two vetted families:
+    // an approval-floor denial (`error: tool_denied — not allowed in ask mode (read-only)`, a static
+    // host-authored label) and a provider status line (`error: provider_auth — 402 Insufficient Balance`, the
+    // upstream message, already secret-scrubbed at the seam). Unlike the run path's final-summary.ts (which
+    // renders errorMessage for every code), the chat path restricts it to these two secret-free sets, since a
+    // chat turn is interactive/lower-trust — every other code (e.g. `tool_failed`) shows only its code.
     head = `error: ${summary.errorCode} — ${reason}`;
   } else if (summary.errorCode === 'tool_failed') {
     // A tool call ended the turn (a repeated failure spent the correction budget, or a non-recoverable tool

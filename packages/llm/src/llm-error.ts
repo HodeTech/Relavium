@@ -33,6 +33,11 @@ export function kindFromHttpStatus(status: number): LlmErrorKind {
   if (status === 408) return 'timeout';
   if (status >= 500) return 'overloaded'; // 5xx — a transient server/overload condition
   if (status === 401 || status === 403) return 'auth';
+  // 402 Payment Required — a provider account/billing problem (e.g. DeepSeek's "Insufficient Balance", an
+  // exhausted prepaid quota), NOT an engine fault. Rides the fatal `auth` bucket → `provider_auth`, so the
+  // surfaced code names an account problem instead of `unknown` → `internal`. Fatal (non-retryable): retrying
+  // the same provider cannot restore balance. Grouped with 401/403 in error-handling.md.
+  if (status === 402) return 'auth';
   // 400 bad request · 404 not found · 409 conflict · 413 too large · 422 unprocessable — all fatal.
   if (status === 400 || status === 404 || status === 409 || status === 413 || status === 422) {
     return 'bad_request';
