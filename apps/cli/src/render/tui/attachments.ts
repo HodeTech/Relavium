@@ -116,17 +116,13 @@ export function commandResultPreview(
   maxLines = 20,
 ): string {
   const header = `! ${commandLine(cmd)} (exit ${exitCode})`;
-  // stderr rides under a `[stderr]` marker; a stderr-only result skips the empty-stdout line (no leading blank line).
+  // Merge the streams: stderr (if any) rides under a `[stderr]` marker; an empty stream is dropped, so a stderr-only
+  // result has no leading blank line and a stdout-only result has no trailing marker.
+  const stderrBlock = stderr.length > 0 ? `[stderr] ${stderr}` : '';
+  const merged = [stdout, stderrBlock].filter((part) => part.length > 0).join('\n');
   // Byte-bound first (a single huge line — a base64 blob, minified output — would otherwise sail past the LINE cap
   // straight into the `<Static>` notice), then trim + line-bound: the same double-bound discipline as `injection.ts`.
-  const combined = boundInjection(
-    (stderr.length > 0
-      ? stdout.length > 0
-        ? `${stdout}\n[stderr] ${stderr}`
-        : `[stderr] ${stderr}`
-      : stdout
-    ).trimEnd(),
-  ).trimEnd();
+  const combined = boundInjection(merged.trimEnd()).trimEnd();
   if (combined.length === 0) return `${header}\n(no output)`;
   const lines = combined.split('\n');
   const shown =

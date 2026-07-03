@@ -21,8 +21,9 @@ describe('untrusted-context injection framing (2.5.D / ADR-0061)', () => {
     expect(sanitizeInjectionAttr('a\nb\tc\rd\x00e\x7ff\x9fg')).toBe('abcdefg');
     // The framing chars `<` `>` `"` are removed (they would otherwise close the attribute / forge a tag).
     expect(sanitizeInjectionAttr('a<b>c"d')).toBe('abcd');
-    // Unicode bidi/format controls (RLO/LRO/isolates/marks) are removed — no visual spoofing of the attribute.
-    expect(sanitizeInjectionAttr('a‮b‏c⁦d؜e')).toBe('abcde');
+    // Unicode bidi/format controls are removed — no visual spoofing of the attribute. Written as explicit escapes
+    // (RLO U+202E, RLM U+200F, LRI U+2066, ALM U+061C) so no literal bidi char lives in the source (no Trojan-Source).
+    expect(sanitizeInjectionAttr('a\u202Eb\u200Fc\u2066d\u061Ce')).toBe('abcde');
   });
 
   it('frameUntrusted fences content with the nonce on BOTH tags and sanitizes attribute values', () => {

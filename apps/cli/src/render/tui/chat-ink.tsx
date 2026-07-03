@@ -197,13 +197,13 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
               {formatToolCall(call)}
             </Text>
           ))}
-          {props.busyCommand !== undefined ? (
-            <Text {...dimProps(color)} wrap="truncate-end">
-              {`${spinnerFrame(tick)} ! ${sanitizeInline(props.busyCommand)} — running · Esc to cancel`}
-            </Text>
-          ) : (
+          {props.busyCommand === undefined ? (
             <Text>
               {spinnerFrame(tick)} {stripTerminalControls(state.liveTokens)}
+            </Text>
+          ) : (
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {`${spinnerFrame(tick)} ! ${sanitizeInline(props.busyCommand)} — running · Esc to cancel`}
             </Text>
           )}
         </Box>
