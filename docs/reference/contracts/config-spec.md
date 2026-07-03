@@ -115,6 +115,8 @@ max_turns = 50                     # hard session TURN cap → SessionDeps.maxTu
 max_messages = 200                 # session-history cap before older turns are trimmed/summarized
 max_cost_microcents = 0            # 0 = unbounded; >0 = per-session pre-egress cost cap (the same governor as a workflow budget — ADR-0028)
 on_exceed = "pause_for_approval"   # fail | pause_for_approval | warn — when a session hits its cap
+allowed_commands = []              # !-shell allowlist (ADR-0061): EXACT full-command-string match; EMPTY/absent ⇒ !-shell disabled
+allowed_command_globs = []         # opt-in glob form of the !-shell allowlist (riskier); empty/absent ⇒ none
 ```
 
 > **Project-scoped MCP servers.** `project.toml` / `workspace.toml` may also declare
@@ -131,7 +133,9 @@ on_exceed = "pause_for_approval"   # fail | pause_for_approval | warn — when a
 >
 > `max_turns` is the surface-mapped form of the engine **hard turn cap** (`SessionDeps.maxTurns`, [agent-session-spec.md](agent-session-spec.md#hard-turn-cap)) — a finite DoS fail-safe (engine default **50**; absent ⇒ that default — a `positiveInt`, so `0` is rejected at the config layer and never reaches the engine's own `<= 0 ⇒ default` arm). It is **distinct** from `max_messages` (a history-**trim** threshold that *silently continues*) and the within-turn `maxToolTurns` tool-loop guard: a `sendMessage` past `max_turns` ends **loudly** (`session:turn_completed` with `error.code: 'turn_limit'`, no egress).
 >
-> The `[chat]` block resolves **per field** (each key independently, last-writer-wins project → workspace) — a project that sets only `max_turns` still inherits `default_model`/`max_messages` from the workspace layer. (Contrast `[defaults].media_cost_estimate`, which resolves **whole-object**: the highest layer present replaces the table outright.)
+> The `[chat]` block resolves **per field** (each key independently, last-writer-wins project → workspace) — a project that sets only `max_turns` still inherits `default_model`/`max_messages` from the workspace layer. (Contrast `[defaults].media_cost_estimate`, which resolves **whole-object**: the highest layer present replaces the table outright.) The `!`-shell allowlist arrays resolve per-field too, but a present array **REPLACES** (never merges) the lower layer's — a project that sets `allowed_commands` fully overrides the workspace's, so a narrower project can never inherit a broader workspace entry.
+>
+> `allowed_commands` / `allowed_command_globs` gate the **`!`-shell escape** (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — a chat user typing `!command` runs it through the **one** `run_command` boundary (they map to the engine's camelCase `allowedCommands` / `allowedCommandGlobs`, the SAME allowlist a workflow `run_command` uses). `allowed_commands` is **exact full-command-string** match (`git status`, `ls -la` — `git` never authorizes `git push --force`); `allowed_command_globs` is the opt-in, riskier pattern form. **Both default to EMPTY ⇒ `!`-shell is disabled** — the `empty ⇒ disabled` symmetry [security-review.md](../../standards/security-review.md) pins, with **no chat-specific relaxation** (there is no curated default: `run_command` has no argument/file confidentiality floor, so even a "read-only" default set — `cat`, `grep` — would reopen `!cat .env` → provider). `!`-shell is first-class via a first-class **opt-in** (the user lists commands, or the 2.5.G onboarding offers a reviewed seed), and a non-allowlisted `!cmd` gets an **actionable, secret-free deny hint** naming the exact line to add. `enforcePolicy(allowedCommands)` runs **before** the mode-aware `confirmAction`, so even `auto` mode never runs a command absent from the allowlist. Editing chat `allowed_commands` is a [security-review.md](../../standards/security-review.md) trigger.
 
 ## Secrets are out of band
 

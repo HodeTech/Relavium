@@ -163,7 +163,21 @@ holistic security review (~50 findings fixed, 4 HIGH). A same-PR chat-UX follow-
 EXECUTION failure on the interactive surface (a file-not-found READ) is fed back to the model to recover
 (`recoverToolFailures`, scoped to IDEMPOTENT tools via a stamped `ToolExecutionError.recoverable`; a governed /
 side-effecting failure stays fail-fast) plus a static secret-free `tool_failed` hint. **With 2.5.E the CLI
-Consolidation spine (2.5.A → C, E) is complete; next: 2.5.D / F / G** (the experience arm). See the
+Consolidation spine (2.5.A → C, E) is complete.** **2.5.D** (chat input ergonomics) is **implemented (PR open,
+pending merge, 2026-07-03)** — the first experience-arm workstream: the pure-ergonomics half (`Ctrl+J` multiline,
+`↑/↓` history + `Ctrl+R` reverse-search, readline motions, a shared cursor-bearing `EditorState`) plus the two
+data-moving affordances behind [ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)
+(**Accepted** after a two-round maintainer security review): **`@`-mention** (dir-navigable file completion that
+reads through the SAME `FsCapability` `read_file` uses — jail + the expanded sensitive-read confidentiality floor
++ listing-gate + binary/size guards — and injects as UNTRUSTED, nonce-fenced, byte+line-bounded context) and
+**`!`-shell** (the additive `AgentSession.runUserCommand` — EA8 — routing `!command` through the one `run_command`
+boundary: `enforcePolicy([chat].allowed_commands)` BEFORE the mode-aware `confirmAction` → `spawn`/`shell:false`;
+**empty-default allowlist ⇒ `!` inert**, secure-by-default, with an actionable deny hint). Each of the 5 steps
+passed the mandated opus + sonnet adversarial-review loop, and the ADR-0061 mandatory security pass ran inside the
+step-4/5 loops (14 findings fixed across the two `@`-mention rounds; on the `!`-shell the opus + security pass
+confirmed 0 defects after adversarial verification, and the sonnet second pass caught a HIGH — a `!`-command in
+flight left no host-visible busy signal, so a message typed mid-command could crash the session — now fixed with a
+`shellBusy` input gate, plus a LOW type-hygiene fix). **Next in the experience arm: 2.5.F / G.** See the
 [Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md).
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks

@@ -244,19 +244,40 @@ discoverable (no separate `/shortcuts`); the palette filters; an unknown slash /
 `/doctor --deep` never connects/spawns an unreferenced MCP server. **Required ADR: in-app slash command
 system + command manifest (ADR-0056).**
 
-### 2.5.D — Chat input ergonomics
+### 2.5.D — Chat input ergonomics — **Implemented (PR pending merge, 2026-07-03)**
 
-Today the ink editor is single-line only, with no history or cursor movement
-(`apps/cli/src/render/tui/chat-ink.tsx`). REPL-only; no engine/seam change.
+> **Status:** Implemented across both interactive surfaces (`relavium chat` + the 2.5.B Home); PR open for
+> review, **pending merge** (the ✅ flips on merge). The two data-moving affordances (`@`/`!`) are behind
+> [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md) (**Accepted** after a
+> two-round maintainer security review + the mandatory adversarial security pass folded into the step-4/5 opus +
+> sonnet review loops). Shipped:
+>
+> - **Ergonomics (no security surface):** `Ctrl+J` newline + multi-line render, `↑/↓` history + `Ctrl+R`
+>   reverse-search, readline cursor/word/line motions — a shared `reduceEditorMotion` + a cursor-bearing
+>   `EditorState` across both surfaces (one raw-mode owner preserved).
+> - **`@`-mention:** dir-navigable file completion (a `..` ascend row + backspace-to-parent) that reads through
+>   the **same** `FsCapability` `read_file` uses (jail + the sensitive-read confidentiality floor, expanded to
+>   `.env*`/`.aws`/`.docker`/`.envrc`/`.dockercfg` + `.env/` as a dir; the listing-gate; binary/size guards), and
+>   injects as **UNTRUSTED, nonce-fenced, byte+line-bounded** context. The `.gitignore`/`.relaviumignore` advisory
+>   trim ships as a fixed `NOISE_DIRS` set (the matcher is a deferred follow-up).
+> - **`!`-shell:** the additive **`AgentSession.runUserCommand`** (the documented engine exception below) routes a
+>   `!command` through the **one** `run_command` boundary — `enforcePolicy([chat].allowed_commands)` **before** the
+>   mode-aware `confirmAction` → `spawn`/`shell:false`. **Empty-default allowlist ⇒ `!` inert** (secure-by-default;
+>   the reversal of an earlier curated-default, per the maintainer security review); a non-allowlisted `!cmd` gets
+>   an actionable, secret-free hint. Output is injected as UNTRUSTED, doubly-bounded context. `@`/`!` are TTY-only.
+>
+> **Documented engine exception:** the "no engine/seam change" acceptance line below is amended by ADR-0061 —
+> `AgentSession.runUserCommand` is one additive, pure method reusing `#runTurn`'s dispatch-context construction
+> verbatim (no platform import, no vendor type; the `LLMProvider` seam + engine purity hold).
 
-**Tasks:** `Ctrl+J` newline (canonical; `Shift+Enter` optional, never relied on); `↑/↓` history +
-`Ctrl+R` reverse search; readline cursor/word motions; `@`-mention (Tab-completion, `.gitignore`/
-`.relavium`-respecting, binary detection, token-limit warning) to inject file context explicitly;
-`!`-shell bounded by `ToolPolicy.allowedCommands` (off in ask/plan, gated in accept-edits). **Esc
-per-turn abort is NOT here** — it requires an engine state and lives in 2.5.E (EA7).
+Originally scoped as REPL-only with no engine/seam change; the `!`-shell's `runUserCommand` is the ADR-0061
+exception (above). `Ctrl+J` newline (canonical; `Shift+Enter` optional, never relied on); `↑/↓` history +
+`Ctrl+R` reverse search; readline cursor/word motions; `@`-mention to inject file context explicitly; `!`-shell
+bounded by `[chat].allowed_commands` (off in ask/plan, gated in accept-edits). **Esc per-turn abort is NOT here**
+— it requires an engine state and lives in 2.5.E (EA7).
 
 **Acceptance:** multi-line input, history recall/search, and `@`/`!` work; the raw-mode owner is
-preserved; zero engine/seam change.
+preserved; the only engine change is the ADR-0061-sanctioned `runUserCommand`.
 
 ### 2.5.E — Chat modes (reseat-less) + per-tool approval + mid-turn abort — ✅ **Done (PR #63, 2026-07-03)**
 
@@ -472,13 +493,18 @@ workstream begins.
    system + command manifest (2.5.C).
 4. [ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) — reseat-less chat modes +
    per-tool approval + mid-turn abort (2.5.E).
+5. [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md) — CLI input-layer
+   file-injection (`@`-mention) + shell-escape (`!`-shell) security model (2.5.D); the pure-ergonomics half
+   (`Ctrl+J` / history / `Ctrl+R` / motions) needs no ADR. **Accepted** (after a two-round maintainer security
+   review; the mandatory adversarial security pass ran inside the step-4/5 review loops). Adds the one documented
+   engine exception, `AgentSession.runUserCommand` (EA8, appendix below).
 
 EA6 (the new `agent:reasoning` event) is an additive event in the shared event union; it does not need a new
 top-level ADR — it **amends** [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)
 (the event substrate) with a dated note and updates
 [sse-event-schema.md](../../reference/contracts/sse-event-schema.md) when 2.5.H lands.
 
-## Engine amendments appendix (EA1–EA7)
+## Engine amendments appendix (EA1–EA8)
 
 Each amendment is pure and platform-free (the engine architecture and the `LLMProvider` seam are unchanged);
 each ships behind the ADR below and updates its canonical-home spec + the drift-pin test where it touches a
@@ -493,6 +519,7 @@ shared contract.
 | EA5 | `agent:approval_requested` stream event (in the `agent:*` namespace) | shared event union | ADR-0057; `sse-event-schema.md` + drift-pin |
 | EA6 | `agent:reasoning` stream event (host-emit; seam already carries reasoning) | `agent-turn.ts` + shared event union | **amends ADR-0036**; `sse-event-schema.md` + drift-pin |
 | EA7 | mid-turn abort (`Esc` → one `session:turn_completed`/abort → `idle`; no new status) | `agent-session.ts` | ADR-0057; `agent-session-spec.md` |
+| EA8 | `AgentSession.runUserCommand` — the user `!`-shell escape through the one `run_command` boundary (reuses `#runTurn`'s dispatch context verbatim; the documented 2.5.D engine exception) | `agent-session.ts` (`#buildDispatchContext` + `runUserCommand` + `UserCommandOutcome`) | ADR-0061; `agent-session-spec.md` |
 
 ## Risks & mitigations
 
