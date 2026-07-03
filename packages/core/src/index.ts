@@ -196,6 +196,8 @@ export type {
   SessionApprovalStreamEvent,
   // The reseat-less mode policy (advertise-filter + confirm hook) a host pushes via setTurnPolicy (ADR-0057).
   SessionTurnPolicy,
+  // The classified result of a `!`-shell runUserCommand (ADR-0061) — the host renders each case (2.5.D).
+  UserCommandOutcome,
 } from './engine/agent-session.js';
 // Session checkpoint/resume (1.Y) — reconstruct the in-flight state from a persisted transcript (1.X) so a
 // session continues after a restart; the host loads via the @relavium/db SessionStore and hands the result

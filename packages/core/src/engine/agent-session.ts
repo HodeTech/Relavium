@@ -42,8 +42,16 @@ import {
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
 
+import {
+  ToolCancelledError,
+  ToolDeniedByUserError,
+  ToolDispatchError,
+  ToolPolicyError,
+} from '../tools/errors.js';
 import type {
   ConfirmActionHook,
+  ProcessResult,
+  ToolCallPart,
   ToolDef,
   ToolDispatchContext,
   ToolId,
@@ -208,6 +216,41 @@ type PlanResult =
   | { readonly ok: false; readonly message: string };
 
 /**
+ * The classified result of a `!`-shell {@link AgentSession.runUserCommand} (ADR-0061). A discriminated union so
+ * the host renders each case explicitly and no raw error escapes:
+ * - `ran` — the command executed; `stdout`/`stderr` are process-arm bounded (the host applies a second injection
+ *   bound before feeding them to the model as UNTRUSTED context). `exitCode` may be non-zero (a normal command
+ *   failure, still `ran`).
+ * - `denied` — refused BEFORE any side effect: `allowlist: true` ⇒ the command is not in `[chat].allowed_commands`
+ *   (the host shows the actionable opt-in hint); `false` ⇒ an interactive approval reject / protected-path denial.
+ * - `failed` — a transient execution/wiring fault (a spawn error, a capability gap) — `message` is secret-free.
+ * - `cancelled` — the session was cancelled/aborted mid-run.
+ */
+export type UserCommandOutcome =
+  | {
+      readonly kind: 'ran';
+      readonly exitCode: number;
+      readonly stdout: string;
+      readonly stderr: string;
+      readonly truncated: boolean;
+    }
+  | { readonly kind: 'denied'; readonly allowlist: boolean; readonly message: string }
+  | { readonly kind: 'failed'; readonly message: string }
+  | { readonly kind: 'cancelled' };
+
+/** Structural guard for the `run_command` dispatch result (a {@link ProcessResult}) — validates at the boundary
+ *  rather than an unsafe cast, so a future tool-shape drift is caught, not silently mis-read. */
+function isProcessResult(value: unknown): value is ProcessResult {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v['exitCode'] === 'number' &&
+    typeof v['stdout'] === 'string' &&
+    typeof v['stderr'] === 'string'
+  );
+}
+
+/**
  * Drive a multi-turn agent conversation over the shared turn core. Construct with a caller-minted
  * `sessionId`, call {@link start} once, then {@link sendMessage} per user turn; {@link cancel} aborts an
  * in-flight turn. Events flow through the injected {@link SessionEventSink}.
@@ -247,6 +290,8 @@ export class AgentSession {
    * `session:turn_completed{stopReason:'aborted'}` and keep the session alive (→ `idle`). Cleared each turn.
    */
   #abortingTurn = false;
+  /** Monotonic counter for the synthetic `run_command` tool-call id of a `!`-shell dispatch ({@link runUserCommand}). */
+  #userCommandSeq = 0;
   /** Memoized provider fallback plan (the agent binding is fixed for the session). */
   #plan: PlanResult | undefined;
 
@@ -525,18 +570,19 @@ export class AgentSession {
     this.#abort?.abort();
   }
 
-  /** Build (memoized) the fallback plan and drive one turn through the shared core. */
-  async #runTurn(
-    signal: AbortSignalLike,
+  /**
+   * Build the per-dispatch {@link ToolDispatchContext} (sans `signal`) shared by {@link #runTurn} and the
+   * {@link runUserCommand} `!`-shell path ([ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)):
+   * the granted set, the session `toolPolicy` (the `allowedCommands` allowlist), the `fsScope`, `gateApproved:
+   * false`, and — under a set mode policy (ADR-0057) — the interactive-approval regime (`confirm` + the EA5
+   * `agent:approval_requested` emit). Factored so the `!`-shell reuses the SAME regime VERBATIM rather than a
+   * dispatch context re-assembled in `apps/cli` (the one command boundary, never a fork).
+   */
+  #buildDispatchContext(
+    grantedToolIds: ReadonlySet<ToolId>,
     turnPolicy: SessionTurnPolicy | undefined,
-  ): Promise<AgentTurnResult> {
-    const plan = this.#resolvePlan();
-    if (!plan.ok) {
-      // A host-wiring gap (a provider was not resolved) — a classified, non-retryable internal failure.
-      throw new AgentTurnError('internal', plan.message, false);
-    }
-    const grantedToolIds = new Set(this.#agent.tools ?? []);
-    const dispatchContext: Omit<ToolDispatchContext, 'signal'> = {
+  ): Omit<ToolDispatchContext, 'signal'> {
+    return {
       nodeId: this.#agentRef,
       grantedToolIds,
       config: {}, // an agent-invoked tool carries no per-tool config block in v1.0
@@ -571,6 +617,86 @@ export class AgentSession {
                   },
           }),
     };
+  }
+
+  /**
+   * Run a USER-invoked `!`-shell command (2.5.D, [ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
+   * — the additive engine method that routes the shell escape through the ONE `run_command` boundary:
+   * `enforcePolicy(allowedCommands)` (the exact-match allowlist, enforced BEFORE approval) → the mode-aware
+   * `confirmAction` gate → the hardened process arm (`spawn`, `shell:false`). It reuses {@link #runTurn}'s
+   * dispatch-context construction VERBATIM (`this.#turnPolicy`, the session `toolPolicy`, `fsScope`,
+   * `gateApproved: false`), so the `!`-shell can never diverge from the audited command sandbox. The caller
+   * pre-tokenizes the line into `command` + `args` (no shell metachar expansion). The classified result is a
+   * discriminated union — the host renders the output (untrusted context), the actionable allowlist-deny hint, or
+   * a failure — so no raw error escapes. Callable only when the session is started + idle (a `!` never races a turn).
+   */
+  async runUserCommand(command: string, args: readonly string[]): Promise<UserCommandOutcome> {
+    this.#assertSendable(); // started + idle — a `!` never runs concurrently with a model turn
+    this.#status = 'running';
+    const abort = this.#deps.newAbortController();
+    this.#abort = abort; // so cancel()/abort() can interrupt a long-running command
+    const toolCall: ToolCallPart = {
+      type: 'tool_call',
+      id: `usercmd-${(this.#userCommandSeq += 1)}`,
+      name: 'run_command',
+      args: { command, args: [...args] },
+    };
+    try {
+      // The user-initiated `!` GRANTS `run_command` for THIS one-off dispatch (the user typed it — the grant is
+      // implicit), regardless of whether the bound agent lists it in `tools`. This never reaches the model: it is a
+      // direct dispatch, not a turn, so the model's granted/advertised set is untouched. The security gate stays the
+      // allowlist (`enforcePolicy`, BEFORE approval) + the mode-aware `confirmAction`, never this grant.
+      const grantedToolIds = new Set<ToolId>([...(this.#agent.tools ?? []), 'run_command']);
+      const outcome = await this.#deps.registry.dispatch(toolCall, {
+        ...this.#buildDispatchContext(grantedToolIds, this.#turnPolicy),
+        signal: abort.signal,
+      });
+      const result = outcome.output;
+      if (!isProcessResult(result)) {
+        return { kind: 'failed', message: 'run_command returned an unexpected result shape' };
+      }
+      return {
+        kind: 'ran',
+        exitCode: result.exitCode,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        truncated: outcome.truncated,
+      };
+    } catch (err) {
+      if (err instanceof ToolCancelledError) return { kind: 'cancelled' };
+      // An allowlist MISS is a policy denial with `command_not_allowed` — the host shows the actionable
+      // `[chat].allowed_commands` hint; any other `tool_denied` (an approval reject / protected path) is a plain
+      // decline. Both messages are secret-free (the error classes never echo the resolved command value).
+      if (err instanceof ToolPolicyError) {
+        return {
+          kind: 'denied',
+          allowlist: err.reason === 'command_not_allowed',
+          message: err.message,
+        };
+      }
+      if (err instanceof ToolDeniedByUserError) {
+        return { kind: 'denied', allowlist: false, message: err.message };
+      }
+      if (err instanceof ToolDispatchError) return { kind: 'failed', message: err.message };
+      throw err; // an unexpected non-tool error (a wiring bug) — surface loudly, never swallow
+    } finally {
+      this.#abort = undefined;
+      if (this.#status === 'running') this.#status = 'idle'; // a cancel() may have set 'cancelled' — don't revert it
+    }
+  }
+
+  /** Build (memoized) the fallback plan and drive one turn through the shared core. */
+  async #runTurn(
+    signal: AbortSignalLike,
+    turnPolicy: SessionTurnPolicy | undefined,
+  ): Promise<AgentTurnResult> {
+    const plan = this.#resolvePlan();
+    if (!plan.ok) {
+      // A host-wiring gap (a provider was not resolved) — a classified, non-retryable internal failure.
+      throw new AgentTurnError('internal', plan.message, false);
+    }
+    const grantedToolIds = new Set(this.#agent.tools ?? []);
+    const dispatchContext = this.#buildDispatchContext(grantedToolIds, turnPolicy);
     // Advertise-filter (ADR-0057): narrow the model-visible tool set per the host's mode (best-effort; the
     // confirm floor stays authoritative). No policy / no filter ⇒ advertise every granted tool.
     const llmTools = buildLlmTools(this.#deps.tools, grantedToolIds, turnPolicy?.advertise);
