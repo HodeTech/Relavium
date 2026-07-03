@@ -404,14 +404,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         return;
       case 'none':
         return;
-      default:
+      default: {
         // Every buffer edit / cursor motion (append / backspace / newline / move / kill) folds via the shared
-        // applyEditorAction — the Home prompt is a first-class line editor too (2.5.D step 2). A typed edit / a
-        // motion clears any stale `/doctor` report + invalidates an in-flight run (the first keystroke after
-        // reading a report means the user has moved on; the bump stops a slow `--deep` report reappearing).
+        // applyEditorAction — the Home prompt is a first-class line editor too (2.5.D step 2). A NO-OP motion (a
+        // cursor key at a boundary — applyEditorAction returns the SAME reference) must not bump doctorRunId or
+        // clear a visible `/doctor` report; only a real change does (the first real edit means the user has moved
+        // on, and the bump stops a slow `--deep` report reappearing over what's now typed).
+        const next = applyEditorAction(state.input, action);
+        if (next === state.input) return;
         doctorRunId += 1;
-        set({ input: applyEditorAction(state.input, action), notice: undefined });
+        set({ input: next, notice: undefined });
         return;
+      }
     }
   };
 

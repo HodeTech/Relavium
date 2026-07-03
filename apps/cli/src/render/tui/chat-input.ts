@@ -76,9 +76,14 @@ export type ChatKeyAction =
  */
 function reduceApprovalKey(char: string, key: ChatKey): ChatKeyAction {
   if (key.escape === true) return { kind: 'abort' };
-  if (char === 'y' || char === '1') return { kind: 'approve', scope: 'once' };
-  if (char === 'a' || char === '2') return { kind: 'approve', scope: 'always' };
-  if (char === 'n' || char === 'r' || char === '3') return { kind: 'reject' };
+  // Only an UNMODIFIED letter answers the prompt — otherwise a now-bound editor chord (Ctrl+A line-start, Ctrl+W
+  // kill, Alt+B word-left) would, during a pending approval, silently pick the most-permissive, session-persistent
+  // approve-always / approve-once / reject, subverting the fail-closed confirmAction floor (ADR-0057). The digit
+  // shortcuts stay unconditional (no chord produces a bare digit).
+  const bare = key.ctrl !== true && key.meta !== true;
+  if ((bare && char === 'y') || char === '1') return { kind: 'approve', scope: 'once' };
+  if ((bare && char === 'a') || char === '2') return { kind: 'approve', scope: 'always' };
+  if ((bare && (char === 'n' || char === 'r')) || char === '3') return { kind: 'reject' };
   return { kind: 'none' };
 }
 
@@ -110,8 +115,12 @@ export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction
   if (key.ctrl === true && char === 'u') return { kind: 'kill', motion: 'to-line-start' };
   if (key.ctrl === true && char === 'k') return { kind: 'kill', motion: 'to-line-end' };
   if (key.backspace === true || key.delete === true) return { kind: 'backspace' };
-  if (char.length > 0 && char !== '\n' && key.ctrl !== true && key.meta !== true)
-    return { kind: 'append', char };
+  if (char.length > 0 && char !== '\n' && key.ctrl !== true && key.meta !== true) {
+    // Normalize any carriage return WITHIN the inserted text (a multi-char paste can carry CRLF / a bare CR):
+    // CRLF/CR → LF, so a pasted line break becomes a real newline in the buffer + sent to the model, never a
+    // stray '\r' that the display strips but the transcript keeps. A single typed char is unaffected (no CR).
+    return { kind: 'append', char: char.replace(/\r\n?/g, '\n') };
+  }
   return undefined;
 }
 
@@ -266,7 +275,10 @@ function wordRight(text: string, i: number): number {
 
 /** The start of the line containing `i` (just after the previous `\n`, or 0) — multiline `Ctrl+A` / `Home`. */
 function lineStart(text: string, i: number): number {
-  const nl = text.lastIndexOf('\n', i - 1);
+  // Guard i<=0: `lastIndexOf('\n', -1)` clamps the negative fromIndex to 0 and would false-match a LEADING '\n',
+  // returning 1 (jumping past the empty first line + inverting the Ctrl+U cut range). At the buffer start there is
+  // no preceding line, so the line start is always 0.
+  const nl = i <= 0 ? -1 : text.lastIndexOf('\n', i - 1);
   return nl === -1 ? 0 : nl + 1;
 }
 
@@ -322,7 +334,7 @@ export function killRange(editor: EditorState, motion: KillMotion): EditorState 
       to = lineEnd(text, cursor);
       break;
   }
-  if (from === to) return editor;
+  if (from >= to) return editor; // `>=` (not just `===`) is defense-in-depth: an inverted range never duplicates
   return { text: text.slice(0, from) + text.slice(to), cursor: from };
 }
 

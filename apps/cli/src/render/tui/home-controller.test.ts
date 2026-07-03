@@ -119,6 +119,28 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().input).toEqual({ text: 'h', cursor: 1 });
   });
 
+  it('the Home prompt is a first-class line editor: motions / newline / kill via handleKey (2.5.D step 2)', () => {
+    // Exercise the shared editor through the CONTROLLER (handleHomeKey → applyEditorAction), not just the reducer,
+    // so a dropped case in the grouped edit arm would fail here (ink surfaces have no render-test backstop).
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: vi.fn(),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'abcd');
+    c.handleKey('', { leftArrow: true }); // Left: 4 → 3
+    c.handleKey('', { leftArrow: true }); // → 2
+    expect(c.getSnapshot().input).toEqual({ text: 'abcd', cursor: 2 });
+    c.handleKey('X', {}); // insert AT the cursor (mid-buffer), not append-at-end
+    expect(c.getSnapshot().input).toEqual({ text: 'abXcd', cursor: 3 });
+    c.handleKey('\n', {}); // Ctrl+J: a newline at the cursor
+    expect(c.getSnapshot().input).toEqual({ text: 'abX\ncd', cursor: 4 });
+    c.handleKey('k', { ctrl: true }); // Ctrl+K: kill to the end of the line (deletes 'cd')
+    expect(c.getSnapshot().input).toEqual({ text: 'abX\n', cursor: 4 });
+  });
+
   it('a non-empty submit builds a chat, transitions loading→chat, and sends the first message', async () => {
     const made = makeSession();
     const startChat = vi.fn(() => Promise.resolve(made.session));
@@ -825,6 +847,28 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       type(c, 'x'); // typing moves on — the report clears
       expect(c.getSnapshot().notice).toBeUndefined();
       expect(c.getSnapshot().input.text).toBe('x');
+    });
+
+    it('a NO-OP cursor motion does NOT clear the Home /doctor notice (only a real edit does)', async () => {
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: vi.fn(),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      c.handleKey('/', {});
+      type(c, 'doc');
+      c.handleKey('', ENTER);
+      await flush();
+      expect(c.getSnapshot().notice).toBeDefined();
+      // The prompt is empty, so every cursor motion is a no-op (applyEditorAction returns the SAME reference); a
+      // boundary motion must NOT clear the report the user is reading (the widened edit arm was clearing it).
+      c.handleKey('', { leftArrow: true });
+      c.handleKey('a', { ctrl: true }); // Ctrl+A (line-start) on an empty buffer
+      c.handleKey('', { end: true });
+      expect(c.getSnapshot().notice).toBeDefined(); // preserved
+      expect(c.getSnapshot().input).toEqual({ text: '', cursor: 0 }); // untouched
     });
 
     it('a faulting fast-tier probe surfaces as a failed check (secret-free), never a crash', async () => {

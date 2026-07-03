@@ -67,6 +67,12 @@ describe('reduceChatKey', () => {
     }); // Return=CR
   });
 
+  it('normalizes a pasted CRLF / bare CR to LF in the appended text (no stray \\r reaches the model)', () => {
+    expect(reduceChatKey('a\r\nb', KEY, '', false)).toEqual({ kind: 'append', char: 'a\nb' }); // CRLF → LF
+    expect(reduceChatKey('a\rb', KEY, '', false)).toEqual({ kind: 'append', char: 'a\nb' }); // bare CR → LF
+    expect(reduceChatKey('abc', KEY, '', false)).toEqual({ kind: 'append', char: 'abc' }); // no CR ⇒ unchanged
+  });
+
   it('maps the cursor motions (arrows / word / line) and the kills (Ctrl+W/U/K)', () => {
     expect(reduceChatKey('', { leftArrow: true }, 'hi', false)).toEqual({
       kind: 'move',
@@ -168,6 +174,20 @@ describe('reduceChatKey — approval-prompt intercept (in-flight key-swallow byp
 
   it('maps Esc to abort (cancels the whole turn AND the pending approval)', () => {
     expect(reduceChatKey('', { escape: true }, '', true, PENDING)).toEqual({ kind: 'abort' });
+  });
+
+  it('an editor CHORD (Ctrl+A / Ctrl+Y / Ctrl+N / Alt+A) does NOT answer a pending approval (fail-closed floor)', () => {
+    // Ctrl+A is now a line-start motion; during a pending approval it must be SWALLOWED, never silently taken as
+    // the persistent approve-always — that would subvert the ADR-0057 fail-closed confirmAction floor.
+    expect(reduceChatKey('a', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // NOT approve-always
+    expect(reduceChatKey('y', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // NOT approve-once
+    expect(reduceChatKey('n', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // NOT reject
+    expect(reduceChatKey('a', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' });
+    // The digit shortcuts still answer regardless (no chord produces a bare digit).
+    expect(reduceChatKey('2', KEY, '', true, PENDING)).toEqual({
+      kind: 'approve',
+      scope: 'always',
+    });
   });
 
   it('SWALLOWS every other key while an approval is pending (no deadlock, no stray edit)', () => {
@@ -327,6 +347,18 @@ describe('cursor motions + kills (2.5.D step 2)', () => {
     expect(moveCursor({ text: 'ab\ncd', cursor: 4 }, 'line-end')).toEqual({
       text: 'ab\ncd',
       cursor: 5,
+    });
+  });
+
+  it('line-start at cursor 0 of a LEADING-newline buffer is a no-op (regression: lastIndexOf(-1) clamping)', () => {
+    // `'\nabc'.lastIndexOf('\n', -1)` clamps the negative fromIndex to 0 and would false-match text[0], returning
+    // cursor 1 (jumping past the empty first line) and inverting the Ctrl+U cut range into a buffer corruption.
+    const at0: EditorState = { text: '\nabc', cursor: 0 };
+    expect(moveCursor(at0, 'line-start')).toBe(at0); // no-op, same reference (was cursor 1)
+    expect(killRange(at0, 'to-line-start')).toBe(at0); // no-op, same reference (was corrupting to '\n\nabc')
+    expect(killRange({ text: '\n', cursor: 0 }, 'to-line-start')).toEqual({
+      text: '\n',
+      cursor: 0,
     });
   });
 
