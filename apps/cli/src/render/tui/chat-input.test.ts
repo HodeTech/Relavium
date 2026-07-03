@@ -167,6 +167,8 @@ describe('the cursor-bearing editor primitives (2.5.D step 1)', () => {
     expect(insertAtCursor({ text: '', cursor: 0 }, 'hi')).toEqual({ text: 'hi', cursor: 2 }); // multi-char (paste)
     expect(insertAtCursor({ text: 'xy', cursor: 2 }, '')).toEqual({ text: 'xy', cursor: 2 }); // empty ⇒ no-op
     expect(insertAtCursor({ text: 'ab', cursor: 0 }, 'Z')).toEqual({ text: 'Zab', cursor: 1 }); // at the start
+    // An astral keystroke (one emoji) advances the cursor by 2 UNITS, not 1 code POINT — pins the code-unit math.
+    expect(insertAtCursor({ text: '', cursor: 0 }, '😀')).toEqual({ text: '😀', cursor: 2 });
   });
 
   it('deleteBeforeCursor removes the code point before the cursor, moving it back', () => {
@@ -178,6 +180,9 @@ describe('the cursor-bearing editor primitives (2.5.D step 1)', () => {
   it('deleteBeforeCursor removes a whole astral char before the cursor (cursor back by 2 units)', () => {
     expect(deleteBeforeCursor({ text: 'a😀b', cursor: 3 })).toEqual({ text: 'ab', cursor: 1 }); // 😀 is 2 units
     expect(deleteBeforeCursor(editorFromText('hi😀'))).toEqual({ text: 'hi', cursor: 2 });
+    // A LONE low surrogate before the cursor (with trailing content after it) drops just itself — the wrapper's
+    // tail-append + cursor arithmetic must not over-delete the 'a' or corrupt the trailing 'b'.
+    expect(deleteBeforeCursor({ text: 'a\uDC00b', cursor: 2 })).toEqual({ text: 'ab', cursor: 1 });
   });
 
   it('returns the SAME reference on a no-op (the documented Object.is render-skip contract)', () => {

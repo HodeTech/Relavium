@@ -111,9 +111,11 @@ export function dropLastCodePoint(buffer: string): string {
  * ------------------------------------------------------------------------------------------------ */
 
 /**
- * The chat prompt buffer: `text` plus a `cursor` — a UTF-16 code-UNIT offset into `text`, in `0..text.length`.
- * The primitives keep the cursor off a surrogate-pair boundary (step 1 keeps it at `text.length` throughout,
- * so the invariant holds trivially; the cursor/word motions in step 2 maintain it explicitly).
+ * The chat prompt buffer: `text` plus a `cursor` — a UTF-16 code-UNIT offset into `text`, in `0..text.length`,
+ * that must never split a surrogate pair. Step 1 keeps the cursor at `text.length` throughout, so the invariant
+ * holds trivially. The insert/delete primitives TRUST this invariant — they do not re-validate — so step 2's
+ * cursor/word motions are responsible for clamping every movement to a code-point boundary within `0..text.length`
+ * (a cursor that lands mid-pair or out of range would silently corrupt the buffer — see the step-2 motion tests).
  */
 export interface EditorState {
   readonly text: string;
