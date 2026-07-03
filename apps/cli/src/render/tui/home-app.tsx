@@ -2,6 +2,7 @@ import { Box, Text, useInput } from 'ink';
 import { useEffect, useState, useSyncExternalStore, type ReactElement } from 'react';
 
 import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
+import type { PendingAttachment } from './attachments.js';
 import { ChatView } from './chat-ink.js';
 import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
@@ -46,7 +47,9 @@ function ChatRegion(
     search: ReverseSearchState | undefined;
     mention: MentionState | undefined;
     shellBusy: boolean;
+    shellCommand: string | undefined;
     historyEntries: readonly string[];
+    attachments: readonly PendingAttachment[];
   }>,
 ): ReactElement {
   const { state, tick, color, mode, approval } = useSyncExternalStore(
@@ -63,6 +66,8 @@ function ChatRegion(
         running={state.status === 'running' || props.shellBusy}
         mode={mode}
         approval={approval}
+        attachments={props.attachments}
+        busyCommand={props.shellCommand}
         paletteOpen={
           props.palette !== undefined || props.search !== undefined || props.mention !== undefined
         }
@@ -97,7 +102,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         search={state.search}
         mention={state.mention}
         shellBusy={state.shellBusy}
+        shellCommand={state.shellCommand}
         historyEntries={state.historyEntries}
+        attachments={state.attachments}
       />
     );
   }

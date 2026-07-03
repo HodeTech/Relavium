@@ -20,20 +20,24 @@ import {
   type EditorState,
 } from './chat-input.js';
 import {
-  estimateTokens,
   foldMentionKey,
-  formatMentionInjection,
-  mentionNonce,
   mentionOpensAt,
-  MENTION_TOKEN_WARN,
   type MentionReader,
   type MentionState,
 } from './mention.js';
 import { MentionView } from './mention-view.js';
-import { injectionNonce } from './injection.js';
+import {
+  appendAttachment,
+  buildOutbound,
+  commandResultPreview,
+  fileAttachmentWarning,
+  mentionMarker,
+  MAX_PENDING_ATTACHMENTS,
+  type PendingAttachment,
+} from './attachments.js';
+import { AttachmentBar } from './attachment-bar.js';
 import {
   commandLine,
-  formatCommandInjection,
   isShellLine,
   shellDenyHint,
   tokenizeCommand,
@@ -112,8 +116,10 @@ function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean
 
 interface ChatAppProps {
   readonly store: ChatStoreController;
-  /** Handle a submitted line (slash or message); resolves when the turn settles. */
-  readonly onSubmit: (line: string) => Promise<void>;
+  /** Handle a submitted turn; resolves when it settles. `message` is the full framed text sent to the model +
+   *  persisted; the optional `display` is the compact transcript form (prose + a `[📎 …]` note for carried
+   *  command outputs). When `display` is absent the two are identical. */
+  readonly onSubmit: (message: string, display?: string) => Promise<void>;
   /** `true` once the session should end — the app unmounts via {@link onExit}. */
   readonly shouldStop: () => boolean;
   /** Called once the session has ended (clean exit) so the driver can unmount + finalize. */
@@ -154,6 +160,11 @@ interface ChatViewProps {
   readonly approval?: PendingApproval | undefined;
   /** When the `/` palette is open it owns the bottom of the view, so the idle prompt + footer are suppressed (2.5.C S3b). */
   readonly paletteOpen?: boolean;
+  /** Pending `@`/`!` attachments (2.5.D chip redesign) — rendered as a compact chip bar above the idle prompt. */
+  readonly attachments?: readonly PendingAttachment[];
+  /** The in-flight `!`-shell command line (2.5.D) — when set, the busy indicator labels WHAT is running (a `!`-
+   *  command emits no session tokens, so without this the spinner would be bare) + how to cancel (Esc). */
+  readonly busyCommand?: string | undefined;
 }
 
 /**
@@ -165,6 +176,7 @@ interface ChatViewProps {
  */
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   const { state, tick, color, editor, running, mode, approval, paletteOpen } = props;
+  const attachments = props.attachments ?? [];
   // When the palette is open it renders its own query line + hint below, so suppress the idle prompt + footer to
   // avoid two competing prompts (the palette owns the input focus until it closes).
   const showIdlePrompt = !running && paletteOpen !== true;
@@ -175,7 +187,9 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         {(entry, index) => <TranscriptLine key={index} entry={entry} color={color} />}
       </Static>
 
-      {/* The in-flight turn: tool annotations + the streaming assistant text + a spinner. */}
+      {/* The in-flight turn: tool annotations + the streaming assistant text + a spinner. A `!`-shell command in
+          flight (busyCommand set) emits no session tokens, so it shows a distinct LABELED line — what is running +
+          the honest Esc-to-cancel affordance (Esc aborts the command, keeping the session; Ctrl-C would end it). */}
       {running && (
         <Box flexDirection="column">
           {state.liveToolCalls.map((call) => (
@@ -183,10 +197,22 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
               {formatToolCall(call)}
             </Text>
           ))}
-          <Text>
-            {spinnerFrame(tick)} {stripTerminalControls(state.liveTokens)}
-          </Text>
+          {props.busyCommand !== undefined ? (
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {`${spinnerFrame(tick)} ! ${sanitizeInline(props.busyCommand)} — running · Esc to cancel`}
+            </Text>
+          ) : (
+            <Text>
+              {spinnerFrame(tick)} {stripTerminalControls(state.liveTokens)}
+            </Text>
+          )}
         </Box>
+      )}
+
+      {/* The pending `@`/`!` attachment chip bar (2.5.D) — shown above the idle prompt so the queued file/command
+          context is always visible without flooding the editor. */}
+      {showIdlePrompt && attachments.length > 0 && (
+        <AttachmentBar attachments={attachments} color={color} />
       )}
 
       {/* The multi-line input prompt (idle) with the cursor at its position. Every segment is sanitized inside
@@ -304,9 +330,32 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // in EVERY settle branch (ran/denied/failed/cancelled + the reject arm).
   const [shellBusy, setShellBusy] = useState(false);
   const shellBusyRef = useRef(false);
-  const applyShellBusy = (busy: boolean): void => {
+  // The command line labeling the busy indicator (2.5.D) — `undefined` between commands. Set alongside the busy
+  // flag so a slow `!`-command shows WHAT is running (it emits no session tokens); cleared in every settle branch.
+  const [busyCommand, setBusyCommand] = useState<string | undefined>(undefined);
+  const applyShellBusy = (busy: boolean, command?: string): void => {
     shellBusyRef.current = busy;
     setShellBusy(busy);
+    setBusyCommand(busy ? command : undefined);
+  };
+  // Pending `@`/`!` attachments (2.5.D chip redesign) — an @-mentioned FILE (referenced inline by its `@path`
+  // marker) or a `!`-command's captured OUTPUT. Ref-shadowed for coalesced-chunk-safe submit reads + state for the
+  // chip bar; expanded into the UNTRUSTED frame at submit; cleared on send / Esc (idle) / unmount (chat end). One
+  // file entry per path (dedup).
+  const [attachments, setAttachments] = useState<readonly PendingAttachment[]>([]);
+  const attachmentsRef = useRef<readonly PendingAttachment[]>([]);
+  const applyAttachments = (next: readonly PendingAttachment[]): void => {
+    attachmentsRef.current = next;
+    setAttachments(next);
+  };
+  const addAttachment = (a: PendingAttachment): void => {
+    const { list, dropped } = appendAttachment(attachmentsRef.current, a);
+    applyAttachments(list);
+    if (dropped > 0) {
+      props.store.note(
+        `pending attachment limit (${MAX_PENDING_ATTACHMENTS}) reached — oldest dropped`,
+      );
+    }
   };
   // List `dir`'s entries through the fs jail (listing-gate + noise filter enforced by the reader), applying them
   // ONLY if the submode is still open on that dir — a resolve from a since-closed or since-descended submode is
@@ -332,27 +381,25 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     applyMention({ dir: '', filter: '', candidates: [], selected: 0, loading: true });
     loadMentions('');
   };
-  // Read the accepted file through the fs jail + confidentiality floor + binary/size guards, then inject its content
-  // into the buffer as UNTRUSTED, user-position context (framed `<file>…</file>`). A read rejection (a floor refusal,
-  // a binary file, oversize, since-deleted) surfaces a STATIC, secret-free note — never the raw error, which could
-  // echo a path/reason. A large file adds a soft size note (the fs 8 MiB cap is the hard ceiling).
+  // Read the accepted file through the fs jail + confidentiality floor + binary/size guards, then queue it as a
+  // pending FILE attachment and insert a compact `@path` marker at the cursor (the chip bar shows it; it expands
+  // into the UNTRUSTED frame only at submit, and only if the marker is still present). A read rejection (a floor
+  // refusal, a binary file, oversize, since-deleted) surfaces a STATIC, secret-free note — never the raw error. A
+  // large/truncated file adds an honest soft size note (the fs 8 MiB cap is the hard ceiling).
   const acceptMention = (path: string): void => {
     const reader = props.mentionReader;
     if (reader === undefined) return;
-    const gen = submitGenRef.current; // capture: a submit since accept ⇒ the buffer moved on (drop the inject)
+    const gen = submitGenRef.current; // capture: a submit since accept ⇒ the buffer moved on (drop the marker/attachment)
     void reader.read(path).then(
       ({ content, sizeBytes }) => {
-        if (submitGenRef.current !== gen) return; // the buffer was submitted since accept — never inject into the next message
-        const injection = formatMentionInjection(path, content, mentionNonce());
+        if (submitGenRef.current !== gen) return; // the buffer was submitted since accept — never touch the next message
         applyEditor((current) => {
           historyRef.current = resetHistoryNav(historyRef.current); // a real edit ends history navigation
-          return insertAtCursor(current, injection);
+          return insertAtCursor(current, `${mentionMarker(path)} `);
         });
-        if (estimateTokens(sizeBytes) > MENTION_TOKEN_WARN) {
-          props.store.note(
-            `@ file is large (~${estimateTokens(sizeBytes)} tokens) — it may crowd the context`,
-          );
-        }
+        addAttachment({ kind: 'file', path, content, sizeBytes });
+        const warn = fileAttachmentWarning(path, content, sizeBytes);
+        if (warn !== undefined) props.store.note(warn);
       },
       () => {
         if (submitGenRef.current !== gen) return;
@@ -361,9 +408,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     );
   };
 
-  // Render a `!`-shell outcome: inject the (nonce-fenced, bounded) output as UNTRUSTED context into the CLEARED
-  // buffer (it rides the next message), or surface the actionable deny / failure note. `gen` guards a stale resolve
-  // (a submit since the run) so a slow command never injects into the next message's buffer.
+  // Render a `!`-shell outcome: on `ran`, queue the (full) output as a pending COMMAND attachment (it rides the
+  // next message) and show a compact, read-only preview via the store; otherwise surface the actionable deny /
+  // failure note. `gen` guards a stale resolve (a submit since the run) so a slow command never re-queues.
   const handleShellOutcome = (
     parsed: ShellCommand,
     outcome: UserCommandOutcome,
@@ -372,19 +419,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   ): void => {
     if (submitGenRef.current !== gen) return;
     if (outcome.kind === 'ran') {
-      const injection = formatCommandInjection(
-        parsed,
-        outcome.exitCode,
-        outcome.stdout,
-        outcome.stderr,
-        injectionNonce(),
-      );
-      applyEditor((current) => {
-        historyRef.current = resetHistoryNav(historyRef.current);
-        return insertAtCursor(current, injection);
+      addAttachment({
+        kind: 'command',
+        cmd: parsed,
+        exitCode: outcome.exitCode,
+        stdout: outcome.stdout,
+        stderr: outcome.stderr,
       });
-      const exit = outcome.exitCode === 0 ? '' : ` (exit ${outcome.exitCode})`;
-      props.store.note(`! ${commandLine(parsed)}${exit} — output added to your next message`);
+      props.store.notice(
+        commandResultPreview(parsed, outcome.exitCode, outcome.stdout, outcome.stderr),
+      );
       return;
     }
     if (outcome.kind === 'denied') {
@@ -402,7 +446,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     if (runner === undefined) return;
     const gen = submitGenRef.current;
     const mode = props.store.getSnapshot().mode; // captured for a mode-aware deny hint
-    applyShellBusy(true); // gate input + show a busy indicator until the command settles (else a submit crashes)
+    // Gate input + show a LABELED busy indicator (the command line) until it settles (else a submit crashes).
+    applyShellBusy(true, commandLine(parsed));
     void runner(parsed.command, parsed.args).then(
       (outcome) => {
         applyShellBusy(false);
@@ -415,12 +460,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     );
   };
 
-  const submit = (line: string): void => {
+  const submit = (message: string, display?: string): void => {
     // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
     // onError so the driver always unblocks + tears down (else `exited` never settles and the REPL hangs). The
     // trailing .catch is defensive: a throw inside either callback still routes to onError, never silently lost.
     void props
-      .onSubmit(line)
+      .onSubmit(message, display)
       .then(
         () => {
           if (props.shouldStop()) props.onExit();
@@ -540,6 +585,18 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       openMention();
       return;
     }
+    // Esc at an IDLE prompt with pending `@`/`!` attachments discards them (a clean cancel affordance — parity with
+    // home-controller.ts; when a turn is running Esc is the mid-turn abort, reduced below).
+    if (
+      key.escape === true &&
+      !isRunning &&
+      !approvalPending &&
+      attachmentsRef.current.length > 0
+    ) {
+      applyAttachments([]);
+      props.store.note('cleared pending attachments');
+      return;
+    }
     const action = reduceChatKey(char, key, editorRef.current.text, isRunning, approvalPending);
     switch (action.kind) {
       case 'cancel':
@@ -582,8 +639,6 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         return;
       case 'submit': {
         submitGenRef.current += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
-        historyRef.current = recordHistory(historyRef.current, action.line);
-        applyEditor(() => emptyEditor());
         // A leading `!` (with a runner wired + a non-empty command) runs the shell escape instead of sending a
         // message; a bare `!` or an absent runner falls through to a normal message send.
         const trimmed = action.line.trim();
@@ -591,11 +646,29 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           props.runShellCommand !== undefined && isShellLine(trimmed)
             ? tokenizeCommand(trimmed.slice(1))
             : undefined;
-        if (parsed === undefined) {
-          submit(action.line); // a bare `!` / no runner → a normal message
-        } else {
-          runShell(parsed); // a `!command` → the shell escape
+        if (parsed !== undefined) {
+          historyRef.current = recordHistory(historyRef.current, action.line);
+          applyEditor(() => emptyEditor());
+          runShell(parsed); // a `!command` → the shell escape (does NOT consume pending attachments)
+          return;
         }
+        if (trimmed.startsWith('/') || attachmentsRef.current.length === 0) {
+          // a slash command, or a plain message with no attachments — the simple path (message === display)
+          historyRef.current = recordHistory(historyRef.current, action.line);
+          applyEditor(() => emptyEditor());
+          submit(action.line);
+          return;
+        }
+        // a message WITH attachments → expand into the outbound frame; the transcript shows the compact display.
+        const { message, display, consumed } = buildOutbound(action.line, attachmentsRef.current);
+        if (message.trim().length === 0) {
+          applyEditor(() => emptyEditor()); // nothing to send (empty prose + no consumable attachment)
+          return;
+        }
+        historyRef.current = recordHistory(historyRef.current, action.line); // history recalls the PROSE, not the frame
+        applyAttachments(attachmentsRef.current.filter((a) => !consumed.includes(a)));
+        applyEditor(() => emptyEditor());
+        submit(message, display);
         return;
       }
       case 'cycle-mode':
@@ -634,6 +707,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         running={running || shellBusy}
         mode={mode}
         approval={approval}
+        attachments={attachments}
+        busyCommand={busyCommand}
         paletteOpen={palette !== undefined || search !== undefined || mention !== undefined}
       />
       {palette !== undefined && (

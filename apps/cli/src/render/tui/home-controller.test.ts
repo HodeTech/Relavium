@@ -205,7 +205,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().input).toEqual({ text: 'alpha', cursor: 5 });
   });
 
-  it('the in-Home chat opens `@` file completion, descends a dir, and injects the accepted file (2.5.D step 4)', async () => {
+  it('the in-Home chat opens `@` file completion, descends a dir, and queues the accepted file as a chip that expands at submit (2.5.D step 4 / ADR-0061 chip model)', async () => {
     const mentionReader: MentionReader = {
       list: (dir) =>
         Promise.resolve(
@@ -245,18 +245,28 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     await flush(); // list('src') resolves
     expect(c.getSnapshot().mention?.candidates.map((x) => x.name)).toEqual(['index.ts']);
 
-    // Enter accepts the FILE → close + read + inject the framed, untrusted content at the cursor.
+    // Enter accepts the FILE → close + read + insert a compact `@marker` into the buffer + queue a pending FILE
+    // attachment (chip). The framed, untrusted content is NOT spliced into the buffer — it expands only at submit.
     c.handleKey('', ENTER);
     expect(c.getSnapshot().mention).toBeUndefined();
     await flush(); // read('src/index.ts') resolves
-    // The injection is nonce-fenced (a fresh random nonce per accept), so match the structure + verify the open
-    // and close nonces are identical (an unforgeable boundary).
-    const injected = c.getSnapshot().input.text;
-    const framed = injected.match(
-      /^\n\n<file id="([0-9a-f]{32})" path="src\/index\.ts">\n\/\/ src\/index\.ts\n<\/file:([0-9a-f]{32})>$/,
+    expect(c.getSnapshot().input.text).toBe('@src/index.ts '); // the marker, not a framed block
+    expect(c.getSnapshot().attachments).toEqual([
+      { kind: 'file', path: 'src/index.ts', content: '// src/index.ts', sizeBytes: 5 },
+    ]);
+
+    // SUBMIT: the marker's file expands into the nonce-fenced <file> frame sent to the model (a fresh random nonce,
+    // open === close — an unforgeable boundary); the buffer + the consumed attachment clear.
+    made.lines.length = 0; // isolate the submitted message from the earlier 'hi'
+    c.handleKey('', ENTER);
+    await flush();
+    const framed = made.lines[0]?.match(
+      /^@src\/index\.ts \n\n<file id="([0-9a-f]{32})" path="src\/index\.ts">\n\/\/ src\/index\.ts\n<\/file:([0-9a-f]{32})>$/,
     );
     expect(framed).not.toBeNull();
     expect(framed?.[1]).toBe(framed?.[2]); // open nonce === close nonce
+    expect(c.getSnapshot().attachments).toEqual([]);
+    expect(c.getSnapshot().input.text).toBe('');
   });
 
   it('`@` completion: Esc restores the typed keystrokes; a mid-word `@` stays literal (2.5.D step 4)', async () => {
@@ -330,7 +340,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().input.text).toBe(''); // the buffer stays clean — the stale inject was dropped
   });
 
-  it('a `!`-shell line runs the command (not a message) and injects the output as untrusted context (2.5.D step 5)', async () => {
+  it('a `!`-shell line runs the command (not a message) and carries the output as a pending chip that expands at the next submit (2.5.D step 5 / ADR-0061 chip model)', async () => {
     const ran: UserCommandOutcome = {
       kind: 'ran',
       exitCode: 0,
@@ -362,14 +372,34 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     // The `!` line was tokenized + run through the runner — NOT sent to the model as a message.
     expect(shellCalls).toEqual([{ command: 'ls', args: ['-la'] }]);
     expect(made.lines).toEqual([]); // no message sent
-    // The output was injected as a nonce-fenced <command> block into the (cleared) buffer for the next message.
-    const framed = c
+    // The buffer stays clean — the output is queued as a pending COMMAND attachment (chip) that rides the NEXT
+    // message, and a read-only preview is shown via the transcript's notice channel.
+    expect(c.getSnapshot().input.text).toBe('');
+    expect(c.getSnapshot().attachments).toEqual([
+      {
+        kind: 'command',
+        cmd: { command: 'ls', args: ['-la'] },
+        exitCode: 0,
+        stdout: 'a.ts\nb.ts',
+        stderr: '',
+      },
+    ]);
+    const noticed = made.store
       .getSnapshot()
-      .input.text.match(
-        /^\n\n<command id="([0-9a-f]{32})" cmd="ls -la" exit="0">\na\.ts\nb\.ts\n<\/command:([0-9a-f]{32})>$/,
-      );
+      .state.transcript.some((e) => e.role === 'notice' && e.text.includes('! ls -la (exit 0)'));
+    expect(noticed).toBe(true);
+
+    // The NEXT message expands the carried command into the nonce-fenced <command> frame (a fresh nonce, open ===
+    // close); the attachment clears. `made.lines` records the full framed MESSAGE (not the compact display).
+    type(c, 'what happened?');
+    c.handleKey('', ENTER);
+    await flush();
+    const framed = made.lines[0]?.match(
+      /^what happened\?\n\n<command id="([0-9a-f]{32})" cmd="ls -la" exit="0">\na\.ts\nb\.ts\n<\/command:([0-9a-f]{32})>$/,
+    );
     expect(framed).not.toBeNull();
     expect(framed?.[1]).toBe(framed?.[2]); // open nonce === close nonce
+    expect(c.getSnapshot().attachments).toEqual([]);
   });
 
   it('a denied `!`-shell command injects NOTHING and surfaces the actionable allowlist hint (2.5.D step 5)', async () => {
@@ -446,6 +476,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     c.handleKey('', ENTER);
     await flush();
     expect(c.getSnapshot().shellBusy).toBe(true); // the busy flag is set — input is now gated
+    expect(c.getSnapshot().shellCommand).toBe('sleep 9'); // the busy indicator is labeled with the running command
 
     // The user, seeing an (apparently idle) prompt, types a message + Enter BEFORE the command resolves.
     type(c, 'a normal message');
@@ -457,11 +488,68 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(onError).not.toHaveBeenCalled();
     expect(c.getSnapshot().input.text).toBe('');
 
-    // The command resolves → busy clears, the output injects, and the session is usable again.
+    // The command resolves → busy clears, the output is queued as a pending command attachment (chip), and the
+    // session is usable again. The buffer stays clean (the mid-command typed message was gated).
     resolveCmd({ kind: 'ran', exitCode: 0, stdout: 'done', stderr: '' });
     await flush();
     expect(c.getSnapshot().shellBusy).toBe(false);
-    expect(c.getSnapshot().input.text).toContain('<command');
+    expect(c.getSnapshot().shellCommand).toBeUndefined(); // the busy label clears on settle
+    expect(c.getSnapshot().input.text).toBe('');
+    expect(c.getSnapshot().attachments).toEqual([
+      {
+        kind: 'command',
+        cmd: { command: 'sleep', args: ['9'] },
+        exitCode: 0,
+        stdout: 'done',
+        stderr: '',
+      },
+    ]);
+  });
+
+  it('`Esc` at an IDLE prompt discards pending attachments — but is a no-op while a `!`-command runs (2.5.D chip model)', async () => {
+    // A deferred runner so we can hold a command in flight (busy) and settle it on demand.
+    const resolvers: ((o: UserCommandOutcome) => void)[] = [];
+    const made = makeSession({
+      runShellCommand: () => new Promise((resolve) => resolvers.push(resolve)),
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+
+    // Queue one command attachment (run + settle `!ls`).
+    type(c, '!ls');
+    c.handleKey('', ENTER);
+    await flush();
+    resolvers[0]?.({ kind: 'ran', exitCode: 0, stdout: 'x', stderr: '' });
+    await flush();
+    expect(c.getSnapshot().attachments).toHaveLength(1);
+
+    // Start a SECOND, deferred command → the surface is busy again. `Esc` is now the mid-turn abort, NOT the clear
+    // affordance, so the pending attachment must SURVIVE.
+    type(c, '!sleep 9');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().shellBusy).toBe(true);
+    c.handleKey('', { escape: true });
+    expect(c.getSnapshot().attachments).toHaveLength(1); // not cleared while busy
+
+    // Settle it (now two chips), then `Esc` at the idle prompt discards ALL pending attachments + notes.
+    resolvers[1]?.({ kind: 'ran', exitCode: 0, stdout: 'y', stderr: '' });
+    await flush();
+    expect(c.getSnapshot().attachments).toHaveLength(2);
+    c.handleKey('', { escape: true });
+    expect(c.getSnapshot().attachments).toEqual([]);
+    const cleared = made.store
+      .getSnapshot()
+      .state.warnings.some((w) => w.includes('cleared pending attachments'));
+    expect(cleared).toBe(true);
   });
 
   it('a non-empty submit builds a chat, transitions loading→chat, and sends the first message', async () => {

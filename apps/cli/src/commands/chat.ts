@@ -92,7 +92,7 @@ export interface ChatDriveContext {
    */
   readonly startSession: () => void;
   /** Handle one line of user input (a slash command or a chat message). Awaits the turn for a message. */
-  readonly processLine: (line: string) => Promise<void>;
+  readonly processLine: (line: string, display?: string) => Promise<void>;
   /** `true` once `/exit` or `/cancel` has run — the driver stops reading input. */
   readonly shouldStop: () => boolean;
   /** The live session stream (the driver renders it: ink reduces it into the store; plain prints it). */
@@ -493,7 +493,7 @@ export function createChatModeControl(
 /** The slash-aware line handler + the session's cancel/stop state + the mode/abort control (ADR-0057). */
 export interface ChatLineHandler extends ChatModeControl {
   /** Handle one line (a slash command or a message); awaits the turn for a message. */
-  readonly processLine: (raw: string) => Promise<void>;
+  readonly processLine: (raw: string, display?: string) => Promise<void>;
   /** Emit the session's sole terminal (`session:cancelled`, idempotent) — the teardown caller fires it. */
   readonly cancelOnce: () => void;
   /** `true` once `/exit` or `/cancel` has run — the driver stops reading input. */
@@ -703,14 +703,16 @@ export function createChatLineHandler(
     await command.run(replCtx, tokens); // may be async (/cost, /doctor); never fire-and-forget
   };
 
-  const processLine = async (raw: string): Promise<void> => {
+  const processLine = async (raw: string, display?: string): Promise<void> => {
     const line = raw.trim();
     if (line.length === 0) return;
     if (line.startsWith('/')) {
       await handleSlashCommand(line);
       return;
     }
-    store.appendUser(line);
+    // `display` is the COMPACT transcript form (prose + chip note) when a message carried `@`/`!` attachments; the
+    // model + the durable transcript get the full framed `line` (resume fidelity), the live transcript the compact one.
+    store.appendUser(display ?? line);
     persister.beginUserTurn(line);
     await built.session.sendMessage(line);
   };

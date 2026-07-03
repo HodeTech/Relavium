@@ -74,15 +74,17 @@ The chat session is built **after** the ink mount (an explicit loading state), s
 | --- | --- | --- | --- |
 | printable | append to the prompt buffer | append (idle) / ignored mid-turn | ignored |
 | Return | submit → start a chat | submit the turn (idle) / ignored mid-turn | ignored |
-| Backspace / Delete | erase one char | erase one char (idle) / ignored mid-turn | ignored |
+| Backspace | erase the char **before** the cursor | erase before the cursor (idle) / ignored mid-turn | ignored |
+| Delete (2.5.D) | erase the char **after / under** the cursor (forward-delete) | forward-delete (idle) / ignored mid-turn | ignored |
 | **Shift+Tab** (2.5.E) | — | **cycle the chat mode** (ask → plan → accept-edits → auto), ADR-0057 | — |
 | **Esc** (2.5.E) | — | **abort the in-flight turn** (mid-turn, EA7 — keeps the session; distinct from `/cancel`) | — |
 | **`[y]`/`[a]`/`[n]`/`[esc]`** (2.5.E) | — | **answer a pending per-tool approval** — `[y]` once · `[a]` always · `[n]` no · `[esc]` abort (the prompt owns the keyboard) | — |
 | **Ctrl+J** (2.5.D) | insert a newline (multi-line prompt) | insert a newline (idle) | ignored |
 | **↑ / ↓** (2.5.D) | — | recall prev/next submitted line (buffer edge) / move by line (mid-buffer) | — |
 | **Ctrl+R** (2.5.D) | — | reverse-incremental history search (chat only) | — |
-| **`@`** (2.5.D) | append (no completion in the bare Home) | at a word boundary, open dir-navigable **file completion** → inject as UNTRUSTED context ([ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) | — |
-| **`!`** (2.5.D) | append | a leading `!` runs a **shell command** via the `[chat].allowed_commands` allowlist → mode-aware `confirmAction` → `spawn` (`shell:false`); output injected as UNTRUSTED context ([ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) | — |
+| **`@`** (2.5.D) | append (no completion in the bare Home) | at a word boundary, open dir-navigable **file completion** → insert a `@path` marker + queue a **chip** that expands to UNTRUSTED context at submit ([ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) | — |
+| **`!`** (2.5.D) | append | a leading `!` runs a **shell command** via the `[chat].allowed_commands` allowlist → mode-aware `confirmAction` → `spawn` (`shell:false`); output shown read-only + queued as a **chip** carrying UNTRUSTED context to the next message ([ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) | — |
+| **`Esc`** (2.5.D) | — | at an **idle** prompt with pending `@`/`!` chips, **discard them** (else mid-turn abort) | — |
 | **Ctrl-C** | **clean exit (`0`)** | **`/cancel`** → end the chat, return to Home | **bail out** (exit) |
 | **Ctrl-D** (EOF) | **clean exit (`0`)** on an **empty** prompt (a non-empty buffer keeps it — no data loss) | — | **clean exit (`0`)** (the prompt is empty while building, so EOF bails the build like Ctrl-C) |
 

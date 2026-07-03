@@ -280,3 +280,35 @@ confidentiality floor, the jail, the listing-gate, or the injection framing). Tr
   general hardening); and the async accept carries a **submit-generation guard** so a slow read cannot inject into
   the next message. The read floor additionally covers `.envrc` / `.dockercfg` and `.env` as a **directory**
   segment (not just a file basename).
+
+### Refined at implementation — the pending-attachment (chip) presentation (2.5.D PR #64 review, 2026-07-03)
+
+The step-4/5 opus+sonnet review loop replaced the drafted **inline-editor injection** (splicing the framed
+`<file>…</file>` / `<command>…</command>` bytes directly into the compose buffer) with a **pending-attachment
+(chip) model** — a **presentation refinement that changes no security boundary**. The canonical pure module is
+`apps/cli/src/render/tui/attachments.ts` (shared by both interactive surfaces — the standalone `ChatApp` and the
+bare-invocation Home, kept at parity):
+
+- **`@`-mention** now inserts a compact **`@path` marker** at the cursor and queues the file's (already-read,
+  floored, bounded) content as a **pending chip**; the framed `<file>` block is expanded into the outbound
+  message **only at submit**, and **only if the `@path` marker is still present** in the prose (a
+  whitespace-bounded token scan — deleting the marker deterministically drops the file, so an email `me@path`
+  never matches and editing the prose can't strand an attachment).
+- **`!`-shell** output is shown **read-only** as a bounded transcript preview (the `notice` channel) and queued
+  as a pending chip that **rides the next `sendMessage`** — exactly the "pending context that rides the next
+  message" the Decision already specifies; the chip only changes how it is surfaced (a clean prompt + a visible
+  chip bar, not raw frame bytes in the editor).
+- **Invariants preserved, byte-for-byte.** At submit each consumed chip expands through the **same**
+  `frameUntrusted` nonce-fenced frame (`injection.ts`), so the model receives **byte-identical** untrusted,
+  user-position, doubly-bounded context at the same position as the drafted design. The confidentiality floor,
+  the jail, the listing-gate, the allowlist-before-approval ordering, the untrusted brand, the double output
+  bound, the submit-generation guard, and the **TTY-only** rule (a non-TTY `@`/`!` stays literal) are all
+  unchanged. `history.db` still records the **full expanded message** — byte-identical to what the model received
+  ([ADR-0050](0050-cli-history-db-at-rest-posture.md) at-rest posture; injected file/command content IS persisted
+  there, in full, for resume fidelity); only the **live/compact transcript** shows the prose plus a `[📎 …]` note
+  for carried command outputs, and the in-memory `↑`/`↓` recall keeps the prose the user typed.
+- **Why.** Raw frames in the editor flooded the compose buffer and the transcript, let a user accidentally edit
+  *inside* a frame, and made a large paste unreadable. The chip bar keeps the prompt clean, makes the queued
+  context explicit, gives a deterministic removal affordance (delete the `@marker`; **`Esc` at an idle prompt
+  discards all pending chips**), and labels the in-flight `!`-command busy indicator with an honest **`Esc` to
+  cancel** (Esc aborts the command, keeping the session; Ctrl-C's `/cancel` would end it).

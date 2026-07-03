@@ -31,20 +31,23 @@ import {
 } from './input-history.js';
 import type { ChatStoreController } from './chat-store.js';
 import {
-  estimateTokens,
   foldMentionKey,
-  formatMentionInjection,
-  mentionNonce,
   mentionOpensAt,
-  MENTION_TOKEN_WARN,
   type MentionCandidate,
   type MentionReader,
   type MentionState,
 } from './mention.js';
-import { injectionNonce } from './injection.js';
+import {
+  appendAttachment,
+  buildOutbound,
+  commandResultPreview,
+  fileAttachmentWarning,
+  mentionMarker,
+  MAX_PENDING_ATTACHMENTS,
+  type PendingAttachment,
+} from './attachments.js';
 import {
   commandLine,
-  formatCommandInjection,
   isShellLine,
   shellDenyHint,
   tokenizeCommand,
@@ -78,7 +81,7 @@ export interface HomeChatSession {
   /** The chat view store the chat region projects (already subscribed to the live stream by `driveHome`). */
   readonly store: ChatStoreController;
   /** Handle one line (a slash command or a message) — the shared `createChatLineHandler` semantics. */
-  readonly processLine: (line: string) => Promise<void>;
+  readonly processLine: (line: string, display?: string) => Promise<void>;
   /** `true` once `/exit` or `/cancel` has run — the chat ends and the Home returns. */
   readonly shouldStop: () => boolean;
   /** Mid-turn abort (EA7) — abort the in-flight turn, keeping the session alive (Esc). Present once wired. */
@@ -122,6 +125,13 @@ export interface HomeControllerState {
    *  event, so this flag gates input + shows a busy indicator; WITHOUT it a message submitted mid-command reaches
    *  `sendMessage`, throws `SessionStateError`, and crashes the chat. Cleared on settle + on chat end. */
   readonly shellBusy: boolean;
+  /** The in-flight `!`-command line labeling the busy indicator (2.5.D) — `undefined` between commands. A `!`-
+   *  command emits no session tokens, so this labels WHAT is running + how to cancel (Esc). */
+  readonly shellCommand: string | undefined;
+  /** Pending `@`/`!` attachments (2.5.D chip redesign) — an @-mentioned FILE (referenced inline by its `@path`
+   *  marker) or a `!`-command's captured OUTPUT (shown read-only when it ran). Rendered as a chip bar; expanded into
+   *  the UNTRUSTED nonce-fenced frame at SUBMIT; cleared on send / `Esc` (idle) / chat end. */
+  readonly attachments: readonly PendingAttachment[];
   /** A published copy of the history entries (the closure `history` is not in state) so the external render can
    *  compute the reverse-search match; changes only on submit. */
   readonly historyEntries: readonly string[];
@@ -173,6 +183,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     search: undefined,
     mention: undefined,
     shellBusy: false,
+    shellCommand: undefined,
+    attachments: [],
     historyEntries: [],
     notice: undefined,
   };
@@ -258,6 +270,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
+          shellCommand: undefined,
+          attachments: [], // pending `@`/`!` attachments must not leak into the next chat
         });
       })
       .catch(() => undefined); // a rejecting teardown (or read) must not surface as an unhandled rejection
@@ -265,8 +279,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
 
   // Drive one chat turn; on success end the chat if `/exit`/`/cancel` ran, on an escaping error tear the session
   // down BEFORE propagating so its MCP child / frame loop / row are never orphaned.
-  const sendChatLine = (active: HomeChatSession, line: string): void => {
-    void active.processLine(line).then(
+  const sendChatLine = (active: HomeChatSession, line: string, display?: string): void => {
+    void active.processLine(line, display).then(
       () => {
         if (active.shouldStop()) endChat(active);
       },
@@ -442,14 +456,23 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       ({ content, sizeBytes }) => {
         if (stale()) return; // the chat ended or the buffer was submitted mid-read — drop it
         history = resetHistoryNav(history); // a real edit ends history navigation
-        set({
-          input: insertAtCursor(state.input, formatMentionInjection(path, content, mentionNonce())),
+        // Insert the compact `@path` marker (the inline reference) + queue the file as a pending attachment (its
+        // bytes are expanded into the UNTRUSTED frame at SUBMIT, only if the marker is still present). The shared
+        // `appendAttachment` dedups by path + caps the list; the marker is inserted regardless (a dup is a no-op add).
+        const { list, dropped } = appendAttachment(state.attachments, {
+          kind: 'file',
+          path,
+          content,
+          sizeBytes,
         });
-        if (estimateTokens(sizeBytes) > MENTION_TOKEN_WARN) {
+        set({ input: insertAtCursor(state.input, `${mentionMarker(path)} `), attachments: list });
+        if (dropped > 0) {
           active.store.note(
-            `@ file is large (~${estimateTokens(sizeBytes)} tokens) — it may crowd the context`,
+            `pending attachment limit (${MAX_PENDING_ATTACHMENTS}) reached — oldest dropped`,
           );
         }
+        const warn = fileAttachmentWarning(path, content, sizeBytes);
+        if (warn !== undefined) active.store.note(warn);
       },
       () => {
         if (stale()) return;
@@ -470,21 +493,24 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   ): void => {
     if (state.session !== active || state.mode !== 'chat' || submitEpoch !== epoch) return;
     if (outcome.kind === 'ran') {
-      history = resetHistoryNav(history);
-      set({
-        input: insertAtCursor(
-          state.input,
-          formatCommandInjection(
-            parsed,
-            outcome.exitCode,
-            outcome.stdout,
-            outcome.stderr,
-            injectionNonce(),
-          ),
-        ),
+      // SHOW the output read-only (a transcript notice) + queue it as a pending COMMAND attachment that rides the
+      // next message (the FULL output is expanded into the UNTRUSTED frame at submit; the preview is bounded).
+      const { list, dropped } = appendAttachment(state.attachments, {
+        kind: 'command',
+        cmd: parsed,
+        exitCode: outcome.exitCode,
+        stdout: outcome.stdout,
+        stderr: outcome.stderr,
       });
-      const exit = outcome.exitCode === 0 ? '' : ` (exit ${outcome.exitCode})`;
-      active.store.note(`! ${commandLine(parsed)}${exit} — output added to your next message`);
+      set({ attachments: list });
+      if (dropped > 0) {
+        active.store.note(
+          `pending attachment limit (${MAX_PENDING_ATTACHMENTS}) reached — oldest dropped`,
+        );
+      }
+      active.store.notice(
+        commandResultPreview(parsed, outcome.exitCode, outcome.stdout, outcome.stderr),
+      );
       return;
     }
     if (outcome.kind === 'denied') {
@@ -500,11 +526,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (runner === undefined) return;
     const epoch = submitEpoch;
     const mode = active.store.getSnapshot().mode; // captured for a mode-aware deny hint
-    set({ shellBusy: true }); // gate input + show busy until the command settles (else a submit crashes the chat)
+    // Gate input + show a LABELED busy indicator (the command line) until it settles (else a submit crashes the chat).
+    set({ shellBusy: true, shellCommand: commandLine(parsed) });
     // Clear the busy flag only if THIS session is still current (a swap's endChat already reset it — never un-gate
     // a new session's own in-flight command).
     const clearBusy = (): void => {
-      if (state.session === active) set({ shellBusy: false });
+      if (state.session === active) set({ shellBusy: false, shellCommand: undefined });
     };
     void runner(parsed.command, parsed.args).then(
       (outcome) => {
@@ -612,22 +639,40 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
   };
 
-  // Submit `line`: record + clear the buffer, then run a leading `!command` (a runner + a non-empty command) as
-  // the shell escape, or send it as a normal message.
+  // Submit `line`: a leading `!command` runs the shell escape (attachments stay pending — they ride the NEXT
+  // message); a `/slash` passes through unchanged (attachments stay); otherwise it is a MESSAGE — expand the pending
+  // attachments (files whose `@marker` is present + all carried commands) into the outbound frame, show the compact
+  // form in the transcript, and clear exactly the consumed attachments.
   const applySubmitAction = (active: HomeChatSession, line: string): void => {
     submitEpoch += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
-    history = recordHistory(history, line);
-    set({ input: emptyEditor(), historyEntries: history.entries });
     const trimmed = line.trim();
     const parsed =
       active.runShellCommand !== undefined && isShellLine(trimmed)
         ? tokenizeCommand(trimmed.slice(1))
         : undefined;
-    if (parsed === undefined) {
-      sendChatLine(active, line); // a bare `!` / no runner → a normal message
-    } else {
-      runShell(active, parsed); // a `!command` → the shell escape
+    if (parsed !== undefined) {
+      history = recordHistory(history, line);
+      set({ input: emptyEditor(), historyEntries: history.entries });
+      runShell(active, parsed); // a `!command` → the shell escape (does NOT consume pending attachments)
+      return;
     }
+    if (trimmed.startsWith('/') || state.attachments.length === 0) {
+      // a slash command, or a plain message with no attachments — the simple path
+      history = recordHistory(history, line);
+      set({ input: emptyEditor(), historyEntries: history.entries });
+      sendChatLine(active, line);
+      return;
+    }
+    // a message WITH attachments → expand into the outbound frame; the transcript shows the compact display.
+    const { message, display, consumed } = buildOutbound(line, state.attachments);
+    if (message.trim().length === 0) {
+      set({ input: emptyEditor() }); // nothing to send (empty prose + no consumable attachment)
+      return;
+    }
+    history = recordHistory(history, line); // history recalls the PROSE the user typed, not the framed message
+    const remaining = state.attachments.filter((a) => !consumed.includes(a));
+    set({ input: emptyEditor(), historyEntries: history.entries, attachments: remaining });
+    sendChatLine(active, message, display);
   };
 
   // Apply one reduced chat-key action: edits/motions fold the buffer, submit runs a `!`-command or sends a message,
@@ -691,6 +736,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (routeSearchKey(input, key)) return;
     const approvalPending = active.store.getSnapshot().approval !== undefined;
     if (tryOpenOverlay(active, input, key, running, approvalPending)) return;
+    // Esc at an IDLE prompt with pending `@`/`!` attachments discards them (a clean cancel affordance — otherwise
+    // Esc idle is a no-op; when a turn is running Esc is the mid-turn abort, handled below).
+    if (key.escape === true && !running && !approvalPending && state.attachments.length > 0) {
+      set({ attachments: [] });
+      active.store.note('cleared pending attachments');
+      return;
+    }
     applyChatAction(active, reduceChatKey(input, key, state.input.text, running, approvalPending));
   };
 
