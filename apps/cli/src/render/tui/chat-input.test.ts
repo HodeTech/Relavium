@@ -144,9 +144,11 @@ describe('applyEditorAction (the functional-updater body, cursor-general)', () =
 
   it('NOTE: a same-chunk [type, Return] submits the stale render-captured buffer (the known [append, Return] limit)', () => {
     // reduceChatKey bakes the submit line from the `text` argument (the render capture), NOT the accumulated
-    // editor — so a Return arriving in the same chunk as a preceding char submits the PRE-edit buffer. The
-    // ChatApp/Home ref-shadow (editorRef.current.text / state.input.text) mitigates this for the real component
-    // by passing the latest committed value; at the pure-reducer level the line is whatever `text` it was given.
+    // editor. The two input owners close this gap DIFFERENTLY: ChatApp's React ref-shadow (`editorRef.current.text`,
+    // chat-ink.tsx) MITIGATES it by passing the latest COMMITTED value into reduceChatKey, so a same-chunk Return
+    // still submits the full buffer; the Home's `state.input.text` is a SYNCHRONOUS plain field (NOT a ref — see
+    // home-controller.ts), so its submit reads the live value and RESOLVES the [type, Return] burst outright, with
+    // no residual limit. At the pure-reducer level here the line is simply whatever `text` it was called with.
     expect(reduceChatKey('', { return: true }, 'partial', false)).toEqual({
       kind: 'submit',
       line: 'partial',

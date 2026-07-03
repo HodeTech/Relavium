@@ -19,8 +19,9 @@ export interface ChatKey {
 
 /**
  * What a keystroke maps to. The buffer EDITS are operations (`append` / `backspace`), NOT a precomputed value,
- * so the caller applies them through React's functional updater (`setInput((cur) => …)`) — this is load-bearing:
- * ink dispatches every event parsed from one stdin chunk synchronously with no render flush between them (a
+ * so the caller folds them onto the accumulated editor — the ChatApp via React's functional updater
+ * (`setEditor((cur) => applyEditorAction(cur, action))`), the Home via a synchronous `set({ input })` — which is
+ * load-bearing: ink dispatches every event parsed from one stdin chunk synchronously with no render flush (a
  * coalesced burst, e.g. a printable interleaved with an escape sequence), so a precomputed `value` would read a
  * STALE buffer and drop all but the last edit. `none` is a deliberately-ignored key (a chord, or mid-turn).
  */

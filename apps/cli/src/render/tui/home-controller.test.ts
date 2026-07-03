@@ -112,9 +112,11 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       onError: vi.fn(),
     });
     type(c, 'hi');
-    expect(c.getSnapshot().input.text).toBe('hi');
+    // Assert the WHOLE EditorState (not just .text) so the Home surface's cursor migration is covered too — the
+    // cursor tracks the end of the buffer in step 1 (the readline motions that move it off the end land in step 2).
+    expect(c.getSnapshot().input).toEqual({ text: 'hi', cursor: 2 });
     c.handleKey('', { backspace: true });
-    expect(c.getSnapshot().input.text).toBe('h');
+    expect(c.getSnapshot().input).toEqual({ text: 'h', cursor: 1 });
   });
 
   it('a non-empty submit builds a chat, transitions loading→chat, and sends the first message', async () => {
