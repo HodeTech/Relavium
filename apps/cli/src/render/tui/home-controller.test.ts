@@ -443,7 +443,9 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     c.handleKey('', { backspace: true });
     c.handleKey('', { backspace: true });
     c.handleKey('', { backspace: true }); // empty the buffer
-    expect(c.getSnapshot().input.text).toBe('');
+    // Assert the WHOLE EditorState so repeated deleteBeforeCursor decrements the Home cursor back to 0 (not just
+    // that .text emptied) — pins the primitive step 2's cursor motions build directly on top of.
+    expect(c.getSnapshot().input).toEqual({ text: '', cursor: 0 });
     c.handleKey('d', { ctrl: true }); // Ctrl-D on the empty buffer → clean exit (EOF)
     expect(onExit).toHaveBeenCalledTimes(1);
   });
@@ -461,7 +463,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey(PASTE_START, {});
       c.handleKey('line1\nline2\r\nline3', {}); // ink delivers the bracketed content as one event
       c.handleKey(PASTE_END, {});
-      expect(c.getSnapshot().input.text).toBe('line1\nline2\r\nline3'); // literal, newlines preserved
+      // The whole EditorState: insertAtCursor advances the cursor past the multi-char pasted block (18 units).
+      expect(c.getSnapshot().input).toEqual({ text: 'line1\nline2\r\nline3', cursor: 18 });
       expect(startChat).not.toHaveBeenCalled(); // nothing submitted by the embedded newlines
       expect(c.getSnapshot().mode).toBe('home');
     });
@@ -512,7 +515,8 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('\r', { return: true }); // even a lone CR chunk INSIDE the paste is literal, not a submit
       c.handleKey('second', {});
       c.handleKey(PASTE_END, {});
-      expect(c.getSnapshot().input.text).toBe('first\n\rsecond');
+      // The cursor advances across EVERY chunk's insert (6 + 1 + 6 = 13 units), not just the first.
+      expect(c.getSnapshot().input).toEqual({ text: 'first\n\rsecond', cursor: 13 });
       expect(startChat).not.toHaveBeenCalled();
     });
 

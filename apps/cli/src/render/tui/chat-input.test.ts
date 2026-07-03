@@ -179,6 +179,19 @@ describe('the cursor-bearing editor primitives (2.5.D step 1)', () => {
     expect(deleteBeforeCursor({ text: 'a😀b', cursor: 3 })).toEqual({ text: 'ab', cursor: 1 }); // 😀 is 2 units
     expect(deleteBeforeCursor(editorFromText('hi😀'))).toEqual({ text: 'hi', cursor: 2 });
   });
+
+  it('returns the SAME reference on a no-op (the documented Object.is render-skip contract)', () => {
+    // The JSDoc promises `return editor` (same reference) on the no-op paths so React's functional updater can
+    // Object.is-bail the re-render. `toEqual` alone would pass a regression that returned a fresh equal object;
+    // `toBe` pins the reference-identity contract. deleteBeforeCursor's no-op (backspace on an empty buffer) is
+    // an ordinary, frequent user action, so the skipped render is live — not merely theoretical.
+    const e1: EditorState = { text: 'xy', cursor: 2 };
+    expect(insertAtCursor(e1, '')).toBe(e1); // an empty insert
+    const e2: EditorState = { text: 'abc', cursor: 0 };
+    expect(deleteBeforeCursor(e2)).toBe(e2); // backspace at the start of the buffer
+    const e3 = emptyEditor();
+    expect(applyEditorAction(e3, { kind: 'backspace' })).toBe(e3); // backspace on an empty buffer
+  });
 });
 
 describe('dropLastCodePoint (code-point-aware backspace)', () => {
