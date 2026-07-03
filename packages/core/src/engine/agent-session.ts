@@ -684,6 +684,7 @@ export class AgentSession {
       throw err; // an unexpected non-tool error (a wiring bug) — surface loudly, never swallow
     } finally {
       this.#abort = undefined;
+      this.#abortingTurn = false; // an Esc-abort during the command set this marker — clear it (mirrors sendMessage)
       if (this.#status === 'running') this.#status = 'idle'; // a cancel() may have set 'cancelled' — don't revert it
     }
   }

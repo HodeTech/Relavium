@@ -6,6 +6,8 @@
  * follow-up, see docs/roadmap/deferred-tasks.md).
  */
 
+import { dropLastCodePoint } from './chat-input.js';
+
 export interface InputHistory {
   /** Submitted lines, oldest first. */
   readonly entries: readonly string[];
@@ -164,8 +166,9 @@ export function foldReverseSearchKey(
     return { kind: 'state', state: reverseSearchOlder(entries, state) };
   }
   if (key.backspace === true || key.delete === true) {
-    // Shrinking widens the search — re-anchor to the newest match.
-    return { kind: 'state', state: reverseSearchSetQuery(entries, state.query.slice(0, -1)) };
+    // Shrinking widens the search — re-anchor to the newest match. Trim by whole CODE POINT (not `slice(0, -1)`),
+    // so backspacing an astral char in the query never leaves a lone surrogate.
+    return { kind: 'state', state: reverseSearchSetQuery(entries, dropLastCodePoint(state.query)) };
   }
   // Only a SINGLE printable code point extends the query. A multi-character blob (a paste — the standalone chat
   // has no bracketed-paste latch, so a paste arrives as one multi-char event) is dropped, keeping the query sane

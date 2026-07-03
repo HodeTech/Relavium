@@ -130,6 +130,15 @@ describe('reverse-search (Ctrl+R) over the history (2.5.D step 3)', () => {
       kind: 'state',
       state: { query: 'fo', matchIndex: 2 },
     });
+    // Backspacing an astral char in the query removes it WHOLE (trims by code point, not a UTF-16 unit) — the query
+    // is left 'a' with no lone surrogate (the re-anchored matchIndex depends on the entries; only the query matters).
+    const shrunk = foldReverseSearchKey(
+      '',
+      { backspace: true },
+      { query: 'a😀', matchIndex: null },
+      entries,
+    );
+    expect(shrunk.kind === 'state' && shrunk.state.query).toBe('a');
     // A multi-character blob (a paste in the standalone chat, which has no bracketed-paste latch) is DROPPED —
     // it must not corrupt the query; a single code point (incl. an astral emoji) still extends it.
     const st = { query: 'fo', matchIndex: 2 };

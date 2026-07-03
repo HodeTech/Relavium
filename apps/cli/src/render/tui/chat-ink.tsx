@@ -246,17 +246,17 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     props.store.getSnapshot,
   );
   const [editor, setEditor] = useState<EditorState>(emptyEditor());
-  // A ref SHADOW of the editor: in a coalesced stdin chunk ink dispatches every event synchronously with no
-  // render flush, so the `editor` closure stays stale across the burst. Reading `editorRef.current` gives the
-  // latest COMMITTED value, so even a Return that arrives in the same chunk as a preceding char submits the full
-  // buffer (not the stale render capture). `applyEditor` wraps `setEditor` to keep the ref in lockstep with state.
+  // A ref SHADOW of the editor is the SOURCE OF TRUTH for edits: in a coalesced stdin chunk ink dispatches every
+  // event synchronously with no render flush, so React's queued-updater `prev` is stale for the 2nd+ event of the
+  // burst (only the first dispatch runs eagerly). `applyEditor` therefore folds against `editorRef.current` (the
+  // synchronous latest — updated the INSTANT it is called, matching the palette/search/mention/shellBusy ref-
+  // shadows) and mirrors the result into React state for render, so a same-chunk edit→edit→Return reads the fully
+  // folded buffer, never a stale capture.
   const editorRef = useRef<EditorState>(emptyEditor());
   const applyEditor = (next: (current: EditorState) => EditorState): void => {
-    setEditor((prev) => {
-      const value = next(prev);
-      editorRef.current = value;
-      return value;
-    });
+    const value = next(editorRef.current);
+    editorRef.current = value;
+    setEditor(value);
   };
   const cancelFired = useRef(false);
   const running = state.status === 'running';
