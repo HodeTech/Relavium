@@ -206,11 +206,20 @@ export function estimateTokens(bytes: number): number {
 export const MENTION_TOKEN_WARN = 8000;
 
 /**
- * Format a mentioned file for injection into the user message as UNTRUSTED, user-position context. The path is
- * stripped of quotes/control chars (it lands in an attribute); the content is verbatim data the model must NOT
- * treat as instructions. Framed with `<file>` tags so the model can tell where the injected data begins/ends.
+ * Format a mentioned file for injection into the user message as UNTRUSTED, user-position context. The path lands
+ * inside the `path="…"` attribute, so it is stripped of the framing chars (`<` `>` `"`) AND every control code —
+ * C0 (`< 0x20`, incl. newline/CR/tab), DEL, and C1 (`0x80–0x9f`) — so a crafted filename (POSIX filenames may
+ * contain newlines) can neither break out of the attribute nor forge a second `<file>` frame. The content is
+ * verbatim data the model must NOT treat as instructions; the `<file>` tags mark where the injected data begins /
+ * ends (belt-and-suspenders — the injected bytes are already flagged untrusted regardless of the framing).
  */
 export function formatMentionInjection(path: string, content: string): string {
-  const safePath = path.replace(/[<>"]/g, '');
+  const safePath = [...path]
+    .filter((ch) => {
+      const code = ch.codePointAt(0) ?? 0;
+      return code >= 0x20 && code !== 0x7f && !(code >= 0x80 && code <= 0x9f);
+    })
+    .join('')
+    .replace(/[<>"]/g, '');
   return `\n\n<file path="${safePath}">\n${content}\n</file>`;
 }
