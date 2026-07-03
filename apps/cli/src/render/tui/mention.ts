@@ -1,5 +1,6 @@
 import type { FsCapability } from '@relavium/core';
 
+import { dropLastCodePoint } from './chat-input.js';
 import { frameUntrusted } from './injection.js';
 
 // The `@`-injection content bounds + fence nonce — the shared injection primitives ({@link injection.ts}),
@@ -11,7 +12,7 @@ export {
 } from './injection.js';
 
 /**
- * The `@`-mention file-context injection (2.5.D step 4, [ADR-0061](../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)).
+ * The `@`-mention file-context injection (2.5.D step 4, [ADR-0061](../../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)).
  * A keyboard-owning completion submode (like the `/` palette) lets the user pick a file whose text is injected
  * into their message as USER-position, UNTRUSTED context. The pure model (state + fold + formatting) lives here;
  * the read goes through {@link MentionReader}, a thin wrapper over the SAME `FsCapability` the session's tools
@@ -146,7 +147,12 @@ function foldMentionAccept(
 function foldMentionBackspace(key: MentionKey, state: MentionState): MentionStep | undefined {
   if (key.backspace !== true && key.delete !== true) return undefined;
   if (state.filter.length > 0) {
-    return { kind: 'state', state: { ...state, filter: state.filter.slice(0, -1), selected: 0 } };
+    // Trim by whole CODE POINT (not `slice(0, -1)`), so backspacing an astral char in the filter (e.g. an emoji)
+    // removes it whole rather than leaving a lone surrogate — same discipline as `deleteBeforeCursor`.
+    return {
+      kind: 'state',
+      state: { ...state, filter: dropLastCodePoint(state.filter), selected: 0 },
+    };
   }
   if (state.dir.length > 0) return { kind: 'descend', dir: parentDir(state.dir) };
   return { kind: 'close', restore: '' };

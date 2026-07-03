@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 /**
- * The shared UNTRUSTED-context injection framing (2.5.D, [ADR-0061](../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
+ * The shared UNTRUSTED-context injection framing (2.5.D, [ADR-0061](../../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
  * used by both the `@`-mention file injection ([mention.ts](mention.ts)) and the `!`-shell output injection
  * ([shell.ts](shell.ts)). Both move data across a trust boundary — a file's bytes / a command's output — into the
  * user message as data the model must NOT treat as instructions. Two invariants make the frame unforgeable and

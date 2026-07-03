@@ -3,7 +3,7 @@ import type { ReactElement } from 'react';
 
 import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
-import { promptRows } from './prompt-cursor.js';
+import { promptRows, type PromptRow } from './prompt-cursor.js';
 import { colorProps } from './projection.js';
 
 /**
@@ -25,14 +25,22 @@ export function PromptEditor(
 ): ReactElement {
   const { editor, color } = props;
   const rows = promptRows(editor.text, editor.cursor);
+  // Key each row by its line START char offset — a stable, positional id (identical lines never collide, unlike a
+  // content key) that is NOT the array index React discourages for keys. The first row (offset 0) gets the `> `.
+  const keyed: { readonly row: PromptRow; readonly offset: number }[] = [];
+  let offset = 0;
+  for (const row of rows) {
+    keyed.push({ row, offset });
+    offset += row.before.length + (row.at?.length ?? 0) + row.after.length + 1; // +1 for the joining '\n'
+  }
   return (
     <Box flexDirection="column">
-      {rows.map((row, index) => {
+      {keyed.map(({ row, offset: rowOffset }) => {
         // sanitizeInline may blank a control char under the cursor → fall back to a space so the block stays visible.
         const cursorCell = row.at === undefined ? '' : sanitizeInline(row.at) || ' ';
         return (
-          <Text key={index} {...colorProps(color, 'cyan')}>
-            {index === 0 ? '> ' : '  '}
+          <Text key={rowOffset} {...colorProps(color, 'cyan')}>
+            {rowOffset === 0 ? '> ' : '  '}
             {sanitizeInline(row.before)}
             {row.at !== undefined && (color ? <Text inverse>{cursorCell}</Text> : cursorCell)}
             {sanitizeInline(row.after)}

@@ -545,7 +545,7 @@ export function isSensitiveReadPath(absoluteTarget: string): boolean {
 function assertNotSensitiveReadPath(absoluteTarget: string): void {
   if (isSensitiveReadPath(absoluteTarget)) {
     throw new FsScopeDeniedError(
-      'refusing to read a credential/secret store (.ssh / .relavium / a git config / a credential dotfile) — ask the user to share any needed content instead',
+      'refusing to read a credential/secret store (.ssh / .relavium / .aws / .env or .env.* / .docker config / a git config or credential dotfile) — ask the user to share any needed content instead',
     );
   }
 }

@@ -96,6 +96,18 @@ function reduceApprovalKey(char: string, key: ChatKey): ChatKeyAction {
   return { kind: 'none' };
 }
 
+/** Line-boundary + readline word chords: `Home`/`Ctrl+A` → line-start, `End`/`Ctrl+E` → line-end, `Alt+B`/`Alt+F`
+ *  → word-left/right. `undefined` when the key is not one of these. */
+function reduceLineMotion(char: string, key: ChatKey): EditorEditAction | undefined {
+  if (key.home === true || (key.ctrl === true && char === 'a'))
+    return { kind: 'move', motion: 'line-start' };
+  if (key.end === true || (key.ctrl === true && char === 'e'))
+    return { kind: 'move', motion: 'line-end' };
+  if (key.meta === true && char === 'b') return { kind: 'move', motion: 'word-left' }; // readline Alt+B
+  if (key.meta === true && char === 'f') return { kind: 'move', motion: 'word-right' }; // readline Alt+F
+  return undefined;
+}
+
 /** A cursor motion (arrows / `Ctrl+A`/`Ctrl+E` / `Home`/`End` / `Alt+B`/`Alt+F`), or `undefined` when not a motion.
  *  A modified arrow (Ctrl/Alt+arrow) is a WORD motion; a bare arrow steps one code point. */
 function reduceCursorMotion(char: string, key: ChatKey): EditorEditAction | undefined {
@@ -106,13 +118,7 @@ function reduceCursorMotion(char: string, key: ChatKey): EditorEditAction | unde
   // chat callers fall back to history recall (the bare Home has no history, so there it is simply a no-op).
   if (key.upArrow === true) return { kind: 'move', motion: 'up' };
   if (key.downArrow === true) return { kind: 'move', motion: 'down' };
-  if (key.home === true || (key.ctrl === true && char === 'a'))
-    return { kind: 'move', motion: 'line-start' };
-  if (key.end === true || (key.ctrl === true && char === 'e'))
-    return { kind: 'move', motion: 'line-end' };
-  if (key.meta === true && char === 'b') return { kind: 'move', motion: 'word-left' }; // readline Alt+B
-  if (key.meta === true && char === 'f') return { kind: 'move', motion: 'word-right' }; // readline Alt+F
-  return undefined;
+  return reduceLineMotion(char, key);
 }
 
 /** A kill (delete a range) — `Ctrl+W` word-back / `Ctrl+U` to-line-start / `Ctrl+K` to-line-end — or `undefined`. */

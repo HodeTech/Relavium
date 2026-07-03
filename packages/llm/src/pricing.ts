@@ -195,9 +195,11 @@ export const MODEL_PRICING = {
     displayName: 'DeepSeek-V4-Flash (reasoner, legacy)',
     contextWindowTokens: 1_000_000,
     maxOutputTokens: 384_000,
-    inputPerMtokMicrocents: usd(0.435),
-    outputPerMtokMicrocents: usd(0.87),
-    cachedInputPerMtokMicrocents: usd(0.003625),
+    // The thinking-mode alias of v4-flash — thinking is a request PARAM, not a separate model, so it bills at the
+    // SAME v4-flash rate as `deepseek-chat` (the prior 0.435/0.87 was a stale R1-era carryover from before v4).
+    inputPerMtokMicrocents: usd(0.14),
+    outputPerMtokMicrocents: usd(0.28),
+    cachedInputPerMtokMicrocents: usd(0.0028),
   },
 } as const satisfies Readonly<Record<string, ModelPricing>>;
 

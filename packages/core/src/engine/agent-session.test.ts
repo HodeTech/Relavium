@@ -1105,6 +1105,22 @@ describe('AgentSession.runUserCommand — the `!`-shell escape (2.5.D, ADR-0061)
     expect(outcome.kind === 'failed' && outcome.message).not.toContain('secret-path'); // raw detail not echoed
   });
 
+  it('classifies a mid-command cancel as `cancelled` (an aborted dispatch signal, not a failure)', async () => {
+    // The spawn cancels the session mid-run — aborting the dispatch signal `runUserCommand` armed — then rejects.
+    // The registry classifies an aborted dispatch as ToolCancelledError (cancel precedence), which runUserCommand
+    // maps to `cancelled` (never `failed`).
+    const ref: { s?: AgentSession } = {};
+    const { registry } = commandRegistry(() => {
+      ref.s?.cancel(); // aborts the command's signal
+      return Promise.reject(new Error('killed'));
+    });
+    const { deps } = harness([], { toolPolicy: { allowedCommands: ['sleep'] } }, registry);
+    const s = startedSession(deps);
+    ref.s = s;
+    const outcome = await s.runUserCommand('sleep', []); // joined 'sleep' matches the allowlist → reaches the spawn
+    expect(outcome.kind).toBe('cancelled');
+  });
+
   it('is lifecycle-guarded: runUserCommand before start throws SessionStateError', async () => {
     const { registry } = commandRegistry(() => Promise.resolve(RAN));
     const { deps } = harness([], { toolPolicy: { allowedCommands: ['ls'] } }, registry);

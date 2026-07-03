@@ -67,6 +67,11 @@ describe('@-mention completion model (2.5.D step 4)', () => {
       kind: 'state',
       state: { ...STATE, filter: 'a', selected: 0 },
     });
+    // Backspacing an astral char (😀 = a surrogate pair) removes it WHOLE — never a lone surrogate.
+    expect(foldMentionKey('', { backspace: true }, { ...STATE, filter: 'a😀' })).toEqual({
+      kind: 'state',
+      state: { ...STATE, filter: 'a', selected: 0 },
+    });
     // Backspace PAST the filter at the ROOT deletes the '@' — restore nothing.
     expect(foldMentionKey('', { backspace: true }, STATE)).toEqual({ kind: 'close', restore: '' });
     // Backspace PAST the filter BELOW the root ASCENDS one directory (dir-navigable, not a dead-end).

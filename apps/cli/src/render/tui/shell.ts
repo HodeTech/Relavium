@@ -2,7 +2,7 @@ import type { ChatMode } from '../../chat/chat-mode.js';
 import { frameUntrusted } from './injection.js';
 
 /**
- * The `!`-shell escape input model (2.5.D step 5, [ADR-0061](../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)).
+ * The `!`-shell escape input model (2.5.D step 5, [ADR-0061](../../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)).
  * A line starting with `!` is a USER-invoked shell command: the rest of the line is tokenized into argv (NO shell
  * metachar expansion — the process arm spawns with `shell:false`) and run through `AgentSession.runUserCommand`,
  * which enforces the `[chat].allowed_commands` allowlist (BEFORE approval) → the mode-aware `confirmAction` → the

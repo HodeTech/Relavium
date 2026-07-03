@@ -414,8 +414,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // (mirrors acceptMention's session-identity guard).
     const applyIfCurrent = (candidates: readonly MentionCandidate[]): void => {
       const open = state.mention;
-      if (open === undefined || open.dir !== dir) return; // a since-closed / since-descended submode — drop it
-      if (state.session !== active || state.mode !== 'chat') return; // a different session / mode — drop it
+      if (open === undefined) return; // no submode open (narrows `open` for the spread below)
+      // Drop a stale resolve: a since-descended submode, or (after /exit → new chat) a different session / mode.
+      if (open.dir !== dir || state.session !== active || state.mode !== 'chat') return;
       set({ mention: { ...open, candidates, loading: false } });
     };
     void reader.list(dir).then(
@@ -595,6 +596,40 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return false;
   };
 
+  // A vertical Up/Down move within a multi-line buffer; at the top/bottom edge (a no-op) recall history.
+  const applyMoveAction = (action: Extract<ChatKeyAction, { kind: 'move' }>): void => {
+    const moved = applyEditorAction(state.input, action);
+    if (moved !== state.input) {
+      set({ input: moved }); // a real move (vertical mid-buffer, or any horizontal/word/line motion)
+      return;
+    }
+    if (action.motion !== 'up' && action.motion !== 'down') return; // a no-op horizontal motion
+    const recall =
+      action.motion === 'up' ? historyPrev(history, state.input.text) : historyNext(history);
+    if (recall !== null) {
+      history = recall.history;
+      set({ input: editorFromText(recall.text) });
+    }
+  };
+
+  // Submit `line`: record + clear the buffer, then run a leading `!command` (a runner + a non-empty command) as
+  // the shell escape, or send it as a normal message.
+  const applySubmitAction = (active: HomeChatSession, line: string): void => {
+    submitEpoch += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
+    history = recordHistory(history, line);
+    set({ input: emptyEditor(), historyEntries: history.entries });
+    const trimmed = line.trim();
+    const parsed =
+      active.runShellCommand !== undefined && isShellLine(trimmed)
+        ? tokenizeCommand(trimmed.slice(1))
+        : undefined;
+    if (parsed === undefined) {
+      sendChatLine(active, line); // a bare `!` / no runner → a normal message
+    } else {
+      runShell(active, parsed); // a `!command` → the shell escape
+    }
+  };
+
   // Apply one reduced chat-key action: edits/motions fold the buffer, submit runs a `!`-command or sends a message,
   // and the surface actions (cancel / cycle-mode / abort / approve / reject) drive the session.
   const applyChatAction = (active: HomeChatSession, action: ChatKeyAction): void => {
@@ -616,39 +651,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         set({ input: next });
         return;
       }
-      case 'move': {
-        // A vertical Up/Down move within a multi-line buffer; at the top/bottom edge (a no-op) recall history.
-        const moved = applyEditorAction(state.input, action);
-        if (moved !== state.input) {
-          set({ input: moved }); // a real move (vertical mid-buffer, or any horizontal/word/line motion)
-          return;
-        }
-        if (action.motion !== 'up' && action.motion !== 'down') return; // a no-op horizontal motion
-        const recall =
-          action.motion === 'up' ? historyPrev(history, state.input.text) : historyNext(history);
-        if (recall !== null) {
-          history = recall.history;
-          set({ input: editorFromText(recall.text) });
-        }
+      case 'move':
+        applyMoveAction(action);
         return;
-      }
-      case 'submit': {
-        submitEpoch += 1; // the buffer is cleared → a pending mention read / shell run must not re-inject
-        history = recordHistory(history, action.line);
-        set({ input: emptyEditor(), historyEntries: history.entries });
-        // A leading `!` (with a runner + a non-empty command) runs the shell escape; else send a normal message.
-        const trimmed = action.line.trim();
-        const parsed =
-          active.runShellCommand !== undefined && isShellLine(trimmed)
-            ? tokenizeCommand(trimmed.slice(1))
-            : undefined;
-        if (parsed === undefined) {
-          sendChatLine(active, action.line); // a bare `!` / no runner → a normal message
-        } else {
-          runShell(active, parsed); // a `!command` → the shell escape
-        }
+      case 'submit':
+        applySubmitAction(active, action.line);
         return;
-      }
       case 'cycle-mode':
         // Shift+Tab: advance the chat mode on the SAME session (ADR-0057; no reseat) — parity with `relavium chat`.
         active.onModeChange?.(nextMode(active.store.getSnapshot().mode));

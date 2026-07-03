@@ -10,7 +10,7 @@ import { colorProps, dimProps } from './projection.js';
 const MENTION_WINDOW = 8;
 
 /**
- * The `@`-mention completion overlay (2.5.D step 4, [ADR-0061](../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
+ * The `@`-mention completion overlay (2.5.D step 4, [ADR-0061](../../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
  * — a PURE ink view over the filtered {@link visibleMentions}. It owns NO `useInput`: the single raw-mode owner
  * (the standalone `ChatApp` or the Home's `RootApp`) routes keys to `foldMentionKey` and re-renders this from the
  * resulting {@link MentionState}. Every free-form field — the browsed dir, the filter echo, each candidate name —

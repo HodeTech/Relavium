@@ -126,10 +126,12 @@ allowed_command_globs = []         # opt-in glob form of the !-shell allowlist (
 
 > The `[chat]` block sets defaults for the **agent-first** chat entry point
 > ([agent-session-spec.md](agent-session-spec.md), [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md)),
-> distinct from `[defaults]` (which governs **workflow** runs). It does **not** define its own command
-> allowlist: a chat session reuses the workflow `allowedCommands` policy whose canonical home is
-> [workflow-yaml-spec.md](workflow-yaml-spec.md#tool-policy-spectools) (empty/absent ⇒ `run_command`
-> disabled). Session history persists in the existing `history.db` — there is no separate `sessions.db`. A chat session may carry its own **pre-egress cost cap** (`max_cost_microcents` + `on_exceed`), enforced by the **same** governor as a workflow `budget` ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)) — so an open-ended chat that loops on tool calls fails safe, and "both entry points inherit resource governance" holds literally.
+> distinct from `[defaults]` (which governs **workflow** runs). Its `allowed_commands` /
+> `allowed_command_globs` keys (the 2.5.D `!`-shell allowlist, detailed below) **map to the SAME engine
+> `allowedCommands` / `allowedCommandGlobs` policy** a workflow `run_command` uses (canonical home
+> [workflow-yaml-spec.md](workflow-yaml-spec.md#tool-policy-spectools); empty/absent ⇒ `run_command` disabled) —
+> a chat surface over the **one** command allowlist, never a chat-specific fork of it. Session history persists
+> in the existing `history.db` — there is no separate `sessions.db`. A chat session may carry its own **pre-egress cost cap** (`max_cost_microcents` + `on_exceed`), enforced by the **same** governor as a workflow `budget` ([ADR-0028](../../decisions/0028-workflow-resource-governance.md)) — so an open-ended chat that loops on tool calls fails safe, and "both entry points inherit resource governance" holds literally.
 >
 > `max_turns` is the surface-mapped form of the engine **hard turn cap** (`SessionDeps.maxTurns`, [agent-session-spec.md](agent-session-spec.md#hard-turn-cap)) — a finite DoS fail-safe (engine default **50**; absent ⇒ that default — a `positiveInt`, so `0` is rejected at the config layer and never reaches the engine's own `<= 0 ⇒ default` arm). It is **distinct** from `max_messages` (a history-**trim** threshold that *silently continues*) and the within-turn `maxToolTurns` tool-loop guard: a `sendMessage` past `max_turns` ends **loudly** (`session:turn_completed` with `error.code: 'turn_limit'`, no egress).
 >
