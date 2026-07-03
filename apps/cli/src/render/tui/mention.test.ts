@@ -7,6 +7,7 @@ import {
   estimateTokens,
   foldMentionKey,
   formatMentionInjection,
+  mentionOpensAt,
   visibleMentions,
   type MentionState,
 } from './mention.js';
@@ -16,7 +17,13 @@ const CANDIDATES = [
   { name: 'app.ts', type: 'file' as const, path: 'app.ts' },
   { name: 'README.md', type: 'file' as const, path: 'README.md' },
 ];
-const STATE: MentionState = { dir: '', filter: '', candidates: CANDIDATES, selected: 0 };
+const STATE: MentionState = {
+  dir: '',
+  filter: '',
+  candidates: CANDIDATES,
+  selected: 0,
+  loading: false,
+};
 
 describe('@-mention completion model (2.5.D step 4)', () => {
   it('visibleMentions filters by a case-insensitive substring of the name', () => {
@@ -51,8 +58,14 @@ describe('@-mention completion model (2.5.D step 4)', () => {
       kind: 'state',
       state: { ...STATE, filter: 'a', selected: 0 },
     });
-    expect(foldMentionKey('', { backspace: true }, STATE)).toEqual({ kind: 'close' }); // empty filter ⇒ drop the '@'
-    expect(foldMentionKey('', { escape: true }, STATE)).toEqual({ kind: 'close' });
+    // Backspace PAST the filter deletes the '@' — restore nothing.
+    expect(foldMentionKey('', { backspace: true }, STATE)).toEqual({ kind: 'close', restore: '' });
+    // Esc restores the literal keystrokes ('@' + filter) so nothing typed is silently eaten.
+    expect(foldMentionKey('', { escape: true }, STATE)).toEqual({ kind: 'close', restore: '@' });
+    expect(foldMentionKey('', { escape: true }, { ...STATE, filter: 'sr' })).toEqual({
+      kind: 'close',
+      restore: '@sr',
+    });
     expect(foldMentionKey('pasted blob', {}, STATE)).toEqual({ kind: 'state', state: STATE }); // multi-char ⇒ dropped
     expect(foldMentionKey('😀', {}, STATE)).toEqual({
       kind: 'state',
@@ -60,10 +73,20 @@ describe('@-mention completion model (2.5.D step 4)', () => {
     }); // a single astral code point still extends
   });
 
-  it('accepts nothing (closes) when the filtered list is empty', () => {
+  it('accepts nothing (closes, restoring the keystrokes) when the filtered list is empty', () => {
     expect(foldMentionKey('', { return: true }, { ...STATE, filter: 'zz' })).toEqual({
       kind: 'close',
+      restore: '@zz',
     });
+  });
+
+  it('mentionOpensAt: `@` opens only at a word boundary (start or after whitespace), else stays literal', () => {
+    expect(mentionOpensAt('', 0)).toBe(true); // start of buffer
+    expect(mentionOpensAt('hi ', 3)).toBe(true); // right after a space
+    expect(mentionOpensAt('a\nb\n', 4)).toBe(true); // right after a newline
+    expect(mentionOpensAt('foo', 3)).toBe(false); // mid-word (email/handle) ⇒ literal '@'
+    expect(mentionOpensAt('foo', 0)).toBe(true); // cursor at start, text follows
+    expect(mentionOpensAt('x', 99)).toBe(false); // clamped/past-end cursor ⇒ charAt('') ⇒ not whitespace
   });
 
   it('estimateTokens is a ~4-bytes/token heuristic; formatMentionInjection frames untrusted content + safe path', () => {

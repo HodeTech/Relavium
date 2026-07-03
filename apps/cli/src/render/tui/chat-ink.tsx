@@ -15,9 +15,20 @@ import {
   applyEditorAction,
   editorFromText,
   emptyEditor,
+  insertAtCursor,
   reduceChatKey,
   type EditorState,
 } from './chat-input.js';
+import {
+  estimateTokens,
+  foldMentionKey,
+  formatMentionInjection,
+  mentionOpensAt,
+  MENTION_TOKEN_WARN,
+  type MentionReader,
+  type MentionState,
+} from './mention.js';
+import { MentionView } from './mention-view.js';
 import {
   EMPTY_HISTORY,
   INITIAL_REVERSE_SEARCH,
@@ -105,6 +116,11 @@ interface ChatAppProps {
   readonly onAbort?: (() => void) | undefined;
   /** Switch the chat mode (Shift+Tab cycle) — re-applies the turn policy on the same session (ADR-0057). */
   readonly onModeChange: (mode: ChatMode) => void;
+  /** The `@`-mention completion reader (2.5.D, ADR-0061) — a READ-ONLY fs jail at the session's fs-scope tier +
+   *  workspace. When present, `@` at a word boundary opens dir-navigable file completion whose accepted file is
+   *  injected as UNTRUSTED, user-position context. Absent (a driver/test wired without it) ⇒ `@` is a literal char.
+   *  `| undefined` so the createElement passthrough can forward an absent `ctx.mentionReader` (exactOptionalPropertyTypes). */
+  readonly mentionReader?: MentionReader | undefined;
 }
 
 interface ChatViewProps {
@@ -248,6 +264,65 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     searchRef.current = next;
     setSearch(next);
   };
+  // The `@`-mention completion submode (2.5.D step 4, ADR-0061) — dir-navigable file completion whose accepted file
+  // is injected into the buffer as UNTRUSTED, user-position context. React-local + ref-shadowed (survives a
+  // coalesced stdin chunk, like the palette/search). ASYNC: opening/descending a dir fires an fs `list()` whose
+  // result lands via `applyMention` only if the submode is still open on the SAME dir (a stale resolve is dropped).
+  // Present only when a `mentionReader` was wired (an interactive session); absent ⇒ `@` is a literal char.
+  const [mention, setMention] = useState<MentionState | undefined>(undefined);
+  const mentionRef = useRef<MentionState | undefined>(undefined);
+  const applyMention = (next: MentionState | undefined): void => {
+    mentionRef.current = next;
+    setMention(next);
+  };
+  // List `dir`'s entries through the fs jail (listing-gate + noise filter enforced by the reader), applying them
+  // ONLY if the submode is still open on that dir — a resolve from a since-closed or since-descended submode is
+  // dropped. A `list()` rejection (the dir vanished) leaves the submode open with an empty, not-loading list.
+  const loadMentions = (dir: string): void => {
+    const reader = props.mentionReader;
+    if (reader === undefined) return;
+    void reader.list(dir).then(
+      (candidates) => {
+        const open = mentionRef.current;
+        if (open !== undefined && open.dir === dir)
+          applyMention({ ...open, candidates, loading: false });
+      },
+      () => {
+        const open = mentionRef.current;
+        if (open !== undefined && open.dir === dir)
+          applyMention({ ...open, candidates: [], loading: false });
+      },
+    );
+  };
+  // Open the completion at the workspace root (the caller has already decided `@` opens — word boundary + reader).
+  const openMention = (): void => {
+    applyMention({ dir: '', filter: '', candidates: [], selected: 0, loading: true });
+    loadMentions('');
+  };
+  // Read the accepted file through the fs jail + confidentiality floor + binary/size guards, then inject its content
+  // into the buffer as UNTRUSTED, user-position context (framed `<file>…</file>`). A read rejection (a floor refusal,
+  // a binary file, oversize, since-deleted) surfaces a STATIC, secret-free note — never the raw error, which could
+  // echo a path/reason. A large file adds a soft size note (the fs 8 MiB cap is the hard ceiling).
+  const acceptMention = (path: string): void => {
+    const reader = props.mentionReader;
+    if (reader === undefined) return;
+    void reader.read(path).then(
+      ({ content, sizeBytes }) => {
+        applyEditor((current) => {
+          historyRef.current = resetHistoryNav(historyRef.current); // a real edit ends history navigation
+          return insertAtCursor(current, formatMentionInjection(path, content));
+        });
+        if (estimateTokens(sizeBytes) > MENTION_TOKEN_WARN) {
+          props.store.note(
+            `@ file is large (~${estimateTokens(sizeBytes)} tokens) — it may crowd the context`,
+          );
+        }
+      },
+      () => {
+        props.store.note('@ mention could not read that file (refused, binary, or too large)');
+      },
+    );
+  };
 
   const submit = (line: string): void => {
     // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
@@ -270,6 +345,38 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // Read `running` FRESH from the store (not the render closure) so a coalesced same-chunk event after a turn
     // settles sees the current status — matching the ref-shadow `editorRef`/`paletteRef` reads below.
     const isRunning = props.store.getSnapshot().state.status === 'running';
+    // The open `@`-mention completion owns every key (2.5.D step 4): Esc/Ctrl-C cancels + restores the literal
+    // keystrokes; ↑/↓ select; Enter/Tab/'/' accept (a dir descends, a file injects); backspace trims the filter
+    // then deletes the `@`; a printable extends the filter. Read the REF so a coalesced same-chunk key sees a
+    // just-applied state. Checked FIRST — it is mutually exclusive with the palette/search (one submode at a time).
+    const activeMention = mentionRef.current;
+    if (activeMention !== undefined) {
+      const step = foldMentionKey(char, key, activeMention);
+      if (step.kind === 'close') {
+        applyMention(undefined);
+        // Restore the literal keystrokes (`@` + filter on cancel; `''` on backspace-past) so nothing typed is lost.
+        // A restore is a real edit ⇒ end history navigation (idempotent), inside the functional updater.
+        if (step.restore.length > 0) {
+          applyEditor((current) => {
+            historyRef.current = resetHistoryNav(historyRef.current);
+            return insertAtCursor(current, step.restore);
+          });
+        }
+        return;
+      }
+      if (step.kind === 'descend') {
+        applyMention({ dir: step.dir, filter: '', candidates: [], selected: 0, loading: true });
+        loadMentions(step.dir);
+        return;
+      }
+      if (step.kind === 'accept') {
+        applyMention(undefined);
+        acceptMention(step.path);
+        return;
+      }
+      applyMention(step.state);
+      return;
+    }
     // The open Ctrl+R reverse-search owns every key (Esc/Ctrl-C cancels; Enter accepts the match; Ctrl+R steps
     // older). Read the REF so a coalesced same-chunk event sees a just-applied close/accept. It is mutually
     // exclusive with the palette (only one submode opens at a time) and yields to a pending approval (below).
@@ -323,6 +430,21 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // Ctrl+R opens reverse-incremental history search (idle, not mid-approval) — a keyboard-owning submode.
     if (!approvalPending && !isRunning && key.ctrl === true && char === 'r') {
       applySearch(INITIAL_REVERSE_SEARCH);
+      return;
+    }
+    // `@` at a word boundary opens dir-navigable file completion (2.5.D step 4) — idle, not mid-approval, and only
+    // when a reader was wired (an interactive session). The `@` is NOT inserted (it lives in the overlay); a cancel
+    // restores it. A mid-word `@` (an email/handle) or an absent reader falls through to `reduceChatKey` as a literal.
+    if (
+      !approvalPending &&
+      !isRunning &&
+      char === '@' &&
+      key.ctrl !== true &&
+      key.meta !== true &&
+      props.mentionReader !== undefined &&
+      mentionOpensAt(editorRef.current.text, editorRef.current.cursor)
+    ) {
+      openMention();
       return;
     }
     const action = reduceChatKey(char, key, editorRef.current.text, isRunning, approvalPending);
@@ -405,7 +527,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         running={running}
         mode={mode}
         approval={approval}
-        paletteOpen={palette !== undefined || search !== undefined}
+        paletteOpen={palette !== undefined || search !== undefined || mention !== undefined}
       />
       {palette !== undefined && (
         <PaletteView commands={CHAT_PALETTE_COMMANDS} state={palette} color={color} />
@@ -413,6 +535,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       {search !== undefined && (
         <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
       )}
+      {mention !== undefined && <MentionView state={mention} color={color} />}
     </Box>
   );
 }
@@ -495,6 +618,9 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
         // 'abort' handler can reject a pending approval when it is absent (never a dead Esc — see ChatApp).
         onAbort: ctx.onAbort,
         onModeChange: ctx.onModeChange ?? ((): void => undefined),
+        // `@`-mention completion (2.5.D, ADR-0061) — the REPL loop wires it only for an interactive session; passed
+        // AS-IS (optional) so an absent reader degrades `@` to a literal char (never a dead key — see ChatApp).
+        mentionReader: ctx.mentionReader,
       }),
       {
         // OUR /cancel (Ctrl-C) handler drives the cooperative cancel — never ink's process.exit.

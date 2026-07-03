@@ -27,6 +27,15 @@ import {
   type ReverseSearchState,
 } from './input-history.js';
 import type { ChatStoreController } from './chat-store.js';
+import {
+  estimateTokens,
+  foldMentionKey,
+  formatMentionInjection,
+  mentionOpensAt,
+  MENTION_TOKEN_WARN,
+  type MentionReader,
+  type MentionState,
+} from './mention.js';
 import { isPasteEnd, isPasteStart, reduceHomeKey, type HomeKey } from './home-input.js';
 import {
   foldPaletteKey,
@@ -62,6 +71,10 @@ export interface HomeChatSession {
   readonly onAbort?: () => void;
   /** Switch the chat mode (Shift+Tab / `/mode`) — re-applies the turn policy on the same session (ADR-0057). */
   readonly onModeChange?: (mode: ChatMode) => void;
+  /** The `@`-mention completion reader (2.5.D, ADR-0061) — a READ-ONLY fs jail at the session's fs-scope tier +
+   *  workspace, so in-Home `@`-completion browses + injects files through the identical confidentiality floor +
+   *  listing-gate as the session's tools. Present once wired; absent ⇒ `@` is a literal char. */
+  readonly mentionReader?: MentionReader;
   /** Best-effort, IDEMPOTENT teardown of THIS chat (persister + frame loop + subscription + MCP), never the shared db. */
   readonly teardown: () => Promise<void>;
 }
@@ -82,6 +95,9 @@ export interface HomeControllerState {
   /** The open Ctrl+R reverse-search submode of the in-Home chat (2.5.D step 3) — `undefined` ⇒ closed. Chat-only
    *  (the bare Home has no history); mutually exclusive with the palette, yields to a pending approval. */
   readonly search: ReverseSearchState | undefined;
+  /** The open `@`-mention completion submode of the in-Home chat (2.5.D step 4, ADR-0061) — `undefined` ⇒ closed.
+   *  Chat-only (its reader is per-session); mutually exclusive with the palette/search, yields to a pending approval. */
+  readonly mention: MentionState | undefined;
   /** A published copy of the history entries (the closure `history` is not in state) so the external render can
    *  compute the reverse-search match; changes only on submit. */
   readonly historyEntries: readonly string[];
@@ -131,6 +147,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     session: undefined,
     palette: undefined,
     search: undefined,
+    mention: undefined,
     historyEntries: [],
     notice: undefined,
   };
@@ -209,6 +226,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           mode: 'home',
           palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
           search: undefined, // ditto a reverse-search submode
+          mention: undefined, // ditto an `@`-completion submode
         });
       })
       .catch(() => undefined); // a rejecting teardown (or read) must not surface as an unhandled rejection
@@ -254,6 +272,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       mode: 'loading',
       palette: undefined,
       search: undefined,
+      mention: undefined,
       historyEntries: history.entries,
     });
     // Track the in-flight build so a signal (or a mid-build exit) during `loading` can reclaim its just-spawned
@@ -353,9 +372,86 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     set({ palette: step.state });
   };
 
+  // The in-Home chat's `@`-mention completion (2.5.D step 4, ADR-0061) — mirrors ChatApp. ASYNC: opening/descending
+  // a dir fires an fs `list()` whose result lands ONLY if the submode is still open on the SAME dir (a stale resolve
+  // is dropped). The reader is per-session (`active`); `state.mention` is the live value the guards read.
+  const loadMentions = (active: HomeChatSession, dir: string): void => {
+    const reader = active.mentionReader;
+    if (reader === undefined) return;
+    void reader.list(dir).then(
+      (candidates) => {
+        const open = state.mention;
+        if (open !== undefined && open.dir === dir) {
+          set({ mention: { ...open, candidates, loading: false } });
+        }
+      },
+      () => {
+        const open = state.mention;
+        if (open !== undefined && open.dir === dir) {
+          set({ mention: { ...open, candidates: [], loading: false } });
+        }
+      },
+    );
+  };
+  const openMention = (active: HomeChatSession): void => {
+    set({ mention: { dir: '', filter: '', candidates: [], selected: 0, loading: true } });
+    loadMentions(active, '');
+  };
+  // Read the accepted file through the fs jail + confidentiality floor + binary/size guards, then inject its content
+  // into the buffer as UNTRUSTED, user-position context. Drop a resolve if the chat ended mid-read (a returned Home
+  // must not gain injected text). A read rejection surfaces a STATIC, secret-free note (never the raw error/path).
+  const acceptMention = (active: HomeChatSession, path: string): void => {
+    const reader = active.mentionReader;
+    if (reader === undefined) return;
+    void reader.read(path).then(
+      ({ content, sizeBytes }) => {
+        if (state.session !== active || state.mode !== 'chat') return; // the chat ended mid-read — drop it
+        history = resetHistoryNav(history); // a real edit ends history navigation
+        set({ input: insertAtCursor(state.input, formatMentionInjection(path, content)) });
+        if (estimateTokens(sizeBytes) > MENTION_TOKEN_WARN) {
+          active.store.note(
+            `@ file is large (~${estimateTokens(sizeBytes)} tokens) — it may crowd the context`,
+          );
+        }
+      },
+      () => {
+        if (state.session !== active || state.mode !== 'chat') return;
+        active.store.note('@ mention could not read that file (refused, binary, or too large)');
+      },
+    );
+  };
+
   const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
     if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
     const running = active.store.getSnapshot().state.status === 'running';
+    // The open `@`-mention completion owns every key (2.5.D step 4) — parity with ChatApp. Mutually exclusive with
+    // the palette/search; yields to a pending approval (only opens below when idle). The reader is per-session.
+    const openMentionState = state.mention;
+    if (openMentionState !== undefined) {
+      const step = foldMentionKey(input, key, openMentionState);
+      if (step.kind === 'close') {
+        // Restore the literal keystrokes (`@` + filter on cancel; `''` on backspace-past) so nothing typed is lost.
+        if (step.restore.length > 0) {
+          history = resetHistoryNav(history); // a restore is a real edit ⇒ end history navigation
+          set({ mention: undefined, input: insertAtCursor(state.input, step.restore) });
+        } else {
+          set({ mention: undefined });
+        }
+        return;
+      }
+      if (step.kind === 'descend') {
+        set({ mention: { dir: step.dir, filter: '', candidates: [], selected: 0, loading: true } });
+        loadMentions(active, step.dir);
+        return;
+      }
+      if (step.kind === 'accept') {
+        set({ mention: undefined });
+        acceptMention(active, step.path);
+        return;
+      }
+      set({ mention: step.state });
+      return;
+    }
     // The open Ctrl+R reverse-search owns every key (Esc/Ctrl-C cancels; Enter accepts the match; Ctrl+R steps
     // older). Mutually exclusive with the palette; yields to a pending approval (only opens below when idle).
     const openSearch = state.search;
@@ -383,6 +479,21 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // Ctrl+R opens reverse-incremental history search (idle, not mid-approval) — parity with `relavium chat`.
     if (!approvalPending && !running && key.ctrl === true && input === 'r') {
       set({ search: INITIAL_REVERSE_SEARCH });
+      return;
+    }
+    // `@` at a word boundary opens dir-navigable file completion (2.5.D step 4) — idle, not mid-approval, and only
+    // when a reader was wired. The `@` is NOT inserted (it lives in the overlay); a cancel restores it. A mid-word
+    // `@` (an email/handle) or an absent reader falls through to `reduceChatKey` as a literal — parity with ChatApp.
+    if (
+      !approvalPending &&
+      !running &&
+      input === '@' &&
+      key.ctrl !== true &&
+      key.meta !== true &&
+      active.mentionReader !== undefined &&
+      mentionOpensAt(state.input.text, state.input.cursor)
+    ) {
+      openMention(active);
       return;
     }
     const action = reduceChatKey(input, key, state.input.text, running, approvalPending);
@@ -517,13 +628,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           // gate does, so paste never diverges from typing (type-ahead is deferred, 2.5.B). CRLF/bare-CR are
           // normalized to LF (matching the reduceEditorMotion append), so a pasted line break is a real newline in
           // the buffer + sent to the model, never a stray '\r' the display strips but the transcript keeps.
-          // `state.search === undefined`: while the Ctrl+R reverse-search submode owns the keyboard, a paste is
-          // dropped (like the palette) — it must not leak into the hidden input buffer behind the search line.
+          // `state.search === undefined` / `state.mention === undefined`: while the Ctrl+R reverse-search or the `@`
+          // completion submode owns the keyboard, a paste is dropped (like the palette) — it must not leak into the
+          // hidden input buffer behind the overlay.
           const editable =
             state.mode !== 'loading' &&
             !chatRunning() &&
             state.palette === undefined &&
-            state.search === undefined;
+            state.search === undefined &&
+            state.mention === undefined;
           const pasted = input.replace(/\r\n?/g, '\n');
           if (pasted.length > 0 && editable) {
             // Match the typed-edit path: appending clears any stale `/doctor` report + invalidates an in-flight run.

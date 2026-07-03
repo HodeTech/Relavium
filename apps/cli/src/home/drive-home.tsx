@@ -10,6 +10,7 @@ import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import type { CliIo } from '../process/io.js';
@@ -17,6 +18,7 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createChatStore } from '../render/tui/chat-store.js';
+import { createMentionReader } from '../render/tui/mention.js';
 import {
   createHomeController,
   type HomeChatSession,
@@ -191,6 +193,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         frame.unref();
         persister.start();
         built.session.start();
+        // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the SAME fs-scope tier +
+        // workspace as the session's tools, so in-Home `@`-completion browses + injects through the identical
+        // confidentiality floor + listing-gate. READ-ONLY by construction (the Home is always a TTY). Building it is
+        // pure (no I/O). Absent (an unwired fs arm) ⇒ `@` degrades to a literal char.
+        const mentionFs = assembleToolEnv({
+          profile: 'chat-read-only',
+          fsScopeTier: built.context.fsScopeTier,
+          workspaceDir: built.context.workingDir,
+        }).host.fs;
+        const mentionReader = mentionFs === undefined ? undefined : createMentionReader(mentionFs);
         let torn = false;
         const teardown = async (): Promise<void> => {
           if (torn) return; // idempotent — an error-path teardown racing an endChat must not double-close the MCP child
@@ -204,7 +216,15 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
             await built.closeMcp?.().catch(() => undefined); // best-effort; never orphan a spawned stdio child
           }
         };
-        return { store, processLine, shouldStop, teardown, onAbort, onModeChange };
+        return {
+          store,
+          processLine,
+          shouldStop,
+          teardown,
+          onAbort,
+          onModeChange,
+          ...(mentionReader === undefined ? {} : { mentionReader }),
+        };
       } catch (err) {
         clearInterval(frame); // reclaim whatever the wiring managed to acquire before the throw
         unsubscribe?.();

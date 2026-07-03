@@ -9,6 +9,7 @@ import {
   type HomeChatSession,
   type HomeController,
 } from './home-controller.js';
+import type { MentionReader } from './mention.js';
 
 // The paste-boundary markers exactly as ink 6.8's input layer surfaces them (the leading ESC is stripped).
 const PASTE_START = '[200~';
@@ -51,6 +52,7 @@ function makeSession(
     store?: ReturnType<typeof createChatStore>;
     onAbort?: () => void;
     onModeChange?: (mode: ChatMode) => void;
+    mentionReader?: MentionReader;
   } = {},
 ): {
   session: HomeChatSession;
@@ -71,6 +73,7 @@ function makeSession(
     shouldStop: opts.stop ?? (() => false),
     ...(opts.onAbort === undefined ? {} : { onAbort: opts.onAbort }),
     ...(opts.onModeChange === undefined ? {} : { onModeChange: opts.onModeChange }),
+    ...(opts.mentionReader === undefined ? {} : { mentionReader: opts.mentionReader }),
     teardown,
   };
   return { session, teardown, lines, store };
@@ -196,6 +199,88 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     // Down is now a no-op (nav reset by accept), NOT a historyNext that clobbers 'alpha' with the stale draft.
     c.handleKey('', { downArrow: true });
     expect(c.getSnapshot().input).toEqual({ text: 'alpha', cursor: 5 });
+  });
+
+  it('the in-Home chat opens `@` file completion, descends a dir, and injects the accepted file (2.5.D step 4)', async () => {
+    const mentionReader: MentionReader = {
+      list: (dir) =>
+        Promise.resolve(
+          dir === ''
+            ? [
+                { name: 'src', type: 'directory' as const, path: 'src' },
+                { name: 'app.ts', type: 'file' as const, path: 'app.ts' },
+              ]
+            : [{ name: 'index.ts', type: 'file' as const, path: 'src/index.ts' }],
+        ),
+      read: (path) => Promise.resolve({ content: `// ${path}`, sizeBytes: 5 }),
+    };
+    const made = makeSession({ mentionReader });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER); // start the chat (input clears)
+    await flush();
+    expect(c.getSnapshot().mode).toBe('chat');
+
+    // '@' at the (empty) word boundary opens the completion — loading, and the '@' is NOT inserted into the buffer.
+    c.handleKey('@', {});
+    expect(c.getSnapshot().mention?.loading).toBe(true);
+    expect(c.getSnapshot().input.text).toBe('');
+    await flush(); // list('') resolves
+    expect(c.getSnapshot().mention?.loading).toBe(false);
+    expect(c.getSnapshot().mention?.candidates.map((x) => x.name)).toEqual(['src', 'app.ts']);
+
+    // Enter accepts the selected DIRECTORY (index 0 = src) → descend + re-list.
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().mention?.dir).toBe('src');
+    await flush(); // list('src') resolves
+    expect(c.getSnapshot().mention?.candidates.map((x) => x.name)).toEqual(['index.ts']);
+
+    // Enter accepts the FILE → close + read + inject the framed, untrusted content at the cursor.
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().mention).toBeUndefined();
+    await flush(); // read('src/index.ts') resolves
+    expect(c.getSnapshot().input.text).toBe(
+      '\n\n<file path="src/index.ts">\n// src/index.ts\n</file>',
+    );
+  });
+
+  it('`@` completion: Esc restores the typed keystrokes; a mid-word `@` stays literal (2.5.D step 4)', async () => {
+    const mentionReader: MentionReader = {
+      list: () => Promise.resolve([{ name: 'app.ts', type: 'file' as const, path: 'app.ts' }]),
+      read: () => Promise.resolve({ content: 'x', sizeBytes: 1 }),
+    };
+    const made = makeSession({ mentionReader });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+
+    // Open, narrow the filter to 'sr', then Esc — the literal '@sr' is restored (nothing typed is eaten).
+    c.handleKey('@', {});
+    await flush();
+    type(c, 'sr');
+    expect(c.getSnapshot().mention?.filter).toBe('sr');
+    c.handleKey('', { escape: true });
+    expect(c.getSnapshot().mention).toBeUndefined();
+    expect(c.getSnapshot().input.text).toBe('@sr');
+
+    // A mid-word '@' (an email/handle) never opens the completion — it appends as a literal char.
+    type(c, 'foo');
+    c.handleKey('@', {});
+    expect(c.getSnapshot().mention).toBeUndefined();
+    expect(c.getSnapshot().input.text).toBe('@srfoo@');
   });
 
   it('a non-empty submit builds a chat, transitions loading→chat, and sends the first message', async () => {

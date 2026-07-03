@@ -21,13 +21,27 @@ export interface MentionCandidate {
 /**
  * The completion submode state. `dir` is the browsed directory (workspace-relative, `''` = root); `filter` the
  * partial name typed to narrow the list; `candidates` ALL of `dir`'s entries (already confidentiality-gated by
- * the fs listing + advisory-ignore filtered, dirs first); `selected` an index into the VISIBLE (filtered) subset.
+ * the fs listing + advisory-ignore filtered, dirs first); `selected` an index into the VISIBLE (filtered) subset;
+ * `loading` is `true` between opening/descending a directory and its async listing resolving (so the view shows a
+ * "loading…" hint instead of a misleading "no matches" during the in-flight fs read).
  */
 export interface MentionState {
   readonly dir: string;
   readonly filter: string;
   readonly candidates: readonly MentionCandidate[];
   readonly selected: number;
+  readonly loading: boolean;
+}
+
+/**
+ * Whether typing `@` at `cursor` in `text` should OPEN the completion (vs. insert a literal `@`): only at a word
+ * boundary — the start of the buffer, or immediately after whitespace — so an email / handle typed mid-word
+ * (`foo@bar`) keeps its literal `@`. Mirrors the competitor rule; makes `@` first-class without hijacking every
+ * literal use. `charAt` past the end returns `''` (never whitespace), so a clamped cursor is safe.
+ */
+export function mentionOpensAt(text: string, cursor: number): boolean {
+  if (cursor <= 0) return true;
+  return /\s/.test(text.charAt(cursor - 1));
 }
 
 /** The visible candidates — those whose name contains `filter` (case-insensitive); order is the loader's (dirs first). */
@@ -52,7 +66,10 @@ export interface MentionKey {
 
 /** What a keystroke does to the open completion submode. */
 export type MentionStep =
-  | { readonly kind: 'close' } // Esc / Ctrl-C / backspace-past-filter — cancel, drop the '@'
+  // Cancel the completion. `restore` is the literal text to re-insert at the cursor so keystrokes are never lost:
+  // Esc / Ctrl-C / an empty match restores `@` + the typed filter (the user keeps what they typed); a backspace
+  // PAST the filter restores `''` (the user was deleting through the `@`, so it stays deleted).
+  | { readonly kind: 'close'; readonly restore: string }
   | { readonly kind: 'descend'; readonly dir: string } // accept a directory — the caller lists it + resets
   | { readonly kind: 'accept'; readonly path: string } // accept a file — the caller reads it + injects
   | { readonly kind: 'state'; readonly state: MentionState };
@@ -71,7 +88,10 @@ function clampSelection(index: number, count: number): number {
  * dropped, matching the other submodes); every other key is ignored (stays open).
  */
 export function foldMentionKey(char: string, key: MentionKey, state: MentionState): MentionStep {
-  if (key.escape === true || (key.ctrl === true && char === 'c')) return { kind: 'close' };
+  // Esc / Ctrl-C cancels but RESTORES the literal keystrokes (`@` + filter) — canceling never silently eats text.
+  if (key.escape === true || (key.ctrl === true && char === 'c')) {
+    return { kind: 'close', restore: `@${state.filter}` };
+  }
   const visible = visibleMentions(state);
   if (key.upArrow === true) {
     return {
@@ -87,7 +107,8 @@ export function foldMentionKey(char: string, key: MentionKey, state: MentionStat
   }
   if (key.return === true || key.tab === true || char === '/') {
     const chosen = visible[state.selected];
-    if (chosen === undefined) return { kind: 'close' };
+    // Nothing to accept (an empty/over-filtered list) — treat like Esc: cancel + restore the typed keystrokes.
+    if (chosen === undefined) return { kind: 'close', restore: `@${state.filter}` };
     return chosen.type === 'directory'
       ? { kind: 'descend', dir: chosen.path }
       : { kind: 'accept', path: chosen.path };
@@ -96,7 +117,8 @@ export function foldMentionKey(char: string, key: MentionKey, state: MentionStat
     if (state.filter.length > 0) {
       return { kind: 'state', state: { ...state, filter: state.filter.slice(0, -1), selected: 0 } };
     }
-    return { kind: 'close' }; // backspace past the filter drops the '@'
+    // Backspace PAST the filter deletes the `@` itself — restore nothing (the user is deleting through it).
+    return { kind: 'close', restore: '' };
   }
   if ([...char].length === 1 && key.ctrl !== true && key.meta !== true) {
     return { kind: 'state', state: { ...state, filter: state.filter + char, selected: 0 } };

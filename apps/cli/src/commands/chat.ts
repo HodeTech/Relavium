@@ -34,6 +34,7 @@ import {
   type BuiltChatSession,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
@@ -47,6 +48,7 @@ import {
   stripTerminalControls,
 } from '../render/tui/chat-projection.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
+import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 
 /**
@@ -129,6 +131,15 @@ export interface ChatDriveContext {
    * (cycle) + the `/mode` command to this. Absent on a driver that has no mode UI (the mode stays the default).
    */
   readonly onModeChange?: (mode: ChatMode) => void;
+  /**
+   * The `@`-mention completion reader (2.5.D, [ADR-0061](../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
+   * — a thin wrapper over a READ-ONLY `FsCapability` jailed to the SAME fs-scope tier + workspace as the session's
+   * tools, so `@`-completion browses + injects files through the identical jail + confidentiality floor + listing-gate
+   * (a `.ssh`/`.env` entry is never listed nor read). Present on an interactive (TTY, non-`--json`) session; the ink
+   * driver wires `@` at a word boundary to the dir-navigable completion. Absent ⇒ a plain/`--json` driver treats a
+   * leading `@` as a literal (no completion). Read-only by construction — the mention path never writes.
+   */
+  readonly mentionReader?: MentionReader;
 }
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<void>;
 
@@ -710,6 +721,21 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
     deps,
   );
 
+  // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the SAME fs-scope tier + workspace
+  // as the session's tools, so `@`-completion browses + injects through the identical confidentiality floor +
+  // listing-gate (a `.ssh`/`.env` entry is never listed nor read). READ-ONLY by construction — the mention path
+  // never writes. TTY-only: an interactive driver wires the completion; a plain/`--json` driver treats a leading
+  // `@` as a literal, so it needs no reader. Building it is pure (no I/O).
+  const mentionReader = ((): MentionReader | undefined => {
+    if (!chatIsInteractive(deps.io, deps.global)) return undefined;
+    const fsArm = assembleToolEnv({
+      profile: 'chat-read-only',
+      fsScopeTier: built.context.fsScopeTier,
+      workspaceDir: built.context.workingDir,
+    }).host.fs;
+    return fsArm === undefined ? undefined : createMentionReader(fsArm);
+  })();
+
   // persister.start() subscribes for the turn events + adopts/inserts the session row; it does NOT consume
   // session:started, so it is safe before the driver. The session-open action (fresh start() / resume no-op)
   // is deferred to startSession() INSIDE the driver, after the driver has subscribed the view store.
@@ -732,6 +758,7 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
       ...(intro === undefined ? {} : { intro }),
       onAbort,
       onModeChange,
+      ...(mentionReader === undefined ? {} : { mentionReader }),
     });
   } finally {
     cancelOnce(); // emit the terminal even on /exit or EOF (idempotent); flips the row to 'ended'

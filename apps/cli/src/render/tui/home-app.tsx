@@ -9,6 +9,8 @@ import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
 import { HomeView } from './home-view.js';
 import type { ReverseSearchState } from './input-history.js';
+import type { MentionState } from './mention.js';
+import { MentionView } from './mention-view.js';
 import { PaletteView } from './palette-view.js';
 import type { PaletteState } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
@@ -42,6 +44,7 @@ function ChatRegion(
     editor: EditorState;
     palette: PaletteState | undefined;
     search: ReverseSearchState | undefined;
+    mention: MentionState | undefined;
     historyEntries: readonly string[];
   }>,
 ): ReactElement {
@@ -59,7 +62,9 @@ function ChatRegion(
         running={state.status === 'running'}
         mode={mode}
         approval={approval}
-        paletteOpen={props.palette !== undefined || props.search !== undefined}
+        paletteOpen={
+          props.palette !== undefined || props.search !== undefined || props.mention !== undefined
+        }
       />
       {props.palette !== undefined && (
         <PaletteView commands={CHAT_PALETTE_COMMANDS} state={props.palette} color={color} />
@@ -67,6 +72,7 @@ function ChatRegion(
       {props.search !== undefined && (
         <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
       )}
+      {props.mention !== undefined && <MentionView state={props.mention} color={color} />}
     </Box>
   );
 }
@@ -88,6 +94,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         editor={state.input}
         palette={state.palette}
         search={state.search}
+        mention={state.mention}
         historyEntries={state.historyEntries}
       />
     );
