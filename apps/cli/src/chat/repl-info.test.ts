@@ -1,7 +1,8 @@
+import type { CompactionResult, TrimResult } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
 import type { CatalogEntry } from '../workflows/catalog.js';
-import { catalogNotice, costNotice } from './repl-info.js';
+import { catalogNotice, compactionNotice, costNotice, trimNotice } from './repl-info.js';
 
 const entry = (slug: string, valid = true): CatalogEntry => ({
   slug,
@@ -39,5 +40,38 @@ describe('catalogNotice', () => {
   it('sanitizes a slug so a crafted entry cannot inject control sequences into the notice', () => {
     const notice = catalogNotice([entry(`evil${String.fromCharCode(27)}[31m`)], []);
     expect(notice).not.toContain(String.fromCharCode(27)); // ESC stripped at the display boundary
+  });
+});
+
+describe('compactionNotice / trimNotice (ADR-0062)', () => {
+  it('reports the token deltas, the summariser spend, and the (sanitized) summary text', () => {
+    const result: CompactionResult = {
+      kind: 'compacted',
+      reason: 'manual',
+      summary: `we set up the db${String.fromCharCode(27)}[31m and the ipc bridge`,
+      keptMessageCount: 2,
+      tokensBefore: 14200,
+      tokensAfter: 900,
+      summaryTokens: { input: 14000, output: 340 },
+    };
+    const notice = compactionNotice(result);
+    expect(notice).toContain('14,200'); // grouped token counts
+    expect(notice).toContain('900');
+    expect(notice).toContain('14,000 in / 340 out');
+    expect(notice).toContain('we set up the db'); // the summary is inspectable (§7)
+    expect(notice).not.toContain(String.fromCharCode(27)); // model output is control-sanitized
+  });
+
+  it('renders the non-compacted cases distinctly', () => {
+    expect(compactionNotice({ kind: 'nothing_to_compact' })).toContain('already short');
+    expect(compactionNotice({ kind: 'failed', message: 'no summary' })).toContain('Try /trim');
+    expect(compactionNotice({ kind: 'cancelled' })).toContain('unchanged');
+  });
+
+  it('trimNotice reports the dropped/kept counts or a no-op', () => {
+    const trimmed: TrimResult = { kind: 'trimmed', keptMessageCount: 20, droppedMessageCount: 8 };
+    expect(trimNotice(trimmed)).toContain('Trimmed 8');
+    expect(trimNotice(trimmed)).toContain('last 20');
+    expect(trimNotice({ kind: 'nothing_to_trim', messageCount: 5 })).toContain('already within');
   });
 });

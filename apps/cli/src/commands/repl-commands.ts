@@ -40,6 +40,12 @@ export interface ReplCommandContext {
   /** Switch the chat mode (ADR-0057). Receives the raw mode-name token (empty ⇒ show the current mode + options).
    *  The surface parses + applies it (re-applying the turn policy on the same session) and reports the result. */
   readonly setMode: (modeArg: string) => void | Promise<void>;
+  /** `/compact` (ADR-0062) — model-summarise the working context into a preamble (an LLM call). Async — the
+   *  surface shows a "Summarizing…" notice while awaiting, then reports the token deltas + summary. */
+  readonly compactHistory: () => void | Promise<void>;
+  /** `/trim [n]` (ADR-0062) — deterministically drop older messages to the last `n` (default `[chat].max_messages`),
+   *  no LLM call. Receives the raw `n` token (empty ⇒ use the config default). */
+  readonly trimHistory: (nArg: string) => void | Promise<void>;
 }
 
 /** A flag a {@link ReplCommand} accepts after its name (e.g. `/doctor --deep`). Flags only — the curated set has
@@ -161,6 +167,25 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     // valid mode or an empty arg (the palette's bare `/mode` — which shows the current mode + the options).
     positional: { name: 'mode', values: [...CHAT_MODES] },
     run: (ctx, args) => ctx.setMode(args[0] ?? ''),
+    availableIn: ['chat'],
+  },
+  {
+    name: 'compact',
+    label: 'Compact',
+    description: 'Summarise the conversation so far to reclaim context (spends tokens).',
+    effect: 'write',
+    run: (ctx) => ctx.compactHistory(),
+    availableIn: ['chat'],
+  },
+  {
+    name: 'trim',
+    label: 'Trim',
+    description:
+      'Deterministically drop older messages (no LLM call); /trim [n], default [chat].max_messages.',
+    effect: 'read',
+    // An optional numeric bound; a FREE positional (empty `values`) accepts any single token — `run` validates it.
+    positional: { name: 'n', values: [] },
+    run: (ctx, args) => ctx.trimHistory(args[0] ?? ''),
     availableIn: ['chat'],
   },
 ];

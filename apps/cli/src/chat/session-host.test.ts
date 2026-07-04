@@ -82,6 +82,8 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   fsScope: undefined,
   maxTurns: undefined,
   maxMessages: undefined,
+  autoCompact: undefined,
+  compactThreshold: undefined,
   maxCostMicrocents: undefined,
   onExceed: undefined,
   allowedCommands: undefined,

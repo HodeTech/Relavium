@@ -1,5 +1,7 @@
+import type { CompactionResult, TrimResult } from '@relavium/core';
+
 import type { CatalogEntry } from '../workflows/catalog.js';
-import { sanitizeInline } from '../render/tui/chat-projection.js';
+import { sanitizeInline, stripTerminalControls } from '../render/tui/chat-projection.js';
 import { formatCostUsd } from '../render/tui/format.js';
 
 /**
@@ -35,4 +37,38 @@ function catalogSection(heading: string, entries: readonly CatalogEntry[]): stri
     return `  ${slug}${entry.valid ? '' : ' (invalid)'}`;
   });
   return `${heading} (${entries.length}):\n${rows.join('\n')}`;
+}
+
+/** Group large integers with thin separators for a readable token count (`14200` → `14,200`). */
+function groupInt(n: number): string {
+  return Math.round(n).toLocaleString('en-US');
+}
+
+/**
+ * The `/compact` (and auto-compaction) result notice (ADR-0062) — the token deltas + the summariser spend, plus
+ * the summary text itself (the lossy, paid operation is inspectable, §7). The summary is model output, so it is
+ * `stripTerminalControls`-sanitized (OSC-52 / control sequences removed) before it reaches the terminal.
+ */
+export function compactionNotice(result: CompactionResult): string {
+  switch (result.kind) {
+    case 'compacted':
+      return (
+        `⟳ Compacted the conversation — ~${groupInt(result.tokensBefore)} → ~${groupInt(result.tokensAfter)} ` +
+        `context tokens (summary cost ${groupInt(result.summaryTokens.input)} in / ${groupInt(result.summaryTokens.output)} out).\n` +
+        `Summary:\n${stripTerminalControls(result.summary)}`
+      );
+    case 'nothing_to_compact':
+      return 'Nothing to compact — the conversation is already short.';
+    case 'failed':
+      return `Compaction failed: ${sanitizeInline(result.message)}. Try /trim for a deterministic bound.`;
+    case 'cancelled':
+      return 'Compaction cancelled — the conversation is unchanged.';
+  }
+}
+
+/** The `/trim` result notice (ADR-0062) — a deterministic drop, no LLM call. */
+export function trimNotice(result: TrimResult): string {
+  return result.kind === 'trimmed'
+    ? `✂ Trimmed ${result.droppedMessageCount} older message(s) — keeping the last ${result.keptMessageCount}.`
+    : `Nothing to trim — ${result.messageCount} message(s), already within the bound.`;
 }

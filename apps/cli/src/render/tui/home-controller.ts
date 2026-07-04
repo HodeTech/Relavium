@@ -364,6 +364,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     showWorkflows: () => undefined,
     showCost: () => undefined,
     setMode: () => undefined, // `/mode` is chat-only (not in HOME_PALETTE_COMMANDS); inert in the Home surface
+    compactHistory: () => undefined, // `/compact` is chat-only (ADR-0062); inert in the Home surface
+    trimHistory: () => undefined, // `/trim` is chat-only (ADR-0062); inert in the Home surface
 
     runDoctor: async (deep) => {
       if (exiting) return;

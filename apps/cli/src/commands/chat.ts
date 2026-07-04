@@ -10,7 +10,7 @@ import {
 import { exportSession } from '../chat/export.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
-import { catalogNotice, costNotice } from '../chat/repl-info.js';
+import { catalogNotice, compactionNotice, costNotice, trimNotice } from '../chat/repl-info.js';
 import { discoverCatalog, type CatalogEntry, type CatalogKind } from '../workflows/catalog.js';
 import {
   formatReplHelp,
@@ -281,7 +281,17 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     });
 
   return runReplLoop(
-    { built, opened, store, persister, doctorProbes, startSession: () => built.session.start() },
+    {
+      built,
+      opened,
+      store,
+      persister,
+      doctorProbes,
+      startSession: () => built.session.start(),
+      ...(config.chat.maxMessages === undefined
+        ? {}
+        : { chatMaxMessages: config.chat.maxMessages }),
+    },
     deps,
   );
 }
@@ -400,7 +410,18 @@ export async function chatResumeCommand(
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
   // re-emitting `session:started` would double a terminal-less lifecycle event — so startSession is a no-op.
   return runReplLoop(
-    { built, opened, store, persister, doctorProbes, startSession: () => {}, intro },
+    {
+      built,
+      opened,
+      store,
+      persister,
+      doctorProbes,
+      startSession: () => {},
+      intro,
+      ...(config.chat.maxMessages === undefined
+        ? {}
+        : { chatMaxMessages: config.chat.maxMessages }),
+    },
     deps,
   );
 }
@@ -417,6 +438,8 @@ interface ReplWiring {
   readonly startSession: () => void;
   /** The plain-driver banner override (the 2.N resume context line); fresh sessions omit it. */
   readonly intro?: string;
+  /** `[chat].max_messages` — the default bound a bare `/trim` uses (ADR-0062); absent ⇒ `/trim` needs an inline `n`. */
+  readonly chatMaxMessages?: number;
 }
 
 /**
@@ -510,20 +533,26 @@ export interface ChatLineHandler extends ChatModeControl {
  * tokens are sanitized (non-printable → `?`, truncated) so a crafted arg can't smuggle a control sequence.
  */
 function validateSlashTokens(command: ReplCommand, tokens: readonly string[]): string | undefined {
-  const positionalValues = command.positional?.values ?? [];
-  const allowed = new Set([...(command.args ?? []).map((arg) => arg.flag), ...positionalValues]);
+  const flags = new Set((command.args ?? []).map((arg) => arg.flag));
+  const positional = command.positional;
+  const positionalValues = positional?.values ?? [];
+  // A positional with an EMPTY `values` list is a FREE positional (any single token — e.g. `/trim 50`); a
+  // non-empty list is a fixed allowlist (`/mode plan`). Only a fixed positional teaches its valid values.
+  const freePositional = positional !== undefined && positionalValues.length === 0;
   const validHint =
-    command.positional === undefined ? '' : ` Valid: ${positionalValues.join(', ')}.`;
-  const bad = tokens.find((token) => !allowed.has(token));
-  if (bad !== undefined) {
-    return `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.${validHint}`;
-  }
-  if (command.positional !== undefined) {
-    const positionalSet = new Set(positionalValues);
-    const positionalCount = tokens.filter((token) => positionalSet.has(token)).length;
-    if (positionalCount > 1) {
-      return `/${command.name}: takes a single ${command.positional.name} value (got ${positionalCount}).${validHint}`;
+    positional === undefined || freePositional ? '' : ` Valid: ${positionalValues.join(', ')}.`;
+  const nonFlag = tokens.filter((token) => !flags.has(token)); // candidate positional value(s)
+  // Reject a non-flag token unless it is the FREE positional's value or a declared FIXED positional value (a
+  // zero-positional command rejects ANY non-flag token — so `/exit now` still fails).
+  if (!freePositional) {
+    const bad = nonFlag.find((token) => !positionalValues.includes(token));
+    if (bad !== undefined) {
+      return `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.${validHint}`;
     }
+  }
+  // A single positional value (fixed OR free) — more than one is rejected, not silently dropped downstream.
+  if (positional !== undefined && nonFlag.length > 1) {
+    return `/${command.name}: takes a single ${positional.name} value (got ${nonFlag.length}).${validHint}`;
   }
   return undefined;
 }
@@ -535,7 +564,10 @@ function validateSlashTokens(command: ReplCommand, tokens: readonly string[]): s
  * state is internal — the caller reads it via `shouldStop` and fires the terminal via `cancelOnce` on teardown.
  */
 export function createChatLineHandler(
-  wiring: Pick<ReplWiring, 'built' | 'opened' | 'store' | 'persister' | 'doctorProbes'>,
+  wiring: Pick<
+    ReplWiring,
+    'built' | 'opened' | 'store' | 'persister' | 'doctorProbes' | 'chatMaxMessages'
+  >,
   deps: ChatReplDeps,
 ): ChatLineHandler {
   const { built, opened, store, persister, doctorProbes } = wiring;
@@ -675,6 +707,29 @@ export function createChatLineHandler(
       }
       modeControl.onModeChange(mode);
       emitOutput(`mode: ${MODE_LABEL[mode]}`);
+    },
+    // `/compact` (ADR-0062): model-summarise the working context. An LLM call — announce the moment, then
+    // await, then report the deltas. The engine emits session:compacted (→ the persister writes the boundary
+    // marker); this notice is the user-facing report. Never crashes the REPL — a failure is reported as output.
+    compactHistory: async () => {
+      emitOutput('compacting: summarizing the conversation…');
+      const result = await built.session.compact('manual');
+      emitOutput(compactionNotice(result));
+    },
+    // `/trim [n]` (ADR-0062): deterministic drop, no LLM call. Bare `/trim` uses `[chat].max_messages`; an
+    // inline `n` overrides it. A missing bound (no arg + no config) is an actionable notice, never a silent no-op.
+    trimHistory: (nArg) => {
+      const trimmed = nArg.trim();
+      const n = trimmed.length > 0 ? Number(trimmed) : wiring.chatMaxMessages;
+      if (n === undefined) {
+        emitOutput('/trim: set a bound — `/trim <n>` or `[chat].max_messages` in your config.');
+        return;
+      }
+      if (!Number.isInteger(n) || n <= 0) {
+        emitOutput(`/trim: <n> must be a positive whole number (got '${trimmed.slice(0, 16)}').`);
+        return;
+      }
+      emitOutput(trimNotice(built.session.trimHistory(n)));
     },
   };
 

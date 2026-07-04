@@ -274,10 +274,29 @@ export function reduceSessionEvent(
         turnStartedAtMs: undefined,
       };
 
+    case 'session:compacted':
+      // A MANUAL /compact is noticed by the command itself (its full summary + token deltas). The view surfaces
+      // only an AUTOMATIC compaction — concisely, so an auto-compaction mid-conversation is never a silent
+      // context swap (ADR-0062 §7). Numbers only (no summary text) ⇒ no sanitization needed.
+      return event.reason === 'auto-threshold'
+        ? appendNotice(
+            base,
+            `⟳ Context auto-compacted to fit the window — ~${grouped(event.tokensBefore)} → ` +
+              `~${grouped(event.tokensAfter)} tokens (summary cost ${grouped(event.tokensUsed.input)} in / ` +
+              `${grouped(event.tokensUsed.output)} out).`,
+          )
+        : base;
+
     default:
-      // session:exported and any forward-compatible additions: no view change.
+      // session:trimmed (the manual /trim command notices its own result), session:exported, and any
+      // forward-compatible additions: no view change.
       return base;
   }
+}
+
+/** Group a token count with thousands separators for a readable notice (`14200` → `14,200`). */
+function grouped(n: number): string {
+  return Math.round(n).toLocaleString('en-US');
 }
 
 /** Mark the first unresolved tool call with `toolId` as resolved (a tool_result closes its annotation). */

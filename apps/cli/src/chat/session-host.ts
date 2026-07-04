@@ -228,6 +228,14 @@ function buildSessionRuntime(
     // rides ONLY the AgentSession chat/Home/one-shot surfaces, never the run-engine's AgentRunner.
     limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
     ...(opts.chat.maxTurns === undefined ? {} : { maxTurns: opts.chat.maxTurns }),
+    // Context compaction (ADR-0062): auto_compact / compact_threshold gate the after-turn auto-compaction, and
+    // max_messages is both the `/trim` bound and the auto-compaction failure-degrade target. Absent ⇒ the
+    // engine defaults (enabled / 0.8 / no fallback trim). Threaded, not hardcoded, so the config is not re-dead.
+    ...(opts.chat.autoCompact === undefined ? {} : { autoCompact: opts.chat.autoCompact }),
+    ...(opts.chat.compactThreshold === undefined
+      ? {}
+      : { compactThreshold: opts.chat.compactThreshold }),
+    ...(opts.chat.maxMessages === undefined ? {} : { maxMessages: opts.chat.maxMessages }),
     ...(governor === undefined
       ? {}
       : { preEgress: governor.preEgress, updateCost: governor.updateCost }),

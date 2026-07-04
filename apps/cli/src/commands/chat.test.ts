@@ -41,6 +41,8 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   fsScope: undefined,
   maxTurns: undefined,
   maxMessages: undefined,
+  autoCompact: undefined,
+  compactThreshold: undefined,
   maxCostMicrocents: undefined,
   onExceed: undefined,
   allowedCommands: undefined,
@@ -299,6 +301,26 @@ describe('chatCommand', () => {
     const { d, err } = deps(['/mode plan accept-edits', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);
     expect(err()).toContain('/mode: takes a single mode value (got 2).'); // arity enforced, not silently dropped
+  });
+
+  it('/compact summarises the conversation, reports the notice, and persists a boundary marker (ADR-0062)', async () => {
+    const { d, err, store, sessionId } = deps(
+      ['q1', 'q2', '/compact', '/exit'],
+      [textTurn('a1'), textTurn('a2'), textTurn('a concise summary')],
+    );
+    await chatCommand({ agent: undefined }, d);
+    const out = err();
+    expect(out).toContain('Compacted the conversation'); // the /compact result notice
+    expect(out).toContain('a concise summary'); // the summary is shown (inspectable, §7)
+    // The append-only marker was persisted (role:'system', role-filtered boundary), full transcript intact.
+    const marker = store.loadFull(sessionId)?.messages.find((m) => m.role === 'system');
+    expect(marker?.compaction).toEqual({ droppedThroughSequence: 1 });
+  });
+
+  it('/trim takes a single FREE positional value — rejects `/trim 2 3` (ADR-0062)', async () => {
+    const { d, err } = deps(['/trim 2 3', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain('/trim: takes a single n value (got 2).');
   });
 
   it('/workflows reports a project-less cwd without crashing the REPL', async () => {

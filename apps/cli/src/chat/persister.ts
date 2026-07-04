@@ -1,11 +1,6 @@
 import type { AgentDefinition, SessionHandle, SessionStreamHandleEvent } from '@relavium/core';
 import type { SessionStore } from '@relavium/db';
-import type {
-  AgentSessionRecord,
-  SessionContext,
-  SessionMessage,
-  SessionStatus,
-} from '@relavium/shared';
+import type { AgentSessionRecord, SessionContext, SessionStatus } from '@relavium/shared';
 
 import { deriveSessionTitle } from './session-title.js';
 
@@ -73,6 +68,47 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   let assistantText = '';
   let unsubscribe: (() => void) | undefined;
   let started = false;
+  // ADR-0062: the ascending `sequenceNumber`s of the REAL (`user`/`assistant`) transcript rows — used to map a
+  // compaction/trim event's `keptMessageCount` (an in-memory count) to the durable `droppedThroughSequence`
+  // boundary. It EXCLUDES `system` boundary-marker rows (a naive "last N durable rows" would miscount once a
+  // prior marker is interleaved — the step-1-review trap). Seeded from the durable transcript on resume.
+  const realMessageSeqs: number[] = [];
+
+  /** Append a REAL transcript row + record its sequence for the boundary mapping. */
+  const appendText = (role: 'user' | 'assistant', text: string): void => {
+    const seq = sequenceNumber++;
+    realMessageSeqs.push(seq);
+    deps.store.appendMessage({
+      id: deps.uuid(),
+      sessionId: deps.sessionId,
+      sequenceNumber: seq,
+      role,
+      content: [{ type: 'text', text }],
+      timestamp: iso(),
+    });
+  };
+
+  /**
+   * Append an append-only compaction/trim boundary MARKER row (ADR-0062): `role:'system'`, the summary text
+   * (empty for a `/trim`), and the durable `droppedThroughSequence` mapped from `keptMessageCount` over the
+   * ROLE-FILTERED real-message sequences (never the raw row count). Returns `false` when there is nothing to
+   * drop (fewer real rows than kept — no marker written). The marker's own seq is NOT a real-message seq.
+   */
+  const appendMarker = (summary: string, keptMessageCount: number): boolean => {
+    if (keptMessageCount >= realMessageSeqs.length) return false; // nothing older to supersede
+    const droppedThroughSequence = realMessageSeqs[realMessageSeqs.length - keptMessageCount - 1];
+    if (droppedThroughSequence === undefined) return false;
+    deps.store.appendMessage({
+      id: deps.uuid(),
+      sessionId: deps.sessionId,
+      sequenceNumber: sequenceNumber++,
+      role: 'system',
+      content: summary.length > 0 ? [{ type: 'text', text: summary }] : [],
+      compaction: { droppedThroughSequence },
+      timestamp: iso(),
+    });
+    return true;
+  };
   // Derived from the FIRST user message so the Home list shows a readable label (2.5.B). Set once; a resumed
   // session hydrates the existing title in start() so a later message never overwrites it.
   let title: string | undefined;
@@ -90,18 +126,6 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     updatedAt: iso(),
     ...(title === undefined ? {} : { title }),
   });
-
-  const appendText = (role: 'user' | 'assistant', text: string): void => {
-    const message: SessionMessage = {
-      id: deps.uuid(),
-      sessionId: deps.sessionId,
-      sequenceNumber: sequenceNumber++,
-      role,
-      content: [{ type: 'text', text }],
-      timestamp: iso(),
-    };
-    deps.store.appendMessage(message);
-  };
 
   const onEvent = (event: SessionStreamHandleEvent): void => {
     switch (event.type) {
@@ -149,6 +173,20 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         pendingUserText = undefined;
         assistantText = '';
         return;
+      case 'session:compacted':
+        // ADR-0062: write the append-only boundary marker (summary + role-filtered droppedThroughSequence) and
+        // add the summariser's REAL token usage to the totals (the cost microcents already flowed via
+        // cost:updated → totalCostMicrocents; flush the row to persist both). Nothing durable is deleted.
+        appendMarker(event.summary, event.keptMessageCount);
+        totalInputTokens += event.tokensUsed.input;
+        totalOutputTokens += event.tokensUsed.output;
+        deps.store.updateSession(record('active'));
+        return;
+      case 'session:trimmed':
+        // A deterministic /trim — a summary-less boundary marker, no cost. Flush the row (updatedAt) after.
+        appendMarker('', event.keptMessageCount);
+        deps.store.updateSession(record('active'));
+        return;
       case 'session:cancelled':
         // The session's sole terminal — mark it ended (still resumable from the persisted transcript), then
         // self-detach so the bus listener does not leak if the REPL's close() is skipped on an early exit.
@@ -179,6 +217,13 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         totalOutputTokens = existing.totalOutputTokens;
         totalCostMicrocents = existing.totalCostMicrocents;
         title = existing.title; // a resumed session keeps its original title — never re-derived from a new message
+        // ADR-0062: seed the ROLE-FILTERED real-message sequences from the durable transcript so a compaction/
+        // trim in THIS process maps keptMessageCount to the correct boundary (excluding prior `system` markers).
+        for (const message of deps.store.loadMessages(deps.sessionId)) {
+          if (message.role === 'user' || message.role === 'assistant') {
+            realMessageSeqs.push(message.sequenceNumber);
+          }
+        }
       }
       unsubscribe = deps.handle.subscribe(onEvent);
     },
