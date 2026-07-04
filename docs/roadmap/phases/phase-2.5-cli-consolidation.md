@@ -387,6 +387,13 @@ host + docs), each with an Opus + Sonnet review round.
 context (append-only, resume-preserving, cost-accounted); auto-compaction bounds a long chat before it
 overflows the context window; the summary is inspectable and the moment is a designed state.
 
+> **Landed pending merge (PR for ADR-0062, three reviewed steps — shared/seam/db, engine primitive, CLI host —
+> each with an Opus + Sonnet review round):** the compaction engine primitive, automatic compaction, append-only
+> resume/reseat-preserving persistence, `/compact`, and `/trim [n]` are **complete**. **Remaining 2.5.F item:**
+> `/clear` (a fresh-session lifecycle swap, orthogonal to compaction) plus two compaction-moment UX polishes (a
+> **labeled** "Summarizing…" spinner — needs a `session:compacting` start signal — and a footer context-fullness
+> indicator). 2.5.F is **not yet Done** (roadmap-done-after-merge).
+
 ### 2.5.G — Onboarding wizard and `/models` (Home model catalog)
 
 **Tasks:** a `@clack` first-run wizard from the key-less Home (provider → **hidden** stdin key →
