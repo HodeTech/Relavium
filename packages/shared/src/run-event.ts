@@ -692,8 +692,9 @@ export const SessionTrimmedEventSchema = z.object({
  * The `session:*` lifecycle events. Within a turn a session also reuses the four dual-envelope events
  * above (`agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated`) plus, on the chat
  * approval path, `agent:approval_requested` (ADR-0057) — all carried with `sessionId` — so the complete
- * session stream is this union plus those. Adding an arm is additive to this closed union; every exhaustive
- * consumer switch is compile-checked (ADR-0062).
+ * session stream is this union plus those. Adding an arm is additive; a consumer with a `default` arm
+ * ignores an unknown event forward-compatibly (there is no `assertNever` over this union — a new arm is a
+ * silent no-op for existing consumers until each opts in, ADR-0062).
  */
 export const SessionEventSchema = z.discriminatedUnion('type', [
   SessionStartedEventSchema,

@@ -8,7 +8,7 @@ import {
   SessionEventSchema,
   StopReasonSchema,
 } from './run-event.js';
-import type { RunEvent, RunEventType } from './index.js';
+import type { RunEvent, RunEventType, SessionEvent, SessionEventType } from './index.js';
 
 const env = { runId: 'run-1', timestamp: '2026-06-04T00:00:00.000Z', sequenceNumber: 7 };
 
@@ -691,6 +691,18 @@ describe('SessionEvent union — the agent-first namespace', () => {
     // distinct arm, so an unknown extra key on this closed union member is stripped, not silently accepted
     // as a compaction. Counts must be non-negative ints.
     expect(SessionEventSchema.safeParse({ ...ok, keptMessageCount: -1 }).success).toBe(false);
+    expect(SessionEventSchema.safeParse({ ...ok, droppedMessageCount: -1 }).success).toBe(false);
+  });
+
+  it('binds session:compacted counts to nonNegativeInt (ADR-0062)', () => {
+    const ok = validSession['session:compacted'];
+    for (const field of ['keptMessageCount', 'tokensBefore', 'tokensAfter'] as const) {
+      expect(SessionEventSchema.safeParse({ ...ok, [field]: -1 }).success).toBe(false);
+    }
+  });
+
+  it('pins the SessionEvent discriminant to SessionEventType (type-level)', () => {
+    expectTypeOf<SessionEvent['type']>().toEqualTypeOf<SessionEventType>();
   });
 
   it('requires sessionId (a session event without it is rejected)', () => {

@@ -261,9 +261,11 @@ never restated (CLAUDE.md #8).
 
 ### Implementation scope
 
-- **`@relavium/shared`**: `session:compacted` arm on `SessionEventSchema` (additive to the
-  closed live union — consumers' exhaustive switches are compile-checked); optional
-  `SessionMessage.compaction` field; `[chat].auto_compact` + `compact_threshold` config.
+- **`@relavium/shared`**: `session:compacted` **and** `session:trimmed` arms on `SessionEventSchema`
+  (a trim is a distinct, cost-free shape — `keptMessageCount`/`droppedMessageCount`, no `summary`, no
+  `tokensUsed`); both additive to the closed live union (a `default`-arm consumer ignores an unknown arm
+  forward-compatibly — there is no `assertNever` over it); optional `SessionMessage.compaction` field;
+  `[chat].auto_compact` + `compact_threshold` config.
 - **`@relavium/llm`**: optional `contextLimit` / `managesOwnContext` / `estimateTokens` on
   `LlmProvider`, implemented in the three real adapters.
 - **`@relavium/db`**: one additive nullable column + mapper round-trip; a standard migration.

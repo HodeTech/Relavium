@@ -113,9 +113,26 @@ describe('SessionStore (1.X) — persist + resume', () => {
     const messages = store.loadMessages('sess-1');
     // The normal row has NO compaction key (the column is NULL → omitted, honoring exactOptionalPropertyTypes).
     expect(messages[0]).not.toHaveProperty('compaction');
-    // The marker round-trips the typed boundary.
+    // The marker round-trips the typed boundary — including droppedThroughSequence 0 (a falsy-but-valid
+    // boundary the `?? null` / `=== null` mapper preserves, never coerces away).
     expect(messages[1]?.compaction).toEqual({ droppedThroughSequence: 0 });
     expect(messages[1]?.role).toBe('system');
+  });
+
+  it('round-trips a summary-less /trim marker (empty content + boundary, ADR-0062)', () => {
+    store.createSession(makeSession());
+    store.appendMessage(makeMessage(0));
+    store.appendMessage(
+      makeMessage(1, { role: 'assistant', content: [{ type: 'text', text: 'a' }] }),
+    );
+    // A /trim marker: role:'system', NO summary text (content:[]), a boundary through seq 0.
+    store.appendMessage(
+      makeMessage(2, { role: 'system', content: [], compaction: { droppedThroughSequence: 0 } }),
+    );
+
+    const marker = store.loadMessages('sess-1')[2];
+    expect(marker?.content).toEqual([]); // empty content round-trips (a trim spends nothing, summarises nothing)
+    expect(marker?.compaction).toEqual({ droppedThroughSequence: 0 });
   });
 
   it('returns undefined for an absent session', () => {

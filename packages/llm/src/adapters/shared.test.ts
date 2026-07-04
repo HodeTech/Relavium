@@ -477,6 +477,41 @@ describe('context/token helpers + adapter seam methods (ADR-0062)', () => {
     ).toBeGreaterThan(0);
   });
 
+  it('estimateRequestTokens: adversarial inputs (empty, mixed/empty-text parts, CJK under-count)', () => {
+    // Empty context needs no compaction — a well-defined 0, not NaN.
+    expect(estimateRequestTokens({ system: '', messages: [] })).toBe(0);
+    // Mixed text + non-text in one message: envelope (8) + 'hi' (2) + 256 (media) = 266 ⇒ ceil(266/4) = 67.
+    expect(
+      estimateRequestTokens({
+        system: '',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'hi' },
+              { type: 'media', mimeType: 'image/png', source: { kind: 'base64', data: 'aQ==' } },
+            ],
+          },
+        ],
+      }),
+    ).toBe(67);
+    // An empty-text part contributes only the envelope: 8 ⇒ ceil(8/4) = 2.
+    expect(
+      estimateRequestTokens({
+        system: '',
+        messages: [{ role: 'user', content: [{ type: 'text', text: '' }] }],
+      }),
+    ).toBe(2);
+    // KNOWN imprecision pinned (ADR-0062): chars/4 UNDER-counts CJK (~1 token/char), so the estimate is a
+    // pre-first-turn FALLBACK only — real provider usage is authoritative once a turn completes. 8 CJK chars
+    // ⇒ envelope (8) + 8 = 16 ⇒ 4 tokens, versus a real ~8. This test documents the gap, not a correctness bug.
+    const cjk = estimateRequestTokens({
+      system: '',
+      messages: [{ role: 'user', content: [{ type: 'text', text: '八文字のテキスト' }] }],
+    });
+    expect(cjk).toBe(4);
+  });
+
   it('contextLimitFor: catalog window for a canonical id, undefined for an unrated/custom model', () => {
     expect(contextLimitFor('claude-haiku-4-5')).toBe(200_000);
     expect(contextLimitFor('made-up-custom-model')).toBeUndefined();

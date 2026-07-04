@@ -105,7 +105,7 @@ A chat session uses the **same** built-in `ToolRegistry` as a workflow agent ([b
 > `SessionEvent` stream. `/export` under `--json` emits a `session:exported` event on the stream (routed
 > through the session bus, so its `sequenceNumber` stays monotonic with the surrounding events).
 
-For scripting and non-interactive use, `--json` switches the REPL to a machine-readable [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) stream — one JSON object per line (NDJSON), the chat analogue of `relavium run --json`. Messages are read from stdin (one user turn per line) and the `session:*` events (`session:started`, `session:turn_started`, `session:turn_completed`, `session:cancelled`, `session:exported`) plus the per-turn `agent:*` / `cost:updated` events are emitted on stdout, each carrying the `sessionId`; an input-stream EOF ends the session with the `session:cancelled` terminal and exit code 4:
+For scripting and non-interactive use, `--json` switches the REPL to a machine-readable [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) stream — one JSON object per line (NDJSON), the chat analogue of `relavium run --json`. Messages are read from stdin (one user turn per line) and the `session:*` events (`session:started`, `session:turn_started`, `session:turn_completed`, `session:cancelled`, `session:exported`, and — ADR-0062 — `session:compacted` / `session:trimmed`) plus the per-turn `agent:*` / `cost:updated` events are emitted on stdout, each carrying the `sessionId`; an input-stream EOF ends the session with the `session:cancelled` terminal and exit code 4:
 
 ```bash
 echo "summarize ./README.md" | relavium chat --agent code-reviewer --json
