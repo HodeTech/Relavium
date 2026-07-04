@@ -657,10 +657,43 @@ export const SessionExportedEventSchema = z.object({
 });
 
 /**
- * The five `session:*` lifecycle events. Within a turn a session also reuses the four dual-envelope events
+ * Context compaction applied ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)) —
+ * the engine summarised the earlier working context into `summary` and now feeds it as a system-prompt
+ * preamble; the host writes the append-only boundary marker row on this event. `keptMessageCount` is how many
+ * trailing in-memory messages the engine RETAINED verbatim (the host maps it to the durable
+ * `droppedThroughSequence`). `tokensUsed` is the summarization call's REAL usage — accounted to the session
+ * budget (ADR-0028); it is NOT a user turn and does not count against `max_turns`.
+ */
+export const SessionCompactedEventSchema = z.object({
+  type: z.literal('session:compacted'),
+  ...sessionBase,
+  reason: z.enum(['manual', 'auto-threshold']),
+  summary: nonEmptyString,
+  keptMessageCount: nonNegativeInt,
+  tokensBefore: nonNegativeInt,
+  tokensAfter: nonNegativeInt,
+  tokensUsed: TokensUsedSchema,
+});
+
+/**
+ * Deterministic history trim applied ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)) —
+ * the engine dropped older messages with NO LLM call (revives `[chat].max_messages`); the host writes a
+ * summary-less boundary marker. `keptMessageCount` (the host maps it to the durable boundary) +
+ * `droppedMessageCount` are the deterministic counts. No `tokensUsed` — a trim spends nothing.
+ */
+export const SessionTrimmedEventSchema = z.object({
+  type: z.literal('session:trimmed'),
+  ...sessionBase,
+  keptMessageCount: nonNegativeInt,
+  droppedMessageCount: nonNegativeInt,
+});
+
+/**
+ * The `session:*` lifecycle events. Within a turn a session also reuses the four dual-envelope events
  * above (`agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated`) plus, on the chat
  * approval path, `agent:approval_requested` (ADR-0057) — all carried with `sessionId` — so the complete
- * session stream is this union plus those five (four when the approval regime is inactive).
+ * session stream is this union plus those. Adding an arm is additive to this closed union; every exhaustive
+ * consumer switch is compile-checked (ADR-0062).
  */
 export const SessionEventSchema = z.discriminatedUnion('type', [
   SessionStartedEventSchema,
@@ -668,8 +701,12 @@ export const SessionEventSchema = z.discriminatedUnion('type', [
   SessionTurnCompletedEventSchema,
   SessionCancelledEventSchema,
   SessionExportedEventSchema,
+  SessionCompactedEventSchema,
+  SessionTrimmedEventSchema,
 ]);
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
+export type SessionCompactedEvent = z.infer<typeof SessionCompactedEventSchema>;
+export type SessionTrimmedEvent = z.infer<typeof SessionTrimmedEventSchema>;
 
 /**
  * The combined event the shared `RunEventBus` carries — the `run:*`/`node:*` family **and** the

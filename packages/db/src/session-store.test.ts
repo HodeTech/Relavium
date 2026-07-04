@@ -98,6 +98,26 @@ describe('SessionStore (1.X) — persist + resume', () => {
     expect(full?.messages[1]?.role).toBe('assistant');
   });
 
+  it('round-trips a compaction boundary marker via the nullable column (ADR-0062)', () => {
+    store.createSession(makeSession());
+    // A normal row carries no compaction field; a marker row (role:'system') carries the boundary.
+    store.appendMessage(makeMessage(0));
+    store.appendMessage(
+      makeMessage(1, {
+        role: 'system',
+        content: [{ type: 'text', text: 'summary of earlier turns' }],
+        compaction: { droppedThroughSequence: 0 },
+      }),
+    );
+
+    const messages = store.loadMessages('sess-1');
+    // The normal row has NO compaction key (the column is NULL → omitted, honoring exactOptionalPropertyTypes).
+    expect(messages[0]).not.toHaveProperty('compaction');
+    // The marker round-trips the typed boundary.
+    expect(messages[1]?.compaction).toEqual({ droppedThroughSequence: 0 });
+    expect(messages[1]?.role).toBe('system');
+  });
+
   it('returns undefined for an absent session', () => {
     expect(store.loadSession('nope')).toBeUndefined();
     expect(store.loadFull('nope')).toBeUndefined();

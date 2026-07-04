@@ -20,6 +20,7 @@ import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
   CapabilityFlags,
+  EstimateTokensInput,
   LlmError,
   LlmErrorKind,
   LlmMessage,
@@ -41,8 +42,10 @@ import {
   REASONING_ID,
   assertMediaCapabilities,
   assertNoStreamingMediaOutput,
+  contextLimitFor,
   decodeMediaJobId,
   encodeMediaJobId,
+  estimateRequestTokens,
   isAbortSignal,
 } from './shared.js';
 
@@ -1011,6 +1014,17 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
         };
       }
       return pollMediaJobSora(createClient(key), jobId, providerId, signal);
+    },
+    // ADR-0062 context-compaction seam: the shared defaults (covers both OpenAI and DeepSeek via this one
+    // factory; real usage is authoritative, so the estimate is only a pre-first-turn fallback).
+    contextLimit(model: string): number | undefined {
+      return contextLimitFor(model);
+    },
+    managesOwnContext(): boolean {
+      return false;
+    },
+    estimateTokens(input: EstimateTokensInput): number {
+      return estimateRequestTokens(input);
     },
   };
 }

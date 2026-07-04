@@ -52,6 +52,16 @@ export const SessionMessageSchema = z.object({
   /** The model that produced an assistant turn (fallback-aware) — a `model_catalog` id reference the host
    *  resolves, NOT a raw model string (mirrors the `session_messages.model_id` FK). */
   modelId: nonEmptyString.optional(),
+  /**
+   * Present ONLY on a compaction/trim **boundary marker** row (`role: 'system'`, [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)).
+   * Records the durable `sequenceNumber` **through which** older messages are superseded: on resume, messages
+   * at/below `droppedThroughSequence` are dropped from the working context, and — when this marker carries
+   * summary text (a `/compact` marker; a `/trim` marker's content is empty) — that text becomes the context
+   * preamble. Absent on every normal transcript row. Additive + optional so the lenient schema stays
+   * forward-compatible; the `@relavium/db` mapper round-trips it via the `compaction_dropped_through_sequence`
+   * column (an older reader that lacks the column reads the marker as an inert `system` row).
+   */
+  compaction: z.object({ droppedThroughSequence: nonNegativeInt }).optional(),
   timestamp: isoTimestamp,
 });
 export type SessionMessage = z.infer<typeof SessionMessageSchema>;

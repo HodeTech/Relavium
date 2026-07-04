@@ -62,6 +62,8 @@ export const SESSION_EVENT_TYPES = [
   'session:turn_completed',
   'session:cancelled',
   'session:exported',
+  'session:compacted', // ADR-0062 — model-summarised context compaction applied
+  'session:trimmed', // ADR-0062 — deterministic history trim applied (no LLM call)
 ] as const;
 export type SessionEventType = (typeof SESSION_EVENT_TYPES)[number];
 

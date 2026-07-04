@@ -311,6 +311,19 @@ describe('config schemas', () => {
     );
   });
 
+  it('accepts [chat].auto_compact + compact_threshold, bounding the threshold to (0, 1] (ADR-0062)', () => {
+    expect(
+      ProjectConfigSchema.safeParse({ chat: { auto_compact: false, compact_threshold: 0.9 } })
+        .success,
+    ).toBe(true);
+    // A fraction in (0, 1]: 1 (compact only at the very edge) is allowed; 0 and >1 are not; a non-bool
+    // auto_compact is rejected. Absent ⇒ the engine defaults (true / 0.8) apply downstream.
+    expect(ProjectConfigSchema.safeParse({ chat: { compact_threshold: 1 } }).success).toBe(true);
+    expect(ProjectConfigSchema.safeParse({ chat: { compact_threshold: 0 } }).success).toBe(false);
+    expect(ProjectConfigSchema.safeParse({ chat: { compact_threshold: 1.5 } }).success).toBe(false);
+    expect(ProjectConfigSchema.safeParse({ chat: { auto_compact: 'yes' } }).success).toBe(false);
+  });
+
   it('accepts [chat].allowed_commands / allowed_command_globs (the `!`-shell allowlist — ADR-0061)', () => {
     expect(
       ProjectConfigSchema.safeParse({

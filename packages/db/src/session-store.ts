@@ -137,6 +137,8 @@ export function toSessionMessageRow(
     inputTokens: meta.inputTokens ?? 0,
     outputTokens: meta.outputTokens ?? 0,
     costMicrocents: meta.costMicrocents ?? 0,
+    // ADR-0062 boundary marker: NULL for every normal row; the durable boundary for a compaction/trim marker.
+    compactionDroppedThroughSequence: m.compaction?.droppedThroughSequence ?? null,
     createdAt: isoToEpochMs(m.timestamp),
   };
 }
@@ -155,6 +157,9 @@ export function fromSessionMessageRow(row: SessionMessageRow): SessionMessage {
     role: row.role,
     content: row.contentParts === null ? [] : (JSON.parse(row.contentParts) as unknown),
     ...(row.modelId === null ? {} : { modelId: row.modelId }),
+    ...(row.compactionDroppedThroughSequence === null
+      ? {}
+      : { compaction: { droppedThroughSequence: row.compactionDroppedThroughSequence } }),
     timestamp: epochMsToIso(row.createdAt),
   };
   return SessionMessageSchema.parse(candidate);

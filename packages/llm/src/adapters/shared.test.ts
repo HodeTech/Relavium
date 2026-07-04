@@ -4,10 +4,15 @@ import { describe, expect, it } from 'vitest';
 
 import { UnsupportedCapabilityError } from '../errors.js';
 import type { CapabilityFlags, LlmRequest } from '../types.js';
+import { anthropicAdapter } from './anthropic.js';
+import { geminiAdapter } from './gemini.js';
+import { deepseekAdapter, openaiAdapter } from './openai.js';
 import {
   assertMediaCapabilities,
+  contextLimitFor,
   decodeMediaJobId,
   encodeMediaJobId,
+  estimateRequestTokens,
   isAbortSignal,
 } from './shared.js';
 
@@ -445,5 +450,49 @@ describe('encodeMediaJobId / decodeMediaJobId (opaque async-media-job bijection,
     // Round-trip validation: a right-prefix but NON-CANONICAL payload (trailing junk base64url drops) is
     // rejected — it would otherwise decode to a wrong-but-non-empty vendor id and be polled.
     expect(decodeMediaJobId(encodeMediaJobId('video_x') + '!')).toBeUndefined();
+  });
+});
+
+describe('context/token helpers + adapter seam methods (ADR-0062)', () => {
+  it('estimateRequestTokens: ~chars/4 over system + text parts + per-message overhead', () => {
+    // system 'abcd' (4) + 1 message: envelope (8) + 'hello' (5) = 17 chars ⇒ ceil(17/4) = 5.
+    expect(
+      estimateRequestTokens({
+        system: 'abcd',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+      }),
+    ).toBe(5);
+    // A non-text part is charged a nominal 256: envelope (8) + 256 = 264 ⇒ ceil(264/4) = 66.
+    expect(
+      estimateRequestTokens({
+        system: '',
+        messages: [
+          { role: 'assistant', content: [{ type: 'tool_call', id: 'c', name: 'f', args: {} }] },
+        ],
+      }),
+    ).toBe(66);
+    // Tools contribute their serialized length; never throws (an estimate always exists).
+    expect(
+      estimateRequestTokens({ system: '', messages: [], tools: [{ name: 't', parameters: {} }] }),
+    ).toBeGreaterThan(0);
+  });
+
+  it('contextLimitFor: catalog window for a canonical id, undefined for an unrated/custom model', () => {
+    expect(contextLimitFor('claude-haiku-4-5')).toBe(200_000);
+    expect(contextLimitFor('made-up-custom-model')).toBeUndefined();
+  });
+
+  it('every real adapter exposes the compaction seam methods, delegating to the shared defaults', () => {
+    for (const adapter of [anthropicAdapter, openaiAdapter, deepseekAdapter, geminiAdapter]) {
+      expect(adapter.managesOwnContext?.()).toBe(false); // no current provider manages its own context
+      expect(adapter.contextLimit?.('claude-haiku-4-5')).toBe(200_000);
+      expect(adapter.contextLimit?.('made-up-custom-model')).toBeUndefined();
+      expect(
+        adapter.estimateTokens?.({
+          system: 's',
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+        }),
+      ).toBeGreaterThan(0);
+    }
   });
 });

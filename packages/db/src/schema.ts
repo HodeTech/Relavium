@@ -463,6 +463,10 @@ export const sessionMessages = sqliteTable(
     inputTokens: tokenCount('input_tokens'),
     outputTokens: tokenCount('output_tokens'),
     costMicrocents: microcents('cost_microcents'),
+    // Present ONLY on a compaction/trim boundary marker row (role='system', ADR-0062): the durable
+    // sequence_number THROUGH which older messages are superseded. NULL on every normal transcript row.
+    // Additive nullable column — an older reader that lacks it reads the marker as an inert system row.
+    compactionDroppedThroughSequence: integer('compaction_dropped_through_sequence'),
     createdAt: epochMs('created_at').notNull(),
   },
   (t) => [

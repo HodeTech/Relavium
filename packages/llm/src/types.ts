@@ -464,6 +464,18 @@ export const MediaJobStatusSchema = z.discriminatedUnion('state', [
 export type MediaJobStatus = z.infer<typeof MediaJobStatusSchema>;
 
 /**
+ * Input to {@link LlmProvider.estimateTokens} (ADR-0062) — a prospective request the engine has NOT yet
+ * sent. Expressed in seam types only (no vendor type crosses — CLAUDE.md #4). Used only as a pre-first-turn
+ * FALLBACK: once a turn has completed, the engine prefers the real provider `usage` as the authoritative
+ * context-size signal, so this estimate's imprecision never drives a live decision.
+ */
+export interface EstimateTokensInput {
+  readonly system: string;
+  readonly messages: readonly LlmMessage[];
+  readonly tools?: readonly ToolDef[];
+}
+
+/**
  * The provider seam itself. A behavioural interface (it carries methods), so it is not a Zod
  * schema. `key` is "the credential the implementation needs" — a resolved provider key on
  * Node-style hosts, a key reference on the desktop (Rust egress), a managed token in managed mode
@@ -474,6 +486,24 @@ export interface LlmProvider {
   generate(req: LlmRequest, key: string): Promise<LlmResult>;
   stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk>;
   readonly supports: CapabilityFlags;
+  /**
+   * The model's context window in tokens, or `undefined` for an unrated / custom-base-URL model (ADR-0062) —
+   * the engine then skips auto-compaction (an unknown window cannot yield a threshold). OPTIONAL (the seam's
+   * capability-varying pattern, cf. `generateMedia?`); the real adapters derive it from the pricing catalog.
+   */
+  contextLimit?(model: string): number | undefined;
+  /**
+   * Whether this provider bounds the context window itself (⇒ the engine skips compaction entirely, ADR-0062).
+   * `false` for every current provider; present so the auto-compaction gate stays honest for a future one.
+   */
+  managesOwnContext?(): boolean;
+  /**
+   * A per-provider token estimate for a prospective request (ADR-0062) — a FALLBACK the engine uses only
+   * before any turn has reported real `usage`. An adapter MAY specialize with a native tokenizer; the real
+   * adapters share a character-based heuristic today (real usage is authoritative, so precision here is
+   * secondary).
+   */
+  estimateTokens?(input: EstimateTokensInput): number;
   /**
    * Separate-endpoint media generation (`media_surface: 'generative'`), OPTIONAL on the one seam —
    * deliberately not a sibling `GenerativeMediaProvider` (that would duplicate the
