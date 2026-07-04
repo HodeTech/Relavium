@@ -44,19 +44,30 @@ function groupInt(n: number): string {
   return Math.round(n).toLocaleString('en-US');
 }
 
+/** Max summary characters shown inline in the `/compact` notice — a long summary is previewed, not dumped
+ *  (the FULL summary is preserved in the durable transcript + `chat-export`; ADR-0062 §7). */
+const SUMMARY_PREVIEW_CHARS = 800;
+
 /**
  * The `/compact` (and auto-compaction) result notice (ADR-0062) — the token deltas + the summariser spend, plus
- * the summary text itself (the lossy, paid operation is inspectable, §7). The summary is model output, so it is
- * `stripTerminalControls`-sanitized (OSC-52 / control sequences removed) before it reaches the terminal.
+ * a preview of the summary (the lossy, paid operation is inspectable, §7). The summary is model output, so it is
+ * `stripTerminalControls`-sanitized (OSC-52 / control sequences removed) and length-capped before it reaches the
+ * terminal (a long summary is previewed with a pointer to the full text, never a scrollback-flooding dump).
  */
 export function compactionNotice(result: CompactionResult): string {
   switch (result.kind) {
-    case 'compacted':
+    case 'compacted': {
+      const summary = stripTerminalControls(result.summary);
+      const preview =
+        summary.length > SUMMARY_PREVIEW_CHARS
+          ? `${summary.slice(0, SUMMARY_PREVIEW_CHARS)}…\n(full summary kept in the session transcript — /export to read it all)`
+          : summary;
       return (
         `⟳ Compacted the conversation — ~${groupInt(result.tokensBefore)} → ~${groupInt(result.tokensAfter)} ` +
         `context tokens (summary cost ${groupInt(result.summaryTokens.input)} in / ${groupInt(result.summaryTokens.output)} out).\n` +
-        `Summary:\n${stripTerminalControls(result.summary)}`
+        `Summary:\n${preview}`
       );
+    }
     case 'nothing_to_compact':
       return 'Nothing to compact — the conversation is already short.';
     case 'failed':

@@ -104,8 +104,14 @@ identifiers / file paths / commands / values in play; and the user's stated pref
 these fails the feature. Under `--json` each compaction/trim rides the stream as a `session:compacted` /
 `session:trimmed` event.
 
-> **Not yet:** `/clear` (start a fresh conversation, old session resumable) is the remaining 2.5.F command — a
-> session-lifecycle swap tracked separately from the compaction primitive above.
+During a compaction (`/compact` or automatic) the interactive surface gates input and shows a spinner while the
+summariser runs (so a keystroke can never race the busy engine), and **`Esc` aborts it** (the session survives).
+
+> **Not yet (2.5.F follow-ups):** `/clear` (start a fresh conversation, old session resumable) — a
+> session-lifecycle swap tracked separately from the compaction primitive above; a **labeled** "Summarizing…"
+> indicator (today the compaction spinner is unlabeled — functional + `Esc`-abortable, but it needs a
+> `session:compacting` start signal to label); and the footer **context-fullness** indicator (last input ÷
+> window). The compaction engine, persistence, resume, auto-compaction, `/compact`, and `/trim` are complete.
 
 ## Input ergonomics (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
 

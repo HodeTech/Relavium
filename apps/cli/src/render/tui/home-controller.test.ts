@@ -507,6 +507,37 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     ]);
   });
 
+  it('gates input WHILE a submit is in flight — a message typed during a turn/compaction never reaches sendMessage (ADR-0062)', async () => {
+    // A DEFERRED turn: processLine stays pending (the auto-compaction window — the engine is busy AFTER the view
+    // went idle — is exactly this state). A message typed then must be gated, not crash the session.
+    let resolveProcess: () => void = () => {};
+    const onError = vi.fn();
+    const made = makeSession({
+      onProcess: () => new Promise<void>((resolve) => (resolveProcess = resolve)),
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError,
+    });
+    type(c, 'first');
+    c.handleKey('', ENTER); // starts the chat + submits 'first' (processLine pending on onProcess)
+    await flush();
+    expect(c.getSnapshot().submitBusy).toBe(true); // the submit is in flight → input gated
+
+    type(c, 'typed during'); // the user, seeing an idle-looking prompt, types + Enter mid-submit
+    c.handleKey('', ENTER);
+    await flush();
+    expect(made.lines).toEqual(['first']); // GATED — the second line never reached processLine (no crash)
+    expect(onError).not.toHaveBeenCalled();
+
+    resolveProcess(); // the submit settles → busy clears, the session usable again
+    await flush();
+    expect(c.getSnapshot().submitBusy).toBe(false);
+  });
+
   it('`Esc` at an IDLE prompt discards pending attachments — but is a no-op while a `!`-command runs (2.5.D chip model)', async () => {
     // A deferred runner so we can hold a command in flight (busy) and settle it on demand.
     const resolvers: ((o: UserCommandOutcome) => void)[] = [];
