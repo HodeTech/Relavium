@@ -105,6 +105,7 @@ flowchart TD
 | 0059 | [Mid-session model switching via host-side reseat (refines ADR-0024)](0059-cli-mid-session-model-reseat.md) | Proposed | 2026-06-28 |
 | 0060 | [Session `{{ctx.*}}` prompt interpolation](0060-session-ctx-prompt-interpolation.md) | Proposed | 2026-06-28 |
 | 0061 | [CLI chat input-layer file-injection (`@`-mention) and shell-escape (`!`-shell) security model](0061-cli-input-layer-file-injection-and-shell-escape.md) | Accepted | 2026-07-03 |
+| 0062 | [Context compaction — append-only conversation summarization and the CLI history commands (`/clear` · `/trim` · `/compact`)](0062-context-compaction-and-cli-history-commands.md) | Accepted | 2026-07-04 |
 
 ## Creating a new ADR
 
