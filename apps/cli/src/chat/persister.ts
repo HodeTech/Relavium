@@ -1,4 +1,9 @@
-import type { AgentDefinition, SessionHandle, SessionStreamHandleEvent } from '@relavium/core';
+import {
+  resumableMessageSequences,
+  type AgentDefinition,
+  type SessionHandle,
+  type SessionStreamHandleEvent,
+} from '@relavium/core';
 import type { SessionStore } from '@relavium/db';
 import type { AgentSessionRecord, SessionContext, SessionStatus } from '@relavium/shared';
 
@@ -217,13 +222,12 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         totalOutputTokens = existing.totalOutputTokens;
         totalCostMicrocents = existing.totalCostMicrocents;
         title = existing.title; // a resumed session keeps its original title — never re-derived from a new message
-        // ADR-0062: seed the ROLE-FILTERED real-message sequences from the durable transcript so a compaction/
-        // trim in THIS process maps keptMessageCount to the correct boundary (excluding prior `system` markers).
-        for (const message of deps.store.loadMessages(deps.sessionId)) {
-          if (message.role === 'user' || message.role === 'assistant') {
-            realMessageSeqs.push(message.sequenceNumber);
-          }
-        }
+        // ADR-0062: seed the real-message sequences from the SAME projection the engine resumes from
+        // (`resumableMessageSequences` — past the compaction boundary, empty-row-dropped, trailing-unanswered-
+        // `user` rolled back), NOT a bare role filter. A role-only seed would include a rolled-back trailing
+        // `user` the engine dropped, making the next compaction's boundary off-by-one → a silent kept-message
+        // loss (the step-3 review data-loss trap). One shared projection ⇒ the host + engine can never drift.
+        realMessageSeqs.push(...resumableMessageSequences(deps.store.loadMessages(deps.sessionId)));
       }
       unsubscribe = deps.handle.subscribe(onEvent);
     },

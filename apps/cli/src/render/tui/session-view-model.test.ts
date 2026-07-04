@@ -77,6 +77,16 @@ function events() {
         : { error: { code: opts.error.code, message: opts.error.message, retryable: false } }),
     }),
     cancelled: (): SessionStreamHandleEvent => ({ type: 'session:cancelled', ...stamp() }),
+    compacted: (reason: 'manual' | 'auto-threshold'): SessionStreamHandleEvent => ({
+      type: 'session:compacted',
+      ...stamp(),
+      reason,
+      summary: 'we set up the project and the db',
+      keptMessageCount: 2,
+      tokensBefore: 14200,
+      tokensAfter: 900,
+      tokensUsed: { input: 14000, output: 340 },
+    }),
   };
 }
 
@@ -516,5 +526,21 @@ describe('session-view-model', () => {
     expect(cancelled.status).toBe('ended');
     expect(cancelled.gapDetected).toBe(true); // a gap survives the terminal
     expect(cancelled.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('surfaces an AUTOMATIC compaction as an inline notice, but not a manual /compact (ADR-0062)', () => {
+    const e = events();
+    // Auto-compaction (reason 'auto-threshold') → a concise ⟳ notice appended to the transcript, so it is
+    // never a silent context swap. Numbers only (no summary text) — the manual /compact shows the summary.
+    const auto = reduceSessionEvent(initialSessionViewState(), e.compacted('auto-threshold'));
+    const notice = auto.transcript.at(-1);
+    expect(notice?.role).toBe('notice');
+    expect(notice?.role === 'notice' && notice.text).toContain('auto-compacted');
+    expect(notice?.role === 'notice' && notice.text).toContain('14,200'); // grouped token deltas
+    expect(notice?.role === 'notice' && notice.text).not.toContain('we set up'); // summary NOT dumped inline
+
+    // A MANUAL /compact is noticed by the command itself, so the view makes NO transcript change here.
+    const manual = reduceSessionEvent(initialSessionViewState(), e.compacted('manual'));
+    expect(manual.transcript).toHaveLength(0);
   });
 });

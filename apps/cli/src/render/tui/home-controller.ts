@@ -125,6 +125,10 @@ export interface HomeControllerState {
    *  event, so this flag gates input + shows a busy indicator; WITHOUT it a message submitted mid-command reaches
    *  `sendMessage`, throws `SessionStateError`, and crashes the chat. Cleared on settle + on chat end. */
   readonly shellBusy: boolean;
+  /** A submit (a message turn or a slash like `/compact`) is in flight (ADR-0062) — gates input + shows the
+   *  spinner for the WHOLE submit, INCLUDING after-turn auto-compaction (which runs after the view goes idle,
+   *  so the view-status `running` alone leaves a crash/frozen window — the same hazard `shellBusy` closes). */
+  readonly submitBusy: boolean;
   /** The in-flight `!`-command line labeling the busy indicator (2.5.D) — `undefined` between commands. A `!`-
    *  command emits no session tokens, so this labels WHAT is running + how to cancel (Esc). */
   readonly shellCommand: string | undefined;
@@ -183,6 +187,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     search: undefined,
     mention: undefined,
     shellBusy: false,
+    submitBusy: false,
     shellCommand: undefined,
     attachments: [],
     historyEntries: [],
@@ -270,6 +275,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
+          submitBusy: false, // ditto a submit/compaction in flight — the returned Home must not be left gated
           shellCommand: undefined,
           attachments: [], // pending `@`/`!` attachments must not leak into the next chat
         });
@@ -280,11 +286,17 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // Drive one chat turn; on success end the chat if `/exit`/`/cancel` ran, on an escaping error tear the session
   // down BEFORE propagating so its MCP child / frame loop / row are never orphaned.
   const sendChatLine = (active: HomeChatSession, line: string, display?: string): void => {
+    // Gate input for the WHOLE submit — streaming AND any after-turn auto-compaction (ADR-0062), which runs
+    // inside processLine AFTER session:turn_completed flipped the view idle. Without this a message typed then
+    // would reach sendMessage → SessionStateError → crash (the same hazard `shellBusy` fixes for `!`-shell).
+    set({ submitBusy: true });
     void active.processLine(line, display).then(
       () => {
+        if (state.session === active) set({ submitBusy: false });
         if (active.shouldStop()) endChat(active);
       },
       (err: unknown) => {
+        if (state.session === active) set({ submitBusy: false });
         tearingDown = active; // align with endChat's single-shot guard (the session closure is idempotent)
         const td = active.teardown();
         activeTeardown = td; // a concurrent signal awaits this teardown too
@@ -732,7 +744,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
     // Busy = a streaming turn OR a `!`-shell command in flight (`state.shellBusy` — the session has no store status
     // for it). A gated keystroke can't reach `sendMessage` → no `SessionStateError` crash.
-    const running = active.store.getSnapshot().state.status === 'running' || state.shellBusy;
+    const running =
+      active.store.getSnapshot().state.status === 'running' || state.shellBusy || state.submitBusy;
     if (routeMentionKey(active, input, key)) return;
     if (routeSearchKey(input, key)) return;
     const approvalPending = active.store.getSnapshot().approval !== undefined;
@@ -822,6 +835,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
             state.mode !== 'loading' &&
             !chatRunning() &&
             !state.shellBusy && // a paste while a `!`-command runs must not leak into the buffer (input is gated)
+            !state.submitBusy && // ditto a submit/compaction in flight (ADR-0062) — input is gated during it
             state.palette === undefined &&
             state.search === undefined &&
             state.mention === undefined;

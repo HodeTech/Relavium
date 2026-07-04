@@ -47,41 +47,48 @@ function textOf(content: readonly DurableContentPart[]): string {
     .join('\n\n');
 }
 
-/**
- * Project the persisted transcript into the in-flight cross-turn form `AgentSession` continues from:
- * **text-only** `user`/`assistant` messages (mirroring how `AgentSession` builds `#messages` — `system` is
- * the agent prompt, not a turn; `tool` results stay within a turn). An empty-text message is dropped (the
- * same `length > 0` guard the assistant-append uses).
- */
-function durableToLlmMessages(messages: readonly SessionMessage[]): LlmMessage[] {
-  const out: LlmMessage[] = [];
-  for (const message of messages) {
-    if (message.role !== 'user' && message.role !== 'assistant') {
-      continue;
-    }
-    const text = textOf(message.content);
-    if (text.length === 0) {
-      continue;
-    }
-    out.push({ role: message.role, content: [{ type: 'text', text }] });
-  }
-  return out;
+/** The compaction/trim DROP BOUNDARY (ADR-0062): messages at/below the max `droppedThroughSequence` across all
+ *  boundary markers are superseded (a later summary-less `/trim` advances it). `-1` ⇒ never compacted. */
+function dropBoundaryOf(ordered: readonly SessionMessage[]): number {
+  return ordered.reduce(
+    (max, m) =>
+      m.compaction === undefined ? max : Math.max(max, m.compaction.droppedThroughSequence),
+    -1,
+  );
 }
 
 /**
- * Drop trailing turns that did not complete — the incomplete-turn rollback, applied to the ALREADY-PROJECTED
- * transcript. After projection the only roles are `user` and text-bearing `assistant`, so a completed exchange
- * ends in `assistant`; any trailing `user` is an unanswered turn — the process died mid-turn, whether **before
- * the assistant replied** or **mid-tool-loop** (which projects away its `tool` / text-less `assistant`
- * tool_call rows and re-exposes the originating `user`). Re-prompting it on resume is the
- * `sessionId+sequenceNumber` idempotency analog of re-running the run-side incomplete node.
+ * Project the persisted transcript into the SURVIVING real `user`/`assistant` durable ROWS `AgentSession`
+ * continues from — the ONE projection both the engine (→ `#messages`) and the host persister (→ the ADR-0062
+ * boundary-mapping seed) derive from, so they can never drift (the step-3-review data-loss trap). It: sorts by
+ * `sequenceNumber`; keeps only text-bearing `user`/`assistant` rows PAST the compaction boundary (`system`
+ * markers + empty-text rows drop — the same `length > 0` guard the assistant-append uses); then rolls back a
+ * trailing run of unanswered `user` rows (the process died mid-turn — the `sessionId+sequenceNumber` idempotency
+ * analog of re-running the run-side incomplete node). Dropping empty rows BEFORE the trailing-user rollback is
+ * load-bearing: an interrupted mid-tool-loop turn projects away its `tool`/text-less rows, re-exposing the
+ * originating `user` so the rollback removes it (else the next `sendMessage` would emit two consecutive `user`s).
  */
-function trimTrailingUserTurn(messages: readonly LlmMessage[]): LlmMessage[] {
-  const committed = [...messages];
-  while (committed.at(-1)?.role === 'user') {
-    committed.pop();
-  }
-  return committed;
+function projectResumableRows(messages: readonly SessionMessage[]): SessionMessage[] {
+  const ordered = [...messages].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
+  const boundary = dropBoundaryOf(ordered);
+  const surviving = ordered.filter(
+    (m) =>
+      (m.role === 'user' || m.role === 'assistant') &&
+      m.sequenceNumber > boundary &&
+      textOf(m.content).length > 0,
+  );
+  while (surviving.at(-1)?.role === 'user') surviving.pop();
+  return surviving;
+}
+
+/**
+ * The durable `sequenceNumber`s of the rows a resumed session continues from (ADR-0062) — the SAME projection
+ * {@link reconstructSessionState} resumes from, exposed so the host persister seeds its compaction/trim
+ * boundary-mapping from an identical view (mirroring the engine's trailing-unanswered-`user` rollback + empty-row
+ * drop, not just a role filter — the step-3-review fix that prevents a silent kept-message loss on resume→compact).
+ */
+export function resumableMessageSequences(messages: readonly SessionMessage[]): number[] {
+  return projectResumableRows(messages).map((m) => m.sequenceNumber);
 }
 
 /**
@@ -105,17 +112,12 @@ export function reconstructSessionState(
   messages: readonly SessionMessage[],
 ): SessionResumeState {
   const ordered = [...messages].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
-  // ADR-0062: honor context-compaction boundary markers (role:'system' rows carrying `compaction`).
-  // The DROP BOUNDARY and the PREAMBLE are computed SEPARATELY (never "last-marker-wins" for both):
-  //  - boundary D = the MAX droppedThroughSequence across all markers (a later summary-less `/trim` advances
-  //    the boundary), so only rows with sequenceNumber > D survive into the working transcript.
-  //  - preamble = the summary text of the NEWEST marker that HAS summary text (a `/compact`); a `/trim`
-  //    marker (empty content) advances the boundary but must NOT blank a prior compact's summary.
+  // ADR-0062: honor context-compaction boundary markers (role:'system' rows carrying `compaction`). The DROP
+  // BOUNDARY (in `projectResumableRows`) and the PREAMBLE are computed SEPARATELY (never "last-marker-wins" for
+  // both): the boundary is the max droppedThroughSequence across ALL markers (a later summary-less `/trim`
+  // advances it), while the preamble is the summary of the NEWEST marker that HAS summary text (a `/compact`) —
+  // so a later `/trim` advances the boundary but must NOT blank a prior compact's summary.
   const markers = ordered.filter((m) => m.compaction !== undefined);
-  const dropBoundary = markers.reduce(
-    (max, m) => Math.max(max, m.compaction?.droppedThroughSequence ?? -1),
-    -1,
-  );
   let contextPreamble: string | undefined;
   for (let i = markers.length - 1; i >= 0; i -= 1) {
     const summary = textOf(markers[i]?.content ?? []);
@@ -124,10 +126,12 @@ export function reconstructSessionState(
       break;
     }
   }
-  // Project AFTER the boundary filter (a marker row is role:'system', so durableToLlmMessages drops it anyway;
-  // filtering by sequence first also drops the pre-boundary user/assistant rows the marker superseded).
-  const past = ordered.filter((m) => m.sequenceNumber > dropBoundary);
-  const committed = trimTrailingUserTurn(durableToLlmMessages(past));
+  // The ONE projection the host persister also seeds from (`resumableMessageSequences`) — no drift.
+  const surviving = projectResumableRows(ordered);
+  const committed: LlmMessage[] = surviving.map((m) => ({
+    role: m.role === 'assistant' ? 'assistant' : 'user',
+    content: [{ type: 'text', text: textOf(m.content) }],
+  }));
   return {
     messages: committed,
     turnCount: committed.filter((message) => message.role === 'assistant').length,

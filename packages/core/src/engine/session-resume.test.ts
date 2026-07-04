@@ -9,7 +9,11 @@ import { describe, expect, it } from 'vitest';
 
 import { AgentSession, type SessionDeps, type SessionStreamEvent } from './agent-session.js';
 import { createAbortController } from './execution-host.js';
-import { reconstructSessionState, type SessionResumeState } from './session-resume.js';
+import {
+  reconstructSessionState,
+  resumableMessageSequences,
+  type SessionResumeState,
+} from './session-resume.js';
 import type { ToolRegistry } from '../tools/types.js';
 
 const TS = '2026-06-17T08:00:00.000Z';
@@ -411,5 +415,43 @@ describe('reconstructSessionState — context-compaction boundary markers (ADR-0
       { role: 'assistant', content: [{ type: 'text', text: 'a7' }] },
     ]);
     expect(state.contextPreamble).toBeUndefined();
+  });
+});
+
+describe('resumableMessageSequences (ADR-0062 — the host boundary-mapping seed)', () => {
+  const marker = (
+    seq: number,
+    summary: string,
+    droppedThroughSequence: number,
+  ): SessionMessage => ({
+    ...msg(seq, 'system', summary.length > 0 ? [{ type: 'text', text: summary }] : []),
+    compaction: { droppedThroughSequence },
+  });
+
+  it('mirrors the engine projection: drops a trailing dangling user (an empty-text turn) + empty rows', () => {
+    // A prior process ended on an empty-text turn ⇒ a dangling `user` row with no assistant. The engine rolls
+    // it back (reconstructSessionState); the host seed MUST match — else a compaction's boundary maps over
+    // [0,1,2,3,4] instead of [0,1,2,3] and silently drops a kept message (the step-3 review data-loss trap).
+    const rows = [
+      msg(0, 'user', [{ type: 'text', text: 'q0' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a1' }]),
+      msg(2, 'user', [{ type: 'text', text: 'q2' }]),
+      msg(3, 'assistant', [{ type: 'text', text: 'a3' }]),
+      msg(4, 'user', [{ type: 'text', text: 'unanswered' }]), // trailing dangling user
+    ];
+    expect(resumableMessageSequences(rows)).toEqual([0, 1, 2, 3]);
+    // And it agrees with reconstructSessionState exactly (one projection, no drift).
+    expect(reconstructSessionState(record(), rows).messages).toHaveLength(4);
+  });
+
+  it('excludes pre-boundary rows and system marker rows', () => {
+    const seqs = resumableMessageSequences([
+      msg(0, 'user', [{ type: 'text', text: 'old' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'old-a' }]),
+      marker(2, 'S', 1),
+      msg(3, 'user', [{ type: 'text', text: 'kept' }]),
+      msg(4, 'assistant', [{ type: 'text', text: 'kept-a' }]),
+    ]);
+    expect(seqs).toEqual([3, 4]); // seq > boundary(1); the marker (seq 2, role system) is excluded
   });
 });

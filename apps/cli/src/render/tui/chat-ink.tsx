@@ -338,6 +338,18 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     setShellBusy(busy);
     setBusyCommand(busy ? command : undefined);
   };
+  // A submit (a message turn OR a slash like `/compact`) in flight (ADR-0062). A turn's view `status:'running'`
+  // covers only the STREAMING phase; **auto-compaction runs INSIDE `sendMessage` AFTER `session:turn_completed`
+  // already flipped the view to idle**, leaving a multi-second window where the engine is busy but the view looks
+  // idle — a message typed then would reach `sendMessage` → `SessionStateError` → crash (the exact hazard
+  // `shellBusy` fixes for `!`-shell). This ref-shadowed flag gates input + drives the spinner for the WHOLE
+  // submit (streaming + any compaction), so `Esc` still aborts and no keystroke can crash the session.
+  const [submitBusy, setSubmitBusy] = useState(false);
+  const submitBusyRef = useRef(false);
+  const applySubmitBusy = (busy: boolean): void => {
+    submitBusyRef.current = busy;
+    setSubmitBusy(busy);
+  };
   // Pending `@`/`!` attachments (2.5.D chip redesign) — an @-mentioned FILE (referenced inline by its `@path`
   // marker) or a `!`-command's captured OUTPUT. Ref-shadowed for coalesced-chunk-safe submit reads + state for the
   // chip bar; expanded into the UNTRUSTED frame at submit; cleared on send / Esc (idle) / unmount (chat end). One
@@ -461,6 +473,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   };
 
   const submit = (message: string, display?: string): void => {
+    // Mark the submit in flight so input is gated + the spinner runs for the WHOLE operation (streaming AND any
+    // after-turn auto-compaction, ADR-0062) — cleared in EVERY settle branch (success / reject / defensive catch).
+    applySubmitBusy(true);
     // Two-arm: a settled turn checks for exit; an UNEXPECTED rejection (the turn core's loud re-throw) goes to
     // onError so the driver always unblocks + tears down (else `exited` never settles and the REPL hangs). The
     // trailing .catch is defensive: a throw inside either callback still routes to onError, never silently lost.
@@ -468,11 +483,18 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       .onSubmit(message, display)
       .then(
         () => {
+          applySubmitBusy(false);
           if (props.shouldStop()) props.onExit();
         },
-        (err: unknown) => props.onError(err),
+        (err: unknown) => {
+          applySubmitBusy(false);
+          props.onError(err);
+        },
       )
-      .catch((err: unknown) => props.onError(err));
+      .catch((err: unknown) => {
+        applySubmitBusy(false);
+        props.onError(err);
+      });
   };
 
   // Ctrl-C reaches us (not the kernel) in raw mode — `reduceChatKey` maps it to `cancel` even mid-turn. Dispatch
@@ -482,7 +504,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // settles sees the current status — matching the ref-shadow `editorRef`/`paletteRef` reads below.
     // Busy = a streaming turn OR a `!`-shell command in flight (the latter has no store status — read the ref so a
     // coalesced same-chunk key after the `!`-submit is gated too). A gated keystroke can't reach `sendMessage`.
-    const isRunning = props.store.getSnapshot().state.status === 'running' || shellBusyRef.current;
+    const isRunning =
+      props.store.getSnapshot().state.status === 'running' ||
+      shellBusyRef.current ||
+      submitBusyRef.current;
     // The open `@`-mention completion owns every key (2.5.D step 4): Esc/Ctrl-C cancels + restores the literal
     // keystrokes; ↑/↓ select; Enter/Tab/'/' accept (a dir descends, a file injects); backspace trims the filter
     // then deletes the `@`; a printable extends the filter. Read the REF so a coalesced same-chunk key sees a
@@ -703,7 +728,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         tick={tick}
         color={color}
         editor={editor}
-        running={running || shellBusy}
+        running={running || shellBusy || submitBusy}
         mode={mode}
         approval={approval}
         attachments={attachments}

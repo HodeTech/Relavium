@@ -193,6 +193,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     type(c, 'beta');
     c.handleKey('', ENTER); // records 'beta' → history ['alpha','beta']
     expect(made.lines).toEqual(['alpha', 'beta']);
+    await flush(); // let the turn settle (ADR-0062: input is gated while a submit is in flight) before navigating
 
     c.handleKey('', { upArrow: true }); // Up-recall makes history navigation active (navIndex set)
     expect(c.getSnapshot().input.text).toBe('beta');
