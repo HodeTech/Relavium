@@ -60,11 +60,11 @@ Along the way, close the bounded engine amendments and docs-debt that Phase 2 de
 - Conversational (model-generated) authoring, the `@relavium/authoring` package promotion, mid-session
   **model** reseat, session `{{ctx.*}}` interpolation, and competitor-parity polish — all
   [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md).
-- `/compact` model-summarised compaction (the engine has no summarisation primitive — Phase 2.5 ships
-  only deterministic `/trim`), `read_media` input (D12), full-fidelity reseat tool-context, in-app
-  scrollback/pager, a **type-ahead message queue while a turn runs** (the in-flight key-swallow is handled
-  for approval input in 2.5.E, but queuing the *next* message is deferred), live provider `/v1/models`
-  fetch, and a multi-pane dashboard — Phase 3 / later (tracked in [../deferred-tasks.md](../deferred-tasks.md)).
+- `read_media` input (D12), full-fidelity reseat tool-context, in-app scrollback/pager, a **type-ahead
+  message queue while a turn runs** (the in-flight key-swallow is handled for approval input in 2.5.E, but
+  queuing the *next* message is deferred), live provider `/v1/models` fetch, and a multi-pane dashboard —
+  Phase 3 / later (tracked in [../deferred-tasks.md](../deferred-tasks.md)). (`/compact` model-summarised
+  compaction was originally listed here as Phase 3; it is now **built in 2.5.F** per [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md).)
 
 ## Work breakdown
 
@@ -363,17 +363,29 @@ is sandbox-bounded with protected paths honoured. A security review of the resea
 (defense-in-depth trade-off) passes. **Required ADR: per-tool approval + reseat-less chat mode system
 (incl. mid-turn abort).**
 
-### 2.5.F — `/clear` and `/trim`
+### 2.5.F — `/clear`, `/trim`, and `/compact` (context compaction)
+
+> **Scope expanded (2026-07-04, [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)).**
+> The maintainer removed the Phase-3 deferral of `/compact`: we build the **full** context-compaction
+> story now — a model-summarised **engine primitive** (`AgentSession.compact()`), plus **automatic**
+> threshold-triggered compaction — not merely the deterministic commands. The earlier
+> "recognized-but-deferred `/compact` stub" plan is superseded by ADR-0062.
 
 `/clear` starts a new conversation (the old session stays persisted and resumable). `/trim` is a
-**deterministic** history trim that finally consumes the dead `max_messages` config field
-(`packages/shared/src/config.ts` — plumbed but never read). `/compact` (model-summarised) is **Phase
-3** (the engine has no summarisation primitive); a no-op stub is forbidden — instead the slash registry
-carries a **recognized-but-deferred** entry so `/compact` prints *"not yet available — use `/trim` for a
-deterministic trim; model-summarised compaction is planned"*, distinct from the generic unknown-slash hint.
+**deterministic** history trim (`/trim [n]`, default `[chat].max_messages`) that finally consumes the
+dead `max_messages` config field (`packages/shared/src/config.ts` — plumbed but never read); it is also
+the zero-cost fallback if a summarization fails. `/compact` is **model-summarised** compaction: the
+summary becomes a session-level system-prompt preamble, the last exchange stays verbatim, and an
+**append-only** boundary marker (no destructive delete; resume-preserving; reseat-safe) records it. The
+same primitive runs **automatically** past `[chat].compact_threshold` of the serving model's context
+window (`[chat].auto_compact`, default on). Every summarization token is accounted to the session budget
+and surfaced. Delivered in three reviewed steps (shared/seam/db foundations → engine primitive → CLI
+host + docs), each with an Opus + Sonnet review round.
 
 **Acceptance:** `/clear` opens a fresh session, the prior one resumable; `/trim` bounds history by
-`max_messages` with no LLM call; `max_messages` is no longer dead.
+`max_messages`/`n` with no LLM call; `max_messages` is no longer dead; `/compact` summarises the working
+context (append-only, resume-preserving, cost-accounted); auto-compaction bounds a long chat before it
+overflows the context window; the summary is inspectable and the moment is a designed state.
 
 ### 2.5.G — Onboarding wizard and `/models` (Home model catalog)
 
@@ -408,7 +420,9 @@ follow-up) lands with EA2's accuracy surface.
   the engine **already** marks retryable in `RETRYABLE_ERROR_CODES` (`@relavium/shared/constants.ts`) but
   the chat renders opaquely — `provider_rate_limit` (`429` → backoff + visible failover) and
   `provider_unavailable` (→ visible failover); plus three classes the engine does **not** map as retryable
-  and the chat must surface actionably — context-overflow (a `bad_request`/fatal → suggest `/trim`),
+  and the chat must surface actionably — context-overflow (a `bad_request`/fatal → suggest `/trim` or
+  `/compact`; note 2.5.F auto-compaction (ADR-0062) now **pre-empts** most context-overflows, so this hint
+  is the secondary net for a model with no known window or `auto_compact = false`),
   keychain-locked mid-session, and MCP-server timeout. Each renders a one-line recovery hint and makes
   explicit that **the session survives** (the "say so plainly" philosophy, extended from tools to
   transport/quota).

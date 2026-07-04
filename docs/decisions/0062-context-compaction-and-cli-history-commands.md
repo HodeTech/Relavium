@@ -299,6 +299,35 @@ sequenceDiagram
   Note over S,H: resume → reconstructSessionState: preamble = newest marker WITH summary;<br/>working msgs = seq > max(droppedThroughSequence)
 ```
 
+### Refined during step-1 review (implementation notes)
+
+Clarifications surfaced by the step-1 adversarial review — refinements of this decision, not reversals:
+
+- **The write-side boundary mapping is role-filtered (a silent-data-loss trap to avoid).** The engine is
+  platform-free and owns no durable `sequenceNumber`, so `session:compacted`/`session:trimmed` carry
+  `keptMessageCount` (how many trailing in-memory messages stay verbatim). The host maps it to
+  `droppedThroughSequence` by walking the durable transcript **counting only real `user`/`assistant` rows —
+  excluding prior `role:'system'` marker rows** — keeping the last `keptMessageCount` of them; `D` = the
+  `sequenceNumber` of the last dropped real row (nothing dropped ⇒ no marker). It must **not** be derived
+  from raw `MAX(sequenceNumber) − keptMessageCount` arithmetic or an unfiltered `LIMIT`: once a session has
+  compacted once, an interleaved marker row makes that arithmetic off-by-one and silently drops a message
+  the user meant to keep. On a resumed process the persister must seed this from `loadMessages` (role-filtered).
+- **The auto-compaction threshold uses the SERVING model's window, not the primary's.** The check compares
+  the last turn's real input against `contextLimit(result.model) × threshold` using **`result.model`** (the
+  model that actually served the turn under fallback), not `agent.model` — else a fallback to a smaller-window
+  model checks the wrong (primary's) window and defeats the safety net exactly when a session is unstable.
+  `contextLimit`/`estimateTokens` must be passed the **canonical** model id `MODEL_PRICING` is keyed on.
+- **Config plumbing must reach the engine.** `auto_compact` / `compact_threshold` need a `resolve.ts` read-site
+  (like `maxMessages`) threaded into `SessionDeps` — not hardcoded at construction — or they re-become dead fields.
+- **Unrelated to the reserved `agent:context_compacted` steering event.** The Phase-1-reserved, still-unemitted
+  `agent:context_compacted` / `agent:context_cleared` are a **different** feature (a run-scoped steering channel
+  whispering to an in-flight workflow `agent` node); `session:compacted` here is session-scoped history
+  compaction. Different scope, trigger, and namespace — they do not share a mechanism.
+- **The durable marker persists only the summary + boundary, by design.** `reason` / `tokensBefore` / `tokensAfter` /
+  the summarization `tokensUsed` live on the transient `session:compacted` event (the live-moment cost UX, §7),
+  not on the marker row. A historical `chat-export`/audit view recovers the summary text and boundary, not the
+  "why"/"at what cost"; a richer audit column is a future add, not a v1 gap.
+
 ## Consequences
 
 ### Positive

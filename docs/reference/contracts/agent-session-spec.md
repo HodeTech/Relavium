@@ -121,6 +121,7 @@ interface SessionMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: DurableContentPart[];          // the PERSISTED content union (ADR-0031): handle-only media, signature-less reasoning
   modelId?: string;                       // canonical model id for an assistant turn (fallback-aware; mirrors session_messages.model_id)
+  compaction?: { droppedThroughSequence: number };  // ADR-0062: present ONLY on a role:'system' compaction/trim boundary marker — the durable seq through which older messages are superseded (mirrors session_messages.compaction_dropped_through_sequence)
   timestamp: string;                      // ISO 8601
 }
 ```
