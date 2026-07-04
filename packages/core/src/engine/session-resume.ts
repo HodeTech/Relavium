@@ -29,6 +29,14 @@ export interface SessionResumeState {
   readonly messages: readonly LlmMessage[];
   readonly turnCount: number;
   readonly cumulativeCostMicrocents: number;
+  /**
+   * The context-compaction **preamble** ([ADR-0062](../../../../docs/decisions/0062-context-compaction-and-cli-history-commands.md))
+   * to restore into the resumed session — the summary text of the **newest boundary marker that carries a
+   * summary** (a `/compact` marker; a summary-less `/trim` marker never provides one). Absent when the session
+   * has never been compacted. `AgentSession.resume` re-injects it into the per-turn system prompt, so a
+   * compacted session stays compacted across resume **and** a model reseat (which reuses this same path).
+   */
+  readonly contextPreamble?: string;
 }
 
 /** The concatenated `text` parts of a durable content array (non-text parts are dropped). */
@@ -97,10 +105,33 @@ export function reconstructSessionState(
   messages: readonly SessionMessage[],
 ): SessionResumeState {
   const ordered = [...messages].sort((a, b) => a.sequenceNumber - b.sequenceNumber);
-  const committed = trimTrailingUserTurn(durableToLlmMessages(ordered));
+  // ADR-0062: honor context-compaction boundary markers (role:'system' rows carrying `compaction`).
+  // The DROP BOUNDARY and the PREAMBLE are computed SEPARATELY (never "last-marker-wins" for both):
+  //  - boundary D = the MAX droppedThroughSequence across all markers (a later summary-less `/trim` advances
+  //    the boundary), so only rows with sequenceNumber > D survive into the working transcript.
+  //  - preamble = the summary text of the NEWEST marker that HAS summary text (a `/compact`); a `/trim`
+  //    marker (empty content) advances the boundary but must NOT blank a prior compact's summary.
+  const markers = ordered.filter((m) => m.compaction !== undefined);
+  const dropBoundary = markers.reduce(
+    (max, m) => Math.max(max, m.compaction?.droppedThroughSequence ?? -1),
+    -1,
+  );
+  let contextPreamble: string | undefined;
+  for (let i = markers.length - 1; i >= 0; i -= 1) {
+    const summary = textOf(markers[i]?.content ?? []);
+    if (summary.length > 0) {
+      contextPreamble = summary;
+      break;
+    }
+  }
+  // Project AFTER the boundary filter (a marker row is role:'system', so durableToLlmMessages drops it anyway;
+  // filtering by sequence first also drops the pre-boundary user/assistant rows the marker superseded).
+  const past = ordered.filter((m) => m.sequenceNumber > dropBoundary);
+  const committed = trimTrailingUserTurn(durableToLlmMessages(past));
   return {
     messages: committed,
     turnCount: committed.filter((message) => message.role === 'assistant').length,
     cumulativeCostMicrocents: record.totalCostMicrocents,
+    ...(contextPreamble === undefined ? {} : { contextPreamble }),
   };
 }

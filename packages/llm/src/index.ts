@@ -35,6 +35,8 @@ export type {
   Usage,
   MediaUnitsEntry,
   CapabilityFlags,
+  // ADR-0062 context-compaction: the seam input to LlmProvider.estimateTokens.
+  EstimateTokensInput,
   MediaCapabilities,
   ModalitySet,
   LlmErrorKind,

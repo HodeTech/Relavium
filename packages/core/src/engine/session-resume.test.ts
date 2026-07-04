@@ -285,3 +285,82 @@ describe('AgentSession.resume (1.Y)', () => {
     expect(costs).toEqual([4200]);
   });
 });
+
+describe('reconstructSessionState — context-compaction boundary markers (ADR-0062)', () => {
+  const marker = (
+    sequenceNumber: number,
+    summary: string,
+    droppedThroughSequence: number,
+  ): SessionMessage => ({
+    ...msg(sequenceNumber, 'system', summary.length > 0 ? [{ type: 'text', text: summary }] : []),
+    compaction: { droppedThroughSequence },
+  });
+
+  it('drops the folded prefix and restores the compact summary as the preamble', () => {
+    // A `/compact` folded seq 0..1 into 'S1' (marker@4, D=1) and kept the last exchange (u2/a3); then u5/a6.
+    const state = reconstructSessionState(record({ totalCostMicrocents: 10 }), [
+      msg(0, 'user', [{ type: 'text', text: 'old-q' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'old-a' }]),
+      msg(2, 'user', [{ type: 'text', text: 'kept-q' }]),
+      msg(3, 'assistant', [{ type: 'text', text: 'kept-a' }]),
+      marker(4, 'S1', 1),
+      msg(5, 'user', [{ type: 'text', text: 'new-q' }]),
+      msg(6, 'assistant', [{ type: 'text', text: 'new-a' }]),
+    ]);
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'kept-q' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'kept-a' }] },
+      { role: 'user', content: [{ type: 'text', text: 'new-q' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'new-a' }] },
+    ]);
+    expect(state.contextPreamble).toBe('S1');
+    expect(state.turnCount).toBe(2); // two surviving assistant turns
+  });
+
+  it('a later summary-less /trim advances the boundary but does NOT blank the prior compact summary (B4)', () => {
+    // compact@2 ('S1', D=1) → u3/a4 → trim@5 (no summary, D=4) → u6/a7.
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'q0' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a1' }]),
+      marker(2, 'S1', 1),
+      msg(3, 'user', [{ type: 'text', text: 'q3' }]),
+      msg(4, 'assistant', [{ type: 'text', text: 'a4' }]),
+      marker(5, '', 4), // a /trim marker: empty summary, boundary advanced to 4
+      msg(6, 'user', [{ type: 'text', text: 'q6' }]),
+      msg(7, 'assistant', [{ type: 'text', text: 'a7' }]),
+    ]);
+    // Boundary = max(1, 4) = 4 → only seq > 4 survive; preamble = newest marker WITH a summary = 'S1'.
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q6' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a7' }] },
+    ]);
+    expect(state.contextPreamble).toBe('S1');
+  });
+
+  it('uses the NEWEST summary-bearing marker as the preamble across multiple compactions', () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'q0' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a1' }]),
+      marker(2, 'S1', 1),
+      msg(3, 'user', [{ type: 'text', text: 'q3' }]),
+      msg(4, 'assistant', [{ type: 'text', text: 'a4' }]),
+      marker(5, 'S2', 4),
+      msg(6, 'user', [{ type: 'text', text: 'q6' }]),
+      msg(7, 'assistant', [{ type: 'text', text: 'a7' }]),
+    ]);
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q6' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a7' }] },
+    ]);
+    expect(state.contextPreamble).toBe('S2');
+  });
+
+  it('no markers ⇒ no preamble (backward-compatible with a never-compacted session)', () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'q' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a' }]),
+    ]);
+    expect(state.contextPreamble).toBeUndefined();
+    expect(state.messages).toHaveLength(2);
+  });
+});

@@ -183,6 +183,9 @@ export type { BudgetCheckResult } from './engine/budget-governor.js';
 export {
   AgentSession,
   DEFAULT_SESSION_MAX_TURNS,
+  // Context compaction (ADR-0062): the auto-compaction default threshold + the summariser system prompt.
+  DEFAULT_COMPACT_THRESHOLD,
+  COMPACTION_SYSTEM_PROMPT,
   SessionStateError,
 } from './engine/agent-session.js';
 export type {
@@ -198,6 +201,9 @@ export type {
   SessionTurnPolicy,
   // The classified result of a `!`-shell runUserCommand (ADR-0061) — the host renders each case (2.5.D).
   UserCommandOutcome,
+  // The classified results of context compaction / trim (ADR-0062) — the host renders each case (2.5.F).
+  CompactionResult,
+  TrimResult,
 } from './engine/agent-session.js';
 // Session checkpoint/resume (1.Y) — reconstruct the in-flight state from a persisted transcript (1.X) so a
 // session continues after a restart; the host loads via the @relavium/db SessionStore and hands the result

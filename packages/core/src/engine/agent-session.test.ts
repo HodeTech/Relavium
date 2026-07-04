@@ -1,7 +1,9 @@
 import type {
   CapabilityFlags,
+  EstimateTokensInput,
   LlmMessage,
   LlmProvider,
+  LlmRequest,
   ProviderId,
   StreamChunk,
 } from '@relavium/llm';
@@ -27,6 +29,7 @@ import type {
 import { markUntrusted } from '../tools/untrusted.js';
 import {
   AgentSession,
+  COMPACTION_SYSTEM_PROMPT,
   DEFAULT_SESSION_MAX_TURNS,
   SessionStateError,
   type SessionDeps,
@@ -1157,5 +1160,197 @@ describe('AgentSession.runUserCommand — the `!`-shell escape (2.5.D, ADR-0061)
     const completes = events.filter((e) => e.type === 'session:turn_completed');
     expect(completes).toHaveLength(1);
     expect(completes[0]?.type === 'session:turn_completed' && completes[0].stopReason).toBe('stop');
+  });
+});
+
+// --- Context compaction (ADR-0062) ---------------------------------------------------------------
+
+interface CompactCaptured {
+  readonly requests: LlmRequest[];
+}
+
+interface CompactOpts {
+  readonly contextLimit?: number | undefined;
+  readonly managesOwnContext?: boolean;
+  readonly estimate?: (input: EstimateTokensInput) => number;
+}
+
+/** A provider that captures each request (to assert the summariser prompt + the injected preamble) and
+ *  implements the ADR-0062 seam methods with test-controllable values. */
+function compactionProvider(
+  scripts: StreamChunk[][],
+  opts: CompactOpts = {},
+): { readonly provider: LlmProvider; readonly captured: CompactCaptured } {
+  const captured: CompactCaptured = { requests: [] };
+  let call = 0;
+  const provider: LlmProvider = {
+    id: 'anthropic',
+    supports: CAPS,
+    generate: () => {
+      throw new Error('unused');
+    },
+    stream: (req) => {
+      captured.requests.push(req);
+      return streamOf(scripts[call++] ?? []);
+    },
+    contextLimit: () => opts.contextLimit,
+    managesOwnContext: () => opts.managesOwnContext ?? false,
+    estimateTokens: (input) => opts.estimate?.(input) ?? 0,
+  };
+  return { provider, captured };
+}
+
+function compactHarness(
+  scripts: StreamChunk[][],
+  opts: CompactOpts = {},
+  depsOverrides: Partial<SessionDeps> = {},
+): { session: AgentSession; events: SessionStreamEvent[]; captured: CompactCaptured } {
+  const events: SessionStreamEvent[] = [];
+  const { provider, captured } = compactionProvider(scripts, opts);
+  const deps: SessionDeps = {
+    resolveProvider: () => provider,
+    registry: noToolRegistry,
+    tools: [],
+    keyFor: () => 'key',
+    sleep: () => Promise.resolve(),
+    newAbortController: createAbortController,
+    emit: (event) => {
+      events.push(event);
+    },
+    ...depsOverrides,
+  };
+  const s = new AgentSession({
+    sessionId: 'sess-1',
+    agentRef: AGENT.id,
+    agent: AGENT,
+    context: CONTEXT,
+    deps,
+  });
+  return { session: s, events, captured };
+}
+
+describe('AgentSession — context compaction + trim (ADR-0062)', () => {
+  it('compact() folds earlier turns into a system-prompt preamble and keeps the last exchange', async () => {
+    // Large window ⇒ auto-compaction never fires; we drive compact() manually. 3 turns then a summary.
+    const {
+      session: s,
+      events,
+      captured,
+    } = compactHarness([textTurn('a1'), textTurn('a2'), textTurn('SUMMARY-TEXT'), textTurn('a3')], {
+      contextLimit: 1_000_000,
+    });
+    s.start();
+    await s.sendMessage('q1');
+    await s.sendMessage('q2');
+
+    const result = await s.compact('manual');
+    expect(result.kind).toBe('compacted');
+    if (result.kind === 'compacted') {
+      expect(result.summary).toBe('SUMMARY-TEXT');
+      expect(result.keptMessageCount).toBe(2); // the last user+assistant exchange stays verbatim
+    }
+    // The summariser call used the AUTHORED compaction system prompt, and the conversation to summarise rode
+    // a USER message (never the system prompt) carrying the folded earlier turn.
+    const summaryReq = captured.requests[2];
+    expect(summaryReq?.system).toBe(COMPACTION_SYSTEM_PROMPT);
+    const summaryUser = summaryReq?.messages[0];
+    expect(summaryUser?.role).toBe('user');
+    const summaryText =
+      summaryUser?.content.map((p) => (p.type === 'text' ? p.text : '')).join('') ?? '';
+    expect(summaryText).toContain('User: q1');
+    expect(summaryText).toContain('Assistant: a1');
+    // A session:compacted event carried the summary + the summarisation spend (accounted, ADR-0028).
+    const compacted = events.find((e) => e.type === 'session:compacted');
+    expect(compacted?.type === 'session:compacted' && compacted.reason).toBe('manual');
+    expect(compacted?.type === 'session:compacted' && compacted.tokensUsed.input).toBe(5);
+
+    // The NEXT turn's system prompt now carries the preamble (reseat-free, applies from the next turn).
+    await s.sendMessage('q3');
+    expect(captured.requests[3]?.system).toContain('<earlier-conversation-summary>\nSUMMARY-TEXT');
+  });
+
+  it('compact() is a no-op with ≤1 exchange (nothing to fold)', async () => {
+    const { session: s, events } = compactHarness([textTurn('a1')], { contextLimit: 1_000_000 });
+    s.start();
+    await s.sendMessage('q1'); // one exchange only
+    const result = await s.compact('manual');
+    expect(result.kind).toBe('nothing_to_compact');
+    expect(events.some((e) => e.type === 'session:compacted')).toBe(false);
+  });
+
+  it('trimHistory() deterministically drops older messages, emits session:trimmed, no LLM call', async () => {
+    const {
+      session: s,
+      events,
+      captured,
+    } = compactHarness([textTurn('a1'), textTurn('a2'), textTurn('a3')], {
+      contextLimit: 1_000_000,
+    });
+    s.start();
+    await s.sendMessage('q1');
+    await s.sendMessage('q2');
+    await s.sendMessage('q3'); // #messages now [u,a,u,a,u,a] (6)
+    const before = captured.requests.length;
+
+    const result = s.trimHistory(2); // keep the last exchange
+    expect(result).toEqual({ kind: 'trimmed', keptMessageCount: 2, droppedMessageCount: 4 });
+    expect(events.some((e) => e.type === 'session:trimmed')).toBe(true);
+    expect(captured.requests.length).toBe(before); // NO summarisation call — deterministic
+
+    // Trimming to a bound larger than the history is a no-op.
+    expect(s.trimHistory(100)).toEqual({ kind: 'nothing_to_trim', messageCount: 2 });
+  });
+
+  it('auto-compacts after a turn whose real input tokens exceed threshold × the model window', async () => {
+    // window 6 × 0.8 = 4.8; each turn reports inputTokens 5 (> 4.8). The thrash guard skips turn 1 (≤1
+    // exchange); after turn 2 (2 exchanges) it fires and consumes the SUMMARY script.
+    const { session: s, events } = compactHarness(
+      [textTurn('a1'), textTurn('a2'), textTurn('AUTO-SUMMARY')],
+      { contextLimit: 6 },
+    );
+    s.start();
+    await s.sendMessage('q1');
+    expect(events.some((e) => e.type === 'session:compacted')).toBe(false); // ≤1 exchange — guarded
+    await s.sendMessage('q2');
+    const compacted = events.find((e) => e.type === 'session:compacted');
+    expect(compacted?.type === 'session:compacted' && compacted.reason).toBe('auto-threshold');
+  });
+
+  it('auto-compaction is skipped by config / provider / window guards', async () => {
+    const cases: Array<{ opts: CompactOpts; deps: Partial<SessionDeps> }> = [
+      { opts: { contextLimit: 6 }, deps: { autoCompact: false } }, // disabled by config
+      { opts: { contextLimit: 6, managesOwnContext: true }, deps: {} }, // provider bounds its own context
+      { opts: { contextLimit: undefined }, deps: {} }, // unrated/custom model — window unknown
+      { opts: { contextLimit: 1_000_000 }, deps: {} }, // under the threshold (5 ≤ 800k)
+    ];
+    for (const { opts, deps } of cases) {
+      const { session: s, events } = compactHarness(
+        [textTurn('a1'), textTurn('a2'), textTurn('UNUSED')],
+        opts,
+        deps,
+      );
+      s.start();
+      await s.sendMessage('q1');
+      await s.sendMessage('q2');
+      expect(events.some((e) => e.type === 'session:compacted')).toBe(false);
+    }
+  });
+
+  it('degrades a failed auto-compaction to a deterministic trim (maxMessages)', async () => {
+    // The summariser returns NO text (empty summary ⇒ compact 'failed'); with maxMessages wired the session
+    // falls back to a zero-cost /trim rather than sending an ever-growing context.
+    const emptySummary: StreamChunk[] = [
+      { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 0 } },
+    ];
+    const { session: s, events } = compactHarness(
+      [textTurn('a1'), textTurn('a2'), emptySummary],
+      { contextLimit: 6 },
+      { maxMessages: 2 },
+    );
+    s.start();
+    await s.sendMessage('q1');
+    await s.sendMessage('q2');
+    expect(events.some((e) => e.type === 'session:compacted')).toBe(false); // the summary failed
+    expect(events.some((e) => e.type === 'session:trimmed')).toBe(true); // degraded to trim
   });
 });
