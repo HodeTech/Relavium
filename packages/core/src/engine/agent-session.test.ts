@@ -1353,4 +1353,142 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
     expect(events.some((e) => e.type === 'session:compacted')).toBe(false); // the summary failed
     expect(events.some((e) => e.type === 'session:trimmed')).toBe(true); // degraded to trim
   });
+
+  it('auto-compaction failure WITHOUT maxMessages leaves the context un-compacted (no throw, no trim)', async () => {
+    const emptySummary: StreamChunk[] = [
+      { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 0 } },
+    ];
+    const { session: s, events } = compactHarness(
+      [textTurn('a1'), textTurn('a2'), emptySummary],
+      { contextLimit: 6 },
+      {}, // no maxMessages wired
+    );
+    s.start();
+    await s.sendMessage('q1');
+    await expect(s.sendMessage('q2')).resolves.toBeUndefined(); // no throw
+    expect(events.some((e) => e.type === 'session:compacted')).toBe(false);
+    expect(events.some((e) => e.type === 'session:trimmed')).toBe(false); // nothing to degrade to
+  });
+
+  it('skips auto-compaction when the kept context alone would still exceed the budget (thrash guard b)', async () => {
+    // window 6 × 0.8 = 4.8. The estimator reports 100 for the kept subset (> 4.8), so compaction cannot help —
+    // the session must NOT pay a summariser call every turn; the SUMMARY script is never consumed.
+    const {
+      session: s,
+      events,
+      captured,
+    } = compactHarness([textTurn('a1'), textTurn('a2'), textTurn('NEVER-USED')], {
+      contextLimit: 6,
+      estimate: () => 100,
+    });
+    s.start();
+    await s.sendMessage('q1');
+    await s.sendMessage('q2');
+    expect(events.some((e) => e.type === 'session:compacted')).toBe(false);
+    expect(captured.requests).toHaveLength(2); // only the two real turns — no summariser call
+  });
+
+  it('reports non-zero before/after token deltas from the estimator (before > after)', async () => {
+    // The estimator returns message-count × 10 — the pre-fold context (more messages) estimates higher than
+    // the post-fold context (the kept last exchange). Pins the before/after ordering + non-zero deltas.
+    const { session: s, events } = compactHarness(
+      [textTurn('a1'), textTurn('a2'), textTurn('SUMMARY')],
+      { contextLimit: 1_000_000, estimate: (input) => input.messages.length * 10 },
+    );
+    s.start();
+    await s.sendMessage('q1');
+    await s.sendMessage('q2'); // #messages = 4
+    const result = await s.compact('manual');
+    expect(result.kind).toBe('compacted');
+    const compacted = events.find((e) => e.type === 'session:compacted');
+    if (compacted?.type === 'session:compacted') {
+      expect(compacted.tokensBefore).toBe(40); // 4 messages × 10 (pre-fold)
+      expect(compacted.tokensAfter).toBe(20); // 2 kept × 10 (post-fold)
+      expect(compacted.tokensBefore).toBeGreaterThan(compacted.tokensAfter);
+    }
+  });
+
+  it('a second compaction folds the PRIOR preamble into the new summary (summary-of-summary)', async () => {
+    const { session: s, captured } = compactHarness(
+      [
+        textTurn('a1'),
+        textTurn('a2'),
+        textTurn('SUMMARY-1'),
+        textTurn('a3'),
+        textTurn('SUMMARY-2'),
+      ],
+      { contextLimit: 1_000_000 },
+    );
+    s.start();
+    await s.sendMessage('q1');
+    await s.sendMessage('q2');
+    await s.compact('manual'); // → preamble 'SUMMARY-1' (call 2)
+    await s.sendMessage('q3'); // call 3
+    const result = await s.compact('manual'); // → call 4, folding the prior preamble
+    expect(result.kind === 'compacted' && result.summary).toBe('SUMMARY-2');
+    const secondSummaryReq = captured.requests[4];
+    const text =
+      secondSummaryReq?.messages[0]?.content
+        .map((p) => (p.type === 'text' ? p.text : ''))
+        .join('') ?? '';
+    expect(text).toContain('Summary of the conversation so far:');
+    expect(text).toContain('SUMMARY-1'); // the prior preamble is folded in, not lost
+  });
+
+  it('abort() mid-summarisation yields cancelled, leaves the context unchanged, and the session stays usable', async () => {
+    const { session: s, events } = compactHarness(
+      [textTurn('a1'), textTurn('a2'), textTurn('SUMMARY')],
+      { contextLimit: 1_000_000 },
+    );
+    s.start();
+    await s.sendMessage('q1');
+    await s.sendMessage('q2');
+    const pending = s.compact('manual');
+    s.abort(); // EA7 — a synchronous abort lands pre-egress in the summariser turn core
+    const result = await pending;
+    expect(result.kind).toBe('cancelled');
+    expect(events.some((e) => e.type === 'session:compacted')).toBe(false); // context unchanged, no event
+    // The session stays alive after an abort — a fresh compact() now succeeds (consumes the SUMMARY script).
+    const retry = await s.compact('manual');
+    expect(retry.kind).toBe('compacted');
+  });
+
+  it('cancel() mid-summarisation yields cancelled and ends the (terminal) session', async () => {
+    const { session: s, events } = compactHarness(
+      [textTurn('a1'), textTurn('a2'), textTurn('SUMMARY')],
+      { contextLimit: 1_000_000 },
+    );
+    s.start();
+    await s.sendMessage('q1');
+    await s.sendMessage('q2');
+    const pending = s.compact('manual');
+    s.cancel(); // terminal
+    const result = await pending;
+    expect(result.kind).toBe('cancelled');
+    expect(events.some((e) => e.type === 'session:cancelled')).toBe(true);
+    expect(() => s.trimHistory(2)).toThrow(SessionStateError); // the session is terminal
+  });
+
+  it('compact() / trimHistory() before start throw SessionStateError (not_started)', async () => {
+    const { session: s } = compactHarness([textTurn('a1')], { contextLimit: 1_000_000 });
+    await expect(s.compact('manual')).rejects.toBeInstanceOf(SessionStateError);
+    expect(() => s.trimHistory(2)).toThrow(SessionStateError);
+  });
+
+  it('trimHistory snaps the kept slice to a user boundary (drops an orphan leading assistant)', async () => {
+    // Build [u,a,u,a,u,a] then trim to 3: the raw last-3 is [a,u,a] (assistant-first) → snapped to [u,a].
+    const { session: s, captured } = compactHarness(
+      [textTurn('a1'), textTurn('a2'), textTurn('a3'), textTurn('a4')],
+      { contextLimit: 1_000_000 },
+    );
+    s.start();
+    await s.sendMessage('q1');
+    await s.sendMessage('q2');
+    await s.sendMessage('q3'); // #messages = [u,a,u,a,u,a] (6)
+    const result = s.trimHistory(3);
+    expect(result).toEqual({ kind: 'trimmed', keptMessageCount: 2, droppedMessageCount: 4 });
+    // The NEXT turn's outbound messages start on a user role (protocol-valid — no orphan assistant).
+    await s.sendMessage('q4');
+    expect(captured.requests.at(-1)?.messages[0]?.role).toBe('user');
+  });
 });

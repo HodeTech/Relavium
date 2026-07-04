@@ -245,12 +245,16 @@ slash hint derive from the one registry.
   intentionally and the full transcript is preserved (recoverable via export), no blocking
   pre-confirm is required; a preview-then-confirm is a possible later enhancement.
 
-**The compaction moment is a designed state.** The summarization call emits `agent:token`
-chunks, so the host renders a live "Summarizing conversation… · Esc to cancel" indicator
-rather than an apparent freeze; on failure it shows the degrade-to-trim notice (§5). A light
-**context-fullness indicator** (last input tokens ÷ window) rides the existing 2.5.C footer
-hint-bar, so auto-compaction is anticipated, not a surprise. Every auto-compaction emits an
-inline notice (`⟳ Context compacted — …`), never a silent context swap.
+**The compaction moment is a designed state.** The summariser's `agent:token`/tool events are
+**not** forwarded to the transcript stream (the internal summary must never render as a chat
+reply); instead the host drives a live "Summarizing conversation… · Esc to cancel" indicator
+off the compaction lifecycle — for an auto-compaction the existing "turn running" indicator
+naturally covers it (it runs inside `sendMessage`, before it resolves), and for a manual
+`/compact` the host shows a spinner while awaiting `compact()`. On failure it shows the
+degrade-to-trim notice (§5). A light **context-fullness indicator** (last input tokens ÷
+window) rides the existing 2.5.C footer hint-bar, so auto-compaction is anticipated, not a
+surprise. Every compaction emits an inline notice (`⟳ Context compacted — …`) on the
+`session:compacted` event, never a silent context swap.
 
 **The summarization prompt is the product.** Summary quality is the feature; the prompt is a
 first-class artifact with a canonical home ([chat-session.md](../reference/cli/chat-session.md)

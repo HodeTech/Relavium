@@ -816,8 +816,10 @@ export class AgentSession {
     this.#status = 'running';
     const abort = this.#deps.newAbortController();
     this.#abort = abort;
-    const tokensBefore = this.#estimateContextTokens();
     try {
+      // Inside the `try` so a provider whose optional `estimateTokens` throws cannot escape past the `finally`
+      // and leave `#status` wedged at 'running' (the seam method is provider-supplied).
+      const tokensBefore = this.#estimateContextTokens();
       const result = await runAgentTurn({
         system: COMPACTION_SYSTEM_PROMPT,
         messages: [renderConversationToSummarise(this.#contextPreamble, split.foldable)],
@@ -867,10 +869,15 @@ export class AgentSession {
       if (this.#statusIs('cancelled') || err instanceof ToolCancelledError)
         return { kind: 'cancelled' };
       if (this.#abortingTurn) return { kind: 'cancelled' }; // an Esc mid-summary (EA7) — context unchanged
-      if (err instanceof AgentTurnError && err.code === 'cancelled') return { kind: 'cancelled' };
-      // Any classified summarisation failure — secret-free message; the caller may degrade to /trim.
-      const message = err instanceof AgentTurnError ? err.message : 'the summarisation failed';
-      return { kind: 'failed', message };
+      if (err instanceof AgentTurnError) {
+        if (err.code === 'cancelled') return { kind: 'cancelled' };
+        return { kind: 'failed', message: err.message }; // a classified summarisation fault — secret-free
+      }
+      // A pre-egress budget refusal of the summariser itself — a bounded 'failed' (the caller degrades to /trim).
+      if (err instanceof BudgetPauseError) return { kind: 'failed', message: err.message };
+      // A truly UNCLASSIFIED error is a bug — re-throw so it surfaces loudly (mirrors #settleTurnError), never
+      // silently masked as an ordinary 'failed'. The `finally` still restores status/abort first.
+      throw err;
     } finally {
       this.#abort = undefined;
       this.#abortingTurn = false;
@@ -910,22 +917,30 @@ export class AgentSession {
   async #maybeAutoCompact(model: string, inputTokens: number): Promise<void> {
     if (this.#deps.autoCompact === false) return;
     if (this.#status !== 'idle') return; // a cancel/abort landed after the turn — do not compact
-    const provider = this.#resolvePlan();
-    if (!provider.ok) return;
-    const primary = provider.entries[0]?.provider;
-    if (primary?.managesOwnContext?.() === true) return; // the provider bounds context itself
-    const window = primary?.contextLimit?.(model);
+    const plan = this.#resolvePlan();
+    if (!plan.ok) return;
+    // Consult the SERVING provider (the plan entry whose model actually produced this turn under fallback), not
+    // just the primary — so managesOwnContext / contextLimit reflect the model that would overflow NEXT.
+    const serving =
+      plan.entries.find((entry) => entry.model === model)?.provider ?? plan.entries[0]?.provider;
+    if (serving?.managesOwnContext?.() === true) return; // the provider bounds context itself
+    const window = serving?.contextLimit?.(model);
     if (window === undefined || window <= 0) return; // unrated/custom model — window unknown, skip auto-compaction
-    const threshold = this.#deps.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD;
-    if (inputTokens <= window * threshold) return; // under the trigger — nothing to do
-    if (splitFoldable(this.#messages) === undefined) return; // ≤1 exchange — compaction cannot help (thrash guard)
+    const budget = window * (this.#deps.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD);
+    if (inputTokens <= budget) return; // under the trigger — nothing to do
+    const split = splitFoldable(this.#messages);
+    if (split === undefined) return; // ≤1 exchange — nothing earlier to fold (thrash guard a)
+    // ADR §5 thrash guard b: if system + preamble + the kept exchange ALONE would still exceed the budget,
+    // compaction cannot help (a single oversized turn / a huge system prompt) — skip and let the overflow
+    // surface via the error taxonomy, rather than paying a summariser call on every subsequent turn.
+    if (this.#estimateTokensFor(split.kept) > budget) return;
 
     const result = await this.compact('auto-threshold');
-    // Degrade a summarisation FAILURE to a deterministic trim (zero cost) so the next turn is bounded; a
-    // `nothing_to_compact`/`cancelled`/`compacted` needs no fallback. Absent maxMessages ⇒ leave it (a real
-    // overflow then surfaces via the error taxonomy rather than a silent, unbounded resend).
+    // Degrade a non-success — a `failed` summariser OR an EA7-aborted `cancelled` — to a deterministic, zero-cost
+    // /trim so the next turn is bounded (never a silent overflowing resend, ADR §5). A terminal `cancel()` leaves
+    // status !== 'idle', so this guard skips a dead session; a `compacted`/`nothing_to_compact` needs no fallback.
     if (
-      result.kind === 'failed' &&
+      (result.kind === 'failed' || result.kind === 'cancelled') &&
       this.#deps.maxMessages !== undefined &&
       this.#status === 'idle'
     ) {
@@ -936,14 +951,17 @@ export class AgentSession {
   /** A rough token estimate of the current working context (system + preamble + messages) via the primary
    *  provider's seam estimator — for the before/after deltas on `session:compacted`. Best-effort; 0 if absent. */
   #estimateContextTokens(): number {
+    return this.#estimateTokensFor(this.#messages);
+  }
+
+  /** Estimate the tokens of `system (with the current preamble) + messages` via the primary provider's optional
+   *  seam estimator (provider-agnostic in practice). Best-effort — 0 when the method is absent. */
+  #estimateTokensFor(messages: readonly LlmMessage[]): number {
     const plan = this.#resolvePlan();
     if (!plan.ok) return 0;
     // Call inline (not via an extracted method reference) so `estimateTokens` stays bound to its provider.
     return (
-      plan.entries[0]?.provider.estimateTokens?.({
-        system: this.#systemPrompt(),
-        messages: this.#messages,
-      }) ?? 0
+      plan.entries[0]?.provider.estimateTokens?.({ system: this.#systemPrompt(), messages }) ?? 0
     );
   }
 

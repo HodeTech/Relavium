@@ -363,4 +363,53 @@ describe('reconstructSessionState — context-compaction boundary markers (ADR-0
     expect(state.contextPreamble).toBeUndefined();
     expect(state.messages).toHaveLength(2);
   });
+
+  it('a trim-only session applies the boundary with NO preamble', () => {
+    // A summary-less /trim marker@2 dropped through seq 1 (u0/a1); u3/a4 survive; never compacted ⇒ no preamble.
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'q0' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a1' }]),
+      marker(2, '', 1),
+      msg(3, 'user', [{ type: 'text', text: 'q3' }]),
+      msg(4, 'assistant', [{ type: 'text', text: 'a4' }]),
+    ]);
+    expect(state.contextPreamble).toBeUndefined();
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q3' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a4' }] },
+    ]);
+  });
+
+  it('honors a droppedThroughSequence of 0 (a falsy-but-valid boundary — not treated as "no boundary")', () => {
+    // marker@1 drops through seq 0 (the first user); the rest survive. 0 must NOT collapse to -1/"none".
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'dropped' }]),
+      marker(1, 'S', 0),
+      msg(2, 'user', [{ type: 'text', text: 'kept-q' }]),
+      msg(3, 'assistant', [{ type: 'text', text: 'kept-a' }]),
+    ]);
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'kept-q' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'kept-a' }] },
+    ]);
+    expect(state.contextPreamble).toBe('S');
+  });
+
+  it('takes the MAX boundary across multiple trim markers', () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'q0' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a1' }]),
+      marker(2, '', 1),
+      msg(3, 'user', [{ type: 'text', text: 'q3' }]),
+      msg(4, 'assistant', [{ type: 'text', text: 'a4' }]),
+      marker(5, '', 4), // a second trim advances the boundary to 4
+      msg(6, 'user', [{ type: 'text', text: 'q6' }]),
+      msg(7, 'assistant', [{ type: 'text', text: 'a7' }]),
+    ]);
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q6' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a7' }] },
+    ]);
+    expect(state.contextPreamble).toBeUndefined();
+  });
 });
