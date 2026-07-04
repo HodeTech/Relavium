@@ -287,9 +287,20 @@ export function reduceSessionEvent(
           )
         : base;
 
+    case 'session:trimmed':
+      // A MANUAL /trim is noticed by the command itself; the view surfaces only the AUTO-FALLBACK trim (the
+      // deterministic trim the engine degrades to when an auto-compaction summariser failed), so that fallback
+      // is never silent (ADR-0062 §5).
+      return event.reason === 'auto-fallback'
+        ? appendNotice(
+            base,
+            `✂ Auto-compaction summary failed — trimmed ${event.droppedMessageCount} older message(s) instead ` +
+              `(keeping the last ${event.keptMessageCount}).`,
+          )
+        : base;
+
     default:
-      // session:trimmed (the manual /trim command notices its own result), session:exported, and any
-      // forward-compatible additions: no view change.
+      // session:exported and any forward-compatible additions: no view change.
       return base;
   }
 }

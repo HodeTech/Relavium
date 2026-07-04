@@ -875,23 +875,32 @@ export class AgentSession {
         summaryTokens: { input: result.usage.input, output: result.usage.output },
       };
     } catch (err) {
-      if (this.#statusIs('cancelled') || err instanceof ToolCancelledError)
-        return { kind: 'cancelled' };
-      if (this.#abortingTurn) return { kind: 'cancelled' }; // an Esc mid-summary (EA7) — context unchanged
-      if (err instanceof AgentTurnError) {
-        if (err.code === 'cancelled') return { kind: 'cancelled' };
-        return { kind: 'failed', message: err.message }; // a classified summarisation fault — secret-free
-      }
-      // A pre-egress budget refusal of the summariser itself — a bounded 'failed' (the caller degrades to /trim).
-      if (err instanceof BudgetPauseError) return { kind: 'failed', message: err.message };
-      // A truly UNCLASSIFIED error is a bug — re-throw so it surfaces loudly (mirrors #settleTurnError), never
-      // silently masked as an ordinary 'failed'. The `finally` still restores status/abort first.
-      throw err;
+      return this.#classifyCompactionError(err); // may re-throw an unclassified error (surfaced loudly)
     } finally {
       this.#abort = undefined;
       this.#abortingTurn = false;
       if (this.#statusIs('running')) this.#status = 'idle';
     }
+  }
+
+  /**
+   * Map a caught {@link compact} error to a {@link CompactionResult} (factored out to keep `compact` focused on
+   * the happy path, mirroring {@link #settleTurnError}). A cancel/abort (terminal `cancel()`, `ToolCancelledError`,
+   * an EA7 `Esc`, or a classified `cancelled`) ⇒ `cancelled`; a classified {@link AgentTurnError} or a pre-egress
+   * {@link BudgetPauseError} ⇒ `failed` (the caller degrades to `/trim`); a truly UNCLASSIFIED error is a bug and
+   * is RE-THROWN so it surfaces loudly (never silently masked as an ordinary `failed`).
+   */
+  #classifyCompactionError(err: unknown): CompactionResult {
+    if (this.#statusIs('cancelled') || err instanceof ToolCancelledError || this.#abortingTurn) {
+      return { kind: 'cancelled' };
+    }
+    if (err instanceof AgentTurnError) {
+      return err.code === 'cancelled'
+        ? { kind: 'cancelled' }
+        : { kind: 'failed', message: err.message };
+    }
+    if (err instanceof BudgetPauseError) return { kind: 'failed', message: err.message };
+    throw err;
   }
 
   /**
@@ -901,7 +910,7 @@ export class AgentSession {
    * without summarising — a prior `/compact` summary survives). Emits `session:trimmed`; the host writes a
    * summary-less boundary marker. Callable only when started + idle.
    */
-  trimHistory(maxMessages: number): TrimResult {
+  trimHistory(maxMessages: number, reason: 'manual' | 'auto-fallback' = 'manual'): TrimResult {
     this.#assertSendable();
     const kept = tailFromUserBoundary(this.#messages, maxMessages);
     const dropped = this.#messages.length - kept.length;
@@ -910,6 +919,7 @@ export class AgentSession {
     this.#messages.push(...kept);
     this.#deps.emit({
       type: 'session:trimmed',
+      reason, // `auto-fallback` when the auto-compaction summariser failed → the view surfaces it (never silent)
       keptMessageCount: kept.length,
       droppedMessageCount: dropped,
     });
@@ -929,11 +939,18 @@ export class AgentSession {
     const plan = this.#resolvePlan();
     if (!plan.ok) return;
     // Consult the SERVING provider (the plan entry whose model actually produced this turn under fallback), not
-    // just the primary — so managesOwnContext / contextLimit reflect the model that would overflow NEXT.
-    const serving =
-      plan.entries.find((entry) => entry.model === model)?.provider ?? plan.entries[0]?.provider;
-    if (serving?.managesOwnContext?.() === true) return; // the provider bounds context itself
-    const window = serving?.contextLimit?.(model);
+    // just the primary — so managesOwnContext / contextLimit reflect the model that would overflow NEXT. Both are
+    // OPTIONAL, provider-supplied seam methods; a throw from either must be a non-fatal SKIP (auto-compaction is
+    // best-effort) — never escape and reject `sendMessage` after the turn already completed (mirrors #estimateTokens).
+    let window: number | undefined;
+    try {
+      const serving =
+        plan.entries.find((entry) => entry.model === model)?.provider ?? plan.entries[0]?.provider;
+      if (serving?.managesOwnContext?.() === true) return; // the provider bounds context itself
+      window = serving?.contextLimit?.(model);
+    } catch {
+      return; // a throwing provider seam method → skip auto-compaction, don't crash the settled turn
+    }
     if (window === undefined || window <= 0) return; // unrated/custom model — window unknown, skip auto-compaction
     const budget = window * (this.#deps.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD);
     if (inputTokens <= budget) return; // under the trigger — nothing to do
@@ -957,7 +974,7 @@ export class AgentSession {
       this.#deps.maxMessages !== undefined &&
       this.#status === 'idle'
     ) {
-      this.trimHistory(this.#deps.maxMessages);
+      this.trimHistory(this.#deps.maxMessages, 'auto-fallback');
     }
   }
 
@@ -1108,13 +1125,19 @@ export class AgentSession {
 function splitFoldable(
   messages: readonly LlmMessage[],
 ): { readonly foldable: LlmMessage[]; readonly kept: LlmMessage[] } | undefined {
-  let keptStart = -1;
+  // O(N): the kept exchange starts at the last `user` that PRECEDES the last `assistant` (any such user has an
+  // assistant reply after it); a trailing dangling `user` rides along in the kept slice, never as a lone user.
+  let lastAssistant = -1;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (
-      messages[i]?.role === 'user' &&
-      messages.slice(i + 1).some((message) => message.role === 'assistant')
-    ) {
-      keptStart = i; // the last `user` that has an assistant reply after it — the start of the last exchange
+    if (messages[i]?.role === 'assistant') {
+      lastAssistant = i;
+      break;
+    }
+  }
+  let keptStart = -1;
+  for (let i = lastAssistant - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === 'user') {
+      keptStart = i;
       break;
     }
   }
@@ -1161,13 +1184,17 @@ function renderConversationToSummarise(
  */
 function tailFromUserBoundary(messages: readonly LlmMessage[], maxKeep: number): LlmMessage[] {
   if (maxKeep <= 0 || messages.length === 0) return [];
-  let slice = messages.slice(Math.max(0, messages.length - maxKeep));
-  while (slice.length > 0 && slice[0]?.role !== 'user') slice = slice.slice(1);
-  if (slice.length > 0) return slice;
-  // The forward-snap emptied the slice — floor at the last `user` onward (the last exchange), never a wipe.
-  let start = messages.length - 1;
-  while (start > 0 && messages[start]?.role !== 'user') start -= 1;
-  return messages.slice(start);
+  const windowStart = Math.max(0, messages.length - maxKeep);
+  // Forward-snap: the first `user` at/after the window start (drops an orphan leading `assistant`). O(N).
+  for (let i = windowStart; i < messages.length; i += 1) {
+    if (messages[i]?.role === 'user') return messages.slice(i);
+  }
+  // The window held no `user` (all trailing assistants) — floor at the LAST `user` so a `/trim` never wipes the
+  // transcript (the maxKeep=1-on-a-trailing-assistant case); an empty return only when there is no user at all.
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === 'user') return messages.slice(i);
+  }
+  return [];
 }
 
 /**

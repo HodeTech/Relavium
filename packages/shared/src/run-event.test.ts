@@ -639,6 +639,7 @@ const validSession: Record<string, Record<string, unknown>> = {
   'session:trimmed': {
     type: 'session:trimmed',
     ...senv,
+    reason: 'manual',
     keptMessageCount: 20,
     droppedMessageCount: 8,
   },
@@ -692,6 +693,9 @@ describe('SessionEvent union — the agent-first namespace', () => {
     // as a compaction. Counts must be non-negative ints.
     expect(SessionEventSchema.safeParse({ ...ok, keptMessageCount: -1 }).success).toBe(false);
     expect(SessionEventSchema.safeParse({ ...ok, droppedMessageCount: -1 }).success).toBe(false);
+    // `reason` is the two-value enum (manual / auto-fallback — the view surfaces the auto-fallback trim, ADR-0062).
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'auto-fallback' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'nope' }).success).toBe(false);
   });
 
   it('binds session:compacted counts to nonNegativeInt (ADR-0062)', () => {

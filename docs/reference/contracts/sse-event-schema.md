@@ -267,7 +267,7 @@ export type SessionEvent =
   | SessionCancelledEvent     // 'session:cancelled' — cancel() was called; the session ends (terminal). NOT a mid-turn abort (EA7), which keeps the session alive — see session:turn_completed{stopReason:'aborted'}.
   | SessionExportedEvent      // 'session:exported'  — { workflowPath } (chat-to-workflow export)
   | SessionCompactedEvent     // 'session:compacted' — { reason:'manual'|'auto-threshold', summary, keptMessageCount, tokensBefore, tokensAfter, tokensUsed } (ADR-0062: model-summarised compaction; tokensUsed is the summarization spend, accounted to the session budget)
-  | SessionTrimmedEvent;      // 'session:trimmed'   — { keptMessageCount, droppedMessageCount } (ADR-0062: deterministic history trim, no LLM call, no cost)
+  | SessionTrimmedEvent;      // 'session:trimmed'   — { reason:'manual'|'auto-fallback', keptMessageCount, droppedMessageCount } (ADR-0062: deterministic history trim, no LLM call, no cost; the view surfaces the auto-fallback trim)
 ```
 
 `session:compacted` and `session:trimmed` are **side events** (like `session:exported`), never a stream terminal; the host writes the append-only boundary marker row (`session_messages.compaction_dropped_through_sequence`) on them — see [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) and [agent-session-spec.md](agent-session-spec.md).

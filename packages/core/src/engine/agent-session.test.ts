@@ -1301,7 +1301,7 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
     const result = s.trimHistory(2); // keep the last exchange
     expect(result).toEqual({ kind: 'trimmed', keptMessageCount: 2, droppedMessageCount: 4 });
     expect(events.some((e) => e.type === 'session:trimmed')).toBe(true);
-    expect(captured.requests.length).toBe(before); // NO summarisation call — deterministic
+    expect(captured.requests).toHaveLength(before); // NO summarisation call — deterministic
 
     // Trimming to a bound larger than the history is a no-op.
     expect(s.trimHistory(100)).toEqual({ kind: 'nothing_to_trim', messageCount: 2 });
@@ -1361,6 +1361,7 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
     const trimmed = events.find((e) => e.type === 'session:trimmed');
     expect(trimmed?.type === 'session:trimmed' && trimmed.keptMessageCount).toBe(2); // degraded to /trim(2)
     expect(trimmed?.type === 'session:trimmed' && trimmed.droppedMessageCount).toBe(2);
+    expect(trimmed?.type === 'session:trimmed' && trimmed.reason).toBe('auto-fallback'); // the view surfaces it
   });
 
   it('auto-compaction failure WITHOUT maxMessages leaves the context un-compacted (no throw, no trim)', async () => {

@@ -87,6 +87,13 @@ function events() {
       tokensAfter: 900,
       tokensUsed: { input: 14000, output: 340 },
     }),
+    trimmed: (reason: 'manual' | 'auto-fallback'): SessionStreamHandleEvent => ({
+      type: 'session:trimmed',
+      ...stamp(),
+      reason,
+      keptMessageCount: 20,
+      droppedMessageCount: 8,
+    }),
   };
 }
 
@@ -542,5 +549,18 @@ describe('session-view-model', () => {
     // A MANUAL /compact is noticed by the command itself, so the view makes NO transcript change here.
     const manual = reduceSessionEvent(initialSessionViewState(), e.compacted('manual'));
     expect(manual.transcript).toHaveLength(0);
+  });
+
+  it('surfaces the AUTO-FALLBACK trim as a notice, but not a manual /trim (ADR-0062)', () => {
+    const e = events();
+    // The deterministic trim the engine degrades to when auto-compaction's summariser fails must NOT be silent.
+    const fallback = reduceSessionEvent(initialSessionViewState(), e.trimmed('auto-fallback'));
+    const notice = fallback.transcript.at(-1);
+    expect(notice?.role).toBe('notice');
+    expect(notice?.role === 'notice' && notice.text).toContain('Auto-compaction summary failed');
+    // A MANUAL /trim is noticed by the command, so the view makes NO transcript change.
+    expect(
+      reduceSessionEvent(initialSessionViewState(), e.trimmed('manual')).transcript,
+    ).toHaveLength(0);
   });
 });

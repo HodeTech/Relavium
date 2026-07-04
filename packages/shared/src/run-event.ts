@@ -684,6 +684,10 @@ export const SessionCompactedEventSchema = z.object({
 export const SessionTrimmedEventSchema = z.object({
   type: z.literal('session:trimmed'),
   ...sessionBase,
+  // `manual` = the `/trim` command (the surface notices its own result); `auto-fallback` = the deterministic
+  // trim the engine degrades to when an auto-compaction summariser FAILS — the view surfaces this one so the
+  // fallback is never silent (ADR-0062 §5). Symmetric with `session:compacted.reason`.
+  reason: z.enum(['manual', 'auto-fallback']),
   keptMessageCount: nonNegativeInt,
   droppedMessageCount: nonNegativeInt,
 });

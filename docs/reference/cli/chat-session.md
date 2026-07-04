@@ -94,8 +94,9 @@ mechanisms bound it — all **append-only** (nothing is deleted; the full transc
 
 **The durable boundary.** Each compaction/trim appends one `role: 'system'` **marker** row carrying the summary
 (empty for a trim) + a `compaction_dropped_through_sequence`; original rows are never edited or deleted. On
-resume, the newest marker's summary becomes the preamble and only rows past the boundary re-enter the working
-context — so a compacted session stays compacted across `chat-resume` and a model reseat.
+resume, the preamble is the summary of the **newest marker that carries one** (a `/compact` — a summary-less
+`/trim` marker advances the boundary but never blanks a prior summary), and only rows past the boundary re-enter
+the working context — so a compacted session stays compacted across `chat-resume` and a model reseat.
 
 **The summary prompt invariant (the product surface of `/compact`).** The summariser prompt (a fixed, authored
 `COMPACTION_SYSTEM_PROMPT` in the engine — the conversation to summarise rides an untrusted user message, never

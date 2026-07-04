@@ -133,20 +133,12 @@ wording is reconciled with this section.
 
 ### 4. Seam amendment — `estimateTokens` / `contextLimit` / `managesOwnContext`
 
-We add three methods to the `LlmProvider` seam
-([types.ts](../../packages/llm/src/types.ts) L472), all expressed in **Relavium/Zod seam
-types only** (no vendor type crosses — CLAUDE.md #4):
-
-```ts
-// additive, OPTIONAL methods (the seam's established capability-varying pattern, cf. generateMedia?)
-contextLimit?(model: string): number;                    // the model's context window in tokens
-managesOwnContext?(): boolean;                           // provider bounds context itself ⇒ skip compaction
-estimateTokens?(input: {                                 // per-provider token estimate — a FALLBACK only
-  readonly system: string;
-  readonly messages: readonly LlmMessage[];
-  readonly tools?: readonly ToolDef[];
-}): number;
-```
+We add three **optional** methods to the `LlmProvider` seam — `contextLimit` (the model's
+context window), `managesOwnContext` (the provider bounds context itself ⇒ skip compaction),
+and `estimateTokens` (a per-provider token estimate, a fallback only) — all expressed in
+**Relavium/Zod seam types only** (no vendor type crosses — CLAUDE.md #4). The exact signatures
+are the seam's one canonical home ([llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md));
+they are not restated here to avoid drift.
 
 They are **optional** on the interface (so a test double or a future adapter is not forced
 to implement them) but implemented by all three real adapters (Anthropic, OpenAI/DeepSeek,
