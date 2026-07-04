@@ -78,6 +78,14 @@ export const DEFAULT_SESSION_MAX_TURNS = 50;
 export const DEFAULT_COMPACT_THRESHOLD = 0.8;
 
 /**
+ * The hard output cap on a compaction summary (ADR-0062) — passed as the summariser turn's `maxTokens` so the
+ * preamble a compaction produces is BOUNDED (an unbounded summary could defeat compaction). It also anchors
+ * the auto-compaction "projected floor" thrash guard: if `base system + kept exchange + this bound` would
+ * still exceed the budget, compaction cannot help and is skipped.
+ */
+export const COMPACTION_MAX_SUMMARY_TOKENS = 4096;
+
+/**
  * The context-compaction summariser system prompt (ADR-0062) — AUTHORED text, never untrusted data (the
  * conversation to summarise rides a user message, per the seam's system-is-authored rule). The invariant it
  * encodes is the product surface of `/compact`: a summary that loses these facts fails the feature. The
@@ -826,6 +834,7 @@ export class AgentSession {
         planEntries: plan.entries,
         chainCapabilities: this.#chainCapabilities(),
         nodeId: this.#agentRef,
+        maxTokens: COMPACTION_MAX_SUMMARY_TOKENS, // bound the summary so compaction reliably reduces context
         // Forward ONLY cost:updated (budget accounting, ADR-0028) — drop agent:token/tool events so the
         // internal summary never streams into the chat transcript as a reply.
         emit: (event) => {
@@ -930,10 +939,14 @@ export class AgentSession {
     if (inputTokens <= budget) return; // under the trigger — nothing to do
     const split = splitFoldable(this.#messages);
     if (split === undefined) return; // ≤1 exchange — nothing earlier to fold (thrash guard a)
-    // ADR §5 thrash guard b: if system + preamble + the kept exchange ALONE would still exceed the budget,
+    // ADR §5 thrash guard b: estimate the PROJECTED post-compaction floor — the BASE system prompt (NOT the
+    // current preamble, which the new summary REPLACES) + the kept exchange + the bounded summary the
+    // compaction will produce (`COMPACTION_MAX_SUMMARY_TOKENS`). If even that floor exceeds the budget,
     // compaction cannot help (a single oversized turn / a huge system prompt) — skip and let the overflow
     // surface via the error taxonomy, rather than paying a summariser call on every subsequent turn.
-    if (this.#estimateTokensFor(split.kept) > budget) return;
+    const projectedFloor =
+      this.#estimateTokens(this.#agent.system_prompt, split.kept) + COMPACTION_MAX_SUMMARY_TOKENS;
+    if (projectedFloor > budget) return;
 
     const result = await this.compact('auto-threshold');
     // Degrade a non-success — a `failed` summariser OR an EA7-aborted `cancelled` — to a deterministic, zero-cost
@@ -948,21 +961,27 @@ export class AgentSession {
     }
   }
 
-  /** A rough token estimate of the current working context (system + preamble + messages) via the primary
-   *  provider's seam estimator — for the before/after deltas on `session:compacted`. Best-effort; 0 if absent. */
+  /** A rough token estimate of the current working context (system-with-preamble + messages) — for the
+   *  before/after deltas on `session:compacted`. Best-effort; 0 if absent. */
   #estimateContextTokens(): number {
-    return this.#estimateTokensFor(this.#messages);
+    return this.#estimateTokens(this.#systemPrompt(), this.#messages);
   }
 
-  /** Estimate the tokens of `system (with the current preamble) + messages` via the primary provider's optional
-   *  seam estimator (provider-agnostic in practice). Best-effort — 0 when the method is absent. */
-  #estimateTokensFor(messages: readonly LlmMessage[]): number {
+  /**
+   * Estimate the tokens of `system + messages` via the primary provider's optional seam estimator
+   * (provider-agnostic in practice). Best-effort and **never throws** — a provider-supplied `estimateTokens`
+   * that throws is swallowed to 0, so an estimate can never wedge `#status`, escape `compact()`'s `finally`,
+   * or crash the auto-compaction gate (the value only drives an observability delta / a thrash heuristic).
+   */
+  #estimateTokens(system: string, messages: readonly LlmMessage[]): number {
     const plan = this.#resolvePlan();
     if (!plan.ok) return 0;
-    // Call inline (not via an extracted method reference) so `estimateTokens` stays bound to its provider.
-    return (
-      plan.entries[0]?.provider.estimateTokens?.({ system: this.#systemPrompt(), messages }) ?? 0
-    );
+    try {
+      // Call inline (not via an extracted method reference) so `estimateTokens` stays bound to its provider.
+      return plan.entries[0]?.provider.estimateTokens?.({ system, messages }) ?? 0;
+    } catch {
+      return 0; // a best-effort estimate — never let a throwing seam estimator break compaction
+    }
   }
 
   /** Build (memoized) the fallback plan and drive one turn through the shared core. */
@@ -1079,22 +1098,28 @@ export class AgentSession {
 }
 
 /**
- * Split the working transcript (ADR-0062) into the earlier part to FOLD into the summary and the last complete
- * `user`+`assistant` exchange to KEEP verbatim. `undefined` when there is ≤1 exchange — the final exchange is
- * the whole transcript, so there is nothing earlier to fold (the thrash guard + the `nothing_to_compact` case).
+ * Split the working transcript (ADR-0062) into the earlier part to FOLD into the summary and the last COMPLETE
+ * `user`+`assistant` exchange to KEEP verbatim. The kept slice starts at the last `user` that is FOLLOWED by an
+ * `assistant` reply — so a trailing dangling `user` (a completed-but-empty-text turn leaves one; `sendMessage`
+ * only appends the assistant when `result.text` is non-empty) is never kept as a protocol-breaking LONE user;
+ * it rides along at the tail of a complete exchange. `undefined` when there is no earlier turn to fold before
+ * the last complete exchange (≤1 exchange — the `nothing_to_compact` / thrash-guard case).
  */
 function splitFoldable(
   messages: readonly LlmMessage[],
 ): { readonly foldable: LlmMessage[]; readonly kept: LlmMessage[] } | undefined {
-  let lastUser = -1;
+  let keptStart = -1;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i]?.role === 'user') {
-      lastUser = i;
+    if (
+      messages[i]?.role === 'user' &&
+      messages.slice(i + 1).some((message) => message.role === 'assistant')
+    ) {
+      keptStart = i; // the last `user` that has an assistant reply after it — the start of the last exchange
       break;
     }
   }
-  if (lastUser <= 0) return undefined; // no earlier turn precedes the final exchange
-  return { foldable: messages.slice(0, lastUser), kept: messages.slice(lastUser) };
+  if (keptStart <= 0) return undefined; // no earlier turn precedes the last complete exchange
+  return { foldable: messages.slice(0, keptStart), kept: messages.slice(keptStart) };
 }
 
 /** The concatenated text of a cross-turn message (the transcript is text-only; a non-text part is skipped). */
@@ -1129,13 +1154,20 @@ function renderConversationToSummarise(
 
 /**
  * The last `maxKeep` messages, snapped to start on a `user` message so the trimmed transcript stays
- * protocol-valid (an orphan leading `assistant` — from slicing mid-exchange — is dropped; ADR-0062).
+ * protocol-valid (an orphan leading `assistant` — from slicing mid-exchange — is dropped; ADR-0062). It never
+ * returns an EMPTY slice when there was history to keep: `maxKeep = 1` on a transcript ending in `assistant`
+ * would forward-snap to empty (WIPING the whole transcript) — instead it floors at the last complete exchange
+ * (the last `user` onward), so `/trim` keeps at least that exchange rather than silently erasing everything.
  */
 function tailFromUserBoundary(messages: readonly LlmMessage[], maxKeep: number): LlmMessage[] {
-  if (maxKeep <= 0) return [];
+  if (maxKeep <= 0 || messages.length === 0) return [];
   let slice = messages.slice(Math.max(0, messages.length - maxKeep));
   while (slice.length > 0 && slice[0]?.role !== 'user') slice = slice.slice(1);
-  return slice;
+  if (slice.length > 0) return slice;
+  // The forward-snap emptied the slice — floor at the last `user` onward (the last exchange), never a wipe.
+  let start = messages.length - 1;
+  while (start > 0 && messages[start]?.role !== 'user') start -= 1;
+  return messages.slice(start);
 }
 
 /**

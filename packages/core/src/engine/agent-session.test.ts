@@ -126,6 +126,12 @@ const textTurn = (text: string): StreamChunk[] => [
   { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 3 } },
 ];
 
+/** A turn reporting a controllable real input-token usage — for the auto-compaction threshold (ADR-0062). */
+const inputTurn = (text: string, inputTokens: number): StreamChunk[] => [
+  { type: 'text_delta', text },
+  { type: 'stop', stopReason: 'stop', usage: { inputTokens, outputTokens: 3 } },
+];
+
 const toolUseTurn = (id: string): StreamChunk[] => [
   { type: 'tool_call_start', id, name: 'echo' },
   { type: 'tool_call_end', id },
@@ -1302,11 +1308,12 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
   });
 
   it('auto-compacts after a turn whose real input tokens exceed threshold × the model window', async () => {
-    // window 6 × 0.8 = 4.8; each turn reports inputTokens 5 (> 4.8). The thrash guard skips turn 1 (≤1
+    // window 10000 × 0.8 = 8000 budget; each turn reports 9000 input (> 8000). The projected floor
+    // (base estimate 0 + the 4096 summary bound) is under budget, so guard-b passes. Turn 1 skips (≤1
     // exchange); after turn 2 (2 exchanges) it fires and consumes the SUMMARY script.
     const { session: s, events } = compactHarness(
-      [textTurn('a1'), textTurn('a2'), textTurn('AUTO-SUMMARY')],
-      { contextLimit: 6 },
+      [inputTurn('a1', 9000), inputTurn('a2', 9000), textTurn('AUTO-SUMMARY')],
+      { contextLimit: 10_000 },
     );
     s.start();
     await s.sendMessage('q1');
@@ -1343,15 +1350,17 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
       { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 0 } },
     ];
     const { session: s, events } = compactHarness(
-      [textTurn('a1'), textTurn('a2'), emptySummary],
-      { contextLimit: 6 },
+      [inputTurn('a1', 9000), inputTurn('a2', 9000), emptySummary],
+      { contextLimit: 10_000 },
       { maxMessages: 2 },
     );
     s.start();
     await s.sendMessage('q1');
     await s.sendMessage('q2');
     expect(events.some((e) => e.type === 'session:compacted')).toBe(false); // the summary failed
-    expect(events.some((e) => e.type === 'session:trimmed')).toBe(true); // degraded to trim
+    const trimmed = events.find((e) => e.type === 'session:trimmed');
+    expect(trimmed?.type === 'session:trimmed' && trimmed.keptMessageCount).toBe(2); // degraded to /trim(2)
+    expect(trimmed?.type === 'session:trimmed' && trimmed.droppedMessageCount).toBe(2);
   });
 
   it('auto-compaction failure WITHOUT maxMessages leaves the context un-compacted (no throw, no trim)', async () => {
@@ -1359,8 +1368,8 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
       { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 0 } },
     ];
     const { session: s, events } = compactHarness(
-      [textTurn('a1'), textTurn('a2'), emptySummary],
-      { contextLimit: 6 },
+      [inputTurn('a1', 9000), inputTurn('a2', 9000), emptySummary],
+      { contextLimit: 10_000 },
       {}, // no maxMessages wired
     );
     s.start();
@@ -1370,22 +1379,57 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
     expect(events.some((e) => e.type === 'session:trimmed')).toBe(false); // nothing to degrade to
   });
 
-  it('skips auto-compaction when the kept context alone would still exceed the budget (thrash guard b)', async () => {
-    // window 6 × 0.8 = 4.8. The estimator reports 100 for the kept subset (> 4.8), so compaction cannot help —
-    // the session must NOT pay a summariser call every turn; the SUMMARY script is never consumed.
+  it('skips auto-compaction when the projected floor would still exceed the budget (thrash guard b)', async () => {
+    // window 10000 × 0.8 = 8000 budget; input 9000 triggers. The estimator reports 8000 for the base kept
+    // context, so the projected floor (8000 + the 4096 summary bound) > budget → compaction cannot help; the
+    // session must NOT pay a summariser call every turn, so the SUMMARY script is never consumed.
     const {
       session: s,
       events,
       captured,
-    } = compactHarness([textTurn('a1'), textTurn('a2'), textTurn('NEVER-USED')], {
-      contextLimit: 6,
-      estimate: () => 100,
+    } = compactHarness([inputTurn('a1', 9000), inputTurn('a2', 9000), textTurn('NEVER-USED')], {
+      contextLimit: 10_000,
+      estimate: () => 8000,
     });
     s.start();
     await s.sendMessage('q1');
     await s.sendMessage('q2');
     expect(events.some((e) => e.type === 'session:compacted')).toBe(false);
     expect(captured.requests).toHaveLength(2); // only the two real turns — no summariser call
+  });
+
+  it('trimHistory(1) keeps the last exchange rather than WIPING the transcript', async () => {
+    const { session: s, captured } = compactHarness(
+      [textTurn('a1'), textTurn('a2'), textTurn('a3')],
+      { contextLimit: 1_000_000 },
+    );
+    s.start();
+    await s.sendMessage('q1');
+    await s.sendMessage('q2'); // #messages = [u,a,u,a]
+    // trim(1) on a transcript ending in assistant must NOT forward-snap to empty (a full wipe) — it floors at
+    // the last complete exchange.
+    const result = s.trimHistory(1);
+    expect(result).toEqual({ kind: 'trimmed', keptMessageCount: 2, droppedMessageCount: 2 });
+    await s.sendMessage('q3');
+    expect(captured.requests.at(-1)?.messages[0]?.role).toBe('user'); // protocol-valid next turn
+  });
+
+  it('does not keep a lone dangling user as the kept exchange (an empty-text turn)', async () => {
+    // A completed turn with empty final text leaves a dangling `user` (sendMessage only appends the assistant
+    // when result.text is non-empty). compact() must NOT keep that lone user as the "kept exchange" — with only
+    // one complete exchange before it, there is nothing earlier to fold, so it is a clean no-op.
+    const emptyTurn: StreamChunk[] = [
+      { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 0 } },
+    ];
+    const { session: s, events } = compactHarness([textTurn('a1'), emptyTurn], {
+      contextLimit: 1_000_000,
+    });
+    s.start();
+    await s.sendMessage('q1'); // [u,a1]
+    await s.sendMessage('q2'); // empty text → [u,a1,u2] (u2 dangling)
+    const result = await s.compact('manual');
+    expect(result.kind).toBe('nothing_to_compact'); // never a lone-user kept slice
+    expect(events.some((e) => e.type === 'session:compacted')).toBe(false);
   });
 
   it('reports non-zero before/after token deltas from the estimator (before > after)', async () => {
