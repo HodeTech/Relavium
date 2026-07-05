@@ -1,10 +1,15 @@
 import { randomUUID } from 'node:crypto';
 
-import { createProviderStore } from '@relavium/db';
+import { createModelCatalogStore, createProviderStore } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
 import { openLocalDb } from '../db/open.js';
-import { createProviderResolver } from '../engine/providers.js';
+import { createModelRefreshService } from '../engine/model-refresh.js';
+import {
+  KNOWN_PROVIDERS,
+  KNOWN_PROVIDER_IDS,
+  createProviderResolver,
+} from '../engine/providers.js';
 import { openHistoryStore } from '../history/open.js';
 import { openSessionStore } from '../history/session-open.js';
 import { CliError } from '../process/errors.js';
@@ -26,6 +31,7 @@ import { gateListCommand } from './gate-list.js';
 import { importCommand, type ImportCommandArgs } from './import.js';
 import { listCommand } from './list.js';
 import { logsCommand } from './logs.js';
+import { modelsCommand, type ModelsCommandArgs } from './models.js';
 import {
   runProviderCommand,
   type ProviderCommandArgs,
@@ -290,6 +296,46 @@ const executeLogs: CommandExecutor = (input, ctx) =>
 const executeStatus: CommandExecutor = (_input, ctx) =>
   Promise.resolve(statusCommand({ io: ctx.io, global: ctx.global }));
 
+/**
+ * Open the local db + OS keychain for one `models` invocation, wire the S5 refresh service over the S4 catalog
+ * store + the S2 `listModels?` seam, run the core, and always close the db (2.5.G S5, ADR-0064). The key
+ * resolver reads a provider key only inside the refresh (keychain → env); the catalog holds no key.
+ */
+async function withModelsDeps(ctx: DispatchContext, args: ModelsCommandArgs): Promise<ExitCode> {
+  const { homeDir } = loadResolvedConfig({
+    cwd: ctx.global.cwd,
+    configPath: ctx.global.configPath,
+  });
+  const { db, close } = openLocalDb(homeDir);
+  try {
+    const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    const resolver = createProviderResolver(ctx.io.env, createOsKeychainStore());
+    const providerStore = createProviderStore(db, storeDeps);
+    const catalogStore = createModelCatalogStore(db, storeDeps);
+    const refreshService = createModelRefreshService({
+      resolveProvider: resolver.resolveProvider,
+      keyFor: resolver.keyFor,
+      providerStore,
+      catalogStore,
+      knownProviderIds: KNOWN_PROVIDER_IDS,
+      knownProviders: KNOWN_PROVIDERS,
+      now: () => Date.now(),
+    });
+    return await modelsCommand(args, {
+      io: ctx.io,
+      global: ctx.global,
+      catalog: catalogStore,
+      refreshService,
+    });
+  } finally {
+    close();
+  }
+}
+
+const executeModels: CommandExecutor = (_input, ctx) => withModelsDeps(ctx, { refresh: false });
+const executeModelsRefresh: CommandExecutor = (_input, ctx) =>
+  withModelsDeps(ctx, { refresh: true });
+
 /** Open the local db + OS keychain for one `provider` invocation, run the core, and always close the db. */
 async function withProviderDeps(
   ctx: DispatchContext,
@@ -342,6 +388,8 @@ const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, 
   ['list', executeList],
   ['logs', executeLogs],
   ['status', executeStatus],
+  ['models', executeModels],
+  ['models.refresh', executeModelsRefresh],
   ['provider.list', providerExecutor(() => ({ action: 'list' }))],
   ['provider.add', providerExecutor(buildProviderAddArgs)],
   [

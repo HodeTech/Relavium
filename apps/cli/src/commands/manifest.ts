@@ -283,6 +283,18 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     effect: 'read',
   },
   {
+    id: 'models',
+    label: 'List models',
+    description: 'List the cached model catalog (refreshes on first run if empty).',
+    effect: 'read',
+  },
+  {
+    id: 'models.refresh',
+    label: 'Refresh models',
+    description: "Re-fetch each connected provider's live model list into the local cache.",
+    effect: 'write',
+  },
+  {
     id: 'provider.list',
     label: 'List providers',
     description: 'List registered providers and whether a key is set.',

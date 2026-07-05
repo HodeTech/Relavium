@@ -53,6 +53,7 @@ export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerImport(program, ctx);
   registerAgent(program, ctx);
   registerGate(program, ctx);
+  registerModels(program, ctx);
   registerProvider(program, ctx);
   registerList(program, ctx);
   registerLogs(program, ctx);
@@ -439,6 +440,45 @@ function registerStatus(program: Command, ctx?: CommandContext): void {
   }
   status.action(async () => {
     ctx.result.exitCode = await executeCommand('status', { positionals: [], options: {} }, ctx);
+  });
+}
+
+/**
+ * Register `relavium models` (list the cached catalog) + `relavium models refresh` (force a live re-fetch)
+ * (2.5.G S5, [ADR-0064](../../../../docs/decisions/0064-live-model-catalog.md)). The parent `models` action
+ * lists the cache (refreshing on first run if empty); the `refresh` subcommand blocks on a live re-fetch and
+ * reports per-provider outcomes. Both honor `--json`. Each dispatch opens the local db + keychain per invocation.
+ */
+function registerModels(program: Command, ctx?: CommandContext): void {
+  const models = program
+    .command('models')
+    .description('List the cached model catalog (refreshes on first run if empty).');
+  const refresh = models
+    .command('refresh')
+    .description("Re-fetch each connected provider's live model list into the local cache.");
+
+  if (ctx === undefined) {
+    models.action(() => {
+      throw new CliError('not_implemented', '`relavium models` requires the CLI runtime context.');
+    });
+    refresh.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium models refresh` requires the CLI runtime context.',
+      );
+    });
+    return;
+  }
+
+  models.action(async () => {
+    ctx.result.exitCode = await executeCommand('models', { positionals: [], options: {} }, ctx);
+  });
+  refresh.action(async () => {
+    ctx.result.exitCode = await executeCommand(
+      'models.refresh',
+      { positionals: [], options: {} },
+      ctx,
+    );
   });
 }
 

@@ -117,6 +117,8 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium budget resume <runId> [--approve\|--abort]` | Resume a run suspended at a budget cap (`budget:paused`, `on_exceed: pause_for_approval`) — approve to continue or abort. The non-interactive operator path for [ADR-0028](../../decisions/0028-workflow-resource-governance.md). |
 | `relavium init` _(planned)_ | Initialize a `.relavium/` directory in the current project. |
 | `relavium agent <subcommand>` _(planned)_ | Manage agents (list / create / test). |
+| `relavium models` | List the cached model catalog (refreshes on first run if the cache is empty). See [`relavium models`](#relavium-models). |
+| `relavium models refresh` | Force a live re-fetch of each connected provider's model list into the local cache, reporting per-provider outcomes. |
 | `relavium provider <subcommand>` | Manage providers and API keys in the OS keychain (`list` / `add` / `set-key` / `remove-key` / `test`). |
 
 ## Command manifest
@@ -200,9 +202,25 @@ Replays a past run's persisted `run_events` in `seq` order (the same data the de
 
 Shows the currently active/paused runs (from `runs` + `step_executions`) and each one's per-node status. Useful while a long workflow runs in another terminal or was launched detached. For any run paused at a human gate it also prints the **pending `gateId`(s)** (with gate type and node id), so a CI author can pass the right one to `relavium gate <runId> --gate <gateId>` — required when a run has more than one gate pending at once. It takes **no argument** (it lists every active run; a terminal run is not shown — inspect one with `relavium logs <runId>`). Under `--json` each active run is one NDJSON record — `{ runId, workflowId, status, startedAt, steps, pendingGates }`, where each `steps` entry is `{ nodeId, nodeType, status, attemptNumber, startedAt, completedAt, durationMs, costMicrocents }` and each `pendingGates` entry is `{ gateId, nodeId, gateType, message, expiresAt? }` (the same pending-gate shape [`gate list`](#relavium-gate-list) emits).
 
+### `relavium models`
+
+The live model catalog (2.5.G, [ADR-0064](../../decisions/0064-live-model-catalog.md)). The catalog is a **local cache** in `history.db` (`model_catalog`) that records which model ids each connected provider key can currently reach; the static registry ([pricing.ts](../../../packages/llm/src/pricing.ts)) stays the pricing authority, so the cache holds **no price** and **no API key**.
+
+```bash
+relavium models              # list the cached catalog
+relavium models refresh      # force a live re-fetch of every connected provider
+```
+
+- **`relavium models`** (no subcommand) lists the cached catalog (read-only). On the **very first run** — when the cache is empty — it does one minimal **blocking** refresh, then lists; an empty result stays a clean exit `0` (an empty catalog is not a fault, like `relavium list`). Human output is one line per model (`<modelId>  <provider>  ctx=<n>  [<source>]`).
+- **`relavium models refresh`** forces a live re-fetch of **each connected provider** (a provider whose key resolves via the OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var) and prints a per-provider outcome. The refresh is **per-provider isolated**: one provider's failure (bad key, network, endpoint drift) or a provider without a list endpoint **never** fails the whole command — that provider is reported `failed` / `skipped` and the others still refresh. A per-provider failure is therefore **not** a command failure (exit `0` with the report). The **one** hard fault is an explicit `refresh` with **zero** providers connected (no key at all): that is a clean exit `2` naming how to add a key, because nothing could be fetched.
+- **Security.** A provider key is read only to make the live request (over the bounded, abortable, secret-free `listModels` seam) and is **never** logged, persisted (the cache holds no key), or placed in the report / `--json` payload / any error message. A failing provider surfaces only the seam's already-redacted message (or a generic `refresh failed`), never a raw cause.
+- **`--json`** ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)) emits **one NDJSON record per line**, stdout-pure, key-free:
+  - `relavium models --json` — one record per model: `{ provider, modelId, displayName, contextWindowTokens, maxOutputTokens, source, lastRefreshedAt, deprecationDate }` (`null` for an absent optional; `source` ∈ `static | live | user`; `lastRefreshedAt` is epoch-ms).
+  - `relavium models refresh --json` — one record per provider: `{ provider, status, added, updated, deactivated, error }`, where `status` ∈ `refreshed | skipped-no-key | skipped-unsupported | failed`, the three counts are the model ids added / refreshed-in-place / soft-deactivated (`null` unless `status` is `refreshed`), and `error` is a short, secret-free reason (`null` unless `failed`).
+
 ### Read-command `--json` output
 
-The non-streaming read commands (`list` / `status` / `gate list` / `chat-list`, and `logs`) keep the CLI to **one machine-output idiom**: `--json` emits **one result record per line** (NDJSON, `jq`-friendly, stdout-pure with diagnostics on stderr) — the same line-oriented shape `relavium run --json` uses for its `RunEvent` stream ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). For `logs --json` the records ARE raw `RunEvent`s — the same `RunEvent` data the run streamed (re-serialized from the persisted log, so the field order may differ from the live `run --json` bytes); for the others they are the per-command result records documented above. An unknown `runId` (`logs` / `gate list`) is the structured pre-run fault on stderr with exit `2`, stdout empty — exactly as for `run`. (`chat-export --json` is **not** a read command — it emits a single `session:exported` **event**, not a result record, since the export is a session-lifecycle action.)
+The non-streaming read commands (`list` / `status` / `gate list` / `chat-list` / `models`, and `logs`) keep the CLI to **one machine-output idiom**: `--json` emits **one result record per line** (NDJSON, `jq`-friendly, stdout-pure with diagnostics on stderr) — the same line-oriented shape `relavium run --json` uses for its `RunEvent` stream ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). For `logs --json` the records ARE raw `RunEvent`s — the same `RunEvent` data the run streamed (re-serialized from the persisted log, so the field order may differ from the live `run --json` bytes); for the others they are the per-command result records documented above. An unknown `runId` (`logs` / `gate list`) is the structured pre-run fault on stderr with exit `2`, stdout empty — exactly as for `run`. (`chat-export --json` is **not** a read command — it emits a single `session:exported` **event**, not a result record, since the export is a session-lifecycle action.)
 
 ### `relavium gate`
 
