@@ -12,6 +12,7 @@ import { HomeView } from './home-view.js';
 import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
+import { ModelPickerView } from './model-picker-view.js';
 import { PaletteView } from './palette-view.js';
 import type { PaletteState } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
@@ -134,10 +135,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         cols={size.cols}
         rows={size.rows}
         color={color}
-        paletteOpen={state.palette !== undefined}
+        paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
       />
       {state.palette !== undefined && (
         <PaletteView commands={HOME_PALETTE_COMMANDS} state={state.palette} color={color} />
+      )}
+      {state.modelPicker !== undefined && (
+        <ModelPickerView state={state.modelPicker} color={color} nowMs={props.nowMs()} />
       )}
     </Box>
   );

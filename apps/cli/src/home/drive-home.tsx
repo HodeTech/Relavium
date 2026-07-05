@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { createRunHistoryReader } from '@relavium/db';
+import { createModelCatalogStore, createProviderStore, createRunHistoryReader } from '@relavium/db';
 import { render } from 'ink';
 import { createElement } from 'react';
 
@@ -10,8 +10,16 @@ import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { writeGlobalDefaultModel } from '../config/write.js';
+import { buildMergedCatalog } from '../engine/model-catalog-view.js';
+import { createModelRefreshService } from '../engine/model-refresh.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
-import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
+import {
+  createProviderResolver,
+  KNOWN_PROVIDERS,
+  KNOWN_PROVIDER_IDS,
+  type ProviderResolver,
+} from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import type { CliIo } from '../process/io.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -24,6 +32,7 @@ import {
   createHomeController,
   type HomeChatSession,
   type HomeController,
+  type HomeModelsPort,
 } from '../render/tui/home-controller.js';
 import { DISABLE_BRACKETED_PASTE, ENABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
@@ -135,6 +144,45 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       sessions: opened.store,
       runs: createRunHistoryReader(opened.db),
     });
+
+    // The `/models` catalog port (2.5.G S7, ADR-0064) — built over the ONE already-open db handle (`opened.db`, the
+    // same `history.db` the catalog cache shares, ADR-0050) + the Home's provider resolver, so the picker reads the
+    // merged catalog + runs the (long-lived-process-safe) TTL background refresh + writes the next session's default.
+    const storeDeps = { uuid, now };
+    const providerStore = createProviderStore(opened.db, storeDeps);
+    const catalogStore = createModelCatalogStore(opened.db, storeDeps);
+    const refreshService = createModelRefreshService({
+      resolveProvider: providers.resolveProvider,
+      keyFor: providers.keyFor,
+      providerStore,
+      catalogStore,
+      knownProviderIds: KNOWN_PROVIDER_IDS,
+      knownProviders: KNOWN_PROVIDERS,
+      now,
+    });
+    // The `✓`-marked current default: `config.chat.defaultModel` resolves project → workspace → global `[preferences]`
+    // (ADR-0063 §1). A same-session `/models` write updates the GLOBAL file, so track the last write locally so a
+    // re-open of the picker marks the just-chosen model (the loaded `config` snapshot is not re-read mid-session).
+    let chosenDefault = config.chat.defaultModel;
+    const models: HomeModelsPort = {
+      load: () => {
+        // Rebuild the UUID→slug map on every load (NOT memoized once like the one-shot dispatch resolver): a refresh
+        // may register a provider's FK row, and the next load must resolve its live rows' provider — not drop them.
+        const slugByUuid = new Map(providerStore.list().map((p) => [p.id, p.name] as const));
+        return buildMergedCatalog({
+          rows: catalogStore.listAll(),
+          providerSlug: (uuid_) => slugByUuid.get(uuid_) ?? uuid_,
+          now: now(),
+        });
+      },
+      refreshIfStale: () => refreshService.refreshIfStale(),
+      refresh: () => refreshService.refresh(),
+      currentDefault: () => chosenDefault,
+      writeDefault: (modelId) => {
+        writeGlobalDefaultModel(modelId, homeDir);
+        chosenDefault = modelId; // the ✓ marker follows the write within this long-lived Home session
+      },
+    };
 
     // Build + wire + START a fresh chat session (the controller sends the first message on transition).
     const startChat = async (): Promise<HomeChatSession> => {
@@ -313,6 +361,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         startChat,
         homeStore,
         doctorProbes,
+        models,
         onExit: () => resolve(EXIT_CODES.success), // a clean Home exit is exit 0
         onError: (err) => reject(err instanceof Error ? err : new Error(String(err))),
       });

@@ -23,6 +23,7 @@ interface CapabilityCalls {
   readonly compactHistory: number;
   readonly trimHistory: number;
   readonly clearSession: number;
+  readonly openModels: number;
 }
 
 /** A fully-spied REPL context — each capability is a spy so a command's `run` can be asserted to call exactly one. */
@@ -39,6 +40,7 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls }
     compactHistory: vi.fn(),
     trimHistory: vi.fn(),
     clearSession: vi.fn(),
+    openModels: vi.fn(),
   };
   return {
     ctx: spies,
@@ -54,6 +56,7 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls }
       compactHistory: spies.compactHistory.mock.calls.length,
       trimHistory: spies.trimHistory.mock.calls.length,
       clearSession: spies.clearSession.mock.calls.length,
+      openModels: spies.openModels.mock.calls.length,
     }),
   };
 }
@@ -75,6 +78,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'compact',
       'trim',
       'clear',
+      'models',
     ]);
   });
 
@@ -91,6 +95,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       ['compact', 'compactHistory'],
       ['trim', 'trimHistory'],
       ['clear', 'clearSession'],
+      ['models', 'openModels'],
     ];
     for (const [name, capability] of cases) {
       const { ctx, calls } = spyContext();
@@ -108,7 +113,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
         counts.setMode +
         counts.compactHistory +
         counts.trimHistory +
-        counts.clearSession;
+        counts.clearSession +
+        counts.openModels;
       expect(total, `${name} calls exactly one capability`).toBe(1);
     }
   });
@@ -124,7 +130,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('replCommandList renders the slash hint, formatReplHelp lists every command', () => {
     expect(replCommandList()).toBe(
-      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /compact, /trim, /clear',
+      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /compact, /trim, /clear, /models',
     );
     const help = formatReplHelp();
     for (const command of REPL_COMMANDS) {
@@ -137,7 +143,17 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     expect(REPL_COMMANDS_BY_NAME.get('export')?.effect).toBe('write');
     expect(REPL_COMMANDS_BY_NAME.get('compact')?.effect).toBe('write'); // /compact spends tokens (ADR-0062)
     expect(REPL_COMMANDS_BY_NAME.get('clear')?.effect).toBe('destructive'); // /clear ends the session (ADR-0062 §7)
-    for (const name of ['help', 'exit', 'cancel', 'workflows', 'cost', 'doctor', 'mode', 'trim']) {
+    for (const name of [
+      'help',
+      'exit',
+      'cancel',
+      'workflows',
+      'cost',
+      'doctor',
+      'mode',
+      'trim',
+      'models',
+    ]) {
       expect(REPL_COMMANDS_BY_NAME.get(name)?.effect).toBe('read');
     }
   });
@@ -158,7 +174,9 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'compact',
       'trim',
       'clear',
+      'models',
     ]);
+    // /models is HOME-ONLY (availableIn ['home']) — it is EXCLUDED from the chat palette.
     expect(CHAT_PALETTE_COMMANDS.map((c) => c.name)).toEqual([
       'exit',
       'cancel',
@@ -171,8 +189,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'trim',
       'clear',
     ]);
-    // The bare Home offers /exit + /doctor (pre-chat diagnostics) and now /clear (availableIn ['home','chat'];
-    // an inert "nothing to clear" notice in the bare Home — ADR-0062 §7).
-    expect(HOME_PALETTE_COMMANDS.map((c) => c.name)).toEqual(['exit', 'doctor', 'clear']);
+    // The bare Home offers /exit + /doctor (pre-chat diagnostics), /clear (availableIn ['home','chat']; an inert
+    // "nothing to clear" notice — ADR-0062 §7), and now /models (home-only, ADR-0064 §10).
+    expect(HOME_PALETTE_COMMANDS.map((c) => c.name)).toEqual(['exit', 'doctor', 'clear', 'models']);
   });
 });

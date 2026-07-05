@@ -1,10 +1,17 @@
 import type { UserCommandOutcome } from '@relavium/core';
+import type { ModelCatalogEntry } from '@relavium/llm';
 
 import {
   CHAT_PALETTE_COMMANDS,
   HOME_PALETTE_COMMANDS,
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
+import type { RefreshReport } from '../../engine/model-refresh.js';
+import {
+  foldModelPickerKey,
+  partialFailureBanner,
+  type ModelPickerState,
+} from './model-picker.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
@@ -149,6 +156,29 @@ export interface HomeControllerState {
   /** Transient command output in the bare Home — the `/doctor` report (2.5.C S5), rendered below the strip and
    *  cleared on the next edit/submit. Multi-line + secret-free (the doctor formatter sanitizes). `undefined` ⇒ none. */
   readonly notice: string | undefined;
+  /** The open `/models` picker (2.5.G S7, ADR-0064 §10) — `undefined` ⇒ closed. HOME-ONLY (a next-session config
+   *  action); a keyboard-owning overlay like the palette. Opened from the Home palette's `/models`; on selection it
+   *  writes the next session's default (ADR-0063), never rebinding the live session. Mutually exclusive with the palette. */
+  readonly modelPicker: ModelPickerState | undefined;
+}
+
+/**
+ * The Home's model-catalog port (2.5.G S7, ADR-0064) — the I/O the `/models` picker needs, injected by `driveHome`
+ * (which owns the db handle + the refresh service + the config writer) so the controller stays pure-ish + testable.
+ * `load` is a sync db read + the pure merge; the refreshes egress (safe here: the Home is the LONG-LIVED process
+ * the S5 background-refresh constraint requires). `writeDefault` persists the NEXT session's default (ADR-0063).
+ */
+export interface HomeModelsPort {
+  /** The merged catalog (all providers) + the newest live-refresh stamp (the freshness badge). Sync read + merge. */
+  load: () => { readonly entries: readonly ModelCatalogEntry[]; readonly refreshedAt: number | undefined };
+  /** TTL-bounded background refresh (ADR-0064 §5c) — refreshes empty/stale providers; `undefined` when none were. */
+  refreshIfStale: () => Promise<RefreshReport | undefined>;
+  /** Unbounded, user-initiated refresh (Ctrl+R) — every connected provider, per-provider-isolated. Never rejects. */
+  refresh: () => Promise<RefreshReport>;
+  /** The current `[preferences].default_model` (the picker's `✓` marker), or `undefined` when none is set. */
+  currentDefault: () => string | undefined;
+  /** Persist the chosen model as the next session's default (writeGlobalDefaultModel). Throws `ConfigError` on a bad write. */
+  writeDefault: (modelId: string) => void;
 }
 
 export interface HomeControllerDeps {
@@ -168,6 +198,9 @@ export interface HomeControllerDeps {
   readonly boundTeardown?: (teardown: Promise<void>) => Promise<void>;
   /** The `/doctor` probes (2.5.C S5) — the Home palette's `/doctor` runs the fast tier over these into `notice`. */
   readonly doctorProbes: DoctorProbes;
+  /** The `/models` catalog port (2.5.G S7, ADR-0064) — absent ⇒ `/models` degrades to an honest "unavailable"
+   *  notice (a test may omit it). Production (`driveHome`) always wires the real db-backed port. */
+  readonly models?: HomeModelsPort;
 }
 
 export interface HomeController {
@@ -199,6 +232,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     attachments: [],
     historyEntries: [],
     notice: undefined,
+    modelPicker: undefined,
   };
   // Per-session command history for the in-Home chat (2.5.D step 3) — accumulates submitted lines across the Home
   // process; Up/Down recall, Ctrl+R reverse-searches. Not persisted (a chat-resume starts fresh).
@@ -281,6 +315,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
+          modelPicker: undefined, // ditto the `/models` picker (Home-only, so never open here — reset for hygiene)
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
           submitBusy: false, // ditto a submit/compaction in flight — the returned Home must not be left gated
           shellCommand: undefined,
@@ -340,6 +375,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           palette: undefined,
           search: undefined,
           mention: undefined,
+          modelPicker: undefined,
           shellBusy: false,
           submitBusy: false, // the swap is done — un-gate the fresh chat
           shellCommand: undefined,
@@ -410,6 +446,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       palette: undefined,
       search: undefined,
       mention: undefined,
+      modelPicker: undefined,
       historyEntries: history.entries,
     });
     // Track the in-flight build so a signal (or a mid-build exit) during `loading` can reclaim its just-spawned
@@ -439,6 +476,97 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
 
+  // The `/models` picker (2.5.G S7, ADR-0064 §10) — a keyboard-owning overlay opened from the Home palette. The db
+  // read + the merge are synchronous (`port.load()`); a refresh egresses and lands its result ONLY if the picker is
+  // still open (a since-closed picker drops it — mirrors loadMentions' stale guard). Home-only: it can be open only
+  // in `mode: 'home'` (the picker branch in handleKey routes before handleHomeKey), so no chat/session race applies.
+  const applyRefreshResult = (report: RefreshReport | undefined): void => {
+    const open = state.modelPicker;
+    if (open === undefined || deps.models === undefined) return; // the picker closed while the refresh was in flight
+    const { entries, refreshedAt } = deps.models.load();
+    const failed = report?.providers.filter((p) => p.status === 'failed').map((p) => p.provider) ?? [];
+    // Keep the user's filter/selection; the view clamps a selection left past the (possibly shrunk) list's end.
+    set({ modelPicker: { ...open, entries, refreshedAt, loading: false, banner: partialFailureBanner(failed) } });
+  };
+  const runPickerRefresh = (refresh: () => Promise<RefreshReport | undefined>): void => {
+    const open = state.modelPicker;
+    if (open === undefined) return;
+    set({ modelPicker: { ...open, loading: true } });
+    void refresh().then(applyRefreshResult, () => {
+      // refresh()/refreshIfStale() never reject (per-provider isolation), but stay defensive: just drop the spinner.
+      const cur = state.modelPicker;
+      if (cur !== undefined) set({ modelPicker: { ...cur, loading: false } });
+    });
+  };
+  const openModelPicker = (): void => {
+    const port = deps.models; // capture the narrowed port so the refresh closure needs no non-null assertion
+    if (port === undefined) {
+      set({ notice: '/models is unavailable here.' }); // defensive — production always wires the port
+      return;
+    }
+    const { entries, refreshedAt } = port.load();
+    set({
+      notice: undefined, // opening the picker clears any stale /doctor report behind it
+      modelPicker: {
+        entries,
+        filter: '',
+        selected: 0,
+        loading: false,
+        currentDefault: port.currentDefault(),
+        refreshedAt,
+        banner: undefined,
+      },
+    });
+    // Render the cache immediately (above), then kick a TTL-bounded background refresh (ADR-0064 §5c) — the Home is
+    // the long-lived process the S5 background constraint requires. An empty/stale cache repopulates as it resolves.
+    runPickerRefresh(() => port.refreshIfStale());
+  };
+  // Persist the chosen model as the NEXT session's default (ADR-0063) — it does NOT rebind a live session (there is
+  // none in the bare Home). A write fault (a malformed existing config) keeps the picker open with a static,
+  // secret-free banner rather than crashing the Home; success closes the picker and confirms in the strip notice.
+  const acceptModel = (modelId: string, displayName: string): void => {
+    if (deps.models === undefined) return;
+    try {
+      deps.models.writeDefault(modelId);
+    } catch {
+      const open = state.modelPicker;
+      if (open !== undefined) {
+        set({ modelPicker: { ...open, banner: 'could not save — check ~/.relavium/config.toml' } });
+      }
+      return;
+    }
+    set({
+      modelPicker: undefined,
+      notice: `Default model set to ${displayName} — applies to your next chat session.`,
+    });
+  };
+  // The open `/models` picker owns every key (2.5.G S7) — parity with routeMentionKey. Returns whether the key was
+  // consumed (the overlay was open). A DIMMED (unavailable-on-your-key) model is non-selectable (ADR §6): accepting
+  // one shows a transient banner rather than writing an unusable default.
+  const routeModelPickerKey = (input: string, key: ChatKey): boolean => {
+    const open = state.modelPicker;
+    if (open === undefined) return false;
+    const step = foldModelPickerKey(input, key, open);
+    switch (step.kind) {
+      case 'close':
+        set({ modelPicker: undefined });
+        break;
+      case 'accept':
+        acceptModel(step.modelId, step.displayName);
+        break;
+      case 'blocked':
+        set({ modelPicker: { ...open, banner: `${step.displayName} is not available on your key — pick another` } });
+        break;
+      case 'refresh':
+        runPickerRefresh(() => deps.models?.refresh() ?? Promise.resolve(undefined));
+        break;
+      case 'state':
+        set({ modelPicker: step.state });
+        break;
+    }
+    return true;
+  };
+
   // Drive the open `/` palette (2.5.C S3b): fold the keystroke, then apply — keep open with new state, run the
   // highlighted command by submitting its slash line through the SAME chat dispatch, or close. Ctrl-C closes it
   // (a gentle escape back to the prompt — never trapping the user).
@@ -463,6 +591,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // `/clear` through the chat handler's REAL clearSession (via sendChatLine → the swap), never through this ctx.
     clearSession: () =>
       set({ notice: 'No active conversation to clear — type a message to start one.' }),
+
+    // `/models` (2.5.G S7, ADR-0064 §10) IS a real Home capability (availableIn ['home']): open the in-tree picker
+    // over the merged catalog. Unlike the inert chat-only noops above, this wires the live picker.
+    openModels: () => openModelPicker(),
 
     runDoctor: async (deep) => {
       if (exiting) return;
@@ -923,7 +1055,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
             !state.submitBusy && // ditto a submit/compaction in flight (ADR-0062) — input is gated during it
             state.palette === undefined &&
             state.search === undefined &&
-            state.mention === undefined;
+            state.mention === undefined &&
+            state.modelPicker === undefined; // a paste while the picker owns the keyboard must not leak into the buffer
           const pasted = input.replace(/\r\n?/g, '\n');
           if (pasted.length > 0 && editable) {
             // Match the typed-edit path: appending clears any stale `/doctor` report + invalidates an in-flight run.
@@ -937,6 +1070,12 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       // The `/` palette (when open) owns every key — before the mode dispatch, so it overlays Home/chat input.
       if (state.palette !== undefined) {
         handlePaletteKey(input, key);
+        return;
+      }
+      // The `/models` picker (2.5.G S7) likewise owns every key while open — a Home-only overlay, mutually exclusive
+      // with the palette (the palette closes before running `/models`), so this can be reached only in `mode: 'home'`.
+      if (state.modelPicker !== undefined) {
+        routeModelPickerKey(input, key);
         return;
       }
       if (state.mode === 'chat' && state.session !== undefined) {

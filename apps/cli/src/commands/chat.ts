@@ -829,6 +829,10 @@ export function createChatLineHandler(
       clearRequested = true;
       stop = true;
     },
+    // `/models` (2.5.G S7, ADR-0064 §10) is HOME-ONLY (a next-session config action). The slash dispatch below
+    // rejects it on this chat surface with a pointer to the Home, so this capability is never reached here — kept as
+    // a documented inert noop to satisfy the shared ReplCommandContext shape (mirroring the Home's inert chat-only noops).
+    openModels: () => undefined,
   };
 
   // Parse + dispatch a `/name [args]` REPL line (extracted from processLine so each stays under the Sonar
@@ -846,6 +850,16 @@ export function createChatLineHandler(
       // terminal control sequence (or a flood).
       const safe = line.replace(/[^\x20-\x7e]/g, '?').slice(0, 64);
       emitOutput(`unknown command '${safe}'. Available: ${replCommandList()}.`);
+      return;
+    }
+    // Surface-scope guard (2.5.G S7): a command not `availableIn` this (chat) surface — e.g. the HOME-ONLY `/models`
+    // — is rejected with an actionable pointer, never dispatched. The palette already filters by surface
+    // (CHAT_PALETTE_COMMANDS); this covers a command TYPED directly, keeping the home-only next-session `/models`
+    // config action distinct from the Phase-2.6 mid-chat `/models` live reseat (ADR-0059).
+    if (!command.availableIn.includes('chat')) {
+      emitOutput(
+        `/${command.name} is available from the Home (run \`relavium\` with no arguments), not inside a chat.`,
+      );
       return;
     }
     const rejection = validateSlashTokens(command, tokens);

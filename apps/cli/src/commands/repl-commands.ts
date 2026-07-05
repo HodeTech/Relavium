@@ -53,6 +53,12 @@ export interface ReplCommandContext {
    *  Interactive-only — a `--json` / plain non-TTY session rejects it (one machine stream is one session lifecycle).
    *  Its notice surfaces the OLD sessionId + `relavium chat-resume <id>` so the prior conversation is discoverable. */
   readonly clearSession: () => void | Promise<void>;
+  /** `/models` (2.5.G S7, [ADR-0064](../../../../docs/decisions/0064-live-model-catalog.md) §10) — open the in-tree
+   *  model picker over the merged live/static catalog; on selection it writes the NEXT session's default model
+   *  ([ADR-0063](../../../../docs/decisions/0063-cli-config-write-contract.md)), it does NOT rebind the live session
+   *  (that is the Phase-2.6 reseat, ADR-0059). HOME-ONLY (`availableIn: ['home']`): the Home wires the real picker;
+   *  the chat surface never reaches this (the slash dispatch rejects a non-`chat` command), so its impl is inert. */
+  readonly openModels: () => void | Promise<void>;
 }
 
 /** A flag a {@link ReplCommand} accepts after its name (e.g. `/doctor --deep`). Flags only — the curated set has
@@ -206,6 +212,18 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     effect: 'destructive',
     run: (ctx) => ctx.clearSession(),
     availableIn: ['home', 'chat'],
+  },
+  {
+    name: 'models',
+    label: 'Models',
+    description: 'Pick your default model (opens the catalog picker).',
+    // `read` in the forward taxonomy: opening the picker changes nothing; the config write happens only on an
+    // explicit selection (ADR-0063), and even then it sets the NEXT session's default, never the running one.
+    effect: 'read',
+    // HOME-ONLY (ADR-0064 §10): a next-session CONFIG action, deliberately distinct from the Phase-2.6 mid-chat
+    // `/models` live reseat (ADR-0059). Inside a live chat the slash dispatch rejects it with a pointer to the Home.
+    run: (ctx) => ctx.openModels(),
+    availableIn: ['home'],
   },
 ];
 

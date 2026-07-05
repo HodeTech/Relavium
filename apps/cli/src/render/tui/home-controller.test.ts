@@ -8,8 +8,10 @@ import {
   createHomeController,
   type HomeChatSession,
   type HomeController,
+  type HomeModelsPort,
 } from './home-controller.js';
 import type { UserCommandOutcome } from '@relavium/core';
+import type { ModelCatalogEntry } from '@relavium/llm';
 
 import type { MentionReader } from './mention.js';
 
@@ -1576,5 +1578,173 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       cr.handleKey('n', {});
       await expect(rejectPending).resolves.toEqual({ outcome: 'reject' });
     });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------ *
+ * The `/models` picker (2.5.G S7 / ADR-0064 §10) — HOME-ONLY, opened via the Home `/` palette.
+ * ------------------------------------------------------------------------------------------------ */
+
+const CTRL_R = { ctrl: true } as const;
+
+/** A merged catalog entry with sensible defaults for the picker port fake. */
+function pickerEntry(
+  partial: Partial<ModelCatalogEntry> & Pick<ModelCatalogEntry, 'modelId'>,
+): ModelCatalogEntry {
+  return {
+    provider: 'anthropic',
+    displayName: partial.modelId,
+    pricingSource: 'registry',
+    priceKnown: true,
+    available: true,
+    deprecated: false,
+    ...partial,
+  };
+}
+
+/** A controllable {@link HomeModelsPort} fake: spies on every method; `load` returns the given entries/stamp. */
+function makeModelsPort(opts: {
+  entries?: readonly ModelCatalogEntry[];
+  refreshedAt?: number;
+  currentDefault?: string;
+  refreshIfStale?: () => Promise<Awaited<ReturnType<HomeModelsPort['refreshIfStale']>>>;
+  refresh?: () => Promise<Awaited<ReturnType<HomeModelsPort['refresh']>>>;
+  writeDefault?: (modelId: string) => void;
+} = {}): {
+  port: HomeModelsPort;
+  load: ReturnType<typeof vi.fn>;
+  refreshIfStale: ReturnType<typeof vi.fn>;
+  refresh: ReturnType<typeof vi.fn>;
+  writeDefault: ReturnType<typeof vi.fn>;
+} {
+  const entries = opts.entries ?? [pickerEntry({ modelId: 'a' }), pickerEntry({ modelId: 'b' })];
+  const load = vi.fn(() => ({ entries, refreshedAt: opts.refreshedAt }));
+  const refreshIfStale = vi.fn(opts.refreshIfStale ?? (() => Promise.resolve(undefined)));
+  const refresh = vi.fn(opts.refresh ?? (() => Promise.resolve({ providers: [] })));
+  const writeDefault = vi.fn(opts.writeDefault ?? (() => undefined));
+  const port: HomeModelsPort = {
+    load,
+    refreshIfStale,
+    refresh,
+    currentDefault: () => opts.currentDefault,
+    writeDefault,
+  };
+  return { port, load, refreshIfStale, refresh, writeDefault };
+}
+
+describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () => {
+  const EMPTY_HOME: HomeSnapshot = {
+    attention: { gates: [], failedRuns: [] },
+    recentSessions: [],
+    recentRuns: [],
+    recentAgents: [],
+    isEmpty: true,
+  };
+  const homeStore: HomeStore = { read: () => EMPTY_HOME };
+
+  /** Build a Home controller with the given models port, then open the picker via the `/` palette (the real path). */
+  function openPicker(port: HomeModelsPort): HomeController {
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: vi.fn(),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+      models: port,
+    });
+    c.handleKey('/', {}); // open the palette
+    type(c, 'models'); // filter HOME_PALETTE_COMMANDS → [/models]
+    c.handleKey('', ENTER); // run the highlighted /models → homeReplCtx.openModels → the picker opens
+    return c;
+  }
+
+  it('opens over the merged catalog and kicks a TTL-bounded background refresh', async () => {
+    const { port, load, refreshIfStale } = makeModelsPort({ refreshedAt: 1000 });
+    const c = openPicker(port);
+    const picker = c.getSnapshot().modelPicker;
+    expect(picker?.entries.map((e) => e.modelId)).toEqual(['a', 'b']);
+    expect(picker?.refreshedAt).toBe(1000);
+    expect(refreshIfStale).toHaveBeenCalledTimes(1); // the auto background refresh (ADR-0064 §5c)
+    await flush();
+    // Nothing was stale (refreshIfStale → undefined): the spinner clears, the cache stands.
+    expect(c.getSnapshot().modelPicker?.loading).toBe(false);
+    expect(load).toHaveBeenCalled();
+  });
+
+  it('selecting a model writes the NEXT session default, closes the picker, and confirms in the notice', async () => {
+    const { port, writeDefault } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER); // accept the selected (available) model
+    expect(writeDefault).toHaveBeenCalledWith('claude-x');
+    expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
+    expect(c.getSnapshot().notice).toContain('Claude X'); // the confirmation names the model
+    expect(c.getSnapshot().notice).toContain('next chat session'); // it is a NEXT-session action, not a live reseat
+  });
+
+  it('a DIMMED (unavailable) model is non-selectable: Enter shows a banner, never a write', async () => {
+    const { port, writeDefault } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'gone', displayName: 'Gone', available: false })],
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER);
+    expect(writeDefault).not.toHaveBeenCalled(); // never write an unusable default
+    expect(c.getSnapshot().modelPicker).toBeDefined(); // stays open
+    expect(c.getSnapshot().modelPicker?.banner).toContain('Gone'); // an actionable banner
+  });
+
+  it('Esc closes the picker without writing a default', async () => {
+    const { port, writeDefault } = makeModelsPort();
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', { escape: true });
+    expect(c.getSnapshot().modelPicker).toBeUndefined();
+    expect(writeDefault).not.toHaveBeenCalled();
+  });
+
+  it('Ctrl+R runs an unbounded refresh; a per-provider failure surfaces a secret-free banner', async () => {
+    const { port, refresh } = makeModelsPort({
+      refresh: () =>
+        Promise.resolve({ providers: [{ provider: 'openai', status: 'failed', error: 'redacted' }] }),
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('r', CTRL_R);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await flush();
+    const picker = c.getSnapshot().modelPicker;
+    expect(picker?.loading).toBe(false);
+    expect(picker?.banner).toContain('openai'); // names the failed provider, not the (redacted) error body
+    expect(picker?.banner).not.toContain('redacted');
+  });
+
+  it('the picker owns the keyboard: typing filters, it does not edit the Home buffer', async () => {
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'alpha' }), pickerEntry({ modelId: 'beta' })],
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('b', {}); // a printable char → extends the picker filter, NOT the Home prompt
+    expect(c.getSnapshot().modelPicker?.filter).toBe('b');
+    expect(c.getSnapshot().input.text).toBe(''); // the Home buffer behind the overlay is untouched
+  });
+
+  it('degrades to an honest notice when no models port is wired (a test/partial host)', () => {
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: vi.fn(),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+      // no `models` port
+    });
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().modelPicker).toBeUndefined();
+    expect(c.getSnapshot().notice).toContain('unavailable');
   });
 });
