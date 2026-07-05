@@ -513,9 +513,9 @@ describe('chatCommand', () => {
       if (builds++ === 0) return buildChatSession(opts);
       return Promise.reject(new Error('no API key for the fresh session'));
     };
-    const driveClear: ChatDriver = async (ctx) => {
+    const driveClear: ChatDriver = (ctx) => {
       ctx.startSession();
-      return { kind: 'clear' }; // request the swap; the rebuild then fails
+      return Promise.resolve({ kind: 'clear' as const }); // request the swap; the rebuild then fails (no await needed)
     };
     const code = await chatCommand({ agent: undefined }, { ...d, buildSession, drive: driveClear });
 

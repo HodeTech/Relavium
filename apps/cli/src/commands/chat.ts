@@ -306,34 +306,23 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       mcpSkipped: built.mcpSkipped,
     });
 
-  // The `/clear` (ADR-0062 §7) re-drive rebuild: a FRESH session bound to the SAME agent (reused verbatim — no disk
-  // re-read), MCP reconnected, store/totals empty, over the SHARED db. `built.agent` is the original bound agent and
-  // is invariant across swaps (a chat never switches agents), so capture it once for every future swap.
-  const boundAgent = built.agent;
-  const rebuild = (oldSessionId: string): Promise<ReplWiring> =>
-    buildFreshChatWiring(
-      {
-        chat: config.chat,
-        agent: boundAgent,
-        cwd: deps.global.cwd,
-        projectConfigDir,
-        now,
-        uuid,
-        providers,
-        mcpSecretResolver,
-        mcpRegistrations: config.mcpServers,
-        configPath: deps.global.configPath,
-        io: deps.io,
-        global: deps.global,
-        opened,
-        buildSession: deps.buildSession ?? buildChatSession,
-        onBudgetWarning: (warning) =>
-          deps.io.writeErr(
-            `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-          ),
-      },
-      clearedNotice(oldSessionId),
-    );
+  // The `/clear` (ADR-0062 §7) re-drive rebuild — a FRESH session bound to the SAME agent (`built.agent`, reused
+  // verbatim, invariant across swaps), MCP reconnected, store/totals empty, over the SHARED db. The contract is
+  // shared with `chat-resume` via createClearRebuild so it cannot drift.
+  const rebuild = createClearRebuild({
+    chat: config.chat,
+    agent: built.agent,
+    projectConfigDir,
+    now,
+    uuid,
+    providers,
+    mcpSecretResolver,
+    mcpRegistrations: config.mcpServers,
+    opened,
+    buildSession: deps.buildSession ?? buildChatSession,
+    io: deps.io,
+    global: deps.global,
+  });
 
   return runReplLoop(
     {
@@ -464,32 +453,21 @@ export async function chatResumeCommand(
     });
 
   // The `/clear` (ADR-0062 §7) re-drive rebuild: a FRESH session (NOT a re-resume) bound to the resumed agent —
-  // `built.agent` is the frozen snapshot agent (no on-disk ref), so it is passed verbatim to `buildChatSession`.
-  const boundAgent = built.agent;
-  const rebuild = (oldSessionId: string): Promise<ReplWiring> =>
-    buildFreshChatWiring(
-      {
-        chat: config.chat,
-        agent: boundAgent,
-        cwd: deps.global.cwd,
-        projectConfigDir,
-        now,
-        uuid,
-        providers,
-        mcpSecretResolver,
-        mcpRegistrations: config.mcpServers,
-        configPath: deps.global.configPath,
-        io: deps.io,
-        global: deps.global,
-        opened,
-        buildSession: deps.buildSession ?? buildChatSession,
-        onBudgetWarning: (warning) =>
-          deps.io.writeErr(
-            `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-          ),
-      },
-      clearedNotice(oldSessionId),
-    );
+  // `built.agent` is the frozen snapshot agent (no on-disk ref), passed verbatim. Same shared contract as `chat`.
+  const rebuild = createClearRebuild({
+    chat: config.chat,
+    agent: built.agent,
+    projectConfigDir,
+    now,
+    uuid,
+    providers,
+    mcpSecretResolver,
+    mcpRegistrations: config.mcpServers,
+    opened,
+    buildSession: deps.buildSession ?? buildChatSession,
+    io: deps.io,
+    global: deps.global,
+  });
 
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
   // re-emitting `session:started` would double a terminal-less lifecycle event — so startSession is a no-op.
@@ -808,13 +786,19 @@ export function createChatLineHandler(
       // (no live spinner) keep a one-line stderr progress note so the multi-second summary isn't a silent pause.
       // Either way `session:compacted` (→ the persister writes the boundary marker) fires and we report the RESULT.
       if (!interactive) emitOutput('compacting: summarizing the conversation…');
-      const result = await built.session.compact('manual');
-      // A manual /compact that FAILS/cancels/no-ops emits NO session:compacted|trimmed, so the store's
-      // `compacting` moment (set by session:compacting) would latch until the next turn — a following slash
-      // command would then render a stale "Summarizing…" spinner. Clear it here; a SUCCESSFUL compact already
-      // cleared it via session:compacted, so this is an idempotent no-op on the happy path.
-      store.clearCompacting();
-      emitOutput(compactionNotice(result));
+      try {
+        emitOutput(compactionNotice(await built.session.compact('manual')));
+      } catch {
+        // compact() RE-THROWS an unclassified error (a bug) rather than returning {kind:'failed'} — never crash
+        // the REPL (the discipline every slash command obeys); surface a static, secret-free notice instead.
+        emitOutput('compaction failed unexpectedly — the conversation is unchanged.');
+      } finally {
+        // ALWAYS reset the moment: a failed/cancelled/no-op /compact (and an unclassified throw) emits NO
+        // session:compacted|trimmed terminal, so without this the store's `compacting` flag (set by
+        // session:compacting) would latch and a later slash command would render a stale "Summarizing…" spinner.
+        // A SUCCESSFUL compact already cleared it via session:compacted, making this an idempotent no-op there.
+        store.clearCompacting();
+      }
     },
     // `/trim [n]` (ADR-0062): deterministic drop, no LLM call. Bare `/trim` uses `[chat].max_messages`; an
     // inline `n` overrides it. A missing bound (no arg + no config) is an actionable notice, never a silent no-op.
@@ -972,6 +956,50 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     intro,
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
+}
+
+/**
+ * Build the `/clear` re-drive rebuild closure (ADR-0062 §7) — SHARED by `chat` and `chat-resume` so the rebuild
+ * CONTRACT (the {@link FreshChatWiringDeps} assembly + the {@link buildFreshChatWiring} call) lives in ONE place and
+ * cannot drift between them. Given the current session's bound agent + the command's capability inputs, it returns a
+ * `(oldSessionId) => Promise<ReplWiring>` that assembles a FRESH session over the SAME agent + SHARED db, its intro
+ * the {@link clearedNotice} naming the prior (still-resumable) session.
+ */
+function createClearRebuild(params: {
+  readonly chat: BuildChatSessionOptions['chat'];
+  readonly agent: AgentDefinition;
+  readonly projectConfigDir: string | undefined;
+  readonly now: () => number;
+  readonly uuid: () => string;
+  readonly providers: ProviderResolver;
+  readonly mcpSecretResolver: McpSecretResolver;
+  readonly mcpRegistrations: BuildChatSessionOptions['mcpRegistrations'];
+  readonly opened: OpenedSessionStore;
+  readonly buildSession: typeof buildChatSession;
+  readonly io: CliIo;
+  readonly global: GlobalOptions;
+}): (oldSessionId: string) => Promise<ReplWiring> {
+  const wiringDeps: FreshChatWiringDeps = {
+    chat: params.chat,
+    agent: params.agent,
+    cwd: params.global.cwd,
+    projectConfigDir: params.projectConfigDir,
+    now: params.now,
+    uuid: params.uuid,
+    providers: params.providers,
+    mcpSecretResolver: params.mcpSecretResolver,
+    mcpRegistrations: params.mcpRegistrations,
+    configPath: params.global.configPath,
+    io: params.io,
+    global: params.global,
+    opened: params.opened,
+    buildSession: params.buildSession,
+    onBudgetWarning: (warning) =>
+      params.io.writeErr(
+        `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
+      ),
+  };
+  return (oldSessionId) => buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId));
 }
 
 /**

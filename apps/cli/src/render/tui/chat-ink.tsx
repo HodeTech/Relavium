@@ -181,6 +181,32 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // When the palette is open it renders its own query line + hint below, so suppress the idle prompt + footer to
   // avoid two competing prompts (the palette owns the input focus until it closes).
   const showIdlePrompt = !running && paletteOpen !== true;
+  // The in-flight busy line — extracted from a nested ternary: the labeled compaction moment (ADR-0062 §7), the
+  // `!`-shell command line, or the streaming token line. Only rendered while `running`.
+  const renderBusyLine = (): ReactElement => {
+    if (state.compacting) {
+      // The compaction moment (ADR-0062 §7): a `/compact` or auto-threshold summarisation is in flight — distinct
+      // from the token stream (its agent:token events are NOT forwarded), so a paid, multi-second operation reads
+      // as deliberate work, never an apparently-frozen pause. Esc aborts it.
+      return (
+        <Text {...dimProps(color)} wrap="truncate-end">
+          {`${spinnerFrame(tick)} ⟳ Summarizing conversation… · Esc to cancel`}
+        </Text>
+      );
+    }
+    if (props.busyCommand === undefined) {
+      return (
+        <Text>
+          {spinnerFrame(tick)} {stripTerminalControls(state.liveTokens)}
+        </Text>
+      );
+    }
+    return (
+      <Text {...dimProps(color)} wrap="truncate-end">
+        {`${spinnerFrame(tick)} ! ${sanitizeInline(props.busyCommand)} — running · Esc to cancel`}
+      </Text>
+    );
+  };
   return (
     <Box flexDirection="column">
       {/* Completed transcript — ink Static prints each entry once, then it scrolls into terminal history. */}
@@ -198,22 +224,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
               {formatToolCall(call)}
             </Text>
           ))}
-          {state.compacting ? (
-            // The labeled compaction moment (ADR-0062 §7): a `/compact` or auto-threshold summarisation is in
-            // flight. Distinct from the token stream (its agent:token events are NOT forwarded) so a paid,
-            // multi-second operation reads as deliberate work, never an apparently-frozen pause. Esc aborts it.
-            <Text {...dimProps(color)} wrap="truncate-end">
-              {`${spinnerFrame(tick)} ⟳ Summarizing conversation… · Esc to cancel`}
-            </Text>
-          ) : props.busyCommand === undefined ? (
-            <Text>
-              {spinnerFrame(tick)} {stripTerminalControls(state.liveTokens)}
-            </Text>
-          ) : (
-            <Text {...dimProps(color)} wrap="truncate-end">
-              {`${spinnerFrame(tick)} ! ${sanitizeInline(props.busyCommand)} — running · Esc to cancel`}
-            </Text>
-          )}
+          {renderBusyLine()}
         </Box>
       )}
 

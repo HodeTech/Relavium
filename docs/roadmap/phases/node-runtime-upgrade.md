@@ -3,7 +3,7 @@
 > Status: **Analysis / deferred maintainer decision.** NOT scheduled into any phase; NOT part of
 > Phase 2.5.F. This note captures the findings so the decision isn't lost — acting on it is a
 > separate, governed change (see [§6 Governance](#6-governance--what-acting-on-this-requires)).
-
+>
 > Snapshot date: **2026-07-05.** Every version/EOL number below is a point-in-time fact from that
 > day (live web + [`endoflife.date/nodejs`](https://endoflife.date/nodejs) + npm/GitHub). Node
 > releases and dependency versions move — **re-verify at the PR that acts on this.**

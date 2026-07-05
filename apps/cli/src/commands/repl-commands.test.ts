@@ -124,7 +124,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('replCommandList renders the slash hint, formatReplHelp lists every command', () => {
     expect(replCommandList()).toBe(
-      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /compact, /trim',
+      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /compact, /trim, /clear',
     );
     const help = formatReplHelp();
     for (const command of REPL_COMMANDS) {
