@@ -182,7 +182,12 @@ flight left no host-visible busy signal, so a message typed mid-command could cr
 preview, expanded into the SAME UNTRUSTED nonce-fenced frame only at submit — byte-identical model context, a
 clean prompt), and two follow-up review passes hardened the `[chat]` allowlist resolution (exact + glob arrays are
 now a **coupled unit**) and fixed a Backspace regression (ink reports the Unix physical Backspace as `key.delete`);
-all recorded in the ADR-0061 "Refined at implementation" append. **Next in the experience arm: 2.5.F / G.** See the
+all recorded in the ADR-0061 "Refined at implementation" append. **2.5.F** (the ADR-0062 context commands) is ✅
+**Done (PR #65, merged 2026-07-05)** behind [ADR-0062](../decisions/0062-context-compaction-and-cli-history-commands.md):
+`/clear` (a host-level fresh-session swap across `chat`/`chat-resume`/Home, TTY-interactive only), the
+`session:compacting` "Summarizing…" moment event (amending ADR-0036), and the footer context-fullness indicator —
+completing compaction alongside the earlier `/compact` + `/trim` + automatic compaction. **Next in the experience
+arm: 2.5.G** (onboarding wizard + Home `/models`); the additive lanes 2.5.H / I / J run in parallel. See the
 [Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md).
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks

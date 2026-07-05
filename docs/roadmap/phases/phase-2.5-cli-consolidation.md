@@ -7,7 +7,9 @@
 > → **2.5.E** (modes + per-tool approval + mid-turn abort) ✅ **Done (PR #63, 2026-07-03)** (ADR-0057 Accepted)
 > — **the spine is complete**. Experience arm: **2.5.D** (chat input ergonomics + `@`/`!` chip model) ✅ **Done
 > (PR #64, 2026-07-03)** behind [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md).
-> **Next: 2.5.F / G** (off the spine, depends on B/C). Additive lanes (no dependency chain): 2.5.H / I / J.
+> **2.5.F** (`/clear` + the `session:compacting` "Summarizing…" moment + the context-fullness footer, completing
+> the ADR-0062 compaction story) ✅ **Done (PR #65, merged 2026-07-05)**. **Next: 2.5.G** (onboarding wizard +
+> Home `/models`). Additive lanes (no dependency chain): 2.5.H / I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
 
@@ -363,7 +365,7 @@ is sandbox-bounded with protected paths honoured. A security review of the resea
 (defense-in-depth trade-off) passes. **Required ADR: per-tool approval + reseat-less chat mode system
 (incl. mid-turn abort).**
 
-### 2.5.F — `/clear`, `/trim`, and `/compact` (context compaction)
+### 2.5.F — `/clear`, `/trim`, and `/compact` (context compaction) — ✅ **Done (PR #65, merged 2026-07-05)**
 
 > **Scope expanded (2026-07-04, [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)).**
 > The maintainer removed the Phase-3 deferral of `/compact`: we build the **full** context-compaction
@@ -387,16 +389,19 @@ host + docs), each with an Opus + Sonnet review round.
 context (append-only, resume-preserving, cost-accounted); auto-compaction bounds a long chat before it
 overflows the context window; the summary is inspectable and the moment is a designed state.
 
-> **Landed pending merge (PR for ADR-0062, three reviewed steps — shared/seam/db, engine primitive, CLI host —
+> **Landed & merged (PR #65 for ADR-0062, three reviewed steps — shared/seam/db, engine primitive, CLI host —
 > each with an Opus + Sonnet review round):** the compaction engine primitive, automatic compaction, append-only
 > resume/reseat-preserving persistence, `/compact`, and `/trim [n]` are **complete**. The final 2.5.F items then
-> landed (pending merge): **`/clear`** — the fresh-session lifecycle swap (ADR-0062 §7) across `relavium chat`,
+> landed: **`/clear`** — the fresh-session lifecycle swap (ADR-0062 §7) across `relavium chat`,
 > `chat-resume`, and the in-Home chat: a host-level re-drive (standalone) / build-first `clearChat` (Home) that ends
 > the current session (persisted + resumable) and rebinds the same agent under a new `sessionId`, TTY-interactive-only
 > (rejected under `--json`/plain), zero engine change; and the two compaction-moment UX polishes — the **labeled**
 > "Summarizing…" spinner off a new additive `session:compacting` engine event (amends ADR-0036's event substrate) and
 > the footer **context-fullness** indicator (last input ÷ the model's context window, via the new pure
-> `@relavium/llm` `contextWindowForModel` helper). **With these 2.5.F is feature-complete (roadmap-done-after-merge).**
+> `@relavium/llm` `contextWindowForModel` helper). **With these 2.5.F is ✅ Done (PR #65, merged 2026-07-05); the
+> merged PR also carried a parallel Opus + Sonnet review round — the compacting-latch spinner fix, the 0%-ctx
+> footer guard, the Home double-clear MCP-leak guard, best-effort auto-compaction, and the shared adapter
+> `CONTEXT_SEAM_DEFAULTS`.**
 
 ### 2.5.G — Onboarding wizard and `/models` (Home model catalog)
 
