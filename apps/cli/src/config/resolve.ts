@@ -87,7 +87,7 @@ export function resolveConfig(layers: ConfigLayers): ResolvedConfig {
     mediaCostEstimate:
       project?.defaults?.media_cost_estimate ?? workspace?.defaults?.media_cost_estimate,
     mediaGcGraceMs: resolveGraceMs(project, workspace),
-    chat: resolveChat(project, workspace),
+    chat: resolveChat(project, workspace, global),
     variables: { ...workspace?.variables, ...project?.variables },
     mcpServers: mergeMcpServers(global?.mcp_servers, workspace?.mcp_servers, project?.mcp_servers),
   };
@@ -106,13 +106,18 @@ function resolveGraceMs(
 }
 
 /**
- * Resolve the `[chat]` block (last-writer-wins: project → workspace; `[chat]` is project/workspace-scoped,
- * not global — config-spec.md). Absent at every layer ⇒ all-`undefined` fields, so the chat host falls
+ * Resolve the `[chat]` block (last-writer-wins: project → workspace). Most fields are project/workspace-scoped
+ * only; `default_model` additionally falls back to the GLOBAL `[preferences].default_model`
+ * ([ADR-0063](../../../../docs/decisions/0063-cli-config-write-contract.md)) — the write target of `/models` and
+ * the onboarding wizard — so a user's "preferred model everywhere" applies to chat when no project/workspace
+ * `[chat].default_model` overrides it, mirroring how the workflow default (`resolveConfig.defaultModel`) already
+ * reads `[preferences].default_model`. Absent at every layer ⇒ all-`undefined` fields, so the chat host falls
  * back to its engine defaults (e.g. `maxTurns` ⇒ `SessionDeps`'s built-in 50).
  */
 function resolveChat(
   project: ProjectConfig | undefined,
   workspace: ProjectConfig | undefined,
+  global: GlobalConfig | undefined,
 ): ResolvedChatConfig {
   const p = project?.chat;
   const w = workspace?.chat;
@@ -125,7 +130,7 @@ function resolveChat(
   const projectSetsAllowlist =
     p?.allowed_commands !== undefined || p?.allowed_command_globs !== undefined;
   return {
-    defaultModel: p?.default_model ?? w?.default_model,
+    defaultModel: p?.default_model ?? w?.default_model ?? global?.preferences?.default_model,
     fsScope: p?.fs_scope ?? w?.fs_scope,
     maxTurns: p?.max_turns ?? w?.max_turns,
     maxMessages: p?.max_messages ?? w?.max_messages,
