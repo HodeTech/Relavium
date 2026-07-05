@@ -83,3 +83,15 @@ export function trimNotice(result: TrimResult): string {
     ? `✂ Trimmed ${result.droppedMessageCount} older message(s) — keeping the last ${result.keptMessageCount}.`
     : `Nothing to trim — ${result.messageCount} message(s), already within the bound.`;
 }
+
+/**
+ * The `/clear` notice (ADR-0062 §7) — the current conversation has been ended (still persisted + resumable) and a
+ * fresh session started. It surfaces the OLD sessionId + the exact `relavium chat-resume` command so the prior
+ * conversation is DISCOVERABLE, not merely theoretically recoverable. The id is `sanitizeInline`-guarded: a
+ * `sessionId` is only schema-constrained to a non-empty string (the CLI mints a UUID, but `history.db` is shared
+ * with other surfaces), so a crafted stored id could otherwise smuggle a terminal escape into this notice.
+ */
+export function clearedNotice(oldSessionId: string): string {
+  const safeId = sanitizeInline(oldSessionId);
+  return `✨ Started a fresh conversation. The previous one is saved — resume it with \`relavium chat-resume ${safeId}\`.`;
+}

@@ -31,7 +31,7 @@ import { BoundedEventStream, DEFAULT_STREAM_CAPACITY } from './event-stream.js';
 
 /**
  * The fully-stamped events a session stream carries: the `session:*` lifecycle/side events (started /
- * turn_started / turn_completed / cancelled / exported / compacted / trimmed — ADR-0062), the four
+ * turn_started / turn_completed / cancelled / exported / compacting / compacted / trimmed — ADR-0062), the four
  * dual-envelope in-turn events (`agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated`),
  * and the host-emitted `agent:approval_requested` (ADR-0057) — all carrying `sessionId`. The complete
  * session stream per sse-event-schema.md §"Session event namespace".

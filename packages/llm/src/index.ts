@@ -122,7 +122,7 @@ export {
 } from './llm-error.js';
 
 // CostTracker + the canonical model-pricing table (1.B).
-export { MODEL_PRICING, KNOWN_MODEL_IDS } from './pricing.js';
+export { MODEL_PRICING, KNOWN_MODEL_IDS, contextWindowForModel } from './pricing.js';
 export type { ModelPricing, CanonicalModelId } from './pricing.js';
 export { priceModel, cost, mediaCost, CostTracker } from './cost-tracker.js';
 export type { CostUpdate } from './cost-tracker.js';

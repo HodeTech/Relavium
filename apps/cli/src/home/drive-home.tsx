@@ -192,7 +192,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // createChatLineHandler owns the mode control (ADR-0057): it applies the initial `ask` mode → the
         // fail-closed approval regime — BEFORE the session opens, so the full-capability chat host is never live
         // without the per-tool approval floor (the SAME guarantee the `chat` command's runReplLoop provides).
-        const { processLine, cancelOnce, shouldStop, onAbort, onModeChange } =
+        const { processLine, cancelOnce, shouldStop, stopReason, onAbort, onModeChange } =
           createChatLineHandler(
             { built, opened, store, persister, doctorProbes: chatDoctorProbes },
             deps,
@@ -238,6 +238,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           store,
           processLine,
           shouldStop,
+          stopReason,
+          sessionId: built.sessionId,
           teardown,
           onAbort,
           onModeChange,

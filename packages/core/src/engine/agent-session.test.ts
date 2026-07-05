@@ -1265,6 +1265,14 @@ describe('AgentSession — context compaction + trim (ADR-0062)', () => {
       summaryUser?.content.map((p) => (p.type === 'text' ? p.text : '')).join('') ?? '';
     expect(summaryText).toContain('User: q1');
     expect(summaryText).toContain('Assistant: a1');
+    // The compaction MOMENT was announced (ADR-0062 §7): session:compacting fired BEFORE the terminal
+    // session:compacted, carrying the same reason — the host drives a labeled "Summarizing…" indicator off it.
+    const compactingIdx = events.findIndex((e) => e.type === 'session:compacting');
+    const compactedIdx = events.findIndex((e) => e.type === 'session:compacted');
+    expect(compactingIdx).toBeGreaterThanOrEqual(0);
+    expect(compactedIdx).toBeGreaterThan(compactingIdx); // START precedes the terminal
+    const compacting = events[compactingIdx];
+    expect(compacting?.type === 'session:compacting' && compacting.reason).toBe('manual');
     // A session:compacted event carried the summary + the summarisation spend (accounted, ADR-0028).
     const compacted = events.find((e) => e.type === 'session:compacted');
     expect(compacted?.type === 'session:compacted' && compacted.reason).toBe('manual');

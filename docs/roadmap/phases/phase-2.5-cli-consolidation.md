@@ -389,10 +389,14 @@ overflows the context window; the summary is inspectable and the moment is a des
 
 > **Landed pending merge (PR for ADR-0062, three reviewed steps — shared/seam/db, engine primitive, CLI host —
 > each with an Opus + Sonnet review round):** the compaction engine primitive, automatic compaction, append-only
-> resume/reseat-preserving persistence, `/compact`, and `/trim [n]` are **complete**. **Remaining 2.5.F item:**
-> `/clear` (a fresh-session lifecycle swap, orthogonal to compaction) plus two compaction-moment UX polishes (a
-> **labeled** "Summarizing…" spinner — needs a `session:compacting` start signal — and a footer context-fullness
-> indicator). 2.5.F is **not yet Done** (roadmap-done-after-merge).
+> resume/reseat-preserving persistence, `/compact`, and `/trim [n]` are **complete**. The final 2.5.F items then
+> landed (pending merge): **`/clear`** — the fresh-session lifecycle swap (ADR-0062 §7) across `relavium chat`,
+> `chat-resume`, and the in-Home chat: a host-level re-drive (standalone) / build-first `clearChat` (Home) that ends
+> the current session (persisted + resumable) and rebinds the same agent under a new `sessionId`, TTY-interactive-only
+> (rejected under `--json`/plain), zero engine change; and the two compaction-moment UX polishes — the **labeled**
+> "Summarizing…" spinner off a new additive `session:compacting` engine event (amends ADR-0036's event substrate) and
+> the footer **context-fullness** indicator (last input ÷ the model's context window, via the new pure
+> `@relavium/llm` `contextWindowForModel` helper). **With these 2.5.F is feature-complete (roadmap-done-after-merge).**
 
 ### 2.5.G — Onboarding wizard and `/models` (Home model catalog)
 

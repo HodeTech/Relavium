@@ -202,6 +202,37 @@ describe('chat-projection', () => {
       expect(footer).not.toMatch(/[\x00-\x1f\x7f]/);
       expect(footer.startsWith('evil model · ')).toBe(true); // escapes stripped; newline collapsed
     });
+
+    it('appends the context-fullness segment (last input ÷ window) after a turn completes (ADR-0062 §7)', () => {
+      const footer = formatSessionFooter({
+        ...initialSessionViewState(),
+        model: 'claude-sonnet-4-6',
+        lastInputTokens: 500_000,
+        contextWindowTokens: 1_000_000,
+        turnCount: 2,
+      });
+      expect(footer).toContain('50% ctx');
+    });
+
+    it('omits the fullness segment with no completed turn OR an unknown (custom-model) window', () => {
+      // A known window but no lastInputTokens (no turn yet) ⇒ no segment.
+      expect(
+        formatSessionFooter({ ...initialSessionViewState(), contextWindowTokens: 1_000_000 }),
+      ).not.toContain('% ctx');
+      // A last-turn count but an unknown window (a custom base-URL model) ⇒ no segment.
+      expect(
+        formatSessionFooter({ ...initialSessionViewState(), lastInputTokens: 100 }),
+      ).not.toContain('% ctx');
+    });
+
+    it('clamps the fullness to 100% for a preamble-heavy over-window turn', () => {
+      const footer = formatSessionFooter({
+        ...initialSessionViewState(),
+        lastInputTokens: 1_500_000,
+        contextWindowTokens: 1_000_000,
+      });
+      expect(footer).toContain('100% ctx');
+    });
   });
 
   describe('formatSessionFooterWithMode', () => {

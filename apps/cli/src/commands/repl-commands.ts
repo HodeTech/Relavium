@@ -1,8 +1,8 @@
 /**
  * The **curated in-REPL command registry** ([ADR-0056](../../../../docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md),
  * 2.5.C — see the amendment). The `/` palette + slash commands inside the Home and chat surface only the commands
- * that make sense in a live REPL: lifecycle (`/exit`, `/cancel`, `/export`) and info/discovery (`/help`,
- * `/workflows`, `/cost`, `/doctor`; `/clear` is a future addition). `/shortcuts` was dropped (S6) — the `/` palette
+ * that make sense in a live REPL: lifecycle (`/exit`, `/cancel`, `/export`, `/clear`) and info/discovery (`/help`,
+ * `/workflows`, `/cost`, `/doctor`). `/shortcuts` was dropped (S6) — the `/` palette
  * (its own nav hints) + the footer hint-bar handle keymap discoverability in context. The heavy, session-starting
  * **shell** commands (`run`, `chat`, `provider`, …) stay shell-only ([manifest.ts](manifest.ts) /
  * [dispatch.ts](dispatch.ts)) — never run from inside a chat.
@@ -46,6 +46,13 @@ export interface ReplCommandContext {
   /** `/trim [n]` (ADR-0062) — deterministically drop older messages to the last `n` (default `[chat].max_messages`),
    *  no LLM call. Receives the raw `n` token (empty ⇒ use the config default). */
   readonly trimHistory: (nArg: string) => void | Promise<void>;
+  /** `/clear` (ADR-0062 §7) — end THIS conversation (persisted + still resumable via `chat-resume`) and start a
+   *  FRESH session under a new `sessionId`. A destructive HOST-LEVEL lifecycle swap (no engine primitive), so its
+   *  effect on the running REPL differs by surface: a live chat (standalone or in-Home) tears the current session
+   *  down and swaps in a fresh one; the BARE Home (no live session) surfaces an inert "nothing to clear" notice.
+   *  Interactive-only — a `--json` / plain non-TTY session rejects it (one machine stream is one session lifecycle).
+   *  Its notice surfaces the OLD sessionId + `relavium chat-resume <id>` so the prior conversation is discoverable. */
+  readonly clearSession: () => void | Promise<void>;
 }
 
 /** A flag a {@link ReplCommand} accepts after its name (e.g. `/doctor --deep`). Flags only — the curated set has
@@ -62,7 +69,7 @@ export interface ReplCommand {
   readonly label: string;
   readonly description: string;
   /** A forward annotation, shared with the shell manifest ({@link CommandEffect}): `read` (no data change) /
-   *  `write` (creates a file) / `destructive` (irreversibly removes — e.g. a future `/clear`). */
+   *  `write` (creates a file) / `destructive` (irreversibly removes — e.g. `/clear`, which ends the current session). */
   readonly effect: CommandEffect;
   /** The flags this command accepts after its name (omitted ⇒ zero-arg). The dispatch rejects any token not
    *  listed here, so a zero-arg command still rejects `/exit now`. */
@@ -187,6 +194,18 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     positional: { name: 'n', values: [] },
     run: (ctx, args) => ctx.trimHistory(args[0] ?? ''),
     availableIn: ['chat'],
+  },
+  {
+    name: 'clear',
+    label: 'Clear',
+    description: 'End this conversation (saved + resumable) and start a fresh session.',
+    // `destructive` in the forward taxonomy (ADR-0062 §7): it ends the current session — still persisted +
+    // resumable via `chat-resume` — and swaps in a fresh one under a new sessionId. Offered in BOTH surfaces'
+    // palettes (['home','chat']): a live chat (standalone OR in-Home) performs the swap, while the BARE Home has
+    // no session and surfaces an inert "nothing to clear" notice (see homeReplCtx). Zero-arg (`/clear x` rejects).
+    effect: 'destructive',
+    run: (ctx) => ctx.clearSession(),
+    availableIn: ['home', 'chat'],
   },
 ];
 

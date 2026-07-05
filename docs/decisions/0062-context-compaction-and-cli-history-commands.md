@@ -324,6 +324,35 @@ Clarifications surfaced by the step-1 adversarial review — refinements of this
   not on the marker row. A historical `chat-export`/audit view recovers the summary text and boundary, not the
   "why"/"at what cost"; a richer audit column is a future add, not a v1 gap.
 
+### Refined during 2.5.F final-step implementation (2026-07-05)
+
+The last 2.5.F items — `/clear` and the two compaction-moment UX polishes — landed with these realizations of §7
+(refinements, not reversals):
+
+- **The compaction moment is a first-class event, not a host-only spinner.** §7 said "for a manual `/compact` the
+  host shows a spinner while awaiting `compact()`". The implementation instead adds one additive session-lifecycle
+  **`session:compacting`** side event (`reason: 'manual' | 'auto-threshold'`), emitted at the start of `compact()`
+  after the nothing-to-fold / plan guards. This unifies the manual and automatic paths (both drive the SAME labeled
+  "Summarizing…" moment off the event) and lets the auto path — which runs inside `sendMessage`, invisible to the
+  host — also render a *labeled* moment rather than the generic turn spinner. It amends the
+  [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) event substrate (a side event, no marker row);
+  a manual `/compact` failure emits no terminal, so the host clears the moment when `compact()` settles (the
+  busy-gated render keeps a stale flag invisible; the next `session:turn_started` clears it regardless).
+- **The context-fullness indicator reads the catalog host-side, not the seam.** The footer indicator (last input ÷
+  window) uses a new pure `@relavium/llm` `contextWindowForModel(model)` helper — the SAME `MODEL_PRICING`
+  `contextWindowTokens` the adapters' `contextLimit` returns — so the host need not resolve a provider to render a
+  light footer segment. It degrades to "not shown" for a custom base-URL model (the same models that skip
+  auto-compaction) and until the first turn completes. A minor imprecision under fallback (the footer uses the
+  bound/primary model's window, whereas auto-compaction uses the serving model's) is accepted for a "light" indicator.
+- **`/clear` is a host-level lifecycle swap with ZERO engine change (§7 held).** Standalone `relavium chat` /
+  `chat-resume` re-drive over a freshly-built session (the `ChatDriver` contract gained a `{kind:'exit'|'clear'}`
+  outcome; the shared db handle survives the swap, closed once); the in-Home chat swaps in place via a build-first
+  `clearChat` (a failed fresh build keeps the old, resumable session live). The fresh session rebinds the SAME agent
+  verbatim (`buildChatSession` gained an `agent` override — no disk re-read, and the only way `chat-resume`'s
+  snapshot agent can seed a fresh session), reconnects MCP fresh, and resets mode → `ask` + totals → zero. It is
+  **TTY-interactive-only** (rejected under `--json`/plain: one machine stream stays one session lifecycle,
+  [ADR-0049](0049-cli-machine-output-contract.md)).
+
 ## Consequences
 
 ### Positive

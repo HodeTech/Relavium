@@ -657,6 +657,22 @@ export const SessionExportedEventSchema = z.object({
 });
 
 /**
+ * Context compaction STARTED ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) §7,
+ * amending [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) — the engine began
+ * summarising the working context (a `/compact` or an auto-threshold trigger) and the summariser LLM call is now in
+ * flight. Emitted at the START of `compact()` (after the nothing-to-fold / plan-resolution guards), and paired with
+ * a terminal `session:compacted` (success) / `session:trimmed` `auto-fallback` (summariser failed) / a silent
+ * settle (a manual `/compact` that failed — the host clears the moment when `compact()` resolves). The host drives a
+ * labeled "Summarizing…" moment off it so a paid, multi-second operation is never an apparently-frozen pause. It
+ * carries no counts — the token deltas ride the terminal `session:compacted`; it is purely the moment's START.
+ */
+export const SessionCompactingEventSchema = z.object({
+  type: z.literal('session:compacting'),
+  ...sessionBase,
+  reason: z.enum(['manual', 'auto-threshold']),
+});
+
+/**
  * Context compaction applied ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)) —
  * the engine summarised the earlier working context into `summary` and now feeds it as a system-prompt
  * preamble; the host writes the append-only boundary marker row on this event. `keptMessageCount` is how many
@@ -706,10 +722,12 @@ export const SessionEventSchema = z.discriminatedUnion('type', [
   SessionTurnCompletedEventSchema,
   SessionCancelledEventSchema,
   SessionExportedEventSchema,
+  SessionCompactingEventSchema,
   SessionCompactedEventSchema,
   SessionTrimmedEventSchema,
 ]);
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
+export type SessionCompactingEvent = z.infer<typeof SessionCompactingEventSchema>;
 export type SessionCompactedEvent = z.infer<typeof SessionCompactedEventSchema>;
 export type SessionTrimmedEvent = z.infer<typeof SessionTrimmedEventSchema>;
 

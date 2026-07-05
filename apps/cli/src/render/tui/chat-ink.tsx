@@ -5,6 +5,7 @@ import {
   driveJson,
   drivePlain,
   type ChatDriveContext,
+  type ChatDriveOutcome,
   type ChatDriver,
 } from '../../commands/chat.js';
 import { CHAT_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
@@ -197,7 +198,14 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
               {formatToolCall(call)}
             </Text>
           ))}
-          {props.busyCommand === undefined ? (
+          {state.compacting ? (
+            // The labeled compaction moment (ADR-0062 §7): a `/compact` or auto-threshold summarisation is in
+            // flight. Distinct from the token stream (its agent:token events are NOT forwarded) so a paid,
+            // multi-second operation reads as deliberate work, never an apparently-frozen pause. Esc aborts it.
+            <Text {...dimProps(color)} wrap="truncate-end">
+              {`${spinnerFrame(tick)} ⟳ Summarizing conversation… · Esc to cancel`}
+            </Text>
+          ) : props.busyCommand === undefined ? (
             <Text>
               {spinnerFrame(tick)} {stripTerminalControls(state.liveTokens)}
             </Text>
@@ -746,8 +754,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   );
 }
 
-/** The TTY ink driver: mount {@link ChatApp}, run the frame loop, and finalize on exit. */
-export function driveInk(ctx: ChatDriveContext): Promise<void> {
+/** The TTY ink driver: mount {@link ChatApp}, run the frame loop, and finalize on exit. Returns the drive OUTCOME
+ *  ({@link ChatDriveOutcome}) so the re-drive loop can swap in a fresh session on `/clear` (ADR-0062 §7). */
+export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // The resume banner (2.N): print it once before mounting ink so it scrolls into the terminal history above
   // the live region — the TTY counterpart of the line drivePlain writes, so a resumed session is visibly a
   // resume (not just an N-turn footer). A fresh session has no intro and prints nothing here.
@@ -842,14 +851,17 @@ export function driveInk(ctx: ChatDriveContext): Promise<void> {
       .then(() => {
         // The persistent final summary — written on any cooperative end (/exit, /cancel, keyboard Ctrl-C, or
         // an external SIGINT, all of which resolve `exited`); an unexpected error reject skips it (→ exit 1).
-        ctx.io.writeOut(`${ctx.store.summaryText()}\n`);
+        // SUPPRESSED on a `/clear` swap (ADR-0062 §7): the old session's stats would clutter the transition — the
+        // fresh session's clearedNotice intro is the sole marker; a real end still prints the summary.
+        if (ctx.stopReason() === 'exit') ctx.io.writeOut(`${ctx.store.summaryText()}\n`);
       })
       .finally(() => {
         clearInterval(frame);
         unsubscribe();
         instance?.unmount();
         process.removeListener('SIGINT', onSigint);
-      });
+      })
+      .then((): ChatDriveOutcome => ({ kind: ctx.stopReason() }));
   } catch (err) {
     // render() threw synchronously — clean up the interval, subscription, and SIGINT handler set up above so
     // none leaks past the throw (the finally above is never reached when render() throws).

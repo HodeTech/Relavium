@@ -626,6 +626,7 @@ const validSession: Record<string, Record<string, unknown>> = {
   },
   'session:cancelled': { type: 'session:cancelled', ...senv },
   'session:exported': { type: 'session:exported', ...senv, workflowPath: '/w/x.relavium.yaml' },
+  'session:compacting': { type: 'session:compacting', ...senv, reason: 'manual' },
   'session:compacted': {
     type: 'session:compacted',
     ...senv,
@@ -650,19 +651,29 @@ describe('SessionEvent union — the agent-first namespace', () => {
     expect(SessionEventSchema.safeParse(validSession[name]).success).toBe(true);
   });
 
-  it('covers exactly the seven session:* names, pinned to a literal list', () => {
+  it('covers exactly the eight session:* names, pinned to a literal list', () => {
     const CONTRACT_NAMES = [
       'session:started',
       'session:turn_started',
       'session:turn_completed',
       'session:cancelled',
       'session:exported',
+      'session:compacting', // ADR-0062 — the "Summarizing…" moment START
       'session:compacted', // ADR-0062
       'session:trimmed', // ADR-0062
     ];
     expect(SessionEventSchema.options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(SESSION_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
     expect(Object.keys(validSession)).toEqual(CONTRACT_NAMES);
+  });
+
+  it('binds session:compacting.reason to the two-value enum (ADR-0062 — the moment START)', () => {
+    const ok = validSession['session:compacting'];
+    expect(SessionEventSchema.safeParse(ok).success).toBe(true);
+    // Symmetric with session:compacted.reason — manual / auto-threshold (NOT auto-fallback, which is a trim).
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'auto-threshold' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'auto-fallback' }).success).toBe(false);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'nope' }).success).toBe(false);
   });
 
   it('binds session:compacted.reason to the two-value enum and requires a non-empty summary (ADR-0062)', () => {

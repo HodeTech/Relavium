@@ -2,7 +2,13 @@ import type { CompactionResult, TrimResult } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
 import type { CatalogEntry } from '../workflows/catalog.js';
-import { catalogNotice, compactionNotice, costNotice, trimNotice } from './repl-info.js';
+import {
+  catalogNotice,
+  clearedNotice,
+  compactionNotice,
+  costNotice,
+  trimNotice,
+} from './repl-info.js';
 
 const entry = (slug: string, valid = true): CatalogEntry => ({
   slug,
@@ -73,5 +79,23 @@ describe('compactionNotice / trimNotice (ADR-0062)', () => {
     expect(trimNotice(trimmed)).toContain('Trimmed 8');
     expect(trimNotice(trimmed)).toContain('last 20');
     expect(trimNotice({ kind: 'nothing_to_trim', messageCount: 5 })).toContain('already within');
+  });
+});
+
+describe('clearedNotice (ADR-0062 §7)', () => {
+  it('names the prior session + the exact chat-resume command so it is discoverable', () => {
+    const notice = clearedNotice('sess-42');
+    expect(notice).toContain('fresh conversation');
+    expect(notice).toContain('relavium chat-resume sess-42'); // the exact recovery command, not just the id
+  });
+
+  it('sanitizes a crafted session id (no terminal escape reaches the TTY)', () => {
+    // `history.db` is shared with other surfaces whose ids are only non-empty strings, so a row may carry control
+    // bytes — the notice must strip them (parity with the resume banner), never let one inject into the terminal.
+    const notice = clearedNotice(`evil${String.fromCharCode(27)}]0;x${String.fromCharCode(7)}\nFAKE`);
+    expect(notice).not.toContain(String.fromCharCode(27)); // no ESC survives
+    expect(notice).not.toContain(String.fromCharCode(7)); // no BEL survives
+    expect(notice).not.toContain('\n'); // the smuggled newline is collapsed — the notice stays one line
+    expect(notice).toContain('relavium chat-resume'); // the static recovery text is intact
   });
 });

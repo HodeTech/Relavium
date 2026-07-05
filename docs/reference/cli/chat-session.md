@@ -57,6 +57,7 @@ A small, **alias-free**, curated set of slash commands drives the REPL itself (n
 | `/doctor` | Run a setup health check as a **notice** (**2.5.C S5**). Fast tier: OS keychain reachable · config valid · wired tool capabilities. `--deep` adds provider-key validation (a bounded, **redacted** live ping per configured key — the key never reaches the output) + the live session's MCP status (the bound agent's connected servers + any tools the manager dropped). The `--deep` MCP tier is **read-only** — it reports the already-connected session, never a fresh connect/spawn (a security-review decision). Available in **both** the chat and the bare Home (pre-chat diagnostics); the Home palette runs the fast tier, `--deep` is typed in a chat. |
 | `/compact` | **Model-summarise** the conversation so far into a compact preamble to reclaim context — an LLM call ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md), **2.5.F**; see § Context compaction below). Reports the token deltas + spend + the summary as a **notice**. Effect `write` (spends tokens). Chat-only. |
 | `/trim [n]` | **Deterministically** drop older messages down to the last `n` (default `[chat].max_messages`), **no LLM call** (ADR-0062, 2.5.F). A bare `/trim` with no config bound prints an actionable notice; a bound larger than the history is a reported no-op. Chat-only. |
+| `/clear` | Start a **fresh conversation** — end the current session (**persisted + resumable** via `relavium chat-resume <sessionId>`) and swap in a new one under a new `sessionId` ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) §7, **2.5.F**). Effect `destructive`; the fresh session resets the mode to `ask` and the budget/turn/cost totals to zero (the old totals stay on the resumable row). Its notice names the prior session + the exact resume command. **Interactive-only** — rejected under `--json` / plain non-TTY, where one machine stream is one session lifecycle ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). Works in `relavium chat`, `chat-resume`, and the in-Home chat (swap in place, staying in chat); in the **bare** Home (no live session) it is an honest "nothing to clear" notice. |
 
 An unrecognized `/…` command — or an **undeclared argument** on a known one (`/exit now`) — prints a one-line, secret-free notice and the prompt returns. A command may accept flags (`/doctor --deep`) or a single positional value (`/mode plan`); the `/` palette runs the bare form, so a flag/value is opt-in by typing it. The idle footer surfaces `/ for commands` at an empty prompt (2.5.C S6). In a TTY, **Ctrl-C** is equivalent to `/cancel` (the `ink` REPL runs in raw mode, so the kernel does not raise SIGINT — the REPL handles it).
 
@@ -102,17 +103,20 @@ the working context — so a compacted session stays compacted across `chat-resu
 `COMPACTION_SYSTEM_PROMPT` in the engine — the conversation to summarise rides an untrusted user message, never
 the authored system prompt) MUST preserve: **open tasks and their state; decisions taken and why; concrete code
 identifiers / file paths / commands / values in play; and the user's stated preferences**. A summary that loses
-these fails the feature. Under `--json` each compaction/trim rides the stream as a `session:compacted` /
-`session:trimmed` event.
+these fails the feature. Under `--json` each compaction rides the stream as a `session:compacting` (the moment
+START) then a terminal `session:compacted` / `session:trimmed` event — **except** a manual `/compact` that
+**fails**, which emits `session:compacting` with **no** terminal (the host clears the moment when `compact()`
+settles). A machine consumer must not assume every `session:compacting` is followed by a terminal.
 
-During a compaction (`/compact` or automatic) the interactive surface gates input and shows a spinner while the
-summariser runs (so a keystroke can never race the busy engine), and **`Esc` aborts it** (the session survives).
-
-> **Not yet (2.5.F follow-ups):** `/clear` (start a fresh conversation, old session resumable) — a
-> session-lifecycle swap tracked separately from the compaction primitive above; a **labeled** "Summarizing…"
-> indicator (today the compaction spinner is unlabeled — functional + `Esc`-abortable, but it needs a
-> `session:compacting` start signal to label); and the footer **context-fullness** indicator (last input ÷
-> window). The compaction engine, persistence, resume, auto-compaction, `/compact`, and `/trim` are complete.
+**The compaction moment.** The engine emits a `session:compacting` event at the start of every compaction
+(`/compact` or automatic). The interactive surface gates input and shows a **labeled** "⟳ Summarizing
+conversation… · Esc to cancel" spinner off it while the summariser runs (so a keystroke can never race the busy
+engine), and **`Esc` aborts it** (the session survives). The moment ends on the terminal `session:compacted` /
+`session:trimmed`; a manual `/compact` that fails clears it when the command settles (the busy-gated render never
+shows a stale label). A **context-fullness** indicator on the session footer (the LAST turn's input tokens ÷ the
+model's context window, e.g. `62% ctx`) makes an impending auto-compaction anticipated; it is omitted for a custom
+base-URL model whose window is unknown (the same models that skip auto-compaction) and until the first turn
+completes.
 
 ## Input ergonomics (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
 
@@ -148,7 +152,7 @@ A chat session uses the **same** built-in `ToolRegistry` as a workflow agent ([b
 > `SessionEvent` stream. `/export` under `--json` emits a `session:exported` event on the stream (routed
 > through the session bus, so its `sequenceNumber` stays monotonic with the surrounding events).
 
-For scripting and non-interactive use, `--json` switches the REPL to a machine-readable [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) stream — one JSON object per line (NDJSON), the chat analogue of `relavium run --json`. Messages are read from stdin (one user turn per line) and the `session:*` events (`session:started`, `session:turn_started`, `session:turn_completed`, `session:cancelled`, `session:exported`, and — ADR-0062 — `session:compacted` / `session:trimmed`) plus the per-turn `agent:*` / `cost:updated` events are emitted on stdout, each carrying the `sessionId`; an input-stream EOF ends the session with the `session:cancelled` terminal and exit code 4:
+For scripting and non-interactive use, `--json` switches the REPL to a machine-readable [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) stream — one JSON object per line (NDJSON), the chat analogue of `relavium run --json`. Messages are read from stdin (one user turn per line) and the `session:*` events (`session:started`, `session:turn_started`, `session:turn_completed`, `session:cancelled`, `session:exported`, and — ADR-0062 — `session:compacting` / `session:compacted` / `session:trimmed`) plus the per-turn `agent:*` / `cost:updated` events are emitted on stdout, each carrying the `sessionId`; an input-stream EOF ends the session with the `session:cancelled` terminal and exit code 4:
 
 ```bash
 echo "summarize ./README.md" | relavium chat --agent code-reviewer --json

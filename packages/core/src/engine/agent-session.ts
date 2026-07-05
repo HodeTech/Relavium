@@ -825,6 +825,13 @@ export class AgentSession {
     const abort = this.#deps.newAbortController();
     this.#abort = abort;
     try {
+      // Announce the compaction MOMENT (ADR-0062 §7) — emitted AFTER the nothing-to-fold / plan-resolution guards
+      // (so a no-op never flashes the indicator) so the host can drive a labeled "Summarizing…" indicator while the
+      // summariser LLM call runs, for both a manual `/compact` and an auto-threshold trigger. The terminal
+      // `session:compacted` (success) / `session:trimmed` auto-fallback (failure→trim) ends the moment; a manual
+      // failure emits no terminal, so the manual host clears the moment when `compact()` resolves. Inside the `try`
+      // (like the estimate below) so nothing escapes past the `finally` that resets `#status`.
+      this.#deps.emit({ type: 'session:compacting', reason });
       // Inside the `try` so a provider whose optional `estimateTokens` throws cannot escape past the `finally`
       // and leave `#status` wedged at 'running' (the seam method is provider-supplied).
       const tokensBefore = this.#estimateContextTokens();

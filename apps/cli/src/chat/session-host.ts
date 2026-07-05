@@ -50,6 +50,13 @@ export interface BuildChatSessionOptions {
   readonly chat: ResolvedChatConfig;
   /** `--agent <ref>` (path or bare id); `undefined` ⇒ the built-in default agent over `[chat].default_model`. */
   readonly agentRef: string | undefined;
+  /**
+   * A pre-resolved agent to bind directly, bypassing `agentRef` resolution. `/clear` (ADR-0062 §7) passes the
+   * CURRENT session's bound agent so the fresh session keeps the exact same agent with **no disk re-read** — robust
+   * against an agent file edited/deleted mid-session, and the only way `chat-resume`'s snapshot agent (which has no
+   * on-disk ref) can seed a fresh `/clear` session. When set, `agentRef` is ignored. Absent ⇒ resolve `agentRef`.
+   */
+  readonly agent?: AgentDefinition;
   /** The session working directory (the launch cwd) — the `SessionContext.workingDir` + agent-discovery root. */
   readonly cwd: string;
   /** The resolved `.relavium/` project config dir (for bare-id `--agent` discovery), or `undefined`. */
@@ -245,11 +252,15 @@ function buildSessionRuntime(
 
 export async function buildChatSession(opts: BuildChatSessionOptions): Promise<BuiltChatSession> {
   const sessionId = opts.uuid();
-  const agent = resolveChatAgent(opts.agentRef, {
-    cwd: opts.cwd,
-    projectConfigDir: opts.projectConfigDir,
-    defaultModel: opts.chat.defaultModel,
-  });
+  // A `/clear` rebuild (ADR-0062 §7) passes the CURRENT bound agent to rebind verbatim; otherwise resolve `agentRef`
+  // from disk / the built-in default. Reusing the agent avoids a disk re-read (and its failure modes) on `/clear`.
+  const agent =
+    opts.agent ??
+    resolveChatAgent(opts.agentRef, {
+      cwd: opts.cwd,
+      projectConfigDir: opts.projectConfigDir,
+      defaultModel: opts.chat.defaultModel,
+    });
   const context: SessionContext = {
     workingDir: opts.cwd,
     // The EFFECTIVE tier (full→project clamped for the chat surface — a chat READ can exfiltrate) — the SAME value the factory

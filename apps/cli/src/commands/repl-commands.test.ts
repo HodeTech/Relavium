@@ -22,6 +22,7 @@ interface CapabilityCalls {
   readonly setMode: number;
   readonly compactHistory: number;
   readonly trimHistory: number;
+  readonly clearSession: number;
 }
 
 /** A fully-spied REPL context — each capability is a spy so a command's `run` can be asserted to call exactly one. */
@@ -37,6 +38,7 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls }
     setMode: vi.fn(),
     compactHistory: vi.fn(),
     trimHistory: vi.fn(),
+    clearSession: vi.fn(),
   };
   return {
     ctx: spies,
@@ -51,6 +53,7 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls }
       runDoctor: spies.runDoctor.mock.calls.length,
       compactHistory: spies.compactHistory.mock.calls.length,
       trimHistory: spies.trimHistory.mock.calls.length,
+      clearSession: spies.clearSession.mock.calls.length,
     }),
   };
 }
@@ -71,6 +74,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'mode',
       'compact',
       'trim',
+      'clear',
     ]);
   });
 
@@ -86,6 +90,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       ['mode', 'setMode'],
       ['compact', 'compactHistory'],
       ['trim', 'trimHistory'],
+      ['clear', 'clearSession'],
     ];
     for (const [name, capability] of cases) {
       const { ctx, calls } = spyContext();
@@ -102,7 +107,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
         counts.runDoctor +
         counts.setMode +
         counts.compactHistory +
-        counts.trimHistory;
+        counts.trimHistory +
+        counts.clearSession;
       expect(total, `${name} calls exactly one capability`).toBe(1);
     }
   });
@@ -127,9 +133,10 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     }
   });
 
-  it('effects are sound: export + compact write, the rest are read', () => {
+  it('effects are sound: export + compact write, clear destructive, the rest read', () => {
     expect(REPL_COMMANDS_BY_NAME.get('export')?.effect).toBe('write');
     expect(REPL_COMMANDS_BY_NAME.get('compact')?.effect).toBe('write'); // /compact spends tokens (ADR-0062)
+    expect(REPL_COMMANDS_BY_NAME.get('clear')?.effect).toBe('destructive'); // /clear ends the session (ADR-0062 §7)
     for (const name of ['help', 'exit', 'cancel', 'workflows', 'cost', 'doctor', 'mode', 'trim']) {
       expect(REPL_COMMANDS_BY_NAME.get(name)?.effect).toBe('read');
     }
@@ -150,6 +157,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'mode',
       'compact',
       'trim',
+      'clear',
     ]);
     expect(CHAT_PALETTE_COMMANDS.map((c) => c.name)).toEqual([
       'exit',
@@ -161,8 +169,10 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'mode',
       'compact',
       'trim',
+      'clear',
     ]);
-    // The bare Home now offers /exit + /doctor (pre-chat diagnostics — a real Home capability via homeReplCtx).
-    expect(HOME_PALETTE_COMMANDS.map((c) => c.name)).toEqual(['exit', 'doctor']);
+    // The bare Home offers /exit + /doctor (pre-chat diagnostics) and now /clear (availableIn ['home','chat'];
+    // an inert "nothing to clear" notice in the bare Home — ADR-0062 §7).
+    expect(HOME_PALETTE_COMMANDS.map((c) => c.name)).toEqual(['exit', 'doctor', 'clear']);
   });
 });

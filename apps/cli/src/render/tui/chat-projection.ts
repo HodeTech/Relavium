@@ -138,14 +138,35 @@ export function formatToolCall(call: ToolCallView): string {
 }
 
 /**
- * The persistent session footer: the bound model, the running cost, and the completed-turn count. A compact,
- * always-visible status line beneath the prompt. The model name is sanitized before display.
+ * The context-fullness footer segment (ADR-0062 §7) — the LAST completed turn's input tokens as a percentage of
+ * the model's context window, so an impending auto-compaction is ANTICIPATED rather than a surprise. `undefined`
+ * (segment omitted) until a turn has completed AND the window is known (a custom base-URL model has no catalog
+ * window). Clamped to [0, 100] so a preamble-heavy over-window turn never prints a nonsensical >100%.
+ */
+function formatContextFullness(state: SessionViewState): string | undefined {
+  const { lastInputTokens, contextWindowTokens } = state;
+  if (
+    lastInputTokens === undefined ||
+    contextWindowTokens === undefined ||
+    contextWindowTokens <= 0
+  ) {
+    return undefined;
+  }
+  const pct = Math.min(100, Math.max(0, Math.round((lastInputTokens / contextWindowTokens) * 100)));
+  return `${pct}% ctx`;
+}
+
+/**
+ * The persistent session footer: the bound model, the running cost, the completed-turn count, and the context
+ * fullness (ADR-0062 §7). A compact, always-visible status line beneath the prompt. The model name is sanitized
+ * before display; the fullness is numbers-only.
  */
 export function formatSessionFooter(state: SessionViewState): string {
   const parts = [
     state.model === undefined ? undefined : sanitizeInline(state.model),
     formatCostUsd(state.cumulativeCostMicrocents),
     `${state.turnCount} ${state.turnCount === 1 ? 'turn' : 'turns'}`,
+    formatContextFullness(state),
   ].filter((part): part is string => part !== undefined);
   return parts.join(' · ');
 }

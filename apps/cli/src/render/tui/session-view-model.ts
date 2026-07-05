@@ -1,4 +1,5 @@
 import type { SessionStreamHandleEvent } from '@relavium/core';
+import { contextWindowForModel } from '@relavium/llm';
 import type { SessionStopReason } from '@relavium/shared';
 
 /**
@@ -53,6 +54,13 @@ export interface SessionViewState {
   readonly agentRef?: string;
   readonly model?: string;
   readonly status: SessionViewStatus;
+  /** Whether a context compaction (`/compact` or an auto-threshold trigger) is IN FLIGHT (ADR-0062 §7) — set on
+   *  `session:compacting`, cleared on every turn/compaction lifecycle terminal (started / turn_started /
+   *  turn_completed / cancelled / compacted / trimmed). Drives the labeled "Summarizing…" moment. A MANUAL
+   *  `/compact` that FAILS emits no terminal, so the host clears this explicitly when `compact()` settles
+   *  (`ChatStoreController.clearCompacting`) — otherwise the flag would latch and a later slash command's busy
+   *  render would show a stale spinner; the `turn_started` reset is a belt-and-suspenders backstop. */
+  readonly compacting: boolean;
   /** The completed conversation (user lines + completed assistant turns) — append-only and UNBOUNDED by design:
    *  ink `<Static>` tracks already-printed items by the array's length delta, so trimming the head would freeze
    *  its cursor at the cap and silently stop rendering entries past it (see {@link appendTranscript}). */
@@ -73,6 +81,13 @@ export interface SessionViewState {
    *  (required-nullable, not optional, so it can be reset to `undefined` between turns under
    *  exactOptionalPropertyTypes — mirrors run-view-model's `activeModel`). */
   readonly turnStartedAtMs: number | undefined;
+  /** The LAST completed turn's input tokens (ADR-0062 §7) — the numerator of the footer context-fullness
+   *  indicator. `undefined` until the first turn completes (a resumed session carries no per-turn seed). */
+  readonly lastInputTokens?: number;
+  /** The bound model's context window (ADR-0062 §7), looked up ONCE from the pricing catalog on `session:started`
+   *  (or the resume seed's model). `undefined` for a custom base-URL model absent from the catalog ⇒ the fullness
+   *  indicator is simply not shown (mirroring how a custom model degrades auto-compaction). */
+  readonly contextWindowTokens?: number;
   /** The last observed `sequenceNumber`, for gap detection. */
   readonly lastSequenceNumber?: number;
   /** Set once a `sequenceNumber` gap/anomaly is observed (the live stream is no-drop, so a gap is a defect). */
@@ -102,11 +117,16 @@ export interface SessionViewSeed {
 }
 
 export function initialSessionViewState(seed?: SessionViewSeed): SessionViewState {
+  // A resumed session (2.N) seeds the model but never re-emits session:started, so derive the context window here
+  // too (ADR-0062 §7) — else a resumed session would show no fullness indicator until the (unrelated) next start.
+  const seedWindow = seed?.model === undefined ? undefined : contextWindowForModel(seed.model);
   return {
     // agentRef/model are required-optional under exactOptionalPropertyTypes: spread the key in only when set.
     ...(seed?.agentRef === undefined ? {} : { agentRef: seed.agentRef }),
     ...(seed?.model === undefined ? {} : { model: seed.model }),
+    ...(seedWindow === undefined ? {} : { contextWindowTokens: seedWindow }),
     status: 'idle',
+    compacting: false,
     transcript: [],
     liveTokens: '',
     liveToolCalls: [],
@@ -225,13 +245,26 @@ export function reduceSessionEvent(
   }
 
   switch (event.type) {
-    case 'session:started':
-      return { ...base, agentRef: event.agentRef, model: event.model };
+    case 'session:started': {
+      // Look up the model's context window ONCE (ADR-0062 §7) — the footer fullness denominator. `undefined` for a
+      // custom base-URL model absent from the catalog ⇒ the key stays absent (exactOptionalPropertyTypes) ⇒ no indicator.
+      const window = contextWindowForModel(event.model);
+      return {
+        ...base,
+        agentRef: event.agentRef,
+        model: event.model,
+        compacting: false,
+        ...(window === undefined ? {} : { contextWindowTokens: window }),
+      };
+    }
 
     case 'session:turn_started':
       return {
         ...base,
         status: 'running',
+        // Clear any stale compaction moment (a manual `/compact` failure emits no terminal — see the field doc);
+        // a new turn is never mid-compaction, so this is the belt-and-suspenders reset.
+        compacting: false,
         liveTokens: '',
         liveToolCalls: [],
         turnStartedAtMs: Date.parse(event.timestamp),
@@ -269,35 +302,48 @@ export function reduceSessionEvent(
       return {
         ...base,
         status: 'ended',
+        compacting: false,
         liveTokens: '',
         liveToolCalls: [],
         turnStartedAtMs: undefined,
       };
 
-    case 'session:compacted':
-      // A MANUAL /compact is noticed by the command itself (its full summary + token deltas). The view surfaces
-      // only an AUTOMATIC compaction — concisely, so an auto-compaction mid-conversation is never a silent
-      // context swap (ADR-0062 §7). Numbers only (no summary text) ⇒ no sanitization needed.
-      return event.reason === 'auto-threshold'
-        ? appendNotice(
-            base,
-            `⟳ Context auto-compacted to fit the window — ~${grouped(event.tokensBefore)} → ` +
-              `~${grouped(event.tokensAfter)} tokens (summary cost ${grouped(event.tokensUsed.input)} in / ` +
-              `${grouped(event.tokensUsed.output)} out).`,
-          )
-        : base;
+    case 'session:compacting':
+      // Context compaction STARTED (ADR-0062 §7) — enter the labeled "Summarizing…" moment. The paired terminal
+      // (session:compacted / session:trimmed) clears it; a manual `/compact` failure has no terminal, so the
+      // busy-gated render keeps a stale flag invisible until the next session:turn_started clears it.
+      return { ...base, compacting: true };
 
-    case 'session:trimmed':
-      // A MANUAL /trim is noticed by the command itself; the view surfaces only the AUTO-FALLBACK trim (the
-      // deterministic trim the engine degrades to when an auto-compaction summariser failed), so that fallback
-      // is never silent (ADR-0062 §5).
-      return event.reason === 'auto-fallback'
-        ? appendNotice(
-            base,
-            `✂ Auto-compaction summary failed — trimmed ${event.droppedMessageCount} older message(s) instead ` +
-              `(keeping the last ${event.keptMessageCount}).`,
-          )
-        : base;
+    case 'session:compacted': {
+      // The moment is over — clear `compacting`. A MANUAL /compact is noticed by the command itself (its full
+      // summary + token deltas); the view surfaces only an AUTOMATIC compaction concisely, so an auto-compaction
+      // mid-conversation is never a silent context swap (ADR-0062 §7). Numbers only ⇒ no sanitization needed.
+      const noticed =
+        event.reason === 'auto-threshold'
+          ? appendNotice(
+              base,
+              `⟳ Context auto-compacted to fit the window — ~${grouped(event.tokensBefore)} → ` +
+                `~${grouped(event.tokensAfter)} tokens (summary cost ${grouped(event.tokensUsed.input)} in / ` +
+                `${grouped(event.tokensUsed.output)} out).`,
+            )
+          : base;
+      return { ...noticed, compacting: false };
+    }
+
+    case 'session:trimmed': {
+      // The moment is over — clear `compacting`. A MANUAL /trim is noticed by the command itself; the view
+      // surfaces only the AUTO-FALLBACK trim (the deterministic trim the engine degrades to when an
+      // auto-compaction summariser failed), so that fallback is never silent (ADR-0062 §5).
+      const noticed =
+        event.reason === 'auto-fallback'
+          ? appendNotice(
+              base,
+              `✂ Auto-compaction summary failed — trimmed ${event.droppedMessageCount} older message(s) instead ` +
+                `(keeping the last ${event.keptMessageCount}).`,
+            )
+          : base;
+      return { ...noticed, compacting: false };
+    }
 
     default:
       // session:exported and any forward-compatible additions: no view change.
@@ -358,7 +404,15 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
   return {
     ...base,
     status: 'idle',
+    // A completed turn is never mid-compaction (auto-compaction runs AFTER this event, re-setting `compacting`
+    // via its own session:compacting); clear it so the flag never straddles a turn boundary.
+    compacting: false,
     turnCount: base.turnCount + 1,
+    // Record the just-completed turn's input tokens (ADR-0062 §7) — the footer fullness numerator. SKIP a
+    // ZERO-input turn: a pre-egress budget/hard-cap block or an Esc-abort emits `{input:0}` (EA2 carries real
+    // usage only when a provider engaged), so `...base` keeps the last FAITHFUL value instead of flashing
+    // "0% ctx" (an empty window) exactly when the window is actually full. A real turn (>0) overrides it.
+    ...(event.tokensUsed.input > 0 ? { lastInputTokens: event.tokensUsed.input } : {}),
     liveTokens: '',
     liveToolCalls: [],
     turnStartedAtMs: undefined,
