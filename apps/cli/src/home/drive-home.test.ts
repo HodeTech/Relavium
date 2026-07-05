@@ -8,7 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildChatSession } from '../chat/session-host.js';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
+import type { ProviderResolver } from '../engine/providers.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
+import type { ClackOnboardingDeps } from '../onboarding/wizard.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -51,6 +53,17 @@ vi.mock('../engine/providers.js', async (importOriginal) => {
 const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
 const type = (props: RootAppProps, text: string): void => {
   for (const ch of text) props.controller.handleKey(ch, {});
+};
+
+/** A scripted onboarding prompter that CANCELS immediately (its `select` returns the cancel sentinel) — the default
+ *  for every drive-home test so a key-less resolver never triggers the REAL clack prompts (which render to stdout). */
+const CANCEL_ONBOARDING: ClackOnboardingDeps = {
+  intro: () => undefined,
+  outro: () => undefined,
+  note: () => undefined,
+  select: () => Promise.resolve(Symbol('cancel')),
+  password: () => Promise.resolve(Symbol('cancel')),
+  isCancel: (v): v is symbol => typeof v === 'symbol',
 };
 const ENTER = { return: true } as const;
 const CTRL_C = { ctrl: true } as const;
@@ -117,6 +130,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       subscribeSignals: () => () => undefined, // no real process listeners in the default tests
       writeControl,
       exit: () => undefined,
+      // A cancel-immediately onboarding prompter by DEFAULT, so a key-less resolver (e.g. the real keychain-backed
+      // resolver over the mocked empty keychain) never invokes the REAL clack prompts in a test (which would render
+      // to stdout / block). A wizard-specific test overrides this with a scripted flow.
+      onboardingPrompter: CANCEL_ONBOARDING,
       ...overrides,
     };
     return { deps, unmount, writeControl };
@@ -253,6 +270,62 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
     await flush();
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('a KEY-LESS first run runs the onboarding wizard BEFORE mounting the Home (2.5.G S8)', async () => {
+    // A scripted clack slice + a key-less resolver (keyFor throws for every provider) ⇒ the wizard triggers.
+    const outros: string[] = [];
+    const select = vi.fn(() => Promise.resolve('anthropic'));
+    const onboardingPrompter: ClackOnboardingDeps = {
+      intro: () => undefined,
+      outro: (m) => outros.push(m),
+      note: () => undefined,
+      select,
+      password: () => Promise.resolve('sk-home-9999'),
+      isCancel: (v): v is symbol => typeof v === 'symbol',
+    };
+    const keylessResolver: ProviderResolver = {
+      resolveProvider: () => undefined,
+      keyFor: () => {
+        throw new Error('no key');
+      },
+    };
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p), {
+      providers: keylessResolver,
+      onboardingPrompter,
+    });
+    const drivePromise = driveHome(deps);
+    await flush(); // the wizard is async — let it settle before render() mounts ink
+    const props = captured;
+    if (props === undefined) throw new Error('the Home did not mount after the wizard');
+    expect(select).toHaveBeenCalledTimes(1); // the wizard ran (provider select)
+    expect(outros.some((o) => o.includes('all set'))).toBe(true); // key stored (mocked keychain) + handed off to the Home
+
+    props.controller.handleKey('c', CTRL_C); // clean exit
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('a run WITH a resolvable key SKIPS the onboarding wizard entirely', async () => {
+    // The default scriptedResolver's keyFor returns 'test-key' ⇒ not key-less ⇒ the wizard must never run.
+    const select = vi.fn(() => Promise.resolve('anthropic'));
+    const onboardingPrompter: ClackOnboardingDeps = {
+      intro: () => undefined,
+      outro: () => undefined,
+      note: () => undefined,
+      select,
+      password: () => Promise.resolve('sk-x'),
+      isCancel: (v): v is symbol => typeof v === 'symbol',
+    };
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p), { onboardingPrompter });
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('render was not invoked');
+    expect(select).not.toHaveBeenCalled(); // no wizard on a keyed run
+
+    props.controller.handleKey('c', CTRL_C);
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 

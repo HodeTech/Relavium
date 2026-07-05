@@ -21,6 +21,11 @@ import {
   type ProviderResolver,
 } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
+import {
+  isProviderKeyless,
+  runOnboardingWizard,
+  type ClackOnboardingDeps,
+} from '../onboarding/wizard.js';
 import type { CliIo } from '../process/io.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -65,6 +70,9 @@ export interface HomeDeps {
   readonly mcpSecretResolver?: McpSecretResolver;
   /** The `/doctor` probes (2.5.C S5) — production assembles the real probes; a test injects a fake. */
   readonly doctorProbes?: DoctorProbes;
+  /** The onboarding clack slice (2.5.G S8) — omit for the real prompts; a test injects a scripted one. Only ever
+   *  used on a truly key-less first run (the wizard is otherwise skipped). */
+  readonly onboardingPrompter?: ClackOnboardingDeps;
   readonly now?: () => number;
   readonly uuid?: () => string;
   /** Injectable ink mount + the terminal-size seam (tests drive `RootApp` props without a real TTY). */
@@ -332,6 +340,20 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         return () => process.stdout.off('resize', onResize);
       });
     const exitProcess = deps.exit ?? ((code: number) => process.exit(code));
+
+    // First-run onboarding (2.5.G S8): a truly KEY-LESS bare Home offers a `@clack` wizard to connect a provider
+    // BEFORE mounting ink — clack + ink both take the terminal's raw mode, so the wizard must fully settle (and
+    // clack restore the terminal) before `render()`. Already behind `shouldOpenHome`'s TTY/CI gate; a cancel or a
+    // keychain-write failure ends the wizard cleanly and the Home mounts key-less (retry, or add a key manually).
+    if (isProviderKeyless(providers)) {
+      await runOnboardingWizard({
+        store: providerStore,
+        keychain,
+        resolver: providers,
+        io: deps.io,
+        ...(deps.onboardingPrompter === undefined ? {} : { prompter: deps.onboardingPrompter }),
+      });
+    }
 
     writeControl(ENABLE_BRACKETED_PASTE); // ask the terminal to bracket pastes (DECSET 2004)
 
