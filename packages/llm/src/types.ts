@@ -464,6 +464,28 @@ export const MediaJobStatusSchema = z.discriminatedUnion('state', [
 export type MediaJobStatus = z.infer<typeof MediaJobStatusSchema>;
 
 /**
+ * One entry in a provider's **live model listing** (ADR-0064 §1) — the Relavium/Zod projection of a vendor
+ * `models.list()` row, mapped INSIDE each adapter so **no vendor SDK type crosses the seam** (ADR-0011).
+ * The live tier decides **availability** (which ids a key can reach); **pricing** stays with the static
+ * registry ([pricing.ts](./pricing.ts)), so this shape carries **no price**. Deliberately MINIMAL and
+ * **lenient-inbound / strict-outbound** (ADR-0064 §3/§8): only `id` is required (a row that yields none is
+ * dropped, never thrown); the rest are provider-varying — Anthropic returns a display name + context/output
+ * limits, Gemini a display name + limits, OpenAI/DeepSeek are id-only. A vendor `0`/absent limit means
+ * "unknown" and is **omitted** (never a stored `0`), which is why the limits are `.positive()`.
+ */
+export const ModelListingSchema = z.object({
+  id: nonEmptyString,
+  displayName: nonEmptyString.optional(),
+  contextWindowTokens: z.number().int().positive().optional(),
+  maxOutputTokens: z.number().int().positive().optional(),
+  // ISO-8601 deprecation date. The LIVE list leaves this UNDEFINED — the static registry supplies the
+  // deprecation half, unioned at merge time (ADR-0064 §7); present in the shape so a future provider that
+  // returns a live deprecation date maps cleanly with no seam change. Never invented from the live list.
+  deprecatedAt: z.string().optional(),
+});
+export type ModelListing = z.infer<typeof ModelListingSchema>;
+
+/**
  * Input to {@link LlmProvider.estimateTokens} (ADR-0062) — a prospective request the engine has NOT yet
  * sent. Expressed in seam types only (no vendor type crosses — CLAUDE.md #4). Used only as a pre-first-turn
  * FALLBACK: once a turn has completed, the engine prefers the real provider `usage` as the authoritative
@@ -519,4 +541,15 @@ export interface LlmProvider {
    * 1.AH A3 (`pollMediaJobSora`), the Gemini/Veo adapter at 1.AH A4.
    */
   pollMediaJob?(jobId: string, key: string, signal?: AbortSignalLike): Promise<MediaJobStatus>;
+  /**
+   * **Live model discovery** (ADR-0064 §1) — return the models this `key` can currently reach, each mapped
+   * to the Relavium {@link ModelListing} INSIDE the adapter (the vendor `models.list()` row is normalized
+   * here, so no vendor SDK type crosses the seam — ADR-0011). OPTIONAL (the seam's capability-varying
+   * pattern, cf. `generateMedia?` / `contextLimit?`): a provider without a list endpoint omits it and the
+   * host degrades to static-only for that provider. The call is **bounded + abortable + secret-free**
+   * (mirroring `validateProviderKey`): `signal` aborts the in-flight request; a per-row parse failure drops
+   * that one row (never throws for it — ADR-0064 §8); a breaking endpoint/shape change throws a classified,
+   * key-redacted `LlmProviderError` the host's per-provider refresh isolation catches (ADR-0064 §5).
+   */
+  listModels?(key: string, signal?: AbortSignalLike): Promise<ModelListing[]>;
 }

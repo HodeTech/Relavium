@@ -242,6 +242,63 @@ const structuredOutput = JSON.stringify({
   usage: { input_tokens: 8, output_tokens: 4 },
 });
 
+// A recorded `/v1/models` page (ADR-0064 §1) — Anthropic's rich list: display_name + max_input_tokens
+// (→contextWindowTokens) + max_tokens (→maxOutputTokens). The second row records the documented `0`
+// "unknown" limits Anthropic returns → the mapper OMITS the fields (the row is still LISTED, never dropped).
+const modelsList = JSON.stringify({
+  data: [
+    {
+      id: 'claude-opus-4-8',
+      type: 'model',
+      display_name: 'Claude Opus 4.8',
+      created_at: '2026-01-15T00:00:00Z',
+      max_input_tokens: 1_000_000,
+      max_tokens: 128_000,
+      capabilities: null,
+    },
+    {
+      id: 'claude-haiku-4-5',
+      type: 'model',
+      display_name: 'Claude Haiku 4.5',
+      created_at: '2025-11-01T00:00:00Z',
+      max_input_tokens: 0, // unknown → OMITTED (never a stored 0)
+      max_tokens: 0,
+      capabilities: null,
+    },
+  ],
+  has_more: false,
+  first_id: 'claude-opus-4-8',
+  last_id: 'claude-haiku-4-5',
+});
+
+// The drift fixture (ADR-0064 §8): one row carries an unknown future field (ignored), one row has NO id
+// (dropped at the mapper boundary) — the whole call must still resolve, degrading one model, never throwing.
+const modelsListDrift = JSON.stringify({
+  data: [
+    {
+      id: 'claude-sonnet-4-6',
+      type: 'model',
+      display_name: 'Claude Sonnet 4.6',
+      created_at: '2026-02-01T00:00:00Z',
+      max_input_tokens: 1_000_000,
+      max_tokens: 64_000,
+      capabilities: null,
+      some_unknown_future_field: 'ignore-me',
+    },
+    {
+      type: 'model', // no `id` — dropped, never a throw
+      display_name: 'Id-less Model',
+      created_at: '2026-02-01T00:00:00Z',
+      max_input_tokens: 100,
+      max_tokens: 100,
+      capabilities: null,
+    },
+  ],
+  has_more: false,
+  first_id: 'claude-sonnet-4-6',
+  last_id: 'claude-sonnet-4-6',
+});
+
 export const ANTHROPIC_FIXTURES: ConformanceFixtures = {
   textGenerate: { status: 200, body: textMessage },
   toolGenerate: { status: 200, body: toolMessage },
@@ -251,6 +308,8 @@ export const ANTHROPIC_FIXTURES: ConformanceFixtures = {
   streamError: { status: 200, contentType: 'text/event-stream', body: streamError },
   reasoningStream: { status: 200, contentType: 'text/event-stream', body: reasoningStream },
   structuredOutput: { status: 200, body: structuredOutput },
+  listModels: { status: 200, body: modelsList },
+  listModelsDrift: { status: 200, body: modelsListDrift },
   toolLoop: {
     turn1: { status: 200, body: toolMessage },
     turn2: { status: 200, body: textMessage },
@@ -264,5 +323,16 @@ export const ANTHROPIC_FIXTURES: ConformanceFixtures = {
     streamErrorKind: 'overloaded',
     reasoningStream: { text: 'let me think', reasoningTokens: 4 },
     structuredOutput: { text: '{"ok":true}' },
+    listModels: {
+      ids: ['claude-opus-4-8', 'claude-haiku-4-5'],
+      // The rich row: display name + context (max_input_tokens) + output (max_tokens) all mapped.
+      sample: {
+        id: 'claude-opus-4-8',
+        displayName: 'Claude Opus 4.8',
+        contextWindowTokens: 1_000_000,
+        maxOutputTokens: 128_000,
+      },
+    },
+    listModelsDrift: { ids: ['claude-sonnet-4-6'] },
   },
 };

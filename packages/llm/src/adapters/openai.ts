@@ -17,6 +17,7 @@ import {
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
+import { MODEL_PRICING } from '../pricing.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
   CapabilityFlags,
@@ -30,6 +31,7 @@ import type {
   MediaGenResult,
   MediaJobStatus,
   MediaUnitsEntry,
+  ModelListing,
   ProviderId,
   StreamChunk,
   ToolChoice,
@@ -42,9 +44,11 @@ import {
   REASONING_ID,
   assertMediaCapabilities,
   assertNoStreamingMediaOutput,
+  boundedListModels,
   decodeMediaJobId,
   encodeMediaJobId,
   isAbortSignal,
+  toModelListing,
 } from './shared.js';
 
 /**
@@ -373,6 +377,68 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId): LlmEr
     kind: 'unknown',
     message: err instanceof Error ? err.message : 'unknown provider error',
   });
+}
+
+// --- Live model discovery: the id-only list filter (ADR-0064 §3) ------------------------------
+
+/**
+ * Id substrings that are NOT chat-completions text models — DENIED from the OpenAI/DeepSeek live list
+ * (ADR-0064 §3). The OpenAI `/v1/models` list is id-only (no capability metadata), so the filter is an
+ * id-family heuristic: deny wins over allow, so `gpt-image-1` / `gpt-4o-audio-preview` / `omni-moderation`
+ * are dropped even though they match a `gpt`/`o` allow-family.
+ */
+const OPENAI_DENY_SUBSTRINGS = [
+  'embedding',
+  'tts',
+  'whisper',
+  'image',
+  'moderation',
+  'realtime',
+  'audio',
+  'dall-e',
+  'transcribe',
+  'search',
+] as const;
+
+/**
+ * The MODEL_PRICING native ids + canonical keys for one OpenAI-compatible provider — unioned into the live
+ * list so a **cost-eligible** id ALWAYS survives the id-family heuristic (ADR-0064 §3), even if a future
+ * priced id doesn't match a `gpt`/`o`/`chat`/`deepseek` family.
+ */
+export function pricedModelIdsFor(provider: ProviderId): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const [canonicalId, pricing] of Object.entries(MODEL_PRICING)) {
+    if (pricing.provider === provider) {
+      ids.add(canonicalId);
+      ids.add(pricing.nativeId);
+    }
+  }
+  return ids;
+}
+
+/**
+ * Keep an OpenAI/DeepSeek model id iff it is a chat-capable text model (ADR-0064 §3). A priced id is kept
+ * unconditionally (cost-eligibility wins); otherwise `ft:` fine-tunes and every {@link OPENAI_DENY_SUBSTRINGS}
+ * family are denied, and only the `gpt` / `o<digit>` / `deepseek` / `*chat*` families are kept. Pure +
+ * unit-tested.
+ */
+export function keepOpenAiModelId(id: string, pricedIds: ReadonlySet<string>): boolean {
+  if (pricedIds.has(id)) {
+    return true;
+  }
+  const lower = id.toLowerCase();
+  if (lower.startsWith('ft:')) {
+    return false;
+  }
+  if (OPENAI_DENY_SUBSTRINGS.some((deny) => lower.includes(deny))) {
+    return false;
+  }
+  return (
+    lower.startsWith('gpt') ||
+    /^o\d/.test(lower) ||
+    lower.startsWith('deepseek') ||
+    lower.includes('chat')
+  );
 }
 
 // --- Request building: canonical → OpenAI wire -----------------------------------------------
@@ -948,6 +1014,39 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(providerId, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
       return streamChunks(createClient(key), req, providerId);
+    },
+    /**
+     * Live model discovery (ADR-0064 §1) over the SDK's `models.list()`. The OpenAI/DeepSeek list is
+     * ID-ONLY (no context/price metadata), so each row maps to a bare `{ id }` `ModelListing` and is
+     * filtered to chat-capable text families via `keepOpenAiModelId` (unioned with `MODEL_PRICING` for
+     * cost-eligibility). The provider id (`openai` | `deepseek`) selects the priced-id union set. Bounded +
+     * abortable + secret-free via `boundedListModels`; a per-row parse failure drops only that row.
+     */
+    async listModels(key: string, signal?: AbortSignalLike): Promise<ModelListing[]> {
+      return boundedListModels({
+        provider: providerId,
+        key,
+        signal,
+        classify: (err) => openaiErrorToLlmError(err, providerId),
+        collect: async (innerSignal) => {
+          const client = createClient(key);
+          const priced = pricedModelIdsFor(providerId);
+          const listings: ModelListing[] = [];
+          const seen = new Set<string>();
+          for await (const model of client.models.list({ signal: innerSignal })) {
+            const id = typeof model.id === 'string' ? model.id : '';
+            if (id.length === 0 || seen.has(id) || !keepOpenAiModelId(id, priced)) {
+              continue;
+            }
+            const listing = toModelListing({ id });
+            if (listing !== undefined) {
+              seen.add(id);
+              listings.push(listing);
+            }
+          }
+          return listings;
+        },
+      });
     },
     /**
      * Separate-endpoint media generation (1.AG/1.AH, [ADR-0045](../../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)).

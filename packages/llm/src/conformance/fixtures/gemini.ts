@@ -95,6 +95,53 @@ const imageGenerate = JSON.stringify({
   ],
 });
 
+// A recorded `models.list()` reply (ADR-0064 §1) — recorded at the SDK-output level (a `GeminiModelInfo[]`
+// the fake transport returns), like the other Gemini fixtures. FILTER: keep only chat-capable models
+// (`supportedActions` includes `generateContent`); the embedding row is dropped. MAP: strip the `models/`
+// prefix, `inputTokenLimit`→contextWindowTokens, `outputTokenLimit`→maxOutputTokens.
+const modelsList = JSON.stringify([
+  {
+    name: 'models/gemini-2.5-flash',
+    displayName: 'Gemini 2.5 Flash',
+    inputTokenLimit: 1_048_576,
+    outputTokenLimit: 65_536,
+    supportedActions: ['generateContent', 'countTokens'],
+  },
+  {
+    name: 'models/gemini-2.5-pro',
+    displayName: 'Gemini 2.5 Pro',
+    inputTokenLimit: 1_048_576,
+    outputTokenLimit: 65_536,
+    supportedActions: ['generateContent'],
+  },
+  {
+    name: 'models/text-embedding-004',
+    displayName: 'Text Embedding 004',
+    inputTokenLimit: 2_048,
+    outputTokenLimit: 1,
+    supportedActions: ['embedContent'], // no generateContent → filtered out
+  },
+]);
+
+// The drift fixture (ADR-0064 §8): one row carries an unknown future field (ignored); one chat-capable row
+// has NO `name` (→ no id → dropped at the mapper boundary), never a throw.
+const modelsListDrift = JSON.stringify([
+  {
+    name: 'models/gemini-2.5-flash',
+    displayName: 'Gemini 2.5 Flash',
+    inputTokenLimit: 1_048_576,
+    outputTokenLimit: 65_536,
+    supportedActions: ['generateContent'],
+    someUnknownFutureField: 'ignore-me',
+  },
+  {
+    displayName: 'Name-less Model', // no `name` → no id → dropped
+    inputTokenLimit: 1_000,
+    outputTokenLimit: 1_000,
+    supportedActions: ['generateContent'],
+  },
+]);
+
 export const GEMINI_FIXTURES: ConformanceFixtures = {
   textGenerate: { status: 200, body: textResponse },
   toolGenerate: { status: 200, body: toolResponse },
@@ -105,6 +152,8 @@ export const GEMINI_FIXTURES: ConformanceFixtures = {
   reasoningStream: { status: 200, body: reasoningStream },
   structuredOutput: { status: 200, body: structuredOutput },
   mediaGenerate: { status: 200, body: imageGenerate },
+  listModels: { status: 200, body: modelsList },
+  listModelsDrift: { status: 200, body: modelsListDrift },
   toolLoop: {
     turn1: { status: 200, body: toolResponse },
     turn2: { status: 200, body: textResponse },
@@ -119,5 +168,16 @@ export const GEMINI_FIXTURES: ConformanceFixtures = {
     reasoningStream: { text: 'let me think', reasoningTokens: 2 },
     structuredOutput: { text: '{"ok":true}' },
     mediaGenerate: { mimeType: 'image/png', data: 'aGVsbG8tY29uZm9ybWFuY2UtaW1hZ2U=' },
+    listModels: {
+      ids: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+      // `models/`-prefix stripped; inputTokenLimit→contextWindowTokens, outputTokenLimit→maxOutputTokens.
+      sample: {
+        id: 'gemini-2.5-flash',
+        displayName: 'Gemini 2.5 Flash',
+        contextWindowTokens: 1_048_576,
+        maxOutputTokens: 65_536,
+      },
+    },
+    listModelsDrift: { ids: ['gemini-2.5-flash'] },
   },
 };

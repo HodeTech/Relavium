@@ -268,6 +268,19 @@ export const LLM_PROVIDERS = ['anthropic', 'openai', 'gemini', 'deepseek'] as co
 export type LlmProviderId = (typeof LLM_PROVIDERS)[number];
 
 /**
+ * The three provider **protocol kinds** (the `kind` abstraction, [ADR-0064] §2) — a closed vocabulary
+ * that derives, **once per protocol rather than per provider**, the adapter factory, the list-models
+ * endpoint, the auth style, and the response mapper. `anthropic` and `gemini` map 1:1 to their id;
+ * `openai` and `deepseek` share `openai-compatible` (DeepSeek is the OpenAI-compatible adapter at a
+ * custom base URL). This is a SEPARATE axis from the provider **id** ({@link LLM_PROVIDERS}), which
+ * stays the closed persisted-contract enum; `kind` is the protocol axis `@relavium/llm` derives from
+ * it (`providerKind`). The enum itself stays closed — an open custom-provider registry is future work
+ * (ADR-0065), not this one.
+ */
+export const PROVIDER_KINDS = ['anthropic', 'openai-compatible', 'gemini'] as const;
+export type ProviderKind = (typeof PROVIDER_KINDS)[number];
+
+/**
  * The three filesystem permission tiers (built-in-tools.md). The canonical vocabulary
  * for the config `fs_scope` (config-spec.md) and a session's `fsScopeTier`
  * (agent-session-spec.md), so both derive their enum from this one list.

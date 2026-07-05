@@ -170,6 +170,11 @@ interface LlmProvider {
   contextLimit?(model: string): number | undefined;      // the model's context window in tokens; undefined for an unrated/custom model (engine then skips auto-compaction)
   managesOwnContext?(): boolean;                          // provider bounds context itself ⇒ engine skips compaction; false for all current providers
   estimateTokens?(input: EstimateTokensInput): number;   // { system, messages, tools? } → a per-provider estimate; a pre-first-turn FALLBACK only (real usage is authoritative)
+  // ADR-0064 live model catalog: return the models this `key` can reach, each mapped INSIDE the adapter to a
+  // Relavium ModelListing (no vendor models.list() type crosses). OPTIONAL (a provider without a list endpoint
+  // omits it → host degrades to static-only). Bounded + abortable + secret-free; one bad row is dropped, a
+  // breaking endpoint change throws a classified, key-redacted LlmProviderError. See "Model discovery" below.
+  listModels?(key: string, signal?: AbortSignalLike): Promise<ModelListing[]>;
 }
 
 // The per-modality capability matrix (ADR-0031 decision #3). Input composability is unconstrained
@@ -448,6 +453,53 @@ The platform-free **`MediaStore`** contract (`put`/`get`/`resolveForEgress` — 
 `Uint8Array`, named only by the handle string) and the **`DeInlineMedia`** transform
 signature are landed as reserved shape; implementations and the choke-point wiring are
 1.AF.
+
+### Model discovery — the `listModels?` capability ([ADR-0064](../../decisions/0064-live-model-catalog.md))
+
+`listModels?(key, signal?): Promise<ModelListing[]>` is an **optional, capability-varying** method (the same
+pattern as `generateMedia?` / `contextLimit?`): a provider without a live list endpoint omits it and the host
+degrades to the static registry ([pricing.ts](../../../packages/llm/src/pricing.ts)) for that provider. It
+returns **live discovery** — which model ids a given `key` can actually reach (tier/allowlist-gated). The live
+tier decides **availability**; the static registry stays the **pricing** authority (ADR-0064 §6), so
+`ModelListing` deliberately carries **no price**. Each adapter maps its vendor `models.list()` row to
+`ModelListing` **inside `src/adapters/*`** — **no vendor SDK type crosses this seam** (ADR-0011).
+
+```ts
+// The Relavium/Zod projection of a live model-list row (ADR-0064 §1). MINIMAL + lenient-inbound /
+// strict-outbound: only `id` is required; the rest are provider-varying and OMITTED when unknown.
+interface ModelListing {
+  id: string;                     // provider-native id (Gemini: the `models/` prefix is stripped)
+  displayName?: string;           // Anthropic/Gemini return one; OpenAI/DeepSeek do not
+  contextWindowTokens?: number;   // Anthropic `max_input_tokens` / Gemini `inputTokenLimit`; positive-only (a 0/absent limit is "unknown" → OMITTED, never a stored 0)
+  maxOutputTokens?: number;       // Anthropic `max_tokens` / Gemini `outputTokenLimit`; positive-only
+  deprecatedAt?: string;          // ISO-8601; the LIVE list leaves it UNDEFINED — the static registry supplies the deprecation half, unioned at merge time (ADR-0064 §7)
+}
+```
+
+**The `kind` protocol axis.** A provider's **`ProviderKind`** ∈ `{ anthropic, openai-compatible, gemini }`
+(owned by `@relavium/shared` as `PROVIDER_KINDS`; derived from a `ProviderId` by `@relavium/llm`'s
+`providerKind(id)`) selects — **once per protocol rather than per provider** — the adapter factory, the
+list-models endpoint, the auth style, and the response mapper: `anthropic → anthropic`, `gemini → gemini`,
+`openai`/`deepseek → openai-compatible`. This is a **separate axis** from the provider **id** enum
+(`LLM_PROVIDERS`), which stays the closed persisted-contract set; the `kind` enum stays closed too
+(ADR-0064 §6). No vendor type crosses either axis.
+
+**Behaviour every implementation shares** (ADR-0064 §3/§8): the call is **bounded + abortable + secret-free**,
+mirroring `validateProviderKey` — `signal` (or a hard internal timeout) aborts the in-flight request, the
+thrown error is a classified `LlmProviderError` whose message is **key-redacted** and which carries **no
+`cause`** (so neither the resolved key nor the raw vendor payload can cross the seam). Parsing is **lenient
+inbound / strict outbound**: unknown vendor fields are ignored (additive drift is absorbed silently); a row
+that yields no `id` is **dropped** at the mapper boundary, never throwing (one malformed row degrades a single
+model, not the whole provider); a breaking endpoint/shape change throws, which the host's per-provider refresh
+isolation catches. A per-provider filter keeps only **chat-capable text models**.
+
+Per-provider list-models endpoint contracts:
+
+| Provider (`kind`) | Endpoint | Shape | Mapping + filter |
+| --- | --- | --- | --- |
+| Anthropic (`anthropic`) | `/v1/models` (SDK `models.list()`, auto-paginating `has_more`/`last_id`) | **Rich** | `id`, `display_name`→`displayName`, `max_input_tokens`→`contextWindowTokens` (omit if 0), `max_tokens`→`maxOutputTokens` (omit if 0). The list is clean — no filter (the rich `capabilities` object is ignored). |
+| Gemini (`gemini`) | `/v1beta/models` (SDK `models.list()`) | **Rich** | `name` (strip `models/`)→`id`, `displayName`, `inputTokenLimit`→`contextWindowTokens`, `outputTokenLimit`→`maxOutputTokens`. **Filter:** keep only rows whose `supportedActions` (the SDK's projection of REST `supportedGenerationMethods`) includes `generateContent`. Key sent as the `x-goog-api-key` header, never a `?key=` query param (ADR-0064 §9). |
+| OpenAI / DeepSeek (`openai-compatible`) | `/v1/models` (SDK `models.list()`) | **Id-only** | `id`→`id`, no context/price. **Filter:** keep the `gpt` / `o<digit>` / `*chat*` / `deepseek` families; DENY `embedding`/`tts`/`whisper`/`image`/`moderation`/`realtime`/`audio`/`search`/`ft:`; **union-in** any id present in `MODEL_PRICING` for that provider (cost-eligibility always wins). |
 
 ## What must be normalized
 

@@ -43,10 +43,14 @@ async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[
 
 /** The generative-endpoint transport methods stubbed to reject — spread into a text/image fake that never
  *  calls the OTHER generative arms. A new transport method needs adding only here, not at every fake. */
-const unusedGenerative: Pick<GeminiTransport, 'generateImages' | 'generateVideos' | 'pollVideo'> = {
+const unusedGenerative: Pick<
+  GeminiTransport,
+  'generateImages' | 'generateVideos' | 'pollVideo' | 'listModels'
+> = {
   generateImages: () => Promise.reject(new Error('unused')),
   generateVideos: () => Promise.reject(new Error('unused')),
   pollVideo: () => Promise.reject(new Error('unused')),
+  listModels: () => Promise.reject(new Error('unused')),
 };
 
 /** A transport that returns a fixed response and captures the request it was handed. */

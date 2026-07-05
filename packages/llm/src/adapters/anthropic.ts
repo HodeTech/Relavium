@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 import { mediaModalityOf } from '@relavium/shared';
-import type { ContentPart, StopReason } from '@relavium/shared';
+import type { AbortSignalLike, ContentPart, StopReason } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
@@ -14,13 +14,21 @@ import type {
   LlmProvider,
   LlmRequest,
   LlmResult,
+  ModelListing,
   StreamChunk,
   ToolChoice,
   ToolDef,
   Usage,
 } from '../types.js';
 
-import { CONTEXT_SEAM_DEFAULTS, assertMediaCapabilities, isAbortSignal } from './shared.js';
+import {
+  CONTEXT_SEAM_DEFAULTS,
+  assertMediaCapabilities,
+  boundedListModels,
+  isAbortSignal,
+  positiveModelInt,
+  toModelListing,
+} from './shared.js';
 
 /**
  * The reference adapter over `@anthropic-ai/sdk` (1.C) — the seam fence's first real consumer and
@@ -134,6 +142,37 @@ export function mapContent(blocks: readonly Anthropic.ContentBlock[]): ContentPa
     // other server-tool blocks remain off the common path — reachable via LlmResult.raw.
   }
   return parts;
+}
+
+/**
+ * Map one Anthropic `models.list()` row (`ModelInfo`) to a canonical {@link ModelListing}, or `undefined`
+ * to drop it (ADR-0064 §3). Anthropic's list is rich: `display_name`→displayName, `max_input_tokens`→
+ * contextWindowTokens, `max_tokens`→maxOutputTokens — but Anthropic returns `0`/`null` for an unknown limit,
+ * so a non-positive limit is OMITTED (`positiveModelInt`). Lenient-inbound: the SDK types most fields, but
+ * each is read defensively (the live API can deviate from the pinned SDK); the rich `capabilities` object is
+ * intentionally ignored (nothing in the merge consumes it). No filter — Anthropic's list is clean.
+ */
+export function mapAnthropicModel(info: {
+  id?: string;
+  display_name?: string | null;
+  max_input_tokens?: number | null;
+  max_tokens?: number | null;
+}): ModelListing | undefined {
+  const candidate: Record<string, unknown> = {
+    id: typeof info.id === 'string' ? info.id : '', // '' fails the schema's min(1) → the row is dropped
+  };
+  if (typeof info.display_name === 'string' && info.display_name.length > 0) {
+    candidate['displayName'] = info.display_name;
+  }
+  const context = positiveModelInt(info.max_input_tokens);
+  if (context !== undefined) {
+    candidate['contextWindowTokens'] = context;
+  }
+  const maxOutput = positiveModelInt(info.max_tokens);
+  if (maxOutput !== undefined) {
+    candidate['maxOutputTokens'] = maxOutput;
+  }
+  return toModelListing(candidate);
 }
 
 /** Map an Anthropic error-body `type` to a kind — works even when there's no HTTP status (a stream `error` event). */
@@ -736,6 +775,33 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
       assertStreamable(PROVIDER, SUPPORTS);
       assertMediaCapabilities(PROVIDER, SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       return streamChunks(createClient(key), req);
+    },
+    /**
+     * Live model discovery (ADR-0064 §1) over the SDK's `models.list()` — a rich, auto-paginating
+     * `PagePromise` (iterated with `for await`, which follows `has_more`/`last_id`). Each `ModelInfo` is
+     * mapped INSIDE the adapter to a canonical `ModelListing` (no vendor type escapes), and a per-row parse
+     * failure drops only that row. Bounded + abortable + secret-free via `boundedListModels`.
+     */
+    async listModels(key: string, signal?: AbortSignalLike): Promise<ModelListing[]> {
+      return boundedListModels({
+        provider: PROVIDER,
+        key,
+        signal,
+        classify: anthropicErrorToLlmError,
+        collect: async (innerSignal) => {
+          const client = createClient(key);
+          const listings: ModelListing[] = [];
+          const seen = new Set<string>();
+          for await (const info of client.models.list(undefined, { signal: innerSignal })) {
+            const listing = mapAnthropicModel(info);
+            if (listing !== undefined && !seen.has(listing.id)) {
+              seen.add(listing.id);
+              listings.push(listing);
+            }
+          }
+          return listings;
+        },
+      });
     },
     // ADR-0062 context-compaction seam — the shared defaults (a native token-count endpoint could specialize
     // estimateTokens later; real usage is authoritative, so the heuristic is only a pre-first-turn fallback).

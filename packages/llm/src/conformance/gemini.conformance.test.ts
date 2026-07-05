@@ -4,6 +4,7 @@ import {
   createGeminiAdapter,
   geminiAdapter,
   type GeminiImageResponse,
+  type GeminiModelInfo,
   type GeminiResponse,
   type GeminiTransport,
 } from '../adapters/gemini.js';
@@ -38,6 +39,12 @@ const isGeminiImageResponse = (value: unknown): value is GeminiImageResponse => 
   const gen: unknown = value.generatedImages;
   return gen === undefined || Array.isArray(gen);
 };
+// The listModels fixture body is the SDK-output GeminiModelInfo[] (the fake transport bypasses the SDK,
+// mirroring how the generate/stream fixtures carry SDK-output GeminiResponse). The adapter mapper reads
+// every field defensively, so an array-of-objects structural check is a sufficient, unsafe-cast-free guard.
+const isGeminiModelInfoArray = (value: unknown): value is GeminiModelInfo[] =>
+  Array.isArray(value) &&
+  value.every((item) => typeof item === 'object' && item !== null && !Array.isArray(item));
 
 // Gemini has no `fetch` hook, so the conformance harness replays at the transport level: a recorded
 // SDK-output JSON (single response or an array of streamed responses) is parsed and served through a
@@ -87,6 +94,14 @@ const makeReplayAdapter: MakeReplayAdapter = (recorded) => {
     generateVideos: () =>
       Promise.reject(new Error('veo not exercised by the chat conformance replay')),
     pollVideo: () => Promise.reject(new Error('veo not exercised by the chat conformance replay')),
+    listModels: () => {
+      const current = nextRecording();
+      if (current.status >= 400) return rejection(current.status);
+      const parsed: unknown = JSON.parse(current.body);
+      return isGeminiModelInfoArray(parsed)
+        ? Promise.resolve(parsed)
+        : Promise.reject(new Error('replay fixture is not a GeminiModelInfo[] array'));
+    },
   };
   return createGeminiAdapter({ transport });
 };

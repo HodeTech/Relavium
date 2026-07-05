@@ -1,3 +1,5 @@
+import type { ProviderKind } from '@relavium/shared';
+
 import { createAnthropicAdapter } from './adapters/anthropic.js';
 import { createGeminiAdapter } from './adapters/gemini.js';
 import { createOpenAiAdapter } from './adapters/openai.js';
@@ -18,4 +20,24 @@ export function defaultProviders(): Readonly<Record<ProviderId, LlmProvider>> {
     deepseek: createOpenAiAdapter({ providerId: 'deepseek' }),
     gemini: createGeminiAdapter(),
   };
+}
+
+/**
+ * Derive a provider's **protocol {@link ProviderKind}** from its id (ADR-0064 §2) — the pure axis that
+ * selects, once per protocol rather than per provider, the adapter factory / list-models endpoint / auth /
+ * response mapper. `anthropic` and `gemini` map 1:1; `openai` and `deepseek` share `openai-compatible`
+ * (DeepSeek being the OpenAI-compatible adapter at a custom base URL). Exhaustive over the closed
+ * `ProviderId` union (a new id is a compile error here), so the two stay in lock-step. Consumed by the
+ * later ADR-0064 steps (the refresh service + the static/live merge); the id enum stays closed.
+ */
+export function providerKind(id: ProviderId): ProviderKind {
+  switch (id) {
+    case 'anthropic':
+      return 'anthropic';
+    case 'gemini':
+      return 'gemini';
+    case 'openai':
+    case 'deepseek':
+      return 'openai-compatible';
+  }
 }

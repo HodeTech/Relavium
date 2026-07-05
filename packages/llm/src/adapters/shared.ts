@@ -1,8 +1,18 @@
+import type { AbortSignalLike } from '@relavium/shared';
+
 import { mediaSupportReason } from '../capabilities.js';
 import { UnsupportedCapabilityError } from '../errors.js';
+import { LlmProviderError, makeLlmError } from '../llm-error.js';
 import { MODEL_PRICING, isCanonicalModelId } from '../pricing.js';
-import { LlmMessageSchema } from '../types.js';
-import type { CapabilityFlags, EstimateTokensInput, LlmRequest, ProviderId } from '../types.js';
+import { LlmMessageSchema, ModelListingSchema } from '../types.js';
+import type {
+  CapabilityFlags,
+  EstimateTokensInput,
+  LlmError,
+  LlmRequest,
+  ModelListing,
+  ProviderId,
+} from '../types.js';
 
 /**
  * Shared helpers for the provider adapters — the platform-coupled zone (`src/adapters/*`) that may
@@ -169,4 +179,110 @@ export function decodeMediaJobId(jobId: string): string | undefined {
     return undefined;
   }
   return decoded;
+}
+
+// --- Live model discovery (ADR-0064) — the shared listModels substrate every adapter reuses -------
+
+/**
+ * Default per-call bound for a `listModels` probe (ADR-0064 §3) — long enough for a cold, multi-page
+ * list, short enough that a stalled provider can never hang a refresh. Mirrors the `validateProviderKey`
+ * bounded discipline ([providers.ts](../../../../apps/cli/src/engine/providers.ts)).
+ */
+export const LIST_MODELS_TIMEOUT_MS = 15_000;
+
+/** Redact every occurrence of `key` from a string — defense-in-depth on the error path (ADR-0064 §3;
+ *  mirrors `validateProviderKey`). An empty key is a no-op (splitting on `''` would garble the text). */
+export function redactKey(text: string, key: string): string {
+  return key.length === 0 ? text : text.split(key).join('••••');
+}
+
+/** A finite positive integer, else `undefined` — the "0/absent limit means unknown, so OMIT it" rule
+ *  (ADR-0064 §3). Anthropic returns `0` for an unknown `max_input_tokens`; a `null`/missing limit is
+ *  likewise unknown. Never stores a `0` limit (the `ModelListing` schema is `.positive()`). */
+export function positiveModelInt(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+/**
+ * Finalize a leniently-built candidate into a validated {@link ModelListing}, or `undefined` if it fails
+ * the strict-outbound schema (ADR-0064 §3/§8) — the one boundary that drops a malformed / id-less row
+ * WITHOUT throwing, so additive provider drift is absorbed and one bad row degrades a single model, never
+ * the whole provider. Each adapter's mapper builds the candidate (which vendor field → which listing field
+ * is per-provider) and passes it here.
+ */
+export function toModelListing(candidate: Record<string, unknown>): ModelListing | undefined {
+  const parsed = ModelListingSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/**
+ * Run a `listModels` collect bounded + abortable + secret-free (ADR-0064 §3). An internal
+ * `AbortController` is threaded to the SDK (so a caller `signal` OR the hard timeout actually cancels the
+ * in-flight request), plus a `Promise.race` hard timeout that settles even if the SDK ignores the signal.
+ * On failure it throws a classified `LlmProviderError` whose message is **key-redacted** and which carries
+ * **no `cause`** (so neither the key nor the raw vendor payload can leak across the seam / into a run
+ * event) — the host's per-provider refresh isolation catches it (ADR-0064 §5).
+ */
+export async function boundedListModels(params: {
+  readonly provider: ProviderId;
+  readonly key: string;
+  readonly signal: AbortSignalLike | undefined;
+  /** The adapter's SDK-error classifier (e.g. `anthropicErrorToLlmError`). */
+  readonly classify: (err: unknown) => LlmError;
+  /** Fetch + map the rows, threading the internal (timeout/abort-linked) signal to the SDK. */
+  readonly collect: (signal: AbortSignal) => Promise<ModelListing[]>;
+  readonly timeoutMs?: number;
+}): Promise<ModelListing[]> {
+  const { provider, key, signal, classify, collect, timeoutMs = LIST_MODELS_TIMEOUT_MS } = params;
+  const controller = new AbortController();
+  const onAbort = (): void => controller.abort();
+  if (signal !== undefined) {
+    if (signal.aborted) {
+      controller.abort();
+    } else {
+      signal.addEventListener('abort', onAbort);
+    }
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+      reject(new Error('listModels timed out'));
+    }, timeoutMs);
+  });
+  const collecting = collect(controller.signal);
+  // Attach a no-op handler so a post-timeout rejection (the SDK aborting after the timeout won the race)
+  // is not an unhandled rejection; the race still observes the rejection through its own handler.
+  collecting.catch(() => undefined);
+  try {
+    return await Promise.race([collecting, timeout]);
+  } catch (err) {
+    const base = timedOut
+      ? makeLlmError({
+          provider,
+          kind: 'timeout',
+          message: `model list timed out after ${String(timeoutMs)}ms`,
+        })
+      : classify(err);
+    // Re-wrap through makeLlmError so scrubSecrets runs again AND redactKey strips the resolved key; never
+    // pass `cause` (it could carry the key or the raw vendor payload — ADR-0064 §3).
+    throw new LlmProviderError(
+      makeLlmError({
+        provider,
+        kind: base.kind,
+        message: redactKey(base.message, key),
+        ...(base.code !== undefined ? { code: base.code } : {}),
+        ...(base.status !== undefined ? { status: base.status } : {}),
+      }),
+    );
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+    if (signal !== undefined) {
+      signal.removeEventListener('abort', onAbort);
+    }
+  }
 }

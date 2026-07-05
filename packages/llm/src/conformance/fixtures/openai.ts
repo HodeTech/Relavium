@@ -156,6 +156,42 @@ const imageGenerate = JSON.stringify({
   data: [{ b64_json: 'aGVsbG8tY29uZm9ybWFuY2UtaW1hZ2U=' }],
 });
 
+// A recorded `/v1/models` page (ADR-0064 §1) — OpenAI's list is ID-ONLY (no context/price metadata), so
+// the filter is an id-family heuristic: keep gpt/o<digit>/chat/deepseek families + any priced id, DENY the
+// embeddings/tts/whisper/image/moderation/realtime/audio/ft: families. Here `gpt-5.5` / `gpt-5.4-mini` / `o3`
+// survive; the six non-chat rows are dropped.
+const modelsList = JSON.stringify({
+  object: 'list',
+  data: [
+    { id: 'gpt-5.5', object: 'model', created: 0, owned_by: 'openai' },
+    { id: 'gpt-5.4-mini', object: 'model', created: 0, owned_by: 'openai' },
+    { id: 'o3', object: 'model', created: 0, owned_by: 'openai' }, // reasoning family (o<digit>) → kept
+    { id: 'text-embedding-3-large', object: 'model', created: 0, owned_by: 'openai' }, // embedding → denied
+    { id: 'gpt-image-1', object: 'model', created: 0, owned_by: 'openai' }, // image → denied (deny wins over gpt)
+    { id: 'whisper-1', object: 'model', created: 0, owned_by: 'openai' }, // whisper → denied
+    { id: 'tts-1', object: 'model', created: 0, owned_by: 'openai' }, // tts → denied
+    { id: 'gpt-4o-realtime-preview', object: 'model', created: 0, owned_by: 'openai' }, // realtime → denied
+    { id: 'omni-moderation-latest', object: 'model', created: 0, owned_by: 'openai' }, // moderation → denied
+    { id: 'ft:gpt-4o-2024:acme', object: 'model', created: 0, owned_by: 'acme' }, // fine-tune → denied
+  ],
+});
+
+// The drift fixture (ADR-0064 §8): one row carries an unknown future field (ignored), one row has NO id
+// (dropped) — the call resolves, never throws.
+const modelsListDrift = JSON.stringify({
+  object: 'list',
+  data: [
+    {
+      id: 'gpt-5.5',
+      object: 'model',
+      created: 0,
+      owned_by: 'openai',
+      some_unknown_field: 'ignore-me',
+    },
+    { object: 'model', created: 0, owned_by: 'openai' }, // no `id` → dropped
+  ],
+});
+
 // No reasoningStream fixture: OpenAI chat.completions emits no reasoning output (the conformance
 // reasoning scenario is skipped for this provider).
 export const OPENAI_FIXTURES: ConformanceFixtures = {
@@ -167,6 +203,8 @@ export const OPENAI_FIXTURES: ConformanceFixtures = {
   streamError: { status: 503, body: streamError },
   structuredOutput: { status: 200, body: structuredOutput },
   mediaGenerate: { status: 200, body: imageGenerate },
+  listModels: { status: 200, body: modelsList },
+  listModelsDrift: { status: 200, body: modelsListDrift },
   toolLoop: {
     turn1: { status: 200, body: toolMessage },
     turn2: { status: 200, body: textMessage },
@@ -180,5 +218,8 @@ export const OPENAI_FIXTURES: ConformanceFixtures = {
     streamErrorKind: 'overloaded',
     structuredOutput: { text: '{"ok":true}' },
     mediaGenerate: { mimeType: 'image/png', data: 'aGVsbG8tY29uZm9ybWFuY2UtaW1hZ2U=' },
+    // id-only list: the three chat families survive; the sample carries only `id` (no context/price).
+    listModels: { ids: ['gpt-5.5', 'gpt-5.4-mini', 'o3'], sample: { id: 'gpt-5.5' } },
+    listModelsDrift: { ids: ['gpt-5.5'] },
   },
 };
