@@ -63,9 +63,13 @@ function rowToListing(row: ModelCatalogListing): ModelListing {
 
 /**
  * Project the active catalog rows into the merged `/models` view. Partitions the `source='live'` rows into a
- * per-`ProviderId` live map (a provider PRESENT in the map — even with no surviving rows — has live data, so its
- * static models are availability-checked against the list; a provider ABSENT has no live data, so its static
- * models fall back to static presence — ADR-0064 §6), then delegates to the pure merge. A live row whose provider
+ * per-`ProviderId` live map, then delegates to the pure merge. A provider is added to the live map only when it
+ * has ≥1 ACTIVE `source='live'` row; a provider with no active live rows (never refreshed, OR refreshed to an
+ * empty list — `replaceProviderModels` soft-deactivates all its live rows, so the two are indistinguishable at
+ * this seam) is ABSENT from the map, so its static models fall back to static presence (ADR-0064 §6's "never
+ * everything unavailable" safe default). This means the merge's `present-with-[]` case (dim all a provider's
+ * statics) is never produced HERE — the real providers never return an empty list for a valid key, and the safe
+ * default is preferred over dimming a whole provider on an ambiguous zero-row read. A live row whose provider
  * UUID resolves to a non-enum slug is dropped (defensive: a mis-keyed or future custom-provider row can never
  * corrupt an unrelated known provider's entry — the merge has its own cross-provider guard too).
  */

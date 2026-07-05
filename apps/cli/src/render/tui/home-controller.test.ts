@@ -13,6 +13,8 @@ import {
 import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
 
+import type { RefreshReport } from '../../engine/model-refresh.js';
+
 import type { MentionReader } from './mention.js';
 
 // The paste-boundary markers exactly as ink 6.8's input layer surfaces them (the leading ESC is stripped).
@@ -1602,14 +1604,19 @@ function pickerEntry(
   };
 }
 
-/** A controllable {@link HomeModelsPort} fake: spies on every method; `load` returns the given entries/stamp. */
+/**
+ * A controllable {@link HomeModelsPort} fake. `writeDefault` records the written id, and `currentDefault` returns
+ * it (so `accept` reports success) UNLESS `overrideDefault` is set — which simulates a project/workspace
+ * `[chat].default_model` shadowing the global write (the effective default stays the override). `writeThrows`
+ * simulates a config-write fault.
+ */
 function makeModelsPort(opts: {
   entries?: readonly ModelCatalogEntry[];
   refreshedAt?: number;
-  currentDefault?: string;
+  overrideDefault?: string;
+  writeThrows?: boolean;
   refreshIfStale?: () => Promise<Awaited<ReturnType<HomeModelsPort['refreshIfStale']>>>;
   refresh?: () => Promise<Awaited<ReturnType<HomeModelsPort['refresh']>>>;
-  writeDefault?: (modelId: string) => void;
 } = {}): {
   port: HomeModelsPort;
   load: ReturnType<typeof vi.fn>;
@@ -1618,15 +1625,20 @@ function makeModelsPort(opts: {
   writeDefault: ReturnType<typeof vi.fn>;
 } {
   const entries = opts.entries ?? [pickerEntry({ modelId: 'a' }), pickerEntry({ modelId: 'b' })];
+  let written: string | undefined;
   const load = vi.fn(() => ({ entries, refreshedAt: opts.refreshedAt }));
   const refreshIfStale = vi.fn(opts.refreshIfStale ?? (() => Promise.resolve(undefined)));
   const refresh = vi.fn(opts.refresh ?? (() => Promise.resolve({ providers: [] })));
-  const writeDefault = vi.fn(opts.writeDefault ?? (() => undefined));
+  const writeDefault = vi.fn((modelId: string) => {
+    if (opts.writeThrows === true) throw new Error('config write failed');
+    written = modelId;
+  });
   const port: HomeModelsPort = {
     load,
     refreshIfStale,
     refresh,
-    currentDefault: () => opts.currentDefault,
+    // The EFFECTIVE default: the override wins (shadows the global write), else the last written id.
+    currentDefault: () => opts.overrideDefault ?? written,
     writeDefault,
   };
   return { port, load, refreshIfStale, refresh, writeDefault };
@@ -1684,7 +1696,35 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(c.getSnapshot().notice).toContain('next chat session'); // it is a NEXT-session action, not a live reseat
   });
 
-  it('a DIMMED (unavailable) model is non-selectable: Enter shows a banner, never a write', async () => {
+  it('an honest notice when a project/workspace setting overrides the global write (no false success)', async () => {
+    // The write lands on the global file, but the effective default stays the project/workspace override, so the
+    // notice must NOT claim "applies to your next chat session" — it says the override still wins here.
+    const { port, writeDefault } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
+      overrideDefault: 'project-pinned',
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER);
+    expect(writeDefault).toHaveBeenCalledWith('claude-x');
+    expect(c.getSnapshot().notice).toContain('overrides it here');
+    expect(c.getSnapshot().notice).not.toContain('next chat session'); // no false claim of effect
+  });
+
+  it('a write fault keeps the picker OPEN with a secret-free hint, never crashes the Home', async () => {
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
+      writeThrows: true,
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().modelPicker).toBeDefined(); // stays open (recoverable)
+    expect(c.getSnapshot().modelPicker?.hint).toContain('could not save');
+    expect(c.getSnapshot().notice).toBeUndefined(); // no success notice on a failed write
+  });
+
+  it('a DIMMED (unavailable) model is non-selectable: Enter shows a HINT, never a write', async () => {
     const { port, writeDefault } = makeModelsPort({
       entries: [pickerEntry({ modelId: 'gone', displayName: 'Gone', available: false })],
     });
@@ -1693,7 +1733,10 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     c.handleKey('', ENTER);
     expect(writeDefault).not.toHaveBeenCalled(); // never write an unusable default
     expect(c.getSnapshot().modelPicker).toBeDefined(); // stays open
-    expect(c.getSnapshot().modelPicker?.banner).toContain('Gone'); // an actionable banner
+    expect(c.getSnapshot().modelPicker?.hint).toContain('Gone'); // an actionable action-hint (not the refresh banner)
+    // A navigation keystroke clears the transient hint (the user has moved on).
+    c.handleKey('x', {}); // a filter keystroke → 'state' step → hint cleared
+    expect(c.getSnapshot().modelPicker?.hint).toBeUndefined();
   });
 
   it('Esc closes the picker without writing a default', async () => {
@@ -1719,6 +1762,36 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(picker?.loading).toBe(false);
     expect(picker?.banner).toContain('openai'); // names the failed provider, not the (redacted) error body
     expect(picker?.banner).not.toContain('redacted');
+  });
+
+  it('a reopened picker is NOT clobbered by a prior open\'s slow refresh (the epoch guard)', async () => {
+    // Open #1 kicks a SLOW refreshIfStale; open #2 (after a close) gets a fast one. When the slow first refresh
+    // finally resolves with a partial failure, it must NOT stamp the SECOND picker's banner (a different generation).
+    let resolveSlow: (report: RefreshReport) => void = () => undefined;
+    let call = 0;
+    const { port } = makeModelsPort({
+      refreshIfStale: () => {
+        call += 1;
+        return call === 1
+          ? new Promise<RefreshReport>((res) => {
+              resolveSlow = res;
+            })
+          : Promise.resolve(undefined);
+      },
+    });
+    const c = openPicker(port); // open #1 → the slow refresh is in flight (generation 1)
+    c.handleKey('', { escape: true }); // close it
+    // Reopen on the SAME controller (open #2, generation 2) via the palette.
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().modelPicker).toBeDefined(); // picker #2 is open
+
+    resolveSlow({ providers: [{ provider: 'openai', status: 'failed', error: 'redacted' }] }); // gen-1 refresh lands late
+    await flush();
+    // The stale gen-1 result is dropped — picker #2's banner is untouched (no ghost partial-failure).
+    expect(c.getSnapshot().modelPicker?.banner).toBeUndefined();
   });
 
   it('the picker owns the keyboard: typing filters, it does not edit the Home buffer', async () => {

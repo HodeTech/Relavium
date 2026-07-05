@@ -50,6 +50,9 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
   const { start, end } = modelWindow(visible.length, selected);
   const windowed = visible.slice(start, end);
   const badge = `${formatRefreshedBadge(state.refreshedAt, nowMs)}${state.loading ? ' · refreshing…' : ''}`;
+  // One status line: the transient user-action `hint` (a dimmed/save note) takes priority over the async refresh
+  // `banner` (partial-failure) so a completing refresh can never silently wipe the feedback the user just triggered.
+  const status = state.hint ?? state.banner;
 
   const renderBody = (): ReactNode => {
     if (state.loading && visible.length === 0) {
@@ -105,9 +108,9 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
         Set your default model
         <Text {...dimProps(color)}>{` · ${badge}`}</Text>
       </Text>
-      {state.banner !== undefined && (
+      {status !== undefined && (
         <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
-          {sanitizeInline(state.banner)}
+          {sanitizeInline(status)}
         </Text>
       )}
       <Text {...dimProps(color)} wrap="truncate-end">

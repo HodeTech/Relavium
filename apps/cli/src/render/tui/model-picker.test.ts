@@ -33,6 +33,7 @@ function state(partial: Partial<ModelPickerState> = {}): ModelPickerState {
     currentDefault: undefined,
     refreshedAt: undefined,
     banner: undefined,
+    hint: undefined,
     ...partial,
   };
 }

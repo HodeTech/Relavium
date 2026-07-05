@@ -160,10 +160,22 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       knownProviders: KNOWN_PROVIDERS,
       now,
     });
-    // The `✓`-marked current default: `config.chat.defaultModel` resolves project → workspace → global `[preferences]`
-    // (ADR-0063 §1). A same-session `/models` write updates the GLOBAL file, so track the last write locally so a
-    // re-open of the picker marks the just-chosen model (the loaded `config` snapshot is not re-read mid-session).
-    let chosenDefault = config.chat.defaultModel;
+    // The `✓`-marked current default is the EFFECTIVE default — `[chat].default_model` resolves project → workspace
+    // → global `[preferences].default_model` (ADR-0063 §1). It is re-read FRESH from disk each call (not the loaded
+    // `config` snapshot) so it reflects a same-session `/models` write AND a project/workspace override AND an edit
+    // from another terminal; a config edited to malformed mid-session degrades to `undefined` rather than crashing
+    // the picker. Cheap (a few small file reads) and only called on a picker open / accept, never per keystroke.
+    const readEffectiveDefault = (): string | undefined => {
+      try {
+        return loadResolvedConfig({
+          cwd: deps.global.cwd,
+          home: homeDir,
+          ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
+        }).config.chat.defaultModel;
+      } catch {
+        return undefined; // a mid-session malformed config must not crash the picker
+      }
+    };
     const models: HomeModelsPort = {
       load: () => {
         // Rebuild the UUID→slug map on every load (NOT memoized once like the one-shot dispatch resolver): a refresh
@@ -177,11 +189,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       },
       refreshIfStale: () => refreshService.refreshIfStale(),
       refresh: () => refreshService.refresh(),
-      currentDefault: () => chosenDefault,
-      writeDefault: (modelId) => {
-        writeGlobalDefaultModel(modelId, homeDir);
-        chosenDefault = modelId; // the ✓ marker follows the write within this long-lived Home session
-      },
+      currentDefault: readEffectiveDefault,
+      writeDefault: (modelId) => writeGlobalDefaultModel(modelId, homeDir),
     };
 
     // Build + wire + START a fresh chat session (the controller sends the first message on transition).

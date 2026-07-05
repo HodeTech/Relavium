@@ -251,6 +251,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // Enter can never splice the file into the (now-empty) buffer meant for the NEXT message (the session-identity
   // guard only catches a chat SWAP, not an in-chat submit that stays in the same session/mode).
   let submitEpoch = 0;
+  // A monotonic `/models` picker generation (2.5.G S7): bumped on every picker open. An async catalog refresh
+  // captures it and lands its result ONLY if the picker is still on the SAME generation — so a slow refresh
+  // resolving after the picker was closed AND reopened can never clobber the fresh picker (the `doctorRunId` pattern).
+  let pickerEpoch = 0;
 
   // Race a chat teardown against the force-teardown deadline so the return-to-Home is bounded even if a hung MCP
   // graceful close never settles; the teardown still runs to completion in the background.
@@ -477,26 +481,34 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   };
 
   // The `/models` picker (2.5.G S7, ADR-0064 §10) — a keyboard-owning overlay opened from the Home palette. The db
-  // read + the merge are synchronous (`port.load()`); a refresh egresses and lands its result ONLY if the picker is
-  // still open (a since-closed picker drops it — mirrors loadMentions' stale guard). Home-only: it can be open only
-  // in `mode: 'home'` (the picker branch in handleKey routes before handleHomeKey), so no chat/session race applies.
-  const applyRefreshResult = (report: RefreshReport | undefined): void => {
+  // read + the merge are synchronous (`port.load()`); a refresh egresses and lands its result ONLY into the SAME
+  // picker generation that kicked it — the monotonic `pickerEpoch` (bumped on every open) drops a resolve whose
+  // picker has since closed or been REOPENED (the `doctorRunId` pattern; the identity half of loadMentions' guard).
+  // Home-only: it can be open only in `mode: 'home'`, so no chat/session race applies. Two status channels are kept
+  // SEPARATE — `banner` (async refresh partial-failure) vs `hint` (transient user-action feedback) — so a completing
+  // refresh can never silently wipe a "not available"/"could not save" message the user just triggered.
+  const applyRefreshResult = (epoch: number, report: RefreshReport | undefined): void => {
     const open = state.modelPicker;
-    if (open === undefined || deps.models === undefined) return; // the picker closed while the refresh was in flight
+    if (epoch !== pickerEpoch || open === undefined || deps.models === undefined) return; // stale/closed — drop it
     const { entries, refreshedAt } = deps.models.load();
     const failed = report?.providers.filter((p) => p.status === 'failed').map((p) => p.provider) ?? [];
-    // Keep the user's filter/selection; the view clamps a selection left past the (possibly shrunk) list's end.
+    // Keep the user's filter/selection + any transient hint; the view clamps a selection past the (shrunk) end.
     set({ modelPicker: { ...open, entries, refreshedAt, loading: false, banner: partialFailureBanner(failed) } });
   };
   const runPickerRefresh = (refresh: () => Promise<RefreshReport | undefined>): void => {
+    const epoch = pickerEpoch; // capture THIS picker generation so a reopened picker never adopts this result
     const open = state.modelPicker;
     if (open === undefined) return;
     set({ modelPicker: { ...open, loading: true } });
-    void refresh().then(applyRefreshResult, () => {
-      // refresh()/refreshIfStale() never reject (per-provider isolation), but stay defensive: just drop the spinner.
-      const cur = state.modelPicker;
-      if (cur !== undefined) set({ modelPicker: { ...cur, loading: false } });
-    });
+    void refresh().then(
+      (report) => applyRefreshResult(epoch, report),
+      () => {
+        // refresh()/refreshIfStale() never reject (per-provider isolation), but stay defensive: drop the spinner
+        // only when this is still the same open picker generation.
+        const cur = state.modelPicker;
+        if (epoch === pickerEpoch && cur !== undefined) set({ modelPicker: { ...cur, loading: false } });
+      },
+    );
   };
   const openModelPicker = (): void => {
     const port = deps.models; // capture the narrowed port so the refresh closure needs no non-null assertion
@@ -504,6 +516,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ notice: '/models is unavailable here.' }); // defensive — production always wires the port
       return;
     }
+    pickerEpoch += 1; // a fresh generation — invalidates any in-flight refresh from a prior (closed) open
     const { entries, refreshedAt } = port.load();
     set({
       notice: undefined, // opening the picker clears any stale /doctor report behind it
@@ -515,6 +528,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         currentDefault: port.currentDefault(),
         refreshedAt,
         banner: undefined,
+        hint: undefined,
       },
     });
     // Render the cache immediately (above), then kick a TTL-bounded background refresh (ADR-0064 §5c) — the Home is
@@ -522,27 +536,33 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     runPickerRefresh(() => port.refreshIfStale());
   };
   // Persist the chosen model as the NEXT session's default (ADR-0063) — it does NOT rebind a live session (there is
-  // none in the bare Home). A write fault (a malformed existing config) keeps the picker open with a static,
-  // secret-free banner rather than crashing the Home; success closes the picker and confirms in the strip notice.
+  // none in the bare Home). Because `writeGlobalDefaultModel` writes only the GLOBAL `[preferences].default_model`
+  // while the EFFECTIVE default resolves project → workspace → global (ADR-0063 §1), the notice is HONEST: it
+  // confirms success only when the freshly-resolved effective default actually became the chosen model, else it
+  // says a project/workspace setting still overrides it here (so the tool never falsely claims a no-op took effect).
+  // A write fault keeps the picker open with a secret-free `hint` rather than crashing the Home.
   const acceptModel = (modelId: string, displayName: string): void => {
-    if (deps.models === undefined) return;
+    const port = deps.models;
+    if (port === undefined) return;
     try {
-      deps.models.writeDefault(modelId);
+      port.writeDefault(modelId);
     } catch {
       const open = state.modelPicker;
       if (open !== undefined) {
-        set({ modelPicker: { ...open, banner: 'could not save — check ~/.relavium/config.toml' } });
+        set({ modelPicker: { ...open, hint: 'could not save — check ~/.relavium/config.toml' } });
       }
       return;
     }
-    set({
-      modelPicker: undefined,
-      notice: `Default model set to ${displayName} — applies to your next chat session.`,
-    });
+    const effective = port.currentDefault();
+    const notice =
+      effective === modelId
+        ? `Default model set to ${displayName} — applies to your next chat session.`
+        : `Saved ${displayName} as your global default, but a project or workspace setting overrides it here.`;
+    set({ modelPicker: undefined, notice });
   };
   // The open `/models` picker owns every key (2.5.G S7) — parity with routeMentionKey. Returns whether the key was
-  // consumed (the overlay was open). A DIMMED (unavailable-on-your-key) model is non-selectable (ADR §6): accepting
-  // one shows a transient banner rather than writing an unusable default.
+  // consumed. A DIMMED (unavailable-on-your-key) model is non-selectable (ADR §6): accepting one shows a transient
+  // `hint`, never a write. Any navigation/filter keystroke clears that hint (the user has moved on).
   const routeModelPickerKey = (input: string, key: ChatKey): boolean => {
     const open = state.modelPicker;
     if (open === undefined) return false;
@@ -555,13 +575,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         acceptModel(step.modelId, step.displayName);
         break;
       case 'blocked':
-        set({ modelPicker: { ...open, banner: `${step.displayName} is not available on your key — pick another` } });
+        set({ modelPicker: { ...open, hint: `${step.displayName} is not available on your key — pick another` } });
         break;
       case 'refresh':
         runPickerRefresh(() => deps.models?.refresh() ?? Promise.resolve(undefined));
         break;
       case 'state':
-        set({ modelPicker: step.state });
+        set({ modelPicker: { ...step.state, hint: undefined } }); // a real interaction clears the transient hint
         break;
     }
     return true;

@@ -18,8 +18,13 @@ import { dropLastCodePoint } from './chat-input.js';
  * The picker submode state. `entries` is the whole merged catalog (all providers, already deterministically
  * ordered by the merge); `filter` narrows it (case-insensitive, over display name / model id / provider);
  * `selected` indexes the VISIBLE (filtered) subset; `loading` is `true` while a refresh is in flight (the spinner);
- * `currentDefault` is the `[preferences].default_model` marked `✓`; `refreshedAt` is the newest live-refresh
- * epoch-ms (the "last updated" badge); `banner` is a secret-free per-provider partial-failure notice (or undefined).
+ * `currentDefault` is the effective default model marked `✓`; `refreshedAt` is the newest live-refresh epoch-ms
+ * (the "last updated" badge).
+ *
+ * Two DISTINCT status channels (kept separate so an async refresh completing can never wipe a synchronous action
+ * message, and vice versa): `banner` is the secret-free per-provider partial-failure **refresh status** (set only
+ * by a refresh; persists until the next refresh); `hint` is the transient **user-action** feedback (a dimmed
+ * "not available on your key" / a "could not save" note), cleared on the next navigation/filter keystroke.
  */
 export interface ModelPickerState {
   readonly entries: readonly ModelCatalogEntry[];
@@ -29,6 +34,7 @@ export interface ModelPickerState {
   readonly currentDefault: string | undefined;
   readonly refreshedAt: number | undefined;
   readonly banner: string | undefined;
+  readonly hint: string | undefined;
 }
 
 /** The minimal key fields the picker fold reads (a structural subset of ink's `Key`). */
