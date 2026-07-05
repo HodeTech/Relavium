@@ -109,8 +109,10 @@ export function foldModelPickerKey(
     return { kind: 'close' };
   }
   // Ctrl+R forces a live refresh (distinct from the auto TTL refresh on open). `r` alone extends the filter.
+  // Ignored while a refresh is already in flight (`loading`) — so two rapid Ctrl+R can't race two refreshes whose
+  // out-of-order completion would flash a stale banner over a fresher one. Stays open, unchanged.
   if (key.ctrl === true && char === 'r') {
-    return { kind: 'refresh' };
+    return state.loading ? { kind: 'state', state } : { kind: 'refresh' };
   }
   const visible = visibleModels(state);
   const arrow = foldArrow(key, state, visible.length);

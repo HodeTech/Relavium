@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { buildChatSession } from '../chat/session-host.js';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
@@ -205,6 +206,54 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ exit
     expect(await drivePromise).toBe(EXIT_CODES.success);
     expect(sessions.listSessions({ limit: 10 })[0]?.status).toBe('ended');
+  });
+
+  it('a /models write is picked up by the NEXT chat started in the SAME Home process (2.5.G S7 regression)', async () => {
+    // The blocker Sonnet review caught: `startChat` closed over the load-once `config` snapshot, so a `/models`
+    // write never reached a same-process chat even though the notice claimed "applies to your next chat session".
+    // Drive the REAL port (real config write + real re-read) end-to-end and assert the next session binds the pick.
+    const configFile = join(cwd, 'home-config.toml'); // a real, writable global config (the write + re-read target)
+    let captured: RootAppProps | undefined;
+    const builtDefaults: Array<string | undefined> = [];
+    const { deps } = makeDeps((p) => (captured = p), {
+      global: { ...global, configPath: configFile },
+      // Record the default the session is built with, then delegate to the real builder (so the chat still works).
+      buildSession: (args) => {
+        builtDefaults.push(args.chat.defaultModel);
+        return buildChatSession(args);
+      },
+    });
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    // Open the /models picker via the Home palette, let its background refresh settle.
+    props.controller.handleKey('/', {});
+    type(props, 'models');
+    props.controller.handleKey('', ENTER);
+    await flush();
+    const picker = props.controller.getSnapshot().modelPicker;
+    if (picker === undefined || picker.entries.length === 0) {
+      throw new Error('the /models picker did not open with catalog entries');
+    }
+    const chosen = picker.entries[picker.selected]?.modelId; // the highlighted model (filter empty ⇒ entries[0])
+    if (chosen === undefined) throw new Error('no selected model');
+
+    props.controller.handleKey('', ENTER); // accept ⇒ writeGlobalDefaultModel(chosen) to configFile
+    expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // picker closed on accept
+    expect(props.controller.getSnapshot().notice).toContain('next chat session'); // honest success (write took effect)
+
+    // Start a chat — the NEXT session MUST bind the just-chosen model (the fresh re-read), not a stale startup default.
+    type(props, 'hello');
+    props.controller.handleKey('', ENTER);
+    await flush();
+    expect(props.controller.getSnapshot().mode).toBe('chat');
+    expect(builtDefaults.at(-1)).toBe(chosen); // the regression assertion — a stale snapshot would NOT equal `chosen`
+
+    props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
+    await flush();
+    props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
+    expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
   it('an external SIGINT tears the live chat down and exits 130 (128+SIGINT)', async () => {

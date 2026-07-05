@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { closeSync, fchmodSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { GlobalConfigSchema, type GlobalConfig } from '@relavium/shared';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
@@ -52,24 +52,42 @@ import { ensureGlobalConfigDir, globalConfigDir } from './paths.js';
 
 /**
  * Set the global `[preferences].default_model`, preserving every other config key. Reads + validates the existing
- * `~/.relavium/config.toml` (an absent file ⇒ a fresh `{}`; a **malformed/invalid** existing config throws a
- * {@link ConfigError} rather than clobbering a file the user must fix), merges only `default_model`, re-validates,
- * verifies the serialized text round-trips, and writes atomically. `home` is injectable for tests.
+ * config (an absent file ⇒ a fresh `{}`; a **malformed/invalid** existing config throws a {@link ConfigError}
+ * rather than clobbering a file the user must fix), merges only `default_model`, re-validates, verifies the
+ * serialized text round-trips, and writes atomically. `home` is injectable for tests.
+ *
+ * `targetPath` (the CLI `--config` override) writes to that **exact** file — the SAME file `loadResolvedConfig`
+ * treats as "global" under `--config` — so a `/models` write, the picker's re-read, and the started chat session
+ * all agree on ONE file (2.5.G S7). Absent ⇒ the canonical global `~/.relavium/config.toml` (its dir created
+ * `0700`). Every ADR-0063 guarantee holds for either target: the temp lands BESIDE the target for an atomic
+ * same-filesystem rename and is `0600` by construction, the schema round-trip runs, and the typed setter stays
+ * secret-incapable (config holds no secrets, so an arbitrary `--config` dir's own mode is immaterial at rest).
  */
-export function writeGlobalDefaultModel(model: string, home: string = homedir()): void {
+export function writeGlobalDefaultModel(
+  model: string,
+  home: string = homedir(),
+  targetPath?: string,
+): void {
+  let target: string;
   let dir: string;
-  try {
-    dir = ensureGlobalConfigDir(home); // `~/.relavium/` (created `0700`)
-  } catch (err) {
-    // Keep the module's "every failure is a typed, file-attributed ConfigError" contract even for the
-    // directory-create step (e.g. EACCES on a read-only home, ENOSPC) — never let a raw fs Error escape.
-    throw new ConfigError(
-      globalConfigPath(home),
-      'could not be written — its directory could not be created.',
-      { cause: err },
-    );
+  if (targetPath === undefined) {
+    try {
+      dir = ensureGlobalConfigDir(home); // `~/.relavium/` (created `0700`)
+    } catch (err) {
+      // Keep the module's "every failure is a typed, file-attributed ConfigError" contract even for the
+      // directory-create step (e.g. EACCES on a read-only home, ENOSPC) — never let a raw fs Error escape.
+      throw new ConfigError(
+        globalConfigPath(home),
+        'could not be written — its directory could not be created.',
+        { cause: err },
+      );
+    }
+    target = join(dir, 'config.toml');
+  } else {
+    // The explicit `--config` target: write beside it (its dir must exist — loadResolvedConfig already read it).
+    target = targetPath;
+    dir = dirname(targetPath);
   }
-  const target = join(dir, 'config.toml');
 
   // Read the EXISTING config through the same validating loader (so we merge onto known-good data and preserve
   // update_channel / mcp_servers / preferences.theme). An absent file is a fresh object; an invalid one throws.

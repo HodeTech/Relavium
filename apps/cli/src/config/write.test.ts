@@ -63,6 +63,30 @@ describe('writeGlobalDefaultModel', () => {
     });
   });
 
+  it('writes to an explicit targetPath (the --config override), leaving ~/.relavium untouched', () => {
+    const explicit = join(home, 'custom-config.toml');
+    writeGlobalDefaultModel('gpt-4o', home, explicit);
+    // The explicit file received the write (round-trips)...
+    expect(loadConfigFile<GlobalConfig>(explicit, GlobalConfigSchema)).toEqual({
+      preferences: { default_model: 'gpt-4o' },
+    });
+    // ...and the canonical ~/.relavium/config.toml was NOT created (the write targeted the override file only).
+    expect(existsSync(globalConfigPath(home))).toBe(false);
+  });
+
+  it('preserves keys and writes 0600 when targeting an explicit --config path', () => {
+    const explicit = join(home, 'custom.toml');
+    writeFileSync(explicit, 'update_channel = "beta"\n[preferences]\ntheme = "dark"\n');
+    writeGlobalDefaultModel('m', home, explicit);
+    expect(loadConfigFile<GlobalConfig>(explicit, GlobalConfigSchema)).toEqual({
+      update_channel: 'beta',
+      preferences: { theme: 'dark', default_model: 'm' },
+    });
+    if (process.platform !== 'win32') {
+      expect(statSync(explicit).mode & 0o777).toBe(0o600); // atomic-write owner-only mode holds for either target
+    }
+  });
+
   it('overwrites an existing default_model in place (last write wins)', () => {
     writeGlobalDefaultModel('first-model', home);
     writeGlobalDefaultModel('second-model', home);

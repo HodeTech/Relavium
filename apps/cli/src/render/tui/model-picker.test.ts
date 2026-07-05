@@ -44,10 +44,13 @@ describe('foldModelPickerKey', () => {
     expect(foldModelPickerKey('c', { ctrl: true }, state()).kind).toBe('close');
   });
 
-  it('Ctrl+R refreshes; a bare "r" extends the filter instead', () => {
+  it('Ctrl+R refreshes; a bare "r" extends the filter; Ctrl+R is IGNORED while already loading', () => {
     expect(foldModelPickerKey('r', { ctrl: true }, state()).kind).toBe('refresh');
     const typed = foldModelPickerKey('r', {}, state());
     expect(typed).toEqual({ kind: 'state', state: state({ filter: 'r', selected: 0 }) });
+    // While a refresh is in flight, Ctrl+R is a no-op (stays open, unchanged) — no racing double-refresh.
+    const loading = state({ loading: true });
+    expect(foldModelPickerKey('r', { ctrl: true }, loading)).toEqual({ kind: 'state', state: loading });
   });
 
   it('arrows move the selection, clamped to the visible list', () => {

@@ -490,10 +490,25 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const applyRefreshResult = (epoch: number, report: RefreshReport | undefined): void => {
     const open = state.modelPicker;
     if (epoch !== pickerEpoch || open === undefined || deps.models === undefined) return; // stale/closed — drop it
-    const { entries, refreshedAt } = deps.models.load();
     const failed = report?.providers.filter((p) => p.status === 'failed').map((p) => p.provider) ?? [];
+    let view: ReturnType<HomeModelsPort['load']>;
+    try {
+      view = deps.models.load(); // a DB read — never crash the REPL (parity with runDoctor / acceptModel's guard)
+    } catch {
+      // Keep the last-shown entries; just drop the spinner and surface the refresh status.
+      set({ modelPicker: { ...open, loading: false, banner: partialFailureBanner(failed) } });
+      return;
+    }
     // Keep the user's filter/selection + any transient hint; the view clamps a selection past the (shrunk) end.
-    set({ modelPicker: { ...open, entries, refreshedAt, loading: false, banner: partialFailureBanner(failed) } });
+    set({
+      modelPicker: {
+        ...open,
+        entries: view.entries,
+        refreshedAt: view.refreshedAt,
+        loading: false,
+        banner: partialFailureBanner(failed),
+      },
+    });
   };
   const runPickerRefresh = (refresh: () => Promise<RefreshReport | undefined>): void => {
     const epoch = pickerEpoch; // capture THIS picker generation so a reopened picker never adopts this result
@@ -516,17 +531,23 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       set({ notice: '/models is unavailable here.' }); // defensive — production always wires the port
       return;
     }
+    let view: ReturnType<HomeModelsPort['load']>;
+    try {
+      view = port.load(); // a DB read — a fault must not crash the REPL (the "never crash the REPL" discipline)
+    } catch {
+      set({ notice: '/models: could not read the model catalog.' });
+      return;
+    }
     pickerEpoch += 1; // a fresh generation — invalidates any in-flight refresh from a prior (closed) open
-    const { entries, refreshedAt } = port.load();
     set({
       notice: undefined, // opening the picker clears any stale /doctor report behind it
       modelPicker: {
-        entries,
+        entries: view.entries,
         filter: '',
         selected: 0,
         loading: false,
         currentDefault: port.currentDefault(),
-        refreshedAt,
+        refreshedAt: view.refreshedAt,
         banner: undefined,
         hint: undefined,
       },
@@ -553,11 +574,17 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       }
       return;
     }
+    // Report HONESTLY by re-reading the effective default (project → workspace → global, ADR-0063 §1): success only
+    // if the chosen model actually became effective; a genuine higher-layer override says so; and — since the write
+    // just succeeded (so the global is valid) — an `undefined` effective read can only be a re-read fault, reported
+    // distinctly rather than mislabeled as an override.
     const effective = port.currentDefault();
     const notice =
       effective === modelId
         ? `Default model set to ${displayName} — applies to your next chat session.`
-        : `Saved ${displayName} as your global default, but a project or workspace setting overrides it here.`;
+        : effective === undefined
+          ? `Saved ${displayName} as your global default, but your config could not be re-read to confirm it.`
+          : `Saved ${displayName} as your global default, but a project or workspace setting overrides it here.`;
     set({ modelPicker: undefined, notice });
   };
   // The open `/models` picker owns every key (2.5.G S7) — parity with routeMentionKey. Returns whether the key was
@@ -581,7 +608,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         runPickerRefresh(() => deps.models?.refresh() ?? Promise.resolve(undefined));
         break;
       case 'state':
-        set({ modelPicker: { ...step.state, hint: undefined } }); // a real interaction clears the transient hint
+        // Clear the transient hint only on a REAL interaction — the fold returns the SAME state ref for an inert key
+        // (an unhandled key / backspace on an empty filter), which must not wipe a just-shown hint.
+        set({ modelPicker: step.state === open ? open : { ...step.state, hint: undefined } });
         break;
     }
     return true;

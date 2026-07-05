@@ -1615,6 +1615,8 @@ function makeModelsPort(opts: {
   refreshedAt?: number;
   overrideDefault?: string;
   writeThrows?: boolean;
+  readFaults?: boolean; // currentDefault always returns undefined (a config re-read fault after a good write)
+  loadThrows?: boolean; // load() throws (a DB read fault)
   refreshIfStale?: () => Promise<Awaited<ReturnType<HomeModelsPort['refreshIfStale']>>>;
   refresh?: () => Promise<Awaited<ReturnType<HomeModelsPort['refresh']>>>;
 } = {}): {
@@ -1626,7 +1628,10 @@ function makeModelsPort(opts: {
 } {
   const entries = opts.entries ?? [pickerEntry({ modelId: 'a' }), pickerEntry({ modelId: 'b' })];
   let written: string | undefined;
-  const load = vi.fn(() => ({ entries, refreshedAt: opts.refreshedAt }));
+  const load = vi.fn(() => {
+    if (opts.loadThrows === true) throw new Error('catalog read failed');
+    return { entries, refreshedAt: opts.refreshedAt };
+  });
   const refreshIfStale = vi.fn(opts.refreshIfStale ?? (() => Promise.resolve(undefined)));
   const refresh = vi.fn(opts.refresh ?? (() => Promise.resolve({ providers: [] })));
   const writeDefault = vi.fn((modelId: string) => {
@@ -1637,8 +1642,9 @@ function makeModelsPort(opts: {
     load,
     refreshIfStale,
     refresh,
-    // The EFFECTIVE default: the override wins (shadows the global write), else the last written id.
-    currentDefault: () => opts.overrideDefault ?? written,
+    // The EFFECTIVE default: a read fault ⇒ undefined; else the override wins (shadows the global write), else the
+    // last written id.
+    currentDefault: () => (opts.readFaults === true ? undefined : (opts.overrideDefault ?? written)),
     writeDefault,
   };
   return { port, load, refreshIfStale, refresh, writeDefault };
@@ -1709,6 +1715,36 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(writeDefault).toHaveBeenCalledWith('claude-x');
     expect(c.getSnapshot().notice).toContain('overrides it here');
     expect(c.getSnapshot().notice).not.toContain('next chat session'); // no false claim of effect
+  });
+
+  it('reports a DISTINCT notice when the config can\'t be re-read after a write (not "overrides")', async () => {
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
+      readFaults: true, // the write succeeds, but the re-read to confirm the effective default throws → undefined
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().notice).toContain('could not be re-read');
+    expect(c.getSnapshot().notice).not.toContain('overrides'); // a read fault is NOT an override
+    expect(c.getSnapshot().notice).not.toContain('next chat session'); // nor a confirmed success
+  });
+
+  it('a catalog read fault on OPEN degrades to a notice, never crashes the Home (never opens a broken picker)', () => {
+    const { port } = makeModelsPort({ loadThrows: true });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: vi.fn(),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+      models: port,
+    });
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER); // /models → openModelPicker → port.load() throws → caught
+    expect(c.getSnapshot().modelPicker).toBeUndefined(); // no half-open picker
+    expect(c.getSnapshot().notice).toContain('could not read the model catalog');
   });
 
   it('a write fault keeps the picker OPEN with a secret-free hint, never crashes the Home', async () => {

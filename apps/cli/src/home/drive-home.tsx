@@ -190,14 +190,21 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       refreshIfStale: () => refreshService.refreshIfStale(),
       refresh: () => refreshService.refresh(),
       currentDefault: readEffectiveDefault,
-      writeDefault: (modelId) => writeGlobalDefaultModel(modelId, homeDir),
+      // Write to the SAME file the picker re-reads + the started session resolves (honors `--config`), so a `/models`
+      // write is never a silent no-op to a different file (2.5.G S7).
+      writeDefault: (modelId) =>
+        writeGlobalDefaultModel(modelId, homeDir, deps.global.configPath),
     };
 
     // Build + wire + START a fresh chat session (the controller sends the first message on transition).
     const startChat = async (): Promise<HomeChatSession> => {
       const store = createChatStore(deps.global.color);
       const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
-        chat: config.chat,
+        // Re-read the EFFECTIVE default model FRESH per chat (not the load-once `config` snapshot) so a same-session
+        // `/models` write takes effect on the very next chat started in this long-lived Home (2.5.G S7) — the
+        // property the accept-notice's "applies to your next chat session" promises. A read fault degrades to the
+        // startup value. Other `[chat]` settings keep the startup snapshot (only `/models` mutates the default).
+        chat: { ...config.chat, defaultModel: readEffectiveDefault() ?? config.chat.defaultModel },
         agentRef: undefined, // the built-in default agent (zero-config first run)
         cwd: deps.global.cwd,
         projectConfigDir,
