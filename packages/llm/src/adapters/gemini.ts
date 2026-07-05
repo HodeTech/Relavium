@@ -9,7 +9,6 @@ import { GeminiToolCallIds, normalizeToolCall, toWire } from '../tool-normalizer
 import { UnsupportedCapabilityError } from '../errors.js';
 import type {
   CapabilityFlags,
-  EstimateTokensInput,
   LlmError,
   LlmMessage,
   LlmProvider,
@@ -25,13 +24,12 @@ import type {
 } from '../types.js';
 
 import {
+  CONTEXT_SEAM_DEFAULTS,
   REASONING_ID,
   assertMediaCapabilities,
   assertNoStreamingMediaOutput,
-  contextLimitFor,
   decodeMediaJobId,
   encodeMediaJobId,
-  estimateRequestTokens,
   isAbortSignal,
 } from './shared.js';
 
@@ -1030,17 +1028,9 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
     ): Promise<MediaJobStatus> {
       return geminiPollVideo(transport, jobId, key, signal);
     },
-    // ADR-0062 context-compaction seam: the shared defaults (Gemini's countTokens endpoint could specialize
+    // ADR-0062 context-compaction seam — the shared defaults (Gemini's countTokens endpoint could specialize
     // estimateTokens later; real usage is authoritative, so the heuristic is only a pre-first-turn fallback).
-    contextLimit(model: string): number | undefined {
-      return contextLimitFor(model);
-    },
-    managesOwnContext(): boolean {
-      return false;
-    },
-    estimateTokens(input: EstimateTokensInput): number {
-      return estimateRequestTokens(input);
-    },
+    ...CONTEXT_SEAM_DEFAULTS,
   };
 }
 

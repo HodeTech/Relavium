@@ -972,7 +972,16 @@ export class AgentSession {
       this.#estimateTokens(this.#agent.system_prompt, split.kept) + COMPACTION_MAX_SUMMARY_TOKENS;
     if (projectedFloor > budget) return;
 
-    const result = await this.compact('auto-threshold');
+    let result: CompactionResult;
+    try {
+      result = await this.compact('auto-threshold');
+    } catch {
+      // `compact()` RE-THROWS an UNCLASSIFIED error (a bug) rather than returning `{kind:'failed'}`. Auto-compaction
+      // is BEST-EFFORT and runs AFTER the turn already completed (session:turn_completed emitted), so such a throw
+      // must NOT reject an otherwise-successful `sendMessage` — mirror the seam-method guard above. Treat it as a
+      // failure so the deterministic /trim fallback below still bounds the next turn (ADR §5).
+      result = { kind: 'failed', message: 'auto-compaction summariser threw' };
+    }
     // Degrade a non-success — a `failed` summariser OR an EA7-aborted `cancelled` — to a deterministic, zero-cost
     // /trim so the next turn is bounded (never a silent overflowing resend, ADR §5). A terminal `cancel()` leaves
     // status !== 'idle', so this guard skips a dead session; a `compacted`/`nothing_to_compact` needs no fallback.

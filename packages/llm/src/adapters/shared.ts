@@ -51,6 +51,25 @@ export function contextLimitFor(model: string): number | undefined {
 }
 
 /**
+ * The default ADR-0062 context/token seam methods every adapter shares: `contextLimit` (the catalog window),
+ * `managesOwnContext` (`false` — no current provider bounds context itself), and `estimateTokens` (the heuristic
+ * fallback; real usage is authoritative). Spread `...CONTEXT_SEAM_DEFAULTS` into an adapter's provider object so
+ * the trio lives in one place; an adapter that later gains a native token-count endpoint layers a specialised
+ * `estimateTokens` on top (a same-key property AFTER the spread wins).
+ */
+export const CONTEXT_SEAM_DEFAULTS = {
+  contextLimit(model: string): number | undefined {
+    return contextLimitFor(model);
+  },
+  managesOwnContext(): boolean {
+    return false;
+  },
+  estimateTokens(input: EstimateTokensInput): number {
+    return estimateRequestTokens(input);
+  },
+};
+
+/**
  * The per-modality media capability gate (1.AE/1.AF). Every adapter calls this at `generate()`/`stream()`
  * entry, AFTER `assertSupported` and `assertStreamable`. An unsupported modality is thrown as
  * `UnsupportedCapabilityError('media')` with a specific detail string — NEVER silently dropped or
