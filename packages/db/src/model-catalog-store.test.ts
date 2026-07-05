@@ -809,4 +809,55 @@ describe('createModelCatalogStore (2.5.G / ADR-0064 — live-discovery cache)', 
     const listing = store.listByProvider(providerId).find((m) => m.modelId === 'soon-gone');
     expect(listing?.deprecationDate).toBe(DEPRECATION_TS);
   });
+
+  it('upsert() does NOT demote an existing live row: source/lastRefreshedAt preserved when omitted', () => {
+    const REFRESH_TS = TS_MS + 12_345;
+    store.replaceProviderModels(
+      providerId,
+      [{ modelId: 'was-live', displayName: 'Was Live' }],
+      REFRESH_TS,
+    );
+    // A provider-sync-style upsert that patches display fields but OMITS source/lastRefreshedAt must not
+    // demote the live row back to 'static' or null its stamp (the "never clobber" invariant).
+    store.upsert({
+      providerId,
+      modelId: 'was-live',
+      displayName: 'Was Live (patched)',
+      contextWindowTokens: 200,
+      maxOutputTokens: 100,
+    });
+    const patched = store.listByProvider(providerId).find((m) => m.modelId === 'was-live');
+    expect(patched?.source).toBe('live'); // NOT demoted to 'static'
+    expect(patched?.lastRefreshedAt).toBe(REFRESH_TS); // stamp preserved, not nulled
+    expect(store.providerRefreshedAt(providerId)).toBe(REFRESH_TS); // still counted as a live row
+    // ...while a TRUE insert still defaults to static / never-refreshed
+    store.upsert({
+      providerId,
+      modelId: 'fresh-static',
+      displayName: 'Fresh',
+      contextWindowTokens: 1,
+      maxOutputTokens: 1,
+    });
+    const fresh = store.listByProvider(providerId).find((m) => m.modelId === 'fresh-static');
+    expect(fresh?.source).toBe('static');
+    expect(fresh?.lastRefreshedAt).toBeUndefined();
+  });
+
+  it('listByProvider/listAll exclude a soft-DELETED (deletedAt) row, not just an inactive one', () => {
+    store.replaceProviderModels(
+      providerId,
+      [
+        { modelId: 'keep', displayName: 'Keep' },
+        { modelId: 'gone', displayName: 'Gone' },
+      ],
+      TS_MS,
+    );
+    // soft-DELETE (deletedAt set) 'gone' — a scenario distinct from the isActive=false deactivation path;
+    // a refactor that dropped isNull(deletedAt) from the listing queries would otherwise stay green.
+    client.sqlite
+      .prepare('UPDATE model_catalog SET deleted_at = ? WHERE model_id = ?')
+      .run(TS_MS + 1, 'gone');
+    expect(store.listByProvider(providerId).map((m) => m.modelId)).toEqual(['keep']);
+    expect(store.listAll().map((m) => m.modelId)).toEqual(['keep']);
+  });
 });

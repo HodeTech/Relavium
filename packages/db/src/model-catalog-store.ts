@@ -330,10 +330,14 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
         mediaImageCostMicrocents: input.mediaImageCostMicrocents ?? null,
         mediaAudioCostMicrocents: input.mediaAudioCostMicrocents ?? null,
         mediaVideoCostMicrocents: input.mediaVideoCostMicrocents ?? null,
-        // Provenance + freshness (ADR-0064 §4/§5). Omitted ⇒ `'static'` / `null`, so every existing
-        // media-routing caller (which passes neither) writes a static, never-refreshed row unchanged.
-        source: input.source ?? 'static',
-        lastRefreshedAt: input.lastRefreshedAt ?? null,
+        // Provenance + freshness (ADR-0064 §4/§5). On a true INSERT (`existing` undefined) these fall to
+        // `'static'` / `null`, so every existing media-routing caller (which passes neither) writes a static,
+        // never-refreshed row unchanged. On an UPDATE they PRESERVE the existing row's `source`/`lastRefreshedAt`
+        // when the caller omits them — a caller that omits `source` (e.g. a future provider-sync patch) must
+        // NEVER demote a live-refreshed row back to `'static'` or null its stamp (the "never clobber" invariant,
+        // symmetric with `replaceProviderModels`).
+        source: input.source ?? existing?.source ?? 'static',
+        lastRefreshedAt: input.lastRefreshedAt ?? existing?.lastRefreshedAt ?? null,
         // An upsert (re)activates the row: keep `isActive` in lockstep with `activeRow`'s `isActive = true`
         // filter so a re-upserted, previously-deactivated row is reachable again and the returned record never
         // disagrees with a subsequent `getByModelId` (which filters inactive rows out).
