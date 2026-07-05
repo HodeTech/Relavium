@@ -111,6 +111,21 @@ export interface ModelCatalogLiveModel {
   readonly maxOutputTokens?: number;
 }
 
+/**
+ * The row tallies a {@link ModelCatalogStore.replaceProviderModels} refresh applied, counted ATOMICALLY inside its
+ * own transaction and returned to the caller ([ADR-0064] §5). Returning them here — rather than the host diffing a
+ * before/after `listByProvider` snapshot — is what makes the counts correct under two CONCURRENT same-provider
+ * refreshes: an external diff reads a stale `before` and can double-count the same rows, whereas these tallies are
+ * observed from within the serialized write. Counts LIVE rows only (a non-`live` `static`/`user` row is skipped and
+ * never contributes — the same provenance protection the write itself enforces). `added` = INSERTed live rows,
+ * `updated` = existing live rows refreshed in place, `deactivated` = vanished live rows soft-deactivated.
+ */
+export interface ReplaceProviderModelsResult {
+  readonly added: number;
+  readonly updated: number;
+  readonly deactivated: number;
+}
+
 export interface ModelCatalogStoreDeps {
   readonly uuid: () => string;
   readonly now: () => number;
@@ -142,12 +157,16 @@ export interface ModelCatalogStore {
    * `deletedAt` untouched). `source='user'`/`source='static'` rows are NEVER touched (the ADR-0065 §1 "a refresh
    * never clobbers a user row" invariant + the media-routing seed's integrity), and nothing is ever hard-DELETED
    * (`model_catalog.id` is an FK target from five tables).
+   *
+   * Returns the {@link ReplaceProviderModelsResult} tallies (added/updated/deactivated), counted ATOMICALLY inside
+   * the transaction — so a concurrent same-provider refresh can never miscount (an external before/after diff would
+   * read a stale `before`). Only LIVE rows are counted; a `static`/`user` row is provenance-skipped and excluded.
    */
   replaceProviderModels: (
     providerId: string,
     rows: ReadonlyArray<ModelCatalogLiveModel>,
     now: number,
-  ) => void;
+  ) => ReplaceProviderModelsResult;
   /** The freshness read for the TTL ([ADR-0064] §5): the max `lastRefreshedAt` among a provider's active
    *  `source='live'` rows, or `undefined` when the provider has none. */
   providerRefreshedAt: (providerId: string) => number | undefined;
@@ -391,8 +410,17 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
         .all()
         .map(toListing),
 
-    replaceProviderModels: (providerId, rows, now) => {
+    replaceProviderModels: (providerId, rows, now) =>
+      // The transaction RETURNS the tallies so they are observed from WITHIN the serialized write — a concurrent
+      // same-provider refresh can never miscount them (an external before/after `listByProvider` diff would read a
+      // stale `before` and could double-count). drizzle's better-sqlite3 `transaction()` returns the callback value.
       db.transaction(() => {
+        // Only LIVE rows are tallied: `added` on a true INSERT, `updated` on an existing-live-row UPDATE (a non-live
+        // `static`/`user` row hits the provenance `continue` below and is counted in NEITHER), `deactivated` from the
+        // soft-deactivate UPDATE's `.changes` (its WHERE is already `source='live'`-scoped) — so the counts carry the
+        // same LIVE-only intent the write enforces, with no separate source filter needed.
+        let added = 0;
+        let updated = 0;
         for (const input of rows) {
           const displayName = input.displayName.trim() === '' ? input.modelId : input.displayName;
           // `0` is the NOT-NULL "unknown" sentinel (ADR-0064 §3) — an absent live limit stores as 0.
@@ -416,6 +444,7 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
             // media_surface/capabilities/rates) row already represents this model. A live refresh must NEVER
             // clobber it (that would drop user pricing or regress media routing), so it is left UNTOUCHED and,
             // being non-`live`, is also never deactivated below — the model stays represented by its own row.
+            // It is counted in neither `added` nor `updated` (provenance-protected — never part of the live delta).
             continue;
           }
           if (existing === undefined) {
@@ -433,6 +462,7 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
               updatedAt: now,
             };
             db.insert(modelCatalog).values(row).run();
+            added += 1;
           } else {
             // Reactivate + refresh the existing live row in place (id/created_at/FK refs preserved); only the
             // discovery columns + provenance/freshness are written — pricing/media columns are left as-is.
@@ -448,6 +478,7 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
               })
               .where(eq(modelCatalog.id, existing.id))
               .run();
+            updated += 1;
           }
         }
         // Soft-deactivate the vanished live rows: every currently-active `source='live'` row of THIS provider
@@ -461,7 +492,8 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
           eq(modelCatalog.source, 'live'),
           isNull(modelCatalog.deletedAt),
         );
-        db.update(modelCatalog)
+        const deactivateResult = db
+          .update(modelCatalog)
           .set({ isActive: false, updatedAt: now })
           // An empty new list deactivates ALL of the provider's live rows (no `notInArray([])` — its semantics
           // vary; the guard makes the "everything vanished" case explicit).
@@ -471,8 +503,10 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
               : and(deactivateScope, notInArray(modelCatalog.modelId, incomingModelIds)),
           )
           .run();
-      });
-    },
+        // better-sqlite3's `RunResult.changes` = the rows the UPDATE matched (each flips isActive true→false, so
+        // every matched row is genuinely modified) = the number of live rows soft-deactivated this refresh.
+        return { added, updated, deactivated: deactivateResult.changes };
+      }),
 
     providerRefreshedAt: (providerId) => {
       const row = db

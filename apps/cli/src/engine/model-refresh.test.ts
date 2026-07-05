@@ -17,9 +17,9 @@ import { createModelRefreshService, TTL_MS, type ModelRefreshDeps } from './mode
 
 /**
  * S5 refresh-orchestrator tests (ADR-0064 §5). All NETWORK-FREE: a stub resolver whose `listModels` returns
- * canned {@link ModelListing}s or throws, over a real in-memory `history.db` (so the store diff / TTL / FK
- * ordering are exercised end-to-end). Asserts per-provider isolation, the skip statuses, the added/updated/
- * deactivated diff, the TTL, and — the security invariant — that no provider key ever appears in a report.
+ * canned {@link ModelListing}s or throws, over a real in-memory `history.db` (so the store's atomic tally / TTL /
+ * FK ordering are exercised end-to-end). Asserts per-provider isolation, the skip statuses, the added/updated/
+ * deactivated tally, the TTL, and — the security invariant — that no provider key ever appears in a report.
  */
 
 const SECRET_KEY = 'sk-super-secret-key-value';
@@ -171,7 +171,7 @@ describe('createModelRefreshService', () => {
     });
   });
 
-  it('counts only the LIVE delta — a source=static / source=user row is excluded (FIX 5a)', async () => {
+  it('counts only the LIVE delta — a source=static / source=user row is excluded (store atomic tally)', async () => {
     let models: ModelListing[] = [listing('m1'), listing('m2')];
     const resolver = stubResolver({
       adapters: { openai: stubProvider('openai', () => Promise.resolve(models)) },
@@ -180,7 +180,9 @@ describe('createModelRefreshService', () => {
     const { svc, providerStore, catalogStore } = service(resolver, ['openai']);
 
     // Seed a static (media-routing) row and a user (pricing) row for the SAME provider BEFORE any refresh; a live
-    // refresh must NEVER count them in its added/updated/deactivated diff (they are provenance-protected — S4).
+    // refresh must NEVER count them in its added/updated/deactivated tally (they are provenance-protected — S4).
+    // The counts now come from the store's atomic transaction (the provenance `continue` skip + the
+    // `source='live'`-scoped deactivate), so a static/user row is excluded by construction — this pins that.
     const providerUuid = providerStore.upsert({
       name: 'openai',
       displayName: 'OpenAI',
@@ -203,8 +205,8 @@ describe('createModelRefreshService', () => {
       source: 'user',
     });
 
-    // First refresh: two LIVE models. added=2, updated=0, deactivated=0. Without the `source==='live'` filter in
-    // `liveModelIds`, the pre-existing static/user rows would be counted as "updated" (→ 2) — so this pins it.
+    // First refresh: two LIVE models. added=2, updated=0, deactivated=0. Without the store's LIVE-only count logic
+    // (the provenance skip), the pre-existing static/user rows would be counted as "updated" (→ 2) — so this pins it.
     const first = await svc.refresh();
     expect(first.providers[0]).toMatchObject({
       status: 'refreshed',
@@ -214,7 +216,7 @@ describe('createModelRefreshService', () => {
     });
 
     // Second refresh: drop m1, keep m2, add m3. added=1, updated=1 (only m2), deactivated=1 (only m1) — the
-    // static/user rows stay out of every count (without the filter, `updated` would be 3).
+    // static/user rows stay out of every count (without the LIVE-only logic, `updated` would be 3).
     models = [listing('m2'), listing('m3')];
     const second = await svc.refresh();
     expect(second.providers[0]).toMatchObject({
@@ -331,8 +333,7 @@ describe('createModelRefreshService', () => {
         },
       },
       catalogStore: {
-        replaceProviderModels: () => {},
-        listByProvider: () => [],
+        replaceProviderModels: () => ({ added: 0, updated: 0, deactivated: 0 }),
         providerRefreshedAt: () => undefined,
       },
       knownProviderIds: ['openai'],

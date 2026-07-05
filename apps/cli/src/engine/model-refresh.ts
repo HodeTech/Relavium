@@ -1,4 +1,4 @@
-import type { ModelCatalogListing, ModelCatalogLiveModel } from '@relavium/db';
+import type { ModelCatalogLiveModel, ReplaceProviderModelsResult } from '@relavium/db';
 import type { AbortSignalLike, LlmProvider, ModelListing, ProviderId } from '@relavium/llm';
 
 import { keyHint } from './providers.js';
@@ -75,14 +75,15 @@ export interface RefreshProviderStore {
   readonly get: (name: string) => { readonly id: string } | undefined;
 }
 
-/** The narrow catalog-store surface the refresh needs (the S4 live-refresh + read/freshness reads). */
+/** The narrow catalog-store surface the refresh needs (the S4 live-refresh write + the freshness read). The
+ *  live-refresh returns its own atomic {@link ReplaceProviderModelsResult} tallies, so the orchestrator no longer
+ *  needs a `listByProvider` before/after diff (which would double-count under a concurrent same-provider refresh). */
 export interface RefreshCatalogStore {
   readonly replaceProviderModels: (
     providerId: string,
     rows: ReadonlyArray<ModelCatalogLiveModel>,
     now: number,
-  ) => void;
-  readonly listByProvider: (providerId: string) => ModelCatalogListing[];
+  ) => ReplaceProviderModelsResult;
   readonly providerRefreshedAt: (providerId: string) => number | undefined;
 }
 
@@ -102,13 +103,33 @@ export interface ModelRefreshDeps {
 }
 
 export interface ModelRefreshService {
-  /** Force-refresh every connected provider (or `opts.providers`), per-provider-isolated. Never rejects. */
+  /** Force-refresh every connected provider (or `opts.providers`), per-provider-isolated. Never rejects. The
+   *  UNBOUNDED, user-initiated refresh (no TTL backoff) — this is what a one-shot CLI invocation must use
+   *  (`relavium models` / `models refresh` do). */
   refresh(opts?: RefreshOptions): Promise<RefreshReport>;
-  /** Refresh only providers whose live cache is empty/never-refreshed or older than {@link TTL_MS}; `undefined`
-   *  when nothing was stale. */
+  /**
+   * Refresh only providers whose live cache is empty/never-refreshed or older than {@link TTL_MS}; `undefined`
+   * when nothing was stale.
+   *
+   * @remarks The TTL backoff is bounded by an **IN-MEMORY, per-host-process** last-attempt map (plus the durable
+   * per-provider `providerRefreshedAt` stamp for successful rows). It is correct ONLY within a **long-lived** host
+   * process (the ADR-0064 §5c Home/picker background trigger), where the map persists across triggers so a failed/
+   * empty provider is not re-egressed every trigger. In a **process-per-invocation** CLI the map starts empty every
+   * run, so it provides ZERO cross-process bounding — a one-shot invocation must therefore use the unbounded
+   * {@link refresh} instead (which `models`/`models refresh` do). A durable per-provider last-ATTEMPT stamp is the
+   * named follow-up if per-process background bounding is ever required.
+   */
   refreshIfStale(opts?: RefreshOptions): Promise<RefreshReport | undefined>;
-  /** Fire-and-forget non-blocking TTL refresh (ADR-0064 §5c). Swallows ALL errors; sets no timer. The actual
-   *  picker/Home trigger is S7's wiring — S5 provides the mechanism only. */
+  /**
+   * Fire-and-forget non-blocking TTL refresh (ADR-0064 §5c). Swallows ALL errors; sets no timer of its own.
+   *
+   * @remarks HARD CONSTRAINT for S7 wiring: wire this ONLY into the **long-lived** Home process, NEVER a one-shot
+   * CLI invocation. A fresh-process background refresh would (a) not back off — the {@link refreshIfStale}
+   * last-attempt map is in-memory and starts empty each run — and (b) not exit promptly — the in-flight
+   * `listModels` request (and its open socket) keeps the event loop alive past the command's logical end. The
+   * one-shot commands already use the unbounded, awaited {@link refresh}; per-process background would need the
+   * durable last-attempt stamp named on {@link refreshIfStale} first.
+   */
   refreshInBackground(opts?: RefreshOptions): void;
 }
 
@@ -126,35 +147,6 @@ function toLiveModel(listing: ModelListing): ModelCatalogLiveModel {
       : { contextWindowTokens: listing.contextWindowTokens }),
     ...(listing.maxOutputTokens === undefined ? {} : { maxOutputTokens: listing.maxOutputTokens }),
   };
-}
-
-/** The provider's currently-active `source='live'` model ids (the before/after diff basis). */
-function liveModelIds(listings: readonly ModelCatalogListing[]): Set<string> {
-  const ids = new Set<string>();
-  for (const listing of listings) {
-    if (listing.source === 'live') {
-      ids.add(listing.modelId);
-    }
-  }
-  return ids;
-}
-
-/** |a \ b| — the count of members of `a` absent from `b`. */
-function countMissing(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
-  let n = 0;
-  for (const id of a) {
-    if (!b.has(id)) n += 1;
-  }
-  return n;
-}
-
-/** |a ∩ b|. */
-function countShared(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
-  let n = 0;
-  for (const id of a) {
-    if (b.has(id)) n += 1;
-  }
-  return n;
 }
 
 /**
@@ -218,18 +210,17 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
         baseUrl: meta.baseUrl,
       }).id;
 
-      const before = liveModelIds(deps.catalogStore.listByProvider(providerUuid));
       const rows = listings.map(toLiveModel);
-      deps.catalogStore.replaceProviderModels(providerUuid, rows, deps.now());
-      const after = liveModelIds(deps.catalogStore.listByProvider(providerUuid));
+      // The store counts added/updated/deactivated ATOMICALLY inside its own transaction and returns them — no
+      // before/after `listByProvider` diff (which, reading a stale `before`, would double-count under two
+      // concurrent same-provider refreshes) and two fewer queries. The tallies are LIVE-only by construction.
+      const { added, updated, deactivated } = deps.catalogStore.replaceProviderModels(
+        providerUuid,
+        rows,
+        deps.now(),
+      );
 
-      return {
-        provider: id,
-        status: 'refreshed',
-        added: countMissing(after, before),
-        updated: countShared(before, after),
-        deactivated: countMissing(before, after),
-      };
+      return { provider: id, status: 'refreshed', added, updated, deactivated };
     } catch (err) {
       return { provider: id, status: 'failed', error: secretFreeReason(err, key) };
     }

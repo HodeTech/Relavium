@@ -3,12 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { createModelCatalogStore, createProviderStore } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
-import { openLocalDb } from '../db/open.js';
+import { openLocalDb, type OpenedDb } from '../db/open.js';
 import { createModelRefreshService } from '../engine/model-refresh.js';
 import {
   KNOWN_PROVIDERS,
   KNOWN_PROVIDER_IDS,
   createProviderResolver,
+  type ProviderResolver,
 } from '../engine/providers.js';
 import { openHistoryStore } from '../history/open.js';
 import { openSessionStore } from '../history/session-open.js';
@@ -297,19 +298,58 @@ const executeStatus: CommandExecutor = (_input, ctx) =>
   Promise.resolve(statusCommand({ io: ctx.io, global: ctx.global }));
 
 /**
- * Open the local db + OS keychain for one `models` invocation, wire the S5 refresh service over the S4 catalog
- * store + the S2 `listModels?` seam, run the core, and always close the db (2.5.G S5, ADR-0064). The key
- * resolver reads a provider key only inside the refresh (keychain → env); the catalog holds no key.
+ * The lazy `llm_providers`-UUID → provider-slug (e.g. `anthropic`) resolver the `models` list path uses for its
+ * `--json` `provider` field + human table. The `id → name` map is built LAZILY on first call and memoized (`??=`):
+ * it is read only while RENDERING, which happens AFTER any first-run refresh has upserted its provider rows — so a
+ * provider DISCOVERED on this very invocation is captured too. Hoisting the map build ahead of the refresh would
+ * silently render a first-run provider's raw UUID instead of its slug. An unmapped uuid falls back to itself
+ * (never throws). Extracted (not inlined in {@link withModelsDeps}) so the lazy-after-refresh ordering is unit-tested.
  */
-async function withModelsDeps(ctx: DispatchContext, args: ModelsCommandArgs): Promise<ExitCode> {
+export function createProviderSlugResolver(
+  providerStore: Pick<ReturnType<typeof createProviderStore>, 'list'>,
+): (uuid: string) => string {
+  let slugByUuid: Map<string, string> | undefined;
+  return (uuid: string): string => {
+    slugByUuid ??= new Map(providerStore.list().map((p): [string, string] => [p.id, p.name]));
+    return slugByUuid.get(uuid) ?? uuid;
+  };
+}
+
+/**
+ * The I/O ports {@link withModelsDeps} owns — the local-db opener and the OS-keychain-backed provider resolver
+ * factory. Injectable (defaulting to {@link PRODUCTION_MODELS_PORTS}) so a test can drive the whole `models`
+ * wiring — including the close-on-fault lifecycle — over an in-memory db + a network-free stub resolver, without
+ * touching the real `history.db` or loading the native keychain.
+ */
+export interface ModelsDbPorts {
+  readonly openDb: (homeDir: string) => OpenedDb;
+  readonly makeResolver: (io: CliIo) => Pick<ProviderResolver, 'resolveProvider' | 'keyFor'>;
+}
+
+const PRODUCTION_MODELS_PORTS: ModelsDbPorts = {
+  openDb: openLocalDb,
+  makeResolver: (io) => createProviderResolver(io.env, createOsKeychainStore()),
+};
+
+/**
+ * Open the local db + OS keychain for one `models` invocation, wire the S5 refresh service over the S4 catalog
+ * store + the S2 `listModels?` seam, run the core, and ALWAYS close the db — even on a thrown fault (2.5.G S5,
+ * ADR-0064). The key resolver reads a provider key only inside the refresh (keychain → env); the catalog holds no
+ * key. `ports` is injectable for tests; production uses the real db + keychain-backed resolver.
+ */
+export async function withModelsDeps(
+  ctx: DispatchContext,
+  args: ModelsCommandArgs,
+  ports: ModelsDbPorts = PRODUCTION_MODELS_PORTS,
+): Promise<ExitCode> {
   const { homeDir } = loadResolvedConfig({
     cwd: ctx.global.cwd,
     configPath: ctx.global.configPath,
   });
-  const { db, close } = openLocalDb(homeDir);
+  const { db, close } = ports.openDb(homeDir);
   try {
     const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };
-    const resolver = createProviderResolver(ctx.io.env, createOsKeychainStore());
+    const resolver = ports.makeResolver(ctx.io);
     const providerStore = createProviderStore(db, storeDeps);
     const catalogStore = createModelCatalogStore(db, storeDeps);
     const refreshService = createModelRefreshService({
@@ -321,21 +361,12 @@ async function withModelsDeps(ctx: DispatchContext, args: ModelsCommandArgs): Pr
       knownProviders: KNOWN_PROVIDERS,
       now: () => Date.now(),
     });
-    // Translate the catalog rows' internal `llm_providers` UUID → the provider slug (e.g. `anthropic`) for the
-    // list command's `--json` `provider` field + human table. Built LAZILY on first use (memoized): the map is
-    // read only while RENDERING, which happens AFTER any first-run refresh has upserted its provider rows — so a
-    // freshly-discovered provider's slug is captured too. An unmapped uuid falls back to itself (never throws).
-    let slugByUuid: Map<string, string> | undefined;
-    const providerSlug = (uuid: string): string => {
-      slugByUuid ??= new Map(providerStore.list().map((p): [string, string] => [p.id, p.name]));
-      return slugByUuid.get(uuid) ?? uuid;
-    };
     return await modelsCommand(args, {
       io: ctx.io,
       global: ctx.global,
       catalog: catalogStore,
       refreshService,
-      providerSlug,
+      providerSlug: createProviderSlugResolver(providerStore),
     });
   } finally {
     close();

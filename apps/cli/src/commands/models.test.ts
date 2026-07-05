@@ -160,6 +160,25 @@ describe('modelsCommand — list', () => {
     expect(text).toContain('gpt-x'); // the visible id text survives
   });
 
+  it('--json first-run failure degrades to an empty NDJSON stream + exit 0 (connected provider fetch failed) (FIX D)', async () => {
+    // The list path under `--json`: an empty cache triggers one first-run refresh, but the CONNECTED provider's
+    // fetch FAILED, so the catalog stays empty. The accepted machine-output degrade (ADR-0049) is an EMPTY stream
+    // + exit 0 — NOT a fault, and NOT the human failure-aware line (which `--json` must never emit).
+    const { io, out } = captureIo();
+    const rowsRef: { value: ModelCatalogListing[] } = { value: [] };
+    const refresh = stubRefresh({
+      providers: [{ provider: 'anthropic', status: 'failed', error: 'bad key' }],
+    });
+
+    const code = await modelsCommand(
+      { refresh: false },
+      deps(io, stubCatalog(rowsRef), refresh, true),
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    expect(refresh.calls).toBe(1); // the blocking first-run refresh DID run
+    expect(out()).toBe(''); // empty NDJSON — no records, and no human "Model refresh failed" message
+  });
+
   it('reports a FAILED first-run refresh (not "add a key") when the catalog is still empty (FIX 4)', async () => {
     const { io, out } = captureIo();
     const rowsRef: { value: ModelCatalogListing[] } = { value: [] };

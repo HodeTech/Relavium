@@ -509,6 +509,92 @@ describe('createModelCatalogStore (2.5.G / ADR-0064 — live-discovery cache)', 
     expect(bRows[0]?.id).toBe(bIdBefore);
   });
 
+  it('RETURNS the atomic added/updated/deactivated tallies (new added, kept updated, vanished deactivated)', () => {
+    // First refresh: three brand-new live models ⇒ all counted as added.
+    const first = store.replaceProviderModels(
+      providerId,
+      [
+        { modelId: 'm1', displayName: 'M1' },
+        { modelId: 'm2', displayName: 'M2' },
+        { modelId: 'm3', displayName: 'M3' },
+      ],
+      TS_MS + 1000,
+    );
+    expect(first).toEqual({ added: 3, updated: 0, deactivated: 0 });
+
+    // Second refresh: m1/m2 kept (updated in place), m3 vanishes (deactivated), m4 appears (added).
+    const second = store.replaceProviderModels(
+      providerId,
+      [
+        { modelId: 'm1', displayName: 'M1 v2' },
+        { modelId: 'm2', displayName: 'M2 v2' },
+        { modelId: 'm4', displayName: 'M4' },
+      ],
+      TS_MS + 2000,
+    );
+    expect(second).toEqual({ added: 1, updated: 2, deactivated: 1 });
+
+    // Third refresh: m3 REAPPEARS ⇒ reactivated in place (counted `updated`, NOT `added`, since the same row id
+    // is reused); m1/m2/m4 all vanish ⇒ deactivated:3; nothing brand-new ⇒ added:0.
+    const third = store.replaceProviderModels(
+      providerId,
+      [{ modelId: 'm3', displayName: 'M3 back' }],
+      TS_MS + 3000,
+    );
+    expect(third).toEqual({ added: 0, updated: 1, deactivated: 3 });
+  });
+
+  it('the returned tallies count LIVE rows only — a coexisting static/user row is never added/updated/deactivated', () => {
+    // Seed a static (media-routing) row and a user (pricing) row BEFORE any refresh.
+    store.upsert({
+      providerId,
+      modelId: 'static-model',
+      displayName: 'Static',
+      contextWindowTokens: 1000,
+      maxOutputTokens: 100,
+      source: 'static',
+    });
+    store.upsert({
+      providerId,
+      modelId: 'user-model',
+      displayName: 'User',
+      contextWindowTokens: 1000,
+      maxOutputTokens: 100,
+      source: 'user',
+    });
+
+    // First live refresh names two NEW live ids ⇒ added:2, updated:0, deactivated:0 — the static/user rows
+    // contribute to NONE of the counts (provenance-protected: never part of the live delta).
+    const first = store.replaceProviderModels(
+      providerId,
+      [
+        { modelId: 'live-1', displayName: 'L1' },
+        { modelId: 'live-2', displayName: 'L2' },
+      ],
+      TS_MS + 1000,
+    );
+    expect(first).toEqual({ added: 2, updated: 0, deactivated: 0 });
+
+    // A refresh whose live list ALSO names the existing static + user ids (a collision) must still not count them:
+    // they are provenance-`continue`-skipped (never `updated`), and dropping live-1 deactivates exactly one LIVE
+    // row — a store count with no `source='live'` guard would report updated:3 / deactivated including them.
+    const second = store.replaceProviderModels(
+      providerId,
+      [
+        { modelId: 'live-2', displayName: 'L2 v2' },
+        { modelId: 'static-model', displayName: 'collide' },
+        { modelId: 'user-model', displayName: 'collide' },
+      ],
+      TS_MS + 2000,
+    );
+    expect(second).toEqual({ added: 0, updated: 1, deactivated: 1 });
+
+    // Both provenance rows survived every refresh (never deactivated by the live delta).
+    const ids = store.listByProvider(providerId).map((m) => m.modelId);
+    expect(ids).toContain('static-model');
+    expect(ids).toContain('user-model');
+  });
+
   it('never clobbers an existing user/static row even when the live list names the same model id (the collision invariant)', () => {
     store.upsert({
       providerId,
