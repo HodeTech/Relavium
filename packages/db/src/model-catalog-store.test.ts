@@ -690,4 +690,123 @@ describe('createModelCatalogStore (2.5.G / ADR-0064 — live-discovery cache)', 
     expect(rec?.mediaSurface).toBe('generative');
     expect(rec?.mediaImageCostMicrocents).toBe(5000);
   });
+
+  it('source-rank: a static generative seed wins over a cross-provider live chat row for the same model id (no media shadow)', () => {
+    // Provider A holds a source='static' generative media seed for the model id (createdAt = TS_MS).
+    store.upsert({
+      providerId,
+      modelId: 'shared-media-id',
+      displayName: 'Static Generative Seed',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'generative',
+    });
+    // Provider B publishes a source='live' row (media_surface defaults to 'chat') for the SAME model id, with an
+    // EARLIER createdAt so a bare `asc(createdAt)` ordering would resolve to THIS live chat row and shadow the
+    // generative seed — silently disabling generateMedia() routing. The source-rank tiebreaker must keep the
+    // static seed (rank 0) authoritative over the live row (rank 1) regardless of createdAt.
+    const providerB = providerStore.upsert({
+      name: 'anthropic',
+      displayName: 'Anthropic',
+      baseUrl: 'https://api.anthropic.com',
+    }).id;
+    store.replaceProviderModels(
+      providerB,
+      [{ modelId: 'shared-media-id', displayName: 'Live Chat Model' }],
+      TS_MS - 1000, // earlier createdAt than the static seed
+    );
+    // Both rows are active for the shared id; the static seed still wins for BOTH read paths (routing + record).
+    expect(store.resolveMediaSurface('shared-media-id')).toBe('generative');
+    expect(store.getByModelId('shared-media-id')?.mediaSurface).toBe('generative');
+    expect(store.getByModelId('shared-media-id')?.providerId).toBe(providerId);
+  });
+
+  it('toListing maps the three text-token cost columns to distinct fields (catches a copy/paste swap)', () => {
+    store.upsert({
+      providerId,
+      modelId: 'priced-model',
+      displayName: 'Priced',
+      contextWindowTokens: 8000,
+      maxOutputTokens: 4000,
+      source: 'user',
+    });
+    // `upsert` does not expose the text-token cost columns; set DISTINCT non-zero µ¢ directly so a swapped
+    // (e.g. output←input) column mapping in `toListing` reads a different value and fails — mirroring the
+    // media-cost columns' distinct-value discipline. Read them back THROUGH the listing path (not raw drizzle).
+    client.sqlite
+      .prepare(
+        'UPDATE model_catalog SET input_cost_per_mtok_microcents = ?, output_cost_per_mtok_microcents = ?, cached_input_cost_per_mtok_microcents = ? WHERE model_id = ?',
+      )
+      .run(1234, 5678, 42, 'priced-model');
+    const listing = store.listByProvider(providerId).find((m) => m.modelId === 'priced-model');
+    expect(listing?.inputCostPerMtokMicrocents).toBe(1234);
+    expect(listing?.outputCostPerMtokMicrocents).toBe(5678);
+    expect(listing?.cachedInputCostPerMtokMicrocents).toBe(42);
+  });
+
+  it('providerRefreshedAt isolates by provider and ignores non-live rows', () => {
+    const providerB = providerStore.upsert({
+      name: 'anthropic',
+      displayName: 'Anthropic',
+      baseUrl: 'https://api.anthropic.com',
+    }).id;
+    const TA = TS_MS + 1000;
+    const TB = TS_MS + 7777;
+    store.replaceProviderModels(providerId, [{ modelId: 'a1', displayName: 'A1' }], TA);
+    store.replaceProviderModels(providerB, [{ modelId: 'b1', displayName: 'B1' }], TB);
+    // Cross-provider isolation: each provider reports ITS OWN max live stamp (the providerId filter). Dropping
+    // that filter would return the global max (TB) for provider A.
+    expect(store.providerRefreshedAt(providerId)).toBe(TA);
+    expect(store.providerRefreshedAt(providerB)).toBe(TB);
+
+    // A non-live row must NOT contribute even if it carries an (injected) last_refreshed_at newer than any live
+    // stamp — the source='live' filter excludes it. Provider A still reports its live max (TA), not the injection.
+    store.upsert({
+      providerId,
+      modelId: 'static-seed',
+      displayName: 'Static',
+      contextWindowTokens: 100,
+      maxOutputTokens: 50,
+    });
+    client.sqlite
+      .prepare('UPDATE model_catalog SET last_refreshed_at = ? WHERE model_id = ?')
+      .run(TS_MS + 999_999, 'static-seed');
+    expect(store.providerRefreshedAt(providerId)).toBe(TA);
+
+    // A provider whose ONLY row is non-live (even carrying an injected stamp) has no live max ⇒ undefined,
+    // not the injected non-live stamp.
+    const providerC = providerStore.upsert({
+      name: 'gemini',
+      displayName: 'Gemini',
+      baseUrl: 'https://generativelanguage.googleapis.com',
+    }).id;
+    store.upsert({
+      providerId: providerC,
+      modelId: 'c-static',
+      displayName: 'C Static',
+      contextWindowTokens: 100,
+      maxOutputTokens: 50,
+    });
+    client.sqlite
+      .prepare('UPDATE model_catalog SET last_refreshed_at = ? WHERE model_id = ?')
+      .run(TS_MS + 555, 'c-static');
+    expect(store.providerRefreshedAt(providerC)).toBeUndefined();
+  });
+
+  it('toListing surfaces a non-null deprecationDate (the positive branch, distinct from other timestamps)', () => {
+    const REFRESH_TS = TS_MS + 60_000;
+    store.replaceProviderModels(
+      providerId,
+      [{ modelId: 'soon-gone', displayName: 'Soon Gone' }],
+      REFRESH_TS,
+    );
+    // A DISTINCTIVE deprecation epoch-ms, distinct from createdAt (REFRESH_TS) and lastRefreshedAt (REFRESH_TS)
+    // so a `toListing` mapping that read created_at/last_refreshed_at by mistake reads a different value and fails.
+    const DEPRECATION_TS = TS_MS + 424_242;
+    client.sqlite
+      .prepare('UPDATE model_catalog SET deprecation_date = ? WHERE model_id = ?')
+      .run(DEPRECATION_TS, 'soon-gone');
+    const listing = store.listByProvider(providerId).find((m) => m.modelId === 'soon-gone');
+    expect(listing?.deprecationDate).toBe(DEPRECATION_TS);
+  });
 });

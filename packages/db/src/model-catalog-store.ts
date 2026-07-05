@@ -262,10 +262,16 @@ function fromRow(row: ModelCatalogRow): ModelCatalogRecord {
 
 /** Wire a {@link ModelCatalogStore} over a `@relavium/db` connection. */
 export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): ModelCatalogStore {
-  // The earliest active, non-deleted row for a (non-unique-alone) model id — `model_catalog` is unique on
-  // (provider, model), so a model offered by two providers yields more than one active row. `asc(createdAt)`
-  // with a stable `asc(id)` tiebreaker (the `run-history-store.ts` convention) keeps the resolved row — hence
-  // the routing surface + capability record — deterministic across reads even when two rows share a createdAt.
+  // The authoritative active, non-deleted row for a (non-unique-alone) model id — `model_catalog` is unique on
+  // (provider, model), so a model offered by two providers yields more than one active row. A SOURCE-RANK
+  // tiebreaker orders FIRST: a `source='live'` row (rank 1) always loses to a non-live `source='static'`/
+  // `'user'` row (rank 0) for the same model id. For media/capability resolution the static/user row is
+  // AUTHORITATIVE over live — so a `source='live'` chat row (media_surface default 'chat', e.g. a cross-provider
+  // live-discovery hit) can never sort ahead of and silently shadow a `source='static'` generative media seed
+  // (or a `source='user'` capability/pricing row) and disable `generateMedia()` routing. Within a rank,
+  // `asc(createdAt)` with a stable `asc(id)` tiebreaker (the `run-history-store.ts` convention) keeps the
+  // resolved row — hence the routing surface + capability record — deterministic across reads even when two
+  // rows share a createdAt (two static rows stay rank 0 = 0 and fall through to createdAt/id, unchanged).
   const activeRow = (modelId: string): ModelCatalogRow | undefined =>
     db
       .select()
@@ -277,7 +283,11 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
           isNull(modelCatalog.deletedAt),
         ),
       )
-      .orderBy(asc(modelCatalog.createdAt), asc(modelCatalog.id))
+      .orderBy(
+        sql`CASE WHEN ${modelCatalog.source} = 'live' THEN 1 ELSE 0 END`,
+        asc(modelCatalog.createdAt),
+        asc(modelCatalog.id),
+      )
       .get();
 
   const rowById = (id: string): ModelCatalogRow | undefined =>
