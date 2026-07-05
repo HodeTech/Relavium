@@ -175,6 +175,16 @@ const modelsList = JSON.stringify({
   ],
 });
 
+// A 401 on the `/models` list (ADR-0064 §3) — the SDK raises an AuthenticationError the adapter classifies
+// to `auth`; boundedListModels re-wraps it key-redacted + cause-stripped.
+const modelsListAuthError = JSON.stringify({
+  error: {
+    message: 'Authentication Fails, Your api key is invalid',
+    type: 'authentication_error',
+    code: 'invalid_request_error',
+  },
+});
+
 // The drift fixture (ADR-0064 §8): an unknown field is ignored, an id-less row dropped, never a throw.
 const modelsListDrift = JSON.stringify({
   object: 'list',
@@ -195,6 +205,7 @@ export const DEEPSEEK_FIXTURES: ConformanceFixtures = {
   structuredOutput: { status: 200, body: structuredOutput },
   listModels: { status: 200, body: modelsList },
   listModelsDrift: { status: 200, body: modelsListDrift },
+  listModelsError: { status: 401, body: modelsListAuthError },
   toolLoop: {
     turn1: { status: 200, body: toolMessage },
     turn2: { status: 200, body: textMessage },
@@ -217,5 +228,6 @@ export const DEEPSEEK_FIXTURES: ConformanceFixtures = {
     structuredOutput: { text: '{"ok":true}' },
     listModels: { ids: ['deepseek-chat', 'deepseek-reasoner'], sample: { id: 'deepseek-chat' } },
     listModelsDrift: { ids: ['deepseek-chat'] },
+    listModelsError: { kind: 'auth' },
   },
 };

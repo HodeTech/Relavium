@@ -36,6 +36,13 @@ const rateLimitError = JSON.stringify({
   error: { type: 'rate_limit_error', message: 'Number of requests has exceeded your rate limit.' },
 });
 
+// A 401 on the `/v1/models` list (ADR-0064 §3) — the SDK raises an AuthenticationError the adapter
+// classifies to `auth`; boundedListModels re-wraps it key-redacted + cause-stripped.
+const modelsListAuthError = JSON.stringify({
+  type: 'error',
+  error: { type: 'authentication_error', message: 'invalid x-api-key' },
+});
+
 /** Build an SSE transcript from `[eventType, dataObject]` pairs in the Anthropic wire format. */
 function sse(events: readonly [string, unknown][]): string {
   return (
@@ -310,6 +317,7 @@ export const ANTHROPIC_FIXTURES: ConformanceFixtures = {
   structuredOutput: { status: 200, body: structuredOutput },
   listModels: { status: 200, body: modelsList },
   listModelsDrift: { status: 200, body: modelsListDrift },
+  listModelsError: { status: 401, body: modelsListAuthError },
   toolLoop: {
     turn1: { status: 200, body: toolMessage },
     turn2: { status: 200, body: textMessage },
@@ -334,5 +342,6 @@ export const ANTHROPIC_FIXTURES: ConformanceFixtures = {
       },
     },
     listModelsDrift: { ids: ['claude-sonnet-4-6'] },
+    listModelsError: { kind: 'auth' },
   },
 };

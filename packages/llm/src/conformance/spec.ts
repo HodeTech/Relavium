@@ -69,6 +69,9 @@ export interface ConformanceExpectations {
   /** The ids a `listModelsDrift` reply should yield (ADR-0064 §8) — the id-less row dropped, the unknown
    *  extra field ignored, never a throw. */
   readonly listModelsDrift?: { readonly ids: readonly string[] };
+  /** The classified kind a failing `listModels` call should reject with (ADR-0064 §3) — providers with a
+   *  `listModelsError` fixture supply it (e.g. `auth` for a 401). */
+  readonly listModelsError?: { readonly kind: LlmErrorKind };
 }
 
 /** The recorded provider responses a conformance run needs — one per canonical scenario. */
@@ -100,6 +103,9 @@ export interface ConformanceFixtures {
   /** A recorded `models.list()` reply carrying an UNKNOWN extra field and an id-less row (ADR-0064 §8) — the
    *  drift-resilience fixture: the extra field is ignored, the id-less row dropped, never a throw. */
   readonly listModelsDrift?: RecordedResponse;
+  /** A recorded `models.list()` FAILURE reply (e.g. a 401/500 error body) — the error-path fixture: the call
+   *  must reject with a classified, key-redacted `LlmProviderError` (ADR-0064 §3). Omit if not recorded. */
+  readonly listModelsError?: RecordedResponse;
   /**
    * A multi-turn tool loop (the path every agent node exercises): `turn1` is a tool-call reply; `turn2` is
    * the continuation the provider returns AFTER the caller appends the tool result. The conformance test
@@ -484,6 +490,35 @@ export function defineConformanceSuite(
         ]);
         for (const listing of listings) {
           expect(Object.keys(listing).every((key) => allowedKeys.has(key))).toBe(true);
+        }
+      },
+    );
+
+    it.skipIf(fixtures.listModelsError === undefined)(
+      'listModels (error): a failing list rejects with a classified, key-redacted LlmProviderError (ADR-0064 §3)',
+      async () => {
+        const recorded = fixtures.listModelsError;
+        const exp = expected.listModelsError;
+        if (recorded === undefined || exp === undefined) {
+          return; // narrow for skipIf
+        }
+        const adapter = makeReplayAdapter(recorded);
+        if (adapter.listModels === undefined) {
+          throw new Error('a listModelsError fixture requires the adapter to implement listModels');
+        }
+        let caught: unknown;
+        try {
+          await adapter.listModels(KEY);
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(LlmProviderError);
+        if (caught instanceof LlmProviderError) {
+          expect(caught.llmError.provider).toBe(name);
+          expect(caught.llmError.kind).toBe(exp.kind);
+          // Redacted + cause-stripped: neither the resolved key nor a raw vendor payload crosses the seam.
+          expect(caught.llmError.message).not.toContain(KEY);
+          expect(caught.llmError.cause).toBeUndefined();
         }
       },
     );

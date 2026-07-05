@@ -27,12 +27,14 @@ import type {
 import {
   CONTEXT_SEAM_DEFAULTS,
   REASONING_ID,
+  assertListModelsShape,
   assertMediaCapabilities,
   assertNoStreamingMediaOutput,
   boundedListModels,
   decodeMediaJobId,
   encodeMediaJobId,
   isAbortSignal,
+  isRecord,
   positiveModelInt,
   toModelListing,
 } from './shared.js';
@@ -74,9 +76,6 @@ const GEMINI_SUPPORTS: CapabilityFlags = {
 };
 
 const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0 };
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
  * The canonical BARE media MIME (no RFC-2045 parameters) from a vendor-reported type, validated against the
@@ -1089,13 +1088,33 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
           const rows = await transport.listModels(key, innerSignal);
           const listings: ModelListing[] = [];
           const seen = new Set<string>();
+          let rawCount = 0;
+          let droppedForShape = 0;
           for (const row of rows) {
+            rawCount += 1;
+            if (!isRecord(row)) {
+              droppedForShape += 1; // a non-object row — drop it, never dereference
+              continue;
+            }
+            // A row filtered out for NOT being chat-capable is a legitimate CONTENT drop (never counted
+            // toward the §8 shape tally); only a chat-capable-but-id-less row is a shape drop.
+            const actions = row['supportedActions'];
+            if (!Array.isArray(actions) || !actions.includes('generateContent')) {
+              continue;
+            }
             const listing = mapGeminiModel(row);
-            if (listing !== undefined && !seen.has(listing.id)) {
+            if (listing === undefined) {
+              droppedForShape += 1; // chat-capable but no usable id ⇒ shape-invalid
+              continue;
+            }
+            if (!seen.has(listing.id)) {
               seen.add(listing.id);
               listings.push(listing);
             }
           }
+          // ADR-0064 §8: a systemic id-removal (rows present, none usable, some shape-broken) THROWS so the
+          // host's per-provider isolation shows "last-known" rather than an empty picker.
+          assertListModelsShape(PROVIDER, { rawCount, kept: listings.length, droppedForShape });
           return listings;
         },
       });

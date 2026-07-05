@@ -23,9 +23,11 @@ import type {
 
 import {
   CONTEXT_SEAM_DEFAULTS,
+  assertListModelsShape,
   assertMediaCapabilities,
   boundedListModels,
   isAbortSignal,
+  isRecord,
   positiveModelInt,
   toModelListing,
 } from './shared.js';
@@ -792,13 +794,27 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
           const client = createClient(key);
           const listings: ModelListing[] = [];
           const seen = new Set<string>();
+          let rawCount = 0;
+          let droppedForShape = 0;
           for await (const info of client.models.list(undefined, { signal: innerSignal })) {
+            rawCount += 1;
+            if (!isRecord(info)) {
+              droppedForShape += 1; // a non-object row (e.g. a null in `data`) — drop it, never dereference
+              continue;
+            }
             const listing = mapAnthropicModel(info);
-            if (listing !== undefined && !seen.has(listing.id)) {
+            if (listing === undefined) {
+              droppedForShape += 1; // no usable id (Anthropic's list is unfiltered — undefined ⇒ shape-invalid)
+              continue;
+            }
+            if (!seen.has(listing.id)) {
               seen.add(listing.id);
               listings.push(listing);
             }
           }
+          // ADR-0064 §8: a systemic id-removal (rows present, none usable, some shape-broken) THROWS so the
+          // host's per-provider isolation shows "last-known" rather than an empty picker.
+          assertListModelsShape(PROVIDER, { rawCount, kept: listings.length, droppedForShape });
           return listings;
         },
       });

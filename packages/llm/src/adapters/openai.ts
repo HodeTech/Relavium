@@ -42,12 +42,14 @@ import type {
 import {
   CONTEXT_SEAM_DEFAULTS,
   REASONING_ID,
+  assertListModelsShape,
   assertMediaCapabilities,
   assertNoStreamingMediaOutput,
   boundedListModels,
   decodeMediaJobId,
   encodeMediaJobId,
   isAbortSignal,
+  isRecord,
   toModelListing,
 } from './shared.js';
 
@@ -180,9 +182,6 @@ function parseToolArgs(raw: string): unknown {
     return {};
   }
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /** OpenAI's accepted inline-audio output formats (a closed union on the SDK param) — used to narrow a
  *  caller-supplied `providerOptions.audio.format` to a valid value (default `wav`). */
@@ -382,10 +381,14 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId): LlmEr
 // --- Live model discovery: the id-only list filter (ADR-0064 §3) ------------------------------
 
 /**
- * Id substrings that are NOT chat-completions text models — DENIED from the OpenAI/DeepSeek live list
+ * Id SEGMENTS that are NOT chat-completions text models — DENIED from the OpenAI/DeepSeek live list
  * (ADR-0064 §3). The OpenAI `/v1/models` list is id-only (no capability metadata), so the filter is an
  * id-family heuristic: deny wins over allow, so `gpt-image-1` / `gpt-4o-audio-preview` / `omni-moderation`
- * are dropped even though they match a `gpt`/`o` allow-family.
+ * are dropped even though they match a `gpt`/`o` allow-family. Each token is matched on a `-`/`_` SEGMENT
+ * boundary (not a bare substring), so `search` denies `gpt-4o-search-preview` but NOT `o3-deep-research`
+ * (re**search**), and `dall-e`'s internal `-` is a literal segment. The tail entries
+ * (`instruct`/`ocr`/`davinci`/`babbage`) drop non-chat completion families that otherwise pass the
+ * gpt/deepseek allow-family; all are priced-rescue-safe (the `pricedIds.has(id)` short-circuit wins first).
  */
 const OPENAI_DENY_SUBSTRINGS = [
   'embedding',
@@ -398,7 +401,24 @@ const OPENAI_DENY_SUBSTRINGS = [
   'dall-e',
   'transcribe',
   'search',
+  'instruct',
+  'ocr',
+  'davinci',
+  'babbage',
 ] as const;
+
+/** Escape a literal string for embedding inside a `RegExp`. The deny tokens carry no metacharacters today
+ *  (`dall-e`'s `-` is literal outside a character class), but this keeps the boundary match safe if one is
+ *  ever added. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** True when a deny `token` occurs on a `-`/`_` segment boundary in `lower` — a word-boundary match, so
+ *  `search` fires on `gpt-4o-search-preview` (`-search-`) but not `o3-deep-research` (`re`+`search`). */
+function denyTokenMatches(lower: string, token: string): boolean {
+  return new RegExp(`(^|[-_])${escapeRegExp(token)}([-_]|$)`).test(lower);
+}
 
 /**
  * The MODEL_PRICING native ids + canonical keys for one OpenAI-compatible provider — unioned into the live
@@ -430,7 +450,7 @@ export function keepOpenAiModelId(id: string, pricedIds: ReadonlySet<string>): b
   if (lower.startsWith('ft:')) {
     return false;
   }
-  if (OPENAI_DENY_SUBSTRINGS.some((deny) => lower.includes(deny))) {
+  if (OPENAI_DENY_SUBSTRINGS.some((deny) => denyTokenMatches(lower, deny))) {
     return false;
   }
   return (
@@ -1033,17 +1053,33 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
           const priced = pricedModelIdsFor(providerId);
           const listings: ModelListing[] = [];
           const seen = new Set<string>();
+          let rawCount = 0;
+          let droppedForShape = 0;
           for await (const model of client.models.list({ signal: innerSignal })) {
-            const id = typeof model.id === 'string' ? model.id : '';
-            if (id.length === 0 || seen.has(id) || !keepOpenAiModelId(id, priced)) {
+            rawCount += 1;
+            if (!isRecord(model)) {
+              droppedForShape += 1; // a non-object row — drop it, never dereference
               continue;
             }
-            const listing = toModelListing({ id });
-            if (listing !== undefined) {
-              seen.add(id);
-              listings.push(listing);
+            const id = typeof model.id === 'string' ? model.id : '';
+            if (id.length === 0) {
+              droppedForShape += 1; // no usable id ⇒ shape-invalid (counts toward the §8 drift tally)
+              continue;
             }
+            if (seen.has(id) || !keepOpenAiModelId(id, priced)) {
+              continue; // a duplicate or a CONTENT-filter drop — legitimate, never a shape drop
+            }
+            const listing = toModelListing({ id });
+            if (listing === undefined) {
+              droppedForShape += 1; // rejected by the strict-outbound schema ⇒ shape-invalid
+              continue;
+            }
+            seen.add(id);
+            listings.push(listing);
           }
+          // ADR-0064 §8: a systemic id-removal (rows present, none usable, some shape-broken) THROWS so the
+          // host's per-provider isolation shows "last-known" rather than an empty picker.
+          assertListModelsShape(providerId, { rawCount, kept: listings.length, droppedForShape });
           return listings;
         },
       });

@@ -204,6 +204,16 @@ export function positiveModelInt(value: unknown): number | undefined {
 }
 
 /**
+ * True for a plain object (not `null`, not an array) — the per-row shape guard the model-list collect loops
+ * apply BEFORE dereferencing a vendor row (ADR-0064 §8, C-fix). A non-object row (e.g. a `null` in the
+ * vendor `data` array) is DROPPED as `droppedForShape`, never dereferenced (dereferencing it would throw a
+ * `TypeError` that discards the whole provider's fresh list instead of the one bad row).
+ */
+export function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
  * Finalize a leniently-built candidate into a validated {@link ModelListing}, or `undefined` if it fails
  * the strict-outbound schema (ADR-0064 §3/§8) — the one boundary that drops a malformed / id-less row
  * WITHOUT throwing, so additive provider drift is absorbed and one bad row degrades a single model, never
@@ -213,6 +223,31 @@ export function positiveModelInt(value: unknown): number | undefined {
 export function toModelListing(candidate: Record<string, unknown>): ModelListing | undefined {
   const parsed = ModelListingSchema.safeParse(candidate);
   return parsed.success ? parsed.data : undefined;
+}
+
+/**
+ * The ADR-0064 §8 systemic-drift guard, called by each adapter's `collect` AFTER it has walked every page.
+ * It THROWS a classified `bad_request` {@link LlmProviderError} **iff** the vendor returned rows
+ * (`rawCount > 0`) but NONE yielded a usable model id (`kept === 0`) AND at least one was dropped for a
+ * broken shape (`droppedForShape > 0`) — i.e. a breaking id-removal / every-row-shape-broken change. The
+ * throw (raised INSIDE the `collect` closure so {@link boundedListModels} redacts + cause-strips it) lets
+ * §5's per-provider refresh isolation show "last-known", not a silently-empty picker. Two non-throw cases:
+ * a well-formed EMPTY list (`rawCount === 0`) returns normally, and a list whose rows were all
+ * CONTENT-filtered but shape-valid (`droppedForShape === 0`) returns a genuine `[]`.
+ */
+export function assertListModelsShape(
+  provider: ProviderId,
+  counts: { rawCount: number; kept: number; droppedForShape: number },
+): void {
+  if (counts.rawCount > 0 && counts.kept === 0 && counts.droppedForShape > 0) {
+    throw new LlmProviderError(
+      makeLlmError({
+        provider,
+        kind: 'bad_request',
+        message: 'model list shape unexpected — no usable model id on any row',
+      }),
+    );
+  }
 }
 
 /**
@@ -259,13 +294,18 @@ export async function boundedListModels(params: {
   try {
     return await Promise.race([collecting, timeout]);
   } catch (err) {
+    // A pre-classified error (the §8 drift throw, or any adapter-side `LlmProviderError`) passes THROUGH
+    // with its own `kind` — never re-run through `classify` (which would flatten a `bad_request` drift
+    // throw to `unknown`). It is still redacted + `cause`-stripped by the re-wrap below.
     const base = timedOut
       ? makeLlmError({
           provider,
           kind: 'timeout',
           message: `model list timed out after ${String(timeoutMs)}ms`,
         })
-      : classify(err);
+      : err instanceof LlmProviderError
+        ? err.llmError
+        : classify(err);
     // Re-wrap through makeLlmError so scrubSecrets runs again AND redactKey strips the resolved key; never
     // pass `cause` (it could carry the key or the raw vendor payload — ADR-0064 §3).
     throw new LlmProviderError(

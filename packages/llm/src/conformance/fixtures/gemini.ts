@@ -123,6 +123,13 @@ const modelsList = JSON.stringify([
   },
 ]);
 
+// A 401 on `models.list()` (ADR-0064 §3) — the fake transport rejects with an ApiError-shaped error (a
+// numeric `status`) the adapter classifies to `auth`; boundedListModels re-wraps it key-redacted +
+// cause-stripped. The body is diagnostic only (the fake transport keys off `status`).
+const modelsListAuthError = JSON.stringify({
+  error: { code: 401, message: 'API key not valid', status: 'UNAUTHENTICATED' },
+});
+
 // The drift fixture (ADR-0064 §8): one row carries an unknown future field (ignored); one chat-capable row
 // has NO `name` (→ no id → dropped at the mapper boundary), never a throw.
 const modelsListDrift = JSON.stringify([
@@ -154,6 +161,7 @@ export const GEMINI_FIXTURES: ConformanceFixtures = {
   mediaGenerate: { status: 200, body: imageGenerate },
   listModels: { status: 200, body: modelsList },
   listModelsDrift: { status: 200, body: modelsListDrift },
+  listModelsError: { status: 401, body: modelsListAuthError },
   toolLoop: {
     turn1: { status: 200, body: toolResponse },
     turn2: { status: 200, body: textResponse },
@@ -179,5 +187,6 @@ export const GEMINI_FIXTURES: ConformanceFixtures = {
       },
     },
     listModelsDrift: { ids: ['gemini-2.5-flash'] },
+    listModelsError: { kind: 'auth' },
   },
 };

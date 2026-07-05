@@ -52,6 +52,14 @@ method is **optional**: an adapter (or a future kind) without a list endpoint om
 static-only for that provider. The exact signature + `ModelListing` shape are the seam's one canonical home
 ([llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)), not restated here.
 
+> **Clarification (2026-07-05):** the informal `ModelListing` sketch in this §1 (and §6's
+> "CAPABILITIES ← live `??` static") lists a `capabilities?` field, but the **shipped** shape — whose
+> canonical home is the seam doc — deliberately carries **no `capabilities`**: the field is
+> `{ id, displayName?, contextWindowTokens?, maxOutputTokens?, deprecatedAt? }`. The adapters drop the
+> vendor capabilities object (no merge step consumes per-model capabilities, and there is no per-model
+> static tier to reconcile against), so §6's "CAPABILITIES ← live `??` static" reduces in practice to the
+> per-**provider** `CapabilityFlags`. This is a documentation reconciliation only — the schema is unchanged.
+
 ### 2. The `kind` protocol abstraction
 
 We introduce a provider **`kind` ∈ `{anthropic, openai-compatible, gemini}`** — a closed vocabulary
@@ -79,6 +87,12 @@ allowlist, intersected with `MODEL_PRICING` for cost eligibility; Anthropic/Gemi
 per-provider endpoint contracts (Anthropic's rich `/v1/models` with `max_input_tokens`/`capabilities`; Gemini's
 `/v1beta/models`; the id-only OpenAI/DeepSeek shapes) are documented in
 [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md), derived once, not restated here.
+
+> **Clarification (2026-07-05):** §3's phrase "an id-family allowlist, **intersected** with `MODEL_PRICING`"
+> describes a **UNION**, not a set intersection — a priced id is kept **even without a family match**
+> (cost-eligibility always wins), matching §6, the seam doc, and `keepOpenAiModelId`
+> ([openai.ts](../../packages/llm/src/adapters/openai.ts) — `pricedIds.has(id)` short-circuits to `true`
+> before the family heuristic runs). The intent throughout is "id-family allowlist ∪ priced ids".
 
 ### 4. The `model_catalog` live cache — repurpose, widen, migrate
 

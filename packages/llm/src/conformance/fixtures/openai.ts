@@ -176,6 +176,16 @@ const modelsList = JSON.stringify({
   ],
 });
 
+// A 401 on the `/v1/models` list (ADR-0064 §3) — the SDK raises an AuthenticationError the adapter
+// classifies to `auth`; boundedListModels re-wraps it key-redacted + cause-stripped.
+const modelsListAuthError = JSON.stringify({
+  error: {
+    message: 'Incorrect API key provided',
+    type: 'invalid_request_error',
+    code: 'invalid_api_key',
+  },
+});
+
 // The drift fixture (ADR-0064 §8): one row carries an unknown future field (ignored), one row has NO id
 // (dropped) — the call resolves, never throws.
 const modelsListDrift = JSON.stringify({
@@ -205,6 +215,7 @@ export const OPENAI_FIXTURES: ConformanceFixtures = {
   mediaGenerate: { status: 200, body: imageGenerate },
   listModels: { status: 200, body: modelsList },
   listModelsDrift: { status: 200, body: modelsListDrift },
+  listModelsError: { status: 401, body: modelsListAuthError },
   toolLoop: {
     turn1: { status: 200, body: toolMessage },
     turn2: { status: 200, body: textMessage },
@@ -221,5 +232,6 @@ export const OPENAI_FIXTURES: ConformanceFixtures = {
     // id-only list: the three chat families survive; the sample carries only `id` (no context/price).
     listModels: { ids: ['gpt-5.5', 'gpt-5.4-mini', 'o3'], sample: { id: 'gpt-5.5' } },
     listModelsDrift: { ids: ['gpt-5.5'] },
+    listModelsError: { kind: 'auth' },
   },
 };
