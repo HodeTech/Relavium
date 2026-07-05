@@ -43,10 +43,12 @@ on top of the Phase 2.5 tool-environment and approval system.
 
 ### Explicitly out of scope (→ Phase 3 / later)
 
-- `/compact` model-summarised compaction (no engine summarisation primitive); full-fidelity reseat
-  tool-context (the persister/schema extension, 1.X/1.Z); `read_media` input (D12); in-app
-  scrollback/pager; live provider `/v1/models` fetch; a multi-pane dashboard. Tracked in
-  [../deferred-tasks.md](../deferred-tasks.md).
+- Full-fidelity reseat tool-context (the persister/schema extension, 1.X/1.Z); `read_media` input (D12); in-app
+  scrollback/pager; a multi-pane dashboard. Tracked in [../deferred-tasks.md](../deferred-tasks.md). (`/compact`
+  model-summarised compaction was originally listed here as Phase 3; it **shipped in 2.5.F** per
+  [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) (PR #65). The **live provider
+  `/v1/models` fetch** was likewise listed here; it is now **built in 2.5.G** per
+  [ADR-0064](../../decisions/0064-live-model-catalog.md) — the Option-A live model catalog.)
 
 ## Work breakdown
 

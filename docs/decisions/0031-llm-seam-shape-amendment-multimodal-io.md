@@ -23,6 +23,8 @@
 
 > **Amended 2026-06-20 by [ADR-0046](0046-inline-media-out-via-generate-streaming-triad-deferred.md).** A refinement, not a reversal: it pins which of §5.1's two inline-media-out paths Phase-1 (1.AG) uses — the non-streaming `generate()` path ("the more common"), de-inlined at the `#emitDurable` choke point — and defers the streaming `media_start`/`media_delta`/`media_end` triad to the host (1.AH). The seam shape (incl. the handle-only `media_end`) is unchanged.
 
+> **Amended 2026-07-05 by [ADR-0064](0064-live-model-catalog.md).** A refinement, not a reversal: the seam gains one more **optional capability method** — `listModels?` (live model discovery, returning a Relavium-typed `ModelListing[]` mapped inside each adapter — no vendor type crosses) — in the same additive spirit as the reserved media methods here. The multimodal seam shape is unchanged.
+
 ## Context
 
 The `@relavium/llm` seam — the request/result/stream/usage/content shapes in

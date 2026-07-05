@@ -186,8 +186,13 @@ all recorded in the ADR-0061 "Refined at implementation" append. **2.5.F** (the 
 **Done (PR #65, merged 2026-07-05)** behind [ADR-0062](../decisions/0062-context-compaction-and-cli-history-commands.md):
 `/clear` (a host-level fresh-session swap across `chat`/`chat-resume`/Home, TTY-interactive only), the
 `session:compacting` "Summarizing…" moment event (amending ADR-0036), and the footer context-fullness indicator —
-completing compaction alongside the earlier `/compact` + `/trim` + automatic compaction. **Next in the experience
-arm: 2.5.G** (onboarding wizard + Home `/models`); the additive lanes 2.5.H / I / J run in parallel. See the
+completing compaction alongside the earlier `/compact` + `/trim` + automatic compaction. **2.5.G is now
+underway**, its scope **expanded to Option A** — a **live** model catalog (per-key provider discovery + a DB
+cache + refresh + a static/live merge) and a complete model-pricing story (user-supplied pricing that governs
+cost) — behind three new ADRs ([ADR-0063](../decisions/0063-cli-config-write-contract.md) config-write ·
+[ADR-0064](../decisions/0064-live-model-catalog.md) live catalog ·
+[ADR-0065](../decisions/0065-provider-economics-and-extensibility.md) provider economics), across 12 reviewed
+steps; the additive lanes 2.5.H / I / J run in parallel. See the
 [Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md).
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks

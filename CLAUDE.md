@@ -108,8 +108,11 @@ under a new `sessionId` (TTY-interactive only, rejected under `--json`/plain per
 compaction-moment UX polishes (a `session:compacting` "Summarizing…" event amending ADR-0036, and the footer
 context-fullness indicator via a pure `@relavium/llm` `contextWindowForModel` helper), completing the ADR-0062
 compaction story alongside the earlier-landed model-summarised `/compact` + deterministic `/trim` + automatic
-compaction. **The next pickup is 2.5.G** (onboarding wizard + the Home `/models` catalog); the additive lanes
-2.5.H / I / J run in parallel.
+compaction. **2.5.G is now underway** — its scope expanded to **Option A** (a **live** model catalog + a complete
+model-pricing story that governs cost) behind three new ADRs ([ADR-0063](docs/decisions/0063-cli-config-write-contract.md)
+config-write, [ADR-0064](docs/decisions/0064-live-model-catalog.md) live catalog,
+[ADR-0065](docs/decisions/0065-provider-economics-and-extensibility.md) provider economics), across 12 reviewed
+steps; the additive lanes 2.5.H / I / J run in parallel.
 For live status, per-PR history, milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the public overview.
 

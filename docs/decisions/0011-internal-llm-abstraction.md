@@ -28,6 +28,8 @@ The seam is the immovable contract; the adapter implementation behind it is deli
 > *reference* on the desktop, where Rust performs the egress via `llm_stream`. The seam's
 > **types and contract are unchanged**; only the per-host transport wiring is refined.
 
+> **Amended 2026-07-05 by [ADR-0064](0064-live-model-catalog.md) and [ADR-0065](0065-provider-economics-and-extensibility.md)** (append-only — this body is unchanged). The seam's method **set** grows again (its **shape** stays frozen): ADR-0064 adds an **optional `listModels?`** capability (returning a Relavium-typed `ModelListing[]` — the vendor `models.list()` is mapped inside the adapter, no vendor type crosses) plus a provider **`kind`** protocol abstraction (`anthropic` | `openai-compatible` | `gemini`) that derives the adapter, list-models endpoint, auth, and response-mapper **per protocol** — formalizing the DeepSeek-via-OpenAI-compatible precedent noted in the Decision above. ADR-0065 makes the host `resolveProvider` build the adapter from the **stored provider row** (`kind` + a custom `base_url`) rather than only the static default registry, and injects a **pricing overlay** into the cost path so a user-priced model prices instead of throwing. The provider-**id** `z.enum` stays **closed** — a truly-open custom-provider registry is named as a future supersede of this ADR, not taken here.
+
 > Amended 2026-06-05: the same `LLMProvider` seam is reused **unchanged** by the agent-first
 > `AgentSession` entry point ([ADR-0024](0024-agent-first-entry-point-agentsession.md)) — chat-mode
 > agents call providers through the identical contract, so no vendor SDK type crosses the seam for
