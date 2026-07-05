@@ -1,6 +1,8 @@
 import type { ModelCatalogListing, ModelCatalogLiveModel } from '@relavium/db';
 import type { AbortSignalLike, LlmProvider, ModelListing, ProviderId } from '@relavium/llm';
 
+import { keyHint } from './providers.js';
+
 /**
  * The live model-catalog refresh orchestrator (workstream **2.5.G S5**, [ADR-0064](../../../../docs/decisions/0064-live-model-catalog.md)
  * §5). A **host service with injected deps** so desktop / VS Code reuse it later and `@relavium/llm` /
@@ -156,25 +158,48 @@ function countShared(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
 }
 
 /**
- * A SECRET-FREE failure reason. The seam's `boundedListModels` already redacts the key AND strips the cause,
- * so its `error.message` is safe to surface; a non-Error / empty message degrades to a generic string. We NEVER
- * read `err.cause` (it could carry a nested field a verbose render might expose — the `validateProviderKey` rule).
+ * A SECRET-FREE failure reason. The seam's `boundedListModels` already redacts the key AND strips the cause, so
+ * its `error.message` is safe to surface; a non-Error / empty message degrades to a generic string. As
+ * DEFENCE-IN-DEPTH — for a non-seam adapter, or a future direct throw that bypasses the seam's redaction — we
+ * ALSO redact any literal occurrence of the known key from the surfaced message (mirroring
+ * `validateProviderKey`'s `raw.split(key).join(keyHint(key))`), so even a raw adapter error that embeds the key
+ * can never reach a {@link RefreshReport} / `--json` payload / a log. We NEVER read `err.cause` (it could carry a
+ * nested field a verbose render might expose — the `validateProviderKey` rule).
  */
-function secretFreeReason(err: unknown): string {
-  if (err instanceof Error && err.message.trim() !== '') {
-    return err.message;
-  }
-  return 'refresh failed';
+function secretFreeReason(err: unknown, key: string): string {
+  const raw = err instanceof Error && err.message.trim() !== '' ? err.message : 'refresh failed';
+  // An empty key can never occur (the resolver rejects `''`), but guard the `split('')`-garbles-everything footgun.
+  return key === '' ? raw : raw.split(key).join(keyHint(key));
+}
+
+/** The larger of two optional epoch-ms stamps (`undefined` only when BOTH are absent). */
+function maxDefined(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.max(a, b);
 }
 
 /** Create the refresh orchestrator over its injected deps. Pure of platform I/O beyond the injected ports. */
 export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshService {
+  // In-service (NEVER persisted — FIX 3 / ADR-0064 §5c) last-ATTEMPT stamp per provider `refreshOne` actually
+  // ran (ANY outcome: refreshed / failed / skipped-unsupported / empty). `catalogStore.providerRefreshedAt` is
+  // `undefined` for a provider whose refresh FAILED (threw before any live row was written) or returned `[]`
+  // (all live rows soft-deactivated), so deriving staleness from it ALONE would treat such a provider as
+  // PERPETUALLY stale and re-egress on every background trigger — defeating the 24h TTL. Bounding on the last
+  // attempt caps a failed/empty provider's background re-egress to once per TTL per process while PRESERVING the
+  // successful-row freshness signal. Only `refreshIfStale`/`refreshInBackground` is bounded — an explicit
+  // `refresh()` always attempts.
+  const lastAttemptAt = new Map<ProviderId, number>();
+
   /** Refresh ONE connected provider (its key already resolved). NEVER throws — a fault becomes `status:'failed'`. */
   const refreshOne = async (
     id: ProviderId,
     key: string,
     signal: AbortSignalLike | undefined,
   ): Promise<RefreshProviderResult> => {
+    // Stamp the ATTEMPT before anything can throw — `refreshOne` runs only for a connected provider, and every
+    // outcome (refreshed / failed / skipped-unsupported / empty) counts as an attempt for the TTL backoff (FIX 3).
+    lastAttemptAt.set(id, deps.now());
     try {
       const adapter = deps.resolveProvider(id);
       if (adapter?.listModels === undefined) {
@@ -206,7 +231,7 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
         deactivated: countMissing(before, after),
       };
     } catch (err) {
-      return { provider: id, status: 'failed', error: secretFreeReason(err) };
+      return { provider: id, status: 'failed', error: secretFreeReason(err, key) };
     }
   };
 
@@ -262,7 +287,12 @@ export function createModelRefreshService(deps: ModelRefreshDeps): ModelRefreshS
       const record = deps.providerStore.get(id);
       const refreshedAt =
         record === undefined ? undefined : deps.catalogStore.providerRefreshedAt(record.id);
-      if (refreshedAt === undefined || now - refreshedAt >= TTL_MS) {
+      // Freshest of the successful-row stamp AND the last-attempt stamp: a provider that FAILED (no row written)
+      // or returned `[]` (all live rows deactivated) has no `refreshedAt`, but IS bounded by its attempt stamp
+      // (FIX 3 / ADR-0064 §5c) — so it is not re-egressed within the TTL despite `providerRefreshedAt` being
+      // undefined. A never-attempted, never-refreshed provider stays stale (both undefined).
+      const newest = maxDefined(refreshedAt, lastAttemptAt.get(id));
+      if (newest === undefined || now - newest >= TTL_MS) {
         stale.push(id);
       }
     }

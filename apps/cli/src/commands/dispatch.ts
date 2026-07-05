@@ -321,11 +321,21 @@ async function withModelsDeps(ctx: DispatchContext, args: ModelsCommandArgs): Pr
       knownProviders: KNOWN_PROVIDERS,
       now: () => Date.now(),
     });
+    // Translate the catalog rows' internal `llm_providers` UUID → the provider slug (e.g. `anthropic`) for the
+    // list command's `--json` `provider` field + human table. Built LAZILY on first use (memoized): the map is
+    // read only while RENDERING, which happens AFTER any first-run refresh has upserted its provider rows — so a
+    // freshly-discovered provider's slug is captured too. An unmapped uuid falls back to itself (never throws).
+    let slugByUuid: Map<string, string> | undefined;
+    const providerSlug = (uuid: string): string => {
+      slugByUuid ??= new Map(providerStore.list().map((p): [string, string] => [p.id, p.name]));
+      return slugByUuid.get(uuid) ?? uuid;
+    };
     return await modelsCommand(args, {
       io: ctx.io,
       global: ctx.global,
       catalog: catalogStore,
       refreshService,
+      providerSlug,
     });
   } finally {
     close();
