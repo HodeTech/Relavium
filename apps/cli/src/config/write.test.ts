@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { ConfigError } from './errors.js';
 import { loadConfigFile } from './load.js';
-import { globalConfigPath, writeGlobalDefaultModel } from './write.js';
+import { globalConfigPath, writeFileAtomic, writeGlobalDefaultModel } from './write.js';
 
 /** Read the global config back through the SAME validating loader the rest of the CLI uses. */
 function readBack(home: string): GlobalConfig | undefined {
@@ -83,6 +83,60 @@ describe('writeGlobalDefaultModel', () => {
     writeGlobalDefaultModel('a-model', home);
     const leftovers = readdirSync(globalDir(home)).filter((name) => name.endsWith('.tmp'));
     expect(leftovers).toEqual([]);
+  });
+
+  it('cleans up the temp file (the catch path) when the atomic rename fails', () => {
+    const dir = globalDir(home);
+    mkdirSync(dir, { recursive: true });
+    // Force the rename to fail deterministically: renameSync(tempFile, target) where `target` is a DIRECTORY ⇒
+    // EISDIR. This exercises writeFileAtomic's catch path (temp created + fsync'd, THEN rename throws) — proving
+    // the temp is unlinked (delete the `unlinkSync(tmp)` in write.ts and this test fails on an orphaned .tmp).
+    const target = join(dir, 'config.toml');
+    mkdirSync(target, { recursive: true });
+    expect(() => writeFileAtomic(dir, target, 'update_channel = "stable"\n')).toThrow(ConfigError);
+    const leftovers = readdirSync(dir).filter((name) => name.endsWith('.tmp'));
+    expect(leftovers).toEqual([]);
+  });
+
+  it('round-trips the tricky mcp_servers shapes (args array + env sub-table + a second network server) untouched', () => {
+    // The round-trip risk lives in the nested shapes (args arrays, env sub-tables) — not the flat command case.
+    // Seed them, write only default_model, and assert the whole config survives the serialize→reparse cycle.
+    mkdirSync(globalDir(home), { recursive: true });
+    writeFileSync(
+      globalConfigPath(home),
+      [
+        '[preferences]',
+        'theme = "light"',
+        '[[mcp_servers]]',
+        'name = "fs"',
+        'transport = "stdio"',
+        'command = "npx server-filesystem"',
+        'args = ["--root", "/tmp"]',
+        '[mcp_servers.env]',
+        'TOKEN = "{{secrets.gh}}"',
+        '[[mcp_servers]]',
+        'name = "web"',
+        'transport = "http"',
+        'url = "https://example.com/mcp"',
+        '',
+      ].join('\n'),
+    );
+
+    writeGlobalDefaultModel('a-model', home);
+
+    expect(readBack(home)).toEqual({
+      preferences: { theme: 'light', default_model: 'a-model' },
+      mcp_servers: [
+        {
+          name: 'fs',
+          transport: 'stdio',
+          command: 'npx server-filesystem',
+          args: ['--root', '/tmp'],
+          env: { TOKEN: '{{secrets.gh}}' },
+        },
+        { name: 'web', transport: 'http', url: 'https://example.com/mcp' },
+      ],
+    });
   });
 
   it('throws a ConfigError rather than clobbering a malformed existing config', () => {

@@ -93,10 +93,13 @@ stdio-only fields (`command`/`args`/`env`) are rejected on a network registratio
 > default model: `/models` and the 2.5.G onboarding wizard set **`[preferences].default_model`** — and *only*
 > that key — through a **typed setter** (never a generic key/value writer), so a secret can never be written by
 > construction (there is no `api_key` field in the schema; keys live only in the OS keychain, [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)).
-> The write is **atomic** (a `0600` temp file in the `0700` `~/.relavium/`, `fsync`, then `rename`) and re-validates
-> the whole object against the strict `GlobalConfigSchema` before emitting, so the file always re-parses. The
-> documented tradeoff: re-serialization **drops comments and key ordering** in `config.toml` — the global file is
-> a preference store, not a hand-curated artifact (project/workspace files are never written by the tool).
+> The write is **atomic + durable** (a `0600` temp file in the `0700` `~/.relavium/`, `fsync` the file, `rename`
+> over the target, then `fsync` the parent directory so the rename itself survives a crash) and it both
+> re-validates the merged object against the strict `GlobalConfigSchema` AND re-parses the emitted TOML back
+> through the schema before the rename — so "the file always re-parses on the next load" is a **verified**
+> guarantee, and on any failure `config.toml` is left untouched. The documented tradeoff: re-serialization
+> **drops comments and key ordering** in `config.toml` — the global file is a preference store, not a
+> hand-curated artifact (project/workspace files are never written by the tool).
 
 ## `project.toml` / `workspace.toml` (project) — keys
 
