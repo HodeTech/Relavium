@@ -38,7 +38,9 @@ export interface ModelCatalogEntry {
    * (a static model absent from the key's live list is **dimmed** "not available on your key", the K2
    * decision); when its provider has **no** live data (endpoint down, `listModels` absent, or not connected),
    * it falls back to **static presence** (`true`) — never "everything unavailable" (ADR-0064 §6). Whether a
-   * non-connected provider's models are ultimately *selectable* is the host surface's call.
+   * non-connected provider's models are ultimately *selectable* is the host surface's call. This rule is
+   * **tier-agnostic**: the ADR-0065 USER tier is pricing-only, so a user-declared id that its connected
+   * provider's live list omits is likewise dimmed — its `pricing` still applies for cost governance.
    */
   readonly available: boolean;
   /** `true` once `now >= deprecatedAt` (ADR-0064 §7). The picker flags but never forbids a deprecated model. */

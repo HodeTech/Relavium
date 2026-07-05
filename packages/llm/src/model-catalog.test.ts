@@ -112,6 +112,21 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(entry?.pricing).toBe(custom);
   });
 
+  it('three tiers on one known id: registry wins price, live wins context, available by live membership', () => {
+    // claude-opus-4-8 present in ALL THREE tiers at once — the full ADR-0064 §6 per-field split must hold.
+    const entries = mergeModelCatalog({
+      live: liveMap([['anthropic', [{ id: 'claude-opus-4-8', contextWindowTokens: 500_000 }]]]),
+      userPricing: new Map([['claude-opus-4-8', userPricing('anthropic')]]),
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    const opus = byId(entries, 'claude-opus-4-8');
+    expect(opus?.pricingSource).toBe('registry'); // registry wins even with a live AND user tier present
+    expect(opus?.pricing).toBe(MODEL_PRICING['claude-opus-4-8']); // NOT the user object
+    expect(opus?.contextWindowTokens).toBe(500_000); // live wins for context
+    expect(opus?.priceKnown).toBe(true);
+    expect(opus?.available).toBe(true); // in the live list
+  });
+
   it('context/output: the LIVE value wins over the static one when present, else static', () => {
     const entries = mergeModelCatalog({
       live: liveMap([['anthropic', [{ id: 'claude-opus-4-8', contextWindowTokens: 500_000 }]]]),
@@ -180,12 +195,28 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     // within a provider, entries are displayName-then-id sorted (stable, no duplicates)
     const anthropic = entries.filter((e) => e.provider === 'anthropic').map((e) => e.displayName);
     expect(anthropic).toEqual([...anthropic].sort((a, b) => a.localeCompare(b)));
-    // two runs produce byte-identical ordering
-    const again = mergeModelCatalog({
-      live: liveMap([['openai', [{ id: 'gpt-6-preview' }]]]),
+    // The modelId tiebreaker + insertion-order independence: two user-priced unknown ids that TIE on
+    // provider (openai) + displayName ('Custom Model') must order by modelId ascending, regardless of the
+    // input Map's insertion order (proves the model-catalog.ts sort tiebreaker, not a same-input re-run).
+    const forward = mergeModelCatalog({
+      userPricing: new Map([
+        ['zeta-model', userPricing('openai')],
+        ['alpha-model', userPricing('openai')],
+      ]),
       now: BEFORE_DEEPSEEK_DEPRECATION,
     });
-    expect(entries.map((e) => e.modelId)).toEqual(again.map((e) => e.modelId));
+    const reversed = mergeModelCatalog({
+      userPricing: new Map([
+        ['alpha-model', userPricing('openai')],
+        ['zeta-model', userPricing('openai')],
+      ]),
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    const forwardCustom = forward
+      .filter((e) => e.displayName === 'Custom Model')
+      .map((e) => e.modelId);
+    expect(forwardCustom).toEqual(['alpha-model', 'zeta-model']); // modelId tiebreaker, not insertion order
+    expect(reversed.map((e) => e.modelId)).toEqual(forward.map((e) => e.modelId)); // insertion-order independent
   });
 
   it('does not mutate MODEL_PRICING', () => {
