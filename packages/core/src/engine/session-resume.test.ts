@@ -9,7 +9,11 @@ import { describe, expect, it } from 'vitest';
 
 import { AgentSession, type SessionDeps, type SessionStreamEvent } from './agent-session.js';
 import { createAbortController } from './execution-host.js';
-import { reconstructSessionState, type SessionResumeState } from './session-resume.js';
+import {
+  reconstructSessionState,
+  resumableMessageSequences,
+  type SessionResumeState,
+} from './session-resume.js';
 import type { ToolRegistry } from '../tools/types.js';
 
 const TS = '2026-06-17T08:00:00.000Z';
@@ -283,5 +287,171 @@ describe('AgentSession.resume (1.Y)', () => {
     // the governor is seeded once, at resume, with the absolute cumulative — so the first resumed turn's
     // pre-egress check sees the real spend, not 0 (before any cost:updated fires).
     expect(costs).toEqual([4200]);
+  });
+});
+
+describe('reconstructSessionState — context-compaction boundary markers (ADR-0062)', () => {
+  const marker = (
+    sequenceNumber: number,
+    summary: string,
+    droppedThroughSequence: number,
+  ): SessionMessage => ({
+    ...msg(sequenceNumber, 'system', summary.length > 0 ? [{ type: 'text', text: summary }] : []),
+    compaction: { droppedThroughSequence },
+  });
+
+  it('drops the folded prefix and restores the compact summary as the preamble', () => {
+    // A `/compact` folded seq 0..1 into 'S1' (marker@4, D=1) and kept the last exchange (u2/a3); then u5/a6.
+    const state = reconstructSessionState(record({ totalCostMicrocents: 10 }), [
+      msg(0, 'user', [{ type: 'text', text: 'old-q' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'old-a' }]),
+      msg(2, 'user', [{ type: 'text', text: 'kept-q' }]),
+      msg(3, 'assistant', [{ type: 'text', text: 'kept-a' }]),
+      marker(4, 'S1', 1),
+      msg(5, 'user', [{ type: 'text', text: 'new-q' }]),
+      msg(6, 'assistant', [{ type: 'text', text: 'new-a' }]),
+    ]);
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'kept-q' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'kept-a' }] },
+      { role: 'user', content: [{ type: 'text', text: 'new-q' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'new-a' }] },
+    ]);
+    expect(state.contextPreamble).toBe('S1');
+    expect(state.turnCount).toBe(2); // two surviving assistant turns
+  });
+
+  it('a later summary-less /trim advances the boundary but does NOT blank the prior compact summary (B4)', () => {
+    // compact@2 ('S1', D=1) → u3/a4 → trim@5 (no summary, D=4) → u6/a7.
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'q0' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a1' }]),
+      marker(2, 'S1', 1),
+      msg(3, 'user', [{ type: 'text', text: 'q3' }]),
+      msg(4, 'assistant', [{ type: 'text', text: 'a4' }]),
+      marker(5, '', 4), // a /trim marker: empty summary, boundary advanced to 4
+      msg(6, 'user', [{ type: 'text', text: 'q6' }]),
+      msg(7, 'assistant', [{ type: 'text', text: 'a7' }]),
+    ]);
+    // Boundary = max(1, 4) = 4 → only seq > 4 survive; preamble = newest marker WITH a summary = 'S1'.
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q6' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a7' }] },
+    ]);
+    expect(state.contextPreamble).toBe('S1');
+  });
+
+  it('uses the NEWEST summary-bearing marker as the preamble across multiple compactions', () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'q0' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a1' }]),
+      marker(2, 'S1', 1),
+      msg(3, 'user', [{ type: 'text', text: 'q3' }]),
+      msg(4, 'assistant', [{ type: 'text', text: 'a4' }]),
+      marker(5, 'S2', 4),
+      msg(6, 'user', [{ type: 'text', text: 'q6' }]),
+      msg(7, 'assistant', [{ type: 'text', text: 'a7' }]),
+    ]);
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q6' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a7' }] },
+    ]);
+    expect(state.contextPreamble).toBe('S2');
+  });
+
+  it('no markers ⇒ no preamble (backward-compatible with a never-compacted session)', () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'q' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a' }]),
+    ]);
+    expect(state.contextPreamble).toBeUndefined();
+    expect(state.messages).toHaveLength(2);
+  });
+
+  it('a trim-only session applies the boundary with NO preamble', () => {
+    // A summary-less /trim marker@2 dropped through seq 1 (u0/a1); u3/a4 survive; never compacted ⇒ no preamble.
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'q0' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a1' }]),
+      marker(2, '', 1),
+      msg(3, 'user', [{ type: 'text', text: 'q3' }]),
+      msg(4, 'assistant', [{ type: 'text', text: 'a4' }]),
+    ]);
+    expect(state.contextPreamble).toBeUndefined();
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q3' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a4' }] },
+    ]);
+  });
+
+  it('honors a droppedThroughSequence of 0 (a falsy-but-valid boundary — not treated as "no boundary")', () => {
+    // marker@1 drops through seq 0 (the first user); the rest survive. 0 must NOT collapse to -1/"none".
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'dropped' }]),
+      marker(1, 'S', 0),
+      msg(2, 'user', [{ type: 'text', text: 'kept-q' }]),
+      msg(3, 'assistant', [{ type: 'text', text: 'kept-a' }]),
+    ]);
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'kept-q' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'kept-a' }] },
+    ]);
+    expect(state.contextPreamble).toBe('S');
+  });
+
+  it('takes the MAX boundary across multiple trim markers', () => {
+    const state = reconstructSessionState(record(), [
+      msg(0, 'user', [{ type: 'text', text: 'q0' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a1' }]),
+      marker(2, '', 1),
+      msg(3, 'user', [{ type: 'text', text: 'q3' }]),
+      msg(4, 'assistant', [{ type: 'text', text: 'a4' }]),
+      marker(5, '', 4), // a second trim advances the boundary to 4
+      msg(6, 'user', [{ type: 'text', text: 'q6' }]),
+      msg(7, 'assistant', [{ type: 'text', text: 'a7' }]),
+    ]);
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q6' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a7' }] },
+    ]);
+    expect(state.contextPreamble).toBeUndefined();
+  });
+});
+
+describe('resumableMessageSequences (ADR-0062 — the host boundary-mapping seed)', () => {
+  const marker = (
+    seq: number,
+    summary: string,
+    droppedThroughSequence: number,
+  ): SessionMessage => ({
+    ...msg(seq, 'system', summary.length > 0 ? [{ type: 'text', text: summary }] : []),
+    compaction: { droppedThroughSequence },
+  });
+
+  it('mirrors the engine projection: drops a trailing dangling user (an empty-text turn) + empty rows', () => {
+    // A prior process ended on an empty-text turn ⇒ a dangling `user` row with no assistant. The engine rolls
+    // it back (reconstructSessionState); the host seed MUST match — else a compaction's boundary maps over
+    // [0,1,2,3,4] instead of [0,1,2,3] and silently drops a kept message (the step-3 review data-loss trap).
+    const rows = [
+      msg(0, 'user', [{ type: 'text', text: 'q0' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'a1' }]),
+      msg(2, 'user', [{ type: 'text', text: 'q2' }]),
+      msg(3, 'assistant', [{ type: 'text', text: 'a3' }]),
+      msg(4, 'user', [{ type: 'text', text: 'unanswered' }]), // trailing dangling user
+    ];
+    expect(resumableMessageSequences(rows)).toEqual([0, 1, 2, 3]);
+    // And it agrees with reconstructSessionState exactly (one projection, no drift).
+    expect(reconstructSessionState(record(), rows).messages).toHaveLength(4);
+  });
+
+  it('excludes pre-boundary rows and system marker rows', () => {
+    const seqs = resumableMessageSequences([
+      msg(0, 'user', [{ type: 'text', text: 'old' }]),
+      msg(1, 'assistant', [{ type: 'text', text: 'old-a' }]),
+      marker(2, 'S', 1),
+      msg(3, 'user', [{ type: 'text', text: 'kept' }]),
+      msg(4, 'assistant', [{ type: 'text', text: 'kept-a' }]),
+    ]);
+    expect(seqs).toEqual([3, 4]); // seq > boundary(1); the marker (seq 2, role system) is excluded
   });
 });

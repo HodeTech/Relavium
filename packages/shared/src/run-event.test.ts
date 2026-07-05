@@ -8,7 +8,7 @@ import {
   SessionEventSchema,
   StopReasonSchema,
 } from './run-event.js';
-import type { RunEvent, RunEventType } from './index.js';
+import type { RunEvent, RunEventType, SessionEvent, SessionEventType } from './index.js';
 
 const env = { runId: 'run-1', timestamp: '2026-06-04T00:00:00.000Z', sequenceNumber: 7 };
 
@@ -626,6 +626,24 @@ const validSession: Record<string, Record<string, unknown>> = {
   },
   'session:cancelled': { type: 'session:cancelled', ...senv },
   'session:exported': { type: 'session:exported', ...senv, workflowPath: '/w/x.relavium.yaml' },
+  'session:compacting': { type: 'session:compacting', ...senv, reason: 'manual' },
+  'session:compacted': {
+    type: 'session:compacted',
+    ...senv,
+    reason: 'manual',
+    summary: 'earlier we set up the project and configured the db',
+    keptMessageCount: 2,
+    tokensBefore: 14200,
+    tokensAfter: 900,
+    tokensUsed: { input: 14000, output: 340 },
+  },
+  'session:trimmed': {
+    type: 'session:trimmed',
+    ...senv,
+    reason: 'manual',
+    keptMessageCount: 20,
+    droppedMessageCount: 8,
+  },
 };
 
 describe('SessionEvent union — the agent-first namespace', () => {
@@ -633,17 +651,73 @@ describe('SessionEvent union — the agent-first namespace', () => {
     expect(SessionEventSchema.safeParse(validSession[name]).success).toBe(true);
   });
 
-  it('covers exactly the five session:* names, pinned to a literal list', () => {
+  it('covers exactly the eight session:* names, pinned to a literal list', () => {
     const CONTRACT_NAMES = [
       'session:started',
       'session:turn_started',
       'session:turn_completed',
       'session:cancelled',
       'session:exported',
+      'session:compacting', // ADR-0062 — the "Summarizing…" moment START
+      'session:compacted', // ADR-0062
+      'session:trimmed', // ADR-0062
     ];
     expect(SessionEventSchema.options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(SESSION_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
     expect(Object.keys(validSession)).toEqual(CONTRACT_NAMES);
+  });
+
+  it('binds session:compacting.reason to the two-value enum (ADR-0062 — the moment START)', () => {
+    const ok = validSession['session:compacting'];
+    expect(SessionEventSchema.safeParse(ok).success).toBe(true);
+    // Symmetric with session:compacted.reason — manual / auto-threshold (NOT auto-fallback, which is a trim).
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'auto-threshold' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'auto-fallback' }).success).toBe(false);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'nope' }).success).toBe(false);
+  });
+
+  it('binds session:compacted.reason to the two-value enum and requires a non-empty summary (ADR-0062)', () => {
+    const ok = validSession['session:compacted'];
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'auto-threshold' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'nope' }).success).toBe(false);
+    // A compaction always carries summary text (it is what becomes the preamble) + its real spend.
+    expect(SessionEventSchema.safeParse({ ...ok, summary: '' }).success).toBe(false);
+    // Omitting the summarization spend is rejected (constructed fresh so the omission is well-typed).
+    expect(
+      SessionEventSchema.safeParse({
+        type: 'session:compacted',
+        ...senv,
+        reason: 'manual',
+        summary: 's',
+        keptMessageCount: 2,
+        tokensBefore: 1,
+        tokensAfter: 1,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a summary-less session:trimmed (deterministic drop, no cost — ADR-0062)', () => {
+    const ok = validSession['session:trimmed'];
+    expect(SessionEventSchema.safeParse(ok).success).toBe(true);
+    // A trim spends nothing: it carries neither summary nor tokensUsed — a compacted-shaped payload is a
+    // distinct arm, so an unknown extra key on this closed union member is stripped, not silently accepted
+    // as a compaction. Counts must be non-negative ints.
+    expect(SessionEventSchema.safeParse({ ...ok, keptMessageCount: -1 }).success).toBe(false);
+    expect(SessionEventSchema.safeParse({ ...ok, droppedMessageCount: -1 }).success).toBe(false);
+    // `reason` is the two-value enum (manual / auto-fallback — the view surfaces the auto-fallback trim, ADR-0062).
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'auto-fallback' }).success).toBe(true);
+    expect(SessionEventSchema.safeParse({ ...ok, reason: 'nope' }).success).toBe(false);
+  });
+
+  it('binds session:compacted counts to nonNegativeInt (ADR-0062)', () => {
+    const ok = validSession['session:compacted'];
+    for (const field of ['keptMessageCount', 'tokensBefore', 'tokensAfter'] as const) {
+      expect(SessionEventSchema.safeParse({ ...ok, [field]: -1 }).success).toBe(false);
+    }
+  });
+
+  it('pins the SessionEvent discriminant to SessionEventType (type-level)', () => {
+    expectTypeOf<SessionEvent['type']>().toEqualTypeOf<SessionEventType>();
   });
 
   it('requires sessionId (a session event without it is rejected)', () => {

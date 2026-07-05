@@ -6,6 +6,7 @@ import {
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
+import { clearedNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import {
@@ -82,8 +83,14 @@ export interface HomeChatSession {
   readonly store: ChatStoreController;
   /** Handle one line (a slash command or a message) — the shared `createChatLineHandler` semantics. */
   readonly processLine: (line: string, display?: string) => Promise<void>;
-  /** `true` once `/exit` or `/cancel` has run — the chat ends and the Home returns. */
+  /** `true` once `/exit`, `/cancel`, or `/clear` has run — the chat ends (or swaps). */
   readonly shouldStop: () => boolean;
+  /** The session's durable id (ADR-0062 §7) — named in the `/clear` notice as the prior (still-resumable)
+   *  conversation, so it is discoverable after the swap. */
+  readonly sessionId: string;
+  /** WHY `shouldStop()` became true (ADR-0062 §7) — `'clear'` (swap in a fresh session, staying in chat) vs
+   *  `'exit'` (`/exit`/`/cancel`, return to the bare Home). Lets the controller pick `clearChat` vs `endChat`. */
+  readonly stopReason: () => 'exit' | 'clear';
   /** Mid-turn abort (EA7) — abort the in-flight turn, keeping the session alive (Esc). Present once wired. */
   readonly onAbort?: () => void;
   /** Switch the chat mode (Shift+Tab / `/mode`) — re-applies the turn policy on the same session (ADR-0057). */
@@ -125,6 +132,10 @@ export interface HomeControllerState {
    *  event, so this flag gates input + shows a busy indicator; WITHOUT it a message submitted mid-command reaches
    *  `sendMessage`, throws `SessionStateError`, and crashes the chat. Cleared on settle + on chat end. */
   readonly shellBusy: boolean;
+  /** A submit (a message turn or a slash like `/compact`) is in flight (ADR-0062) — gates input + shows the
+   *  spinner for the WHOLE submit, INCLUDING after-turn auto-compaction (which runs after the view goes idle,
+   *  so the view-status `running` alone leaves a crash/frozen window — the same hazard `shellBusy` closes). */
+  readonly submitBusy: boolean;
   /** The in-flight `!`-command line labeling the busy indicator (2.5.D) — `undefined` between commands. A `!`-
    *  command emits no session tokens, so this labels WHAT is running + how to cancel (Esc). */
   readonly shellCommand: string | undefined;
@@ -183,6 +194,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     search: undefined,
     mention: undefined,
     shellBusy: false,
+    submitBusy: false,
     shellCommand: undefined,
     attachments: [],
     historyEntries: [],
@@ -270,6 +282,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
+          submitBusy: false, // ditto a submit/compaction in flight — the returned Home must not be left gated
           shellCommand: undefined,
           attachments: [], // pending `@`/`!` attachments must not leak into the next chat
         });
@@ -277,14 +290,93 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       .catch(() => undefined); // a rejecting teardown (or read) must not surface as an unhandled rejection
   };
 
+  // `/clear` (ADR-0062 §7) — swap the current in-Home chat for a FRESH session, STAYING in chat (the defining
+  // difference from endChat, which returns to the bare Home). BUILD-FIRST: the old session stays live + rendered
+  // while the fresh one builds, so a build failure leaves the user in a working, resumable conversation rather than
+  // a dead screen. Input is re-gated (submitBusy) for the whole swap so a message typed mid-swap can't land on the
+  // about-to-be-cleared session. On success the old session is torn down (bounded, mirroring endChat) and the fresh
+  // one is swapped in, its transcript opening with the clearedNotice naming the prior (resumable) conversation.
+  const clearChat = (old: HomeChatSession): void => {
+    if (tearingDown === old) return; // already ending this session (a double-/clear race) — mirror endChat
+    const oldId = old.sessionId;
+    set({ submitBusy: true }); // re-gate input for the whole swap (the old chat is still live underneath)
+    const build = deps.startChat();
+    buildInFlight = build;
+    void build.then(
+      (fresh) => {
+        if (buildInFlight === build) buildInFlight = undefined;
+        if (exiting) {
+          void fresh.teardown().catch(() => undefined); // exited mid-build ⇒ reap the just-built fresh session
+          return;
+        }
+        // Guard a SUPERSEDING /clear: a mid-build Ctrl-C→/cancel re-routes to a SECOND clearChat(old) (the old
+        // handler's stopReason is sticky-'clear'), starting a second build. If an earlier build already swapped a
+        // fresh session in (state.session !== old), reap THIS now-superseded build instead of swapping it in and
+        // leaking the earlier fresh session's MCP child. Mirrors the failure arm's `state.session === old` guard.
+        if (state.session !== old) {
+          void fresh.teardown().catch(() => undefined);
+          return;
+        }
+        // Tear the OLD session down (bounded, like endChat) — its terminal marks the row 'ended' (still resumable).
+        tearingDown = old;
+        const td = old.teardown();
+        activeTeardown = td;
+        void boundTeardown(td)
+          .finally(() => {
+            if (activeTeardown === td) activeTeardown = undefined;
+            tearingDown = undefined;
+          })
+          .catch(() => undefined);
+        cancelFired = false; // the fresh session starts with a clean cancel latch (parity with endChat)
+        pasting = false; // a lost paste-end marker must not leak the latch into the fresh chat
+        fresh.store.notice(clearedNotice(oldId)); // name the prior (resumable) conversation in the fresh transcript
+        set({
+          session: fresh,
+          mode: 'chat', // STAY in chat (no bare-Home flash) — the defining difference from endChat
+          input: emptyEditor(),
+          errorText: undefined,
+          notice: undefined,
+          pendingMessage: '',
+          palette: undefined,
+          search: undefined,
+          mention: undefined,
+          shellBusy: false,
+          submitBusy: false, // the swap is done — un-gate the fresh chat
+          shellCommand: undefined,
+          attachments: [], // pending `@`/`!` attachments must not leak into the fresh conversation
+        });
+      },
+      () => {
+        if (buildInFlight === build) buildInFlight = undefined;
+        if (exiting) return;
+        // The fresh build FAILED — keep the OLD session live + resumable (do NOT tear it down); surface a static,
+        // secret-free note in the old chat and un-gate it so the user can keep going or /exit.
+        if (state.session === old) {
+          old.store.note('/clear could not start a fresh session — keeping this conversation.');
+          set({ submitBusy: false });
+        }
+      },
+    );
+  };
+
   // Drive one chat turn; on success end the chat if `/exit`/`/cancel` ran, on an escaping error tear the session
   // down BEFORE propagating so its MCP child / frame loop / row are never orphaned.
   const sendChatLine = (active: HomeChatSession, line: string, display?: string): void => {
+    // Gate input for the WHOLE submit — streaming AND any after-turn auto-compaction (ADR-0062), which runs
+    // inside processLine AFTER session:turn_completed flipped the view idle. Without this a message typed then
+    // would reach sendMessage → SessionStateError → crash (the same hazard `shellBusy` fixes for `!`-shell).
+    set({ submitBusy: true });
     void active.processLine(line, display).then(
       () => {
-        if (active.shouldStop()) endChat(active);
+        if (state.session === active) set({ submitBusy: false });
+        if (active.shouldStop()) {
+          // `/clear` (ADR-0062 §7) swaps in a FRESH session, staying in chat; `/exit`/`/cancel` end to the bare Home.
+          if (active.stopReason() === 'clear') clearChat(active);
+          else endChat(active);
+        }
       },
       (err: unknown) => {
+        if (state.session === active) set({ submitBusy: false });
         tearingDown = active; // align with endChat's single-shot guard (the session closure is idempotent)
         const td = active.teardown();
         activeTeardown = td; // a concurrent signal awaits this teardown too
@@ -364,6 +456,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     showWorkflows: () => undefined,
     showCost: () => undefined,
     setMode: () => undefined, // `/mode` is chat-only (not in HOME_PALETTE_COMMANDS); inert in the Home surface
+    compactHistory: () => undefined, // `/compact` is chat-only (ADR-0062); inert in the Home surface
+    trimHistory: () => undefined, // `/trim` is chat-only (ADR-0062); inert in the Home surface
+    // `/clear` (ADR-0062 §7) IS offered in the Home palette (availableIn ['home','chat']), but the BARE Home has no
+    // live session to clear — surface an honest notice rather than a silent no-op. An ACTIVE in-Home chat routes
+    // `/clear` through the chat handler's REAL clearSession (via sendChatLine → the swap), never through this ctx.
+    clearSession: () =>
+      set({ notice: 'No active conversation to clear — type a message to start one.' }),
 
     runDoctor: async (deep) => {
       if (exiting) return;
@@ -730,7 +829,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
     // Busy = a streaming turn OR a `!`-shell command in flight (`state.shellBusy` — the session has no store status
     // for it). A gated keystroke can't reach `sendMessage` → no `SessionStateError` crash.
-    const running = active.store.getSnapshot().state.status === 'running' || state.shellBusy;
+    const running =
+      active.store.getSnapshot().state.status === 'running' || state.shellBusy || state.submitBusy;
     if (routeMentionKey(active, input, key)) return;
     if (routeSearchKey(input, key)) return;
     const approvalPending = active.store.getSnapshot().approval !== undefined;
@@ -820,6 +920,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
             state.mode !== 'loading' &&
             !chatRunning() &&
             !state.shellBusy && // a paste while a `!`-command runs must not leak into the buffer (input is gated)
+            !state.submitBusy && // ditto a submit/compaction in flight (ADR-0062) — input is gated during it
             state.palette === undefined &&
             state.search === undefined &&
             state.mention === undefined;
@@ -845,12 +946,17 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       handleHomeKey(input, key);
     },
     async teardownActive() {
-      exiting = true; // terminating: a deferred endChat skips the (about-to-close) db; an in-flight build reclaims itself
+      exiting = true; // terminating: a deferred endChat/clearChat skips the (about-to-close) db; an in-flight build reclaims itself
+      // During a `/clear` swap (ADR-0062 §7) BOTH are live at once — the OLD session (`state.session`, still
+      // rendered) AND the fresh build (`buildInFlight`) — so reap BOTH; a signal mid-swap must orphan neither MCP
+      // child. Outside a swap exactly one is set (a live chat ⇒ session only; a first-message `loading` build ⇒
+      // build only). Both teardowns are idempotent, so an overlap with clearChat's/submit's own exiting-arm reap
+      // is harmless.
       const active = state.session;
       if (active !== undefined) {
         if (tearingDown === active) {
-          // A teardown is ALREADY in flight (an endChat / error-arm) — await THAT graceful close rather than
-          // returning early, so the bounded signal race waits for the MCP handshake instead of hard-killing it.
+          // A teardown is ALREADY in flight (an endChat/clearChat / error-arm) — await THAT graceful close rather
+          // than returning early, so the bounded signal race waits for the MCP handshake instead of hard-killing it.
           // `.catch` so a rejecting teardown can't make this (signal-path) call reject.
           await (activeTeardown ?? Promise.resolve()).catch(() => undefined);
         } else {
@@ -859,12 +965,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           activeTeardown = td;
           await td.catch(() => undefined);
         }
-        return;
       }
-      // No live session yet — a signal during the `loading` build window. Await + reap the in-flight build so its
-      // spawned MCP child / frame loop is never orphaned (bounded by driveHome's force-teardown race). submit's
-      // exiting-arm may also reap it once it resolves; both call the SAME idempotent teardown, so the overlap is
-      // harmless — awaiting here guarantees the reap completes within the bound.
+      // The in-flight build: a signal during the `loading` first-message build window OR the `/clear` swap build.
+      // Await + reap it so its spawned MCP child / frame loop is never orphaned (bounded by driveHome's
+      // force-teardown race). submit's/clearChat's exiting-arm may also reap it once it resolves; both call the
+      // SAME idempotent teardown, so the overlap is harmless — awaiting here guarantees the reap within the bound.
       const pending = buildInFlight;
       if (pending !== undefined) {
         const built = await pending.catch(() => undefined);

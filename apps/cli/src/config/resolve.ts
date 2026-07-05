@@ -27,8 +27,15 @@ export interface ResolvedChatConfig {
    *  a `positiveInt`, so 0 is rejected at the config layer, never reaching the engine's `<= 0 ⇒ default` arm);
    *  DISTINCT from `maxMessages` (a history-trim threshold) and the within-turn `maxToolTurns` guard. */
   readonly maxTurns: ChatConfig['max_turns'];
-  /** `[chat].max_messages` — the history-trim threshold (silently continues; trimming itself is a later phase). */
+  /** `[chat].max_messages` — the history-trim threshold consumed by `/trim` + the auto-compaction failure
+   *  fallback (→ `SessionDeps.maxMessages`; ADR-0062). */
   readonly maxMessages: ChatConfig['max_messages'];
+  /** `[chat].auto_compact` — enable automatic context compaction (→ `SessionDeps.autoCompact`; absent ⇒ the
+   *  engine default of enabled). ADR-0062. */
+  readonly autoCompact: ChatConfig['auto_compact'];
+  /** `[chat].compact_threshold` — the context-window fraction that triggers auto-compaction
+   *  (→ `SessionDeps.compactThreshold`; absent ⇒ the engine default 0.8). ADR-0062. */
+  readonly compactThreshold: ChatConfig['compact_threshold'];
   /** `[chat].max_cost_microcents` — per-session pre-egress cost cap (0/absent ⇒ unbounded; same ADR-0028 governor). */
   readonly maxCostMicrocents: ChatConfig['max_cost_microcents'];
   /** `[chat].on_exceed` — action when the cost cap trips (in an interactive REPL, `pause_for_approval`
@@ -122,6 +129,8 @@ function resolveChat(
     fsScope: p?.fs_scope ?? w?.fs_scope,
     maxTurns: p?.max_turns ?? w?.max_turns,
     maxMessages: p?.max_messages ?? w?.max_messages,
+    autoCompact: p?.auto_compact ?? w?.auto_compact,
+    compactThreshold: p?.compact_threshold ?? w?.compact_threshold,
     maxCostMicrocents: p?.max_cost_microcents ?? w?.max_cost_microcents,
     onExceed: p?.on_exceed ?? w?.on_exceed,
     allowedCommands: projectSetsAllowlist ? p?.allowed_commands : w?.allowed_commands,

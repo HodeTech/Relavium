@@ -38,6 +38,7 @@ import type {
 } from '../types.js';
 
 import {
+  CONTEXT_SEAM_DEFAULTS,
   REASONING_ID,
   assertMediaCapabilities,
   assertNoStreamingMediaOutput,
@@ -1012,6 +1013,9 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       }
       return pollMediaJobSora(createClient(key), jobId, providerId, signal);
     },
+    // ADR-0062 context-compaction seam — the shared defaults (covers both OpenAI and DeepSeek via this one
+    // factory; real usage is authoritative, so the estimate is only a pre-first-turn fallback).
+    ...CONTEXT_SEAM_DEFAULTS,
   };
 }
 

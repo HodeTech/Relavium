@@ -3,6 +3,7 @@ import { createInterface } from 'node:readline';
 
 import {
   DEFAULT_SESSION_MAX_TURNS,
+  type AgentDefinition,
   type SessionHandle,
   type SessionStreamHandleEvent,
   type UserCommandOutcome,
@@ -10,7 +11,13 @@ import {
 import { exportSession } from '../chat/export.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
-import { catalogNotice, costNotice } from '../chat/repl-info.js';
+import {
+  catalogNotice,
+  clearedNotice,
+  compactionNotice,
+  costNotice,
+  trimNotice,
+} from '../chat/repl-info.js';
 import { discoverCatalog, type CatalogEntry, type CatalogKind } from '../workflows/catalog.js';
 import {
   formatReplHelp,
@@ -32,6 +39,7 @@ import { createSessionPersister, type SessionPersister } from '../chat/persister
 import {
   buildChatSession,
   buildResumedChatSession,
+  type BuildChatSessionOptions,
   type BuiltChatSession,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
@@ -93,8 +101,15 @@ export interface ChatDriveContext {
   readonly startSession: () => void;
   /** Handle one line of user input (a slash command or a chat message). Awaits the turn for a message. */
   readonly processLine: (line: string, display?: string) => Promise<void>;
-  /** `true` once `/exit` or `/cancel` has run — the driver stops reading input. */
+  /** `true` once `/exit` or `/cancel` (or `/clear`) has run — the driver stops reading input. */
   readonly shouldStop: () => boolean;
+  /**
+   * WHY the driver's input loop ended (ADR-0062 §7) — `'exit'` (`/exit`, `/cancel`, or an input EOF) or `'clear'`
+   * (`/clear`, TTY-interactive only). The driver returns `{ kind: ctx.stopReason() }`; the standalone re-drive loop
+   * ({@link runReplLoop}) reads a `'clear'` to swap in a FRESH session. The `/clear` interactive gate keeps
+   * `stopReason()` at `'exit'` under `--json` / plain non-TTY, so those drivers only ever return `'exit'`.
+   */
+  readonly stopReason: () => 'exit' | 'clear';
   /** The live session stream (the driver renders it: ink reduces it into the store; plain prints it). */
   readonly handle: SessionHandle;
   /** The view store the ink renderer projects (`apply` already wired by the ink driver). */
@@ -153,7 +168,15 @@ export interface ChatDriveContext {
     args: readonly string[],
   ) => Promise<UserCommandOutcome>;
 }
-export type ChatDriver = (ctx: ChatDriveContext) => Promise<void>;
+/**
+ * How a {@link ChatDriver}'s input loop ended (ADR-0062 §7): `'exit'` ends the REPL (exit 4); `'clear'` tells the
+ * standalone {@link runReplLoop} to tear the current session down and re-drive over a FRESH one. A `/clear` is
+ * TTY-interactive only, so `--json` / plain drivers only ever return `'exit'`.
+ */
+export interface ChatDriveOutcome {
+  readonly kind: 'exit' | 'clear';
+}
+export type ChatDriver = (ctx: ChatDriveContext) => Promise<ChatDriveOutcome>;
 
 export interface ChatCommandDeps {
   readonly io: CliIo;
@@ -186,6 +209,9 @@ export interface ChatResumeCommandDeps {
   readonly providers?: ProviderResolver;
   /** Injectable resumed-session builder (tests inject a scripted provider via providers). Default {@link buildResumedChatSession}. */
   readonly buildResumedSession?: typeof buildResumedChatSession;
+  /** Injectable FRESH session builder — used only by the `/clear` re-drive rebuild (ADR-0062 §7), which starts a
+   *  brand-new session (not a re-resume) bound to the resumed agent. Default {@link buildChatSession}. */
+  readonly buildSession?: typeof buildChatSession;
   /** Injectable session-store opener (tests pass an in-memory store). Default {@link openSessionStore}. */
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
@@ -280,9 +306,38 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       mcpSkipped: built.mcpSkipped,
     });
 
+  // The `/clear` (ADR-0062 §7) re-drive rebuild — a FRESH session bound to the SAME agent (`built.agent`, reused
+  // verbatim, invariant across swaps), MCP reconnected, store/totals empty, over the SHARED db. The contract is
+  // shared with `chat-resume` via createClearRebuild so it cannot drift.
+  const rebuild = createClearRebuild({
+    chat: config.chat,
+    agent: built.agent,
+    projectConfigDir,
+    now,
+    uuid,
+    providers,
+    mcpSecretResolver,
+    mcpRegistrations: config.mcpServers,
+    opened,
+    buildSession: deps.buildSession ?? buildChatSession,
+    io: deps.io,
+    global: deps.global,
+  });
+
   return runReplLoop(
-    { built, opened, store, persister, doctorProbes, startSession: () => built.session.start() },
+    {
+      built,
+      opened,
+      store,
+      persister,
+      doctorProbes,
+      startSession: () => built.session.start(),
+      ...(config.chat.maxMessages === undefined
+        ? {}
+        : { chatMaxMessages: config.chat.maxMessages }),
+    },
     deps,
+    rebuild,
   );
 }
 
@@ -301,7 +356,7 @@ export async function chatResumeCommand(
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
 
-  const { config, homeDir } = loadResolvedConfig({
+  const { config, projectConfigDir, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
@@ -397,11 +452,40 @@ export async function chatResumeCommand(
       mcpSkipped: built.mcpSkipped,
     });
 
+  // The `/clear` (ADR-0062 §7) re-drive rebuild: a FRESH session (NOT a re-resume) bound to the resumed agent —
+  // `built.agent` is the frozen snapshot agent (no on-disk ref), passed verbatim. Same shared contract as `chat`.
+  const rebuild = createClearRebuild({
+    chat: config.chat,
+    agent: built.agent,
+    projectConfigDir,
+    now,
+    uuid,
+    providers,
+    mcpSecretResolver,
+    mcpRegistrations: config.mcpServers,
+    opened,
+    buildSession: deps.buildSession ?? buildChatSession,
+    io: deps.io,
+    global: deps.global,
+  });
+
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
   // re-emitting `session:started` would double a terminal-less lifecycle event — so startSession is a no-op.
   return runReplLoop(
-    { built, opened, store, persister, doctorProbes, startSession: () => {}, intro },
+    {
+      built,
+      opened,
+      store,
+      persister,
+      doctorProbes,
+      startSession: () => {},
+      intro,
+      ...(config.chat.maxMessages === undefined
+        ? {}
+        : { chatMaxMessages: config.chat.maxMessages }),
+    },
     deps,
+    rebuild,
   );
 }
 
@@ -417,6 +501,8 @@ interface ReplWiring {
   readonly startSession: () => void;
   /** The plain-driver banner override (the 2.N resume context line); fresh sessions omit it. */
   readonly intro?: string;
+  /** `[chat].max_messages` — the default bound a bare `/trim` uses (ADR-0062); absent ⇒ `/trim` needs an inline `n`. */
+  readonly chatMaxMessages?: number;
 }
 
 /**
@@ -496,8 +582,11 @@ export interface ChatLineHandler extends ChatModeControl {
   readonly processLine: (raw: string, display?: string) => Promise<void>;
   /** Emit the session's sole terminal (`session:cancelled`, idempotent) — the teardown caller fires it. */
   readonly cancelOnce: () => void;
-  /** `true` once `/exit` or `/cancel` has run — the driver stops reading input. */
+  /** `true` once `/exit`, `/cancel`, or `/clear` has run — the driver stops reading input. */
   readonly shouldStop: () => boolean;
+  /** WHY the loop stopped (ADR-0062 §7) — `'clear'` after a `/clear`, else `'exit'`. The standalone re-drive loop
+   *  swaps in a fresh session on `'clear'`; the Home reads it to swap-in-place vs. return to the bare Home. */
+  readonly stopReason: () => 'exit' | 'clear';
 }
 
 /**
@@ -510,20 +599,26 @@ export interface ChatLineHandler extends ChatModeControl {
  * tokens are sanitized (non-printable → `?`, truncated) so a crafted arg can't smuggle a control sequence.
  */
 function validateSlashTokens(command: ReplCommand, tokens: readonly string[]): string | undefined {
-  const positionalValues = command.positional?.values ?? [];
-  const allowed = new Set([...(command.args ?? []).map((arg) => arg.flag), ...positionalValues]);
+  const flags = new Set((command.args ?? []).map((arg) => arg.flag));
+  const positional = command.positional;
+  const positionalValues = positional?.values ?? [];
+  // A positional with an EMPTY `values` list is a FREE positional (any single token — e.g. `/trim 50`); a
+  // non-empty list is a fixed allowlist (`/mode plan`). Only a fixed positional teaches its valid values.
+  const freePositional = positional !== undefined && positionalValues.length === 0;
   const validHint =
-    command.positional === undefined ? '' : ` Valid: ${positionalValues.join(', ')}.`;
-  const bad = tokens.find((token) => !allowed.has(token));
-  if (bad !== undefined) {
-    return `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.${validHint}`;
-  }
-  if (command.positional !== undefined) {
-    const positionalSet = new Set(positionalValues);
-    const positionalCount = tokens.filter((token) => positionalSet.has(token)).length;
-    if (positionalCount > 1) {
-      return `/${command.name}: takes a single ${command.positional.name} value (got ${positionalCount}).${validHint}`;
+    positional === undefined || freePositional ? '' : ` Valid: ${positionalValues.join(', ')}.`;
+  const nonFlag = tokens.filter((token) => !flags.has(token)); // candidate positional value(s)
+  // Reject a non-flag token unless it is the FREE positional's value or a declared FIXED positional value (a
+  // zero-positional command rejects ANY non-flag token — so `/exit now` still fails).
+  if (!freePositional) {
+    const bad = nonFlag.find((token) => !positionalValues.includes(token));
+    if (bad !== undefined) {
+      return `/${command.name}: unknown argument '${bad.replace(/[^\x20-\x7e]/g, '?').slice(0, 32)}'.${validHint}`;
     }
+  }
+  // A single positional value (fixed OR free) — more than one is rejected, not silently dropped downstream.
+  if (positional !== undefined && nonFlag.length > 1) {
+    return `/${command.name}: takes a single ${positional.name} value (got ${nonFlag.length}).${validHint}`;
   }
   return undefined;
 }
@@ -535,12 +630,18 @@ function validateSlashTokens(command: ReplCommand, tokens: readonly string[]): s
  * state is internal — the caller reads it via `shouldStop` and fires the terminal via `cancelOnce` on teardown.
  */
 export function createChatLineHandler(
-  wiring: Pick<ReplWiring, 'built' | 'opened' | 'store' | 'persister' | 'doctorProbes'>,
+  wiring: Pick<
+    ReplWiring,
+    'built' | 'opened' | 'store' | 'persister' | 'doctorProbes' | 'chatMaxMessages'
+  >,
   deps: ChatReplDeps,
 ): ChatLineHandler {
   const { built, opened, store, persister, doctorProbes } = wiring;
   let stop = false;
   let cancelled = false;
+  // Set by `/clear` (ADR-0062 §7): the loop stopped to SWAP the session, not to end the REPL — `stopReason` reports
+  // it so the surface (the standalone re-drive loop, or the Home) rebuilds a fresh session instead of exiting.
+  let clearRequested = false;
   const cancelOnce = (): void => {
     if (!cancelled) {
       cancelled = true;
@@ -676,6 +777,58 @@ export function createChatLineHandler(
       modeControl.onModeChange(mode);
       emitOutput(`mode: ${MODE_LABEL[mode]}`);
     },
+    // `/compact` (ADR-0062): model-summarise the working context. An LLM call — announce the moment, then
+    // await, then report the deltas. The engine emits session:compacted (→ the persister writes the boundary
+    // marker); this notice is the user-facing report. Never crashes the REPL — a failure is reported as output.
+    compactHistory: async () => {
+      // The engine emits `session:compacting` at the start (ADR-0062 §7): on an INTERACTIVE surface the store
+      // renders a labeled "Summarizing…" moment off it, so no pre-notice is needed; on a plain/`--json` surface
+      // (no live spinner) keep a one-line stderr progress note so the multi-second summary isn't a silent pause.
+      // Either way `session:compacted` (→ the persister writes the boundary marker) fires and we report the RESULT.
+      if (!interactive) emitOutput('compacting: summarizing the conversation…');
+      try {
+        emitOutput(compactionNotice(await built.session.compact('manual')));
+      } catch {
+        // compact() RE-THROWS an unclassified error (a bug) rather than returning {kind:'failed'} — never crash
+        // the REPL (the discipline every slash command obeys); surface a static, secret-free notice instead.
+        emitOutput('compaction failed unexpectedly — the conversation is unchanged.');
+      } finally {
+        // ALWAYS reset the moment: a failed/cancelled/no-op /compact (and an unclassified throw) emits NO
+        // session:compacted|trimmed terminal, so without this the store's `compacting` flag (set by
+        // session:compacting) would latch and a later slash command would render a stale "Summarizing…" spinner.
+        // A SUCCESSFUL compact already cleared it via session:compacted, making this an idempotent no-op there.
+        store.clearCompacting();
+      }
+    },
+    // `/trim [n]` (ADR-0062): deterministic drop, no LLM call. Bare `/trim` uses `[chat].max_messages`; an
+    // inline `n` overrides it. A missing bound (no arg + no config) is an actionable notice, never a silent no-op.
+    trimHistory: (nArg) => {
+      const trimmed = nArg.trim();
+      const n = trimmed.length > 0 ? Number(trimmed) : wiring.chatMaxMessages;
+      if (n === undefined) {
+        emitOutput('/trim: set a bound — `/trim <n>` or `[chat].max_messages` in your config.');
+        return;
+      }
+      if (!Number.isInteger(n) || n <= 0) {
+        emitOutput(`/trim: <n> must be a positive whole number (got '${trimmed.slice(0, 16)}').`);
+        return;
+      }
+      emitOutput(trimNotice(built.session.trimHistory(n)));
+    },
+    // `/clear` (ADR-0062 §7): end THIS conversation (persisted + resumable) and swap in a fresh session. A
+    // HOST-LEVEL lifecycle swap — the handler only SIGNALS it (clearRequested + stop); the surface orchestrates the
+    // teardown + fresh-session rebuild (the standalone re-drive `runReplLoop`, or the Home's `clearChat`). It does
+    // NOT call cancelOnce here — the surface teardown fires the old session's sole terminal exactly once.
+    // INTERACTIVE-ONLY: under `--json` / plain non-TTY there is no swap surface (one machine stream is one session
+    // lifecycle, ADR-0049), so reject with an actionable hint and change nothing (stopReason stays 'exit').
+    clearSession: () => {
+      if (!interactive) {
+        emitOutput('/clear needs an interactive terminal — start a new `relavium chat` instead.');
+        return;
+      }
+      clearRequested = true;
+      stop = true;
+    },
   };
 
   // Parse + dispatch a `/name [args]` REPL line (extracted from processLine so each stays under the Sonar
@@ -721,19 +874,145 @@ export function createChatLineHandler(
     processLine,
     cancelOnce,
     shouldStop: () => stop,
+    stopReason: () => (clearRequested ? 'clear' : 'exit'),
     onAbort: modeControl.onAbort,
     onModeChange: modeControl.onModeChange,
   };
 }
 
-async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<ExitCode> {
-  const { built, opened, store, persister, startSession, intro } = wiring;
-  // createChatLineHandler owns the mode control (so `/mode` + the driver keys drive one control) — it applies
-  // the initial mode, activating the fail-closed approval regime before the first turn.
-  const { processLine, cancelOnce, shouldStop, onAbort, onModeChange } = createChatLineHandler(
-    wiring,
-    deps,
-  );
+/**
+ * Build a FRESH chat wiring — a new {@link AgentSession} + view store + persister + doctor probes over the SHARED
+ * `history.db` handle — for the `/clear` (ADR-0062 §7) re-drive rebuild. The bound `agent` is reused verbatim (no
+ * disk re-read), MCP reconnects fresh, and the store/totals start empty; the `intro` carries the {@link clearedNotice}
+ * that surfaces the prior (still-resumable) session. Mirrors the initial-build acquire-then-teardown-on-failure guard
+ * so a persister-construction throw never leaks the just-spawned MCP children. The SHARED `opened` is NOT this
+ * function's to close — the caller's outer {@link runReplLoop} finally owns it across every swap.
+ */
+interface FreshChatWiringDeps {
+  readonly chat: BuildChatSessionOptions['chat'];
+  readonly agent: AgentDefinition;
+  readonly cwd: string;
+  readonly projectConfigDir: string | undefined;
+  readonly now: () => number;
+  readonly uuid: () => string;
+  readonly providers: ProviderResolver;
+  readonly mcpSecretResolver: McpSecretResolver;
+  readonly mcpRegistrations: BuildChatSessionOptions['mcpRegistrations'];
+  readonly configPath: string | undefined;
+  readonly io: CliIo;
+  readonly global: GlobalOptions;
+  readonly opened: OpenedSessionStore;
+  readonly buildSession: typeof buildChatSession;
+  readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+}
+
+async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): Promise<ReplWiring> {
+  const built = await deps.buildSession({
+    chat: deps.chat,
+    agent: deps.agent,
+    agentRef: deps.agent.id, // ignored when `agent` is set, but the option key is required
+    cwd: deps.cwd,
+    projectConfigDir: deps.projectConfigDir,
+    now: deps.now,
+    uuid: deps.uuid,
+    providers: deps.providers,
+    mcpSecretResolver: deps.mcpSecretResolver,
+    ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
+    onBudgetWarning: deps.onBudgetWarning,
+  });
+  surfaceMcpSkipped(deps.io, built.mcpSkipped);
+  const store = createChatStore(deps.global.color);
+  let persister: SessionPersister;
+  try {
+    persister = createSessionPersister({
+      store: deps.opened.store,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now: deps.now,
+      uuid: deps.uuid,
+    });
+  } catch (err) {
+    // Acquire-then-guard: the fresh MCP children are already spawned — reclaim them before the failure propagates
+    // so a persister-construction throw never orphans a stdio child (best-effort; never mask the primary error).
+    await built.closeMcp?.().catch(() => undefined);
+    throw err;
+  }
+  const doctorProbes = assembleDoctorProbes({
+    cwd: deps.cwd,
+    ...(deps.configPath === undefined ? {} : { configPath: deps.configPath }),
+    resolver: deps.providers,
+    agentMcpServers: built.agent.mcp_servers ?? [],
+    mcpSkipped: built.mcpSkipped,
+  });
+  return {
+    built,
+    opened: deps.opened,
+    store,
+    persister,
+    doctorProbes,
+    startSession: () => built.session.start(),
+    intro,
+    ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
+  };
+}
+
+/**
+ * Build the `/clear` re-drive rebuild closure (ADR-0062 §7) — SHARED by `chat` and `chat-resume` so the rebuild
+ * CONTRACT (the {@link FreshChatWiringDeps} assembly + the {@link buildFreshChatWiring} call) lives in ONE place and
+ * cannot drift between them. Given the current session's bound agent + the command's capability inputs, it returns a
+ * `(oldSessionId) => Promise<ReplWiring>` that assembles a FRESH session over the SAME agent + SHARED db, its intro
+ * the {@link clearedNotice} naming the prior (still-resumable) session.
+ */
+function createClearRebuild(params: {
+  readonly chat: BuildChatSessionOptions['chat'];
+  readonly agent: AgentDefinition;
+  readonly projectConfigDir: string | undefined;
+  readonly now: () => number;
+  readonly uuid: () => string;
+  readonly providers: ProviderResolver;
+  readonly mcpSecretResolver: McpSecretResolver;
+  readonly mcpRegistrations: BuildChatSessionOptions['mcpRegistrations'];
+  readonly opened: OpenedSessionStore;
+  readonly buildSession: typeof buildChatSession;
+  readonly io: CliIo;
+  readonly global: GlobalOptions;
+}): (oldSessionId: string) => Promise<ReplWiring> {
+  const wiringDeps: FreshChatWiringDeps = {
+    chat: params.chat,
+    agent: params.agent,
+    cwd: params.global.cwd,
+    projectConfigDir: params.projectConfigDir,
+    now: params.now,
+    uuid: params.uuid,
+    providers: params.providers,
+    mcpSecretResolver: params.mcpSecretResolver,
+    mcpRegistrations: params.mcpRegistrations,
+    configPath: params.global.configPath,
+    io: params.io,
+    global: params.global,
+    opened: params.opened,
+    buildSession: params.buildSession,
+    onBudgetWarning: (warning) =>
+      params.io.writeErr(
+        `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
+      ),
+  };
+  return (oldSessionId) => buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId));
+}
+
+/**
+ * Drive ONE session to its stop (`/exit`, `/cancel`, `/clear`, or EOF) and tear it down — the per-session unit the
+ * re-drive {@link runReplLoop} runs once per conversation. Its finally fires the session's sole terminal
+ * (`cancelOnce`, idempotent → the row flips to 'ended', still resumable), closes the persister, and tears the MCP
+ * connections down — but NOT the shared db (the loop owns it across swaps). Returns the driver's outcome so the loop
+ * can decide between ending and re-driving over a fresh session (`/clear`).
+ */
+async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<ChatDriveOutcome> {
+  const { built, store, persister, startSession, intro } = wiring;
+  const { processLine, cancelOnce, shouldStop, stopReason, onAbort, onModeChange } =
+    createChatLineHandler(wiring, deps);
 
   // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the SAME fs-scope tier + workspace
   // as the session's tools, so `@`-completion browses + injects through the identical confidentiality floor +
@@ -750,8 +1029,7 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
     return fsArm === undefined ? undefined : createMentionReader(fsArm);
   })();
 
-  // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`. TTY-only:
-  // an interactive driver intercepts a leading `!`; a plain/`--json` driver treats it as a literal message.
+  // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`. TTY-only.
   const runShellCommand = chatIsInteractive(deps.io, deps.global)
     ? (command: string, args: readonly string[]): Promise<UserCommandOutcome> =>
         built.session.runUserCommand(command, args)
@@ -762,19 +1040,20 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
   // is deferred to startSession() INSIDE the driver, after the driver has subscribed the view store.
   try {
     persister.start();
-    await (deps.drive ?? drivePlain)({
+    return await (deps.drive ?? drivePlain)({
       startSession,
       processLine,
       shouldStop,
+      stopReason,
       handle: built.handle,
       store,
       io: deps.io,
       global: deps.global,
-      // A headless driver flushes the terminal (session:cancelled) before unsubscribing; the command's own
-      // cancelOnce below is then a no-op (idempotent). Other drivers ignore it — the command fires it.
+      // A headless driver flushes the terminal (session:cancelled) before unsubscribing; the finally's cancelOnce
+      // below is then a no-op (idempotent). Other drivers ignore it — the finally fires it.
       finalize: cancelOnce,
-      // The ink driver's second-SIGINT hard `process.exit` bypasses the finally below — give it a best-effort
-      // MCP teardown to run first so a forced quit never orphans a spawned stdio child (no-op when no servers).
+      // The ink driver's second-SIGINT hard `process.exit` bypasses the finally below — give it a best-effort MCP
+      // teardown to run first so a forced quit never orphans a spawned stdio child (no-op when no servers).
       ...(built.closeMcp === undefined ? {} : { onForceExit: built.closeMcp }),
       ...(intro === undefined ? {} : { intro }),
       onAbort,
@@ -783,15 +1062,58 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
       ...(runShellCommand === undefined ? {} : { runShellCommand }),
     });
   } finally {
-    cancelOnce(); // emit the terminal even on /exit or EOF (idempotent); flips the row to 'ended'
+    cancelOnce(); // emit the terminal even on /exit, /clear, or EOF (idempotent); flips the row to 'ended'
     // Attempt EVERY teardown step (a reject in one must not skip the next) and never let a cleanup fault mask the
-    // loop's exit outcome — each is best-effort, surfacing a warning rather than throwing. MCP tears down LAST,
-    // AFTER the session terminal, so no tool call can race the close (idempotent; present only with `mcp_servers`).
+    // outcome — each is best-effort, surfacing a warning rather than throwing. MCP tears down LAST, AFTER the
+    // session terminal, so no tool call can race the close (idempotent; present only with `mcp_servers`).
     closeQuietly(deps.io, 'persister', () => persister.close());
-    closeQuietly(deps.io, 'session store', () => opened.close());
     await built.closeMcp?.().catch((e: unknown) => warnTeardown(deps.io, 'MCP', e));
   }
-  // `/exit`, `/cancel`, and an input EOF all END the chat session — the canonical chat-session-ended code.
+}
+
+/**
+ * The shared REPL loop driving both `chat` (fresh) and `chat-resume` (2.N). It drives the CURRENT session to its
+ * stop ({@link driveOneSession}) and, on a `/clear` outcome (ADR-0062 §7, TTY-interactive only), rebuilds a FRESH
+ * session over the SAME db and re-drives — otherwise it ends. The shared `history.db` handle survives every swap
+ * and is closed exactly ONCE in the outer finally; each session's own teardown (terminal + persister + MCP) is
+ * owned by `driveOneSession`. `/exit`, `/cancel`, and an input EOF all end the session with **exit code 4**.
+ */
+async function runReplLoop(
+  wiring: ReplWiring,
+  deps: ChatReplDeps,
+  rebuild?: (oldSessionId: string) => Promise<ReplWiring>,
+): Promise<ExitCode> {
+  // The SHARED db handle — the same across every /clear swap (a fresh session reuses it), closed ONCE below.
+  const opened = wiring.opened;
+  let current = wiring;
+  try {
+    for (;;) {
+      const outcome = await driveOneSession(current, deps);
+      // Only a TTY `/clear` yields 'clear' (the gate rejects it under `--json`/plain); with no rebuild wired, end.
+      if (outcome.kind !== 'clear' || rebuild === undefined) break;
+      // The old session is ALREADY torn down (driveOneSession's finally fired its terminal → the row is 'ended' +
+      // resumable). Build the fresh session over the same db and re-drive; a build failure is surfaced actionably
+      // (the prior conversation is still resumable) and ends the REPL rather than looping on a broken build.
+      const oldSessionId = current.built.sessionId;
+      try {
+        current = await rebuild(oldSessionId);
+      } catch (err) {
+        deps.io.writeErr(
+          // Sanitize the error text too (not just the id beside it) — a rebuild fault can rethrow an unclassified
+          // message verbatim (session-host.ts), which could carry an ANSI/OSC escape from a spawned MCP server's
+          // error text; strip it exactly as the id + every other display string on this surface is stripped.
+          `could not start a fresh session after /clear: ${sanitizeInline(err instanceof Error ? err.message : String(err))}. ` +
+            `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`,
+        );
+        break;
+      }
+    }
+  } finally {
+    // The shared db closes exactly once, after the last session's own teardown — never per-swap (that would strand
+    // the next session), never skipped (best-effort; a close fault warns rather than masking the loop outcome).
+    closeQuietly(deps.io, 'session store', () => opened.close());
+  }
+  // `/exit`, `/cancel`, an input EOF, and a `/clear` whose rebuild failed all END the chat — the canonical code.
   return EXIT_CODES.chatEnded;
 }
 
@@ -799,7 +1121,7 @@ async function runReplLoop(wiring: ReplWiring, deps: ChatReplDeps): Promise<Exit
  * The default, **plain** (non-TTY) driver: a line loop over stdin with a streamed-token printer. Used when no
  * TTY is attached (a pipe / CI without `--json`, which is 2.Q); the TTY ink driver overrides `deps.drive`.
  */
-export async function drivePlain(ctx: ChatDriveContext): Promise<void> {
+export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   const unsubscribe = ctx.handle.subscribe(makePlainPrinter(ctx.io));
   const rl = createInterface({ input: ctx.io.stdin, terminal: false });
   // Ctrl-C (cooked mode here, unlike the raw-mode ink path) closes the input so the loop ends and the
@@ -818,6 +1140,8 @@ export async function drivePlain(ctx: ChatDriveContext): Promise<void> {
     rl.close();
     unsubscribe();
   }
+  // A plain (non-TTY) session is not interactive, so `/clear` is gated off — `stopReason()` is always `'exit'`.
+  return { kind: ctx.stopReason() };
 }
 
 /**
@@ -828,7 +1152,7 @@ export async function drivePlain(ctx: ChatDriveContext): Promise<void> {
  * /export) stay on stderr, so stdout is a pure `SessionEvent` stream. An input-stream EOF ends the session
  * (exit code 4, like the REPL). No banner — the first line is the `session:started` event.
  */
-export async function driveJson(ctx: ChatDriveContext): Promise<void> {
+export async function driveJson(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   const unsubscribe = ctx.handle.subscribe((event) =>
     ctx.io.writeOut(`${JSON.stringify(event)}\n`),
   );
@@ -848,6 +1172,9 @@ export async function driveJson(ctx: ChatDriveContext): Promise<void> {
     ctx.finalize?.();
     unsubscribe();
   }
+  // `--json` is a machine stream, not interactive, so `/clear` is gated off — `stopReason()` is always `'exit'`
+  // (one stdout stream stays one session lifecycle, ADR-0049).
+  return { kind: ctx.stopReason() };
 }
 
 /**

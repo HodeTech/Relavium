@@ -50,6 +50,13 @@ export interface BuildChatSessionOptions {
   readonly chat: ResolvedChatConfig;
   /** `--agent <ref>` (path or bare id); `undefined` ⇒ the built-in default agent over `[chat].default_model`. */
   readonly agentRef: string | undefined;
+  /**
+   * A pre-resolved agent to bind directly, bypassing `agentRef` resolution. `/clear` (ADR-0062 §7) passes the
+   * CURRENT session's bound agent so the fresh session keeps the exact same agent with **no disk re-read** — robust
+   * against an agent file edited/deleted mid-session, and the only way `chat-resume`'s snapshot agent (which has no
+   * on-disk ref) can seed a fresh `/clear` session. When set, `agentRef` is ignored. Absent ⇒ resolve `agentRef`.
+   */
+  readonly agent?: AgentDefinition;
   /** The session working directory (the launch cwd) — the `SessionContext.workingDir` + agent-discovery root. */
   readonly cwd: string;
   /** The resolved `.relavium/` project config dir (for bare-id `--agent` discovery), or `undefined`. */
@@ -228,6 +235,14 @@ function buildSessionRuntime(
     // rides ONLY the AgentSession chat/Home/one-shot surfaces, never the run-engine's AgentRunner.
     limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
     ...(opts.chat.maxTurns === undefined ? {} : { maxTurns: opts.chat.maxTurns }),
+    // Context compaction (ADR-0062): auto_compact / compact_threshold gate the after-turn auto-compaction, and
+    // max_messages is both the `/trim` bound and the auto-compaction failure-degrade target. Absent ⇒ the
+    // engine defaults (enabled / 0.8 / no fallback trim). Threaded, not hardcoded, so the config is not re-dead.
+    ...(opts.chat.autoCompact === undefined ? {} : { autoCompact: opts.chat.autoCompact }),
+    ...(opts.chat.compactThreshold === undefined
+      ? {}
+      : { compactThreshold: opts.chat.compactThreshold }),
+    ...(opts.chat.maxMessages === undefined ? {} : { maxMessages: opts.chat.maxMessages }),
     ...(governor === undefined
       ? {}
       : { preEgress: governor.preEgress, updateCost: governor.updateCost }),
@@ -237,11 +252,15 @@ function buildSessionRuntime(
 
 export async function buildChatSession(opts: BuildChatSessionOptions): Promise<BuiltChatSession> {
   const sessionId = opts.uuid();
-  const agent = resolveChatAgent(opts.agentRef, {
-    cwd: opts.cwd,
-    projectConfigDir: opts.projectConfigDir,
-    defaultModel: opts.chat.defaultModel,
-  });
+  // A `/clear` rebuild (ADR-0062 §7) passes the CURRENT bound agent to rebind verbatim; otherwise resolve `agentRef`
+  // from disk / the built-in default. Reusing the agent avoids a disk re-read (and its failure modes) on `/clear`.
+  const agent =
+    opts.agent ??
+    resolveChatAgent(opts.agentRef, {
+      cwd: opts.cwd,
+      projectConfigDir: opts.projectConfigDir,
+      defaultModel: opts.chat.defaultModel,
+    });
   const context: SessionContext = {
     workingDir: opts.cwd,
     // The EFFECTIVE tier (full→project clamped for the chat surface — a chat READ can exfiltrate) — the SAME value the factory

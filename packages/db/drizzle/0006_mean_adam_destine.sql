@@ -1,0 +1,1 @@
+ALTER TABLE `session_messages` ADD `compaction_dropped_through_sequence` integer;

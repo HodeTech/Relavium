@@ -5,8 +5,9 @@
 > — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home) ✅ → **2.5.C** (slash registry
 > + palette + `/help`/`/doctor`/`/workflows`/`/cost` + footer hint-bar) ✅ **Done (PR #62, 2026-06-30)**
 > → **2.5.E** (modes + per-tool approval + mid-turn abort) ✅ **Done (PR #63, 2026-07-03)** (ADR-0057 Accepted)
-> — **the spine is complete**. **Next: the experience arm 2.5.D / F / G** (off the spine, depends on B/C).
-> Additive lanes (no dependency chain): 2.5.H / I / J.
+> — **the spine is complete**. Experience arm: **2.5.D** (chat input ergonomics + `@`/`!` chip model) ✅ **Done
+> (PR #64, 2026-07-03)** behind [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md).
+> **Next: 2.5.F / G** (off the spine, depends on B/C). Additive lanes (no dependency chain): 2.5.H / I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
 
@@ -59,11 +60,11 @@ Along the way, close the bounded engine amendments and docs-debt that Phase 2 de
 - Conversational (model-generated) authoring, the `@relavium/authoring` package promotion, mid-session
   **model** reseat, session `{{ctx.*}}` interpolation, and competitor-parity polish — all
   [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md).
-- `/compact` model-summarised compaction (the engine has no summarisation primitive — Phase 2.5 ships
-  only deterministic `/trim`), `read_media` input (D12), full-fidelity reseat tool-context, in-app
-  scrollback/pager, a **type-ahead message queue while a turn runs** (the in-flight key-swallow is handled
-  for approval input in 2.5.E, but queuing the *next* message is deferred), live provider `/v1/models`
-  fetch, and a multi-pane dashboard — Phase 3 / later (tracked in [../deferred-tasks.md](../deferred-tasks.md)).
+- `read_media` input (D12), full-fidelity reseat tool-context, in-app scrollback/pager, a **type-ahead
+  message queue while a turn runs** (the in-flight key-swallow is handled for approval input in 2.5.E, but
+  queuing the *next* message is deferred), live provider `/v1/models` fetch, and a multi-pane dashboard —
+  Phase 3 / later (tracked in [../deferred-tasks.md](../deferred-tasks.md)). (`/compact` model-summarised
+  compaction was originally listed here as Phase 3; it is now **built in 2.5.F** per [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md).)
 
 ## Work breakdown
 
@@ -244,27 +245,35 @@ discoverable (no separate `/shortcuts`); the palette filters; an unknown slash /
 `/doctor --deep` never connects/spawns an unreferenced MCP server. **Required ADR: in-app slash command
 system + command manifest (ADR-0056).**
 
-### 2.5.D — Chat input ergonomics — **Implemented (PR #64, pending merge, 2026-07-03)**
+### 2.5.D — Chat input ergonomics — ✅ **Done (PR #64, 2026-07-03)**
 
-> **Status:** Implemented across both interactive surfaces (`relavium chat` + the 2.5.B Home); **PR #64** open for
-> review, **pending merge** (the ✅ flips on merge). The two data-moving affordances (`@`/`!`) are behind
+> **Status:** ✅ **Done (PR #64, merged 2026-07-03)** across both interactive surfaces (`relavium chat` + the 2.5.B
+> Home). The two data-moving affordances (`@`/`!`) are behind
 > [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md) (**Accepted** after a
 > two-round maintainer security review + the mandatory adversarial security pass folded into the step-4/5 opus +
-> sonnet review loops). Shipped:
+> sonnet review loops). A post-implementation comprehensive review then **refined the `@`/`!` presentation to a
+> pending-attachment (chip) model** — the accepted file / command output is queued as a compact chip (an inline
+> `@path` marker for a file; a read-only preview for a command) and expanded into the SAME UNTRUSTED nonce-fenced
+> frame only at submit, so the model receives byte-identical context while the prompt stays clean (ADR-0061
+> "Refined at implementation" append). Two further review passes hardened the `[chat]` allowlist resolution (the
+> exact + glob arrays are now a **coupled unit** — a project setting either owns the whole allowlist) and fixed a
+> Backspace regression (ink reports the Unix physical Backspace as `key.delete`). Shipped:
 >
 > - **Ergonomics (no security surface):** `Ctrl+J` newline + multi-line render, `↑/↓` history + `Ctrl+R`
 >   reverse-search, readline cursor/word/line motions — a shared `reduceEditorMotion` + a cursor-bearing
 >   `EditorState` across both surfaces (one raw-mode owner preserved).
 > - **`@`-mention:** dir-navigable file completion (a `..` ascend row + backspace-to-parent) that reads through
 >   the **same** `FsCapability` `read_file` uses (jail + the sensitive-read confidentiality floor, expanded to
->   `.env*`/`.aws`/`.docker`/`.envrc`/`.dockercfg` + `.env/` as a dir; the listing-gate; binary/size guards), and
->   injects as **UNTRUSTED, nonce-fenced, byte+line-bounded** context. The `.gitignore`/`.relaviumignore` advisory
->   trim ships as a fixed `NOISE_DIRS` set (the matcher is a deferred follow-up).
+>   `.env*`/`.aws`/`.docker`/`.envrc`/`.dockercfg` + `.env/` as a dir; the listing-gate; binary/size guards). The
+>   accepted file becomes a compact `@path`-marker **chip**; at submit it expands into **UNTRUSTED, nonce-fenced,
+>   byte+line-bounded** context (only while its marker survives). The `.gitignore`/`.relaviumignore` advisory trim
+>   ships as a fixed `NOISE_DIRS` set (the matcher is a deferred follow-up).
 > - **`!`-shell:** the additive **`AgentSession.runUserCommand`** (the documented engine exception below) routes a
 >   `!command` through the **one** `run_command` boundary — `enforcePolicy([chat].allowed_commands)` **before** the
 >   mode-aware `confirmAction` → `spawn`/`shell:false`. **Empty-default allowlist ⇒ `!` inert** (secure-by-default;
 >   the reversal of an earlier curated-default, per the maintainer security review); a non-allowlisted `!cmd` gets
->   an actionable, secret-free hint. Output is injected as UNTRUSTED, doubly-bounded context. `@`/`!` are TTY-only.
+>   an actionable, secret-free hint. Output is shown read-only and rides the next message as a **chip** carrying
+>   UNTRUSTED, doubly-bounded context. `@`/`!` are TTY-only.
 >
 > **Documented engine exception:** the "no engine/seam change" acceptance line below is amended by ADR-0061 —
 > `AgentSession.runUserCommand` is one additive, pure method reusing `#runTurn`'s dispatch-context construction
@@ -354,17 +363,40 @@ is sandbox-bounded with protected paths honoured. A security review of the resea
 (defense-in-depth trade-off) passes. **Required ADR: per-tool approval + reseat-less chat mode system
 (incl. mid-turn abort).**
 
-### 2.5.F — `/clear` and `/trim`
+### 2.5.F — `/clear`, `/trim`, and `/compact` (context compaction)
+
+> **Scope expanded (2026-07-04, [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)).**
+> The maintainer removed the Phase-3 deferral of `/compact`: we build the **full** context-compaction
+> story now — a model-summarised **engine primitive** (`AgentSession.compact()`), plus **automatic**
+> threshold-triggered compaction — not merely the deterministic commands. The earlier
+> "recognized-but-deferred `/compact` stub" plan is superseded by ADR-0062.
 
 `/clear` starts a new conversation (the old session stays persisted and resumable). `/trim` is a
-**deterministic** history trim that finally consumes the dead `max_messages` config field
-(`packages/shared/src/config.ts` — plumbed but never read). `/compact` (model-summarised) is **Phase
-3** (the engine has no summarisation primitive); a no-op stub is forbidden — instead the slash registry
-carries a **recognized-but-deferred** entry so `/compact` prints *"not yet available — use `/trim` for a
-deterministic trim; model-summarised compaction is planned"*, distinct from the generic unknown-slash hint.
+**deterministic** history trim (`/trim [n]`, default `[chat].max_messages`) that finally consumes the
+dead `max_messages` config field (`packages/shared/src/config.ts` — plumbed but never read); it is also
+the zero-cost fallback if a summarization fails. `/compact` is **model-summarised** compaction: the
+summary becomes a session-level system-prompt preamble, the last exchange stays verbatim, and an
+**append-only** boundary marker (no destructive delete; resume-preserving; reseat-safe) records it. The
+same primitive runs **automatically** past `[chat].compact_threshold` of the serving model's context
+window (`[chat].auto_compact`, default on). Every summarization token is accounted to the session budget
+and surfaced. Delivered in three reviewed steps (shared/seam/db foundations → engine primitive → CLI
+host + docs), each with an Opus + Sonnet review round.
 
 **Acceptance:** `/clear` opens a fresh session, the prior one resumable; `/trim` bounds history by
-`max_messages` with no LLM call; `max_messages` is no longer dead.
+`max_messages`/`n` with no LLM call; `max_messages` is no longer dead; `/compact` summarises the working
+context (append-only, resume-preserving, cost-accounted); auto-compaction bounds a long chat before it
+overflows the context window; the summary is inspectable and the moment is a designed state.
+
+> **Landed pending merge (PR for ADR-0062, three reviewed steps — shared/seam/db, engine primitive, CLI host —
+> each with an Opus + Sonnet review round):** the compaction engine primitive, automatic compaction, append-only
+> resume/reseat-preserving persistence, `/compact`, and `/trim [n]` are **complete**. The final 2.5.F items then
+> landed (pending merge): **`/clear`** — the fresh-session lifecycle swap (ADR-0062 §7) across `relavium chat`,
+> `chat-resume`, and the in-Home chat: a host-level re-drive (standalone) / build-first `clearChat` (Home) that ends
+> the current session (persisted + resumable) and rebinds the same agent under a new `sessionId`, TTY-interactive-only
+> (rejected under `--json`/plain), zero engine change; and the two compaction-moment UX polishes — the **labeled**
+> "Summarizing…" spinner off a new additive `session:compacting` engine event (amends ADR-0036's event substrate) and
+> the footer **context-fullness** indicator (last input ÷ the model's context window, via the new pure
+> `@relavium/llm` `contextWindowForModel` helper). **With these 2.5.F is feature-complete (roadmap-done-after-merge).**
 
 ### 2.5.G — Onboarding wizard and `/models` (Home model catalog)
 
@@ -399,7 +431,9 @@ follow-up) lands with EA2's accuracy surface.
   the engine **already** marks retryable in `RETRYABLE_ERROR_CODES` (`@relavium/shared/constants.ts`) but
   the chat renders opaquely — `provider_rate_limit` (`429` → backoff + visible failover) and
   `provider_unavailable` (→ visible failover); plus three classes the engine does **not** map as retryable
-  and the chat must surface actionably — context-overflow (a `bad_request`/fatal → suggest `/trim`),
+  and the chat must surface actionably — context-overflow (a `bad_request`/fatal → suggest `/trim` or
+  `/compact`; note 2.5.F auto-compaction (ADR-0062) now **pre-empts** most context-overflows, so this hint
+  is the secondary net for a model with no known window or `auto_compact = false`),
   keychain-locked mid-session, and MCP-server timeout. Each renders a one-line recovery hint and makes
   explicit that **the session survives** (the "say so plainly" philosophy, extended from tools to
   transport/quota).

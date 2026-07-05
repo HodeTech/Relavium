@@ -163,8 +163,8 @@ holistic security review (~50 findings fixed, 4 HIGH). A same-PR chat-UX follow-
 EXECUTION failure on the interactive surface (a file-not-found READ) is fed back to the model to recover
 (`recoverToolFailures`, scoped to IDEMPOTENT tools via a stamped `ToolExecutionError.recoverable`; a governed /
 side-effecting failure stays fail-fast) plus a static secret-free `tool_failed` hint. **With 2.5.E the CLI
-Consolidation spine (2.5.A → C, E) is complete.** **2.5.D** (chat input ergonomics) is **implemented (PR #64,
-pending merge, 2026-07-03)** — the first experience-arm workstream: the pure-ergonomics half (`Ctrl+J` multiline,
+Consolidation spine (2.5.A → C, E) is complete.** **2.5.D** (chat input ergonomics) is ✅ **Done (PR #64, merged
+2026-07-03)** — the first experience-arm workstream: the pure-ergonomics half (`Ctrl+J` multiline,
 `↑/↓` history + `Ctrl+R` reverse-search, readline motions, a shared cursor-bearing `EditorState`) plus the two
 data-moving affordances behind [ADR-0061](../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)
 (**Accepted** after a two-round maintainer security review): **`@`-mention** (dir-navigable file completion that
@@ -177,7 +177,12 @@ passed the mandated opus + sonnet adversarial-review loop, and the ADR-0061 mand
 step-4/5 loops (14 findings fixed across the two `@`-mention rounds; on the `!`-shell the opus + security pass
 confirmed 0 defects after adversarial verification, and the sonnet second pass caught a HIGH — a `!`-command in
 flight left no host-visible busy signal, so a message typed mid-command could crash the session — now fixed with a
-`shellBusy` input gate, plus a LOW type-hygiene fix). **Next in the experience arm: 2.5.F / G.** See the
+`shellBusy` input gate, plus a LOW type-hygiene fix). A post-implementation comprehensive review then refined the
+`@`/`!` presentation to a **pending-attachment (chip) model** (an inline `@path` marker + a read-only `!`-output
+preview, expanded into the SAME UNTRUSTED nonce-fenced frame only at submit — byte-identical model context, a
+clean prompt), and two follow-up review passes hardened the `[chat]` allowlist resolution (exact + glob arrays are
+now a **coupled unit**) and fixed a Backspace regression (ink reports the Unix physical Backspace as `key.delete`);
+all recorded in the ADR-0061 "Refined at implementation" append. **Next in the experience arm: 2.5.F / G.** See the
 [Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md).
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks

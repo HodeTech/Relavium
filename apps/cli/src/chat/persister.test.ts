@@ -7,12 +7,13 @@ import {
   type DbClient,
   type SessionStore,
 } from '@relavium/db';
-import type { DurableContentPart } from '@relavium/shared';
+import type { AgentSessionRecord, DurableContentPart, SessionMessage } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
+import { buildDefaultChatAgent } from './default-agent.js';
 import { createSessionPersister } from './persister.js';
-import { buildChatSession } from './session-host.js';
+import { buildChatSession, buildResumedChatSession } from './session-host.js';
 import { scriptedResolver, stop, textTurn, unresolvedResolver } from './test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
 
@@ -21,6 +22,8 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   fsScope: undefined,
   maxTurns: undefined,
   maxMessages: undefined,
+  autoCompact: undefined,
+  compactThreshold: undefined,
   maxCostMicrocents: undefined,
   onExceed: undefined,
   allowedCommands: undefined,
@@ -381,5 +384,118 @@ describe('createSessionPersister', () => {
     expect(after?.session.totalInputTokens).toBe(before?.session.totalInputTokens);
     expect(after?.session.totalCostMicrocents).toBe(before?.session.totalCostMicrocents);
     expect(after?.messages).toHaveLength(2); // cancel does not touch the transcript
+  });
+
+  it('on /compact: writes a role-filtered boundary marker + resume honors it (ADR-0062)', async () => {
+    // 2 turns → durable rows seq 0..3 (u0,a1,u2,a3). A compact keeping the last exchange (kept=2) must map to
+    // droppedThroughSequence=1 (drop seq 0,1; keep 2,3) — the ROLE-FILTERED mapping, not raw arithmetic.
+    const { built, persister } = await setup(
+      scriptedResolver([textTurn('a1'), textTurn('a2'), textTurn('the summary text')]),
+    );
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('q1');
+    await built.session.sendMessage('q1');
+    persister.beginUserTurn('q2');
+    await built.session.sendMessage('q2');
+
+    const result = await built.session.compact('manual');
+    expect(result.kind).toBe('compacted');
+
+    const messages = store.loadMessages('sess-1');
+    const marker = messages.find((m) => m.role === 'system');
+    expect(marker?.compaction).toEqual({ droppedThroughSequence: 1 });
+    expect(marker?.content).toEqual([{ type: 'text', text: 'the summary text' }]);
+    // The full transcript is preserved (append-only — nothing deleted): 4 real rows + 1 marker.
+    expect(messages).toHaveLength(5);
+
+    // Resume honors the marker: only the kept exchange survives, with the summary as the preamble.
+    const full = store.loadFull('sess-1');
+    const state = reconstructSessionState(full!.session, full!.messages);
+    expect(state.contextPreamble).toBe('the summary text');
+    expect(state.messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q2' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'a2' }] },
+    ]);
+  });
+
+  it('resume→/compact maps the boundary over the ENGINE projection, not the raw rows (ADR-0062 step-3 fix)', async () => {
+    // A prior process left a durable transcript ENDING on a dangling `user` (an empty-text turn): u0,a1,u2,a3,u4.
+    const agent = buildDefaultChatAgent('claude-sonnet-4-6');
+    const iso = '2026-06-25T00:00:00.000Z';
+    const rec: AgentSessionRecord = {
+      id: 'sess-r',
+      agentSlug: agent.id,
+      agentSnapshot: agent,
+      context: { workingDir: '/workspace', fsScopeTier: 'sandboxed' },
+      status: 'ended',
+      totalInputTokens: 0,
+      totalOutputTokens: 0,
+      totalCostMicrocents: 0,
+      createdAt: iso,
+      updatedAt: iso,
+    };
+    const row = (seq: number, role: 'user' | 'assistant', text: string): SessionMessage => ({
+      id: `m${seq}`,
+      sessionId: 'sess-r',
+      sequenceNumber: seq,
+      role,
+      content: [{ type: 'text', text }],
+      timestamp: iso,
+    });
+    const messages = [
+      row(0, 'user', 'q0'),
+      row(1, 'assistant', 'a1'),
+      row(2, 'user', 'q2'),
+      row(3, 'assistant', 'a3'),
+      row(4, 'user', 'unanswered'), // a dangling user (empty-text turn) the engine rolls back on resume
+    ];
+    store.createSession(rec);
+    for (const m of messages) store.appendMessage(m);
+
+    // Resume: the engine's #messages = [u0,a1,u2,a3] (u4 rolled back). A second persister adopts + seeds its
+    // boundary-mapping from the SAME projection (excluding u4).
+    const built = await buildResumedChatSession({
+      chat: EMPTY_CHAT,
+      record: rec,
+      messages,
+      now: () => Date.parse(iso),
+      providers: scriptedResolver([textTurn('the summary')]),
+    });
+    let mid = 100;
+    const persister = createSessionPersister({
+      store,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now: () => Date.parse(iso),
+      uuid: () => `mk-${mid++}`,
+      initialSequenceNumber: built.nextSequenceNumber,
+    });
+    persister.start();
+
+    const result = await built.session.compact('manual'); // keeps the last exchange [u2,a3]
+    expect(result.kind).toBe('compacted');
+    const marker = store.loadMessages('sess-r').find((m) => m.role === 'system');
+    // Boundary = the last DROPPED real row = seq 1 (drop u0,a1; keep u2,a3). A bare ROLE-filter seed would count
+    // the rolled-back u4 and produce seq 2 — silently dropping u2, the exact data-loss the step-3 fix prevents.
+    expect(marker?.compaction).toEqual({ droppedThroughSequence: 1 });
+  });
+
+  it('on /trim: writes a summary-less boundary marker (no cost, ADR-0062)', async () => {
+    const { built, persister } = await setup(scriptedResolver([textTurn('a1'), textTurn('a2')]));
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('q1');
+    await built.session.sendMessage('q1');
+    persister.beginUserTurn('q2');
+    await built.session.sendMessage('q2');
+
+    const result = built.session.trimHistory(2); // keep the last exchange
+    expect(result.kind).toBe('trimmed');
+    const marker = store.loadMessages('sess-1').find((m) => m.role === 'system');
+    expect(marker?.compaction).toEqual({ droppedThroughSequence: 1 });
+    expect(marker?.content).toEqual([]); // a trim marker carries NO summary
   });
 });

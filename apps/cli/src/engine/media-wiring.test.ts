@@ -28,6 +28,8 @@ const EMPTY_CONFIG: ResolvedConfig = {
     fsScope: undefined,
     maxTurns: undefined,
     maxMessages: undefined,
+    autoCompact: undefined,
+    compactThreshold: undefined,
     maxCostMicrocents: undefined,
     onExceed: undefined,
     allowedCommands: undefined,

@@ -375,6 +375,7 @@ pattern). Cascades from `agent_sessions`.
 | `name` | TEXT | NULL |
 | `finish_reason` | TEXT | NULL |
 | `model_id` | TEXT | NULL REFERENCES `model_catalog(id)` — the model that produced an assistant turn (**fallback-aware**, so the transcript shows which model answered; NULL for non-assistant rows) |
+| `compaction_dropped_through_sequence` | INTEGER | NULL — ADR-0062: set ONLY on a `role='system'` compaction/trim boundary marker; the durable `sequence_number` through which older messages are superseded (resume drops rows at/below it). Additive nullable column (migration 0006); NULL on every normal transcript row |
 | `input_tokens` | INTEGER | NOT NULL DEFAULT 0 |
 | `output_tokens` | INTEGER | NOT NULL DEFAULT 0 |
 | `cost_microcents` | INTEGER | NOT NULL DEFAULT 0 |

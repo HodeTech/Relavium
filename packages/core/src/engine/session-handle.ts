@@ -30,7 +30,8 @@ import type { RunEventBus } from './event-bus.js';
 import { BoundedEventStream, DEFAULT_STREAM_CAPACITY } from './event-stream.js';
 
 /**
- * The fully-stamped events a session stream carries: the five `session:*` lifecycle events, the four
+ * The fully-stamped events a session stream carries: the `session:*` lifecycle/side events (started /
+ * turn_started / turn_completed / cancelled / exported / compacting / compacted / trimmed — ADR-0062), the four
  * dual-envelope in-turn events (`agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated`),
  * and the host-emitted `agent:approval_requested` (ADR-0057) — all carrying `sessionId`. The complete
  * session stream per sse-event-schema.md §"Session event namespace".
@@ -83,8 +84,8 @@ export function createSessionEventSink(bus: RunEventBus, sessionId: string): Ses
     // (agent-turn.ts), so a session never actually emits it. It is the one `NodeStreamEvent` arm with no
     // session-carrying schema member, so it could not validate on the bus. Drop it at this single
     // translation point — the contract boundary 1.W owns — keeping the session stream to its
-    // sse-event-schema.md contract (the five `session:*`, the four dual `agent:*`/`cost:updated`, and the
-    // host-emitted `agent:approval_requested` — ADR-0057).
+    // sse-event-schema.md contract (the `session:*` lifecycle/side events, the four dual
+    // `agent:*`/`cost:updated`, and the host-emitted `agent:approval_requested` — ADR-0057).
     if (event.type === 'agent:file_patch_proposed') {
       return;
     }

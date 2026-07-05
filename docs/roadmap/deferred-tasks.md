@@ -2,7 +2,7 @@
 
 > Status: Living
 
-> Last updated: 2026-06-28
+> Last updated: 2026-07-05
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -18,6 +18,21 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 
 ## Decisions needed (maintainer call)
+
+
+### Node.js runtime — dev/CI bump + supported-floor bump (the floor is now EOL)
+
+- [ ] **⚠ Supported floor (Node 20.12) is on an EOL Node line with no `better-sqlite3` prebuild
+  (2026-04-30).** As of 2026-07-05, Node 20 is EOL and `better-sqlite3` 12.x ships no prebuilt binary for
+  it, so a fresh `relavium` install on the *declared* floor already forces a C++ source build — partially
+  defeating [ADR-0021](../decisions/0021-node-sqlite-driver-better-sqlite3.md). **Two decoupled changes:**
+  **(A)** dev/CI bump `.nvmrc` 22 → 24 (Active LTS) — ~zero-risk, one line, no ADR, non-breaking; **(B)**
+  raise the supported floor 20.12 → `>=22` — a **SemVer-major** for published `relavium` that *restores*
+  prebuild coverage and unlocks ink 7 / `node:sqlite` / eslint 10 / vitest 5, and **reopens ADR-0021 → needs
+  a superseding ADR**. Recommendation: ship (A) now, do (B) in its own governed PR. **Full analysis, current
+  version table, per-dependency verdicts, migration plans, and open questions:
+  [phases/node-runtime-upgrade.md](phases/node-runtime-upgrade.md).** Out of scope for Phase 2.5.F.
+  *(package.json engines + .nvmrc + pnpm-workspace catalog @types/node + tech-stack.md; cross-phase)*
 
 
 ### Multimodal forward-obligations (carry the not-yet-coded pieces — see ADR-0031)

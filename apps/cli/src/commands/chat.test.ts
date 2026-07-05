@@ -41,6 +41,8 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   fsScope: undefined,
   maxTurns: undefined,
   maxMessages: undefined,
+  autoCompact: undefined,
+  compactThreshold: undefined,
   maxCostMicrocents: undefined,
   onExceed: undefined,
   allowedCommands: undefined,
@@ -61,6 +63,7 @@ function linesDriver(lines: readonly string[]): ChatDriver {
       await ctx.processLine(line);
       if (ctx.shouldStop()) break;
     }
+    return { kind: ctx.stopReason() }; // 'exit' for a normal /exit/EOF; 'clear' if a /clear ran (ADR-0062 §7)
   };
 }
 
@@ -301,6 +304,27 @@ describe('chatCommand', () => {
     expect(err()).toContain('/mode: takes a single mode value (got 2).'); // arity enforced, not silently dropped
   });
 
+  it('/compact summarises the conversation, reports the notice, and persists a boundary marker (ADR-0062)', async () => {
+    const { d, err, store, sessionId } = deps(
+      ['q1', 'q2', '/compact', '/exit'],
+      [textTurn('a1'), textTurn('a2'), textTurn('a concise summary')],
+    );
+    await chatCommand({ agent: undefined }, d);
+    const out = err();
+    expect(out).toContain('compacting: summarizing the conversation'); // the NON-interactive pre-notice (chat.ts, no live spinner)
+    expect(out).toContain('Compacted the conversation'); // the /compact result notice
+    expect(out).toContain('a concise summary'); // the summary is shown (inspectable, §7)
+    // The append-only marker was persisted (role:'system', role-filtered boundary), full transcript intact.
+    const marker = store.loadFull(sessionId)?.messages.find((m) => m.role === 'system');
+    expect(marker?.compaction).toEqual({ droppedThroughSequence: 1 });
+  });
+
+  it('/trim takes a single FREE positional value — rejects `/trim 2 3` (ADR-0062)', async () => {
+    const { d, err } = deps(['/trim 2 3', '/exit'], [textTurn('hi')]);
+    await chatCommand({ agent: undefined }, d);
+    expect(err()).toContain('/trim: takes a single n value (got 2).');
+  });
+
   it('/workflows reports a project-less cwd without crashing the REPL', async () => {
     const { d, err, store, sessionId } = deps(['/workflows', 'hello', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d); // the test cwd is a fresh temp dir ⇒ no .relavium/ project
@@ -395,6 +419,7 @@ describe('chatCommand', () => {
       statusAfterExport = store.loadFull(sessionId)?.session.status;
       await ctx.processLine('again'); // turn 2 still runs (the REPL continued)
       await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
     };
     await chatCommand({ agent: undefined }, { ...d, drive: probingDrive });
 
@@ -416,6 +441,7 @@ describe('chatCommand', () => {
       await ctx.processLine('/export'); // creates id-0.relavium.yaml
       await ctx.processLine('/export'); // must overwrite it (force:true), not error
       await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
     };
     await chatCommand({ agent: undefined }, { ...d, drive: twiceDrive });
     expect(existsSync(join(cwd, 'id-0.relavium.yaml'))).toBe(true);
@@ -430,6 +456,87 @@ describe('chatCommand', () => {
     await chatCommand({ agent: undefined }, d);
     expect(err()).toContain('export failed:'); // the catch arm reported the fault
     expect(store.loadFull(sessionId)?.session.status).toBe('ended'); // the REPL survived and ended cleanly
+  });
+
+  it('/clear ends the current session (persisted + resumable) and re-drives a FRESH one under a new id (ADR-0062 §7)', async () => {
+    const { d, store } = deps([], [textTurn('hi there')]);
+    let closeCount = 0;
+    const seen: string[] = [];
+    let call = 0;
+    // A driver that returns 'clear' the first time (what driveInk returns after an interactive /clear) then 'exit'.
+    const clearThenExit: ChatDriver = async (ctx) => {
+      seen.push(ctx.handle.sessionId); // record WHICH session this invocation drove
+      ctx.startSession();
+      if (call++ === 0) {
+        await ctx.processLine('hello'); // a real turn on the OLD session ⇒ persisted
+        return { kind: 'clear' };
+      }
+      await ctx.processLine('/exit');
+      return { kind: 'exit' };
+    };
+    const code = await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        openSessionStore: () => ({ store, db: client.db, close: () => (closeCount += 1) }),
+        drive: clearThenExit,
+      },
+    );
+
+    expect(code).toBe(EXIT_CODES.chatEnded);
+    expect(seen).toHaveLength(2); // drove the original session, THEN a fresh one after /clear
+    const [oldId, freshId] = seen;
+    expect(freshId).not.toBe(oldId); // a NEW sessionId — not a re-drive of the same session
+
+    // The OLD conversation is persisted + RESUMABLE ('ended') and kept its turn — the acceptance proof.
+    const oldRow = store.loadFull(oldId ?? '');
+    expect(oldRow?.session.status).toBe('ended');
+    expect(oldRow?.messages.length).toBeGreaterThan(0); // the 'hello' exchange survives for chat-resume
+
+    // The FRESH session is a clean slate: a distinct row, ZERO carried cost, no messages (only /exit ran).
+    const freshRow = store.loadFull(freshId ?? '');
+    expect(freshRow).toBeDefined();
+    expect(freshRow?.session.totalCostMicrocents).toBe(0);
+    expect(freshRow?.messages ?? []).toHaveLength(0);
+    // The fresh session rebinds the SAME agent (the reason `buildChatSession` gained an `agent` override) —
+    // not a re-resolved / different agent.
+    expect(freshRow?.session.agentSlug).toBe(oldRow?.session.agentSlug);
+
+    expect(closeCount).toBe(1); // the SHARED db handle closed exactly ONCE across the swap (not per session)
+  });
+
+  it('/clear whose FRESH build fails surfaces the resumable prior session and ends cleanly (ADR-0062 §7)', async () => {
+    const { d, err, store } = deps([], [textTurn('hi there')]);
+    let builds = 0;
+    // The initial session builds fine; the /clear rebuild REJECTS (e.g. a transient key/MCP fault).
+    const buildSession: typeof buildChatSession = (opts) => {
+      if (builds++ === 0) return buildChatSession(opts);
+      return Promise.reject(new Error('no API key for the fresh session'));
+    };
+    const driveClear: ChatDriver = (ctx) => {
+      ctx.startSession();
+      return Promise.resolve({ kind: 'clear' as const }); // request the swap; the rebuild then fails (no await needed)
+    };
+    const code = await chatCommand({ agent: undefined }, { ...d, buildSession, drive: driveClear });
+
+    expect(code).toBe(EXIT_CODES.chatEnded); // ends cleanly despite the failed rebuild (never hangs/loops)
+    expect(err()).toContain('could not start a fresh session after /clear'); // actionable hint on stderr
+    expect(err()).toContain('relavium chat-resume id-0'); // names the OLD, still-resumable conversation
+    expect(store.loadFull('id-0')?.session.status).toBe('ended'); // the prior session is persisted + resumable
+  });
+
+  it('/clear is REJECTED on a non-interactive surface — the session is not swapped (ADR-0049 gate)', async () => {
+    // The deps() harness is non-TTY (captureIo), so chatIsInteractive is false → clearSession's gate refuses
+    // /clear and NEVER sets clearRequested (a machine stream stays one session lifecycle). This drives the REAL
+    // processLine('/clear') → clearSession → stopReason() path the fabricated-outcome /clear tests bypass.
+    const { d, err, store, sessionId } = deps(['hello', '/clear', '/exit'], [textTurn('hi there')]);
+    const code = await chatCommand({ agent: undefined }, d);
+    expect(code).toBe(EXIT_CODES.chatEnded);
+    expect(err()).toContain('needs an interactive terminal'); // the actionable rejection hint
+    // NOT swapped: the ORIGINAL session id-0 kept its 'hello' exchange; no fresh session was built.
+    const rows = store.loadFull(sessionId);
+    expect(rows?.messages).toHaveLength(2); // user 'hello' + assistant 'hi there' — one session, not cleared
+    expect(rows?.session.status).toBe('ended');
   });
 
   it('chat --json drives the headless stream: stdout pure NDJSON, the unknown-slash diagnostic on stderr', async () => {
@@ -702,6 +809,36 @@ describe('chatResumeCommand (2.N)', () => {
     expect(full?.session.totalCostMicrocents).toBeGreaterThan(0);
   });
 
+  it('/clear from a resumed session rebinds the SNAPSHOT agent into a fresh session (ADR-0062 §7)', async () => {
+    const store = createSessionStore(client.db);
+    // Seed a session so 'id-0' has a persisted agent SNAPSHOT (no on-disk agentRef) to resume + rebind on /clear.
+    await chatCommand({ agent: undefined }, freshDeps(['hello', '/exit'], [textTurn('hi')], store));
+    const originalAgent = store.loadFull('id-0')?.session.agentSlug;
+    expect(originalAgent).toBeDefined();
+
+    const seen: string[] = [];
+    let call = 0;
+    const clearThenExit: ChatDriver = async (ctx) => {
+      seen.push(ctx.handle.sessionId);
+      ctx.startSession(); // no-op for the resumed session; starts the fresh one
+      if (call++ === 0) return { kind: 'clear' }; // the resumed session's /clear swap
+      await ctx.processLine('/exit');
+      return { kind: 'exit' };
+    };
+    const { d } = resumeDeps([], [], store);
+    expect(await chatResumeCommand({ sessionId: 'id-0' }, { ...d, drive: clearThenExit })).toBe(
+      EXIT_CODES.chatEnded,
+    );
+
+    expect(seen).toHaveLength(2); // drove the RESUMED session, then a fresh one after /clear
+    const [resumedId, freshId] = seen;
+    expect(resumedId).toBe('id-0'); // resume reuses the persisted id (no mint)
+    expect(freshId).not.toBe('id-0'); // /clear started a NEW session
+    // The fresh session rebinds the resumed session's SNAPSHOT agent — the whole reason the `agent` override
+    // exists (a resumed agent has no on-disk `agentRef` to re-resolve).
+    expect(store.loadFull(freshId ?? '')?.session.agentSlug).toBe(originalAgent);
+  });
+
   it('keeps sequence numbers monotonic across THREE resumes (no off-by-one)', async () => {
     const store = createSessionStore(client.db);
     await chatCommand({ agent: undefined }, freshDeps(['t1', '/exit'], [textTurn('a')], store));
@@ -776,7 +913,7 @@ describe('chatResumeCommand (2.N)', () => {
     const captureDrive: ChatDriver = (ctx) => {
       snapshot = ctx.store.getSnapshot();
       intro = ctx.intro;
-      return Promise.resolve();
+      return Promise.resolve({ kind: ctx.stopReason() });
     };
     const { d } = resumeDeps([], [], store);
     await chatResumeCommand({ sessionId: 'id-0' }, { ...d, drive: captureDrive });
@@ -801,7 +938,7 @@ describe('chatResumeCommand (2.N)', () => {
     let intro: string | undefined;
     const captureDrive: ChatDriver = (ctx) => {
       intro = ctx.intro;
-      return Promise.resolve();
+      return Promise.resolve({ kind: ctx.stopReason() });
     };
     const { d } = resumeDeps([], [], store);
     await chatResumeCommand({ sessionId: 'id-0' }, { ...d, drive: captureDrive });
@@ -831,7 +968,7 @@ describe('chatResumeCommand (2.N)', () => {
     let intro: string | undefined;
     const captureDrive: ChatDriver = (ctx) => {
       intro = ctx.intro;
-      return Promise.resolve();
+      return Promise.resolve({ kind: ctx.stopReason() });
     };
     const { d } = resumeDeps([], [], store);
     await chatResumeCommand({ sessionId: craftedId }, { ...d, drive: captureDrive });
@@ -935,6 +1072,7 @@ describe('drivePlain', () => {
         return Promise.resolve();
       },
       shouldStop: () => stop,
+      stopReason: () => 'exit' as const,
       handle: built.handle,
       store: createChatStore(false),
       io: { ...base, stdin },
@@ -1079,6 +1217,7 @@ describe('selectChatDriver', () => {
       startSession: () => undefined,
       processLine: () => Promise.resolve(),
       shouldStop: () => true,
+      stopReason: () => 'exit' as const,
       handle: built.handle,
       store: createChatStore(false),
       io: { ...base, stdoutIsTty, stdin },
@@ -1087,15 +1226,16 @@ describe('selectChatDriver', () => {
   }
 
   it('routes a non-TTY surface to the plain driver (resolves; ink would block)', async () => {
-    await expect(selectChatDriver(await ctxWith(false, false))).resolves.toBeUndefined();
+    // A driver now resolves to its outcome ({ kind: 'exit' } here — /clear is gated off-TTY, ADR-0062 §7).
+    await expect(selectChatDriver(await ctxWith(false, false))).resolves.toEqual({ kind: 'exit' });
   });
 
   it('routes --json to the headless json driver even on a TTY (resolves; ink would block)', async () => {
-    await expect(selectChatDriver(await ctxWith(true, true))).resolves.toBeUndefined();
+    await expect(selectChatDriver(await ctxWith(true, true))).resolves.toEqual({ kind: 'exit' });
   });
 
   it('routes a non-TTY + --json surface to the headless json driver', async () => {
-    await expect(selectChatDriver(await ctxWith(false, true))).resolves.toBeUndefined();
+    await expect(selectChatDriver(await ctxWith(false, true))).resolves.toEqual({ kind: 'exit' });
   });
 });
 
@@ -1127,6 +1267,7 @@ describe('driveJson (2.Q)', () => {
         await built.session.sendMessage(line);
       },
       shouldStop: () => stop,
+      stopReason: () => 'exit' as const,
       handle: built.handle,
       store: createChatStore(false),
       io: { ...base, stdin },

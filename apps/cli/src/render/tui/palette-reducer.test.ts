@@ -88,11 +88,12 @@ describe('stepPalette', () => {
     expect(step).toEqual({ kind: 'state', state: { query: 'e', index: 0 } });
   });
 
-  it('move re-clamps against the FILTERED count (query "ex" ⇒ 2 rows)', () => {
+  it('move re-clamps against the FILTERED count (query "ex" ⇒ exit, export, compact)', () => {
+    // "ex" matches `exit`/`export` by name + `compact` by description ("…reclaim context…") = 3 filtered rows.
     const down = stepPalette({ query: 'ex', index: 0 }, { kind: 'move', delta: 1 }, REPL_COMMANDS);
     expect(down).toEqual({ kind: 'state', state: { query: 'ex', index: 1 } });
-    const past = stepPalette({ query: 'ex', index: 1 }, { kind: 'move', delta: 1 }, REPL_COMMANDS);
-    expect(past).toEqual({ kind: 'state', state: { query: 'ex', index: 1 } }); // clamped at the last row
+    const past = stepPalette({ query: 'ex', index: 2 }, { kind: 'move', delta: 1 }, REPL_COMMANDS);
+    expect(past).toEqual({ kind: 'state', state: { query: 'ex', index: 2 } }); // clamped at the last row
   });
 
   it('select reads the highlighted FILTERED command', () => {

@@ -74,6 +74,62 @@ import type { SessionResumeState } from './session-resume.js';
 /** The default hard turn cap when {@link SessionDeps.maxTurns} is omitted — a finite DoS fail-safe. */
 export const DEFAULT_SESSION_MAX_TURNS = 50;
 
+/** The auto-compaction trigger fraction when {@link SessionDeps.compactThreshold} is omitted (ADR-0062). */
+export const DEFAULT_COMPACT_THRESHOLD = 0.8;
+
+/**
+ * The hard output cap on a compaction summary (ADR-0062) — passed as the summariser turn's `maxTokens` so the
+ * preamble a compaction produces is BOUNDED (an unbounded summary could defeat compaction). It also anchors
+ * the auto-compaction "projected floor" thrash guard: if `base system + kept exchange + this bound` would
+ * still exceed the budget, compaction cannot help and is skipped.
+ */
+export const COMPACTION_MAX_SUMMARY_TOKENS = 4096;
+
+/**
+ * The context-compaction summariser system prompt (ADR-0062) — AUTHORED text, never untrusted data (the
+ * conversation to summarise rides a user message, per the seam's system-is-authored rule). The invariant it
+ * encodes is the product surface of `/compact`: a summary that loses these facts fails the feature. The
+ * canonical description of what a summary preserves lives in chat-session.md §compaction; this is the prompt.
+ */
+export const COMPACTION_SYSTEM_PROMPT =
+  'You are compacting a conversation to fit a smaller context window. Produce a concise, faithful summary ' +
+  'of the conversation below that PRESERVES: open tasks and their current state; decisions taken and why; ' +
+  'concrete code identifiers, file paths, commands, and values in play; and the user’s stated preferences ' +
+  'and constraints. Omit pleasantries and redundant back-and-forth. Write it as notes for an assistant that ' +
+  'will continue the conversation — not as a message to the user. Output ONLY the summary.';
+
+/**
+ * The classified result of a {@link AgentSession.compact} (ADR-0062) — a discriminated union so the host renders
+ * each case explicitly. `compacted` carries the token deltas + the summary text (the host shows an inline
+ * notice + an expandable summary); `nothing_to_compact` means there was ≤1 exchange to fold; `failed` is a
+ * secret-free summarisation fault (the caller degrades to `/trim`); `cancelled` = an `Esc`/cancel mid-summary.
+ */
+export type CompactionResult =
+  | {
+      readonly kind: 'compacted';
+      readonly reason: 'manual' | 'auto-threshold';
+      readonly summary: string;
+      readonly keptMessageCount: number;
+      readonly tokensBefore: number;
+      readonly tokensAfter: number;
+      readonly summaryTokens: { readonly input: number; readonly output: number };
+    }
+  | { readonly kind: 'nothing_to_compact' }
+  | { readonly kind: 'failed'; readonly message: string }
+  | { readonly kind: 'cancelled' };
+
+/**
+ * The result of a {@link AgentSession.trimHistory} (ADR-0062) — a deterministic, no-LLM drop. `trimmed` carries
+ * the kept/dropped counts; `nothing_to_trim` means the history was already within the bound.
+ */
+export type TrimResult =
+  | {
+      readonly kind: 'trimmed';
+      readonly keptMessageCount: number;
+      readonly droppedMessageCount: number;
+    }
+  | { readonly kind: 'nothing_to_trim'; readonly messageCount: number };
+
 /** Distribute `Omit` across each union member so the discriminated union (and `.type` narrowing) survives. */
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
@@ -100,7 +156,7 @@ export type SessionApprovalStreamEvent = DistributiveOmit<
 >;
 
 /**
- * Everything a session emits, envelope-less: the five `session:*` lifecycle bodies, the four dual-envelope
+ * Everything a session emits, envelope-less: the `session:*` lifecycle/side bodies, the four dual-envelope
  * in-turn bodies the turn core produces (`agent:token` / `agent:tool_call` / `agent:tool_result` /
  * `cost:updated`), and the engine-emitted `agent:approval_requested` body (ADR-0057 EA5 — the registry's
  * `confirmDispatch` emits it via the dispatch context's `emitApprovalRequested`). The injected sink receives
@@ -183,6 +239,21 @@ export interface SessionDeps {
    * safe). No-op by default; the host wires it to `governor.updateCost`.
    */
   readonly updateCost?: (cumulativeCostMicrocents: number) => void;
+  /**
+   * Automatic context compaction (ADR-0062) — the surface-mapped form of `[chat].auto_compact`. When not
+   * `false` (absent ⇒ enabled), after a turn completes the session compacts if the turn's real input tokens
+   * exceed {@link SessionDeps.compactThreshold} × the serving model's context window. The host wires this from
+   * config; hardcoding it here would re-orphan the config field.
+   */
+  readonly autoCompact?: boolean;
+  /** The auto-compaction trigger fraction (`[chat].compact_threshold`; absent ⇒ {@link DEFAULT_COMPACT_THRESHOLD}). */
+  readonly compactThreshold?: number;
+  /**
+   * The history-trim bound (`[chat].max_messages`) the auto-compaction FAILURE path degrades to (ADR-0062): a
+   * summarisation fault falls back to a deterministic, zero-cost `/trim` to `maxMessages`. Absent ⇒ no
+   * fallback trim (the un-compacted turn proceeds; a genuine overflow surfaces via the error taxonomy).
+   */
+  readonly maxMessages?: number;
 }
 
 /** Construction params: a caller-minted `sessionId`, the bound agent + its `agentRef`, the context, deps. */
@@ -299,6 +370,19 @@ export class AgentSession {
   #userCommandSeq = 0;
   /** Memoized provider fallback plan (the agent binding is fixed for the session). */
   #plan: PlanResult | undefined;
+  /**
+   * The context-compaction preamble (ADR-0062) — the summary of the folded-away earlier conversation. When
+   * present, {@link #runTurn} prepends it (XML-wrapped) to the agent's system prompt, so every subsequent turn
+   * carries the compacted context. Set by {@link compact}, restored on {@link resume}, untouched by
+   * {@link trimHistory} (a trim drops older turns without summarising — a prior compact's summary survives).
+   */
+  #contextPreamble: string | undefined;
+  /**
+   * Set on a CLEAN turn success to the settled turn's model + real input tokens, so `sendMessage` can run the
+   * after-turn auto-compaction check (ADR-0062) AFTER the turn fully settles (status back to idle). Cleared
+   * once consumed. Never set on an error/abort/cancel/cap path — those never auto-compact.
+   */
+  #autoCompactPending: { readonly model: string; readonly inputTokens: number } | undefined;
 
   constructor(params: AgentSessionParams) {
     this.sessionId = params.sessionId;
@@ -324,6 +408,10 @@ export class AgentSession {
     session.#messages.push(...state.messages);
     session.#turnCount = state.turnCount;
     session.#cumulativeCostMicrocents = state.cumulativeCostMicrocents;
+    // ADR-0062: restore the compaction preamble so a compacted session stays compacted across resume AND a
+    // model reseat (which reuses this same reconstruct→resume path); without it, resume would silently
+    // re-expand the folded history into the (possibly smaller-window) new model.
+    session.#contextPreamble = state.contextPreamble;
     // Sync a host-wired budget governor with the carried-over spend so the FIRST resumed turn's pre-egress
     // check sees the real cumulative — not 0 — before any cost:updated fires (mirrors #onTurnEmit). Without
     // this, a resumed session's first turn could bypass a near-exhausted budget cap.
@@ -441,6 +529,10 @@ export class AgentSession {
         output: result.usage.output,
         model: result.model,
       });
+      // ADR-0062: arm the after-turn auto-compaction check for AFTER this turn fully settles (status back to
+      // idle in the `finally`). Set ONLY on this clean-success path — never on an error/abort/cancel/cap exit
+      // (those return before here or from the catch, so a failed turn never triggers compaction).
+      this.#autoCompactPending = { model: result.model, inputTokens: result.usage.input };
     } catch (err) {
       // The turn did not complete — roll the user message back so the transcript holds only COMPLETED
       // exchanges (no dangling user turn or two consecutive user messages) on EVERY non-completing exit,
@@ -467,6 +559,13 @@ export class AgentSession {
       this.#abortingTurn = false; // clear the per-turn EA7 marker (no stale abort leaks into the next turn)
       if (this.#statusIs('running')) this.#status = 'idle';
     }
+    // ADR-0062: run the after-turn auto-compaction check AFTER the turn has fully settled (status is now idle).
+    // Only the clean-success path armed `#autoCompactPending`; every non-completing exit returned earlier, so
+    // this line is unreachable on an error/abort/cancel/cap turn. Runs within `sendMessage`, so the host's
+    // "turn running" indicator naturally covers the summarisation moment and the caller awaits it.
+    const pending = this.#autoCompactPending;
+    this.#autoCompactPending = undefined;
+    if (pending !== undefined) await this.#maybeAutoCompact(pending.model, pending.inputTokens);
   }
 
   /**
@@ -694,6 +793,230 @@ export class AgentSession {
     }
   }
 
+  /**
+   * The per-turn system prompt: the agent's authored `system_prompt`, plus — when the session has been
+   * compacted (ADR-0062) — the compaction preamble, XML-wrapped for structured attention. The preamble is
+   * re-derived every turn (the system prompt is rebuilt per `sendMessage`), so setting `#contextPreamble` is
+   * reseat-free and applies from the next turn without a new instance.
+   */
+  #systemPrompt(): string {
+    const base = this.#agent.system_prompt;
+    if (this.#contextPreamble === undefined) return base;
+    return `${base}\n\n<earlier-conversation-summary>\n${this.#contextPreamble}\n</earlier-conversation-summary>`;
+  }
+
+  /**
+   * **Compact the working context** (ADR-0062, `/compact` + the auto-threshold path) — summarise the earlier
+   * conversation into the {@link #contextPreamble} via the session's OWN bound model, keep the last complete
+   * `user`+`assistant` exchange verbatim, and emit `session:compacted`. Append-only at the durable layer: the
+   * host writes a boundary marker on the event; the engine mutates only in-memory state. Callable only when
+   * started + idle. Aborting mid-summary (`cancel`/`abort`) yields `cancelled` and leaves the context
+   * unchanged. The summarisation's cost is accounted via `cost:updated` (the session budget), but its
+   * `agent:token`/tool events are NOT forwarded — the summary is internal context, never a transcript reply.
+   */
+  async compact(reason: 'manual' | 'auto-threshold' = 'manual'): Promise<CompactionResult> {
+    this.#assertSendable();
+    const split = splitFoldable(this.#messages);
+    if (split === undefined) return { kind: 'nothing_to_compact' }; // ≤1 exchange — nothing to fold
+    const plan = this.#resolvePlan();
+    if (!plan.ok) return { kind: 'failed', message: plan.message };
+
+    this.#status = 'running';
+    const abort = this.#deps.newAbortController();
+    this.#abort = abort;
+    try {
+      // Announce the compaction MOMENT (ADR-0062 §7) — emitted AFTER the nothing-to-fold / plan-resolution guards
+      // (so a no-op never flashes the indicator) so the host can drive a labeled "Summarizing…" indicator while the
+      // summariser LLM call runs, for both a manual `/compact` and an auto-threshold trigger. The terminal
+      // `session:compacted` (success) / `session:trimmed` auto-fallback (failure→trim) ends the moment; a manual
+      // failure emits no terminal, so the manual host clears the moment when `compact()` resolves. Inside the `try`
+      // (like the estimate below) so nothing escapes past the `finally` that resets `#status`.
+      this.#deps.emit({ type: 'session:compacting', reason });
+      // Inside the `try` so a provider whose optional `estimateTokens` throws cannot escape past the `finally`
+      // and leave `#status` wedged at 'running' (the seam method is provider-supplied).
+      const tokensBefore = this.#estimateContextTokens();
+      const result = await runAgentTurn({
+        system: COMPACTION_SYSTEM_PROMPT,
+        messages: [renderConversationToSummarise(this.#contextPreamble, split.foldable)],
+        planEntries: plan.entries,
+        chainCapabilities: this.#chainCapabilities(),
+        nodeId: this.#agentRef,
+        maxTokens: COMPACTION_MAX_SUMMARY_TOKENS, // bound the summary so compaction reliably reduces context
+        // Forward ONLY cost:updated (budget accounting, ADR-0028) — drop agent:token/tool events so the
+        // internal summary never streams into the chat transcript as a reply.
+        emit: (event) => {
+          if (event.type === 'cost:updated') this.#onTurnEmit(event);
+        },
+        signal: abort.signal,
+        registry: this.#deps.registry,
+        dispatchContext: this.#buildDispatchContext(new Set(), undefined),
+        limits: this.#limits,
+        ...(this.#deps.preEgress === undefined ? {} : { preEgress: this.#deps.preEgress }),
+      });
+      const summary = result.text.trim();
+      if (summary.length === 0) {
+        // The model returned no summary text — treat as a failure (the caller degrades to /trim) rather than
+        // installing an empty preamble that would silently lose the folded context.
+        return { kind: 'failed', message: 'the summarisation produced no summary text' };
+      }
+      this.#contextPreamble = summary;
+      this.#messages.length = 0;
+      this.#messages.push(...split.kept);
+      const tokensAfter = this.#estimateContextTokens();
+      this.#deps.emit({
+        type: 'session:compacted',
+        reason,
+        summary,
+        keptMessageCount: split.kept.length,
+        tokensBefore,
+        tokensAfter,
+        tokensUsed: { input: result.usage.input, output: result.usage.output },
+      });
+      return {
+        kind: 'compacted',
+        reason,
+        summary,
+        keptMessageCount: split.kept.length,
+        tokensBefore,
+        tokensAfter,
+        summaryTokens: { input: result.usage.input, output: result.usage.output },
+      };
+    } catch (err) {
+      return this.#classifyCompactionError(err); // may re-throw an unclassified error (surfaced loudly)
+    } finally {
+      this.#abort = undefined;
+      this.#abortingTurn = false;
+      if (this.#statusIs('running')) this.#status = 'idle';
+    }
+  }
+
+  /**
+   * Map a caught {@link compact} error to a {@link CompactionResult} (factored out to keep `compact` focused on
+   * the happy path, mirroring {@link #settleTurnError}). A cancel/abort (terminal `cancel()`, `ToolCancelledError`,
+   * an EA7 `Esc`, or a classified `cancelled`) ⇒ `cancelled`; a classified {@link AgentTurnError} or a pre-egress
+   * {@link BudgetPauseError} ⇒ `failed` (the caller degrades to `/trim`); a truly UNCLASSIFIED error is a bug and
+   * is RE-THROWN so it surfaces loudly (never silently masked as an ordinary `failed`).
+   */
+  #classifyCompactionError(err: unknown): CompactionResult {
+    if (this.#statusIs('cancelled') || err instanceof ToolCancelledError || this.#abortingTurn) {
+      return { kind: 'cancelled' };
+    }
+    if (err instanceof AgentTurnError) {
+      return err.code === 'cancelled'
+        ? { kind: 'cancelled' }
+        : { kind: 'failed', message: err.message };
+    }
+    if (err instanceof BudgetPauseError) return { kind: 'failed', message: err.message };
+    throw err;
+  }
+
+  /**
+   * **Deterministically trim history** to the last `maxMessages` messages (ADR-0062, `/trim`) — NO LLM call,
+   * no cost. The kept slice is snapped to start on a `user` message (an orphan leading `assistant` is dropped)
+   * so the next turn stays protocol-valid. Leaves {@link #contextPreamble} untouched (a trim drops older turns
+   * without summarising — a prior `/compact` summary survives). Emits `session:trimmed`; the host writes a
+   * summary-less boundary marker. Callable only when started + idle.
+   */
+  trimHistory(maxMessages: number, reason: 'manual' | 'auto-fallback' = 'manual'): TrimResult {
+    this.#assertSendable();
+    const kept = tailFromUserBoundary(this.#messages, maxMessages);
+    const dropped = this.#messages.length - kept.length;
+    if (dropped <= 0) return { kind: 'nothing_to_trim', messageCount: this.#messages.length };
+    this.#messages.length = 0;
+    this.#messages.push(...kept);
+    this.#deps.emit({
+      type: 'session:trimmed',
+      reason, // `auto-fallback` when the auto-compaction summariser failed → the view surfaces it (never silent)
+      keptMessageCount: kept.length,
+      droppedMessageCount: dropped,
+    });
+    return { kind: 'trimmed', keptMessageCount: kept.length, droppedMessageCount: dropped };
+  }
+
+  /**
+   * The after-turn auto-compaction gate (ADR-0062) — run from {@link sendMessage} AFTER a clean turn settles.
+   * Compacts when: auto-compaction is enabled; the SERVING model's context window is known; the turn's real
+   * input tokens exceed `threshold × window`; and there is more than one exchange to fold. Skips a provider
+   * that manages its own context. On a summarisation failure it degrades to a deterministic `/trim` to
+   * `maxMessages` (zero cost) rather than sending an ever-growing context. A no-op on every skip condition.
+   */
+  async #maybeAutoCompact(model: string, inputTokens: number): Promise<void> {
+    if (this.#deps.autoCompact === false) return;
+    if (this.#status !== 'idle') return; // a cancel/abort landed after the turn — do not compact
+    const plan = this.#resolvePlan();
+    if (!plan.ok) return;
+    // Consult the SERVING provider (the plan entry whose model actually produced this turn under fallback), not
+    // just the primary — so managesOwnContext / contextLimit reflect the model that would overflow NEXT. Both are
+    // OPTIONAL, provider-supplied seam methods; a throw from either must be a non-fatal SKIP (auto-compaction is
+    // best-effort) — never escape and reject `sendMessage` after the turn already completed (mirrors #estimateTokens).
+    let window: number | undefined;
+    try {
+      const serving =
+        plan.entries.find((entry) => entry.model === model)?.provider ?? plan.entries[0]?.provider;
+      if (serving?.managesOwnContext?.() === true) return; // the provider bounds context itself
+      window = serving?.contextLimit?.(model);
+    } catch {
+      return; // a throwing provider seam method → skip auto-compaction, don't crash the settled turn
+    }
+    if (window === undefined || window <= 0) return; // unrated/custom model — window unknown, skip auto-compaction
+    const budget = window * (this.#deps.compactThreshold ?? DEFAULT_COMPACT_THRESHOLD);
+    if (inputTokens <= budget) return; // under the trigger — nothing to do
+    const split = splitFoldable(this.#messages);
+    if (split === undefined) return; // ≤1 exchange — nothing earlier to fold (thrash guard a)
+    // ADR §5 thrash guard b: estimate the PROJECTED post-compaction floor — the BASE system prompt (NOT the
+    // current preamble, which the new summary REPLACES) + the kept exchange + the bounded summary the
+    // compaction will produce (`COMPACTION_MAX_SUMMARY_TOKENS`). If even that floor exceeds the budget,
+    // compaction cannot help (a single oversized turn / a huge system prompt) — skip and let the overflow
+    // surface via the error taxonomy, rather than paying a summariser call on every subsequent turn.
+    const projectedFloor =
+      this.#estimateTokens(this.#agent.system_prompt, split.kept) + COMPACTION_MAX_SUMMARY_TOKENS;
+    if (projectedFloor > budget) return;
+
+    let result: CompactionResult;
+    try {
+      result = await this.compact('auto-threshold');
+    } catch {
+      // `compact()` RE-THROWS an UNCLASSIFIED error (a bug) rather than returning `{kind:'failed'}`. Auto-compaction
+      // is BEST-EFFORT and runs AFTER the turn already completed (session:turn_completed emitted), so such a throw
+      // must NOT reject an otherwise-successful `sendMessage` — mirror the seam-method guard above. Treat it as a
+      // failure so the deterministic /trim fallback below still bounds the next turn (ADR §5).
+      result = { kind: 'failed', message: 'auto-compaction summariser threw' };
+    }
+    // Degrade a non-success — a `failed` summariser OR an EA7-aborted `cancelled` — to a deterministic, zero-cost
+    // /trim so the next turn is bounded (never a silent overflowing resend, ADR §5). A terminal `cancel()` leaves
+    // status !== 'idle', so this guard skips a dead session; a `compacted`/`nothing_to_compact` needs no fallback.
+    if (
+      (result.kind === 'failed' || result.kind === 'cancelled') &&
+      this.#deps.maxMessages !== undefined &&
+      this.#status === 'idle'
+    ) {
+      this.trimHistory(this.#deps.maxMessages, 'auto-fallback');
+    }
+  }
+
+  /** A rough token estimate of the current working context (system-with-preamble + messages) — for the
+   *  before/after deltas on `session:compacted`. Best-effort; 0 if absent. */
+  #estimateContextTokens(): number {
+    return this.#estimateTokens(this.#systemPrompt(), this.#messages);
+  }
+
+  /**
+   * Estimate the tokens of `system + messages` via the primary provider's optional seam estimator
+   * (provider-agnostic in practice). Best-effort and **never throws** — a provider-supplied `estimateTokens`
+   * that throws is swallowed to 0, so an estimate can never wedge `#status`, escape `compact()`'s `finally`,
+   * or crash the auto-compaction gate (the value only drives an observability delta / a thrash heuristic).
+   */
+  #estimateTokens(system: string, messages: readonly LlmMessage[]): number {
+    const plan = this.#resolvePlan();
+    if (!plan.ok) return 0;
+    try {
+      // Call inline (not via an extracted method reference) so `estimateTokens` stays bound to its provider.
+      return plan.entries[0]?.provider.estimateTokens?.({ system, messages }) ?? 0;
+    } catch {
+      return 0; // a best-effort estimate — never let a throwing seam estimator break compaction
+    }
+  }
+
   /** Build (memoized) the fallback plan and drive one turn through the shared core. */
   async #runTurn(
     signal: AbortSignalLike,
@@ -710,7 +1033,7 @@ export class AgentSession {
     // confirm floor stays authoritative). No policy / no filter ⇒ advertise every granted tool.
     const llmTools = buildLlmTools(this.#deps.tools, grantedToolIds, turnPolicy?.advertise);
     return runAgentTurn({
-      system: this.#agent.system_prompt,
+      system: this.#systemPrompt(),
       messages: this.#messages,
       ...(llmTools.length > 0 ? { tools: llmTools } : {}),
       planEntries: plan.entries,
@@ -805,6 +1128,89 @@ export class AgentSession {
       ...(deps.onAuthError === undefined ? {} : { onAuthError: deps.onAuthError }),
     };
   }
+}
+
+/**
+ * Split the working transcript (ADR-0062) into the earlier part to FOLD into the summary and the last COMPLETE
+ * `user`+`assistant` exchange to KEEP verbatim. The kept slice starts at the last `user` that is FOLLOWED by an
+ * `assistant` reply — so a trailing dangling `user` (a completed-but-empty-text turn leaves one; `sendMessage`
+ * only appends the assistant when `result.text` is non-empty) is never kept as a protocol-breaking LONE user;
+ * it rides along at the tail of a complete exchange. `undefined` when there is no earlier turn to fold before
+ * the last complete exchange (≤1 exchange — the `nothing_to_compact` / thrash-guard case).
+ */
+function splitFoldable(
+  messages: readonly LlmMessage[],
+): { readonly foldable: LlmMessage[]; readonly kept: LlmMessage[] } | undefined {
+  // O(N): the kept exchange starts at the last `user` that PRECEDES the last `assistant` (any such user has an
+  // assistant reply after it); a trailing dangling `user` rides along in the kept slice, never as a lone user.
+  let lastAssistant = -1;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === 'assistant') {
+      lastAssistant = i;
+      break;
+    }
+  }
+  let keptStart = -1;
+  for (let i = lastAssistant - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === 'user') {
+      keptStart = i;
+      break;
+    }
+  }
+  if (keptStart <= 0) return undefined; // no earlier turn precedes the last complete exchange
+  return { foldable: messages.slice(0, keptStart), kept: messages.slice(keptStart) };
+}
+
+/** The concatenated text of a cross-turn message (the transcript is text-only; a non-text part is skipped). */
+function messageText(message: LlmMessage): string {
+  return message.content.map((part) => (part.type === 'text' ? part.text : '')).join('');
+}
+
+/**
+ * Render the earlier conversation (an optional prior summary preamble + the foldable turns) as ONE `user`
+ * message for the summariser (ADR-0062). Untrusted conversation data rides the USER role — never the authored
+ * system prompt (the seam's system-is-authored rule). Including the prior preamble is what makes re-compaction
+ * fold summary-of-summary (the disclosed, accepted degradation).
+ */
+function renderConversationToSummarise(
+  preamble: string | undefined,
+  foldable: readonly LlmMessage[],
+): LlmMessage {
+  const parts: string[] = [];
+  if (preamble !== undefined) {
+    parts.push(
+      `Summary of the conversation so far:\n${preamble}`,
+      'The conversation then continued:',
+    );
+  }
+  for (const message of foldable) {
+    const text = messageText(message);
+    if (text.length === 0) continue;
+    parts.push(`${message.role === 'user' ? 'User' : 'Assistant'}: ${text}`);
+  }
+  return { role: 'user', content: [{ type: 'text', text: parts.join('\n\n') }] };
+}
+
+/**
+ * The last `maxKeep` messages, snapped to start on a `user` message so the trimmed transcript stays
+ * protocol-valid (an orphan leading `assistant` — from slicing mid-exchange — is dropped; ADR-0062). It never
+ * returns an EMPTY slice when there was history to keep: `maxKeep = 1` on a transcript ending in `assistant`
+ * would forward-snap to empty (WIPING the whole transcript) — instead it floors at the last complete exchange
+ * (the last `user` onward), so `/trim` keeps at least that exchange rather than silently erasing everything.
+ */
+function tailFromUserBoundary(messages: readonly LlmMessage[], maxKeep: number): LlmMessage[] {
+  if (maxKeep <= 0 || messages.length === 0) return [];
+  const windowStart = Math.max(0, messages.length - maxKeep);
+  // Forward-snap: the first `user` at/after the window start (drops an orphan leading `assistant`). O(N).
+  for (let i = windowStart; i < messages.length; i += 1) {
+    if (messages[i]?.role === 'user') return messages.slice(i);
+  }
+  // The window held no `user` (all trailing assistants) — floor at the LAST `user` so a `/trim` never wipes the
+  // transcript (the maxKeep=1-on-a-trailing-assistant case); an empty return only when there is no user at all.
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === 'user') return messages.slice(i);
+  }
+  return [];
 }
 
 /**

@@ -657,10 +657,64 @@ export const SessionExportedEventSchema = z.object({
 });
 
 /**
- * The five `session:*` lifecycle events. Within a turn a session also reuses the four dual-envelope events
+ * Context compaction STARTED ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) §7,
+ * amending [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) — the engine began
+ * summarising the working context (a `/compact` or an auto-threshold trigger) and the summariser LLM call is now in
+ * flight. Emitted at the START of `compact()` (after the nothing-to-fold / plan-resolution guards), and paired with
+ * a terminal `session:compacted` (success) / `session:trimmed` `auto-fallback` (summariser failed) / a silent
+ * settle (a manual `/compact` that failed — the host clears the moment when `compact()` resolves). The host drives a
+ * labeled "Summarizing…" moment off it so a paid, multi-second operation is never an apparently-frozen pause. It
+ * carries no counts — the token deltas ride the terminal `session:compacted`; it is purely the moment's START.
+ */
+export const SessionCompactingEventSchema = z.object({
+  type: z.literal('session:compacting'),
+  ...sessionBase,
+  reason: z.enum(['manual', 'auto-threshold']),
+});
+
+/**
+ * Context compaction applied ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)) —
+ * the engine summarised the earlier working context into `summary` and now feeds it as a system-prompt
+ * preamble; the host writes the append-only boundary marker row on this event. `keptMessageCount` is how many
+ * trailing in-memory messages the engine RETAINED verbatim (the host maps it to the durable
+ * `droppedThroughSequence`). `tokensUsed` is the summarization call's REAL usage — accounted to the session
+ * budget (ADR-0028); it is NOT a user turn and does not count against `max_turns`.
+ */
+export const SessionCompactedEventSchema = z.object({
+  type: z.literal('session:compacted'),
+  ...sessionBase,
+  reason: z.enum(['manual', 'auto-threshold']),
+  summary: nonEmptyString,
+  keptMessageCount: nonNegativeInt,
+  tokensBefore: nonNegativeInt,
+  tokensAfter: nonNegativeInt,
+  tokensUsed: TokensUsedSchema,
+});
+
+/**
+ * Deterministic history trim applied ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)) —
+ * the engine dropped older messages with NO LLM call (revives `[chat].max_messages`); the host writes a
+ * summary-less boundary marker. `keptMessageCount` (the host maps it to the durable boundary) +
+ * `droppedMessageCount` are the deterministic counts. No `tokensUsed` — a trim spends nothing.
+ */
+export const SessionTrimmedEventSchema = z.object({
+  type: z.literal('session:trimmed'),
+  ...sessionBase,
+  // `manual` = the `/trim` command (the surface notices its own result); `auto-fallback` = the deterministic
+  // trim the engine degrades to when an auto-compaction summariser FAILS — the view surfaces this one so the
+  // fallback is never silent (ADR-0062 §5). Symmetric with `session:compacted.reason`.
+  reason: z.enum(['manual', 'auto-fallback']),
+  keptMessageCount: nonNegativeInt,
+  droppedMessageCount: nonNegativeInt,
+});
+
+/**
+ * The `session:*` lifecycle events. Within a turn a session also reuses the four dual-envelope events
  * above (`agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated`) plus, on the chat
  * approval path, `agent:approval_requested` (ADR-0057) — all carried with `sessionId` — so the complete
- * session stream is this union plus those five (four when the approval regime is inactive).
+ * session stream is this union plus those. Adding an arm is additive; a consumer with a `default` arm
+ * ignores an unknown event forward-compatibly (there is no `assertNever` over this union — a new arm is a
+ * silent no-op for existing consumers until each opts in, ADR-0062).
  */
 export const SessionEventSchema = z.discriminatedUnion('type', [
   SessionStartedEventSchema,
@@ -668,8 +722,14 @@ export const SessionEventSchema = z.discriminatedUnion('type', [
   SessionTurnCompletedEventSchema,
   SessionCancelledEventSchema,
   SessionExportedEventSchema,
+  SessionCompactingEventSchema,
+  SessionCompactedEventSchema,
+  SessionTrimmedEventSchema,
 ]);
 export type SessionEvent = z.infer<typeof SessionEventSchema>;
+export type SessionCompactingEvent = z.infer<typeof SessionCompactingEventSchema>;
+export type SessionCompactedEvent = z.infer<typeof SessionCompactedEventSchema>;
+export type SessionTrimmedEvent = z.infer<typeof SessionTrimmedEventSchema>;
 
 /**
  * The combined event the shared `RunEventBus` carries — the `run:*`/`node:*` family **and** the

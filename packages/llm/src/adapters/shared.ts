@@ -1,7 +1,8 @@
 import { mediaSupportReason } from '../capabilities.js';
 import { UnsupportedCapabilityError } from '../errors.js';
+import { MODEL_PRICING, isCanonicalModelId } from '../pricing.js';
 import { LlmMessageSchema } from '../types.js';
-import type { CapabilityFlags, LlmRequest, ProviderId } from '../types.js';
+import type { CapabilityFlags, EstimateTokensInput, LlmRequest, ProviderId } from '../types.js';
 
 /**
  * Shared helpers for the provider adapters — the platform-coupled zone (`src/adapters/*`) that may
@@ -12,6 +13,61 @@ import type { CapabilityFlags, LlmRequest, ProviderId } from '../types.js';
 export function isAbortSignal(value: unknown): value is AbortSignal {
   return typeof AbortSignal !== 'undefined' && value instanceof AbortSignal;
 }
+
+// --- Context/token helpers (ADR-0062) — the shared defaults behind each adapter's contextLimit/estimateTokens.
+// Kept here so all three real adapters agree; an adapter MAY override either with a native tokenizer/limit.
+
+const CHARS_PER_TOKEN = 4; // a rough, provider-agnostic characters→tokens ratio
+const MESSAGE_ENVELOPE_CHARS = 8; // per-message role/framing overhead
+const NON_TEXT_PART_CHARS = 256; // nominal charge for a non-text part (media handle / tool payload)
+
+/**
+ * A provider-agnostic, character-based token estimate for a prospective request (ADR-0062) — the shared
+ * default behind each adapter's `estimateTokens`. Deliberately a heuristic: it is a **fallback** the engine
+ * uses only before any turn has reported real `usage` (which is authoritative), so its imprecision never
+ * drives a live budget or compaction decision. Never throws — an estimate always exists.
+ */
+export function estimateRequestTokens(input: EstimateTokensInput): number {
+  let chars = input.system.length;
+  for (const message of input.messages) {
+    chars += MESSAGE_ENVELOPE_CHARS;
+    for (const part of message.content) {
+      chars += part.type === 'text' ? part.text.length : NON_TEXT_PART_CHARS;
+    }
+  }
+  for (const tool of input.tools ?? []) {
+    chars += JSON.stringify(tool).length;
+  }
+  return Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
+/**
+ * The model's context window in tokens from the shared pricing catalog (ADR-0062) — the shared default behind
+ * each adapter's `contextLimit`. `undefined` for an unrated / custom-base-URL model (the engine then skips
+ * auto-compaction rather than guess a window). No cast: the canonical-id guard narrows the index.
+ */
+export function contextLimitFor(model: string): number | undefined {
+  return isCanonicalModelId(model) ? MODEL_PRICING[model].contextWindowTokens : undefined;
+}
+
+/**
+ * The default ADR-0062 context/token seam methods every adapter shares: `contextLimit` (the catalog window),
+ * `managesOwnContext` (`false` — no current provider bounds context itself), and `estimateTokens` (the heuristic
+ * fallback; real usage is authoritative). Spread `...CONTEXT_SEAM_DEFAULTS` into an adapter's provider object so
+ * the trio lives in one place; an adapter that later gains a native token-count endpoint layers a specialised
+ * `estimateTokens` on top (a same-key property AFTER the spread wins).
+ */
+export const CONTEXT_SEAM_DEFAULTS = {
+  contextLimit(model: string): number | undefined {
+    return contextLimitFor(model);
+  },
+  managesOwnContext(): boolean {
+    return false;
+  },
+  estimateTokens(input: EstimateTokensInput): number {
+    return estimateRequestTokens(input);
+  },
+};
 
 /**
  * The per-modality media capability gate (1.AE/1.AF). Every adapter calls this at `generate()`/`stream()`

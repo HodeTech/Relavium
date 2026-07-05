@@ -47,6 +47,7 @@ function ChatRegion(
     search: ReverseSearchState | undefined;
     mention: MentionState | undefined;
     shellBusy: boolean;
+    submitBusy: boolean;
     shellCommand: string | undefined;
     historyEntries: readonly string[];
     attachments: readonly PendingAttachment[];
@@ -63,7 +64,7 @@ function ChatRegion(
         tick={tick}
         color={color}
         editor={props.editor}
-        running={state.status === 'running' || props.shellBusy}
+        running={state.status === 'running' || props.shellBusy || props.submitBusy}
         mode={mode}
         approval={approval}
         attachments={props.attachments}
@@ -102,6 +103,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         search={state.search}
         mention={state.mention}
         shellBusy={state.shellBusy}
+        submitBusy={state.submitBusy}
         shellCommand={state.shellCommand}
         historyEntries={state.historyEntries}
         attachments={state.attachments}

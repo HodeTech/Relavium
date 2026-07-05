@@ -1,4 +1,5 @@
 import type { SessionStreamHandleEvent } from '@relavium/core';
+import { contextWindowForModel } from '@relavium/llm';
 import type { ErrorCode, SessionStopReason } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
@@ -77,6 +78,28 @@ function events() {
         : { error: { code: opts.error.code, message: opts.error.message, retryable: false } }),
     }),
     cancelled: (): SessionStreamHandleEvent => ({ type: 'session:cancelled', ...stamp() }),
+    compacted: (reason: 'manual' | 'auto-threshold'): SessionStreamHandleEvent => ({
+      type: 'session:compacted',
+      ...stamp(),
+      reason,
+      summary: 'we set up the project and the db',
+      keptMessageCount: 2,
+      tokensBefore: 14200,
+      tokensAfter: 900,
+      tokensUsed: { input: 14000, output: 340 },
+    }),
+    trimmed: (reason: 'manual' | 'auto-fallback'): SessionStreamHandleEvent => ({
+      type: 'session:trimmed',
+      ...stamp(),
+      reason,
+      keptMessageCount: 20,
+      droppedMessageCount: 8,
+    }),
+    compacting: (reason: 'manual' | 'auto-threshold'): SessionStreamHandleEvent => ({
+      type: 'session:compacting',
+      ...stamp(),
+      reason,
+    }),
   };
 }
 
@@ -516,5 +539,73 @@ describe('session-view-model', () => {
     expect(cancelled.status).toBe('ended');
     expect(cancelled.gapDetected).toBe(true); // a gap survives the terminal
     expect(cancelled.warnings.length).toBeGreaterThan(0);
+  });
+
+  it('surfaces an AUTOMATIC compaction as an inline notice, but not a manual /compact (ADR-0062)', () => {
+    const e = events();
+    // Auto-compaction (reason 'auto-threshold') → a concise ⟳ notice appended to the transcript, so it is
+    // never a silent context swap. Numbers only (no summary text) — the manual /compact shows the summary.
+    const auto = reduceSessionEvent(initialSessionViewState(), e.compacted('auto-threshold'));
+    const notice = auto.transcript.at(-1);
+    expect(notice?.role).toBe('notice');
+    expect(notice?.role === 'notice' && notice.text).toContain('auto-compacted');
+    expect(notice?.role === 'notice' && notice.text).toContain('14,200'); // grouped token deltas
+    expect(notice?.role === 'notice' && notice.text).not.toContain('we set up'); // summary NOT dumped inline
+
+    // A MANUAL /compact is noticed by the command itself, so the view makes NO transcript change here.
+    const manual = reduceSessionEvent(initialSessionViewState(), e.compacted('manual'));
+    expect(manual.transcript).toHaveLength(0);
+  });
+
+  it('surfaces the AUTO-FALLBACK trim as a notice, but not a manual /trim (ADR-0062)', () => {
+    const e = events();
+    // The deterministic trim the engine degrades to when auto-compaction's summariser fails must NOT be silent.
+    const fallback = reduceSessionEvent(initialSessionViewState(), e.trimmed('auto-fallback'));
+    const notice = fallback.transcript.at(-1);
+    expect(notice?.role).toBe('notice');
+    expect(notice?.role === 'notice' && notice.text).toContain('Auto-compaction summary failed');
+    // A MANUAL /trim is noticed by the command, so the view makes NO transcript change.
+    expect(
+      reduceSessionEvent(initialSessionViewState(), e.trimmed('manual')).transcript,
+    ).toHaveLength(0);
+  });
+
+  it('enters the compaction moment on session:compacting and clears it on the terminal (ADR-0062 §7)', () => {
+    const e = events();
+    const start = reduceAll([e.started()]);
+    expect(start.compacting).toBe(false);
+    const compacting = reduceSessionEvent(start, e.compacting('manual'));
+    expect(compacting.compacting).toBe(true);
+    // A cost:updated during the summary (the summariser's only forwarded event) PRESERVES the moment.
+    const midCost = reduceSessionEvent(compacting, e.cost(100));
+    expect(midCost.compacting).toBe(true);
+    // The terminal session:compacted ends the moment.
+    expect(reduceSessionEvent(midCost, e.compacted('manual')).compacting).toBe(false);
+    // An auto-fallback trim (summariser failed) also ends it.
+    expect(reduceSessionEvent(compacting, e.trimmed('auto-fallback')).compacting).toBe(false);
+  });
+
+  it('clears a stale compaction moment on the next turn (a manual /compact failure emits no terminal)', () => {
+    const e = events();
+    const stuck = reduceAll([e.started(), e.compacting('manual')]); // no terminal ⇒ still "compacting"
+    expect(stuck.compacting).toBe(true);
+    expect(reduceSessionEvent(stuck, e.turnStarted()).compacting).toBe(false); // the next turn resets it
+  });
+
+  it('tracks last-turn input tokens + the model context window for the footer fullness (ADR-0062 §7)', () => {
+    const e = events();
+    const start = reduceAll([e.started()]); // MODEL is a known-catalog id ⇒ a resolved window
+    expect(start.contextWindowTokens).toBe(contextWindowForModel('claude-sonnet-4-6'));
+    expect(start.contextWindowTokens).toBeGreaterThan(0);
+    expect(start.lastInputTokens).toBeUndefined(); // no turn yet ⇒ no numerator
+    const afterTurn = reduceAll([e.started(), e.turnStarted(), e.turnCompleted()]);
+    expect(afterTurn.lastInputTokens).toBe(10); // the turn's tokensUsed.input
+    expect(afterTurn.contextWindowTokens).toBe(contextWindowForModel('claude-sonnet-4-6'));
+  });
+
+  it('seeds the context window from a resume seed model (a resumed session never re-emits session:started)', () => {
+    const seeded = initialSessionViewState({ model: 'claude-sonnet-4-6', turnCount: 3 });
+    expect(seeded.contextWindowTokens).toBe(contextWindowForModel('claude-sonnet-4-6'));
+    expect(seeded.lastInputTokens).toBeUndefined(); // no per-turn seed until the first resumed turn completes
   });
 });

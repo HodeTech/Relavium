@@ -170,7 +170,13 @@ export const ChatConfigSchema = z
     // DISTINCT from `max_messages` (a history-**trim** threshold that silently continues) and the
     // within-turn `maxToolTurns` guard.
     max_turns: positiveInt.optional(),
-    max_messages: positiveInt.optional(), // session-history cap before older turns are trimmed
+    max_messages: positiveInt.optional(), // history-trim threshold — consumed by `/trim` + auto-compaction (ADR-0062)
+    // Automatic context compaction (ADR-0062). `auto_compact` gates the after-turn threshold check (absent ⇒
+    // enabled — the read site applies `?? true`); `compact_threshold` is the fraction of the model's context
+    // window that, once the last turn's real input tokens exceed it, triggers a compaction before the next
+    // turn (absent ⇒ 0.8). A fraction in (0, 1].
+    auto_compact: z.boolean().optional(),
+    compact_threshold: z.number().gt(0).lte(1).optional(),
     max_cost_microcents: nonNegativeInt.optional(), // 0/absent = unbounded; >0 = per-session cap
     on_exceed: z.enum(ON_EXCEED_ACTIONS).optional(),
   })

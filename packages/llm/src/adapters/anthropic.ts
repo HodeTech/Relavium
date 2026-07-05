@@ -20,7 +20,7 @@ import type {
   Usage,
 } from '../types.js';
 
-import { assertMediaCapabilities, isAbortSignal } from './shared.js';
+import { CONTEXT_SEAM_DEFAULTS, assertMediaCapabilities, isAbortSignal } from './shared.js';
 
 /**
  * The reference adapter over `@anthropic-ai/sdk` (1.C) — the seam fence's first real consumer and
@@ -737,6 +737,9 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
       assertMediaCapabilities(PROVIDER, SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       return streamChunks(createClient(key), req);
     },
+    // ADR-0062 context-compaction seam — the shared defaults (a native token-count endpoint could specialize
+    // estimateTokens later; real usage is authoritative, so the heuristic is only a pre-first-turn fallback).
+    ...CONTEXT_SEAM_DEFAULTS,
   };
 }
 

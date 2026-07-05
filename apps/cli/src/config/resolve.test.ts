@@ -73,6 +73,17 @@ describe('resolveConfig', () => {
     expect(resolved.onExceed).toBe('warn'); // only on project
   });
 
+  it('resolves [chat].auto_compact + compact_threshold (ADR-0062) last-writer-wins, per field', () => {
+    const workspace: ProjectConfig = { chat: { auto_compact: false, compact_threshold: 0.7 } };
+    const project: ProjectConfig = { chat: { compact_threshold: 0.9 } };
+    const resolved = resolveConfig({ workspace, project }).chat;
+    expect(resolved.compactThreshold).toBe(0.9); // project overrides workspace
+    expect(resolved.autoCompact).toBe(false); // falls back to workspace (project omits it)
+    // Absent everywhere ⇒ undefined ⇒ the engine defaults (enabled / 0.8) apply downstream.
+    expect(resolveConfig({}).chat.autoCompact).toBeUndefined();
+    expect(resolveConfig({}).chat.compactThreshold).toBeUndefined();
+  });
+
   it('resolves [chat] per field: a project block present but omitting a key falls through to workspace', () => {
     const workspace: ProjectConfig = { chat: { default_model: 'w-model', max_turns: 20 } };
     // project declares fs_scope only — max_turns/default_model must inherit from workspace per-field.

@@ -24,6 +24,7 @@ import type {
 } from '../types.js';
 
 import {
+  CONTEXT_SEAM_DEFAULTS,
   REASONING_ID,
   assertMediaCapabilities,
   assertNoStreamingMediaOutput,
@@ -1027,6 +1028,9 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
     ): Promise<MediaJobStatus> {
       return geminiPollVideo(transport, jobId, key, signal);
     },
+    // ADR-0062 context-compaction seam — the shared defaults (Gemini's countTokens endpoint could specialize
+    // estimateTokens later; real usage is authoritative, so the heuristic is only a pre-first-turn fallback).
+    ...CONTEXT_SEAM_DEFAULTS,
   };
 }
 

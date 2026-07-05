@@ -7,6 +7,8 @@
 > **Amended 2026-06-18 by [ADR-0042](0042-engine-media-storage-substrate-mediastore-deinline-retention.md).** A refinement, not a reversal: ADR-0042 adds an optional `mediaStore?` port to the `ExecutionHost` seam (1.AF) and pins where the async `deInlineMedia` pass sits relative to the single producer-side translation point this ADR defines (the gap-free `sequenceNumber` + persist-before-deliver chokepoint is unchanged). This ADR's substrate decisions stand.
 
 > **Amended 2026-06-20 by [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md).** A refinement, not a reversal: 1.AG adds a new non-terminal node **suspension state** (a parked async media job) + a durable `media_job:submitted` event, both settling through the single `#emitDurable` choke point this ADR defines (the gap-free `sequenceNumber` + persist-before-deliver are unchanged). This ADR's substrate decisions stand.
+>
+> **Amended 2026-07-05 by [ADR-0062](0062-context-compaction-and-cli-history-commands.md) §7.** A refinement, not a reversal: ADR-0062 §7 adds one additive session-lifecycle **side event** `session:compacting` (the "Summarizing…" moment START, paired with the existing terminal `session:compacted` / `session:trimmed`), emitted through the single producer-side translation point this ADR defines. The host writes **no** marker row on it (only on the terminals); the gap-free `sequenceNumber` + persist-before-deliver chokepoint is unchanged, and a `default`-arm consumer ignores the new arm forward-compatibly. This ADR's substrate decisions stand.
 
 ## Context
 

@@ -75,6 +75,11 @@ export interface ChatStoreController extends ChatStore {
   /** Set the active chat mode (Shift+Tab / `/mode`) — updates the footer; the caller also re-applies the turn
    *  policy via `applyChatMode`. Flushes immediately (a mode switch feels instant). */
   setMode: (mode: ChatMode) => void;
+  /** Clear the compaction "moment" flag (ADR-0062 §7). The host calls this when a MANUAL `/compact` settles — a
+   *  failed/cancelled `/compact` emits NO `session:compacted`/`session:trimmed`, so the flag (set by
+   *  `session:compacting`) would otherwise latch and a later slash command's busy render would show a stale
+   *  "Summarizing…" spinner. Idempotent (a successful compact already cleared it via `session:compacted`). */
+  clearCompacting: () => void;
   /**
    * The {@link ApprovalPrompt} the mode controller injects: publish a pending approval (flush → the REPL
    * renders the prompt) and RESOLVE when the input handler calls {@link answerApproval}. Honors the abort
@@ -157,6 +162,11 @@ export function createChatStore(color: boolean, seed?: SessionViewSeed): ChatSto
     summaryText: () => formatSessionFooter(state),
     setMode: (next) => {
       mode = next;
+      flush();
+    },
+    clearCompacting: () => {
+      if (!state.compacting) return; // idempotent — only repaint if the moment was actually latched
+      state = { ...state, compacting: false };
       flush();
     },
     requestApproval: (request, cacheable, signal) =>

@@ -219,3 +219,14 @@ export function isCanonicalModelId(value: string): value is CanonicalModelId {
 /** Every canonical model id, for diagnostics (e.g. the unknown-model error). */
 export const KNOWN_MODEL_IDS: readonly CanonicalModelId[] =
   Object.keys(MODEL_PRICING).filter(isCanonicalModelId);
+
+/**
+ * The context window (max tokens) for a canonical model id, or `undefined` for an unknown id (e.g. a custom
+ * base-URL model absent from the catalog). A light, pure host-side helper — the SAME catalog value the adapters'
+ * `LlmProvider.contextLimit` returns — for UI that needs the window WITHOUT going through the provider seam: the
+ * ADR-0062 §7 footer context-fullness indicator (last input tokens ÷ window). A custom-model `undefined` degrades
+ * the indicator to "not shown", exactly as it degrades auto-compaction (ADR-0062 §5).
+ */
+export function contextWindowForModel(model: string): number | undefined {
+  return isCanonicalModelId(model) ? MODEL_PRICING[model].contextWindowTokens : undefined;
+}

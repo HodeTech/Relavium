@@ -50,6 +50,8 @@ function makeSession(
   opts: {
     onProcess?: () => Promise<void>;
     stop?: () => boolean;
+    stopReason?: () => 'exit' | 'clear';
+    sessionId?: string;
     running?: boolean;
     store?: ReturnType<typeof createChatStore>;
     onAbort?: () => void;
@@ -69,11 +71,13 @@ function makeSession(
   const store = opts.store ?? (opts.running === true ? runningStore() : createChatStore(false));
   const session: HomeChatSession = {
     store,
+    sessionId: opts.sessionId ?? 'sess-fake',
     processLine: async (line) => {
       lines.push(line);
       if (opts.onProcess) await opts.onProcess();
     },
     shouldStop: opts.stop ?? (() => false),
+    stopReason: opts.stopReason ?? (() => 'exit'),
     ...(opts.onAbort === undefined ? {} : { onAbort: opts.onAbort }),
     ...(opts.onModeChange === undefined ? {} : { onModeChange: opts.onModeChange }),
     ...(opts.mentionReader === undefined ? {} : { mentionReader: opts.mentionReader }),
@@ -193,6 +197,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     type(c, 'beta');
     c.handleKey('', ENTER); // records 'beta' → history ['alpha','beta']
     expect(made.lines).toEqual(['alpha', 'beta']);
+    await flush(); // let the turn settle (ADR-0062: input is gated while a submit is in flight) before navigating
 
     c.handleKey('', { upArrow: true }); // Up-recall makes history navigation active (navIndex set)
     expect(c.getSnapshot().input.text).toBe('beta');
@@ -506,6 +511,37 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     ]);
   });
 
+  it('gates input WHILE a submit is in flight — a message typed during a turn/compaction never reaches sendMessage (ADR-0062)', async () => {
+    // A DEFERRED turn: processLine stays pending (the auto-compaction window — the engine is busy AFTER the view
+    // went idle — is exactly this state). A message typed then must be gated, not crash the session.
+    let resolveProcess: () => void = () => {};
+    const onError = vi.fn();
+    const made = makeSession({
+      onProcess: () => new Promise<void>((resolve) => (resolveProcess = resolve)),
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError,
+    });
+    type(c, 'first');
+    c.handleKey('', ENTER); // starts the chat + submits 'first' (processLine pending on onProcess)
+    await flush();
+    expect(c.getSnapshot().submitBusy).toBe(true); // the submit is in flight → input gated
+
+    type(c, 'typed during'); // the user, seeing an idle-looking prompt, types + Enter mid-submit
+    c.handleKey('', ENTER);
+    await flush();
+    expect(made.lines).toEqual(['first']); // GATED — the second line never reached processLine (no crash)
+    expect(onError).not.toHaveBeenCalled();
+
+    resolveProcess(); // the submit settles → busy clears, the session usable again
+    await flush();
+    expect(c.getSnapshot().submitBusy).toBe(false);
+  });
+
   it('`Esc` at an IDLE prompt discards pending attachments — but is a no-op while a `!`-command runs (2.5.D chip model)', async () => {
     // A deferred runner so we can hold a command in flight (busy) and settle it on demand.
     const resolvers: ((o: UserCommandOutcome) => void)[] = [];
@@ -772,13 +808,106 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(made.lines).toEqual([]);
   });
 
+  it('/clear (stopReason clear) swaps in a FRESH session, staying in chat and tearing the old down (ADR-0062 §7)', async () => {
+    // The first session's turn ends with stopReason 'clear' ⇒ clearChat builds a fresh session and STAYS in chat
+    // (distinct from endChat, which returns to the bare Home). A build-first swap: the old is torn down only after
+    // the fresh one is ready.
+    const old = makeSession({ stop: () => true, stopReason: () => 'clear', sessionId: 'old-1' });
+    const fresh = makeSession({ sessionId: 'fresh-2' });
+    let built = 0;
+    const startChat = vi.fn(() => Promise.resolve(built++ === 0 ? old.session : fresh.session));
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    // submit build → sendChatLine → processLine settle (stopReason 'clear') → clearChat build → swap; several
+    // microtask/macrotask hops, so flush generously until the swap settles.
+    for (let i = 0; i < 5; i++) await flush();
+
+    expect(startChat).toHaveBeenCalledTimes(2); // the original session + the /clear rebuild
+    expect(old.teardown).toHaveBeenCalledTimes(1); // the OLD session was torn down (its row marked 'ended')
+    const snap = c.getSnapshot();
+    expect(snap.mode).toBe('chat'); // STAYED in chat — no bare-Home flash (the /clear semantics)
+    expect(snap.session).toBe(fresh.session); // the FRESH session is now live
+    expect(snap.submitBusy).toBe(false); // the swap un-gated input
+  });
+
+  it('/clear keeps the OLD session live when the fresh build fails (build-first, no dead screen)', async () => {
+    const old = makeSession({ stop: () => true, stopReason: () => 'clear', sessionId: 'old-1' });
+    let built = 0;
+    // First startChat builds the original; the /clear rebuild REJECTS (e.g. a transient provider fault).
+    const startChat = vi.fn(() =>
+      built++ === 0 ? Promise.resolve(old.session) : Promise.reject(new Error('no key')),
+    );
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    for (let i = 0; i < 5; i++) await flush();
+
+    expect(startChat).toHaveBeenCalledTimes(2); // the rebuild was attempted
+    expect(old.teardown).not.toHaveBeenCalled(); // the OLD session was KEPT (never torn down on a failed rebuild)
+    const snap = c.getSnapshot();
+    expect(snap.mode).toBe('chat'); // still in the old chat, not the bare Home
+    expect(snap.session).toBe(old.session); // the old session stays live + resumable
+    expect(snap.submitBusy).toBe(false); // input un-gated so the user can keep going or /exit
+  });
+
+  it('teardownActive during a /clear swap reaps BOTH the old session AND the in-flight fresh build (ADR-0062 §7)', async () => {
+    // The widened teardownActive (no early return) must reap the "both live" window a /clear swap creates:
+    // state.session === old AND buildInFlight === the fresh build. Hold the fresh build UNRESOLVED to sit in it.
+    const old = makeSession({ stop: () => true, stopReason: () => 'clear', sessionId: 'old-1' });
+    const fresh = makeSession({ sessionId: 'fresh-2' });
+    let releaseFresh: (s: HomeChatSession) => void = () => undefined;
+    let built = 0;
+    const startChat = vi.fn(() =>
+      built++ === 0
+        ? Promise.resolve(old.session)
+        : new Promise<HomeChatSession>((r) => (releaseFresh = r)),
+    );
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    for (let i = 0; i < 4; i++) await flush(); // submit → sendChatLine → /clear settle → clearChat starts the (held) fresh build
+    expect(startChat).toHaveBeenCalledTimes(2); // both-live: old is state.session, the fresh build is in flight
+
+    // A signal mid-swap: teardownActive must reap BOTH. It awaits the in-flight build, so resolve it during.
+    const done = c.teardownActive();
+    releaseFresh(fresh.session);
+    await done;
+
+    expect(old.teardown).toHaveBeenCalled(); // the OLD live session reaped
+    expect(fresh.teardown).toHaveBeenCalled(); // AND the in-flight fresh build — neither MCP child orphaned
+  });
+
   it('a signal during an in-flight endChat awaits the GRACEFUL teardown and skips the closed-db read', async () => {
     let releaseTeardown: () => void = () => undefined;
     const teardown = vi.fn(() => new Promise<void>((r) => (releaseTeardown = r))); // a slow (graceful MCP) close
     const session: HomeChatSession = {
       store: createChatStore(false),
+      sessionId: 'sess-x',
       processLine: () => Promise.resolve(),
       shouldStop: () => true, // the first turn ends the session ⇒ endChat fires
+      stopReason: () => 'exit', // /exit-style end → endChat (not the /clear swap)
       teardown,
     };
     const startChat = vi.fn(() => Promise.resolve(session));
@@ -808,11 +937,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     const lines: string[] = [];
     const session: HomeChatSession = {
       store: createChatStore(false),
+      sessionId: 'sess-x',
       processLine: (line) => {
         lines.push(line);
         return Promise.resolve();
       },
       shouldStop: () => true,
+      stopReason: () => 'exit',
       teardown: vi.fn(() => new Promise<void>((r) => (releaseTeardown = r))),
     };
     const c = createHomeController({

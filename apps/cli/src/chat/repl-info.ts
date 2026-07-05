@@ -1,5 +1,7 @@
+import type { CompactionResult, TrimResult } from '@relavium/core';
+
 import type { CatalogEntry } from '../workflows/catalog.js';
-import { sanitizeInline } from '../render/tui/chat-projection.js';
+import { sanitizeInline, stripTerminalControls } from '../render/tui/chat-projection.js';
 import { formatCostUsd } from '../render/tui/format.js';
 
 /**
@@ -35,4 +37,61 @@ function catalogSection(heading: string, entries: readonly CatalogEntry[]): stri
     return `  ${slug}${entry.valid ? '' : ' (invalid)'}`;
   });
   return `${heading} (${entries.length}):\n${rows.join('\n')}`;
+}
+
+/** Group large integers with thin separators for a readable token count (`14200` → `14,200`). */
+function groupInt(n: number): string {
+  return Math.round(n).toLocaleString('en-US');
+}
+
+/** Max summary characters shown inline in the `/compact` notice — a long summary is previewed, not dumped
+ *  (the FULL summary is preserved in the durable transcript + `chat-export`; ADR-0062 §7). */
+const SUMMARY_PREVIEW_CHARS = 800;
+
+/**
+ * The `/compact` (and auto-compaction) result notice (ADR-0062) — the token deltas + the summariser spend, plus
+ * a preview of the summary (the lossy, paid operation is inspectable, §7). The summary is model output, so it is
+ * `stripTerminalControls`-sanitized (OSC-52 / control sequences removed) and length-capped before it reaches the
+ * terminal (a long summary is previewed with a pointer to the full text, never a scrollback-flooding dump).
+ */
+export function compactionNotice(result: CompactionResult): string {
+  switch (result.kind) {
+    case 'compacted': {
+      const summary = stripTerminalControls(result.summary);
+      const preview =
+        summary.length > SUMMARY_PREVIEW_CHARS
+          ? `${summary.slice(0, SUMMARY_PREVIEW_CHARS)}…\n(full summary kept in the session transcript — /export to read it all)`
+          : summary;
+      return (
+        `⟳ Compacted the conversation — ~${groupInt(result.tokensBefore)} → ~${groupInt(result.tokensAfter)} ` +
+        `context tokens (summary cost ${groupInt(result.summaryTokens.input)} in / ${groupInt(result.summaryTokens.output)} out).\n` +
+        `Summary:\n${preview}`
+      );
+    }
+    case 'nothing_to_compact':
+      return 'Nothing to compact — the conversation is already short.';
+    case 'failed':
+      return `Compaction failed: ${sanitizeInline(result.message)}. Try /trim for a deterministic bound.`;
+    case 'cancelled':
+      return 'Compaction cancelled — the conversation is unchanged.';
+  }
+}
+
+/** The `/trim` result notice (ADR-0062) — a deterministic drop, no LLM call. */
+export function trimNotice(result: TrimResult): string {
+  return result.kind === 'trimmed'
+    ? `✂ Trimmed ${result.droppedMessageCount} older message(s) — keeping the last ${result.keptMessageCount}.`
+    : `Nothing to trim — ${result.messageCount} message(s), already within the bound.`;
+}
+
+/**
+ * The `/clear` notice (ADR-0062 §7) — the current conversation has been ended (still persisted + resumable) and a
+ * fresh session started. It surfaces the OLD sessionId + the exact `relavium chat-resume` command so the prior
+ * conversation is DISCOVERABLE, not merely theoretically recoverable. The id is `sanitizeInline`-guarded: a
+ * `sessionId` is only schema-constrained to a non-empty string (the CLI mints a UUID, but `history.db` is shared
+ * with other surfaces), so a crafted stored id could otherwise smuggle a terminal escape into this notice.
+ */
+export function clearedNotice(oldSessionId: string): string {
+  const safeId = sanitizeInline(oldSessionId);
+  return `✨ Started a fresh conversation. The previous one is saved — resume it with \`relavium chat-resume ${safeId}\`.`;
 }
