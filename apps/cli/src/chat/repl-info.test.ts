@@ -92,7 +92,9 @@ describe('clearedNotice (ADR-0062 §7)', () => {
   it('sanitizes a crafted session id (no terminal escape reaches the TTY)', () => {
     // `history.db` is shared with other surfaces whose ids are only non-empty strings, so a row may carry control
     // bytes — the notice must strip them (parity with the resume banner), never let one inject into the terminal.
-    const notice = clearedNotice(`evil${String.fromCharCode(27)}]0;x${String.fromCharCode(7)}\nFAKE`);
+    const notice = clearedNotice(
+      `evil${String.fromCharCode(27)}]0;x${String.fromCharCode(7)}\nFAKE`,
+    );
     expect(notice).not.toContain(String.fromCharCode(27)); // no ESC survives
     expect(notice).not.toContain(String.fromCharCode(7)); // no BEL survives
     expect(notice).not.toContain('\n'); // the smuggled newline is collapsed — the notice stays one line

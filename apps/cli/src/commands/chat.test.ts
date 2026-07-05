@@ -826,9 +826,9 @@ describe('chatResumeCommand (2.N)', () => {
       return { kind: 'exit' };
     };
     const { d } = resumeDeps([], [], store);
-    expect(
-      await chatResumeCommand({ sessionId: 'id-0' }, { ...d, drive: clearThenExit }),
-    ).toBe(EXIT_CODES.chatEnded);
+    expect(await chatResumeCommand({ sessionId: 'id-0' }, { ...d, drive: clearThenExit })).toBe(
+      EXIT_CODES.chatEnded,
+    );
 
     expect(seen).toHaveLength(2); // drove the RESUMED session, then a fresh one after /clear
     const [resumedId, freshId] = seen;
