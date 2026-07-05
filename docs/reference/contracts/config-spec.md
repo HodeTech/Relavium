@@ -97,9 +97,11 @@ stdio-only fields (`command`/`args`/`env`) are rejected on a network registratio
 > over the target, then `fsync` the parent directory so the rename itself survives a crash) and it both
 > re-validates the merged object against the strict `GlobalConfigSchema` AND re-parses the emitted TOML back
 > through the schema before the rename — so "the file always re-parses on the next load" is a **verified**
-> guarantee, and on any failure `config.toml` is left untouched. The documented tradeoff: re-serialization
-> **drops comments and key ordering** in `config.toml` — the global file is a preference store, not a
-> hand-curated artifact (project/workspace files are never written by the tool).
+> guarantee, and on any failure `config.toml` is left untouched. Two documented tradeoffs: re-serialization
+> **drops comments and key ordering** in `config.toml` (the global file is a preference store, not a
+> hand-curated artifact — project/workspace files are never written by the tool); and there is **no lock**, so
+> two concurrent writes resolve **last-writer-wins** (a lost update, never a torn file) — acceptable for a
+> single-user, rarely-written preference store.
 
 ## `project.toml` / `workspace.toml` (project) — keys
 

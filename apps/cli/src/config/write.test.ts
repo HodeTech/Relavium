@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -137,6 +146,26 @@ describe('writeGlobalDefaultModel', () => {
         { name: 'web', transport: 'http', url: 'https://example.com/mcp' },
       ],
     });
+  });
+
+  it('refuses to write (throws, never creates the file) when the model serializes to non-round-tripping TOML', () => {
+    // A lone UTF-16 surrogate is a valid JS string (so it passes schema validation) but stringifies to an
+    // invalid TOML escape that parseToml rejects. The round-trip self-check (ADR-0063 §3) must catch it BEFORE
+    // the atomic rename, so config.toml is never created. This is the exact guarantee the hardening added —
+    // WITHOUT this test, silently dropping the verifyRoundTrips() call would still pass the whole suite.
+    let thrown: unknown;
+    try {
+      writeGlobalDefaultModel('sentinel:\uD800:model', home);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(ConfigError);
+    if (thrown instanceof ConfigError) {
+      expect(thrown.message).not.toContain('sentinel:'); // value-free message (no echoed model value)
+    }
+    // The atomic contract: a rejected write leaves no target and no orphan temp.
+    expect(existsSync(globalConfigPath(home))).toBe(false);
+    expect(readdirSync(globalDir(home)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 
   it('throws a ConfigError rather than clobbering a malformed existing config', () => {

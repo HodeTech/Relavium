@@ -36,6 +36,18 @@ import { ensureGlobalConfigDir, globalConfigDir } from './paths.js';
  * 4. **No new dependency.** `smol-toml` is the ADR-0048 parser/serializer already in use; re-serialization drops
  *    comments/ordering (the documented ADR-0063 tradeoff for the global preference file — project/workspace files
  *    are never written by the tool).
+ *
+ * Two documented invariants / tradeoffs:
+ * - **The error MESSAGE is the enforced value-free surface — not the `cause`.** A failure attaches the raw
+ *   `ZodError`/`TomlError` as `cause` (as the sibling loader does) for debuggability. That cause *can* embed the
+ *   attempted value, but the enforced surface is the value-free `ConfigError` **message** ({@link formatZodError}
+ *   / static strings). No current renderer prints `.cause` — they print `err.stack`, which excludes it — so no
+ *   value leaks today. A future verbose renderer MUST NOT dump `.cause` (e.g. `util.inspect(err, { depth: null })`)
+ *   without re-establishing the value-free property here (mirrors the S5 `model-refresh.ts` "never read cause"
+ *   stance, kept as a documented invariant here rather than dropping the debug-useful cause the loader also keeps).
+ * - **Last-writer-wins under concurrent writes.** There is no lock/CAS: two racing invocations each read then
+ *   rename, so the later rename silently supersedes the earlier edit (a lost update, never a torn or invalid
+ *   file). Accepted for a single-user, rarely-written preference store; a future multi-writer path would need a lock.
  */
 
 /**
@@ -45,7 +57,18 @@ import { ensureGlobalConfigDir, globalConfigDir } from './paths.js';
  * verifies the serialized text round-trips, and writes atomically. `home` is injectable for tests.
  */
 export function writeGlobalDefaultModel(model: string, home: string = homedir()): void {
-  const dir = ensureGlobalConfigDir(home); // `~/.relavium/` (created `0700`)
+  let dir: string;
+  try {
+    dir = ensureGlobalConfigDir(home); // `~/.relavium/` (created `0700`)
+  } catch (err) {
+    // Keep the module's "every failure is a typed, file-attributed ConfigError" contract even for the
+    // directory-create step (e.g. EACCES on a read-only home, ENOSPC) — never let a raw fs Error escape.
+    throw new ConfigError(
+      globalConfigPath(home),
+      'could not be written — its directory could not be created.',
+      { cause: err },
+    );
+  }
   const target = join(dir, 'config.toml');
 
   // Read the EXISTING config through the same validating loader (so we merge onto known-good data and preserve
@@ -105,8 +128,11 @@ function configWriteError(target: string, error: ZodError): ConfigError {
  * target, then a best-effort parent-directory `fsync` so the rename (the directory-entry swap) is durable too. On
  * any failure the temp is best-effort removed and a typed {@link ConfigError} is thrown.
  *
- * Exported for the fault-injection test that drives the catch path with a real failing rename (a `target` that is
- * an existing directory ⇒ `EISDIR`), verifying the temp is cleaned up and the fd is not leaked.
+ * Exported ONLY as a test seam — for the fault-injection test that drives the catch path with a real failing
+ * rename (a `target` that is an existing directory ⇒ `EISDIR`), verifying the temp is cleaned up and the fd is
+ * not leaked. It is NOT part of the writer's public contract: it is a generic "replace this path with this text"
+ * primitive with no schema, so the secret-incapability guarantee is a property of {@link writeGlobalDefaultModel}
+ * (the typed setter), never of this helper. Do not call it to write arbitrary content.
  */
 export function writeFileAtomic(dir: string, target: string, text: string): void {
   const tmp = join(dir, `config.toml.${randomUUID()}.tmp`);
