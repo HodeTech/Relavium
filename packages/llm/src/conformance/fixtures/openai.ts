@@ -177,10 +177,14 @@ const modelsList = JSON.stringify({
 });
 
 // A 401 on the `/v1/models` list (ADR-0064 §3) — the SDK raises an AuthenticationError the adapter
-// classifies to `auth`; boundedListModels re-wraps it key-redacted + cause-stripped.
+// classifies to `auth`; boundedListModels re-wraps it key-redacted + cause-stripped. The body `message`
+// deliberately embeds the conformance API key (`conformance-test-key`) so the shared spec's
+// `.not.toContain(KEY)` assertion actually EXERCISES `redactKey`: the OpenAI SDK folds the body message into
+// `APIError.message` (`${status} ${error.message}`), the classifier surfaces it as `llmError.message`, and
+// only `redactKey` in `boundedListModels` masks it — a vacuous key-free body would pass the assert trivially.
 const modelsListAuthError = JSON.stringify({
   error: {
-    message: 'Incorrect API key provided',
+    message: 'Incorrect API key provided: conformance-test-key',
     type: 'invalid_request_error',
     code: 'invalid_api_key',
   },

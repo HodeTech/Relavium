@@ -228,18 +228,22 @@ export function toModelListing(candidate: Record<string, unknown>): ModelListing
 /**
  * The ADR-0064 §8 systemic-drift guard, called by each adapter's `collect` AFTER it has walked every page.
  * It THROWS a classified `bad_request` {@link LlmProviderError} **iff** the vendor returned rows
- * (`rawCount > 0`) but NONE yielded a usable model id (`kept === 0`) AND at least one was dropped for a
- * broken shape (`droppedForShape > 0`) — i.e. a breaking id-removal / every-row-shape-broken change. The
- * throw (raised INSIDE the `collect` closure so {@link boundedListModels} redacts + cause-strips it) lets
- * §5's per-provider refresh isolation show "last-known", not a silently-empty picker. Two non-throw cases:
- * a well-formed EMPTY list (`rawCount === 0`) returns normally, and a list whose rows were all
- * CONTENT-filtered but shape-valid (`droppedForShape === 0`) returns a genuine `[]`.
+ * (`rawCount > 0`) but NONE yielded a usable model id (`kept === 0`) AND **every** row was dropped for a
+ * broken shape (`droppedForShape === rawCount`, i.e. none was merely content-filtered) — a breaking
+ * id-removal / every-row-shape-broken change. The throw (raised INSIDE the `collect` closure so
+ * {@link boundedListModels} redacts + cause-strips it) lets §5's per-provider refresh isolation show
+ * "last-known", not a silently-empty picker. Non-throw cases (all return a genuine `[]`): a well-formed EMPTY
+ * list (`rawCount === 0`); a list whose rows were all CONTENT-filtered but shape-valid (`droppedForShape === 0`);
+ * and — the case a `droppedForShape > 0` guard would wrongly trip — a list empty because of content-filtering
+ * PLUS one unrelated shape-broken row (`0 < droppedForShape < rawCount`), where the emptiness is explained by
+ * the filter, not a systemic break. (When `kept === 0`, no row was deduped — dedup needs a kept row — so
+ * `droppedForShape === rawCount` is exactly "no row survived content-filtering", the true drift signal.)
  */
 export function assertListModelsShape(
   provider: ProviderId,
   counts: { rawCount: number; kept: number; droppedForShape: number },
 ): void {
-  if (counts.rawCount > 0 && counts.kept === 0 && counts.droppedForShape > 0) {
+  if (counts.rawCount > 0 && counts.kept === 0 && counts.droppedForShape === counts.rawCount) {
     throw new LlmProviderError(
       makeLlmError({
         provider,
@@ -313,7 +317,7 @@ export async function boundedListModels(params: {
         provider,
         kind: base.kind,
         message: redactKey(base.message, key),
-        ...(base.code !== undefined ? { code: base.code } : {}),
+        ...(base.code !== undefined ? { code: redactKey(base.code, key) } : {}),
         ...(base.status !== undefined ? { status: base.status } : {}),
       }),
     );

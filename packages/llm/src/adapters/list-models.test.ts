@@ -4,8 +4,13 @@ import { LlmProviderError, makeLlmError } from '../llm-error.js';
 import type { ModelListing } from '../types.js';
 
 import { createAnthropicAdapter, mapAnthropicModel } from './anthropic.js';
-import { mapGeminiModel } from './gemini.js';
-import { keepOpenAiModelId, pricedModelIdsFor } from './openai.js';
+import {
+  createGeminiAdapter,
+  mapGeminiModel,
+  type GeminiModelInfo,
+  type GeminiTransport,
+} from './gemini.js';
+import { createOpenAiAdapter, keepOpenAiModelId, pricedModelIdsFor } from './openai.js';
 import {
   assertListModelsShape,
   boundedListModels,
@@ -203,8 +208,9 @@ describe('Anthropic listModels — pagination', () => {
 });
 
 describe('assertListModelsShape (ADR-0064 §8)', () => {
-  it('throws a bad_request LlmProviderError only when rows exist, none are kept, and some broke shape', () => {
-    // The one throwing case: a systemic id-removal (every row shape-broken).
+  it('throws a bad_request LlmProviderError only when rows exist, none are kept, and EVERY row broke shape', () => {
+    // The one throwing case: a systemic id-removal where EVERY row was shape-broken
+    // (droppedForShape === rawCount) — none was merely content-filtered.
     let caught: unknown;
     try {
       assertListModelsShape('anthropic', { rawCount: 2, kept: 0, droppedForShape: 2 });
@@ -218,7 +224,7 @@ describe('assertListModelsShape (ADR-0064 §8)', () => {
     }
   });
 
-  it('returns normally for an empty list, an all-content-filtered list, and a partial-drop list', () => {
+  it('returns normally for an empty list, an all-content-filtered list, a partial-drop list, and the MIXED case', () => {
     // A well-formed EMPTY list (no rows) is a genuine [] — never a throw.
     expect(() =>
       assertListModelsShape('openai', { rawCount: 0, kept: 0, droppedForShape: 0 }),
@@ -230,6 +236,13 @@ describe('assertListModelsShape (ADR-0064 §8)', () => {
     // At least one row kept — never a throw, whatever was dropped.
     expect(() =>
       assertListModelsShape('gemini', { rawCount: 3, kept: 1, droppedForShape: 2 }),
+    ).not.toThrow();
+    // MIXED (the guard-fix regression, ADR-0064 §8): empty because of content-filtering PLUS one unrelated
+    // shape-broken row (0 < droppedForShape < rawCount, kept 0) — the emptiness is explained by the filter,
+    // not a systemic id-removal, so it must NOT throw. The old `droppedForShape > 0` guard wrongly tripped
+    // here, producing a false bad_request; `droppedForShape === rawCount` is the correct drift signal.
+    expect(() =>
+      assertListModelsShape('openai', { rawCount: 3, kept: 0, droppedForShape: 1 }),
     ).not.toThrow();
   });
 });
@@ -292,6 +305,213 @@ describe('listModels — per-row drop + systemic drift (ADR-0064 §8, FIX C/D)',
     const adapter = createAnthropicAdapter({ fetch: anthropicModelsFetch([]), maxRetries: 0 });
     const listings = await (adapter.listModels?.('key') ?? Promise.resolve([]));
     expect(listings).toEqual([]);
+  });
+});
+
+// --- Cross-adapter end-to-end §8 coverage (OpenAI/DeepSeek fetch-replay + a hand-built Gemini transport),
+//     mirroring the Anthropic FIX C/D tests above through the other two providers. --------------------------
+
+/** Serve one 200 JSON response through an injected fetch — used for BOTH a well-formed page and a
+ *  structurally-broken top-level envelope (T5), so the body is an arbitrary value. */
+function jsonResponseFetch(body: unknown): () => Promise<Response> {
+  const text = JSON.stringify(body);
+  return () =>
+    Promise.resolve(
+      new Response(text, { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+}
+
+/** A single-page OpenAI/DeepSeek `/v1/models` body from raw row objects (a row may be `null` / id-less to
+ *  exercise the per-row drop + the §8 tally). Serves one 200 response through the adapter's injected fetch. */
+function openaiModelsFetch(rows: readonly unknown[]): () => Promise<Response> {
+  return jsonResponseFetch({ object: 'list', data: rows });
+}
+
+/** A GeminiTransport whose `listModels` resolves the given (deliberately-malformed) rows; every other arm
+ *  rejects (unused by these list tests). `rows` is typed `unknown` so a test can hand it a non-array (T5) or
+ *  an array carrying a `null` row (T3) — the adapter collect's own isRecord/array guards are what's exercised.
+ *  The transport contract is `GeminiModelInfo[]`, so a single controlled cast crosses the type on purpose. */
+function geminiListTransport(rows: unknown): GeminiTransport {
+  return {
+    generate: () => Promise.reject(new Error('unused')),
+    stream: () => Promise.reject(new Error('unused')),
+    generateImages: () => Promise.reject(new Error('unused')),
+    generateVideos: () => Promise.reject(new Error('unused')),
+    pollVideo: () => Promise.reject(new Error('unused')),
+    listModels: () => Promise.resolve(rows as GeminiModelInfo[]),
+  };
+}
+
+/** Assert the ONLY two acceptable outcomes for a malformed top-level envelope (ADR-0064 §8, T5): a genuine
+ *  `[]`, or a rejection that is a CLASSIFIED `LlmProviderError` — never a raw TypeError, an unclassified
+ *  throw, or a hang (a hang trips vitest's per-test timeout). */
+async function expectEmptyOrClassifiedReject(run: () => Promise<ModelListing[]>): Promise<void> {
+  let result: ModelListing[] | undefined;
+  let caught: unknown;
+  try {
+    result = await run();
+  } catch (err) {
+    caught = err;
+  }
+  if (caught !== undefined) {
+    expect(caught).toBeInstanceOf(LlmProviderError);
+  } else {
+    expect(result).toEqual([]);
+  }
+}
+
+describe('listModels — MIXED content-filter + one shape-broken row resolves [] (ADR-0064 §8, guard-fix)', () => {
+  it('OpenAI: two content-filtered valid rows + one id-less row → resolves [], never a false bad_request', async () => {
+    // The EXACT scenario the old `droppedForShape > 0` guard turned into a false bad_request: the list is
+    // empty because both real rows were CONTENT-filtered (embedding + whisper), not because of drift, and one
+    // unrelated id-less row is present. rawCount 3, kept 0, droppedForShape 1 (0 < 1 < 3) → resolves [].
+    const adapter = createOpenAiAdapter({
+      fetch: openaiModelsFetch([
+        { id: 'text-embedding-3-large', object: 'model' }, // valid id, content-filtered (embedding)
+        { id: 'whisper-1', object: 'model' }, // valid id, content-filtered (whisper)
+        { owned_by: 'openai', object: 'model' }, // id-less → the lone droppedForShape
+      ]),
+      maxRetries: 0,
+    });
+    const listings = await (adapter.listModels?.('key') ?? Promise.resolve([]));
+    expect(listings).toEqual([]);
+  });
+});
+
+describe('listModels — systemic-drift throw end-to-end (ADR-0064 §8, mirrors Anthropic FIX D)', () => {
+  it('OpenAI: every data row id-less → rejects bad_request, key absent from the message', async () => {
+    const key = 'sk-live-openai-abcdefghijklmnop';
+    const adapter = createOpenAiAdapter({
+      // Two id-less rows → rawCount 2, kept 0, droppedForShape 2 → the systemic-drift throw.
+      fetch: openaiModelsFetch([{ owned_by: 'x' }, { created: 1 }]),
+      maxRetries: 0,
+    });
+    let caught: unknown;
+    try {
+      await (adapter.listModels?.(key) ?? Promise.resolve([]));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(LlmProviderError);
+    if (caught instanceof LlmProviderError) {
+      expect(caught.llmError.kind).toBe('bad_request');
+      expect(caught.llmError.message).not.toContain(key);
+      expect(caught.llmError.cause).toBeUndefined();
+    }
+  });
+
+  it('Gemini: every chat-capable row lacks a usable name → rejects bad_request, key absent', async () => {
+    const key = 'AIza-gemini-secret-abcdefghijklmnop';
+    const adapter = createGeminiAdapter({
+      // Both rows are chat-capable (generateContent) but id-less → droppedForShape 2, kept 0 → the throw.
+      transport: geminiListTransport([
+        { supportedActions: ['generateContent'] },
+        { name: '', supportedActions: ['generateContent'] },
+      ]),
+    });
+    let caught: unknown;
+    try {
+      await (adapter.listModels?.(key) ?? Promise.resolve([]));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(LlmProviderError);
+    if (caught instanceof LlmProviderError) {
+      expect(caught.llmError.kind).toBe('bad_request');
+      expect(caught.llmError.message).not.toContain(key);
+      expect(caught.llmError.cause).toBeUndefined();
+    }
+  });
+});
+
+describe('listModels — a null row is dropped, the valid rows survive (ADR-0064 §8, mirrors Anthropic FIX C)', () => {
+  it('OpenAI: [valid, null] resolves with the one valid ModelListing', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: openaiModelsFetch([{ id: 'gpt-5.5', object: 'model' }, null]),
+      maxRetries: 0,
+    });
+    const listings = await (adapter.listModels?.('key') ?? Promise.resolve([]));
+    expect(listings.map((l) => l.id)).toEqual(['gpt-5.5']);
+  });
+
+  it('Gemini: [valid, null] resolves with the one valid ModelListing', async () => {
+    const adapter = createGeminiAdapter({
+      transport: geminiListTransport([
+        { name: 'models/gemini-2.5-flash', supportedActions: ['generateContent'] },
+        null,
+      ]),
+    });
+    const listings = await (adapter.listModels?.('key') ?? Promise.resolve([]));
+    expect(listings.map((l) => l.id)).toEqual(['gemini-2.5-flash']);
+  });
+});
+
+describe('listModels — a duplicate id is deduped to a single ModelListing (ADR-0064 §8, seen/dedup pin)', () => {
+  it('Anthropic: two paginator pages both yielding id m1 → the id appears once', async () => {
+    const bodies = [page('m1', true), page('m1', false)];
+    let call = 0;
+    const fetchSeq = (): Promise<Response> => {
+      const body = bodies[Math.min(call, bodies.length - 1)];
+      call += 1;
+      return Promise.resolve(
+        new Response(body, { status: 200, headers: { 'content-type': 'application/json' } }),
+      );
+    };
+    const adapter = createAnthropicAdapter({ fetch: fetchSeq, maxRetries: 0 });
+    const listings = await (adapter.listModels?.('key') ?? Promise.resolve([]));
+    expect(listings.map((l) => l.id)).toEqual(['m1']);
+  });
+
+  it('OpenAI: a data array repeating an id → the id appears once', async () => {
+    const adapter = createOpenAiAdapter({
+      fetch: openaiModelsFetch([
+        { id: 'gpt-5.5', object: 'model' },
+        { id: 'gpt-5.5', object: 'model' },
+      ]),
+      maxRetries: 0,
+    });
+    const listings = await (adapter.listModels?.('key') ?? Promise.resolve([]));
+    expect(listings.map((l) => l.id)).toEqual(['gpt-5.5']);
+  });
+
+  it('Gemini: two rows with the same name → the id appears once', async () => {
+    const adapter = createGeminiAdapter({
+      transport: geminiListTransport([
+        { name: 'models/gemini-2.5-flash', supportedActions: ['generateContent'] },
+        { name: 'models/gemini-2.5-flash', supportedActions: ['generateContent'] },
+      ]),
+    });
+    const listings = await (adapter.listModels?.('key') ?? Promise.resolve([]));
+    expect(listings.map((l) => l.id)).toEqual(['gemini-2.5-flash']);
+  });
+});
+
+describe('listModels — a broken top-level envelope resolves [] or a classified error, never a raw throw (ADR-0064 §8, T5)', () => {
+  it('Anthropic: an empty-object body and a non-array data are each classified or empty', async () => {
+    for (const body of [{}, { data: 'not-an-array' }]) {
+      const adapter = createAnthropicAdapter({ fetch: jsonResponseFetch(body), maxRetries: 0 });
+      await expectEmptyOrClassifiedReject(() => adapter.listModels?.('key') ?? Promise.resolve([]));
+    }
+  });
+
+  it('OpenAI + DeepSeek: an empty-object body and a non-array data are each classified or empty', async () => {
+    for (const providerId of ['openai', 'deepseek'] as const) {
+      for (const body of [{}, { data: 'not-an-array' }]) {
+        const adapter = createOpenAiAdapter({
+          providerId,
+          fetch: jsonResponseFetch(body),
+          maxRetries: 0,
+        });
+        await expectEmptyOrClassifiedReject(
+          () => adapter.listModels?.('key') ?? Promise.resolve([]),
+        );
+      }
+    }
+  });
+
+  it('Gemini: a transport resolving a non-array is classified or empty', async () => {
+    const adapter = createGeminiAdapter({ transport: geminiListTransport({}) });
+    await expectEmptyOrClassifiedReject(() => adapter.listModels?.('key') ?? Promise.resolve([]));
   });
 });
 
