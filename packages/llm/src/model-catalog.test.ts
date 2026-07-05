@@ -110,6 +110,9 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     const entry = byId(entries, 'my-custom-model');
     expect(entry).toMatchObject({ provider: 'openai', pricingSource: 'user', priceKnown: true });
     expect(entry?.pricing).toBe(custom);
+    // the user tier also supplies context/output when no registry or live value exists
+    expect(entry?.contextWindowTokens).toBe(custom.contextWindowTokens);
+    expect(entry?.maxOutputTokens).toBe(custom.maxOutputTokens);
   });
 
   it('three tiers on one known id: registry wins price, live wins context, available by live membership', () => {
@@ -127,14 +130,25 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(opus?.available).toBe(true); // in the live list
   });
 
-  it('context/output: the LIVE value wins over the static one when present, else static', () => {
+  it('context/output: the LIVE value wins over the static one for BOTH fields when present, else static', () => {
     const entries = mergeModelCatalog({
-      live: liveMap([['anthropic', [{ id: 'claude-opus-4-8', contextWindowTokens: 500_000 }]]]),
+      live: liveMap([
+        [
+          'anthropic',
+          [{ id: 'claude-opus-4-8', contextWindowTokens: 500_000, maxOutputTokens: 7_000 }],
+        ],
+      ]),
       now: BEFORE_DEEPSEEK_DEPRECATION,
     });
     const opus = byId(entries, 'claude-opus-4-8');
     expect(opus?.contextWindowTokens).toBe(500_000); // live wins
-    expect(opus?.maxOutputTokens).toBe(MODEL_PRICING['claude-opus-4-8'].maxOutputTokens); // no live -> static
+    expect(opus?.maxOutputTokens).toBe(7_000); // live wins for maxOutput too (not the static value)
+    // a model with no live entry of its own falls back to the static values
+    const sonnet = byId(entries, 'claude-sonnet-4-6');
+    expect(sonnet?.contextWindowTokens).toBe(
+      MODEL_PRICING['claude-sonnet-4-6'].contextWindowTokens,
+    );
+    expect(sonnet?.maxOutputTokens).toBe(MODEL_PRICING['claude-sonnet-4-6'].maxOutputTokens);
   });
 
   it('deprecation: a static deprecatedAt flags the model only once now >= the date', () => {
@@ -178,6 +192,59 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     const weird = byId(entries, 'weird');
     expect(weird?.deprecated).toBe(false);
     expect(weird?.deprecatedAt).toBeUndefined();
+  });
+
+  it('ignores a live listing whose id collides with a DIFFERENT provider’s static model (no field corruption)', () => {
+    // a rogue / mis-keyed 'deepseek' live list claims 'gpt-5.5' (a real OpenAI static id) with junk fields
+    const entries = mergeModelCatalog({
+      live: liveMap([
+        [
+          'deepseek',
+          [
+            {
+              id: 'gpt-5.5',
+              contextWindowTokens: 1,
+              maxOutputTokens: 1,
+              displayName: 'HIJACKED',
+              deprecatedAt: '2000-01-01T00:00:00Z',
+            },
+          ],
+        ],
+      ]),
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    const gpt = byId(entries, 'gpt-5.5');
+    expect(gpt?.provider).toBe('openai'); // stays openai
+    expect(gpt?.displayName).toBe(MODEL_PRICING['gpt-5.5'].displayName); // registry, NOT 'HIJACKED'
+    expect(gpt?.contextWindowTokens).toBe(MODEL_PRICING['gpt-5.5'].contextWindowTokens); // registry, not 1
+    expect(gpt?.maxOutputTokens).toBe(MODEL_PRICING['gpt-5.5'].maxOutputTokens);
+    expect(gpt?.deprecated).toBe(false); // the rogue deprecatedAt is dropped
+    expect(gpt?.deprecatedAt).toBeUndefined();
+    // openai has NO live list (only the mis-keyed deepseek one) -> gpt-5.5 falls back to static presence
+    expect(gpt?.available).toBe(true);
+  });
+
+  it('USER-tier availability is tier-agnostic: a user id omitted from its connected provider’s live list is dimmed', () => {
+    const entries = mergeModelCatalog({
+      // openai is connected (has a live list) but that list does NOT include the user-declared id
+      live: liveMap([['openai', [{ id: 'gpt-5.5' }]]]),
+      userPricing: new Map([['my-custom-openai-model', userPricing('openai')]]),
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    const custom = byId(entries, 'my-custom-openai-model');
+    expect(custom?.pricingSource).toBe('user');
+    expect(custom?.available).toBe(false); // dimmed — openai has live data and this id isn't in it
+  });
+
+  it('deprecation union includes the USER tier: a user-priced id with a past deprecatedAt is flagged', () => {
+    const custom: ModelPricing = { ...userPricing('openai'), deprecatedAt: '2020-01-01T00:00:00Z' };
+    const entries = mergeModelCatalog({
+      userPricing: new Map([['old-custom-model', custom]]),
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    const entry = byId(entries, 'old-custom-model');
+    expect(entry?.deprecatedAt).toBe('2020-01-01T00:00:00Z');
+    expect(entry?.deprecated).toBe(true);
   });
 
   it('is deterministically ordered: provider (seam order) then displayName then id', () => {

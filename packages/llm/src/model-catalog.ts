@@ -88,8 +88,8 @@ const PROVIDER_RANK = new Map<ProviderId, number>(LLM_PROVIDERS.map((p, i) => [p
  * Reconcile live discovery ⋈ the static registry ⋈ the user tier into one deterministically-ordered catalog
  * (ADR-0064 §6). Pure: no I/O, no `Date.now()` (the caller passes `now`). Per-field precedence —
  * availability ← live (else static presence); price ← registry ?? user (never live); context/output ← live ??
- * static ?? user; deprecation ← the earlier of the static and live dates; priceKnown ← a static or user price
- * exists.
+ * static ?? user; deprecation ← the earliest of the static, live, and user dates; priceKnown ← a static or
+ * user price exists.
  */
 export function mergeModelCatalog(input: MergeModelCatalogInput): ModelCatalogEntry[] {
   const live = input.live ?? new Map<ProviderId, readonly ModelListing[]>();
@@ -101,15 +101,21 @@ export function mergeModelCatalog(input: MergeModelCatalogInput): ModelCatalogEn
     tiers.set(id, { provider: registry.provider, registry });
   }
   // Live tier — per provider present in the map. The map key is authoritative for a live-only id's provider.
+  // A listing whose id COLLIDES with a model already anchored to a DIFFERENT provider is IGNORED, so a live
+  // list fetched under one provider key can never overwrite another provider's static context/output/name/
+  // deprecation (model ids are globally unique in practice; this guard keeps a mis-keyed or custom-endpoint
+  // rogue id from corrupting an unrelated entry).
   for (const [provider, listings] of live) {
     for (const listing of listings) {
       const prev = tiers.get(listing.id);
+      if (prev !== undefined && prev.provider !== provider) continue; // cross-provider id collision — drop
       tiers.set(listing.id, { ...prev, provider: prev?.provider ?? provider, live: listing });
     }
   }
-  // User tier — fills an unknown id; a known id keeps its registry provider.
+  // User tier — fills an unknown id; a known id keeps its registry provider. Same cross-provider guard.
   for (const [id, pricing] of userPricing) {
     const prev = tiers.get(id);
+    if (prev !== undefined && prev.provider !== pricing.provider) continue; // cross-provider id collision — drop
     tiers.set(id, { ...prev, provider: prev?.provider ?? pricing.provider, user: pricing });
   }
 
@@ -123,7 +129,10 @@ export function mergeModelCatalog(input: MergeModelCatalogInput): ModelCatalogEn
       t.live?.maxOutputTokens ?? t.registry?.maxOutputTokens ?? t.user?.maxOutputTokens;
     // Availability: live-list membership when the provider has live data, else static presence.
     const available = live.has(t.provider) ? t.live !== undefined : true;
-    const deprecatedAt = earlierIsoDate(t.registry?.deprecatedAt, t.live?.deprecatedAt);
+    const deprecatedAt = earlierIsoDate(
+      earlierIsoDate(t.registry?.deprecatedAt, t.live?.deprecatedAt),
+      t.user?.deprecatedAt,
+    );
     const parsedDeprecation = deprecatedAt === undefined ? NaN : Date.parse(deprecatedAt);
     const deprecated = !Number.isNaN(parsedDeprecation) && parsedDeprecation <= input.now;
 
@@ -148,8 +157,10 @@ export function mergeModelCatalog(input: MergeModelCatalogInput): ModelCatalogEn
       (PROVIDER_RANK.get(x.provider) ?? LLM_PROVIDERS.length) -
       (PROVIDER_RANK.get(y.provider) ?? LLM_PROVIDERS.length);
     if (byProvider !== 0) return byProvider;
-    const byName = x.displayName.localeCompare(y.displayName);
-    return byName !== 0 ? byName : x.modelId.localeCompare(y.modelId);
+    // Pin an explicit locale so the catalog order is byte-identical across every host/OS/CI locale (a
+    // runtime-default locale — e.g. Danish — can flip case ordering for a provider-controlled live displayName).
+    const byName = x.displayName.localeCompare(y.displayName, 'en');
+    return byName !== 0 ? byName : x.modelId.localeCompare(y.modelId, 'en');
   });
   return entries;
 }
