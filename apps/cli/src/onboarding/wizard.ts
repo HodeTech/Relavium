@@ -9,8 +9,9 @@ import {
   providerKeyEnvVar,
   type ProviderResolver,
 } from '../engine/providers.js';
+import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
-import type { KeychainStore } from '../secrets/keychain.js';
+import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychain.js';
 
 /**
  * The first-run onboarding wizard (workstream **2.5.G S8**) — a `@clack/prompts` flow that turns a KEY-LESS Home
@@ -150,21 +151,38 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
         readSecret: () => Promise.resolve(key),
       },
     );
-    p.note(`Stored your ${provider} key (${keyHint(key)}) in the OS keychain.`, 'Connected');
-    p.outro("You're all set — starting Relavium.");
-  } catch {
-    // Write-failure fallback: the OS keychain is unavailable (locked / no Secret Service / a headless box). NEVER
-    // persist the key to disk — guide the user to the env var, which the resolver imports at call time
-    // (keychain → env fallback). The broad catch is intentional: any failure to store degrades to the same
-    // env-var guidance rather than crashing the first run.
-    p.note(
-      `Couldn't reach your OS keychain, so the key was NOT saved.\n` +
-        `Set it in your shell instead, then restart Relavium:\n\n` +
-        `  export ${providerKeyEnvVar(provider)}=<your ${provider} key>`,
-      'Keychain unavailable',
-    );
+  } catch (err) {
+    // Distinguish the EXPECTED keychain-unavailable failure (recoverable → env-var guidance) from an UNEXPECTED
+    // fault (e.g. a db write). `providerSetKey` writes to the keychain FIRST, so a keychain-unavailable failure
+    // persists NOTHING; mislabeling a *post*-`keychain.set` fault (a later db upsert) as "keychain unavailable, key
+    // not saved" would LIE — the key IS in the keychain then. `runProviderCommand` wraps `KeychainUnavailableError`
+    // in a `CliError(cause)`. Never render the raw error (it could carry context) — both branches use static text.
+    const keychainDown =
+      err instanceof KeychainUnavailableError ||
+      (err instanceof CliError && err.cause instanceof KeychainUnavailableError);
+    if (keychainDown) {
+      // The no-plaintext fallback: guide the user to the env var (the resolver imports it at call time). NEVER
+      // persist the key to disk.
+      p.note(
+        `Couldn't reach your OS keychain, so the key was NOT saved.\n` +
+          `Set it in your shell instead, then restart Relavium:\n\n` +
+          `  export ${providerKeyEnvVar(provider)}=<your ${provider} key>`,
+        'Keychain unavailable',
+      );
+    } else {
+      // An unexpected fault (e.g. a broken db) — do NOT claim a keychain failure. A generic pointer; the underlying
+      // issue resurfaces at the Home, which reads the same store.
+      p.note(
+        'Setup could not be completed. Add a provider anytime with `relavium provider add`.',
+        'Setup failed',
+      );
+    }
     p.outro('Setup incomplete — see the note above.');
+    return;
   }
+  // Success — only reached when the key was actually stored (keychain.set + the provider row + the keychain-ref).
+  p.note(`Stored your ${provider} key (${keyHint(key)}) in the OS keychain.`, 'Connected');
+  p.outro("You're all set — starting Relavium.");
 }
 
 /** The cancel/skip exit: a friendly pointer to the manual path, then hand off to the Home. */

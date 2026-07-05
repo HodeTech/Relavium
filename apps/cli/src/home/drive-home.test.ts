@@ -301,7 +301,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const props = captured;
     if (props === undefined) throw new Error('the Home did not mount after the wizard');
     expect(select).toHaveBeenCalledTimes(1); // the wizard ran (provider select)
-    expect(outros.some((o) => o.includes('all set'))).toBe(true); // key stored (mocked keychain) + handed off to the Home
+    // The wizard reached its success path + handed off to the Home. (Real keychain STORAGE is proven in
+    // wizard.test.ts with an inspectable keychain; here the module-level vi.mock discards the key, which is what
+    // keeps the test off the developer's/CI's real OS keychain.)
+    expect(outros.some((o) => o.includes('all set'))).toBe(true);
 
     props.controller.handleKey('c', CTRL_C); // clean exit
     expect(await drivePromise).toBe(EXIT_CODES.success);

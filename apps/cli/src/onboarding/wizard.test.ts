@@ -157,7 +157,8 @@ describe('runOnboardingWizard', () => {
       runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io }),
     ).resolves.toBeUndefined();
 
-    expect(keychain.store.size).toBe(0); // nothing persisted
+    expect(keychain.store.size).toBe(0); // nothing persisted to the keychain...
+    expect(s.get('gemini')).toBeUndefined(); // ...and NO dangling provider row (keychain.set is first, so it fails atomically)
     const all = [...notes, ...outros].join('\n');
     expect(all).toContain(providerKeyEnvVar('gemini')); // the env-var fallback is named (RELAVIUM_GEMINI_API_KEY)
     expect(all).not.toContain('sk-gem-secret-9999'); // the key is NEVER echoed, even in the fallback
