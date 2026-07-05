@@ -351,6 +351,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         keychain,
         resolver: providers,
         io: deps.io,
+        // Reuse the SAME config-write target as the `/models` port (honors `--config`) so the wizard's starter
+        // model + a later `/models` pick + the started session all agree on one file (2.5.G S7/S8).
+        writeDefaultModel: (modelId) => writeGlobalDefaultModel(modelId, homeDir, deps.global.configPath),
         ...(deps.onboardingPrompter === undefined ? {} : { prompter: deps.onboardingPrompter }),
       });
     }

@@ -81,6 +81,10 @@ export interface OnboardingDeps {
   readonly keychain: KeychainStore;
   readonly resolver: ProviderResolver;
   readonly io: CliIo;
+  /** Persist the NEXT session's default model (writeGlobalDefaultModel via the Home's config target). The wizard
+   *  sets a starter model of the CHOSEN provider so the first chat binds a model whose key was just stored — the
+   *  built-in default (`claude-sonnet-4-6` → anthropic) would otherwise error for a user who picked another provider. */
+  readonly writeDefaultModel: (modelId: string) => void;
 }
 
 /**
@@ -106,8 +110,9 @@ const requireKey = (value: string | undefined): string | undefined =>
 
 /**
  * Run the first-run wizard. Resolves when the user has stored a key OR skipped/failed — the caller (the Home) then
- * mounts as usual. Never throws for a normal cancel or a keychain-unavailable fallback (both end cleanly); only an
- * unexpected fault propagates (caught by the Home's cleanup finally).
+ * mounts as usual. Every STORAGE outcome ends cleanly (cancel → skip; keychain-unavailable → env-var guidance; any
+ * other storage fault → a generic note) — none rethrow. Only a fault inside a clack prompt call itself
+ * (`select`/`password`/`note`/`outro`) propagates, and that is caught by the Home's cleanup `finally`.
  */
 export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
   const p = deps.prompter ?? defaultPrompter;
@@ -130,11 +135,15 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
   const provider = KNOWN_PROVIDER_IDS.find((id) => id === providerValue);
   if (provider === undefined) return skip(p);
 
-  const key = await p.password({
+  const rawKey = await p.password({
     message: `Paste your ${KNOWN_PROVIDERS[provider].displayName} API key`,
     validate: requireKey,
   });
-  if (p.isCancel(key)) return skip(p);
+  if (p.isCancel(rawKey)) return skip(p);
+  // Trim incidental paste whitespace (a stray space from a dashboard copy) before storing — matching
+  // `readSecretFromStdin`'s `.trim()` so `provider set-key` and the wizard persist byte-identical credentials.
+  // `requireKey` already rejected a whitespace-only value, so the trimmed key is non-empty.
+  const key = rawKey.trim();
 
   // Store via the TESTED providerSetKey path (keychain.set + the provider row + the keychain-ref, secret-free). Its
   // one stdout line is suppressed (a silent io) so the wizard's output stays uniformly clack-styled — the wizard
@@ -156,7 +165,8 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
     // fault (e.g. a db write). `providerSetKey` writes to the keychain FIRST, so a keychain-unavailable failure
     // persists NOTHING; mislabeling a *post*-`keychain.set` fault (a later db upsert) as "keychain unavailable, key
     // not saved" would LIE — the key IS in the keychain then. `runProviderCommand` wraps `KeychainUnavailableError`
-    // in a `CliError(cause)`. Never render the raw error (it could carry context) — both branches use static text.
+    // in a `CliError(cause)`; the bare-`instanceof KeychainUnavailableError` disjunct is a DEFENSIVE fallback for a
+    // future direct caller. Never render the raw error (it could carry context) — both branches use static text.
     const keychainDown =
       err instanceof KeychainUnavailableError ||
       (err instanceof CliError && err.cause instanceof KeychainUnavailableError);
@@ -180,8 +190,27 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
     p.outro('Setup incomplete — see the note above.');
     return;
   }
-  // Success — only reached when the key was actually stored (keychain.set + the provider row + the keychain-ref).
-  p.note(`Stored your ${provider} key (${keyHint(key)}) in the OS keychain.`, 'Connected');
+
+  // Set a working default model of the CHOSEN provider so the very NEXT chat binds a model whose key was just
+  // stored — the built-in default (`claude-sonnet-4-6` → anthropic) would otherwise error for a user who picked a
+  // different provider (breaking the "reach a working chat" promise). `testModel` is a cheap/fast, priced starter;
+  // the user upgrades via `/models`. Best-effort: a config-write fault still leaves a working key (fall back to the
+  // `/models` pointer) rather than undoing the store.
+  const starterModel = KNOWN_PROVIDERS[provider].testModel;
+  try {
+    deps.writeDefaultModel(starterModel);
+    p.note(
+      `Stored your ${provider} key (${keyHint(key)}) in the OS keychain.\n` +
+        `Your default model is ${starterModel} — change it anytime with /models.`,
+      'Connected',
+    );
+  } catch {
+    p.note(
+      `Stored your ${provider} key (${keyHint(key)}) in the OS keychain.\n` +
+        `Pick a ${provider} model with /models to start chatting.`,
+      'Connected',
+    );
+  }
   p.outro("You're all set — starting Relavium.");
 }
 

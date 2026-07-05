@@ -295,6 +295,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const { deps } = makeDeps((p) => (captured = p), {
       providers: keylessResolver,
       onboardingPrompter,
+      // An ISOLATED config file in the per-test cwd — the wizard's success path writes the chosen provider's starter
+      // model here (via writeGlobalDefaultModel), so it must not touch the shared tmp configPath other tests use.
+      global: { ...global, configPath: join(cwd, 'wizard-config.toml') },
     });
     const drivePromise = driveHome(deps);
     await flush(); // the wizard is async — let it settle before render() mounts ink

@@ -3,7 +3,7 @@ import { Readable } from 'node:stream';
 import { createClient, createProviderStore, runMigrations, type DbClient } from '@relavium/db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { providerKeyEnvVar, type ProviderResolver } from '../engine/providers.js';
+import { KNOWN_PROVIDERS, providerKeyEnvVar, type ProviderResolver } from '../engine/providers.js';
 import type { CliIo } from '../process/io.js';
 import {
   KeychainUnavailableError,
@@ -105,63 +105,111 @@ describe('runOnboardingWizard', () => {
   const store = (): ReturnType<typeof createProviderStore> =>
     createProviderStore(client.db, { uuid: () => 'id-fixed', now: () => 1 });
 
-  it('stores the pasted key in the OS keychain + registers the provider row (secret-free)', async () => {
+  it('stores the pasted key + registers the provider row + sets the chosen provider\'s starter model (secret-free)', async () => {
     const keychain = memKeychain();
     const s = store();
+    const writeDefaultModel = vi.fn();
     const { prompter, notes, outros } = scriptedPrompter({
       provider: 'anthropic',
-      key: 'sk-ant-supersecret-1234',
+      key: '  sk-ant-supersecret-1234  ', // incidental paste whitespace — must be trimmed before storing
     });
-    await runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io });
+    await runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io, writeDefaultModel });
 
-    // The key landed in the keychain under the provider account...
+    // The TRIMMED key landed in the keychain under the provider account (no stray whitespace persisted)...
     expect(keychain.store.get(keychainAccount('anthropic'))).toBe('sk-ant-supersecret-1234');
     // ...the provider row + keychain-ref were registered...
     expect(s.get('anthropic')?.apiKeyKeychainRef).toBe(keychainAccount('anthropic'));
+    // ...the chosen provider's starter model was set as the default (so the NEXT chat binds a model whose key exists)...
+    expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.anthropic.testModel);
     // ...a "Connected" note shows only the key HINT (last 4), never the full key, and confirms + hands off.
     const all = [...notes, ...outros].join('\n');
     expect(all).toContain('••••1234');
+    expect(all).toContain(KNOWN_PROVIDERS.anthropic.testModel); // the starter model is surfaced
     expect(all).not.toContain('sk-ant-supersecret-1234'); // the full key NEVER appears anywhere
     expect(outros.some((o) => o.includes('all set'))).toBe(true);
   });
 
-  it('cancelling the provider select skips setup, writes NOTHING to the keychain', async () => {
+  it('a non-anthropic pick sets THAT provider\'s starter model (the "working chat" fix)', async () => {
     const keychain = memKeychain();
     const s = store();
+    const writeDefaultModel = vi.fn();
+    const { prompter } = scriptedPrompter({ provider: 'openai', key: 'sk-openai-xyz' });
+    await runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io, writeDefaultModel });
+    // NOT the anthropic default — the openai starter, so a first chat doesn't try (and fail) an anthropic key.
+    expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.openai.testModel);
+    expect(KNOWN_PROVIDERS.openai.testModel).not.toBe(KNOWN_PROVIDERS.anthropic.testModel);
+  });
+
+  it('cancelling the provider select skips setup, writes NOTHING (no key, no default model)', async () => {
+    const keychain = memKeychain();
+    const s = store();
+    const writeDefaultModel = vi.fn();
     const { prompter, password, notes } = scriptedPrompter({ provider: CANCEL });
-    await runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io });
+    await runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io, writeDefaultModel });
     expect(keychain.store.size).toBe(0); // no key captured or stored
     expect(password).not.toHaveBeenCalled(); // never even prompted for a key
+    expect(writeDefaultModel).not.toHaveBeenCalled(); // no default model written on cancel
     expect(notes.some((n) => n.includes('Skipped'))).toBe(true);
   });
 
   it('cancelling the key prompt skips setup, writes NOTHING to the keychain', async () => {
     const keychain = memKeychain();
     const s = store();
+    const writeDefaultModel = vi.fn();
     const { prompter, notes } = scriptedPrompter({ provider: 'openai', key: CANCEL });
-    await runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io });
+    await runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io, writeDefaultModel });
     expect(keychain.store.size).toBe(0);
     expect(s.get('openai')).toBeUndefined(); // no row registered on cancel
+    expect(writeDefaultModel).not.toHaveBeenCalled();
     expect(notes.some((n) => n.includes('Skipped'))).toBe(true);
   });
 
-  it('on a keychain-write failure, guides to the env var — NEVER persists the key, never crashes', async () => {
+  it('on a keychain-write failure, guides to the env var — NEVER persists the key or a default model, never crashes', async () => {
     const keychain = memKeychain({ throwOnSet: true });
     const s = store();
+    const writeDefaultModel = vi.fn();
     const { prompter, notes, outros } = scriptedPrompter({
       provider: 'gemini',
       key: 'sk-gem-secret-9999',
     });
     // Must resolve (not throw) — a keychain-unavailable first run degrades gracefully.
     await expect(
-      runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io }),
+      runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io, writeDefaultModel }),
     ).resolves.toBeUndefined();
 
     expect(keychain.store.size).toBe(0); // nothing persisted to the keychain...
     expect(s.get('gemini')).toBeUndefined(); // ...and NO dangling provider row (keychain.set is first, so it fails atomically)
+    expect(writeDefaultModel).not.toHaveBeenCalled(); // no default model on a failed store
     const all = [...notes, ...outros].join('\n');
     expect(all).toContain(providerKeyEnvVar('gemini')); // the env-var fallback is named (RELAVIUM_GEMINI_API_KEY)
     expect(all).not.toContain('sk-gem-secret-9999'); // the key is NEVER echoed, even in the fallback
     expect(all.toLowerCase()).toContain('keychain'); // the fallback explains why
+  });
+
+  it('an UNEXPECTED store fault (not keychain) shows a generic note, never mislabels it "keychain" or leaks the error', async () => {
+    // keychain.set SUCCEEDS, but a later store step throws a PLAIN Error (a db write fault). The catch must route to
+    // the generic "setup failed" branch — NOT the keychain branch — and never render the thrown message. The key is
+    // in the keychain (set ran first), so the "key not saved" copy would LIE; the generic copy must be used instead.
+    const keychain = memKeychain();
+    const realStore = store();
+    const brokenStore = {
+      ...realStore,
+      setKeychainRef: () => {
+        throw new Error('db write failed: sensitive-context-xyz');
+      },
+    };
+    const writeDefaultModel = vi.fn();
+    const { prompter, notes, outros } = scriptedPrompter({ provider: 'deepseek', key: 'sk-ds-1234' });
+    await expect(
+      runOnboardingWizard({ prompter, store: brokenStore, keychain, resolver: stubResolver, io, writeDefaultModel }),
+    ).resolves.toBeUndefined();
+
+    const all = [...notes, ...outros].join('\n');
+    expect(all).toContain('Setup failed'); // the generic branch, not the keychain branch
+    expect(all).not.toContain('Keychain unavailable'); // never mislabel a db fault as a keychain failure
+    expect(all).not.toContain('db write failed'); // the raw error is NEVER rendered
+    expect(all).not.toContain('sk-ds-1234'); // and certainly not the key
+    expect(keychain.store.get(keychainAccount('deepseek'))).toBe('sk-ds-1234'); // the key IS stored (set ran first)
+    expect(writeDefaultModel).not.toHaveBeenCalled(); // no default model on a failed store
   });
 });
