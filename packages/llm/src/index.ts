@@ -131,6 +131,9 @@ export {
 // CostTracker + the canonical model-pricing table (1.B).
 export { MODEL_PRICING, KNOWN_MODEL_IDS, contextWindowForModel } from './pricing.js';
 export type { ModelPricing, CanonicalModelId } from './pricing.js';
+// The pure live/static/user merge helper (ADR-0064 §6) — reused by every surface's model catalog / picker.
+export { mergeModelCatalog } from './model-catalog.js';
+export type { ModelCatalogEntry, MergeModelCatalogInput, PricingSource } from './model-catalog.js';
 export { priceModel, cost, mediaCost, CostTracker } from './cost-tracker.js';
 export type { CostUpdate } from './cost-tracker.js';
 export { estimateMaxNextCost, estimateMediaCost } from './budget-estimator.js';

@@ -40,6 +40,13 @@ export interface ModelPricing {
   /** Cache-write price, where the provider charges one (Anthropic does); undefined otherwise. */
   readonly cacheWritePerMtokMicrocents?: number;
   /**
+   * ISO-8601 date this model is scheduled to retire, if any (ADR-0064 §7). The pure {@link mergeModelCatalog}
+   * flags an entry `deprecated` once `now >= deprecatedAt` (unioned with a live-list deprecation date, taking
+   * the earlier). The picker flags a deprecated model but never forbids it — a legacy alias still costs
+   * correctly until its date. Absent ⇒ not deprecated.
+   */
+  readonly deprecatedAt?: string;
+  /**
    * Per-modality media **output** rates (1.AF/D17,
    * [ADR-0044](../../../docs/decisions/0044-media-access-governance-read-media-save-to-cost.md) §3) — integer
    * micro-cents per billed unit: `image` per image (the unit is a count), `audio`/`video` per second. The
@@ -188,6 +195,7 @@ export const MODEL_PRICING = {
     inputPerMtokMicrocents: usd(0.14),
     outputPerMtokMicrocents: usd(0.28),
     cachedInputPerMtokMicrocents: usd(0.0028), // cache-hit input
+    deprecatedAt: '2026-07-24T15:59:00Z', // legacy alias retires 2026-07-24 15:59 UTC (see header)
   },
   'deepseek-reasoner': {
     provider: 'deepseek',
@@ -200,6 +208,7 @@ export const MODEL_PRICING = {
     inputPerMtokMicrocents: usd(0.14),
     outputPerMtokMicrocents: usd(0.28),
     cachedInputPerMtokMicrocents: usd(0.0028),
+    deprecatedAt: '2026-07-24T15:59:00Z', // legacy alias retires 2026-07-24 15:59 UTC (see header)
   },
 } as const satisfies Readonly<Record<string, ModelPricing>>;
 
