@@ -10,6 +10,7 @@ import {
   type MediaModality,
   type MediaScopeKind,
   type MediaSurface,
+  type ModelCatalogSource,
   type RunStatus,
   type SessionStatus,
 } from '@relavium/shared';
@@ -126,6 +127,17 @@ export const modelCatalog = sqliteTable(
     supportsJsonMode: boolFlag('supports_json_mode', false),
     capabilities: jsonText('capabilities').notNull().default('{}'),
     deprecationDate: epochMs('deprecation_date'),
+    // Live-discovery cache provenance (2.5.G/ADR-0064 §4): `'static'` (a hardcoded capability/media seed — the
+    // default the media-routing `upsert` path writes), `'live'` (discovered via the seam's `listModels` — the
+    // bulk refresh writes it), `'user'` (user-supplied pricing, ADR-0065). A text column with a CONSTANT default
+    // is legal on `ALTER TABLE ADD` (the table ships EMPTY so existing rows are moot). Like `media_surface`,
+    // SQLite `ALTER ADD` carries no CHECK, so the closed `MODEL_CATALOG_SOURCES` set is validated at the store
+    // read boundary (`coerceModelCatalogSource`, model-catalog-store.ts) — a tampered value degrades to `'static'`.
+    source: text('source').$type<ModelCatalogSource>().notNull().default('static'),
+    // The epoch-ms a live refresh last wrote this row (ADR-0064 §5 TTL freshness); NULLABLE — NULL for a
+    // static/user row or a never-refreshed row. Backs `providerRefreshedAt` (the max over a provider's active
+    // `source='live'` rows). Additive nullable ALTER ADD, like the `media_*_cost_microcents` columns (0003).
+    lastRefreshedAt: epochMs('last_refreshed_at'),
     isActive: boolFlag('is_active', true),
     deletedAt: epochMs('deleted_at'),
     createdAt: epochMs('created_at').notNull(),

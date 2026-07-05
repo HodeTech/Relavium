@@ -159,4 +159,7 @@ export {
   type ModelCatalogStoreDeps,
   type ModelCatalogRecord,
   type ModelCatalogUpsert,
+  // Live-discovery cache (2.5.G, ADR-0064) — the picker/refresh listing projection + the bulk live-refresh input.
+  type ModelCatalogListing,
+  type ModelCatalogLiveModel,
 } from './model-catalog-store.js';

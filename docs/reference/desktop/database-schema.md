@@ -84,6 +84,8 @@ CREATE UNIQUE INDEX idx_llm_providers_name ON llm_providers (name) WHERE deleted
 
 Models offered by each provider, including pricing used for local cost tracking. The `*_per_mtok_microcents` columns are price **per million tokens, in integer micro-cents** (one micro-cent = 1e-8 USD = cents x 1,000,000; see the [money/cost convention](#sqlite-type-conventions)). The three `media_*_cost_microcents` columns are the projection of `ModelPricing.mediaOutputRates` (1.AF/D17, [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §3) — integer micro-cents **per billed media-output unit** (per image, per audio-second, per video-second); **NULL** when the model has no metered media rate (the realized fold + the pre-egress estimate degrade to 0 for it — H4). `document`/PDF is excluded (it bills as tokens). No shipped model carries a media rate yet, so these are NULL across the seeded catalog.
 
+**Live-discovery cache role ([ADR-0064](../../decisions/0064-live-model-catalog.md) §4/§5).** As of 2.5.G this table doubles as the **live-discovery cache** — "which model ids a given key can reach" — filled by a bulk refresh over the seam's `listModels`, with the static `MODEL_PRICING` registry enriching **at read time** (the registry is **never** seeded into the DB — that would create a second, drift-prone pricing home). The `source` discriminant records provenance: **`static`** (a hardcoded capability/media seed — the media-routing `upsert` path's default), **`live`** (discovered via `listModels` — the refresh writes it), **`user`** (user-supplied pricing, [ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md)). `last_refreshed_at` is the freshness stamp backing the 24h TTL. The bulk refresh (`replaceProviderModels`) **soft-deactivates** (`is_active = 0`, `deleted_at` left NULL) every currently-active `source='live'` row of a provider whose model id vanishes from the new list, and **reactivates** a reappearing one by reusing the same row — it **never hard-DELETEs** (`model_catalog.id` is an FK target from five tables) and **never touches a `source='user'` or `source='static'` row** (a refresh must not clobber user pricing or regress the media-routing seed). The existing narrow media-routing projection (`resolveMediaSurface` / the D15 capability load-check) is untouched by the widening. Because SQLite `ALTER TABLE ADD` cannot carry a CHECK, the closed `source` value set is validated at the store read boundary (`coerceModelCatalogSource`, degrading a foreign value to `static`), like `media_surface`.
+
 | Column | Type | Constraints |
 |--------|------|-------------|
 | `id` | TEXT | PRIMARY KEY (UUID) |
@@ -105,6 +107,8 @@ Models offered by each provider, including pricing used for local cost tracking.
 | `supports_json_mode` | INTEGER (bool) | NOT NULL DEFAULT 0 |
 | `capabilities` | TEXT (JSON) | NOT NULL DEFAULT `'{}'` |
 | `deprecation_date` | INTEGER | NULL |
+| `source` | TEXT | NOT NULL DEFAULT `'static'` — provenance: `'static'` \| `'live'` \| `'user'` (the live-discovery cache discriminant, [ADR-0064](../../decisions/0064-live-model-catalog.md) §4); validated at the store read boundary (no DB CHECK — SQLite `ALTER ADD`) |
+| `last_refreshed_at` | INTEGER | NULL — epoch-ms a live refresh last wrote this row (ADR-0064 §5 TTL freshness); NULL for a static/user or never-refreshed row |
 | `is_active` | INTEGER (bool) | NOT NULL DEFAULT 1 |
 | `deleted_at` | INTEGER | NULL |
 | `created_at` | INTEGER | NOT NULL |

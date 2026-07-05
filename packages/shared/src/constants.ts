@@ -281,6 +281,18 @@ export const PROVIDER_KINDS = ['anthropic', 'openai-compatible', 'gemini'] as co
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
 /**
+ * The provenance discriminant of a `model_catalog` row ([ADR-0064] §4) — the live-discovery cache's
+ * `source` column. `static` is a hardcoded capability/media seed (the media-routing upsert path's default);
+ * `live` is discovered via the seam's `listModels` (the refresh writes it); `user` is user-supplied pricing
+ * ([ADR-0065], a later step). A closed set mirroring {@link LLM_PROVIDERS}/{@link MEDIA_SURFACES}; because
+ * SQLite `ALTER TABLE ADD` cannot carry a CHECK, `@relavium/db` validates it at the store read boundary
+ * (`coerceModelCatalogSource`, degrading a foreign value to the safe `static` default). Lives here so the DB
+ * layer derives the vocabulary from `@relavium/shared`, never restating it.
+ */
+export const MODEL_CATALOG_SOURCES = ['static', 'live', 'user'] as const;
+export type ModelCatalogSource = (typeof MODEL_CATALOG_SOURCES)[number];
+
+/**
  * The three filesystem permission tiers (built-in-tools.md). The canonical vocabulary
  * for the config `fs_scope` (config-spec.md) and a session's `fsScopeTier`
  * (agent-session-spec.md), so both derive their enum from this one list.

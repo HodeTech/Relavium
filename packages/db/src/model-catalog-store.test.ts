@@ -312,3 +312,382 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
     expect(caught.cause).toBeInstanceOf(SyntaxError);
   });
 });
+
+describe('createModelCatalogStore (2.5.G / ADR-0064 — live-discovery cache)', () => {
+  let client: DbClient;
+  let store: ModelCatalogStore;
+  let providerStore: ProviderStore;
+  let providerId: string;
+
+  beforeEach(() => {
+    client = createClient(':memory:');
+    runMigrations(client.db);
+    let n = 0;
+    const deps = {
+      uuid: () => `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`,
+      now: () => TS_MS,
+    };
+    providerStore = createProviderStore(client.db, deps);
+    providerId = providerStore.upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    }).id;
+    store = createModelCatalogStore(client.db, deps);
+  });
+
+  afterEach(() => {
+    client.sqlite.close();
+  });
+
+  it('a live model round-trips via replaceProviderModels → listByProvider (source live, stamp set, 0-context ⇒ undefined)', () => {
+    const REFRESH_TS = TS_MS + 60_000;
+    store.replaceProviderModels(
+      providerId,
+      [
+        {
+          modelId: 'gpt-4o',
+          displayName: 'GPT-4o',
+          contextWindowTokens: 128_000,
+          maxOutputTokens: 16_384,
+        },
+        // No context/output ⇒ stored as the `0` "unknown" sentinel ⇒ read back as undefined.
+        { modelId: 'o3', displayName: 'o3' },
+      ],
+      REFRESH_TS,
+    );
+    const listing = store.listByProvider(providerId);
+    // Deterministic order by model id.
+    expect(listing.map((m) => m.modelId)).toEqual(['gpt-4o', 'o3']);
+
+    const gpt = listing.find((m) => m.modelId === 'gpt-4o');
+    expect(gpt?.source).toBe('live');
+    expect(gpt?.lastRefreshedAt).toBe(REFRESH_TS);
+    expect(gpt?.isActive).toBe(true);
+    expect(gpt?.contextWindowTokens).toBe(128_000);
+    expect(gpt?.maxOutputTokens).toBe(16_384);
+    // A live row carries no price (the static registry is the pricing authority) — integer µ¢ zeros.
+    expect(gpt?.inputCostPerMtokMicrocents).toBe(0);
+    expect(gpt?.outputCostPerMtokMicrocents).toBe(0);
+    expect(gpt?.cachedInputCostPerMtokMicrocents).toBe(0);
+
+    const o3 = listing.find((m) => m.modelId === 'o3');
+    expect(o3?.contextWindowTokens).toBeUndefined();
+    expect(o3?.maxOutputTokens).toBeUndefined();
+    expect(o3?.displayName).toBe('o3');
+    expect(o3?.deprecationDate).toBeUndefined();
+  });
+
+  it('replaceProviderModels falls back an empty displayName to the model id', () => {
+    store.replaceProviderModels(providerId, [{ modelId: 'bare-model', displayName: '   ' }], TS_MS);
+    expect(store.listByProvider(providerId)[0]?.displayName).toBe('bare-model');
+  });
+
+  it('upserts new, soft-deactivates a vanished live row (never hard-deletes), reactivates a reappearing one, preserves user/static rows', () => {
+    const T1 = TS_MS + 1000;
+    const T2 = TS_MS + 2000;
+    const T3 = TS_MS + 3000;
+
+    // A source='user' row (user pricing) and a source='static' row (a media-routing seed); NEITHER appears in
+    // any live list below — a refresh must leave both alone.
+    store.upsert({
+      providerId,
+      modelId: 'user-priced',
+      displayName: 'User Priced',
+      contextWindowTokens: 8000,
+      maxOutputTokens: 4000,
+      source: 'user',
+    });
+    // Distinctive pricing set directly (upsert doesn't expose the text-token cost columns) to prove preservation.
+    client.sqlite
+      .prepare('UPDATE model_catalog SET input_cost_per_mtok_microcents = ? WHERE model_id = ?')
+      .run(1234, 'user-priced');
+    store.upsert({
+      providerId,
+      modelId: 'seeded-generative',
+      displayName: 'Seeded Generative',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'generative', // source defaults to 'static'
+    });
+
+    // First refresh: models a + b.
+    store.replaceProviderModels(
+      providerId,
+      [
+        { modelId: 'model-a', displayName: 'A', contextWindowTokens: 1000, maxOutputTokens: 500 },
+        { modelId: 'model-b', displayName: 'B', contextWindowTokens: 2000, maxOutputTokens: 800 },
+      ],
+      T1,
+    );
+    expect(store.listByProvider(providerId).map((m) => m.modelId)).toEqual([
+      'model-a',
+      'model-b',
+      'seeded-generative',
+      'user-priced',
+    ]);
+    const bIdBefore = client.db
+      .select()
+      .from(modelCatalog)
+      .where(eq(modelCatalog.modelId, 'model-b'))
+      .get()?.id;
+
+    // Second refresh: a stays (updated in place), b vanishes, c appears.
+    store.replaceProviderModels(
+      providerId,
+      [
+        { modelId: 'model-a', displayName: 'A2', contextWindowTokens: 1500, maxOutputTokens: 600 },
+        { modelId: 'model-c', displayName: 'C', contextWindowTokens: 3000, maxOutputTokens: 900 },
+      ],
+      T2,
+    );
+    // b soft-deactivated ⇒ absent from the active listing; user + static rows still present.
+    expect(store.listByProvider(providerId).map((m) => m.modelId)).toEqual([
+      'model-a',
+      'model-c',
+      'seeded-generative',
+      'user-priced',
+    ]);
+    const a = store.listByProvider(providerId).find((m) => m.modelId === 'model-a');
+    expect(a?.displayName).toBe('A2'); // updated in place
+    expect(a?.contextWindowTokens).toBe(1500);
+    expect(a?.lastRefreshedAt).toBe(T2);
+
+    // b was NOT hard-deleted — same row still exists, just deactivated (deleted_at still NULL, source live).
+    const bRow = client.db
+      .select()
+      .from(modelCatalog)
+      .where(eq(modelCatalog.modelId, 'model-b'))
+      .get();
+    expect(bRow?.id).toBe(bIdBefore);
+    expect(bRow?.isActive).toBe(false);
+    expect(bRow?.deletedAt).toBeNull();
+    expect(bRow?.source).toBe('live');
+
+    // user + static rows preserved: source unchanged, active, pricing + media routing intact.
+    const userRow = client.db
+      .select()
+      .from(modelCatalog)
+      .where(eq(modelCatalog.modelId, 'user-priced'))
+      .get();
+    expect(userRow?.source).toBe('user');
+    expect(userRow?.isActive).toBe(true);
+    expect(userRow?.inputCostPerMtokMicrocents).toBe(1234);
+    const staticRow = client.db
+      .select()
+      .from(modelCatalog)
+      .where(eq(modelCatalog.modelId, 'seeded-generative'))
+      .get();
+    expect(staticRow?.source).toBe('static');
+    expect(staticRow?.isActive).toBe(true);
+    expect(store.resolveMediaSurface('seeded-generative')).toBe('generative');
+
+    // Third refresh: b REAPPEARS ⇒ reactivated, reusing the SAME row id (FK stability), not a duplicate insert.
+    store.replaceProviderModels(
+      providerId,
+      [
+        { modelId: 'model-a', displayName: 'A3', contextWindowTokens: 1500, maxOutputTokens: 600 },
+        {
+          modelId: 'model-b',
+          displayName: 'B-back',
+          contextWindowTokens: 2222,
+          maxOutputTokens: 811,
+        },
+        { modelId: 'model-c', displayName: 'C', contextWindowTokens: 3000, maxOutputTokens: 900 },
+      ],
+      T3,
+    );
+    const bReactivated = store.listByProvider(providerId).find((m) => m.modelId === 'model-b');
+    expect(bReactivated?.displayName).toBe('B-back');
+    expect(bReactivated?.lastRefreshedAt).toBe(T3);
+    const bRows = client.db
+      .select()
+      .from(modelCatalog)
+      .where(eq(modelCatalog.modelId, 'model-b'))
+      .all();
+    expect(bRows).toHaveLength(1); // reused, not duplicated
+    expect(bRows[0]?.id).toBe(bIdBefore);
+  });
+
+  it('never clobbers an existing user/static row even when the live list names the same model id (the collision invariant)', () => {
+    store.upsert({
+      providerId,
+      modelId: 'shared-id-user',
+      displayName: 'User Row',
+      contextWindowTokens: 8000,
+      maxOutputTokens: 4000,
+      source: 'user',
+    });
+    client.sqlite
+      .prepare('UPDATE model_catalog SET input_cost_per_mtok_microcents = ? WHERE model_id = ?')
+      .run(999, 'shared-id-user');
+    store.upsert({
+      providerId,
+      modelId: 'shared-id-static',
+      displayName: 'Static Seed',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'generative',
+      capabilities: { media: { outputCombinations: [['image']] } },
+    });
+
+    const REFRESH_TS = TS_MS + 5000;
+    // The live list NAMES both existing ids (a collision) plus a genuinely new one.
+    store.replaceProviderModels(
+      providerId,
+      [
+        {
+          modelId: 'shared-id-user',
+          displayName: 'LIVE Overwrite Attempt',
+          contextWindowTokens: 111,
+          maxOutputTokens: 22,
+        },
+        {
+          modelId: 'shared-id-static',
+          displayName: 'LIVE Overwrite Attempt',
+          contextWindowTokens: 111,
+          maxOutputTokens: 22,
+        },
+        {
+          modelId: 'brand-new-live',
+          displayName: 'New',
+          contextWindowTokens: 500,
+          maxOutputTokens: 200,
+        },
+      ],
+      REFRESH_TS,
+    );
+
+    // The user row is untouched: source, pricing, display, context all preserved; no refresh stamp.
+    const userRow = client.db
+      .select()
+      .from(modelCatalog)
+      .where(eq(modelCatalog.modelId, 'shared-id-user'))
+      .get();
+    expect(userRow?.source).toBe('user');
+    expect(userRow?.displayName).toBe('User Row');
+    expect(userRow?.inputCostPerMtokMicrocents).toBe(999);
+    expect(userRow?.contextWindowTokens).toBe(8000);
+    expect(userRow?.lastRefreshedAt).toBeNull();
+
+    // The static media-seed row is untouched: media routing intact.
+    const staticRow = client.db
+      .select()
+      .from(modelCatalog)
+      .where(eq(modelCatalog.modelId, 'shared-id-static'))
+      .get();
+    expect(staticRow?.source).toBe('static');
+    expect(staticRow?.mediaSurface).toBe('generative');
+    expect(staticRow?.displayName).toBe('Static Seed');
+    expect(store.resolveMediaSurface('shared-id-static')).toBe('generative');
+
+    // Only the genuinely new id becomes a live row.
+    const brandNew = store.listByProvider(providerId).find((m) => m.modelId === 'brand-new-live');
+    expect(brandNew?.source).toBe('live');
+    expect(brandNew?.lastRefreshedAt).toBe(REFRESH_TS);
+  });
+
+  it('providerRefreshedAt returns the max live stamp, or undefined when no live rows exist', () => {
+    expect(store.providerRefreshedAt(providerId)).toBeUndefined(); // empty provider
+    // A static seed alone does NOT count — only source='live' rows contribute.
+    store.upsert({
+      providerId,
+      modelId: 'seed',
+      displayName: 'Seed',
+      contextWindowTokens: 100,
+      maxOutputTokens: 50,
+    });
+    expect(store.providerRefreshedAt(providerId)).toBeUndefined();
+    const T1 = TS_MS + 1000;
+    store.replaceProviderModels(providerId, [{ modelId: 'm1', displayName: 'M1' }], T1);
+    expect(store.providerRefreshedAt(providerId)).toBe(T1);
+    const T2 = TS_MS + 9999;
+    store.replaceProviderModels(
+      providerId,
+      [
+        { modelId: 'm1', displayName: 'M1' },
+        { modelId: 'm2', displayName: 'M2' },
+      ],
+      T2,
+    );
+    expect(store.providerRefreshedAt(providerId)).toBe(T2);
+  });
+
+  it('an empty live list soft-deactivates all of a provider live rows (never touches user/static)', () => {
+    store.upsert({
+      providerId,
+      modelId: 'keep-static',
+      displayName: 'Keep',
+      contextWindowTokens: 100,
+      maxOutputTokens: 50,
+    });
+    store.replaceProviderModels(
+      providerId,
+      [{ modelId: 'gone', displayName: 'Gone', contextWindowTokens: 1, maxOutputTokens: 1 }],
+      TS_MS + 1,
+    );
+    expect(store.listByProvider(providerId).map((m) => m.modelId)).toEqual(['gone', 'keep-static']);
+    // A refresh returning nothing — the whole live set vanishes; the static row survives.
+    store.replaceProviderModels(providerId, [], TS_MS + 2);
+    expect(store.listByProvider(providerId).map((m) => m.modelId)).toEqual(['keep-static']);
+    expect(store.providerRefreshedAt(providerId)).toBeUndefined(); // no active live rows left
+  });
+
+  it('listAll spans providers, active + non-deleted only, ordered by model id', () => {
+    const otherProviderId = providerStore.upsert({
+      name: 'anthropic',
+      displayName: 'Anthropic',
+      baseUrl: 'https://api.anthropic.com',
+    }).id;
+    store.replaceProviderModels(
+      providerId,
+      [{ modelId: 'zzz-openai', displayName: 'Z' }],
+      TS_MS + 1,
+    );
+    store.replaceProviderModels(
+      otherProviderId,
+      [{ modelId: 'aaa-claude', displayName: 'A' }],
+      TS_MS + 1,
+    );
+    expect(store.listAll().map((m) => m.modelId)).toEqual(['aaa-claude', 'zzz-openai']);
+  });
+
+  it('fail-closed: a tampered source value degrades to static at the read boundary (coerceModelCatalogSource)', () => {
+    store.replaceProviderModels(
+      providerId,
+      [{ modelId: 'm1', displayName: 'M1', contextWindowTokens: 100, maxOutputTokens: 50 }],
+      TS_MS + 1,
+    );
+    client.sqlite.prepare("UPDATE model_catalog SET source = 'bogus' WHERE model_id = ?").run('m1');
+    expect(store.listByProvider(providerId).find((m) => m.modelId === 'm1')?.source).toBe('static');
+  });
+
+  it('the media-routing reader is unaffected by a coexisting live refresh', () => {
+    store.upsert({
+      providerId,
+      modelId: 'imagen',
+      displayName: 'Imagen',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'generative',
+      mediaImageCostMicrocents: 5000,
+    });
+    store.replaceProviderModels(
+      providerId,
+      [
+        {
+          modelId: 'text-model',
+          displayName: 'Text',
+          contextWindowTokens: 1000,
+          maxOutputTokens: 500,
+        },
+      ],
+      TS_MS + 1,
+    );
+    expect(store.resolveMediaSurface('imagen')).toBe('generative');
+    expect(store.resolveMediaSurface('text-model')).toBe('chat'); // a live row defaults to the chat surface
+    const rec = store.getByModelId('imagen');
+    expect(rec?.mediaSurface).toBe('generative');
+    expect(rec?.mediaImageCostMicrocents).toBe(5000);
+  });
+});
