@@ -11,6 +11,7 @@ import {
   type AbortSignalLike,
   type ContentPart,
   mediaModalityOf,
+  type ReasoningEffort,
   type StopReason,
 } from '@relavium/shared';
 
@@ -648,6 +649,17 @@ function toOpenAiTool(toolDef: ToolDef, provider: ProviderId): OpenAI.ChatComple
   return { type: 'function', function: fn };
 }
 
+/** ADR-0066: the normalized reasoning-effort tier → OpenAI's native `reasoning_effort` values. `off`→'none',
+ *  `max`→'xhigh' (its highest); low/medium/high are 1:1. A SUBSET of the SDK's `ReasoningEffort` union, so the
+ *  assignment to `body.reasoning_effort` needs no cast. */
+const OPENAI_REASONING_EFFORT: Record<ReasoningEffort, 'none' | 'low' | 'medium' | 'high' | 'xhigh'> = {
+  off: 'none',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
+  max: 'xhigh',
+};
+
 function toOpenAiToolChoice(choice: ToolChoice): OpenAI.ChatCompletionToolChoiceOption {
   if (choice === 'auto') {
     return 'auto';
@@ -700,6 +712,13 @@ function buildCommonBody(
   }
   if (req.maxTokens !== undefined) {
     body.max_tokens = req.maxTokens;
+  }
+  // ADR-0066: map the normalized reasoning-effort tier to OpenAI's native `reasoning_effort` (also a tier). ONLY for
+  // the `openai` provider — DeepSeek (the other id this shared adapter serves) controls thinking differently (its
+  // own follow-up), so its effort is not sent here. The host gates this to reasoning-capable models (a non-reasoning
+  // model would reject it), and `body` is spread LAST below so this mapped field wins over any providerOptions echo.
+  if (provider === 'openai' && req.reasoningEffort !== undefined) {
+    body.reasoning_effort = OPENAI_REASONING_EFFORT[req.reasoningEffort];
   }
   if (req.stopSequences !== undefined) {
     body.stop = req.stopSequences;

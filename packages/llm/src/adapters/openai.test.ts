@@ -231,6 +231,43 @@ describe('OpenAI-compatible adapter', () => {
     });
   });
 
+  it('maps the reasoning-effort tier to OpenAI reasoning_effort (max→xhigh, off→none, unset omitted); DeepSeek is not mapped (ADR-0066)', async () => {
+    let sent: Record<string, unknown> = {};
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    const base = {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }],
+    };
+    await oai.generate({ ...base, reasoningEffort: 'high' }, 'k');
+    expect(sent['reasoning_effort']).toBe('high');
+    await oai.generate({ ...base, reasoningEffort: 'max' }, 'k');
+    expect(sent['reasoning_effort']).toBe('xhigh'); // `max` → the provider's HIGHEST tier
+    await oai.generate({ ...base, reasoningEffort: 'off' }, 'k');
+    expect(sent['reasoning_effort']).toBe('none');
+    await oai.generate({ ...base }, 'k'); // unset ⇒ omitted (provider default, unchanged behavior)
+    expect('reasoning_effort' in sent).toBe(false);
+
+    // DeepSeek (the other id this shared adapter serves) controls thinking differently — reasoning_effort is NOT sent.
+    let dsSent: Record<string, unknown> = {};
+    const ds = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: (_input, init) => {
+        dsSent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    await ds.generate(
+      { model: 'deepseek-v4-flash', messages: base.messages, reasoningEffort: 'high' },
+      'k',
+    );
+    expect('reasoning_effort' in dsSent).toBe(false);
+  });
+
   it('round-trips inline audio-out: lowers output_modalities → modalities+audio and parses the response (1.AG/ADR-0046)', async () => {
     let sent: Record<string, unknown> = {};
     const adapter = createOpenAiAdapter({

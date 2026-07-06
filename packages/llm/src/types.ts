@@ -8,6 +8,7 @@ import {
   LLM_PROVIDERS,
   MEDIA_BILLED_MODALITIES,
   MEDIA_SURFACES,
+  REASONING_EFFORTS,
   MEDIA_HANDLE_PATTERN,
   MEDIA_MESSAGE_CAPS,
   MediaMimeTypeSchema,
@@ -298,6 +299,11 @@ export const LlmRequestSchema = z.object({
   outputModalities: z.array(z.enum(OUTPUT_MODALITIES)).optional(),
   temperature: z.number().optional(),
   maxTokens: z.number().int().positive().optional(), // required downstream for Anthropic — adapters default it
+  // Normalized, provider-agnostic reasoning-effort TIER (ADR-0066). Each adapter maps it to the provider's native
+  // tier control (OpenAI reasoning_effort, Anthropic output_config effort, Gemini thinking-level, DeepSeek-v4
+  // thinking on/off). Absent ⇒ provider default. On a COLLISION with a providerOptions key the adapter's mapping
+  // wins (canonical last in `{...providerOptions, ...body}`). A non-reasoning model never receives it (host-gated).
+  reasoningEffort: z.enum(REASONING_EFFORTS).optional(),
   stopSequences: z.array(z.string()).optional(),
   signal: abortSignalLikeSchema.optional(),
   providerOptions: z.record(z.string(), z.unknown()).optional(), // typed escape hatch

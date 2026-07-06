@@ -268,6 +268,19 @@ export const LLM_PROVIDERS = ['anthropic', 'openai', 'gemini', 'deepseek'] as co
 export type LlmProviderId = (typeof LLM_PROVIDERS)[number];
 
 /**
+ * The normalized, provider-agnostic **reasoning-effort** tiers ([ADR-0066](../decisions/0066-normalized-reasoning-effort-control.md)).
+ * A closed vocabulary the caller picks; each `@relavium/llm` adapter maps it to its provider's NATIVE tier control
+ * (OpenAI `reasoning_effort`, Anthropic `output_config` effort, Gemini thinking-level, DeepSeek-v4 thinking on/off).
+ * `off` disables reasoning where the provider allows it (an always-on model degrades to the lowest); `low`/`medium`/
+ * `high` map to the matching tier; `max` maps to the provider's HIGHEST available tier. Absent on a request ⇒ the
+ * provider default (unchanged behavior). It rides `LlmRequest.reasoningEffort` (the seam), the authored agent
+ * `reasoning_effort`, and the `[chat].reasoning_effort` config default — all one vocabulary. Owned here (like
+ * {@link STOP_REASONS}/{@link FS_SCOPE_TIERS}) so `@relavium/llm` + `@relavium/core` derive the enum from one home.
+ */
+export const REASONING_EFFORTS = ['off', 'low', 'medium', 'high', 'max'] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+/**
  * The three provider **protocol kinds** (the `kind` abstraction, [ADR-0064] §2) — a closed vocabulary
  * that derives, **once per protocol rather than per provider**, the adapter factory, the list-models
  * endpoint, the auth style, and the response mapper. `anthropic` and `gemini` map 1:1 to their id;
