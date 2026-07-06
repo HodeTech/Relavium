@@ -260,7 +260,7 @@ export const KNOWN_MODEL_IDS: readonly CanonicalModelId[] =
 export function reasoningModelIdHeuristic(model: string): boolean {
   const m = model.toLowerCase();
   if (/^o\d/.test(m)) return true; // OpenAI o-series (o1 / o3 / o4 / o5+) — the entire family reasons
-  if (/^gpt-5/.test(m) && !m.includes('chat')) return true; // the reasoning gpt-5 line (gpt-5-chat is non-reasoning)
+  if (m.startsWith('gpt-5') && !m.includes('chat')) return true; // the reasoning gpt-5 line (gpt-5-chat is non-reasoning)
   if (m.startsWith('claude-opus')) return true; // Claude Opus reasons (extended thinking)
   if (m.includes('thinking')) return true; // an explicit "thinking" model id (e.g. a Gemini thinking variant)
   return false;

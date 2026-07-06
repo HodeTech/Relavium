@@ -79,7 +79,9 @@ describe('resolveConfig', () => {
     const project: ProjectConfig = { chat: { reasoning_effort: 'high' } };
     expect(resolveConfig({ workspace, project }).chat.reasoningEffort).toBe('high'); // project wins
     // A project present but omitting it falls through to workspace (per-field, like the sibling keys).
-    expect(resolveConfig({ workspace, project: { chat: { max_turns: 5 } } }).chat.reasoningEffort).toBe('low');
+    expect(
+      resolveConfig({ workspace, project: { chat: { max_turns: 5 } } }).chat.reasoningEffort,
+    ).toBe('low');
     // Absent everywhere ⇒ undefined (no global-layer fallback — that extra fallback is default_model's alone).
     expect(resolveConfig({}).chat.reasoningEffort).toBeUndefined();
     expect(

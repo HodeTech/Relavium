@@ -55,11 +55,13 @@ export interface ModelPickerState {
    */
   readonly effortStep: boolean;
   /** The model chosen in `'model'` phase, awaiting an effort pick — carried so `'effort'`'s accept emits the pair. */
-  readonly pending: {
-    readonly modelId: string;
-    readonly displayName: string;
-    readonly provider: ProviderId;
-  } | undefined;
+  readonly pending:
+    | {
+        readonly modelId: string;
+        readonly displayName: string;
+        readonly provider: ProviderId;
+      }
+    | undefined;
   /** The highlighted index into {@link REASONING_EFFORTS} while in `'effort'` phase. */
   readonly effortSelected: number;
   /** The session's currently-bound effort (the `✓` in the effort sub-list + the initial highlight); `undefined` ⇒
@@ -130,10 +132,16 @@ function foldArrow(
   visibleCount: number,
 ): ModelPickerStep | undefined {
   if (key.upArrow === true) {
-    return { kind: 'state', state: { ...state, selected: clampSelection(state.selected - 1, visibleCount) } };
+    return {
+      kind: 'state',
+      state: { ...state, selected: clampSelection(state.selected - 1, visibleCount) },
+    };
   }
   if (key.downArrow === true) {
-    return { kind: 'state', state: { ...state, selected: clampSelection(state.selected + 1, visibleCount) } };
+    return {
+      kind: 'state',
+      state: { ...state, selected: clampSelection(state.selected + 1, visibleCount) },
+    };
   }
   return undefined;
 }
@@ -163,6 +171,73 @@ export function foldModelPickerKey(
  * backspace trims the filter; a single printable code point extends the filter (a multi-char paste blob is dropped);
  * every other key stays open.
  */
+/**
+ * `Enter` in the model phase: act on the highlighted model. An empty (over-filtered) list is a gentle close; a
+ * DIMMED (unavailable) model yields `blocked` (non-selectable, ADR §6); a reasoning-capable model on a reseat
+ * surface (`effortStep`) advances to the `'effort'` sub-step opened on the bound effort (else a neutral middle
+ * tier); otherwise it accepts the model.
+ */
+function acceptVisibleModel(
+  state: ModelPickerState,
+  visible: readonly ModelCatalogEntry[],
+): ModelPickerStep {
+  const chosen = visible[clampSelection(state.selected, visible.length)];
+  if (chosen === undefined) return { kind: 'close' }; // an empty list — Enter is a gentle cancel
+  if (!chosen.available) {
+    return {
+      kind: 'blocked',
+      displayName: chosen.displayName,
+      provider: chosen.provider,
+      ...(chosen.unavailableReason !== undefined ? { reason: chosen.unavailableReason } : {}),
+    };
+  }
+  if (state.effortStep && chosen.supportsReasoning) {
+    return {
+      kind: 'state',
+      state: {
+        ...state,
+        phase: 'effort',
+        pending: {
+          modelId: chosen.modelId,
+          displayName: chosen.displayName,
+          provider: chosen.provider,
+        },
+        effortSelected: initialEffortIndex(state.currentEffort),
+        hint: undefined,
+      },
+    };
+  }
+  return {
+    kind: 'accept',
+    modelId: chosen.modelId,
+    displayName: chosen.displayName,
+    provider: chosen.provider,
+  };
+}
+
+/**
+ * Filter editing in the model phase: backspace trims a whole CODE POINT (so an astral char is removed whole — the
+ * other submodes' `dropLastCodePoint` discipline); a single printable code point extends the filter (a multi-char
+ * paste blob is dropped, matching the other submodes); any other key is inert.
+ */
+function foldFilterKey(
+  char: string,
+  key: ModelPickerKey,
+  state: ModelPickerState,
+): ModelPickerStep {
+  if (key.backspace === true || key.delete === true) {
+    if (state.filter.length === 0) return { kind: 'state', state }; // nothing to trim (Esc cancels; backspace is inert)
+    return {
+      kind: 'state',
+      state: { ...state, filter: dropLastCodePoint(state.filter), selected: 0 },
+    };
+  }
+  if ([...char].length === 1 && key.ctrl !== true && key.meta !== true) {
+    return { kind: 'state', state: { ...state, filter: state.filter + char, selected: 0 } };
+  }
+  return { kind: 'state', state };
+}
+
 function foldModelPhaseKey(
   char: string,
   key: ModelPickerKey,
@@ -178,53 +253,8 @@ function foldModelPhaseKey(
   const visible = visibleModels(state);
   const arrow = foldArrow(key, state, visible.length);
   if (arrow !== undefined) return arrow;
-  if (key.return === true) {
-    const chosen = visible[clampSelection(state.selected, visible.length)];
-    if (chosen === undefined) return { kind: 'close' }; // an empty list — Enter is a gentle cancel
-    if (!chosen.available) {
-      return {
-        kind: 'blocked',
-        displayName: chosen.displayName,
-        provider: chosen.provider,
-        ...(chosen.unavailableReason !== undefined ? { reason: chosen.unavailableReason } : {}),
-      };
-    }
-    // A reasoning-capable model on a reseat surface advances to the effort sub-step (ADR-0066) instead of accepting
-    // immediately; the sub-list opens on the session's bound effort (else a neutral middle tier).
-    if (state.effortStep && chosen.supportsReasoning) {
-      return {
-        kind: 'state',
-        state: {
-          ...state,
-          phase: 'effort',
-          pending: {
-            modelId: chosen.modelId,
-            displayName: chosen.displayName,
-            provider: chosen.provider,
-          },
-          effortSelected: initialEffortIndex(state.currentEffort),
-          hint: undefined,
-        },
-      };
-    }
-    return {
-      kind: 'accept',
-      modelId: chosen.modelId,
-      displayName: chosen.displayName,
-      provider: chosen.provider,
-    };
-  }
-  if (key.backspace === true || key.delete === true) {
-    if (state.filter.length === 0) return { kind: 'state', state }; // nothing to trim (Esc cancels; backspace is inert)
-    // Trim by whole CODE POINT so backspacing an astral char removes it whole (no lone surrogate) — same discipline
-    // as the other submodes' `dropLastCodePoint`.
-    return { kind: 'state', state: { ...state, filter: dropLastCodePoint(state.filter), selected: 0 } };
-  }
-  // A single printable code point extends the filter (a multi-char paste blob is dropped); any other key stays open.
-  if ([...char].length === 1 && key.ctrl !== true && key.meta !== true) {
-    return { kind: 'state', state: { ...state, filter: state.filter + char, selected: 0 } };
-  }
-  return { kind: 'state', state };
+  if (key.return === true) return acceptVisibleModel(state, visible);
+  return foldFilterKey(char, key, state);
 }
 
 /**
@@ -251,7 +281,8 @@ function foldEffortPhaseKey(
   }
   if (key.return === true) {
     const pending = state.pending;
-    const effort = REASONING_EFFORTS[clampSelection(state.effortSelected, REASONING_EFFORTS.length)];
+    const effort =
+      REASONING_EFFORTS[clampSelection(state.effortSelected, REASONING_EFFORTS.length)];
     // Defensive: a missing pending model (never expected — set on the transition) or an out-of-range tier backs out
     // to the model list rather than emitting a malformed accept.
     if (pending === undefined || effort === undefined) {
@@ -269,23 +300,9 @@ function foldEffortPhaseKey(
 }
 
 /** The effort sub-list's opening highlight: the session's bound effort, else a neutral middle tier (`'medium'`). */
-function initialEffortIndex(currentEffort: ReasoningEffort | undefined): number {
-  const target = currentEffort ?? 'medium';
-  const index = REASONING_EFFORTS.indexOf(target);
-  return index < 0 ? 0 : index;
+function initialEffortIndex(currentEffort: ReasoningEffort = 'medium'): number {
+  return Math.max(0, REASONING_EFFORTS.indexOf(currentEffort));
 }
-
-/**
- * The one-line hint shown beside each reasoning-effort tier in the effort sub-list (ADR-0066). Display-only, so the
- * picker explains what each tier trades off (latency/cost vs depth) without the user consulting the docs.
- */
-export const EFFORT_TIER_HINT: Record<ReasoningEffort, string> = {
-  off: 'no reasoning — fastest, lowest cost',
-  low: 'brief reasoning',
-  medium: 'balanced reasoning',
-  high: 'deep reasoning',
-  max: 'maximum reasoning — slowest, highest cost',
-};
 
 /* -------------------------------------------------------------------------------------------------- *
  * Pure display formatters (unit-tested; the ink view is not render-tested, per the repo convention).
@@ -342,9 +359,7 @@ export function formatRefreshedBadge(refreshedAt: number | undefined, now: numbe
  * kept last-known rows (ADR-0064 §8: drift/failure is visible, non-fatal). The per-provider `error` strings are
  * already seam-redacted; this joins only the provider ids, never an error body.
  */
-export function partialFailureBanner(
-  failedProviders: readonly string[],
-): string | undefined {
+export function partialFailureBanner(failedProviders: readonly string[]): string | undefined {
   if (failedProviders.length === 0) return undefined;
   const list = failedProviders.join(', ');
   return `couldn't refresh ${list} — showing last-known models`;

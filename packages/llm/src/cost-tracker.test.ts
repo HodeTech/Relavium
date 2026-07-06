@@ -251,9 +251,9 @@ describe('user-pricing overlay (2.5.G S10, ADR-0065 §2)', () => {
 
   it('CostTracker WITHOUT an overlay throws on the same unknown model (degrades loudly, never a silent 0)', () => {
     const tracker = new CostTracker();
-    expect(() => tracker.record('acme-custom-1', { inputTokens: 1000, outputTokens: 500 })).toThrowError(
-      UnknownModelError,
-    );
+    expect(() =>
+      tracker.record('acme-custom-1', { inputTokens: 1000, outputTokens: 500 }),
+    ).toThrowError(UnknownModelError);
   });
 });
 

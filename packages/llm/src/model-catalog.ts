@@ -98,11 +98,109 @@ interface Tiers {
 
 /** The earlier of two optional ISO dates (their "union" for deprecation), skipping any that fails to parse. */
 function earlierIsoDate(a: string | undefined, b: string | undefined): string | undefined {
-  const pa = a === undefined ? NaN : Date.parse(a);
-  const pb = b === undefined ? NaN : Date.parse(b);
+  const pa = a === undefined ? Number.NaN : Date.parse(a);
+  const pb = b === undefined ? Number.NaN : Date.parse(b);
   if (Number.isNaN(pa)) return Number.isNaN(pb) ? undefined : b;
   if (Number.isNaN(pb)) return a;
   return pa <= pb ? a : b;
+}
+
+/** The pricing provenance for a merged entry: the registry wins, then the user tier, else none (ADR-0064 §6). */
+function pricingSourceOf(t: Tiers): PricingSource {
+  if (t.registry) return 'registry';
+  if (t.user) return 'user';
+  return 'none';
+}
+
+/**
+ * Availability + its reason (2.5.G key-awareness). Key gate FIRST: a provider absent from `keyedProviders` has no
+ * resolvable key, so its model is genuinely uncallable → unavailable with an actionable `'no-key'` reason,
+ * regardless of live/static presence. A KEYED provider keeps the pre-existing rule: live-list membership when it
+ * has live data (a static model absent from the list is `'not-on-key'`-dimmed), else static presence (the ADR-0064
+ * §6 "never everything unavailable" safe default — PRESERVED, but now only for a KEYED provider). `keyedProviders`
+ * ABSENT ⇒ not key-gated (every provider treated as keyed): the `available` BOOLEAN is unchanged from pre-change;
+ * the only new output is the additive `'not-on-key'` reason on a live-omitted static model — informational.
+ */
+function resolveAvailability(
+  t: Tiers,
+  live: ReadonlyMap<ProviderId, readonly ModelListing[]>,
+  keyedProviders: ReadonlySet<ProviderId> | undefined,
+): { available: boolean; unavailableReason?: 'no-key' | 'not-on-key' } {
+  const providerKeyed = keyedProviders === undefined || keyedProviders.has(t.provider);
+  if (!providerKeyed) return { available: false, unavailableReason: 'no-key' };
+  if (live.has(t.provider)) {
+    return t.live !== undefined
+      ? { available: true }
+      : { available: false, unavailableReason: 'not-on-key' };
+  }
+  return { available: true };
+}
+
+/** Build the tier map (registry ⋈ live ⋈ user). A listing/price whose id COLLIDES with a model already anchored to
+ *  a DIFFERENT provider is IGNORED, so a mis-keyed or custom-endpoint rogue id can never corrupt an unrelated entry
+ *  (model ids are globally unique in practice). */
+function buildTiers(
+  live: ReadonlyMap<ProviderId, readonly ModelListing[]>,
+  userPricing: ReadonlyMap<string, ModelPricing>,
+): Map<string, Tiers> {
+  const tiers = new Map<string, Tiers>();
+  for (const [id, registry] of Object.entries(MODEL_PRICING) as [string, ModelPricing][]) {
+    tiers.set(id, { provider: registry.provider, registry });
+  }
+  for (const [provider, listings] of live) {
+    for (const listing of listings) {
+      const prev = tiers.get(listing.id);
+      if (prev !== undefined && prev.provider !== provider) continue; // cross-provider id collision — drop
+      tiers.set(listing.id, { ...prev, provider: prev?.provider ?? provider, live: listing });
+    }
+  }
+  for (const [id, pricing] of userPricing) {
+    const prev = tiers.get(id);
+    if (prev !== undefined && prev.provider !== pricing.provider) continue; // cross-provider id collision — drop
+    tiers.set(id, { ...prev, provider: prev?.provider ?? pricing.provider, user: pricing });
+  }
+  return tiers;
+}
+
+/** Reconcile one tier-set into a catalog entry (ADR-0064 §6 per-field precedence). */
+function buildEntry(
+  modelId: string,
+  t: Tiers,
+  input: MergeModelCatalogInput,
+  live: ReadonlyMap<ProviderId, readonly ModelListing[]>,
+): ModelCatalogEntry {
+  const pricing = t.registry ?? t.user; // registry wins for a known id; user fills an unknown one.
+  const pricingSource = pricingSourceOf(t);
+  const contextWindowTokens =
+    t.live?.contextWindowTokens ?? t.registry?.contextWindowTokens ?? t.user?.contextWindowTokens;
+  const maxOutputTokens =
+    t.live?.maxOutputTokens ?? t.registry?.maxOutputTokens ?? t.user?.maxOutputTokens;
+  const { available, unavailableReason } = resolveAvailability(t, live, input.keyedProviders);
+  const deprecatedAt = earlierIsoDate(
+    earlierIsoDate(t.registry?.deprecatedAt, t.live?.deprecatedAt),
+    t.user?.deprecatedAt,
+  );
+  const parsedDeprecation = deprecatedAt === undefined ? Number.NaN : Date.parse(deprecatedAt);
+  const deprecated = !Number.isNaN(parsedDeprecation) && parsedDeprecation <= input.now;
+  return {
+    modelId,
+    provider: t.provider,
+    displayName: t.registry?.displayName ?? t.live?.displayName ?? t.user?.displayName ?? modelId,
+    ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+    ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+    ...(pricing !== undefined ? { pricing } : {}),
+    pricingSource,
+    priceKnown: pricingSource !== 'none',
+    available,
+    ...(unavailableReason !== undefined ? { unavailableReason } : {}),
+    deprecated,
+    ...(deprecatedAt !== undefined ? { deprecatedAt } : {}),
+    // Reasoning capability via the SAME authority as the engine gate (ADR-0066 §4): the registry flag for a known
+    // id (authoritative — true or false), else the conservative id heuristic for a live-discovered id. So the
+    // picker's effort sub-step lights up exactly for the models the engine will actually honor — including a newly
+    // released reasoning family member absent from the registry.
+    supportsReasoning: modelSupportsReasoning(modelId),
+  };
 }
 
 /**
@@ -115,86 +213,10 @@ function earlierIsoDate(a: string | undefined, b: string | undefined): string | 
 export function mergeModelCatalog(input: MergeModelCatalogInput): ModelCatalogEntry[] {
   const live = input.live ?? new Map<ProviderId, readonly ModelListing[]>();
   const userPricing = input.userPricing ?? new Map<string, ModelPricing>();
-  const tiers = new Map<string, Tiers>();
-
-  // Registry tier — every static model.
-  for (const [id, registry] of Object.entries(MODEL_PRICING) as [string, ModelPricing][]) {
-    tiers.set(id, { provider: registry.provider, registry });
-  }
-  // Live tier — per provider present in the map. The map key is authoritative for a live-only id's provider.
-  // A listing whose id COLLIDES with a model already anchored to a DIFFERENT provider is IGNORED, so a live
-  // list fetched under one provider key can never overwrite another provider's static context/output/name/
-  // deprecation (model ids are globally unique in practice; this guard keeps a mis-keyed or custom-endpoint
-  // rogue id from corrupting an unrelated entry).
-  for (const [provider, listings] of live) {
-    for (const listing of listings) {
-      const prev = tiers.get(listing.id);
-      if (prev !== undefined && prev.provider !== provider) continue; // cross-provider id collision — drop
-      tiers.set(listing.id, { ...prev, provider: prev?.provider ?? provider, live: listing });
-    }
-  }
-  // User tier — fills an unknown id; a known id keeps its registry provider. Same cross-provider guard.
-  for (const [id, pricing] of userPricing) {
-    const prev = tiers.get(id);
-    if (prev !== undefined && prev.provider !== pricing.provider) continue; // cross-provider id collision — drop
-    tiers.set(id, { ...prev, provider: prev?.provider ?? pricing.provider, user: pricing });
-  }
-
+  const tiers = buildTiers(live, userPricing);
   const entries: ModelCatalogEntry[] = [];
   for (const [modelId, t] of tiers) {
-    const pricing = t.registry ?? t.user; // registry wins for a known id; user fills an unknown one.
-    const pricingSource: PricingSource = t.registry ? 'registry' : t.user ? 'user' : 'none';
-    const contextWindowTokens =
-      t.live?.contextWindowTokens ?? t.registry?.contextWindowTokens ?? t.user?.contextWindowTokens;
-    const maxOutputTokens =
-      t.live?.maxOutputTokens ?? t.registry?.maxOutputTokens ?? t.user?.maxOutputTokens;
-    // Availability (2.5.G key-awareness). Key gate FIRST: a provider absent from `keyedProviders` has no
-    // resolvable key, so its model is genuinely uncallable → unavailable with an actionable `'no-key'` reason,
-    // regardless of live/static presence. A KEYED provider keeps the pre-existing rule: live-list membership when
-    // it has live data (a static model absent from the list is `'not-on-key'`-dimmed), else static presence (the
-    // ADR-0064 §6 "never everything unavailable" safe default — PRESERVED, but now only for a KEYED provider).
-    // `keyedProviders` ABSENT ⇒ not key-gated (every provider treated as keyed): the `available` BOOLEAN is
-    // unchanged from pre-change; the only new output is the additive-optional `unavailableReason` (`'not-on-key'`
-    // on a live-omitted static model) — informational, and the sole live-data-passing caller passes keyedProviders.
-    const providerKeyed =
-      input.keyedProviders === undefined || input.keyedProviders.has(t.provider);
-    let available: boolean;
-    let unavailableReason: 'no-key' | 'not-on-key' | undefined;
-    if (!providerKeyed) {
-      available = false;
-      unavailableReason = 'no-key';
-    } else if (live.has(t.provider)) {
-      available = t.live !== undefined;
-      if (!available) unavailableReason = 'not-on-key';
-    } else {
-      available = true;
-    }
-    const deprecatedAt = earlierIsoDate(
-      earlierIsoDate(t.registry?.deprecatedAt, t.live?.deprecatedAt),
-      t.user?.deprecatedAt,
-    );
-    const parsedDeprecation = deprecatedAt === undefined ? NaN : Date.parse(deprecatedAt);
-    const deprecated = !Number.isNaN(parsedDeprecation) && parsedDeprecation <= input.now;
-
-    entries.push({
-      modelId,
-      provider: t.provider,
-      displayName: t.registry?.displayName ?? t.live?.displayName ?? t.user?.displayName ?? modelId,
-      ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
-      ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-      ...(pricing !== undefined ? { pricing } : {}),
-      pricingSource,
-      priceKnown: pricingSource !== 'none',
-      available,
-      ...(unavailableReason !== undefined ? { unavailableReason } : {}),
-      deprecated,
-      ...(deprecatedAt !== undefined ? { deprecatedAt } : {}),
-      // Reasoning capability via the SAME authority as the engine gate (ADR-0066 §4): the registry flag for a known
-      // id (authoritative — true or false), else the conservative id heuristic for a live-discovered id. So the
-      // picker's effort sub-step lights up exactly for the models the engine will actually honor — including a newly
-      // released reasoning family member absent from the registry.
-      supportsReasoning: modelSupportsReasoning(modelId),
-    });
+    entries.push(buildEntry(modelId, t, input, live));
   }
 
   // Order (maintainer, 2.5.G): AVAILABLE (selectable) models FIRST, then the dimmed/unavailable ones — each group

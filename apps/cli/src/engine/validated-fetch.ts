@@ -19,9 +19,11 @@ import {
  * **Streaming-safe:** `connectValidated` returns a LIVE `AsyncIterable` body (it never buffers — `readBounded` is
  * a separate helper), which this wraps in a **backpressure-aware** `ReadableStream`, so an SSE completion streams
  * chunk-by-chunk. It deliberately does NOT wrap the call in `withEgressTimeout` — that would abort a long-lived
- * stream at a fixed deadline; the caller's `AbortSignal` (the OpenAI SDK's own timeout, `boundedListModels`'s 15s,
- * `validateProviderKey`'s 10s) is threaded straight through and tears the socket down on connect AND during
- * streaming. Every escaping error is normalized to a reason-only `SafeEgressError` (never the url/IP/host/key) —
+ * stream at a fixed working deadline; the caller's `AbortSignal` (the OpenAI SDK's own timeout, `boundedListModels`'s
+ * 15s, `validateProviderKey`'s 10s) drives cancellation and tears the socket down on connect AND during streaming.
+ * A caller signal is only composed (`AbortSignal.any`) with a very generous, no-op-in-practice ceiling
+ * ({@link DEFAULT_EGRESS_CEILING_MS}) that backstops a signal-less / never-firing caller against an infinite hang —
+ * it sits far above every real deadline, so it never clips normal streaming. Every escaping error is normalized to a reason-only `SafeEgressError` (never the url/IP/host/key) —
  * `connectValidated`'s own throws already are, and a raw resolver/socket fault (a DNS error carries the non-secret
  * hostname) is re-wrapped here. The `Authorization` key rides the request headers to the endpoint (as the API
  * requires) but is never logged. The `EgressDeps` (DNS + connect) are injectable so the SSRF policy is
@@ -77,13 +79,20 @@ const EGRESS_METHODS = ['GET', 'POST', 'PUT', 'DELETE'] as const satisfies reado
 const isEgressMethod = (method: string): method is EgressMethod =>
   (EGRESS_METHODS as readonly string[]).includes(method);
 
+/** Resolve the request URL string from a `Request`, a `URL`, or a raw string input (no nested ternary). */
+function inputToUrl(input: string | URL | Request): string {
+  if (input instanceof Request) return input.url;
+  if (typeof input === 'string') return input;
+  return input.href;
+}
+
 /** Resolve the url / method / headers / body / signal from either a `Request` or a `(url, init)` pair. */
 async function normalizeRequest(
   input: string | URL | Request,
   init: RequestInit | undefined,
 ): Promise<NormalizedRequest> {
   const isRequest = input instanceof Request;
-  const url = isRequest ? input.url : typeof input === 'string' ? input : input.href;
+  const url = inputToUrl(input);
   const rawMethod = (init?.method ?? (isRequest ? input.method : 'GET')).toUpperCase();
   if (!isEgressMethod(rawMethod)) {
     // The OpenAI SDK uses only GET (models.list) + POST (completions); refuse anything else loudly rather than
@@ -92,8 +101,23 @@ async function normalizeRequest(
   }
   const headers = headersToRecord(init?.headers ?? (isRequest ? input.headers : undefined));
   const body = await bodyToString(init?.body ?? (isRequest ? input.body : undefined));
-  const signal = init?.signal ?? (isRequest ? input.signal : undefined) ?? new AbortController().signal;
+  const signal = composeEgressSignal(init?.signal ?? (isRequest ? input.signal : undefined));
   return { url, method: rawMethod, headers, body, signal };
+}
+
+/** A very generous backstop deadline (NOT a working timeout). A signal-less — or a never-firing — caller would
+ *  otherwise ride an unowned `AbortController` signal that never aborts, so the request could hang forever. This
+ *  ceiling sits far ABOVE every real caller deadline (the OpenAI SDK's own request timeout, `boundedListModels`'s
+ *  15s, `validateProviderKey`'s 10s) and above any normal streamed completion, so a real caller's (shorter) signal
+ *  always wins in practice — it never clips normal long-lived streaming, it only backstops a pathological hang. */
+const DEFAULT_EGRESS_CEILING_MS = 15 * 60_000; // 15 minutes — a backstop, not a working deadline
+
+/** Compose the caller's `AbortSignal` (if any) with the generous {@link DEFAULT_EGRESS_CEILING_MS} backstop.
+ *  `AbortSignal.timeout`'s timer is unref'd, so the ceiling never keeps the process alive after a fast call, and
+ *  a caller-provided signal still drives cancellation on connect AND during streaming (it fires long before this). */
+function composeEgressSignal(callerSignal: AbortSignal | undefined): AbortSignal {
+  const ceiling = AbortSignal.timeout(DEFAULT_EGRESS_CEILING_MS);
+  return callerSignal === undefined ? ceiling : AbortSignal.any([callerSignal, ceiling]);
 }
 
 /** Flatten a `RequestInit['headers']` (Headers | record | pairs) to a plain record; connectValidated re-sanitizes it.
@@ -177,7 +201,13 @@ function hopBodyToStream(hop: HopResponse): ReadableStream<Uint8Array> {
     },
     cancel() {
       dispose();
-      void iterator.return?.(undefined);
+      // Best-effort iterator cleanup — a `return()` rejection must never escape `cancel()` (and must not float).
+      const returned = iterator.return?.(undefined);
+      if (returned !== undefined) {
+        returned.catch(() => {
+          // ignore — cancel is best-effort and must not throw
+        });
+      }
     },
   });
 }

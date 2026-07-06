@@ -118,9 +118,7 @@ export interface OnboardingDeps {
  * bare Home offers the wizard. A run with EITHER a keychain key or an env key is NOT key-less (no wizard) — so a
  * working env-key user is never nagged, and the env fallback IS the resolver's built-in key import.
  */
-export function isProviderKeyless(
-  resolver: Pick<ProviderResolver, 'keyFor' | 'hasKey'>,
-): boolean {
+export function isProviderKeyless(resolver: Pick<ProviderResolver, 'keyFor' | 'hasKey'>): boolean {
   return !KNOWN_PROVIDER_IDS.some((id) => providerHasKey(resolver, id));
 }
 
@@ -188,7 +186,13 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
         readSecret: () => Promise.resolve(keyToStore),
         // `global` is read only by `provider list --json`; `set-key` never touches it — a throwaway (the wizard is
         // always interactive, never `--json`).
-        global: { json: false, color: false, cwd: process.cwd(), configPath: undefined, verbosity: 'normal' },
+        global: {
+          json: false,
+          color: false,
+          cwd: process.cwd(),
+          configPath: undefined,
+          verbosity: 'normal',
+        },
       },
     );
   } catch (err) {
@@ -285,31 +289,9 @@ async function validateWithRetry(
     }
     if (res.ok) return { keyToStore, verified: true };
 
-    // The order + the pre-highlighted (bare-Enter) option depend on the CAUSE: a TRANSIENT (`network` — offline /
-    // timeout / rate-limit / overloaded) failure defaults to "save it anyway" (don't block an offline first-run);
-    // a non-transient failure (a rejected key, a billing/account issue, or an unexpected fault) defaults to
-    // "re-enter". `res.detail` (already key-redacted, and it names the specific reason, e.g. `invalid_api_key`) is
-    // the neutral evidence — we do NOT assert "the key is bad" for the non-network case, since a 402/400 may mean
-    // billing or a stale test model rather than a wrong key.
     const isTransient = res.reason === 'network';
     const displayName = KNOWN_PROVIDERS[provider].displayName;
-    const choice = await p.select({
-      message: isTransient
-        ? `Couldn't reach ${displayName} to verify — you may be offline or it's busy (${res.detail}).`
-        : `Couldn't verify your ${displayName} key (${res.detail}).`,
-      options: isTransient
-        ? [
-            { value: 'continue', label: 'Save it anyway', hint: 'verify later with /doctor' },
-            { value: 'retry', label: 'Enter a different key' },
-            { value: 'skip', label: 'Skip setup' },
-          ]
-        : [
-            { value: 'retry', label: 'Enter a new key' },
-            { value: 'continue', label: 'Save it anyway', hint: 'fix it later with /doctor' },
-            { value: 'skip', label: 'Skip setup' },
-          ],
-      initialValue: isTransient ? 'continue' : 'retry',
-    });
+    const choice = await p.select(buildRetryPrompt(isTransient, displayName, res.detail));
     if (p.isCancel(choice) || choice === 'skip') {
       skip(p);
       return null;
@@ -329,6 +311,38 @@ async function validateWithRetry(
     }
     keyToStore = again.trim();
   }
+}
+
+/**
+ * Build the failed-key retry prompt (the `p.select` payload). The order + the pre-highlighted (bare-Enter) option
+ * depend on the CAUSE: a TRANSIENT (`network` — offline / timeout / rate-limit / overloaded) failure defaults to
+ * "save it anyway" (don't block an offline first-run); a non-transient failure (a rejected key, a billing/account
+ * issue, or an unexpected fault) defaults to "re-enter". `detail` (already key-redacted, and it names the specific
+ * reason, e.g. `invalid_api_key`) is the neutral evidence — we do NOT assert "the key is bad" for the non-network
+ * case, since a 402/400 may mean billing or a stale test model rather than a wrong key.
+ */
+function buildRetryPrompt(
+  isTransient: boolean,
+  displayName: string,
+  detail: string,
+): Parameters<ClackOnboardingDeps['select']>[0] {
+  return {
+    message: isTransient
+      ? `Couldn't reach ${displayName} to verify — you may be offline or it's busy (${detail}).`
+      : `Couldn't verify your ${displayName} key (${detail}).`,
+    options: isTransient
+      ? [
+          { value: 'continue', label: 'Save it anyway', hint: 'verify later with /doctor' },
+          { value: 'retry', label: 'Enter a different key' },
+          { value: 'skip', label: 'Skip setup' },
+        ]
+      : [
+          { value: 'retry', label: 'Enter a new key' },
+          { value: 'continue', label: 'Save it anyway', hint: 'fix it later with /doctor' },
+          { value: 'skip', label: 'Skip setup' },
+        ],
+    initialValue: isTransient ? 'continue' : 'retry',
+  };
 }
 
 /** The cancel/skip exit: a friendly pointer to the manual path, then hand off to the Home. */

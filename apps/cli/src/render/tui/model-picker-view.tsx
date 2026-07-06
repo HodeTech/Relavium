@@ -1,11 +1,11 @@
 import { Box, Text } from 'ink';
 import type { ReactElement, ReactNode } from 'react';
 
-import { REASONING_EFFORTS } from '@relavium/shared';
+import type { ModelCatalogEntry } from '@relavium/llm';
+import { EFFORT_TIER_HINT, REASONING_EFFORTS } from '@relavium/shared';
 
 import { sanitizeInline } from './chat-projection.js';
 import {
-  EFFORT_TIER_HINT,
   formatContextWindow,
   formatModelPrice,
   formatRefreshedBadge,
@@ -44,6 +44,26 @@ export function modelWindow(count: number, selected: number): { start: number; e
   return { start, end: start + MODEL_WINDOW };
 }
 
+/** The "unavailable" reason chip(s) for a row (2.5.G key-awareness): a keyless provider names the remedy; a keyed
+ *  provider whose live list omits the model shows the pre-existing "not on your key". Empty when available. */
+function unavailableParts(entry: ModelCatalogEntry): string[] {
+  if (entry.available) return [];
+  if (entry.unavailableReason === 'no-key') return [`no key for ${entry.provider}`];
+  return ['unavailable on your key'];
+}
+
+/** The row color: selected → cyan (the highlight wins for visibility); else an unavailable/deprecated row is
+ *  dimmed; else the default (no color props). */
+function rowColorFor(
+  entry: ModelCatalogEntry,
+  isSelected: boolean,
+  color: boolean,
+): ReturnType<typeof colorProps> | ReturnType<typeof dimProps> {
+  if (isSelected) return colorProps(color, 'cyan');
+  if (!entry.available || entry.deprecated) return dimProps(color);
+  return {};
+}
+
 /**
  * The `'effort'` sub-list (ADR-0066) — the reasoning-effort tiers for the model chosen in the `'model'` phase. A
  * fixed five-row list (no scroll window needed): each tier + its one-line hint, the highlighted row in cyan, a `✓`
@@ -53,7 +73,8 @@ export function modelWindow(count: number, selected: number): { start: number; e
 function EffortSubList(props: Readonly<{ state: ModelPickerState; color: boolean }>): ReactElement {
   const { state, color } = props;
   const selected = Math.max(0, Math.min(state.effortSelected, REASONING_EFFORTS.length - 1));
-  const forModel = state.pending === undefined ? '' : ` · ${sanitizeInline(state.pending.displayName)}`;
+  const forModel =
+    state.pending === undefined ? '' : ` · ${sanitizeInline(state.pending.displayName)}`;
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
@@ -85,7 +106,8 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
   const visible = visibleModels(state);
   // Clamp the highlight for display — a refresh can shrink the list under a `selected` past the new end until the
   // next keystroke re-clamps (foldModelPickerKey clamps on move).
-  const selected = visible.length === 0 ? 0 : Math.max(0, Math.min(state.selected, visible.length - 1));
+  const selected =
+    visible.length === 0 ? 0 : Math.max(0, Math.min(state.selected, visible.length - 1));
   const { start, end } = modelWindow(visible.length, selected);
   const windowed = visible.slice(start, end);
   const badge = `${formatRefreshedBadge(state.refreshedAt, nowMs)}${state.loading ? ' · refreshing…' : ''}`;
@@ -124,21 +146,10 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
         entry.provider,
         ...(ctx.length > 0 ? [ctx] : []),
         formatModelPrice(entry),
-        // Distinguish the two unavailable reasons (2.5.G key-awareness): a keyless provider names the remedy,
-        // vs the pre-existing "not on your key" (a keyed provider whose live list omits the model).
-        ...(entry.available
-          ? []
-          : entry.unavailableReason === 'no-key'
-            ? [`no key for ${entry.provider}`]
-            : ['unavailable on your key']),
+        ...unavailableParts(entry),
         ...(entry.deprecated ? ['deprecated'] : []),
       ];
-      // Selected → cyan (highlight wins for visibility); else an unavailable/deprecated row is dimmed; else default.
-      const rowColor = isSelected
-        ? colorProps(color, 'cyan')
-        : !entry.available || entry.deprecated
-          ? dimProps(color)
-          : {};
+      const rowColor = rowColorFor(entry, isSelected, color);
       return (
         <Text key={`${entry.provider}:${entry.modelId}`} {...rowColor} wrap="truncate-end">
           {`${isSelected ? '›' : ' '} ${isDefault ? '✓' : ' '} ${parts.join(' · ')}`}

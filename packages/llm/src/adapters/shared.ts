@@ -255,6 +255,33 @@ export function assertListModelsShape(
 }
 
 /**
+ * Resolve the base {@link LlmError} for a failed {@link boundedListModels} race, BEFORE the final redact +
+ * `cause`-strip re-wrap. A timeout wins first; then a pre-classified error (the §8 drift throw, or any
+ * adapter-side `LlmProviderError`) passes THROUGH with its own `kind` — never re-run through `classify`
+ * (which would flatten a `bad_request` drift throw to `unknown`); otherwise the adapter classifier runs.
+ */
+function resolveListModelsError(params: {
+  readonly provider: ProviderId;
+  readonly err: unknown;
+  readonly timedOut: boolean;
+  readonly timeoutMs: number;
+  readonly classify: (err: unknown) => LlmError;
+}): LlmError {
+  const { provider, err, timedOut, timeoutMs, classify } = params;
+  if (timedOut) {
+    return makeLlmError({
+      provider,
+      kind: 'timeout',
+      message: `model list timed out after ${String(timeoutMs)}ms`,
+    });
+  }
+  if (err instanceof LlmProviderError) {
+    return err.llmError;
+  }
+  return classify(err);
+}
+
+/**
  * Run a `listModels` collect bounded + abortable + secret-free (ADR-0064 §3). An internal
  * `AbortController` is threaded to the SDK (so a caller `signal` OR the hard timeout actually cancels the
  * in-flight request), plus a `Promise.race` hard timeout that settles even if the SDK ignores the signal.
@@ -298,20 +325,10 @@ export async function boundedListModels(params: {
   try {
     return await Promise.race([collecting, timeout]);
   } catch (err) {
-    // A pre-classified error (the §8 drift throw, or any adapter-side `LlmProviderError`) passes THROUGH
-    // with its own `kind` — never re-run through `classify` (which would flatten a `bad_request` drift
-    // throw to `unknown`). It is still redacted + `cause`-stripped by the re-wrap below.
-    const base = timedOut
-      ? makeLlmError({
-          provider,
-          kind: 'timeout',
-          message: `model list timed out after ${String(timeoutMs)}ms`,
-        })
-      : err instanceof LlmProviderError
-        ? err.llmError
-        : classify(err);
-    // Re-wrap through makeLlmError so scrubSecrets runs again AND redactKey strips the resolved key; never
-    // pass `cause` (it could carry the key or the raw vendor payload — ADR-0064 §3).
+    // Resolve the base error (timeout wins; a pre-classified `LlmProviderError` passes through with its own
+    // `kind`), then re-wrap through makeLlmError so scrubSecrets runs again AND redactKey strips the resolved
+    // key; never pass `cause` (it could carry the key or the raw vendor payload — ADR-0064 §3).
+    const base = resolveListModelsError({ provider, err, timedOut, timeoutMs, classify });
     throw new LlmProviderError(
       makeLlmError({
         provider,

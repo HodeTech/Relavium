@@ -458,7 +458,9 @@ function registerModels(program: Command, ctx?: CommandContext): void {
     .description("Re-fetch each connected provider's live model list into the local cache.");
   const pricing = models
     .command('pricing <model>')
-    .description('Set a user price for a model the registry does not know (custom / new provider models).')
+    .description(
+      'Set a user price for a model the registry does not know (custom / new provider models).',
+    )
     .requiredOption('--provider <slug>', 'the provider that serves the model (must be registered)')
     .requiredOption('--input <usd-per-mtok>', 'input (prompt) price, USD per million tokens')
     .requiredOption('--output <usd-per-mtok>', 'output (completion) price, USD per million tokens')
@@ -528,7 +530,10 @@ function registerProvider(program: Command, ctx?: CommandContext): void {
     .command('add <name>')
     .description('Register a provider.')
     .option('--base-url <url>', 'override the provider base URL')
-    .option('--pricing-url <url>', 'override the pricing reference page (where you find model prices)');
+    .option(
+      '--pricing-url <url>',
+      'override the pricing reference page (where you find model prices)',
+    );
   const setKey = provider
     .command('set-key <name>')
     .description('Store a provider API key in the OS keychain (the key is read from stdin).');

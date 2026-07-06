@@ -997,6 +997,30 @@ describe('createModelCatalogStore (2.5.G / ADR-0064 — live-discovery cache)', 
     expect(reListing?.outputCostPerMtokMicrocents).toBe(950); // updated
   });
 
+  it('upsert() distinguishes an OMITTED media cost (preserve) from an explicit null (CLEAR) — the `number | null` contract', () => {
+    store.upsert({
+      providerId,
+      modelId: 'media-cost-clear',
+      mediaImageCostMicrocents: 1_900_000,
+      mediaAudioCostMicrocents: 2_000_000,
+    });
+    // OMITTED ⇒ the existing rate is preserved (the never-clobber invariant).
+    store.upsert({ providerId, modelId: 'media-cost-clear', source: 'user' });
+    const preserved = store.getByModelId('media-cost-clear');
+    expect(preserved?.mediaImageCostMicrocents).toBe(1_900_000);
+    expect(preserved?.mediaAudioCostMicrocents).toBe(2_000_000);
+    // Explicit `null` ⇒ the stored rate is CLEARED (not treated as an omission by `??`), while a still-omitted
+    // sibling is preserved.
+    store.upsert({
+      providerId,
+      modelId: 'media-cost-clear',
+      mediaImageCostMicrocents: null,
+    });
+    const cleared = store.getByModelId('media-cost-clear');
+    expect(cleared?.mediaImageCostMicrocents).toBeNull(); // an explicit null cleared it
+    expect(cleared?.mediaAudioCostMicrocents).toBe(2_000_000); // the omitted sibling survived
+  });
+
   it('a pricing-only upsert PRESERVES the display name + limits of a SOFT-DEACTIVATED row (S10 re-price)', () => {
     // A live refresh discovers the model with a real name + context, then a later refresh drops it → soft-deactivated
     // (isActive=false, source='live', deletedAt=null). The active-only `listByProvider` the command reads can no

@@ -149,7 +149,7 @@ describe('BudgetGovernor', () => {
   });
 
   describe('user-pricing overlay (2.5.G S10, ADR-0065 §2 — closes the cost-cap gap)', () => {
-    // A user price for a model the static registry does not know — output $9/MTok so 10_000 tok ⇒ 90_000µ¢.
+    // A user price for a model the static registry does not know — output $9/MTok so 10_000 tok ⇒ 9_000_000µ¢.
     const OVERLAY: PricingOverlay = new Map([
       [
         'acme-custom-1',

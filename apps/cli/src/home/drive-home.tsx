@@ -248,11 +248,18 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         });
         // createChatLineHandler owns the mode control (ADR-0057): it applies the initial `ask` mode → the
         // fail-closed approval regime — BEFORE the session opens, so the full-capability host is never live without it.
-        const { processLine, cancelOnce, shouldStop, stopReason, onAbort, onModeChange, onSetEffort } =
-          createChatLineHandler(
-            { built, opened, store, persister, doctorProbes: chatDoctorProbes },
-            deps,
-          );
+        const {
+          processLine,
+          cancelOnce,
+          shouldStop,
+          stopReason,
+          onAbort,
+          onModeChange,
+          onSetEffort,
+        } = createChatLineHandler(
+          { built, opened, store, persister, doctorProbes: chatDoctorProbes },
+          deps,
+        );
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
         unsubscribe = built.handle.subscribe((event) => store.apply(event));
         frame = setInterval(() => store.tick(), FRAME_MS);
@@ -345,7 +352,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     // the just-torn-down session's transcript from the SHARED db and RESUME it under a model-swapped agent (dropping
     // the original fallback_chain), carrying the text-only transcript + cumulative cost/turns; a NEW instance,
     // honoring ADR-0024's one-model-per-lifetime rule. The controller drives the tear-down / swap (mirroring clearChat).
-    const reseatChat = async (sessionId: string, target: ReseatTarget): Promise<HomeChatSession> => {
+    const reseatChat = async (
+      sessionId: string,
+      target: ReseatTarget,
+    ): Promise<HomeChatSession> => {
       const loaded = opened.store.loadFull(sessionId);
       if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
         throw new CliError(
@@ -412,7 +422,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         io: deps.io,
         // Reuse the SAME config-write target as the `/models` port (honors `--config`) so the wizard's starter
         // model + a later `/models` pick + the started session all agree on one file (2.5.G S7/S8).
-        writeDefaultModel: (modelId) => writeGlobalDefaultModel(modelId, homeDir, deps.global.configPath),
+        writeDefaultModel: (modelId) =>
+          writeGlobalDefaultModel(modelId, homeDir, deps.global.configPath),
         ...(deps.onboardingPrompter === undefined ? {} : { prompter: deps.onboardingPrompter }),
       });
     }

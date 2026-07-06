@@ -133,8 +133,10 @@ const BIDI_ZERO_WIDTH = /[\u200b-\u200f\u2060\u2066-\u2069\u202a-\u202e\ufeff]/g
 /** C0/C1 control bytes + the {@link BIDI_ZERO_WIDTH} spoof family, as a NON-global tester (safe for `.test`) \u2014 none
  *  is valid in a base URL, so `requireHttpsUrl` REJECTS a raw containing any at `add` time, making the stored value
  *  inherently terminal-safe on every surface (list / `--json` / the add confirmation), not just after a render-strip. */
-// eslint-disable-next-line no-control-regex -- intentionally matches C0/C1 control bytes to reject them from a URL
-const UNSAFE_URL_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2060\u2066-\u2069\u202a-\u202e\ufeff]/u;
+/* eslint-disable no-control-regex -- intentionally matches C0/C1 control bytes to reject them from a URL */
+const UNSAFE_URL_CHARS =
+  /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2060\u2066-\u2069\u202a-\u202e\ufeff]/u;
+/* eslint-enable no-control-regex */
 
 /** Neutralize a provider-supplied string for inline echo: strip ANSI/C0/C1 control bytes ({@link stripTerminalControls})
  *  AND the {@link BIDI_ZERO_WIDTH} spoof family, then squeeze whitespace so one row stays one line. Used for a stored
@@ -161,7 +163,9 @@ async function providerList(args: ProviderCommandArgs, deps: ProviderCommandDeps
   const outcomes = new Map<string, VerifyOutcome>();
   if (args.verify) {
     const probed = await Promise.all(
-      providers.map(async (p): Promise<[string, VerifyOutcome]> => [p.name, await verifyProvider(p, deps)]),
+      providers.map(
+        async (p): Promise<[string, VerifyOutcome]> => [p.name, await verifyProvider(p, deps)],
+      ),
     );
     for (const [name, outcome] of probed) outcomes.set(name, outcome);
   }
@@ -368,7 +372,10 @@ function requireHttpsPricingUrl(raw: string): string {
     throw new CliError('invalid_invocation', '--pricing-url must be HTTPS.');
   }
   if (urlHasCredentials(raw)) {
-    throw new CliError('invalid_invocation', '--pricing-url must not embed credentials (user:pass@…).');
+    throw new CliError(
+      'invalid_invocation',
+      '--pricing-url must not embed credentials (user:pass@…).',
+    );
   }
   return url.href;
 }

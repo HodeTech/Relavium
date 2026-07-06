@@ -806,7 +806,11 @@ function resolveGenKnobs(
   // reasoning-capable (the shared {@link gateReasoningEffort} rule — a non-reasoning model would reject the field).
   // The per-fallback-entry re-gate lives in the chain (a non-reasoning fallback entry strips the tier), so a failover
   // to a different-capability model never carries an unsupported field.
-  const reasoningEffort = gateReasoningEffort(agent.reasoning_effort, agent.model, deps.resolveReasoning);
+  const reasoningEffort = gateReasoningEffort(
+    agent.reasoning_effort,
+    agent.model,
+    deps.resolveReasoning,
+  );
   return {
     ...(temperature === undefined ? {} : { temperature }),
     ...(maxTokens === undefined ? {} : { maxTokens }),

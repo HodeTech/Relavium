@@ -558,6 +558,31 @@ const GEMINI_RESPONSE_MODALITY: Record<OutputModality, string> = {
   video: 'VIDEO',
 };
 
+/**
+ * The Gemini `thinkingConfig` for a reasoning-effort tier (ADR-0066): DEEP-merge onto a caller's
+ * `providerOptions.thinkingConfig` so the canonical `thinkingLevel` wins on THAT key while the caller's sibling
+ * knobs (`includeThoughts` / `thinkingBudget`) survive — a shallow replace would silently drop them, so turning
+ * effort up could paradoxically SILENCE the reasoning output the caller enabled while still billing thought tokens
+ * (mirrors the Anthropic adapter preserving `output_config.format`). A non-off tier defaults `includeThoughts: true`
+ * — the ONLY switch that returns thought parts (the adapter's reasoning stream depends on it) — so raising effort
+ * actually shows more reasoning, but never overriding a caller's explicit choice, and never forced for `'off'`.
+ */
+function buildThinkingConfig(
+  reasoningEffort: ReasoningEffort,
+  providerOptions: LlmRequest['providerOptions'],
+): Record<string, unknown> {
+  const poThinking: Record<string, unknown> =
+    providerOptions !== undefined && isRecord(providerOptions['thinkingConfig'])
+      ? providerOptions['thinkingConfig']
+      : {};
+  const surfaceThoughts = reasoningEffort !== 'off' && poThinking['includeThoughts'] === undefined;
+  return {
+    ...poThinking,
+    thinkingLevel: GEMINI_THINKING_LEVEL[reasoningEffort],
+    ...(surfaceThoughts ? { includeThoughts: true } : {}),
+  };
+}
+
 /** Lower a canonical request into the Gemini request shape (system → `systemInstruction`, etc.). */
 export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   const config: Record<string, unknown> = {};
@@ -582,25 +607,8 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
     config['maxOutputTokens'] = req.maxTokens;
   }
   if (req.reasoningEffort !== undefined) {
-    // ADR-0066: Gemini's tier-native thinking control (thinkingLevel). DEEP-merge onto a caller's
-    // providerOptions.thinkingConfig so the canonical thinkingLevel wins on THAT key while the caller's sibling
-    // knobs (includeThoughts / thinkingBudget) survive — a shallow replace (config wins on the top-level merge
-    // below) would silently drop them, so turning effort up could paradoxically SILENCE the reasoning output the
-    // caller enabled while still billing thought tokens. (Mirrors the Anthropic adapter preserving output_config.format.)
-    const poThinking: Record<string, unknown> =
-      req.providerOptions !== undefined && isRecord(req.providerOptions['thinkingConfig'])
-        ? req.providerOptions['thinkingConfig']
-        : {};
-    config['thinkingConfig'] = {
-      ...poThinking,
-      thinkingLevel: GEMINI_THINKING_LEVEL[req.reasoningEffort],
-      // Surface the reasoning the tier bills for: `includeThoughts` is the ONLY switch that returns thought parts
-      // (the adapter's reasoning stream depends on it). Default it on for a thinking tier so raising effort actually
-      // shows more reasoning — but never override a caller's explicit choice, and never force it for 'off' (minimal).
-      ...(req.reasoningEffort !== 'off' && poThinking['includeThoughts'] === undefined
-        ? { includeThoughts: true }
-        : {}),
-    };
+    // ADR-0066: Gemini's tier-native thinking control — see {@link buildThinkingConfig} for the deep-merge rationale.
+    config['thinkingConfig'] = buildThinkingConfig(req.reasoningEffort, req.providerOptions);
   }
   if (req.outputModalities !== undefined && req.outputModalities.some((m) => m !== 'text')) {
     // Lower the node's non-text output_modalities to Gemini `responseModalities` (inline media-out,

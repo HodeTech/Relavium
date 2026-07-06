@@ -40,7 +40,11 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
       now: () => 1_700_000_000_000,
     };
     providers = createProviderStore(client.db, deps);
-    providers.upsert({ name: 'openai', displayName: 'OpenAI', baseUrl: 'https://api.openai.com/v1' });
+    providers.upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    });
     catalog = createModelCatalogStore(client.db, deps);
   });
 
@@ -48,7 +52,10 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
     client.sqlite.close();
   });
 
-  function run(args: ModelsPricingCommandArgs, json = false): { code: number; out: string; err: string } {
+  function run(
+    args: ModelsPricingCommandArgs,
+    json = false,
+  ): { code: number; out: string; err: string } {
     const { io, out, err } = captureIo();
     const code = modelsPricingCommand(args, {
       io,
@@ -146,7 +153,11 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
 
   it('REJECTS pricing a model id already user-priced under a DIFFERENT provider (the overlay keys by id)', () => {
     // Register a second provider + price the SAME model id under it, then try to price it under openai.
-    providers.upsert({ name: 'deepseek', displayName: 'DeepSeek', baseUrl: 'https://api.deepseek.com' });
+    providers.upsert({
+      name: 'deepseek',
+      displayName: 'DeepSeek',
+      baseUrl: 'https://api.deepseek.com',
+    });
     const deepseekId = providers.list().find((p) => p.name === 'deepseek')?.id ?? '';
     catalog.upsert({
       providerId: deepseekId,

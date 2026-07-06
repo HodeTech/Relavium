@@ -17,6 +17,7 @@ import {
   partialFailureBanner,
   type ModelPickerKey,
   type ModelPickerState,
+  type ModelPickerStep,
 } from './model-picker.js';
 import { ModelPickerView } from './model-picker-view.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
@@ -202,7 +203,8 @@ interface ChatViewProps {
  * sequence cannot corrupt the terminal or inject ANSI/OSC.
  */
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
-  const { state, tick, color, editor, running, mode, reasoningEffort, approval, paletteOpen } = props;
+  const { state, tick, color, editor, running, mode, reasoningEffort, approval, paletteOpen } =
+    props;
   const attachments = props.attachments ?? [];
   // When the palette is open it renders its own query line + hint below, so suppress the idle prompt + footer to
   // avoid two competing prompts (the palette owns the input focus until it closes).
@@ -536,7 +538,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     const port = props.modelPicker;
     const open = modelPickerRef.current;
     if (epoch !== pickerEpochRef.current || open === undefined || port === undefined) return;
-    const failed = report?.providers.filter((p) => p.status === 'failed').map((p) => p.provider) ?? [];
+    const failed =
+      report?.providers.filter((p) => p.status === 'failed').map((p) => p.provider) ?? [];
     let view: ReturnType<ChatModelsPort['load']>;
     try {
       view = port.load(); // a DB read — never crash the REPL (parity with the Home)
@@ -563,7 +566,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         // refresh()/refreshIfStale() never reject (per-provider isolation), but stay defensive: drop the spinner
         // only when this is still the same open picker generation.
         const cur = modelPickerRef.current;
-        if (epoch === pickerEpochRef.current && cur !== undefined) applyModelPicker({ ...cur, loading: false });
+        if (epoch === pickerEpochRef.current && cur !== undefined)
+          applyModelPicker({ ...cur, loading: false });
       },
     );
   };
@@ -599,9 +603,43 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     });
     runPickerRefresh(() => port.refreshIfStale());
   };
-  // The open picker owns every key (mirrors routeMentionKey). On accept → a LIVE reseat (onReseat sets the stop
-  // state) then end the driver loop (onExit) so runReplLoop rebuilds the session on the new model. A DIMMED model is
-  // non-selectable (a transient hint, ADR-0064 §6); any nav/filter keystroke clears that hint.
+  // A DIMMED (unavailable) model's actionable hint (ADR-0064 §6) — a keyless provider names the remedy, else the
+  // pre-existing "not on your key" note.
+  const blockedHint = (step: Extract<ModelPickerStep, { kind: 'blocked' }>): string =>
+    step.reason === 'no-key'
+      ? `${step.displayName}: no key for ${step.provider} — run \`relavium provider set-key ${step.provider}\``
+      : `${step.displayName} is not available on your key — pick another`;
+
+  // Act on an accepted pick. A SAME-model pick is an effort-only change (ADR-0066 §5) — a per-turn SESSION override
+  // (no reseat, no teardown/approval-wipe/MCP-reconnect/context-loss); a re-pick of the same tier (or a non-reasoning
+  // model with no tier) is a gentle no-op. A DIFFERENT-model pick is a live reseat (ADR-0059) carrying the chosen
+  // effort, then ends the driver loop so runReplLoop rebuilds on the new model.
+  const acceptModelPick = (
+    step: Extract<ModelPickerStep, { kind: 'accept' }>,
+    open: ModelPickerState,
+  ): void => {
+    if (step.modelId === open.currentDefault) {
+      if (step.reasoningEffort === undefined || step.reasoningEffort === open.currentEffort) {
+        const at = step.reasoningEffort === undefined ? '' : ` at effort ${step.reasoningEffort}`;
+        props.store.note(`Already on ${step.displayName}${at}.`);
+      } else {
+        props.onSetEffort?.(step.reasoningEffort);
+        props.store.note(
+          `Reasoning effort set to ${step.reasoningEffort} — applies to your next message.`,
+        );
+      }
+      return;
+    }
+    props.onReseat?.({
+      modelId: step.modelId,
+      provider: step.provider,
+      ...(step.reasoningEffort === undefined ? {} : { reasoningEffort: step.reasoningEffort }),
+    });
+    props.onExit();
+  };
+
+  // The open picker owns every key (mirrors routeMentionKey). Route the fold's step; the accept/blocked cases
+  // delegate to the helpers above.
   const routeModelPickerKey = (char: string, key: ModelPickerKey): void => {
     const open = modelPickerRef.current;
     if (open === undefined) return;
@@ -610,38 +648,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       case 'close':
         applyModelPicker(undefined);
         return;
-      case 'accept': {
+      case 'accept':
         applyModelPicker(undefined);
-        if (step.modelId === open.currentDefault) {
-          // SAME model: this is an effort-only change (ADR-0066 §5) — a per-turn SESSION override, NOT a reseat. No
-          // teardown, no ADR-0057 approval-cache wipe, no MCP reconnect, no text-only context loss. A re-pick of the
-          // same tier (or a non-reasoning model with no tier) is a gentle no-op.
-          if (step.reasoningEffort === undefined || step.reasoningEffort === open.currentEffort) {
-            const at = step.reasoningEffort === undefined ? '' : ` at effort ${step.reasoningEffort}`;
-            props.store.note(`Already on ${step.displayName}${at}.`);
-          } else {
-            props.onSetEffort?.(step.reasoningEffort);
-            props.store.note(`Reasoning effort set to ${step.reasoningEffort} — applies to your next message.`);
-          }
-          return;
-        }
-        // DIFFERENT model: a live reseat (ADR-0059), carrying the chosen effort onto the new binding.
-        props.onReseat?.({
-          modelId: step.modelId,
-          provider: step.provider,
-          ...(step.reasoningEffort === undefined ? {} : { reasoningEffort: step.reasoningEffort }),
-        });
-        props.onExit(); // the reseat set the stop state; end the loop so runReplLoop swaps in the new-model session
+        acceptModelPick(step, open);
         return;
-      }
-      case 'blocked': {
-        const hint =
-          step.reason === 'no-key'
-            ? `${step.displayName}: no key for ${step.provider} — run \`relavium provider set-key ${step.provider}\``
-            : `${step.displayName} is not available on your key — pick another`;
-        applyModelPicker({ ...open, hint });
+      case 'blocked':
+        applyModelPicker({ ...open, hint: blockedHint(step) });
         return;
-      }
       case 'refresh':
         runPickerRefresh(() => props.modelPicker?.refresh() ?? Promise.resolve(undefined));
         return;

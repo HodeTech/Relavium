@@ -9,7 +9,7 @@
 > [ADR-0050](0050-cli-history-db-at-rest-posture.md)). Only the **desktop** surface uses a SQLCipher-encrypted
 > store. The Context below originally said "encrypted" without that surface distinction; read it as
 > surface-specific.
-
+>
 > Amended 2026-07-06: the "one agent + one model bound for the session lifetime" rule is **refined** (not
 > reversed) by [ADR-0059](0059-cli-mid-session-model-reseat.md) — a mid-session `/models` **model switch** is a
 > host-side **reseat** (a new `AgentSession.resume` instance bound to the new model, carrying the text-only

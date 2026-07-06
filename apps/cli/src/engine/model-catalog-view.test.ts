@@ -77,8 +77,18 @@ describe('buildMergedCatalog', () => {
   it('reports refreshedAt as the newest lastRefreshedAt across the live rows only', () => {
     const view = buildMergedCatalog({
       rows: [
-        row({ modelId: MODEL_PRESENT, providerId: 'p-anthropic', source: 'live', lastRefreshedAt: 100 }),
-        row({ modelId: MODEL_ABSENT, providerId: 'p-anthropic', source: 'live', lastRefreshedAt: 300 }),
+        row({
+          modelId: MODEL_PRESENT,
+          providerId: 'p-anthropic',
+          source: 'live',
+          lastRefreshedAt: 100,
+        }),
+        row({
+          modelId: MODEL_ABSENT,
+          providerId: 'p-anthropic',
+          source: 'live',
+          lastRefreshedAt: 300,
+        }),
         // a non-live row's stamp (if any) must NOT count toward freshness
         row({ modelId: 'x', providerId: 'p-anthropic', source: 'user', lastRefreshedAt: 999 }),
       ],
@@ -103,7 +113,9 @@ describe('buildMergedCatalog', () => {
     // An unmapped uuid resolves to itself ('rogue'), which is not a ProviderId ⇒ the row is skipped, so anthropic
     // has NO live data and its statics stay available (the rogue row cannot dim an unrelated provider).
     const view = buildMergedCatalog({
-      rows: [row({ modelId: MODEL_PRESENT, providerId: 'rogue', source: 'live', lastRefreshedAt: 50 })],
+      rows: [
+        row({ modelId: MODEL_PRESENT, providerId: 'rogue', source: 'live', lastRefreshedAt: 50 }),
+      ],
       providerSlug: slugResolver({}),
       now: 0,
     });

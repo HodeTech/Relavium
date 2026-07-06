@@ -281,6 +281,19 @@ export const REASONING_EFFORTS = ['off', 'low', 'medium', 'high', 'max'] as cons
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
 /**
+ * The one-line hint for each reasoning-effort tier — display-only text (latency/cost vs depth), so a surface (the
+ * CLI `/models` effort sub-list, the `/effort` command) can explain each tier without the user consulting the docs.
+ * Owned here beside {@link REASONING_EFFORTS} so it is a neutral, surface-agnostic home (no `render/tui` dependency).
+ */
+export const EFFORT_TIER_HINT: Record<ReasoningEffort, string> = {
+  off: 'no reasoning — fastest, lowest cost',
+  low: 'brief reasoning',
+  medium: 'balanced reasoning',
+  high: 'deep reasoning',
+  max: 'maximum reasoning — slowest, highest cost',
+};
+
+/**
  * The three provider **protocol kinds** (the `kind` abstraction, [ADR-0064] §2) — a closed vocabulary
  * that derives, **once per protocol rather than per provider**, the adapter factory, the list-models
  * endpoint, the auth style, and the response mapper. `anthropic` and `gemini` map 1:1 to their id;

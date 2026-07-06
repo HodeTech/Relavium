@@ -312,10 +312,13 @@ describe('createProviderResolver custom endpoints (2.5.G S9 / ADR-0065 §3–4)'
     const fetch: FetchLike = (input) => {
       urls.push(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
       return Promise.resolve(
-        new Response(JSON.stringify({ object: 'list', data: [{ id: 'gpt-5.4-mini', object: 'model' }] }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
+        new Response(
+          JSON.stringify({ object: 'list', data: [{ id: 'gpt-5.4-mini', object: 'model' }] }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
       );
     };
     return { fetch, urls };
@@ -348,7 +351,10 @@ describe('createProviderResolver custom endpoints (2.5.G S9 / ADR-0065 §3–4)'
     const { fetch } = recordingFetch();
     const resolver = createProviderResolver({}, undefined, {
       providerStore: {
-        list: () => [row('anthropic', 'https://custom.example'), row('gemini', 'https://custom.example')],
+        list: () => [
+          row('anthropic', 'https://custom.example'),
+          row('gemini', 'https://custom.example'),
+        ],
       },
       validatedFetch: fetch,
     });

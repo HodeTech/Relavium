@@ -381,12 +381,23 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
           input.capabilities !== undefined
             ? JSON.stringify(input.capabilities)
             : (existing?.capabilities ?? JSON.stringify({})),
+        // The media cost fields are `number | null` (unlike the NOT-NULL text-token prices below): OMITTED
+        // (`undefined`) preserves the existing row's value (the "never clobber" invariant), an explicit `null`
+        // CLEARS it, and a number writes it — so a `!== undefined` check (not `??`, which would treat a clearing
+        // `null` as an omission and preserve the old rate). A true INSERT (`existing` undefined) still defaults to
+        // `null`.
         mediaImageCostMicrocents:
-          input.mediaImageCostMicrocents ?? existing?.mediaImageCostMicrocents ?? null,
+          input.mediaImageCostMicrocents !== undefined
+            ? input.mediaImageCostMicrocents
+            : (existing?.mediaImageCostMicrocents ?? null),
         mediaAudioCostMicrocents:
-          input.mediaAudioCostMicrocents ?? existing?.mediaAudioCostMicrocents ?? null,
+          input.mediaAudioCostMicrocents !== undefined
+            ? input.mediaAudioCostMicrocents
+            : (existing?.mediaAudioCostMicrocents ?? null),
         mediaVideoCostMicrocents:
-          input.mediaVideoCostMicrocents ?? existing?.mediaVideoCostMicrocents ?? null,
+          input.mediaVideoCostMicrocents !== undefined
+            ? input.mediaVideoCostMicrocents
+            : (existing?.mediaVideoCostMicrocents ?? null),
         // USER text-token pricing (2.5.G S10) — write the supplied prices, else PRESERVE the existing row's (an
         // update that omits them must not zero a hand-entered price), else the NOT-NULL default `0`.
         inputCostPerMtokMicrocents:

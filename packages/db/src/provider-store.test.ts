@@ -95,14 +95,22 @@ describe('createProviderStore', () => {
   });
 
   it('reads an absent kind / pricingReferenceUrl as undefined (a plain add omits them)', () => {
-    store.upsert({ name: 'anthropic', displayName: 'Anthropic', baseUrl: 'https://api.anthropic.com' });
+    store.upsert({
+      name: 'anthropic',
+      displayName: 'Anthropic',
+      baseUrl: 'https://api.anthropic.com',
+    });
     const got = store.get('anthropic');
     expect(got?.kind).toBeUndefined();
     expect(got?.pricingReferenceUrl).toBeUndefined();
   });
 
   it('coerces a FOREIGN stored kind to undefined at the read boundary (fail-closed, no DB CHECK)', () => {
-    const rec = store.upsert({ name: 'openai', displayName: 'OpenAI', baseUrl: 'https://api.openai.com/v1' });
+    const rec = store.upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    });
     // Simulate a tampered/foreign value written outside the typed setter (no DB CHECK on the ALTER-ADD column).
     client.db.run(sql`update llm_providers set kind = 'rogue-protocol' where id = ${rec.id}`);
     expect(store.get('openai')?.kind).toBeUndefined(); // a non-PROVIDER_KINDS value is never trusted

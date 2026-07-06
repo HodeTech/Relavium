@@ -174,7 +174,11 @@ export type ValidationReason = 'ok' | 'auth' | 'network' | 'other';
  */
 export type ProviderKeyValidation =
   | { readonly ok: true; readonly detail: string; readonly reason: 'ok' }
-  | { readonly ok: false; readonly detail: string; readonly reason: Exclude<ValidationReason, 'ok'> };
+  | {
+      readonly ok: false;
+      readonly detail: string;
+      readonly reason: Exclude<ValidationReason, 'ok'>;
+    };
 
 /**
  * Validate a provider key with a minimal live request (`maxTokens: 1` 'ping'). Returns a RESULT so the caller
@@ -206,7 +210,11 @@ export async function validateProviderKey(
   const timeout = new Promise<ProviderKeyValidation>((resolve) => {
     timer = setTimeout(() => {
       controller.abort();
-      resolve({ ok: false, detail: `key test failed — timeout (${timeoutMs}ms)`, reason: 'network' });
+      resolve({
+        ok: false,
+        detail: `key test failed — timeout (${timeoutMs}ms)`,
+        reason: 'network',
+      });
     }, timeoutMs);
   });
   const probe = (async (): Promise<ProviderKeyValidation> => {
@@ -376,7 +384,11 @@ function applyCustomEndpoints(
     if (id !== 'openai' && id !== 'deepseek') continue; // custom base_url is openai-compatible only this round (§3)
     validatedFetch ??= options.validatedFetch ?? createValidatedFetch(); // built lazily, once, only when needed
     try {
-      adapters[id] = createCustomOpenAiProvider({ providerId: id, baseURL: row.baseUrl, fetch: validatedFetch });
+      adapters[id] = createCustomOpenAiProvider({
+        providerId: id,
+        baseURL: row.baseUrl,
+        fetch: validatedFetch,
+      });
     } catch (err) {
       // A bad stored base_url (non-HTTPS / private / creds) — refuse the custom endpoint, keep the default adapter.
       if (!(err instanceof InvalidBaseUrlError)) throw err;

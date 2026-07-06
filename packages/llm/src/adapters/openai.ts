@@ -652,7 +652,10 @@ function toOpenAiTool(toolDef: ToolDef, provider: ProviderId): OpenAI.ChatComple
 /** ADR-0066: the normalized reasoning-effort tier → OpenAI's native `reasoning_effort` values. `off`→'none',
  *  `max`→'xhigh' (its highest); low/medium/high are 1:1. A SUBSET of the SDK's `ReasoningEffort` union, so the
  *  assignment to `body.reasoning_effort` needs no cast. */
-const OPENAI_REASONING_EFFORT: Record<ReasoningEffort, 'none' | 'low' | 'medium' | 'high' | 'xhigh'> = {
+const OPENAI_REASONING_EFFORT: Record<
+  ReasoningEffort,
+  'none' | 'low' | 'medium' | 'high' | 'xhigh'
+> = {
   off: 'none',
   low: 'low',
   medium: 'medium',

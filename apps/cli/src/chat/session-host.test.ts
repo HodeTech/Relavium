@@ -752,14 +752,20 @@ describe('swapAgentModel (ADR-0059 model-switch rule)', () => {
   });
 
   it('DROPS a prior effort when none is passed (a non-reasoning target can’t carry a stale tier)', () => {
-    const withEffort = { ...buildDefaultChatAgent('claude-opus-4-8'), reasoning_effort: 'max' as const };
+    const withEffort = {
+      ...buildDefaultChatAgent('claude-opus-4-8'),
+      reasoning_effort: 'max' as const,
+    };
     const next = swapAgentModel(withEffort, 'deepseek-chat', 'deepseek'); // no reasoningEffort arg
     expect('reasoning_effort' in next).toBe(false); // dropped, not carried onto the new model
     expect(withEffort.reasoning_effort).toBe('max'); // the input is untouched (a fresh copy)
   });
 
   it('OVERWRITES a prior effort with the newly-picked tier', () => {
-    const withEffort = { ...buildDefaultChatAgent('claude-opus-4-8'), reasoning_effort: 'low' as const };
+    const withEffort = {
+      ...buildDefaultChatAgent('claude-opus-4-8'),
+      reasoning_effort: 'low' as const,
+    };
     const next = swapAgentModel(withEffort, 'claude-sonnet-4-6', 'anthropic', 'off');
     expect(next.reasoning_effort).toBe('off');
   });

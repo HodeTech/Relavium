@@ -9,7 +9,12 @@ import {
   type UserCommandOutcome,
 } from '@relavium/core';
 import { modelSupportsReasoning, type ProviderId } from '@relavium/llm';
-import { REASONING_EFFORTS, type AgentSessionRecord, type ReasoningEffort } from '@relavium/shared';
+import {
+  EFFORT_TIER_HINT,
+  REASONING_EFFORTS,
+  type AgentSessionRecord,
+  type ReasoningEffort,
+} from '@relavium/shared';
 import { exportSession } from '../chat/export.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
@@ -68,7 +73,6 @@ import {
   stripTerminalControls,
 } from '../render/tui/chat-projection.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
-import { EFFORT_TIER_HINT } from '../render/tui/model-picker.js';
 import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 
@@ -122,6 +126,15 @@ export interface ReseatTarget {
 }
 
 /**
+ * WHY a chat driver's input loop ended (ADR-0062 §7 · [ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md)):
+ * `'exit'` (`/exit`, `/cancel`, or an input EOF), `'clear'` (`/clear`, TTY-interactive only — swap in a FRESH
+ * session), or `'reseat'` (a `/models` model switch, TTY-interactive only — swap in a NEW-model session carrying the
+ * transcript). Both interactive gates keep this at `'exit'` under `--json`/plain (one machine stream stays one
+ * session lifecycle, ADR-0049).
+ */
+export type ChatStopReason = 'exit' | 'clear' | 'reseat';
+
+/**
  * The catalog port the ink `/models` reseat picker (ADR-0059) reads — the SHARED load/refresh trio
  * ({@link ModelCatalogPort}) plus the session's currently-bound model (the picker's `✓` "you are here" marker).
  * Built per session so `boundModel` reflects a reseat's switched model. Interactive (TTY) sessions only.
@@ -163,7 +176,7 @@ export interface ChatDriveContext {
    * to swap in a NEW-model session carrying the transcript. Both interactive gates keep `stopReason()` at `'exit'`
    * under `--json` / plain non-TTY, so those drivers only ever return `'exit'`.
    */
-  readonly stopReason: () => 'exit' | 'clear' | 'reseat';
+  readonly stopReason: () => ChatStopReason;
   /**
    * Switch the bound model mid-session (ADR-0059) — the ink model-picker overlay calls this on accept. It signals a
    * host-side reseat (a new instance bound to `target`), so like `/clear` it sets the stop state; the driver then
@@ -250,7 +263,7 @@ export interface ChatDriveContext {
  * present iff `kind === 'reseat'` — {@link driveOneSession} attaches it from the line handler's captured target.
  */
 export interface ChatDriveOutcome {
-  readonly kind: 'exit' | 'clear' | 'reseat';
+  readonly kind: ChatStopReason;
   readonly target?: ReseatTarget;
 }
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<ChatDriveOutcome>;
@@ -727,7 +740,7 @@ export interface ChatLineHandler extends ChatModeControl {
   /** WHY the loop stopped (ADR-0062 §7 · ADR-0059) — `'reseat'` after a `/models` switch, `'clear'` after a `/clear`,
    *  else `'exit'`. The standalone re-drive loop swaps in a new-model / fresh session accordingly; the Home reads it
    *  to swap-in-place vs. return to the bare Home. */
-  readonly stopReason: () => 'exit' | 'clear' | 'reseat';
+  readonly stopReason: () => ChatStopReason;
   /** Request a mid-session model switch (ADR-0059) — sets the stop state + captures the target for the reseat. */
   readonly onReseat: (target: ReseatTarget) => void;
   /** The captured reseat target once {@link onReseat} fired (else `undefined`) — {@link driveOneSession} reads it. */
@@ -948,7 +961,9 @@ export function createChatLineHandler(
       }
       const tier = REASONING_EFFORTS.find((e) => e === requested);
       if (tier === undefined) {
-        emitOutput(`/effort: unknown tier '${requested.replace(/[^\x20-\x7e]/g, '?').slice(0, 16)}'`);
+        emitOutput(
+          `/effort: unknown tier '${requested.replace(/[^\x20-\x7e]/g, '?').slice(0, 16)}'`,
+        );
         return;
       }
       modeControl.onSetEffort(tier);
@@ -1078,7 +1093,10 @@ export function createChatLineHandler(
     // Priority: a reseat is a swap-to-new-model, a clear is a swap-to-fresh, else the REPL ends. A `/models` reseat
     // and a `/clear` are mutually exclusive in one settle (each sets `stop`), but order the check so an explicit
     // reseat is never mis-read as a clear.
-    stopReason: () => (reseatRequested !== undefined ? 'reseat' : clearRequested ? 'clear' : 'exit'),
+    stopReason: (): ChatStopReason => {
+      if (reseatRequested !== undefined) return 'reseat';
+      return clearRequested ? 'clear' : 'exit';
+    },
     onReseat: (target) => {
       reseatRequested = target;
       stop = true;
@@ -1149,7 +1167,10 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
       now: deps.now,
       uuid: deps.uuid,
       // ADR-0059 attribution — resolved over the SAME shared db (a `/clear` rebuild re-reads it fresh).
-      resolveModelCatalogId: makeCatalogIdResolver(deps.opened.db, { uuid: deps.uuid, now: deps.now }),
+      resolveModelCatalogId: makeCatalogIdResolver(deps.opened.db, {
+        uuid: deps.uuid,
+        now: deps.now,
+      }),
     });
   } catch (err) {
     // Acquire-then-guard: the fresh MCP children are already spawned — reclaim them before the failure propagates
@@ -1172,7 +1193,13 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     doctorProbes,
     startSession: () => built.session.start(),
     intro,
-    modelPicker: buildChatModelsPort(deps.opened, deps.providers, built.agent.model, deps.now, deps.uuid),
+    modelPicker: buildChatModelsPort(
+      deps.opened,
+      deps.providers,
+      built.agent.model,
+      deps.now,
+      deps.uuid,
+    ),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
 }
@@ -1353,7 +1380,13 @@ async function buildReseatWiring(
     startSession: () => {},
     intro: modelSwitchNotice(target.modelId, resumed.resumeState.turnCount),
     // The picker's `boundModel` is now the SWITCHED model — a further reseat marks it as the ✓ "you are here".
-    modelPicker: buildChatModelsPort(deps.opened, deps.providers, resumed.agent.model, deps.now, deps.uuid),
+    modelPicker: buildChatModelsPort(
+      deps.opened,
+      deps.providers,
+      resumed.agent.model,
+      deps.now,
+      deps.uuid,
+    ),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
 }
@@ -1403,6 +1436,39 @@ function createReseatRebuild(params: {
  * connections down — but NOT the shared db (the loop owns it across swaps). Returns the driver's outcome so the loop
  * can decide between ending and re-driving over a fresh session (`/clear`).
  */
+/**
+ * The `@`-mention completion reader for an INTERACTIVE driver (2.5.D, ADR-0061): a READ-ONLY fs jail at the
+ * session's fs-scope tier + workspace, so `@`-completion browses + injects through the identical confidentiality
+ * floor + listing-gate. `undefined` on a plain/`--json` driver (a leading `@` is a literal there) or when the fs
+ * arm is unavailable. READ-ONLY by construction — the mention path never writes. Pure (no I/O).
+ */
+function buildInteractiveMentionReader(
+  deps: ChatReplDeps,
+  built: ReplWiring['built'],
+): MentionReader | undefined {
+  if (!chatIsInteractive(deps.io, deps.global)) return undefined;
+  const fsArm = assembleToolEnv({
+    profile: 'chat-read-only',
+    fsScopeTier: built.context.fsScopeTier,
+    workspaceDir: built.context.workingDir,
+  }).host.fs;
+  return fsArm === undefined ? undefined : createMentionReader(fsArm);
+}
+
+/**
+ * Attach the captured reseat target to a `'reseat'` outcome (ADR-0059) — done in the ONE place holding the line
+ * handler, so every driver stays target-agnostic. A missing target (never expected: `onReseat` always captures one)
+ * degrades to a plain end rather than a broken rebuild loop.
+ */
+function finalizeReseatOutcome(
+  outcome: ChatDriveOutcome,
+  reseatTarget: () => ReseatTarget | undefined,
+): ChatDriveOutcome {
+  if (outcome.kind !== 'reseat') return outcome;
+  const target = reseatTarget();
+  return target === undefined ? { kind: 'exit' } : { kind: 'reseat', target };
+}
+
 async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<ChatDriveOutcome> {
   const { built, store, persister, startSession, intro } = wiring;
   const {
@@ -1422,19 +1488,8 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
   const reseatEnabled = chatIsInteractive(deps.io, deps.global);
 
   // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the SAME fs-scope tier + workspace
-  // as the session's tools, so `@`-completion browses + injects through the identical confidentiality floor +
-  // listing-gate (a `.ssh`/`.env` entry is never listed nor read). READ-ONLY by construction — the mention path
-  // never writes. TTY-only: an interactive driver wires the completion; a plain/`--json` driver treats a leading
-  // `@` as a literal, so it needs no reader. Building it is pure (no I/O).
-  const mentionReader = ((): MentionReader | undefined => {
-    if (!chatIsInteractive(deps.io, deps.global)) return undefined;
-    const fsArm = assembleToolEnv({
-      profile: 'chat-read-only',
-      fsScopeTier: built.context.fsScopeTier,
-      workspaceDir: built.context.workingDir,
-    }).host.fs;
-    return fsArm === undefined ? undefined : createMentionReader(fsArm);
-  })();
+  // as the session's tools (a `.ssh`/`.env` entry is never listed nor read). TTY-only; see the helper.
+  const mentionReader = buildInteractiveMentionReader(deps, built);
 
   // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`. TTY-only.
   const runShellCommand = chatIsInteractive(deps.io, deps.global)
@@ -1469,18 +1524,14 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       // The reseat trigger (onReseat) + its picker are wired together, interactive-only: the ink overlay reads the
       // catalog through `modelPicker` and calls `onReseat` on accept. A plain/`--json` driver gets neither.
       ...(reseatEnabled ? { onReseat } : {}),
-      ...(reseatEnabled && wiring.modelPicker !== undefined ? { modelPicker: wiring.modelPicker } : {}),
+      ...(reseatEnabled && wiring.modelPicker !== undefined
+        ? { modelPicker: wiring.modelPicker }
+        : {}),
       ...(mentionReader === undefined ? {} : { mentionReader }),
       ...(runShellCommand === undefined ? {} : { runShellCommand }),
     });
-    // A `/models` reseat: the driver returns `{ kind: 'reseat' }` (from `stopReason()`); attach the captured target
-    // HERE — the one place holding the line handler — so every driver stays target-agnostic. A missing target
-    // (never expected: `onReseat` always captures one) degrades to a plain end rather than a broken rebuild loop.
-    if (outcome.kind === 'reseat') {
-      const target = reseatTarget();
-      return target === undefined ? { kind: 'exit' } : { kind: 'reseat', target };
-    }
-    return outcome;
+    // A `/models` reseat attaches the captured target here (the one place holding the line handler); see the helper.
+    return finalizeReseatOutcome(outcome, reseatTarget);
   } finally {
     cancelOnce(); // emit the terminal even on /exit, /clear, or EOF (idempotent); flips the row to 'ended'
     // Attempt EVERY teardown step (a reject in one must not skip the next) and never let a cleanup fault mask the
@@ -1499,6 +1550,26 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
  * closed exactly ONCE in the outer finally; each session's own teardown (terminal + persister + MCP) is owned by
  * `driveOneSession`. `/exit`, `/cancel`, and an input EOF all end the session with **exit code 4**.
  */
+/**
+ * The rebuild closure for a swap outcome (ADR-0062 §7 `/clear` → a FRESH session; ADR-0059 `reseat` → a NEW-model
+ * session carrying the transcript), or `undefined` to END the REPL (an `'exit'`, or a swap whose builder is not
+ * wired — both TTY-only, so a non-TTY outcome is always `'exit'`). The reseat target is captured into a const so
+ * the closure keeps its narrowed (non-undefined) type — no unsafe non-null assertion.
+ */
+function resolveSwapRebuild(
+  outcome: ChatDriveOutcome,
+  oldSessionId: string,
+  rebuild: ((oldSessionId: string) => Promise<ReplWiring>) | undefined,
+  reseatRebuild: ((oldSessionId: string, target: ReseatTarget) => Promise<ReplWiring>) | undefined,
+): (() => Promise<ReplWiring>) | undefined {
+  if (outcome.kind === 'clear' && rebuild !== undefined) return () => rebuild(oldSessionId);
+  if (outcome.kind === 'reseat' && reseatRebuild !== undefined && outcome.target !== undefined) {
+    const target = outcome.target;
+    return () => reseatRebuild(oldSessionId, target);
+  }
+  return undefined;
+}
+
 async function runReplLoop(
   wiring: ReplWiring,
   deps: ChatReplDeps,
@@ -1512,17 +1583,9 @@ async function runReplLoop(
     for (;;) {
       const outcome = await driveOneSession(current, deps);
       // The old session is ALREADY torn down (driveOneSession's finally fired its terminal → the row is 'ended' +
-      // resumable). Resolve the rebuild for this swap kind (both /clear + reseat are TTY-only; a non-TTY outcome is
-      // always 'exit'), or leave `next` unset to END the REPL. The target is captured into a const so the closure
-      // keeps its narrowed (non-undefined) type — no unsafe non-null assertion.
+      // resumable). Resolve the rebuild for this swap kind, or `undefined` to END the REPL (see resolveSwapRebuild).
       const oldSessionId = current.built.sessionId;
-      let next: (() => Promise<ReplWiring>) | undefined;
-      if (outcome.kind === 'clear' && rebuild !== undefined) {
-        next = () => rebuild(oldSessionId);
-      } else if (outcome.kind === 'reseat' && reseatRebuild !== undefined && outcome.target !== undefined) {
-        const target = outcome.target;
-        next = () => reseatRebuild(oldSessionId, target);
-      }
+      const next = resolveSwapRebuild(outcome, oldSessionId, rebuild, reseatRebuild);
       if (next === undefined) break;
       // Build the swap session over the same db and re-drive; a build failure is surfaced actionably (the prior
       // conversation is still resumable) and ends the REPL rather than looping on a broken build.

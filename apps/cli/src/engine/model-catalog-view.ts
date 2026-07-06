@@ -141,7 +141,10 @@ export function buildMergedCatalog(input: BuildMergedCatalogInput): MergedCatalo
     if (!isProviderId(slug)) continue; // an unmapped UUID / a non-enum (custom) provider — not this step's concern
     // Freshness reflects only VALID (enum-provider) live rows — a dropped rogue row must not skew the badge.
     if (row.lastRefreshedAt !== undefined) {
-      refreshedAt = refreshedAt === undefined ? row.lastRefreshedAt : Math.max(refreshedAt, row.lastRefreshedAt);
+      refreshedAt =
+        refreshedAt === undefined
+          ? row.lastRefreshedAt
+          : Math.max(refreshedAt, row.lastRefreshedAt);
     }
     const list = live.get(slug) ?? [];
     list.push(rowToListing(row));

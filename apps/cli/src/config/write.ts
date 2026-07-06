@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { closeSync, fchmodSync, fsyncSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  fchmodSync,
+  fsyncSync,
+  openSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -136,7 +144,9 @@ function verifyRoundTrips(text: string, target: string): void {
 
 /** A write-attributed {@link ConfigError} whose detail is the loader's **value-free** field-path reason. */
 function configWriteError(target: string, error: ZodError): ConfigError {
-  return new ConfigError(target, `could not be written — ${formatZodError(error)}.`, { cause: error });
+  return new ConfigError(target, `could not be written — ${formatZodError(error)}.`, {
+    cause: error,
+  });
 }
 
 /**

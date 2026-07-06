@@ -12,7 +12,9 @@ import {
 } from './model-picker.js';
 
 /** A merged catalog entry with sensible defaults; override what a case cares about. */
-function entry(partial: Partial<ModelCatalogEntry> & Pick<ModelCatalogEntry, 'modelId'>): ModelCatalogEntry {
+function entry(
+  partial: Partial<ModelCatalogEntry> & Pick<ModelCatalogEntry, 'modelId'>,
+): ModelCatalogEntry {
   return {
     provider: 'anthropic',
     displayName: partial.modelId,
@@ -56,7 +58,10 @@ describe('foldModelPickerKey', () => {
     expect(typed).toEqual({ kind: 'state', state: state({ filter: 'r', selected: 0 }) });
     // While a refresh is in flight, Ctrl+R is a no-op (stays open, unchanged) — no racing double-refresh.
     const loading = state({ loading: true });
-    expect(foldModelPickerKey('r', { ctrl: true }, loading)).toEqual({ kind: 'state', state: loading });
+    expect(foldModelPickerKey('r', { ctrl: true }, loading)).toEqual({
+      kind: 'state',
+      state: loading,
+    });
   });
 
   it('arrows move the selection, clamped to the visible list', () => {
@@ -89,7 +94,9 @@ describe('foldModelPickerKey', () => {
 
   it('Enter on a DIMMED (unavailable) model is BLOCKED, never an accept — carrying the provider (ADR §6)', () => {
     const s = state({
-      entries: [entry({ modelId: 'x', displayName: 'Model X', available: false, provider: 'openai' })],
+      entries: [
+        entry({ modelId: 'x', displayName: 'Model X', available: false, provider: 'openai' }),
+      ],
       selected: 0,
     });
     expect(foldModelPickerKey('', { return: true }, s)).toEqual({
@@ -129,7 +136,11 @@ describe('foldModelPickerKey', () => {
   it('a printable char extends the filter and resets the selection; backspace trims it', () => {
     const typed = foldModelPickerKey('b', {}, state({ selected: 2 }));
     expect(typed).toEqual({ kind: 'state', state: state({ filter: 'b', selected: 0 }) });
-    const trimmed = foldModelPickerKey('', { backspace: true }, state({ filter: 'ab', selected: 1 }));
+    const trimmed = foldModelPickerKey(
+      '',
+      { backspace: true },
+      state({ filter: 'ab', selected: 1 }),
+    );
     expect(trimmed).toEqual({ kind: 'state', state: state({ filter: 'a', selected: 0 }) });
     // Backspace on an EMPTY filter is inert (Esc cancels; backspace never closes) — stays open, unchanged.
     expect(foldModelPickerKey('', { backspace: true }, state({ filter: '' }))).toEqual({
@@ -193,7 +204,11 @@ describe('foldModelPickerKey — the ADR-0066 effort sub-step', () => {
   });
 
   it('opens the effort sub-list on the session BOUND effort when one is set', () => {
-    const step = foldModelPickerKey('', { return: true }, reasoningState({ currentEffort: 'high' }));
+    const step = foldModelPickerKey(
+      '',
+      { return: true },
+      reasoningState({ currentEffort: 'high' }),
+    );
     if (step.kind !== 'state') throw new Error('expected a state step');
     expect(step.state.effortSelected).toBe(3); // index of 'high'
   });
@@ -217,10 +232,12 @@ describe('foldModelPickerKey — the ADR-0066 effort sub-step', () => {
       state: effortPhase({ effortSelected: 1 }),
     });
     // Clamp at the ends: max (index 4) Down stays 4; off (index 0) Up stays 0.
-    expect(foldModelPickerKey('', { downArrow: true }, effortPhase({ effortSelected: 4 }))).toEqual({
-      kind: 'state',
-      state: effortPhase({ effortSelected: 4 }),
-    });
+    expect(foldModelPickerKey('', { downArrow: true }, effortPhase({ effortSelected: 4 }))).toEqual(
+      {
+        kind: 'state',
+        state: effortPhase({ effortSelected: 4 }),
+      },
+    );
     expect(foldModelPickerKey('', { upArrow: true }, effortPhase({ effortSelected: 0 }))).toEqual({
       kind: 'state',
       state: effortPhase({ effortSelected: 0 }),
@@ -247,7 +264,10 @@ describe('foldModelPickerKey — the ADR-0066 effort sub-step', () => {
 
   it('Esc in the effort phase BACKS OUT to the model list (clears pending) — it does NOT cancel the picker', () => {
     const step = foldModelPickerKey('', { escape: true }, effortPhase());
-    expect(step).toEqual({ kind: 'state', state: effortPhase({ phase: 'model', pending: undefined }) });
+    expect(step).toEqual({
+      kind: 'state',
+      state: effortPhase({ phase: 'model', pending: undefined }),
+    });
   });
 
   it('Ctrl-C in the effort phase is the HARD cancel (closes the whole picker)', () => {
@@ -335,9 +355,11 @@ describe('display formatters', () => {
 
   it('summarizes partial refresh failures into a secret-free banner (or undefined when clean)', () => {
     expect(partialFailureBanner([])).toBeUndefined();
-    expect(partialFailureBanner(['openai'])).toBe('couldn\'t refresh openai — showing last-known models');
+    expect(partialFailureBanner(['openai'])).toBe(
+      "couldn't refresh openai — showing last-known models",
+    );
     expect(partialFailureBanner(['openai', 'gemini'])).toBe(
-      'couldn\'t refresh openai, gemini — showing last-known models',
+      "couldn't refresh openai, gemini — showing last-known models",
     );
   });
 });

@@ -480,28 +480,38 @@ describe('Gemini adapter — request building (buildGeminiRequest)', () => {
   it('maps the reasoning-effort tier to thinkingConfig.thinkingLevel + includeThoughts on a thinking tier (ADR-0066)', () => {
     // A non-off tier also sets includeThoughts:true so raising effort SURFACES the reasoning it bills for (the only
     // switch that returns Gemini thought parts). All five tiers assert thinkingLevel; medium is the picker default.
-    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'high' }).config['thinkingConfig']).toEqual({
+    expect(
+      buildGeminiRequest({ ...REQ, reasoningEffort: 'high' }).config['thinkingConfig'],
+    ).toEqual({
       thinkingLevel: 'HIGH',
       includeThoughts: true,
     });
     // Gemini tops out at HIGH — `max` coarsens to it (no separate xhigh/max tier).
-    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'max' }).config['thinkingConfig']).toEqual({
-      thinkingLevel: 'HIGH',
-      includeThoughts: true,
-    });
-    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'medium' }).config['thinkingConfig']).toEqual({
+    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'max' }).config['thinkingConfig']).toEqual(
+      {
+        thinkingLevel: 'HIGH',
+        includeThoughts: true,
+      },
+    );
+    expect(
+      buildGeminiRequest({ ...REQ, reasoningEffort: 'medium' }).config['thinkingConfig'],
+    ).toEqual({
       thinkingLevel: 'MEDIUM',
       includeThoughts: true,
     });
-    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'low' }).config['thinkingConfig']).toEqual({
-      thinkingLevel: 'LOW',
-      includeThoughts: true,
-    });
+    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'low' }).config['thinkingConfig']).toEqual(
+      {
+        thinkingLevel: 'LOW',
+        includeThoughts: true,
+      },
+    );
     // Gemini has no universal disable (a Pro model rejects budget 0) — `off` degrades to the lowest tier and does
     // NOT force thought output on (minimal thinking).
-    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'off' }).config['thinkingConfig']).toEqual({
-      thinkingLevel: 'MINIMAL',
-    });
+    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'off' }).config['thinkingConfig']).toEqual(
+      {
+        thinkingLevel: 'MINIMAL',
+      },
+    );
     expect('thinkingConfig' in buildGeminiRequest(REQ).config).toBe(false); // unset ⇒ omitted (provider default)
   });
 

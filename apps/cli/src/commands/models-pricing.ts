@@ -105,7 +105,8 @@ export function modelsPricingCommand(
       (m) => m.source === 'user' && m.modelId === args.model && m.providerId !== providerRow.id,
     );
   if (dup !== undefined) {
-    const otherProvider = deps.providers.list().find((p) => p.id === dup.providerId)?.name ?? 'another provider';
+    const otherProvider =
+      deps.providers.list().find((p) => p.id === dup.providerId)?.name ?? 'another provider';
     throw new CliError(
       'invalid_invocation',
       `'${args.model}' is already user-priced under '${otherProvider}'. The cost cap keys by model id, so a second provider's price can't be distinguished — remove that price (re-price under '${otherProvider}') or use a distinct model id.`,
@@ -148,9 +149,7 @@ export function modelsPricingCommand(
   }
 
   const cachedNote =
-    args.cachedInputUsdPerMtok === undefined
-      ? ''
-      : `, cached $${args.cachedInputUsdPerMtok}/Mtok`;
+    args.cachedInputUsdPerMtok === undefined ? '' : `, cached $${args.cachedInputUsdPerMtok}/Mtok`;
   // Strip any terminal-control byte from the (user-typed) model id before echo — parity with `renderModelList`'s
   // FIX 2. `ModelListingSchema` only requires min(1), so an id can carry a control byte; the JSON path is safe on
   // its own (JSON.stringify escapes them). The provider is a validated (kebab) ProviderId, and the prices are

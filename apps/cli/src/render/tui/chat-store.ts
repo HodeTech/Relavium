@@ -126,7 +126,14 @@ export function createChatStore(color: boolean, seed?: SessionViewSeed): ChatSto
   let settleApproval: ((answer: ApprovalAnswer) => void) | undefined;
   let tickCount = 0;
   let dirty = false;
-  let snapshot: ChatStoreSnapshot = { state, mode, reasoningEffort, approval, tick: tickCount, color };
+  let snapshot: ChatStoreSnapshot = {
+    state,
+    mode,
+    reasoningEffort,
+    approval,
+    tick: tickCount,
+    color,
+  };
 
   const flush = (): void => {
     snapshot = { state, mode, reasoningEffort, approval, tick: tickCount, color };

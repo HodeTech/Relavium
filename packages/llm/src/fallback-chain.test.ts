@@ -586,7 +586,10 @@ describe('withEntryModel (ADR-0066 §4 — per-fallback-entry reasoning gate)', 
       model: 'gpt-4o',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
     };
-    expect(withEntryModel(req, 'claude-sonnet-4-6')).toEqual({ ...req, model: 'claude-sonnet-4-6' });
+    expect(withEntryModel(req, 'claude-sonnet-4-6')).toEqual({
+      ...req,
+      model: 'claude-sonnet-4-6',
+    });
   });
 });
 

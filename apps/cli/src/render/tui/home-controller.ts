@@ -8,11 +8,7 @@ import {
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
-import {
-  foldModelPickerKey,
-  partialFailureBanner,
-  type ModelPickerState,
-} from './model-picker.js';
+import { foldModelPickerKey, partialFailureBanner, type ModelPickerState } from './model-picker.js';
 import type { ReseatTarget } from '../../commands/chat.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
@@ -179,7 +175,10 @@ export interface HomeControllerState {
  */
 export interface HomeModelsPort {
   /** The merged catalog (all providers) + the newest live-refresh stamp (the freshness badge). Sync read + merge. */
-  load: () => { readonly entries: readonly ModelCatalogEntry[]; readonly refreshedAt: number | undefined };
+  load: () => {
+    readonly entries: readonly ModelCatalogEntry[];
+    readonly refreshedAt: number | undefined;
+  };
   /** TTL-bounded background refresh (ADR-0064 §5c) — refreshes empty/stale providers; `undefined` when none were. */
   refreshIfStale: () => Promise<RefreshReport | undefined>;
   /** Unbounded, user-initiated refresh (Ctrl+R) — every connected provider, per-provider-isolated. Never rejects. */
@@ -450,7 +449,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           .catch(() => undefined);
         cancelFired = false; // the reseated session starts with a clean cancel latch (parity with clearChat)
         pasting = false; // a lost paste-end marker must not leak the latch into the reseated chat
-        next.store.notice(modelSwitchNotice(target.modelId, next.store.getSnapshot().state.turnCount));
+        next.store.notice(
+          modelSwitchNotice(target.modelId, next.store.getSnapshot().state.turnCount),
+        );
         set({
           session: next,
           mode: 'chat', // STAY in chat — the model switched underneath, the conversation continues
@@ -572,7 +573,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const applyRefreshResult = (epoch: number, report: RefreshReport | undefined): void => {
     const open = state.modelPicker;
     if (epoch !== pickerEpoch || open === undefined || deps.models === undefined) return; // stale/closed — drop it
-    const failed = report?.providers.filter((p) => p.status === 'failed').map((p) => p.provider) ?? [];
+    const failed =
+      report?.providers.filter((p) => p.status === 'failed').map((p) => p.provider) ?? [];
     let view: ReturnType<HomeModelsPort['load']>;
     try {
       view = deps.models.load(); // a DB read — never crash the REPL (parity with runDoctor / acceptModel's guard)
@@ -603,7 +605,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         // refresh()/refreshIfStale() never reject (per-provider isolation), but stay defensive: drop the spinner
         // only when this is still the same open picker generation.
         const cur = state.modelPicker;
-        if (epoch === pickerEpoch && cur !== undefined) set({ modelPicker: { ...cur, loading: false } });
+        if (epoch === pickerEpoch && cur !== undefined)
+          set({ modelPicker: { ...cur, loading: false } });
       },
     );
   };
@@ -651,59 +654,25 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // the long-lived process the S5 background constraint requires. An empty/stale cache repopulates as it resolves.
     runPickerRefresh(() => port.refreshIfStale());
   };
-  // Accept the chosen model. TWO surface-specific actions off the ONE picker (ADR-0059/ADR-0063):
-  //  - a LIVE in-Home chat ⇒ RESEAT it onto the picked model (mirrors the standalone `relavium chat` /models reseat);
-  //  - the BARE Home ⇒ persist the chosen model as the NEXT session's default (the pre-existing behavior below).
-  const acceptModel = (
+  // The bare-Home config-write notice (ADR-0063): an HONEST re-read of the EFFECTIVE default (project → workspace →
+  // global) — success only when the chosen model actually became effective; a higher-layer override says so; and a
+  // post-write `undefined` read can only be a re-read fault (the global was just written valid), reported distinctly.
+  const defaultWriteNotice = (
+    effective: string | undefined,
     modelId: string,
     displayName: string,
-    provider: ReseatTarget['provider'],
-    reasoningEffort?: ReasoningEffort,
-  ): void => {
-    const active = state.session;
-    // A LIVE in-Home chat owns the pick (the bare-Home config write is the `else` below). The effort setter path
-    // does not itself need `reseatChat`, but it is only REACHED with `reseatChat` wired: the in-chat `/models` that
-    // opens the effort sub-step is gated on `reseatChat` (see the palette/typed intercepts), so an active-session
-    // pick never runs without it. Guarding on both here therefore never diverts an effort pick to the config write.
-    if (active !== undefined && deps.reseatChat !== undefined) {
-      if (modelId === active.store.getSnapshot().state.model) {
-        if (reasoningEffort === undefined) {
-          // MODEL-phase no-op (a non-reasoning same-model re-pick — no effort sub-step): keep the picker OPEN with a
-          // hint so the user can pick a different model. The model-phase view renders the hint (unchanged ADR-0059).
-          const open = state.modelPicker;
-          set(
-            open === undefined
-              ? { modelPicker: undefined }
-              : { modelPicker: { ...open, hint: `Already on ${displayName} — pick a different model or Esc.` } },
-          );
-          return;
-        }
-        // EFFORT-phase accept (a reasoning model): an effort-only change (ADR-0066 §5) — a per-turn SESSION override
-        // via the setter, NOT a reseat (no teardown, no ADR-0057 approval-cache wipe, no MCP reconnect, no context
-        // loss). Close + note: the effort sub-list renders no hint, so a no-op must give visible store feedback.
-        const current = active.store.getSnapshot().reasoningEffort;
-        if (reasoningEffort !== current) {
-          active.onSetEffort?.(reasoningEffort);
-          active.store.note(`Reasoning effort set to ${reasoningEffort} — applies to your next message.`);
-        } else {
-          active.store.note(`Already on ${displayName} at effort ${reasoningEffort}.`);
-        }
-        set({ modelPicker: undefined });
-        return;
-      }
-      // DIFFERENT model: a live reseat (ADR-0059), carrying the chosen effort onto the new binding.
-      reseatChat(active, {
-        modelId,
-        provider,
-        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
-      });
-      return;
+  ): string => {
+    if (effective === modelId)
+      return `Default model set to ${displayName} — applies to your next chat session.`;
+    if (effective === undefined) {
+      return `Saved ${displayName} as your global default, but your config could not be re-read to confirm it.`;
     }
-    // ---- The bare-Home next-session-default write (ADR-0063) ---------------------------------------------------
-    // `writeGlobalDefaultModel` writes only the GLOBAL `[preferences].default_model` while the EFFECTIVE default
-    // resolves project → workspace → global (ADR-0063 §1), so the notice is HONEST: success only when the
-    // freshly-resolved effective default actually became the chosen model, else a project/workspace override says so.
-    // A write fault keeps the picker open with a secret-free `hint` rather than crashing the Home.
+    return `Saved ${displayName} as your global default, but a project or workspace setting overrides it here.`;
+  };
+
+  // The BARE-Home next-session-default write (ADR-0063). `writeGlobalDefaultModel` writes only the GLOBAL
+  // `[preferences].default_model`; a write fault keeps the picker open with a secret-free hint rather than crashing.
+  const writeNextSessionDefault = (modelId: string, displayName: string): void => {
     const port = deps.models;
     if (port === undefined) return;
     try {
@@ -715,18 +684,84 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       }
       return;
     }
-    // Report HONESTLY by re-reading the effective default (project → workspace → global, ADR-0063 §1): success only
-    // if the chosen model actually became effective; a genuine higher-layer override says so; and — since the write
-    // just succeeded (so the global is valid) — an `undefined` effective read can only be a re-read fault, reported
-    // distinctly rather than mislabeled as an override.
-    const effective = port.currentDefault();
-    const notice =
-      effective === modelId
-        ? `Default model set to ${displayName} — applies to your next chat session.`
-        : effective === undefined
-          ? `Saved ${displayName} as your global default, but your config could not be re-read to confirm it.`
-          : `Saved ${displayName} as your global default, but a project or workspace setting overrides it here.`;
-    set({ modelPicker: undefined, notice });
+    set({
+      modelPicker: undefined,
+      notice: defaultWriteNotice(port.currentDefault(), modelId, displayName),
+    });
+  };
+
+  // EFFORT-phase accept on the live session (ADR-0066 §5): a per-turn SESSION override via the setter — NOT a reseat
+  // (no teardown/approval-wipe/MCP-reconnect/context-loss). Close + note (the effort sub-list renders no hint, so a
+  // no-op must give visible store feedback).
+  const applyEffortOnlyUpdate = (
+    active: HomeChatSession,
+    displayName: string,
+    reasoningEffort: ReasoningEffort,
+  ): void => {
+    if (reasoningEffort !== active.store.getSnapshot().reasoningEffort) {
+      active.onSetEffort?.(reasoningEffort);
+      active.store.note(
+        `Reasoning effort set to ${reasoningEffort} — applies to your next message.`,
+      );
+    } else {
+      active.store.note(`Already on ${displayName} at effort ${reasoningEffort}.`);
+    }
+    set({ modelPicker: undefined });
+  };
+
+  // A pick on a LIVE in-Home chat: a SAME-model model-phase no-op keeps the picker OPEN with a hint (the user can
+  // pick another); a SAME-model effort pick is the per-turn setter; a DIFFERENT model is a live reseat (ADR-0059)
+  // carrying the chosen effort.
+  const applyLiveSessionPick = (
+    active: HomeChatSession,
+    modelId: string,
+    displayName: string,
+    provider: ReseatTarget['provider'],
+    reasoningEffort: ReasoningEffort | undefined,
+  ): void => {
+    if (modelId !== active.store.getSnapshot().state.model) {
+      reseatChat(active, {
+        modelId,
+        provider,
+        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      });
+      return;
+    }
+    if (reasoningEffort === undefined) {
+      // MODEL-phase no-op (a non-reasoning same-model re-pick — no effort sub-step): keep the picker OPEN with a hint
+      // so the user can pick a different model (the model-phase view renders the hint, unchanged ADR-0059).
+      const open = state.modelPicker;
+      set(
+        open === undefined
+          ? { modelPicker: undefined }
+          : {
+              modelPicker: {
+                ...open,
+                hint: `Already on ${displayName} — pick a different model or Esc.`,
+              },
+            },
+      );
+      return;
+    }
+    applyEffortOnlyUpdate(active, displayName, reasoningEffort);
+  };
+
+  // Accept the chosen model. TWO surface-specific actions off the ONE picker (ADR-0059/ADR-0063): a LIVE in-Home chat
+  // RESEATs / updates effort (the effort setter path is only REACHED with `reseatChat` wired — the in-chat `/models`
+  // that opens the effort sub-step is gated on it — so guarding on both never diverts an effort pick to the config
+  // write); the BARE Home persists the chosen model as the NEXT session's default.
+  const acceptModel = (
+    modelId: string,
+    displayName: string,
+    provider: ReseatTarget['provider'],
+    reasoningEffort?: ReasoningEffort,
+  ): void => {
+    const active = state.session;
+    if (active !== undefined && deps.reseatChat !== undefined) {
+      applyLiveSessionPick(active, modelId, displayName, provider, reasoningEffort);
+      return;
+    }
+    writeNextSessionDefault(modelId, displayName);
   };
   // The open `/models` picker owns every key (2.5.G S7) — parity with routeMentionKey. Returns whether the key was
   // consumed. A DIMMED (unavailable-on-your-key) model is non-selectable (ADR §6): accepting one shows a transient

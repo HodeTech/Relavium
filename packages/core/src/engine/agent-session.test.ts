@@ -794,8 +794,10 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
     // Reasoning-capable ⇒ the tier reaches the request.
     const on = capturing();
     const onSession = session(
-      harness([textTurn('ok')], { resolveProvider: () => on.provider, resolveReasoning: () => true })
-        .deps,
+      harness([textTurn('ok')], {
+        resolveProvider: () => on.provider,
+        resolveReasoning: () => true,
+      }).deps,
       reader,
     );
     onSession.start();
@@ -836,7 +838,8 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
       },
     };
     const s = session(
-      harness([textTurn('ok')], { resolveProvider: () => provider, resolveReasoning: () => true }).deps,
+      harness([textTurn('ok')], { resolveProvider: () => provider, resolveReasoning: () => true })
+        .deps,
       reader,
     );
     s.start();
@@ -874,7 +877,8 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
       },
     };
     const s = session(
-      harness([textTurn('ok')], { resolveProvider: () => provider, resolveReasoning: () => false }).deps,
+      harness([textTurn('ok')], { resolveProvider: () => provider, resolveReasoning: () => false })
+        .deps,
       reader,
     );
     s.start();

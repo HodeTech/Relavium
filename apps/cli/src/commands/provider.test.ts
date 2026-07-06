@@ -71,7 +71,13 @@ describe('relavium provider commands (2.C)', () => {
         Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>),
       ),
       readSecret: () => Promise.resolve(RAW_KEY),
-      global: { json: false, color: false, cwd: process.cwd(), configPath: undefined, verbosity: 'normal' },
+      global: {
+        json: false,
+        color: false,
+        cwd: process.cwd(),
+        configPath: undefined,
+        verbosity: 'normal',
+      },
       ...over,
     });
   });
@@ -127,7 +133,9 @@ describe('relavium provider commands (2.C)', () => {
   });
 
   it('list --verify reports "no key" for a provider with no resolvable key — and never probes it (no hang)', async () => {
-    const stub = stubResolver(() => Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>));
+    const stub = stubResolver(() =>
+      Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>),
+    );
     const noKeyResolver: ProviderResolver = {
       resolveProvider: stub.resolveProvider,
       keyFor: () => {
@@ -177,7 +185,12 @@ describe('relavium provider commands (2.C)', () => {
     const listIo = captureIo();
     await runProviderCommand({ action: 'list' }, deps({ io: listIo.io, global: jsonGlobal }));
     const [rec] = parseNdjson(listIo.out());
-    expect(rec).toMatchObject({ name: 'openai', keySet: false, verified: null, verifyDetail: null });
+    expect(rec).toMatchObject({
+      name: 'openai',
+      keySet: false,
+      verified: null,
+      verifyDetail: null,
+    });
   });
 
   const jsonGlobal = {
@@ -206,7 +219,9 @@ describe('relavium provider commands (2.C)', () => {
   });
 
   it('list --json --verify distinguishes keyless (verified:null, verifyDetail:"no key") from not-probed', async () => {
-    const stub = stubResolver(() => Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>));
+    const stub = stubResolver(() =>
+      Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>),
+    );
     const noKeyResolver: ProviderResolver = {
       resolveProvider: stub.resolveProvider,
       keyFor: () => {
@@ -241,7 +256,9 @@ describe('relavium provider commands (2.C)', () => {
   it('list --verify PROPAGATES an unexpected keyFor fault (not "no key") — a locked/faulted keychain is loud', async () => {
     // A non-`invalid_invocation` error (e.g. a native keychain-binding fault) must NOT be mislabeled "no key" for
     // every provider; it propagates as the command's fault. verifyProvider re-throws it → Promise.all rejects.
-    const stub = stubResolver(() => Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>));
+    const stub = stubResolver(() =>
+      Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>),
+    );
     const faulted: ProviderResolver = {
       resolveProvider: stub.resolveProvider,
       keyFor: () => {

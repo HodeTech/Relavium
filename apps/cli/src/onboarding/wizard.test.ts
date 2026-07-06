@@ -11,11 +11,7 @@ import {
   type KeychainStore,
 } from '../secrets/keychain.js';
 import type { ProviderKeyValidation } from '../engine/providers.js';
-import {
-  isProviderKeyless,
-  runOnboardingWizard,
-  type ClackOnboardingDeps,
-} from './wizard.js';
+import { isProviderKeyless, runOnboardingWizard, type ClackOnboardingDeps } from './wizard.js';
 
 const CANCEL = Symbol('clack-cancel');
 
@@ -57,7 +53,9 @@ function queuedPrompter(
 }
 
 /** A scripted live-validation port draining a queue of outcomes (defaulting to ok when exhausted). */
-function validateSeq(results: ProviderKeyValidation[]): (id: string, key: string) => Promise<ProviderKeyValidation> {
+function validateSeq(
+  results: ProviderKeyValidation[],
+): (id: string, key: string) => Promise<ProviderKeyValidation> {
   return () => Promise.resolve(results.shift() ?? { ok: true, detail: 'ok', reason: 'ok' });
 }
 
@@ -89,7 +87,9 @@ function scriptedPrompter(script: { provider?: string | symbol; key?: string | s
 }
 
 /** An in-memory keychain; `throwOnSet` makes `set` raise `KeychainUnavailableError` (the locked-keychain case). */
-function memKeychain(opts: { throwOnSet?: boolean } = {}): KeychainStore & { store: Map<string, string> } {
+function memKeychain(
+  opts: { throwOnSet?: boolean } = {},
+): KeychainStore & { store: Map<string, string> } {
   const store = new Map<string, string>();
   return {
     store,
@@ -121,7 +121,13 @@ const io: CliIo = {
 
 describe('isProviderKeyless', () => {
   it('is TRUE when every provider key resolution throws (no keychain + no env)', () => {
-    expect(isProviderKeyless({ keyFor: () => { throw new Error('no key'); } })).toBe(true);
+    expect(
+      isProviderKeyless({
+        keyFor: () => {
+          throw new Error('no key');
+        },
+      }),
+    ).toBe(true);
   });
   it('is FALSE as soon as one provider resolves a key (keychain or env)', () => {
     let calls = 0;
@@ -148,7 +154,7 @@ describe('runOnboardingWizard', () => {
   const store = (): ReturnType<typeof createProviderStore> =>
     createProviderStore(client.db, { uuid: () => 'id-fixed', now: () => 1 });
 
-  it('stores the pasted key + registers the provider row + sets the chosen provider\'s starter model (secret-free)', async () => {
+  it("stores the pasted key + registers the provider row + sets the chosen provider's starter model (secret-free)", async () => {
     const keychain = memKeychain();
     const s = store();
     const writeDefaultModel = vi.fn();
@@ -156,7 +162,14 @@ describe('runOnboardingWizard', () => {
       provider: 'anthropic',
       key: '  sk-ant-supersecret-1234  ', // incidental paste whitespace — must be trimmed before storing
     });
-    await runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io, writeDefaultModel });
+    await runOnboardingWizard({
+      prompter,
+      store: s,
+      keychain,
+      resolver: stubResolver,
+      io,
+      writeDefaultModel,
+    });
 
     // The TRIMMED key landed in the keychain under the provider account (no stray whitespace persisted)...
     expect(keychain.store.get(keychainAccount('anthropic'))).toBe('sk-ant-supersecret-1234');
@@ -177,7 +190,14 @@ describe('runOnboardingWizard', () => {
     const s = store();
     const writeDefaultModel = vi.fn();
     const { prompter } = scriptedPrompter({ provider: 'openai', key: 'sk-openai-xyz' });
-    await runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io, writeDefaultModel });
+    await runOnboardingWizard({
+      prompter,
+      store: s,
+      keychain,
+      resolver: stubResolver,
+      io,
+      writeDefaultModel,
+    });
     // NOT the anthropic default — the openai starter, so a first chat doesn't try (and fail) an anthropic key.
     expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.openai.testModel);
     expect(KNOWN_PROVIDERS.openai.testModel).not.toBe(KNOWN_PROVIDERS.anthropic.testModel);
@@ -188,7 +208,14 @@ describe('runOnboardingWizard', () => {
     const s = store();
     const writeDefaultModel = vi.fn();
     const { prompter, password, notes } = scriptedPrompter({ provider: CANCEL });
-    await runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io, writeDefaultModel });
+    await runOnboardingWizard({
+      prompter,
+      store: s,
+      keychain,
+      resolver: stubResolver,
+      io,
+      writeDefaultModel,
+    });
     expect(keychain.store.size).toBe(0); // no key captured or stored
     expect(password).not.toHaveBeenCalled(); // never even prompted for a key
     expect(writeDefaultModel).not.toHaveBeenCalled(); // no default model written on cancel
@@ -200,7 +227,14 @@ describe('runOnboardingWizard', () => {
     const s = store();
     const writeDefaultModel = vi.fn();
     const { prompter, notes } = scriptedPrompter({ provider: 'openai', key: CANCEL });
-    await runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io, writeDefaultModel });
+    await runOnboardingWizard({
+      prompter,
+      store: s,
+      keychain,
+      resolver: stubResolver,
+      io,
+      writeDefaultModel,
+    });
     expect(keychain.store.size).toBe(0);
     expect(s.get('openai')).toBeUndefined(); // no row registered on cancel
     expect(writeDefaultModel).not.toHaveBeenCalled();
@@ -217,7 +251,14 @@ describe('runOnboardingWizard', () => {
     });
     // Must resolve (not throw) — a keychain-unavailable first run degrades gracefully.
     await expect(
-      runOnboardingWizard({ prompter, store: s, keychain, resolver: stubResolver, io, writeDefaultModel }),
+      runOnboardingWizard({
+        prompter,
+        store: s,
+        keychain,
+        resolver: stubResolver,
+        io,
+        writeDefaultModel,
+      }),
     ).resolves.toBeUndefined();
 
     expect(keychain.store.size).toBe(0); // nothing persisted to the keychain...
@@ -242,9 +283,19 @@ describe('runOnboardingWizard', () => {
       },
     };
     const writeDefaultModel = vi.fn();
-    const { prompter, notes, outros } = scriptedPrompter({ provider: 'deepseek', key: 'sk-ds-1234' });
+    const { prompter, notes, outros } = scriptedPrompter({
+      provider: 'deepseek',
+      key: 'sk-ds-1234',
+    });
     await expect(
-      runOnboardingWizard({ prompter, store: brokenStore, keychain, resolver: stubResolver, io, writeDefaultModel }),
+      runOnboardingWizard({
+        prompter,
+        store: brokenStore,
+        keychain,
+        resolver: stubResolver,
+        io,
+        writeDefaultModel,
+      }),
     ).resolves.toBeUndefined();
 
     const all = [...notes, ...outros].join('\n');
@@ -285,11 +336,14 @@ describe('runOnboardingWizard', () => {
     expect(all).not.toContain('sk-good-second');
   });
 
-  it('a bad key (auth) → CONTINUE anyway: stores the FIRST key, note says couldn\'t be verified (secret-free)', async () => {
+  it("a bad key (auth) → CONTINUE anyway: stores the FIRST key, note says couldn't be verified (secret-free)", async () => {
     const keychain = memKeychain();
     const s = store();
     const writeDefaultModel = vi.fn();
-    const { prompter, notes, selectCalls } = queuedPrompter(['openai', 'continue'], ['sk-unverified-key']);
+    const { prompter, notes, selectCalls } = queuedPrompter(
+      ['openai', 'continue'],
+      ['sk-unverified-key'],
+    );
     await runOnboardingWizard({
       prompter,
       store: s,
@@ -299,7 +353,11 @@ describe('runOnboardingWizard', () => {
       writeDefaultModel,
       // A PLANTED secret in the detail must never reach the select MESSAGE (the wizard surfaces res.detail there).
       validate: validateSeq([
-        { ok: false, detail: 'key test failed — LEAKED-sk-unverified-key rejected', reason: 'auth' },
+        {
+          ok: false,
+          detail: 'key test failed — LEAKED-sk-unverified-key rejected',
+          reason: 'auth',
+        },
       ]),
     });
     expect(keychain.store.get(keychainAccount('openai'))).toBe('sk-unverified-key'); // consciously accepted
@@ -314,7 +372,7 @@ describe('runOnboardingWizard', () => {
     expect(retrySelect?.message).toContain('LEAKED-sk-unverified-key'); // detail is surfaced verbatim (already redacted at the seam)
   });
 
-  it('a NETWORK failure → default Continue (offline first-run isn\'t blocked): stores the key', async () => {
+  it("a NETWORK failure → default Continue (offline first-run isn't blocked): stores the key", async () => {
     const keychain = memKeychain();
     const s = store();
     const writeDefaultModel = vi.fn();
@@ -326,7 +384,9 @@ describe('runOnboardingWizard', () => {
       resolver: stubResolver,
       io,
       writeDefaultModel,
-      validate: validateSeq([{ ok: false, detail: 'key test failed — timeout (10000ms)', reason: 'network' }]),
+      validate: validateSeq([
+        { ok: false, detail: 'key test failed — timeout (10000ms)', reason: 'network' },
+      ]),
     });
     expect(keychain.store.get(keychainAccount('gemini'))).toBe('sk-offline-key');
     expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.gemini.testModel);
@@ -346,7 +406,9 @@ describe('runOnboardingWizard', () => {
       resolver: stubResolver,
       io,
       writeDefaultModel,
-      validate: validateSeq([{ ok: false, detail: 'key test failed — invalid_api_key', reason: 'auth' }]),
+      validate: validateSeq([
+        { ok: false, detail: 'key test failed — invalid_api_key', reason: 'auth' },
+      ]),
     });
     expect(keychain.store.size).toBe(0);
     expect(writeDefaultModel).not.toHaveBeenCalled();
@@ -365,7 +427,9 @@ describe('runOnboardingWizard', () => {
       resolver: stubResolver,
       io,
       writeDefaultModel,
-      validate: validateSeq([{ ok: false, detail: 'key test failed — invalid_api_key', reason: 'auth' }]),
+      validate: validateSeq([
+        { ok: false, detail: 'key test failed — invalid_api_key', reason: 'auth' },
+      ]),
     });
     expect(keychain.store.size).toBe(0);
     expect(writeDefaultModel).not.toHaveBeenCalled();
@@ -374,7 +438,10 @@ describe('runOnboardingWizard', () => {
 
   it('threads keyToStore across MULTIPLE retries (retry → retry → good stores the THIRD key)', async () => {
     const keychain = memKeychain();
-    const { prompter } = queuedPrompter(['openai', 'retry', 'retry'], ['sk-bad1', 'sk-bad2', 'sk-good3']);
+    const { prompter } = queuedPrompter(
+      ['openai', 'retry', 'retry'],
+      ['sk-bad1', 'sk-bad2', 'sk-good3'],
+    );
     await runOnboardingWizard({
       prompter,
       store: store(),

@@ -52,7 +52,9 @@ export function createModelCatalogPort(params: {
       // Rebuild the UUID→slug map on every load (NOT memoized): a refresh may register a provider's FK row, and the
       // next load must resolve its live rows' provider — not drop them (mirrors the Home's load).
       const slugByUuid = new Map(providerStore.list().map((p) => [p.id, p.name] as const));
-      keyedProviders ??= new Set(KNOWN_PROVIDER_IDS.filter((id) => providerHasKey(params.providers, id)));
+      keyedProviders ??= new Set(
+        KNOWN_PROVIDER_IDS.filter((id) => providerHasKey(params.providers, id)),
+      );
       return buildMergedCatalog({
         rows: catalogStore.listAll(),
         providerSlug: (uuid) => slugByUuid.get(uuid) ?? uuid,

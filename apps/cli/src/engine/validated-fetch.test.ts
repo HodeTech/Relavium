@@ -48,7 +48,9 @@ function fakeDeps(opts: {
 
 describe('createValidatedFetch', () => {
   it('routes a request through connectValidated and maps the response (status + headers + body)', async () => {
-    const fetch = createValidatedFetch(fakeDeps({ ips: ['1.2.3.4'], status: 200, chunks: ['{"models":[]}'] }));
+    const fetch = createValidatedFetch(
+      fakeDeps({ ips: ['1.2.3.4'], status: 200, chunks: ['{"models":[]}'] }),
+    );
     const res = await fetch('https://api.example.com/v1/models');
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('application/json');
@@ -57,7 +59,9 @@ describe('createValidatedFetch', () => {
 
   it('BLOCKS a host that resolves to a private/loopback address (SSRF) — the fetch rejects', async () => {
     const fetch = createValidatedFetch(fakeDeps({ ips: ['10.0.0.1'] })); // a private IP
-    await expect(fetch('https://sneaky-rebind.example.com/v1/models')).rejects.toBeInstanceOf(SafeEgressError);
+    await expect(fetch('https://sneaky-rebind.example.com/v1/models')).rejects.toBeInstanceOf(
+      SafeEgressError,
+    );
   });
 
   it('rejects a non-HTTPS url (the shared HTTPS policy), never connecting', async () => {
@@ -69,7 +73,9 @@ describe('createValidatedFetch', () => {
 
   it('pins the connection to the validated IP and passes method + headers + body through', async () => {
     let captured: HopRequest | undefined;
-    const fetch = createValidatedFetch(fakeDeps({ ips: ['203.0.113.7'], onConnect: (req) => (captured = req) }));
+    const fetch = createValidatedFetch(
+      fakeDeps({ ips: ['203.0.113.7'], onConnect: (req) => (captured = req) }),
+    );
     await fetch('https://api.example.com/v1/chat/completions', {
       method: 'POST',
       headers: { authorization: 'Bearer sk-secret', 'content-type': 'application/json' },
@@ -86,7 +92,10 @@ describe('createValidatedFetch', () => {
     const fetch = createValidatedFetch(
       fakeDeps({ ips: ['1.2.3.4'], chunks: ['data: a\n\n', 'data: b\n\n', 'data: [DONE]\n\n'] }),
     );
-    const res = await fetch('https://api.example.com/v1/chat/completions', { method: 'POST', body: '{}' });
+    const res = await fetch('https://api.example.com/v1/chat/completions', {
+      method: 'POST',
+      body: '{}',
+    });
     const reader = res.body?.getReader();
     if (reader === undefined) throw new Error('no response body stream');
     const received: string[] = [];
@@ -101,7 +110,9 @@ describe('createValidatedFetch', () => {
 
   it('disposes the socket when the response stream is cancelled early', async () => {
     const dispose = vi.fn();
-    const fetch = createValidatedFetch(fakeDeps({ ips: ['1.2.3.4'], chunks: ['a', 'b', 'c'], dispose }));
+    const fetch = createValidatedFetch(
+      fakeDeps({ ips: ['1.2.3.4'], chunks: ['a', 'b', 'c'], dispose }),
+    );
     const res = await fetch('https://api.example.com/v1/models');
     await res.body?.cancel(); // stop reading early
     expect(dispose).toHaveBeenCalled();
@@ -140,7 +151,10 @@ describe('createValidatedFetch', () => {
     const fetch = createValidatedFetch(
       fakeDeps({ ips: ['1.2.3.4'], body: failingBody(['data: a\n\n']), dispose }),
     );
-    const res = await fetch('https://api.example.com/v1/chat/completions', { method: 'POST', body: '{}' });
+    const res = await fetch('https://api.example.com/v1/chat/completions', {
+      method: 'POST',
+      body: '{}',
+    });
     const reader = res.body?.getReader();
     if (reader === undefined) throw new Error('no body stream');
     let thrown: unknown;
@@ -160,7 +174,9 @@ describe('createValidatedFetch', () => {
 
   it('accepts a Request-object input (not just a url + init)', async () => {
     let captured: HopRequest | undefined;
-    const fetch = createValidatedFetch(fakeDeps({ ips: ['203.0.113.9'], onConnect: (req) => (captured = req) }));
+    const fetch = createValidatedFetch(
+      fakeDeps({ ips: ['203.0.113.9'], onConnect: (req) => (captured = req) }),
+    );
     await fetch(
       new Request('https://api.example.com/v1/chat/completions', {
         method: 'POST',
@@ -176,7 +192,9 @@ describe('createValidatedFetch', () => {
   it('rejects an out-of-range HTTP status (a hostile 999) as a typed SafeEgressError, never a raw RangeError', async () => {
     const dispose = vi.fn();
     const fetch = createValidatedFetch(fakeDeps({ ips: ['1.2.3.4'], status: 999, dispose }));
-    await expect(fetch('https://api.example.com/v1/models')).rejects.toBeInstanceOf(SafeEgressError);
+    await expect(fetch('https://api.example.com/v1/models')).rejects.toBeInstanceOf(
+      SafeEgressError,
+    );
     expect(dispose).toHaveBeenCalled();
   });
 
@@ -208,7 +226,9 @@ describe('createValidatedFetch', () => {
 
   it('strips accept-encoding from the request (this fetch does not auto-decompress the streamed body)', async () => {
     let captured: HopRequest | undefined;
-    const fetch = createValidatedFetch(fakeDeps({ ips: ['1.2.3.4'], onConnect: (req) => (captured = req) }));
+    const fetch = createValidatedFetch(
+      fakeDeps({ ips: ['1.2.3.4'], onConnect: (req) => (captured = req) }),
+    );
     await fetch('https://api.example.com/v1/models', {
       headers: { 'accept-encoding': 'gzip, br', authorization: 'Bearer sk-x' },
     });

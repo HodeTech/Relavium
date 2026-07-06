@@ -168,9 +168,7 @@ describe('build*Args (argv → typed core args)', () => {
 
   it('provider.add: name + optional baseUrl + optional pricingUrl (each omitted when absent)', () => {
     expect(
-      buildProviderAddArgs(
-        input(['anthropic'], { baseUrl: 'https://x', pricingUrl: 'https://p' }),
-      ),
+      buildProviderAddArgs(input(['anthropic'], { baseUrl: 'https://x', pricingUrl: 'https://p' })),
     ).toEqual({
       action: 'add',
       name: 'anthropic',

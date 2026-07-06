@@ -207,7 +207,10 @@ function parseUsdPerMtok(raw: string, flag: string): number {
   const trimmed = raw.trim();
   const value = Number(trimmed);
   if (trimmed === '' || !Number.isFinite(value)) {
-    throw new CliError('invalid_invocation', `${flag} must be a finite number of USD per million tokens.`);
+    throw new CliError(
+      'invalid_invocation',
+      `${flag} must be a finite number of USD per million tokens.`,
+    );
   }
   return value;
 }
@@ -262,7 +265,10 @@ function storeAwareResolver(
   });
   const { db, close } = openLocalDb(homeDir);
   try {
-    const providerStore = createProviderStore(db, { uuid: () => randomUUID(), now: () => Date.now() });
+    const providerStore = createProviderStore(db, {
+      uuid: () => randomUUID(),
+      now: () => Date.now(),
+    });
     return createProviderResolver(ctx.io.env, keychain, { providerStore });
   } finally {
     close();
@@ -465,7 +471,10 @@ const executeModelsRefresh: CommandExecutor = (_input, ctx) =>
  */
 const executeModelsPricing: CommandExecutor = (input, ctx) => {
   const args = buildModelsPricingArgs(input); // a bad/absent flag is an invocation fault before any db work
-  const { homeDir } = loadResolvedConfig({ cwd: ctx.global.cwd, configPath: ctx.global.configPath });
+  const { homeDir } = loadResolvedConfig({
+    cwd: ctx.global.cwd,
+    configPath: ctx.global.configPath,
+  });
   const { db, close } = openLocalDb(homeDir);
   try {
     const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };

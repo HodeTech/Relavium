@@ -1614,16 +1614,18 @@ function pickerEntry(
  * `[chat].default_model` shadowing the global write (the effective default stays the override). `writeThrows`
  * simulates a config-write fault.
  */
-function makeModelsPort(opts: {
-  entries?: readonly ModelCatalogEntry[];
-  refreshedAt?: number;
-  overrideDefault?: string;
-  writeThrows?: boolean;
-  readFaults?: boolean; // currentDefault always returns undefined (a config re-read fault after a good write)
-  loadThrows?: boolean; // load() throws (a DB read fault)
-  refreshIfStale?: () => Promise<Awaited<ReturnType<HomeModelsPort['refreshIfStale']>>>;
-  refresh?: () => Promise<Awaited<ReturnType<HomeModelsPort['refresh']>>>;
-} = {}): {
+function makeModelsPort(
+  opts: {
+    entries?: readonly ModelCatalogEntry[];
+    refreshedAt?: number;
+    overrideDefault?: string;
+    writeThrows?: boolean;
+    readFaults?: boolean; // currentDefault always returns undefined (a config re-read fault after a good write)
+    loadThrows?: boolean; // load() throws (a DB read fault)
+    refreshIfStale?: () => Promise<Awaited<ReturnType<HomeModelsPort['refreshIfStale']>>>;
+    refresh?: () => Promise<Awaited<ReturnType<HomeModelsPort['refresh']>>>;
+  } = {},
+): {
   port: HomeModelsPort;
   load: ReturnType<typeof vi.fn>;
   refreshIfStale: ReturnType<typeof vi.fn>;
@@ -1648,7 +1650,8 @@ function makeModelsPort(opts: {
     refresh,
     // The EFFECTIVE default: a read fault ⇒ undefined; else the override wins (shadows the global write), else the
     // last written id.
-    currentDefault: () => (opts.readFaults === true ? undefined : (opts.overrideDefault ?? written)),
+    currentDefault: () =>
+      opts.readFaults === true ? undefined : (opts.overrideDefault ?? written),
     writeDefault,
   };
   return { port, load, refreshIfStale, refresh, writeDefault };
@@ -1812,7 +1815,9 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   it('Ctrl+R runs an unbounded refresh; a per-provider failure surfaces a secret-free banner', async () => {
     const { port, refresh } = makeModelsPort({
       refresh: () =>
-        Promise.resolve({ providers: [{ provider: 'openai', status: 'failed', error: 'redacted' }] }),
+        Promise.resolve({
+          providers: [{ provider: 'openai', status: 'failed', error: 'redacted' }],
+        }),
     });
     const c = openPicker(port);
     await flush();
@@ -1825,7 +1830,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(picker?.banner).not.toContain('redacted');
   });
 
-  it('a reopened picker is NOT clobbered by a prior open\'s slow refresh (the epoch guard)', async () => {
+  it("a reopened picker is NOT clobbered by a prior open's slow refresh (the epoch guard)", async () => {
     // Open #1 kicks a SLOW refreshIfStale; open #2 (after a close) gets a fast one. When the slow first refresh
     // finally resolves with a partial failure, it must NOT stamp the SECOND picker's banner (a different generation).
     let resolveSlow: (report: RefreshReport) => void = () => undefined;
@@ -1935,7 +1940,9 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
     const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
     const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic', supportsReasoning: true })],
+      entries: [
+        pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic', supportsReasoning: true }),
+      ],
     });
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,
@@ -1973,7 +1980,9 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
     const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
     const { port } = makeModelsPort({
-      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic', supportsReasoning: true })],
+      entries: [
+        pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic', supportsReasoning: true }),
+      ],
     });
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,
