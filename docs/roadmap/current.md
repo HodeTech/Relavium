@@ -200,8 +200,11 @@ the onboarding-wizard live key-validation + retry UX, wizard-dynamic provider do
 now Accepted), and **normalized reasoning-effort control** ([ADR-0066](../decisions/0066-normalized-reasoning-effort-control.md),
 now Accepted): a provider-agnostic effort tier (`off`/`low`/`medium`/`high`/`max`) authored in agent YAML or the
 `[chat].reasoning_effort` config default, each adapter mapping it to its provider's **native** tier, gated per-model
-by a host-injected capability resolver, and chosen live via the `/models` picker's **effort sub-step** on a
-reasoning-capable model during a reseat.
+by a host-injected capability resolver (plus a conservative id heuristic for a live-discovered model), and changed
+live — via the `/effort` command or the `/models` picker's **effort sub-step** — as a **per-turn session override**
+(no reseat, §5), with the active tier shown in the footer. The comprehensive multi-agent review after the first
+implementation caught that the picker had (wrongly) routed the effort through a full model reseat; the P0 fix
+rebuilt it as the ADR-mandated session-level setter.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks
 items up as it first touches each file. Notable inheritances: 1.AH's host-wiring half
