@@ -144,14 +144,14 @@ export const VALIDATE_KEY_TIMEOUT_MS = 10_000;
  */
 export type ValidationReason = 'ok' | 'auth' | 'network' | 'other';
 
-/** The outcome of a {@link validateProviderKey} probe — `ok` plus a secret-free `detail` line + a {@link ValidationReason}. */
-export interface ProviderKeyValidation {
-  readonly ok: boolean;
-  /** Secret-free: `key works (<model>)` on success, or `key test failed — <redacted>` on failure. */
-  readonly detail: string;
-  /** The cause discriminant (2.5.G S8) — `'ok'` on success, else `'auth'` / `'network'` / `'other'`. */
-  readonly reason: ValidationReason;
-}
+/**
+ * The outcome of a {@link validateProviderKey} probe — a DISCRIMINATED union so `reason` is pinned to `ok` at the
+ * type level (the "typed, discriminated" standard): success is always `reason: 'ok'`; a failure is never `'ok'`.
+ * `detail` is secret-free (`key works (<model>)` on success, `key test failed — <redacted>` on failure).
+ */
+export type ProviderKeyValidation =
+  | { readonly ok: true; readonly detail: string; readonly reason: 'ok' }
+  | { readonly ok: false; readonly detail: string; readonly reason: Exclude<ValidationReason, 'ok'> };
 
 /**
  * Validate a provider key with a minimal live request (`maxTokens: 1` 'ping'). Returns a RESULT so the caller
@@ -219,7 +219,7 @@ export async function validateProviderKey(
 /** Map a probe throw → a {@link ValidationReason}, from the seam's `LlmProviderError.llmError.kind` (never a string
  *  heuristic). A non-`LlmProviderError` is `'other'`. The `'network'` (continue-anyway) bucket IS exactly the seam's
  *  RETRYABLE (transient) set — bound to `isRetryable` so a new transient kind can't drift out of it. No text read. */
-function classifyValidationFailure(err: unknown): ValidationReason {
+function classifyValidationFailure(err: unknown): Exclude<ValidationReason, 'ok'> {
   if (!(err instanceof LlmProviderError)) return 'other';
   const kind = err.llmError.kind;
   if (kind === 'auth') return 'auth'; // a rejected key — re-entering is the remedy

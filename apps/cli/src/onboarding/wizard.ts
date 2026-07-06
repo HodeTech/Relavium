@@ -28,9 +28,14 @@ import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychai
  * wizard's job is to store the key that lights up the S7 `/models` picker + chat; the user picks a model there.
  *
  * SECURITY (this captures a live API key):
- *  - The key is read via clack's masked `password` prompt (never an argv flag, never echoed), held only in memory,
- *    and handed straight to the keychain — it is never logged (only {@link keyHint}, the last 4), persisted to a
- *    file, or placed in an error/report.
+ *  - The key is read via clack's masked `password` prompt (never an argv flag, never echoed) and held only in
+ *    memory. Before it is stored, it is sent LIVE to the provider ONCE (the bounded, key-redacted
+ *    {@link validateProviderKey} `maxTokens:1` ping) to verify it — the key crosses the network only to its own
+ *    provider, over the adapter's own transport, and is never logged/persisted/echoed on that path.
+ *  - It is then handed to the OS keychain. On a validation FAILURE the user may consciously "save it anyway" — the
+ *    key is then stored UNVERIFIED and the note says so (never claiming a verification we didn't do).
+ *  - The only key material ever surfaced is {@link keyHint} (the last 4); the redacted probe `detail` is the only
+ *    failure text shown. Nothing is written to a file/log/error/report.
  *  - The keychain-unavailable fallback prints the env-var name to set — NEVER the key, and NEVER a plaintext file
  *    (the deliberate "no silent plaintext fallback" of `providerSetKey`).
  */
@@ -280,15 +285,19 @@ async function validateWithRetry(
     }
     if (res.ok) return { keyToStore, verified: true };
 
-    // The order + the pre-highlighted (bare-Enter) option depend on the CAUSE: an offline/transient `network`
-    // failure defaults to "save it anyway" (don't block an offline first-run); a rejected key defaults to
-    // "re-enter". `res.detail` is already key-redacted, so it is safe to show.
-    const isNetwork = res.reason === 'network';
+    // The order + the pre-highlighted (bare-Enter) option depend on the CAUSE: a TRANSIENT (`network` — offline /
+    // timeout / rate-limit / overloaded) failure defaults to "save it anyway" (don't block an offline first-run);
+    // a non-transient failure (a rejected key, a billing/account issue, or an unexpected fault) defaults to
+    // "re-enter". `res.detail` (already key-redacted, and it names the specific reason, e.g. `invalid_api_key`) is
+    // the neutral evidence — we do NOT assert "the key is bad" for the non-network case, since a 402/400 may mean
+    // billing or a stale test model rather than a wrong key.
+    const isTransient = res.reason === 'network';
+    const displayName = KNOWN_PROVIDERS[provider].displayName;
     const choice = await p.select({
-      message: isNetwork
-        ? `Couldn't reach ${KNOWN_PROVIDERS[provider].displayName} to verify — you may be offline.`
-        : `That key didn't work — ${res.detail}.`,
-      options: isNetwork
+      message: isTransient
+        ? `Couldn't reach ${displayName} to verify — you may be offline or it's busy (${res.detail}).`
+        : `Couldn't verify your ${displayName} key (${res.detail}).`,
+      options: isTransient
         ? [
             { value: 'continue', label: 'Save it anyway', hint: 'verify later with /doctor' },
             { value: 'retry', label: 'Enter a different key' },
@@ -299,17 +308,19 @@ async function validateWithRetry(
             { value: 'continue', label: 'Save it anyway', hint: 'fix it later with /doctor' },
             { value: 'skip', label: 'Skip setup' },
           ],
-      initialValue: isNetwork ? 'continue' : 'retry',
+      initialValue: isTransient ? 'continue' : 'retry',
     });
     if (p.isCancel(choice) || choice === 'skip') {
       skip(p);
       return null;
     }
     if (choice === 'continue') return { keyToStore, verified: false };
+    // clack's `select` only ever yields a listed value; fail loud if a future option is added without a handler.
+    if (choice !== 'retry') throw new Error(`unexpected wizard choice: ${String(choice)}`);
 
     // 'retry' — re-prompt for a key; Esc here also skips. The new key loops back through validation.
     const again = await p.password({
-      message: `Paste your ${KNOWN_PROVIDERS[provider].displayName} API key`,
+      message: `Paste your ${displayName} API key`,
       validate: requireKey,
     });
     if (p.isCancel(again)) {

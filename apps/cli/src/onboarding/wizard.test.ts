@@ -371,4 +371,61 @@ describe('runOnboardingWizard', () => {
     expect(writeDefaultModel).not.toHaveBeenCalled();
     expect(notes.some((n) => n.includes('Skipped'))).toBe(true);
   });
+
+  it('threads keyToStore across MULTIPLE retries (retry → retry → good stores the THIRD key)', async () => {
+    const keychain = memKeychain();
+    const { prompter } = queuedPrompter(['openai', 'retry', 'retry'], ['sk-bad1', 'sk-bad2', 'sk-good3']);
+    await runOnboardingWizard({
+      prompter,
+      store: store(),
+      keychain,
+      resolver: stubResolver,
+      io,
+      writeDefaultModel: vi.fn(),
+      validate: validateSeq([
+        { ok: false, detail: 'x', reason: 'auth' },
+        { ok: false, detail: 'x', reason: 'auth' },
+        { ok: true, detail: 'ok', reason: 'ok' },
+      ]),
+    });
+    expect(keychain.store.get(keychainAccount('openai'))).toBe('sk-good3'); // the LAST-entered key threaded through
+  });
+
+  it('an "other" (non-transient) failure uses neutral "Couldn\'t verify" copy + a retry default, not "offline"', async () => {
+    const { prompter, selectCalls } = queuedPrompter(['openai', 'skip'], ['sk-x']);
+    await runOnboardingWizard({
+      prompter,
+      store: store(),
+      keychain: memKeychain(),
+      resolver: stubResolver,
+      io,
+      writeDefaultModel: vi.fn(),
+      validate: validateSeq([{ ok: false, detail: 'bad_request: model retired', reason: 'other' }]),
+    });
+    const msg = selectCalls[1]?.message ?? '';
+    expect(msg).toContain("Couldn't verify"); // never asserts "the key is bad" for a non-auth/non-network cause
+    expect(msg).not.toContain('offline');
+    expect(selectCalls[1]?.initialValue).toBe('retry'); // non-transient → re-enter is the default
+  });
+
+  it('a REJECTING validate STOPS the spinner (finally) + PROPAGATES (no runaway spinner, no swallow)', async () => {
+    const stops: number[] = [];
+    const { prompter } = queuedPrompter(['openai'], ['sk-x']);
+    const spied: ClackOnboardingDeps = {
+      ...prompter,
+      spinner: () => ({ start: () => undefined, stop: () => stops.push(1) }),
+    };
+    await expect(
+      runOnboardingWizard({
+        prompter: spied,
+        store: store(),
+        keychain: memKeychain(),
+        resolver: stubResolver,
+        io,
+        writeDefaultModel: vi.fn(),
+        validate: () => Promise.reject(new Error('probe boom')),
+      }),
+    ).rejects.toThrow('probe boom'); // propagates (not swallowed) to the Home's cleanup
+    expect(stops.length).toBe(1); // the finally stopped the spinner despite the rejection
+  });
 });

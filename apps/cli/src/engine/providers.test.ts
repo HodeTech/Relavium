@@ -192,8 +192,14 @@ describe('validateProviderKey', () => {
   });
 
   it('classifies the failure CAUSE from the seam error kind — auth vs network vs other (2.5.G S8)', async () => {
+    // `retryable` set to match the real `makeLlmError` (timeout IS retryable) so the fixture is a possible value.
     const err = (kind: 'auth' | 'timeout' | 'bad_request'): LlmProviderError =>
-      new LlmProviderError({ kind, retryable: false, provider: 'anthropic', message: `${kind} boom` });
+      new LlmProviderError({
+        kind,
+        retryable: kind === 'timeout',
+        provider: 'anthropic',
+        message: `${kind} boom`,
+      });
     const auth = await validateProviderKey(
       fakeProvider(vi.fn().mockRejectedValue(err('auth'))),
       TEST_KEY,
@@ -256,6 +262,7 @@ describe('validateProviderKey', () => {
     const result = await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test', 5);
     expect(result.ok).toBe(false);
     expect(result.detail).toContain('timeout');
+    expect(result.reason).toBe('network'); // a timeout classifies as network (continue-anyway in the wizard)
     expect(result.detail).not.toContain(TEST_KEY);
   });
 });
