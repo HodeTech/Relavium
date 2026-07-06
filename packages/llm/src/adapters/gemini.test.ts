@@ -477,6 +477,24 @@ describe('Gemini adapter — request building (buildGeminiRequest)', () => {
     });
   });
 
+  it('maps the reasoning-effort tier to thinkingConfig.thinkingLevel (max→HIGH, off→MINIMAL, unset omitted) (ADR-0066)', () => {
+    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'high' }).config['thinkingConfig']).toEqual({
+      thinkingLevel: 'HIGH',
+    });
+    // Gemini tops out at HIGH — `max` coarsens to it (no separate xhigh/max tier).
+    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'max' }).config['thinkingConfig']).toEqual({
+      thinkingLevel: 'HIGH',
+    });
+    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'low' }).config['thinkingConfig']).toEqual({
+      thinkingLevel: 'LOW',
+    });
+    // Gemini has no universal disable (a Pro model rejects budget 0) — `off` degrades to the lowest tier.
+    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'off' }).config['thinkingConfig']).toEqual({
+      thinkingLevel: 'MINIMAL',
+    });
+    expect('thinkingConfig' in buildGeminiRequest(REQ).config).toBe(false); // unset ⇒ omitted (provider default)
+  });
+
   it('round-trips tool_call → functionCall and tool_result → functionResponse by name', () => {
     const request = buildGeminiRequest({
       model: 'gemini-2.5-flash',

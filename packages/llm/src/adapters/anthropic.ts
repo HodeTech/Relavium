@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 import { mediaModalityOf } from '@relavium/shared';
-import type { AbortSignalLike, ContentPart, StopReason } from '@relavium/shared';
+import type { AbortSignalLike, ContentPart, ReasoningEffort, StopReason } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
@@ -46,6 +46,12 @@ const PROVIDER = 'anthropic';
 const DEFAULT_MAX_TOKENS = 4096;
 /** Anthropic's API caps `temperature` at 1 (the shared contract's envelope is the wider [0, 2]). */
 const MAX_TEMPERATURE = 1;
+/** ADR-0066: the normalized reasoning-effort tier → Anthropic's native `output_config.effort` levels. Anthropic has
+ *  a native `max`, so all four non-`off` tiers map 1:1; `off` is handled separately (thinking disabled). */
+const ANTHROPIC_REASONING_EFFORT: Record<
+  Exclude<ReasoningEffort, 'off'>,
+  'low' | 'medium' | 'high' | 'max'
+> = { low: 'low', medium: 'medium', high: 'high', max: 'max' };
 
 /**
  * Anthropic supports the full common-path surface; provider-specific features go via
@@ -477,6 +483,21 @@ function buildCommonBody(
     body.output_config = {
       format: { type: 'json_schema', schema: req.responseFormat.schema as Record<string, unknown> },
     };
+  }
+  if (req.reasoningEffort !== undefined) {
+    // ADR-0066: Anthropic's tier-native reasoning control — `output_config.effort` (the level) + ADAPTIVE thinking
+    // to enable it (no token budget: the tier-native path avoids the legacy budget_tokens constraint). `off` DISABLES
+    // thinking. The effort level MERGES alongside any structured-output `format` already on output_config. Anthropic
+    // has a native `max` tier, so all five normalized tiers map 1:1 (no coarsening here).
+    if (req.reasoningEffort === 'off') {
+      body.thinking = { type: 'disabled' };
+    } else {
+      body.thinking = { type: 'adaptive' };
+      body.output_config = {
+        ...body.output_config,
+        effort: ANTHROPIC_REASONING_EFFORT[req.reasoningEffort],
+      };
+    }
   }
   if (req.temperature !== undefined) {
     // The shared contract is the provider-agnostic [0, 2] envelope (common.ts); Anthropic's API

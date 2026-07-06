@@ -1,7 +1,13 @@
 import { GenerateVideosOperation, GoogleGenAI } from '@google/genai';
 
 import { MediaMimeTypeSchema, mediaModalityOf } from '@relavium/shared';
-import type { AbortSignalLike, ContentPart, OutputModality, StopReason } from '@relavium/shared';
+import type {
+  AbortSignalLike,
+  ContentPart,
+  OutputModality,
+  ReasoningEffort,
+  StopReason,
+} from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
@@ -51,6 +57,16 @@ import {
  */
 
 const PROVIDER = 'gemini';
+/** ADR-0066: the normalized reasoning-effort tier → Gemini's native `thinkingConfig.thinkingLevel` enum values.
+ *  Gemini tops out at HIGH, so `max`→HIGH (a coarsening); it has no universal disable (a Pro model rejects budget
+ *  0), so `off` degrades to the lowest tier MINIMAL. The loose config Record takes the enum's string value directly. */
+const GEMINI_THINKING_LEVEL: Record<ReasoningEffort, 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH'> = {
+  off: 'MINIMAL',
+  low: 'LOW',
+  medium: 'MEDIUM',
+  high: 'HIGH',
+  max: 'HIGH',
+};
 
 /**
  * Gemini's common-path capability surface (restricted tool schema; ids synthesized). 1.AE wires
@@ -564,6 +580,11 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   }
   if (req.maxTokens !== undefined) {
     config['maxOutputTokens'] = req.maxTokens;
+  }
+  if (req.reasoningEffort !== undefined) {
+    // ADR-0066: Gemini's tier-native thinking control (thinkingLevel). Set on thinkingConfig; canonical config wins
+    // over a providerOptions thinkingConfig on the shallow merge below (the normalized field wins on collision).
+    config['thinkingConfig'] = { thinkingLevel: GEMINI_THINKING_LEVEL[req.reasoningEffort] };
   }
   if (req.outputModalities !== undefined && req.outputModalities.some((m) => m !== 'text')) {
     // Lower the node's non-text output_modalities to Gemini `responseModalities` (inline media-out,

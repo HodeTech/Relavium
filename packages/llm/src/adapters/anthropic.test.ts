@@ -159,6 +159,46 @@ describe('AnthropicAdapter', () => {
     });
   });
 
+  it('maps the reasoning-effort tier to output_config.effort + adaptive thinking; off disables; unset omits (ADR-0066)', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'claude-opus-4-8',
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+    const base = {
+      model: 'claude-opus-4-8',
+      maxTokens: 1024,
+      messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }],
+    };
+    await adapter.generate({ ...base, reasoningEffort: 'high' }, 'k');
+    expect(sent['thinking']).toEqual({ type: 'adaptive' });
+    expect(sent['output_config']).toEqual({ effort: 'high' });
+    await adapter.generate({ ...base, reasoningEffort: 'max' }, 'k');
+    expect(sent['output_config']).toEqual({ effort: 'max' }); // Anthropic has a native `max` — 1:1, no coarsening
+    await adapter.generate({ ...base, reasoningEffort: 'off' }, 'k');
+    expect(sent['thinking']).toEqual({ type: 'disabled' });
+    expect('output_config' in sent).toBe(false); // off never sets output_config
+    await adapter.generate({ ...base }, 'k'); // unset ⇒ no thinking, no output_config (provider default)
+    expect('thinking' in sent).toBe(false);
+  });
+
   it('rejects handle and url media sources with an explicit bad_request error (1.AF)', async () => {
     const adapter = createAnthropicAdapter({
       fetch: () => Promise.resolve(new Response('unused', { status: 200 })),
