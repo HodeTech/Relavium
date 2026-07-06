@@ -8,6 +8,7 @@ import {
   providerKeyEnvVar,
   type ProviderResolver,
 } from '../engine/providers.js';
+import { CliError } from '../process/errors.js';
 import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
 import { captureIo, parseNdjson } from '../test-support.js';
@@ -130,7 +131,7 @@ describe('relavium provider commands (2.C)', () => {
     const noKeyResolver: ProviderResolver = {
       resolveProvider: stub.resolveProvider,
       keyFor: () => {
-        throw new Error('no key configured'); // keychain → env both empty
+        throw new CliError('invalid_invocation', 'no API key'); // matches real keyFor's absence throw
       },
     };
     const d = deps({ resolver: noKeyResolver });
@@ -209,7 +210,7 @@ describe('relavium provider commands (2.C)', () => {
     const noKeyResolver: ProviderResolver = {
       resolveProvider: stub.resolveProvider,
       keyFor: () => {
-        throw new Error('no key');
+        throw new CliError('invalid_invocation', 'no API key');
       },
     };
     await runProviderCommand({ action: 'add', name: 'openai' }, deps({}));
@@ -235,6 +236,61 @@ describe('relavium provider commands (2.C)', () => {
     expect(text).not.toContain('\x1b'); // the ESC byte is stripped
     expect(text).not.toContain('\r'); // the CR is collapsed (one row stays one line)
     expect(text).toContain('failed'); // the row still renders the failure state
+  });
+
+  it('list --verify PROPAGATES an unexpected keyFor fault (not "no key") — a locked/faulted keychain is loud', async () => {
+    // A non-`invalid_invocation` error (e.g. a native keychain-binding fault) must NOT be mislabeled "no key" for
+    // every provider; it propagates as the command's fault. verifyProvider re-throws it → Promise.all rejects.
+    const stub = stubResolver(() => Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>));
+    const faulted: ProviderResolver = {
+      resolveProvider: stub.resolveProvider,
+      keyFor: () => {
+        throw new Error('native keychain binding crashed');
+      },
+    };
+    const d = deps({ resolver: faulted });
+    await runProviderCommand({ action: 'add', name: 'openai' }, d);
+    await expect(runProviderCommand({ action: 'list', verify: true }, d)).rejects.toThrow(
+      'native keychain binding crashed',
+    );
+  });
+
+  it('list --verify probes providers CONCURRENTLY, not serially (a barrier deadlocks a sequential loop)', async () => {
+    // Two providers; each probe blocks until BOTH have started. A concurrent Promise.all releases the barrier; a
+    // sequential `await` loop would block forever on the first (the 2nd never starts) — so this test only passes
+    // when the probes run concurrently. A generous timeout keeps a genuine deadlock from hanging CI.
+    let started = 0;
+    let releaseBarrier: () => void = () => undefined;
+    const barrier = new Promise<void>((res) => {
+      releaseBarrier = res;
+    });
+    const concurrentGen: LlmProvider['generate'] = async () => {
+      started += 1;
+      if (started === 2) releaseBarrier();
+      await barrier;
+      return {} as Awaited<ReturnType<LlmProvider['generate']>>;
+    };
+    const d = deps({ resolver: stubResolver(concurrentGen) });
+    await runProviderCommand({ action: 'set-key', name: 'anthropic' }, d);
+    await runProviderCommand({ action: 'set-key', name: 'openai' }, d);
+    io.out();
+    await runProviderCommand({ action: 'list', verify: true }, d);
+    expect(started).toBe(2); // both probes ran (the barrier could only release if they overlapped)
+    expect(io.out()).toContain('[verified]');
+  }, 2000);
+
+  it('add --base-url REJECTS a control/bidi-bearing URL at the door (never stored or echoed)', async () => {
+    for (const evil of [
+      'https://x.example.com/\x1b[2Jpath', // ANSI screen-clear in the path
+      'https://x.example.com/\u202eevil', // a bidi RIGHT-TO-LEFT OVERRIDE (U+202E)
+      'https://x.example.com/a\r b', // a bare CR
+    ]) {
+      await expect(
+        runProviderCommand({ action: 'add', name: 'openai', baseUrl: evil }, deps({})),
+      ).rejects.toMatchObject({ code: 'invalid_invocation' });
+    }
+    // Nothing was stored for openai (every attempt was rejected before the upsert).
+    expect(deps({}).store.get('openai')).toBeUndefined();
   });
 
   it('remove-key deletes the keychain entry and clears the db ref', async () => {

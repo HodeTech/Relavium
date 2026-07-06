@@ -8,12 +8,12 @@ import {
   validateProviderKey,
   type ProviderResolver,
 } from '../engine/providers.js';
-import { CliError } from '../process/errors.js';
+import { CliError, isCliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
-import { sanitizeInline, stripTerminalControls } from '../render/tui/chat-projection.js';
+import { stripTerminalControls } from '../render/tui/chat-projection.js';
 import {
   KeychainUnavailableError,
   keychainAccount,
@@ -107,18 +107,49 @@ async function verifyProvider(
   let key: string;
   try {
     key = deps.resolver.keyFor(id); // keychain → env var → throws; never logged
-  } catch {
-    return { verified: null, detail: 'no key' }; // no key anywhere ⇒ nothing to verify (distinct from "not probed")
+  } catch (err) {
+    // The ONE expected throw is keyFor's genuine key-absence (`invalid_invocation`) → report "no key" (distinct
+    // from "not probed"). Any OTHER error (e.g. a native keychain-binding fault keyFor re-raises) is unexpected —
+    // PROPAGATE it (a clean exit-2 fault for the whole command) rather than mislabel every provider "no key".
+    if (isCliError(err) && err.code === 'invalid_invocation') {
+      return { verified: null, detail: 'no key' };
+    }
+    throw err;
   }
   const result = await validateProviderKey(provider, key, KNOWN_PROVIDERS[id].testModel);
-  return { verified: result.ok, detail: result.ok ? null : result.detail };
+  // The failure detail is a REMOTE endpoint's error body — clean + bound it at the source so both the human row and
+  // the `--json` `verifyDetail` carry the safe value (the key is already redacted by `validateProviderKey`).
+  return { verified: result.ok, detail: result.ok ? null : cleanDetail(result.detail) };
 }
 
-/** Collapse a provider-supplied verification detail to one clean line before it reaches the TTY — strip ANSI/C0/C1
- *  control bytes (a rogue provider error must not inject a cursor jump / `\r` line-overwrite) then squeeze
- *  whitespace, so one row stays one line. The stored/`--json` value is untouched (JSON escapes on its own). */
-function oneLine(text: string): string {
-  return stripTerminalControls(text).replace(/\s+/gu, ' ').trim();
+/** The Unicode bidi-override + zero-width "Trojan Source" family the ASCII-only {@link stripTerminalControls}
+ *  MISSES: LRE/RLE/PDF/LRO/RLO (U+202A–E), the isolates LRI/RLI/FSI/PDI (U+2066–9), the zero-width + directional
+ *  marks (U+200B–F), the word-joiner (U+2060), and the BOM (U+FEFF). None has a legitimate use in a URL or a probe
+ *  detail; left in, they visually reorder/hide text (a spoof), so they are stripped from any provider-supplied
+ *  value echoed inline here. NOT added to the shared `stripTerminalControls` — that also renders chat bodies, where
+ *  bidi controls ARE legitimate for RTL text. */
+const BIDI_ZERO_WIDTH = /[\u200b-\u200f\u2060\u2066-\u2069\u202a-\u202e\ufeff]/gu;
+
+/** C0/C1 control bytes + the {@link BIDI_ZERO_WIDTH} spoof family, as a NON-global tester (safe for `.test`) \u2014 none
+ *  is valid in a base URL, so `requireHttpsUrl` REJECTS a raw containing any at `add` time, making the stored value
+ *  inherently terminal-safe on every surface (list / `--json` / the add confirmation), not just after a render-strip. */
+// eslint-disable-next-line no-control-regex -- intentionally matches C0/C1 control bytes to reject them from a URL
+const UNSAFE_URL_CHARS = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2060\u2066-\u2069\u202a-\u202e\ufeff]/u;
+
+/** Neutralize a provider-supplied string for inline echo: strip ANSI/C0/C1 control bytes ({@link stripTerminalControls})
+ *  AND the {@link BIDI_ZERO_WIDTH} spoof family, then squeeze whitespace so one row stays one line. Used for a stored
+ *  base URL (defense-in-depth over the add-time reject) and — via {@link cleanDetail} — a network-sourced probe detail. */
+function stripInline(text: string): string {
+  return stripTerminalControls(text).replace(BIDI_ZERO_WIDTH, '').replace(/\s+/gu, ' ').trim();
+}
+
+/** As {@link stripInline}, additionally length-BOUNDED — a probe `detail` comes from a remote endpoint's error body
+ *  (unbounded), so cap it so one `--verify` row / one NDJSON line can never blow up a terminal or a line consumer.
+ *  Cleaned AT THE SOURCE (in {@link verifyProvider} / {@link providerTest}) so BOTH the human and `--json` surfaces
+ *  carry the safe value — the `--json` record is then safe without diverging from the raw-value NDJSON convention. */
+function cleanDetail(text: string): string {
+  const s = stripInline(text);
+  return s.length > 200 ? `${s.slice(0, 199)}…` : s;
 }
 
 async function providerList(args: ProviderCommandArgs, deps: ProviderCommandDeps): Promise<void> {
@@ -162,11 +193,11 @@ async function providerList(args: ProviderCommandArgs, deps: ProviderCommandDeps
   }
   for (const p of providers) {
     // "key set" is derived from the stored keychain ref (no key read) — never echo the key here. The base URL is
-    // stored VERBATIM (requireHttpsUrl keeps the user's exact endpoint — NOT href-normalized), so a crafted /
-    // tampered value could carry a control byte: sanitize it at the render boundary (the provider name is a closed
-    // kebab `ProviderId`, safe raw).
+    // stored VERBATIM (requireHttpsUrl keeps the user's exact endpoint — NOT href-normalized) and add-time REJECTS
+    // control/bidi, but a directly-tampered at-rest row (ADR-0050) could still carry one: strip it at the render
+    // boundary too (defense-in-depth; the provider name is a closed kebab `ProviderId`, safe raw).
     const status = statusColumn(p, args.verify === true, outcomes.get(p.name));
-    deps.io.writeOut(`${p.name}\t${sanitizeInline(p.baseUrl)}\t[${status}]\n`);
+    deps.io.writeOut(`${p.name}\t${stripInline(p.baseUrl)}\t[${status}]\n`);
   }
 }
 
@@ -179,7 +210,8 @@ function statusColumn(
 ): string {
   if (!verify) return record.apiKeyKeychainRef !== undefined ? 'key set' : 'no key';
   if (outcome === undefined || outcome.verified === null) return 'no key';
-  return outcome.verified ? 'verified' : `failed — ${oneLine(outcome.detail ?? 'verification failed')}`;
+  // `outcome.detail` is already cleaned + bounded at the source (verifyProvider → cleanDetail).
+  return outcome.verified ? 'verified' : `failed — ${outcome.detail ?? 'verification failed'}`;
 }
 
 function providerAdd(args: ProviderCommandArgs, deps: ProviderCommandDeps): void {
@@ -218,12 +250,11 @@ function providerAdd(args: ProviderCommandArgs, deps: ProviderCommandDeps): void
     kind: providerKind(id),
     pricingReferenceUrl: pricingUrl,
   });
-  // Sanitize the echoed URLs at the render boundary: `record.baseUrl` is stored VERBATIM (requireHttpsUrl keeps the
-  // user's exact endpoint, NOT href-normalized), so a control byte in a crafted/tampered value would otherwise
-  // reach the TTY. (`pricingReferenceUrl` IS href-normalized, but sanitize it too for defense-in-depth against a
-  // tampered at-rest row — ADR-0050.)
+  // Strip the echoed URLs at the render boundary (defense-in-depth): `record.baseUrl` is add-time control/bidi
+  // rejected + stored verbatim, `pricingReferenceUrl` is href-normalized — but a directly-tampered at-rest row
+  // (ADR-0050) could still carry a spoof byte, so neutralize both before the TTY.
   deps.io.writeOut(
-    `Registered provider '${id}' (${sanitizeInline(record.baseUrl)}). Store a key with \`relavium provider set-key ${id}\`. Find model prices at ${sanitizeInline(record.pricingReferenceUrl ?? pricingUrl)} and set one with \`relavium models pricing\`.\n`,
+    `Registered provider '${id}' (${stripInline(record.baseUrl)}). Store a key with \`relavium provider set-key ${id}\`. Find model prices at ${stripInline(record.pricingReferenceUrl ?? pricingUrl)} and set one with \`relavium models pricing\`.\n`,
   );
 }
 
@@ -268,10 +299,12 @@ async function providerTest(args: ProviderCommandArgs, deps: ProviderCommandDeps
   // The live ping + the defensive key-redaction live in `validateProviderKey` (the seam), shared with the
   // `/doctor --deep` probe so the secret-scrubbing has one tested home.
   const result = await validateProviderKey(provider, key, model);
+  // The detail is a REMOTE endpoint's message — clean + bound it before it reaches the TTY (a rogue endpoint must
+  // not inject a cursor jump / bidi spoof via the failure line or the success ping). The key is already redacted.
   if (!result.ok) {
-    throw new CliError('invalid_invocation', `${id}: ${result.detail}`);
+    throw new CliError('invalid_invocation', `${id}: ${cleanDetail(result.detail)}`);
   }
-  deps.io.writeOut(`${id}: ${result.detail}.\n`);
+  deps.io.writeOut(`${id}: ${cleanDetail(result.detail)}.\n`);
 }
 
 /**
@@ -285,6 +318,15 @@ async function providerTest(args: ProviderCommandArgs, deps: ProviderCommandDeps
  * preserve the user's exact endpoint/trailing slash; the routing-time gate re-parses it via `new URL()` anyway.
  */
 function requireHttpsUrl(raw: string): string {
+  // FIRST — reject a control/bidi-bearing raw before it is stored OR echoed (incl. in the error messages below,
+  // which interpolate `raw`). A legitimate base URL never contains these; rejecting here makes the verbatim-stored
+  // value inherently terminal-safe on every surface (2.5.G S11). The reject message omits `raw` (no re-injection).
+  if (UNSAFE_URL_CHARS.test(raw)) {
+    throw new CliError(
+      'invalid_invocation',
+      'base URL must not contain control or bidirectional characters.',
+    );
+  }
   let url: URL;
   try {
     url = new URL(raw);
