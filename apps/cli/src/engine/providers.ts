@@ -33,11 +33,14 @@ export interface ProviderResolver {
   readonly keyFor: (id: ProviderId) => string;
   /**
    * Whether a key for `id` is RESOLVABLE (keychain OR env) — a boolean, never the key value (2.5.G key-awareness).
-   * Used by the `/models` picker to gate a keyless provider's models and by `isProviderKeyless`. Only the genuine
-   * "no source" case returns `false`; a real keychain fault still PROPAGATES (it is not silently reported as "no
-   * key"), so a locked keychain is not misread as absence. OPTIONAL so a test stub can implement `keyFor` alone —
-   * consumers go through {@link providerHasKey}, which falls back to a `keyFor` probe when this is absent. The real
-   * {@link createProviderResolver} always provides it (the fault-preserving path), so production never falls back.
+   * Used by the `/models` picker to gate a keyless provider's models and by `isProviderKeyless`. Identical
+   * resolution to {@link keyFor}: a keychain key OR the env fallback ⇒ `true`, else `false`. A **locked /
+   * unavailable** keychain is a `KeychainUnavailableError` that (like `keyFor`) falls through to env and is treated
+   * as absence — so with no env key it returns `false` (correct: the provider genuinely can't be called). Only a
+   * NON-`KeychainUnavailableError` native binding fault propagates — but the production `createOsKeychainStore`
+   * wraps every native error into `KeychainUnavailableError`, so in practice nothing propagates. OPTIONAL so a test
+   * stub can implement `keyFor` alone — consumers go through {@link providerHasKey}, which falls back to a `keyFor`
+   * probe when this is absent; the real {@link createProviderResolver} always provides it, so production never falls back.
    */
   readonly hasKey?: (id: ProviderId) => boolean;
 }
@@ -288,8 +291,10 @@ export function createProviderResolver(
       }
       return key;
     },
-    // Boolean-only (never the key). A real keychain fault still propagates via `resolveKey` — only genuine absence
-    // is `false`, so a locked keychain is not misreported as "no key" here.
+    // Boolean-only (never the key). Same resolution as `keyFor`: a locked/unavailable keychain (a
+    // `KeychainUnavailableError`) falls through to env, so with no env key it is `false` (correct — uncallable);
+    // only a non-`KeychainUnavailableError` native fault propagates via `resolveKey` (the production store never
+    // raises one, so nothing propagates in practice).
     hasKey: (id) => resolveKey(id) !== undefined,
   };
 }

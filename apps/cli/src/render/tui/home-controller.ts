@@ -606,7 +606,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         // "not on your key" case keeps its message. Never a write — a blocked model can't become the default.
         const hint =
           step.reason === 'no-key'
-            ? `${step.displayName} needs a ${step.provider} key — run \`relavium provider add ${step.provider}\`, then set-key`
+            ? `${step.displayName}: no key for ${step.provider} — run \`relavium provider add ${step.provider}\`, then set-key`
             : `${step.displayName} is not available on your key — pick another`;
         set({ modelPicker: { ...open, hint } });
         break;

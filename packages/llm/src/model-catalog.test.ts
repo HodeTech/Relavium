@@ -334,9 +334,20 @@ describe('mergeModelCatalog — key-awareness (2.5.G, ADR-0064 §6 clarification
     expect(opus?.unavailableReason).toBe('not-on-key');
   });
 
-  it('keyedProviders ABSENT ⇒ availability is not key-gated (byte-identical to pre-change)', () => {
+  it('keyedProviders ABSENT ⇒ availability is not key-gated (the `available` boolean is unchanged)', () => {
     const gated = mergeModelCatalog({ now: BEFORE_DEEPSEEK_DEPRECATION });
     // Every entry is available (no live data, no key gate) and carries no unavailableReason.
     expect(gated.every((e) => e.available && e.unavailableReason === undefined)).toBe(true);
+  });
+
+  it('keyedProviders ABSENT + live data still labels a live-omitted static model `not-on-key` (additive field)', () => {
+    // The `available` boolean is unchanged from pre-change; only the additive `unavailableReason` is new here.
+    const entries = mergeModelCatalog({
+      live: liveMap([['anthropic', [{ id: 'claude-haiku-4-5' }]]]),
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    const opus = byId(entries, 'claude-opus-4-8');
+    expect(opus?.available).toBe(false); // unchanged
+    expect(opus?.unavailableReason).toBe('not-on-key'); // additive-optional reason
   });
 });

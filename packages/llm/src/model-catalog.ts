@@ -149,7 +149,9 @@ export function mergeModelCatalog(input: MergeModelCatalogInput): ModelCatalogEn
     // regardless of live/static presence. A KEYED provider keeps the pre-existing rule: live-list membership when
     // it has live data (a static model absent from the list is `'not-on-key'`-dimmed), else static presence (the
     // ADR-0064 §6 "never everything unavailable" safe default — PRESERVED, but now only for a KEYED provider).
-    // `keyedProviders` ABSENT ⇒ not key-gated (every provider treated as keyed) — byte-identical to pre-change.
+    // `keyedProviders` ABSENT ⇒ not key-gated (every provider treated as keyed): the `available` BOOLEAN is
+    // unchanged from pre-change; the only new output is the additive-optional `unavailableReason` (`'not-on-key'`
+    // on a live-omitted static model) — informational, and the sole live-data-passing caller passes keyedProviders.
     const providerKeyed =
       input.keyedProviders === undefined || input.keyedProviders.has(t.provider);
     let available: boolean;
