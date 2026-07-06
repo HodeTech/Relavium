@@ -10,6 +10,7 @@ import {
   buildGateArgs,
   buildImportArgs,
   buildProviderAddArgs,
+  buildProviderListArgs,
   buildProviderTestArgs,
   buildRunArgs,
   DISPATCHABLE_COMMAND_IDS,
@@ -155,6 +156,14 @@ describe('build*Args (argv → typed core args)', () => {
 
   it('gate: a missing runId is the clean invocation fault (a bare `gate` without `list`)', () => {
     expect(() => buildGateArgs(input([]))).toThrow(/`relavium gate` requires a <runId>/);
+  });
+
+  it('provider.list: verify defaults false, true when the flag is present', () => {
+    expect(buildProviderListArgs(input([], {}))).toEqual({ action: 'list', verify: false });
+    expect(buildProviderListArgs(input([], { verify: true }))).toEqual({
+      action: 'list',
+      verify: true,
+    });
   });
 
   it('provider.add: name + optional baseUrl + optional pricingUrl (each omitted when absent)', () => {

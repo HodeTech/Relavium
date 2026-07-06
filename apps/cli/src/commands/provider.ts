@@ -1,5 +1,5 @@
 import { providerKind, ProviderIdSchema, type ProviderId } from '@relavium/llm';
-import type { ProviderStore } from '@relavium/db';
+import type { ProviderRecord, ProviderStore } from '@relavium/db';
 import { isPrivateOrLocalHost, urlHasCredentials } from '@relavium/shared';
 
 import {
@@ -11,6 +11,9 @@ import {
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
+import type { GlobalOptions } from '../process/options.js';
+import { writeRecordLines } from '../render/records.js';
+import { stripTerminalControls } from '../render/tui/chat-projection.js';
 import {
   KeychainUnavailableError,
   keychainAccount,
@@ -38,6 +41,10 @@ export interface ProviderCommandArgs {
   /** `provider add --pricing-url <url>` (2.5.G S10, ADR-0065 §1) — override the seeded `pricing_reference_url`
    *  (the public pricing page the user consults to hand-enter a price). A display-only pointer, never fetched. */
   readonly pricingUrl?: string;
+  /** `provider list --verify` (2.5.G S11, ADR-0065 §6) — additionally run a bounded, key-redacted LIVE probe per
+   *  registered provider (reusing `validateProviderKey`) and report its per-provider verification state. Opt-in
+   *  because it makes a network request per key; absent ⇒ the fast offline listing (key-set status only). */
+  readonly verify?: boolean;
 }
 
 export interface ProviderCommandDeps {
@@ -47,6 +54,10 @@ export interface ProviderCommandDeps {
   readonly resolver: ProviderResolver;
   /** Read the API key (from stdin in production) — injected so tests supply a fixed key, never a real one. */
   readonly readSecret: () => Promise<string>;
+  /** The invocation's global options — read ONLY by `provider list` for the `--json` machine-output contract
+   *  (2.5.G S11, ADR-0049). Optional so a non-`list` caller (the onboarding wizard's `set-key`) need not build one;
+   *  absent ⇒ human output. */
+  readonly global?: GlobalOptions;
 }
 
 /** Validate a provider name against the known `@relavium/llm` providers (`ProviderId`), or fail (exit 2). */
@@ -71,8 +82,72 @@ function requireName(args: ProviderCommandArgs): string {
   return args.name;
 }
 
-function providerList(deps: ProviderCommandDeps): void {
+/** One provider's live verification outcome (2.5.G S11). `verified: null` ⇒ NOT probed (no key resolvable, or
+ *  `--verify` was not passed); `true`/`false` ⇒ the probe's result. `detail` is a SHORT, already-key-REDACTED
+ *  reason on failure (from `validateProviderKey`), else `null`. */
+interface VerifyOutcome {
+  readonly verified: boolean | null;
+  readonly detail: string | null;
+}
+
+/** Live-probe one registered provider's key via the bounded, key-redacted {@link validateProviderKey} seam (shared
+ *  with `provider test` + `/doctor --deep`). A provider with NO resolvable key (keychain → env both empty) is
+ *  reported `null` (not verifiable), never probed — so `--verify` never hangs on a keyless provider. */
+async function verifyProvider(
+  record: ProviderRecord,
+  deps: ProviderCommandDeps,
+): Promise<VerifyOutcome> {
+  const parsed = ProviderIdSchema.safeParse(record.name);
+  if (!parsed.success) return { verified: false, detail: 'unknown provider' };
+  const id = parsed.data;
+  const provider = deps.resolver.resolveProvider(id);
+  if (provider === undefined) return { verified: false, detail: 'no adapter' };
+  let key: string;
+  try {
+    key = deps.resolver.keyFor(id); // keychain → env var → throws; never logged
+  } catch {
+    return { verified: null, detail: null }; // no key anywhere ⇒ nothing to verify
+  }
+  const result = await validateProviderKey(provider, key, KNOWN_PROVIDERS[id].testModel);
+  return { verified: result.ok, detail: result.ok ? null : result.detail };
+}
+
+/** Collapse a provider-supplied verification detail to one clean line before it reaches the TTY — strip ANSI/C0/C1
+ *  control bytes (a rogue provider error must not inject a cursor jump / `\r` line-overwrite) then squeeze
+ *  whitespace, so one row stays one line. The stored/`--json` value is untouched (JSON escapes on its own). */
+function oneLine(text: string): string {
+  return stripTerminalControls(text).replace(/\s+/gu, ' ').trim();
+}
+
+async function providerList(args: ProviderCommandArgs, deps: ProviderCommandDeps): Promise<void> {
   const providers = deps.store.list();
+  // Probe each provider up front (only when --verify) so the human + --json branches share one outcome set and the
+  // output order is deterministic. Sequential over the ≤4 known providers, each bounded by validateProviderKey's
+  // own timeout — no unbounded hang. Absent --verify, no probe runs (the fast offline listing).
+  const outcomes = new Map<string, VerifyOutcome>();
+  if (args.verify) {
+    for (const p of providers) outcomes.set(p.name, await verifyProvider(p, deps));
+  }
+
+  if (deps.global?.json === true) {
+    // ADR-0049 read-command NDJSON, key-free by construction (only the keychain-ref-derived `keySet` + the
+    // redacted verify state, NEVER the key). `verified`/`verifyDetail` are `null` unless --verify was passed.
+    writeRecordLines(
+      deps.io,
+      providers.map((p) => {
+        const outcome = outcomes.get(p.name);
+        return {
+          name: p.name,
+          baseUrl: p.baseUrl,
+          keySet: p.apiKeyKeychainRef !== undefined,
+          verified: outcome?.verified ?? null,
+          verifyDetail: outcome?.detail ?? null,
+        };
+      }),
+    );
+    return;
+  }
+
   if (providers.length === 0) {
     deps.io.writeOut(
       'No providers registered. Add a key with `relavium provider set-key <name>`.\n',
@@ -81,8 +156,21 @@ function providerList(deps: ProviderCommandDeps): void {
   }
   for (const p of providers) {
     // "key set" is derived from the stored keychain ref (no key read) — never echo the key here.
-    deps.io.writeOut(`${p.name}\t${p.baseUrl}\t[${p.apiKeyKeychainRef ? 'key set' : 'no key'}]\n`);
+    const status = statusColumn(p, args.verify === true, outcomes.get(p.name));
+    deps.io.writeOut(`${p.name}\t${p.baseUrl}\t[${status}]\n`);
   }
+}
+
+/** The bracketed status column of a `provider list` row: the offline key-set marker, or — under `--verify` — the
+ *  live probe result (`verified` / `no key` / `failed — <redacted reason>`). */
+function statusColumn(
+  record: ProviderRecord,
+  verify: boolean,
+  outcome: VerifyOutcome | undefined,
+): string {
+  if (!verify) return record.apiKeyKeychainRef !== undefined ? 'key set' : 'no key';
+  if (outcome === undefined || outcome.verified === null) return 'no key';
+  return outcome.verified ? 'verified' : `failed — ${oneLine(outcome.detail ?? 'verification failed')}`;
 }
 
 function providerAdd(args: ProviderCommandArgs, deps: ProviderCommandDeps): void {
@@ -240,7 +328,7 @@ export async function runProviderCommand(
   try {
     switch (args.action) {
       case 'list':
-        providerList(deps);
+        await providerList(args, deps);
         break;
       case 'add':
         providerAdd(args, deps);

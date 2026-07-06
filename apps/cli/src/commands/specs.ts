@@ -522,7 +522,8 @@ function registerProvider(program: Command, ctx?: CommandContext): void {
     .description('Manage providers and API keys in the OS keychain.');
   const list = provider
     .command('list')
-    .description('List registered providers and whether a key is set.');
+    .description('List registered providers and whether a key is set.')
+    .option('--verify', 'additionally run a live key-verification probe per provider');
   const add = provider
     .command('add <name>')
     .description('Register a provider.')
@@ -552,10 +553,10 @@ function registerProvider(program: Command, ctx?: CommandContext): void {
     return;
   }
 
-  list.action(async () => {
+  list.action(async (opts: { verify?: boolean }) => {
     ctx.result.exitCode = await executeCommand(
       'provider.list',
-      { positionals: [], options: {} },
+      { positionals: [], options: { verify: opts.verify } },
       ctx,
     );
   });

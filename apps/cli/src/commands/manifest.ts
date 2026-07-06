@@ -331,6 +331,13 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     id: 'provider.list',
     label: 'List providers',
     description: 'List registered providers and whether a key is set.',
+    args: [
+      {
+        name: 'verify',
+        type: 'boolean',
+        description: 'additionally run a live key-verification probe per provider',
+      },
+    ],
     effect: 'read',
   },
   {

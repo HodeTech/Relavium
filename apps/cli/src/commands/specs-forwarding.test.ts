@@ -64,6 +64,12 @@ describe('commander action → executeCommand forwarding (S10)', () => {
     });
   });
 
+  it('provider list forwards --verify (2.5.G S11)', () => {
+    const { id, input } = drive(['provider', 'list', '--verify']);
+    expect(id).toBe('provider.list');
+    expect(input).toMatchObject({ positionals: [], options: { verify: true } });
+  });
+
   it('models pricing forwards the model positional + all four options', () => {
     const { id, input } = drive([
       'models',

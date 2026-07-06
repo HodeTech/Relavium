@@ -177,6 +177,10 @@ export function buildGateArgs(input: CommandInput): GateCommandArgs {
   };
 }
 
+export function buildProviderListArgs(input: CommandInput): ProviderCommandArgs {
+  return { action: 'list', verify: boolFlag(input.options['verify']) };
+}
+
 export function buildProviderAddArgs(input: CommandInput): ProviderCommandArgs {
   const baseUrl = optString(input.options['baseUrl']);
   const pricingUrl = optString(input.options['pricingUrl']);
@@ -498,6 +502,7 @@ async function withProviderDeps(
       // Store-aware so `provider test` pings a custom `base_url` provider at its CUSTOM endpoint (2.5.G S9).
       resolver: createProviderResolver(ctx.io.env, keychain, { providerStore: store }),
       readSecret: readSecretFromStdin,
+      global: ctx.global, // for `provider list --json` (2.5.G S11, ADR-0049)
     };
     return await fn(deps);
   } finally {
@@ -535,7 +540,7 @@ const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, 
   ['models', executeModels],
   ['models.refresh', executeModelsRefresh],
   ['models.pricing', executeModelsPricing],
-  ['provider.list', providerExecutor(() => ({ action: 'list' }))],
+  ['provider.list', providerExecutor(buildProviderListArgs)],
   ['provider.add', providerExecutor(buildProviderAddArgs)],
   [
     'provider.set-key',

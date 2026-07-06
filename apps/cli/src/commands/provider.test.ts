@@ -10,7 +10,7 @@ import {
 } from '../engine/providers.js';
 import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
-import { captureIo } from '../test-support.js';
+import { captureIo, parseNdjson } from '../test-support.js';
 import { runProviderCommand, type ProviderCommandDeps } from './provider.js';
 
 const TS_MS = new Date('2026-06-23T12:00:00.000Z').getTime();
@@ -70,6 +70,7 @@ describe('relavium provider commands (2.C)', () => {
         Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>),
       ),
       readSecret: () => Promise.resolve(RAW_KEY),
+      global: { json: false, color: false, cwd: process.cwd(), configPath: undefined, verbosity: 'normal' },
       ...over,
     });
   });
@@ -104,6 +105,78 @@ describe('relavium provider commands (2.C)', () => {
     expect(text).toContain('openai');
     expect(text).toContain('[no key]');
     expect(text).not.toContain(RAW_KEY);
+  });
+
+  it('list --verify reports "verified" when a provider live probe succeeds (2.5.G S11)', async () => {
+    const d = deps({}); // the default stub resolver resolves generate ⇒ probe ok
+    await runProviderCommand({ action: 'add', name: 'openai' }, d);
+    io.out();
+    await runProviderCommand({ action: 'list', verify: true }, d);
+    expect(io.out()).toContain('[verified]');
+  });
+
+  it('list --verify reports "failed — <redacted>" on a probe failure, NEVER echoing the key', async () => {
+    const d = deps({ resolver: stubResolver(() => Promise.reject(new Error(`boom ${RAW_KEY}`))) });
+    await runProviderCommand({ action: 'add', name: 'openai' }, d);
+    io.out();
+    await runProviderCommand({ action: 'list', verify: true }, d);
+    const text = io.out();
+    expect(text).toContain('failed');
+    expect(text).not.toContain(RAW_KEY); // validateProviderKey redacts the key in the detail
+  });
+
+  it('list --verify reports "no key" for a provider with no resolvable key — and never probes it (no hang)', async () => {
+    const stub = stubResolver(() => Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>));
+    const noKeyResolver: ProviderResolver = {
+      resolveProvider: stub.resolveProvider,
+      keyFor: () => {
+        throw new Error('no key configured'); // keychain → env both empty
+      },
+    };
+    const d = deps({ resolver: noKeyResolver });
+    await runProviderCommand({ action: 'add', name: 'openai' }, d);
+    io.out();
+    await runProviderCommand({ action: 'list', verify: true }, d);
+    expect(io.out()).toContain('[no key]'); // reported without a probe (keyFor threw before generate)
+  });
+
+  it('list --json emits one key-free NDJSON record per provider with the verify state (2.5.G S11)', async () => {
+    const jsonGlobal = {
+      json: true,
+      color: false,
+      cwd: process.cwd(),
+      configPath: undefined,
+      verbosity: 'normal' as const,
+    };
+    // Register two providers WITH keys via a non-json setup (their confirmations don't pollute the json capture).
+    const setup = deps({});
+    await runProviderCommand({ action: 'set-key', name: 'anthropic' }, setup);
+    await runProviderCommand({ action: 'set-key', name: 'openai' }, setup);
+    const listIo = captureIo();
+    await runProviderCommand(
+      { action: 'list', verify: true },
+      deps({ io: listIo.io, global: jsonGlobal }),
+    );
+    const records = parseNdjson(listIo.out());
+    expect(records).toHaveLength(2);
+    const anthropic = records.find((r) => r['name'] === 'anthropic');
+    expect(anthropic).toMatchObject({ keySet: true, verified: true, verifyDetail: null });
+    expect(listIo.out()).not.toContain(RAW_KEY); // no key ever in the machine output
+  });
+
+  it('list --json without --verify leaves verified/verifyDetail null (no probe)', async () => {
+    const jsonGlobal = {
+      json: true,
+      color: false,
+      cwd: process.cwd(),
+      configPath: undefined,
+      verbosity: 'normal' as const,
+    };
+    await runProviderCommand({ action: 'add', name: 'openai' }, deps({}));
+    const listIo = captureIo();
+    await runProviderCommand({ action: 'list' }, deps({ io: listIo.io, global: jsonGlobal }));
+    const [rec] = parseNdjson(listIo.out());
+    expect(rec).toMatchObject({ name: 'openai', keySet: false, verified: null, verifyDetail: null });
   });
 
   it('remove-key deletes the keychain entry and clears the db ref', async () => {
