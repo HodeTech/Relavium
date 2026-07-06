@@ -216,6 +216,54 @@ describe('relavium provider commands (2.C)', () => {
     expect(d.store.get('openai')?.baseUrl).toBe('https://proxy.example/v1'); // not the SDK default
   });
 
+  it('seeds the default pricing_reference_url on a plain add + set-key (2.5.G S10)', async () => {
+    const d = deps({});
+    await runProviderCommand({ action: 'add', name: 'openai' }, d);
+    expect(d.store.get('openai')?.pricingReferenceUrl).toBe(
+      'https://platform.openai.com/docs/pricing',
+    );
+    // set-key alone (no prior add) also seeds it — so a provider registered by set-key carries the pointer.
+    await runProviderCommand({ action: 'set-key', name: 'anthropic' }, d);
+    expect(d.store.get('anthropic')?.pricingReferenceUrl).toBe(
+      'https://platform.claude.com/docs/en/about-claude/pricing',
+    );
+  });
+
+  it('stores a validated custom --pricing-url (normalized href), overriding the default (S10)', async () => {
+    const d = deps({});
+    await runProviderCommand(
+      { action: 'add', name: 'openai', pricingUrl: 'https://wiki.internal/prices' },
+      d,
+    );
+    // Normalized via `new URL().href` (a trailing slash is added for a bare-host URL) — terminal-safe.
+    expect(d.store.get('openai')?.pricingReferenceUrl).toBe('https://wiki.internal/prices');
+  });
+
+  it('rejects a non-HTTPS / credential-bearing --pricing-url (exit 2), unlike base_url it allows any host', async () => {
+    for (const pricingUrl of ['http://x.example/p', 'https://u:p@x.example/p', 'not-a-url']) {
+      await expect(
+        runProviderCommand({ action: 'add', name: 'openai', pricingUrl }, deps({})),
+      ).rejects.toMatchObject({ code: 'invalid_invocation' });
+    }
+    // A private/loopback host IS allowed for a pricing pointer (display-only, never fetched → no SSRF concern).
+    const d = deps({});
+    await runProviderCommand(
+      { action: 'add', name: 'openai', pricingUrl: 'https://localhost/prices' },
+      d,
+    );
+    expect(d.store.get('openai')?.pricingReferenceUrl).toBe('https://localhost/prices');
+  });
+
+  it('a second `add` with NO --pricing-url preserves a prior custom pricing pointer (never resets it)', async () => {
+    const d = deps({});
+    await runProviderCommand(
+      { action: 'add', name: 'openai', pricingUrl: 'https://wiki.internal/prices' },
+      d,
+    );
+    await runProviderCommand({ action: 'add', name: 'openai' }, d); // re-run, no --pricing-url
+    expect(d.store.get('openai')?.pricingReferenceUrl).toBe('https://wiki.internal/prices');
+  });
+
   it('rejects an unknown provider name (exit 2)', async () => {
     await expect(
       runProviderCommand({ action: 'add', name: 'bogus' }, deps({})),

@@ -56,9 +56,12 @@ export interface ModelCatalogRecord {
 export interface ModelCatalogUpsert {
   readonly providerId: string;
   readonly modelId: string;
-  readonly displayName: string;
-  readonly contextWindowTokens: number;
-  readonly maxOutputTokens: number;
+  /** OMITTED on update ⇒ PRESERVE the existing row's value (a pricing-only patch keeps the discovered name/limits,
+   *  incl. a soft-deactivated row's); on a true INSERT ⇒ default (`displayName` → the model id, tokens → the `0`
+   *  "unknown" sentinel). A full-row caller (the media fixture / a sync) always passes them, so it is unchanged. */
+  readonly displayName?: string;
+  readonly contextWindowTokens?: number;
+  readonly maxOutputTokens?: number;
   readonly mediaSurface?: MediaSurface;
   readonly supportsVision?: boolean;
   readonly capabilities?: Record<string, unknown>;
@@ -345,9 +348,14 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
         .get();
       const id = existing?.id ?? deps.uuid();
       const shared = {
-        displayName: input.displayName,
-        contextWindowTokens: input.contextWindowTokens,
-        maxOutputTokens: input.maxOutputTokens,
+        // Display name + token limits also follow the "never clobber an omitted field on update" invariant (2.5.G
+        // S10): a pricing-only `models pricing` patch omits them, so they PRESERVE the existing row's values — incl.
+        // a soft-deactivated live row the command's active-only read cannot see (else a re-price would silently zero
+        // the discovered name/context). A true INSERT defaults `displayName` → the model id, tokens → the `0`
+        // "unknown" sentinel; a full-row caller (media fixture / a sync) passes all three, so it is unchanged.
+        displayName: input.displayName ?? existing?.displayName ?? input.modelId,
+        contextWindowTokens: input.contextWindowTokens ?? existing?.contextWindowTokens ?? 0,
+        maxOutputTokens: input.maxOutputTokens ?? existing?.maxOutputTokens ?? 0,
         // Media routing / capability columns follow the SAME "never clobber an omitted field on update" invariant
         // as the pricing + provenance columns below (2.5.G S10): a partial upsert — e.g. `models pricing` writing a
         // `source='user'` row over a model the live refresh discovered — must NOT reset a live/seed row's

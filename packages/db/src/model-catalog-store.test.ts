@@ -982,6 +982,47 @@ describe('createModelCatalogStore (2.5.G / ADR-0064 — live-discovery cache)', 
     expect(reListing?.outputCostPerMtokMicrocents).toBe(950); // updated
   });
 
+  it('a pricing-only upsert PRESERVES the display name + limits of a SOFT-DEACTIVATED row (S10 re-price)', () => {
+    // A live refresh discovers the model with a real name + context, then a later refresh drops it → soft-deactivated
+    // (isActive=false, source='live', deletedAt=null). The active-only `listByProvider` the command reads can no
+    // longer see it, so the pricing upsert must OMIT display/limits and let the store preserve the deactivated row's.
+    store.replaceProviderModels(
+      providerId,
+      [{ modelId: 'vanishing', displayName: 'Vanishing Pro', contextWindowTokens: 128_000 }],
+      TS_MS,
+    );
+    store.replaceProviderModels(providerId, [], TS_MS + 1); // the model vanishes ⇒ soft-deactivated
+    expect(store.listByProvider(providerId).find((m) => m.modelId === 'vanishing')).toBeUndefined();
+    // Pricing-only upsert (display/limits omitted) — the store finds the deactivated row (deletedAt IS NULL),
+    // reactivates it as source='user', and PRESERVES its discovered name/context rather than zeroing them.
+    store.upsert({
+      providerId,
+      modelId: 'vanishing',
+      source: 'user',
+      inputCostPerMtokMicrocents: 300,
+      outputCostPerMtokMicrocents: 900,
+    });
+    const listing = store.listByProvider(providerId).find((m) => m.modelId === 'vanishing');
+    expect(listing?.displayName).toBe('Vanishing Pro'); // NOT zeroed to the id
+    expect(listing?.contextWindowTokens).toBe(128_000); // NOT zeroed
+    expect(listing?.source).toBe('user');
+    expect(listing?.inputCostPerMtokMicrocents).toBe(300);
+  });
+
+  it('a brand-new pricing-only upsert (no prior row) defaults displayName → the model id, limits → unknown', () => {
+    store.upsert({
+      providerId,
+      modelId: 'fresh-priced',
+      source: 'user',
+      inputCostPerMtokMicrocents: 100,
+      outputCostPerMtokMicrocents: 200,
+    });
+    const listing = store.listByProvider(providerId).find((m) => m.modelId === 'fresh-priced');
+    expect(listing?.displayName).toBe('fresh-priced'); // defaulted to the id
+    expect(listing?.contextWindowTokens).toBeUndefined(); // stored 0 sentinel ⇒ read back as absent
+    expect(listing?.maxOutputTokens).toBeUndefined();
+  });
+
   it('listByProvider/listAll exclude a soft-DELETED (deletedAt) row, not just an inactive one', () => {
     store.replaceProviderModels(
       providerId,

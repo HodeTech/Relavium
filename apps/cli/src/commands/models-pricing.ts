@@ -6,10 +6,11 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
+import { stripTerminalControls } from '../render/tui/chat-projection.js';
 
 /**
  * The `relavium models pricing <model>` capture command (workstream **2.5.G S10**,
- * [ADR-0065](../../../../docs/decisions/0065-provider-economics-and-user-pricing.md) §1/§2) — hand-enter the
+ * [ADR-0065](../../../../docs/decisions/0065-provider-economics-and-extensibility.md) §1/§2) — hand-enter the
  * per-Mtok text-token price of a model the static registry does NOT know (a custom-endpoint model, or a new
  * provider model not yet in `MODEL_PRICING`), so the cost cap (`max_cost_microcents`) can enforce it. The price is
  * stored as a `source='user'` `model_catalog` row (integer micro-cents, never float); a live `models refresh` NEVER
@@ -42,9 +43,9 @@ export interface ModelsPricingCommandArgs {
 export interface ModelsPricingCommandDeps {
   readonly io: CliIo;
   readonly global: GlobalOptions;
-  /** The catalog store — `upsert` writes the `source='user'` row; `listByProvider` preserves an existing row's
-   *  display/limits on a re-price (the store overwrites those required columns). */
-  readonly catalog: Pick<ModelCatalogStore, 'upsert' | 'listByProvider'>;
+  /** The catalog store — `upsert` writes the `source='user'` row (a pricing-only patch; the store preserves the
+   *  existing row's display/limits + media columns, so no read is needed here). */
+  readonly catalog: Pick<ModelCatalogStore, 'upsert'>;
   /** The provider registry — resolves the `<slug>` → its internal `llm_providers` UUID (the catalog FK). */
   readonly providers: Pick<ProviderStore, 'list'>;
 }
@@ -102,19 +103,13 @@ export function modelsPricingCommand(
       ? 0
       : usdToMicrocents(args.cachedInputUsdPerMtok, '--cached');
 
-  // Preserve an existing row's display name + limits on a re-price (the store overwrites those REQUIRED columns;
-  // the media/provenance/pricing columns preserve themselves on omit). A fresh price defaults display → the id,
-  // limits → `0` (the "unknown" sentinel, which reads back as absent).
-  const existing = deps.catalog
-    .listByProvider(providerRow.id)
-    .find((m) => m.modelId === args.model);
-
+  // A pricing-ONLY upsert: omit display name + limits (and every media/capability column) so the store PRESERVES
+  // whatever an existing row carries — including a soft-deactivated live row the active-only reader cannot see, so
+  // a re-price never zeroes a discovered name/context. A brand-new user-priced model defaults display → the id and
+  // limits → the `0` "unknown" sentinel (in the store), so no read is needed here.
   deps.catalog.upsert({
     providerId: providerRow.id,
     modelId: args.model,
-    displayName: existing?.displayName ?? args.model,
-    contextWindowTokens: existing?.contextWindowTokens ?? 0,
-    maxOutputTokens: existing?.maxOutputTokens ?? 0,
     source: 'user',
     inputCostPerMtokMicrocents,
     outputCostPerMtokMicrocents,
@@ -140,8 +135,12 @@ export function modelsPricingCommand(
     args.cachedInputUsdPerMtok === undefined
       ? ''
       : `, cached $${args.cachedInputUsdPerMtok}/Mtok`;
+  // Strip any terminal-control byte from the (user-typed) model id before echo — parity with `renderModelList`'s
+  // FIX 2. `ModelListingSchema` only requires min(1), so an id can carry a control byte; the JSON path is safe on
+  // its own (JSON.stringify escapes them). The provider is a validated (kebab) ProviderId, and the prices are
+  // numbers — both already safe.
   deps.io.writeOut(
-    `Set user pricing for ${args.model} (${args.provider}): input $${args.inputUsdPerMtok}/Mtok, output $${args.outputUsdPerMtok}/Mtok${cachedNote}. It applies to your next run/chat and survives \`models refresh\`.\n`,
+    `Set user pricing for ${stripTerminalControls(args.model)} (${args.provider}): input $${args.inputUsdPerMtok}/Mtok, output $${args.outputUsdPerMtok}/Mtok${cachedNote}. It applies to your next run/chat and survives \`models refresh\`.\n`,
   );
   return EXIT_CODES.success;
 }

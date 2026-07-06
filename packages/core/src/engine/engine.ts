@@ -240,7 +240,7 @@ export interface WorkflowEngineDeps {
    */
   readonly maxTokensEstimate?: number;
   /**
-   * The user-pricing overlay (2.5.G S10, [ADR-0065](../../../docs/decisions/0065-provider-economics-and-user-pricing.md)
+   * The user-pricing overlay (2.5.G S10, [ADR-0065](../../../docs/decisions/0065-provider-economics-and-extensibility.md)
    * §2) — a `ReadonlyMap<modelId, ModelPricing>` the host projects from the `model_catalog` `source='user'` rows.
    * It feeds the workflow PRE-EGRESS budget governor so a model with no static price, once user-priced, is enforced
    * by `budget.max_cost_microcents`. Static `MODEL_PRICING` still wins for a known id (fills an UNKNOWN id only).

@@ -56,6 +56,11 @@ export function loadUserPricingOverlay(homeDir: string): PricingOverlay | undefi
   }
   try {
     return buildUserPricingOverlay(opened.db);
+  } catch {
+    // A READ fault too (a corrupt provider/catalog row, a locked table) degrades to `undefined` — the docstring's
+    // "any db fault ⇒ undefined" contract is unconditional, so the overlay is never the thing that crashes a
+    // surface; the surface's own store open is the authoritative fault report.
+    return undefined;
   } finally {
     opened.close();
   }

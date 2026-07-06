@@ -559,10 +559,10 @@ function registerProvider(program: Command, ctx?: CommandContext): void {
       ctx,
     );
   });
-  add.action(async (name: string, opts: { baseUrl?: string }) => {
+  add.action(async (name: string, opts: { baseUrl?: string; pricingUrl?: string }) => {
     ctx.result.exitCode = await executeCommand(
       'provider.add',
-      { positionals: [name], options: { baseUrl: opts.baseUrl } },
+      { positionals: [name], options: { baseUrl: opts.baseUrl, pricingUrl: opts.pricingUrl } },
       ctx,
     );
   });

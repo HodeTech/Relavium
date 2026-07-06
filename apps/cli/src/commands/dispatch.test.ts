@@ -157,15 +157,27 @@ describe('build*Args (argv → typed core args)', () => {
     expect(() => buildGateArgs(input([]))).toThrow(/`relavium gate` requires a <runId>/);
   });
 
-  it('provider.add: name + optional baseUrl (omitted when absent)', () => {
-    expect(buildProviderAddArgs(input(['anthropic'], { baseUrl: 'https://x' }))).toEqual({
+  it('provider.add: name + optional baseUrl + optional pricingUrl (each omitted when absent)', () => {
+    expect(
+      buildProviderAddArgs(
+        input(['anthropic'], { baseUrl: 'https://x', pricingUrl: 'https://p' }),
+      ),
+    ).toEqual({
       action: 'add',
       name: 'anthropic',
       baseUrl: 'https://x',
+      pricingUrl: 'https://p',
     });
-    const noBase = buildProviderAddArgs(input(['anthropic']));
-    expect(noBase).toEqual({ action: 'add', name: 'anthropic' });
-    expect('baseUrl' in noBase).toBe(false);
+    const noOpts = buildProviderAddArgs(input(['anthropic']));
+    expect(noOpts).toEqual({ action: 'add', name: 'anthropic' });
+    expect('baseUrl' in noOpts).toBe(false);
+    expect('pricingUrl' in noOpts).toBe(false);
+    // pricingUrl alone (no baseUrl) still extracts (the S10 flag is independent of --base-url).
+    expect(buildProviderAddArgs(input(['openai'], { pricingUrl: 'https://p' }))).toEqual({
+      action: 'add',
+      name: 'openai',
+      pricingUrl: 'https://p',
+    });
   });
 
   it('provider.test: name + optional model (omitted when absent)', () => {
