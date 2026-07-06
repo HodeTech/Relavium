@@ -296,3 +296,47 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(JSON.stringify(MODEL_PRICING)).toBe(snapshot);
   });
 });
+
+describe('mergeModelCatalog — key-awareness (2.5.G, ADR-0064 §6 clarification)', () => {
+  it('marks a model of an UNKEYED provider unavailable with reason `no-key`, regardless of static presence', () => {
+    // anthropic is NOT in keyedProviders → all its static models are no-key (uncallable), even with no live data.
+    const entries = mergeModelCatalog({
+      keyedProviders: new Set<ProviderId>(['openai']),
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    const opus = byId(entries, 'claude-opus-4-8'); // anthropic — unkeyed
+    expect(opus?.available).toBe(false);
+    expect(opus?.unavailableReason).toBe('no-key');
+    const gpt = entries.find((e) => e.provider === 'openai'); // openai — keyed, no live data → static presence
+    expect(gpt?.available).toBe(true);
+    expect(gpt?.unavailableReason).toBeUndefined();
+  });
+
+  it('PRESERVES the §6 static-presence safe default for a KEYED provider with no live data', () => {
+    const entries = mergeModelCatalog({
+      keyedProviders: new Set<ProviderId>(['anthropic']),
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    const opus = byId(entries, 'claude-opus-4-8'); // keyed + no live data → available (unchanged)
+    expect(opus?.available).toBe(true);
+    expect(opus?.unavailableReason).toBeUndefined();
+  });
+
+  it('a KEYED provider WITH live data still dims a static model absent from its list as `not-on-key`', () => {
+    const entries = mergeModelCatalog({
+      keyedProviders: new Set<ProviderId>(['anthropic']),
+      // anthropic has live data, but the list omits claude-opus-4-8 → not-on-key (the pre-existing dim).
+      live: liveMap([['anthropic', [{ id: 'claude-haiku-4-5' }]]]),
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    const opus = byId(entries, 'claude-opus-4-8');
+    expect(opus?.available).toBe(false);
+    expect(opus?.unavailableReason).toBe('not-on-key');
+  });
+
+  it('keyedProviders ABSENT ⇒ availability is not key-gated (byte-identical to pre-change)', () => {
+    const gated = mergeModelCatalog({ now: BEFORE_DEEPSEEK_DEPRECATION });
+    // Every entry is available (no live data, no key gate) and carries no unavailableReason.
+    expect(gated.every((e) => e.available && e.unavailableReason === undefined)).toBe(true);
+  });
+});

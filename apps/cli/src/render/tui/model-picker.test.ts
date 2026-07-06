@@ -77,12 +77,37 @@ describe('foldModelPickerKey', () => {
     });
   });
 
-  it('Enter on a DIMMED (unavailable) model is BLOCKED, never an accept (ADR §6)', () => {
+  it('Enter on a DIMMED (unavailable) model is BLOCKED, never an accept — carrying the provider (ADR §6)', () => {
     const s = state({
-      entries: [entry({ modelId: 'x', displayName: 'Model X', available: false })],
+      entries: [entry({ modelId: 'x', displayName: 'Model X', available: false, provider: 'openai' })],
       selected: 0,
     });
-    expect(foldModelPickerKey('', { return: true }, s)).toEqual({ kind: 'blocked', displayName: 'Model X' });
+    expect(foldModelPickerKey('', { return: true }, s)).toEqual({
+      kind: 'blocked',
+      displayName: 'Model X',
+      provider: 'openai',
+    });
+  });
+
+  it('a `no-key` blocked step carries the reason (so the host hint can name the remedy) (2.5.G)', () => {
+    const s = state({
+      entries: [
+        entry({
+          modelId: 'y',
+          displayName: 'Model Y',
+          provider: 'gemini',
+          available: false,
+          unavailableReason: 'no-key',
+        }),
+      ],
+      selected: 0,
+    });
+    expect(foldModelPickerKey('', { return: true }, s)).toEqual({
+      kind: 'blocked',
+      displayName: 'Model Y',
+      provider: 'gemini',
+      reason: 'no-key',
+    });
   });
 
   it('Enter on an EMPTY (over-filtered) list is a gentle close, not a crash', () => {

@@ -46,6 +46,22 @@ describe('buildMergedCatalog', () => {
     expect(view.entries.every((e) => e.available)).toBe(true);
   });
 
+  it('threads keyedProviders → a model of an UNKEYED provider is unavailable/no-key; a keyed one stays available (2.5.G)', () => {
+    // Only openai is keyed; anthropic's static models become no-key even with no live rows.
+    const view = buildMergedCatalog({
+      rows: [],
+      providerSlug: slugResolver({}),
+      keyedProviders: new Set(['openai']),
+      now: 0,
+    });
+    const anthropicEntry = view.entries.find((e) => e.provider === 'anthropic');
+    expect(anthropicEntry?.available).toBe(false);
+    expect(anthropicEntry?.unavailableReason).toBe('no-key');
+    const openaiEntry = view.entries.find((e) => e.provider === 'openai');
+    expect(openaiEntry?.available).toBe(true);
+    expect(openaiEntry?.unavailableReason).toBeUndefined();
+  });
+
   it('a live row makes its provider "have live data": present models stay available, absent ones are dimmed', () => {
     const view = buildMergedCatalog({
       rows: [row({ modelId: MODEL_PRESENT, providerId: 'p-anthropic', source: 'live' })],

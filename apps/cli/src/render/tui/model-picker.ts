@@ -1,4 +1,4 @@
-import type { ModelCatalogEntry } from '@relavium/llm';
+import type { ModelCatalogEntry, ProviderId } from '@relavium/llm';
 
 import { dropLastCodePoint } from './chat-input.js';
 
@@ -54,7 +54,12 @@ export interface ModelPickerKey {
 export type ModelPickerStep =
   | { readonly kind: 'close' } // Esc / Ctrl-C — cancel without writing a default
   | { readonly kind: 'accept'; readonly modelId: string; readonly displayName: string } // set the default
-  | { readonly kind: 'blocked'; readonly displayName: string } // a dimmed/unavailable model — non-selectable (ADR §6)
+  | {
+      readonly kind: 'blocked'; // a dimmed/unavailable model — non-selectable (ADR-0064 §6)
+      readonly displayName: string;
+      readonly provider: ProviderId; // so the host hint can name the remedy (`no key for <provider>`)
+      readonly reason?: 'no-key' | 'not-on-key'; // WHY it is unavailable (2.5.G key-awareness)
+    }
   | { readonly kind: 'refresh' } // Ctrl+R — force a live re-fetch of every connected provider
   | { readonly kind: 'state'; readonly state: ModelPickerState };
 
@@ -120,7 +125,14 @@ export function foldModelPickerKey(
   if (key.return === true) {
     const chosen = visible[clampSelection(state.selected, visible.length)];
     if (chosen === undefined) return { kind: 'close' }; // an empty list — Enter is a gentle cancel
-    if (!chosen.available) return { kind: 'blocked', displayName: chosen.displayName };
+    if (!chosen.available) {
+      return {
+        kind: 'blocked',
+        displayName: chosen.displayName,
+        provider: chosen.provider,
+        ...(chosen.unavailableReason !== undefined ? { reason: chosen.unavailableReason } : {}),
+      };
+    }
     return { kind: 'accept', modelId: chosen.modelId, displayName: chosen.displayName };
   }
   if (key.backspace === true || key.delete === true) {

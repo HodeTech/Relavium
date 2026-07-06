@@ -39,6 +39,9 @@ export interface BuildMergedCatalogInput {
   readonly rows: readonly ModelCatalogListing[];
   /** Resolve an internal `llm_providers` UUID → its provider slug (e.g. `anthropic`) — `createProviderSlugResolver`. */
   readonly providerSlug: (uuid: string) => string;
+  /** The providers with a resolvable key (2.5.G key-awareness) — passed straight to {@link mergeModelCatalog} so a
+   *  keyless provider's models are dimmed `no-key` + non-selectable. Absent ⇒ not key-gated (unchanged). */
+  readonly keyedProviders?: ReadonlySet<ProviderId>;
   /** Current time (epoch-ms) for the deprecation check — passed in so the projection stays pure/testable. */
   readonly now: number;
 }
@@ -145,6 +148,11 @@ export function buildMergedCatalog(input: BuildMergedCatalogInput): MergedCatalo
     live.set(slug, list);
   }
   const userPricing = buildUserPricing({ rows: input.rows, providerSlug: input.providerSlug });
-  const entries = mergeModelCatalog({ live, userPricing, now: input.now });
+  const entries = mergeModelCatalog({
+    live,
+    userPricing,
+    ...(input.keyedProviders === undefined ? {} : { keyedProviders: input.keyedProviders }),
+    now: input.now,
+  });
   return { entries, refreshedAt };
 }

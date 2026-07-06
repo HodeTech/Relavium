@@ -43,6 +43,13 @@ export interface ModelCatalogEntry {
    * provider's live list omits is likewise dimmed — its `pricing` still applies for cost governance.
    */
   readonly available: boolean;
+  /**
+   * Why an entry is `available: false`, so the picker can show a distinct, actionable reason (2.5.G key-awareness):
+   * `'no-key'` — the provider has no resolvable key at all, so the model is genuinely unusable ("no key for
+   * `<provider>` — add one"); `'not-on-key'` — the provider IS keyed and has live data, but this model is not in
+   * that key's live list (the pre-existing "not available on your key" dim). Absent when `available: true`.
+   */
+  readonly unavailableReason?: 'no-key' | 'not-on-key';
   /** `true` once `now >= deprecatedAt` (ADR-0064 §7). The picker flags but never forbids a deprecated model. */
   readonly deprecated: boolean;
   /** The effective ISO deprecation date — the earlier of the static and live dates (their union). */
@@ -62,6 +69,16 @@ export interface MergeModelCatalogInput {
    * always wins for a known id (ADR-0064 §6 / ADR-0065 §2), so a user cannot silently misprice a shipped model.
    */
   readonly userPricing?: ReadonlyMap<string, ModelPricing>;
+  /**
+   * The providers with a **resolvable key** (keychain OR env) — 2.5.G key-awareness. A model whose provider is
+   * NOT in this set is `available: false` / `unavailableReason: 'no-key'` REGARDLESS of live/static presence: with
+   * no key the model is genuinely uncallable, so the picker must not offer it (and a chat started on it would only
+   * fail with `provider_auth`). ABSENT ⇒ availability is **not** key-gated (every provider treated as keyed) — the
+   * pre-key-gating behavior, preserved byte-identical for surfaces/tests that do not resolve keys. This REFINES
+   * (does not reverse) the ADR-0064 §6 "static presence" safe default: that default applies only to a **keyed**
+   * provider with no live data — never dimming a whole provider the user can actually use.
+   */
+  readonly keyedProviders?: ReadonlySet<ProviderId>;
   /** Current time (epoch ms) for the deprecation check — passed in so the merge stays pure and testable. */
   readonly now: number;
 }
@@ -127,8 +144,25 @@ export function mergeModelCatalog(input: MergeModelCatalogInput): ModelCatalogEn
       t.live?.contextWindowTokens ?? t.registry?.contextWindowTokens ?? t.user?.contextWindowTokens;
     const maxOutputTokens =
       t.live?.maxOutputTokens ?? t.registry?.maxOutputTokens ?? t.user?.maxOutputTokens;
-    // Availability: live-list membership when the provider has live data, else static presence.
-    const available = live.has(t.provider) ? t.live !== undefined : true;
+    // Availability (2.5.G key-awareness). Key gate FIRST: a provider absent from `keyedProviders` has no
+    // resolvable key, so its model is genuinely uncallable → unavailable with an actionable `'no-key'` reason,
+    // regardless of live/static presence. A KEYED provider keeps the pre-existing rule: live-list membership when
+    // it has live data (a static model absent from the list is `'not-on-key'`-dimmed), else static presence (the
+    // ADR-0064 §6 "never everything unavailable" safe default — PRESERVED, but now only for a KEYED provider).
+    // `keyedProviders` ABSENT ⇒ not key-gated (every provider treated as keyed) — byte-identical to pre-change.
+    const providerKeyed =
+      input.keyedProviders === undefined || input.keyedProviders.has(t.provider);
+    let available: boolean;
+    let unavailableReason: 'no-key' | 'not-on-key' | undefined;
+    if (!providerKeyed) {
+      available = false;
+      unavailableReason = 'no-key';
+    } else if (live.has(t.provider)) {
+      available = t.live !== undefined;
+      if (!available) unavailableReason = 'not-on-key';
+    } else {
+      available = true;
+    }
     const deprecatedAt = earlierIsoDate(
       earlierIsoDate(t.registry?.deprecatedAt, t.live?.deprecatedAt),
       t.user?.deprecatedAt,
@@ -146,6 +180,7 @@ export function mergeModelCatalog(input: MergeModelCatalogInput): ModelCatalogEn
       pricingSource,
       priceKnown: pricingSource !== 'none',
       available,
+      ...(unavailableReason !== undefined ? { unavailableReason } : {}),
       deprecated,
       ...(deprecatedAt !== undefined ? { deprecatedAt } : {}),
     });

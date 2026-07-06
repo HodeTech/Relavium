@@ -31,6 +31,34 @@ import { createValidatedFetch, type FetchLike } from './validated-fetch.js';
 export interface ProviderResolver {
   readonly resolveProvider: (id: ProviderId) => LlmProvider | undefined;
   readonly keyFor: (id: ProviderId) => string;
+  /**
+   * Whether a key for `id` is RESOLVABLE (keychain OR env) — a boolean, never the key value (2.5.G key-awareness).
+   * Used by the `/models` picker to gate a keyless provider's models and by `isProviderKeyless`. Only the genuine
+   * "no source" case returns `false`; a real keychain fault still PROPAGATES (it is not silently reported as "no
+   * key"), so a locked keychain is not misread as absence. OPTIONAL so a test stub can implement `keyFor` alone —
+   * consumers go through {@link providerHasKey}, which falls back to a `keyFor` probe when this is absent. The real
+   * {@link createProviderResolver} always provides it (the fault-preserving path), so production never falls back.
+   */
+  readonly hasKey?: (id: ProviderId) => boolean;
+}
+
+/**
+ * Whether `resolver` can resolve a key for `id` — a boolean, never the key. Prefers the resolver's own
+ * {@link ProviderResolver.hasKey} (the fault-preserving path production always provides); falls back to a
+ * `keyFor` try/probe only when a (test) stub omits it. Centralizes the "does this provider have a key" question
+ * so the picker key-gate + `isProviderKeyless` share one source (2.5.G key-awareness).
+ */
+export function providerHasKey(
+  resolver: Pick<ProviderResolver, 'keyFor' | 'hasKey'>,
+  id: ProviderId,
+): boolean {
+  if (resolver.hasKey !== undefined) return resolver.hasKey(id);
+  try {
+    resolver.keyFor(id);
+    return true;
+  } catch {
+    return false; // a stub with no key source for this provider
+  }
 }
 
 /** The env var holding a provider's API key — the headless per-invocation key source (CI / no-keychain). */
@@ -221,36 +249,48 @@ export function createProviderResolver(
   // provider's adapter to a validated per-provider endpoint here.
   const adapters: Record<ProviderId, LlmProvider> = { ...defaultProviders() };
   applyCustomEndpoints(adapters, options);
+  // The ONE key-resolution path (keychain → env), returning `undefined` for genuine absence — shared by `keyFor`
+  // (which throws on absence) and `hasKey` (which returns a boolean), so the two never drift (2.5.G key-awareness).
+  const resolveKey = (id: ProviderId): string | undefined => {
+    // 1. OS keychain (the primary store, 2.C). Absent (`null`) → fall through to env; an *unavailable* backend
+    //    (locked / no Secret Service) also falls through — the env var is the CLI's documented no-keychain path.
+    //    A NON-KeychainUnavailableError (a native binding fault) PROPAGATES — it is not silent absence.
+    if (keychain !== undefined) {
+      let fromKeychain: string | null = null;
+      try {
+        fromKeychain = keychain.get(keychainAccount(id));
+      } catch (err) {
+        if (!(err instanceof KeychainUnavailableError)) {
+          throw err;
+        }
+      }
+      if (fromKeychain !== null && fromKeychain !== '') {
+        return fromKeychain;
+      }
+    }
+    // 2. Env var — the headless / CI per-invocation source.
+    const fromEnv = env[providerKeyEnvVar(id)];
+    if (fromEnv !== undefined && fromEnv !== '') {
+      return fromEnv;
+    }
+    return undefined; // 3. No source.
+  };
   return {
     resolveProvider: (id) => adapters[id],
     keyFor: (id) => {
-      // 1. OS keychain (the primary store, 2.C). Absent (`null`) → fall through to env; an *unavailable*
-      //    backend (locked / no Secret Service) also falls through — the env var is the CLI's documented
-      //    no-keychain path. We never read/write a plaintext fallback.
-      if (keychain !== undefined) {
-        let fromKeychain: string | null = null;
-        try {
-          fromKeychain = keychain.get(keychainAccount(id));
-        } catch (err) {
-          if (!(err instanceof KeychainUnavailableError)) {
-            throw err;
-          }
-        }
-        if (fromKeychain !== null && fromKeychain !== '') {
-          return fromKeychain;
-        }
+      const key = resolveKey(id);
+      if (key === undefined) {
+        // A clean invocation error naming both ways to provide the key (never the key itself).
+        throw new CliError(
+          'invalid_invocation',
+          `no API key for provider '${id}' — store one with \`relavium provider set-key ${id}\` or set ${providerKeyEnvVar(id)}.`,
+        );
       }
-      // 2. Env var — the headless / CI per-invocation source.
-      const fromEnv = env[providerKeyEnvVar(id)];
-      if (fromEnv !== undefined && fromEnv !== '') {
-        return fromEnv;
-      }
-      // 3. No source — a clean invocation error naming both ways to provide the key (never the key itself).
-      throw new CliError(
-        'invalid_invocation',
-        `no API key for provider '${id}' — store one with \`relavium provider set-key ${id}\` or set ${providerKeyEnvVar(id)}.`,
-      );
+      return key;
     },
+    // Boolean-only (never the key). A real keychain fault still propagates via `resolveKey` — only genuine absence
+    // is `false`, so a locked keychain is not misreported as "no key" here.
+    hasKey: (id) => resolveKey(id) !== undefined,
   };
 }
 

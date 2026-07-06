@@ -8,6 +8,7 @@ import {
   createProviderResolver,
   KNOWN_PROVIDERS,
   neededProviderIds,
+  providerHasKey,
   providerKeyEnvVar,
   validateProviderKey,
 } from './providers.js';
@@ -139,6 +140,31 @@ describe('providerKeyEnvVar', () => {
   it('maps a lowercase provider id to its uppercase env var', () => {
     expect(providerKeyEnvVar('anthropic')).toBe('RELAVIUM_ANTHROPIC_API_KEY');
     expect(providerKeyEnvVar('deepseek')).toBe('RELAVIUM_DEEPSEEK_API_KEY');
+  });
+});
+
+describe('resolver.hasKey / providerHasKey (2.5.G key-awareness)', () => {
+  it('createProviderResolver.hasKey is true for a provider with an env key, false otherwise (never throws)', () => {
+    // Env-only (no keychain) — a key for openai, nothing for the others.
+    const resolver = createProviderResolver({ RELAVIUM_OPENAI_API_KEY: TEST_KEY });
+    expect(resolver.hasKey?.('openai')).toBe(true);
+    expect(resolver.hasKey?.('anthropic')).toBe(false);
+    expect(resolver.hasKey?.('gemini')).toBe(false);
+    // And keyFor stays consistent: resolves for the keyed provider, throws for a keyless one.
+    expect(resolver.keyFor('openai')).toBe(TEST_KEY);
+    expect(() => resolver.keyFor('anthropic')).toThrow();
+  });
+
+  it('providerHasKey falls back to a keyFor probe when a stub omits hasKey', () => {
+    const keyed = { resolveProvider: () => undefined, keyFor: () => TEST_KEY };
+    expect(providerHasKey(keyed, 'openai')).toBe(true);
+    const keyless = {
+      resolveProvider: () => undefined,
+      keyFor: () => {
+        throw new Error('no key');
+      },
+    };
+    expect(providerHasKey(keyless, 'openai')).toBe(false);
   });
 });
 

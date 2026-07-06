@@ -1775,6 +1775,27 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(c.getSnapshot().modelPicker?.hint).toBeUndefined();
   });
 
+  it('a `no-key` model is non-selectable with a hint NAMING the remedy (provider add) (2.5.G)', async () => {
+    const { port, writeDefault } = makeModelsPort({
+      entries: [
+        pickerEntry({
+          modelId: 'x',
+          displayName: 'Model X',
+          provider: 'openai',
+          available: false,
+          unavailableReason: 'no-key',
+        }),
+      ],
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER);
+    expect(writeDefault).not.toHaveBeenCalled(); // a keyless model can never become the default
+    const hint = c.getSnapshot().modelPicker?.hint ?? '';
+    expect(hint).toContain('openai'); // names the provider
+    expect(hint).toContain('provider add'); // and the actionable remedy
+  });
+
   it('Esc closes the picker without writing a default', async () => {
     const { port, writeDefault } = makeModelsPort();
     const c = openPicker(port);

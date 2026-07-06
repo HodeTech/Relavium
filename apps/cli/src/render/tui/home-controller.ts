@@ -601,9 +601,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'accept':
         acceptModel(step.modelId, step.displayName);
         break;
-      case 'blocked':
-        set({ modelPicker: { ...open, hint: `${step.displayName} is not available on your key — pick another` } });
+      case 'blocked': {
+        // An ACTIONABLE hint (2.5.G key-awareness): a keyless provider names the remedy; the pre-existing
+        // "not on your key" case keeps its message. Never a write — a blocked model can't become the default.
+        const hint =
+          step.reason === 'no-key'
+            ? `${step.displayName} needs a ${step.provider} key — run \`relavium provider add ${step.provider}\`, then set-key`
+            : `${step.displayName} is not available on your key — pick another`;
+        set({ modelPicker: { ...open, hint } });
         break;
+      }
       case 'refresh':
         runPickerRefresh(() => deps.models?.refresh() ?? Promise.resolve(undefined));
         break;

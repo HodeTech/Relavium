@@ -6,6 +6,7 @@ import {
   KNOWN_PROVIDERS,
   KNOWN_PROVIDER_IDS,
   keyHint,
+  providerHasKey,
   providerKeyEnvVar,
   type ProviderResolver,
 } from '../engine/providers.js';
@@ -93,15 +94,10 @@ export interface OnboardingDeps {
  * bare Home offers the wizard. A run with EITHER a keychain key or an env key is NOT key-less (no wizard) — so a
  * working env-key user is never nagged, and the env fallback IS the resolver's built-in key import.
  */
-export function isProviderKeyless(resolver: Pick<ProviderResolver, 'keyFor'>): boolean {
-  return !KNOWN_PROVIDER_IDS.some((id) => {
-    try {
-      resolver.keyFor(id);
-      return true;
-    } catch {
-      return false; // no keychain key + no env var for this provider
-    }
-  });
+export function isProviderKeyless(
+  resolver: Pick<ProviderResolver, 'keyFor' | 'hasKey'>,
+): boolean {
+  return !KNOWN_PROVIDER_IDS.some((id) => providerHasKey(resolver, id));
 }
 
 /** A clack `validate` that rejects an empty/whitespace key (Esc still cancels the whole flow). */

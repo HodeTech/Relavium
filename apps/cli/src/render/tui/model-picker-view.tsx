@@ -85,7 +85,13 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
         entry.provider,
         ...(ctx.length > 0 ? [ctx] : []),
         formatModelPrice(entry),
-        ...(entry.available ? [] : ['unavailable on your key']),
+        // Distinguish the two unavailable reasons (2.5.G key-awareness): a keyless provider names the remedy,
+        // vs the pre-existing "not on your key" (a keyed provider whose live list omits the model).
+        ...(entry.available
+          ? []
+          : entry.unavailableReason === 'no-key'
+            ? [`no key for ${entry.provider}`]
+            : ['unavailable on your key']),
         ...(entry.deprecated ? ['deprecated'] : []),
       ];
       // Selected → cyan (highlight wins for visibility); else an unavailable/deprecated row is dimmed; else default.
