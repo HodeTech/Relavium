@@ -706,8 +706,9 @@ export function createChatModeControl(
       applyChatMode(modeEnv, mode);
     },
     // ADR-0066 §5: push the SESSION override (no reseat) + update the footer. The tier is gated per-model at send,
-    // so the footer reflects it only on a reasoning-capable model — but the override is still stored so a later
-    // reseat to a capable model would honor it.
+    // so the footer reflects it only on a reasoning-capable model. The override lives on THIS session instance only
+    // (it does not survive a reseat — a model change rebuilds the session, carrying its own picked effort via the
+    // ReseatTarget); so on a non-reasoning model the tier is stored but inert until the very next same-model turn.
     onSetEffort: (effort) => {
       built.session.setReasoningEffort(effort);
       store.setReasoningEffort(capable ? effort : undefined);

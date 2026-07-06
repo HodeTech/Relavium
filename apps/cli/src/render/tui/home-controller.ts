@@ -661,6 +661,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     reasoningEffort?: ReasoningEffort,
   ): void => {
     const active = state.session;
+    // A LIVE in-Home chat owns the pick (the bare-Home config write is the `else` below). The effort setter path
+    // does not itself need `reseatChat`, but it is only REACHED with `reseatChat` wired: the in-chat `/models` that
+    // opens the effort sub-step is gated on `reseatChat` (see the palette/typed intercepts), so an active-session
+    // pick never runs without it. Guarding on both here therefore never diverts an effort pick to the config write.
     if (active !== undefined && deps.reseatChat !== undefined) {
       if (modelId === active.store.getSnapshot().state.model) {
         if (reasoningEffort === undefined) {
