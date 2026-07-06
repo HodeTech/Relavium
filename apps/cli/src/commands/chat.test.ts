@@ -4,8 +4,16 @@ import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 
 import type { SessionStreamHandleEvent } from '@relavium/core';
-import type { StreamChunk } from '@relavium/llm';
-import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
+import type { ProviderId, StreamChunk } from '@relavium/llm';
+import {
+  createClient,
+  createModelCatalogStore,
+  createProviderStore,
+  createSessionStore,
+  runMigrations,
+  type Db,
+  type DbClient,
+} from '@relavium/db';
 import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -95,6 +103,32 @@ function mcpConn(): { conn: McpConnection; closed: () => number } {
     },
   };
   return { conn, closed: () => n };
+}
+
+// Seed a model into `model_catalog` (+ its provider row for the FK) so ADR-0059 attribution can resolve the model
+// STRING → the catalog row UUID. Returns that UUID (the `session_messages.model_id` FK target to assert against).
+let seedCatalogN = 0;
+function seedCatalogModel(db: Db, provider: ProviderId, modelId: string): string {
+  const storeDeps = {
+    uuid: () => `cat-${provider}-${seedCatalogN++}`,
+    now: () => Date.parse('2026-06-25T00:00:00.000Z'),
+  };
+  const providerRow = createProviderStore(db, storeDeps).upsert({
+    name: provider,
+    displayName: provider,
+    baseUrl: 'https://api.anthropic.com',
+  });
+  const catalog = createModelCatalogStore(db, storeDeps);
+  catalog.upsert({
+    providerId: providerRow.id,
+    modelId,
+    displayName: modelId,
+    contextWindowTokens: 200_000,
+    maxOutputTokens: 8_192,
+  });
+  const id = catalog.catalogIdByModelId(modelId);
+  if (id === undefined) throw new Error(`catalog seed failed for ${modelId}`);
+  return id;
 }
 
 describe('chatCommand', () => {
@@ -541,6 +575,9 @@ describe('chatCommand', () => {
 
   it('/models reseat: rebinds the model on the SAME session, carrying the transcript + per-turn attribution (ADR-0059)', async () => {
     const { d, store } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
+    // Seed both models into the catalog so attribution resolves the model string → the FK-target UUID.
+    const sonnetId = seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    const opusId = seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
     // A live reseat is TTY-interactive only (like `/clear`), so `onReseat` is wired only on an interactive io.
     const interactiveIo = { ...d.io, stdoutIsTty: true };
     const seen: string[] = [];
@@ -573,10 +610,15 @@ describe('chatCommand', () => {
 
     const full = store.loadFull('id-0');
     expect(full?.session.agentSnapshot?.model).toBe('claude-opus-4-8'); // rebound to the target model
-    // The transcript carried across the switch: turn 1 (sonnet) + turn 2 (opus) — 4 sequenced rows, one session.
+    expect(full?.session.modelId).toBe(opusId); // the reseated session's coarse primary = the new model's catalog id
+    // The transcript carried across the switch: turn 1 (sonnet) + turn 2 (opus) — 4 sequenced rows, one session,
+    // each assistant row ATTRIBUTED to the model that produced it (its catalog UUID, ADR-0059).
     expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
     expect(full?.messages[1]?.content[0]).toEqual({ type: 'text', text: 'sonnet reply' });
+    expect(full?.messages[1]?.modelId).toBe(sonnetId); // turn 1 produced by the ORIGINAL model
     expect(full?.messages[3]?.content[0]).toEqual({ type: 'text', text: 'opus reply' });
+    expect(full?.messages[3]?.modelId).toBe(opusId); // turn 2 produced by the NEW model
+    expect(full?.messages[0]?.modelId).toBeUndefined(); // a user row carries no producing model
     expect(full?.session.totalCostMicrocents).toBeGreaterThan(0); // both turns' cost accrued (carried, not reset)
   });
 

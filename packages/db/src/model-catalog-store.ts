@@ -149,6 +149,15 @@ export interface ModelCatalogStore {
    *  whole-catalog projection) while a genuine store/DB fault propagates. Unlike {@link resolveMediaSurface},
    *  which never parses `capabilities` and so stays usable for routing. */
   getByModelId: (modelId: string) => ModelCatalogRecord | undefined;
+  /**
+   * The active catalog ROW ID — the `model_catalog.id` UUID that is the FK target of `session_messages.model_id`
+   * and `agent_sessions.model_id` — for a model STRING, or `undefined` when the model is not cataloged. Uses the
+   * SAME source-ranked authoritative-row selection as {@link getByModelId}. Lets a caller resolve a model string
+   * (a bound model, or a failover-aware `cost:updated.model`) to the referential id a transcript row stores for
+   * per-model cost attribution ([ADR-0059]), degrading to `undefined` → a NULL column (the "unknown" bucket) when
+   * the model has not been discovered into the catalog yet.
+   */
+  catalogIdByModelId: (modelId: string) => string | undefined;
   /** Seed/replace a catalog row (by provider + model) — used by the generative acceptance fixture and a future
    *  provider-sync; the store mints the id + timestamps. */
   upsert: (input: ModelCatalogUpsert) => ModelCatalogRecord;
@@ -332,6 +341,10 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
     },
 
     getByModelId,
+
+    // The authoritative active row's UUID (the FK target) for a model string, or `undefined` when uncataloged —
+    // the same source-ranked selection `getByModelId` uses, projected to just the id (ADR-0059 attribution).
+    catalogIdByModelId: (modelId) => activeRow(modelId)?.id,
 
     upsert: (input) => {
       const t = deps.now();

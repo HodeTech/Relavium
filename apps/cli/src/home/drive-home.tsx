@@ -8,7 +8,11 @@ import { createChatLineHandler } from '../commands/chat.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import type { DoctorProbes } from '../chat/doctor.js';
-import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
+import {
+  createSessionPersister,
+  makeCatalogIdResolver,
+  type SessionPersister,
+} from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { writeGlobalDefaultModel } from '../config/write.js';
 import { buildMergedCatalog } from '../engine/model-catalog-view.js';
@@ -283,6 +287,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           context: built.context,
           now,
           uuid,
+          // ADR-0059 per-message/session model attribution — resolve a model string → its `model_catalog.id`
+          // over the SAME db (the Home's catalog is the one the picker refreshes), degrading to NULL when uncataloged.
+          resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
         });
         // createChatLineHandler owns the mode control (ADR-0057): it applies the initial `ask` mode → the
         // fail-closed approval regime — BEFORE the session opens, so the full-capability chat host is never live

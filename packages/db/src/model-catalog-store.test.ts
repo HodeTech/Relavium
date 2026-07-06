@@ -96,6 +96,21 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
     expect(store.getByModelId('not-in-catalog')).toBeUndefined();
   });
 
+  it('catalogIdByModelId resolves a model string to its catalog row UUID (the FK target), undefined when uncataloged (ADR-0059)', () => {
+    // providerStore.upsert (beforeEach) minted uuid #1; this first catalog upsert mints #2 — so the row's id is
+    // deterministic. `catalogIdByModelId` returns THAT id (the `session_messages.model_id` FK target), never the
+    // model string; an uncataloged model resolves to undefined (→ a NULL column, the pre-attribution bucket).
+    store.upsert({
+      providerId,
+      modelId: 'gpt-4o',
+      displayName: 'GPT-4o',
+      contextWindowTokens: 128_000,
+      maxOutputTokens: 16_384,
+    });
+    expect(store.catalogIdByModelId('gpt-4o')).toBe('00000000-0000-4000-8000-000000000002');
+    expect(store.catalogIdByModelId('not-in-catalog')).toBeUndefined();
+  });
+
   it('fromRow maps each capability flag to its own column (non-default values)', () => {
     store.upsert({
       providerId,

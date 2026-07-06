@@ -38,7 +38,11 @@ import {
   type ChatMode,
 } from '../chat/chat-mode.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
-import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
+import {
+  createSessionPersister,
+  makeCatalogIdResolver,
+  type SessionPersister,
+} from '../chat/persister.js';
 import {
   buildChatSession,
   buildResumedChatSession,
@@ -323,6 +327,9 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       context: built.context,
       now,
       uuid,
+      // ADR-0059 per-message/session model attribution — resolve a model string → its `model_catalog.id` (the FK
+      // target) over the SAME db, degrading to NULL when uncataloged. Shared across every persister site.
+      resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
     });
   } catch (err) {
     closeQuietly(deps.io, 'session store', () => opened.close());
@@ -1032,6 +1039,8 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
       context: built.context,
       now: deps.now,
       uuid: deps.uuid,
+      // ADR-0059 attribution — resolved over the SAME shared db (a `/clear` rebuild re-reads it fresh).
+      resolveModelCatalogId: makeCatalogIdResolver(deps.opened.db, { uuid: deps.uuid, now: deps.now }),
     });
   } catch (err) {
     // Acquire-then-guard: the fresh MCP children are already spawned — reclaim them before the failure propagates
@@ -1132,6 +1141,8 @@ function seedResumedWiring(
     uuid,
     // Continue the durable transcript past its last sequence number (start() adopts the row + its totals).
     initialSequenceNumber: resumed.nextSequenceNumber,
+    // ADR-0059 attribution — resolved over the SAME db; a reseat's new persister records the switched model.
+    resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
   });
   return { store, persister };
 }

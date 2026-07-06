@@ -2,6 +2,8 @@ import { reconstructSessionState } from '@relavium/core';
 import type { StreamChunk } from '@relavium/llm';
 import {
   createClient,
+  createModelCatalogStore,
+  createProviderStore,
   createSessionStore,
   runMigrations,
   type DbClient,
@@ -12,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { buildDefaultChatAgent } from './default-agent.js';
-import { createSessionPersister } from './persister.js';
+import { createSessionPersister, makeCatalogIdResolver } from './persister.js';
 import { buildChatSession, buildResumedChatSession } from './session-host.js';
 import { scriptedResolver, stop, textTurn, unresolvedResolver } from './test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
@@ -176,6 +178,75 @@ describe('createSessionPersister', () => {
     // The scripted stop reports usage {input:10, output:5}; the persister folds it into the session totals.
     expect(full?.session.totalInputTokens).toBe(10);
     expect(full?.session.totalOutputTokens).toBe(5);
+  });
+
+  it('attributes the assistant + session rows to the producing model’s catalog id (ADR-0059)', async () => {
+    // Seed the default model into the catalog so the resolver maps its STRING → the FK-target UUID; the assistant
+    // row (from cost:updated.model) + the session row (the bound model) both carry that id, the user row none.
+    const provider = createProviderStore(client.db, { uuid: () => 'p-1', now: () => 0 }).upsert({
+      name: 'anthropic',
+      displayName: 'Anthropic',
+      baseUrl: 'https://api.anthropic.com',
+    });
+    const catalog = createModelCatalogStore(client.db, { uuid: () => 'm-1', now: () => 0 });
+    catalog.upsert({
+      providerId: provider.id,
+      modelId: 'claude-sonnet-4-6',
+      displayName: 'Sonnet',
+      contextWindowTokens: 200_000,
+      maxOutputTokens: 8_192,
+    });
+    const sonnetId = catalog.catalogIdByModelId('claude-sonnet-4-6');
+    expect(sonnetId).toBeDefined();
+
+    let tick = Date.parse('2026-06-25T00:00:00.000Z');
+    const now = (): number => tick++;
+    let msgId = 0;
+    const built = await buildChatSession({
+      chat: EMPTY_CHAT,
+      agentRef: undefined,
+      cwd: '/workspace',
+      projectConfigDir: undefined,
+      now,
+      uuid: () => 'sess-attr',
+      providers: scriptedResolver([textTurn('hi there')]),
+    });
+    const persister = createSessionPersister({
+      store,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now,
+      uuid: () => `attr-${msgId++}`,
+      resolveModelCatalogId: makeCatalogIdResolver(client.db, { uuid: () => 'unused', now }),
+    });
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('hello');
+    await built.session.sendMessage('hello');
+
+    const full = store.loadFull('sess-attr');
+    expect(full?.messages[0]?.role).toBe('user');
+    expect(full?.messages[0]?.modelId).toBeUndefined(); // user text has no producing model
+    expect(full?.messages[1]?.role).toBe('assistant');
+    expect(full?.messages[1]?.modelId).toBe(sonnetId); // the resolved catalog id of the producing model
+    expect(full?.session.modelId).toBe(sonnetId); // the session's coarse primary
+  });
+
+  it('leaves modelId NULL with no resolver — an uncataloged model degrades to the unknown bucket (ADR-0059)', async () => {
+    // No `resolveModelCatalogId` wired ⇒ every attribution column stays NULL (the safe default), and the FK is
+    // never violated by writing a raw model string.
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi there')]));
+    persister.start();
+    built.session.start();
+    persister.beginUserTurn('hello');
+    await built.session.sendMessage('hello');
+
+    const full = store.loadFull('sess-1');
+    expect(full?.messages[1]?.role).toBe('assistant');
+    expect(full?.messages[1]?.modelId).toBeUndefined(); // no resolver ⇒ NULL, never the raw model string
+    expect(full?.session.modelId).toBeUndefined();
   });
 
   it('derives the session title from the FIRST user message, and a later message does not overwrite it', async () => {
