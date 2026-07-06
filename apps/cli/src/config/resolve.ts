@@ -46,6 +46,9 @@ export interface ResolvedChatConfig {
   readonly allowedCommands: ChatConfig['allowed_commands'];
   /** `[chat].allowed_command_globs` — the opt-in glob form of the `!`-shell allowlist (→ `allowedCommandGlobs`). */
   readonly allowedCommandGlobs: ChatConfig['allowed_command_globs'];
+  /** `[chat].reasoning_effort` — the default reasoning-effort tier for a chat whose agent authors none (ADR-0066).
+   *  Applied to the built-in default chat agent (only sent to a reasoning-capable model). Absent ⇒ provider default. */
+  readonly reasoningEffort: ChatConfig['reasoning_effort'];
 }
 
 export interface ResolvedConfig {
@@ -140,6 +143,7 @@ function resolveChat(
     onExceed: p?.on_exceed ?? w?.on_exceed,
     allowedCommands: projectSetsAllowlist ? p?.allowed_commands : w?.allowed_commands,
     allowedCommandGlobs: projectSetsAllowlist ? p?.allowed_command_globs : w?.allowed_command_globs,
+    reasoningEffort: p?.reasoning_effort ?? w?.reasoning_effort,
   };
 }
 

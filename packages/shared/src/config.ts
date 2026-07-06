@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import { URL_HAS_CREDENTIALS, nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
-import { FS_SCOPE_TIERS, ON_EXCEED_ACTIONS } from './constants.js';
+import { FS_SCOPE_TIERS, ON_EXCEED_ACTIONS, REASONING_EFFORTS } from './constants.js';
 
 /**
  * Configuration schemas (config-spec.md). Validation only — no file IO. The global
@@ -179,6 +179,10 @@ export const ChatConfigSchema = z
     compact_threshold: z.number().gt(0).lte(1).optional(),
     max_cost_microcents: nonNegativeInt.optional(), // 0/absent = unbounded; >0 = per-session cap
     on_exceed: z.enum(ON_EXCEED_ACTIONS).optional(),
+    // The default reasoning-effort tier for a chat whose bound agent authors none (ADR-0066) — off/low/medium/high/
+    // max. Applied to the built-in default chat agent + surfaced as the picker's starting effort; only sent to a
+    // reasoning-capable model. Absent ⇒ the provider default (no reasoning control sent).
+    reasoning_effort: z.enum(REASONING_EFFORTS).optional(),
   })
   .strict() // fail loud on an unknown [chat] key (strict config — ADR-0033, amends ADR-0023)
   .optional();

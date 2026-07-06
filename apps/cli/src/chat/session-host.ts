@@ -276,6 +276,11 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       cwd: opts.cwd,
       projectConfigDir: opts.projectConfigDir,
       defaultModel: opts.chat.defaultModel,
+      // ADR-0066: the `[chat].reasoning_effort` default is baked onto the DEFAULT agent only (an authored agent
+      // owns its own). Threaded here so a config default lights up a default-agent chat without a picker step.
+      ...(opts.chat.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: opts.chat.reasoningEffort }),
     });
   const context: SessionContext = {
     workingDir: opts.cwd,
