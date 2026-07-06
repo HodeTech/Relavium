@@ -1793,7 +1793,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(writeDefault).not.toHaveBeenCalled(); // a keyless model can never become the default
     const hint = c.getSnapshot().modelPicker?.hint ?? '';
     expect(hint).toContain('openai'); // names the provider
-    expect(hint).toContain('provider add'); // and the actionable remedy
+    expect(hint).toContain('provider set-key'); // and the actionable single-command remedy
   });
 
   it('Esc closes the picker without writing a default', async () => {

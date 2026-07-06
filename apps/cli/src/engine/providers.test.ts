@@ -166,6 +166,19 @@ describe('resolver.hasKey / providerHasKey (2.5.G key-awareness)', () => {
     };
     expect(providerHasKey(keyless, 'openai')).toBe(false);
   });
+
+  it('providerHasKey uses hasKey DIRECTLY when present — an unexpected hasKey fault PROPAGATES (not swallowed)', () => {
+    // The one asymmetry: branch (1) [hasKey present] does NOT catch, so a native fault surfaces (fail-loud); only
+    // branch (2) [keyFor fallback] swallows. Documents the intentional divergence.
+    const faulted = {
+      resolveProvider: () => undefined,
+      keyFor: () => TEST_KEY, // would say "true" if the fallback were (wrongly) used
+      hasKey: () => {
+        throw new Error('native keychain binding fault');
+      },
+    };
+    expect(() => providerHasKey(faulted, 'openai')).toThrow('native keychain binding fault');
+  });
 });
 
 // The shared redaction seam (used by `provider test` AND the `/doctor --deep` probe) — its security contract is
