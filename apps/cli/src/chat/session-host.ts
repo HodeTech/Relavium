@@ -16,7 +16,7 @@ import {
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
-import type { PricingOverlay } from '@relavium/llm';
+import type { PricingOverlay, ProviderId } from '@relavium/llm';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
 import type {
   AgentSessionRecord,
@@ -357,6 +357,25 @@ function narrowToWired(
   defs: readonly ToolDef[],
 ): AgentDefinition {
   return { ...agent, tools: wiredToolIds(agent.tools ?? [], host, defs) };
+}
+
+/**
+ * Return the bound agent for a mid-session model SWITCH ([ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md)):
+ * the snapshot with `model`/`provider` swapped to the picked pair and the original `fallback_chain` DROPPED (it
+ * belonged to the old model; the resumed instance builds its own default plan for the new model, exactly as a fresh
+ * session on it would). Operates on a fresh copy — never mutates the input. Shared by the standalone `chat` reseat
+ * (`buildReseatWiring`) and the in-Home chat reseat (`driveHome`) so the swap rule has ONE home.
+ */
+export function swapAgentModel(
+  agent: AgentDefinition,
+  modelId: string,
+  provider: ProviderId,
+): AgentDefinition {
+  // A fresh copy, then `delete` the optional `fallback_chain` (removes the key entirely — never an explicit
+  // `undefined` under exactOptionalPropertyTypes — and mutates only this copy, never the loaded record).
+  const next: AgentDefinition = { ...agent, model: modelId, provider };
+  delete next.fallback_chain;
+  return next;
 }
 
 /** A resumed session (2.N) plus the two extra facts the REPL needs: the reconstructed state + the next seq. */

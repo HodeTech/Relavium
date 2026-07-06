@@ -53,11 +53,13 @@ export interface ReplCommandContext {
    *  Interactive-only — a `--json` / plain non-TTY session rejects it (one machine stream is one session lifecycle).
    *  Its notice surfaces the OLD sessionId + `relavium chat-resume <id>` so the prior conversation is discoverable. */
   readonly clearSession: () => void | Promise<void>;
-  /** `/models` (2.5.G S7, [ADR-0064](../../../../docs/decisions/0064-live-model-catalog.md) §10) — open the in-tree
-   *  model picker over the merged live/static catalog; on selection it writes the NEXT session's default model
-   *  ([ADR-0063](../../../../docs/decisions/0063-cli-config-write-contract.md)), it does NOT rebind the live session
-   *  (that is the Phase-2.6 reseat, ADR-0059). HOME-ONLY (`availableIn: ['home']`): the Home wires the real picker;
-   *  the chat surface never reaches this (the slash dispatch rejects a non-`chat` command), so its impl is inert. */
+  /** `/models` (2.5.G S7, [ADR-0064](../../../../docs/decisions/0064-live-model-catalog.md) §10 · ADR-0059) — open the
+   *  in-tree model picker over the merged live/static catalog. `availableIn: ['home','chat']`, with a surface-specific
+   *  accept: the **Home** writes the NEXT session's default model ([ADR-0063](../../../../docs/decisions/0063-cli-config-write-contract.md)),
+   *  and a **live chat** rebinds the running session via a host-side reseat (ADR-0059). The interactive render layer
+   *  (the ink `ChatApp` / the in-Home controller) INTERCEPTS a typed/palette `/models` to open the overlay, so this
+   *  ctx handler runs ONLY on a non-interactive chat driver (plain/`--json`), where it surfaces an actionable hint;
+   *  the bare Home wires the real picker. */
   readonly openModels: () => void | Promise<void>;
 }
 

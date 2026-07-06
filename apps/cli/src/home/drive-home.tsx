@@ -1,11 +1,17 @@
 import { randomUUID } from 'node:crypto';
 
 import { createProviderStore, createRunHistoryReader } from '@relavium/db';
+import type { AgentSessionRecord } from '@relavium/shared';
 import { render } from 'ink';
 import { createElement } from 'react';
 
-import { createChatLineHandler } from '../commands/chat.js';
-import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
+import { createChatLineHandler, type ReseatTarget } from '../commands/chat.js';
+import {
+  buildChatSession,
+  buildResumedChatSession,
+  swapAgentModel,
+  type BuiltChatSession,
+} from '../chat/session-host.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
@@ -20,6 +26,7 @@ import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
+import { CliError } from '../process/errors.js';
 import {
   isProviderKeyless,
   runOnboardingWizard,
@@ -30,7 +37,7 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
-import { createChatStore } from '../render/tui/chat-store.js';
+import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { createMentionReader } from '../render/tui/mention.js';
 import {
   createHomeController,
@@ -64,6 +71,8 @@ export interface HomeDeps {
   readonly providers?: ProviderResolver;
   /** Injectable session builder (tests inject a scripted provider via `providers`). Default {@link buildChatSession}. */
   readonly buildSession?: typeof buildChatSession;
+  /** Injectable RESUMED-session builder — used by the in-Home `/models` reseat (ADR-0059). Default {@link buildResumedChatSession}. */
+  readonly buildResumedSession?: typeof buildResumedChatSession;
   /** Injectable session-store opener (tests pass an in-memory store). Default {@link openSessionStore}. */
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
   readonly mcpSecretResolver?: McpSecretResolver;
@@ -190,43 +199,22 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       writeDefault: (modelId) => writeGlobalDefaultModel(modelId, homeDir, deps.global.configPath),
     };
 
-    // Build + wire + START a fresh chat session (the controller sends the first message on transition).
-    const startChat = async (): Promise<HomeChatSession> => {
-      const store = createChatStore(deps.global.color);
-      // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read FRESH per chat from the SAME `history.db` — so a
-      // user-priced model started in this long-lived Home is enforced by `[chat].max_cost_microcents` + tracked in
-      // realized cost. Static `MODEL_PRICING` still wins. Non-fatal (empty map on a read fault).
-      const resolvePrice = readUserPricingOverlay(opened.db);
-      const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
-        // Re-read the EFFECTIVE default model FRESH per chat (not the load-once `config` snapshot) so a same-session
-        // `/models` write takes effect on the very next chat started in this long-lived Home (2.5.G S7) — the
-        // property the accept-notice's "applies to your next chat session" promises. A read fault degrades to the
-        // startup value. Other `[chat]` settings keep the startup snapshot (only `/models` mutates the default).
-        chat: { ...config.chat, defaultModel: readEffectiveDefault() ?? config.chat.defaultModel },
-        agentRef: undefined, // the built-in default agent (zero-config first run)
-        cwd: deps.global.cwd,
-        projectConfigDir,
-        now,
-        uuid,
-        providers,
-        mcpSecretResolver,
-        mcpRegistrations: config.mcpServers,
-        ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
-        onBudgetWarning: (warning) =>
-          deps.io.writeErr(
-            `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-          ),
-      });
+    // The SHARED HomeChatSession wiring over a built (FRESH or RESUMED) session + its view store — the persister,
+    // the shared line handler (owns the ADR-0057 mode floor), the stream subscription + frame, the mention/shell
+    // ports, and the bounded teardown. Used by startChat (fresh) and reseatChat (the ADR-0059 model switch), so the
+    // in-Home chat wiring has ONE home. `open` opens a FRESH session (`session.start()`); a RESUMED session already
+    // landed at idle, so it stays `false` and seeds the persister past its last durable sequence.
+    const wireHomeChatSession = async (
+      built: BuiltChatSession,
+      store: ChatStoreController,
+      opts: { readonly open: boolean; readonly initialSequenceNumber?: number },
+    ): Promise<HomeChatSession> => {
       // Surface any config-level MCP tools the build skipped through the chat's ⚠ warnings channel (NOT stderr,
-      // which would corrupt the live TUI) — parity with `relavium chat`'s surfaceMcpSkipped so a Home-started chat
-      // tells the user why a configured tool is unavailable.
+      // which would corrupt the live TUI) — parity with `relavium chat`'s surfaceMcpSkipped.
       for (const tool of built.mcpSkipped) {
         store.note(`MCP tool '${tool.name}' (server '${tool.server}') skipped — ${tool.reason}`);
       }
-      // The chat's `/doctor` probes reflect THIS session's MCP status (the bound agent's declared servers + the
-      // tools the manager dropped) — derived from `built`, not the Home defaults — so `/doctor --deep` in a
-      // Home-started chat is correct by construction (the default agent has no `mcp_servers` today, but this keeps
-      // it right if that ever changes). A test override (`deps.doctorProbes`) still wins.
+      // The chat's `/doctor` probes reflect THIS session's MCP status (derived from `built`, not the Home defaults).
       const chatDoctorProbes =
         deps.doctorProbes ??
         assembleDoctorProbes({
@@ -236,9 +224,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           agentMcpServers: built.agent.mcp_servers ?? [],
           mcpSkipped: built.mcpSkipped,
         });
-      // Acquire-then-guard: once the subscription + frame interval exist, a throw in the remaining wiring
-      // (persister.start()'s insert, session.start()) must reclaim them — and any spawned MCP child — rather than
-      // leak the timer/subscription, mirroring chatCommand's post-build guard.
+      // Acquire-then-guard: once the subscription + frame interval exist, a throw in the remaining wiring must
+      // reclaim them — and any spawned MCP child — rather than leak the timer/subscription (chatCommand's guard).
       let frame: ReturnType<typeof setInterval> | undefined;
       let unsubscribe: (() => void) | undefined;
       let persister: SessionPersister | undefined;
@@ -251,13 +238,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           context: built.context,
           now,
           uuid,
-          // ADR-0059 per-message/session model attribution — resolve a model string → its `model_catalog.id`
-          // over the SAME db (the Home's catalog is the one the picker refreshes), degrading to NULL when uncataloged.
+          // ADR-0059 per-message/session model attribution — resolve a model string → its `model_catalog.id` over
+          // the SAME db (the Home's catalog is the one the picker refreshes), degrading to NULL when uncataloged.
           resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
+          // A RESUMED session continues the durable transcript past its last sequence number; a fresh one starts at 0.
+          ...(opts.initialSequenceNumber === undefined
+            ? {}
+            : { initialSequenceNumber: opts.initialSequenceNumber }),
         });
         // createChatLineHandler owns the mode control (ADR-0057): it applies the initial `ask` mode → the
-        // fail-closed approval regime — BEFORE the session opens, so the full-capability chat host is never live
-        // without the per-tool approval floor (the SAME guarantee the `chat` command's runReplLoop provides).
+        // fail-closed approval regime — BEFORE the session opens, so the full-capability host is never live without it.
         const { processLine, cancelOnce, shouldStop, stopReason, onAbort, onModeChange } =
           createChatLineHandler(
             { built, opened, store, persister, doctorProbes: chatDoctorProbes },
@@ -268,20 +258,17 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         frame = setInterval(() => store.tick(), FRAME_MS);
         frame.unref();
         persister.start();
-        built.session.start();
-        // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the SAME fs-scope tier +
-        // workspace as the session's tools, so in-Home `@`-completion browses + injects through the identical
-        // confidentiality floor + listing-gate. READ-ONLY by construction (the Home is always a TTY). Building it is
-        // pure (no I/O). Absent (an unwired fs arm) ⇒ `@` degrades to a literal char.
+        // Open a FRESH session; a RESUMED session already landed at idle inside AgentSession.resume — start() would
+        // throw and re-emitting session:started would double a terminal-less lifecycle event.
+        if (opts.open) built.session.start();
+        // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the session's fs-scope tier.
         const mentionFs = assembleToolEnv({
           profile: 'chat-read-only',
           fsScopeTier: built.context.fsScopeTier,
           workspaceDir: built.context.workingDir,
         }).host.fs;
         const mentionReader = mentionFs === undefined ? undefined : createMentionReader(mentionFs);
-        // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand` (the one
-        // command boundary: allowlist BEFORE approval → mode-aware confirmAction → hardened process arm). The Home is
-        // always a TTY, so it is always wired; the empty-default `[chat].allowed_commands` keeps `!` inert until opt-in.
+        // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`.
         const runShellCommand = (
           command: string,
           args: readonly string[],
@@ -322,6 +309,77 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         }
         throw err;
       }
+    };
+
+    // Build + wire + START a fresh chat session (the controller sends the first message on transition).
+    const startChat = async (): Promise<HomeChatSession> => {
+      const store = createChatStore(deps.global.color);
+      // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read FRESH per chat from the SAME `history.db` (empty map
+      // on a read fault). Static `MODEL_PRICING` still wins.
+      const resolvePrice = readUserPricingOverlay(opened.db);
+      const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
+        // Re-read the EFFECTIVE default model FRESH per chat (not the load-once `config` snapshot) so a same-session
+        // `/models` write takes effect on the very next chat started in this long-lived Home (2.5.G S7). A read
+        // fault degrades to the startup value. Other `[chat]` settings keep the startup snapshot.
+        chat: { ...config.chat, defaultModel: readEffectiveDefault() ?? config.chat.defaultModel },
+        agentRef: undefined, // the built-in default agent (zero-config first run)
+        cwd: deps.global.cwd,
+        projectConfigDir,
+        now,
+        uuid,
+        providers,
+        mcpSecretResolver,
+        mcpRegistrations: config.mcpServers,
+        ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
+        onBudgetWarning: (warning) =>
+          deps.io.writeErr(
+            `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
+          ),
+      });
+      return wireHomeChatSession(built, store, { open: true });
+    };
+
+    // Reseat the in-Home chat onto a NEW model (ADR-0059) — the counterpart of the standalone `chat` reseat. Reload
+    // the just-torn-down session's transcript from the SHARED db and RESUME it under a model-swapped agent (dropping
+    // the original fallback_chain), carrying the text-only transcript + cumulative cost/turns; a NEW instance,
+    // honoring ADR-0024's one-model-per-lifetime rule. The controller drives the tear-down / swap (mirroring clearChat).
+    const reseatChat = async (sessionId: string, target: ReseatTarget): Promise<HomeChatSession> => {
+      const loaded = opened.store.loadFull(sessionId);
+      if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
+        throw new CliError(
+          'invalid_invocation',
+          `cannot switch model: session ${sessionId} could not be reloaded for reseat`,
+        );
+      }
+      const newAgent = swapAgentModel(loaded.session.agentSnapshot, target.modelId, target.provider);
+      const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
+      const resolvePrice = readUserPricingOverlay(opened.db);
+      const built = await (deps.buildResumedSession ?? buildResumedChatSession)({
+        chat: config.chat,
+        record,
+        messages: loaded.messages,
+        now,
+        providers,
+        mcpSecretResolver,
+        mcpRegistrations: config.mcpServers,
+        ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
+        onBudgetWarning: (warning) =>
+          deps.io.writeErr(
+            `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
+          ),
+      });
+      // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
+      // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
+      const store = createChatStore(deps.global.color, {
+        agentRef: built.agent.id,
+        model: built.agent.model,
+        cumulativeCostMicrocents: built.resumeState.cumulativeCostMicrocents,
+        turnCount: built.resumeState.turnCount,
+      });
+      return wireHomeChatSession(built, store, {
+        open: false,
+        initialSequenceNumber: built.nextSequenceNumber,
+      });
     };
 
     const getSize =
@@ -394,6 +452,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     return await new Promise<ExitCode>((resolve, reject) => {
       controller = createHomeController({
         startChat,
+        reseatChat,
         homeStore,
         doctorProbes,
         models,

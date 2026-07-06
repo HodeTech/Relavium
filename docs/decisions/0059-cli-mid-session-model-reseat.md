@@ -9,15 +9,21 @@
 > from 2.6.C. The reseat reuses the `/clear` host-swap machinery ([ADR-0062](0062-context-compaction-and-cli-history-commands.md) §7)
 > and the `chat-resume` transcript path — zero engine change — exactly as designed below.
 
-> **Note (2026-07-06): the per-message `modelId` persistence is DEFERRED to 2.6.C (with the cost breakdown that
-> consumes it).** The Decision below says "only the CLI persister wiring is missing"; on implementation that proved
-> under-specified. `session_messages.model_id` / `agent_sessions.model_id` are **foreign keys to `model_catalog.id`
-> (a UUID row PK), not the raw model string** — and nothing populates them today (run history leaves them NULL too).
-> Correct population needs a model-string → `model_catalog.id` resolution (and the model may not yet be cataloged →
-> the NULL "unknown" bucket the Decision anticipates). That resolution belongs with the 2.6.C per-model cost
-> breakdown that reads it, so it lands there. **The reseat itself is fully implemented and correct without it** — a
-> mid-session `/models` switch carries the transcript + cumulative cost/turns and rebinds the model as designed; only
-> the per-turn attribution column is deferred. This note refines, and does not reverse, the Decision.
+> **Note (2026-07-06): the FK reality behind the per-message `modelId`.** The Decision below says "only the CLI
+> persister wiring is missing"; on implementation that proved under-specified. `session_messages.model_id` /
+> `agent_sessions.model_id` are **foreign keys to `model_catalog.id` (a UUID row PK), not the raw model string** — and
+> nothing populated them before this work (run history still leaves them NULL). Correct population needs a
+> model-string → `model_catalog.id` resolution, degrading to a NULL "unknown" bucket when the model is not yet
+> cataloged (the Decision anticipates this).
+>
+> **Note (2026-07-06, superseding the deferral): the attribution SHIPPED in 2.5.G Step D, not 2.6.C.** An earlier
+> draft of the note above deferred the per-message/session `modelId` to 2.6.C; on maintainer direction it was
+> implemented now instead. The persister resolves the failover-aware `cost:updated.model` (per assistant turn) and
+> the bound model (per session) to their `model_catalog.id` via `catalogIdByModelId` (`@relavium/db`), writing the
+> UUID or NULL — never a raw string (so the FK is never violated). The 2.6.C cost breakdown will now merely *read*
+> the populated column. **Known limitation (low):** the resolution is by model STRING (ignoring provider), so a
+> model id shared across two providers could mis-attribute to the other provider's catalog row; deferred as a
+> latent edge (real model ids are globally unique; the FK stays valid either way).
 
 ## Context
 

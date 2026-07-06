@@ -46,6 +46,7 @@ import {
 import {
   buildChatSession,
   buildResumedChatSession,
+  swapAgentModel,
   type BuildChatSessionOptions,
   type BuiltChatSession,
   type BuiltResumedChatSession,
@@ -1230,16 +1231,8 @@ async function buildReseatWiring(
       `cannot switch model: session ${oldSessionId} could not be reloaded for reseat`,
     );
   }
-  // Swap the bound model/provider on a FRESH copy, then DROP the original `fallback_chain` — it belonged to the old
-  // model; the resumed instance builds its own default plan for `target` (ADR-0059). `fallback_chain` is optional on
-  // `AgentDefinition`, so `delete` removes the key entirely (never leaves an explicit `undefined`, satisfying
-  // exactOptionalPropertyTypes) and mutates only this copy, never the loaded record.
-  const newAgent: AgentDefinition = {
-    ...loaded.session.agentSnapshot,
-    model: target.modelId,
-    provider: target.provider,
-  };
-  delete newAgent.fallback_chain;
+  // Swap the bound model/provider (dropping the original fallback_chain) via the shared ADR-0059 rule.
+  const newAgent = swapAgentModel(loaded.session.agentSnapshot, target.modelId, target.provider);
   // The record the resumed session rebinds from: the just-ended row with the model-swapped agent snapshot.
   // (The row's own `modelId` FK column stays as-is — per-message/session `modelId` attribution is deferred with
   // the 2.6.C cost breakdown; see persister.ts. `reconstructSessionState` reads only the transcript + cost here.)

@@ -12,8 +12,9 @@ import {
   partialFailureBanner,
   type ModelPickerState,
 } from './model-picker.js';
+import type { ReseatTarget } from '../../commands/chat.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
-import { clearedNotice } from '../../chat/repl-info.js';
+import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import {
@@ -187,6 +188,9 @@ export interface HomeModelsPort {
 export interface HomeControllerDeps {
   /** Build + wire + START a fresh chat session (no first message — the controller sends it on transition). May reject. */
   readonly startChat: () => Promise<HomeChatSession>;
+  /** Reseat the in-Home chat onto a NEW model (ADR-0059) — reload + resume the current session's transcript under the
+   *  switched model. Absent ⇒ the in-Home `/models` picker degrades to the next-session-default write (no live reseat). */
+  readonly reseatChat?: (sessionId: string, target: ReseatTarget) => Promise<HomeChatSession>;
   readonly homeStore: HomeStore;
   /** The Home exited cleanly (Ctrl-C / EOF in Home mode) → `driveHome` resolves with exit 0. */
   readonly onExit: () => void;
@@ -402,6 +406,76 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     );
   };
 
+  // Reseat the in-Home chat onto a NEW model (ADR-0059) — the counterpart of the standalone `/models` reseat, built
+  // like clearChat (BUILD-FIRST: the old session stays live + rendered while the reseated one builds, so a build
+  // failure leaves the user in a working, resumable conversation rather than a dead screen). On success the old
+  // session is torn down (bounded) and the reseated session — the SAME sessionId, resumed under the switched model
+  // with the carried transcript + cost/turns — is swapped in, its transcript opening with the modelSwitchNotice.
+  const reseatChat = (old: HomeChatSession, target: ReseatTarget): void => {
+    const reseat = deps.reseatChat;
+    if (reseat === undefined) return; // acceptModel only calls this when a builder IS wired (defensive)
+    if (tearingDown === old) return; // already ending this session (mirror clearChat)
+    const oldId = old.sessionId;
+    set({ modelPicker: undefined, submitBusy: true }); // close the picker + re-gate input for the whole swap
+    const build = reseat(oldId, target);
+    buildInFlight = build;
+    void build.then(
+      (next) => {
+        if (buildInFlight === build) buildInFlight = undefined;
+        if (exiting) {
+          void next.teardown().catch(() => undefined); // exited mid-build ⇒ reap the just-built reseated session
+          return;
+        }
+        // A superseding swap already replaced `old` (a mid-build /clear or another reseat) ⇒ reap this superseded
+        // build rather than swapping it in and leaking its MCP child (mirrors clearChat's guard).
+        if (state.session !== old) {
+          void next.teardown().catch(() => undefined);
+          return;
+        }
+        // Tear the OLD session down (bounded, like clearChat) — its terminal marks the row 'ended'; the reseated
+        // session continues the SAME sessionId (its persister adopted the row at build time).
+        tearingDown = old;
+        const td = old.teardown();
+        activeTeardown = td;
+        void boundTeardown(td)
+          .finally(() => {
+            if (activeTeardown === td) activeTeardown = undefined;
+            tearingDown = undefined;
+          })
+          .catch(() => undefined);
+        cancelFired = false; // the reseated session starts with a clean cancel latch (parity with clearChat)
+        pasting = false; // a lost paste-end marker must not leak the latch into the reseated chat
+        next.store.notice(modelSwitchNotice(target.modelId, next.store.getSnapshot().state.turnCount));
+        set({
+          session: next,
+          mode: 'chat', // STAY in chat — the model switched underneath, the conversation continues
+          input: emptyEditor(),
+          errorText: undefined,
+          notice: undefined,
+          pendingMessage: '',
+          palette: undefined,
+          search: undefined,
+          mention: undefined,
+          modelPicker: undefined,
+          shellBusy: false,
+          submitBusy: false, // the swap is done — un-gate the reseated chat
+          shellCommand: undefined,
+          attachments: [], // pending `@`/`!` attachments must not leak into the reseated conversation
+        });
+      },
+      () => {
+        if (buildInFlight === build) buildInFlight = undefined;
+        if (exiting) return;
+        // The reseat build FAILED — keep the OLD session live + resumable (do NOT tear it down); surface a static,
+        // secret-free note (the displayName is a catalog/registry string — sanitize defensively) and un-gate it.
+        if (state.session === old) {
+          old.store.note(`/models could not switch the model — keeping this conversation.`);
+          set({ submitBusy: false });
+        }
+      },
+    );
+  };
+
   // Drive one chat turn; on success end the chat if `/exit`/`/cancel` ran, on an escaping error tear the session
   // down BEFORE propagating so its MCP child / frame loop / row are never orphaned.
   const sendChatLine = (active: HomeChatSession, line: string, display?: string): void => {
@@ -542,6 +616,9 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return;
     }
     pickerEpoch += 1; // a fresh generation — invalidates any in-flight refresh from a prior (closed) open
+    // The `✓` marker: in a LIVE chat (ADR-0059 reseat) it is the session's BOUND model (the "you are here"); at the
+    // bare Home it is the effective next-session default. The accept action mirrors this (reseat vs default-write).
+    const activeModel = state.session?.store.getSnapshot().state.model;
     set({
       notice: undefined, // opening the picker clears any stale /doctor report behind it
       modelPicker: {
@@ -549,7 +626,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         filter: '',
         selected: 0,
         loading: false,
-        currentDefault: port.currentDefault(),
+        currentDefault: activeModel ?? port.currentDefault(),
         refreshedAt: view.refreshedAt,
         banner: undefined,
         hint: undefined,
@@ -559,13 +636,20 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // the long-lived process the S5 background constraint requires. An empty/stale cache repopulates as it resolves.
     runPickerRefresh(() => port.refreshIfStale());
   };
-  // Persist the chosen model as the NEXT session's default (ADR-0063) — it does NOT rebind a live session (there is
-  // none in the bare Home). Because `writeGlobalDefaultModel` writes only the GLOBAL `[preferences].default_model`
-  // while the EFFECTIVE default resolves project → workspace → global (ADR-0063 §1), the notice is HONEST: it
-  // confirms success only when the freshly-resolved effective default actually became the chosen model, else it
-  // says a project/workspace setting still overrides it here (so the tool never falsely claims a no-op took effect).
-  // A write fault keeps the picker open with a secret-free `hint` rather than crashing the Home.
-  const acceptModel = (modelId: string, displayName: string): void => {
+  // Accept the chosen model. TWO surface-specific actions off the ONE picker (ADR-0059/ADR-0063):
+  //  - a LIVE in-Home chat ⇒ RESEAT it onto the picked model (mirrors the standalone `relavium chat` /models reseat);
+  //  - the BARE Home ⇒ persist the chosen model as the NEXT session's default (the pre-existing behavior below).
+  const acceptModel = (modelId: string, displayName: string, provider: ReseatTarget['provider']): void => {
+    const active = state.session;
+    if (active !== undefined && deps.reseatChat !== undefined) {
+      reseatChat(active, { modelId, provider });
+      return;
+    }
+    // ---- The bare-Home next-session-default write (ADR-0063) ---------------------------------------------------
+    // `writeGlobalDefaultModel` writes only the GLOBAL `[preferences].default_model` while the EFFECTIVE default
+    // resolves project → workspace → global (ADR-0063 §1), so the notice is HONEST: success only when the
+    // freshly-resolved effective default actually became the chosen model, else a project/workspace override says so.
+    // A write fault keeps the picker open with a secret-free `hint` rather than crashing the Home.
     const port = deps.models;
     if (port === undefined) return;
     try {
@@ -602,7 +686,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         set({ modelPicker: undefined });
         break;
       case 'accept':
-        acceptModel(step.modelId, step.displayName);
+        acceptModel(step.modelId, step.displayName, step.provider);
         break;
       case 'blocked': {
         // An ACTIONABLE hint (2.5.G key-awareness): a keyless provider names the remedy; the pre-existing
@@ -700,6 +784,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           // home: run over the Home context. The palette captures NO args, so the bare command runs (`/doctor`
           // ⇒ fast tier); `--deep` is a typed-in-chat affordance (repl-commands.ts).
           void Promise.resolve(step.command.run(homeReplCtx, [])).catch(() => undefined);
+        } else if (step.command.name === 'models' && deps.reseatChat !== undefined) {
+          // chat: `/models` opens the reseat picker (ADR-0059) — parity with the typed-`/models` intercept, so the
+          // palette route + the typed route behave identically (never the "interactive terminal" dispatch hint).
+          openModelPicker();
         } else {
           sendChatLine(active, `/${step.command.name}`); // chat: reuse the S3a slash dispatch (createChatLineHandler)
         }
@@ -946,6 +1034,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       history = recordHistory(history, line);
       set({ input: emptyEditor(), historyEntries: history.entries });
       runShell(active, parsed); // a `!command` → the shell escape (does NOT consume pending attachments)
+      return;
+    }
+    // `/models` in a LIVE chat opens the reseat picker (ADR-0059) instead of dispatching — parity with the standalone
+    // ChatApp's submit-intercept. Only when a reseat builder is wired (always, in production); else it falls through
+    // to the normal slash dispatch (which surfaces the "interactive terminal" hint). `/models <arg>` is NOT
+    // intercepted (exact match) — it dispatches and is rejected as an unknown argument, like the standalone chat.
+    if (trimmed === '/models' && deps.reseatChat !== undefined) {
+      history = recordHistory(history, line);
+      set({ input: emptyEditor(), historyEntries: history.entries });
+      openModelPicker();
       return;
     }
     if (trimmed.startsWith('/') || state.attachments.length === 0) {

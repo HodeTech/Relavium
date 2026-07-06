@@ -1877,4 +1877,48 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(c.getSnapshot().modelPicker).toBeUndefined();
     expect(c.getSnapshot().notice).toContain('unavailable');
   });
+
+  it('in-Home chat: /models opens the reseat picker; accepting a model RESEATS the live session (ADR-0059)', async () => {
+    const sessionA = makeSession({ sessionId: 'sess-A' });
+    const sessionB = makeSession({ sessionId: 'sess-A' }); // a reseat continues the SAME sessionId
+    const startChat = vi.fn(() => Promise.resolve(sessionA.session));
+    const reseatChat = vi.fn(() => Promise.resolve(sessionB.session));
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      reseatChat,
+      models: port,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER); // start the chat (session A)
+    await flush();
+    expect(c.getSnapshot().mode).toBe('chat');
+
+    // Open the reseat picker from the chat palette (`/` → filter `models` → run) — the in-chat intercept opens the
+    // picker instead of dispatching `/models` to the "interactive terminal" hint.
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().modelPicker).toBeDefined(); // the picker opened IN the chat
+
+    // Accept the (only, available) model → a LIVE reseat, not a next-session-default write.
+    c.handleKey('', ENTER);
+    await flush();
+
+    expect(reseatChat).toHaveBeenCalledWith('sess-A', {
+      modelId: 'claude-opus-4-8',
+      provider: 'anthropic',
+    });
+    expect(sessionA.teardown).toHaveBeenCalledTimes(1); // the old session torn down (bounded)
+    expect(c.getSnapshot().session).toBe(sessionB.session); // swapped to the reseated session
+    expect(c.getSnapshot().mode).toBe('chat'); // stayed in chat (the model switched underneath)
+    expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
+  });
 });
