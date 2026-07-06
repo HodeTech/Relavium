@@ -158,6 +158,9 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
         keychain: deps.keychain,
         resolver: deps.resolver,
         readSecret: () => Promise.resolve(key),
+        // `global` is read only by `provider list --json`; `set-key` never touches it — a throwaway (the wizard is
+        // always interactive, never `--json`).
+        global: { json: false, color: false, cwd: process.cwd(), configPath: undefined, verbosity: 'normal' },
       },
     );
   } catch (err) {

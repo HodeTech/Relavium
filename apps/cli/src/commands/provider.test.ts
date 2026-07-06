@@ -179,6 +179,64 @@ describe('relavium provider commands (2.C)', () => {
     expect(rec).toMatchObject({ name: 'openai', keySet: false, verified: null, verifyDetail: null });
   });
 
+  const jsonGlobal = {
+    json: true,
+    color: false,
+    cwd: process.cwd(),
+    configPath: undefined,
+    verbosity: 'normal' as const,
+  };
+
+  it('list --json --verify records a probe FAILURE as { verified: false, verifyDetail: <redacted> } (no key)', async () => {
+    await runProviderCommand({ action: 'add', name: 'openai' }, deps({}));
+    const listIo = captureIo();
+    await runProviderCommand(
+      { action: 'list', verify: true },
+      deps({
+        io: listIo.io,
+        global: jsonGlobal,
+        resolver: stubResolver(() => Promise.reject(new Error(`boom ${RAW_KEY}`))),
+      }),
+    );
+    const [rec] = parseNdjson(listIo.out());
+    expect(rec).toMatchObject({ name: 'openai', verified: false });
+    expect(typeof rec?.['verifyDetail']).toBe('string'); // a redacted reason is present
+    expect(listIo.out()).not.toContain(RAW_KEY);
+  });
+
+  it('list --json --verify distinguishes keyless (verified:null, verifyDetail:"no key") from not-probed', async () => {
+    const stub = stubResolver(() => Promise.resolve({} as Awaited<ReturnType<LlmProvider['generate']>>));
+    const noKeyResolver: ProviderResolver = {
+      resolveProvider: stub.resolveProvider,
+      keyFor: () => {
+        throw new Error('no key');
+      },
+    };
+    await runProviderCommand({ action: 'add', name: 'openai' }, deps({}));
+    const listIo = captureIo();
+    await runProviderCommand(
+      { action: 'list', verify: true },
+      deps({ io: listIo.io, global: jsonGlobal, resolver: noKeyResolver }),
+    );
+    const [rec] = parseNdjson(listIo.out());
+    // Distinct from the no-`--verify` record (which is verified:null, verifyDetail:null).
+    expect(rec).toMatchObject({ verified: null, verifyDetail: 'no key' });
+  });
+
+  it('list --verify strips terminal-control bytes from a crafted provider error on the human line', async () => {
+    const d = deps({
+      // A rogue provider error carrying an ANSI screen-clear (ESC) + a bare CR line-overwrite.
+      resolver: stubResolver(() => Promise.reject(new Error('bad \x1b[2J\r end'))),
+    });
+    await runProviderCommand({ action: 'add', name: 'openai' }, d);
+    io.out();
+    await runProviderCommand({ action: 'list', verify: true }, d);
+    const text = io.out();
+    expect(text).not.toContain('\x1b'); // the ESC byte is stripped
+    expect(text).not.toContain('\r'); // the CR is collapsed (one row stays one line)
+    expect(text).toContain('failed'); // the row still renders the failure state
+  });
+
   it('remove-key deletes the keychain entry and clears the db ref', async () => {
     const keychain = memKeychain();
     const d = deps({ keychain });

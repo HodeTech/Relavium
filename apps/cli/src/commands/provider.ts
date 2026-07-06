@@ -13,7 +13,7 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
-import { stripTerminalControls } from '../render/tui/chat-projection.js';
+import { sanitizeInline, stripTerminalControls } from '../render/tui/chat-projection.js';
 import {
   KeychainUnavailableError,
   keychainAccount,
@@ -54,10 +54,10 @@ export interface ProviderCommandDeps {
   readonly resolver: ProviderResolver;
   /** Read the API key (from stdin in production) — injected so tests supply a fixed key, never a real one. */
   readonly readSecret: () => Promise<string>;
-  /** The invocation's global options — read ONLY by `provider list` for the `--json` machine-output contract
-   *  (2.5.G S11, ADR-0049). Optional so a non-`list` caller (the onboarding wizard's `set-key`) need not build one;
-   *  absent ⇒ human output. */
-  readonly global?: GlobalOptions;
+  /** The invocation's global options — read by `provider list` for the `--json` machine-output contract (2.5.G S11,
+   *  ADR-0049). Required (like the sibling read commands `list`/`status`/`models`) so a future caller can never
+   *  silently drop `--json`; a non-`list` caller (the wizard's `set-key`) passes a throwaway it never reads. */
+  readonly global: GlobalOptions;
 }
 
 /** Validate a provider name against the known `@relavium/llm` providers (`ProviderId`), or fail (exit 2). */
@@ -82,9 +82,11 @@ function requireName(args: ProviderCommandArgs): string {
   return args.name;
 }
 
-/** One provider's live verification outcome (2.5.G S11). `verified: null` ⇒ NOT probed (no key resolvable, or
- *  `--verify` was not passed); `true`/`false` ⇒ the probe's result. `detail` is a SHORT, already-key-REDACTED
- *  reason on failure (from `validateProviderKey`), else `null`. */
+/** One provider's live verification outcome (2.5.G S11). `verified: null` ⇒ NOT verifiable (no key resolvable);
+ *  `true`/`false` ⇒ the probe's result. `detail` is a SHORT reason: `'no key'` for the `null` case, an
+ *  already-key-REDACTED failure reason (from `validateProviderKey`) for `false`, else `null`. So a `--json`
+ *  consumer distinguishes "probed, no key" (`verified:null, verifyDetail:'no key'`) from "not probed"
+ *  (`verified:null, verifyDetail:null`, the no-`--verify` record). */
 interface VerifyOutcome {
   readonly verified: boolean | null;
   readonly detail: string | null;
@@ -106,7 +108,7 @@ async function verifyProvider(
   try {
     key = deps.resolver.keyFor(id); // keychain → env var → throws; never logged
   } catch {
-    return { verified: null, detail: null }; // no key anywhere ⇒ nothing to verify
+    return { verified: null, detail: 'no key' }; // no key anywhere ⇒ nothing to verify (distinct from "not probed")
   }
   const result = await validateProviderKey(provider, key, KNOWN_PROVIDERS[id].testModel);
   return { verified: result.ok, detail: result.ok ? null : result.detail };
@@ -121,15 +123,19 @@ function oneLine(text: string): string {
 
 async function providerList(args: ProviderCommandArgs, deps: ProviderCommandDeps): Promise<void> {
   const providers = deps.store.list();
-  // Probe each provider up front (only when --verify) so the human + --json branches share one outcome set and the
-  // output order is deterministic. Sequential over the ≤4 known providers, each bounded by validateProviderKey's
-  // own timeout — no unbounded hang. Absent --verify, no probe runs (the fast offline listing).
+  // Probe each provider up front (only when --verify) so the human + --json branches share one outcome set. Run the
+  // probes CONCURRENTLY (each bounded by validateProviderKey's own timeout + AbortController) so the worst case is
+  // ONE timeout, not N serialized — the output order is still the deterministic `providers` order (the outcomes are
+  // keyed by the unique provider name, read back during rendering). Absent --verify, no probe runs.
   const outcomes = new Map<string, VerifyOutcome>();
   if (args.verify) {
-    for (const p of providers) outcomes.set(p.name, await verifyProvider(p, deps));
+    const probed = await Promise.all(
+      providers.map(async (p): Promise<[string, VerifyOutcome]> => [p.name, await verifyProvider(p, deps)]),
+    );
+    for (const [name, outcome] of probed) outcomes.set(name, outcome);
   }
 
-  if (deps.global?.json === true) {
+  if (deps.global.json) {
     // ADR-0049 read-command NDJSON, key-free by construction (only the keychain-ref-derived `keySet` + the
     // redacted verify state, NEVER the key). `verified`/`verifyDetail` are `null` unless --verify was passed.
     writeRecordLines(
@@ -155,9 +161,12 @@ async function providerList(args: ProviderCommandArgs, deps: ProviderCommandDeps
     return;
   }
   for (const p of providers) {
-    // "key set" is derived from the stored keychain ref (no key read) — never echo the key here.
+    // "key set" is derived from the stored keychain ref (no key read) — never echo the key here. The base URL is
+    // stored VERBATIM (requireHttpsUrl keeps the user's exact endpoint — NOT href-normalized), so a crafted /
+    // tampered value could carry a control byte: sanitize it at the render boundary (the provider name is a closed
+    // kebab `ProviderId`, safe raw).
     const status = statusColumn(p, args.verify === true, outcomes.get(p.name));
-    deps.io.writeOut(`${p.name}\t${p.baseUrl}\t[${status}]\n`);
+    deps.io.writeOut(`${p.name}\t${sanitizeInline(p.baseUrl)}\t[${status}]\n`);
   }
 }
 
@@ -209,10 +218,12 @@ function providerAdd(args: ProviderCommandArgs, deps: ProviderCommandDeps): void
     kind: providerKind(id),
     pricingReferenceUrl: pricingUrl,
   });
-  // `record.baseUrl` / `record.pricingReferenceUrl` are validated HTTPS URLs (a custom value round-trips through
-  // `new URL().href`, so control bytes are percent-encoded) — terminal-safe to echo without a further sanitize.
+  // Sanitize the echoed URLs at the render boundary: `record.baseUrl` is stored VERBATIM (requireHttpsUrl keeps the
+  // user's exact endpoint, NOT href-normalized), so a control byte in a crafted/tampered value would otherwise
+  // reach the TTY. (`pricingReferenceUrl` IS href-normalized, but sanitize it too for defense-in-depth against a
+  // tampered at-rest row — ADR-0050.)
   deps.io.writeOut(
-    `Registered provider '${id}' (${record.baseUrl}). Store a key with \`relavium provider set-key ${id}\`. Find model prices at ${record.pricingReferenceUrl ?? pricingUrl} and set one with \`relavium models pricing\`.\n`,
+    `Registered provider '${id}' (${sanitizeInline(record.baseUrl)}). Store a key with \`relavium provider set-key ${id}\`. Find model prices at ${sanitizeInline(record.pricingReferenceUrl ?? pricingUrl)} and set one with \`relavium models pricing\`.\n`,
   );
 }
 
