@@ -13,11 +13,21 @@ async function* bytes(chunks: readonly string[]): AsyncGenerator<Uint8Array> {
  * A fake {@link EgressDeps}: `resolveHost` returns the configured IP(s) (so the SSRF range-block is deterministic
  * without DNS), and `openConnection` returns a scripted {@link HopResponse} + captures the pinned request.
  */
+/** An async-iterable body that yields `before`, then THROWS a raw error (a socket reset) — the fault must be
+ *  normalized to a secret-free SafeEgressError and never surface the raw message. */
+async function* failingBody(before: readonly string[]): AsyncGenerator<Uint8Array> {
+  await Promise.resolve();
+  for (const chunk of before) yield new TextEncoder().encode(chunk);
+  throw new Error('socket reset (host 10.9.8.7, key sk-leak-me)'); // must NEVER reach the caller
+}
+
 function fakeDeps(opts: {
   ips: readonly string[];
   status?: number;
   headers?: Record<string, string>;
+  location?: string;
   chunks?: readonly string[];
+  body?: AsyncIterable<Uint8Array>;
   onConnect?: (req: HopRequest) => void;
   dispose?: () => void;
 }): EgressDeps {
@@ -28,8 +38,8 @@ function fakeDeps(opts: {
       return Promise.resolve({
         status: opts.status ?? 200,
         headers: opts.headers ?? { 'content-type': 'application/json' },
-        location: undefined,
-        body: bytes(opts.chunks ?? ['{"ok":true}']),
+        location: opts.location,
+        body: opts.body ?? bytes(opts.chunks ?? ['{"ok":true}']),
         dispose: opts.dispose ?? ((): void => undefined),
       });
     },
@@ -112,6 +122,61 @@ describe('createValidatedFetch', () => {
     const res = await fetch('https://api.example.com/v1/models', { method: 'DELETE' });
     expect(res.status).toBe(204);
     expect(res.body).toBeNull();
+    expect(dispose).toHaveBeenCalled();
+  });
+
+  it('does NOT follow a redirect — a 3xx + Location is returned TERMINALLY (no second unvalidated hop)', async () => {
+    const onConnect = vi.fn();
+    const fetch = createValidatedFetch(
+      fakeDeps({ ips: ['1.2.3.4'], status: 302, location: 'https://169.254.169.254/', onConnect }),
+    );
+    const res = await fetch('https://api.example.com/v1/models');
+    expect(res.status).toBe(302); // handed to the caller as-is...
+    expect(onConnect).toHaveBeenCalledTimes(1); // ...never re-issued to the (private) Location target
+  });
+
+  it('normalizes a body-read fault to a secret-free SafeEgressError + reaps the socket (never leaks the raw error)', async () => {
+    const dispose = vi.fn();
+    const fetch = createValidatedFetch(
+      fakeDeps({ ips: ['1.2.3.4'], body: failingBody(['data: a\n\n']), dispose }),
+    );
+    const res = await fetch('https://api.example.com/v1/chat/completions', { method: 'POST', body: '{}' });
+    const reader = res.body?.getReader();
+    if (reader === undefined) throw new Error('no body stream');
+    let thrown: unknown;
+    try {
+      await reader.read(); // 'data: a\n\n'
+      await reader.read(); // the underlying body throws → the stream errors
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(SafeEgressError);
+    if (thrown instanceof SafeEgressError) {
+      expect(thrown.message).not.toContain('sk-leak-me'); // the raw error (host + key) never surfaces
+      expect(thrown.message).not.toContain('10.9.8.7');
+    }
+    expect(dispose).toHaveBeenCalled(); // the socket is reaped on the fault
+  });
+
+  it('accepts a Request-object input (not just a url + init)', async () => {
+    let captured: HopRequest | undefined;
+    const fetch = createValidatedFetch(fakeDeps({ ips: ['203.0.113.9'], onConnect: (req) => (captured = req) }));
+    await fetch(
+      new Request('https://api.example.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { authorization: 'Bearer sk-req' },
+        body: '{"m":1}',
+      }),
+    );
+    expect(captured?.method).toBe('POST');
+    expect(captured?.headers?.['authorization']).toBe('Bearer sk-req');
+    expect(captured?.body).toBe('{"m":1}');
+  });
+
+  it('rejects an out-of-range HTTP status (a hostile 999) as a typed SafeEgressError, never a raw RangeError', async () => {
+    const dispose = vi.fn();
+    const fetch = createValidatedFetch(fakeDeps({ ips: ['1.2.3.4'], status: 999, dispose }));
+    await expect(fetch('https://api.example.com/v1/models')).rejects.toBeInstanceOf(SafeEgressError);
     expect(dispose).toHaveBeenCalled();
   });
 });
