@@ -157,6 +157,45 @@ describe('relavium provider commands (2.C)', () => {
     }
   });
 
+  it('rejects a private/loopback or credential-bearing --base-url (fail-fast SSRF, exit 2) (2.5.G S9)', async () => {
+    for (const baseUrl of [
+      'https://localhost/v1',
+      'https://127.0.0.1/v1',
+      'https://192.168.1.10/v1',
+      'https://169.254.169.254/latest', // link-local metadata
+      'https://user:pass@proxy.example/v1', // embedded credentials
+    ]) {
+      await expect(
+        runProviderCommand({ action: 'add', name: 'openai', baseUrl }, deps({})),
+      ).rejects.toMatchObject({ exitCode: 2 });
+    }
+  });
+
+  it('refuses a custom --base-url on a NON-OpenAI-compatible provider (anthropic/gemini, exit 2) (ADR-0065 §3)', async () => {
+    for (const name of ['anthropic', 'gemini']) {
+      await expect(
+        runProviderCommand({ action: 'add', name, baseUrl: 'https://proxy.example/v1' }, deps({})),
+      ).rejects.toMatchObject({ exitCode: 2 });
+    }
+  });
+
+  it('stores a custom openai-compatible --base-url + the provider kind (ADR-0065 §3/§5)', async () => {
+    const d = deps({});
+    await runProviderCommand(
+      { action: 'add', name: 'deepseek', baseUrl: 'https://my-proxy.example/v1' },
+      d,
+    );
+    const row = d.store.get('deepseek');
+    expect(row?.baseUrl).toBe('https://my-proxy.example/v1');
+    expect(row?.kind).toBe('openai-compatible'); // the protocol kind is populated (§5)
+  });
+
+  it('populates the provider kind on a plain add (no --base-url) too — for uniformity (§5)', async () => {
+    const d = deps({});
+    await runProviderCommand({ action: 'add', name: 'anthropic' }, d);
+    expect(d.store.get('anthropic')?.kind).toBe('anthropic');
+  });
+
   it('set-key preserves a base URL set by a prior `add` (never clobbers it)', async () => {
     const d = deps({});
     await runProviderCommand(

@@ -57,6 +57,13 @@
       "when": 1783272761773,
       "tag": "0007_harsh_bug",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1783298924478,
+      "tag": "0008_plain_scourge",
+      "breakpoints": true
     }
   ]
 }

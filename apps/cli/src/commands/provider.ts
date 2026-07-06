@@ -1,5 +1,6 @@
-import { ProviderIdSchema, type ProviderId } from '@relavium/llm';
+import { providerKind, ProviderIdSchema, type ProviderId } from '@relavium/llm';
 import type { ProviderStore } from '@relavium/db';
+import { isPrivateOrLocalHost, urlHasCredentials } from '@relavium/shared';
 
 import {
   KNOWN_PROVIDERS,
@@ -84,11 +85,21 @@ function providerList(deps: ProviderCommandDeps): void {
 function providerAdd(args: ProviderCommandArgs, deps: ProviderCommandDeps): void {
   const id = parseProviderId(requireName(args));
   const meta = KNOWN_PROVIDERS[id];
-  const record = deps.store.upsert({
-    name: id,
-    displayName: meta.displayName,
-    baseUrl: args.baseUrl === undefined ? meta.baseUrl : requireHttpsUrl(args.baseUrl),
-  });
+  let baseUrl = meta.baseUrl;
+  if (args.baseUrl !== undefined) {
+    // A custom `--base-url` is **OpenAI-compatible only** this round (2.5.G S9, ADR-0065 §3) — refuse it on the
+    // Anthropic/Gemini protocols with a clear message rather than silently ignoring it (the old dead-config bug).
+    if (providerKind(id) !== 'openai-compatible') {
+      throw new CliError(
+        'invalid_invocation',
+        `a custom --base-url is only supported for OpenAI-compatible providers (openai, deepseek); '${id}' uses the ${providerKind(id)} protocol.`,
+      );
+    }
+    baseUrl = requireHttpsUrl(args.baseUrl);
+  }
+  // Store the protocol `kind` for every provider (ADR-0065 §5 — populated for uniformity; the resolver derives it
+  // from the closed id today, load-bearing only for a future custom provider).
+  const record = deps.store.upsert({ name: id, displayName: meta.displayName, baseUrl, kind: providerKind(id) });
   deps.io.writeOut(
     `Registered provider '${id}' (${record.baseUrl}). Store a key with \`relavium provider set-key ${id}\`.\n`,
   );
@@ -102,7 +113,12 @@ async function providerSetKey(args: ProviderCommandArgs, deps: ProviderCommandDe
   deps.keychain.set(account, key); // KeychainUnavailableError surfaces (no silent plaintext fallback)
   // Register the row only if it's new — never overwrite a base URL the user set via `provider add --base-url`.
   if (deps.store.get(id) === undefined) {
-    deps.store.upsert({ name: id, displayName: meta.displayName, baseUrl: meta.baseUrl });
+    deps.store.upsert({
+      name: id,
+      displayName: meta.displayName,
+      baseUrl: meta.baseUrl,
+      kind: providerKind(id),
+    });
   }
   deps.store.setKeychainRef(id, account); // the ref, NEVER the key value
   deps.io.writeOut(`Stored ${id} key ${keyHint(key)} in the OS keychain.\n`);
@@ -135,12 +151,14 @@ async function providerTest(args: ProviderCommandArgs, deps: ProviderCommandDeps
 }
 
 /**
- * Validate a user-supplied provider base URL: a parseable **HTTPS** URL (fail-fast at `add`). HTTPS-only
- * matches the at-routing-time gate (`@relavium/llm`'s `assertHttpsBaseUrl`, security-review.md §Network) and
- * keeps a plaintext `http:` endpoint from ever being persisted; the private/loopback/metadata range-block
- * stays at the routing-time gate (it needs host resolution this fail-fast deliberately does not do). The
- * value is stored **verbatim** (not `url.href`-normalized) to preserve the user's exact endpoint/trailing
- * slash; the routing-time gate re-parses it via `new URL()` anyway.
+ * Validate a user-supplied provider base URL (fail-fast at `add`, 2.5.G S9): a parseable **HTTPS** URL, with no
+ * embedded credentials and no **literal** private/loopback/link-local/metadata host — reusing the SAME shared
+ * string-level primitives (`urlHasCredentials` / `isPrivateOrLocalHost`) the adapter's construction-time
+ * `assertHttpsBaseUrl` and the `connectValidated` egress gate use, never a second hand-rolled parser (ADR-0029(d)).
+ * The literal-host block gives a clear "no private address" error at `add`; the **resolve-time** DNS-rebinding
+ * defense (a public hostname resolving to a private IP) stays with `connectValidated` (it needs host resolution
+ * this fail-fast deliberately does not do). The value is stored **verbatim** (not `url.href`-normalized) to
+ * preserve the user's exact endpoint/trailing slash; the routing-time gate re-parses it via `new URL()` anyway.
  */
 function requireHttpsUrl(raw: string): string {
   let url: URL;
@@ -151,6 +169,16 @@ function requireHttpsUrl(raw: string): string {
   }
   if (url.protocol !== 'https:') {
     throw new CliError('invalid_invocation', `base URL must be HTTPS, got '${raw}'.`);
+  }
+  if (urlHasCredentials(raw)) {
+    throw new CliError('invalid_invocation', 'base URL must not embed credentials (user:pass@…).');
+  }
+  const host = url.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  if (isPrivateOrLocalHost(host)) {
+    throw new CliError(
+      'invalid_invocation',
+      'base URL must not be a private, loopback, or link-local address.',
+    );
   }
   return raw;
 }

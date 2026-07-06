@@ -167,4 +167,5 @@ export type {
 // Default keyless provider registry — the provider→adapter mapping a host wires into
 // `resolveProvider` (ADR-0038); the key is injected per call via `keyFor`, never here (ADR-0011).
 // `providerKind` derives the ADR-0064 protocol `kind` from a provider id (used by the later merge/refresh steps).
-export { defaultProviders, providerKind } from './providers.js';
+// `createCustomOpenAiProvider` builds a per-provider OpenAI-compatible adapter for a custom base_url (ADR-0065 §3, S9).
+export { createCustomOpenAiProvider, defaultProviders, providerKind } from './providers.js';

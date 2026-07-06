@@ -1,3 +1,4 @@
+import { PROVIDER_KINDS, type ProviderKind } from '@relavium/shared';
 import { and, asc, eq, isNull } from 'drizzle-orm';
 
 import type { Db } from './client.js';
@@ -23,6 +24,11 @@ export interface ProviderRecord {
   /** The OS-keychain `account` holding this provider's key, or `undefined` when no key is set. NEVER the key. */
   readonly apiKeyKeychainRef?: string;
   readonly defaultHeaders: Record<string, string>;
+  /** The provider's protocol `kind` (ADR-0065 §5) — a custom OpenAI-compatible `base_url` reuses it. `undefined`
+   *  when unset (the host derives it from the closed provider id) or a foreign stored value (fail-closed to unset). */
+  readonly kind?: ProviderKind;
+  /** A pricing-page URL (ADR-0065 §5, a UX pointer for user-supplied pricing — S10). `undefined` when unset. */
+  readonly pricingReferenceUrl?: string;
   readonly isActive: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -34,6 +40,8 @@ export interface ProviderUpsert {
   readonly displayName: string;
   readonly baseUrl: string;
   readonly defaultHeaders?: Record<string, string>;
+  readonly kind?: ProviderKind;
+  readonly pricingReferenceUrl?: string;
 }
 
 export interface ProviderStoreDeps {
@@ -75,7 +83,19 @@ function parseStringRecord(json: string): Record<string, string> {
   return out;
 }
 
+/**
+ * Validate the stored `kind` against the closed {@link PROVIDER_KINDS} set at the DB read boundary — no DB CHECK
+ * exists (a SQLite `ALTER ADD` limitation), so a tampered/foreign value must not be trusted. A `null` (unset) or a
+ * non-member value degrades to `undefined` (treated as "no explicit kind"; the host derives the kind from the
+ * closed provider id) — a foreign protocol string is never mistaken for a real `kind`. Mirrors `coerceModelCatalogSource`.
+ */
+function coerceProviderKind(value: string | null): ProviderKind | undefined {
+  if (value === null) return undefined;
+  return PROVIDER_KINDS.find((kind) => kind === value);
+}
+
 function fromRow(row: LlmProviderRow): ProviderRecord {
+  const kind = coerceProviderKind(row.kind);
   return {
     id: row.id,
     name: row.name,
@@ -83,6 +103,8 @@ function fromRow(row: LlmProviderRow): ProviderRecord {
     baseUrl: row.baseUrl,
     ...(row.apiKeyKeychainRef === null ? {} : { apiKeyKeychainRef: row.apiKeyKeychainRef }),
     defaultHeaders: parseStringRecord(row.defaultHeaders),
+    ...(kind === undefined ? {} : { kind }),
+    ...(row.pricingReferenceUrl === null ? {} : { pricingReferenceUrl: row.pricingReferenceUrl }),
     isActive: row.isActive,
     createdAt: epochMsToIso(row.createdAt),
     updatedAt: epochMsToIso(row.updatedAt),
@@ -123,6 +145,10 @@ export function createProviderStore(db: Db, deps: ProviderStoreDeps): ProviderSt
           displayName: input.displayName,
           baseUrl: input.baseUrl,
           defaultHeaders: JSON.stringify(input.defaultHeaders ?? {}),
+          ...(input.kind === undefined ? {} : { kind: input.kind }),
+          ...(input.pricingReferenceUrl === undefined
+            ? {}
+            : { pricingReferenceUrl: input.pricingReferenceUrl }),
           createdAt: t,
           updatedAt: t,
         };
@@ -138,6 +164,11 @@ export function createProviderStore(db: Db, deps: ProviderStoreDeps): ProviderSt
               input.defaultHeaders === undefined
                 ? existing.defaultHeaders
                 : JSON.stringify(input.defaultHeaders),
+            // Preserve an existing kind / pricing URL when the caller omits it (like defaultHeaders).
+            ...(input.kind === undefined ? {} : { kind: input.kind }),
+            ...(input.pricingReferenceUrl === undefined
+              ? {}
+              : { pricingReferenceUrl: input.pricingReferenceUrl }),
             updatedAt: t,
           })
           .where(eq(llmProviders.id, existing.id))

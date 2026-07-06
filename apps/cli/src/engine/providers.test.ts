@@ -1,9 +1,17 @@
 import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
+import type { ProviderRecord } from '@relavium/db';
 import type { LlmProvider } from '@relavium/llm';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
-import { neededProviderIds, providerKeyEnvVar, validateProviderKey } from './providers.js';
+import {
+  createProviderResolver,
+  KNOWN_PROVIDERS,
+  neededProviderIds,
+  providerKeyEnvVar,
+  validateProviderKey,
+} from './providers.js';
+import type { FetchLike } from './validated-fetch.js';
 
 // A test key assembled at runtime (no contiguous secret literal — leakwatch).
 const TEST_KEY = ['sk', 'prov', '90ABCDEF'].join('-');
@@ -181,5 +189,82 @@ describe('validateProviderKey', () => {
     expect(result.ok).toBe(false);
     expect(result.detail).toContain('timeout');
     expect(result.detail).not.toContain(TEST_KEY);
+  });
+});
+
+describe('createProviderResolver custom endpoints (2.5.G S9 / ADR-0065 §3–4)', () => {
+  /** A minimal provider registry row (only `name` + `baseUrl` matter to the custom-endpoint rebinding). */
+  function row(name: string, baseUrl: string): ProviderRecord {
+    return {
+      id: `id-${name}`,
+      name,
+      displayName: name,
+      baseUrl,
+      defaultHeaders: {},
+      isActive: true,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    };
+  }
+
+  /** A fake validated fetch that records the request URLs + returns a valid OpenAI models-list payload. */
+  function recordingFetch(): { fetch: FetchLike; urls: string[] } {
+    const urls: string[] = [];
+    const fetch: FetchLike = (input) => {
+      urls.push(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      return Promise.resolve(
+        new Response(JSON.stringify({ object: 'list', data: [{ id: 'gpt-5.4-mini', object: 'model' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    };
+    return { fetch, urls };
+  }
+
+  it('routes a CUSTOM openai-compatible base_url through the injected validated fetch', async () => {
+    const { fetch, urls } = recordingFetch();
+    const resolver = createProviderResolver({}, undefined, {
+      providerStore: { list: () => [row('openai', 'https://my-proxy.example/v1')] },
+      validatedFetch: fetch,
+    });
+    const openai = resolver.resolveProvider('openai');
+    expect(openai?.listModels !== undefined).toBe(true); // the openai-compatible adapter carries the live-list capability
+    // The listModels egress hits the CUSTOM endpoint (the dead-base_url bug is fixed) — via the validated fetch.
+    await openai?.listModels?.('sk-test')?.catch(() => undefined); // the ROUTING is the assertion, not the parse result
+    expect(urls.some((url) => url.startsWith('https://my-proxy.example/v1'))).toBe(true);
+    expect(urls.every((url) => !url.startsWith('https://api.openai.com'))).toBe(true); // NOT the default endpoint
+  });
+
+  it('SKIPS a bad (private) custom base_url — the resolver still builds, keeping the default adapter (no crash)', () => {
+    const { fetch } = recordingFetch();
+    const resolver = createProviderResolver({}, undefined, {
+      providerStore: { list: () => [row('openai', 'https://127.0.0.1/v1')] }, // fails the adapter's HTTPS+private gate
+      validatedFetch: fetch,
+    });
+    expect(resolver.resolveProvider('openai')).toBeDefined(); // InvalidBaseUrlError caught; default adapter stands
+  });
+
+  it('SKIPS a custom base_url on anthropic/gemini (openai-compatible only this round) — no crash', () => {
+    const { fetch } = recordingFetch();
+    const resolver = createProviderResolver({}, undefined, {
+      providerStore: {
+        list: () => [row('anthropic', 'https://custom.example'), row('gemini', 'https://custom.example')],
+      },
+      validatedFetch: fetch,
+    });
+    expect(resolver.resolveProvider('anthropic')).toBeDefined();
+    expect(resolver.resolveProvider('gemini')).toBeDefined();
+  });
+
+  it('leaves a DEFAULT base_url row alone — no custom adapter is built (the resolver builds cleanly)', () => {
+    const { fetch } = recordingFetch();
+    const resolver = createProviderResolver({}, undefined, {
+      // The known default base_url is NOT custom ⇒ applyCustomEndpoints skips it, keeping the default adapter (no
+      // injected validated fetch wired — proven by the positive routing test above, without a real network call).
+      providerStore: { list: () => [row('openai', KNOWN_PROVIDERS.openai.baseUrl)] },
+      validatedFetch: fetch,
+    });
+    expect(resolver.resolveProvider('openai')).toBeDefined();
   });
 });

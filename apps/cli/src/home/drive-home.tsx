@@ -115,19 +115,12 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   // key is actually resolved (the default agent has no MCP servers, so the MCP resolver stays inert), so building
   // it here is side-effect-free; a test injects `providers` and never reaches the keychain.
   const keychain = createOsKeychainStore();
-  const providers = deps.providers ?? createProviderResolver(deps.io.env, keychain);
   const mcpSecretResolver =
     deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env, keychain);
-  const doctorProbes =
-    deps.doctorProbes ??
-    assembleDoctorProbes({
-      cwd: deps.global.cwd,
-      ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
-      resolver: providers,
-      // The Home binds the zero-config default agent (no `mcp_servers`), so the `--deep` MCP tier reports "none
-      // configured" — no session-specific status to thread (and the Home palette runs only the fast tier anyway).
-    });
   const opened = (deps.openSessionStore ?? openSessionStore)(homeDir);
+  // The provider resolver + `/doctor` probes are built INSIDE the try below — once `opened.db` + the `providerStore`
+  // exist — so the resolver is STORE-AWARE (a custom `base_url` rebinds to its validated endpoint, 2.5.G S9); a test
+  // still injects `deps.providers` / `deps.doctorProbes` to bypass the keychain/network.
 
   // The cleanup scope opens as soon as the db handle is held, so an init fault AFTER this point (a failed
   // homeStore wire, a control write, a signal registration) still closes the shared db ONCE and restores the
@@ -158,6 +151,19 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     // merged catalog + runs the (long-lived-process-safe) TTL background refresh + writes the next session's default.
     const storeDeps = { uuid, now };
     const providerStore = createProviderStore(opened.db, storeDeps);
+    // The STORE-AWARE provider resolver (2.5.G S9, ADR-0065 §4) — built from `providerStore` so a stored custom
+    // `base_url` rebinds its adapter to the SSRF-validated endpoint, for the Home's chat turns + the catalog refresh.
+    const providers =
+      deps.providers ?? createProviderResolver(deps.io.env, keychain, { providerStore });
+    // The Home's `/doctor` probes (built here, over the store-aware resolver). The zero-config default agent has no
+    // `mcp_servers`, so the `--deep` MCP tier reports "none configured" (and the Home palette runs only the fast tier).
+    const doctorProbes =
+      deps.doctorProbes ??
+      assembleDoctorProbes({
+        cwd: deps.global.cwd,
+        ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
+        resolver: providers,
+      });
     const catalogStore = createModelCatalogStore(opened.db, storeDeps);
     const refreshService = createModelRefreshService({
       resolveProvider: providers.resolveProvider,

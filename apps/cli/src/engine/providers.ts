@@ -1,5 +1,12 @@
 import type { WorkflowDefinition } from '@relavium/core';
-import { defaultProviders, type LlmProvider, type ProviderId } from '@relavium/llm';
+import type { ProviderStore } from '@relavium/db';
+import {
+  createCustomOpenAiProvider,
+  defaultProviders,
+  InvalidBaseUrlError,
+  type LlmProvider,
+  type ProviderId,
+} from '@relavium/llm';
 import type { Agent } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
@@ -8,6 +15,7 @@ import {
   keychainAccount,
   type KeychainStore,
 } from '../secrets/keychain.js';
+import { createValidatedFetch, type FetchLike } from './validated-fetch.js';
 
 /**
  * The CLI's provider seam (ADR-0038 host-injected resolution). `resolveProvider` returns the keyless
@@ -183,13 +191,27 @@ export function neededProviderIds(def: WorkflowDefinition): ProviderId[] {
   return [...needed];
 }
 
+/** Options threading the provider registry (for custom endpoints) into the resolver — all optional so the pre-S9
+ *  callers (and tests) that pass none keep the static default-endpoint behavior. */
+export interface ProviderResolverOptions {
+  /** The provider registry — a row carrying a CUSTOM `base_url` (≠ the known default) rebinds its provider's
+   *  adapter to a validated per-provider endpoint (2.5.G S9, ADR-0065 §3–4). Absent ⇒ default endpoints only. */
+  readonly providerStore?: Pick<ProviderStore, 'list'>;
+  /** The SSRF-validated `fetch` custom endpoints egress through — injectable so a test drives a fake `EgressDeps`.
+   *  Default: {@link createValidatedFetch} over Node's real DNS + pinned-HTTPS connect. */
+  readonly validatedFetch?: FetchLike;
+}
+
 export function createProviderResolver(
   env: Readonly<Record<string, string | undefined>> = process.env,
   keychain?: KeychainStore,
+  options: ProviderResolverOptions = {},
 ): ProviderResolver {
-  // Keyless adapters built once and reused; the key is injected per call via `keyFor`. The
-  // provider→adapter mapping lives in the seam package (`@relavium/llm`), not here.
-  const adapters = defaultProviders();
+  // Keyless adapters built once and reused; the key is injected per call via `keyFor`. The default provider→adapter
+  // mapping lives in the seam package (`@relavium/llm`); a stored CUSTOM `base_url` (ADR-0065 §3) rebinds its
+  // provider's adapter to a validated per-provider endpoint here.
+  const adapters: Record<ProviderId, LlmProvider> = { ...defaultProviders() };
+  applyCustomEndpoints(adapters, options);
   return {
     resolveProvider: (id) => adapters[id],
     keyFor: (id) => {
@@ -221,4 +243,36 @@ export function createProviderResolver(
       );
     },
   };
+}
+
+/**
+ * Rebind a provider's adapter to a validated CUSTOM-endpoint adapter when its stored row carries a `base_url` that
+ * differs from the known default (2.5.G S9, ADR-0065 §3–4). Only **OpenAI-compatible** (`openai`/`deepseek`) is
+ * supported this round; `provider add` refuses a custom `base_url` on `anthropic`/`gemini`, so a stored one on them
+ * shouldn't exist — skipped defensively. The custom endpoint's egress rides the host's **SSRF-validated fetch**
+ * (`connectValidated`), and the adapter's construction-time `assertHttpsBaseUrl` (HTTPS + private-range + no-creds)
+ * gate re-validates the URL. A `base_url` that fails that gate is **skipped** (the default endpoint stands) rather
+ * than crashing resolver creation for EVERY command — the fail-fast refusal is at `provider add`; this is the
+ * defensive net for a pre-S9 / tampered row.
+ */
+function applyCustomEndpoints(
+  adapters: Record<ProviderId, LlmProvider>,
+  options: ProviderResolverOptions,
+): void {
+  const store = options.providerStore;
+  if (store === undefined) return; // no registry ⇒ default endpoints only (the pre-S9 behavior)
+  let validatedFetch: FetchLike | undefined;
+  for (const row of store.list()) {
+    const id = KNOWN_PROVIDER_IDS.find((known) => known === row.name);
+    if (id === undefined) continue; // a non-enum name (provider add enforces the closed enum) — ignore
+    if (row.baseUrl === KNOWN_PROVIDERS[id].baseUrl) continue; // the default endpoint — keep the default adapter
+    if (id !== 'openai' && id !== 'deepseek') continue; // custom base_url is openai-compatible only this round (§3)
+    validatedFetch ??= options.validatedFetch ?? createValidatedFetch(); // built lazily, once, only when needed
+    try {
+      adapters[id] = createCustomOpenAiProvider({ providerId: id, baseURL: row.baseUrl, fetch: validatedFetch });
+    } catch (err) {
+      // A bad stored base_url (non-HTTPS / private / creds) — refuse the custom endpoint, keep the default adapter.
+      if (!(err instanceof InvalidBaseUrlError)) throw err;
+    }
+  }
 }

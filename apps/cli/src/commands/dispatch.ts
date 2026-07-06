@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { createModelCatalogStore, createProviderStore } from '@relavium/db';
+import { createModelCatalogStore, createProviderStore, type ProviderStore } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
 import { openLocalDb, type OpenedDb } from '../db/open.js';
@@ -18,6 +18,7 @@ import { type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
+import type { KeychainStore } from '../secrets/keychain.js';
 import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
@@ -195,21 +196,45 @@ export function buildProviderTestArgs(input: CommandInput): ProviderCommandArgs 
 
 // ── executors (production dep wiring, copied verbatim from the old register* bodies) ──
 
+/**
+ * Build a **store-aware** provider resolver (2.5.G S9, [ADR-0065](../../../../docs/decisions/0065-provider-economics-and-extensibility.md) §4):
+ * open the durable `history.db` briefly to read the provider registry so a stored **custom `base_url`** rebinds
+ * its adapter to the SSRF-validated endpoint, then close it. The custom adapters are built EAGERLY at resolver
+ * creation (`applyCustomEndpoints` reads `list()` once), so no db handle is held past this call — a self-contained
+ * short-lived read that needs no lifecycle threaded into the command's own db/teardown ordering.
+ */
+function storeAwareResolver(
+  ctx: DispatchContext,
+  keychain: KeychainStore,
+): ReturnType<typeof createProviderResolver> {
+  const { homeDir } = loadResolvedConfig({
+    cwd: ctx.global.cwd,
+    configPath: ctx.global.configPath,
+  });
+  const { db, close } = openLocalDb(homeDir);
+  try {
+    const providerStore = createProviderStore(db, { uuid: () => randomUUID(), now: () => Date.now() });
+    return createProviderResolver(ctx.io.env, keychain, { providerStore });
+  } finally {
+    close();
+  }
+}
+
 /** One native keychain accessor, shared by the key resolver (2.C) + the MCP named-secret resolver (2.R §6). */
-function keyResolvers(io: CliIo): {
+function keyResolvers(ctx: DispatchContext): {
   providers: ReturnType<typeof createProviderResolver>;
   mcpSecretResolver: ReturnType<typeof createMcpSecretResolver>;
 } {
   const keychain = createOsKeychainStore();
   return {
-    providers: createProviderResolver(io.env, keychain),
-    mcpSecretResolver: createMcpSecretResolver(io.env, keychain),
+    providers: storeAwareResolver(ctx, keychain),
+    mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
   };
 }
 
-/** The env-backed provider resolver alone (a command — like `gate` — that needs keys but not MCP secrets). */
-function providerResolver(io: CliIo): ReturnType<typeof createProviderResolver> {
-  return createProviderResolver(io.env, createOsKeychainStore());
+/** The store-aware provider resolver alone (a command — like `gate` — that needs keys but not MCP secrets). */
+function providerResolver(ctx: DispatchContext): ReturnType<typeof createProviderResolver> {
+  return storeAwareResolver(ctx, createOsKeychainStore());
 }
 
 const executeRun: CommandExecutor = (input, ctx) =>
@@ -217,14 +242,14 @@ const executeRun: CommandExecutor = (input, ctx) =>
     io: ctx.io,
     global: ctx.global,
     openRunStore: openHistoryStore,
-    ...keyResolvers(ctx.io),
+    ...keyResolvers(ctx),
   });
 
 const executeChat: CommandExecutor = (input, ctx) =>
   chatCommand(buildChatArgs(input), {
     io: ctx.io,
     global: ctx.global,
-    ...keyResolvers(ctx.io),
+    ...keyResolvers(ctx),
     openSessionStore,
     drive: selectChatDriver,
   });
@@ -235,7 +260,7 @@ const executeChatResume: CommandExecutor = (input, ctx) =>
     {
       io: ctx.io,
       global: ctx.global,
-      ...keyResolvers(ctx.io),
+      ...keyResolvers(ctx),
       openSessionStore,
       drive: selectChatDriver,
     },
@@ -266,7 +291,7 @@ const executeAgentRun: CommandExecutor = (input, ctx) =>
   agentRunCommand(buildAgentRunArgs(input), {
     io: ctx.io,
     global: ctx.global,
-    ...keyResolvers(ctx.io),
+    ...keyResolvers(ctx),
   });
 
 const executeGate: CommandExecutor = (input, ctx) =>
@@ -274,7 +299,7 @@ const executeGate: CommandExecutor = (input, ctx) =>
     io: ctx.io,
     global: ctx.global,
     // Production resolves a post-gate agent's key via the OS keychain → env var (2.C), like `run`.
-    providers: providerResolver(ctx.io),
+    providers: providerResolver(ctx),
   });
 
 const executeGateList: CommandExecutor = (input, ctx) => {
@@ -323,12 +348,18 @@ export function createProviderSlugResolver(
  */
 export interface ModelsDbPorts {
   readonly openDb: (homeDir: string) => OpenedDb;
-  readonly makeResolver: (io: CliIo) => Pick<ProviderResolver, 'resolveProvider' | 'keyFor'>;
+  /** Build the key resolver over the models db — the `providerStore` (from the SAME db) makes it store-aware so a
+   *  custom `base_url` lists models over the SSRF-validated hop (2.5.G S9, ADR-0065 §4). A test stub may ignore it. */
+  readonly makeResolver: (
+    io: CliIo,
+    providerStore: Pick<ProviderStore, 'list'>,
+  ) => Pick<ProviderResolver, 'resolveProvider' | 'keyFor'>;
 }
 
 const PRODUCTION_MODELS_PORTS: ModelsDbPorts = {
   openDb: openLocalDb,
-  makeResolver: (io) => createProviderResolver(io.env, createOsKeychainStore()),
+  makeResolver: (io, providerStore) =>
+    createProviderResolver(io.env, createOsKeychainStore(), { providerStore }),
 };
 
 /**
@@ -349,8 +380,8 @@ export async function withModelsDeps(
   const { db, close } = ports.openDb(homeDir);
   try {
     const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };
-    const resolver = ports.makeResolver(ctx.io);
     const providerStore = createProviderStore(db, storeDeps);
+    const resolver = ports.makeResolver(ctx.io, providerStore); // store-aware ⇒ a custom base_url is used (S9)
     const catalogStore = createModelCatalogStore(db, storeDeps);
     const refreshService = createModelRefreshService({
       resolveProvider: resolver.resolveProvider,
@@ -389,11 +420,13 @@ async function withProviderDeps(
   const { db, close } = openLocalDb(homeDir);
   try {
     const keychain = createOsKeychainStore(); // one native accessor, shared by the store-ref writes + the resolver
+    const store = createProviderStore(db, { uuid: () => randomUUID(), now: () => Date.now() });
     const deps: ProviderCommandDeps = {
       io: ctx.io,
-      store: createProviderStore(db, { uuid: () => randomUUID(), now: () => Date.now() }),
+      store,
       keychain,
-      resolver: createProviderResolver(ctx.io.env, keychain),
+      // Store-aware so `provider test` pings a custom `base_url` provider at its CUSTOM endpoint (2.5.G S9).
+      resolver: createProviderResolver(ctx.io.env, keychain, { providerStore: store }),
       readSecret: readSecretFromStdin,
     };
     return await fn(deps);

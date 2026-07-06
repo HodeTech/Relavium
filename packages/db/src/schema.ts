@@ -11,6 +11,7 @@ import {
   type MediaScopeKind,
   type MediaSurface,
   type ModelCatalogSource,
+  type ProviderKind,
   type RunStatus,
   type SessionStatus,
 } from '@relavium/shared';
@@ -79,6 +80,12 @@ export const llmProviders = sqliteTable(
     // keychain `account` identifier — NEVER the key itself (ADR-0006).
     apiKeyKeychainRef: text('api_key_keychain_ref'),
     defaultHeaders: jsonText('default_headers').notNull().default('{}'),
+    // ADR-0065 §5: the provider's protocol `kind` (a custom OpenAI-compatible `base_url` reuses it) + a pricing
+    // page `pricing_reference_url` (a UX pointer for user-supplied pricing, S10). Both NULLABLE — populated for
+    // uniformity, load-bearing only for a custom provider; validated against `PROVIDER_KINDS` at the store read
+    // boundary (no DB CHECK — SQLite `ALTER ADD` limitation), mirroring `model_catalog.source`.
+    kind: text('kind').$type<ProviderKind>(),
+    pricingReferenceUrl: text('pricing_reference_url'),
     isActive: boolFlag('is_active', true),
     deletedAt: epochMs('deleted_at'),
     createdAt: epochMs('created_at').notNull(),

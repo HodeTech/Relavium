@@ -68,9 +68,11 @@ Registered LLM providers. The actual API key never lives here — only a referen
 | `id` | TEXT | PRIMARY KEY (UUID) |
 | `name` | TEXT | NOT NULL UNIQUE (e.g. `anthropic`, `openai`) |
 | `display_name` | TEXT | NOT NULL |
-| `base_url` | TEXT | NOT NULL |
+| `base_url` | TEXT | NOT NULL — a custom endpoint (2.5.G S9); actually used at routing time for an OpenAI-compatible provider (ADR-0065 §3) |
 | `api_key_keychain_ref` | TEXT | NULL — keychain `account` identifier, not the key itself |
 | `default_headers` | TEXT (JSON) | NOT NULL DEFAULT `'{}'` |
+| `kind` | TEXT | NULL — the protocol `ProviderKind` (`anthropic`/`openai-compatible`/`gemini`), added by migration `0008` (ADR-0065 §5). Populated for uniformity; validated against `PROVIDER_KINDS` at the store read boundary (no DB CHECK — SQLite `ALTER ADD` limit; a foreign value ⇒ `undefined`). Load-bearing only for a future custom provider. |
+| `pricing_reference_url` | TEXT | NULL — a pricing-page URL (a UX pointer for user-supplied pricing, S10), added by migration `0008` (ADR-0065 §5) |
 | `is_active` | INTEGER (bool) | NOT NULL DEFAULT 1 |
 | `deleted_at` | INTEGER | NULL |
 | `created_at` | INTEGER | NOT NULL |
