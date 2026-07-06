@@ -273,6 +273,56 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
+  it('in-Home /models reseat: the REAL reseatChat resumes the session under the switched model, carrying the transcript (ADR-0059)', async () => {
+    // Exercises the REAL drive-home reseatChat builder (loadFull → swapAgentModel → buildResumedChatSession → seeded
+    // store) end-to-end — not the mocked controller-level test — pinning the build-first swap over the same sessionId.
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p), {
+      providers: scriptedResolver([textTurn('sonnet reply'), textTurn('opus reply')]),
+    });
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    // Start a chat (bound to the default claude-sonnet-4-6) + run one turn so the transcript persists.
+    type(props, 'first');
+    props.controller.handleKey('', ENTER);
+    await flush();
+    expect(props.controller.getSnapshot().mode).toBe('chat');
+    const oldSession = props.controller.getSnapshot().session;
+    const sessionId = oldSession?.sessionId ?? '';
+    expect(sessionId).not.toBe('');
+
+    // Open the reseat picker from the chat palette, filter to a DIFFERENT available model (opus), accept.
+    props.controller.handleKey('/', {});
+    type(props, 'models');
+    props.controller.handleKey('', ENTER);
+    await flush();
+    expect(props.controller.getSnapshot().modelPicker).toBeDefined();
+    type(props, 'opus'); // filter to claude-opus-4-8 (registry-priced anthropic ⇒ available on the scripted key)
+    props.controller.handleKey('', ENTER); // accept ⇒ the REAL reseatChat
+    await flush();
+
+    // The session was reseated: a NEW session object, the SAME sessionId, bound to opus, carrying the prior turn.
+    const reseated = props.controller.getSnapshot().session;
+    expect(reseated).not.toBe(oldSession); // swapped in a new instance
+    expect(reseated?.sessionId).toBe(sessionId); // a reseat CONTINUES the same session (unlike /clear's new id)
+    expect(reseated?.store.getSnapshot().state.model).toBe('claude-opus-4-8'); // rebound to the picked model
+    expect(reseated?.store.getSnapshot().state.turnCount).toBe(1); // the prior turn carried
+    expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
+    expect(props.controller.getSnapshot().mode).toBe('chat'); // stayed in chat
+
+    // The durable row's agent snapshot updates to the switched model after the reseated session ends.
+    props.controller.handleKey('c', CTRL_C); // /cancel ⇒ back to Home (the reseated session's terminal writes 'ended')
+    await flush();
+    const full = createSessionStore(client.db).loadFull(sessionId);
+    expect(full?.session.agentSnapshot?.model).toBe('claude-opus-4-8');
+    expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant']); // the single carried exchange
+
+    props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
   it('a KEY-LESS first run runs the onboarding wizard BEFORE mounting the Home (2.5.G S8)', async () => {
     // A scripted clack slice + a key-less resolver (keyFor throws for every provider) ⇒ the wizard triggers.
     const outros: string[] = [];

@@ -593,6 +593,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         applyModelPicker(undefined);
         return;
       case 'accept':
+        // No-op guard (ADR-0059): accepting the ALREADY-bound model (the ✓ = `currentDefault` = the session's bound
+        // model) would reseat for zero change — wiping the ADR-0057 approval cache + reconnecting MCP. Close with a
+        // note instead of a pointless switch.
+        if (step.modelId === open.currentDefault) {
+          applyModelPicker(undefined);
+          props.store.note(`Already on ${step.displayName}.`);
+          return;
+        }
         applyModelPicker(undefined);
         props.onReseat?.({ modelId: step.modelId, provider: step.provider });
         props.onExit(); // the reseat set the stop state; end the loop so runReplLoop swaps in the new-model session

@@ -466,10 +466,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       () => {
         if (buildInFlight === build) buildInFlight = undefined;
         if (exiting) return;
-        // The reseat build FAILED — keep the OLD session live + resumable (do NOT tear it down); surface a static,
-        // secret-free note (the displayName is a catalog/registry string — sanitize defensively) and un-gate it.
+        // The reseat build FAILED — keep the OLD session live + resumable (do NOT tear it down); surface a fully
+        // STATIC, secret-free note (no model id interpolated) and un-gate it so the user can keep going or /exit.
         if (state.session === old) {
-          old.store.note(`/models could not switch the model — keeping this conversation.`);
+          old.store.note('/models could not switch the model — keeping this conversation.');
           set({ submitBusy: false });
         }
       },
@@ -642,6 +642,18 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const acceptModel = (modelId: string, displayName: string, provider: ReseatTarget['provider']): void => {
     const active = state.session;
     if (active !== undefined && deps.reseatChat !== undefined) {
+      // No-op guard (ADR-0059): accepting the ALREADY-bound model would tear the session down + rebuild for zero
+      // change — wiping the ADR-0057 per-tool approval cache, reconnecting MCP, and showing a misleading "Switched"
+      // notice. Keep the picker open with a hint instead so a mis-click doesn't churn the live session.
+      if (modelId === active.store.getSnapshot().state.model) {
+        const open = state.modelPicker;
+        set(
+          open === undefined
+            ? { modelPicker: undefined }
+            : { modelPicker: { ...open, hint: `Already on ${displayName} — pick a different model or Esc.` } },
+        );
+        return;
+      }
       reseatChat(active, { modelId, provider });
       return;
     }

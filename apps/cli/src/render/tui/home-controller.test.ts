@@ -1921,4 +1921,37 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(c.getSnapshot().mode).toBe('chat'); // stayed in chat (the model switched underneath)
     expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
   });
+
+  it('in-Home chat: accepting the ALREADY-bound model does NOT reseat — a no-op hint (ADR-0059)', async () => {
+    // The session is bound to claude-opus-4-8; the only picker entry IS that model. Accepting it must NOT tear the
+    // session down + rebuild for zero change (which would wipe the approval cache) — it keeps the picker open + hints.
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore });
+    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(sessionA.session),
+      reseatChat,
+      models: port,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('', ENTER); // accept the (only, ALREADY-bound) model
+    await flush();
+
+    expect(reseatChat).not.toHaveBeenCalled(); // no pointless reseat onto the current model
+    expect(sessionA.teardown).not.toHaveBeenCalled(); // the live session is untouched
+    expect(c.getSnapshot().modelPicker?.hint).toContain('Already on'); // the picker stays open with a hint
+  });
 });

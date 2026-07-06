@@ -27,6 +27,7 @@ import {
   buildChatSession,
   buildGovernorWiring,
   buildResumedChatSession,
+  swapAgentModel,
   type ChatBudgetWarning,
 } from './session-host.js';
 import {
@@ -712,6 +713,31 @@ describe('buildResumedChatSession (2.N)', () => {
       await expect(building).rejects.toThrow(/duplicate tool id/);
       expect(closed).toBe(1);
     });
+  });
+});
+
+describe('swapAgentModel (ADR-0059 model-switch rule)', () => {
+  it('swaps model + provider and DROPS the original fallback_chain, without mutating the input', () => {
+    const original = {
+      ...buildDefaultChatAgent('claude-sonnet-4-6'),
+      fallback_chain: [{ model: 'gpt-5.5', provider: 'openai' as const, max_attempts: 2 }],
+    };
+    const frozenChain = original.fallback_chain;
+    const next = swapAgentModel(original, 'claude-opus-4-8', 'anthropic');
+
+    expect(next.model).toBe('claude-opus-4-8');
+    expect(next.provider).toBe('anthropic');
+    expect('fallback_chain' in next).toBe(false); // dropped — the new instance builds its own default plan
+    // The input is untouched (a fresh copy): the original keeps its model + fallback_chain.
+    expect(original.model).toBe('claude-sonnet-4-6');
+    expect(original.fallback_chain).toBe(frozenChain);
+  });
+
+  it('is a no-op on fallback_chain for an agent that has none (no key materialized)', () => {
+    const next = swapAgentModel(buildDefaultChatAgent('claude-sonnet-4-6'), 'gpt-5.5', 'openai');
+    expect(next.model).toBe('gpt-5.5');
+    expect(next.provider).toBe('openai');
+    expect('fallback_chain' in next).toBe(false);
   });
 });
 
