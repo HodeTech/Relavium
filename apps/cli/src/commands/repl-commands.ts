@@ -216,14 +216,16 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
   {
     name: 'models',
     label: 'Models',
-    description: 'Pick your default model (opens the catalog picker).',
-    // `read` in the forward taxonomy: opening the picker changes nothing; the config write happens only on an
-    // explicit selection (ADR-0063), and even then it sets the NEXT session's default, never the running one.
+    description: 'Switch model (opens the catalog picker).',
+    // `read` in the forward taxonomy: opening the picker changes nothing; the action happens only on an explicit
+    // selection — the Home writes the NEXT session's default (ADR-0063), the chat reseats the LIVE session (ADR-0059).
     effect: 'read',
-    // HOME-ONLY (ADR-0064 §10): a next-session CONFIG action, deliberately distinct from the Phase-2.6 mid-chat
-    // `/models` live reseat (ADR-0059). Inside a live chat the slash dispatch rejects it with a pointer to the Home.
+    // Available on BOTH surfaces off the ONE picker, with a surface-specific accept: the HOME writes the next-session
+    // default (ADR-0064 §10 / ADR-0063); the CHAT REPL rebinds the LIVE session mid-conversation via a host-side
+    // reseat (ADR-0059). In an interactive (ink) chat the render layer intercepts a typed `/models` to open the
+    // overlay; a plain/`--json` chat (no overlay) falls through to `openModels`, which surfaces an actionable hint.
     run: (ctx) => ctx.openModels(),
-    availableIn: ['home'],
+    availableIn: ['home', 'chat'],
   },
 ];
 

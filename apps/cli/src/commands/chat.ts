@@ -51,6 +51,7 @@ import {
   type BuiltResumedChatSession,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { createModelCatalogPort, type ModelCatalogPort } from '../engine/model-catalog-port.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { loadUserPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
@@ -112,6 +113,27 @@ export interface ReseatTarget {
   readonly provider: ProviderId;
 }
 
+/**
+ * The catalog port the ink `/models` reseat picker (ADR-0059) reads — the SHARED load/refresh trio
+ * ({@link ModelCatalogPort}) plus the session's currently-bound model (the picker's `✓` "you are here" marker).
+ * Built per session so `boundModel` reflects a reseat's switched model. Interactive (TTY) sessions only.
+ */
+export interface ChatModelsPort extends ModelCatalogPort {
+  readonly boundModel: string;
+}
+
+/** Assemble a {@link ChatModelsPort} over the session's shared db + provider resolver (the catalog the Home picker
+ *  also reads) plus the bound model — the one place the chat reseat picker's port is wired. */
+function buildChatModelsPort(
+  opened: OpenedSessionStore,
+  providers: ProviderResolver,
+  boundModel: string,
+  now: () => number,
+  uuid: () => string,
+): ChatModelsPort {
+  return { ...createModelCatalogPort({ db: opened.db, providers, now, uuid }), boundModel };
+}
+
 /** What an interactive driver receives — the command core's seam, so a driver never touches the session directly. */
 export interface ChatDriveContext {
   /**
@@ -139,6 +161,13 @@ export interface ChatDriveContext {
    * is unavailable — one machine stream is one session lifecycle (ADR-0049), exactly as `/clear` is gated off there.
    */
   readonly onReseat?: (target: ReseatTarget) => void;
+  /**
+   * The `/models` reseat picker catalog port (ADR-0059) — the ink `ChatApp` opens the model-picker overlay off a
+   * typed `/models`, reads the merged catalog through this, and calls {@link onReseat} on accept. Present on an
+   * interactive (TTY, non-`--json`) session only; a plain/`--json` driver has no overlay, so a typed `/models`
+   * there falls through to the core surface guard's actionable "interactive terminal" hint. Absent ⇒ no picker.
+   */
+  readonly modelPicker?: ChatModelsPort;
   /** The live session stream (the driver renders it: ink reduces it into the store; plain prints it). */
   readonly handle: SessionHandle;
   /** The view store the ink renderer projects (`apply` already wired by the ink driver). */
@@ -392,6 +421,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       persister,
       doctorProbes,
       startSession: () => built.session.start(),
+      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -549,6 +579,7 @@ export async function chatResumeCommand(
       doctorProbes,
       startSession: () => {},
       intro,
+      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -573,6 +604,9 @@ interface ReplWiring {
   readonly intro?: string;
   /** `[chat].max_messages` — the default bound a bare `/trim` uses (ADR-0062); absent ⇒ `/trim` needs an inline `n`. */
   readonly chatMaxMessages?: number;
+  /** The `/models` reseat picker port (ADR-0059) — built per session (its `boundModel` is the current model).
+   *  Forwarded to the ctx only on an interactive driver (`driveOneSession` gates it). */
+  readonly modelPicker?: ChatModelsPort;
 }
 
 /**
@@ -908,10 +942,16 @@ export function createChatLineHandler(
       clearRequested = true;
       stop = true;
     },
-    // `/models` (2.5.G S7, ADR-0064 §10) is HOME-ONLY (a next-session config action). The slash dispatch below
-    // rejects it on this chat surface with a pointer to the Home, so this capability is never reached here — kept as
-    // a documented inert noop to satisfy the shared ReplCommandContext shape (mirroring the Home's inert chat-only noops).
-    openModels: () => undefined,
+    // `/models` on the chat surface (ADR-0059) opens the ink reseat-picker overlay — but that is intercepted at the
+    // RENDER layer (ChatApp), BEFORE this core handler, so `openModels` runs ONLY on a non-interactive driver
+    // (plain/`--json`), where there is no overlay. There, surface an actionable hint instead of a silent no-op: a
+    // live reseat needs an interactive terminal (one machine stream stays one session lifecycle, ADR-0049); the
+    // Home's `/models` is the alternative for setting the next-session default.
+    openModels: () =>
+      emitOutput(
+        '/models needs an interactive terminal to switch the model live. From a pipe, set `[chat].default_model` ' +
+          'in your config, or run `relavium` (the Home) to change the default.',
+      ),
   };
 
   // Parse + dispatch a `/name [args]` REPL line (extracted from processLine so each stays under the Sonar
@@ -1063,6 +1103,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     doctorProbes,
     startSession: () => built.session.start(),
     intro,
+    modelPicker: buildChatModelsPort(deps.opened, deps.providers, built.agent.model, deps.now, deps.uuid),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
 }
@@ -1244,6 +1285,8 @@ async function buildReseatWiring(
     // session:started would double a terminal-less lifecycle event — so startSession is a no-op (like chat-resume).
     startSession: () => {},
     intro: modelSwitchNotice(target.modelId, resumed.resumeState.turnCount),
+    // The picker's `boundModel` is now the SWITCHED model — a further reseat marks it as the ✓ "you are here".
+    modelPicker: buildChatModelsPort(deps.opened, deps.providers, resumed.agent.model, deps.now, deps.uuid),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
 }
@@ -1346,7 +1389,10 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       ...(intro === undefined ? {} : { intro }),
       onAbort,
       onModeChange,
+      // The reseat trigger (onReseat) + its picker are wired together, interactive-only: the ink overlay reads the
+      // catalog through `modelPicker` and calls `onReseat` on accept. A plain/`--json` driver gets neither.
       ...(reseatEnabled ? { onReseat } : {}),
+      ...(reseatEnabled && wiring.modelPicker !== undefined ? { modelPicker: wiring.modelPicker } : {}),
       ...(mentionReader === undefined ? {} : { mentionReader }),
       ...(runShellCommand === undefined ? {} : { runShellCommand }),
     });

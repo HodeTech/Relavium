@@ -7,8 +7,18 @@ import {
   type ChatDriveContext,
   type ChatDriveOutcome,
   type ChatDriver,
+  type ChatModelsPort,
+  type ReseatTarget,
 } from '../../commands/chat.js';
 import { CHAT_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
+import type { RefreshReport } from '../../engine/model-refresh.js';
+import {
+  foldModelPickerKey,
+  partialFailureBanner,
+  type ModelPickerKey,
+  type ModelPickerState,
+} from './model-picker.js';
+import { ModelPickerView } from './model-picker-view.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
 import { colorProps, dimProps } from './projection.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
@@ -134,6 +144,13 @@ interface ChatAppProps {
   readonly onAbort?: (() => void) | undefined;
   /** Switch the chat mode (Shift+Tab cycle) — re-applies the turn policy on the same session (ADR-0057). */
   readonly onModeChange: (mode: ChatMode) => void;
+  /** Request a mid-session model switch (ADR-0059) — the `/models` picker overlay calls it on accept. Absent (a
+   *  driver/test wired without it) ⇒ the overlay never opens (see `modelPicker`). `| undefined` for the passthrough. */
+  readonly onReseat?: ((target: ReseatTarget) => void) | undefined;
+  /** The `/models` reseat picker catalog port (ADR-0059). When present (with `onReseat`), a typed `/models` opens a
+   *  keyboard-owning model-picker overlay whose accept triggers a live reseat. Absent ⇒ `/models` is a normal
+   *  message/slash (no overlay). `| undefined` so the createElement passthrough forwards an absent `ctx.modelPicker`. */
+  readonly modelPicker?: ChatModelsPort | undefined;
   /** The `@`-mention completion reader (2.5.D, ADR-0061) — a READ-ONLY fs jail at the session's fs-scope tier +
    *  workspace. When present, `@` at a word boundary opens dir-navigable file completion whose accepted file is
    *  injected as UNTRUSTED, user-position context. Absent (a driver/test wired without it) ⇒ `@` is a literal char.
@@ -338,6 +355,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     mentionRef.current = next;
     setMention(next);
   };
+  // The `/models` reseat picker overlay (ADR-0059) — a keyboard-owning submode (like the palette/mention/search),
+  // React-local + ref-shadowed so a coalesced stdin chunk sees a just-applied open/close/accept. A monotonic epoch
+  // drops a stale async refresh whose picker has since closed/reopened (the Home controller's `pickerEpoch` pattern).
+  const [modelPicker, setModelPicker] = useState<ModelPickerState | undefined>(undefined);
+  const modelPickerRef = useRef<ModelPickerState | undefined>(undefined);
+  const applyModelPicker = (next: ModelPickerState | undefined): void => {
+    modelPickerRef.current = next;
+    setModelPicker(next);
+  };
+  const pickerEpochRef = useRef(0);
   // A monotonic submit generation: bumped every time the compose buffer is submitted (cleared). An async mention
   // read captures it at accept time and DROPS its inject if a submit has since happened — so a slow read that
   // resolves after Enter can never splice the file into the (now-empty) buffer meant for the NEXT message.
@@ -491,7 +518,110 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     );
   };
 
+  // ---- The `/models` reseat picker overlay (ADR-0059) — mirrors the Home controller's picker functions --------
+  // Apply a refresh result INTO the same picker generation that kicked it (drop a stale/closed/reopened one via the
+  // epoch); keep the user's filter/selection, surface the per-provider partial-failure banner. Never crash the REPL.
+  const applyPickerRefresh = (epoch: number, report: RefreshReport | undefined): void => {
+    const port = props.modelPicker;
+    const open = modelPickerRef.current;
+    if (epoch !== pickerEpochRef.current || open === undefined || port === undefined) return;
+    const failed = report?.providers.filter((p) => p.status === 'failed').map((p) => p.provider) ?? [];
+    let view: ReturnType<ChatModelsPort['load']>;
+    try {
+      view = port.load(); // a DB read — never crash the REPL (parity with the Home)
+    } catch {
+      applyModelPicker({ ...open, loading: false, banner: partialFailureBanner(failed) });
+      return;
+    }
+    applyModelPicker({
+      ...open,
+      entries: view.entries,
+      refreshedAt: view.refreshedAt,
+      loading: false,
+      banner: partialFailureBanner(failed),
+    });
+  };
+  const runPickerRefresh = (refresh: () => Promise<RefreshReport | undefined>): void => {
+    const epoch = pickerEpochRef.current; // capture THIS generation so a reopened picker never adopts this result
+    const open = modelPickerRef.current;
+    if (open === undefined) return;
+    applyModelPicker({ ...open, loading: true });
+    void refresh().then(
+      (report) => applyPickerRefresh(epoch, report),
+      () => {
+        // refresh()/refreshIfStale() never reject (per-provider isolation), but stay defensive: drop the spinner
+        // only when this is still the same open picker generation.
+        const cur = modelPickerRef.current;
+        if (epoch === pickerEpochRef.current && cur !== undefined) applyModelPicker({ ...cur, loading: false });
+      },
+    );
+  };
+  // Open the picker on a typed `/models` (interactive only — the port is present): render the cached catalog
+  // synchronously (the ✓ is the session's BOUND model — the reseat "you are here"), then kick a TTL-bounded refresh.
+  const openModelPicker = (): void => {
+    const port = props.modelPicker;
+    if (port === undefined) return;
+    let view: ReturnType<ChatModelsPort['load']>;
+    try {
+      view = port.load(); // a DB read — a fault must not crash the REPL (the "never crash the REPL" discipline)
+    } catch {
+      props.store.note('/models: could not read the model catalog.');
+      return;
+    }
+    pickerEpochRef.current += 1; // a fresh generation — invalidates any in-flight refresh from a prior (closed) open
+    applyModelPicker({
+      entries: view.entries,
+      filter: '',
+      selected: 0,
+      loading: false,
+      currentDefault: port.boundModel,
+      refreshedAt: view.refreshedAt,
+      banner: undefined,
+      hint: undefined,
+    });
+    runPickerRefresh(() => port.refreshIfStale());
+  };
+  // The open picker owns every key (mirrors routeMentionKey). On accept → a LIVE reseat (onReseat sets the stop
+  // state) then end the driver loop (onExit) so runReplLoop rebuilds the session on the new model. A DIMMED model is
+  // non-selectable (a transient hint, ADR-0064 §6); any nav/filter keystroke clears that hint.
+  const routeModelPickerKey = (char: string, key: ModelPickerKey): void => {
+    const open = modelPickerRef.current;
+    if (open === undefined) return;
+    const step = foldModelPickerKey(char, key, open);
+    switch (step.kind) {
+      case 'close':
+        applyModelPicker(undefined);
+        return;
+      case 'accept':
+        applyModelPicker(undefined);
+        props.onReseat?.({ modelId: step.modelId, provider: step.provider });
+        props.onExit(); // the reseat set the stop state; end the loop so runReplLoop swaps in the new-model session
+        return;
+      case 'blocked': {
+        const hint =
+          step.reason === 'no-key'
+            ? `${step.displayName}: no key for ${step.provider} — run \`relavium provider set-key ${step.provider}\``
+            : `${step.displayName} is not available on your key — pick another`;
+        applyModelPicker({ ...open, hint });
+        return;
+      }
+      case 'refresh':
+        runPickerRefresh(() => props.modelPicker?.refresh() ?? Promise.resolve(undefined));
+        return;
+      case 'state':
+        // Clear the transient hint only on a REAL interaction — the fold returns the SAME state ref for an inert key.
+        applyModelPicker(step.state === open ? open : { ...step.state, hint: undefined });
+        return;
+    }
+  };
+
   const submit = (message: string, display?: string): void => {
+    // A typed `/models` opens the reseat picker overlay (ADR-0059) instead of sending — interactive only (the port
+    // is wired). Covers a directly-typed `/models` AND a chat-palette selection (both route through `submit`).
+    if (props.modelPicker !== undefined && message.trim() === '/models') {
+      openModelPicker();
+      return;
+    }
     // Mark the submit in flight so input is gated + the spinner runs for the WHOLE operation (streaming AND any
     // after-turn auto-compaction, ADR-0062) — cleared in EVERY settle branch (success / reject / defensive catch).
     applySubmitBusy(true);
@@ -527,6 +657,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.store.getSnapshot().state.status === 'running' ||
       shellBusyRef.current ||
       submitBusyRef.current;
+    // The open `/models` reseat picker owns every key (ADR-0059) — checked FIRST (mutually exclusive with the other
+    // submodes; it only opens at an idle prompt). Read the REF so a coalesced same-chunk key sees a just-applied
+    // open/close/accept; on accept it triggers the reseat + ends the loop (see routeModelPickerKey).
+    if (modelPickerRef.current !== undefined) {
+      routeModelPickerKey(char, key);
+      return;
+    }
     // The open `@`-mention completion owns every key (2.5.D step 4): Esc/Ctrl-C cancels + restores the literal
     // keystrokes; ↑/↓ select; Enter/Tab/'/' accept (a dir descends, a file injects); backspace trims the filter
     // then deletes the `@`; a printable extends the filter. Read the REF so a coalesced same-chunk key sees a
@@ -752,7 +889,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         approval={approval}
         attachments={attachments}
         busyCommand={busyCommand}
-        paletteOpen={palette !== undefined || search !== undefined || mention !== undefined}
+        paletteOpen={
+          palette !== undefined ||
+          search !== undefined ||
+          mention !== undefined ||
+          modelPicker !== undefined
+        }
       />
       {palette !== undefined && (
         <PaletteView commands={CHAT_PALETTE_COMMANDS} state={palette} color={color} />
@@ -761,6 +903,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         <ReverseSearchView state={search} entries={historyRef.current.entries} color={color} />
       )}
       {mention !== undefined && <MentionView state={mention} color={color} />}
+      {/* The `/models` reseat picker overlay (ADR-0059) — mounted like the palette; nowMs feeds the freshness badge
+          (cosmetic, render-only, so `Date.now()` is fine on this UI path — no engine-purity concern here). */}
+      {modelPicker !== undefined && (
+        <ModelPickerView state={modelPicker} color={color} nowMs={Date.now()} />
+      )}
     </Box>
   );
 }
@@ -844,6 +991,10 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         // 'abort' handler can reject a pending approval when it is absent (never a dead Esc — see ChatApp).
         onAbort: ctx.onAbort,
         onModeChange: ctx.onModeChange ?? ((): void => undefined),
+        // `/models` reseat (ADR-0059) — the REPL loop wires both onReseat + the picker port only for an interactive
+        // session; passed AS-IS (optional) so a driver wired without them simply has no `/models` overlay.
+        onReseat: ctx.onReseat,
+        modelPicker: ctx.modelPicker,
         // `@`-mention completion (2.5.D, ADR-0061) — the REPL loop wires it only for an interactive session; passed
         // AS-IS (optional) so an absent reader degrades `@` to a literal char (never a dead key — see ChatApp).
         mentionReader: ctx.mentionReader,

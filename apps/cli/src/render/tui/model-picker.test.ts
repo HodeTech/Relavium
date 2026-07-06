@@ -68,12 +68,16 @@ describe('foldModelPickerKey', () => {
     });
   });
 
-  it('Enter on an AVAILABLE model accepts it (modelId + displayName)', () => {
-    const s = state({ entries: [entry({ modelId: 'x', displayName: 'Model X' })], selected: 0 });
+  it('Enter on an AVAILABLE model accepts it (modelId + displayName + provider for the reseat target)', () => {
+    const s = state({
+      entries: [entry({ modelId: 'x', displayName: 'Model X', provider: 'openai' })],
+      selected: 0,
+    });
     expect(foldModelPickerKey('', { return: true }, s)).toEqual({
       kind: 'accept',
       modelId: 'x',
       displayName: 'Model X',
+      provider: 'openai', // the entry is authoritative — the chat reseat (ADR-0059) needs it
     });
   });
 

@@ -5,13 +5,17 @@ import { dropLastCodePoint } from './chat-input.js';
 /**
  * The `/models` picker submode (workstream **2.5.G S7**, [ADR-0064](../../../../../docs/decisions/0064-live-model-catalog.md) §10)
  * — a keyboard-owning overlay (like the `/` palette + the `@`-mention completion) that lists the MERGED model
- * catalog and, on selection, writes the NEXT session's default model ([ADR-0063](../../../../../docs/decisions/0063-cli-config-write-contract.md));
- * it does NOT rebind the live session (that is the Phase-2.6 `/models` reseat, ADR-0059). Home-only (`availableIn: ['home']`).
+ * catalog and, on selection, acts on the chosen model. It serves TWO surfaces off the SAME pure fold: the **Home**
+ * writes the NEXT session's default model ([ADR-0063](../../../../../docs/decisions/0063-cli-config-write-contract.md)),
+ * and the **chat REPL** (ADR-0059) rebinds the live session mid-conversation via a host-side reseat — both keyed off
+ * the one `accept` step (which carries the model id + provider). The Home version is `availableIn: ['home']` for the
+ * config-write action; the chat version is triggered by a typed `/models` intercepted at the ink layer.
  *
  * The PURE model — state + fold + the display formatters — lives here; the ink view ({@link model-picker-view.tsx})
- * renders it and the Home controller routes keys + does the async db/refresh/write I/O (mirroring the mention submode).
- * A DIMMED (unavailable-on-your-key) or a deprecated model is still shown (ADR-0064 §6/§7: dim/flag, never hide) but
- * a dimmed model is **non-selectable** — accepting one yields a `blocked` step, not a write.
+ * renders it and each surface (the Home controller / the chat ink `ChatApp`) routes keys + does the async db/refresh
+ * + the accept action (mirroring the mention submode). A DIMMED (unavailable-on-your-key) or a deprecated model is
+ * still shown (ADR-0064 §6/§7: dim/flag, never hide) but a dimmed model is **non-selectable** — accepting one yields
+ * a `blocked` step, not an action.
  */
 
 /**
@@ -52,8 +56,15 @@ export interface ModelPickerKey {
 
 /** What a keystroke does to the open picker. */
 export type ModelPickerStep =
-  | { readonly kind: 'close' } // Esc / Ctrl-C — cancel without writing a default
-  | { readonly kind: 'accept'; readonly modelId: string; readonly displayName: string } // set the default
+  | { readonly kind: 'close' } // Esc / Ctrl-C — cancel without acting
+  // Accept the selected model. `provider` rides along (the entry is authoritative) so the chat reseat (ADR-0059)
+  // has its `{ modelId, provider }` target; the Home's default-write reads only `modelId`/`displayName`.
+  | {
+      readonly kind: 'accept';
+      readonly modelId: string;
+      readonly displayName: string;
+      readonly provider: ProviderId;
+    }
   | {
       readonly kind: 'blocked'; // a dimmed/unavailable model — non-selectable (ADR-0064 §6)
       readonly displayName: string;
@@ -133,7 +144,12 @@ export function foldModelPickerKey(
         ...(chosen.unavailableReason !== undefined ? { reason: chosen.unavailableReason } : {}),
       };
     }
-    return { kind: 'accept', modelId: chosen.modelId, displayName: chosen.displayName };
+    return {
+      kind: 'accept',
+      modelId: chosen.modelId,
+      displayName: chosen.displayName,
+      provider: chosen.provider,
+    };
   }
   if (key.backspace === true || key.delete === true) {
     if (state.filter.length === 0) return { kind: 'state', state }; // nothing to trim (Esc cancels; backspace is inert)

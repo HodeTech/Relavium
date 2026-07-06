@@ -1,5 +1,3 @@
-import { LLM_PROVIDERS } from '@relavium/shared';
-
 import { MODEL_PRICING, type ModelPricing } from './pricing.js';
 import type { ModelListing, ProviderId } from './types.js';
 
@@ -99,8 +97,6 @@ function earlierIsoDate(a: string | undefined, b: string | undefined): string | 
   return pa <= pb ? a : b;
 }
 
-const PROVIDER_RANK = new Map<ProviderId, number>(LLM_PROVIDERS.map((p, i) => [p, i]));
-
 /**
  * Reconcile live discovery ⋈ the static registry ⋈ the user tier into one deterministically-ordered catalog
  * (ADR-0064 §6). Pure: no I/O, no `Date.now()` (the caller passes `now`). Per-field precedence —
@@ -188,12 +184,14 @@ export function mergeModelCatalog(input: MergeModelCatalogInput): ModelCatalogEn
     });
   }
 
-  // Deterministic order: provider (in the seam's LLM_PROVIDERS order), then displayName, then modelId.
+  // Order (maintainer, 2.5.G): AVAILABLE (selectable) models FIRST, then the dimmed/unavailable ones — each group
+  // sorted alphabetically by displayName, with modelId as the deterministic tiebreaker. So the picker shows the
+  // models a user can actually pick at the top (alphabetical), with the no-key / not-on-key ones grouped below
+  // (ADR-0064 §6: dimmed, never hidden). Provider is no longer a sort key — availability + name is the user's axis.
   entries.sort((x, y) => {
-    const byProvider =
-      (PROVIDER_RANK.get(x.provider) ?? LLM_PROVIDERS.length) -
-      (PROVIDER_RANK.get(y.provider) ?? LLM_PROVIDERS.length);
-    if (byProvider !== 0) return byProvider;
+    // `available: true` sorts BEFORE `available: false` (true → 0, false → 1).
+    const byAvailability = (x.available ? 0 : 1) - (y.available ? 0 : 1);
+    if (byAvailability !== 0) return byAvailability;
     // Pin an explicit locale so the catalog order is byte-identical across every host/OS/CI locale (a
     // runtime-default locale — e.g. Danish — can flip case ordering for a provider-controlled live displayName).
     const byName = x.displayName.localeCompare(y.displayName, 'en');

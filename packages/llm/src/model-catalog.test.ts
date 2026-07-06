@@ -247,21 +247,23 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(entry?.deprecated).toBe(true);
   });
 
-  it('is deterministically ordered: provider (seam order) then displayName then id', () => {
+  it('orders AVAILABLE models first (alphabetical), then unavailable (alphabetical) — maintainer 2.5.G', () => {
+    // openai has live data (only gpt-6-preview), so its static-but-not-live models are dimmed (available:false);
+    // every other provider has no live data ⇒ static presence (available:true).
     const entries = mergeModelCatalog({
       live: liveMap([['openai', [{ id: 'gpt-6-preview' }]]]),
       now: BEFORE_DEEPSEEK_DEPRECATION,
     });
-    // provider order is anthropic < openai < gemini < deepseek
-    const providers = entries.map((e) => e.provider);
-    const firstOpenAi = providers.indexOf('openai');
-    const lastAnthropic = providers.lastIndexOf('anthropic');
-    const firstGemini = providers.indexOf('gemini');
-    expect(lastAnthropic).toBeLessThan(firstOpenAi);
-    expect(firstOpenAi).toBeLessThan(firstGemini);
-    // within a provider, entries are displayName-then-id sorted (stable, no duplicates)
-    const anthropic = entries.filter((e) => e.provider === 'anthropic').map((e) => e.displayName);
-    expect(anthropic).toEqual([...anthropic].sort((a, b) => a.localeCompare(b)));
+    // Availability is the PRIMARY key: every available entry precedes every unavailable one.
+    const firstUnavailable = entries.findIndex((e) => !e.available);
+    expect(firstUnavailable).toBeGreaterThan(0); // there ARE dimmed entries (openai's non-live static models)
+    expect(entries.slice(0, firstUnavailable).every((e) => e.available)).toBe(true);
+    expect(entries.slice(firstUnavailable).every((e) => !e.available)).toBe(true);
+    // Within each availability group, entries are displayName-sorted (en locale), stable + no duplicates.
+    const availableNames = entries.filter((e) => e.available).map((e) => e.displayName);
+    expect(availableNames).toEqual([...availableNames].sort((a, b) => a.localeCompare(b, 'en')));
+    const dimmedNames = entries.filter((e) => !e.available).map((e) => e.displayName);
+    expect(dimmedNames).toEqual([...dimmedNames].sort((a, b) => a.localeCompare(b, 'en')));
     // The modelId tiebreaker + insertion-order independence: two user-priced unknown ids that TIE on
     // provider (openai) + displayName ('Custom Model') must order by modelId ascending, regardless of the
     // input Map's insertion order (proves the model-catalog.ts sort tiebreaker, not a same-input re-run).

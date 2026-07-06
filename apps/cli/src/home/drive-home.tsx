@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { createModelCatalogStore, createProviderStore, createRunHistoryReader } from '@relavium/db';
+import { createProviderStore, createRunHistoryReader } from '@relavium/db';
 import { render } from 'ink';
 import { createElement } from 'react';
 
@@ -15,17 +15,10 @@ import {
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { writeGlobalDefaultModel } from '../config/write.js';
-import { buildMergedCatalog } from '../engine/model-catalog-view.js';
+import { createModelCatalogPort } from '../engine/model-catalog-port.js';
 import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
-import { createModelRefreshService } from '../engine/model-refresh.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
-import {
-  createProviderResolver,
-  KNOWN_PROVIDERS,
-  KNOWN_PROVIDER_IDS,
-  providerHasKey,
-  type ProviderResolver,
-} from '../engine/providers.js';
+import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import {
   isProviderKeyless,
@@ -170,16 +163,6 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
         resolver: providers,
       });
-    const catalogStore = createModelCatalogStore(opened.db, storeDeps);
-    const refreshService = createModelRefreshService({
-      resolveProvider: providers.resolveProvider,
-      keyFor: providers.keyFor,
-      providerStore,
-      catalogStore,
-      knownProviderIds: KNOWN_PROVIDER_IDS,
-      knownProviders: KNOWN_PROVIDERS,
-      now,
-    });
     // The `✓`-marked current default is the EFFECTIVE default — `[chat].default_model` resolves project → workspace
     // → global `[preferences].default_model` (ADR-0063 §1). It is re-read FRESH from disk each call (not the loaded
     // `config` snapshot) so it reflects a same-session `/models` write AND a project/workspace override AND an edit
@@ -196,34 +179,15 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         return undefined; // a mid-session malformed config must not crash the picker
       }
     };
-    // The keyed providers (2.5.G key-awareness) — a keychain/env probe per known provider (≤4) so the picker dims
-    // + refuses a model whose provider has no key (a `no-key` reason) rather than offering one whose next chat would
-    // only fail `provider_auth`. Memoized: a keychain read is a SYNCHRONOUS native N-API call (and can pop an OS ACL
-    // prompt on first access), so we must not repeat it on every `/models` open + every refresh completion on the
-    // live ink render thread. Computed LAZILY on the first `load` (after the wizard has stored any first-run key),
-    // then reused — the resolvable key set is fixed for the Home process (a mid-session key change ⇒ restart), the
-    // same one-time posture as the startup `isProviderKeyless` probe.
-    let keyedProviders: ReadonlySet<(typeof KNOWN_PROVIDER_IDS)[number]> | undefined;
+    // The `/models` catalog port (ADR-0064 §10) — the SHARED load/refresh + key-aware merge trio (the SAME one the
+    // chat reseat picker uses, ADR-0059), over the ONE open db + the store-aware resolver. The Home layers its own
+    // accept action on top: `currentDefault` (the ✓ marker) + `writeDefault` (the next-session default, ADR-0063 §1).
     const models: HomeModelsPort = {
-      load: () => {
-        // Rebuild the UUID→slug map on every load (NOT memoized once like the one-shot dispatch resolver): a refresh
-        // may register a provider's FK row, and the next load must resolve its live rows' provider — not drop them.
-        const slugByUuid = new Map(providerStore.list().map((p) => [p.id, p.name] as const));
-        keyedProviders ??= new Set(KNOWN_PROVIDER_IDS.filter((id) => providerHasKey(providers, id)));
-        return buildMergedCatalog({
-          rows: catalogStore.listAll(),
-          providerSlug: (uuid_) => slugByUuid.get(uuid_) ?? uuid_,
-          keyedProviders,
-          now: now(),
-        });
-      },
-      refreshIfStale: () => refreshService.refreshIfStale(),
-      refresh: () => refreshService.refresh(),
+      ...createModelCatalogPort({ db: opened.db, providers, now, uuid }),
       currentDefault: readEffectiveDefault,
       // Write to the SAME file the picker re-reads + the started session resolves (honors `--config`), so a `/models`
       // write is never a silent no-op to a different file (2.5.G S7).
-      writeDefault: (modelId) =>
-        writeGlobalDefaultModel(modelId, homeDir, deps.global.configPath),
+      writeDefault: (modelId) => writeGlobalDefaultModel(modelId, homeDir, deps.global.configPath),
     };
 
     // Build + wire + START a fresh chat session (the controller sends the first message on transition).
