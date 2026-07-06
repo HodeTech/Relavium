@@ -197,8 +197,11 @@ steps; the additive lanes 2.5.H / I / J run in parallel. See the
 maintainer questions on model/provider/wizard behavior) then landed as a sequenced plan: `/models` key-awareness,
 the onboarding-wizard live key-validation + retry UX, wizard-dynamic provider docs, **mid-session model switching**
 (the `/models` reseat across `relavium chat` + the in-Home chat — [ADR-0059](../decisions/0059-cli-mid-session-model-reseat.md),
-now Accepted), and **normalized reasoning-effort control** (a provider-agnostic effort tier authored in agent YAML +
-chosen in the picker — [ADR-0066](../decisions/0066-normalized-reasoning-effort-control.md)).
+now Accepted), and **normalized reasoning-effort control** ([ADR-0066](../decisions/0066-normalized-reasoning-effort-control.md),
+now Accepted): a provider-agnostic effort tier (`off`/`low`/`medium`/`high`/`max`) authored in agent YAML or the
+`[chat].reasoning_effort` config default, each adapter mapping it to its provider's **native** tier, gated per-model
+by a host-injected capability resolver, and chosen live via the `/models` picker's **effort sub-step** on a
+reasoning-capable model during a reseat.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks
 items up as it first touches each file. Notable inheritances: 1.AH's host-wiring half

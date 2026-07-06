@@ -12,6 +12,7 @@ import {
 } from './home-controller.js';
 import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
+import type { ReasoningEffort } from '@relavium/shared';
 
 import type { RefreshReport } from '../../engine/model-refresh.js';
 
@@ -62,6 +63,7 @@ function makeSession(
     onModeChange?: (mode: ChatMode) => void;
     mentionReader?: MentionReader;
     runShellCommand?: (command: string, args: readonly string[]) => Promise<UserCommandOutcome>;
+    boundEffort?: ReasoningEffort;
   } = {},
 ): {
   session: HomeChatSession;
@@ -82,6 +84,7 @@ function makeSession(
     },
     shouldStop: opts.stop ?? (() => false),
     stopReason: opts.stopReason ?? (() => 'exit'),
+    boundEffort: opts.boundEffort,
     ...(opts.onAbort === undefined ? {} : { onAbort: opts.onAbort }),
     ...(opts.onModeChange === undefined ? {} : { onModeChange: opts.onModeChange }),
     ...(opts.mentionReader === undefined ? {} : { mentionReader: opts.mentionReader }),
@@ -912,6 +915,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       processLine: () => Promise.resolve(),
       shouldStop: () => true, // the first turn ends the session ⇒ endChat fires
       stopReason: () => 'exit', // /exit-style end → endChat (not the /clear swap)
+      boundEffort: undefined,
       teardown,
     };
     const startChat = vi.fn(() => Promise.resolve(session));
@@ -948,6 +952,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       },
       shouldStop: () => true,
       stopReason: () => 'exit',
+      boundEffort: undefined,
       teardown: vi.fn(() => new Promise<void>((r) => (releaseTeardown = r))),
     };
     const c = createHomeController({
@@ -1600,6 +1605,7 @@ function pickerEntry(
     priceKnown: true,
     available: true,
     deprecated: false,
+    supportsReasoning: false,
     ...partial,
   };
 }

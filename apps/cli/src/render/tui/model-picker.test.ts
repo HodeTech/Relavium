@@ -20,6 +20,7 @@ function entry(partial: Partial<ModelCatalogEntry> & Pick<ModelCatalogEntry, 'mo
     priceKnown: true,
     available: true,
     deprecated: false,
+    supportsReasoning: false,
     ...partial,
   };
 }
@@ -34,6 +35,11 @@ function state(partial: Partial<ModelPickerState> = {}): ModelPickerState {
     refreshedAt: undefined,
     banner: undefined,
     hint: undefined,
+    phase: 'model',
+    effortStep: false,
+    pending: undefined,
+    effortSelected: 0,
+    currentEffort: undefined,
     ...partial,
   };
 }
@@ -135,6 +141,124 @@ describe('foldModelPickerKey', () => {
   it('drops a multi-char paste blob (only a single code point extends the filter)', () => {
     const blob = foldModelPickerKey('pasted text', {}, state());
     expect(blob).toEqual({ kind: 'state', state: state() }); // unchanged
+  });
+});
+
+describe('foldModelPickerKey — the ADR-0066 effort sub-step', () => {
+  // A reasoning-capable catalog whose first entry (empty filter ⇒ selected 0) supports reasoning.
+  const reasoningState = (partial: Partial<ModelPickerState> = {}): ModelPickerState =>
+    state({
+      entries: [
+        entry({ modelId: 'claude-opus-4-8', displayName: 'Opus', supportsReasoning: true }),
+        entry({ modelId: 'deepseek-chat', displayName: 'DeepSeek', supportsReasoning: false }),
+      ],
+      effortStep: true,
+      ...partial,
+    });
+
+  it('accepts IMMEDIATELY (no effort sub-step) when the surface does not offer it (effortStep=false)', () => {
+    // The bare-Home default-write path: even a reasoning-capable model accepts straight to a model-only write.
+    const step = foldModelPickerKey('', { return: true }, reasoningState({ effortStep: false }));
+    expect(step).toEqual({
+      kind: 'accept',
+      modelId: 'claude-opus-4-8',
+      displayName: 'Opus',
+      provider: 'anthropic',
+    });
+    expect('reasoningEffort' in step).toBe(false); // no tier on a non-effort surface
+  });
+
+  it('accepts IMMEDIATELY when the chosen model does NOT support reasoning (even on an effort surface)', () => {
+    const step = foldModelPickerKey('', { return: true }, reasoningState({ selected: 1 })); // deepseek (no reasoning)
+    expect(step).toEqual({
+      kind: 'accept',
+      modelId: 'deepseek-chat',
+      displayName: 'DeepSeek',
+      provider: 'anthropic',
+    });
+  });
+
+  it('a reasoning model on an effort surface ADVANCES to the effort phase (not an immediate accept)', () => {
+    const step = foldModelPickerKey('', { return: true }, reasoningState());
+    expect(step.kind).toBe('state');
+    if (step.kind !== 'state') throw new Error('expected a state step');
+    expect(step.state.phase).toBe('effort');
+    expect(step.state.pending).toEqual({
+      modelId: 'claude-opus-4-8',
+      displayName: 'Opus',
+      provider: 'anthropic',
+    });
+    // No bound effort ⇒ the sub-list opens on the neutral middle tier ('medium', index 2 of off/low/medium/high/max).
+    expect(step.state.effortSelected).toBe(2);
+  });
+
+  it('opens the effort sub-list on the session BOUND effort when one is set', () => {
+    const step = foldModelPickerKey('', { return: true }, reasoningState({ currentEffort: 'high' }));
+    if (step.kind !== 'state') throw new Error('expected a state step');
+    expect(step.state.effortSelected).toBe(3); // index of 'high'
+  });
+
+  // A picker already parked in the effort phase over a pending model (selected tier = 'medium').
+  const effortPhase = (partial: Partial<ModelPickerState> = {}): ModelPickerState =>
+    reasoningState({
+      phase: 'effort',
+      pending: { modelId: 'claude-opus-4-8', displayName: 'Opus', provider: 'anthropic' },
+      effortSelected: 2,
+      ...partial,
+    });
+
+  it('↑/↓ move the effort selection, clamped to the tier list', () => {
+    expect(foldModelPickerKey('', { downArrow: true }, effortPhase())).toEqual({
+      kind: 'state',
+      state: effortPhase({ effortSelected: 3 }),
+    });
+    expect(foldModelPickerKey('', { upArrow: true }, effortPhase())).toEqual({
+      kind: 'state',
+      state: effortPhase({ effortSelected: 1 }),
+    });
+    // Clamp at the ends: max (index 4) Down stays 4; off (index 0) Up stays 0.
+    expect(foldModelPickerKey('', { downArrow: true }, effortPhase({ effortSelected: 4 }))).toEqual({
+      kind: 'state',
+      state: effortPhase({ effortSelected: 4 }),
+    });
+    expect(foldModelPickerKey('', { upArrow: true }, effortPhase({ effortSelected: 0 }))).toEqual({
+      kind: 'state',
+      state: effortPhase({ effortSelected: 0 }),
+    });
+  });
+
+  it('Enter in the effort phase accepts the pending model + the highlighted tier', () => {
+    expect(foldModelPickerKey('', { return: true }, effortPhase({ effortSelected: 3 }))).toEqual({
+      kind: 'accept',
+      modelId: 'claude-opus-4-8',
+      displayName: 'Opus',
+      provider: 'anthropic',
+      reasoningEffort: 'high',
+    });
+    // The lowest tier 'off' is a valid pick (disables reasoning), not a "cancel".
+    expect(foldModelPickerKey('', { return: true }, effortPhase({ effortSelected: 0 }))).toEqual({
+      kind: 'accept',
+      modelId: 'claude-opus-4-8',
+      displayName: 'Opus',
+      provider: 'anthropic',
+      reasoningEffort: 'off',
+    });
+  });
+
+  it('Esc in the effort phase BACKS OUT to the model list (clears pending) — it does NOT cancel the picker', () => {
+    const step = foldModelPickerKey('', { escape: true }, effortPhase());
+    expect(step).toEqual({ kind: 'state', state: effortPhase({ phase: 'model', pending: undefined }) });
+  });
+
+  it('Ctrl-C in the effort phase is the HARD cancel (closes the whole picker)', () => {
+    expect(foldModelPickerKey('c', { ctrl: true }, effortPhase()).kind).toBe('close');
+  });
+
+  it('filter / other keys are inert in the fixed effort list', () => {
+    const s = effortPhase();
+    expect(foldModelPickerKey('x', {}, s)).toEqual({ kind: 'state', state: s }); // typing does not filter
+    expect(foldModelPickerKey('', { backspace: true }, s)).toEqual({ kind: 'state', state: s });
+    expect(foldModelPickerKey('r', { ctrl: true }, s)).toEqual({ kind: 'state', state: s }); // no refresh here
   });
 });
 

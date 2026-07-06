@@ -293,6 +293,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           shouldStop,
           stopReason,
           sessionId: built.sessionId,
+          // The bound effort (ADR-0066) for the `/models` effort sub-list ✓/highlight + the reseat no-op guard.
+          boundEffort: built.agent.reasoning_effort,
           teardown,
           onAbort,
           onModeChange,
@@ -351,7 +353,12 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           `cannot switch model: session ${sessionId} could not be reloaded for reseat`,
         );
       }
-      const newAgent = swapAgentModel(loaded.session.agentSnapshot, target.modelId, target.provider);
+      const newAgent = swapAgentModel(
+        loaded.session.agentSnapshot,
+        target.modelId,
+        target.provider,
+        target.reasoningEffort,
+      );
       const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
       const resolvePrice = readUserPricingOverlay(opened.db);
       const built = await (deps.buildResumedSession ?? buildResumedChatSession)({

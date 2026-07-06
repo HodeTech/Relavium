@@ -578,6 +578,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       refreshedAt: view.refreshedAt,
       banner: undefined,
       hint: undefined,
+      // The standalone `relavium chat` picker is ALWAYS a live reseat, so it offers the effort sub-step (ADR-0066).
+      phase: 'model',
+      effortStep: true,
+      pending: undefined,
+      effortSelected: 0,
+      currentEffort: port.boundEffort,
     });
     runPickerRefresh(() => port.refreshIfStale());
   };
@@ -593,16 +599,21 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         applyModelPicker(undefined);
         return;
       case 'accept':
-        // No-op guard (ADR-0059): accepting the ALREADY-bound model (the ✓ = `currentDefault` = the session's bound
-        // model) would reseat for zero change — wiping the ADR-0057 approval cache + reconnecting MCP. Close with a
-        // note instead of a pointless switch.
-        if (step.modelId === open.currentDefault) {
+        // No-op guard (ADR-0059/ADR-0066): accepting the ALREADY-bound model AND effort (the ✓ = `currentDefault` +
+        // `currentEffort` = the session's binding) would reseat for zero change — wiping the ADR-0057 approval cache
+        // + reconnecting MCP. The same model with a DIFFERENT effort IS a real (effort-only) switch, so the guard is
+        // keyed on BOTH axes. Close with a note instead of a pointless switch.
+        if (step.modelId === open.currentDefault && step.reasoningEffort === open.currentEffort) {
           applyModelPicker(undefined);
           props.store.note(`Already on ${step.displayName}.`);
           return;
         }
         applyModelPicker(undefined);
-        props.onReseat?.({ modelId: step.modelId, provider: step.provider });
+        props.onReseat?.({
+          modelId: step.modelId,
+          provider: step.provider,
+          ...(step.reasoningEffort === undefined ? {} : { reasoningEffort: step.reasoningEffort }),
+        });
         props.onExit(); // the reseat set the stop state; end the loop so runReplLoop swaps in the new-model session
         return;
       case 'blocked': {

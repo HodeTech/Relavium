@@ -9,7 +9,7 @@ import {
   type UserCommandOutcome,
 } from '@relavium/core';
 import type { ProviderId } from '@relavium/llm';
-import type { AgentSessionRecord } from '@relavium/shared';
+import type { AgentSessionRecord, ReasoningEffort } from '@relavium/shared';
 import { exportSession } from '../chat/export.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
@@ -112,6 +112,12 @@ function closeQuietly(io: CliIo, label: string, close: () => void): void {
 export interface ReseatTarget {
   readonly modelId: string;
   readonly provider: ProviderId;
+  /**
+   * The reasoning-effort tier the picker's effort sub-step chose ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md)),
+   * bound onto the reseated agent. Present only when the picked model supports reasoning; absent ⇒ the reseat drops
+   * any prior tier (a non-reasoning target can't use one). Threaded verbatim to {@link swapAgentModel}.
+   */
+  readonly reasoningEffort?: ReasoningEffort;
 }
 
 /**
@@ -121,18 +127,26 @@ export interface ReseatTarget {
  */
 export interface ChatModelsPort extends ModelCatalogPort {
   readonly boundModel: string;
+  /**
+   * The session's currently-bound reasoning-effort tier (ADR-0066) — the effort sub-list's `✓` "you are here" +
+   * its opening highlight, and (with `boundModel`) the reseat no-op guard's second axis: re-picking the same model
+   * AND the same effort is a no-op, but the same model with a different effort is a real (effort-only) switch.
+   * `undefined` ⇒ no effort bound (the provider default).
+   */
+  readonly boundEffort: ReasoningEffort | undefined;
 }
 
 /** Assemble a {@link ChatModelsPort} over the session's shared db + provider resolver (the catalog the Home picker
- *  also reads) plus the bound model — the one place the chat reseat picker's port is wired. */
+ *  also reads) plus the bound model + effort — the one place the chat reseat picker's port is wired. */
 function buildChatModelsPort(
   opened: OpenedSessionStore,
   providers: ProviderResolver,
   boundModel: string,
+  boundEffort: ReasoningEffort | undefined,
   now: () => number,
   uuid: () => string,
 ): ChatModelsPort {
-  return { ...createModelCatalogPort({ db: opened.db, providers, now, uuid }), boundModel };
+  return { ...createModelCatalogPort({ db: opened.db, providers, now, uuid }), boundModel, boundEffort };
 }
 
 /** What an interactive driver receives — the command core's seam, so a driver never touches the session directly. */
@@ -422,7 +436,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       persister,
       doctorProbes,
       startSession: () => built.session.start(),
-      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
+      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, built.agent.reasoning_effort, now, uuid),
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -580,7 +594,7 @@ export async function chatResumeCommand(
       doctorProbes,
       startSession: () => {},
       intro,
-      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
+      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, built.agent.reasoning_effort, now, uuid),
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -1104,7 +1118,14 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     doctorProbes,
     startSession: () => built.session.start(),
     intro,
-    modelPicker: buildChatModelsPort(deps.opened, deps.providers, built.agent.model, deps.now, deps.uuid),
+    modelPicker: buildChatModelsPort(
+      deps.opened,
+      deps.providers,
+      built.agent.model,
+      built.agent.reasoning_effort,
+      deps.now,
+      deps.uuid,
+    ),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
 }
@@ -1231,8 +1252,14 @@ async function buildReseatWiring(
       `cannot switch model: session ${oldSessionId} could not be reloaded for reseat`,
     );
   }
-  // Swap the bound model/provider (dropping the original fallback_chain) via the shared ADR-0059 rule.
-  const newAgent = swapAgentModel(loaded.session.agentSnapshot, target.modelId, target.provider);
+  // Swap the bound model/provider (dropping the original fallback_chain) via the shared ADR-0059 rule; the picker's
+  // effort sub-step (ADR-0066) rides `target.reasoningEffort` onto the swapped agent (or drops any prior tier).
+  const newAgent = swapAgentModel(
+    loaded.session.agentSnapshot,
+    target.modelId,
+    target.provider,
+    target.reasoningEffort,
+  );
   // The record the resumed session rebinds from: the just-ended row with the model-swapped agent snapshot.
   // (The row's own `modelId` FK column stays as-is — per-message/session `modelId` attribution is deferred with
   // the 2.6.C cost breakdown; see persister.ts. `reconstructSessionState` reads only the transcript + cost here.)
@@ -1279,7 +1306,14 @@ async function buildReseatWiring(
     startSession: () => {},
     intro: modelSwitchNotice(target.modelId, resumed.resumeState.turnCount),
     // The picker's `boundModel` is now the SWITCHED model — a further reseat marks it as the ✓ "you are here".
-    modelPicker: buildChatModelsPort(deps.opened, deps.providers, resumed.agent.model, deps.now, deps.uuid),
+    modelPicker: buildChatModelsPort(
+      deps.opened,
+      deps.providers,
+      resumed.agent.model,
+      resumed.agent.reasoning_effort,
+      deps.now,
+      deps.uuid,
+    ),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
 }

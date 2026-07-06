@@ -1,4 +1,5 @@
 import type { ModelCatalogEntry, ProviderId } from '@relavium/llm';
+import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
 
 import { dropLastCodePoint } from './chat-input.js';
 
@@ -39,6 +40,31 @@ export interface ModelPickerState {
   readonly refreshedAt: number | undefined;
   readonly banner: string | undefined;
   readonly hint: string | undefined;
+  /**
+   * The picker's TWO-PHASE step ([ADR-0066](../../../../../docs/decisions/0066-normalized-reasoning-effort-control.md)):
+   * `'model'` is the catalog list (the default); accepting a reasoning-capable model on a reseat surface
+   * ({@link effortStep}) advances to `'effort'` — a fixed sub-list of the reasoning-effort tiers for the chosen
+   * model. The two surfaces route the SAME fold, so the phase transition lives here, not in either host.
+   */
+  readonly phase: 'model' | 'effort';
+  /**
+   * Whether this picker offers the reasoning-effort sub-step. `true` for a LIVE reseat surface (standalone
+   * `relavium chat` + the in-Home live chat, where the effort binds onto the reseated agent, ADR-0059); `false`
+   * for the bare-Home next-session-default write (which persists only the model, ADR-0063 — the effort default is
+   * the `[chat].reasoning_effort` config key, not a per-write pick), so a non-reseat surface stays single-phase.
+   */
+  readonly effortStep: boolean;
+  /** The model chosen in `'model'` phase, awaiting an effort pick — carried so `'effort'`'s accept emits the pair. */
+  readonly pending: {
+    readonly modelId: string;
+    readonly displayName: string;
+    readonly provider: ProviderId;
+  } | undefined;
+  /** The highlighted index into {@link REASONING_EFFORTS} while in `'effort'` phase. */
+  readonly effortSelected: number;
+  /** The session's currently-bound effort (the `✓` in the effort sub-list + the initial highlight); `undefined` ⇒
+   *  no effort bound (the provider default), so the sub-list opens on a neutral middle tier. */
+  readonly currentEffort: ReasoningEffort | undefined;
 }
 
 /** The minimal key fields the picker fold reads (a structural subset of ink's `Key`). */
@@ -59,11 +85,15 @@ export type ModelPickerStep =
   | { readonly kind: 'close' } // Esc / Ctrl-C — cancel without acting
   // Accept the selected model. `provider` rides along (the entry is authoritative) so the chat reseat (ADR-0059)
   // has its `{ modelId, provider }` target; the Home's default-write reads only `modelId`/`displayName`.
+  // `reasoningEffort` is present iff the effort sub-step ran (a reasoning-capable model on a reseat surface,
+  // ADR-0066); absent ⇒ the reseat drops any prior effort (a non-reasoning model can't use one) / the default-write
+  // ignores it.
   | {
       readonly kind: 'accept';
       readonly modelId: string;
       readonly displayName: string;
       readonly provider: ProviderId;
+      readonly reasoningEffort?: ReasoningEffort;
     }
   | {
       readonly kind: 'blocked'; // a dimmed/unavailable model — non-selectable (ADR-0064 §6)
@@ -109,21 +139,36 @@ function foldArrow(
 }
 
 /**
- * Fold one keystroke into the open picker (the keyboard-owning contract, mirroring the mention submode):
- * `Esc`/`Ctrl-C` cancels (no write); `Ctrl+R` refreshes; `↑`/`↓` move; `Enter` accepts the selected model — a
- * DIMMED (unavailable) model yields `blocked` (non-selectable, ADR §6), an empty list closes; backspace trims the
- * filter; a single printable code point extends the filter (a multi-char paste blob is dropped, matching the other
- * submodes); every other key stays open.
+ * Fold one keystroke into the open picker (the keyboard-owning contract, mirroring the mention submode). Two phases
+ * (ADR-0066): `'model'` (the catalog) delegates to {@link foldModelPhaseKey}; `'effort'` (the reasoning-effort
+ * sub-list) delegates to {@link foldEffortPhaseKey}. `Ctrl-C` is the hard cancel from EITHER phase (nothing written).
  */
 export function foldModelPickerKey(
   char: string,
   key: ModelPickerKey,
   state: ModelPickerState,
 ): ModelPickerStep {
-  // Esc / Ctrl-C cancels the picker (nothing is written — a cancel never changes the default).
-  if (key.escape === true || (key.ctrl === true && char === 'c')) {
-    return { kind: 'close' };
-  }
+  // Ctrl-C is the hard cancel from any phase (nothing is written). Esc is phase-scoped: it cancels the model list
+  // but only backs OUT of the effort sub-list to the model list (handled in foldEffortPhaseKey).
+  if (key.ctrl === true && char === 'c') return { kind: 'close' };
+  return state.phase === 'effort'
+    ? foldEffortPhaseKey(char, key, state)
+    : foldModelPhaseKey(char, key, state);
+}
+
+/**
+ * The `'model'` phase fold: `Esc` cancels (no write); `Ctrl+R` refreshes; `↑`/`↓` move; `Enter` accepts the selected
+ * model — a DIMMED (unavailable) model yields `blocked` (non-selectable, ADR §6), an empty list closes; a
+ * reasoning-capable model on a reseat surface (`effortStep`) instead advances to the `'effort'` sub-step (ADR-0066);
+ * backspace trims the filter; a single printable code point extends the filter (a multi-char paste blob is dropped);
+ * every other key stays open.
+ */
+function foldModelPhaseKey(
+  char: string,
+  key: ModelPickerKey,
+  state: ModelPickerState,
+): ModelPickerStep {
+  if (key.escape === true) return { kind: 'close' };
   // Ctrl+R forces a live refresh (distinct from the auto TTL refresh on open). `r` alone extends the filter.
   // Ignored while a refresh is already in flight (`loading`) — so two rapid Ctrl+R can't race two refreshes whose
   // out-of-order completion would flash a stale banner over a fresher one. Stays open, unchanged.
@@ -142,6 +187,24 @@ export function foldModelPickerKey(
         displayName: chosen.displayName,
         provider: chosen.provider,
         ...(chosen.unavailableReason !== undefined ? { reason: chosen.unavailableReason } : {}),
+      };
+    }
+    // A reasoning-capable model on a reseat surface advances to the effort sub-step (ADR-0066) instead of accepting
+    // immediately; the sub-list opens on the session's bound effort (else a neutral middle tier).
+    if (state.effortStep && chosen.supportsReasoning) {
+      return {
+        kind: 'state',
+        state: {
+          ...state,
+          phase: 'effort',
+          pending: {
+            modelId: chosen.modelId,
+            displayName: chosen.displayName,
+            provider: chosen.provider,
+          },
+          effortSelected: initialEffortIndex(state.currentEffort),
+          hint: undefined,
+        },
       };
     }
     return {
@@ -163,6 +226,66 @@ export function foldModelPickerKey(
   }
   return { kind: 'state', state };
 }
+
+/**
+ * The `'effort'` phase fold (ADR-0066): a fixed sub-list of the reasoning-effort tiers for the {@link ModelPickerState.pending}
+ * model. `Esc` backs OUT to the model list (Ctrl-C, handled by the caller, is the hard cancel); `↑`/`↓` move over
+ * {@link REASONING_EFFORTS}; `Enter` accepts the chosen model + the highlighted tier. There is no filter or refresh
+ * here (a fixed five-item list), so every other key is inert.
+ */
+function foldEffortPhaseKey(
+  char: string,
+  key: ModelPickerKey,
+  state: ModelPickerState,
+): ModelPickerStep {
+  if (key.escape === true) {
+    return { kind: 'state', state: { ...state, phase: 'model', pending: undefined } };
+  }
+  if (key.upArrow === true) {
+    const next = clampSelection(state.effortSelected - 1, REASONING_EFFORTS.length);
+    return { kind: 'state', state: { ...state, effortSelected: next } };
+  }
+  if (key.downArrow === true) {
+    const next = clampSelection(state.effortSelected + 1, REASONING_EFFORTS.length);
+    return { kind: 'state', state: { ...state, effortSelected: next } };
+  }
+  if (key.return === true) {
+    const pending = state.pending;
+    const effort = REASONING_EFFORTS[clampSelection(state.effortSelected, REASONING_EFFORTS.length)];
+    // Defensive: a missing pending model (never expected — set on the transition) or an out-of-range tier backs out
+    // to the model list rather than emitting a malformed accept.
+    if (pending === undefined || effort === undefined) {
+      return { kind: 'state', state: { ...state, phase: 'model', pending: undefined } };
+    }
+    return {
+      kind: 'accept',
+      modelId: pending.modelId,
+      displayName: pending.displayName,
+      provider: pending.provider,
+      reasoningEffort: effort,
+    };
+  }
+  return { kind: 'state', state };
+}
+
+/** The effort sub-list's opening highlight: the session's bound effort, else a neutral middle tier (`'medium'`). */
+function initialEffortIndex(currentEffort: ReasoningEffort | undefined): number {
+  const target = currentEffort ?? 'medium';
+  const index = REASONING_EFFORTS.indexOf(target);
+  return index < 0 ? 0 : index;
+}
+
+/**
+ * The one-line hint shown beside each reasoning-effort tier in the effort sub-list (ADR-0066). Display-only, so the
+ * picker explains what each tier trades off (latency/cost vs depth) without the user consulting the docs.
+ */
+export const EFFORT_TIER_HINT: Record<ReasoningEffort, string> = {
+  off: 'no reasoning — fastest, lowest cost',
+  low: 'brief reasoning',
+  medium: 'balanced reasoning',
+  high: 'deep reasoning',
+  max: 'maximum reasoning — slowest, highest cost',
+};
 
 /* -------------------------------------------------------------------------------------------------- *
  * Pure display formatters (unit-tested; the ink view is not render-tested, per the repo convention).

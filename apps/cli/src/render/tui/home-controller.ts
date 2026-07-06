@@ -1,5 +1,6 @@
 import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
+import type { ReasoningEffort } from '@relavium/shared';
 
 import {
   CHAT_PALETTE_COMMANDS,
@@ -96,6 +97,10 @@ export interface HomeChatSession {
   /** The session's durable id (ADR-0062 §7) — named in the `/clear` notice as the prior (still-resumable)
    *  conversation, so it is discoverable after the swap. */
   readonly sessionId: string;
+  /** The session's currently-bound reasoning-effort tier (ADR-0066), from the bound agent's `reasoning_effort` —
+   *  the `/models` effort sub-list's `✓` + opening highlight, and the reseat no-op guard's second axis (same model
+   *  AND same effort ⇒ no-op). `undefined` ⇒ no effort bound (the provider default). */
+  readonly boundEffort: ReasoningEffort | undefined;
   /** WHY `shouldStop()` became true (ADR-0062 §7 · ADR-0059) — `'clear'` (swap in a fresh session, staying in chat)
    *  vs `'exit'` (`/exit`/`/cancel`, return to the bare Home). Shares the widened `ChatLineHandler.stopReason` type,
    *  so it also carries `'reseat'`; but the in-Home chat does NOT yet wire `onReseat` (its `/models` is the Home's
@@ -618,7 +623,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     pickerEpoch += 1; // a fresh generation — invalidates any in-flight refresh from a prior (closed) open
     // The `✓` marker: in a LIVE chat (ADR-0059 reseat) it is the session's BOUND model (the "you are here"); at the
     // bare Home it is the effective next-session default. The accept action mirrors this (reseat vs default-write).
-    const activeModel = state.session?.store.getSnapshot().state.model;
+    const active = state.session;
+    const activeModel = active?.store.getSnapshot().state.model;
+    // The effort sub-step (ADR-0066) is offered ONLY on a LIVE reseat (an active in-Home chat with a reseat builder
+    // wired) — the bare-Home default-write persists only the model (ADR-0063), so it stays single-phase.
+    const effortStep = active !== undefined && deps.reseatChat !== undefined;
     set({
       notice: undefined, // opening the picker clears any stale /doctor report behind it
       modelPicker: {
@@ -630,6 +639,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         refreshedAt: view.refreshedAt,
         banner: undefined,
         hint: undefined,
+        phase: 'model',
+        effortStep,
+        pending: undefined,
+        effortSelected: 0,
+        currentEffort: effortStep ? active.boundEffort : undefined,
       },
     });
     // Render the cache immediately (above), then kick a TTL-bounded background refresh (ADR-0064 §5c) — the Home is
@@ -639,13 +653,19 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   // Accept the chosen model. TWO surface-specific actions off the ONE picker (ADR-0059/ADR-0063):
   //  - a LIVE in-Home chat ⇒ RESEAT it onto the picked model (mirrors the standalone `relavium chat` /models reseat);
   //  - the BARE Home ⇒ persist the chosen model as the NEXT session's default (the pre-existing behavior below).
-  const acceptModel = (modelId: string, displayName: string, provider: ReseatTarget['provider']): void => {
+  const acceptModel = (
+    modelId: string,
+    displayName: string,
+    provider: ReseatTarget['provider'],
+    reasoningEffort?: ReasoningEffort,
+  ): void => {
     const active = state.session;
     if (active !== undefined && deps.reseatChat !== undefined) {
-      // No-op guard (ADR-0059): accepting the ALREADY-bound model would tear the session down + rebuild for zero
-      // change — wiping the ADR-0057 per-tool approval cache, reconnecting MCP, and showing a misleading "Switched"
-      // notice. Keep the picker open with a hint instead so a mis-click doesn't churn the live session.
-      if (modelId === active.store.getSnapshot().state.model) {
+      // No-op guard (ADR-0059/ADR-0066): accepting the ALREADY-bound model AND effort would tear the session down +
+      // rebuild for zero change — wiping the ADR-0057 per-tool approval cache, reconnecting MCP, and showing a
+      // misleading "Switched" notice. The same model with a DIFFERENT effort IS a real (effort-only) switch, so the
+      // guard is keyed on BOTH axes. Keep the picker open with a hint instead so a mis-click doesn't churn the session.
+      if (modelId === active.store.getSnapshot().state.model && reasoningEffort === active.boundEffort) {
         const open = state.modelPicker;
         set(
           open === undefined
@@ -654,7 +674,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         );
         return;
       }
-      reseatChat(active, { modelId, provider });
+      reseatChat(active, {
+        modelId,
+        provider,
+        ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      });
       return;
     }
     // ---- The bare-Home next-session-default write (ADR-0063) ---------------------------------------------------
@@ -698,7 +722,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         set({ modelPicker: undefined });
         break;
       case 'accept':
-        acceptModel(step.modelId, step.displayName, step.provider);
+        acceptModel(step.modelId, step.displayName, step.provider, step.reasoningEffort);
         break;
       case 'blocked': {
         // An ACTIONABLE hint (2.5.G key-awareness): a keyless provider names the remedy; the pre-existing

@@ -1,8 +1,11 @@
 import { Box, Text } from 'ink';
 import type { ReactElement, ReactNode } from 'react';
 
+import { REASONING_EFFORTS } from '@relavium/shared';
+
 import { sanitizeInline } from './chat-projection.js';
 import {
+  EFFORT_TIER_HINT,
   formatContextWindow,
   formatModelPrice,
   formatRefreshedBadge,
@@ -41,8 +44,44 @@ export function modelWindow(count: number, selected: number): { start: number; e
   return { start, end: start + MODEL_WINDOW };
 }
 
+/**
+ * The `'effort'` sub-list (ADR-0066) — the reasoning-effort tiers for the model chosen in the `'model'` phase. A
+ * fixed five-row list (no scroll window needed): each tier + its one-line hint, the highlighted row in cyan, a `✓`
+ * on the session's currently-bound effort. The `pending` model's name (a provider-controlled string) is sanitized
+ * at this display boundary, exactly as the model rows are.
+ */
+function EffortSubList(props: Readonly<{ state: ModelPickerState; color: boolean }>): ReactElement {
+  const { state, color } = props;
+  const selected = Math.max(0, Math.min(state.effortSelected, REASONING_EFFORTS.length - 1));
+  const forModel = state.pending === undefined ? '' : ` · ${sanitizeInline(state.pending.displayName)}`;
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Text {...colorProps(color, 'cyan')} wrap="truncate-end">
+        Reasoning effort
+        <Text {...dimProps(color)}>{forModel}</Text>
+      </Text>
+      {REASONING_EFFORTS.map((effort, index) => {
+        const isSelected = index === selected;
+        const isCurrent = effort === state.currentEffort;
+        const rowColor = isSelected ? colorProps(color, 'cyan') : {};
+        return (
+          <Text key={effort} {...rowColor} wrap="truncate-end">
+            {`${isSelected ? '›' : ' '} ${isCurrent ? '✓' : ' '} ${effort} · `}
+            <Text {...dimProps(color)}>{EFFORT_TIER_HINT[effort]}</Text>
+          </Text>
+        );
+      })}
+      <Text {...dimProps(color)} wrap="truncate-end">
+        ↑/↓ select · Enter apply · Esc back
+      </Text>
+    </Box>
+  );
+}
+
 export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactElement {
   const { state, color, nowMs } = props;
+  // The effort sub-step (ADR-0066) owns the whole overlay while active — a fixed tier list, no catalog/filter/badge.
+  if (state.phase === 'effort') return <EffortSubList state={state} color={color} />;
   const visible = visibleModels(state);
   // Clamp the highlight for display — a refresh can shrink the list under a `selected` past the new end until the
   // next keystroke re-clamps (foldModelPickerKey clamps on move).

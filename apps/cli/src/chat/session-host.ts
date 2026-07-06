@@ -22,6 +22,7 @@ import type {
   AgentSessionRecord,
   Budget,
   McpServerRegistration,
+  ReasoningEffort,
   SessionContext,
   SessionMessage,
   ToolPolicy,
@@ -373,16 +374,25 @@ function narrowToWired(
  * belonged to the old model; the resumed instance builds its own default plan for the new model, exactly as a fresh
  * session on it would). Operates on a fresh copy — never mutates the input. Shared by the standalone `chat` reseat
  * (`buildReseatWiring`) and the in-Home chat reseat (`driveHome`) so the swap rule has ONE home.
+ *
+ * `reasoningEffort` ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md)) rides the
+ * picker's effort sub-step: a defined tier is bound onto the swapped agent; `undefined` DROPS any prior
+ * `reasoning_effort` (a non-reasoning target can't use one, and the picker only omits it for such a target), so the
+ * new binding never carries a stale tier from the old model.
  */
 export function swapAgentModel(
   agent: AgentDefinition,
   modelId: string,
   provider: ProviderId,
+  reasoningEffort?: ReasoningEffort,
 ): AgentDefinition {
   // A fresh copy, then `delete` the optional `fallback_chain` (removes the key entirely — never an explicit
   // `undefined` under exactOptionalPropertyTypes — and mutates only this copy, never the loaded record).
   const next: AgentDefinition = { ...agent, model: modelId, provider };
   delete next.fallback_chain;
+  // Bind the picked tier, or drop any prior one (same `delete` discipline — never an explicit `undefined`).
+  if (reasoningEffort === undefined) delete next.reasoning_effort;
+  else next.reasoning_effort = reasoningEffort;
   return next;
 }
 

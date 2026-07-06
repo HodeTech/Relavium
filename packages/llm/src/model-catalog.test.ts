@@ -44,6 +44,22 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(opus?.contextWindowTokens).toBe(1_000_000);
   });
 
+  it('surfaces supportsReasoning from the STATIC registry tier (ADR-0066) — true for a reasoning model, false otherwise', () => {
+    const entries = mergeModelCatalog({ now: BEFORE_DEEPSEEK_DEPRECATION });
+    // A registry model tagged `reasoning: true` (flagship) exposes the effort-controllable capability…
+    expect(byId(entries, 'claude-opus-4-8')?.supportsReasoning).toBe(true);
+    // …a registry model NOT so tagged (DeepSeek is deferred, ADR-0066) is false — the picker skips its effort sub-step.
+    expect(byId(entries, 'deepseek-v4-flash')?.supportsReasoning).toBe(false);
+  });
+
+  it('a LIVE-only model (no registry tier) is never reasoning-capable — capability is a shipped-registry fact', () => {
+    const entries = mergeModelCatalog({
+      live: liveMap([['openai', [{ id: 'gpt-6-preview', displayName: 'GPT-6 preview' }]]]),
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    expect(byId(entries, 'gpt-6-preview')?.supportsReasoning).toBe(false); // not inferred from a discovery listing
+  });
+
   it('availability: a static model NOT in a CONNECTED provider live list is dimmed, one present is available', () => {
     const entries = mergeModelCatalog({
       live: liveMap([['anthropic', [{ id: 'claude-opus-4-8' }]]]),

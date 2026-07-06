@@ -52,6 +52,14 @@ export interface ModelCatalogEntry {
   readonly deprecated: boolean;
   /** The effective ISO deprecation date — the earlier of the static and live dates (their union). */
   readonly deprecatedAt?: string;
+  /**
+   * Whether the model exposes a controllable reasoning-effort tier ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md)).
+   * Sourced from the STATIC registry only (`MODEL_PRICING[id].reasoning === true`) — the same authority as
+   * `modelSupportsReasoning`, so the picker's effort sub-step and the engine's `resolveReasoning` gate agree. A
+   * live-only / user-only id (no registry tier) is `false` (reasoning capability is a shipped-registry fact, never
+   * inferred from a discovery listing or a user price row).
+   */
+  readonly supportsReasoning: boolean;
 }
 
 /** Input to {@link mergeModelCatalog} — all plain data the host resolves and passes in (keeps the merge pure). */
@@ -181,6 +189,10 @@ export function mergeModelCatalog(input: MergeModelCatalogInput): ModelCatalogEn
       ...(unavailableReason !== undefined ? { unavailableReason } : {}),
       deprecated,
       ...(deprecatedAt !== undefined ? { deprecatedAt } : {}),
+      // Reasoning capability rides the STATIC registry tier only (never live/user) — the same source as
+      // `modelSupportsReasoning`, so the picker's effort sub-step lights up exactly for the models the engine gate
+      // will actually honor (ADR-0066).
+      supportsReasoning: t.registry?.reasoning === true,
     });
   }
 

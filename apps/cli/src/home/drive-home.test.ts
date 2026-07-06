@@ -300,7 +300,12 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     await flush();
     expect(props.controller.getSnapshot().modelPicker).toBeDefined();
     type(props, 'opus'); // filter to claude-opus-4-8 (registry-priced anthropic ⇒ available on the scripted key)
-    props.controller.handleKey('', ENTER); // accept ⇒ the REAL reseatChat
+    props.controller.handleKey('', ENTER); // opus is reasoning-capable ⇒ the ADR-0066 effort sub-step (not an
+    // immediate reseat). The picker advanced to the effort phase over the pending model.
+    const effortPicker = props.controller.getSnapshot().modelPicker;
+    expect(effortPicker?.phase).toBe('effort');
+    expect(effortPicker?.pending?.modelId).toBe('claude-opus-4-8');
+    props.controller.handleKey('', ENTER); // apply the highlighted tier (default 'medium') ⇒ the REAL reseatChat
     await flush();
 
     // The session was reseated: a NEW session object, the SAME sessionId, bound to opus, carrying the prior turn.
@@ -309,6 +314,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(reseated?.sessionId).toBe(sessionId); // a reseat CONTINUES the same session (unlike /clear's new id)
     expect(reseated?.store.getSnapshot().state.model).toBe('claude-opus-4-8'); // rebound to the picked model
     expect(reseated?.store.getSnapshot().state.turnCount).toBe(1); // the prior turn carried
+    expect(reseated?.boundEffort).toBe('medium'); // the effort sub-step's tier bound onto the reseated agent (ADR-0066)
     expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
     expect(props.controller.getSnapshot().mode).toBe('chat'); // stayed in chat
 
@@ -317,6 +323,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     await flush();
     const full = createSessionStore(client.db).loadFull(sessionId);
     expect(full?.session.agentSnapshot?.model).toBe('claude-opus-4-8');
+    expect(full?.session.agentSnapshot?.reasoning_effort).toBe('medium'); // the effort tier persisted onto the snapshot
     expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant']); // the single carried exchange
 
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
