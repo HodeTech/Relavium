@@ -54,13 +54,14 @@ relavium provider add openai --pricing-url https://my-gateway.example.com/pricin
 ```
 
 - `--base-url` is **OpenAI-compatible only** (`openai` / `deepseek`); on `anthropic` /
-  `gemini` it is refused (exit 2). All egress to a custom base URL — streaming turns **and**
-  the model-list refresh — goes through an **SSRF-validated** hop
-  ([ADR-0065](../decisions/0065-provider-economics-and-extensibility.md) §3–4): HTTPS-only,
-  no embedded credentials, no private/loopback/link-local host, and no terminal-control /
-  bidirectional characters. A custom endpoint **reuses** the `openai` / `deepseek` id, so it
-  cannot coexist with the real vendor under that id (a genuinely-separate custom id awaits a
-  future enum-opening ADR).
+  `gemini` it is refused (exit 2). The URL is validated at **`add` time** — HTTPS, no embedded
+  credentials, no terminal-control / bidirectional characters — so a clean value is what gets
+  stored. Then **every** egress to it — streaming turns **and** the model-list refresh — rides
+  a per-request **SSRF-validated** hop
+  ([ADR-0065](../decisions/0065-provider-economics-and-extensibility.md) §3–4) that re-checks
+  HTTPS + no-credentials and blocks a private/loopback/link-local host (with DNS-rebinding
+  protection). A custom endpoint **reuses** the `openai` / `deepseek` id, so it cannot coexist
+  with the real vendor under that id (a genuinely-separate custom id awaits a future enum-opening ADR).
 - `--pricing-url` is a **display-only pointer** (never fetched), so it may point at any HTTPS
   host with no embedded credentials (no SSRF host block); it is where you go to find a model's
   price for step 6.
