@@ -257,7 +257,10 @@ async function validateWithRetry(
     deps.validate ??
     (async (id: ProviderId, k: string): Promise<ProviderKeyValidation> => {
       const adapter = deps.resolver.resolveProvider(id);
-      // No adapter (a test stub) ⇒ can't probe → don't block the flow; treat as verified.
+      // A NON-PRODUCTION path only: the real `createProviderResolver` returns an adapter for every `ProviderId`, so
+      // this `undefined` branch is reachable ONLY by a test stub (`resolveProvider: () => undefined`). There it
+      // can't probe, so it treats the key as ok to avoid blocking the scripted flow; in production every first-run
+      // key is genuinely probed, so the "Verified and stored" copy is never shown for an un-probed key.
       if (adapter === undefined) return { ok: true, detail: 'skipped', reason: 'ok' };
       return validateProviderKey(adapter, k, KNOWN_PROVIDERS[id].testModel);
     });
@@ -266,8 +269,15 @@ async function validateWithRetry(
   for (;;) {
     const sp = p.spinner?.();
     sp?.start(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`);
-    const res = await validate(provider, keyToStore);
-    sp?.stop(res.ok ? 'Key verified.' : 'Key check finished.');
+    // The spinner MUST stop even if the probe rejects unexpectedly (validateProviderKey never rejects, but a future
+    // injected `validate` might) — otherwise a runaway spinner interval would sit over the ink-hosted Home while the
+    // throw propagates to the Home's cleanup. The `finally` stops it; the throw then surfaces cleanly there.
+    let res: ProviderKeyValidation;
+    try {
+      res = await validate(provider, keyToStore);
+    } finally {
+      sp?.stop('Key check finished.');
+    }
     if (res.ok) return { keyToStore, verified: true };
 
     // The order + the pre-highlighted (bare-Enter) option depend on the CAUSE: an offline/transient `network`

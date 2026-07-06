@@ -4,6 +4,7 @@ import {
   createCustomOpenAiProvider,
   defaultProviders,
   InvalidBaseUrlError,
+  isRetryable,
   LlmProviderError,
   type LlmProvider,
   type ProviderId,
@@ -216,20 +217,13 @@ export async function validateProviderKey(
 }
 
 /** Map a probe throw → a {@link ValidationReason}, from the seam's `LlmProviderError.llmError.kind` (never a string
- *  heuristic). A non-`LlmProviderError` (or an unclassified kind) is `'other'`. No provider text is read. */
+ *  heuristic). A non-`LlmProviderError` is `'other'`. The `'network'` (continue-anyway) bucket IS exactly the seam's
+ *  RETRYABLE (transient) set — bound to `isRetryable` so a new transient kind can't drift out of it. No text read. */
 function classifyValidationFailure(err: unknown): ValidationReason {
   if (!(err instanceof LlmProviderError)) return 'other';
-  switch (err.llmError.kind) {
-    case 'auth':
-      return 'auth';
-    case 'timeout':
-    case 'transport':
-    case 'overloaded':
-    case 'rate_limit':
-      return 'network';
-    default:
-      return 'other'; // bad_request / content_filter / cancelled / unknown
-  }
+  const kind = err.llmError.kind;
+  if (kind === 'auth') return 'auth'; // a rejected key — re-entering is the remedy
+  return isRetryable(kind) ? 'network' : 'other'; // transient (timeout/transport/overloaded/rate_limit) ⇒ network
 }
 
 /**
