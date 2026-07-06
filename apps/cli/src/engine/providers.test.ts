@@ -1,11 +1,13 @@
 import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
 import type { ProviderRecord } from '@relavium/db';
 import { LlmProviderError, type LlmProvider } from '@relavium/llm';
+import { LLM_PROVIDERS } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import {
   createProviderResolver,
+  KNOWN_PROVIDER_IDS,
   KNOWN_PROVIDERS,
   neededProviderIds,
   providerHasKey,
@@ -140,6 +142,28 @@ describe('providerKeyEnvVar', () => {
   it('maps a lowercase provider id to its uppercase env var', () => {
     expect(providerKeyEnvVar('anthropic')).toBe('RELAVIUM_ANTHROPIC_API_KEY');
     expect(providerKeyEnvVar('deepseek')).toBe('RELAVIUM_DEEPSEEK_API_KEY');
+  });
+});
+
+describe('KNOWN_PROVIDER_IDS ↔ LLM_PROVIDERS lock-step (2.5.G Step-A latent coupling)', () => {
+  it('registers every seam provider id for CLI onboarding + key-probing (equal sets)', () => {
+    // `KNOWN_PROVIDER_IDS satisfies readonly ProviderId[]` already enforces KNOWN_PROVIDER_IDS ⊆ LLM_PROVIDERS at
+    // COMPILE time. This pins the UNENFORCED reverse (LLM_PROVIDERS ⊆ KNOWN_PROVIDER_IDS): a provider in the seam's
+    // closed enum but MISSING from KNOWN_PROVIDER_IDS is silently mis-dimmed in the Home — the key-probe filters
+    // KNOWN_PROVIDER_IDS, so the new provider is never in `keyedProviders`, and `mergeModelCatalog` marks its
+    // model_catalog rows `available: false` + `unavailableReason: 'no-key'` even with a stored key. Adding a
+    // provider to LLM_PROVIDERS therefore REQUIRES a KNOWN_PROVIDERS entry (incl. a testModel); this red run is
+    // the reminder. `toEqual` compares Set membership structurally (order-independent).
+    expect(new Set(KNOWN_PROVIDER_IDS)).toEqual(new Set(LLM_PROVIDERS));
+  });
+
+  it('gives every known provider a non-empty testModel (so its key is live-validatable)', () => {
+    // The onboarding wizard + `provider test` + `/doctor --deep` all ping `KNOWN_PROVIDERS[id].testModel`; an empty
+    // string would break the live key-check. The `Record<KNOWN_PROVIDER_IDS[number], ProviderMeta>` type guarantees
+    // a row per id, so this asserts the field's VALUE, not its presence.
+    for (const id of KNOWN_PROVIDER_IDS) {
+      expect(KNOWN_PROVIDERS[id].testModel.trim().length).toBeGreaterThan(0);
+    }
   });
 });
 
