@@ -115,22 +115,25 @@ export function modelsPricingCommand(
   // Convert + bounds-validate BEFORE the write (a bad `--cached` must not leave a partially-applied row).
   const inputCostPerMtokMicrocents = usdToMicrocents(args.inputUsdPerMtok, '--input');
   const outputCostPerMtokMicrocents = usdToMicrocents(args.outputUsdPerMtok, '--output');
+  // OMITTED `--cached` ⇒ `undefined` (not `0`): so the upsert can OMIT the column and the store PRESERVES an
+  // existing cached price on a re-price, rather than the `??`-passing `0` silently zeroing a hand-entered rate.
   const cachedInputCostPerMtokMicrocents =
     args.cachedInputUsdPerMtok === undefined
-      ? 0
+      ? undefined
       : usdToMicrocents(args.cachedInputUsdPerMtok, '--cached');
 
   // A pricing-ONLY upsert: omit display name + limits (and every media/capability column) so the store PRESERVES
   // whatever an existing row carries — including a soft-deactivated live row the active-only reader cannot see, so
   // a re-price never zeroes a discovered name/context. A brand-new user-priced model defaults display → the id and
-  // limits → the `0` "unknown" sentinel (in the store), so no read is needed here.
+  // limits → the `0` "unknown" sentinel (in the store), so no read is needed here. `cachedInput…` is omitted when
+  // `--cached` was not passed (so the store preserves the existing cached rate — see the local above).
   deps.catalog.upsert({
     providerId: providerRow.id,
     modelId: args.model,
     source: 'user',
     inputCostPerMtokMicrocents,
     outputCostPerMtokMicrocents,
-    cachedInputCostPerMtokMicrocents,
+    ...(cachedInputCostPerMtokMicrocents === undefined ? {} : { cachedInputCostPerMtokMicrocents }),
   });
 
   if (deps.global.json) {
@@ -142,7 +145,9 @@ export function modelsPricingCommand(
         source: 'user',
         inputCostPerMtokMicrocents,
         outputCostPerMtokMicrocents,
-        cachedInputCostPerMtokMicrocents,
+        // The `--json` field stays present as `0` when `--cached` was omitted (unchanged contract) even though the
+        // store now PRESERVES the existing cached rate rather than writing this `0` (see the upsert above).
+        cachedInputCostPerMtokMicrocents: cachedInputCostPerMtokMicrocents ?? 0,
       },
     ]);
     return EXIT_CODES.success;

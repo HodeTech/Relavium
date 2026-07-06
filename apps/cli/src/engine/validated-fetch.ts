@@ -201,12 +201,17 @@ function hopBodyToStream(hop: HopResponse): ReadableStream<Uint8Array> {
     },
     cancel() {
       dispose();
-      // Best-effort iterator cleanup — a `return()` rejection must never escape `cancel()` (and must not float).
-      const returned = iterator.return?.(undefined);
-      if (returned !== undefined) {
-        returned.catch(() => {
-          // ignore — cancel is best-effort and must not throw
-        });
+      // Best-effort iterator cleanup — a `return()` fault must never escape `cancel()` nor leave a floating promise:
+      // catch a SYNCHRONOUS throw, and attach a no-op `.catch` to an async rejection.
+      try {
+        const returned = iterator.return?.(undefined);
+        if (returned !== undefined) {
+          returned.catch(() => {
+            // ignore — cancel is best-effort and must not throw
+          });
+        }
+      } catch {
+        // ignore — a synchronous return() throw is best-effort cleanup, never propagated
       }
     },
   });

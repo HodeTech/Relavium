@@ -97,6 +97,14 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
     expect(listing?.cachedInputCostPerMtokMicrocents).toBe(3_000_000); // $0.03 × 1e8
   });
 
+  it('a re-price that OMITS --cached PRESERVES the previously-stored cached price (not zeroed)', () => {
+    run({ ...baseArgs, cachedInputUsdPerMtok: 0.03 }); // first: set a cached price
+    run({ ...baseArgs, inputUsdPerMtok: 5 }); // re-price WITHOUT --cached (change input only)
+    const listing = catalog.listAll().find((m) => m.modelId === 'acme-custom-1');
+    expect(listing?.cachedInputCostPerMtokMicrocents).toBe(3_000_000); // preserved — NOT overwritten with 0
+    expect(listing?.inputCostPerMtokMicrocents).toBe(500_000_000); // the input re-price DID take ($5 × 1e8)
+  });
+
   it('--json emits one key-free record with the stored micro-cents', () => {
     const { code, out } = run(baseArgs, true);
     expect(code).toBe(EXIT_CODES.success);

@@ -678,9 +678,16 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     try {
       port.writeDefault(modelId);
     } catch {
+      // A generic save-failure hint — the actual write target may be a `--config` override, not the canonical
+      // `~/.relavium/config.toml`, so don't name a path the user may not be using.
       const open = state.modelPicker;
       if (open !== undefined) {
-        set({ modelPicker: { ...open, hint: 'could not save — check ~/.relavium/config.toml' } });
+        set({
+          modelPicker: {
+            ...open,
+            hint: 'could not save the default model — check your config file.',
+          },
+        });
       }
       return;
     }

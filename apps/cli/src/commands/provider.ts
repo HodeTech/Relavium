@@ -213,7 +213,9 @@ function statusColumn(
   outcome: VerifyOutcome | undefined,
 ): string {
   if (!verify) return record.apiKeyKeychainRef !== undefined ? 'key set' : 'no key';
-  if (outcome === undefined || outcome.verified === null) return 'no key';
+  // `== null` (the one deliberate loose check) folds a missing outcome AND a `verified: null` (no key / not
+  // verifiable) into the single "no key" column — via an optional chain, so `outcome` need not be re-tested.
+  if (outcome?.verified == null) return 'no key';
   // `outcome.detail` is already cleaned + bounded at the source (verifyProvider → cleanDetail).
   return outcome.verified ? 'verified' : `failed — ${outcome.detail ?? 'verification failed'}`;
 }

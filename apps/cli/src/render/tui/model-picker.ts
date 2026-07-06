@@ -232,7 +232,9 @@ function foldFilterKey(
       state: { ...state, filter: dropLastCodePoint(state.filter), selected: 0 },
     };
   }
-  if ([...char].length === 1 && key.ctrl !== true && key.meta !== true) {
+  // A single PRINTABLE code point extends the filter — a multi-char paste blob is dropped (matching the other
+  // submodes), and a control character (`\p{Cc}` — e.g. Tab) is ignored rather than inserted as invisible filter text.
+  if ([...char].length === 1 && key.ctrl !== true && key.meta !== true && !/\p{Cc}/u.test(char)) {
     return { kind: 'state', state: { ...state, filter: state.filter + char, selected: 0 } };
   }
   return { kind: 'state', state };

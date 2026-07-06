@@ -153,6 +153,18 @@ describe('foldModelPickerKey', () => {
     const blob = foldModelPickerKey('pasted text', {}, state());
     expect(blob).toEqual({ kind: 'state', state: state() }); // unchanged
   });
+
+  it('ignores a single CONTROL character (Tab / ESC / NUL / DEL) \u2014 never inserted as invisible filter text', () => {
+    for (const control of ['\t', '\x1b', '\x00', '\x7f']) {
+      const s = state({ filter: 'ab' });
+      expect(foldModelPickerKey(control, {}, s)).toEqual({ kind: 'state', state: s }); // filter unchanged
+    }
+    // A regular printable char still extends it (the guard rejects only control chars).
+    expect(foldModelPickerKey('x', {}, state({ filter: 'ab' }))).toEqual({
+      kind: 'state',
+      state: state({ filter: 'abx', selected: 0 }),
+    });
+  });
 });
 
 describe('foldModelPickerKey — the ADR-0066 effort sub-step', () => {

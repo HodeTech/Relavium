@@ -630,12 +630,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       }
       return;
     }
-    props.onReseat?.({
+    // DIFFERENT model: a live reseat — only when `onReseat` is actually wired. Without it (a driver/test with the
+    // picker but no reseat support), do NOT call `onExit()` — that would close the chat WITHOUT applying the switch;
+    // the pick is simply dropped (defensive — production always wires `onReseat` alongside the picker).
+    if (props.onReseat === undefined) return;
+    props.onReseat({
       modelId: step.modelId,
       provider: step.provider,
       ...(step.reasoningEffort === undefined ? {} : { reasoningEffort: step.reasoningEffort }),
     });
-    props.onExit();
+    props.onExit(); // the reseat set the stop state; end the loop so runReplLoop swaps in the new-model session
   };
 
   // The open picker owns every key (mirrors routeMentionKey). Route the fold's step; the accept/blocked cases
