@@ -91,12 +91,19 @@ export interface ProviderMeta {
 /**
  * The known providers (each has an `@relavium/llm` adapter). The single home for CLI provider metadata:
  * `displayName`, `baseUrl`, a cheap `testModel` for the live key-check, and the public `pricingUrl`. Every
- * provider-facing CLI surface is **data-driven off this map + {@link KNOWN_PROVIDER_IDS}** — the first-run
- * onboarding **wizard** ([onboarding/wizard.ts](../onboarding/wizard.ts)), `relavium provider add` / `provider
- * test`, the `/doctor --deep` key probe, and the `/models` Home key-gate all iterate `KNOWN_PROVIDER_IDS` and read
- * `KNOWN_PROVIDERS[id]`. So registering a provider here (plus its `LLM_PROVIDERS` id — see below) lights up every
- * surface with **no per-surface edit**; a new provider's test model / display name is defined once. See the
- * `add-llm-adapter` skill for the end-to-end checklist.
+ * provider-facing CLI surface is **data-driven off this map + {@link KNOWN_PROVIDER_IDS}** — registering a provider
+ * here (plus its `LLM_PROVIDERS` id — see below) lights up every surface with **no per-surface edit**, via one of
+ * two access patterns:
+ *  - **Iterate `KNOWN_PROVIDER_IDS`** (enumerate every known provider): the first-run onboarding **wizard**
+ *    ([onboarding/wizard.ts](../onboarding/wizard.ts)), the `/doctor --deep` key probe, and the `/models` Home
+ *    key-gate ([drive-home.tsx](../home/drive-home.tsx)). A provider absent from `KNOWN_PROVIDER_IDS` is simply
+ *    invisible / mis-dimmed here (see the {@link KNOWN_PROVIDER_IDS} lock-step note).
+ *  - **Validate one supplied id, then index `KNOWN_PROVIDERS[id]`** for its metadata: `relavium provider add` /
+ *    `set-key` / `remove-key` / `test`, which accept a single name gated by the WIDER `ProviderIdSchema`
+ *    (`z.enum(LLM_PROVIDERS)`) — so an `LLM_PROVIDERS` id absent from `KNOWN_PROVIDERS` would pass validation and
+ *    then throw on the `undefined` metadata lookup (the second reason the two lists must stay in lock-step).
+ * A new provider's test model / display name is thus defined once. See the `add-llm-adapter` skill for the
+ * end-to-end checklist.
  */
 /** The provider ids the CLI knows how to validate + onboard (those with a `testModel`). The const tuple is the
  *  SOURCE OF TRUTH — `satisfies readonly ProviderId[]` validates each is a real `ProviderId` (no cast, no
@@ -108,9 +115,10 @@ export interface ProviderMeta {
  *  added to `LLM_PROVIDERS` (so a live/static `model_catalog` row can exist for it) but MISSING here is silently
  *  mis-dimmed in the Home: the key-probe ([drive-home.tsx](../home/drive-home.tsx)) filters `KNOWN_PROVIDER_IDS`,
  *  so the new provider is never in `keyedProviders`, and `mergeModelCatalog` marks its models `available: false` +
- *  `unavailableReason: 'no-key'` EVEN WITH a stored key (the 2.5.G Step-A latent coupling). A guard test
- *  (`providers.test.ts`) pins the two as equal sets, so a missed registration is a red CI run, not a runtime
- *  mis-dim. */
+ *  `unavailableReason: 'no-key'` EVEN WITH a stored key (the 2.5.G Step-A latent coupling). The `provider`
+ *  commands (`add`/`set-key`/`test`), whose id-validation accepts the wider `LLM_PROVIDERS`, would instead throw on
+ *  the `undefined` `KNOWN_PROVIDERS[id]` metadata lookup. A guard test (`providers.test.ts`) pins the two as equal
+ *  sets, so a missed registration is a red CI run — not either runtime failure. */
 export const KNOWN_PROVIDER_IDS = [
   'anthropic',
   'openai',
