@@ -4,6 +4,7 @@ import {
   createCustomOpenAiProvider,
   defaultProviders,
   InvalidBaseUrlError,
+  LlmProviderError,
   type LlmProvider,
   type ProviderId,
 } from '@relavium/llm';
@@ -132,11 +133,23 @@ export const KNOWN_PROVIDERS: Record<(typeof KNOWN_PROVIDER_IDS)[number], Provid
  *  enough that a stalled provider can never hang `provider test` or `/doctor --deep`. */
 export const VALIDATE_KEY_TIMEOUT_MS = 10_000;
 
-/** The outcome of a {@link validateProviderKey} probe — `ok` plus a secret-free `detail` line. */
+/**
+ * Why a {@link validateProviderKey} probe ended — so a caller can branch on the CAUSE, not by string-matching
+ * `detail` (2.5.G S8 wizard). `'auth'` — the key was rejected (a bad key; retrying with a new key is the remedy);
+ * `'network'` — a timeout / transport / overloaded / rate-limit (offline/transient; "continue anyway" is the sane
+ * default so an offline first-run isn't blocked); `'other'` — a non-auth request fault or an unexpected throw.
+ * Sourced from the seam's own `LlmProviderError.llmError.kind`, never a heuristic — a Relavium classification, not
+ * a message; it carries no provider text.
+ */
+export type ValidationReason = 'ok' | 'auth' | 'network' | 'other';
+
+/** The outcome of a {@link validateProviderKey} probe — `ok` plus a secret-free `detail` line + a {@link ValidationReason}. */
 export interface ProviderKeyValidation {
   readonly ok: boolean;
   /** Secret-free: `key works (<model>)` on success, or `key test failed — <redacted>` on failure. */
   readonly detail: string;
+  /** The cause discriminant (2.5.G S8) — `'ok'` on success, else `'auth'` / `'network'` / `'other'`. */
+  readonly reason: ValidationReason;
 }
 
 /**
@@ -162,14 +175,14 @@ export async function validateProviderKey(
   // and garble the message (no secret leaks — the key is empty — but the detail becomes nonsense). All current
   // callers resolve a non-empty key (createProviderResolver rejects `''`); this closes the footgun at the seam.
   if (key.length === 0) {
-    return { ok: false, detail: 'key test failed — (no key)' };
+    return { ok: false, detail: 'key test failed — (no key)', reason: 'other' };
   }
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<ProviderKeyValidation>((resolve) => {
     timer = setTimeout(() => {
       controller.abort();
-      resolve({ ok: false, detail: `key test failed — timeout (${timeoutMs}ms)` });
+      resolve({ ok: false, detail: `key test failed — timeout (${timeoutMs}ms)`, reason: 'network' });
     }, timeoutMs);
   });
   const probe = (async (): Promise<ProviderKeyValidation> => {
@@ -183,16 +196,39 @@ export async function validateProviderKey(
         },
         key,
       );
-      return { ok: true, detail: `key works (${model})` };
+      return { ok: true, detail: `key works (${model})`, reason: 'ok' };
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
-      return { ok: false, detail: `key test failed — ${raw.split(key).join(keyHint(key))}` };
+      return {
+        ok: false,
+        detail: `key test failed — ${raw.split(key).join(keyHint(key))}`,
+        // Classify from the seam's own error kind (never a string heuristic): a rejected key is `auth` (retry with
+        // a new key); a timeout/transport/overloaded/rate-limit is `network` (continue-anyway is sane); else `other`.
+        reason: classifyValidationFailure(err),
+      };
     }
   })();
   try {
     return await Promise.race([probe, timeout]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/** Map a probe throw → a {@link ValidationReason}, from the seam's `LlmProviderError.llmError.kind` (never a string
+ *  heuristic). A non-`LlmProviderError` (or an unclassified kind) is `'other'`. No provider text is read. */
+function classifyValidationFailure(err: unknown): ValidationReason {
+  if (!(err instanceof LlmProviderError)) return 'other';
+  switch (err.llmError.kind) {
+    case 'auth':
+      return 'auth';
+    case 'timeout':
+    case 'transport':
+    case 'overloaded':
+    case 'rate_limit':
+      return 'network';
+    default:
+      return 'other'; // bad_request / content_filter / cancelled / unknown
   }
 }
 

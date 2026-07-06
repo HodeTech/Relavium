@@ -1,6 +1,6 @@
 import { parseWorkflow, type WorkflowDefinition } from '@relavium/core';
 import type { ProviderRecord } from '@relavium/db';
-import type { LlmProvider } from '@relavium/llm';
+import { LlmProviderError, type LlmProvider } from '@relavium/llm';
 import { describe, expect, it, vi } from 'vitest';
 
 import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
@@ -187,8 +187,37 @@ describe('validateProviderKey', () => {
   it('reports ok with the test model on a successful ping', async () => {
     const generate = vi.fn().mockResolvedValue({});
     const result = await validateProviderKey(fakeProvider(generate), TEST_KEY, 'm-test');
-    expect(result).toEqual({ ok: true, detail: 'key works (m-test)' });
+    expect(result).toEqual({ ok: true, detail: 'key works (m-test)', reason: 'ok' });
     expect(generate).toHaveBeenCalledWith(expect.anything(), TEST_KEY); // the key reached generate, not the detail
+  });
+
+  it('classifies the failure CAUSE from the seam error kind — auth vs network vs other (2.5.G S8)', async () => {
+    const err = (kind: 'auth' | 'timeout' | 'bad_request'): LlmProviderError =>
+      new LlmProviderError({ kind, retryable: false, provider: 'anthropic', message: `${kind} boom` });
+    const auth = await validateProviderKey(
+      fakeProvider(vi.fn().mockRejectedValue(err('auth'))),
+      TEST_KEY,
+      'm-test',
+    );
+    expect(auth).toMatchObject({ ok: false, reason: 'auth' }); // a rejected key → auth (retry with a new key)
+    const net = await validateProviderKey(
+      fakeProvider(vi.fn().mockRejectedValue(err('timeout'))),
+      TEST_KEY,
+      'm-test',
+    );
+    expect(net.reason).toBe('network'); // transient/offline → network (continue-anyway is sane)
+    const other = await validateProviderKey(
+      fakeProvider(vi.fn().mockRejectedValue(err('bad_request'))),
+      TEST_KEY,
+      'm-test',
+    );
+    expect(other.reason).toBe('other');
+    const plain = await validateProviderKey(
+      fakeProvider(vi.fn().mockRejectedValue(new Error('not a seam error'))),
+      TEST_KEY,
+      'm-test',
+    );
+    expect(plain.reason).toBe('other'); // a non-LlmProviderError throw → other
   });
 
   it('REDACTS the key from a failing-ping message (never the full key, keeps the last-4 hint)', async () => {
@@ -211,7 +240,7 @@ describe('validateProviderKey', () => {
   it('guards an empty key (the split("") footgun) without calling generate', async () => {
     const generate = vi.fn();
     const result = await validateProviderKey(fakeProvider(generate), '', 'm-test');
-    expect(result).toEqual({ ok: false, detail: 'key test failed — (no key)' });
+    expect(result).toEqual({ ok: false, detail: 'key test failed — (no key)', reason: 'other' });
     expect(generate).not.toHaveBeenCalled();
   });
 

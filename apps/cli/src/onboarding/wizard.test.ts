@@ -10,6 +10,7 @@ import {
   keychainAccount,
   type KeychainStore,
 } from '../secrets/keychain.js';
+import type { ProviderKeyValidation } from '../engine/providers.js';
 import {
   isProviderKeyless,
   runOnboardingWizard,
@@ -17,6 +18,34 @@ import {
 } from './wizard.js';
 
 const CANCEL = Symbol('clack-cancel');
+
+/** A prompter that drains QUEUES of `select`/`password` results (for the retry flow) — a bare no-op spinner. */
+function queuedPrompter(
+  selects: (string | symbol)[],
+  passwords: (string | symbol)[],
+): { prompter: ClackOnboardingDeps; notes: string[]; outros: string[] } {
+  const notes: string[] = [];
+  const outros: string[] = [];
+  const prompter: ClackOnboardingDeps = {
+    intro: () => undefined,
+    outro: (m) => {
+      outros.push(m);
+    },
+    note: (m, t) => {
+      notes.push(`${t ?? ''}\n${m}`);
+    },
+    select: () => Promise.resolve(selects.shift() ?? CANCEL),
+    password: () => Promise.resolve(passwords.shift() ?? CANCEL),
+    isCancel: (v): v is symbol => typeof v === 'symbol',
+    spinner: () => ({ start: () => undefined, stop: () => undefined }),
+  };
+  return { prompter, notes, outros };
+}
+
+/** A scripted live-validation port draining a queue of outcomes (defaulting to ok when exhausted). */
+function validateSeq(results: ProviderKeyValidation[]): (id: string, key: string) => Promise<ProviderKeyValidation> {
+  return () => Promise.resolve(results.shift() ?? { ok: true, detail: 'ok', reason: 'ok' });
+}
 
 /** A scripted clack slice: fixed `select`/`password` results (a `symbol` = cancel), spies + captured notes/outros. */
 function scriptedPrompter(script: { provider?: string | symbol; key?: string | symbol }): {
@@ -211,5 +240,110 @@ describe('runOnboardingWizard', () => {
     expect(all).not.toContain('sk-ds-1234'); // and certainly not the key
     expect(keychain.store.get(keychainAccount('deepseek'))).toBe('sk-ds-1234'); // the key IS stored (set ran first)
     expect(writeDefaultModel).not.toHaveBeenCalled(); // no default model on a failed store
+  });
+
+  // ── Live key validation + retry UX (2.5.G S8) ─────────────────────────────────────────────
+  it('a bad key (auth) → RETRY → a good key: stores the SECOND key, note says Verified', async () => {
+    const keychain = memKeychain();
+    const s = store();
+    const writeDefaultModel = vi.fn();
+    const { prompter, notes } = queuedPrompter(
+      ['openai', 'retry'], // provider, then the retry-decision
+      ['sk-bad-first', 'sk-good-second'], // initial key, then the re-entered key
+    );
+    await runOnboardingWizard({
+      prompter,
+      store: s,
+      keychain,
+      resolver: stubResolver,
+      io,
+      writeDefaultModel,
+      validate: validateSeq([
+        { ok: false, detail: 'key test failed — invalid_api_key', reason: 'auth' },
+        { ok: true, detail: 'key works', reason: 'ok' },
+      ]),
+    });
+    // The SECOND (re-entered) key is what landed — a bad key never reaches the keychain.
+    expect(keychain.store.get(keychainAccount('openai'))).toBe('sk-good-second');
+    const all = notes.join('\n');
+    expect(all).toContain('Verified and stored');
+    expect(all).not.toContain('sk-bad-first');
+    expect(all).not.toContain('sk-good-second');
+  });
+
+  it('a bad key (auth) → CONTINUE anyway: stores the FIRST key, note says couldn\'t be verified (secret-free)', async () => {
+    const keychain = memKeychain();
+    const s = store();
+    const writeDefaultModel = vi.fn();
+    const { prompter, notes } = queuedPrompter(['openai', 'continue'], ['sk-unverified-key']);
+    await runOnboardingWizard({
+      prompter,
+      store: s,
+      keychain,
+      resolver: stubResolver,
+      io,
+      writeDefaultModel,
+      validate: validateSeq([{ ok: false, detail: 'key test failed — invalid_api_key', reason: 'auth' }]),
+    });
+    expect(keychain.store.get(keychainAccount('openai'))).toBe('sk-unverified-key'); // consciously accepted
+    const all = notes.join('\n');
+    expect(all).toContain("couldn't be verified");
+    expect(all).not.toContain('sk-unverified-key'); // never echoed, even on the continue path
+  });
+
+  it('a NETWORK failure → default Continue (offline first-run isn\'t blocked): stores the key', async () => {
+    const keychain = memKeychain();
+    const s = store();
+    const writeDefaultModel = vi.fn();
+    const { prompter } = queuedPrompter(['gemini', 'continue'], ['sk-offline-key']);
+    await runOnboardingWizard({
+      prompter,
+      store: s,
+      keychain,
+      resolver: stubResolver,
+      io,
+      writeDefaultModel,
+      validate: validateSeq([{ ok: false, detail: 'key test failed — timeout (10000ms)', reason: 'network' }]),
+    });
+    expect(keychain.store.get(keychainAccount('gemini'))).toBe('sk-offline-key');
+    expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.gemini.testModel);
+  });
+
+  it('a bad key → RETRY → Esc on the re-prompt: SKIPS, keychain empty', async () => {
+    const keychain = memKeychain();
+    const s = store();
+    const writeDefaultModel = vi.fn();
+    const { prompter, notes } = queuedPrompter(['openai', 'retry'], ['sk-bad', CANCEL]);
+    await runOnboardingWizard({
+      prompter,
+      store: s,
+      keychain,
+      resolver: stubResolver,
+      io,
+      writeDefaultModel,
+      validate: validateSeq([{ ok: false, detail: 'key test failed — invalid_api_key', reason: 'auth' }]),
+    });
+    expect(keychain.store.size).toBe(0);
+    expect(writeDefaultModel).not.toHaveBeenCalled();
+    expect(notes.some((n) => n.includes('Skipped'))).toBe(true);
+  });
+
+  it('a bad key → SKIP choice: keychain empty, no default written', async () => {
+    const keychain = memKeychain();
+    const s = store();
+    const writeDefaultModel = vi.fn();
+    const { prompter, notes } = queuedPrompter(['openai', 'skip'], ['sk-bad']);
+    await runOnboardingWizard({
+      prompter,
+      store: s,
+      keychain,
+      resolver: stubResolver,
+      io,
+      writeDefaultModel,
+      validate: validateSeq([{ ok: false, detail: 'key test failed — invalid_api_key', reason: 'auth' }]),
+    });
+    expect(keychain.store.size).toBe(0);
+    expect(writeDefaultModel).not.toHaveBeenCalled();
+    expect(notes.some((n) => n.includes('Skipped'))).toBe(true);
   });
 });

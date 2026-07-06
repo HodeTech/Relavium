@@ -1,5 +1,6 @@
-import { intro, isCancel, note, outro, password, select } from '@clack/prompts';
+import { intro, isCancel, note, outro, password, select, spinner } from '@clack/prompts';
 import type { ProviderStore } from '@relavium/db';
+import type { ProviderId } from '@relavium/llm';
 
 import { runProviderCommand } from '../commands/provider.js';
 import {
@@ -8,6 +9,8 @@ import {
   keyHint,
   providerHasKey,
   providerKeyEnvVar,
+  validateProviderKey,
+  type ProviderKeyValidation,
   type ProviderResolver,
 } from '../engine/providers.js';
 import { CliError } from '../process/errors.js';
@@ -40,6 +43,8 @@ export interface ClackOnboardingDeps {
   readonly select: (opts: {
     message: string;
     options: readonly { value: string; label: string; hint?: string }[];
+    /** Pre-highlight an option so a bare Enter takes it (2.5.G S8 — the "press Enter to continue" affordance). */
+    initialValue?: string;
   }) => Promise<string | symbol>;
   /** A MASKED key prompt (clack `password`) — the hidden interactive key input. */
   readonly password: (opts: {
@@ -48,6 +53,8 @@ export interface ClackOnboardingDeps {
   }) => Promise<string | symbol>;
   /** Clack's cancel sentinel guard (Ctrl-C / ESC) — a real type guard so a non-cancel value narrows. */
   readonly isCancel: (value: unknown) => value is symbol;
+  /** An optional progress spinner for the live key-check moment (2.5.G S8) — omit ⇒ no spinner (a test no-op). */
+  readonly spinner?: () => { start: (message?: string) => void; stop: (message?: string) => void };
 }
 
 // The clack-boundary adapter (the one place the library's exact option shapes are met) — spread the optional
@@ -65,6 +72,7 @@ const defaultPrompter: ClackOnboardingDeps = {
         label: option.label,
         ...(option.hint === undefined ? {} : { hint: option.hint }),
       })),
+      ...(opts.initialValue === undefined ? {} : { initialValue: opts.initialValue }),
     }),
   password: (opts) =>
     password({
@@ -72,6 +80,10 @@ const defaultPrompter: ClackOnboardingDeps = {
       ...(opts.validate === undefined ? {} : { validate: opts.validate }),
     }),
   isCancel,
+  spinner: () => {
+    const sp = spinner();
+    return { start: (message) => sp.start(message), stop: (message) => sp.stop(message) };
+  },
 };
 
 /** The non-clack ports the wizard needs — the keychain-write path + the resolver (injected for tests). */
@@ -86,6 +98,13 @@ export interface OnboardingDeps {
    *  sets a starter model of the CHOSEN provider so the first chat binds a model whose key was just stored — the
    *  built-in default (`claude-sonnet-4-6` → anthropic) would otherwise error for a user who picked another provider. */
   readonly writeDefaultModel: (modelId: string) => void;
+  /**
+   * LIVE-validate a just-entered key (2.5.G S8) — injected for tests (no network). Absent ⇒ the real bounded,
+   * key-redacted {@link validateProviderKey} probe against the provider's cheap `testModel`. The wizard uses the
+   * result's `reason` to branch the retry UX (auth → re-enter; network → continue-anyway). A resolver with no
+   * adapter (a test stub) validates as `ok` so the flow never blocks on an un-probeable provider.
+   */
+  readonly validate?: (id: ProviderId, key: string) => Promise<ProviderKeyValidation>;
 }
 
 /**
@@ -141,6 +160,14 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
   // `requireKey` already rejected a whitespace-only value, so the trimmed key is non-empty.
   const key = rawKey.trim();
 
+  // LIVE-validate the key BEFORE storing it (2.5.G S8), with a retry-not-hard-fail UX so a fat-fingered paste is
+  // instantly recoverable and a bad key never lands in the keychain. `verified` is threaded into the note so the
+  // "connected" copy stays honest on the continue-anyway path. `keyToStore` is what we finally persist (the
+  // originally-typed or a re-entered key). A `null` return ⇒ the user skipped mid-retry.
+  const outcome = await validateWithRetry(p, deps, provider, key);
+  if (outcome === null) return; // skip already surfaced its note/outro
+  const { keyToStore, verified } = outcome;
+
   // Store via the TESTED providerSetKey path (keychain.set + the provider row + the keychain-ref, secret-free). Its
   // one stdout line is suppressed (a silent io) so the wizard's output stays uniformly clack-styled — the wizard
   // surfaces the outcome through a clack note/outro instead.
@@ -153,7 +180,7 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
         store: deps.store,
         keychain: deps.keychain,
         resolver: deps.resolver,
-        readSecret: () => Promise.resolve(key),
+        readSecret: () => Promise.resolve(keyToStore),
         // `global` is read only by `provider list --json`; `set-key` never touches it — a throwaway (the wizard is
         // always interactive, never `--json`).
         global: { json: false, color: false, cwd: process.cwd(), configPath: undefined, verbosity: 'normal' },
@@ -196,21 +223,91 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
   // the user upgrades via `/models`. Best-effort: a config-write fault still leaves a working key (fall back to the
   // `/models` pointer) rather than undoing the store.
   const starterModel = KNOWN_PROVIDERS[provider].testModel;
+  // Honest copy: a verified key is "Verified and stored"; a consciously-accepted (network/continue-anyway) key is
+  // "Saved … couldn't be verified" so the user knows to re-check — never claim verification we didn't do.
+  const storedLine = verified
+    ? `Verified and stored your ${provider} key (${keyHint(keyToStore)}) in the OS keychain.`
+    : `Saved your ${provider} key (${keyHint(keyToStore)}) — it couldn't be verified now. Run /doctor to re-check.`;
   try {
     deps.writeDefaultModel(starterModel);
     p.note(
-      `Stored your ${provider} key (${keyHint(key)}) in the OS keychain.\n` +
-        `Your default model is ${starterModel} — change it anytime with /models.`,
+      `${storedLine}\nYour default model is ${starterModel} — change it anytime with /models.`,
       'Connected',
     );
   } catch {
-    p.note(
-      `Stored your ${provider} key (${keyHint(key)}) in the OS keychain.\n` +
-        `Pick a ${provider} model with /models to start chatting.`,
-      'Connected',
-    );
+    p.note(`${storedLine}\nPick a ${provider} model with /models to start chatting.`, 'Connected');
   }
   p.outro("You're all set — starting Relavium.");
+}
+
+/**
+ * Live-validate a key with a retry loop (2.5.G S8). Returns `{ keyToStore, verified }` once the user has a key to
+ * persist — verified (probe ok), or consciously accepted despite a failure ("save it anyway"). Returns `null` when
+ * the user skips (a note/outro is already shown, mirroring the top-level flow). Never throws for a bad key; only a
+ * clack-prompt fault propagates (caught by the Home's cleanup). Secret-free: the key is never echoed — only the
+ * redacted `detail`. A bad key never reaches the keychain (storage happens only after this resolves).
+ */
+async function validateWithRetry(
+  p: ClackOnboardingDeps,
+  deps: OnboardingDeps,
+  provider: ProviderId,
+  key: string,
+): Promise<{ keyToStore: string; verified: boolean } | null> {
+  const validate =
+    deps.validate ??
+    (async (id: ProviderId, k: string): Promise<ProviderKeyValidation> => {
+      const adapter = deps.resolver.resolveProvider(id);
+      // No adapter (a test stub) ⇒ can't probe → don't block the flow; treat as verified.
+      if (adapter === undefined) return { ok: true, detail: 'skipped', reason: 'ok' };
+      return validateProviderKey(adapter, k, KNOWN_PROVIDERS[id].testModel);
+    });
+
+  let keyToStore = key;
+  for (;;) {
+    const sp = p.spinner?.();
+    sp?.start(`Checking your ${KNOWN_PROVIDERS[provider].displayName} key…`);
+    const res = await validate(provider, keyToStore);
+    sp?.stop(res.ok ? 'Key verified.' : 'Key check finished.');
+    if (res.ok) return { keyToStore, verified: true };
+
+    // The order + the pre-highlighted (bare-Enter) option depend on the CAUSE: an offline/transient `network`
+    // failure defaults to "save it anyway" (don't block an offline first-run); a rejected key defaults to
+    // "re-enter". `res.detail` is already key-redacted, so it is safe to show.
+    const isNetwork = res.reason === 'network';
+    const choice = await p.select({
+      message: isNetwork
+        ? `Couldn't reach ${KNOWN_PROVIDERS[provider].displayName} to verify — you may be offline.`
+        : `That key didn't work — ${res.detail}.`,
+      options: isNetwork
+        ? [
+            { value: 'continue', label: 'Save it anyway', hint: 'verify later with /doctor' },
+            { value: 'retry', label: 'Enter a different key' },
+            { value: 'skip', label: 'Skip setup' },
+          ]
+        : [
+            { value: 'retry', label: 'Enter a new key' },
+            { value: 'continue', label: 'Save it anyway', hint: 'fix it later with /doctor' },
+            { value: 'skip', label: 'Skip setup' },
+          ],
+      initialValue: isNetwork ? 'continue' : 'retry',
+    });
+    if (p.isCancel(choice) || choice === 'skip') {
+      skip(p);
+      return null;
+    }
+    if (choice === 'continue') return { keyToStore, verified: false };
+
+    // 'retry' — re-prompt for a key; Esc here also skips. The new key loops back through validation.
+    const again = await p.password({
+      message: `Paste your ${KNOWN_PROVIDERS[provider].displayName} API key`,
+      validate: requireKey,
+    });
+    if (p.isCancel(again)) {
+      skip(p);
+      return null;
+    }
+    keyToStore = again.trim();
+  }
 }
 
 /** The cancel/skip exit: a friendly pointer to the manual path, then hand off to the Home. */
