@@ -30,7 +30,9 @@ relavium models refresh                                   # 4. discover the mode
 relavium models                                           # 5. list the cached catalog
 ```
 
-Each step is idempotent; re-running `add`/`set-key` never resets a value you set earlier.
+Re-running `add` never resets a base/pricing URL you set earlier, and `set-key` re-registers
+without disturbing that config; `set-key` does overwrite the key itself — that is how you
+rotate (see "Rotate or remove" below).
 
 ## 1. Register the provider
 
@@ -59,8 +61,9 @@ relavium provider add openai --pricing-url https://my-gateway.example.com/pricin
   bidirectional characters. A custom endpoint **reuses** the `openai` / `deepseek` id, so it
   cannot coexist with the real vendor under that id (a genuinely-separate custom id awaits a
   future enum-opening ADR).
-- `--pricing-url` is a **display-only pointer** (never fetched), so it may point anywhere
-  HTTPS; it is where you go to find a model's price for step 6.
+- `--pricing-url` is a **display-only pointer** (never fetched), so it may point at any HTTPS
+  host with no embedded credentials (no SSRF host block); it is where you go to find a model's
+  price for step 6.
 
 ## 2. Store the key
 
@@ -85,9 +88,9 @@ relavium provider test <provider>      # verify one provider (optionally --model
 
 `list --verify` reports `verified` / `failed — <redacted reason>` / `no key` per provider
 (the probes run concurrently, each timeout-bounded). A provider with no resolvable key is
-reported `no key` and never probed. For a machine-readable result use
-`relavium provider list --verify --json` — one key-free NDJSON record per provider
-(`{ name, baseUrl, keySet, verified, verifyDetail }`). No key is ever echoed on any of these.
+reported `no key` and never probed. For a machine-readable result use `relavium provider list
+--verify --json` — one key-free NDJSON record per provider (the record shape is documented in
+[commands.md](../reference/cli/commands.md#relavium-provider)). No key is ever echoed on any of these.
 
 ## 4–5. Discover and list the models
 
@@ -99,9 +102,10 @@ relavium models            # list the cached catalog (auto-refreshes once on an 
 `models refresh` is **per-provider isolated** — one provider's failure never fails the whole
 command (it is reported `failed` / `skipped`, the others still refresh). The catalog is a
 local cache of *which model ids each key can reach*; the shipped `MODEL_PRICING` registry is
-the pricing authority for a known model. A model absent from your key's live list is dimmed
-"not available on your key"; a deprecated model is flagged
-([ADR-0064](../decisions/0064-live-model-catalog.md) §6).
+the pricing authority for a known model. (The interactive Home's `/models` picker
+additionally **dims** a model not available on your key and **flags** a deprecated one; the
+plain `relavium models` list is `<modelId> <provider> ctx=<n> [<source>]` —
+[ADR-0064](../decisions/0064-live-model-catalog.md) §7/§10.)
 
 ## 6. Price a model the registry does not know
 
@@ -121,10 +125,11 @@ as a user row and a live `models refresh` **never** clobbers it; once set, the m
 enforced by the cost cap on `run`, a `run` resumed via `relavium gate`, `chat` /
 `chat-resume`, the interactive Home, and one-shot `agent run`. Guards (each exit 2, nothing
 written): a **built-in-priced** model is refused (the shipped price always wins); an
-**unregistered provider** is refused (do step 1 first); and the **same model id already
-priced under a different provider** is refused (the cost cap keys by model id, so it could
-not tell them apart). Look up the real price at the provider's pricing page — the one
-`--pricing-url` recorded in step 1 (`relavium provider list` shows it).
+**unregistered provider** is refused (do step 1 first); the **same model id already priced
+under a different provider** is refused (the cost cap keys by model id, so it could not tell
+them apart); and a **negative / non-finite / implausibly-large** price is refused. Look up the
+real price at the provider's pricing page — the one `--pricing-url` recorded in step 1 (the
+`provider add` confirmation echoes it).
 
 ## Rotate or remove a key
 
@@ -134,7 +139,8 @@ relavium provider remove-key <provider>                  # delete the key from t
 ```
 
 `remove-key` clears the keychain entry + the row's ref; it leaves the provider row (base URL,
-pricing URL, any user pricing) intact so re-adding a key restores the provider as configured.
+pricing URL) intact — and your user pricing, which lives in a separate `model_catalog` row it
+never touches — so re-adding a key restores the provider as configured.
 
 ## Safety checklist
 
