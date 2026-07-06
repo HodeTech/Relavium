@@ -37,10 +37,9 @@ const NULL_BODY_STATUS: ReadonlySet<number> = new Set([204, 205, 304]);
 /** Build the validated `fetch`. `deps` default to Node's real DNS + pinned-HTTPS connect. */
 export function createValidatedFetch(deps: EgressDeps = nodeEgressDeps): FetchLike {
   return async (input, init) => {
-    const req = await normalizeRequest(input, init);
-    let hop: HopResponse;
     try {
-      hop = await connectValidated(
+      const req = await normalizeRequest(input, init);
+      const hop = await connectValidated(
         req.url,
         {
           allowPrivate: false, // a custom base_url resolving to a private/loopback/metadata address is REFUSED
@@ -51,14 +50,16 @@ export function createValidatedFetch(deps: EgressDeps = nodeEgressDeps): FetchLi
         deps,
         req.signal,
       );
+      // `toResponse` disposes `hop` on its OWN construction failure (the catch here has no `hop` in scope).
+      return toResponse(hop);
     } catch (err) {
-      // connectValidated's policy throws are already typed SafeEgressErrors; a raw resolver/socket fault (e.g. a
-      // DNS error carrying the non-secret hostname) is re-wrapped so ONLY a reason-only SafeEgressError escapes.
+      // EVERY escaping error — a bad method (normalizeRequest), a policy/connect fault or a raw resolver/socket
+      // throw (connectValidated), or a response-mapping failure — is normalized to ONE reason-only SafeEgressError
+      // (never the url/IP/host/key). connectValidated's policy throws are already SafeEgressErrors (preserved).
       throw err instanceof SafeEgressError
         ? err
-        : new SafeEgressError('network', 'egress connect failed');
+        : new SafeEgressError('network', 'egress request failed');
     }
-    return toResponse(hop);
   };
 }
 
@@ -70,8 +71,8 @@ interface NormalizedRequest {
   readonly signal: AbortSignal;
 }
 
-// The `as const satisfies` keeps this set in LOCKSTEP with the `EgressMethod` union — adding one here without
-// updating the union (or vice versa) is a compile error, so the `isEgressMethod` narrowing below stays sound.
+// `as const satisfies readonly EgressMethod[]` verifies every listed method IS a real `EgressMethod` (so the
+// `isEgressMethod` narrowing is sound); a NEW union member not listed here simply isn't accepted (fails closed).
 const EGRESS_METHODS = ['GET', 'POST', 'PUT', 'DELETE'] as const satisfies readonly EgressMethod[];
 const isEgressMethod = (method: string): method is EgressMethod =>
   (EGRESS_METHODS as readonly string[]).includes(method);
@@ -136,7 +137,16 @@ function toResponse(hop: HopResponse): Response {
     hop.dispose(); // a null-body status must not carry a stream — reap the (empty) socket
     return new Response(null, { status: hop.status, headers });
   }
-  return new Response(hopBodyToStream(hop), { status: hop.status, headers });
+  try {
+    return new Response(hopBodyToStream(hop), { status: hop.status, headers });
+  } catch (err) {
+    // The `Response` constructor rejected the headers (a CR/LF/NUL / codepoint > 255 a swapped transport didn't
+    // filter) — the stream was never consumed, so reap the socket directly + surface a reason-only failure.
+    hop.dispose();
+    throw err instanceof SafeEgressError
+      ? err
+      : new SafeEgressError('network', 'egress response could not be mapped');
+  }
 }
 
 /** Wrap the HopResponse's live `AsyncIterable` body in a pull-based `ReadableStream` (backpressure — one chunk per

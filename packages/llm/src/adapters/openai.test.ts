@@ -833,6 +833,24 @@ describe('openaiErrorToLlmError — classification', () => {
     ).toMatchObject({ kind: 'unknown', retryable: false });
   });
 
+  it('EXACT-redacts the resolved key from an echoed error body (a custom endpoint\'s opaque key) (2.5.G S9)', () => {
+    // A custom OpenAI-compatible endpoint's key has no `sk-`/`Bearer` shape, so the shape-based scrubSecrets can't
+    // match it — a hostile/misconfigured proxy that echoes the received credential in its error body would leak the
+    // real key into history.db / --json / the TUI unless the resolved key is exact-redacted (CLAUDE.md #6).
+    const key = ['opaque', 'proxy', 'CREDENTIAL', '4f2a9'].join('-'); // no vendor key shape
+    const echoed = new APIError(401, undefined, `rejected token '${key}' for this endpoint`, undefined);
+    // WITHOUT the key (the listModels path redacts separately) the opaque token would pass through...
+    expect(openaiErrorToLlmError(echoed, 'openai').message).toContain(key);
+    // ...WITH the resolved key threaded (generate/stream/media), it is exact-redacted before it can escape.
+    const redacted = openaiErrorToLlmError(echoed, 'openai', key);
+    expect(redacted.message).not.toContain(key);
+    expect(redacted.kind).toBe('auth'); // classification is preserved
+    // Also redacts a key echoed in the error CODE field.
+    const codeEcho = new APIError(400, undefined, 'bad', undefined);
+    Object.assign(codeEcho, { code: `token_${key}_invalid` });
+    expect(openaiErrorToLlmError(codeEcho, 'openai', key).code).not.toContain(key);
+  });
+
   it('classifies a content-policy / moderation code as content_filter regardless of HTTP status (1.AG §6)', () => {
     const policy = new APIError(400, undefined, 'blocked', undefined);
     Object.assign(policy, { code: 'content_policy_violation' });

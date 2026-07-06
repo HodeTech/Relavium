@@ -179,4 +179,40 @@ describe('createValidatedFetch', () => {
     await expect(fetch('https://api.example.com/v1/models')).rejects.toBeInstanceOf(SafeEgressError);
     expect(dispose).toHaveBeenCalled();
   });
+
+  it('treats 599 as valid and 600 as out-of-range (the status-clamp boundary)', async () => {
+    const ok = createValidatedFetch(fakeDeps({ ips: ['1.2.3.4'], status: 599 }));
+    expect((await ok('https://api.example.com/v1/models')).status).toBe(599);
+    const bad = createValidatedFetch(fakeDeps({ ips: ['1.2.3.4'], status: 600 }));
+    await expect(bad('https://api.example.com/v1/models')).rejects.toBeInstanceOf(SafeEgressError);
+  });
+
+  it('normalizes a RAW connect/resolver throw to a reason-only SafeEgressError (never a raw leak)', async () => {
+    // A resolver that throws a raw Error (a DNS fault carrying the hostname) — the wrapper must re-wrap it so ONLY
+    // a reason-only SafeEgressError escapes (matching the contract the hardening commit added).
+    const deps: EgressDeps = {
+      resolveHost: () => Promise.reject(new Error('getaddrinfo ENOTFOUND my-secret-proxy.example')),
+      openConnection: () => Promise.reject(new Error('unused')),
+    };
+    let thrown: unknown;
+    try {
+      await createValidatedFetch(deps)('https://my-secret-proxy.example/v1/models');
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(SafeEgressError);
+    if (thrown instanceof SafeEgressError) {
+      expect(thrown.message).not.toContain('my-secret-proxy.example'); // the raw hostname-bearing error never surfaces
+    }
+  });
+
+  it('strips accept-encoding from the request (this fetch does not auto-decompress the streamed body)', async () => {
+    let captured: HopRequest | undefined;
+    const fetch = createValidatedFetch(fakeDeps({ ips: ['1.2.3.4'], onConnect: (req) => (captured = req) }));
+    await fetch('https://api.example.com/v1/models', {
+      headers: { 'accept-encoding': 'gzip, br', authorization: 'Bearer sk-x' },
+    });
+    expect(captured?.headers?.['accept-encoding']).toBeUndefined(); // never negotiate compression
+    expect(captured?.headers?.['authorization']).toBe('Bearer sk-x'); // the key header still rides through
+  });
 });

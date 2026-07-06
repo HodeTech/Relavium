@@ -196,6 +196,16 @@ describe('relavium provider commands (2.C)', () => {
     expect(d.store.get('anthropic')?.kind).toBe('anthropic');
   });
 
+  it('a second `add` with NO --base-url preserves a prior custom base_url (never silently resets it) (2.5.G S9)', async () => {
+    const d = deps({});
+    await runProviderCommand(
+      { action: 'add', name: 'openai', baseUrl: 'https://my-proxy.example/v1' },
+      d,
+    );
+    await runProviderCommand({ action: 'add', name: 'openai' }, d); // re-run, no --base-url
+    expect(d.store.get('openai')?.baseUrl).toBe('https://my-proxy.example/v1'); // preserved, not reset to the SDK default
+  });
+
   it('set-key preserves a base URL set by a prior `add` (never clobbers it)', async () => {
     const d = deps({});
     await runProviderCommand(

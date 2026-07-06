@@ -202,6 +202,12 @@ export function buildProviderTestArgs(input: CommandInput): ProviderCommandArgs 
  * its adapter to the SSRF-validated endpoint, then close it. The custom adapters are built EAGERLY at resolver
  * creation (`applyCustomEndpoints` reads `list()` once), so no db handle is held past this call — a self-contained
  * short-lived read that needs no lifecycle threaded into the command's own db/teardown ordering.
+ *
+ * The `run`/`chat`/`gate` commands then re-open the same `history.db` for their own stores — a deliberate, PURELY
+ * SEQUENTIAL second open (the first handle is fully closed here first, so no WAL/lock race), accepted as the
+ * low-risk alternative to threading the db handle through each command's careful teardown. The `models` /
+ * `provider` paths avoid it entirely — they build the resolver from the db they already hold (`withModelsDeps` /
+ * `withProviderDeps`), and the long-lived Home builds it over its one open handle in the S7 port block.
  */
 function storeAwareResolver(
   ctx: DispatchContext,

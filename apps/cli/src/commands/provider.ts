@@ -85,7 +85,7 @@ function providerList(deps: ProviderCommandDeps): void {
 function providerAdd(args: ProviderCommandArgs, deps: ProviderCommandDeps): void {
   const id = parseProviderId(requireName(args));
   const meta = KNOWN_PROVIDERS[id];
-  let baseUrl = meta.baseUrl;
+  let baseUrl: string;
   if (args.baseUrl !== undefined) {
     // A custom `--base-url` is **OpenAI-compatible only** this round (2.5.G S9, ADR-0065 §3) — refuse it on the
     // Anthropic/Gemini protocols with a clear message rather than silently ignoring it (the old dead-config bug).
@@ -96,6 +96,10 @@ function providerAdd(args: ProviderCommandArgs, deps: ProviderCommandDeps): void
       );
     }
     baseUrl = requireHttpsUrl(args.baseUrl);
+  } else {
+    // PRESERVE a previously-set custom base_url — a re-run of `relavium provider add <id>` with no `--base-url` must
+    // not silently reset it to the SDK default (2.5.G S9 review). A genuinely new row gets the provider's default.
+    baseUrl = deps.store.get(id)?.baseUrl ?? meta.baseUrl;
   }
   // Store the protocol `kind` for every provider (ADR-0065 §5 — populated for uniformity; the resolver derives it
   // from the closed id today, load-bearing only for a future custom provider).

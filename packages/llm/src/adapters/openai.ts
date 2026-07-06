@@ -50,6 +50,7 @@ import {
   encodeMediaJobId,
   isAbortSignal,
   isRecord,
+  redactKey,
   toModelListing,
 } from './shared.js';
 
@@ -350,8 +351,8 @@ function mapOpenAiApiError(
   });
 }
 
-/** Classify any SDK throwable into a normalized `LlmError` — no vendor error shape escapes. */
-export function openaiErrorToLlmError(err: unknown, provider: ProviderId): LlmError {
+/** The pure classification — an SDK throwable → a normalized `LlmError` (before any key redaction). */
+function classifyOpenAiError(err: unknown, provider: ProviderId): LlmError {
   if (err instanceof APIUserAbortError) {
     return makeLlmError({ provider, kind: 'cancelled', message: 'request aborted' });
   }
@@ -375,6 +376,26 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId): LlmEr
     provider,
     kind: 'unknown',
     message: err instanceof Error ? err.message : 'unknown provider error',
+  });
+}
+
+/**
+ * Classify any SDK throwable into a normalized `LlmError` — no vendor error shape escapes. When the resolved `key`
+ * is passed (`generate`/`stream`/media, which have it in scope), the message/code are **exact-key-redacted**
+ * (`redactKey`) before returning — the shape-based `scrubSecrets` (`Bearer …`/`sk-…`/`AIza…`) inside `makeLlmError`
+ * CANNOT match a CUSTOM OpenAI-compatible endpoint's OPAQUE key (2.5.G S9, ADR-0065), so a hostile/misconfigured
+ * proxy that echoes the received credential in its error body would otherwise leak the real key into the plaintext
+ * `history.db` / `--json` / the TUI (CLAUDE.md #6). This mirrors `boundedListModels`'s exact-redaction for `listModels`.
+ */
+export function openaiErrorToLlmError(err: unknown, provider: ProviderId, key?: string): LlmError {
+  const base = classifyOpenAiError(err, provider);
+  if (key === undefined || key.length === 0) return base;
+  return makeLlmError({
+    provider: base.provider,
+    kind: base.kind,
+    message: redactKey(base.message, key),
+    ...(base.status === undefined ? {} : { status: base.status }),
+    ...(base.code === undefined ? {} : { code: redactKey(base.code, key) }),
   });
 }
 
@@ -909,11 +930,13 @@ function foldChatChunk(chunk: OpenAI.ChatCompletionChunk, state: OpenAiStreamSta
   return out;
 }
 
-/** Fold the OpenAI chat-completion event stream into the canonical `StreamChunk` sequence. */
+/** Fold the OpenAI chat-completion event stream into the canonical `StreamChunk` sequence. `key` is threaded solely
+ *  to exact-redact it from an error message (a custom endpoint's opaque key the shape-based scrub can't match). */
 async function* streamChunks(
   client: OpenAI,
   req: LlmRequest,
   provider: ProviderId,
+  key: string,
 ): AsyncIterable<StreamChunk> {
   const state: OpenAiStreamState = {
     reasoningOpen: false,
@@ -930,7 +953,7 @@ async function* streamChunks(
       buildRequestOptions(req),
     );
   } catch (err) {
-    yield { type: 'error', error: openaiErrorToLlmError(err, provider) };
+    yield { type: 'error', error: openaiErrorToLlmError(err, provider, key) };
     return;
   }
   try {
@@ -943,7 +966,7 @@ async function* streamChunks(
       }
     }
   } catch (err) {
-    yield { type: 'error', error: openaiErrorToLlmError(err, provider) };
+    yield { type: 'error', error: openaiErrorToLlmError(err, provider, key) };
     return;
   }
   // A stream that ends without a terminal finish_reason was truncated (dropped connection, partial
@@ -1025,7 +1048,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
           raw: completion,
         };
       } catch (err) {
-        throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
+        throw new LlmProviderError(openaiErrorToLlmError(err, providerId, key));
       }
     },
     stream(req: LlmRequest, key: string): AsyncIterable<StreamChunk> {
@@ -1033,7 +1056,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       assertStreamable(providerId, supports);
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(providerId, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
-      return streamChunks(createClient(key), req, providerId);
+      return streamChunks(createClient(key), req, providerId, key);
     },
     /**
      * Live model discovery (ADR-0064 §1) over the SDK's `models.list()`. The OpenAI/DeepSeek list is
@@ -1105,13 +1128,13 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       // (images.generate, SYNC); audio → TTS (audio.speech, SYNC); video → Sora (videos.create, ASYNC LRO —
       // returns an opaque jobId the engine polls via pollMediaJob below).
       if (req.modality === 'image') {
-        return openAiGenerateImage(client, req, providerId);
+        return openAiGenerateImage(client, req, providerId, key);
       }
       if (req.modality === 'audio') {
-        return openAiGenerateSpeech(client, req, providerId);
+        return openAiGenerateSpeech(client, req, providerId, key);
       }
       if (req.modality === 'video') {
-        return openAiGenerateVideo(client, req, providerId);
+        return openAiGenerateVideo(client, req, providerId, key);
       }
       // Exhaustiveness: MEDIA_BILLED_MODALITIES is image|audio|video, so `modality` is `never` here. A new
       // member makes this assignment a COMPILE error — a future modality fails at build, never silently at
@@ -1146,7 +1169,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
           }),
         };
       }
-      return pollMediaJobSora(createClient(key), jobId, providerId, signal);
+      return pollMediaJobSora(createClient(key), jobId, providerId, signal, key);
     },
     // ADR-0062 context-compaction seam — the shared defaults (covers both OpenAI and DeepSeek via this one
     // factory; real usage is authoritative, so the estimate is only a pre-first-turn fallback).
@@ -1165,6 +1188,7 @@ async function openAiGenerateImage(
   client: OpenAI,
   req: MediaGenRequest,
   providerId: ProviderId,
+  key: string, // threaded solely to exact-redact it from an error (a custom endpoint's opaque key, 2.5.G S9)
 ): Promise<MediaGenResult> {
   if (req.count !== undefined && req.count > 1) {
     throw new LlmProviderError(
@@ -1191,7 +1215,7 @@ async function openAiGenerateImage(
       isAbortSignal(req.signal) ? { signal: req.signal } : {},
     );
   } catch (err) {
-    throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
+    throw new LlmProviderError(openaiErrorToLlmError(err, providerId, key));
   }
   const b64 = response.data?.[0]?.b64_json;
   if (b64 === undefined || b64.length === 0) {
@@ -1220,6 +1244,7 @@ async function openAiGenerateSpeech(
   client: OpenAI,
   req: MediaGenRequest,
   providerId: ProviderId,
+  key: string, // threaded solely to exact-redact it from an error (a custom endpoint's opaque key, 2.5.G S9)
 ): Promise<MediaGenResult> {
   // `count` (images-per-call) is a no-op for TTS — `audio.speech` is billed per input character and yields a
   // single audio stream, so there is no bill-N-deliver-1 hazard (unlike the image path's loud count>1 reject).
@@ -1240,7 +1265,7 @@ async function openAiGenerateSpeech(
     // otherwise escape unclassified and flatten to an opaque `internal` instead of a classified LlmError.
     bytes = new Uint8Array(await response.arrayBuffer());
   } catch (err) {
-    throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
+    throw new LlmProviderError(openaiErrorToLlmError(err, providerId, key));
   }
   if (bytes.length === 0) {
     throw new LlmProviderError(
@@ -1308,6 +1333,7 @@ async function openAiGenerateVideo(
   client: OpenAI,
   req: MediaGenRequest,
   providerId: ProviderId,
+  key: string, // threaded solely to exact-redact it from an error (a custom endpoint's opaque key, 2.5.G S9)
 ): Promise<MediaGenResult> {
   const seconds = soraSeconds(req.durationSeconds, providerId); // throws bad_request if not 4/8/12
   const size = soraSize(req.providerOptions);
@@ -1323,7 +1349,7 @@ async function openAiGenerateVideo(
       isAbortSignal(req.signal) ? { signal: req.signal } : {},
     );
   } catch (err) {
-    throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
+    throw new LlmProviderError(openaiErrorToLlmError(err, providerId, key));
   }
   if (video.id.length === 0) {
     throw new LlmProviderError(
@@ -1374,6 +1400,7 @@ async function pollMediaJobSora(
   jobId: string,
   providerId: ProviderId,
   signal: AbortSignalLike | undefined,
+  key: string, // threaded solely to exact-redact it from an error (a custom endpoint's opaque key, 2.5.G S9)
 ): Promise<MediaJobStatus> {
   const vendorId = decodeMediaJobId(jobId);
   if (vendorId === undefined) {
@@ -1401,7 +1428,7 @@ async function pollMediaJobSora(
       bytes = new Uint8Array(await response.arrayBuffer());
     }
   } catch (err) {
-    throw new LlmProviderError(openaiErrorToLlmError(err, providerId));
+    throw new LlmProviderError(openaiErrorToLlmError(err, providerId, key));
   }
   switch (video.status) {
     case 'queued':
