@@ -95,3 +95,19 @@ export function clearedNotice(oldSessionId: string): string {
   const safeId = sanitizeInline(oldSessionId);
   return `✨ Started a fresh conversation. The previous one is saved — resume it with \`relavium chat-resume ${safeId}\`.`;
 }
+
+/**
+ * The mid-session `/models` model-SWITCH notice ([ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md))
+ * — the intro line of the reseated session. It confirms the NEW model, states how many turns carried, and
+ * DISCLOSES what a host-side reseat does not carry: the transcript continues **text-only**, so the new model does
+ * not see prior tool calls or file contents (the same honesty the `chat-resume` family surfaces). The model id is
+ * a `model_catalog` id (curated), but `sanitizeInline`-guarded defensively — a live-catalog id is provider-sourced
+ * and `history.db` is shared across surfaces, so a crafted value must not smuggle a terminal escape into the notice.
+ */
+export function modelSwitchNotice(newModel: string, carriedTurns: number): string {
+  const turns = `${carriedTurns} prior ${carriedTurns === 1 ? 'turn' : 'turns'}`;
+  return (
+    `⇄ Switched to ${sanitizeInline(newModel)} — ${turns} carried. The new model sees the text transcript only ` +
+    `(not prior tool calls or file contents). Type a message, or /exit to quit.`
+  );
+}

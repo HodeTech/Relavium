@@ -1,10 +1,23 @@
 # ADR-0059: Mid-session model switching via host-side reseat (refines ADR-0024)
 
-- **Status**: Proposed
-- **Date**: 2026-06-28
-- **Related**: [ADR-0024](0024-agent-first-entry-point-agentsession.md), [ADR-0026](0026-session-export-to-workflow.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md), [phase-2.6-conversational-authoring.md](../roadmap/phases/phase-2.6-conversational-authoring.md) (2.6.C), [architectural-principles.md](../standards/architectural-principles.md)
+- **Status**: Accepted
+- **Date**: 2026-07-06
+- **Related**: [ADR-0024](0024-agent-first-entry-point-agentsession.md) (the one-model-per-lifetime rule this refines), [ADR-0026](0026-session-export-to-workflow.md), [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md) (the instance-scoped approval cache a reseat re-primes), [ADR-0062](0062-context-compaction-and-cli-history-commands.md) (the `/clear` host-swap machinery + the `contextPreamble` a reseat must carry), [phase-2.6-conversational-authoring.md](../roadmap/phases/phase-2.6-conversational-authoring.md) (2.6.C), [architectural-principles.md](../standards/architectural-principles.md)
 
-> **Draft.** Proposed alongside the Phase 2.6 plan; to be reviewed and finalized (→ Accepted) when workstream 2.6.C begins.
+> **Proposed 2026-06-28 alongside the Phase 2.6 plan; Accepted 2026-07-06** and implemented as a 2.5.G follow-up
+> (the in-chat `/models` reseat requested with the Phase-2.5 CLI-consolidation model work), pulling the ADR forward
+> from 2.6.C. The reseat reuses the `/clear` host-swap machinery ([ADR-0062](0062-context-compaction-and-cli-history-commands.md) §7)
+> and the `chat-resume` transcript path — zero engine change — exactly as designed below.
+
+> **Note (2026-07-06): the per-message `modelId` persistence is DEFERRED to 2.6.C (with the cost breakdown that
+> consumes it).** The Decision below says "only the CLI persister wiring is missing"; on implementation that proved
+> under-specified. `session_messages.model_id` / `agent_sessions.model_id` are **foreign keys to `model_catalog.id`
+> (a UUID row PK), not the raw model string** — and nothing populates them today (run history leaves them NULL too).
+> Correct population needs a model-string → `model_catalog.id` resolution (and the model may not yet be cataloged →
+> the NULL "unknown" bucket the Decision anticipates). That resolution belongs with the 2.6.C per-model cost
+> breakdown that reads it, so it lands there. **The reseat itself is fully implemented and correct without it** — a
+> mid-session `/models` switch carries the transcript + cumulative cost/turns and rebinds the model as designed; only
+> the per-turn attribution column is deferred. This note refines, and does not reverse, the Decision.
 
 ## Context
 
@@ -67,5 +80,5 @@ session that drops history (rejected: poor UX — the user expects to continue).
 
 - This **refines, not reverses**, [ADR-0024](0024-agent-first-entry-point-agentsession.md): each
   `AgentSession` instance still binds exactly one model for its lifetime; mid-session model switching is a
-  host-side reseat (a new instance), not an in-place rebind. When this ADR is Accepted, ADR-0024 gets a
-  dated `> Amended` note + a Related forward-link (documentation-style §7).
+  host-side reseat (a new instance), not an in-place rebind. On acceptance (2026-07-06), ADR-0024 received a
+  dated `> Amended` note + a Related forward-link to this ADR (documentation-style §7).

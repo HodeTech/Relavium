@@ -79,7 +79,9 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   // prior marker is interleaved — the step-1-review trap). Seeded from the durable transcript on resume.
   const realMessageSeqs: number[] = [];
 
-  /** Append a REAL transcript row + record its sequence for the boundary mapping. */
+  /** Append a REAL transcript row + record its sequence for the boundary mapping. (Per-message `modelId`
+   *  attribution — ADR-0059 — is DEFERRED to Phase 2.6.C: `session_messages.model_id` is a FK to
+   *  `model_catalog.id` (a UUID), so it needs a model-string→catalog-id resolution the cost breakdown will own.) */
   const appendText = (role: 'user' | 'assistant', text: string): void => {
     const seq = sequenceNumber++;
     realMessageSeqs.push(seq);
@@ -130,6 +132,9 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     createdAt,
     updatedAt: iso(),
     ...(title === undefined ? {} : { title }),
+    // NOTE: the session-level `modelId` (ADR-0059) is DEFERRED with the per-message attribution (see `appendText`):
+    // `agent_sessions.model_id` is a FK to `model_catalog.id` (a UUID), not the raw model string, so populating it
+    // needs the same catalog resolution the 2.6.C cost breakdown will own. Left NULL until then (like run history).
   });
 
   const onEvent = (event: SessionStreamHandleEvent): void => {

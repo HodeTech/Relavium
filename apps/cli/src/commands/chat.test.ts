@@ -520,7 +520,7 @@ describe('chatCommand', () => {
     const code = await chatCommand({ agent: undefined }, { ...d, buildSession, drive: driveClear });
 
     expect(code).toBe(EXIT_CODES.chatEnded); // ends cleanly despite the failed rebuild (never hangs/loops)
-    expect(err()).toContain('could not start a fresh session after /clear'); // actionable hint on stderr
+    expect(err()).toContain('could not start a new session after /clear'); // actionable, swap-kind-aware hint
     expect(err()).toContain('relavium chat-resume id-0'); // names the OLD, still-resumable conversation
     expect(store.loadFull('id-0')?.session.status).toBe('ended'); // the prior session is persisted + resumable
   });
@@ -537,6 +537,90 @@ describe('chatCommand', () => {
     const rows = store.loadFull(sessionId);
     expect(rows?.messages).toHaveLength(2); // user 'hello' + assistant 'hi there' — one session, not cleared
     expect(rows?.session.status).toBe('ended');
+  });
+
+  it('/models reseat: rebinds the model on the SAME session, carrying the transcript + per-turn attribution (ADR-0059)', async () => {
+    const { d, store } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
+    // A live reseat is TTY-interactive only (like `/clear`), so `onReseat` is wired only on an interactive io.
+    const interactiveIo = { ...d.io, stdoutIsTty: true };
+    const seen: string[] = [];
+    const intros: (string | undefined)[] = [];
+    let call = 0;
+    const reseatThenExit: ChatDriver = async (ctx) => {
+      seen.push(ctx.handle.sessionId);
+      intros.push(ctx.intro);
+      ctx.startSession();
+      if (call++ === 0) {
+        await ctx.processLine('first'); // a turn on the sonnet-bound session ⇒ persisted (attributed to sonnet)
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' }); // switch to opus
+        return { kind: ctx.stopReason() }; // 'reseat'
+      }
+      await ctx.processLine('second'); // a turn on the opus-bound session ⇒ persisted (attributed to opus)
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    const code = await chatCommand(
+      { agent: undefined },
+      { ...d, io: interactiveIo, drive: reseatThenExit },
+    );
+    expect(code).toBe(EXIT_CODES.chatEnded);
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toBe(seen[1]); // a reseat CONTINUES the same session (unlike /clear's new id)
+    expect(intros[0]).toBeUndefined(); // the original session has no intro
+    expect(intros[1]).toContain('Switched to claude-opus-4-8'); // the reseat disclosure intro
+    expect(intros[1]).toContain('text transcript only'); // the tool-context-not-carried disclosure
+
+    const full = store.loadFull('id-0');
+    expect(full?.session.agentSnapshot?.model).toBe('claude-opus-4-8'); // rebound to the target model
+    // The transcript carried across the switch: turn 1 (sonnet) + turn 2 (opus) — 4 sequenced rows, one session.
+    expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(full?.messages[1]?.content[0]).toEqual({ type: 'text', text: 'sonnet reply' });
+    expect(full?.messages[3]?.content[0]).toEqual({ type: 'text', text: 'opus reply' });
+    expect(full?.session.totalCostMicrocents).toBeGreaterThan(0); // both turns' cost accrued (carried, not reset)
+  });
+
+  it('/models reseat whose rebuild fails surfaces the resumable prior session and ends cleanly (ADR-0059)', async () => {
+    const { d, err, store } = deps([], [textTurn('hi there')]);
+    const interactiveIo = { ...d.io, stdoutIsTty: true };
+    // The reseat's resumed build REJECTS (e.g. a transient MCP/key fault binding the new model).
+    const buildResumedSession: typeof buildResumedChatSession = () =>
+      Promise.reject(new Error('reseat build failed'));
+    const reseat: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.processLine('hello'); // a real turn on the OLD session ⇒ persisted + resumable
+      ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+      return { kind: ctx.stopReason() };
+    };
+    const code = await chatCommand(
+      { agent: undefined },
+      { ...d, io: interactiveIo, buildResumedSession, drive: reseat },
+    );
+    expect(code).toBe(EXIT_CODES.chatEnded); // ends cleanly despite the failed rebuild (never hangs/loops)
+    expect(err()).toContain('could not start a new session after a model switch'); // swap-kind-aware hint
+    expect(err()).toContain('relavium chat-resume id-0'); // names the OLD, still-resumable conversation
+    expect(store.loadFull('id-0')?.session.status).toBe('ended'); // the prior session is persisted + resumable
+  });
+
+  it('a live reseat is gated OFF on a non-interactive surface — onReseat is not wired (ADR-0049 parity)', async () => {
+    // The default deps() harness io is non-TTY, so `chatIsInteractive` is false → `onReseat` is NOT wired (a
+    // machine/plain stream stays one session lifecycle, exactly as `/clear` is gated off there).
+    const { d, store } = deps([], [textTurn('hi there')]);
+    let onReseatWired = true;
+    const driver: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.processLine('hello');
+      onReseatWired = ctx.onReseat !== undefined;
+      ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' }); // a no-op when unwired
+      return { kind: ctx.stopReason() };
+    };
+    const code = await chatCommand({ agent: undefined }, { ...d, drive: driver });
+    expect(code).toBe(EXIT_CODES.chatEnded);
+    expect(onReseatWired).toBe(false); // no live reseat on a machine/plain stream
+    // NOT reseated: id-0 kept its one 'hello' exchange, still bound to the ORIGINAL model.
+    const full = store.loadFull('id-0');
+    expect(full?.messages).toHaveLength(2);
+    expect(full?.session.agentSnapshot?.model).toBe('claude-sonnet-4-6');
   });
 
   it('chat --json drives the headless stream: stdout pure NDJSON, the unknown-slash diagnostic on stderr', async () => {

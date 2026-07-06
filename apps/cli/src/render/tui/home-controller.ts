@@ -95,9 +95,12 @@ export interface HomeChatSession {
   /** The session's durable id (ADR-0062 §7) — named in the `/clear` notice as the prior (still-resumable)
    *  conversation, so it is discoverable after the swap. */
   readonly sessionId: string;
-  /** WHY `shouldStop()` became true (ADR-0062 §7) — `'clear'` (swap in a fresh session, staying in chat) vs
-   *  `'exit'` (`/exit`/`/cancel`, return to the bare Home). Lets the controller pick `clearChat` vs `endChat`. */
-  readonly stopReason: () => 'exit' | 'clear';
+  /** WHY `shouldStop()` became true (ADR-0062 §7 · ADR-0059) — `'clear'` (swap in a fresh session, staying in chat)
+   *  vs `'exit'` (`/exit`/`/cancel`, return to the bare Home). Shares the widened `ChatLineHandler.stopReason` type,
+   *  so it also carries `'reseat'`; but the in-Home chat does NOT yet wire `onReseat` (its `/models` is the Home's
+   *  next-session-default picker, not a live reseat — ADR-0059's in-Home live reseat is a follow-up), so `'reseat'`
+   *  is currently unreachable here and the consumer's non-`'clear'` branch treats it as an end (a safe default). */
+  readonly stopReason: () => 'exit' | 'clear' | 'reseat';
   /** Mid-turn abort (EA7) — abort the in-flight turn, keeping the session alive (Esc). Present once wired. */
   readonly onAbort?: () => void;
   /** Switch the chat mode (Shift+Tab / `/mode`) — re-applies the turn policy on the same session (ADR-0057). */
