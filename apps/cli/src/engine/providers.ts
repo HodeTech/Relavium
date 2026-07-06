@@ -43,11 +43,16 @@ export function keyHint(key: string): string {
   return key.length <= 4 ? '••••' : `••••${key.slice(-4)}`;
 }
 
-/** A known provider's metadata — display name, base URL, and a cheap model for the live key test. */
+/** A known provider's metadata — display name, base URL, a cheap model for the live key test, and the public
+ *  pricing page (the ADR-0065 §1 default `pricing_reference_url`, where a user finds a price to hand-enter). */
 export interface ProviderMeta {
   readonly displayName: string;
   readonly baseUrl: string;
   readonly testModel: string;
+  /** The provider's public pricing page — the default `llm_providers.pricing_reference_url` seeded on
+   *  `provider add` (overridable with `--pricing-url`). A display-only pointer; NEVER fetched (not an egress
+   *  target), so it needs no SSRF gate. Verified 2026-07-06 against each provider's live docs. */
+  readonly pricingUrl: string;
 }
 
 /**
@@ -70,21 +75,25 @@ export const KNOWN_PROVIDERS: Record<(typeof KNOWN_PROVIDER_IDS)[number], Provid
     displayName: 'Anthropic',
     baseUrl: 'https://api.anthropic.com',
     testModel: 'claude-haiku-4-5',
+    pricingUrl: 'https://platform.claude.com/docs/en/about-claude/pricing',
   },
   openai: {
     displayName: 'OpenAI',
     baseUrl: 'https://api.openai.com/v1',
     testModel: 'gpt-5.4-mini',
+    pricingUrl: 'https://platform.openai.com/docs/pricing',
   },
   gemini: {
     displayName: 'Google Gemini',
     baseUrl: 'https://generativelanguage.googleapis.com',
     testModel: 'gemini-2.5-flash',
+    pricingUrl: 'https://ai.google.dev/gemini-api/docs/pricing',
   },
   deepseek: {
     displayName: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com',
     testModel: 'deepseek-v4-flash',
+    pricingUrl: 'https://api-docs.deepseek.com/quick_start/pricing',
   },
 };
 

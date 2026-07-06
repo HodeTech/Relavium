@@ -11,6 +11,7 @@ import {
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
+import type { PricingOverlay } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
 import { createCliHost } from './host.js';
@@ -49,6 +50,15 @@ export interface BuildEngineOptions {
    * `fs_scope`. The MCP arm is merged on top below.
    */
   readonly toolEnv?: { readonly workspaceDir: string; readonly fsScopeTier: FsScopeTier };
+  /**
+   * The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a `ReadonlyMap<modelId, ModelPricing>` the caller (`run.ts`)
+   * projects from the `model_catalog` `source='user'` rows. Threaded into BOTH the workflow PRE-EGRESS governor
+   * (so a user-priced model is enforced by `budget.max_cost_microcents`) AND the agent node's realized
+   * `AgentRunnerDeps.resolvePrice` (so the same model's realized cost is tracked, not thrown as `UnknownModel`).
+   * Static `MODEL_PRICING` still wins for a known id. Absent ⇒ an unknown model degrades cost governance to
+   * `allow` loudly, unchanged.
+   */
+  readonly resolvePrice?: PricingOverlay;
 }
 
 /**
@@ -118,10 +128,16 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     ...(options.mediaCostEstimate === undefined
       ? {}
       : { mediaCostEstimate: options.mediaCostEstimate }),
+    // The user-pricing overlay for the agent node's REALIZED CostTracker (2.5.G S10, ADR-0065 §2) — so a
+    // user-priced (otherwise unknown) model's realized cost is priced, not thrown as UnknownModelError.
+    ...(options.resolvePrice === undefined ? {} : { resolvePrice: options.resolvePrice }),
   };
 
   return new WorkflowEngine({
     host,
     executor: createStandardNodeExecutor({ sandbox, agent, humanGate: {} }),
+    // The same overlay for the workflow PRE-EGRESS budget governor (2.5.G S10) — so `budget.max_cost_microcents`
+    // is enforced on a user-priced model, closing the ADR-0064 §6 cost-cap gap for the run path.
+    ...(options.resolvePrice === undefined ? {} : { resolvePrice: options.resolvePrice }),
   });
 }

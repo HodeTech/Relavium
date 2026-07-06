@@ -929,6 +929,59 @@ describe('createModelCatalogStore (2.5.G / ADR-0064 — live-discovery cache)', 
     expect(fresh?.lastRefreshedAt).toBeUndefined();
   });
 
+  it('upsert() PRESERVES media_surface / capabilities / supportsVision + cost columns when omitted (the S10 clobber fix)', () => {
+    // Seed a full generative/media row (as the media fixture / a live-then-enriched sync would).
+    store.upsert({
+      providerId,
+      modelId: 'media-then-priced',
+      displayName: 'Media Then Priced',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      mediaSurface: 'generative',
+      supportsVision: true,
+      capabilities: { media: { outputCombinations: [['image']] } },
+      mediaImageCostMicrocents: 1_900_000,
+    });
+    // A `models pricing`-style PARTIAL upsert: it writes ONLY the text-token prices + source='user' and omits
+    // every media/capability field. The never-clobber invariant must keep the generative routing + capabilities
+    // intact (a reset to media_surface='chat' would silently disable generative routing).
+    store.upsert({
+      providerId,
+      modelId: 'media-then-priced',
+      displayName: 'Media Then Priced',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      source: 'user',
+      inputCostPerMtokMicrocents: 300,
+      outputCostPerMtokMicrocents: 900,
+    });
+    const rec = store.getByModelId('media-then-priced');
+    expect(rec?.mediaSurface).toBe('generative'); // NOT reset to 'chat'
+    expect(rec?.supportsVision).toBe(true); // NOT reset to false
+    expect(rec?.capabilities).toEqual({ media: { outputCombinations: [['image']] } }); // NOT blanked to {}
+    expect(rec?.mediaImageCostMicrocents).toBe(1_900_000); // media rate preserved
+    const listing = store.listByProvider(providerId).find((m) => m.modelId === 'media-then-priced');
+    expect(listing?.source).toBe('user'); // the write DID take (prices applied)
+    expect(listing?.inputCostPerMtokMicrocents).toBe(300);
+    expect(listing?.outputCostPerMtokMicrocents).toBe(900);
+
+    // ...and a SUBSEQUENT re-price that omits the cost columns preserves the previously-entered prices.
+    store.upsert({
+      providerId,
+      modelId: 'media-then-priced',
+      displayName: 'Media Then Priced',
+      contextWindowTokens: 4096,
+      maxOutputTokens: 4096,
+      source: 'user',
+      outputCostPerMtokMicrocents: 950, // change ONLY output
+    });
+    const reListing = store
+      .listByProvider(providerId)
+      .find((m) => m.modelId === 'media-then-priced');
+    expect(reListing?.inputCostPerMtokMicrocents).toBe(300); // preserved
+    expect(reListing?.outputCostPerMtokMicrocents).toBe(950); // updated
+  });
+
   it('listByProvider/listAll exclude a soft-DELETED (deletedAt) row, not just an inactive one', () => {
     store.replaceProviderModels(
       providerId,

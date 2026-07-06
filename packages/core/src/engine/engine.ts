@@ -50,7 +50,7 @@ import {
   type RunStatus,
   type TokensUsed,
 } from '@relavium/shared';
-import type { MediaJobStatus } from '@relavium/llm';
+import type { MediaJobStatus, PricingOverlay } from '@relavium/llm';
 
 import { buildRunPlan, type BuildRunPlanOptions } from '../dag.js';
 import { InterpolationError } from '../errors.js';
@@ -239,6 +239,15 @@ export interface WorkflowEngineDeps {
    * `maxTokens` (ADR-0028). Not the model's absolute max, which would over-block.
    */
   readonly maxTokensEstimate?: number;
+  /**
+   * The user-pricing overlay (2.5.G S10, [ADR-0065](../../../docs/decisions/0065-provider-economics-and-user-pricing.md)
+   * §2) — a `ReadonlyMap<modelId, ModelPricing>` the host projects from the `model_catalog` `source='user'` rows.
+   * It feeds the workflow PRE-EGRESS budget governor so a model with no static price, once user-priced, is enforced
+   * by `budget.max_cost_microcents`. Static `MODEL_PRICING` still wins for a known id (fills an UNKNOWN id only).
+   * Injected exactly like the realized path's overlay, which the node executor's runner already carries; omit ⇒
+   * an unknown model degrades cost governance to `allow` loudly, unchanged.
+   */
+  readonly resolvePrice?: PricingOverlay;
 }
 
 function maskInputs(
@@ -331,6 +340,9 @@ class RunExecution {
     onSettled: (runId: string) => void;
     resolverCapabilities: ResolverCapabilities;
     maxTokensEstimate?: number;
+    /** The user-pricing overlay (2.5.G S10, ADR-0065 §2) — into the workflow PRE-EGRESS governor so a user-priced
+     *  model is enforced by `budget`. Host-injected; the realized path rides the runner's own `resolvePrice`. */
+    resolvePrice?: PricingOverlay;
     /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
     checkpoint?: CheckpointState;
   }) {
@@ -359,6 +371,7 @@ class RunExecution {
         budget: params.plan.budget,
         defaultMaxTokensEstimate: this.#maxTokensEstimate,
         emit: (draft) => this.#emitDurable({ ...draft, runId: this.runId }),
+        ...(params.resolvePrice === undefined ? {} : { resolvePrice: params.resolvePrice }),
       });
     }
 
@@ -2169,6 +2182,7 @@ export class WorkflowEngine {
   readonly #capacity: number;
   readonly #resolverCapabilities: ResolverCapabilities;
   readonly #maxTokensEstimate: number;
+  readonly #resolvePrice: PricingOverlay | undefined;
   readonly #runs = new Map<string, RunExecution>();
 
   constructor(deps: WorkflowEngineDeps) {
@@ -2178,6 +2192,7 @@ export class WorkflowEngine {
     this.#capacity = deps.eventBufferCapacity ?? 256;
     this.#resolverCapabilities = deps.resolverCapabilities ?? {};
     this.#maxTokensEstimate = deps.maxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
+    this.#resolvePrice = deps.resolvePrice;
   }
 
   /**
@@ -2206,6 +2221,7 @@ export class WorkflowEngine {
       },
       resolverCapabilities: this.#resolverCapabilities,
       maxTokensEstimate: this.#maxTokensEstimate,
+      ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
     });
     this.#runs.set(runId, execution);
     void execution.begin();
@@ -2301,6 +2317,7 @@ export class WorkflowEngine {
       },
       resolverCapabilities: this.#resolverCapabilities,
       maxTokensEstimate: this.#maxTokensEstimate,
+      ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
       checkpoint,
     });
     this.#runs.set(input.runId, execution);

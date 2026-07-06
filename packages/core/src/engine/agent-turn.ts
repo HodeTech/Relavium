@@ -44,6 +44,7 @@ import {
   type LlmMessage,
   type LlmRequest,
   type MediaUnitsEstimate,
+  type PricingOverlay,
   type ResponseFormat,
   type StreamChunk,
   type ToolDef as LlmToolDef,
@@ -153,6 +154,12 @@ export interface AgentTurnParams {
    * built by the AgentRunner from `output_modalities` + the `[defaults].media_cost_estimate` unit counts.
    */
   readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
+  /**
+   * The user-pricing overlay (2.5.G S10, ADR-0065 §2) — the REALIZED cost path's tier for a model the static
+   * registry lacks, injected into this turn's {@link CostTracker} so a user-priced model's spend is folded (and
+   * so the cap enforces it). Host-built from the `model_catalog` `source='user'` rows; absent ⇒ static-only.
+   */
+  readonly resolvePrice?: PricingOverlay;
 }
 
 /** What one settled agent turn produced. */
@@ -700,8 +707,9 @@ async function driveAgentTurn(
   }
 
   // The cost path is the core's, not the host's: one tracker per turn, one cost:updated per
-  // non-skipped attempt (attemptNumber counts non-skipped records, not the positional index).
-  const costTracker = new CostTracker();
+  // non-skipped attempt (attemptNumber counts non-skipped records, not the positional index). The user-pricing
+  // overlay (2.5.G S10) lets the tracker price a user-priced model the static registry lacks.
+  const costTracker = new CostTracker(params.resolvePrice);
   let activeModel = primaryModel;
   let nonSkippedAttempts = 0;
 

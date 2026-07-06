@@ -11,7 +11,7 @@ import type { DoctorProbes } from '../chat/doctor.js';
 import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { writeGlobalDefaultModel } from '../config/write.js';
-import { buildMergedCatalog } from '../engine/model-catalog-view.js';
+import { buildMergedCatalog, buildUserPricing } from '../engine/model-catalog-view.js';
 import { createModelRefreshService } from '../engine/model-refresh.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import {
@@ -213,6 +213,14 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     // Build + wire + START a fresh chat session (the controller sends the first message on transition).
     const startChat = async (): Promise<HomeChatSession> => {
       const store = createChatStore(deps.global.color);
+      // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read FRESH per chat from the SAME db `models.load` reads
+      // (its own slug snapshot, like the picker) — so a user-priced model started in this long-lived Home is
+      // enforced by `[chat].max_cost_microcents` + tracked in realized cost. Static `MODEL_PRICING` still wins.
+      const pricingSlugByUuid = new Map(providerStore.list().map((p) => [p.id, p.name] as const));
+      const resolvePrice = buildUserPricing({
+        rows: catalogStore.listAll(),
+        providerSlug: (uuid_) => pricingSlugByUuid.get(uuid_) ?? uuid_,
+      });
       const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
         // Re-read the EFFECTIVE default model FRESH per chat (not the load-once `config` snapshot) so a same-session
         // `/models` write takes effect on the very next chat started in this long-lived Home (2.5.G S7) — the
@@ -227,6 +235,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         providers,
         mcpSecretResolver,
         mcpRegistrations: config.mcpServers,
+        ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
         onBudgetWarning: (warning) =>
           deps.io.writeErr(
             `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,

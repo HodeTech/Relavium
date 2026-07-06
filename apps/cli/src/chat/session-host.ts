@@ -16,6 +16,7 @@ import {
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
+import type { PricingOverlay } from '@relavium/llm';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
 import type {
   AgentSessionRecord,
@@ -103,6 +104,14 @@ export interface BuildChatSessionOptions {
    * one-line notice. Absent ⇒ a no-op (the warn stays non-blocking either way).
    */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
+  /**
+   * The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a `ReadonlyMap<modelId, ModelPricing>` the command projects
+   * from the `model_catalog` `source='user'` rows (via `buildUserPricing`). It flows into BOTH the pre-egress
+   * governor (so a user-priced model is enforced by `[chat].max_cost_microcents`) AND `SessionDeps.resolvePrice`
+   * (so the realized cost of the same model is tracked). Static `MODEL_PRICING` still wins for a known id. Absent ⇒
+   * unknown models degrade cost governance to `allow` loudly, unchanged.
+   */
+  readonly resolvePrice?: PricingOverlay;
 }
 
 /** A pre-egress budget warning surfaced to the chat surface (`on_exceed: 'warn'`) — secret-free counts only. */
@@ -156,7 +165,7 @@ const DEFAULT_FS_SCOPE = 'sandboxed' as const;
 /** The fields {@link buildSessionRuntime} reads — the platform-capability inputs shared by a fresh + resumed session. */
 type SessionRuntimeOptions = Pick<
   BuildChatSessionOptions,
-  'chat' | 'now' | 'providers' | 'toolHost' | 'onBudgetWarning'
+  'chat' | 'now' | 'providers' | 'toolHost' | 'onBudgetWarning' | 'resolvePrice'
 >;
 
 /**
@@ -208,7 +217,7 @@ function buildSessionRuntime(
       ? {}
       : { allowedCommandGlobs: opts.chat.allowedCommandGlobs }),
   };
-  const governor = buildGovernorWiring(opts.chat, opts.onBudgetWarning);
+  const governor = buildGovernorWiring(opts.chat, opts.onBudgetWarning, opts.resolvePrice);
   // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
   // event (the in-REPL `/export`'s `session:exported`, 2.Q) can ride the same monotonic per-session counter.
   const emit = createSessionEventSink(bus, sessionId);
@@ -246,6 +255,10 @@ function buildSessionRuntime(
     ...(governor === undefined
       ? {}
       : { preEgress: governor.preEgress, updateCost: governor.updateCost }),
+    // The realized-cost overlay (2.5.G S10, ADR-0065 §2) — so the CostTracker prices a user-priced (otherwise
+    // unknown) model instead of throwing UnknownModelError. Same map the governor uses; both fill an UNKNOWN id
+    // only (static MODEL_PRICING wins). Absent ⇒ unchanged (an unknown model's realized cost degrades loudly).
+    ...(opts.resolvePrice === undefined ? {} : { resolvePrice: opts.resolvePrice }),
   };
   return { bus, deps, emit, host };
 }
@@ -382,6 +395,9 @@ export interface BuildResumedChatSessionOptions {
   readonly mcpRegistrations?: readonly McpServerRegistration[];
   /** Sink for an `on_exceed: 'warn'` pre-egress budget warning (see {@link BuildChatSessionOptions}). */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
+  /** The ADR-0065 §2 user-pricing overlay (2.5.G S10; see {@link BuildChatSessionOptions.resolvePrice}) — so a
+   *  resumed session enforces + tracks a user-priced model exactly like a fresh one. */
+  readonly resolvePrice?: PricingOverlay;
 }
 
 /**
@@ -480,6 +496,7 @@ export interface GovernorWiring {
 export function buildGovernorWiring(
   chat: ResolvedChatConfig,
   onWarning?: (warning: ChatBudgetWarning) => void,
+  resolvePrice?: PricingOverlay,
 ): GovernorWiring | undefined {
   const cap = chat.maxCostMicrocents;
   if (cap === undefined || cap <= 0) return undefined;
@@ -489,6 +506,9 @@ export function buildGovernorWiring(
   };
   const governor = new BudgetGovernor({
     budget,
+    // The ADR-0065 §2 user-pricing overlay — so the PRE-EGRESS estimate can price a user-priced (otherwise
+    // unknown) model and enforce the cost cap on it. Omit ⇒ an unknown model degrades to `allow` loudly.
+    ...(resolvePrice === undefined ? {} : { resolvePrice }),
     emit: (event) => {
       // `warn` is non-blocking BY CONTRACT. A misbehaving warn surface must never reject this emit — a
       // rejection would propagate as an `internal` turn error and break sendMessage — so swallow a sync throw.

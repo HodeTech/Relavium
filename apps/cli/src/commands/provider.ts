@@ -35,6 +35,9 @@ export interface ProviderCommandArgs {
   readonly name?: string;
   readonly baseUrl?: string;
   readonly model?: string;
+  /** `provider add --pricing-url <url>` (2.5.G S10, ADR-0065 §1) — override the seeded `pricing_reference_url`
+   *  (the public pricing page the user consults to hand-enter a price). A display-only pointer, never fetched. */
+  readonly pricingUrl?: string;
 }
 
 export interface ProviderCommandDeps {
@@ -101,11 +104,27 @@ function providerAdd(args: ProviderCommandArgs, deps: ProviderCommandDeps): void
     // not silently reset it to the SDK default (2.5.G S9 review). A genuinely new row gets the provider's default.
     baseUrl = deps.store.get(id)?.baseUrl ?? meta.baseUrl;
   }
+  // The pricing REFERENCE url (2.5.G S10, ADR-0065 §1) — the user-supplied `--pricing-url` (validated), else PRESERVE
+  // an existing custom pointer (a re-run without the flag must not reset it), else the provider's default pricing page.
+  let pricingUrl: string;
+  if (args.pricingUrl !== undefined) {
+    pricingUrl = requireHttpsPricingUrl(args.pricingUrl);
+  } else {
+    pricingUrl = deps.store.get(id)?.pricingReferenceUrl ?? meta.pricingUrl;
+  }
   // Store the protocol `kind` for every provider (ADR-0065 §5 — populated for uniformity; the resolver derives it
   // from the closed id today, load-bearing only for a future custom provider).
-  const record = deps.store.upsert({ name: id, displayName: meta.displayName, baseUrl, kind: providerKind(id) });
+  const record = deps.store.upsert({
+    name: id,
+    displayName: meta.displayName,
+    baseUrl,
+    kind: providerKind(id),
+    pricingReferenceUrl: pricingUrl,
+  });
+  // `record.baseUrl` / `record.pricingReferenceUrl` are validated HTTPS URLs (a custom value round-trips through
+  // `new URL().href`, so control bytes are percent-encoded) — terminal-safe to echo without a further sanitize.
   deps.io.writeOut(
-    `Registered provider '${id}' (${record.baseUrl}). Store a key with \`relavium provider set-key ${id}\`.\n`,
+    `Registered provider '${id}' (${record.baseUrl}). Store a key with \`relavium provider set-key ${id}\`. Find model prices at ${record.pricingReferenceUrl ?? pricingUrl} and set one with \`relavium models pricing\`.\n`,
   );
 }
 
@@ -122,6 +141,8 @@ async function providerSetKey(args: ProviderCommandArgs, deps: ProviderCommandDe
       displayName: meta.displayName,
       baseUrl: meta.baseUrl,
       kind: providerKind(id),
+      // Seed the default pricing pointer too, so a provider registered by `set-key` alone still carries it (2.5.G S10).
+      pricingReferenceUrl: meta.pricingUrl,
     });
   }
   deps.store.setKeychainRef(id, account); // the ref, NEVER the key value
@@ -185,6 +206,30 @@ function requireHttpsUrl(raw: string): string {
     );
   }
   return raw;
+}
+
+/**
+ * Validate a user-supplied `--pricing-url` (2.5.G S10) — a parseable **HTTPS** URL with no embedded credentials.
+ * UNLIKE the base URL, a pricing reference is NEVER an egress target (never fetched/DNS-resolved), so the SSRF
+ * literal-host block deliberately does NOT apply — it may point at any HTTPS host, incl. an internal wiki. The
+ * NORMALIZED `url.href` is returned (not the raw input): `new URL()` percent-encodes any control byte in the
+ * path/query/hash and rejects it in the host, so the stored + later-echoed pointer is inherently terminal-safe
+ * (no separate sanitize needed at the render boundary). `javascript:` / `http:` / `user:pass@…` are rejected.
+ */
+function requireHttpsPricingUrl(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new CliError('invalid_invocation', '--pricing-url must be a valid URL.');
+  }
+  if (url.protocol !== 'https:') {
+    throw new CliError('invalid_invocation', '--pricing-url must be HTTPS.');
+  }
+  if (urlHasCredentials(raw)) {
+    throw new CliError('invalid_invocation', '--pricing-url must not embed credentials (user:pass@…).');
+  }
+  return url.href;
 }
 
 /** Dispatch a `relavium provider <action>` to its core, mapping a keychain-unavailable backend to exit 2. */

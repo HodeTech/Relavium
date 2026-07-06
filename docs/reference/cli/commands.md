@@ -119,6 +119,7 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 | `relavium agent <subcommand>` _(planned)_ | Manage agents (list / create / test). |
 | `relavium models` | List the cached model catalog (refreshes on first run if the cache is empty). See [`relavium models`](#relavium-models). |
 | `relavium models refresh` | Force a live re-fetch of each connected provider's model list into the local cache, reporting per-provider outcomes. |
+| `relavium models pricing <model>` | Hand-enter a user price for a model the registry does not know, so the cost cap enforces it. See [`relavium models`](#relavium-models). |
 | `relavium provider <subcommand>` | Manage providers and API keys in the OS keychain (`list` / `add` / `set-key` / `remove-key` / `test`). |
 
 ## Command manifest
@@ -209,14 +210,17 @@ The live model catalog (2.5.G, [ADR-0064](../../decisions/0064-live-model-catalo
 ```bash
 relavium models              # list the cached catalog
 relavium models refresh      # force a live re-fetch of every connected provider
+relavium models pricing my-custom-model --provider openai --input 3 --output 9   # hand-enter a price
 ```
 
 - **`relavium models`** (no subcommand) lists the cached catalog (read-only). On the **very first run** — when the cache is empty — it does one minimal **blocking** refresh, then lists; an empty result stays a clean exit `0` (an empty catalog is not a fault, like `relavium list`). Human output is one line per model (`<modelId>  <provider>  ctx=<n>  [<source>]`).
 - **`relavium models refresh`** forces a live re-fetch of **each connected provider** (a provider whose key resolves via the OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var) and prints a per-provider outcome. The refresh is **per-provider isolated**: one provider's failure (bad key, network, endpoint drift) or a provider without a list endpoint **never** fails the whole command — that provider is reported `failed` / `skipped` and the others still refresh. A per-provider failure is therefore **not** a command failure (exit `0` with the report). The **one** hard fault is an explicit `refresh` with **zero** providers connected (no key at all): that is a clean exit `2` naming how to add a key, because nothing could be fetched.
-- **Security.** A provider key is read only to make the live request (over the bounded, abortable, secret-free `listModels` seam) and is **never** logged, persisted (the cache holds no key), or placed in the report / `--json` payload / any error message. A failing provider surfaces only the seam's already-redacted message (or a generic `refresh failed`), never a raw cause.
+- **`relavium models pricing <model> --provider <slug> --input <usd> --output <usd> [--cached <usd>]`** hand-enters the per-million-token price of a model the static registry does **not** know — a custom-endpoint model, or a new provider model not yet in the shipped [pricing.ts](../../../packages/llm/src/pricing.ts) (2.5.G S10, [ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md) §1–2). Prices are **USD per million tokens** (`--input` prompt, `--output` completion, `--cached` cache-read; stored as integer micro-cents, `usd × 1e8`, never a float). The row is written as `source='user'` and a live `models refresh` **never** clobbers it. This **closes the cost-cap gap** ([ADR-0064](../../decisions/0064-live-model-catalog.md) §6): before, an unknown model had no price, so `budget.max_cost_microcents` / `[chat].max_cost_microcents` **degraded to allow** for it; once user-priced, the cap is enforced (pre-egress **and** realized) on `run`, `chat`, the Home chat, and one-shot `agent run`. Guards (each a clean exit `2`, nothing written): a **canonical** model id is refused (the shipped price always wins, so an override would be silently ignored); an **unregistered provider** is refused (register it first with `relavium provider add`); a **negative / non-finite / implausibly-large** price is refused. The static registry still wins for a known id, so a user can never misprice a shipped model.
+- **Security.** A provider key is read only to make the live request (over the bounded, abortable, secret-free `listModels` seam) and is **never** logged, persisted (the cache holds no key), or placed in the report / `--json` payload / any error message. A failing provider surfaces only the seam's already-redacted message (or a generic `refresh failed`), never a raw cause. `models pricing` writes only a model id + provider + integer prices — no key, ever.
 - **`--json`** ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)) emits **one NDJSON record per line**, stdout-pure, key-free:
   - `relavium models --json` — one record per model: `{ provider, modelId, displayName, contextWindowTokens, maxOutputTokens, source, lastRefreshedAt, deprecationDate }` (`null` for an absent optional; `source` ∈ `static | live | user`; `lastRefreshedAt` is epoch-ms).
   - `relavium models refresh --json` — one record per provider: `{ provider, status, added, updated, deactivated, error }`, where `status` ∈ `refreshed | skipped-no-key | skipped-unsupported | failed`, the three counts are the model ids added / refreshed-in-place / soft-deactivated (`null` unless `status` is `refreshed`), and `error` is a short, secret-free reason (`null` unless `failed`).
+  - `relavium models pricing --json` — one record: `{ model, provider, source, inputCostPerMtokMicrocents, outputCostPerMtokMicrocents, cachedInputCostPerMtokMicrocents }` (the stored integer micro-cents; `source` is always `user`).
 
 ### Read-command `--json` output
 
@@ -289,7 +293,8 @@ key is read solely at LLM-call time. Known providers: `anthropic`, `openai`, `ge
 
 ```bash
 relavium provider list                                  # registered providers + whether a key is set
-relavium provider add anthropic                         # register a provider (its default base URL)
+relavium provider add anthropic                         # register a provider (its default base URL + pricing page)
+relavium provider add openai --pricing-url https://example.com/prices   # override the pricing reference page
 echo "$ANTHROPIC_API_KEY" | relavium provider set-key anthropic   # store a key (read from STDIN, never argv)
 relavium provider test anthropic                        # verify the key with a minimal live request
 relavium provider remove-key anthropic                  # delete the key from the keychain
@@ -299,6 +304,7 @@ relavium provider remove-key anthropic                  # delete the key from th
   logs); pipe it or use a heredoc. The key is stored in the OS keychain under the canonical entry-naming
   scheme ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md#entry-naming)).
 - **`add` / `set-key`** auto-register the provider row. `--base-url <url>` on `add` records a custom endpoint that **is now actually used at request routing** (2.5.G S9, [ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md) §3–4 — the earlier "dead-config" gap is closed): the resolver rebinds that provider's adapter to the custom endpoint and routes **all** its egress (streaming `generate`/`stream` + the `models.list` refresh) through the shared **SSRF-validated** hop (`connectValidated` — HTTPS-only, no embedded credentials, every resolved IP range-blocked, connect pinned to the validated IP for DNS-rebinding safety). Custom endpoints are **OpenAI-compatible only** this round (`openai` / `deepseek`); a `--base-url` on `anthropic` / `gemini` is **refused** with a clear message (exit `2`), as is a non-HTTPS / private-loopback / credential-bearing URL (fail-fast at `add`). The provider-id set stays **closed** — a custom endpoint reuses the `openai` / `deepseek` id (ADR-0065 §6).
+- **`--pricing-url <url>`** on `add` overrides the seeded `pricing_reference_url` — the public pricing page where you find a model's price to hand-enter via [`relavium models pricing`](#relavium-models) (2.5.G S10, ADR-0065 §1). Each known provider is seeded with its default pricing page; the `add` confirmation echoes it. It is a **display-only pointer**, **never fetched** (not an egress target), so — unlike `--base-url` — it needs no SSRF gate; it is validated as an HTTPS URL with no embedded credentials and stored normalized (control bytes percent-encoded, so it is terminal-safe). Omitting the flag on a re-`add` preserves a previously-set custom pointer.
 - **`test`** does a 1-token `generate` through `@relavium/llm`; `--model <id>` overrides the cheap default. A bad
   key fails cleanly (exit `2`) without echoing the key.
 - **Key resolution** (used by `run` + `test`): **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error**.

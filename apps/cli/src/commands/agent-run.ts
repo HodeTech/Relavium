@@ -8,6 +8,7 @@ import { cassetteResolver, loadCassette } from '../chat/fixture.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
+import { loadUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -54,7 +55,7 @@ export async function agentRunCommand(
 ): Promise<ExitCode> {
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
-  const { config, projectConfigDir } = loadResolvedConfig({
+  const { config, projectConfigDir, homeDir } = loadResolvedConfig({
     cwd: deps.global.cwd,
     configPath: deps.global.configPath,
   });
@@ -69,6 +70,10 @@ export async function agentRunCommand(
     args.fixture === undefined
       ? (deps.providers ?? createProviderResolver(deps.io.env))
       : cassetteResolver(loadCassette(args.fixture, deps.global.cwd));
+  // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — so a one-shot live turn enforces + tracks a user-priced
+  // model. SKIPPED under `--fixture`: a cassette replay must stay deterministic + fully offline (no local
+  // `history.db` dependency); the recorded run already carries its costs.
+  const resolvePrice = offline ? undefined : loadUserPricingOverlay(homeDir);
 
   // An unknown `<agent>` (path or id) throws a typed CliError here (exit 2), before any turn. The build is
   // async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a fail-loud exit-2
@@ -86,6 +91,7 @@ export async function agentRunCommand(
       ? createMcpSecretResolver(deps.io.env)
       : (deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env)),
     mcpRegistrations: offline ? [] : config.mcpServers,
+    ...(resolvePrice === undefined ? {} : { resolvePrice }),
     // FULLY offline in `--fixture` (cassette) mode: disable inbound MCP entirely so an agent's inline
     // `mcp_servers` are never connected (no config build, no spawn, no dial). The cassette already carries any
     // recorded tool results, so the replay needs no live MCP.

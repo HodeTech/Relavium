@@ -24,6 +24,7 @@ import {
   sweepMediaAtTerminal,
 } from '../engine/media-gc.js';
 import { buildMediaEngineWiring } from '../engine/media-wiring.js';
+import { buildUserPricingOverlay } from '../engine/pricing-overlay.js';
 import {
   createProviderResolver,
   neededProviderIds,
@@ -203,6 +204,11 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       // fails fast at LOAD (exit 2), not only at the runtime FallbackChain pre-skip. `gate` runs the SAME check
       // (drive.ts), so a fresh run and a resume reject consistently.
       assertWorkflowCatalogValid(def, wiring.workflowModelCatalog);
+      // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the SAME durable `history.db` — so a
+      // workflow using a user-priced model is enforced by `budget.max_cost_microcents` (pre-egress) + priced in
+      // realized cost (the agent node). Only wired on this durable-history branch: the in-memory unit/harness
+      // path has no db, hence no user rows. An empty map (no user rows) is harmless (fills nothing).
+      const resolvePrice = buildUserPricingOverlay(opened.db);
       engineOptions = {
         providers,
         toolEnv,
@@ -211,6 +217,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
         ...(wiring.mediaCostEstimate === undefined
           ? {}
           : { mediaCostEstimate: wiring.mediaCostEstimate }),
+        ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
         ...mcpOption,
       };
     }

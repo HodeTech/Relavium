@@ -2,7 +2,7 @@ import type { ModelCatalogListing } from '@relavium/db';
 import { MODEL_PRICING } from '@relavium/llm';
 import { describe, expect, it } from 'vitest';
 
-import { buildMergedCatalog } from './model-catalog-view.js';
+import { buildMergedCatalog, buildUserPricing } from './model-catalog-view.js';
 
 /** Two known static anthropic model ids (derived from the registry so the test survives a pricing.ts edit). */
 function twoAnthropicIds(): readonly [string, string] {
@@ -95,5 +95,83 @@ describe('buildMergedCatalog', () => {
     // The skipped row contributes NOTHING — not availability, and not freshness (the stamp is read only AFTER the
     // slug is validated as a known ProviderId), so a rogue/custom-provider row can never skew the badge.
     expect(view.refreshedAt).toBeUndefined();
+  });
+});
+
+describe('buildUserPricing (2.5.G S10, ADR-0065 §2)', () => {
+  it('projects a source="user" row into a ModelPricing keyed by model id', () => {
+    const overlay = buildUserPricing({
+      rows: [
+        row({
+          modelId: 'acme-custom-1',
+          providerId: 'p-openai',
+          source: 'user',
+          inputCostPerMtokMicrocents: 300_000_000,
+          outputCostPerMtokMicrocents: 900_000_000,
+          cachedInputCostPerMtokMicrocents: 12_345,
+          contextWindowTokens: 32_000,
+          maxOutputTokens: 4_000,
+        }),
+      ],
+      providerSlug: slugResolver({ 'p-openai': 'openai' }),
+    });
+    const priced = overlay.get('acme-custom-1');
+    expect(priced?.provider).toBe('openai');
+    expect(priced?.nativeId).toBe('acme-custom-1');
+    expect(priced?.inputPerMtokMicrocents).toBe(300_000_000);
+    expect(priced?.outputPerMtokMicrocents).toBe(900_000_000);
+    expect(priced?.cachedInputPerMtokMicrocents).toBe(12_345);
+    expect(priced?.contextWindowTokens).toBe(32_000);
+    expect(priced?.maxOutputTokens).toBe(4_000);
+  });
+
+  it('includes ONLY source="user" rows (a live/static row is not a user price)', () => {
+    const overlay = buildUserPricing({
+      rows: [
+        row({ modelId: 'live-model', providerId: 'p-openai', source: 'live' }),
+        row({ modelId: 'static-model', providerId: 'p-openai', source: 'static' }),
+        row({ modelId: 'user-model', providerId: 'p-openai', source: 'user' }),
+      ],
+      providerSlug: slugResolver({ 'p-openai': 'openai' }),
+    });
+    expect([...overlay.keys()]).toEqual(['user-model']);
+  });
+
+  it('drops a user row whose provider UUID resolves to a non-enum slug (never injects under a known provider)', () => {
+    const overlay = buildUserPricing({
+      rows: [row({ modelId: 'rogue-priced', providerId: 'rogue', source: 'user' })],
+      providerSlug: slugResolver({}), // 'rogue' → 'rogue', not a ProviderId
+    });
+    expect(overlay.size).toBe(0);
+  });
+
+  it('defaults absent context/output limits to 0 (the "unknown" sentinel) without throwing', () => {
+    const overlay = buildUserPricing({
+      rows: [row({ modelId: 'no-limits', providerId: 'p-openai', source: 'user' })],
+      providerSlug: slugResolver({ 'p-openai': 'openai' }),
+    });
+    const priced = overlay.get('no-limits');
+    expect(priced?.contextWindowTokens).toBe(0);
+    expect(priced?.maxOutputTokens).toBe(0);
+  });
+
+  it('buildMergedCatalog fills the merge userPricing tier from the user rows (an unknown id becomes priceKnown)', () => {
+    const view = buildMergedCatalog({
+      rows: [
+        row({
+          modelId: 'acme-custom-1',
+          providerId: 'p-openai',
+          source: 'user',
+          inputCostPerMtokMicrocents: 300_000_000,
+          outputCostPerMtokMicrocents: 900_000_000,
+        }),
+      ],
+      providerSlug: slugResolver({ 'p-openai': 'openai' }),
+      now: 0,
+    });
+    const entry = view.entries.find((e) => e.modelId === 'acme-custom-1');
+    expect(entry?.pricingSource).toBe('user');
+    expect(entry?.priceKnown).toBe(true);
+    expect(entry?.pricing?.inputPerMtokMicrocents).toBe(300_000_000);
   });
 });

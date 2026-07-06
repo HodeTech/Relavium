@@ -44,6 +44,7 @@ import {
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
+import { buildUserPricingOverlay, loadUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
@@ -245,6 +246,10 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   const providers = deps.providers ?? createProviderResolver(deps.io.env);
   const mcpSecretResolver = deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
   const store = createChatStore(deps.global.color);
+  // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a transient read of the `model_catalog` `source='user'`
+  // rows, so a user-priced model is enforced by `[chat].max_cost_microcents` + tracked in realized cost. NON-FATAL:
+  // an unopenable db yields `undefined` here and surfaces cleanly through the session store open below.
+  const resolvePrice = loadUserPricingOverlay(homeDir);
 
   // An unknown --agent / un-inferrable default model throws a typed CliError here (exit 2), before any session.
   // The build is async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a
@@ -259,6 +264,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     providers,
     mcpSecretResolver,
     mcpRegistrations: config.mcpServers,
+    ...(resolvePrice === undefined ? {} : { resolvePrice }),
     onBudgetWarning: (warning) =>
       deps.io.writeErr(
         `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
@@ -322,6 +328,8 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     buildSession: deps.buildSession ?? buildChatSession,
     io: deps.io,
     global: deps.global,
+    // The same overlay the initial session used — a `/clear` rebuild keeps the user-priced cost enforcement.
+    ...(resolvePrice === undefined ? {} : { resolvePrice }),
   });
 
   return runReplLoop(
@@ -368,6 +376,8 @@ export async function chatResumeCommand(
   let store: ChatStoreController;
   let persister: SessionPersister;
   let intro: string;
+  // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — hoisted so the post-try `/clear` rebuild reuses it.
+  let resolvePrice: BuildChatSessionOptions['resolvePrice'];
   // The just-built resumed session OWNS its MCP connections; if a pre-loop step after a SUCCESSFUL build throws,
   // the catch must tear them down (the steady-state teardown is runReplLoop's finally, not yet entered). Undefined
   // when no server was declared OR the build self-cleaned its own post-connect fault (see buildResumedChatSession).
@@ -379,6 +389,10 @@ export async function chatResumeCommand(
     if (loaded === undefined) {
       throw new CliError('invalid_invocation', `no session found with id ${args.sessionId}`);
     }
+    // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the ALREADY-OPEN session db — so a resumed
+    // session enforces + tracks a user-priced model exactly like a fresh `chat`. An empty map (no user rows) is
+    // harmless. Inside the try, so any read fault hits the same teardown as the rest of the pre-loop wiring.
+    resolvePrice = buildUserPricingOverlay(opened.db);
     const resumed = await (deps.buildResumedSession ?? buildResumedChatSession)({
       chat: config.chat,
       record: loaded.session,
@@ -387,6 +401,7 @@ export async function chatResumeCommand(
       providers,
       mcpSecretResolver,
       mcpRegistrations: config.mcpServers,
+      resolvePrice,
       onBudgetWarning: (warning) =>
         deps.io.writeErr(
           `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
@@ -467,6 +482,8 @@ export async function chatResumeCommand(
     buildSession: deps.buildSession ?? buildChatSession,
     io: deps.io,
     global: deps.global,
+    // The same overlay the resumed session used — a `/clear` rebuild keeps the user-priced cost enforcement.
+    ...(resolvePrice === undefined ? {} : { resolvePrice }),
   });
 
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
@@ -918,6 +935,9 @@ interface FreshChatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildSession: typeof buildChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+  /** The ADR-0065 §2 user-pricing overlay (2.5.G S10) — carried into the rebuilt session so a `/clear` keeps
+   *  the user-priced cost enforcement of the session it replaced. */
+  readonly resolvePrice: BuildChatSessionOptions['resolvePrice'];
 }
 
 async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): Promise<ReplWiring> {
@@ -932,6 +952,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     providers: deps.providers,
     mcpSecretResolver: deps.mcpSecretResolver,
     ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
+    ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
   });
   surfaceMcpSkipped(deps.io, built.mcpSkipped);
@@ -992,6 +1013,7 @@ function createClearRebuild(params: {
   readonly buildSession: typeof buildChatSession;
   readonly io: CliIo;
   readonly global: GlobalOptions;
+  readonly resolvePrice?: BuildChatSessionOptions['resolvePrice'];
 }): (oldSessionId: string) => Promise<ReplWiring> {
   const wiringDeps: FreshChatWiringDeps = {
     chat: params.chat,
@@ -1008,6 +1030,7 @@ function createClearRebuild(params: {
     global: params.global,
     opened: params.opened,
     buildSession: params.buildSession,
+    resolvePrice: params.resolvePrice,
     onBudgetWarning: (warning) =>
       params.io.writeErr(
         `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,

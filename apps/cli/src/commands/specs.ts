@@ -456,6 +456,13 @@ function registerModels(program: Command, ctx?: CommandContext): void {
   const refresh = models
     .command('refresh')
     .description("Re-fetch each connected provider's live model list into the local cache.");
+  const pricing = models
+    .command('pricing <model>')
+    .description('Set a user price for a model the registry does not know (custom / new provider models).')
+    .requiredOption('--provider <slug>', 'the provider that serves the model (must be registered)')
+    .requiredOption('--input <usd-per-mtok>', 'input (prompt) price, USD per million tokens')
+    .requiredOption('--output <usd-per-mtok>', 'output (completion) price, USD per million tokens')
+    .option('--cached <usd-per-mtok>', 'cache-read price, USD per million tokens (default 0)');
 
   if (ctx === undefined) {
     models.action(() => {
@@ -465,6 +472,12 @@ function registerModels(program: Command, ctx?: CommandContext): void {
       throw new CliError(
         'not_implemented',
         '`relavium models refresh` requires the CLI runtime context.',
+      );
+    });
+    pricing.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium models pricing` requires the CLI runtime context.',
       );
     });
     return;
@@ -480,6 +493,26 @@ function registerModels(program: Command, ctx?: CommandContext): void {
       ctx,
     );
   });
+  pricing.action(
+    async (
+      model: string,
+      opts: { provider?: string; input?: string; output?: string; cached?: string },
+    ) => {
+      ctx.result.exitCode = await executeCommand(
+        'models.pricing',
+        {
+          positionals: [model],
+          options: {
+            provider: opts.provider,
+            input: opts.input,
+            output: opts.output,
+            cached: opts.cached,
+          },
+        },
+        ctx,
+      );
+    },
+  );
 }
 
 /** Register `relavium provider` and its subcommands (2.C). Each dispatch opens the local db + keychain per invocation. */
@@ -493,7 +526,8 @@ function registerProvider(program: Command, ctx?: CommandContext): void {
   const add = provider
     .command('add <name>')
     .description('Register a provider.')
-    .option('--base-url <url>', 'override the provider base URL');
+    .option('--base-url <url>', 'override the provider base URL')
+    .option('--pricing-url <url>', 'override the pricing reference page (where you find model prices)');
   const setKey = provider
     .command('set-key <name>')
     .description('Store a provider API key in the OS keychain (the key is read from stdin).');

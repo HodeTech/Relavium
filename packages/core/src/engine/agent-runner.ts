@@ -43,6 +43,7 @@ import {
   type MediaJobStatus,
   type MediaUnitsEntry,
   type MediaUnitsEstimate,
+  type PricingOverlay,
   type ProviderId,
   type ResponseFormat,
   type ToolDef as LlmToolDef,
@@ -115,6 +116,9 @@ export interface AgentRunnerDeps {
   readonly limits?: AgentTurnLimits;
   /** Pre-egress budget hook (default no-op; 1.AC fills it). */
   readonly preEgress?: PreEgressHook;
+  /** The user-pricing overlay (2.5.G S10, ADR-0065 §2) — host-injected into the turn's realized cost tracker so a
+   *  workflow run's user-priced model is folded into cost governance. Absent ⇒ static-only. */
+  readonly resolvePrice?: PricingOverlay;
   /**
    * Per-modality media-output **unit-count** default (1.AF/D17, ADR-0044 §3) — the host-resolved
    * `[defaults].media_cost_estimate`. Used to build the per-turn media-unit estimate from a node's
@@ -336,6 +340,7 @@ async function executeAgent(
       dispatchContext,
       limits: deps.limits ?? DEFAULT_AGENT_TURN_LIMITS,
       ...(preEgress === undefined ? {} : { preEgress }),
+      ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }), // user-pricing overlay (S10)
       // Media cost governance (1.AF/D17): forward the node's requested output modalities + a per-modality
       // unit estimate so the budget governor prices a media-output turn pre-egress. Both omitted for a
       // text-only node (no `output_modalities`), so a text turn pays no media-estimate work.

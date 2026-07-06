@@ -38,6 +38,7 @@ import {
   type FallbackPlanEntry,
   type LlmMessage,
   type LlmProvider,
+  type PricingOverlay,
   type ProviderId,
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
@@ -231,6 +232,13 @@ export interface SessionDeps {
   readonly maxTurns?: number;
   /** Pre-egress budget hook (default no-op; 1.AC fills it — ADR-0028). */
   readonly preEgress?: PreEgressHook;
+  /**
+   * The user-pricing overlay (2.5.G S10, ADR-0065 §2) — host-injected (like {@link keyFor}) from the
+   * `model_catalog` `source='user'` rows, threaded into the turn's REALIZED cost tracker so a user-priced model
+   * the static registry lacks is folded into the cumulative cost (which `updateCost` feeds to the governor, so
+   * `max_cost_microcents` enforces it). Absent ⇒ static-only pricing. `@relavium/core` never imports `@relavium/db`.
+   */
+  readonly resolvePrice?: PricingOverlay;
   /**
    * Feed the running session cost to a budget governor so a host that wires {@link preEgress} to
    * `BudgetGovernor.checkPreEgress` also keeps the governor's cumulative total current (ADR-0028, 1.AC).
@@ -852,6 +860,7 @@ export class AgentSession {
         dispatchContext: this.#buildDispatchContext(new Set(), undefined),
         limits: this.#limits,
         ...(this.#deps.preEgress === undefined ? {} : { preEgress: this.#deps.preEgress }),
+        ...(this.#deps.resolvePrice === undefined ? {} : { resolvePrice: this.#deps.resolvePrice }),
       });
       const summary = result.text.trim();
       if (summary.length === 0) {
@@ -1049,6 +1058,7 @@ export class AgentSession {
       dispatchContext,
       limits: this.#limits,
       ...(this.#deps.preEgress === undefined ? {} : { preEgress: this.#deps.preEgress }),
+      ...(this.#deps.resolvePrice === undefined ? {} : { resolvePrice: this.#deps.resolvePrice }),
     });
   }
 

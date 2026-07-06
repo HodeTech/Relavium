@@ -34,6 +34,7 @@ import { importCommand, type ImportCommandArgs } from './import.js';
 import { listCommand } from './list.js';
 import { logsCommand } from './logs.js';
 import { modelsCommand, type ModelsCommandArgs } from './models.js';
+import { modelsPricingCommand, type ModelsPricingCommandArgs } from './models-pricing.js';
 import {
   runProviderCommand,
   type ProviderCommandArgs,
@@ -178,10 +179,12 @@ export function buildGateArgs(input: CommandInput): GateCommandArgs {
 
 export function buildProviderAddArgs(input: CommandInput): ProviderCommandArgs {
   const baseUrl = optString(input.options['baseUrl']);
+  const pricingUrl = optString(input.options['pricingUrl']);
   return {
     action: 'add',
     name: reqPositional(input, 0, 'name'),
     ...(baseUrl === undefined ? {} : { baseUrl }),
+    ...(pricingUrl === undefined ? {} : { pricingUrl }),
   };
 }
 
@@ -191,6 +194,42 @@ export function buildProviderTestArgs(input: CommandInput): ProviderCommandArgs 
     action: 'test',
     name: reqPositional(input, 0, 'name'),
     ...(model === undefined ? {} : { model }),
+  };
+}
+
+/** Parse one USD/Mtok option string → a finite number (invocation-level: shape only; the command core owns the
+ *  non-negative + ceiling domain rules). The raw value is NEVER echoed (a defensive no-terminal-injection habit). */
+function parseUsdPerMtok(raw: string, flag: string): number {
+  const trimmed = raw.trim();
+  const value = Number(trimmed);
+  if (trimmed === '' || !Number.isFinite(value)) {
+    throw new CliError('invalid_invocation', `${flag} must be a finite number of USD per million tokens.`);
+  }
+  return value;
+}
+
+export function buildModelsPricingArgs(input: CommandInput): ModelsPricingCommandArgs {
+  const provider = optString(input.options['provider']);
+  if (provider === undefined) {
+    throw new CliError('invalid_invocation', 'missing required option --provider <slug>.');
+  }
+  const rawInput = optString(input.options['input']);
+  const rawOutput = optString(input.options['output']);
+  if (rawInput === undefined) {
+    throw new CliError('invalid_invocation', 'missing required option --input <usd-per-mtok>.');
+  }
+  if (rawOutput === undefined) {
+    throw new CliError('invalid_invocation', 'missing required option --output <usd-per-mtok>.');
+  }
+  const rawCached = optString(input.options['cached']);
+  return {
+    model: reqPositional(input, 0, 'model'),
+    provider,
+    inputUsdPerMtok: parseUsdPerMtok(rawInput, '--input'),
+    outputUsdPerMtok: parseUsdPerMtok(rawOutput, '--output'),
+    ...(rawCached === undefined
+      ? {}
+      : { cachedInputUsdPerMtok: parseUsdPerMtok(rawCached, '--cached') }),
   };
 }
 
@@ -414,6 +453,31 @@ const executeModels: CommandExecutor = (_input, ctx) => withModelsDeps(ctx, { re
 const executeModelsRefresh: CommandExecutor = (_input, ctx) =>
   withModelsDeps(ctx, { refresh: true });
 
+/**
+ * `models pricing <model>` (2.5.G S10, ADR-0065) — open the local db, build the catalog + provider stores over it,
+ * capture the user price, and ALWAYS close the db. No keychain / resolver / refresh service is needed (a pure local
+ * write), so this is a lighter path than {@link withModelsDeps}. Args are parsed FIRST (a bad flag fails exit-2
+ * before the db opens); the core is injected in unit tests directly (never touching `~/.relavium/history.db`).
+ */
+const executeModelsPricing: CommandExecutor = (input, ctx) => {
+  const args = buildModelsPricingArgs(input); // a bad/absent flag is an invocation fault before any db work
+  const { homeDir } = loadResolvedConfig({ cwd: ctx.global.cwd, configPath: ctx.global.configPath });
+  const { db, close } = openLocalDb(homeDir);
+  try {
+    const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    return Promise.resolve(
+      modelsPricingCommand(args, {
+        io: ctx.io,
+        global: ctx.global,
+        catalog: createModelCatalogStore(db, storeDeps),
+        providers: createProviderStore(db, storeDeps),
+      }),
+    );
+  } finally {
+    close();
+  }
+};
+
 /** Open the local db + OS keychain for one `provider` invocation, run the core, and always close the db. */
 async function withProviderDeps(
   ctx: DispatchContext,
@@ -470,6 +534,7 @@ const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, 
   ['status', executeStatus],
   ['models', executeModels],
   ['models.refresh', executeModelsRefresh],
+  ['models.pricing', executeModelsPricing],
   ['provider.list', providerExecutor(() => ({ action: 'list' }))],
   ['provider.add', providerExecutor(buildProviderAddArgs)],
   [

@@ -183,6 +183,80 @@ describe('CostTracker', () => {
   });
 });
 
+describe('user-pricing overlay (2.5.G S10, ADR-0065 §2)', () => {
+  // A user-supplied price for a model the static registry does NOT know (a custom-endpoint id).
+  const OVERLAY: ReadonlyMap<string, ModelPricing> = new Map([
+    [
+      'acme-custom-1',
+      {
+        provider: 'openai',
+        nativeId: 'acme-custom-1',
+        displayName: 'Acme Custom 1',
+        contextWindowTokens: 32_000,
+        maxOutputTokens: 4_000,
+        inputPerMtokMicrocents: 300_000_000, // $3/MTok
+        outputPerMtokMicrocents: 900_000_000, // $9/MTok
+        cachedInputPerMtokMicrocents: 0,
+      },
+    ],
+    // A user row that COLLIDES with a canonical id — the static registry must still win (no silent misprice).
+    [
+      'claude-opus-4-8',
+      {
+        provider: 'anthropic',
+        nativeId: 'claude-opus-4-8',
+        displayName: 'Tampered Opus',
+        contextWindowTokens: 1,
+        maxOutputTokens: 1,
+        inputPerMtokMicrocents: 1, // absurd override — must be ignored
+        outputPerMtokMicrocents: 1,
+        cachedInputPerMtokMicrocents: 0,
+      },
+    ],
+  ]);
+
+  it('priceModel fills an UNKNOWN id from the overlay', () => {
+    const p = priceModel('acme-custom-1', OVERLAY);
+    expect(p.inputPerMtokMicrocents).toBe(300_000_000);
+    expect(p.provider).toBe('openai');
+  });
+
+  it('priceModel keeps the STATIC registry authoritative for a known id even when the overlay collides', () => {
+    const p = priceModel('claude-opus-4-8', OVERLAY);
+    expect(p.displayName).toBe('Claude Opus 4.8'); // the static row, not the tampered overlay
+    expect(p.inputPerMtokMicrocents).toBe(500_000_000); // $5/MTok, not the overlay's 1µ¢
+  });
+
+  it('priceModel still throws UnknownModelError for an id absent from BOTH tiers', () => {
+    expect(() => priceModel('not-anywhere', OVERLAY)).toThrowError(UnknownModelError);
+  });
+
+  it('cost() prices a user-priced unknown model via the overlay (the cost-cap gap is closed)', () => {
+    // 1000 in @ $3/MTok = 300_000µ¢; 500 out @ $9/MTok = 450_000µ¢ → 750_000µ¢.
+    expect(cost('acme-custom-1', { inputTokens: 1000, outputTokens: 500 }, OVERLAY)).toBe(750_000);
+  });
+
+  it('cost() without an overlay still throws for the same unknown model (no silent zero)', () => {
+    expect(() => cost('acme-custom-1', { inputTokens: 1000, outputTokens: 500 })).toThrowError(
+      UnknownModelError,
+    );
+  });
+
+  it('CostTracker records realized cost for a user-priced model when constructed with the overlay', () => {
+    const tracker = new CostTracker(OVERLAY);
+    const r = tracker.record('acme-custom-1', { inputTokens: 1000, outputTokens: 500 });
+    expect(r.costMicrocents).toBe(750_000);
+    expect(tracker.cumulativeCostMicrocents).toBe(750_000);
+  });
+
+  it('CostTracker WITHOUT an overlay throws on the same unknown model (degrades loudly, never a silent 0)', () => {
+    const tracker = new CostTracker();
+    expect(() => tracker.record('acme-custom-1', { inputTokens: 1000, outputTokens: 500 })).toThrowError(
+      UnknownModelError,
+    );
+  });
+});
+
 describe('MODEL_PRICING table invariants (the values seeded into model_catalog)', () => {
   it('keys match KNOWN_MODEL_IDS and every catalog-projection field is complete + integer', () => {
     const byLocale = (a: string, b: string): number => a.localeCompare(b);

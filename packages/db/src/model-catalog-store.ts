@@ -65,8 +65,13 @@ export interface ModelCatalogUpsert {
   readonly mediaImageCostMicrocents?: number | null;
   readonly mediaAudioCostMicrocents?: number | null;
   readonly mediaVideoCostMicrocents?: number | null;
+  /** USER-supplied TEXT-token pricing (2.5.G S10, ADR-0065 §1) — integer micro-cents per Mtok. Written under
+   *  `source='user'` (a live refresh NEVER clobbers a user row, §1); OMITTED ⇒ the DB default `0`. */
+  readonly inputCostPerMtokMicrocents?: number;
+  readonly outputCostPerMtokMicrocents?: number;
+  readonly cachedInputCostPerMtokMicrocents?: number;
   /** The provenance discriminant ([ADR-0064] §4). OMITTED ⇒ `'static'` (a hardcoded seed), so every existing
-   *  media-routing caller is unchanged; the live refresh writes `'live'`. */
+   *  media-routing caller is unchanged; the live refresh writes `'live'`; user pricing writes `'user'`. */
   readonly source?: ModelCatalogSource;
   /** The epoch-ms this row was live-refreshed (ADR-0064 §5). OMITTED ⇒ `null` (a static/user or never-refreshed row). */
   readonly lastRefreshedAt?: number;
@@ -343,12 +348,32 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
         displayName: input.displayName,
         contextWindowTokens: input.contextWindowTokens,
         maxOutputTokens: input.maxOutputTokens,
-        mediaSurface: input.mediaSurface ?? 'chat',
-        supportsVision: input.supportsVision ?? false,
-        capabilities: JSON.stringify(input.capabilities ?? {}),
-        mediaImageCostMicrocents: input.mediaImageCostMicrocents ?? null,
-        mediaAudioCostMicrocents: input.mediaAudioCostMicrocents ?? null,
-        mediaVideoCostMicrocents: input.mediaVideoCostMicrocents ?? null,
+        // Media routing / capability columns follow the SAME "never clobber an omitted field on update" invariant
+        // as the pricing + provenance columns below (2.5.G S10): a partial upsert — e.g. `models pricing` writing a
+        // `source='user'` row over a model the live refresh discovered — must NOT reset a live/seed row's
+        // `media_surface` back to `'chat'` (silently disabling generative routing) or blank its capabilities. On a
+        // true INSERT (`existing` undefined) each still falls to its documented default, so every full-row caller
+        // (the media fixture, a re-seed) is byte-for-byte unchanged (it always passes these).
+        mediaSurface: input.mediaSurface ?? existing?.mediaSurface ?? 'chat',
+        supportsVision: input.supportsVision ?? existing?.supportsVision ?? false,
+        capabilities:
+          input.capabilities !== undefined
+            ? JSON.stringify(input.capabilities)
+            : (existing?.capabilities ?? JSON.stringify({})),
+        mediaImageCostMicrocents:
+          input.mediaImageCostMicrocents ?? existing?.mediaImageCostMicrocents ?? null,
+        mediaAudioCostMicrocents:
+          input.mediaAudioCostMicrocents ?? existing?.mediaAudioCostMicrocents ?? null,
+        mediaVideoCostMicrocents:
+          input.mediaVideoCostMicrocents ?? existing?.mediaVideoCostMicrocents ?? null,
+        // USER text-token pricing (2.5.G S10) — write the supplied prices, else PRESERVE the existing row's (an
+        // update that omits them must not zero a hand-entered price), else the NOT-NULL default `0`.
+        inputCostPerMtokMicrocents:
+          input.inputCostPerMtokMicrocents ?? existing?.inputCostPerMtokMicrocents ?? 0,
+        outputCostPerMtokMicrocents:
+          input.outputCostPerMtokMicrocents ?? existing?.outputCostPerMtokMicrocents ?? 0,
+        cachedInputCostPerMtokMicrocents:
+          input.cachedInputCostPerMtokMicrocents ?? existing?.cachedInputCostPerMtokMicrocents ?? 0,
         // Provenance + freshness (ADR-0064 §4/§5). On a true INSERT (`existing` undefined) these fall to
         // `'static'` / `null`, so every existing media-routing caller (which passes neither) writes a static,
         // never-refreshed row unchanged. On an UPDATE they PRESERVE the existing row's `source`/`lastRefreshedAt`

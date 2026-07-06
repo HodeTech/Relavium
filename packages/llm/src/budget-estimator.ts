@@ -1,6 +1,6 @@
 import type { MediaBilledModality } from '@relavium/shared';
 
-import { priceModel } from './cost-tracker.js';
+import { priceModel, type PricingOverlay } from './cost-tracker.js';
 
 const TOKENS_PER_MTOK = 1_000_000;
 
@@ -13,8 +13,12 @@ const TOKENS_PER_MTOK = 1_000_000;
  *
  * All figures are integer micro-cents.
  */
-export function estimateMaxNextCost(modelId: string, maxOutputTokens: number): number {
-  const p = priceModel(modelId);
+export function estimateMaxNextCost(
+  modelId: string,
+  maxOutputTokens: number,
+  overlay?: PricingOverlay,
+): number {
+  const p = priceModel(modelId, overlay);
   if (maxOutputTokens <= 0) {
     return 0;
   }
@@ -38,8 +42,9 @@ export interface MediaUnitsEstimate {
 export function estimateMediaCost(
   modelId: string,
   estimate: readonly MediaUnitsEstimate[],
+  overlay?: PricingOverlay,
 ): number {
-  const p = priceModel(modelId);
+  const p = priceModel(modelId, overlay);
   let total = 0;
   for (const { modality, units } of estimate) {
     const rate = p.mediaOutputRates?.[modality];

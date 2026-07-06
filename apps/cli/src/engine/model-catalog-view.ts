@@ -3,6 +3,8 @@ import {
   mergeModelCatalog,
   type ModelCatalogEntry,
   type ModelListing,
+  type ModelPricing,
+  type PricingOverlay,
   type ProviderId,
 } from '@relavium/llm';
 import { LLM_PROVIDERS } from '@relavium/shared';
@@ -16,9 +18,12 @@ import { LLM_PROVIDERS } from '@relavium/shared';
  * merge, whose static tier is the in-code `MODEL_PRICING`. Keeping this in the host — not the store, not the merge
  * — is what lets `@relavium/llm`/`@relavium/core` stay platform-free while every surface reuses the one merge.
  *
- * The ADR-0065 USER-pricing tier is intentionally NOT built here yet — S7 ships availability + static pricing; the
- * `source='user'` rows are populated + merged in S10 (the merge already accepts an optional `userPricing` slot, so
- * that lands additively with no signature change).
+ * The ADR-0065 USER-pricing tier is built by {@link buildUserPricing} (workstream **2.5.G S10**): it projects the
+ * `source='user'` rows into the ONE `ReadonlyMap<string, ModelPricing>` that serves BOTH consumers — the merge's
+ * `userPricing` slot (so the `/models` picker shows a user-priced model's cost) AND the cost path's
+ * {@link PricingOverlay} (host-injected exactly like `keyFor`, so the budget governor enforces `max_cost_microcents`
+ * on an otherwise-unknown model). Static `MODEL_PRICING` still wins for a known id in both — the user tier only ever
+ * fills an UNKNOWN id (ADR-0065 §2), so a user can never silently misprice a shipped model.
  */
 
 /** The merged catalog for the picker + the newest live-refresh stamp (the "last updated" freshness badge). */
@@ -62,6 +67,51 @@ function rowToListing(row: ModelCatalogListing): ModelListing {
 }
 
 /**
+ * Map a `source='user'` catalog row → a seam {@link ModelPricing} (the ADR-0065 user tier). The DB stores integer
+ * micro-cents in the three `*_per_mtok_microcents` columns (NOT NULL, default `0`) — a captured price is a real
+ * value; a `0` means "not set for this dimension" and costs that dimension as free, which is the user's declared
+ * intent. Media output rates + cache-write are NOT user-capturable (no column), so they stay undefined — the cost
+ * fold degrades those to 0 (H4: never hard-fail on a missing rate). The context/output limits carry through so the
+ * merged picker and the footer context indicator can show them for an otherwise-unknown model.
+ */
+function rowToUserPricing(row: ModelCatalogListing, provider: ProviderId): ModelPricing {
+  return {
+    provider,
+    nativeId: row.modelId,
+    displayName: row.displayName,
+    contextWindowTokens: row.contextWindowTokens ?? 0,
+    maxOutputTokens: row.maxOutputTokens ?? 0,
+    inputPerMtokMicrocents: row.inputCostPerMtokMicrocents,
+    outputPerMtokMicrocents: row.outputCostPerMtokMicrocents,
+    cachedInputPerMtokMicrocents: row.cachedInputCostPerMtokMicrocents,
+    ...(row.deprecationDate !== undefined
+      ? { deprecatedAt: new Date(row.deprecationDate).toISOString() }
+      : {}),
+  };
+}
+
+/**
+ * Project the active catalog rows into the ADR-0065 USER-pricing map — the single source that feeds BOTH the merge's
+ * `userPricing` slot and the cost path's {@link PricingOverlay}. Only `source='user'` rows contribute; a row whose
+ * provider UUID resolves to a non-enum slug is dropped (a mis-keyed or future custom-provider row can never inject a
+ * price under a known provider). The map is keyed by model id — the same key the merge and {@link priceModel} look
+ * up — so a user price reaches an unknown model in both the picker and the governor with one build.
+ */
+export function buildUserPricing(input: {
+  readonly rows: readonly ModelCatalogListing[];
+  readonly providerSlug: (uuid: string) => string;
+}): PricingOverlay {
+  const map = new Map<string, ModelPricing>();
+  for (const row of input.rows) {
+    if (row.source !== 'user') continue; // only the user-pricing rows carry an authored price
+    const slug = input.providerSlug(row.providerId);
+    if (!isProviderId(slug)) continue; // an unmapped UUID / non-enum provider — never inject under a known provider
+    map.set(row.modelId, rowToUserPricing(row, slug));
+  }
+  return map;
+}
+
+/**
  * Project the active catalog rows into the merged `/models` view. Partitions the `source='live'` rows into a
  * per-`ProviderId` live map, then delegates to the pure merge. A provider is added to the live map only when it
  * has ≥1 ACTIVE `source='live'` row; a provider with no active live rows (never refreshed, OR refreshed to an
@@ -88,6 +138,7 @@ export function buildMergedCatalog(input: BuildMergedCatalogInput): MergedCatalo
     list.push(rowToListing(row));
     live.set(slug, list);
   }
-  const entries = mergeModelCatalog({ live, now: input.now });
+  const userPricing = buildUserPricing({ rows: input.rows, providerSlug: input.providerSlug });
+  const entries = mergeModelCatalog({ live, userPricing, now: input.now });
   return { entries, refreshedAt };
 }
