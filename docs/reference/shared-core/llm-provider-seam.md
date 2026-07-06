@@ -38,6 +38,7 @@ interface LlmRequest {
   toolChoice?: 'auto' | 'none' | 'required' | { name: string };
   temperature?: number;
   maxTokens?: number;            // REQUIRED downstream for Anthropic; we default it
+  reasoningEffort?: ReasoningEffort; // normalized tier off|low|medium|high|max (ADR-0066); each adapter maps to its provider's native tier — CANONICAL, wins over a colliding providerOptions key; absent ⇒ provider default
   stopSequences?: string[];
   responseFormat?: ResponseFormat; // structured-output request (ADR-0030)
   outputModalities?: OutputModality[]; // request media output on the INLINE path (ADR-0031); default ['text']

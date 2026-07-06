@@ -1,4 +1,4 @@
-import { MODEL_PRICING, type ModelPricing } from './pricing.js';
+import { MODEL_PRICING, modelSupportsReasoning, type ModelPricing } from './pricing.js';
 import type { ModelListing, ProviderId } from './types.js';
 
 /**
@@ -189,10 +189,11 @@ export function mergeModelCatalog(input: MergeModelCatalogInput): ModelCatalogEn
       ...(unavailableReason !== undefined ? { unavailableReason } : {}),
       deprecated,
       ...(deprecatedAt !== undefined ? { deprecatedAt } : {}),
-      // Reasoning capability rides the STATIC registry tier only (never live/user) — the same source as
-      // `modelSupportsReasoning`, so the picker's effort sub-step lights up exactly for the models the engine gate
-      // will actually honor (ADR-0066).
-      supportsReasoning: t.registry?.reasoning === true,
+      // Reasoning capability via the SAME authority as the engine gate (ADR-0066 §4): the registry flag for a known
+      // id (authoritative — true or false), else the conservative id heuristic for a live-discovered id. So the
+      // picker's effort sub-step lights up exactly for the models the engine will actually honor — including a newly
+      // released reasoning family member absent from the registry.
+      supportsReasoning: modelSupportsReasoning(modelId),
     });
   }
 

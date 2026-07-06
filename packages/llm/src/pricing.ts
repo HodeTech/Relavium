@@ -247,17 +247,41 @@ export const KNOWN_MODEL_IDS: readonly CanonicalModelId[] =
   Object.keys(MODEL_PRICING).filter(isCanonicalModelId);
 
 /**
- * Whether a model supports a reasoning-effort control ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md))
- * — the static per-model capability the host projects to the engine's `resolveReasoning` gate (and the `/models`
- * picker's effort selector). `false` for an unknown/custom (non-catalog) model — the SAFE default, so the tier is
- * never sent to a model that would reject it. A pure host-side helper, like {@link contextWindowForModel}.
+ * A CONSERVATIVE model-id reasoning heuristic ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §4)
+ * — the second arm of {@link modelSupportsReasoning}, applied ONLY to an id absent from the static registry (a
+ * live-discovered model whose list endpoint omits a reasoning flag). Each arm is a family/pattern where the WHOLE
+ * matched set reasons, so a new member of a known reasoning family (e.g. a next o-series id) gates correctly before
+ * the registry is updated. Deliberately **narrow**: it does NOT prefix-match ambiguous families whose lineup mixes
+ * reasoning and non-reasoning members (base Claude Sonnet, Gemini by version, DeepSeek — reasoning deferred), because
+ * OVER-matching would send the tier to a non-reasoning model and earn a provider rejection — strictly worse than the
+ * safe under-match (no effort UX until the registry adds the model, the same maintenance shape as pricing). The
+ * `-chat` exclusion keeps OpenAI's non-reasoning `gpt-5-chat` conversational variant out.
+ */
+export function reasoningModelIdHeuristic(model: string): boolean {
+  const m = model.toLowerCase();
+  if (/^o\d/.test(m)) return true; // OpenAI o-series (o1 / o3 / o4 / o5+) — the entire family reasons
+  if (/^gpt-5/.test(m) && !m.includes('chat')) return true; // the reasoning gpt-5 line (gpt-5-chat is non-reasoning)
+  if (m.startsWith('claude-opus')) return true; // Claude Opus reasons (extended thinking)
+  if (m.includes('thinking')) return true; // an explicit "thinking" model id (e.g. a Gemini thinking variant)
+  return false;
+}
+
+/**
+ * Whether a model supports a reasoning-effort control ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md)
+ * §4) — the per-model capability the host projects to the engine's `resolveReasoning` gate (and the `/models`
+ * picker's effort selector). The STATIC registry is authoritative for a canonical id (its `reasoning` flag, `true`
+ * OR `false` — so an explicit non-reasoning member always wins); a NON-registry id (a live-discovered model) falls
+ * back to the conservative {@link reasoningModelIdHeuristic}. A pure host-side helper, like {@link contextWindowForModel}.
  */
 export function modelSupportsReasoning(model: string): boolean {
-  if (!isCanonicalModelId(model)) return false;
-  // Widen the literal-union entry to `ModelPricing` so `.reasoning` (absent on the non-reasoning members) reads as
-  // `boolean | undefined` — each entry `satisfies ModelPricing`, so this is assignment, not a cast.
-  const entry: ModelPricing = MODEL_PRICING[model];
-  return entry.reasoning === true;
+  if (isCanonicalModelId(model)) {
+    // Widen the literal-union entry to `ModelPricing` so `.reasoning` (absent on the non-reasoning members) reads as
+    // `boolean | undefined` — each entry `satisfies ModelPricing`, so this is assignment, not a cast. The registry
+    // is authoritative for a known id, so a false/absent flag is NOT overridden by the id heuristic.
+    const entry: ModelPricing = MODEL_PRICING[model];
+    return entry.reasoning === true;
+  }
+  return reasoningModelIdHeuristic(model);
 }
 
 /**

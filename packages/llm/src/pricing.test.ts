@@ -21,9 +21,28 @@ describe('modelSupportsReasoning (ADR-0066)', () => {
     // DeepSeek reasons (v4 thinking) but its adapter mapping is deferred, so the capability stays OFF (the effort
     // is not controllable there yet — the picker must not offer it).
     expect(modelSupportsReasoning('deepseek-v4-flash')).toBe(false);
-    // Unknown / custom base-URL model ⇒ the SAFE default (never send the tier to a model that would reject it).
+    // Unknown / custom base-URL model NOT matching a reasoning family ⇒ the SAFE default.
     expect(modelSupportsReasoning('some-custom-base-url-model-xyz')).toBe(false);
     expect(modelSupportsReasoning('')).toBe(false);
+  });
+
+  it('the §4 id heuristic gates a NON-registry model in a known reasoning family (conservative)', () => {
+    // A live-discovered id absent from MODEL_PRICING but in a family whose whole set reasons is gated ON…
+    expect(modelSupportsReasoning('o5-mini')).toBe(true); // a future o-series id
+    expect(modelSupportsReasoning('gpt-5.9-turbo')).toBe(true); // a future reasoning gpt-5 id
+    expect(modelSupportsReasoning('claude-opus-5')).toBe(true); // a future Opus
+    expect(modelSupportsReasoning('gemini-3.0-flash-thinking')).toBe(true); // an explicit "thinking" id
+    // …while an AMBIGUOUS / non-reasoning id stays OFF (over-matching would earn a provider 400).
+    expect(modelSupportsReasoning('gpt-4o')).toBe(false); // not a reasoning family
+    expect(modelSupportsReasoning('gpt-5-chat-latest')).toBe(false); // the non-reasoning gpt-5 conversational variant
+    expect(modelSupportsReasoning('claude-sonnet-9')).toBe(false); // base Sonnet is version-dependent — registry only
+    expect(modelSupportsReasoning('gemini-2.0-flash')).toBe(false); // Gemini by version is not heuristic-matched
+  });
+
+  it('the registry is AUTHORITATIVE for a canonical id — a false/absent flag is not overridden by the heuristic', () => {
+    // deepseek-v4-flash is a canonical id whose registry flag is not set; the id heuristic never runs for a canonical
+    // id, so it stays false (the deferred-adapter decision) even though it is a v4 "thinking" model.
+    expect(modelSupportsReasoning('deepseek-v4-flash')).toBe(false);
   });
 });
 

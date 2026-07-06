@@ -582,9 +582,25 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
     config['maxOutputTokens'] = req.maxTokens;
   }
   if (req.reasoningEffort !== undefined) {
-    // ADR-0066: Gemini's tier-native thinking control (thinkingLevel). Set on thinkingConfig; canonical config wins
-    // over a providerOptions thinkingConfig on the shallow merge below (the normalized field wins on collision).
-    config['thinkingConfig'] = { thinkingLevel: GEMINI_THINKING_LEVEL[req.reasoningEffort] };
+    // ADR-0066: Gemini's tier-native thinking control (thinkingLevel). DEEP-merge onto a caller's
+    // providerOptions.thinkingConfig so the canonical thinkingLevel wins on THAT key while the caller's sibling
+    // knobs (includeThoughts / thinkingBudget) survive — a shallow replace (config wins on the top-level merge
+    // below) would silently drop them, so turning effort up could paradoxically SILENCE the reasoning output the
+    // caller enabled while still billing thought tokens. (Mirrors the Anthropic adapter preserving output_config.format.)
+    const poThinking: Record<string, unknown> =
+      req.providerOptions !== undefined && isRecord(req.providerOptions['thinkingConfig'])
+        ? req.providerOptions['thinkingConfig']
+        : {};
+    config['thinkingConfig'] = {
+      ...poThinking,
+      thinkingLevel: GEMINI_THINKING_LEVEL[req.reasoningEffort],
+      // Surface the reasoning the tier bills for: `includeThoughts` is the ONLY switch that returns thought parts
+      // (the adapter's reasoning stream depends on it). Default it on for a thinking tier so raising effort actually
+      // shows more reasoning — but never override a caller's explicit choice, and never force it for 'off' (minimal).
+      ...(req.reasoningEffort !== 'off' && poThinking['includeThoughts'] === undefined
+        ? { includeThoughts: true }
+        : {}),
+    };
   }
   if (req.outputModalities !== undefined && req.outputModalities.some((m) => m !== 'text')) {
     // Lower the node's non-text output_modalities to Gemini `responseModalities` (inline media-out,

@@ -52,12 +52,21 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(byId(entries, 'deepseek-v4-flash')?.supportsReasoning).toBe(false);
   });
 
-  it('a LIVE-only model (no registry tier) is never reasoning-capable — capability is a shipped-registry fact', () => {
+  it('a LIVE-only model gates via the §4 id heuristic — a known reasoning family ON, an ambiguous id OFF (ADR-0066)', () => {
     const entries = mergeModelCatalog({
-      live: liveMap([['openai', [{ id: 'gpt-6-preview', displayName: 'GPT-6 preview' }]]]),
+      live: liveMap([
+        [
+          'openai',
+          [
+            { id: 'o5-mini', displayName: 'o5 mini' }, // a future o-series id (whole family reasons) ⇒ ON
+            { id: 'gpt-4o-2026', displayName: 'GPT-4o' }, // not a reasoning family ⇒ OFF (over-match would 400)
+          ],
+        ],
+      ]),
       now: BEFORE_DEEPSEEK_DEPRECATION,
     });
-    expect(byId(entries, 'gpt-6-preview')?.supportsReasoning).toBe(false); // not inferred from a discovery listing
+    expect(byId(entries, 'o5-mini')?.supportsReasoning).toBe(true); // heuristic covers a new reasoning-family member
+    expect(byId(entries, 'gpt-4o-2026')?.supportsReasoning).toBe(false); // conservative — no false positive
   });
 
   it('availability: a static model NOT in a CONNECTED provider live list is dimmed, one present is available', () => {
