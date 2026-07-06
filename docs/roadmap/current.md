@@ -193,7 +193,12 @@ cost) — behind three new ADRs ([ADR-0063](../decisions/0063-cli-config-write-c
 [ADR-0064](../decisions/0064-live-model-catalog.md) live catalog ·
 [ADR-0065](../decisions/0065-provider-economics-and-extensibility.md) provider economics), across 12 reviewed
 steps; the additive lanes 2.5.H / I / J run in parallel. See the
-[Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md).
+[Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md). A **post-2.5.G model-UX follow-up** (from six
+maintainer questions on model/provider/wizard behavior) then landed as a sequenced plan: `/models` key-awareness,
+the onboarding-wizard live key-validation + retry UX, wizard-dynamic provider docs, **mid-session model switching**
+(the `/models` reseat across `relavium chat` + the in-Home chat — [ADR-0059](../decisions/0059-cli-mid-session-model-reseat.md),
+now Accepted), and **normalized reasoning-effort control** (a provider-agnostic effort tier authored in agent YAML +
+chosen in the picker — [ADR-0066](../decisions/0066-normalized-reasoning-effort-control.md)).
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks
 items up as it first touches each file. Notable inheritances: 1.AH's host-wiring half

@@ -109,6 +109,7 @@ flowchart TD
 | 0063 | [CLI config-write contract — the first on-disk config writer, the global `[preferences].default_model` target, and the `resolveChat` global fallback](0063-cli-config-write-contract.md) | Accepted | 2026-07-05 |
 | 0064 | [Live model catalog — the `listModels?` seam capability, the `kind` protocol abstraction, the `model_catalog` live cache, the refresh lifecycle, and the static/live merge](0064-live-model-catalog.md) | Accepted | 2026-07-05 |
 | 0065 | [Provider economics and extensibility — user-supplied pricing, the cost-path pricing-injection seam, pricing-reference capture, and custom OpenAI-compatible endpoints](0065-provider-economics-and-extensibility.md) | Accepted | 2026-07-05 |
+| 0066 | [Normalized reasoning-effort control — a provider-agnostic tier, per-adapter native mapping, and a per-model capability](0066-normalized-reasoning-effort-control.md) | Accepted | 2026-07-06 |
 
 ## Creating a new ADR
 
