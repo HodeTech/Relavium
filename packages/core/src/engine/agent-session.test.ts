@@ -768,6 +768,53 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
     expect(advertised).not.toContain('read_file');
   });
 
+  it('sends the authored reasoning_effort ONLY when the model is reasoning-capable (ADR-0066)', async () => {
+    const reader = AgentSchema.parse({
+      id: 'reader',
+      model: 'claude-opus-4-8',
+      provider: 'anthropic',
+      system_prompt: 'x',
+      reasoning_effort: 'high',
+    });
+    const capturing = (): { provider: LlmProvider; effort: () => unknown } => {
+      let effort: unknown = 'UNSET';
+      const provider: LlmProvider = {
+        id: 'anthropic',
+        supports: CAPS,
+        generate: () => {
+          throw new Error('unused');
+        },
+        stream: (req) => {
+          effort = req.reasoningEffort;
+          return streamOf(textTurn('ok'));
+        },
+      };
+      return { provider, effort: () => effort };
+    };
+    // Reasoning-capable ⇒ the tier reaches the request.
+    const on = capturing();
+    const onSession = session(
+      harness([textTurn('ok')], { resolveProvider: () => on.provider, resolveReasoning: () => true })
+        .deps,
+      reader,
+    );
+    onSession.start();
+    await onSession.sendMessage('go');
+    expect(on.effort()).toBe('high');
+    // NOT reasoning-capable ⇒ the tier is WITHHELD (a non-reasoning model would reject it).
+    const off = capturing();
+    const offSession = session(
+      harness([textTurn('ok')], {
+        resolveProvider: () => off.provider,
+        resolveReasoning: () => false,
+      }).deps,
+      reader,
+    );
+    offSession.start();
+    await offSession.sendMessage('go');
+    expect(off.effort()).toBeUndefined();
+  });
+
   it('setTurnPolicy activates the approval regime — the dispatch context carries the confirm hook', async () => {
     const confirm = (): Promise<{ outcome: 'approve' }> => Promise.resolve({ outcome: 'approve' });
     let captured: ToolDispatchContext | undefined;

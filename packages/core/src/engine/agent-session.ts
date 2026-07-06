@@ -240,6 +240,14 @@ export interface SessionDeps {
    */
   readonly resolvePrice?: PricingOverlay;
   /**
+   * Whether the bound model supports reasoning ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md))
+   * — the host-injected per-model `model_catalog.capabilities.reasoning` projection (mirrors the `AgentRunner`'s
+   * `resolveReasoning`). Gates the `reasoningEffort` send: the authored `agent.reasoning_effort` is passed to a turn
+   * only when this returns `true` (a non-reasoning model rejects the field). Absent/`undefined` ⇒ not reasoning
+   * ⇒ withheld. `@relavium/core` never imports `@relavium/db`, so the host injects the catalog lookup.
+   */
+  readonly resolveReasoning?: (model: string) => boolean | undefined;
+  /**
    * Feed the running session cost to a budget governor so a host that wires {@link preEgress} to
    * `BudgetGovernor.checkPreEgress` also keeps the governor's cumulative total current (ADR-0028, 1.AC).
    * Called after each `cost:updated` with the session-wide cumulative; without it the governor would stay
@@ -1049,6 +1057,12 @@ export class AgentSession {
       chainCapabilities: this.#chainCapabilities(),
       ...(this.#agent.temperature === undefined ? {} : { temperature: this.#agent.temperature }),
       ...(this.#agent.max_tokens === undefined ? {} : { maxTokens: this.#agent.max_tokens }),
+      // ADR-0066: the authored reasoning-effort tier, sent ONLY when the bound model is reasoning-capable (a
+      // non-reasoning model would reject it — the host-injected per-model catalog projection gates it).
+      ...(this.#agent.reasoning_effort !== undefined &&
+      this.#deps.resolveReasoning?.(this.#agent.model) === true
+        ? { reasoningEffort: this.#agent.reasoning_effort }
+        : {}),
       nodeId: this.#agentRef,
       emit: (event) => {
         this.#onTurnEmit(event);

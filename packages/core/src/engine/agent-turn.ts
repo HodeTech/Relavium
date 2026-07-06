@@ -31,6 +31,7 @@ import type {
   ContentPart,
   ErrorCode,
   OutputModality,
+  ReasoningEffort,
   StopReason,
 } from '@relavium/shared';
 import {
@@ -131,6 +132,9 @@ export interface AgentTurnParams {
   /** Per-turn generation knobs (node-over-agent precedence is resolved by the caller). */
   readonly temperature?: number;
   readonly maxTokens?: number;
+  /** Normalized reasoning-effort tier (ADR-0066) — passed onto every chain attempt's `LlmRequest.reasoningEffort`;
+   *  each adapter maps it to the provider's native control. Gated to a reasoning-capable primary model by the caller. */
+  readonly reasoningEffort?: ReasoningEffort;
   /** The id stamped on emitted events (a workflow vertex id on the run path; a synthetic id on a session). */
   readonly nodeId: string;
   /** Emit an envelope-less streaming event; the engine/bus attaches the correlation key + sequence. */
@@ -347,6 +351,8 @@ function buildRequest(messages: readonly LlmMessage[], params: AgentTurnParams):
     ...(params.responseFormat === undefined ? {} : { responseFormat: params.responseFormat }),
     ...(params.temperature === undefined ? {} : { temperature: params.temperature }),
     ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
+    // ADR-0066: the normalized reasoning-effort tier onto every attempt's request (the adapter maps it natively).
+    ...(params.reasoningEffort === undefined ? {} : { reasoningEffort: params.reasoningEffort }),
     // Lower the node's requested non-text output onto the request (1.AF/D15) so the FallbackChain
     // per-attempt capability pre-skip (requestSupportReason → outputCombinationReason) can skip a model
     // that cannot emit the combination — the runtime backstop the load-check defers to (ADR-0044 §2). Without

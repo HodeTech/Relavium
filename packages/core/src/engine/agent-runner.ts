@@ -27,6 +27,7 @@ import {
   type MediaCostEstimate,
   type MediaSurface,
   type OutputModality,
+  type ReasoningEffort,
 } from '@relavium/shared';
 import {
   LlmConfigError,
@@ -90,6 +91,14 @@ export interface AgentRunnerDeps {
    * lookup; the production catalog wiring is host-side (1.AH), like the other 1.AF/1.AG host-wiring obligations.
    */
   readonly resolveMediaSurface?: (model: string) => MediaSurface | undefined;
+  /**
+   * Whether a model supports reasoning ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md)) —
+   * the host-injected per-model catalog projection (`model_catalog.capabilities.reasoning`), mirroring
+   * {@link resolveMediaSurface}. The engine is platform-pure (no DB), so the host injects it. Gates the
+   * `reasoningEffort` send: a non-reasoning model would reject the field, so the tier is sent only when this
+   * returns `true`. Absent or `undefined` ⇒ treated as NOT reasoning (safe — the field is not sent).
+   */
+  readonly resolveReasoning?: (model: string) => boolean | undefined;
   /** The shared tool registry (1.T) the agent dispatches through (ADR-0037). */
   readonly registry: ToolRegistry;
   /** The registry's tool defs — the source of the LLM-visible schema + descriptions for granted tools. */
@@ -332,7 +341,7 @@ async function executeAgent(
       planEntries: plan.entries,
       chainCapabilities: chainCapabilities(deps),
       ...(responseFormat === undefined ? {} : { responseFormat }),
-      ...resolveGenKnobs(agent, node),
+      ...resolveGenKnobs(agent, node, deps),
       nodeId: node.id,
       emit: ctx.emit,
       signal: ctx.signal,
@@ -788,12 +797,22 @@ function buildLlmTools(defs: readonly ToolDef[], granted: ReadonlySet<string>): 
 function resolveGenKnobs(
   agent: Agent,
   node: AgentNode,
-): { temperature?: number; maxTokens?: number } {
+  deps: AgentRunnerDeps,
+): { temperature?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort } {
   const temperature = node.temperature ?? agent.temperature;
   const maxTokens = node.max_tokens ?? agent.max_tokens;
+  // ADR-0066: send the reasoning-effort tier ONLY when the agent authored one AND the primary model is
+  // reasoning-capable (a non-reasoning model would reject the field). The host-injected `resolveReasoning` is the
+  // per-model catalog projection; absent/`undefined` ⇒ not reasoning ⇒ the tier is withheld (safe). A fallback to a
+  // different chain model carries the tier along — the adapter/provider ignores or rejects it there (a documented edge).
+  const reasoningEffort =
+    agent.reasoning_effort !== undefined && deps.resolveReasoning?.(agent.model) === true
+      ? agent.reasoning_effort
+      : undefined;
   return {
     ...(temperature === undefined ? {} : { temperature }),
     ...(maxTokens === undefined ? {} : { maxTokens }),
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
   };
 }
 
