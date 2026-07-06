@@ -137,6 +137,31 @@ describe('buildUserPricing (2.5.G S10, ADR-0065 §2)', () => {
     expect([...overlay.keys()]).toEqual(['user-model']);
   });
 
+  it('is DETERMINISTIC on a cross-provider model-id collision — keeps the FIRST row, never last-write-wins', () => {
+    // Two user rows for the SAME model id under different providers (reachable via custom base_url on openai vs
+    // deepseek). The overlay keys by model id, so it can hold only one — the guard keeps the first, deterministically.
+    const overlay = buildUserPricing({
+      rows: [
+        row({
+          modelId: 'shared-id',
+          providerId: 'p-openai',
+          source: 'user',
+          inputCostPerMtokMicrocents: 111,
+        }),
+        row({
+          modelId: 'shared-id',
+          providerId: 'p-deepseek',
+          source: 'user',
+          inputCostPerMtokMicrocents: 999,
+        }),
+      ],
+      providerSlug: slugResolver({ 'p-openai': 'openai', 'p-deepseek': 'deepseek' }),
+    });
+    expect(overlay.size).toBe(1);
+    expect(overlay.get('shared-id')?.inputPerMtokMicrocents).toBe(111); // the FIRST row, not the second (999)
+    expect(overlay.get('shared-id')?.provider).toBe('openai');
+  });
+
   it('drops a user row whose provider UUID resolves to a non-enum slug (never injects under a known provider)', () => {
     const overlay = buildUserPricing({
       rows: [row({ modelId: 'rogue-priced', providerId: 'rogue', source: 'user' })],

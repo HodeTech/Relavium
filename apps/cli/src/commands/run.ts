@@ -24,7 +24,7 @@ import {
   sweepMediaAtTerminal,
 } from '../engine/media-gc.js';
 import { buildMediaEngineWiring } from '../engine/media-wiring.js';
-import { buildUserPricingOverlay } from '../engine/pricing-overlay.js';
+import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import {
   createProviderResolver,
   neededProviderIds,
@@ -207,8 +207,9 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the SAME durable `history.db` — so a
       // workflow using a user-priced model is enforced by `budget.max_cost_microcents` (pre-egress) + priced in
       // realized cost (the agent node). Only wired on this durable-history branch: the in-memory unit/harness
-      // path has no db, hence no user rows. An empty map (no user rows) is harmless (fills nothing).
-      const resolvePrice = buildUserPricingOverlay(opened.db);
+      // path has no db, hence no user rows. An empty map (no user rows) is harmless (fills nothing). Non-fatal:
+      // a corrupt provider/catalog row degrades to an empty overlay, never failing the run over a pricing read.
+      const resolvePrice = readUserPricingOverlay(opened.db);
       engineOptions = {
         providers,
         toolEnv,

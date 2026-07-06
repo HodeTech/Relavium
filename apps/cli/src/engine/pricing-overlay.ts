@@ -41,6 +41,23 @@ export function buildUserPricingOverlay(db: Db): PricingOverlay {
 }
 
 /**
+ * The NON-FATAL variant of {@link buildUserPricingOverlay} for a surface that ALREADY holds an open db (`run`,
+ * `gate`, `chat-resume`, and the `/clear` rebuild): a READ fault (a corrupt provider/catalog row — e.g.
+ * `providerStore.list()` throwing on a tampered `default_headers`) degrades to an EMPTY overlay rather than
+ * propagating, so the overlay is never the thing that fails an otherwise-valid run/resume. It mirrors the same
+ * best-effort contract {@link loadUserPricingOverlay} gives the transient-open surfaces — the caller's own store /
+ * run path is the authoritative fault report. Returns a non-`undefined` empty map (the db is already open here, so
+ * there is no open-fault case to signal).
+ */
+export function readUserPricingOverlay(db: Db): PricingOverlay {
+  try {
+    return buildUserPricingOverlay(db);
+  } catch {
+    return new Map();
+  }
+}
+
+/**
  * Load the overlay via a SELF-CONTAINED transient open→read→close, for a surface with no db handle of its own yet
  * (`relavium chat`, one-shot `agent run`). Deliberately NON-FATAL: an unopenable/unmigratable `history.db` yields
  * `undefined` (cost governance degrades to the no-overlay behavior — unknown models `allow` loudly), so the db

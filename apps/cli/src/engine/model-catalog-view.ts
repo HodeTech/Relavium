@@ -106,6 +106,12 @@ export function buildUserPricing(input: {
     if (row.source !== 'user') continue; // only the user-pricing rows carry an authored price
     const slug = input.providerSlug(row.providerId);
     if (!isProviderId(slug)) continue; // an unmapped UUID / non-enum provider — never inject under a known provider
+    // Cross-provider collision guard (mirrors {@link mergeModelCatalog}'s): the overlay is keyed by model id
+    // (the runtime references a model by id alone), so two providers' user rows for the SAME id are ambiguous.
+    // Keep the FIRST (deterministic: `listAll()` orders `asc(modelId), asc(id)`) rather than letting the last
+    // write win by UUID luck. `models pricing` REJECTS creating such a duplicate, so this is a defense-in-depth
+    // floor for a legacy / directly-edited db, never the primary guard.
+    if (map.has(row.modelId)) continue;
     map.set(row.modelId, rowToUserPricing(row, slug));
   }
   return map;

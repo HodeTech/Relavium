@@ -272,6 +272,43 @@ describe('gateCommand', () => {
     expect(sweptArgs?.graceMs).toBeUndefined(); // no [defaults].media_gc_grace_days ⇒ the GC default window
   });
 
+  it('wires the user-pricing overlay on a gate-resumed run so the post-gate segment stays capped (2.5.G S10)', async () => {
+    // Seed a `source='user'` price for a model the static registry does NOT know, into the SHARED db the gate
+    // path reads. Without the S10 wiring the resumed run would silently uncap this model past the gate.
+    const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    const providerId = createProviderStore(db, dbDeps).upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    }).id;
+    createModelCatalogStore(db, dbDeps).upsert({
+      providerId,
+      modelId: 'acme-custom-1',
+      source: 'user',
+      inputCostPerMtokMicrocents: 300_000_000,
+      outputCostPerMtokMicrocents: 900_000_000,
+    });
+    const { runId } = await setupPausedRun();
+    const { io } = captureIo();
+    let captured: BuildEngineOptions | undefined;
+    const code = await gateCommand(
+      { runId, approve: true },
+      {
+        ...deps(io),
+        buildEngine: (opts) => {
+          captured = opts;
+          return buildEngine(opts);
+        },
+        sweepMedia: () => Promise.resolve(undefined),
+      },
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    // The overlay reached buildEngine (which threads it into BOTH the pre-egress governor and the realized
+    // CostTracker), and it prices the otherwise-unknown model.
+    expect(captured?.resolvePrice?.get('acme-custom-1')?.inputPerMtokMicrocents).toBe(300_000_000);
+    expect(captured?.resolvePrice?.get('acme-custom-1')?.outputPerMtokMicrocents).toBe(900_000_000);
+  });
+
   it('re-jails save_to under the ORIGINAL run project root on resume (persisted runs.project_root)', async () => {
     // Seed the paused run WITH project_root = a real dir A (distinct from the resumer cwd `root`), then resume.
     const originalRoot = mkdtempSync(join(tmpdir(), 'relavium-orig-root-'));

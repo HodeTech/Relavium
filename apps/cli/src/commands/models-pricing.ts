@@ -1,5 +1,5 @@
 import type { ModelCatalogStore, ProviderStore } from '@relavium/db';
-import { KNOWN_MODEL_IDS } from '@relavium/llm';
+import { isCanonicalModelId } from '@relavium/llm';
 
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -44,8 +44,9 @@ export interface ModelsPricingCommandDeps {
   readonly io: CliIo;
   readonly global: GlobalOptions;
   /** The catalog store — `upsert` writes the `source='user'` row (a pricing-only patch; the store preserves the
-   *  existing row's display/limits + media columns, so no read is needed here). */
-  readonly catalog: Pick<ModelCatalogStore, 'upsert'>;
+   *  existing row's display/limits + media columns). `listAll` is read only to reject a cross-provider duplicate
+   *  (the overlay keys by model id, so the same id priced under two providers would be ambiguous). */
+  readonly catalog: Pick<ModelCatalogStore, 'upsert' | 'listAll'>;
   /** The provider registry — resolves the `<slug>` → its internal `llm_providers` UUID (the catalog FK). */
   readonly providers: Pick<ProviderStore, 'list'>;
 }
@@ -81,7 +82,7 @@ export function modelsPricingCommand(
 ): ExitCode {
   // Precedence guard (ADR-0065 §2): a canonical id always resolves to `MODEL_PRICING`, so a user override would be
   // a silent no-op. Reject BEFORE any write — nothing is stored on a rejected invocation.
-  if ((KNOWN_MODEL_IDS as readonly string[]).includes(args.model)) {
+  if (isCanonicalModelId(args.model)) {
     throw new CliError(
       'invalid_invocation',
       `'${args.model}' already has a built-in price — a user override would never take effect (the static registry always wins). Nothing written.`,
@@ -93,6 +94,21 @@ export function modelsPricingCommand(
     throw new CliError(
       'invalid_invocation',
       `unknown provider '${args.provider}' — register it first (e.g. \`relavium provider add ${args.provider}\` or \`relavium provider set-key ${args.provider}\`).`,
+    );
+  }
+  // Cross-provider ambiguity guard (ADR-0065 §2): the cost overlay keys by MODEL ID (the runtime references a model
+  // by id alone, no provider), so the SAME id user-priced under two providers can't be distinguished — the cap
+  // would then apply an arbitrary one. Reject fail-loud rather than silently overwrite; nothing is written.
+  const dup = deps.catalog
+    .listAll()
+    .find(
+      (m) => m.source === 'user' && m.modelId === args.model && m.providerId !== providerRow.id,
+    );
+  if (dup !== undefined) {
+    const otherProvider = deps.providers.list().find((p) => p.id === dup.providerId)?.name ?? 'another provider';
+    throw new CliError(
+      'invalid_invocation',
+      `'${args.model}' is already user-priced under '${otherProvider}'. The cost cap keys by model id, so a second provider's price can't be distinguished — remove that price (re-price under '${otherProvider}') or use a distinct model id.`,
     );
   }
   // Convert + bounds-validate BEFORE the write (a bad `--cached` must not leave a partially-applied row).

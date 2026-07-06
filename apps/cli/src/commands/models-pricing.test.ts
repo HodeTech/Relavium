@@ -144,6 +144,36 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
     expect(catalog.listAll()).toHaveLength(0);
   });
 
+  it('REJECTS pricing a model id already user-priced under a DIFFERENT provider (the overlay keys by id)', () => {
+    // Register a second provider + price the SAME model id under it, then try to price it under openai.
+    providers.upsert({ name: 'deepseek', displayName: 'DeepSeek', baseUrl: 'https://api.deepseek.com' });
+    const deepseekId = providers.list().find((p) => p.name === 'deepseek')?.id ?? '';
+    catalog.upsert({
+      providerId: deepseekId,
+      modelId: 'shared-id',
+      source: 'user',
+      inputCostPerMtokMicrocents: 5,
+      outputCostPerMtokMicrocents: 15,
+    });
+    const err = runThrows({ ...baseArgs, model: 'shared-id', provider: 'openai' });
+    expect(err.code).toBe('invalid_invocation');
+    expect(err.message).toContain('already user-priced');
+    expect(err.message).toContain('deepseek'); // names the other provider
+    // The openai row was NOT written — only the original deepseek user row remains for this id.
+    const rows = catalog.listAll().filter((m) => m.modelId === 'shared-id');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.providerId).toBe(deepseekId);
+  });
+
+  it('ALLOWS re-pricing the SAME (provider, model) — an update, not a cross-provider duplicate', () => {
+    run(baseArgs); // openai / acme-custom-1
+    // Re-price the same pair — the dup guard must NOT trip (same provider), it is a plain update.
+    run({ ...baseArgs, inputUsdPerMtok: 4, outputUsdPerMtok: 12 });
+    const rows = catalog.listAll().filter((m) => m.modelId === 'acme-custom-1');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.inputCostPerMtokMicrocents).toBe(400_000_000);
+  });
+
   it('re-pricing an existing model preserves its display name + limits (only prices change)', () => {
     const providerId = providers.list()[0]?.id ?? '';
     // Seed a richer existing row (as a live discovery would) with a display name + context.

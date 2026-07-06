@@ -13,7 +13,11 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { openLocalDb } from '../db/open.js';
-import { buildUserPricingOverlay, loadUserPricingOverlay } from './pricing-overlay.js';
+import {
+  buildUserPricingOverlay,
+  loadUserPricingOverlay,
+  readUserPricingOverlay,
+} from './pricing-overlay.js';
 
 /**
  * `pricing-overlay` host-loader tests (2.5.G S10, ADR-0065 §2). `buildUserPricingOverlay` is driven over a real
@@ -71,6 +75,23 @@ describe('buildUserPricingOverlay (over an open db)', () => {
   it('is an empty map when there are no user rows (harmless — fills nothing)', () => {
     const overlay = buildUserPricingOverlay(client.db);
     expect(overlay.size).toBe(0);
+  });
+
+  it('readUserPricingOverlay returns the same overlay on a healthy db (the non-fatal wrapper)', () => {
+    seedUserPriced(client.db);
+    expect(readUserPricingOverlay(client.db).get('acme-custom-1')?.inputPerMtokMicrocents).toBe(
+      300_000_000,
+    );
+  });
+
+  it('readUserPricingOverlay degrades to an EMPTY map (never throws) when the read faults', () => {
+    // A separate, already-CLOSED db: better-sqlite3 throws on any query against a closed handle, so the read
+    // faults. The non-fatal wrapper must swallow it and return an empty overlay (the surface's own store open is
+    // the authoritative report). A throwaway client so the shared `client`/afterEach lifecycle is untouched.
+    const doomed = createClient(':memory:');
+    runMigrations(doomed.db);
+    doomed.sqlite.close();
+    expect(readUserPricingOverlay(doomed.db).size).toBe(0);
   });
 });
 

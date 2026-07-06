@@ -44,7 +44,7 @@ import {
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
-import { buildUserPricingOverlay, loadUserPricingOverlay } from '../engine/pricing-overlay.js';
+import { loadUserPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
@@ -328,8 +328,8 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     buildSession: deps.buildSession ?? buildChatSession,
     io: deps.io,
     global: deps.global,
-    // The same overlay the initial session used — a `/clear` rebuild keeps the user-priced cost enforcement.
-    ...(resolvePrice === undefined ? {} : { resolvePrice }),
+    // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring), so a
+    // mid-session `models pricing` write applies to the next cleared session — no captured value to thread here.
   });
 
   return runReplLoop(
@@ -390,9 +390,9 @@ export async function chatResumeCommand(
       throw new CliError('invalid_invocation', `no session found with id ${args.sessionId}`);
     }
     // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the ALREADY-OPEN session db — so a resumed
-    // session enforces + tracks a user-priced model exactly like a fresh `chat`. An empty map (no user rows) is
-    // harmless. Inside the try, so any read fault hits the same teardown as the rest of the pre-loop wiring.
-    resolvePrice = buildUserPricingOverlay(opened.db);
+    // session enforces + tracks a user-priced model exactly like a fresh `chat`. Non-fatal (an empty map on a
+    // read fault): a corrupt pricing row must not fail an otherwise-valid resume.
+    resolvePrice = readUserPricingOverlay(opened.db);
     const resumed = await (deps.buildResumedSession ?? buildResumedChatSession)({
       chat: config.chat,
       record: loaded.session,
@@ -482,8 +482,7 @@ export async function chatResumeCommand(
     buildSession: deps.buildSession ?? buildChatSession,
     io: deps.io,
     global: deps.global,
-    // The same overlay the resumed session used — a `/clear` rebuild keeps the user-priced cost enforcement.
-    ...(resolvePrice === undefined ? {} : { resolvePrice }),
+    // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring).
   });
 
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
@@ -935,12 +934,14 @@ interface FreshChatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildSession: typeof buildChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
-  /** The ADR-0065 §2 user-pricing overlay (2.5.G S10) — carried into the rebuilt session so a `/clear` keeps
-   *  the user-priced cost enforcement of the session it replaced. */
-  readonly resolvePrice: BuildChatSessionOptions['resolvePrice'];
 }
 
 async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): Promise<ReplWiring> {
+  // Re-read the ADR-0065 §2 user-pricing overlay FRESH from the shared db on each `/clear` rebuild (2.5.G S10) — so
+  // a `models pricing` write made in another terminal mid-session takes effect on the very next `/clear` session,
+  // the SAME freshness guarantee `readEffectiveDefault()` gives the default model (and the Home already gives
+  // pricing). Non-fatal (empty map on a read fault). Empty ⇒ omitted (unknown models degrade to allow, unchanged).
+  const resolvePrice = readUserPricingOverlay(deps.opened.db);
   const built = await deps.buildSession({
     chat: deps.chat,
     agent: deps.agent,
@@ -952,7 +953,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     providers: deps.providers,
     mcpSecretResolver: deps.mcpSecretResolver,
     ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
-    ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }),
+    ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
   });
   surfaceMcpSkipped(deps.io, built.mcpSkipped);
@@ -1013,7 +1014,6 @@ function createClearRebuild(params: {
   readonly buildSession: typeof buildChatSession;
   readonly io: CliIo;
   readonly global: GlobalOptions;
-  readonly resolvePrice?: BuildChatSessionOptions['resolvePrice'];
 }): (oldSessionId: string) => Promise<ReplWiring> {
   const wiringDeps: FreshChatWiringDeps = {
     chat: params.chat,
@@ -1030,7 +1030,6 @@ function createClearRebuild(params: {
     global: params.global,
     opened: params.opened,
     buildSession: params.buildSession,
-    resolvePrice: params.resolvePrice,
     onBudgetWarning: (warning) =>
       params.io.writeErr(
         `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
