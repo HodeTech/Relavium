@@ -45,6 +45,30 @@ describe('resolveChatAgent', () => {
     expect(agent.model).toBe(DEFAULT_CHAT_MODEL);
   });
 
+  it('bakes opts.reasoningEffort onto the DEFAULT agent (ADR-0066)', () => {
+    const agent = resolveChatAgent(undefined, {
+      cwd: dir,
+      projectConfigDir: undefined,
+      defaultModel: 'claude-opus-4-8',
+      reasoningEffort: 'high',
+    });
+    expect(agent.id).toBe(DEFAULT_CHAT_AGENT_ID);
+    expect(agent.reasoning_effort).toBe('high');
+  });
+
+  it('does NOT leak [chat].reasoning_effort into an explicit --agent — the authored tier wins (ADR-0066 §5)', () => {
+    const path = join(dir, 'coder.agent.yaml');
+    writeFileSync(path, `${AGENT_YAML}\nreasoning_effort: off`); // the authored agent pins 'off'
+    const agent = resolveChatAgent(path, {
+      cwd: dir,
+      projectConfigDir: undefined,
+      defaultModel: undefined,
+      reasoningEffort: 'high', // a config default MUST NOT override the authored agent's own tier
+    });
+    expect(agent.id).toBe('coder');
+    expect(agent.reasoning_effort).toBe('off'); // the authored 'off' survives — config did not leak in
+  });
+
   it('resolves an explicit --agent path through the strict core parseAgent', () => {
     const path = join(dir, 'coder.agent.yaml');
     writeFileSync(path, AGENT_YAML);

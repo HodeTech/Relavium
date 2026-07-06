@@ -56,6 +56,12 @@ describe('buildDefaultChatAgent', () => {
     expect(buildDefaultChatAgent('gemini-2.5-pro').provider).toBe('gemini');
   });
 
+  it('bakes the [chat].reasoning_effort default onto the agent, and OMITS it when absent (ADR-0066)', () => {
+    expect(buildDefaultChatAgent('claude-opus-4-8', 'high').reasoning_effort).toBe('high');
+    // Absent ⇒ the key is not present (never an explicit `undefined` under exactOptionalPropertyTypes).
+    expect('reasoning_effort' in buildDefaultChatAgent('claude-opus-4-8')).toBe(false);
+  });
+
   it('throws a clean exit-2 CliError when the provider cannot be inferred', () => {
     let caught: unknown;
     try {

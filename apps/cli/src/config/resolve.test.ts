@@ -14,6 +14,7 @@ describe('resolveConfig', () => {
       mediaGcGraceMs: undefined,
       chat: {
         defaultModel: undefined,
+        reasoningEffort: undefined,
         fsScope: undefined,
         maxTurns: undefined,
         maxMessages: undefined,
@@ -71,6 +72,19 @@ describe('resolveConfig', () => {
     expect(resolved.maxMessages).toBe(100); // falls back to workspace
     expect(resolved.maxCostMicrocents).toBe(1000); // only on project
     expect(resolved.onExceed).toBe('warn'); // only on project
+  });
+
+  it('resolves [chat].reasoning_effort (ADR-0066) last-writer-wins project > workspace, no global fallback', () => {
+    const workspace: ProjectConfig = { chat: { reasoning_effort: 'low' } };
+    const project: ProjectConfig = { chat: { reasoning_effort: 'high' } };
+    expect(resolveConfig({ workspace, project }).chat.reasoningEffort).toBe('high'); // project wins
+    // A project present but omitting it falls through to workspace (per-field, like the sibling keys).
+    expect(resolveConfig({ workspace, project: { chat: { max_turns: 5 } } }).chat.reasoningEffort).toBe('low');
+    // Absent everywhere ⇒ undefined (no global-layer fallback — that extra fallback is default_model's alone).
+    expect(resolveConfig({}).chat.reasoningEffort).toBeUndefined();
+    expect(
+      resolveConfig({ global: { preferences: { default_model: 'g' } } }).chat.reasoningEffort,
+    ).toBeUndefined();
   });
 
   it('resolves [chat].auto_compact + compact_threshold (ADR-0062) last-writer-wins, per field', () => {

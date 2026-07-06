@@ -934,6 +934,32 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
   });
 
+  it('createChatModeControl seeds the store effort from the agent + onSetEffort pushes a no-reseat override (ADR-0066)', async () => {
+    const built = await build({
+      chat: { ...EMPTY_CHAT, defaultModel: 'claude-opus-4-8', reasoningEffort: 'medium' },
+    });
+    const store = createChatStore(false);
+    const control = createChatModeControl(built, store);
+    // Seeded from the agent's effective tier — opus is reasoning-capable, so the footer shows it.
+    expect(store.getSnapshot().reasoningEffort).toBe('medium');
+    expect(built.session.reasoningEffort).toBe('medium');
+    // onSetEffort pushes the SESSION override (no reseat) + updates the footer — effective next turn.
+    control.onSetEffort('max');
+    expect(built.session.reasoningEffort).toBe('max');
+    expect(store.getSnapshot().reasoningEffort).toBe('max');
+  });
+
+  it('createChatModeControl surfaces NO effort on a non-reasoning model — the footer stays clear (ADR-0066)', async () => {
+    const built = await build({
+      chat: { ...EMPTY_CHAT, defaultModel: 'gpt-4o', reasoningEffort: 'high' },
+    });
+    const store = createChatStore(false);
+    createChatModeControl(built, store);
+    // The config default is baked onto the agent, but gpt-4o has no reasoning tier — the footer shows nothing
+    // (the tier is gated off at send anyway), so a user is never shown an inert effort.
+    expect(store.getSnapshot().reasoningEffort).toBeUndefined();
+  });
+
   it('createChatModeControl ask: denies an EGRESS-class dispatch too (http_request), not just fs_write', async () => {
     // The confirm floor rejects EVERY governed class; prove the egress class end-to-end (governedAction maps
     // http_request → 'egress', a distinct ToolActionClass) — the deny happens BEFORE dispatch, so the egress

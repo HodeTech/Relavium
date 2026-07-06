@@ -187,6 +187,12 @@ describe('AnthropicAdapter', () => {
       maxTokens: 1024,
       messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }],
     };
+    // All five tiers, so a valid-but-wrong within-domain swap on any row is caught (medium is the picker default).
+    await adapter.generate({ ...base, reasoningEffort: 'low' }, 'k');
+    expect(sent['thinking']).toEqual({ type: 'adaptive' });
+    expect(sent['output_config']).toEqual({ effort: 'low' });
+    await adapter.generate({ ...base, reasoningEffort: 'medium' }, 'k');
+    expect(sent['output_config']).toEqual({ effort: 'medium' });
     await adapter.generate({ ...base, reasoningEffort: 'high' }, 'k');
     expect(sent['thinking']).toEqual({ type: 'adaptive' });
     expect(sent['output_config']).toEqual({ effort: 'high' });

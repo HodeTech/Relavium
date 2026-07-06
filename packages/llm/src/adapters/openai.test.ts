@@ -243,6 +243,11 @@ describe('OpenAI-compatible adapter', () => {
       model: 'gpt-5.5',
       messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }],
     };
+    // All FIVE tiers, so a valid-but-wrong within-domain swap on any row is caught (medium is the picker default).
+    await oai.generate({ ...base, reasoningEffort: 'low' }, 'k');
+    expect(sent['reasoning_effort']).toBe('low');
+    await oai.generate({ ...base, reasoningEffort: 'medium' }, 'k');
+    expect(sent['reasoning_effort']).toBe('medium');
     await oai.generate({ ...base, reasoningEffort: 'high' }, 'k');
     expect(sent['reasoning_effort']).toBe('high');
     await oai.generate({ ...base, reasoningEffort: 'max' }, 'k');

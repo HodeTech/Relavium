@@ -986,3 +986,37 @@ describe('generativeUnits — authored media volume (ADR-0045 §5)', () => {
     );
   });
 });
+
+describe('createAgentNodeExecutor — reasoning-effort gate (ADR-0066, the workflow path)', () => {
+  const reasoningAgent: Agent = { ...AGENT, reasoning_effort: 'high' };
+  async function capturedReq(
+    overrides: Partial<AgentRunnerDeps>,
+    agent: Agent,
+  ): Promise<LlmRequest | undefined> {
+    const cap = reqCapturingProvider();
+    const exec = createAgentNodeExecutor(deps(cap.provider, overrides));
+    const { ctx } = ctxFor(vertexFor({ kind: 'agent', node: agentNode(), resolvedAgent: agent }));
+    await exec.execute(ctx);
+    return cap.req();
+  }
+
+  it('SENDS the authored tier when the model is reasoning-capable', async () => {
+    const req = await capturedReq({ resolveReasoning: () => true }, reasoningAgent);
+    expect(req?.reasoningEffort).toBe('high');
+  });
+
+  it('WITHHOLDS the tier when the model is NOT reasoning-capable (a non-reasoning model would reject it)', async () => {
+    const req = await capturedReq({ resolveReasoning: () => false }, reasoningAgent);
+    expect(req?.reasoningEffort).toBeUndefined();
+  });
+
+  it('WITHHOLDS the tier when NO resolver is wired (the safe default)', async () => {
+    const req = await capturedReq({}, reasoningAgent);
+    expect(req?.reasoningEffort).toBeUndefined();
+  });
+
+  it('sends nothing when the agent authored NO tier — even on a capable model', async () => {
+    const req = await capturedReq({ resolveReasoning: () => true }, AGENT);
+    expect(req?.reasoningEffort).toBeUndefined();
+  });
+});
