@@ -129,7 +129,13 @@ export {
 } from './llm-error.js';
 
 // CostTracker + the canonical model-pricing table (1.B).
-export { MODEL_PRICING, KNOWN_MODEL_IDS, isCanonicalModelId, contextWindowForModel } from './pricing.js';
+export {
+  MODEL_PRICING,
+  KNOWN_MODEL_IDS,
+  isCanonicalModelId,
+  contextWindowForModel,
+  modelSupportsReasoning,
+} from './pricing.js';
 export type { ModelPricing, CanonicalModelId } from './pricing.js';
 // The pure live/static/user merge helper (ADR-0064 §6) — reused by every surface's model catalog / picker.
 export { mergeModelCatalog } from './model-catalog.js';

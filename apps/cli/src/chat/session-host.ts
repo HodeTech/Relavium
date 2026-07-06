@@ -16,7 +16,7 @@ import {
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
-import type { PricingOverlay, ProviderId } from '@relavium/llm';
+import { modelSupportsReasoning, type PricingOverlay, type ProviderId } from '@relavium/llm';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
 import type {
   AgentSessionRecord,
@@ -225,6 +225,9 @@ function buildSessionRuntime(
   const deps: SessionDeps = {
     resolveProvider: providers.resolveProvider,
     keyFor: providers.keyFor,
+    // ADR-0066: the per-model reasoning capability (static registry projection) — gates whether the authored
+    // reasoning_effort tier is sent (a non-reasoning / custom model returns false, so the field is withheld).
+    resolveReasoning: modelSupportsReasoning,
     registry,
     tools,
     sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),

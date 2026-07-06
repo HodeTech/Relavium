@@ -60,6 +60,15 @@ export interface ModelPricing {
   // Keyed by the canonical `MediaBilledModality` set (image/audio/video) via a mapped type, so the keys
   // stay in sync with `MEDIA_BILLED_MODALITIES` at compile time — never a hand-maintained literal.
   readonly mediaOutputRates?: { readonly [K in MediaBilledModality]?: number };
+  /**
+   * Whether this model supports a reasoning-effort control ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md)) —
+   * the static per-model capability the host projects to `resolveReasoning` (gating whether `reasoningEffort` is
+   * sent + whether the picker offers the effort selector). **Opt-in**: absent ⇒ `false` (the SAFE default — a
+   * non-reasoning model must never receive the field). Set `true` only for a model whose adapter maps the tier
+   * (so DeepSeek stays absent until its adapter mapping lands, even though v4 reasons — the effort is not
+   * controllable there yet).
+   */
+  readonly reasoning?: boolean;
 }
 
 const USD_PER_MTOK_TO_MICROCENTS = 100_000_000; // 1 USD = 1e8 micro-cents
@@ -73,6 +82,7 @@ export const MODEL_PRICING = {
     provider: 'anthropic',
     nativeId: 'claude-fable-5',
     displayName: 'Claude Fable 5',
+    reasoning: true,
     contextWindowTokens: 1_000_000,
     maxOutputTokens: 128_000,
     inputPerMtokMicrocents: usd(10),
@@ -84,6 +94,7 @@ export const MODEL_PRICING = {
     provider: 'anthropic',
     nativeId: 'claude-opus-4-8',
     displayName: 'Claude Opus 4.8',
+    reasoning: true,
     contextWindowTokens: 1_000_000,
     maxOutputTokens: 128_000,
     inputPerMtokMicrocents: usd(5),
@@ -95,6 +106,7 @@ export const MODEL_PRICING = {
     provider: 'anthropic',
     nativeId: 'claude-sonnet-4-6',
     displayName: 'Claude Sonnet 4.6',
+    reasoning: true,
     contextWindowTokens: 1_000_000,
     maxOutputTokens: 64_000,
     inputPerMtokMicrocents: usd(3),
@@ -106,6 +118,7 @@ export const MODEL_PRICING = {
     provider: 'anthropic',
     nativeId: 'claude-haiku-4-5',
     displayName: 'Claude Haiku 4.5',
+    reasoning: true,
     contextWindowTokens: 200_000,
     maxOutputTokens: 64_000,
     inputPerMtokMicrocents: usd(1),
@@ -119,6 +132,7 @@ export const MODEL_PRICING = {
     provider: 'openai',
     nativeId: 'gpt-5.5',
     displayName: 'GPT-5.5',
+    reasoning: true,
     contextWindowTokens: 1_000_000,
     maxOutputTokens: 128_000,
     inputPerMtokMicrocents: usd(5),
@@ -129,6 +143,7 @@ export const MODEL_PRICING = {
     provider: 'openai',
     nativeId: 'gpt-5.4-mini',
     displayName: 'GPT-5.4 mini',
+    reasoning: true,
     contextWindowTokens: 400_000,
     maxOutputTokens: 128_000,
     inputPerMtokMicrocents: usd(0.75),
@@ -141,6 +156,7 @@ export const MODEL_PRICING = {
     provider: 'gemini',
     nativeId: 'gemini-2.5-flash',
     displayName: 'Gemini 2.5 Flash',
+    reasoning: true,
     contextWindowTokens: 1_048_576,
     maxOutputTokens: 65_536,
     inputPerMtokMicrocents: usd(0.3), // text/image/video tier (audio: $1.00/MTok)
@@ -151,6 +167,7 @@ export const MODEL_PRICING = {
     provider: 'gemini',
     nativeId: 'gemini-2.5-pro',
     displayName: 'Gemini 2.5 Pro',
+    reasoning: true,
     contextWindowTokens: 1_048_576,
     maxOutputTokens: 65_536,
     inputPerMtokMicrocents: usd(1.25), // prompts ≤200K tier (>200K: $2.50 in / $15 out)
@@ -228,6 +245,20 @@ export function isCanonicalModelId(value: string): value is CanonicalModelId {
 /** Every canonical model id, for diagnostics (e.g. the unknown-model error). */
 export const KNOWN_MODEL_IDS: readonly CanonicalModelId[] =
   Object.keys(MODEL_PRICING).filter(isCanonicalModelId);
+
+/**
+ * Whether a model supports a reasoning-effort control ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md))
+ * — the static per-model capability the host projects to the engine's `resolveReasoning` gate (and the `/models`
+ * picker's effort selector). `false` for an unknown/custom (non-catalog) model — the SAFE default, so the tier is
+ * never sent to a model that would reject it. A pure host-side helper, like {@link contextWindowForModel}.
+ */
+export function modelSupportsReasoning(model: string): boolean {
+  if (!isCanonicalModelId(model)) return false;
+  // Widen the literal-union entry to `ModelPricing` so `.reasoning` (absent on the non-reasoning members) reads as
+  // `boolean | undefined` — each entry `satisfies ModelPricing`, so this is assignment, not a cast.
+  const entry: ModelPricing = MODEL_PRICING[model];
+  return entry.reasoning === true;
+}
 
 /**
  * The context window (max tokens) for a canonical model id, or `undefined` for an unknown id (e.g. a custom
