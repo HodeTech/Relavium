@@ -57,7 +57,7 @@ function ChatRegion(
     attachments: readonly PendingAttachment[];
   }>,
 ): ReactElement {
-  const { state, tick, color, mode, approval } = useSyncExternalStore(
+  const { state, tick, color, mode, reasoningEffort, approval } = useSyncExternalStore(
     props.store.subscribe,
     props.store.getSnapshot,
   );
@@ -70,6 +70,7 @@ function ChatRegion(
         editor={props.editor}
         running={state.status === 'running' || props.shellBusy || props.submitBusy}
         mode={mode}
+        reasoningEffort={reasoningEffort}
         approval={approval}
         attachments={props.attachments}
         busyCommand={props.shellCommand}

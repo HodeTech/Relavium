@@ -1,4 +1,5 @@
 import type { ToolApprovalRequest } from '@relavium/core';
+import type { ReasoningEffort } from '@relavium/shared';
 
 import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
 import { formatCostUsd, formatDuration, formatTokens } from './format.js';
@@ -171,11 +172,20 @@ export function formatSessionFooter(state: SessionViewState): string {
   return parts.join(' · ');
 }
 
-/** The footer including the active chat mode (ADR-0057) — the mode is always shown so `auto` is never hidden. */
-export function formatSessionFooterWithMode(state: SessionViewState, mode: ChatMode): string {
+/**
+ * The footer including the active chat mode (ADR-0057) and — when set — the reasoning-effort tier (ADR-0066), each
+ * always shown so neither `auto` mode nor a non-default effort is a hidden state. The effort is omitted when unset
+ * (a non-reasoning model / no tier), so a plain chat's footer is unchanged.
+ */
+export function formatSessionFooterWithMode(
+  state: SessionViewState,
+  mode: ChatMode,
+  reasoningEffort?: ReasoningEffort,
+): string {
   const base = formatSessionFooter(state);
   const modePart = `${MODE_LABEL[mode]} mode`;
-  return base.length > 0 ? `${base} · ${modePart}` : modePart;
+  const withMode = base.length > 0 ? `${base} · ${modePart}` : modePart;
+  return reasoningEffort === undefined ? withMode : `${withMode} · effort: ${reasoningEffort}`;
 }
 
 /**

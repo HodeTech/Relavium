@@ -97,10 +97,10 @@ export interface HomeChatSession {
   /** The session's durable id (ADR-0062 §7) — named in the `/clear` notice as the prior (still-resumable)
    *  conversation, so it is discoverable after the swap. */
   readonly sessionId: string;
-  /** The session's currently-bound reasoning-effort tier (ADR-0066), from the bound agent's `reasoning_effort` —
-   *  the `/models` effort sub-list's `✓` + opening highlight, and the reseat no-op guard's second axis (same model
-   *  AND same effort ⇒ no-op). `undefined` ⇒ no effort bound (the provider default). */
-  readonly boundEffort: ReasoningEffort | undefined;
+  /** Set the reasoning-effort tier (ADR-0066 §5) — the in-Home `/models` effort sub-step calls it on a SAME-model
+   *  pick (a per-turn session override, NO reseat) + the `/effort` command. Absent ⇒ the effort sub-step is not
+   *  offered. The current tier is read live from `store` (`ChatStoreSnapshot.reasoningEffort`), not tracked here. */
+  readonly onSetEffort?: (effort: ReasoningEffort) => void;
   /** WHY `shouldStop()` became true (ADR-0062 §7 · ADR-0059) — `'clear'` (swap in a fresh session, staying in chat)
    *  vs `'exit'` (`/exit`/`/cancel`, return to the bare Home). Shares the widened `ChatLineHandler.stopReason` type,
    *  so it also carries `'reseat'`; but the in-Home chat does NOT yet wire `onReseat` (its `/models` is the Home's
@@ -625,9 +625,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // bare Home it is the effective next-session default. The accept action mirrors this (reseat vs default-write).
     const active = state.session;
     const activeModel = active?.store.getSnapshot().state.model;
-    // The effort sub-step (ADR-0066) is offered ONLY on a LIVE reseat (an active in-Home chat with a reseat builder
-    // wired) — the bare-Home default-write persists only the model (ADR-0063), so it stays single-phase.
-    const effortStep = active !== undefined && deps.reseatChat !== undefined;
+    // The effort sub-step (ADR-0066) is offered ONLY in a LIVE in-Home chat (a session with the effort setter wired)
+    // — the bare-Home default-write persists only the model (ADR-0063), so it stays single-phase. `currentEffort`
+    // reads the LIVE store tier, so after a no-reseat `/effort` change the sub-list opens on it.
+    const effortStep = active?.onSetEffort !== undefined;
     set({
       notice: undefined, // opening the picker clears any stale /doctor report behind it
       modelPicker: {
@@ -643,7 +644,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         effortStep,
         pending: undefined,
         effortSelected: 0,
-        currentEffort: effortStep ? active.boundEffort : undefined,
+        currentEffort: effortStep ? active?.store.getSnapshot().reasoningEffort : undefined,
       },
     });
     // Render the cache immediately (above), then kick a TTL-bounded background refresh (ADR-0064 §5c) — the Home is
@@ -661,19 +662,32 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   ): void => {
     const active = state.session;
     if (active !== undefined && deps.reseatChat !== undefined) {
-      // No-op guard (ADR-0059/ADR-0066): accepting the ALREADY-bound model AND effort would tear the session down +
-      // rebuild for zero change — wiping the ADR-0057 per-tool approval cache, reconnecting MCP, and showing a
-      // misleading "Switched" notice. The same model with a DIFFERENT effort IS a real (effort-only) switch, so the
-      // guard is keyed on BOTH axes. Keep the picker open with a hint instead so a mis-click doesn't churn the session.
-      if (modelId === active.store.getSnapshot().state.model && reasoningEffort === active.boundEffort) {
-        const open = state.modelPicker;
-        set(
-          open === undefined
-            ? { modelPicker: undefined }
-            : { modelPicker: { ...open, hint: `Already on ${displayName} — pick a different model or Esc.` } },
-        );
+      if (modelId === active.store.getSnapshot().state.model) {
+        if (reasoningEffort === undefined) {
+          // MODEL-phase no-op (a non-reasoning same-model re-pick — no effort sub-step): keep the picker OPEN with a
+          // hint so the user can pick a different model. The model-phase view renders the hint (unchanged ADR-0059).
+          const open = state.modelPicker;
+          set(
+            open === undefined
+              ? { modelPicker: undefined }
+              : { modelPicker: { ...open, hint: `Already on ${displayName} — pick a different model or Esc.` } },
+          );
+          return;
+        }
+        // EFFORT-phase accept (a reasoning model): an effort-only change (ADR-0066 §5) — a per-turn SESSION override
+        // via the setter, NOT a reseat (no teardown, no ADR-0057 approval-cache wipe, no MCP reconnect, no context
+        // loss). Close + note: the effort sub-list renders no hint, so a no-op must give visible store feedback.
+        const current = active.store.getSnapshot().reasoningEffort;
+        if (reasoningEffort !== current) {
+          active.onSetEffort?.(reasoningEffort);
+          active.store.note(`Reasoning effort set to ${reasoningEffort} — applies to your next message.`);
+        } else {
+          active.store.note(`Already on ${displayName} at effort ${reasoningEffort}.`);
+        }
+        set({ modelPicker: undefined });
         return;
       }
+      // DIFFERENT model: a live reseat (ADR-0059), carrying the chosen effort onto the new binding.
       reseatChat(active, {
         modelId,
         provider,
@@ -765,6 +779,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     showWorkflows: () => undefined,
     showCost: () => undefined,
     setMode: () => undefined, // `/mode` is chat-only (not in HOME_PALETTE_COMMANDS); inert in the Home surface
+    setReasoningEffort: () => undefined, // `/effort` is chat-only (ADR-0066); inert in the bare-Home surface
     compactHistory: () => undefined, // `/compact` is chat-only (ADR-0062); inert in the Home surface
     trimHistory: () => undefined, // `/trim` is chat-only (ADR-0062); inert in the Home surface
     // `/clear` (ADR-0062 §7) IS offered in the Home palette (availableIn ['home','chat']), but the BARE Home has no

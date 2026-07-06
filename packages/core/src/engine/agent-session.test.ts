@@ -815,6 +815,74 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
     expect(off.effort()).toBeUndefined();
   });
 
+  it('setReasoningEffort override wins over the authored tier on the NEXT turn — no reseat (ADR-0066 §5)', async () => {
+    const reader = AgentSchema.parse({
+      id: 'reader',
+      model: 'claude-opus-4-8',
+      provider: 'anthropic',
+      system_prompt: 'x',
+      reasoning_effort: 'low',
+    });
+    let effort: unknown = 'UNSET';
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (req) => {
+        effort = req.reasoningEffort;
+        return streamOf(textTurn('ok'));
+      },
+    };
+    const s = session(
+      harness([textTurn('ok')], { resolveProvider: () => provider, resolveReasoning: () => true }).deps,
+      reader,
+    );
+    s.start();
+    // Turn 1: no override yet ⇒ the authored 'low' rides; the getter reflects the effective tier.
+    expect(s.reasoningEffort).toBe('low');
+    await s.sendMessage('one');
+    expect(effort).toBe('low');
+    // A mid-session setter — the SAME instance, no reseat; the getter updates and it lands on the NEXT turn.
+    s.setReasoningEffort('max');
+    expect(s.reasoningEffort).toBe('max'); // override ?? agent
+    await s.sendMessage('two');
+    expect(effort).toBe('max');
+    // Clearing the override falls back to the authored tier.
+    s.setReasoningEffort(undefined);
+    expect(s.reasoningEffort).toBe('low');
+  });
+
+  it('a session-effort override is STILL per-model gated — withheld on a non-reasoning model (ADR-0066 §4)', async () => {
+    const reader = AgentSchema.parse({
+      id: 'reader',
+      model: 'gpt-4o',
+      provider: 'openai',
+      system_prompt: 'x',
+    });
+    let effort: unknown = 'UNSET';
+    const provider: LlmProvider = {
+      id: 'openai',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: (req) => {
+        effort = req.reasoningEffort;
+        return streamOf(textTurn('ok'));
+      },
+    };
+    const s = session(
+      harness([textTurn('ok')], { resolveProvider: () => provider, resolveReasoning: () => false }).deps,
+      reader,
+    );
+    s.start();
+    s.setReasoningEffort('high'); // the user set a tier, but the model does not reason
+    await s.sendMessage('go');
+    expect(effort).toBeUndefined(); // gated off at send — a non-reasoning model would reject it
+  });
+
   it('setTurnPolicy activates the approval regime — the dispatch context carries the confirm hook', async () => {
     const confirm = (): Promise<{ outcome: 'approve' }> => Promise.resolve({ outcome: 'approve' });
     let captured: ToolDispatchContext | undefined;

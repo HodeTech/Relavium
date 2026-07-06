@@ -8,8 +8,8 @@ import {
   type SessionStreamHandleEvent,
   type UserCommandOutcome,
 } from '@relavium/core';
-import type { ProviderId } from '@relavium/llm';
-import type { AgentSessionRecord, ReasoningEffort } from '@relavium/shared';
+import { modelSupportsReasoning, type ProviderId } from '@relavium/llm';
+import { REASONING_EFFORTS, type AgentSessionRecord, type ReasoningEffort } from '@relavium/shared';
 import { exportSession } from '../chat/export.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
@@ -68,6 +68,7 @@ import {
   stripTerminalControls,
 } from '../render/tui/chat-projection.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
+import { EFFORT_TIER_HINT } from '../render/tui/model-picker.js';
 import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 
@@ -127,26 +128,20 @@ export interface ReseatTarget {
  */
 export interface ChatModelsPort extends ModelCatalogPort {
   readonly boundModel: string;
-  /**
-   * The session's currently-bound reasoning-effort tier (ADR-0066) — the effort sub-list's `✓` "you are here" +
-   * its opening highlight, and (with `boundModel`) the reseat no-op guard's second axis: re-picking the same model
-   * AND the same effort is a no-op, but the same model with a different effort is a real (effort-only) switch.
-   * `undefined` ⇒ no effort bound (the provider default).
-   */
-  readonly boundEffort: ReasoningEffort | undefined;
 }
 
 /** Assemble a {@link ChatModelsPort} over the session's shared db + provider resolver (the catalog the Home picker
- *  also reads) plus the bound model + effort — the one place the chat reseat picker's port is wired. */
+ *  also reads) plus the bound model — the one place the chat reseat picker's port is wired. The picker's current
+ *  effort (the effort sub-list's ✓ / footer) reads the live chat store (ADR-0066), not the port, so a no-reseat
+ *  `/effort` change is reflected without rebuilding the port. */
 function buildChatModelsPort(
   opened: OpenedSessionStore,
   providers: ProviderResolver,
   boundModel: string,
-  boundEffort: ReasoningEffort | undefined,
   now: () => number,
   uuid: () => string,
 ): ChatModelsPort {
-  return { ...createModelCatalogPort({ db: opened.db, providers, now, uuid }), boundModel, boundEffort };
+  return { ...createModelCatalogPort({ db: opened.db, providers, now, uuid }), boundModel };
 }
 
 /** What an interactive driver receives — the command core's seam, so a driver never touches the session directly. */
@@ -220,6 +215,12 @@ export interface ChatDriveContext {
    * (cycle) + the `/mode` command to this. Absent on a driver that has no mode UI (the mode stays the default).
    */
   readonly onModeChange?: (mode: ChatMode) => void;
+  /**
+   * Set the reasoning-effort tier ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §5)
+   * — pushes the SESSION override + updates the footer on the SAME session (no reseat). The ink driver wires the
+   * `/effort` command + the `/models` effort sub-step to this. Absent on a driver with no effort UI.
+   */
+  readonly onSetEffort?: (effort: ReasoningEffort) => void;
   /**
    * The `@`-mention completion reader (2.5.D, [ADR-0061](../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
    * — a thin wrapper over a READ-ONLY `FsCapability` jailed to the SAME fs-scope tier + workspace as the session's
@@ -436,7 +437,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       persister,
       doctorProbes,
       startSession: () => built.session.start(),
-      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, built.agent.reasoning_effort, now, uuid),
+      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -594,7 +595,7 @@ export async function chatResumeCommand(
       doctorProbes,
       startSession: () => {},
       intro,
-      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, built.agent.reasoning_effort, now, uuid),
+      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -630,12 +631,19 @@ interface ReplWiring {
  * loop), and on teardown emit the session's sole terminal (`session:cancelled`, idempotent) + close the
  * persister and the db. `/exit`, `/cancel`, and an input-stream EOF all end the session with **exit code 4**.
  */
-/** The mode/abort control surface a driver wires to its keys + the `/mode` command (ADR-0057). */
+/** The session-control surface a driver wires to its keys + the `/mode`/`/effort` commands (ADR-0057/ADR-0066). */
 export interface ChatModeControl {
   /** Mid-turn abort (EA7) — abort the in-flight turn, keeping the session alive. */
   readonly onAbort: () => void;
   /** Switch the chat mode: update the footer + re-apply the turn policy on the same session (no reseat). */
   readonly onModeChange: (mode: ChatMode) => void;
+  /**
+   * Set the session's reasoning-effort tier ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §5)
+   * — the `/effort` command + the `/models` effort sub-step wire to this. It pushes the SESSION override (a per-turn
+   * update on the SAME instance — no reseat, no context/tool loss) and updates the footer; the effect lands on the
+   * next turn. The tier is still per-model gated at send, so on a non-reasoning model the footer stays clear.
+   */
+  readonly onSetEffort: (effort: ReasoningEffort) => void;
 }
 
 /**
@@ -660,7 +668,7 @@ export function chatIsInteractive(
 }
 
 export function createChatModeControl(
-  built: Pick<BuiltChatSession, 'session' | 'tools' | 'context'>,
+  built: Pick<BuiltChatSession, 'session' | 'tools' | 'context' | 'agent'>,
   store: ChatStoreController,
   opts?: { readonly interactive?: boolean },
 ): ChatModeControl {
@@ -684,6 +692,11 @@ export function createChatModeControl(
     prompt,
   });
   applyChatMode(modeEnv, store.getSnapshot().mode);
+  // ADR-0066: seed the footer's effort indicator from the session's initial effective tier (override ?? agent),
+  // shown only when the bound model is reasoning-capable (a non-reasoning model has no controllable tier, so its
+  // baked config default is not surfaced). Mirrors applyChatMode's initial-mode seed above.
+  const capable = modelSupportsReasoning(built.agent.model);
+  store.setReasoningEffort(capable ? built.session.reasoningEffort : undefined);
   return {
     onAbort: () => {
       built.session.abort(); // void-returning: block body so it never forwards abort()'s return value
@@ -691,6 +704,13 @@ export function createChatModeControl(
     onModeChange: (mode) => {
       store.setMode(mode);
       applyChatMode(modeEnv, mode);
+    },
+    // ADR-0066 §5: push the SESSION override (no reseat) + update the footer. The tier is gated per-model at send,
+    // so the footer reflects it only on a reasoning-capable model — but the override is still stored so a later
+    // reseat to a capable model would honor it.
+    onSetEffort: (effort) => {
+      built.session.setReasoningEffort(effort);
+      store.setReasoningEffort(capable ? effort : undefined);
     },
   };
 }
@@ -905,6 +925,38 @@ export function createChatLineHandler(
       modeControl.onModeChange(mode);
       emitOutput(`mode: ${MODE_LABEL[mode]}`);
     },
+    // `/effort [tier]` (ADR-0066 §5): set the session's reasoning-effort override, or (bare `/effort`) show the
+    // current tier + explain each option. Applying pushes the SESSION override on the SAME instance — a per-turn
+    // update, NO reseat (effort changes neither provider, pricing, nor the plan), effective next turn. On a
+    // non-reasoning model the tier is stored but gated off at send, so the note says it will be ignored.
+    setReasoningEffort: (effortArg) => {
+      const requested = effortArg.trim();
+      const capable = modelSupportsReasoning(built.agent.model);
+      if (requested.length === 0) {
+        // Bare `/effort`: show the current tier + EXPLAIN each one (a discovery affordance — the palette submits
+        // this bare form), marking the active one. On a non-reasoning model, say so plainly instead of a tier.
+        const current = store.getSnapshot().reasoningEffort;
+        const rows = REASONING_EFFORTS.map(
+          (e) => `  ${e.padEnd(8)} ${EFFORT_TIER_HINT[e]}${e === current ? '  (current)' : ''}`,
+        );
+        const header = capable
+          ? `reasoning effort: ${current ?? 'default (provider)'}`
+          : `reasoning effort: ${built.agent.model} has no controllable reasoning tier — a tier would be ignored`;
+        emitOutput(`${header}\n${rows.join('\n')}`);
+        return;
+      }
+      const tier = REASONING_EFFORTS.find((e) => e === requested);
+      if (tier === undefined) {
+        emitOutput(`/effort: unknown tier '${requested.replace(/[^\x20-\x7e]/g, '?').slice(0, 16)}'`);
+        return;
+      }
+      modeControl.onSetEffort(tier);
+      emitOutput(
+        capable
+          ? `reasoning effort: ${tier} — applies to your next message.`
+          : `reasoning effort: ${tier} set, but ${built.agent.model} has no reasoning control — it will be ignored.`,
+      );
+    },
     // `/compact` (ADR-0062): model-summarise the working context. An LLM call — announce the moment, then
     // await, then report the deltas. The engine emits session:compacted (→ the persister writes the boundary
     // marker); this notice is the user-facing report. Never crashes the REPL — a failure is reported as output.
@@ -1033,6 +1085,7 @@ export function createChatLineHandler(
     reseatTarget: () => reseatRequested,
     onAbort: modeControl.onAbort,
     onModeChange: modeControl.onModeChange,
+    onSetEffort: modeControl.onSetEffort,
   };
 }
 
@@ -1118,14 +1171,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     doctorProbes,
     startSession: () => built.session.start(),
     intro,
-    modelPicker: buildChatModelsPort(
-      deps.opened,
-      deps.providers,
-      built.agent.model,
-      built.agent.reasoning_effort,
-      deps.now,
-      deps.uuid,
-    ),
+    modelPicker: buildChatModelsPort(deps.opened, deps.providers, built.agent.model, deps.now, deps.uuid),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
 }
@@ -1306,14 +1352,7 @@ async function buildReseatWiring(
     startSession: () => {},
     intro: modelSwitchNotice(target.modelId, resumed.resumeState.turnCount),
     // The picker's `boundModel` is now the SWITCHED model — a further reseat marks it as the ✓ "you are here".
-    modelPicker: buildChatModelsPort(
-      deps.opened,
-      deps.providers,
-      resumed.agent.model,
-      resumed.agent.reasoning_effort,
-      deps.now,
-      deps.uuid,
-    ),
+    modelPicker: buildChatModelsPort(deps.opened, deps.providers, resumed.agent.model, deps.now, deps.uuid),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
 }
@@ -1365,8 +1404,17 @@ function createReseatRebuild(params: {
  */
 async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<ChatDriveOutcome> {
   const { built, store, persister, startSession, intro } = wiring;
-  const { processLine, cancelOnce, shouldStop, stopReason, onReseat, reseatTarget, onAbort, onModeChange } =
-    createChatLineHandler(wiring, deps);
+  const {
+    processLine,
+    cancelOnce,
+    shouldStop,
+    stopReason,
+    onReseat,
+    reseatTarget,
+    onAbort,
+    onModeChange,
+    onSetEffort,
+  } = createChatLineHandler(wiring, deps);
   // A live reseat is TTY-interactive only (like `/clear`): the ink model-picker overlay is the sole trigger, and a
   // plain/`--json` driver has no picker. Wiring `onReseat` only on an interactive driver means `stopReason()` can
   // never yield `'reseat'` under `--json`/plain — one machine stream stays one session lifecycle (ADR-0049).
@@ -1416,6 +1464,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       ...(intro === undefined ? {} : { intro }),
       onAbort,
       onModeChange,
+      onSetEffort,
       // The reseat trigger (onReseat) + its picker are wired together, interactive-only: the ink overlay reads the
       // catalog through `modelPicker` and calls `onReseat` on accept. A plain/`--json` driver gets neither.
       ...(reseatEnabled ? { onReseat } : {}),

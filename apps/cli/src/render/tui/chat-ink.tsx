@@ -84,6 +84,8 @@ import {
   sanitizeInline,
   stripTerminalControls,
 } from './chat-projection.js';
+import type { ReasoningEffort } from '@relavium/shared';
+
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import type { ChatStoreController, PendingApproval } from './chat-store.js';
 import type { SessionViewState, TranscriptEntry } from './session-view-model.js';
@@ -144,6 +146,10 @@ interface ChatAppProps {
   readonly onAbort?: (() => void) | undefined;
   /** Switch the chat mode (Shift+Tab cycle) — re-applies the turn policy on the same session (ADR-0057). */
   readonly onModeChange: (mode: ChatMode) => void;
+  /** Set the reasoning-effort tier (ADR-0066 §5) — the `/models` effort sub-step calls it on a SAME-model pick (a
+   *  per-turn session override, NO reseat). Absent ⇒ the effort sub-step is not offered. `| undefined` for the
+   *  createElement passthrough. */
+  readonly onSetEffort?: ((effort: ReasoningEffort) => void) | undefined;
   /** Request a mid-session model switch (ADR-0059) — the `/models` picker overlay calls it on accept. Absent (a
    *  driver/test wired without it) ⇒ the overlay never opens (see `modelPicker`). `| undefined` for the passthrough. */
   readonly onReseat?: ((target: ReseatTarget) => void) | undefined;
@@ -174,6 +180,9 @@ interface ChatViewProps {
   readonly running: boolean;
   /** The active chat mode (ADR-0057) — shown in the footer so `auto` is never a hidden state. */
   readonly mode: ChatMode;
+  /** The active reasoning-effort tier (ADR-0066) — shown in the footer (parity with `mode`) so the tier is never a
+   *  hidden state; absent ⇒ not shown (a non-reasoning model / no tier). */
+  readonly reasoningEffort?: ReasoningEffort | undefined;
   /** An in-flight per-tool approval — when set, the `[y]/[a]/[n]` prompt replaces the idle prompt. */
   readonly approval?: PendingApproval | undefined;
   /** When the `/` palette is open it owns the bottom of the view, so the idle prompt + footer are suppressed (2.5.C S3b). */
@@ -193,7 +202,7 @@ interface ChatViewProps {
  * sequence cannot corrupt the terminal or inject ANSI/OSC.
  */
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
-  const { state, tick, color, editor, running, mode, approval, paletteOpen } = props;
+  const { state, tick, color, editor, running, mode, reasoningEffort, approval, paletteOpen } = props;
   const attachments = props.attachments ?? [];
   // When the palette is open it renders its own query line + hint below, so suppress the idle prompt + footer to
   // avoid two competing prompts (the palette owns the input focus until it closes).
@@ -297,13 +306,15 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         </Box>
       )}
 
-      <Text {...colorProps(color, 'gray')}>{formatSessionFooterWithMode(state, mode)}</Text>
+      <Text {...colorProps(color, 'gray')}>
+        {formatSessionFooterWithMode(state, mode, reasoningEffort)}
+      </Text>
     </Box>
   );
 }
 
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
-  const { state, tick, color, mode, approval } = useSyncExternalStore(
+  const { state, tick, color, mode, reasoningEffort, approval } = useSyncExternalStore(
     props.store.subscribe,
     props.store.getSnapshot,
   );
@@ -578,12 +589,13 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       refreshedAt: view.refreshedAt,
       banner: undefined,
       hint: undefined,
-      // The standalone `relavium chat` picker is ALWAYS a live reseat, so it offers the effort sub-step (ADR-0066).
+      // ADR-0066: offer the effort sub-step when the setter is wired (interactive). `currentEffort` reads the LIVE
+      // store tier (not a stale build-time value), so after a no-reseat `/effort` change the sub-list opens on it.
       phase: 'model',
-      effortStep: true,
+      effortStep: props.onSetEffort !== undefined,
       pending: undefined,
       effortSelected: 0,
-      currentEffort: port.boundEffort,
+      currentEffort: props.store.getSnapshot().reasoningEffort,
     });
     runPickerRefresh(() => port.refreshIfStale());
   };
@@ -598,17 +610,22 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       case 'close':
         applyModelPicker(undefined);
         return;
-      case 'accept':
-        // No-op guard (ADR-0059/ADR-0066): accepting the ALREADY-bound model AND effort (the ✓ = `currentDefault` +
-        // `currentEffort` = the session's binding) would reseat for zero change — wiping the ADR-0057 approval cache
-        // + reconnecting MCP. The same model with a DIFFERENT effort IS a real (effort-only) switch, so the guard is
-        // keyed on BOTH axes. Close with a note instead of a pointless switch.
-        if (step.modelId === open.currentDefault && step.reasoningEffort === open.currentEffort) {
-          applyModelPicker(undefined);
-          props.store.note(`Already on ${step.displayName}.`);
+      case 'accept': {
+        applyModelPicker(undefined);
+        if (step.modelId === open.currentDefault) {
+          // SAME model: this is an effort-only change (ADR-0066 §5) — a per-turn SESSION override, NOT a reseat. No
+          // teardown, no ADR-0057 approval-cache wipe, no MCP reconnect, no text-only context loss. A re-pick of the
+          // same tier (or a non-reasoning model with no tier) is a gentle no-op.
+          if (step.reasoningEffort === undefined || step.reasoningEffort === open.currentEffort) {
+            const at = step.reasoningEffort === undefined ? '' : ` at effort ${step.reasoningEffort}`;
+            props.store.note(`Already on ${step.displayName}${at}.`);
+          } else {
+            props.onSetEffort?.(step.reasoningEffort);
+            props.store.note(`Reasoning effort set to ${step.reasoningEffort} — applies to your next message.`);
+          }
           return;
         }
-        applyModelPicker(undefined);
+        // DIFFERENT model: a live reseat (ADR-0059), carrying the chosen effort onto the new binding.
         props.onReseat?.({
           modelId: step.modelId,
           provider: step.provider,
@@ -616,6 +633,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         });
         props.onExit(); // the reseat set the stop state; end the loop so runReplLoop swaps in the new-model session
         return;
+      }
       case 'blocked': {
         const hint =
           step.reason === 'no-key'
@@ -905,6 +923,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         editor={editor}
         running={running || shellBusy || submitBusy}
         mode={mode}
+        reasoningEffort={reasoningEffort}
         approval={approval}
         attachments={attachments}
         busyCommand={busyCommand}
@@ -1010,6 +1029,8 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         // 'abort' handler can reject a pending approval when it is absent (never a dead Esc — see ChatApp).
         onAbort: ctx.onAbort,
         onModeChange: ctx.onModeChange ?? ((): void => undefined),
+        // ADR-0066 §5 effort setter — passed AS-IS (optional); absent ⇒ the `/models` effort sub-step is not offered.
+        onSetEffort: ctx.onSetEffort,
         // `/models` reseat (ADR-0059) — the REPL loop wires both onReseat + the picker port only for an interactive
         // session; passed AS-IS (optional) so a driver wired without them simply has no `/models` overlay.
         onReseat: ctx.onReseat,

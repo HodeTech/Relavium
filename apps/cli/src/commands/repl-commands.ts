@@ -13,6 +13,8 @@
  * those three can never disagree. The set is deliberately small and **alias-free**.
  */
 
+import { REASONING_EFFORTS } from '@relavium/shared';
+
 import { CHAT_MODES } from '../chat/chat-mode.js';
 import type { CommandEffect } from './manifest.js';
 
@@ -37,6 +39,9 @@ export interface ReplCommandContext {
   readonly showCost: () => void | Promise<void>;
   /** Run the `/doctor` health check (2.5.C S5); `deep` adds the network/process tier (key + MCP validation). */
   readonly runDoctor: (deep: boolean) => void | Promise<void>;
+  /** Set the reasoning-effort tier (ADR-0066). Receives the raw tier token (empty ⇒ show the current tier + options).
+   *  Pushes the session override (no reseat); chat-only, like `/mode`. */
+  readonly setReasoningEffort: (effortArg: string) => void | Promise<void>;
   /** Switch the chat mode (ADR-0057). Receives the raw mode-name token (empty ⇒ show the current mode + options).
    *  The surface parses + applies it (re-applying the turn policy on the same session) and reports the result. */
   readonly setMode: (modeArg: string) => void | Promise<void>;
@@ -182,6 +187,17 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     // valid mode or an empty arg (the palette's bare `/mode` — which shows the current mode + the options).
     positional: { name: 'mode', values: [...CHAT_MODES] },
     run: (ctx, args) => ctx.setMode(args[0] ?? ''),
+    availableIn: ['chat'],
+  },
+  {
+    name: 'effort',
+    label: 'Effort',
+    description: 'Set the reasoning-effort tier: off / low / medium / high / max (ADR-0066).',
+    effect: 'read',
+    // A single positional tier, validated by the dispatch against these values; bare `/effort` shows the current
+    // tier + the options. A per-turn session override (no reseat) — chat-only, like `/mode`.
+    positional: { name: 'effort', values: [...REASONING_EFFORTS] },
+    run: (ctx, args) => ctx.setReasoningEffort(args[0] ?? ''),
     availableIn: ['chat'],
   },
   {

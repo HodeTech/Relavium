@@ -20,6 +20,7 @@ interface CapabilityCalls {
   readonly showCost: number;
   readonly runDoctor: number;
   readonly setMode: number;
+  readonly setReasoningEffort: number;
   readonly compactHistory: number;
   readonly trimHistory: number;
   readonly clearSession: number;
@@ -37,6 +38,7 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls }
     showCost: vi.fn(),
     runDoctor: vi.fn(),
     setMode: vi.fn(),
+    setReasoningEffort: vi.fn(),
     compactHistory: vi.fn(),
     trimHistory: vi.fn(),
     clearSession: vi.fn(),
@@ -52,6 +54,7 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls }
       showWorkflows: spies.showWorkflows.mock.calls.length,
       showCost: spies.showCost.mock.calls.length,
       setMode: spies.setMode.mock.calls.length,
+      setReasoningEffort: spies.setReasoningEffort.mock.calls.length,
       runDoctor: spies.runDoctor.mock.calls.length,
       compactHistory: spies.compactHistory.mock.calls.length,
       trimHistory: spies.trimHistory.mock.calls.length,
@@ -75,6 +78,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'cost',
       'doctor',
       'mode',
+      'effort',
       'compact',
       'trim',
       'clear',
@@ -92,6 +96,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       ['cost', 'showCost'],
       ['doctor', 'runDoctor'],
       ['mode', 'setMode'],
+      ['effort', 'setReasoningEffort'],
       ['compact', 'compactHistory'],
       ['trim', 'trimHistory'],
       ['clear', 'clearSession'],
@@ -111,6 +116,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
         counts.showCost +
         counts.runDoctor +
         counts.setMode +
+        counts.setReasoningEffort +
         counts.compactHistory +
         counts.trimHistory +
         counts.clearSession +
@@ -130,7 +136,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('replCommandList renders the slash hint, formatReplHelp lists every command', () => {
     expect(replCommandList()).toBe(
-      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /compact, /trim, /clear, /models',
+      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /effort, /compact, /trim, /clear, /models',
     );
     const help = formatReplHelp();
     for (const command of REPL_COMMANDS) {
@@ -151,6 +157,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'cost',
       'doctor',
       'mode',
+      'effort',
       'trim',
       'models',
     ]) {
@@ -171,6 +178,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'cost',
       'doctor',
       'mode',
+      'effort',
       'compact',
       'trim',
       'clear',
@@ -185,6 +193,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'cost',
       'doctor',
       'mode',
+      'effort',
       'compact',
       'trim',
       'clear',

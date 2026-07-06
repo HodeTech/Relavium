@@ -65,6 +65,7 @@ import {
   type PreEgressHook,
 } from './agent-turn.js';
 import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
+import { gateReasoningEffort } from './reasoning-effort.js';
 import type {
   MediaJobSubmission,
   NodeExecContext,
@@ -802,13 +803,10 @@ function resolveGenKnobs(
   const temperature = node.temperature ?? agent.temperature;
   const maxTokens = node.max_tokens ?? agent.max_tokens;
   // ADR-0066: send the reasoning-effort tier ONLY when the agent authored one AND the primary model is
-  // reasoning-capable (a non-reasoning model would reject the field). The host-injected `resolveReasoning` is the
-  // per-model catalog projection; absent/`undefined` ⇒ not reasoning ⇒ the tier is withheld (safe). A fallback to a
-  // different chain model carries the tier along — the adapter/provider ignores or rejects it there (a documented edge).
-  const reasoningEffort =
-    agent.reasoning_effort !== undefined && deps.resolveReasoning?.(agent.model) === true
-      ? agent.reasoning_effort
-      : undefined;
+  // reasoning-capable (the shared {@link gateReasoningEffort} rule — a non-reasoning model would reject the field).
+  // The per-fallback-entry re-gate lives in the chain (a non-reasoning fallback entry strips the tier), so a failover
+  // to a different-capability model never carries an unsupported field.
+  const reasoningEffort = gateReasoningEffort(agent.reasoning_effort, agent.model, deps.resolveReasoning);
   return {
     ...(temperature === undefined ? {} : { temperature }),
     ...(maxTokens === undefined ? {} : { maxTokens }),

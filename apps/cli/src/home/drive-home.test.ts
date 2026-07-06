@@ -314,7 +314,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(reseated?.sessionId).toBe(sessionId); // a reseat CONTINUES the same session (unlike /clear's new id)
     expect(reseated?.store.getSnapshot().state.model).toBe('claude-opus-4-8'); // rebound to the picked model
     expect(reseated?.store.getSnapshot().state.turnCount).toBe(1); // the prior turn carried
-    expect(reseated?.boundEffort).toBe('medium'); // the effort sub-step's tier bound onto the reseated agent (ADR-0066)
+    // The effort sub-step's tier bound onto the reseated agent (ADR-0066) — surfaced in the footer via the store.
+    expect(reseated?.store.getSnapshot().reasoningEffort).toBe('medium');
     expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
     expect(props.controller.getSnapshot().mode).toBe('chat'); // stayed in chat
 

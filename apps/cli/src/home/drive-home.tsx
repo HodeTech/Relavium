@@ -248,7 +248,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         });
         // createChatLineHandler owns the mode control (ADR-0057): it applies the initial `ask` mode → the
         // fail-closed approval regime — BEFORE the session opens, so the full-capability host is never live without it.
-        const { processLine, cancelOnce, shouldStop, stopReason, onAbort, onModeChange } =
+        const { processLine, cancelOnce, shouldStop, stopReason, onAbort, onModeChange, onSetEffort } =
           createChatLineHandler(
             { built, opened, store, persister, doctorProbes: chatDoctorProbes },
             deps,
@@ -293,11 +293,11 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           shouldStop,
           stopReason,
           sessionId: built.sessionId,
-          // The bound effort (ADR-0066) for the `/models` effort sub-list ✓/highlight + the reseat no-op guard.
-          boundEffort: built.agent.reasoning_effort,
           teardown,
           onAbort,
           onModeChange,
+          // ADR-0066 §5: the in-Home `/models` effort sub-step + `/effort` push the SESSION override (no reseat).
+          onSetEffort,
           ...(mentionReader === undefined ? {} : { mentionReader }),
           runShellCommand,
         };

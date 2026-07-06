@@ -63,7 +63,7 @@ function makeSession(
     onModeChange?: (mode: ChatMode) => void;
     mentionReader?: MentionReader;
     runShellCommand?: (command: string, args: readonly string[]) => Promise<UserCommandOutcome>;
-    boundEffort?: ReasoningEffort;
+    onSetEffort?: (effort: ReasoningEffort) => void;
   } = {},
 ): {
   session: HomeChatSession;
@@ -84,7 +84,7 @@ function makeSession(
     },
     shouldStop: opts.stop ?? (() => false),
     stopReason: opts.stopReason ?? (() => 'exit'),
-    boundEffort: opts.boundEffort,
+    ...(opts.onSetEffort === undefined ? {} : { onSetEffort: opts.onSetEffort }),
     ...(opts.onAbort === undefined ? {} : { onAbort: opts.onAbort }),
     ...(opts.onModeChange === undefined ? {} : { onModeChange: opts.onModeChange }),
     ...(opts.mentionReader === undefined ? {} : { mentionReader: opts.mentionReader }),
@@ -915,7 +915,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       processLine: () => Promise.resolve(),
       shouldStop: () => true, // the first turn ends the session ⇒ endChat fires
       stopReason: () => 'exit', // /exit-style end → endChat (not the /clear swap)
-      boundEffort: undefined,
       teardown,
     };
     const startChat = vi.fn(() => Promise.resolve(session));
@@ -952,7 +951,6 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       },
       shouldStop: () => true,
       stopReason: () => 'exit',
-      boundEffort: undefined,
       teardown: vi.fn(() => new Promise<void>((r) => (releaseTeardown = r))),
     };
     const c = createHomeController({
@@ -1926,6 +1924,80 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(c.getSnapshot().session).toBe(sessionB.session); // swapped to the reseated session
     expect(c.getSnapshot().mode).toBe('chat'); // stayed in chat (the model switched underneath)
     expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
+  });
+
+  it('in-Home chat: a SAME-model effort change calls the setter — NO reseat (ADR-0066 §5)', async () => {
+    // Bound to a reasoning-capable model at effort 'low'. Re-picking the SAME model then choosing 'high' in the
+    // effort sub-step must push the SESSION override (onSetEffort) — NOT a reseat (which would tear the session down).
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    boundStore.setReasoningEffort('low'); // the session's current tier (drives the sub-list's ✓/highlight)
+    const onSetEffort = vi.fn();
+    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
+    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic', supportsReasoning: true })],
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(sessionA.session),
+      reseatChat,
+      models: port,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('', ENTER); // model phase: Enter on the reasoning model ⇒ advance to the effort sub-step
+    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
+    c.handleKey('', { downArrow: true }); // low → medium
+    c.handleKey('', { downArrow: true }); // medium → high
+    c.handleKey('', ENTER); // apply 'high'
+    await flush();
+
+    expect(onSetEffort).toHaveBeenCalledWith('high'); // the SESSION override (no reseat)
+    expect(reseatChat).not.toHaveBeenCalled(); // an effort change is NOT a reseat (ADR-0066 §5, not option (d))
+    expect(sessionA.teardown).not.toHaveBeenCalled(); // the live session is untouched (no teardown/MCP reconnect)
+    expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed after the effort pick
+  });
+
+  it('in-Home chat: re-picking the SAME model AND same effort is a no-op (no setter, no reseat) (ADR-0066)', async () => {
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    boundStore.setReasoningEffort('high');
+    const onSetEffort = vi.fn();
+    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
+    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic', supportsReasoning: true })],
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(sessionA.session),
+      reseatChat,
+      models: port,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('', ENTER); // effort sub-step opens highlighted on the bound 'high'
+    c.handleKey('', ENTER); // accept 'high' (unchanged)
+    await flush();
+
+    expect(onSetEffort).not.toHaveBeenCalled(); // same tier ⇒ no setter call
+    expect(reseatChat).not.toHaveBeenCalled();
+    expect(c.getSnapshot().modelPicker).toBeUndefined();
   });
 
   it('in-Home chat: accepting the ALREADY-bound model does NOT reseat — a no-op hint (ADR-0059)', async () => {
