@@ -760,6 +760,17 @@ describe('session-view-model — reasoning fold (EA6, 2.5.H)', () => {
     expect(state.liveReasoningTruncated).toBe(true);
   });
 
+  it('keeps the reasoning truncation flag STICKY across a later non-truncating delta', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.reasoning('r'.repeat(MAX_LIVE_TOKEN_CHARS + 5)), // truncates
+      e.reasoning(' more'), // this delta alone would not truncate, but the flag stays set for the segment
+    ]);
+    expect(state.liveReasoningTruncated).toBe(true);
+  });
+
   it('accumulates reasoning ACROSS a tool call (unlike liveTokens, which resets per tool round)', () => {
     const e = events();
     const state = reduceAll([

@@ -232,8 +232,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
     paletteOpen,
   } = props;
   const attachments = props.attachments ?? [];
-  // The turn streamed reasoning ⇒ render the collapsible "thinking" panel (2.5.H) + label the pre-token line
-  // "Thinking…" rather than "Working…".
+  // The turn streamed reasoning ⇒ render the collapsible "thinking" panel (2.5.H).
   const hasReasoning = state.liveReasoning.length > 0;
   const reasoningPanel = hasReasoning
     ? formatReasoningPanel({
@@ -242,6 +241,10 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         visible: reasoningVisible,
       })
     : undefined;
+  // The pre-token busy line reads "Thinking…" ONLY while the model is plausibly reasoning — reasoning has streamed
+  // AND no tool call is currently blocking. During a tool round (an unresolved tool line sits above) it falls back
+  // to "Working…", so the timer never claims the model is thinking while a tool executes.
+  const reasoningActive = hasReasoning && !state.liveToolCalls.some((call) => !call.resolved);
   // When the palette is open it renders its own query line + hint below, so suppress the idle prompt + footer to
   // avoid two competing prompts (the palette owns the input focus until it closes).
   const showIdlePrompt = !running && paletteOpen !== true;
@@ -263,7 +266,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       liveTokens: state.liveTokens,
       liveTokensTruncated: state.liveTokensTruncated,
       elapsedMs,
-      hasReasoning,
+      hasReasoning: reasoningActive,
     });
     return line.dim ? (
       <Text {...dimProps(color)} wrap="truncate-end">

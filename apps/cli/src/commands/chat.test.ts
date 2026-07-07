@@ -325,6 +325,20 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
   });
 
+  it('/thinking toggles the reasoning panel and reports the resulting state (2.5.H)', async () => {
+    const { d, err, store, sessionId } = deps(
+      ['/thinking', '/thinking', '/exit'],
+      [textTurn('hi')],
+    );
+    await chatCommand({ agent: undefined }, d);
+    const out = err();
+    expect(out).toContain('reasoning panel: shown'); // first /thinking: collapsed (default) → shown
+    expect(out).toContain('reasoning panel: hidden'); // second /thinking: shown → hidden
+    // /thinking is read-only (a pure view flip): the session continued, so the 'hello' turn is not persisted here
+    // (no user turn was sent — only slash commands ran + /exit); the row exists with no messages.
+    expect(store.loadFull(sessionId)?.messages ?? []).toHaveLength(0);
+  });
+
   it('rejects an invalid /mode value at the dispatch, LISTING the valid names (a positional not in the mode set)', async () => {
     const { d, err } = deps(['/mode bogus', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);

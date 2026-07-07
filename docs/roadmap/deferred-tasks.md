@@ -764,6 +764,16 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **Compact abort hint during token streaming.** The `Esc to stop` affordance shows on the pre-first-token
   status line but not once the answer streams (the content line needs the width) — yet `Esc` aborts throughout the
   turn (EA7). A follow-up could keep a compact hint in the footer during streaming. *(low · apps/cli/src/render/tui/chat-ink.tsx)*
+- [ ] **Bound the EXPANDED reasoning panel by rendered LINES, not just chars.** The panel body is bounded to
+  `MAX_LIVE_TOKEN_CHARS` (4000) chars, which can wrap to 60+ lines of narrow prose in the live (non-`<Static>`)
+  region, re-painted each frame — a taller-than-viewport live block that can flicker on a short terminal (the same
+  risk class the `liveTokens` answer stream already carries; the panel is opt-in + collapsed by default, so LOW).
+  A follow-up could tail the expanded body to the last N rendered lines. *(low · apps/cli/src/render/tui/chat-ink.tsx)*
+- [ ] **Allow `Ctrl+T` / `/thinking` during a pending approval.** The fail-closed approval keyboard-ownership
+  (ADR-0057) swallows every key except `[y]/[a]/[n]/[esc]` — including the reasoning toggle, the one moment a user
+  might most want to expand the thinking to inform the decision. `toggle-reasoning` is a pure view flip (zero
+  session effect), so it would be safe to let it bypass the swallow. Deliberately left fail-closed for now (the
+  approval floor is security-sensitive). *(low · apps/cli/src/render/tui/chat-input.ts)*
 
 ## Sonar code-quality backlog
 
