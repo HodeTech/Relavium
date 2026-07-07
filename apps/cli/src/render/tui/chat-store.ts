@@ -111,6 +111,7 @@ export interface ChatStoreController extends ChatStore {
  */
 const HIGH_FREQUENCY_EVENTS: ReadonlySet<SessionStreamHandleEvent['type']> = new Set([
   'agent:token',
+  'agent:reasoning', // EA6 (2.5.H) — a per-reasoning_delta firehose like agent:token; coalesce its repaints
   'agent:tool_call',
   'agent:tool_result',
   'cost:updated',

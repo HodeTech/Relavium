@@ -215,6 +215,22 @@ describe('runAgentTurn — streaming + cost', () => {
       expect(r).not.toHaveProperty('signature');
     }
   });
+
+  it('streams no agent:reasoning for a redacted block with no reasoning_delta text (EA6, 2.5.H)', async () => {
+    // A provider-withheld ("redacted") reasoning block carries the flag on reasoning_end and NO delta text —
+    // so it emits nothing (there is nothing to render). Pins the stated invariant in foldReasoningChunk.
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'reasoning_start', id: 'r1' },
+        { type: 'reasoning_end', id: 'r1', redacted: true },
+        { type: 'text_delta', text: 'Answer' },
+        STOP(),
+      ],
+    ]);
+    const params = baseParams(provider);
+    await runAgentTurn(params);
+    expect(eventsOf(params).some((e) => e.type === 'agent:reasoning')).toBe(false);
+  });
 });
 
 describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {

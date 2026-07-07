@@ -236,6 +236,25 @@ describe('WorkflowEngine — the event stream', () => {
     expect(terminalsIn(events)[0]?.type).toBe('run:completed');
   });
 
+  it('carries a run-path agent:reasoning event onto the bus, correlated by runId (EA6 — #nodeEmit pass-through)', async () => {
+    // Regression: `agent:reasoning` was added to InNodeEventType but the #nodeEmit switch had no case for it,
+    // so it fell through and was silently DROPPED on the run path (the session path still emitted it). Assert
+    // it reaches the bus with runId + its fields, and that the stream stays gap-free with the new arm present.
+    const engine = engineWith({
+      work: (ctx) => {
+        ctx.emit({ type: 'agent:reasoning', nodeId: 'work', text: 'thinking', model: 'm' });
+        return { kind: 'completed', output: 'done', tokensUsed: { input: 1, output: 1 } };
+      },
+    });
+    const events = await drain(engine.start({ workflow: workflow(SEQUENTIAL) }));
+    const reasoning = events.find((e) => e.type === 'agent:reasoning');
+    expect(reasoning?.type === 'agent:reasoning' && reasoning.text).toBe('thinking');
+    expect(reasoning?.type === 'agent:reasoning' && reasoning.model).toBe('m');
+    // dual-envelope: correlated by runId on the run path
+    expect(reasoning?.type === 'agent:reasoning' && reasoning.runId).toBeTruthy();
+    events.forEach((event, index) => expect(event.sequenceNumber).toBe(index));
+  });
+
   it('stamps run:started with the resolved UUID workflowId, the execution mode, and a masked secret input', async () => {
     const def = workflow(`  id: sec
   inputs:

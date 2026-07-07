@@ -19,11 +19,12 @@
  *
  * NOTE (model attribution): `cost:updated` always carries the **accurate per-attempt** model (it is
  * emitted from the attempt record), and `agent:tool_call` is emitted *after* the stream settles (the
- * succeeding attempt record has already updated `activeModel`), so it is accurate too. Only
- * **`agent:token`** carries `activeModel` mid-stream — correct for the common (no-failover) and
- * same-model-retry cases, but a *cross-model pre-content failover* attributes the streamed tokens to
- * the prior model until the succeeding record updates it (a recorded edge — the accurate per-attempt
- * source is always `cost:updated`).
+ * succeeding attempt record has already updated `activeModel`), so it is accurate too. The two mid-stream
+ * events — **`agent:token`** and **`agent:reasoning`** (EA6) — carry `activeModel` as it stands mid-stream:
+ * correct for the common (no-failover) and same-model-retry cases, but a *cross-model pre-content failover*
+ * attributes those streamed tokens/reasoning to the prior model until the succeeding record updates it
+ * (a recorded edge — the accurate per-attempt source is always `cost:updated`; reasoning arrives before text,
+ * so it shares this window).
  */
 
 import type {

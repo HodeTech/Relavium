@@ -1873,6 +1873,7 @@ class RunExecution {
     // authoritatively rather than passed through.
     switch (event.type) {
       case 'agent:token':
+      case 'agent:reasoning':
       case 'agent:tool_call':
       case 'agent:tool_result':
       case 'agent:file_patch_proposed':
@@ -1887,6 +1888,14 @@ class RunExecution {
           cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
         });
         return;
+      default: {
+        // Exhaustiveness guard over `NodeStreamEvent` (`InNodeEventType`): a future in-node event must add a
+        // case above, not silently fall through here. EA6 (`agent:reasoning`) added a member that this bare
+        // switch had dropped — the `never` assignment makes the next such omission a compile error, not a
+        // silent run-path drop of an event the session path still emitted.
+        const exhaustive: never = event;
+        return exhaustive;
+      }
     }
   }
 

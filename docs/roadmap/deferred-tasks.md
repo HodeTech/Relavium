@@ -355,10 +355,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   Deep conformance needs a JSON-Schema validator (Zod cannot consume an arbitrary JSON-Schema), which is a new
   runtime dependency requiring an ADR. *(medium · packages/core/src/engine/agent-runner.ts,
   packages/core/src/engine/node-handlers/transform.ts; error-handling.md)*
-- [ ] **Per-attempt model attribution for `agent:token`** — `cost:updated` is always per-attempt-accurate, but
-  `agent:token.model` uses `activeModel` (updated from the *succeeding* attempt record, which fires after the
-  stream), so a *cross-model pre-content failover* attributes that turn's tokens to the prior model. A precise
-  fix needs a `FallbackChain` `onAttemptStart`/attributed-stream hook (a seam change). *(low · packages/core/src/engine/agent-turn.ts; packages/llm/src/fallback-chain.ts)*
+- [ ] **Per-attempt model attribution for `agent:token` / `agent:reasoning`** — `cost:updated` is always
+  per-attempt-accurate, but the two mid-stream events `agent:token.model` and `agent:reasoning.model` (EA6, 2.5.H)
+  use `activeModel` (updated from the *succeeding* attempt record, which fires after the stream), so a
+  *cross-model pre-content failover* attributes that turn's tokens/reasoning to the prior model (reasoning arrives
+  before text, so it shares the same window). A precise fix needs a `FallbackChain` `onAttemptStart`/attributed-stream
+  hook (a seam change). *(low · packages/core/src/engine/agent-turn.ts; packages/llm/src/fallback-chain.ts)*
 - [ ] **Multi-tool result ordering in the turn core** — `dispatchToolCalls` appends tool-result messages in
   dispatch-completion order; for v1.0 (single tool call per `tool_use` stop) this is moot — and 1.V now reuses
   the core on that single-tool path. A parallel-tool provider should order by the accumulator's `toolOrder`;
