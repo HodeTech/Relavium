@@ -321,13 +321,23 @@ const REASONING_PANEL_FALLBACK_COLUMNS = 80;
  * counts as `⌈len / columns⌉` wrapped rows (never < 1), so both many short lines AND one very long line are bounded.
  * When the single most-recent logical line alone exceeds the row budget its HEAD is sliced so the tail still fits.
  * Returns the kept body + whether anything was dropped (`tailed`), so the caller can show the head-elision marker.
+ *
+ * The row count is APPROXIMATE, not exact: `.length` (UTF-16 units) stands in for ink's display-width wrap, so a
+ * wide-glyph (CJK/emoji) line under-counts and a combining-mark line over-counts — the panel can render up to ~2×
+ * on wide text; the prepended `…` marker in {@link formatReasoningPanel} can add one more row. This matches the
+ * store's existing `.length`-based 4000-char cap and avoids a `string-width` runtime dependency; the bound is a
+ * cosmetic anti-flicker guard, so an off-by-a-row on unusual scripts is acceptable.
  */
 function tailToRenderedRows(
   text: string,
   columns: number | undefined,
 ): { body: string; tailed: boolean } {
+  // `>= 1` (not `> 0`): a fractional 0<columns<1 would floor to 0 and make `rowsOf` divide by zero. In practice
+  // the caller always passes an integer ≥ 1 (`process.stdout.columns` / the Home's `size.cols`), so this is a floor.
   const width =
-    columns !== undefined && columns > 0 ? Math.floor(columns) : REASONING_PANEL_FALLBACK_COLUMNS;
+    columns !== undefined && Math.floor(columns) >= 1
+      ? Math.floor(columns)
+      : REASONING_PANEL_FALLBACK_COLUMNS;
   const rowsOf = (line: string): number => Math.max(1, Math.ceil(line.length / width));
   const lines = text.split('\n');
   const kept: string[] = [];
@@ -353,9 +363,10 @@ function tailToRenderedRows(
  * Project the in-flight reasoning into the collapsible panel (2.5.H). Collapsed (default): a dim header with the
  * Ctrl+T toggle hint, so the user knows thinking is available without it flooding the view. Expanded: the header +
  * the reasoning BODY — terminal-sanitized at this display boundary (newline-preserving, it is multi-line prose),
- * bounded to the last {@link MAX_REASONING_PANEL_LINES} rendered rows so a full 4000-char buffer cannot wrap into a
- * flickering, screen-filling panel on a short terminal, with a leading `…` elision marker when the buffer's head
- * scrolled out — via the store's char cap (`liveReasoningTruncated`) OR this row tail (parity with the answer stream).
+ * bounded to ~the last {@link MAX_REASONING_PANEL_LINES} rendered rows (an approximate width count — see
+ * {@link tailToRenderedRows}) so a full 4000-char buffer cannot wrap into a flickering, screen-filling panel on a
+ * short terminal, with a leading `…` elision marker when the buffer's head scrolled out — via the store's char cap
+ * (`liveReasoningTruncated`) OR this row tail (parity with the answer stream).
  */
 export function formatReasoningPanel(input: {
   readonly liveReasoning: string;

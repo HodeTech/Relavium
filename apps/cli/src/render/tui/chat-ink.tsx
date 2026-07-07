@@ -1089,6 +1089,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         busyCommand={busyCommand}
         // Live terminal width for the reasoning-panel row bound (2.5.H) — read fresh each render (parity with
         // `nowMs={Date.now()}`); the frame loop re-renders, so a resize is picked up on the next tick.
+        // `stdout.columns` is typed `number` but is `undefined` at runtime off a TTY — the formatter's 80-col
+        // fallback covers that (moot here anyway: ChatApp only mounts on a TTY via the driveInk gate).
         columns={process.stdout.columns}
         paletteOpen={
           palette !== undefined ||

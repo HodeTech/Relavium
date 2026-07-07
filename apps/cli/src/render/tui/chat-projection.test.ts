@@ -419,6 +419,20 @@ describe('chat-projection', () => {
         expect(panel.body).toBe(body); // under budget ⇒ no tail, no marker
       });
 
+      it('keeps everything with NO marker when the rows sum to EXACTLY the budget', () => {
+        // Exactly MAX one-char lines at width 80 = exactly 12 rendered rows — the boundary case: the loop ends
+        // naturally (nothing dropped), so `tailed` is false and no leading marker is added.
+        const lines = Array.from({ length: MAX_REASONING_PANEL_LINES }, (_, i) => String(i));
+        const body = lines.join('\n');
+        const panel = formatReasoningPanel({
+          liveReasoning: body,
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 80,
+        });
+        expect(panel.body).toBe(body); // == budget ⇒ kept whole, no `…`
+      });
+
       it('tails MANY short lines to the last N and prefixes the elision marker', () => {
         // 30 one-char lines = 30 rendered rows (each short line is its own row) — well over the 12-row budget.
         const lines = Array.from({ length: 30 }, (_, i) => String(i));
