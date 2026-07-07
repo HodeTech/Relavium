@@ -176,12 +176,14 @@ jobs:
         run: pnpm coverage
 
   # Cross-OS concurrency + headless gate (2.5.I S6). The DB write-path hardening (BEGIN IMMEDIATE + the
-  # SQLITE_BUSY retry's Atomics.wait sleep + WAL locking), the two-process concurrency e2e (a child spawn +
-  # a file:// import of the built @relavium/db), and the no-TTY raw-mode path are the parts most likely to
-  # behave differently on Windows. Runs the @relavium/db concurrency suite + the CLI concurrency/perf harness
-  # there, plus a headless raw-mode smoke. A SEPARATE, advisory job (the required check stays the ubuntu `ci`
-  # job) — promote to required in branch protection once confirmed stable. POSIX 0600/0700 perm assertions are
-  # NOT exercised here (a documented Windows no-op — ADR-0050).
+  # SQLITE_BUSY retry's Atomics.wait sleep + WAL locking) and the two-process concurrency e2e (a child spawn +
+  # a file:// import of the built @relavium/db) are the parts most likely to behave differently on Windows —
+  # ci.yml ran ubuntu-only (release.yml already smokes the built binary cross-OS, but never the test suite).
+  # Runs the @relavium/db concurrency suite (the real Windows native-addon + WAL exercise) + the CLI
+  # concurrency/perf harness there, plus a headless no-TTY smoke. A SEPARATE, advisory job (the required check
+  # stays the ubuntu `ci` job) — promote to required in branch protection once confirmed stable. POSIX 0600/0700
+  # perm assertions are NOT exercised here (a documented Windows no-op — ADR-0050); nor is ink's raw-mode code,
+  # which is TTY-gated (the driver-selection gate picks the plain driver without a TTY — see the smoke below).
   windows-concurrency:
     name: windows · db concurrency + headless smoke (advisory)
     runs-on: windows-latest
@@ -197,6 +199,13 @@ jobs:
           cache: pnpm
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
+      - name: Restore Turborepo cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-
       # The two-process concurrency e2e spawns children that import the BUILT @relavium/db (by file:// URL),
       # so the dist must exist before the tests run.
       - name: Build
@@ -205,17 +214,19 @@ jobs:
         run: pnpm --filter @relavium/db test
       - name: CLI concurrency + query-shape harness (cross-process spawn + EXPLAIN plans on Windows)
         run: pnpm --filter relavium exec vitest run concurrency perf-budget session-chain
-      - name: Headless raw-mode smoke (no TTY ⇒ the CLI must not crash entering raw mode)
+      - name: Headless no-TTY smoke (the bundle loads; a piped chat picks the plain driver and exits cleanly)
         shell: bash
         run: |
           set -euo pipefail
-          node apps/cli/dist/index.js --help >/dev/null
-          # `chat` needs an interactive TTY; a piped (non-TTY) stdin must exit cleanly — never a setRawMode crash.
+          node apps/cli/dist/index.js --help >/dev/null # the tsup bundle loads + --help renders
+          # `chat` is TTY-gated: with a piped (non-TTY) stdin the driver-selection gate picks the PLAIN driver
+          # (ink/setRawMode is never entered), and the plain driver must exit cleanly on EOF — never crash. If a
+          # regression routed to ink without a TTY it would throw "Raw mode is not supported…", which this catches.
           out="$(printf '' | node apps/cli/dist/index.js chat 2>&1 || true)"
           if printf '%s' "$out" | grep -qiE 'setRawMode|raw mode'; then
-            echo "::error::chat crashed entering raw mode without a TTY"; exit 1
+            echo "::error::chat entered raw mode without a TTY (the driver-selection gate regressed)"; exit 1
           fi
-          echo "✓ windows headless raw-mode smoke passed"
+          echo "✓ windows headless no-TTY smoke passed"
 
 # --- Reserved Phase-1 lanes (TODO: enable with the first provider adapter) ------------
 # The per-provider conformance suite and the nightly live-API lane land WITH the adapters

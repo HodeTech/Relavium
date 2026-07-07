@@ -19,7 +19,7 @@ describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () =
     root = mkdtempSync(join(tmpdir(), 'relavium-media-'));
     store = new FilesystemMediaStore(root);
   });
-  afterAll(() => rmSync(root, { recursive: true, force: true }));
+  afterAll(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
   it('put returns the canonical media://sha256-<hex> handle = sha256 of the bytes', async () => {
     const handle = await store.put(HELLO);
@@ -58,7 +58,7 @@ describe('FilesystemMediaStore (1.AF, ADR-0042 — content-addressed CAS)', () =
       writeFileSync(casPath, new Uint8Array([0xff])); // overwrite the stored bytes in place
       await expect(tamperStore.get(handle)).rejects.toThrow(/content-address/);
     } finally {
-      rmSync(tamperRoot, { recursive: true, force: true });
+      rmSync(tamperRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });
@@ -114,7 +114,7 @@ describe('MediaStore.readRange (1.AF/D13 — byte-delivery Range gate)', () => {
         /handle/,
       );
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   });
 });
@@ -126,7 +126,7 @@ describe('FilesystemMediaStore — host GC support (2.S/D-GC: delete + listHandl
     root = mkdtempSync(join(tmpdir(), 'relavium-media-gc-'));
     store = new FilesystemMediaStore(root);
   });
-  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  afterEach(() => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
   it('listHandles enumerates every stored handle (with mtime); an empty or absent root yields []', async () => {
     expect(await store.listHandles()).toEqual([]); // the root exists but is empty

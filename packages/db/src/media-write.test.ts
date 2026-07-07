@@ -17,8 +17,8 @@ describe('createFilesystemMediaWrite (1.AF/D16, ADR-0044 §2 — save_to write p
     outside = mkdtempSync(join(tmpdir(), 'relavium-outside-'));
   });
   afterEach(() => {
-    rmSync(root, { recursive: true, force: true });
-    rmSync(outside, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    rmSync(outside, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it('writes the bytes to a nested relative path under the scope root, creating dirs', async () => {

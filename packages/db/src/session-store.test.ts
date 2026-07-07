@@ -500,7 +500,7 @@ describe('SessionStore — loadFull snapshot isolation (2.5.I)', () => {
       try {
         reader.sqlite.close();
       } finally {
-        rmSync(dir, { recursive: true, force: true });
+        rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }
     }
   });

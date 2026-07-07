@@ -186,7 +186,7 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
         try {
           chatClient.sqlite.close();
         } finally {
-          rmSync(dir, { recursive: true, force: true });
+          rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
         }
       }
     }
@@ -258,7 +258,7 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
           try {
             holder.sqlite.close();
           } finally {
-            rmSync(dir, { recursive: true, force: true });
+            rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
           }
         }
       }

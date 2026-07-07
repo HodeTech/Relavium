@@ -188,7 +188,7 @@ describe('withBusyRetry — real SQLITE_BUSY contention (2.5.I)', () => {
         try {
           writer.sqlite.close();
         } finally {
-          rmSync(dir, { recursive: true, force: true });
+          rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
         }
       }
     }
@@ -225,7 +225,7 @@ describe('withBusyRetry — real SQLITE_BUSY contention (2.5.I)', () => {
         try {
           writer.sqlite.close();
         } finally {
-          rmSync(dir, { recursive: true, force: true });
+          rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
         }
       }
     }

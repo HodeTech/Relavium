@@ -95,7 +95,7 @@ describe('session chain e2e (2.5.I S4) — Home→chat→resume→export over a 
   });
 
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   /** Open a fresh connection + a migrated session store on the shared file (each "process" gets its own). */
