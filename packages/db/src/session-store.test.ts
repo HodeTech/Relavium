@@ -492,12 +492,16 @@ describe('SessionStore — loadFull snapshot isolation (2.5.I)', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-    // Best-effort teardown: close both connections even if one throws, then remove the temp dir.
+    // Best-effort teardown: close both connections and remove the temp dir even if a close throws
+    // (nested finally so the dir is always swept regardless of which close fails).
     try {
       writer.sqlite.close();
     } finally {
-      reader.sqlite.close();
-      rmSync(dir, { recursive: true, force: true });
+      try {
+        reader.sqlite.close();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     }
   });
 
