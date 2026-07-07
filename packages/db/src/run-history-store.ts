@@ -502,6 +502,8 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         opts?.status === undefined
           ? isNull(runs.deletedAt)
           : and(eq(runs.status, opts.status), isNull(runs.deletedAt));
+      // The no-status ORDER BY is index-served (idx_runs_created, no filesort); its plan is pinned by
+      // apps/cli/src/harness/perf-budget.e2e.test.ts (2.5.I S5) — keep the WHERE/ORDER BY in sync with it.
       const query = db
         .select()
         .from(runs)

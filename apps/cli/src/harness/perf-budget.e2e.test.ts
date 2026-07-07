@@ -43,48 +43,54 @@ describe('query-shape perf budgets (2.5.I S5) — the hot reads stay index-serve
     return rows.map((row) => (row as { detail?: string }).detail ?? '');
   }
 
-  /** A read is within budget when it uses an index for the scan AND never sorts in a temp b-tree (filesort). */
-  function expectIndexServedNoFilesort(plan: string[], indexName: string): void {
+  /**
+   * A read is within budget when the ORDER BY is served off its intended index (no filesort) and the scan is
+   * index-backed (no full-table SCAN). The `indexName` pin is the primary guard (a dropped/renamed index fails
+   * here); the SCAN regex is belt-and-suspenders and is coupled to modern SQLite's `SCAN <table>` plan wording.
+   * (If a future `.select()` narrows to only-indexed columns, SQLite emits `USING COVERING INDEX` — still
+   * index-served, but the `USING INDEX` substring would need loosening then.)
+   */
+  function expectIndexServedNoFilesort(plan: string[], table: string, indexName: string): void {
     const joined = plan.join('\n');
     expect(joined).toContain('USING INDEX'); // an index serves the scan, not a full-table SCAN
-    expect(joined).toContain(indexName); // and specifically the intended index
+    expect(joined).toContain(indexName); // and specifically the intended index — the real teeth of the budget
     expect(joined).not.toMatch(/USE TEMP B-TREE/); // the ORDER BY is index-served — no filesort
-    expect(joined).not.toMatch(/SCAN (agent_sessions|runs)(?! USING)/); // no bare full-table scan
+    expect(joined).not.toMatch(new RegExp(`SCAN ${table}(?! USING)`)); // no bare full-table scan
   }
 
   it('listSessions (recent-sessions strip / chat-list) is served off idx_agent_sessions_updated', () => {
-    // Mirrors session-store.listSessions: non-deleted, most-recently-updated first, id tiebreak, top-N.
+    // Mirrors session-store.ts `listSessions` (keep in sync — that query site back-references this budget):
+    // non-deleted, most-recently-updated first, id tiebreak. No `.limit` — the plan is identical for the bounded
+    // Home strip and the unbounded `chat-list`, so this one case covers both callers.
     const query = client.db
       .select()
       .from(agentSessions)
       .where(isNull(agentSessions.deletedAt))
-      .orderBy(desc(agentSessions.updatedAt), desc(agentSessions.id))
-      .limit(8);
-    expectIndexServedNoFilesort(planFor(query), 'idx_agent_sessions_updated');
+      .orderBy(desc(agentSessions.updatedAt), desc(agentSessions.id));
+    expectIndexServedNoFilesort(planFor(query), 'agent_sessions', 'idx_agent_sessions_updated');
   });
 
   it('listRuns (recent-runs strip / relavium list) is served off idx_runs_created', () => {
-    // Mirrors run-history.listRuns: non-deleted, newest-first, id tiebreak, top-N.
+    // Mirrors run-history-store.ts `listRuns` (the no-status branch; keep in sync — back-referenced there):
+    // non-deleted, newest-first, id tiebreak. Unbounded — same plan as the bounded Home strip.
     const query = client.db
       .select()
       .from(runs)
       .where(isNull(runs.deletedAt))
-      .orderBy(desc(runs.createdAt), desc(runs.id))
-      .limit(8);
-    expectIndexServedNoFilesort(planFor(query), 'idx_runs_created');
+      .orderBy(desc(runs.createdAt), desc(runs.id));
+    expectIndexServedNoFilesort(planFor(query), 'runs', 'idx_runs_created');
   });
 
-  it('loadFull messages read is a single indexed range scan (no N+1, no full scan)', () => {
-    // Mirrors session-store.loadMessages: one ordered range read of a session's transcript, keyed by session_id.
+  it('loadFull messages read is one indexed range scan (not a per-message read), served off idx_session_messages_seq', () => {
+    // Mirrors session-store.ts `loadMessages` (keep in sync — back-referenced there): one ordered range read of
+    // a session's transcript, keyed by session_id. Pinning the (session_id, sequence_number) index + forbidding a
+    // temp b-tree is what stops SQLite silently falling to the (session_id, created_at) index with a filesort.
     const filter: SQL = eq(sessionMessages.sessionId, 'sess-1');
     const query = client.db
       .select()
       .from(sessionMessages)
       .where(filter)
       .orderBy(asc(sessionMessages.sequenceNumber));
-    const plan = planFor(query).join('\n');
-    // A single index-backed lookup by session_id — never a per-message (N+1) fan-out or a full-table scan.
-    expect(plan).toContain('USING INDEX');
-    expect(plan).not.toMatch(/SCAN session_messages(?! USING)/);
+    expectIndexServedNoFilesort(planFor(query), 'session_messages', 'idx_session_messages_seq');
   });
 });

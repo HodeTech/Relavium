@@ -211,6 +211,8 @@ export function createSessionStore(db: Db): SessionStore {
   };
 
   const listSessions = (opts?: { readonly limit?: number }): AgentSessionRecord[] => {
+    // This ORDER BY is index-served (idx_agent_sessions_updated, no filesort); its plan is pinned by
+    // apps/cli/src/harness/perf-budget.e2e.test.ts (2.5.I S5) — keep the WHERE/ORDER BY in sync with that budget.
     const query = db
       .select()
       .from(agentSessions)
@@ -228,6 +230,8 @@ export function createSessionStore(db: Db): SessionStore {
   };
 
   const loadMessages = (sessionId: string): SessionMessage[] =>
+    // Ordered range read by session_id — index-served (idx_session_messages_seq, no filesort); its plan is
+    // pinned by apps/cli/src/harness/perf-budget.e2e.test.ts (2.5.I S5).
     db
       .select()
       .from(sessionMessages)
