@@ -10,6 +10,7 @@ import {
   formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
+  reasoningLabelActive,
   stripTerminalControls,
 } from './chat-projection.js';
 import { formatDuration, formatTokens } from './format.js';
@@ -250,13 +251,34 @@ describe('chat-projection', () => {
       expect(line.text).toBe('⠋ okclear');
     });
 
-    it('labels the pre-token status "Thinking…" when reasoning is streaming, else "Working…" (2.5.H)', () => {
-      expect(formatBusyLine({ ...base, hasReasoning: true, elapsedMs: 2000 }).text).toBe(
+    it('labels the pre-token status "Thinking…" when reasoning is active, else "Working…" (2.5.H)', () => {
+      expect(formatBusyLine({ ...base, reasoningActive: true, elapsedMs: 2000 }).text).toBe(
         '⠋ Thinking… 2s · Esc to stop',
       );
       expect(formatBusyLine({ ...base, elapsedMs: 2000 }).text).toBe('⠋ Working… 2s · Esc to stop');
-      // Once answer tokens stream, the content wins regardless of hasReasoning (no label).
-      expect(formatBusyLine({ ...base, hasReasoning: true, liveTokens: 'hi' }).text).toBe('⠋ hi');
+      // Once answer tokens stream, the content wins regardless of reasoningActive (no label).
+      expect(formatBusyLine({ ...base, reasoningActive: true, liveTokens: 'hi' }).text).toBe(
+        '⠋ hi',
+      );
+    });
+  });
+
+  describe('reasoningLabelActive (2.5.H — Thinking… only when no tool is executing)', () => {
+    const call = (resolved: boolean) => ({ id: 't', toolId: 'read_file', resolved });
+
+    it('is true when reasoning streamed and every tool call is resolved (or there are none)', () => {
+      expect(reasoningLabelActive(true, [])).toBe(true); // the initial thinking phase (no tools yet)
+      expect(reasoningLabelActive(true, [call(true)])).toBe(true); // a resolved tool ⇒ back to thinking/composing
+    });
+
+    it('is false while ANY tool call is unresolved (the model idle-waits — show "Working…")', () => {
+      expect(reasoningLabelActive(true, [call(false)])).toBe(false);
+      expect(reasoningLabelActive(true, [call(true), call(false)])).toBe(false); // a mix ⇒ still executing
+    });
+
+    it('is false when no reasoning streamed this turn (a plain turn)', () => {
+      expect(reasoningLabelActive(false, [])).toBe(false);
+      expect(reasoningLabelActive(false, [call(true)])).toBe(false);
     });
   });
 

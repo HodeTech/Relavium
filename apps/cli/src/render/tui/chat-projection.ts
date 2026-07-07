@@ -159,9 +159,11 @@ export function formatBusyLine(input: {
   readonly liveTokens: string;
   readonly liveTokensTruncated: boolean;
   readonly elapsedMs?: number | undefined;
-  /** True while the turn streams reasoning with no answer text yet (2.5.H) — the pre-token label then reads
-   *  "Thinking…" instead of "Working…". Absent/false ⇒ a plain turn shows "Working…". */
-  readonly hasReasoning?: boolean | undefined;
+  /** True when the pre-token label should read "Thinking…" rather than "Working…" (2.5.H). This is the DERIVED
+   *  "the model is plausibly reasoning" signal — the caller computes it via {@link reasoningLabelActive} (reasoning
+   *  streamed this turn AND no tool call is currently executing), NOT the raw "any reasoning streamed" flag, so a
+   *  tool round shows "Working…". Absent/false ⇒ a plain (or tool-running) turn shows "Working…". */
+  readonly reasoningActive?: boolean | undefined;
 }): BusyLine {
   const { spinner } = input;
   if (input.compacting) {
@@ -175,11 +177,27 @@ export function formatBusyLine(input: {
   }
   const content = stripTerminalControls(input.liveTokens);
   if (content.length === 0) {
-    const label = input.hasReasoning === true ? 'Thinking…' : 'Working…';
+    const label = input.reasoningActive === true ? 'Thinking…' : 'Working…';
     const elapsed = input.elapsedMs === undefined ? '' : ` ${formatElapsed(input.elapsedMs)}`;
     return { text: `${spinner} ${label}${elapsed} · Esc to stop`, dim: true };
   }
   return { text: `${spinner} ${input.liveTokensTruncated ? '…' : ''}${content}`, dim: false };
+}
+
+/**
+ * Whether the pre-token busy line should read "Thinking…" (vs "Working…") — the turn streamed reasoning AND no tool
+ * call is currently executing (2.5.H). During a tool round the model idle-waits on the tool, so the label falls
+ * back to "Working…" rather than claiming the model is thinking while a tool runs. Extracted + exported so this
+ * derivation (the fix for the "Thinking… during tool execution" mislabel) is unit-tested, not just inline glue.
+ * NOTE: `liveToolCalls` is bounded (`MAX_LIVE_TOOL_CALLS`); in the pathological >bound parallel-tools case an
+ * evicted-but-still-unresolved old call could read as resolved here — cosmetic-only (the panel + tool lines are
+ * unaffected), acceptable given the generous bound and this engine's typically-ordered resolution.
+ */
+export function reasoningLabelActive(
+  hasReasoning: boolean,
+  liveToolCalls: readonly ToolCallView[],
+): boolean {
+  return hasReasoning && !liveToolCalls.some((call) => !call.resolved);
 }
 
 /** The collapsible "thinking" panel (2.5.H): a header (always, carrying the Ctrl+T toggle hint) + the reasoning

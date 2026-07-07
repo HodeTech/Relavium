@@ -91,6 +91,7 @@ import {
   formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
+  reasoningLabelActive,
   sanitizeInline,
   stripTerminalControls,
 } from './chat-projection.js';
@@ -241,10 +242,9 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         visible: reasoningVisible,
       })
     : undefined;
-  // The pre-token busy line reads "Thinking…" ONLY while the model is plausibly reasoning — reasoning has streamed
-  // AND no tool call is currently blocking. During a tool round (an unresolved tool line sits above) it falls back
-  // to "Working…", so the timer never claims the model is thinking while a tool executes.
-  const reasoningActive = hasReasoning && !state.liveToolCalls.some((call) => !call.resolved);
+  // The pre-token busy line reads "Thinking…" ONLY while the model is plausibly reasoning (reasoning streamed AND no
+  // tool call is currently executing) — the derivation is the pure, unit-tested {@link reasoningLabelActive}.
+  const reasoningActive = reasoningLabelActive(hasReasoning, state.liveToolCalls);
   // When the palette is open it renders its own query line + hint below, so suppress the idle prompt + footer to
   // avoid two competing prompts (the palette owns the input focus until it closes).
   const showIdlePrompt = !running && paletteOpen !== true;
@@ -266,7 +266,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       liveTokens: state.liveTokens,
       liveTokensTruncated: state.liveTokensTruncated,
       elapsedMs,
-      hasReasoning: reasoningActive,
+      reasoningActive,
     });
     return line.dim ? (
       <Text {...dimProps(color)} wrap="truncate-end">
