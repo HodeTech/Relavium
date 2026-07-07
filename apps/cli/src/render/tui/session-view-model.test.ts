@@ -622,7 +622,7 @@ describe('session-view-model — live-turn feedback + attribution (2.5.H)', () =
     const e = events();
     const long = 'x'.repeat(MAX_LIVE_TOKEN_CHARS + 50);
     const state = reduceAll([e.started(), e.turnStarted(), e.token(long)]);
-    expect(state.liveTokens.length).toBe(MAX_LIVE_TOKEN_CHARS); // only the trailing window is kept
+    expect(state.liveTokens).toHaveLength(MAX_LIVE_TOKEN_CHARS); // only the trailing window is kept
     expect(state.liveTokensTruncated).toBe(true); // …so the render shows a leading elision marker, not a silent loss
   });
 
@@ -756,7 +756,7 @@ describe('session-view-model — reasoning fold (EA6, 2.5.H)', () => {
       e.turnStarted(),
       e.reasoning('r'.repeat(MAX_LIVE_TOKEN_CHARS + 5)),
     ]);
-    expect(state.liveReasoning.length).toBe(MAX_LIVE_TOKEN_CHARS);
+    expect(state.liveReasoning).toHaveLength(MAX_LIVE_TOKEN_CHARS);
     expect(state.liveReasoningTruncated).toBe(true);
   });
 

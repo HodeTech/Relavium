@@ -1718,9 +1718,9 @@ export function makePlainPrinter(
         const hint = recoveryHints
           ? errorRecoveryHint(event.error.code, event.error.message)
           : undefined;
-        io.writeOut(
-          `\n[turn failed: ${event.error.code}]\n${hint === undefined ? '' : `${hint}\n`}`,
-        );
+        // Build the optional hint LINE separately (no nested template literal) before composing the output.
+        const hintLine = hint === undefined ? '' : `${hint}\n`;
+        io.writeOut(`\n[turn failed: ${event.error.code}]\n${hintLine}`);
         return;
       }
       default:
