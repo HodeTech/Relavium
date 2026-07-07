@@ -45,7 +45,10 @@ import { captureIo } from '../test-support.js';
  */
 
 const FIXTURES_DIR = fileURLToPath(new URL('./fixtures/', import.meta.url));
-const DB_DIST = fileURLToPath(new URL('../../../../packages/db/dist/index.js', import.meta.url));
+// The child receives the built db as a file:// URL (its `import()` needs a URL — a bare Windows path like
+// `C:\…` is not a valid import specifier); the path form is only for the existence gate.
+const DB_DIST_URL = new URL('../../../../packages/db/dist/index.js', import.meta.url);
+const DB_DIST_PATH = fileURLToPath(DB_DIST_URL);
 const CHILD_SCRIPT = fileURLToPath(new URL('./fixtures/concurrent-writer.mjs', import.meta.url));
 const ISO = '2026-07-07T00:00:00.000Z';
 
@@ -189,7 +192,7 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
     }
   });
 
-  it.skipIf(!existsSync(DB_DIST))(
+  it.skipIf(!existsSync(DB_DIST_PATH))(
     'cross-process safety: two child processes contend on one file (parent holds the lock) — all writes land',
     async () => {
       const dir = mkdtempSync(join(tmpdir(), 'relavium-concurrency-2p-'));
@@ -208,8 +211,8 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
       };
       try {
         holder.sqlite.exec('BEGIN IMMEDIATE'); // acquire the write lock; the children block on it
-        const childA = runChild([DB_DIST, dbPath, 'a', String(PER_CHILD)]);
-        const childB = runChild([DB_DIST, dbPath, 'b', String(PER_CHILD)]);
+        const childA = runChild([DB_DIST_URL.href, dbPath, 'a', String(PER_CHILD)]);
+        const childB = runChild([DB_DIST_URL.href, dbPath, 'b', String(PER_CHILD)]);
 
         // Deterministic handshake: both children print READY the instant before their first write, so once
         // both signal they are (about to be) busy-waiting on the held lock. A small margin then covers the
