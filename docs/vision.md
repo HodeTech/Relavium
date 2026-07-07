@@ -148,7 +148,8 @@ The full positioning and competitor matrix lives in [uvp.md](uvp.md).
   workflow. See
   [decisions/0026-session-export-to-workflow.md](decisions/0026-session-export-to-workflow.md).
 - **Persistent, resumable agent sessions** — every conversation is auto-saved to
-  the encrypted local history and resumable on any surface; no run is ever
+  durable local history (owner-only `0700`/`0600` file permissions; API keys live in
+  the OS keychain, never at rest) and resumable on any surface; no run is ever
   ephemeral. *(The `AgentSession` engine lands in build Phase 1; the first
   user-facing surface is CLI `relavium chat` in build phase 2 — all within Product
   Phase 1.)* See

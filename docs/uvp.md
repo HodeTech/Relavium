@@ -19,7 +19,8 @@
    (usage, quota, governance), not a fourth identical-engine runtime.
 2. **No chat-driven assistant lets you keep — and ship — the conversation.**
    Relavium agent sessions are **persistent, resumable, and exportable**:
-   auto-saved to encrypted local history, resumable on any surface, and one-click
+   auto-saved to durable local history (owner-only file permissions; keys stay in
+   the OS keychain, never at rest), resumable on any surface, and one-click
    exportable to a reviewable `.relavium.yaml` scaffold. Competitors' sessions
    evaporate; Relavium's become committable, re-runnable workflows. See
    [decisions/0024-agent-first-entry-point-agentsession.md](decisions/0024-agent-first-entry-point-agentsession.md)
