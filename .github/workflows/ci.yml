@@ -219,9 +219,10 @@ jobs:
         run: |
           set -euo pipefail
           node apps/cli/dist/index.js --help >/dev/null # the tsup bundle loads + --help renders
-          # `chat` is TTY-gated: with a piped (non-TTY) stdin the driver-selection gate picks the PLAIN driver
-          # (ink/setRawMode is never entered), and the plain driver must exit cleanly on EOF — never crash. If a
-          # regression routed to ink without a TTY it would throw "Raw mode is not supported…", which this catches.
+          # `chat` is TTY-gated on STDOUT (selectChatDriver / io.stdoutIsTty): with stdout captured (non-TTY)
+          # here, the driver-selection gate picks the PLAIN driver (ink/setRawMode is never entered), and the
+          # plain driver must exit cleanly on EOF — never crash. A regression routing to ink without a TTY would
+          # throw "Raw mode is not supported…", which this catches.
           out="$(printf '' | node apps/cli/dist/index.js chat 2>&1 || true)"
           if printf '%s' "$out" | grep -qiE 'setRawMode|raw mode'; then
             echo "::error::chat entered raw mode without a TTY (the driver-selection gate regressed)"; exit 1
