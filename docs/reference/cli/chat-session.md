@@ -153,8 +153,8 @@ A **failed** turn is never a terminal (only `session:cancelled` ends a session),
 - `provider_rate_limit` (429) / `provider_unavailable` — Relavium already retried with backoff + fallback-chain failover; resend.
 - `provider_auth` — check the key or **unlock the OS keychain** if it locked mid-session, then resend.
 - **context-overflow** — surfaces as `validation` (a provider `bad_request`); a keyword heuristic on the (never-displayed) provider message distinguishes it from a shape error and suggests **`/compact` or `/trim`**. This is a *secondary* net — 2.5.F auto-compaction ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)) pre-empts most overflows; it fires for a model with no known window or `auto_compact = false`.
-- `tool_failed` (incl. an **MCP-server timeout**) — a transient failure retried within budget; try again.
-- `budget_exceeded` / `run_timeout` / `turn_limit` / `content_filter` / `internal` — each renders its own actionable one-liner.
+- `tool_failed` (incl. an **unreachable MCP server**) — the summary names the likely cause (a path / an unavailable target); fix it and resend (no blind retry — a side-effecting tool failure is fail-fast by design).
+- `budget_exceeded` / `turn_limit` / `content_filter` / `internal` — each renders its own actionable one-liner. (`cancelled` is user-initiated and `sandbox_error` / `run_timeout` are WorkflowEngine-only, so they carry no chat hint.)
 
 The hint is **always a static host string** — the provider message is read only to pick the right hint (the context-overflow heuristic), **never echoed**, so no provider text or secret reaches the terminal. The hint renders on both the interactive TUI (a yellow line under the summary) and the plain non-TTY driver (under `[turn failed: <code>]`); `--json` stays the structured stream (the consumer branches on `error.code`).
 

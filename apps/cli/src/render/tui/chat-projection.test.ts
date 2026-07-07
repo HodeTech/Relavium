@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ToolApprovalRequest } from '@relavium/core';
+import { ERROR_CODES } from '@relavium/shared';
 
 import {
   errorRecoveryHint,
@@ -181,39 +182,34 @@ describe('chat-projection', () => {
   });
 
   describe('errorRecoveryHint (2.5.H actionable error taxonomy)', () => {
-    const OPERATIONAL = [
-      'provider_rate_limit',
-      'provider_unavailable',
-      'provider_auth',
-      'content_filter',
-      'tool_failed',
-      'tool_unavailable',
-      'tool_denied',
-      'budget_exceeded',
-      'run_timeout',
-      'turn_limit',
-      'internal',
-    ] as const;
+    // The codes that deliberately get NO unconditional hint — user-initiated or WorkflowEngine-only (not
+    // chat-reachable). `validation` is MESSAGE-conditional (only the context-overflow shape, covered by the
+    // heuristic test below). Every OTHER `ErrorCode` MUST have a session-survives hint; deriving from ERROR_CODES
+    // makes a NEW code force a decision here (the test fails until it is classified) rather than silently
+    // falling through to no hint.
+    const NO_HINT: ReadonlySet<string> = new Set(['cancelled', 'sandbox_error', 'run_timeout']);
+    const CONDITIONAL: ReadonlySet<string> = new Set(['validation']);
 
-    it('gives every operational error class a session-survives recovery hint', () => {
-      for (const code of OPERATIONAL) {
+    it('classifies EVERY ErrorCode: a session-survives hint, or a deliberate no-hint (drift-guarded)', () => {
+      for (const code of ERROR_CODES) {
+        if (CONDITIONAL.has(code)) continue; // message-dependent — asserted by the heuristic test below
         const hint = errorRecoveryHint(code);
-        expect(hint, code).toBeDefined();
-        expect(hint, code).toContain('session is still active'); // the reassurance is on every operational hint
+        if (NO_HINT.has(code)) {
+          expect(hint, code).toBeUndefined();
+        } else {
+          expect(hint, code).toBeDefined();
+          expect(hint, code).toContain('session is still active');
+        }
       }
-    });
-
-    it('returns no hint for a user-initiated / non-chat-reachable code or a success', () => {
-      expect(errorRecoveryHint('cancelled')).toBeUndefined(); // user-initiated
-      expect(errorRecoveryHint('sandbox_error')).toBeUndefined(); // not reachable on the chat path
-      expect(errorRecoveryHint(undefined)).toBeUndefined(); // a successful/aborted turn
+      expect(errorRecoveryHint(undefined)).toBeUndefined(); // a successful/aborted turn carries no code
     });
 
     it('hints /compact·/trim for a context-overflow validation (the message heuristic), else no hint', () => {
       for (const msg of [
-        "This model's maximum context length is 8192 tokens",
-        'prompt is too long: 210000 tokens > 200000 maximum',
-        'input token count 1050000 exceeds the maximum',
+        "This model's maximum context length is 8192 tokens", // OpenAI
+        'prompt is too long: 210000 tokens > 200000 maximum', // Anthropic form 1
+        'input length and max_tokens exceed context limit: 200500 > 200000', // Anthropic form 2
+        'input token count (1050000) exceeds the maximum number of tokens', // Gemini
       ]) {
         const hint = errorRecoveryHint('validation', msg);
         expect(hint, msg).toContain('/compact');
@@ -222,6 +218,17 @@ describe('chat-projection', () => {
       // A generic validation error (no context markers) has no chat-side remedy ⇒ no hint (just the bare code shows).
       expect(errorRecoveryHint('validation', 'field `model` is required')).toBeUndefined();
       expect(errorRecoveryHint('validation')).toBeUndefined();
+    });
+
+    it('does NOT false-match a param-range validation error (the markers are context/token-qualified)', () => {
+      // A 400 for an out-of-range parameter must NOT suggest /compact — the markers deliberately dropped the bare
+      // "exceeds the maximum" / "token limit" phrasings that these would otherwise trip.
+      expect(
+        errorRecoveryHint('validation', 'temperature 3.0 exceeds the maximum of 2.0'),
+      ).toBeUndefined();
+      expect(
+        errorRecoveryHint('validation', 'max_tokens 999999 is above the model token limit'),
+      ).toBeUndefined();
     });
 
     it('NEVER echoes the provider message — the hint is a static host string (security)', () => {
