@@ -195,8 +195,13 @@ export interface HomeModelsPort {
   refresh: () => Promise<RefreshReport>;
   /** The current `[preferences].default_model` (the picker's `✓` marker), or `undefined` when none is set. */
   currentDefault: () => string | undefined;
-  /** Persist the chosen model as the next session's default (writeGlobalDefaultModel). Throws `ConfigError` on a bad write. */
-  writeDefault: (modelId: string) => void;
+  /** The current resolved default reasoning-effort tier (ADR-0066 §6) — the `✓`/opening highlight of the bare-Home
+   *  effort sub-step; `undefined` ⇒ none set (the sub-list opens on a neutral middle tier). */
+  currentEffort: () => ReasoningEffort | undefined;
+  /** Persist the chosen model as the next session's default, and (ADR-0066 §6) — when the effort sub-step ran for a
+   *  reasoning model — its effort tier too, in ONE atomic write (writeGlobalPreferences). An absent `reasoningEffort`
+   *  leaves any prior effort default unchanged. Throws `ConfigError` on a bad write. */
+  writeDefault: (modelId: string, reasoningEffort?: ReasoningEffort) => void;
 }
 
 export interface HomeControllerDeps {
@@ -643,10 +648,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // bare Home it is the effective next-session default. The accept action mirrors this (reseat vs default-write).
     const active = state.session;
     const activeModel = active?.store.getSnapshot().state.model;
-    // The effort sub-step (ADR-0066) is offered ONLY in a LIVE in-Home chat (a session with the effort setter wired)
-    // — the bare-Home default-write persists only the model (ADR-0063), so it stays single-phase. `currentEffort`
-    // reads the LIVE store tier, so after a no-reseat `/effort` change the sub-list opens on it.
-    const effortStep = active?.onSetEffort !== undefined;
+    // The effort sub-step (ADR-0066) is offered for a reasoning model on BOTH surfaces: a LIVE in-Home chat (the
+    // setter is wired → the pick is a per-turn session override) AND the bare Home (ADR-0066 §6 → the pick writes the
+    // NEXT session's effort default alongside the model). `currentEffort` opens the sub-list on the right tier: the
+    // LIVE store tier in a chat (so a prior no-reseat `/effort` change is reflected), else the config effort default.
+    const effortStep = active !== undefined ? active.onSetEffort !== undefined : true;
     set({
       notice: undefined, // opening the picker clears any stale /doctor report behind it
       modelPicker: {
@@ -662,7 +668,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         effortStep,
         pending: undefined,
         effortSelected: 0,
-        currentEffort: effortStep ? active?.store.getSnapshot().reasoningEffort : undefined,
+        currentEffort: !effortStep
+          ? undefined
+          : active !== undefined
+            ? active.store.getSnapshot().reasoningEffort
+            : port.currentEffort(),
       },
     });
     // Render the cache immediately (above), then kick a TTL-bounded background refresh (ADR-0064 §5c) — the Home is
@@ -676,22 +686,31 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     effective: string | undefined,
     modelId: string,
     displayName: string,
+    reasoningEffort: ReasoningEffort | undefined,
   ): string => {
+    // The effort (ADR-0066 §6) is written to the SAME layer atomically, so it shares the model's effectiveness — the
+    // suffix just names what was set (a reasoning model went through the effort sub-step; a non-reasoning one did not).
+    const effort = reasoningEffort === undefined ? '' : ` at effort ${reasoningEffort}`;
     if (effective === modelId)
-      return `Default model set to ${displayName} — applies to your next chat session.`;
+      return `Default model set to ${displayName}${effort} — applies to your next chat session.`;
     if (effective === undefined) {
-      return `Saved ${displayName} as your global default, but your config could not be re-read to confirm it.`;
+      return `Saved ${displayName}${effort} as your global default, but your config could not be re-read to confirm it.`;
     }
-    return `Saved ${displayName} as your global default, but a project or workspace setting overrides it here.`;
+    return `Saved ${displayName}${effort} as your global default, but a project or workspace setting overrides it here.`;
   };
 
-  // The BARE-Home next-session-default write (ADR-0063). `writeGlobalDefaultModel` writes only the GLOBAL
-  // `[preferences].default_model`; a write fault keeps the picker open with a secret-free hint rather than crashing.
-  const writeNextSessionDefault = (modelId: string, displayName: string): void => {
+  // The BARE-Home next-session-default write (ADR-0063 · ADR-0066 §6). Persists the GLOBAL `[preferences].default_model`
+  // and — when the effort sub-step ran for a reasoning model — `[preferences].reasoning_effort` too, in ONE atomic
+  // write; a write fault keeps the picker open with a secret-free hint rather than crashing.
+  const writeNextSessionDefault = (
+    modelId: string,
+    displayName: string,
+    reasoningEffort?: ReasoningEffort,
+  ): void => {
     const port = deps.models;
     if (port === undefined) return;
     try {
-      port.writeDefault(modelId);
+      port.writeDefault(modelId, reasoningEffort);
     } catch {
       // A generic save-failure hint — the actual write target may be a `--config` override, not the canonical
       // `~/.relavium/config.toml`, so don't name a path the user may not be using.
@@ -708,7 +727,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
     set({
       modelPicker: undefined,
-      notice: defaultWriteNotice(port.currentDefault(), modelId, displayName),
+      notice: defaultWriteNotice(port.currentDefault(), modelId, displayName, reasoningEffort),
     });
   };
 
@@ -768,10 +787,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     applyEffortOnlyUpdate(active, displayName, reasoningEffort);
   };
 
-  // Accept the chosen model. TWO surface-specific actions off the ONE picker (ADR-0059/ADR-0063): a LIVE in-Home chat
-  // RESEATs / updates effort (the effort setter path is only REACHED with `reseatChat` wired — the in-chat `/models`
-  // that opens the effort sub-step is gated on it — so guarding on both never diverts an effort pick to the config
-  // write); the BARE Home persists the chosen model as the NEXT session's default.
+  // Accept the chosen model. TWO surface-specific actions off the ONE picker (ADR-0059/ADR-0063 · ADR-0066 §6): a LIVE
+  // in-Home chat RESEATs / updates effort (the effort setter path is only REACHED with `reseatChat` wired — the
+  // in-chat `/models` that opens the effort sub-step is gated on it — so guarding on both never diverts an effort pick
+  // to the config write); the BARE Home persists the chosen model AND (when the effort sub-step ran) its effort tier
+  // as the NEXT session's defaults.
   const acceptModel = (
     modelId: string,
     displayName: string,
@@ -783,7 +803,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       applyLiveSessionPick(active, modelId, displayName, provider, reasoningEffort);
       return;
     }
-    writeNextSessionDefault(modelId, displayName);
+    writeNextSessionDefault(modelId, displayName, reasoningEffort);
   };
   // The open `/models` picker owns every key (2.5.G S7) — parity with routeMentionKey. Returns whether the key was
   // consumed. A DIMMED (unavailable-on-your-key) model is non-selectable (ADR §6): accepting one shows a transient

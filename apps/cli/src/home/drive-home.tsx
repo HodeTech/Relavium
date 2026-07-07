@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { createProviderStore, createRunHistoryReader } from '@relavium/db';
-import type { AgentSessionRecord } from '@relavium/shared';
+import type { AgentSessionRecord, ReasoningEffort } from '@relavium/shared';
 import { render } from 'ink';
 import { createElement } from 'react';
 
@@ -20,7 +20,7 @@ import {
   type SessionPersister,
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
-import { writeGlobalDefaultModel } from '../config/write.js';
+import { writeGlobalDefaultModel, writeGlobalPreferences } from '../config/write.js';
 import { createModelCatalogPort } from '../engine/model-catalog-port.js';
 import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
@@ -177,26 +177,42 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     // `config` snapshot) so it reflects a same-session `/models` write AND a project/workspace override AND an edit
     // from another terminal; a config edited to malformed mid-session degrades to `undefined` rather than crashing
     // the picker. Cheap (a few small file reads) and only called on a picker open / accept, never per keystroke.
-    const readEffectiveDefault = (): string | undefined => {
+    // The EFFECTIVE `[chat]` block (project → workspace → global) — the shared read LOGIC (not a cached instance)
+    // behind the model + effort readers, so a bare-Home picker open does up to two cheap reads (currentDefault +
+    // currentEffort), never per-keystroke. A mid-session malformed config degrades to `undefined`, never a crash.
+    const readEffectiveChat = ():
+      | ReturnType<typeof loadResolvedConfig>['config']['chat']
+      | undefined => {
       try {
         return loadResolvedConfig({
           cwd: deps.global.cwd,
           home: homeDir,
           ...(deps.global.configPath === undefined ? {} : { configPath: deps.global.configPath }),
-        }).config.chat.defaultModel;
+        }).config.chat;
       } catch {
         return undefined; // a mid-session malformed config must not crash the picker
       }
     };
+    const readEffectiveDefault = (): string | undefined => readEffectiveChat()?.defaultModel;
+    const readEffectiveEffort = (): ReasoningEffort | undefined =>
+      readEffectiveChat()?.reasoningEffort;
     // The `/models` catalog port (ADR-0064 §10) — the SHARED load/refresh + key-aware merge trio (the SAME one the
     // chat reseat picker uses, ADR-0059), over the ONE open db + the store-aware resolver. The Home layers its own
-    // accept action on top: `currentDefault` (the ✓ marker) + `writeDefault` (the next-session default, ADR-0063 §1).
+    // accept action on top: `currentDefault`/`currentEffort` (the ✓ markers) + `writeDefault` (the next-session
+    // default model + its effort tier, ADR-0063 §1 · ADR-0066 §6).
     const models: HomeModelsPort = {
       ...createModelCatalogPort({ db: opened.db, providers, now, uuid }),
       currentDefault: readEffectiveDefault,
+      currentEffort: readEffectiveEffort,
       // Write to the SAME file the picker re-reads + the started session resolves (honors `--config`), so a `/models`
-      // write is never a silent no-op to a different file (2.5.G S7).
-      writeDefault: (modelId) => writeGlobalDefaultModel(modelId, homeDir, deps.global.configPath),
+      // write is never a silent no-op to a different file (2.5.G S7). The effort rides the SAME atomic write; an
+      // absent `reasoningEffort` (a non-reasoning model) leaves any prior effort default unchanged.
+      writeDefault: (modelId, reasoningEffort) =>
+        writeGlobalPreferences(
+          { defaultModel: modelId, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) },
+          homeDir,
+          deps.global.configPath,
+        ),
     };
 
     // The SHARED HomeChatSession wiring over a built (FRESH or RESUMED) session + its view store — the persister,
@@ -327,10 +343,15 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // on a read fault). Static `MODEL_PRICING` still wins.
       const resolvePrice = readUserPricingOverlay(opened.db);
       const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
-        // Re-read the EFFECTIVE default model FRESH per chat (not the load-once `config` snapshot) so a same-session
-        // `/models` write takes effect on the very next chat started in this long-lived Home (2.5.G S7). A read
-        // fault degrades to the startup value. Other `[chat]` settings keep the startup snapshot.
-        chat: { ...config.chat, defaultModel: readEffectiveDefault() ?? config.chat.defaultModel },
+        // Re-read the EFFECTIVE default model AND reasoning-effort FRESH per chat (not the load-once `config`
+        // snapshot) so a same-session `/models` write — the model (2.5.G S7) AND its effort sub-step (ADR-0066 §6) —
+        // takes effect on the very next chat started in this long-lived Home. A read fault degrades to the startup
+        // value. The other `[chat]` settings keep the startup snapshot.
+        chat: {
+          ...config.chat,
+          defaultModel: readEffectiveDefault() ?? config.chat.defaultModel,
+          reasoningEffort: readEffectiveEffort() ?? config.chat.reasoningEffort,
+        },
         agentRef: undefined, // the built-in default agent (zero-config first run)
         cwd: deps.global.cwd,
         projectConfigDir,

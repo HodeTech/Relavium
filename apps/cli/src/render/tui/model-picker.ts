@@ -42,16 +42,17 @@ export interface ModelPickerState {
   readonly hint: string | undefined;
   /**
    * The picker's TWO-PHASE step ([ADR-0066](../../../../../docs/decisions/0066-normalized-reasoning-effort-control.md)):
-   * `'model'` is the catalog list (the default); accepting a reasoning-capable model on a reseat surface
+   * `'model'` is the catalog list (the default); accepting a reasoning-capable model on an effort-offering surface
    * ({@link effortStep}) advances to `'effort'` — a fixed sub-list of the reasoning-effort tiers for the chosen
    * model. The two surfaces route the SAME fold, so the phase transition lives here, not in either host.
    */
   readonly phase: 'model' | 'effort';
   /**
    * Whether this picker offers the reasoning-effort sub-step. `true` for a LIVE reseat surface (standalone
-   * `relavium chat` + the in-Home live chat, where the effort binds onto the reseated agent, ADR-0059); `false`
-   * for the bare-Home next-session-default write (which persists only the model, ADR-0063 — the effort default is
-   * the `[chat].reasoning_effort` config key, not a per-write pick), so a non-reseat surface stays single-phase.
+   * `relavium chat` + the in-Home live chat, where the effort binds onto the reseated agent as a per-turn override,
+   * ADR-0059/§5) AND for the bare Home (ADR-0066 §6 — where the accept instead WRITES the model + effort tier as the
+   * next-session config defaults via `writeGlobalPreferences`); `false` only where no effort control applies. A
+   * reasoning-capable model advances to the sub-step; a non-reasoning one stays single-phase (accepts the model alone).
    */
   readonly effortStep: boolean;
   /** The model chosen in `'model'` phase, awaiting an effort pick — carried so `'effort'`'s accept emits the pair. */

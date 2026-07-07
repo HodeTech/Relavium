@@ -1619,6 +1619,7 @@ function makeModelsPort(
     entries?: readonly ModelCatalogEntry[];
     refreshedAt?: number;
     overrideDefault?: string;
+    currentEffort?: ReasoningEffort; // the effective effort default (the bare-Home effort sub-list's ✓/highlight)
     writeThrows?: boolean;
     readFaults?: boolean; // currentDefault always returns undefined (a config re-read fault after a good write)
     loadThrows?: boolean; // load() throws (a DB read fault)
@@ -1634,15 +1635,17 @@ function makeModelsPort(
 } {
   const entries = opts.entries ?? [pickerEntry({ modelId: 'a' }), pickerEntry({ modelId: 'b' })];
   let written: string | undefined;
+  let writtenEffort: ReasoningEffort | undefined;
   const load = vi.fn(() => {
     if (opts.loadThrows === true) throw new Error('catalog read failed');
     return { entries, refreshedAt: opts.refreshedAt };
   });
   const refreshIfStale = vi.fn(opts.refreshIfStale ?? (() => Promise.resolve(undefined)));
   const refresh = vi.fn(opts.refresh ?? (() => Promise.resolve({ providers: [] })));
-  const writeDefault = vi.fn((modelId: string) => {
+  const writeDefault = vi.fn((modelId: string, reasoningEffort?: ReasoningEffort) => {
     if (opts.writeThrows === true) throw new Error('config write failed');
     written = modelId;
+    if (reasoningEffort !== undefined) writtenEffort = reasoningEffort;
   });
   const port: HomeModelsPort = {
     load,
@@ -1652,6 +1655,9 @@ function makeModelsPort(
     // last written id.
     currentDefault: () =>
       opts.readFaults === true ? undefined : (opts.overrideDefault ?? written),
+    // The EFFECTIVE effort default: an explicit `currentEffort` opt wins (a pre-existing config default), else the
+    // last written effort (so a re-opened picker shows the ✓ on it).
+    currentEffort: () => opts.currentEffort ?? writtenEffort,
     writeDefault,
   };
   return { port, load, refreshIfStale, refresh, writeDefault };
@@ -1703,10 +1709,64 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     const c = openPicker(port);
     await flush();
     c.handleKey('', ENTER); // accept the selected (available) model
-    expect(writeDefault).toHaveBeenCalledWith('claude-x');
+    expect(writeDefault).toHaveBeenCalledWith('claude-x', undefined); // non-reasoning ⇒ model only, no effort
     expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
     expect(c.getSnapshot().notice).toContain('Claude X'); // the confirmation names the model
     expect(c.getSnapshot().notice).toContain('next chat session'); // it is a NEXT-session action, not a live reseat
+  });
+
+  it('bare Home: a REASONING model offers the effort sub-step, writing BOTH model + effort defaults (ADR-0066 §6)', async () => {
+    // ADR-0066 §6: in the bare Home a reasoning model advances to the effort sub-step (opened on the config effort
+    // default), and accepting writes model + effort together — so the user sets both future-session defaults at once.
+    const { port, writeDefault } = makeModelsPort({
+      entries: [
+        pickerEntry({
+          modelId: 'deepseek-v4-flash',
+          displayName: 'DeepSeek V4 Flash',
+          supportsReasoning: true,
+        }),
+      ],
+      currentEffort: 'low', // the existing effort default — the sub-list opens highlighted on it
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER); // model phase: Enter on the reasoning model ⇒ advance to the effort sub-step
+    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
+    expect(c.getSnapshot().modelPicker?.currentEffort).toBe('low'); // opened on the config effort default
+    c.handleKey('', { downArrow: true }); // low → medium
+    c.handleKey('', { downArrow: true }); // medium → high
+    c.handleKey('', ENTER); // accept the model + 'high'
+
+    expect(writeDefault).toHaveBeenCalledWith('deepseek-v4-flash', 'high'); // BOTH written (one atomic call)
+    expect(c.getSnapshot().modelPicker).toBeUndefined(); // closed
+    expect(c.getSnapshot().notice).toContain('DeepSeek V4 Flash');
+    expect(c.getSnapshot().notice).toContain('effort high'); // the notice names the written effort
+    expect(c.getSnapshot().notice).toContain('next chat session');
+  });
+
+  it('bare Home: a reasoning model with NO prior effort default opens on medium; immediate Enter writes medium (ADR-0066 §6)', async () => {
+    // No `currentEffort` opt ⇒ the sub-list opens on the neutral 'medium' (initialEffortIndex(undefined)). There is
+    // no "model-only, skip effort" path for a reasoning model in the bare Home (Esc only backs to the model list), so
+    // accepting immediately writes the neutral default — pin that intended behavior (ADR-0066 §6).
+    const { port, writeDefault } = makeModelsPort({
+      entries: [
+        pickerEntry({
+          modelId: 'deepseek-v4-flash',
+          displayName: 'DeepSeek V4 Flash',
+          supportsReasoning: true,
+        }),
+      ],
+      // no currentEffort → port.currentEffort() is undefined
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER); // advance to the effort sub-step
+    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
+    expect(c.getSnapshot().modelPicker?.currentEffort).toBeUndefined(); // no config effort default
+    c.handleKey('', ENTER); // immediate Enter on the opening highlight (the neutral 'medium')
+
+    expect(writeDefault).toHaveBeenCalledWith('deepseek-v4-flash', 'medium'); // the neutral default is written
+    expect(c.getSnapshot().notice).toContain('effort medium');
   });
 
   it('an honest notice when a project/workspace setting overrides the global write (no false success)', async () => {
@@ -1719,7 +1779,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     const c = openPicker(port);
     await flush();
     c.handleKey('', ENTER);
-    expect(writeDefault).toHaveBeenCalledWith('claude-x');
+    expect(writeDefault).toHaveBeenCalledWith('claude-x', undefined); // non-reasoning ⇒ model only, no effort
     expect(c.getSnapshot().notice).toContain('overrides it here');
     expect(c.getSnapshot().notice).not.toContain('next chat session'); // no false claim of effect
   });

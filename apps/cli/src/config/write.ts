@@ -11,7 +11,7 @@ import {
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { GlobalConfigSchema, type GlobalConfig } from '@relavium/shared';
+import { GlobalConfigSchema, type GlobalConfig, type ReasoningEffort } from '@relavium/shared';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import type { ZodError } from 'zod';
 
@@ -21,14 +21,15 @@ import { ensureGlobalConfigDir, globalConfigDir } from './paths.js';
 
 /**
  * The **first on-disk config WRITER** ([ADR-0063](../../../../docs/decisions/0063-cli-config-write-contract.md)) —
- * the sibling of the read-only [load.ts](./load.ts). It persists a user's chosen chat default model to the
- * **global** `~/.relavium/config.toml` `[preferences].default_model`, the write target for `/models` and the
- * onboarding wizard. Every later writer inherits this primitive, so its guarantees are enforced by construction,
- * not by convention.
+ * the sibling of the read-only [load.ts](./load.ts). It persists a user's chosen chat defaults to the **global**
+ * `~/.relavium/config.toml` `[preferences]` block — `default_model` and (ADR-0066 §6) `reasoning_effort` — the
+ * write targets for the `/models` picker (model + its effort sub-step) and the onboarding wizard. Every later writer
+ * inherits this primitive, so its guarantees are enforced by construction, not by convention.
  *
  * Four load-bearing guarantees (the ADR-0063 contract; a security-reviewed surface):
- * 1. **Secret-free by construction.** The surface is a **typed setter** ({@link writeGlobalDefaultModel}) — never
- *    a generic `writeKey(k, v)` — so it can only ever set `default_model` (a non-secret). There is no API-key
+ * 1. **Secret-free by construction.** The surface is a **typed setter** ({@link writeGlobalPreferences}, of which
+ *    {@link writeGlobalDefaultModel} is a thin single-key wrapper) — never a generic `writeKey(k, v)` — so it can
+ *    only ever set the two non-secret `[preferences]` keys `default_model` / `reasoning_effort`. There is no API-key
  *    field in the schema to write to (keys live only in the OS keychain, ADR-0006). And a schema-validation
  *    failure on the write path is reported through the **same value-free formatter** the loader uses
  *    ({@link formatZodError}) — never a raw `ZodError`, whose `.message` embeds the received value for several
@@ -58,11 +59,20 @@ import { ensureGlobalConfigDir, globalConfigDir } from './paths.js';
  *   file). Accepted for a single-user, rarely-written preference store; a future multi-writer path would need a lock.
  */
 
+/** The typed set of global `[preferences]` a write MAY touch (ADR-0063 · ADR-0066 §6). Only non-secret keys —
+ *  the typed setter can never reach an API-key field (there is none in the schema; keys live in the keychain). A
+ *  field absent from the object is left UNCHANGED (a partial merge), so a model-only write never clears the effort. */
+export interface GlobalPreferenceWrite {
+  readonly defaultModel?: string;
+  readonly reasoningEffort?: ReasoningEffort;
+}
+
 /**
- * Set the global `[preferences].default_model`, preserving every other config key. Reads + validates the existing
- * config (an absent file ⇒ a fresh `{}`; a **malformed/invalid** existing config throws a {@link ConfigError}
- * rather than clobbering a file the user must fix), merges only `default_model`, re-validates, verifies the
- * serialized text round-trips, and writes atomically. `home` is injectable for tests.
+ * Set one or more global `[preferences]` keys (`default_model` and/or `reasoning_effort`), preserving every other
+ * config key. Reads + validates the existing config (an absent file ⇒ a fresh `{}`; a **malformed/invalid** existing
+ * config throws a {@link ConfigError} rather than clobbering a file the user must fix), merges only the PROVIDED
+ * keys (an absent field is left unchanged), re-validates, verifies the serialized text round-trips, and writes
+ * atomically. `home` is injectable for tests.
  *
  * `targetPath` (the CLI `--config` override) writes to that **exact** file — the SAME file `loadResolvedConfig`
  * treats as "global" under `--config` — so a `/models` write, the picker's re-read, and the started chat session
@@ -71,11 +81,14 @@ import { ensureGlobalConfigDir, globalConfigDir } from './paths.js';
  * same-filesystem rename and is `0600` by construction, the schema round-trip runs, and the typed setter stays
  * secret-incapable (config holds no secrets, so an arbitrary `--config` dir's own mode is immaterial at rest).
  */
-export function writeGlobalDefaultModel(
-  model: string,
+export function writeGlobalPreferences(
+  prefs: GlobalPreferenceWrite,
   home: string = homedir(),
   targetPath?: string,
 ): void {
+  // An all-absent write is a no-op: touch nothing rather than emit an empty `[preferences]` table where none
+  // existed. Unreachable from the current callers (each passes ≥1 key), but keeps the typed setter footgun-free.
+  if (prefs.defaultModel === undefined && prefs.reasoningEffort === undefined) return;
   let target: string;
   let dir: string;
   if (targetPath === undefined) {
@@ -98,11 +111,16 @@ export function writeGlobalDefaultModel(
   }
 
   // Read the EXISTING config through the same validating loader (so we merge onto known-good data and preserve
-  // update_channel / mcp_servers / preferences.theme). An absent file is a fresh object; an invalid one throws.
+  // update_channel / mcp_servers / preferences.theme + the OTHER preference). An absent file is a fresh object; an
+  // invalid one throws. Only the provided keys override — a model-only write keeps a prior `reasoning_effort`.
   const existing = loadConfigFile<GlobalConfig>(target, GlobalConfigSchema) ?? {};
   const merged: GlobalConfig = {
     ...existing,
-    preferences: { ...existing.preferences, default_model: model },
+    preferences: {
+      ...existing.preferences,
+      ...(prefs.defaultModel === undefined ? {} : { default_model: prefs.defaultModel }),
+      ...(prefs.reasoningEffort === undefined ? {} : { reasoning_effort: prefs.reasoningEffort }),
+    },
   };
 
   // Re-validate the whole object so the emission is provably schema-valid (ADR-0033) — a `.strict()` round-trip
@@ -115,6 +133,16 @@ export function writeGlobalDefaultModel(
   // the "always re-parses on next load" guarantee verified, not assumed. On failure config.toml is untouched.
   verifyRoundTrips(text, target);
   writeFileAtomic(dir, target, text);
+}
+
+/** Set the global `[preferences].default_model` (the common single-key write) — a thin wrapper over
+ *  {@link writeGlobalPreferences}. Kept as the named setter the onboarding wizard + the non-effort callers use. */
+export function writeGlobalDefaultModel(
+  model: string,
+  home: string = homedir(),
+  targetPath?: string,
+): void {
+  writeGlobalPreferences({ defaultModel: model }, home, targetPath);
 }
 
 /** Schema-validate the object to write, mapping a failure to the value-free {@link ConfigError} path. */
@@ -159,7 +187,7 @@ function configWriteError(target: string, error: ZodError): ConfigError {
  * Exported ONLY as a test seam — for the fault-injection test that drives the catch path with a real failing
  * rename (a `target` that is an existing directory ⇒ `EISDIR`), verifying the temp is cleaned up and the fd is
  * not leaked. It is NOT part of the writer's public contract: it is a generic "replace this path with this text"
- * primitive with no schema, so the secret-incapability guarantee is a property of {@link writeGlobalDefaultModel}
+ * primitive with no schema, so the secret-incapability guarantee is a property of {@link writeGlobalPreferences}
  * (the typed setter), never of this helper. Do not call it to write arbitrary content.
  */
 export function writeFileAtomic(dir: string, target: string, text: string): void {

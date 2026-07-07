@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
 import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
+import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildChatSession } from '../chat/session-host.js';
@@ -232,11 +233,13 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const configFile = join(cwd, 'home-config.toml'); // a real, writable global config (the write + re-read target)
     let captured: RootAppProps | undefined;
     const builtDefaults: Array<string | undefined> = [];
+    const builtEfforts: Array<ReasoningEffort | undefined> = [];
     const { deps } = makeDeps((p) => (captured = p), {
       global: { ...global, configPath: configFile },
-      // Record the default the session is built with, then delegate to the real builder (so the chat still works).
+      // Record the model + effort the session is built with, then delegate to the real builder (so the chat works).
       buildSession: (args) => {
         builtDefaults.push(args.chat.defaultModel);
+        builtEfforts.push(args.chat.reasoningEffort);
         return buildChatSession(args);
       },
     });
@@ -256,7 +259,16 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const chosen = picker.entries[picker.selected]?.modelId; // the highlighted model (filter empty ⇒ entries[0])
     if (chosen === undefined) throw new Error('no selected model');
 
-    props.controller.handleKey('', ENTER); // accept ⇒ writeGlobalDefaultModel(chosen) to configFile
+    props.controller.handleKey('', ENTER); // accept the model
+    // ADR-0066 §6: a reasoning-capable pick advances to the bare-Home effort sub-step (writes model + effort); a
+    // non-reasoning one writes + closes directly. Accept the (default) effort too when the sub-step opened, and
+    // capture the tier it will write (the opening highlight) so the next-chat re-read can be asserted.
+    let writtenEffort: ReasoningEffort | undefined;
+    const effortStep = props.controller.getSnapshot().modelPicker;
+    if (effortStep?.phase === 'effort') {
+      writtenEffort = REASONING_EFFORTS[effortStep.effortSelected]; // the tier the opening highlight accepts
+      props.controller.handleKey('', ENTER); // accept the default effort ⇒ writeGlobalPreferences(chosen, effort)
+    }
     expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // picker closed on accept
     expect(props.controller.getSnapshot().notice).toContain('next chat session'); // honest success (write took effect)
 
@@ -266,6 +278,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     await flush();
     expect(props.controller.getSnapshot().mode).toBe('chat');
     expect(builtDefaults.at(-1)).toBe(chosen); // the regression assertion — a stale snapshot would NOT equal `chosen`
+    // ADR-0066 §6 regression: the effort write (not only the model) must ALSO flow to the next chat in the SAME Home
+    // process — a stale `config.chat.reasoningEffort` snapshot would silently drop the just-written effort default.
+    if (writtenEffort !== undefined) {
+      expect(builtEfforts.at(-1)).toBe(writtenEffort);
+    }
 
     props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
     await flush();

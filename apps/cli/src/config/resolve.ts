@@ -110,12 +110,12 @@ function resolveGraceMs(
 
 /**
  * Resolve the `[chat]` block (last-writer-wins: project → workspace). Most fields are project/workspace-scoped
- * only; `default_model` additionally falls back to the GLOBAL `[preferences].default_model`
- * ([ADR-0063](../../../../docs/decisions/0063-cli-config-write-contract.md)) — the write target of `/models` and
- * the onboarding wizard — so a user's "preferred model everywhere" applies to chat when no project/workspace
- * `[chat].default_model` overrides it, mirroring how the workflow default (`resolveConfig.defaultModel`) already
- * reads `[preferences].default_model`. Absent at every layer ⇒ all-`undefined` fields, so the chat host falls
- * back to its engine defaults (e.g. `maxTurns` ⇒ `SessionDeps`'s built-in 50).
+ * only; `default_model` AND `reasoning_effort` additionally fall back to their GLOBAL `[preferences]` counterparts
+ * ([ADR-0063](../../../../docs/decisions/0063-cli-config-write-contract.md) · ADR-0066 §6) — the write targets of
+ * the `/models` picker (model + its effort sub-step) and the onboarding wizard — so a user's "preferred model /
+ * effort everywhere" applies to chat when no project/workspace `[chat]` override wins, mirroring how the workflow
+ * default (`resolveConfig.defaultModel`) already reads `[preferences].default_model`. Absent at every layer ⇒
+ * all-`undefined` fields, so the chat host falls back to its engine defaults (e.g. `maxTurns` ⇒ `SessionDeps`'s 50).
  */
 function resolveChat(
   project: ProjectConfig | undefined,
@@ -143,7 +143,8 @@ function resolveChat(
     onExceed: p?.on_exceed ?? w?.on_exceed,
     allowedCommands: projectSetsAllowlist ? p?.allowed_commands : w?.allowed_commands,
     allowedCommandGlobs: projectSetsAllowlist ? p?.allowed_command_globs : w?.allowed_command_globs,
-    reasoningEffort: p?.reasoning_effort ?? w?.reasoning_effort,
+    reasoningEffort:
+      p?.reasoning_effort ?? w?.reasoning_effort ?? global?.preferences?.reasoning_effort,
   };
 }
 

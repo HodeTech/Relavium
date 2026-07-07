@@ -137,6 +137,10 @@ export const GlobalConfigSchema = z
       .object({
         default_model: z.string().optional(),
         theme: z.string().optional(),
+        // The GLOBAL default reasoning-effort tier (ADR-0066 §6) — the effort counterpart of `default_model`, the
+        // write target of the `/models` picker's effort sub-step. Resolved BELOW project/workspace
+        // `[chat].reasoning_effort` (config-spec.md), so a project override still wins; absent ⇒ the provider default.
+        reasoning_effort: z.enum(REASONING_EFFORTS).optional(),
       })
       .strict()
       .optional(),

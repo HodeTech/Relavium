@@ -16,7 +16,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { ConfigError } from './errors.js';
 import { loadConfigFile } from './load.js';
-import { globalConfigPath, writeFileAtomic, writeGlobalDefaultModel } from './write.js';
+import {
+  globalConfigPath,
+  writeFileAtomic,
+  writeGlobalDefaultModel,
+  writeGlobalPreferences,
+} from './write.js';
 
 /** Read the global config back through the SAME validating loader the rest of the CLI uses. */
 function readBack(home: string): GlobalConfig | undefined {
@@ -222,6 +227,47 @@ describe('writeGlobalDefaultModel', () => {
       expect(thrown.message).not.toContain('leak-me-please');
       expect(thrown.message).not.toContain('the-new-model');
     }
+  });
+});
+
+describe('writeGlobalPreferences (ADR-0066 §6 — the /models effort sub-step write)', () => {
+  let home: string;
+  beforeEach(() => {
+    home = mkdtempSync(join(tmpdir(), 'relavium-write-'));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  it('writes [preferences].reasoning_effort alone (round-trip)', () => {
+    writeGlobalPreferences({ reasoningEffort: 'high' }, home);
+    expect(readBack(home)).toEqual({ preferences: { reasoning_effort: 'high' } });
+  });
+
+  it('writes default_model AND reasoning_effort together in one atomic write', () => {
+    writeGlobalPreferences({ defaultModel: 'deepseek-v4-flash', reasoningEffort: 'max' }, home);
+    expect(readBack(home)).toEqual({
+      preferences: { default_model: 'deepseek-v4-flash', reasoning_effort: 'max' },
+    });
+  });
+
+  it('a model-only write PRESERVES an existing reasoning_effort (partial merge — an absent field is unchanged)', () => {
+    // Seed a prior effort default, then write only the model — the effort must survive (the ADR-0066 §6 partial-merge
+    // guarantee, so setting a model in the picker never silently clears the user's effort preference).
+    writeGlobalPreferences({ reasoningEffort: 'low' }, home);
+    writeGlobalPreferences({ defaultModel: 'gpt-4o' }, home);
+    expect(readBack(home)).toEqual({
+      preferences: { reasoning_effort: 'low', default_model: 'gpt-4o' },
+    });
+  });
+
+  it('an invalid tier is rejected by the schema round-trip (value-free ConfigError), file untouched', () => {
+    // The typed setter only accepts a `ReasoningEffort`, but a cast-through would fail the strict re-validation
+    // rather than reach disk — pin that the schema is the guard (ADR-0063 §3), not the caller's discipline.
+    expect(() => writeGlobalPreferences({ reasoningEffort: 'ludicrous' as never }, home)).toThrow(
+      ConfigError,
+    );
+    expect(existsSync(globalConfigPath(home))).toBe(false); // nothing written on a rejected value
   });
 });
 

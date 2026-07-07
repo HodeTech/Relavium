@@ -74,7 +74,7 @@ describe('resolveConfig', () => {
     expect(resolved.onExceed).toBe('warn'); // only on project
   });
 
-  it('resolves [chat].reasoning_effort (ADR-0066) last-writer-wins project > workspace, no global fallback', () => {
+  it('resolves [chat].reasoning_effort (ADR-0066) last-writer-wins project > workspace > global [preferences]', () => {
     const workspace: ProjectConfig = { chat: { reasoning_effort: 'low' } };
     const project: ProjectConfig = { chat: { reasoning_effort: 'high' } };
     expect(resolveConfig({ workspace, project }).chat.reasoningEffort).toBe('high'); // project wins
@@ -82,7 +82,12 @@ describe('resolveConfig', () => {
     expect(
       resolveConfig({ workspace, project: { chat: { max_turns: 5 } } }).chat.reasoningEffort,
     ).toBe('low');
-    // Absent everywhere ⇒ undefined (no global-layer fallback — that extra fallback is default_model's alone).
+    // ADR-0066 §6: like `default_model`, it now ALSO falls back to the GLOBAL `[preferences].reasoning_effort`
+    // (the `/models` picker effort sub-step's write target) — BELOW any project/workspace `[chat]` override.
+    const global = { preferences: { reasoning_effort: 'max' as const } };
+    expect(resolveConfig({ global }).chat.reasoningEffort).toBe('max'); // global fallback applies…
+    expect(resolveConfig({ global, workspace }).chat.reasoningEffort).toBe('low'); // …but a workspace/project wins
+    // Absent at EVERY layer ⇒ undefined (the provider default; no reasoning control sent).
     expect(resolveConfig({}).chat.reasoningEffort).toBeUndefined();
     expect(
       resolveConfig({ global: { preferences: { default_model: 'g' } } }).chat.reasoningEffort,
