@@ -118,6 +118,10 @@ shared with 2.6.A.**
 
 ### 2.6.C — Mid-session model reseat (`/models` mid-chat)
 
+> **Note (2026-07-07):** ADR-0059 was pulled forward and the `/models` mid-chat reseat **shipped early in
+> 2.5.G**'s model-UX follow-up (PR #66, merged 2026-07-06). This workstream is retained for any residual
+> Phase-2.6 polish and as the cross-reference home.
+
 A session binds one model for its lifetime ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md);
 the fallback plan is memoized). Switching the **model** mid-chat is therefore a host-side **reseat**:
 reconstruct the transcript (`reconstructSessionState`) and start a new `AgentSession.resume` bound to the
@@ -132,10 +136,10 @@ breakdown.
 
 **Acceptance:** `/models` mid-chat continues the conversation on a new model from the next turn; cost/turn
 carry; per-message model attribution persists; the context-loss notice is shown; "carries full context" is
-never claimed. When [ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md) flips to Accepted, its
-refinement of [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md) is recorded **in
-place** on ADR-0024 with a dated `> Amended …` note + a Related forward-link (documentation-style §7), since
-it refines without reversing. **Required ADR: mid-session reseat (model-only) — refines ADR-0024.**
+never claimed. [ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md) is **Accepted (2026-07-06)** and
+its refinement of [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md) is recorded **in
+place** on ADR-0024 (the dated `> Amended 2026-07-06 …` note + the Related forward-link, documentation-style §7),
+since it refines without reversing. **Required ADR: mid-session reseat (model-only) — refines ADR-0024 (done).**
 
 ### 2.6.D — Session `{{ctx.*}}` prompt interpolation
 

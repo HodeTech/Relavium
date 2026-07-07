@@ -62,9 +62,11 @@ Along the way, close the bounded engine amendments and docs-debt that Phase 2 de
 
 ### Explicitly out of scope (→ Phase 2.6 or Phase 3)
 
-- Conversational (model-generated) authoring, the `@relavium/authoring` package promotion, mid-session
-  **model** reseat, session `{{ctx.*}}` interpolation, and competitor-parity polish — all
-  [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md).
+- Conversational (model-generated) authoring, the `@relavium/authoring` package promotion, session
+  `{{ctx.*}}` interpolation, and competitor-parity polish — all
+  [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md). (**Mid-session model
+  reseat** was also listed here for Phase 2.6; its core **shipped early in 2.5.G**'s model-UX follow-up per
+  [ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md) — the `/models` mid-chat reseat, PR #66.)
 - `read_media` input (D12), full-fidelity reseat tool-context, in-app scrollback/pager, a **type-ahead
   message queue while a turn runs** (the in-flight key-swallow is handled for approval input in 2.5.E, but
   queuing the *next* message is deferred), and a multi-pane dashboard —

@@ -595,7 +595,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `egress` + `os` arms via `assembleToolEnv`, all behind the fail-closed approval floor (see the **RESOLVED**
   block below, [ADR-0055](../decisions/0055-cli-host-capability-seam-tool-environment-factory.md) +
   [ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md)). What remains: the **desktop/Tauri**
-  surface still binds an empty host (Phase 3), and its host-side `EgressCapability.fetch` SSRF hardening tracks
+  surface has no tool host wired yet (Phase 3), and its host-side `EgressCapability.fetch` SSRF hardening tracks
   with the SSRF item above. Until the desktop host is wired, a desktop workflow calling a capability-backed
   built-in tool surfaces a clean "tool unavailable" failure, never a half-implemented or unsafe execution.
   *(medium · desktop tool host; Phase 3; security-review.md; egress → the SSRF item above)*

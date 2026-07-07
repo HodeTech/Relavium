@@ -102,7 +102,7 @@ flowchart TD
 | 0056 | [In-app slash command system driven by a single command manifest](0056-cli-in-app-slash-command-system-and-manifest.md) | Accepted | 2026-06-29 |
 | 0057 | [Reseat-less chat modes and per-tool approval (with mid-turn abort)](0057-cli-chat-modes-and-per-tool-approval.md) | Accepted | 2026-06-28 |
 | 0058 | [`@relavium/authoring` package and the conversational-authoring pre-flight contract](0058-relavium-authoring-package-and-conversational-authoring.md) | Proposed | 2026-06-28 |
-| 0059 | [Mid-session model switching via host-side reseat (refines ADR-0024)](0059-cli-mid-session-model-reseat.md) | Proposed | 2026-06-28 |
+| 0059 | [Mid-session model switching via host-side reseat (refines ADR-0024)](0059-cli-mid-session-model-reseat.md) | Accepted | 2026-07-06 |
 | 0060 | [Session `{{ctx.*}}` prompt interpolation](0060-session-ctx-prompt-interpolation.md) | Proposed | 2026-06-28 |
 | 0061 | [CLI chat input-layer file-injection (`@`-mention) and shell-escape (`!`-shell) security model](0061-cli-input-layer-file-injection-and-shell-escape.md) | Accepted | 2026-07-03 |
 | 0062 | [Context compaction — append-only conversation summarization and the CLI history commands (`/clear` · `/trim` · `/compact`)](0062-context-compaction-and-cli-history-commands.md) | Accepted | 2026-07-04 |
