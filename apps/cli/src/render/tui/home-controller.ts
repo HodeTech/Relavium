@@ -653,6 +653,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // NEXT session's effort default alongside the model). `currentEffort` opens the sub-list on the right tier: the
     // LIVE store tier in a chat (so a prior no-reseat `/effort` change is reflected), else the config effort default.
     const effortStep = active !== undefined ? active.onSetEffort !== undefined : true;
+    // The effort sub-list's opening tier: absent when the sub-step isn't offered; else the LIVE store tier in a chat
+    // (reflecting a prior no-reseat /effort change), else the config effort default in the bare Home.
+    let currentEffort: ReasoningEffort | undefined;
+    if (effortStep) {
+      currentEffort =
+        active !== undefined ? active.store.getSnapshot().reasoningEffort : port.currentEffort();
+    }
     set({
       notice: undefined, // opening the picker clears any stale /doctor report behind it
       modelPicker: {
@@ -668,11 +675,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         effortStep,
         pending: undefined,
         effortSelected: 0,
-        currentEffort: !effortStep
-          ? undefined
-          : active !== undefined
-            ? active.store.getSnapshot().reasoningEffort
-            : port.currentEffort(),
+        currentEffort,
       },
     });
     // Render the cache immediately (above), then kick a TTL-bounded background refresh (ADR-0064 §5c) — the Home is
@@ -1360,6 +1363,34 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
   };
 
+  // The open-overlay + mode key router — extracted from `handleKey` so its bracketed-paste handling stays within the
+  // cognitive-complexity budget. Precedence (each open overlay owns EVERY key while open, and only one opens at a
+  // time): the `/` palette → the `/models` picker → the `/effort` overlay → the live chat → else the bare Home.
+  const dispatchKey = (input: string, key: HomeKey & ChatKey & PaletteKey): void => {
+    // The `/` palette (when open) owns every key — before the mode dispatch, so it overlays Home/chat input.
+    if (state.palette !== undefined) {
+      handlePaletteKey(input, key);
+      return;
+    }
+    // The `/models` picker (2.5.G S7) — opened from the bare-Home palette (next-session default, ADR-0063) OR a live
+    // in-Home chat (a typed/palette `/models` → the reseat picker, ADR-0059), so it is routed before the mode branches.
+    if (state.modelPicker !== undefined) {
+      routeModelPickerKey(input, key);
+      return;
+    }
+    // The `/effort` overlay (ADR-0066 §6) — chat-scoped, so it always has a live session; the guard keeps
+    // `routeEffortPickerKey`'s `active` non-null (a stale overlay with no session falls through, never expected).
+    if (state.effortPicker !== undefined && state.session !== undefined) {
+      routeEffortPickerKey(state.session, input, key);
+      return;
+    }
+    if (state.mode === 'chat' && state.session !== undefined) {
+      handleChatKey(state.session, input, key);
+      return;
+    }
+    handleHomeKey(input, key);
+  };
+
   return {
     subscribe(listener) {
       listeners.add(listener);
@@ -1412,31 +1443,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         }
         pasting = false;
       }
-      // The `/` palette (when open) owns every key — before the mode dispatch, so it overlays Home/chat input.
-      if (state.palette !== undefined) {
-        handlePaletteKey(input, key);
-        return;
-      }
-      // The `/models` picker (2.5.G S7) likewise owns every key while open — mutually exclusive with the palette
-      // (the palette closes before running `/models`). Opened from the bare-Home palette (next-session default,
-      // ADR-0063) OR a live in-Home chat (a typed/palette `/models` → the reseat picker, ADR-0059), so it is routed
-      // before the mode branches rather than assuming a single mode.
-      if (state.modelPicker !== undefined) {
-        routeModelPickerKey(input, key);
-        return;
-      }
-      // The `/effort` overlay (ADR-0066 §6) likewise owns every key while open — chat-scoped, so it always has a
-      // live session; the guard keeps `routeEffortPickerKey`'s `active` non-null (a stale overlay with no session,
-      // never expected, falls through instead of driving a torn-down session).
-      if (state.effortPicker !== undefined && state.session !== undefined) {
-        routeEffortPickerKey(state.session, input, key);
-        return;
-      }
-      if (state.mode === 'chat' && state.session !== undefined) {
-        handleChatKey(state.session, input, key);
-        return;
-      }
-      handleHomeKey(input, key);
+      // Past the paste latch: the open-overlay + mode router owns the rest (palette → /models → /effort → chat → Home).
+      dispatchKey(input, key);
     },
     async teardownActive() {
       exiting = true; // terminating: a deferred endChat/clearChat skips the (about-to-close) db; an in-flight build reclaims itself
