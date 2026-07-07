@@ -255,9 +255,16 @@ export function createSessionStore(db: Db): SessionStore {
       db.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run();
     },
     loadMessages,
-    loadFull: (sessionId) => {
-      const session = loadSession(sessionId);
-      return session === undefined ? undefined : { session, messages: loadMessages(sessionId) };
-    },
+    loadFull: (sessionId) =>
+      // One read transaction so the session row and its transcript come from a SINGLE consistent snapshot.
+      // Without it the two SELECTs are independent reads: a concurrent writer — another `relavium` process, or
+      // a `run` sharing this `history.db` — committing an append + a session-total update BETWEEN them yields a
+      // torn read (a session whose totals do not match the returned messages). In WAL mode the deferred
+      // transaction pins one snapshot for both reads (2.5.I). A read-only body COMMITs a no-op. The write-side
+      // `BEGIN IMMEDIATE` + `SQLITE_BUSY` retry that this pairs with is ADR-0064 §5 (landed alongside).
+      db.transaction(() => {
+        const session = loadSession(sessionId);
+        return session === undefined ? undefined : { session, messages: loadMessages(sessionId) };
+      }),
   };
 }

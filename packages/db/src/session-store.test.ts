@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -459,5 +463,86 @@ describe('agent_sessions CHECK constraints (raw insert bypassing the mapper)', (
         })
         .run();
     }).toThrow();
+  });
+});
+
+/**
+ * 2.5.I — `loadFull` reads its session row and its transcript inside ONE deferred read transaction, so the
+ * pair is a single consistent snapshot even while another connection (a second `relavium` process, or a
+ * `run` sharing this `history.db`) commits between the two SELECTs. WAL snapshot isolation needs a shared
+ * FILE — two `:memory:` connections are separate databases — so these use a temp-file DB with two
+ * connections and interleave a real committed write mid-read.
+ */
+describe('SessionStore — loadFull snapshot isolation (2.5.I)', () => {
+  let dir: string;
+  let writer: DbClient;
+  let reader: DbClient;
+  let writerStore: SessionStore;
+  let readerStore: SessionStore;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'relavium-session-snap-'));
+    const path = join(dir, 'history.db');
+    writer = createClient(path);
+    runMigrations(writer.db);
+    reader = createClient(path); // a second connection on the SAME file (WAL shared readers)
+    writerStore = createSessionStore(writer.db);
+    readerStore = createSessionStore(reader.db);
+  });
+
+  afterEach(() => {
+    writer.sqlite.close();
+    reader.sqlite.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("loadFull's read transaction hides a concurrent writer's mid-read commit (no torn read)", () => {
+    // Session v1 with two messages; totalOutputTokens reflects them.
+    writerStore.createSession(makeSession({ totalOutputTokens: 2 }));
+    writerStore.appendMessage(makeMessage(0));
+    writerStore.appendMessage(makeMessage(1, { role: 'assistant' }));
+
+    // Reproduce loadFull's structure (read session, then read messages) inside the reader's OWN read
+    // transaction — exactly what loadFull wraps — and commit an append + a session-total bump on the OTHER
+    // connection BETWEEN the two reads. The deferred transaction pinned its snapshot at read 1, so read 2
+    // must not observe the interleaved write.
+    const snapshot = reader.db.transaction(() => {
+      const session = readerStore.loadSession('sess-1'); // read 1 — pins the WAL snapshot
+      writerStore.appendMessage(makeMessage(2, { role: 'user' })); // concurrent, auto-committed
+      writerStore.updateSession(
+        makeSession({ totalOutputTokens: 3, updatedAt: '2026-06-17T09:00:00.000Z' }),
+      );
+      const messages = readerStore.loadMessages('sess-1'); // read 2 — same snapshot
+      return { session, messages };
+    });
+
+    // Consistent: session v1 (totalOutputTokens 2) paired with exactly its two messages — the mid-read
+    // append (seq 2) and the total bump are invisible to the pinned snapshot.
+    expect(snapshot.session?.totalOutputTokens).toBe(2);
+    expect(snapshot.messages.map((m) => m.sequenceNumber)).toEqual([0, 1]);
+
+    // The write really committed: a fresh loadFull after the transaction sees the bump + the new message.
+    const after = readerStore.loadFull('sess-1');
+    expect(after?.session.totalOutputTokens).toBe(3);
+    expect(after?.messages.map((m) => m.sequenceNumber)).toEqual([0, 1, 2]);
+  });
+
+  it('WITHOUT a read transaction the same interleave tears (why loadFull wraps its reads)', () => {
+    writerStore.createSession(makeSession({ totalOutputTokens: 2 }));
+    writerStore.appendMessage(makeMessage(0));
+    writerStore.appendMessage(makeMessage(1, { role: 'assistant' }));
+
+    // Two INDEPENDENT reads (no surrounding transaction) with a committed write between them.
+    const session = readerStore.loadSession('sess-1'); // read 1 — no snapshot held
+    writerStore.appendMessage(makeMessage(2, { role: 'user' }));
+    writerStore.updateSession(
+      makeSession({ totalOutputTokens: 3, updatedAt: '2026-06-17T09:00:00.000Z' }),
+    );
+    const messages = readerStore.loadMessages('sess-1'); // read 2 — sees the post-write transcript
+
+    // Torn: the stale session (totalOutputTokens 2) is paired with the 3-message post-write transcript —
+    // the mismatch loadFull's transaction prevents.
+    expect(session?.totalOutputTokens).toBe(2);
+    expect(messages.map((m) => m.sequenceNumber)).toEqual([0, 1, 2]);
   });
 });
