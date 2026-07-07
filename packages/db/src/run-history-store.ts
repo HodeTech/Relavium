@@ -7,6 +7,7 @@ import {
 import { and, asc, desc, eq, getTableColumns, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 
 import type { Db } from './client.js';
+import { withBusyRetry } from './retry.js';
 import {
   runCosts,
   runEvents,
@@ -436,11 +437,14 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           throw new Error(`run-history store received a non-run event: ${parsed.type}`);
         }
         const ts = isoToEpochMs(parsed.timestamp);
-        // One transaction per event: the run_events append and its derived rows land atomically, so a crash
-        // can never leave a derived row without its event (or vice-versa).
-        db.transaction(() => {
-          fold(parsed, runId, ts);
-        });
+        // One IMMEDIATE transaction per event: the run_events append and its derived rows land atomically, so a
+        // crash can never leave a derived row without its event (or vice-versa). `BEGIN IMMEDIATE` takes the
+        // write lock up front (never a DEFERRED read→write upgrade race), and `withBusyRetry` waits out residual
+        // cross-process lock contention — fail-loud, so a swallowed write can never be silent data loss
+        // (ADR-0050; the ADR-0064 amendment note — DB write-path concurrency).
+        withBusyRetry(() =>
+          db.transaction(() => fold(parsed, runId, ts), { behavior: 'immediate' }),
+        );
         return Promise.resolve();
       } catch (error) {
         return Promise.reject(error instanceof Error ? error : new Error(String(error)));

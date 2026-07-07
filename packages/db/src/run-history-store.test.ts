@@ -1,6 +1,6 @@
 import { RunEventSchema, type RunEvent } from '@relavium/shared';
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
 import { runCosts, runEvents, runs, stepExecutions, workflows } from './schema.js';
@@ -67,7 +67,19 @@ describe('createRunHistoryStore', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     client.sqlite.close();
+  });
+
+  it('persistEvent opens an IMMEDIATE write transaction (2.5.I — guards against a DEFERRED regression)', async () => {
+    const workflowId = await store.resolveWorkflowId('demo');
+    const txnSpy = vi.spyOn(client.db, 'transaction');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: { n: 3 }, executionMode: 'local' }),
+    );
+    // BEGIN IMMEDIATE takes the write lock up front (no DEFERRED read→write upgrade race); reverting to the
+    // default deferred transaction drops the config arg and fails this assertion.
+    expect(txnSpy).toHaveBeenCalledWith(expect.any(Function), { behavior: 'immediate' });
   });
 
   /** Resolve the workflow + persist a `run:started` so a `runs` row (FK target) exists. Returns the workflow UUID. */

@@ -485,6 +485,19 @@ CREATE INDEX idx_media_references_handle ON media_references (handle);
 
 > Postgres `DISTINCT ON (workflow_id)` for "latest run per workflow" is **not** supported in SQLite. Use `ROW_NUMBER() OVER (PARTITION BY workflow_id ORDER BY created_at DESC)` instead — it works identically in both engines, easing the Phase-2 port.
 
+## Concurrency & transaction behavior
+
+`history.db` is a **single shared file** two concurrent `relavium` processes may write at once — e.g. a `run` persisting events while a `chat` refreshes the live model catalog ([ADR-0064](../../decisions/0064-live-model-catalog.md) §5). The Node/CLI path (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)) hardens this at the connection and the transaction level; this is the one canonical home for the policy that `packages/db/src/retry.ts` and the store doc-comments cite.
+
+- **Connection PRAGMAs** ([`client.ts`](../../../packages/db/src/client.ts)): `journal_mode = WAL` (readers never block the single writer, and vice-versa), `busy_timeout = 5000` (SQLite's built-in busy handler waits up to 5 s for a contended lock before returning `SQLITE_BUSY`), `synchronous = NORMAL` (the recommended durability/throughput trade-off under WAL), and `foreign_keys = ON`.
+- **Write transactions use `BEGIN IMMEDIATE`**, never drizzle's `DEFERRED` default. A DEFERRED transaction that reads before it writes takes a read lock first and must *upgrade* to a write lock on the first write — if another connection committed in between, that upgrade fails immediately with `SQLITE_BUSY` (`SQLITE_BUSY_SNAPSHOT`), which `busy_timeout` does **not** cover. `BEGIN IMMEDIATE` takes the write lock up front, so the upgrade race cannot occur. Applied to every multi-statement writer: `persistEvent` (run history), `replaceProviderModels` (the model-catalog bulk live-upsert), and the provider `upsert` read-then-write.
+- **The bounded retry** (`packages/db/src/retry.ts`, `withBusyRetry`) wraps those write transactions and retries only `SQLITE_BUSY`/`SQLITE_LOCKED` up to a bounded attempt budget (default 5) with a **deterministic** linear backoff — **no jitter**, never `Math.random`, per the no-jitter/deterministic-replay convention of [ADR-0040](../../decisions/0040-node-retry-budget-above-the-chain.md). It is **fail-loud**: on an exhausted budget (or any non-lock fault) it rethrows the original error and never silently drops a write, preserving [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s durability-first `persistEvent` posture. A retried transaction rolls back with no partial write and re-runs the whole (idempotent) body.
+- **Single-statement writes** (e.g. `appendMessage`, `setKeychainRef`) go straight for the write lock and rely on SQLite's built-in busy handler (`busy_timeout`); they need no explicit transaction.
+- **Reads that must be consistent across statements** use a read transaction: `sessionStore.loadFull` reads the session row and its transcript inside one deferred transaction so the pair is a single WAL snapshot, never a torn read (a session whose totals disagree with its returned messages).
+- **Cross-platform:** `BEGIN IMMEDIATE` + the retry behave identically on every OS. The `0600`/`0700` at-rest guard below is a documented Windows no-op, so the concurrency test lane gates POSIX-permission assertions off Windows only.
+
+This realizes the concurrent-process write requirement recorded in the [ADR-0064](../../decisions/0064-live-model-catalog.md) §5 amendment note (2.5.I).
+
 ## Encryption at rest
 
 At-rest encryption of `history.db` is **per-surface**:
