@@ -324,8 +324,11 @@ export function reduceSessionEvent(
       return { ...base, liveToolCalls: markResolved(base.liveToolCalls, event.toolId) };
 
     case 'cost:updated':
-      // Capture the accurate per-attempt model (EA2) — the LAST cost:updated of the turn is the committed model,
-      // which the completed-turn summary attributes to when it differs from the bound model (a within-turn failover).
+      // Capture the accurate per-attempt model (EA2). The completed-turn summary attributes to this ONLY when it
+      // differs from the bound model (a within-turn failover). We keep the LAST cost:updated of the turn: it is the
+      // committed model that produced the final answer — relying on the engine emitting per-attempt cost:updated in
+      // order, the last just before session:turn_completed. A multi-model tool-round turn collapses to that final
+      // model (an accepted one-line-summary simplification, not per-round attribution).
       return {
         ...base,
         cumulativeCostMicrocents: event.cumulativeCostMicrocents,

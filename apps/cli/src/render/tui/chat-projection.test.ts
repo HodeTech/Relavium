@@ -4,6 +4,7 @@ import type { ToolApprovalRequest } from '@relavium/core';
 
 import {
   formatApprovalTarget,
+  formatBusyLine,
   formatSessionFooter,
   formatSessionFooterWithMode,
   formatToolCall,
@@ -195,6 +196,54 @@ describe('chat-projection', () => {
       // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
       expect(line).not.toMatch(/[\x00-\x1f\x7f]/); // no ESC/CR/NUL/tab/newline survived
       expect(line).toBe('→ read file …'); // escapes stripped; the bare newline collapsed to a space
+    });
+  });
+
+  describe('formatBusyLine (2.5.H live-turn feedback)', () => {
+    const base = {
+      spinner: '⠋',
+      compacting: false,
+      liveTokens: '',
+      liveTokensTruncated: false,
+    } as const;
+
+    it('renders the compaction moment first (dim, ADR-0062 §7)', () => {
+      const line = formatBusyLine({ ...base, compacting: true, liveTokens: 'ignored' });
+      expect(line).toEqual({ text: '⠋ ⟳ Summarizing conversation… · Esc to cancel', dim: true });
+    });
+
+    it('renders the `!`-shell command line (dim) and sanitizes the command', () => {
+      const line = formatBusyLine({ ...base, busyCommand: 'npm\x1b[31m test' });
+      expect(line.dim).toBe(true);
+      expect(line.text).toBe('⠋ ! npm test — running · Esc to cancel'); // ANSI stripped
+    });
+
+    it('shows the pre-first-token status with the live elapsed + abort hint (dim)', () => {
+      const line = formatBusyLine({ ...base, elapsedMs: 3200 });
+      expect(line).toEqual({ text: '⠋ Working… 3s · Esc to stop', dim: true });
+    });
+
+    it('omits the timer when no turn is in flight yet (elapsedMs undefined)', () => {
+      const line = formatBusyLine(base);
+      expect(line).toEqual({ text: '⠋ Working… · Esc to stop', dim: true });
+    });
+
+    it('renders streaming content plain (not dim) with the spinner and no elision when untruncated', () => {
+      const line = formatBusyLine({ ...base, liveTokens: 'hello world', elapsedMs: 9999 });
+      expect(line).toEqual({ text: '⠋ hello world', dim: false }); // the timer is not shown once content streams
+    });
+
+    it('prefixes a leading elision marker flush against the content when the head scrolled out', () => {
+      const line = formatBusyLine({ ...base, liveTokens: 'tail', liveTokensTruncated: true });
+      expect(line.text).toBe('⠋ …tail'); // "…" is adjacent to the content — no spurious space
+      expect(line.dim).toBe(false);
+    });
+
+    it('sanitizes streamed content (a control byte cannot reach the terminal)', () => {
+      const line = formatBusyLine({ ...base, liveTokens: 'ok\x1b[2Jclear' });
+      // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
+      expect(line.text).not.toMatch(/\x1b/);
+      expect(line.text).toBe('⠋ okclear');
     });
   });
 

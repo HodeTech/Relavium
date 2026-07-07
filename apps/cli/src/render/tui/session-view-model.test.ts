@@ -656,6 +656,21 @@ describe('session-view-model — live-turn feedback + attribution (2.5.H)', () =
     expect(last?.role === 'assistant' && last.summary.model).toBe('claude-opus-4-8');
   });
 
+  it('keeps the LAST cost:updated model across a multi-attempt turn (the committed model)', () => {
+    const e = events();
+    // Two attempts: the first model fails over to the second, which commits — the summary shows the last (B).
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.cost(1, 'claude-sonnet-4-6'), // attempt A (== bound)
+      e.token('hi'),
+      e.cost(2, 'claude-opus-4-8'), // attempt B commits (the final cost:updated before turn_completed)
+      e.turnCompleted(),
+    ]);
+    const last = state.transcript.at(-1);
+    expect(last?.role === 'assistant' && last.summary.model).toBe('claude-opus-4-8');
+  });
+
   it('omits the summary model when the committed model equals the bound model (no redundant noise)', () => {
     const e = events();
     const state = reduceAll([

@@ -104,7 +104,8 @@ export function formatDuration(ms: number): string {
  * COMPLETED span (a live counter reading "3.2s" then "3.3s" every frame is noise, not precision).
  */
 export function formatElapsed(ms: number): string {
-  const totalSeconds = Math.floor(Math.max(0, ms) / 1000);
+  // Guard a non-finite input to 0 (symmetry with `spinnerFrame`) so a NaN can never render "NaNmNaNs".
+  const totalSeconds = Math.floor(Math.max(0, Number.isFinite(ms) ? ms : 0) / 1000);
   if (totalSeconds < 60) {
     return `${totalSeconds}s`;
   }

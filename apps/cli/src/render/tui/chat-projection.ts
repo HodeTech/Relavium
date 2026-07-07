@@ -2,7 +2,7 @@ import type { ToolApprovalRequest } from '@relavium/core';
 import type { ReasoningEffort } from '@relavium/shared';
 
 import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
-import { formatCostUsd, formatDuration, formatTokens } from './format.js';
+import { formatCostUsd, formatDuration, formatElapsed, formatTokens } from './format.js';
 import type { SessionViewState, ToolCallView, TurnSummary } from './session-view-model.js';
 
 /**
@@ -130,6 +130,52 @@ export function formatTurnSummary(summary: TurnSummary): string {
     summary.durationMs === undefined ? undefined : formatDuration(summary.durationMs),
   ].filter((part): part is string => part !== undefined);
   return parts.join(' · ');
+}
+
+/** The in-flight busy line: its text plus whether it renders as a DIM, truncate-end STATUS line (compaction /
+ *  shell / the pre-token "Working…" line) or as PLAIN, full-width streaming CONTENT (the answer token line). */
+export interface BusyLine {
+  readonly text: string;
+  readonly dim: boolean;
+}
+
+/**
+ * Assemble the in-flight busy line (2.5.H) — extracted from the ink render so its branch matrix is unit-tested
+ * without mounting React. Four states in priority order:
+ *  1. the labeled compaction moment (ADR-0062 §7);
+ *  2. the `!`-shell command line (2.5.D);
+ *  3. the pre-first-token live-turn STATUS — `Working… {elapsed} · Esc to stop`, a whole-second timer + the abort
+ *     hint, so a running turn never reads as a frozen bare spinner;
+ *  4. the streaming answer CONTENT — with a leading `…` elision marker when the live buffer's head scrolled out (a
+ *     VISIBLE loss, not the old silent drop).
+ * Every dynamic value (`busyCommand`, `liveTokens`) is terminal-sanitized here at the display boundary. `elapsedMs`
+ * is `undefined` before a turn starts; a status line then shows no timer. Returns the text + a `dim` flag the
+ * caller maps to `<Text dim wrap>` (status) vs `<Text>` (content).
+ */
+export function formatBusyLine(input: {
+  readonly spinner: string;
+  readonly compacting: boolean;
+  readonly busyCommand?: string | undefined;
+  readonly liveTokens: string;
+  readonly liveTokensTruncated: boolean;
+  readonly elapsedMs?: number | undefined;
+}): BusyLine {
+  const { spinner } = input;
+  if (input.compacting) {
+    return { text: `${spinner} ⟳ Summarizing conversation… · Esc to cancel`, dim: true };
+  }
+  if (input.busyCommand !== undefined) {
+    return {
+      text: `${spinner} ! ${sanitizeInline(input.busyCommand)} — running · Esc to cancel`,
+      dim: true,
+    };
+  }
+  const content = stripTerminalControls(input.liveTokens);
+  if (content.length === 0) {
+    const elapsed = input.elapsedMs === undefined ? '' : ` ${formatElapsed(input.elapsedMs)}`;
+    return { text: `${spinner} Working…${elapsed} · Esc to stop`, dim: true };
+  }
+  return { text: `${spinner} ${input.liveTokensTruncated ? '…' : ''}${content}`, dim: false };
 }
 
 /**

@@ -83,9 +83,10 @@ import {
   shouldOpenPalette,
   type PaletteState,
 } from './palette-reducer.js';
-import { formatElapsed, spinnerFrame } from './format.js';
+import { spinnerFrame } from './format.js';
 import {
   formatApprovalTarget,
+  formatBusyLine,
   formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
@@ -226,42 +227,25 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
     state.turnStartedAtMs === undefined
       ? undefined
       : Math.max(0, props.nowMs - state.turnStartedAtMs);
-  // The in-flight busy line — extracted from a nested ternary: the labeled compaction moment (ADR-0062 §7), the
-  // `!`-shell command line, or the streaming token line. Only rendered while `running`.
+  // The in-flight busy line — the labeled compaction moment (ADR-0062 §7), the `!`-shell command line, the
+  // pre-token live-turn status ("Working… {elapsed} · Esc to stop"), or the streaming token line (with the
+  // elision marker). The branch matrix lives in the pure, unit-tested {@link formatBusyLine}; here we only map
+  // its `dim` flag to `<Text>`. Only rendered while `running`.
   const renderBusyLine = (): ReactElement => {
-    if (state.compacting) {
-      // The compaction moment (ADR-0062 §7): a `/compact` or auto-threshold summarisation is in flight — distinct
-      // from the token stream (its agent:token events are NOT forwarded), so a paid, multi-second operation reads
-      // as deliberate work, never an apparently-frozen pause. Esc aborts it.
-      return (
-        <Text {...dimProps(color)} wrap="truncate-end">
-          {`${spinnerFrame(tick)} ⟳ Summarizing conversation… · Esc to cancel`}
-        </Text>
-      );
-    }
-    if (props.busyCommand === undefined) {
-      const content = stripTerminalControls(state.liveTokens);
-      if (content.length === 0) {
-        // Before the first assistant token streams (the model is processing): show the LIVE elapsed + the abort
-        // hint (2.5.H live-turn feedback) so the turn never reads as a frozen bare spinner. Once reasoning render
-        // lands (Step 2b) the label becomes "Thinking…" when reasoning is streaming.
-        const elapsed = elapsedMs === undefined ? '' : ` ${formatElapsed(elapsedMs)}`;
-        return (
-          <Text {...dimProps(color)} wrap="truncate-end">
-            {`${spinnerFrame(tick)} Working…${elapsed} · Esc to stop`}
-          </Text>
-        );
-      }
-      // A leading elision marker when the live buffer's head scrolled out (2.5.H) — the earlier text is VISIBLY
-      // dropped, not silently lost.
-      return (
-        <Text>{`${spinnerFrame(tick)} ${state.liveTokensTruncated ? '…' : ''}${content}`}</Text>
-      );
-    }
-    return (
+    const line = formatBusyLine({
+      spinner: spinnerFrame(tick),
+      compacting: state.compacting,
+      busyCommand: props.busyCommand,
+      liveTokens: state.liveTokens,
+      liveTokensTruncated: state.liveTokensTruncated,
+      elapsedMs,
+    });
+    return line.dim ? (
       <Text {...dimProps(color)} wrap="truncate-end">
-        {`${spinnerFrame(tick)} ! ${sanitizeInline(props.busyCommand)} — running · Esc to cancel`}
+        {line.text}
       </Text>
+    ) : (
+      <Text>{line.text}</Text>
     );
   };
   return (
