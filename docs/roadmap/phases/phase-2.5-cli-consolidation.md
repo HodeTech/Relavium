@@ -434,8 +434,10 @@ overlay** that closes the "cost cap will not apply" gap (ADR-0065 §1–2); `pro
 static model is dimmed and a deprecated entry is flagged; `models refresh` reports per-provider outcomes and one
 provider's failure never fails the whole refresh; a custom OpenAI-compatible `base_url` lists its models over an
 SSRF-validated hop; a model with **no static price**, once **user-priced**, is enforced by `max_cost_microcents`
-(the cost-cap gap is closed). (Mid-chat model switch via reseat stays Phase 2.6,
-[ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md).)
+(the cost-cap gap is closed). (Mid-chat model switch via reseat + normalized reasoning-effort control then landed as
+the **post-2.5.G model-UX follow-up** — [ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md) +
+[ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md), merged 2026-07-07; see the live status in
+[current.md](../current.md).)
 
 **Implementation steps** (each: implement + commit → Opus review → Sonnet review; **🔒** = an added security
 round): **S1** ADRs 0063/0064/0065 + roadmap reconciliation (design-lock) · **S2 🔒** seam `listModels?` + `kind`

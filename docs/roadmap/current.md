@@ -198,13 +198,17 @@ maintainer questions on model/provider/wizard behavior) then landed as a sequenc
 the onboarding-wizard live key-validation + retry UX, wizard-dynamic provider docs, **mid-session model switching**
 (the `/models` reseat across `relavium chat` + the in-Home chat — [ADR-0059](../decisions/0059-cli-mid-session-model-reseat.md),
 now Accepted), and **normalized reasoning-effort control** ([ADR-0066](../decisions/0066-normalized-reasoning-effort-control.md),
-now Accepted): a provider-agnostic effort tier (`off`/`low`/`medium`/`high`/`max`) authored in agent YAML or the
-`[chat].reasoning_effort` config default, each adapter mapping it to its provider's **native** tier, gated per-model
-by a host-injected capability resolver (plus a conservative id heuristic for a live-discovered model), and changed
-live — via the `/effort` command or the `/models` picker's **effort sub-step** — as a **per-turn session override**
-(no reseat, §5), with the active tier shown in the footer. The comprehensive multi-agent review after the first
-implementation caught that the picker had (wrongly) routed the effort through a full model reseat; the P0 fix
-rebuilt it as the ADR-mandated session-level setter.
+now Accepted, **merged 2026-07-07**): a provider-agnostic effort tier (`off`/`low`/`medium`/`high`/`max`) authored in
+agent YAML or the `[chat].reasoning_effort` config default, each adapter mapping it to its provider's **native** tier —
+**all four providers**, DeepSeek-v4's `thinking` param included (doc-verified against api-docs.deepseek.com) — gated
+per-model by a host-injected capability resolver (plus a conservative id heuristic for a live-discovered model). It is
+changed **interactively**: `/effort` opens a keyboard-owning tier-selector **overlay** in `relavium chat` + the in-Home
+chat (§6), and the `/models` picker's **effort sub-step** either applies a **per-turn session override** in a live chat
+(no reseat, §5) or — in the **bare Home** — **writes** the model + effort as the next session's config defaults (a new
+global `[preferences].reasoning_effort` key), the active tier shown in the footer. Two multi-agent review passes
+hardened it: the first caught the picker (wrongly) routing effort through a full model reseat — the P0 fix rebuilt it
+as the ADR-mandated session-level setter; the second caught the bare-Home effort default not being re-read for a
+same-process next chat — fixed to mirror the model's fresh per-chat re-read.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks
 items up as it first touches each file. Notable inheritances: 1.AH's host-wiring half
