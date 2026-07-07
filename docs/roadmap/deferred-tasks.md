@@ -608,6 +608,13 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   session/run store until a Phase-3/4 ADR reconciles it. Reword the VS Code at-rest posture once the
   cross-host physical-store decision lands. *(low · Phase 4 forward-design docs; blocked on the cross-host
   store decision; surfaced during the 2.5.J encrypted-wording sweep)*
+- [ ] **Run-resume reconstruction reads (`loadRun` + `loadRunEvents` + `loadStepExecutions`) are separate
+  reads at the caller level — the same torn-read class 2.5.I S1 fixed for session `loadFull`.** A concurrent
+  writer committing between them could yield a run row + event/step reads from different snapshots. Lower
+  impact than the session case: run history is **event-sourced** and the checkpoint fold tolerates partial
+  state, so a torn read self-heals on the next fold. If tightened, wrap the caller-level reconstruction in one
+  read transaction (as `loadFull` now does). *(low · packages/db run-history-store consumers + the resume
+  caller; surfaced during 2.5.I S1 review)*
 - [ ] **`relavium run` maps any `run:paused` to exit 3 (gate-paused); revisit when media host-wiring lands.**
   `run.ts` returns `EXIT_CODES.gatePaused` (3) for any `run:paused`, which is correct in 2.D because a
   human gate is the **only** `run:paused` source (no `mediaStore`/media-job host is wired, so a media-only

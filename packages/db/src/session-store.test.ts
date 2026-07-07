@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
 import { agentSessions, llmProviders, modelCatalog, sessionMessages } from './schema.js';
@@ -491,9 +491,34 @@ describe('SessionStore — loadFull snapshot isolation (2.5.I)', () => {
   });
 
   afterEach(() => {
-    writer.sqlite.close();
-    reader.sqlite.close();
-    rmSync(dir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+    // Best-effort teardown: close both connections even if one throws, then remove the temp dir.
+    try {
+      writer.sqlite.close();
+    } finally {
+      reader.sqlite.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loadFull routes its two reads through ONE db.transaction (guards the wrapper is not removed)', () => {
+    // Bind the regression to the real method: spy the reader connection's `transaction` (in place, so the
+    // store's captured handle sees it) and assert loadFull opens exactly one — deleting the wrapper from
+    // loadFull drops this to zero. The default spy calls through, so the reads still run and return.
+    writerStore.createSession(makeSession());
+    writerStore.appendMessage(makeMessage(0));
+    const txnSpy = vi.spyOn(reader.db, 'transaction');
+
+    const full = readerStore.loadFull('sess-1');
+    expect(full?.messages.map((m) => m.sequenceNumber)).toEqual([0]);
+    expect(txnSpy).toHaveBeenCalledTimes(1);
+
+    // Sanity: the single-read methods do NOT open a transaction, so the assertion above is meaningful
+    // (it is loadFull's wrapper being counted, not an incidental transaction).
+    txnSpy.mockClear();
+    readerStore.loadSession('sess-1');
+    readerStore.loadMessages('sess-1');
+    expect(txnSpy).not.toHaveBeenCalled();
   });
 
   it("loadFull's read transaction hides a concurrent writer's mid-read commit (no torn read)", () => {
