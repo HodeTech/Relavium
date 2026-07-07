@@ -189,8 +189,8 @@ describe('buildChatSession', () => {
     // read_file case above); this pins the UNION for a real process-arm tool. git_status is granted to the
     // default agent, pre-approved (no confirm gate), and takes no model-controlled args, so it reaches the host.
     const repo = mkdtempSync(join(tmpdir(), 'relavium-git-'));
-    execFileSync('git', ['init', '-q'], { cwd: repo }); // `git status` needs no user identity (unlike commits)
     try {
+      execFileSync('git', ['init', '-q'], { cwd: repo }); // `git status` needs no user identity (unlike commits)
       const built = await build({
         cwd: repo,
         providers: scriptedResolver([callWithArgs('c1', 'git_status', {}), textTurn('clean')]),
@@ -203,7 +203,19 @@ describe('buildChatSession', () => {
       // The git_status tool call was annotated on the stream (the session routed it to the host)…
       const toolCall = events.find((e) => e.type === 'agent:tool_call');
       expect(toolCall?.type === 'agent:tool_call' && toolCall.toolId).toBe('git_status');
-      // …the process arm ran it and the result folded back, so the post-tool answer streamed (the loop completed).
+      // …the process arm produced a git_status RESULT that folded back. `success` here means only "the dispatch
+      // did not THROW" (the registry stamps it true for any resolved spawn) — it rules out git-not-on-PATH but,
+      // crucially, does NOT distinguish a clean run from an exit-128 "not a repository" (a non-zero git exit still
+      // RESOLVES a ProcessResult, so success stays true). The real lock is the summary: the process arm captured
+      // git's `{exitCode:0,…}` stdout, proving it ran to a CLEAN exit against the repo we init'd (not a silent
+      // wrong-cwd/uninit'd error the model could narrate 'clean' over from the cassette regardless).
+      const result = events.find((e) => e.type === 'agent:tool_result');
+      expect(result?.type === 'agent:tool_result' && result.toolId).toBe('git_status');
+      expect(result?.type === 'agent:tool_result' && result.success).toBe(true);
+      expect(result?.type === 'agent:tool_result' && result.outputSummary).toContain(
+        '"exitCode":0',
+      );
+      // …and the post-tool answer streamed, so the loop completed after the fold.
       const tokens = events.flatMap((e) => (e.type === 'agent:token' ? [e.token] : [])).join('');
       expect(tokens).toContain('clean');
     } finally {
