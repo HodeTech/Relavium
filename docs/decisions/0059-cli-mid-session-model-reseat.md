@@ -8,7 +8,7 @@
 > (the in-chat `/models` reseat requested with the Phase-2.5 CLI-consolidation model work), pulling the ADR forward
 > from 2.6.C. The reseat reuses the `/clear` host-swap machinery ([ADR-0062](0062-context-compaction-and-cli-history-commands.md) §7)
 > and the `chat-resume` transcript path — zero engine change — exactly as designed below.
-
+>
 > **Note (2026-07-06): the FK reality behind the per-message `modelId`.** The Decision below says "only the CLI
 > persister wiring is missing"; on implementation that proved under-specified. `session_messages.model_id` /
 > `agent_sessions.model_id` are **foreign keys to `model_catalog.id` (a UUID row PK), not the raw model string** — and

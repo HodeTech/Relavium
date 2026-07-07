@@ -54,6 +54,15 @@ describe('relavium provider commands (2.C)', () => {
   let deps: (over: Partial<ProviderCommandDeps>) => ProviderCommandDeps;
   let io: ReturnType<typeof captureIo>;
 
+  // The `--json` global options every `provider list --json` test reuses (a stateless constant).
+  const jsonGlobal = {
+    json: true,
+    color: false,
+    cwd: process.cwd(),
+    configPath: undefined,
+    verbosity: 'normal' as const,
+  };
+
   beforeEach(() => {
     client = createClient(':memory:');
     runMigrations(client.db);
@@ -150,13 +159,6 @@ describe('relavium provider commands (2.C)', () => {
   });
 
   it('list --json emits one key-free NDJSON record per provider with the verify state (2.5.G S11)', async () => {
-    const jsonGlobal = {
-      json: true,
-      color: false,
-      cwd: process.cwd(),
-      configPath: undefined,
-      verbosity: 'normal' as const,
-    };
     // Register two providers WITH keys via a non-json setup (their confirmations don't pollute the json capture).
     const setup = deps({});
     await runProviderCommand({ action: 'set-key', name: 'anthropic' }, setup);
@@ -174,13 +176,6 @@ describe('relavium provider commands (2.C)', () => {
   });
 
   it('list --json without --verify leaves verified/verifyDetail null (no probe)', async () => {
-    const jsonGlobal = {
-      json: true,
-      color: false,
-      cwd: process.cwd(),
-      configPath: undefined,
-      verbosity: 'normal' as const,
-    };
     await runProviderCommand({ action: 'add', name: 'openai' }, deps({}));
     const listIo = captureIo();
     await runProviderCommand({ action: 'list' }, deps({ io: listIo.io, global: jsonGlobal }));
@@ -192,14 +187,6 @@ describe('relavium provider commands (2.C)', () => {
       verifyDetail: null,
     });
   });
-
-  const jsonGlobal = {
-    json: true,
-    color: false,
-    cwd: process.cwd(),
-    configPath: undefined,
-    verbosity: 'normal' as const,
-  };
 
   it('list --json --verify records a probe FAILURE as { verified: false, verifyDetail: <redacted> } (no key)', async () => {
     await runProviderCommand({ action: 'add', name: 'openai' }, deps({}));

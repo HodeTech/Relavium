@@ -102,15 +102,25 @@ async function runList(deps: ModelsCommandDeps): Promise<ExitCode> {
     );
     return EXIT_CODES.success;
   }
-  // Human mode only (FIX 4): when the catalog is STILL empty after a first-run refresh because a CONNECTED
-  // provider's refresh FAILED (not merely because no key was set), print a failure-aware line — the plain
-  // "add a key" guidance would be misleading (a key IS set; the fetch failed).
+  // Human mode only (FIX 4/6): when the catalog is STILL empty after a first-run refresh because a CONNECTED
+  // provider either FAILED its refresh OR does not support listing (`skipped-unsupported`) — NOT merely because no
+  // key was set — print a status-aware line. The plain `renderModelList` "add a provider key" guidance would
+  // mislead in both cases (a key IS set). `skipped-no-key` is genuinely keyless, so it falls through to that
+  // default guidance as before.
   if (listings.length === 0 && firstRunReport !== undefined) {
     const failed = firstRunReport.providers.filter((p) => p.status === 'failed');
     if (failed.length > 0) {
       const names = failed.map((p) => p.provider).join(', ');
       deps.io.writeOut(
         `Model refresh failed for ${names}; showing no models — run \`relavium models refresh\` or check \`relavium doctor\`.\n`,
+      );
+      return EXIT_CODES.success;
+    }
+    const unsupported = firstRunReport.providers.filter((p) => p.status === 'skipped-unsupported');
+    if (unsupported.length > 0) {
+      const names = unsupported.map((p) => p.provider).join(', ');
+      deps.io.writeOut(
+        `No models to list for ${names} — the provider does not support listing models (a key is set, so this is not a missing-key issue).\n`,
       );
       return EXIT_CODES.success;
     }

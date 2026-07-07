@@ -299,4 +299,23 @@ describe('modelsCommand — refresh', () => {
     const code = await modelsCommand({ refresh: true }, deps(io, stubCatalog(rowsRef), refresh));
     expect(code).toBe(EXIT_CODES.success);
   });
+
+  it('reports a SKIPPED-UNSUPPORTED first-run refresh (not "add a key") when the catalog is still empty (FIX 6)', async () => {
+    // On the LIST path (first-run auto-refresh), a CONNECTED provider with no `listModels` leaves the catalog empty
+    // for a reason that is NOT "no key" — so the plain add-a-key guidance would mislead (a key IS set).
+    const { io, out } = captureIo();
+    const rowsRef: { value: ModelCatalogListing[] } = { value: [] };
+    const refresh = stubRefresh({
+      providers: [
+        { provider: 'anthropic', status: 'skipped-unsupported' },
+        { provider: 'openai', status: 'skipped-no-key' },
+      ],
+    });
+
+    const code = await modelsCommand({ refresh: false }, deps(io, stubCatalog(rowsRef), refresh));
+    expect(code).toBe(EXIT_CODES.success);
+    const text = out();
+    expect(text).toContain('does not support listing models'); // the status-aware line for anthropic
+    expect(text).not.toContain('No models cached'); // NOT the misleading add-a-key default
+  });
 });
