@@ -1,0 +1,162 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import {
+  createClient,
+  createSessionStore,
+  runMigrations,
+  type DbClient,
+  type SessionStore,
+} from '@relavium/db';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import type { ResolvedChatConfig } from '../config/resolve.js';
+import { exportSession } from '../chat/export.js';
+import { cassetteResolver, type Cassette } from '../chat/fixture.js';
+import { createSessionPersister } from '../chat/persister.js';
+import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
+import { textTurn } from '../chat/test-support.js';
+
+/**
+ * 2.5.I S4 — the Home → chat → resume → export CHAIN over a real file-backed `history.db`, the coverage the
+ * 2.K regression harness (offline `run` fixtures only) does not carry. It proves a transcript survives the
+ * whole journey a user takes: a fresh session graduated from the Home (`buildChatSession`, cassette-driven)
+ * that persists a turn, a `chat-resume` on a FRESH connection to the same file (`loadFull` →
+ * `buildResumedChatSession`) that continues it, and a `chat-export` (`exportSession`) that serializes it to a
+ * `.relavium.yaml`. The interactive ink Home/chat surface itself is a TUI (out of scope without a render-test
+ * dependency); this drives the exact session-host + persister + export seam the Home graduates into.
+ */
+
+const EMPTY_CHAT: ResolvedChatConfig = {
+  defaultModel: undefined,
+  fsScope: undefined,
+  maxTurns: undefined,
+  maxMessages: undefined,
+  autoCompact: undefined,
+  compactThreshold: undefined,
+  maxCostMicrocents: undefined,
+  onExceed: undefined,
+  allowedCommands: undefined,
+  allowedCommandGlobs: undefined,
+  reasoningEffort: undefined,
+};
+
+/** A one-turn cassette: the single `stream()` call replays the given assistant reply (the seam holds — all
+ *  chunks are Relavium `StreamChunk`s). A fresh + a resumed build each get their OWN cassette (own call counter). */
+const oneTurnCassette = (reply: string): Cassette => ({
+  schema_version: '1.0',
+  provider: 'anthropic',
+  calls: [textTurn(reply)],
+});
+
+const SESSION_ID = 'sess-chain';
+
+describe('session chain e2e (2.5.I S4) — Home→chat→resume→export over a real history.db', () => {
+  let dir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'relavium-session-chain-'));
+    dbPath = join(dir, 'history.db');
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** Open a fresh connection + a migrated session store on the shared file (each "process" gets its own). */
+  function openStore(): { client: DbClient; store: SessionStore } {
+    const client = createClient(dbPath);
+    runMigrations(client.db); // idempotent — mirrors migrate-on-open
+    return { client, store: createSessionStore(client.db) };
+  }
+
+  it('a transcript survives fresh-chat → persist → resume → continue → export', async () => {
+    let tick = Date.parse('2026-07-07T00:00:00.000Z');
+    const now = (): number => tick++;
+    let msgSeq = 0;
+    const uuidMsg = (): string => `m-${msgSeq++}`;
+
+    // 1. FRESH session (the Home graduating into chat), cassette-driven, on connection #1.
+    const first = openStore();
+    try {
+      const built = await buildChatSession({
+        chat: EMPTY_CHAT,
+        agentRef: undefined,
+        cwd: dir,
+        projectConfigDir: undefined,
+        now,
+        uuid: () => SESSION_ID,
+        providers: cassetteResolver(oneTurnCassette('reply from the fresh session')),
+      });
+      const persister = createSessionPersister({
+        store: first.store,
+        handle: built.handle,
+        sessionId: built.sessionId,
+        agent: built.agent,
+        context: built.context,
+        now,
+        uuid: uuidMsg,
+      });
+      persister.start();
+      built.session.start(); // a fresh session must be started before its first turn (the resumed one lands idle)
+      persister.beginUserTurn('first user message'); // record the user text for the in-flight turn (as the REPL does)
+      await built.session.sendMessage('first user message');
+      persister.close();
+    } finally {
+      first.client.sqlite.close(); // the chat process exits
+    }
+
+    // 2. RESUME on a FRESH connection (a separate `chat-resume` process reopening the file).
+    const second = openStore();
+    try {
+      const loaded = second.store.loadFull(SESSION_ID);
+      if (loaded === undefined) {
+        throw new Error('expected the fresh session to have persisted before resume');
+      }
+      // The fresh turn persisted a user + an assistant message.
+      expect(loaded.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+
+      const resumed = await buildResumedChatSession({
+        chat: EMPTY_CHAT,
+        record: loaded.session,
+        messages: loaded.messages,
+        now,
+        providers: cassetteResolver(oneTurnCassette('reply from the resumed session')),
+      });
+      const persister = createSessionPersister({
+        store: second.store,
+        handle: resumed.handle,
+        sessionId: resumed.sessionId,
+        agent: resumed.agent,
+        context: resumed.context,
+        now,
+        uuid: uuidMsg,
+        initialSequenceNumber: resumed.nextSequenceNumber, // continue PAST the persisted max seq
+      });
+      persister.start();
+      persister.beginUserTurn('second user message');
+      await resumed.session.sendMessage('second user message');
+      persister.close();
+
+      // The full chain persisted, in order, gap-free: two complete turns.
+      const full = second.store.loadFull(SESSION_ID);
+      expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+      expect(full?.messages.map((m) => m.sequenceNumber)).toEqual([0, 1, 2, 3]);
+
+      // 3. EXPORT → a share-safe `.relavium.yaml`; the transcript's user turns survive into the scaffold.
+      const result = exportSession({
+        store: second.store,
+        sessionId: SESSION_ID,
+        cwd: dir,
+        force: false,
+      });
+      const yaml = readFileSync(result.path, 'utf8');
+      expect(yaml).toContain('first user message');
+      expect(yaml).toContain('second user message');
+    } finally {
+      second.client.sqlite.close();
+    }
+  });
+});
