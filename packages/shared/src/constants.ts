@@ -16,14 +16,19 @@ export type SchemaVersion = typeof SCHEMA_VERSION;
  * The canonical, **colon-namespaced** run-event type names (sse-event-schema.md).
  * Never the legacy dotted names (`node.started`), never `node:error`/`run:error`,
  * and the per-event ordinal is always `sequenceNumber`, never `seqNo`. Order mirrors the
- * `RunEvent` union in the spec: `agent:approval_requested` + `agent:file_patch_proposed` sit after
- * `agent:tool_result`, and the four governance events (`run:paused`, `run:timeout`, `budget:warning`,
- * `budget:paused`; ADR-0028) close the list.
+ * `RunEvent` union in the spec: `agent:reasoning` sits immediately after `agent:token` (the reasoning
+ * host-emit, EA6/2.5.H amending [ADR-0036]); `agent:approval_requested` + `agent:file_patch_proposed`
+ * sit after `agent:tool_result`, and the four governance events (`run:paused`, `run:timeout`,
+ * `budget:warning`, `budget:paused`; ADR-0028) close the list.
  */
 export const RUN_EVENT_TYPES = [
   'run:started',
   'node:started',
   'agent:token',
+  // A streaming reasoning ("thinking") delta from an agent turn (EA6, 2.5.H). A dual-envelope event like
+  // `agent:token` (runId on a run, sessionId on a session); the turn core emits it per `reasoning_delta`
+  // chunk. Never carries the ephemeral same-provider signature (ADR-0030). Amends [ADR-0036].
+  'agent:reasoning',
   'agent:tool_call',
   'agent:tool_result',
   // A side-effecting tool dispatch is awaiting an interactive per-tool approval decision (ADR-0057 EA3/EA5).

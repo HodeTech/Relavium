@@ -460,7 +460,7 @@ function foldChunk(
     return;
   }
   foldToolCallChunk(chunk, acc);
-  foldReasoningChunk(chunk, acc);
+  foldReasoningChunk(chunk, acc, params, getModel);
   // tool_call_end / stop / error / media_* / tool_result are no-ops in both sub-folders.
 }
 
@@ -479,8 +479,20 @@ function foldToolCallChunk(chunk: StreamChunk, acc: TurnAccumulator): void {
   }
 }
 
-/** Accumulate a `reasoning_*` delta; `reasoning_end` carries the optional signature / redacted flag. */
-function foldReasoningChunk(chunk: StreamChunk, acc: TurnAccumulator): void {
+/**
+ * Accumulate a `reasoning_*` delta; `reasoning_end` carries the optional signature / redacted flag. EA6
+ * (2.5.H): a `reasoning_delta` also emits an `agent:reasoning` event — the reasoning counterpart of the
+ * `agent:token` emit in {@link foldChunk} — so a surface can render live "thinking". Mirrors `agent:token`:
+ * the delta `text` + the active `model`, never the ephemeral `signature` (ADR-0030 — it rides on
+ * `reasoning_end`, is fed back only to the same-provider adapter, and is never written to an event). A
+ * `redacted` block carries no `reasoning_delta` text, so it streams no event (nothing to render).
+ */
+function foldReasoningChunk(
+  chunk: StreamChunk,
+  acc: TurnAccumulator,
+  params: AgentTurnParams,
+  getModel: () => string,
+): void {
   if (chunk.type === 'reasoning_start') {
     if (!acc.reasoning.has(chunk.id)) {
       acc.reasoning.set(chunk.id, { text: '' });
@@ -491,6 +503,12 @@ function foldReasoningChunk(chunk: StreamChunk, acc: TurnAccumulator): void {
   if (chunk.type === 'reasoning_delta') {
     const r = acc.reasoning.get(chunk.id);
     if (r !== undefined) r.text += chunk.text;
+    params.emit({
+      type: 'agent:reasoning',
+      nodeId: params.nodeId,
+      text: chunk.text,
+      model: getModel(),
+    });
     return;
   }
   if (chunk.type === 'reasoning_end') {

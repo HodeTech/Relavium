@@ -187,6 +187,34 @@ describe('runAgentTurn — streaming + cost', () => {
     expect(cost?.type === 'cost:updated' && cost.attemptNumber).toBe(1);
     expect(cost?.type === 'cost:updated' && cost.model).toBe('claude-opus-4-8');
   });
+
+  it('emits agent:reasoning per reasoning_delta (EA6, 2.5.H) — text + active model, never a signature', async () => {
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'reasoning_start', id: 'r1' },
+        { type: 'reasoning_delta', id: 'r1', text: 'let me ' },
+        { type: 'reasoning_delta', id: 'r1', text: 'think' },
+        { type: 'reasoning_end', id: 'r1', signature: 'sig-abc' },
+        { type: 'text_delta', text: 'Answer' },
+        STOP(),
+      ],
+    ]);
+    const params = baseParams(provider);
+    const result = await runAgentTurn(params);
+    expect(result.text).toBe('Answer');
+
+    const reasoning = eventsOf(params).filter((e) => e.type === 'agent:reasoning');
+    // one event per DELTA only — reasoning_start / reasoning_end (no text) emit nothing
+    expect(reasoning.map((r) => (r.type === 'agent:reasoning' ? r.text : ''))).toEqual([
+      'let me ',
+      'think',
+    ]);
+    for (const r of reasoning) {
+      // mirrors agent:token: the active model rides; the ephemeral signature (ADR-0030) never does
+      expect(r.type === 'agent:reasoning' && r.model).toBe('claude-opus-4-8');
+      expect(r).not.toHaveProperty('signature');
+    }
+  });
 });
 
 describe('runAgentTurn — inline media-out (1.AG/ADR-0046)', () => {

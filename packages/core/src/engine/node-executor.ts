@@ -38,6 +38,7 @@ export type GateType = HumanGatePausedEvent['gateType'];
 /** The event types a node may emit *during* its own execution (carried on the run/session envelope). */
 type InNodeEventType =
   | 'agent:token'
+  | 'agent:reasoning'
   | 'agent:tool_call'
   | 'agent:tool_result'
   | 'cost:updated'
