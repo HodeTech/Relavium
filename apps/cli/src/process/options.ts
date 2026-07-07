@@ -169,11 +169,12 @@ function resolveVerbosity(raw: RawGlobalOptions): Verbosity {
 /**
  * Resolve the effective color setting — ANSI STYLING only, orthogonal to the `--json`/CI/non-TTY output MODE
  * (which suppresses ANSI separately in `detectOutputMode`, output-mode.ts). Precedence (2.5.J; the flag pair
- * is [ADR-0047](../../../docs/decisions/0047-cli-framework-commander-ink-clack.md)'s global-flag set):
+ * is [ADR-0047](../../../../docs/decisions/0047-cli-framework-commander-ink-clack.md)'s global-flag set):
  *   1. an explicit `--color` / `--no-color` flag (a per-invocation override);
  *   2. `NO_COLOR` — ANY non-empty value ⇒ OFF (the no-color.org accessibility contract; wins over FORCE_COLOR);
- *   3. `FORCE_COLOR` — any value other than `0`/`false`/`''` ⇒ ON;
- *   4. default ON.
+ *   3. `FORCE_COLOR` — `0`/`false` ⇒ OFF (the `supports-color` convention; the value is checked, unlike NO_COLOR);
+ *   4. default ON (a truthy `FORCE_COLOR` is consistent with this — it can only opt OUT here, since color already
+ *      defaults on and is consulted only on a TTY where it is on).
  * `NO_COLOR` intentionally beats `FORCE_COLOR`: a user who opts OUT of color must win over a tool/CI opting in.
  */
 function resolveColor(
@@ -181,10 +182,10 @@ function resolveColor(
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
   if (raw.color !== undefined) return raw.color; // 1. the explicit flag wins
-  if ((env['NO_COLOR'] ?? '') !== '') return false; // 2. NO_COLOR opts out (accessibility floor)
-  const force = env['FORCE_COLOR']; // 3. FORCE_COLOR opts in (force-ON only; disabling is NO_COLOR/--no-color)
-  if (force !== undefined && force !== '' && force !== '0' && force !== 'false') return true;
-  return true; // 4. default on
+  if ((env['NO_COLOR'] ?? '') !== '') return false; // 2. NO_COLOR opts out (any non-empty; accessibility floor)
+  const force = env['FORCE_COLOR']; // 3. FORCE_COLOR=0/false opts out (supports-color convention)
+  if (force === '0' || force === 'false') return false;
+  return true; // 4. default on (incl. a truthy FORCE_COLOR)
 }
 
 export function resolveGlobalOptions(

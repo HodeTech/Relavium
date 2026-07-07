@@ -33,7 +33,7 @@ Global options (usable anywhere on the command line):
   -v, --verbose     print verbose diagnostics to stderr
   -q, --quiet       suppress non-essential output
 
-Color precedence: --color/--no-color > NO_COLOR (any value ⇒ off) > FORCE_COLOR (⇒ on) > on.`;
+Color precedence: --color/--no-color > NO_COLOR (any value ⇒ off) > FORCE_COLOR (0/false ⇒ off) > on.`;
 
 /**
  * Build the `commander` program: the full subcommand surface plus a bare-invocation help

@@ -123,14 +123,18 @@ describe('resolveGlobalOptions', () => {
       expect(color({}, { NO_COLOR: '1', FORCE_COLOR: '1' })).toBe(false);
     });
 
-    it('FORCE_COLOR turns color ON only for a truthy value; 0/false/empty fall through to default-on', () => {
+    it('FORCE_COLOR=0/false turns color OFF (the supports-color convention); other values keep the default on', () => {
+      // 0/false is the one FORCE_COLOR value with an observable effect — it opts out (distinct from default-on).
+      expect(color({}, { FORCE_COLOR: '0' })).toBe(false);
+      expect(color({}, { FORCE_COLOR: 'false' })).toBe(false);
+      // A truthy or empty value is consistent with the default-on (color already defaults on).
       expect(color({}, { FORCE_COLOR: '1' })).toBe(true);
       expect(color({}, { FORCE_COLOR: 'true' })).toBe(true);
-      // These do not FORCE on (and there is no NO_COLOR), so the default-on applies — FORCE_COLOR never
-      // turns color OFF; that is NO_COLOR / --no-color's job.
-      expect(color({}, { FORCE_COLOR: '0' })).toBe(true);
-      expect(color({}, { FORCE_COLOR: 'false' })).toBe(true);
       expect(color({}, { FORCE_COLOR: '' })).toBe(true);
+    });
+
+    it('an explicit flag beats FORCE_COLOR=0 (the per-invocation override wins over env opt-out)', () => {
+      expect(color({ color: true }, { FORCE_COLOR: '0' })).toBe(true);
     });
   });
 });

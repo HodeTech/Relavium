@@ -43,10 +43,10 @@ no-TTY / `CI=true`, and to NDJSON only on `--json`.
 
 **Color precedence.** ANSI styling is orthogonal to the output mode above, resolved with this precedence:
 an explicit `--color` / `--no-color` flag > the `NO_COLOR` env var (**any** non-empty value ⇒ off, the
-[no-color.org](https://no-color.org) accessibility contract) > the `FORCE_COLOR` env var (any value other than
-`0`/`false`/empty ⇒ on) > **on** by default. `NO_COLOR` intentionally beats `FORCE_COLOR` — a user who opts
-out of color wins over a tool/CI that opts in. (A `--json`/CI/no-TTY stream carries no ANSI regardless — that
-is the separate output-mode selection above.)
+[no-color.org](https://no-color.org) accessibility contract) > the `FORCE_COLOR` env var (`0`/`false` ⇒ off,
+the `supports-color` convention) > **on** by default. `NO_COLOR` intentionally beats `FORCE_COLOR` — a user
+who opts out of color wins over a tool/CI that opts in. (A `--json`/CI/no-TTY stream carries no ANSI regardless
+— that is the separate output-mode selection above.)
 
 ### The `--json` machine-output contract
 
