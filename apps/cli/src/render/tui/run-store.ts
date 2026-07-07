@@ -47,6 +47,7 @@ export interface RunStoreController extends RunStore {
  */
 const HIGH_FREQUENCY_EVENTS: ReadonlySet<RunEvent['type']> = new Set([
   'agent:token',
+  'agent:reasoning', // EA6 (2.5.H) — a per-reasoning_delta firehose like agent:token; coalesce its repaints
   'agent:tool_call',
   'agent:tool_result',
   'agent:file_patch_proposed',

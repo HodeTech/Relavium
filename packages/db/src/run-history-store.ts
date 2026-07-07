@@ -178,8 +178,15 @@ const NON_TERMINAL_STATUSES = ['pending', 'running', 'paused'] as const;
 
 /** The per-token/tool streaming firehose — the highest-volume events, which checkpoint reconstruction and gate
  *  detection ignore. {@link RunHistoryReader.loadRunStateEvents} excludes these so a bounded fold over a long run
- *  does not pay to parse them. (Matches `runEvents.eventType`, which stores `event.type`.) */
-const STREAMING_EVENT_TYPES = ['agent:token', 'agent:tool_call', 'agent:tool_result'];
+ *  does not pay to parse them. (Matches `runEvents.eventType`, which stores `event.type`.) `agent:reasoning`
+ *  (EA6, 2.5.H) is a streamed firehose event of the same class; it is never persisted (streamed `agent:*` events
+ *  go through the bus, not `persistEvent`), so it is listed here for defensive consistency, not effect. */
+const STREAMING_EVENT_TYPES = [
+  'agent:token',
+  'agent:reasoning',
+  'agent:tool_call',
+  'agent:tool_result',
+];
 
 function fromRunRow(row: RunRow): RunRecord {
   return {

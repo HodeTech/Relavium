@@ -97,6 +97,23 @@ export function formatDuration(ms: number): string {
   return `${minutes}m${String(seconds).padStart(2, '0')}s`;
 }
 
+/**
+ * Format an elapsed millisecond count for a LIVE in-flight counter (the "thinking…/working… {elapsed}" turn
+ * timer, 2.5.H): WHOLE seconds only so it does not jitter every ~80ms animation frame — `3s`, `12s`, `1m03s`.
+ * Negatives (clock skew) clamp to 0. Distinct from {@link formatDuration}, which shows sub-second precision for a
+ * COMPLETED span (a live counter reading "3.2s" then "3.3s" every frame is noise, not precision).
+ */
+export function formatElapsed(ms: number): string {
+  // Guard a non-finite input to 0 (symmetry with `spinnerFrame`) so a NaN can never render "NaNmNaNs".
+  const totalSeconds = Math.floor(Math.max(0, Number.isFinite(ms) ? ms : 0) / 1000);
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m${String(seconds).padStart(2, '0')}s`;
+}
+
 /** Format a token-usage pair as `↑in ↓out`. */
 export function formatTokens(tokens: { readonly input: number; readonly output: number }): string {
   return `↑${tokens.input} ↓${tokens.output}`;

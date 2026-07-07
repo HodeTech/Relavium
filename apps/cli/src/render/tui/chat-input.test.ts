@@ -159,6 +159,13 @@ describe('reduceChatKey', () => {
     expect(reduceChatKey('', { escape: true }, 'h', true)).toEqual({ kind: 'abort' });
     expect(reduceChatKey('', { escape: true }, 'h', false)).toEqual({ kind: 'none' }); // idle Esc: nothing to abort
   });
+
+  it('maps Ctrl+T to toggle-reasoning (idle OR running — the thinking panel toggles mid-turn), 2.5.H', () => {
+    expect(reduceChatKey('t', { ctrl: true }, 'h', false)).toEqual({ kind: 'toggle-reasoning' });
+    expect(reduceChatKey('t', { ctrl: true }, 'h', true)).toEqual({ kind: 'toggle-reasoning' });
+    // A bare 't' (no ctrl) is a normal character, never the toggle.
+    expect(reduceChatKey('t', KEY, 'h', false)).toEqual({ kind: 'append', char: 't' });
+  });
 });
 
 describe('reduceChatKey — approval-prompt intercept (in-flight key-swallow bypass, ADR-0057)', () => {

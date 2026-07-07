@@ -68,6 +68,9 @@ export type ChatKeyAction =
   | { readonly kind: 'cancel' }
   /** Shift+Tab — advance the chat mode (ask → plan → accept-edits → auto → ask), ADR-0057. */
   | { readonly kind: 'cycle-mode' }
+  /** Ctrl+T — toggle the collapsible "thinking" panel (2.5.H); a pure UI-view flip, valid MID-turn (it is decided
+   *  before the running-swallow, so a user can expand reasoning while it streams). */
+  | { readonly kind: 'toggle-reasoning' }
   /** Esc mid-turn — abort the in-flight turn but KEEP the session alive (EA7), distinct from `cancel`. */
   | { readonly kind: 'abort' }
   /** An approval-prompt decision (accept-edits / auto's protected-path fallback): `[y]` once / `[a]` always. */
@@ -182,6 +185,7 @@ export function reduceChatKey(
   if (approvalPending) return reduceApprovalKey(char, key);
   if (key.ctrl === true && char === 'c') return { kind: 'cancel' };
   if (key.tab === true && key.shift === true) return { kind: 'cycle-mode' }; // Shift+Tab cycles the chat mode
+  if (key.ctrl === true && char === 't') return { kind: 'toggle-reasoning' }; // Ctrl+T toggles the thinking panel (mid-turn OK)
   if (key.escape === true && running) return { kind: 'abort' }; // mid-turn abort, keeps the session (EA7)
   if (running) return { kind: 'none' }; // one turn at a time — ignore typing while the assistant streams
   const edit = reduceEditorMotion(char, key);

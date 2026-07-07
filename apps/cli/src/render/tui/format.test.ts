@@ -4,6 +4,7 @@ import {
   formatCostShort,
   formatCostUsd,
   formatDuration,
+  formatElapsed,
   formatProducedMedia,
   formatTokens,
   SPINNER_FRAMES,
@@ -96,5 +97,28 @@ describe('formatProducedMedia', () => {
     expect(formatProducedMedia({ mimeType: 'image/png', handle })).toBe(`◆ image/png ${handle}`);
     // Pure mimeType passthrough — a non-image modality is rendered verbatim (no per-modality special-casing).
     expect(formatProducedMedia({ mimeType: 'audio/mpeg', handle })).toBe(`◆ audio/mpeg ${handle}`);
+  });
+});
+
+describe('formatElapsed (2.5.H live-turn timer)', () => {
+  it('shows whole seconds under a minute (floored, so it does not jitter per frame)', () => {
+    expect(formatElapsed(0)).toBe('0s');
+    expect(formatElapsed(3200)).toBe('3s'); // floors, not rounds — a live counter never reads ahead
+    expect(formatElapsed(59_000)).toBe('59s');
+  });
+
+  it('rolls into m/ss at a minute with a zero-padded seconds field', () => {
+    expect(formatElapsed(60_000)).toBe('1m00s');
+    expect(formatElapsed(63_000)).toBe('1m03s');
+    expect(formatElapsed(600_000)).toBe('10m00s');
+  });
+
+  it('clamps a negative elapsed (clock skew) to 0s', () => {
+    expect(formatElapsed(-5000)).toBe('0s');
+  });
+
+  it('guards a non-finite input to 0s (never "NaNmNaNs")', () => {
+    expect(formatElapsed(Number.NaN)).toBe('0s');
+    expect(formatElapsed(Number.POSITIVE_INFINITY)).toBe('0s');
   });
 });

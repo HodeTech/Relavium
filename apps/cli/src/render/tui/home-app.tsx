@@ -52,7 +52,11 @@ function ChatRegion(
     mention: MentionState | undefined;
     modelPicker: ModelPickerState | undefined;
     effortPicker: EffortPickerState | undefined;
-    nowMs: number;
+    /** The wall-clock as a FUNCTION, not a pre-computed number: `ChatRegion` re-renders every frame while a turn
+     *  streams (its own store subscription flushes on `tick`, chat-store.ts), whereas its parent `RootApp` only
+     *  re-renders on controller state changes. So the live-turn timer (2.5.H) MUST read the clock here, per frame —
+     *  a number prop frozen at the parent's last render would stick the elapsed at 0s for the whole pre-token wait. */
+    now: () => number;
     shellBusy: boolean;
     submitBusy: boolean;
     shellCommand: string | undefined;
@@ -60,20 +64,22 @@ function ChatRegion(
     attachments: readonly PendingAttachment[];
   }>,
 ): ReactElement {
-  const { state, tick, color, mode, reasoningEffort, approval } = useSyncExternalStore(
-    props.store.subscribe,
-    props.store.getSnapshot,
-  );
+  const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
+    useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
+  // Read the clock in THIS per-frame component (see the `now` prop doc) so the elapsed advances live.
+  const nowMs = props.now();
   return (
     <Box flexDirection="column">
       <ChatView
         state={state}
         tick={tick}
+        nowMs={nowMs}
         color={color}
         editor={props.editor}
         running={state.status === 'running' || props.shellBusy || props.submitBusy}
         mode={mode}
         reasoningEffort={reasoningEffort}
+        reasoningVisible={reasoningVisible}
         approval={approval}
         attachments={props.attachments}
         busyCommand={props.shellCommand}
@@ -94,7 +100,7 @@ function ChatRegion(
       {props.mention !== undefined && <MentionView state={props.mention} color={color} />}
       {/* The `/models` reseat picker overlay in a live in-Home chat (ADR-0059) — mounted like the palette. */}
       {props.modelPicker !== undefined && (
-        <ModelPickerView state={props.modelPicker} color={color} nowMs={props.nowMs} />
+        <ModelPickerView state={props.modelPicker} color={color} nowMs={nowMs} />
       )}
       {/* The standalone `/effort` overlay in a live in-Home chat (ADR-0066 §6) — the shared tier list. */}
       {props.effortPicker !== undefined && (
@@ -130,7 +136,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         mention={state.mention}
         modelPicker={state.modelPicker}
         effortPicker={state.effortPicker}
-        nowMs={props.nowMs()}
+        now={props.nowMs}
         shellBusy={state.shellBusy}
         submitBusy={state.submitBusy}
         shellCommand={state.shellCommand}

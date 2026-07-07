@@ -68,6 +68,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import {
+  errorRecoveryHint,
   formatToolCall,
   sanitizeInline,
   stripTerminalControls,
@@ -973,6 +974,13 @@ export function createChatLineHandler(
           : `reasoning effort: ${tier} set, but ${built.agent.model} has no reasoning control — it will be ignored.`,
       );
     },
+    // `/thinking` (2.5.H): toggle the collapsible reasoning panel — a pure store-view flip (no session/engine
+    // effect), mirroring the Ctrl+T keybind. Report the resulting state so the toggle is confirmed (the panel only
+    // renders while the model is actually streaming reasoning).
+    toggleReasoning: () => {
+      store.toggleReasoning();
+      emitOutput(`reasoning panel: ${store.getSnapshot().reasoningVisible ? 'shown' : 'hidden'}`);
+    },
     // `/compact` (ADR-0062): model-summarise the working context. An LLM call — announce the moment, then
     // await, then report the deltas. The engine emits session:compacted (→ the persister writes the boundary
     // marker); this notice is the user-facing report. Never crashes the REPL — a failure is reported as output.
@@ -1676,7 +1684,14 @@ export async function driveJson(ctx: ChatDriveContext): Promise<ChatDriveOutcome
  * A plain event printer for the non-TTY surface — streams the assistant tokens and annotates tool calls, both
  * SECRET-FREE (only the token text the model produced + the namespaced tool id, never tool arguments).
  */
-export function makePlainPrinter(io: CliIo): (event: SessionStreamHandleEvent) => void {
+export function makePlainPrinter(
+  io: CliIo,
+  // Whether to append the session-continuity recovery hint on a failed turn (2.5.H). TRUE for the plain CHAT REPL
+  // (`drivePlain`) — the session survives, so "the session is still active; resend / `/compact` / …" is accurate.
+  // FALSE for the ONE-SHOT `agent run`, which cancels the session in its `finally` right after: those hints would
+  // be false (no live session, no slash REPL to resend into), so a one-shot prints only `[turn failed: <code>]`.
+  recoveryHints = true,
+): (event: SessionStreamHandleEvent) => void {
   return (event) => {
     switch (event.type) {
       case 'agent:token':
@@ -1692,9 +1707,22 @@ export function makePlainPrinter(io: CliIo): (event: SessionStreamHandleEvent) =
         io.writeOut(`\n${annotation}\n`);
         return;
       }
-      case 'session:turn_completed':
-        io.writeOut(event.error === undefined ? '\n' : `\n[turn failed: ${event.error.code}]\n`);
+      case 'session:turn_completed': {
+        if (event.error === undefined) {
+          io.writeOut('\n');
+          return;
+        }
+        // A failed turn: the code + (in a continuing session only) an actionable, secret-free recovery hint (2.5.H)
+        // making explicit the session is still active. A one-shot `agent run` sets `recoveryHints = false` — its
+        // session is cancelled immediately after, so a session-continuity hint would be false there.
+        const hint = recoveryHints
+          ? errorRecoveryHint(event.error.code, event.error.message)
+          : undefined;
+        // Build the optional hint LINE separately (no nested template literal) before composing the output.
+        const hintLine = hint === undefined ? '' : `${hint}\n`;
+        io.writeOut(`\n[turn failed: ${event.error.code}]\n${hintLine}`);
         return;
+      }
       default:
         return;
     }

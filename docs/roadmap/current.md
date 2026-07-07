@@ -192,19 +192,32 @@ cache + refresh + a static/live merge) and a complete model-pricing story (user-
 cost) — behind three new ADRs ([ADR-0063](../decisions/0063-cli-config-write-contract.md) config-write ·
 [ADR-0064](../decisions/0064-live-model-catalog.md) live catalog ·
 [ADR-0065](../decisions/0065-provider-economics-and-extensibility.md) provider economics), across 12 reviewed
-steps; the additive lanes 2.5.H / I / J run in parallel. See the
+steps. The additive lane **2.5.H** (reasoning render + live-turn feedback + an actionable error taxonomy) is ✅
+**Done (2026-07-07)** — behind **EA6** (a new dual-envelope `agent:reasoning` stream event that *amends*
+[ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md); no new top-level ADR): a
+host-emit of the reasoning the `@relavium/llm` seam already carries (ADR-0030), a collapsible "thinking" panel
+(`/thinking` / `Ctrl+T`), the `Thinking…/Working… {elapsed}s · Esc to stop` timer, a visible `…` elision marker
+(fixing the silent live-buffer head-drop), per-attempt `via {model}` failover attribution, and a static,
+secret-free per-`ErrorCode` recovery hint (session-survives; a context-overflow message heuristic → `/compact`·
+`/trim`). Four steps, each opus + Sonnet reviewed (3 HIGH fixed: a run-path silent-drop, a frozen Home timer, a
+scrollback elision loss; + a one-shot `agent run` hint-leak). **With 2.5.E this reaches milestone M2.5-3.** The
+remaining additive lanes 2.5.I / J run in parallel. See the
 [Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md). A **post-2.5.G model-UX follow-up** (from six
 maintainer questions on model/provider/wizard behavior) then landed as a sequenced plan: `/models` key-awareness,
 the onboarding-wizard live key-validation + retry UX, wizard-dynamic provider docs, **mid-session model switching**
 (the `/models` reseat across `relavium chat` + the in-Home chat — [ADR-0059](../decisions/0059-cli-mid-session-model-reseat.md),
 now Accepted), and **normalized reasoning-effort control** ([ADR-0066](../decisions/0066-normalized-reasoning-effort-control.md),
-now Accepted): a provider-agnostic effort tier (`off`/`low`/`medium`/`high`/`max`) authored in agent YAML or the
-`[chat].reasoning_effort` config default, each adapter mapping it to its provider's **native** tier, gated per-model
-by a host-injected capability resolver (plus a conservative id heuristic for a live-discovered model), and changed
-live — via the `/effort` command or the `/models` picker's **effort sub-step** — as a **per-turn session override**
-(no reseat, §5), with the active tier shown in the footer. The comprehensive multi-agent review after the first
-implementation caught that the picker had (wrongly) routed the effort through a full model reseat; the P0 fix
-rebuilt it as the ADR-mandated session-level setter.
+now Accepted, **merged 2026-07-07**): a provider-agnostic effort tier (`off`/`low`/`medium`/`high`/`max`) authored in
+agent YAML or the `[chat].reasoning_effort` config default, each adapter mapping it to its provider's **native** tier —
+**all four providers**, DeepSeek-v4's `thinking` param included (doc-verified against api-docs.deepseek.com) — gated
+per-model by a host-injected capability resolver (plus a conservative id heuristic for a live-discovered model). It is
+changed **interactively**: `/effort` opens a keyboard-owning tier-selector **overlay** in `relavium chat` + the in-Home
+chat (§6), and the `/models` picker's **effort sub-step** either applies a **per-turn session override** in a live chat
+(no reseat, §5) or — in the **bare Home** — **writes** the model + effort as the next session's config defaults (a new
+global `[preferences].reasoning_effort` key), the active tier shown in the footer. Two multi-agent review passes
+hardened it: the first caught the picker (wrongly) routing effort through a full model reseat — the P0 fix rebuilt it
+as the ADR-mandated session-level setter; the second caught the bare-Home effort default not being re-read for a
+same-process next chat — fixed to mirror the model's fresh per-chat re-read.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks
 items up as it first touches each file. Notable inheritances: 1.AH's host-wiring half

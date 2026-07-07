@@ -40,6 +40,13 @@ function events() {
       token,
       model: MODEL,
     }),
+    reasoning: (text: string): SessionStreamHandleEvent => ({
+      type: 'agent:reasoning',
+      ...stamp(),
+      nodeId: NODE,
+      text,
+      model: MODEL,
+    }),
     toolCall: (toolId: string): SessionStreamHandleEvent => ({
       type: 'agent:tool_call',
       ...stamp(),
@@ -56,11 +63,11 @@ function events() {
       success: true,
       outputSummary: 'ok',
     }),
-    cost: (cumulative: number): SessionStreamHandleEvent => ({
+    cost: (cumulative: number, model: string = MODEL): SessionStreamHandleEvent => ({
       type: 'cost:updated',
       ...stamp(),
       nodeId: NODE,
-      model: MODEL,
+      model, // defaults to the bound MODEL; a test passes a DIFFERENT id to simulate a within-turn failover
       inputTokens: 10,
       outputTokens: 5,
       costMicrocents: cumulative,
@@ -607,5 +614,190 @@ describe('session-view-model', () => {
     const seeded = initialSessionViewState({ model: 'claude-sonnet-4-6', turnCount: 3 });
     expect(seeded.contextWindowTokens).toBe(contextWindowForModel('claude-sonnet-4-6'));
     expect(seeded.lastInputTokens).toBeUndefined(); // no per-turn seed until the first resumed turn completes
+  });
+});
+
+describe('session-view-model — live-turn feedback + attribution (2.5.H)', () => {
+  it('flags liveTokensTruncated when the live buffer head scrolls out (the elision marker source)', () => {
+    const e = events();
+    const long = 'x'.repeat(MAX_LIVE_TOKEN_CHARS + 50);
+    const state = reduceAll([e.started(), e.turnStarted(), e.token(long)]);
+    expect(state.liveTokens).toHaveLength(MAX_LIVE_TOKEN_CHARS); // only the trailing window is kept
+    expect(state.liveTokensTruncated).toBe(true); // …so the render shows a leading elision marker, not a silent loss
+  });
+
+  it('keeps liveTokensTruncated false under the cap and resets it on a tool-call boundary', () => {
+    const e = events();
+    const under = reduceAll([e.started(), e.turnStarted(), e.token('hello')]);
+    expect(under.liveTokensTruncated).toBe(false);
+    const afterTool = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('y'.repeat(MAX_LIVE_TOKEN_CHARS + 10)),
+      e.toolCall('read_file'),
+    ]);
+    expect(afterTool.liveTokens).toBe(''); // the segment after the last tool call starts fresh
+    expect(afterTool.liveTokensTruncated).toBe(false); // …and the elision flag resets with it
+  });
+
+  it('resets liveTokensTruncated on turn_completed and on cancel', () => {
+    const e = events();
+    const overflow = () => e.token('z'.repeat(MAX_LIVE_TOKEN_CHARS + 1));
+    const done = reduceAll([e.started(), e.turnStarted(), overflow(), e.turnCompleted()]);
+    expect(done.liveTokensTruncated).toBe(false);
+    const cancelled = reduceAll([e.started(), e.turnStarted(), overflow(), e.cancelled()]);
+    expect(cancelled.liveTokensTruncated).toBe(false);
+  });
+
+  it('bakes the elision marker into the FINALIZED transcript entry so a truncated answer stays visible', () => {
+    // The marker must survive turn completion: a completed turn lands in ink <Static> (permanent scrollback)
+    // rendered verbatim, so the reducer bakes `…` into the display text — else the head silently vanishes exactly
+    // when the turn ends (the loss the feature exists to surface). (The DURABLE record via the persister is full.)
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('z'.repeat(MAX_LIVE_TOKEN_CHARS + 20)),
+      e.turnCompleted(),
+    ]);
+    const last = state.transcript.at(-1);
+    expect(last?.role === 'assistant' && last.text.startsWith('…')).toBe(true);
+  });
+
+  it('does NOT prefix the elision marker on a non-truncated completed turn', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('a short answer'),
+      e.turnCompleted(),
+    ]);
+    const last = state.transcript.at(-1);
+    expect(last?.role === 'assistant' && last.text).toBe('a short answer');
+  });
+
+  it('attributes a completed turn to the committed model on a within-turn failover', () => {
+    const e = events();
+    // The LAST cost:updated of the turn carries the committed (failed-over) model, distinct from the bound model.
+    const state = reduceAll([
+      e.started(), // bound model = claude-sonnet-4-6
+      e.turnStarted(),
+      e.token('hi'),
+      e.cost(1, 'claude-opus-4-8'), // committed model differs ⇒ attributed on the summary
+      e.turnCompleted(),
+    ]);
+    const last = state.transcript.at(-1);
+    expect(last?.role === 'assistant' && last.summary.model).toBe('claude-opus-4-8');
+  });
+
+  it('keeps the LAST cost:updated model across a multi-attempt turn (the committed model)', () => {
+    const e = events();
+    // Two attempts: the first model fails over to the second, which commits — the summary shows the last (B).
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.cost(1, 'claude-sonnet-4-6'), // attempt A (== bound)
+      e.token('hi'),
+      e.cost(2, 'claude-opus-4-8'), // attempt B commits (the final cost:updated before turn_completed)
+      e.turnCompleted(),
+    ]);
+    const last = state.transcript.at(-1);
+    expect(last?.role === 'assistant' && last.summary.model).toBe('claude-opus-4-8');
+  });
+
+  it('omits the summary model when the committed model equals the bound model (no redundant noise)', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('hi'),
+      e.cost(1), // same as the bound model
+      e.turnCompleted(),
+    ]);
+    const last = state.transcript.at(-1);
+    expect(last?.role === 'assistant' && last.summary.model).toBeUndefined();
+  });
+
+  it('resets activeTurnModel between turns so a failover never leaks into the next turn', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('a'),
+      e.cost(1, 'claude-opus-4-8'),
+      e.turnCompleted(),
+      e.turnStarted(),
+      e.token('b'), // this turn engaged no cost:updated ⇒ activeTurnModel stays reset
+      e.turnCompleted(),
+    ]);
+    const last = state.transcript.at(-1);
+    expect(last?.role === 'assistant' && last.text).toBe('b');
+    expect(last?.role === 'assistant' && last.summary.model).toBeUndefined();
+  });
+});
+
+describe('session-view-model — reasoning fold (EA6, 2.5.H)', () => {
+  it('accumulates agent:reasoning into liveReasoning', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.reasoning('let me '),
+      e.reasoning('think'),
+    ]);
+    expect(state.liveReasoning).toBe('let me think');
+    expect(state.liveReasoningTruncated).toBe(false);
+  });
+
+  it('flags liveReasoningTruncated when the reasoning buffer head scrolls out', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.reasoning('r'.repeat(MAX_LIVE_TOKEN_CHARS + 5)),
+    ]);
+    expect(state.liveReasoning).toHaveLength(MAX_LIVE_TOKEN_CHARS);
+    expect(state.liveReasoningTruncated).toBe(true);
+  });
+
+  it('keeps the reasoning truncation flag STICKY across a later non-truncating delta', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.reasoning('r'.repeat(MAX_LIVE_TOKEN_CHARS + 5)), // truncates
+      e.reasoning(' more'), // this delta alone would not truncate, but the flag stays set for the segment
+    ]);
+    expect(state.liveReasoningTruncated).toBe(true);
+  });
+
+  it('accumulates reasoning ACROSS a tool call (unlike liveTokens, which resets per tool round)', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.reasoning('before tool'),
+      e.toolCall('read_file'),
+      e.reasoning(' after tool'),
+    ]);
+    expect(state.liveReasoning).toBe('before tool after tool'); // the whole turn's thinking
+    expect(state.liveTokens).toBe(''); // liveTokens WAS reset by the tool call — they diverge by design
+  });
+
+  it('resets reasoning on turn_started, turn_completed, and cancel (per-turn lifecycle)', () => {
+    const e = events();
+    const nextTurn = reduceAll([e.started(), e.turnStarted(), e.reasoning('x'), e.turnStarted()]);
+    expect(nextTurn.liveReasoning).toBe('');
+    const done = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.reasoning('x'),
+      e.token('a'),
+      e.turnCompleted(),
+    ]);
+    expect(done.liveReasoning).toBe('');
+    expect(done.liveReasoningTruncated).toBe(false);
+    const cancelled = reduceAll([e.started(), e.turnStarted(), e.reasoning('x'), e.cancelled()]);
+    expect(cancelled.liveReasoning).toBe('');
   });
 });

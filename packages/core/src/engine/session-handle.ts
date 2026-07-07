@@ -17,6 +17,7 @@
 
 import type {
   AgentApprovalRequestedEvent,
+  AgentReasoningEvent,
   AgentToolCallEvent,
   AgentToolResultEvent,
   AgentTokenEvent,
@@ -31,14 +32,15 @@ import { BoundedEventStream, DEFAULT_STREAM_CAPACITY } from './event-stream.js';
 
 /**
  * The fully-stamped events a session stream carries: the `session:*` lifecycle/side events (started /
- * turn_started / turn_completed / cancelled / exported / compacting / compacted / trimmed — ADR-0062), the four
- * dual-envelope in-turn events (`agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated`),
- * and the host-emitted `agent:approval_requested` (ADR-0057) — all carrying `sessionId`. The complete
- * session stream per sse-event-schema.md §"Session event namespace".
+ * turn_started / turn_completed / cancelled / exported / compacting / compacted / trimmed — ADR-0062), the five
+ * dual-envelope in-turn events (`agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` /
+ * `cost:updated`), and the host-emitted `agent:approval_requested` (ADR-0057) — all carrying `sessionId`. The
+ * complete session stream per sse-event-schema.md §"Session event namespace".
  */
 export type SessionStreamHandleEvent =
   | SessionEvent
   | AgentTokenEvent
+  | AgentReasoningEvent
   | AgentToolCallEvent
   | AgentToolResultEvent
   | AgentApprovalRequestedEvent
@@ -84,15 +86,16 @@ export function createSessionEventSink(bus: RunEventBus, sessionId: string): Ses
     // (agent-turn.ts), so a session never actually emits it. It is the one `NodeStreamEvent` arm with no
     // session-carrying schema member, so it could not validate on the bus. Drop it at this single
     // translation point — the contract boundary 1.W owns — keeping the session stream to its
-    // sse-event-schema.md contract (the `session:*` lifecycle/side events, the four dual
-    // `agent:*`/`cost:updated`, and the host-emitted `agent:approval_requested` — ADR-0057).
+    // sse-event-schema.md contract (the `session:*` lifecycle/side events, the five dual
+    // `agent:*`/`cost:updated` — incl. `agent:reasoning` (EA6) — and the host-emitted
+    // `agent:approval_requested` — ADR-0057).
     if (event.type === 'agent:file_patch_proposed') {
       return;
     }
     // Attach the correlation key; the bus then stamps the per-session sequenceNumber + timestamp and
     // validates against the combined RunOrSessionEventSchema. After the guard the body is a `session:*`
-    // lifecycle body, one of the four dual `agent:*`/`cost:updated` bodies, or the host-emitted
-    // `agent:approval_requested` body, so `+ sessionId` is a
+    // lifecycle body, one of the five dual `agent:*`/`cost:updated` bodies (incl. `agent:reasoning`), or the
+    // host-emitted `agent:approval_requested` body, so `+ sessionId` is a
     // BusEventDraft the session-side `emit` overload accepts (a session lifecycle → `SessionEventDraft`,
     // a dual body → the optional-`sessionId` `RunEventDraft` arm). The bus stamps and returns it.
     bus.emit({ ...event, sessionId });

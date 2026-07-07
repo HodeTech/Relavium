@@ -162,17 +162,19 @@ describe('createSessionEventSink (1.W) — AgentSession envelope-free drafts →
     // AgentSession emits envelope-LESS, sessionId-LESS bodies (SessionStreamEvent); the sink injects the key.
     sink({ type: 'session:started', agentRef: 'chatter', model: 'claude-opus-4-8', context: CTX });
     sink({ type: 'session:turn_started' });
+    sink({ type: 'agent:reasoning', nodeId: 'n', text: 'think', model: 'claude-opus-4-8' }); // dual in-turn event (EA6) — carried, not dropped
     sink({ type: 'agent:token', nodeId: 'n', token: 'hi', model: 'claude-opus-4-8' }); // dual in-turn event
     sink({ type: 'session:cancelled' });
     const events = await drain(handle.events);
     expect(events.map((e) => e.type)).toEqual([
       'session:started',
       'session:turn_started',
+      'agent:reasoning',
       'agent:token',
       'session:cancelled',
     ]);
     expect(events.every((e) => e.sessionId === 'sess-1')).toBe(true);
-    expect(events.map((e) => e.sequenceNumber)).toEqual([0, 1, 2, 3]);
+    expect(events.map((e) => e.sequenceNumber)).toEqual([0, 1, 2, 3, 4]);
   });
 
   it('drops the run-only agent:file_patch_proposed (never part of a session stream) without consuming a sequence', async () => {

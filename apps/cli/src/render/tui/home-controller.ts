@@ -904,6 +904,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     showCost: () => undefined,
     setMode: () => undefined, // `/mode` is chat-only (not in HOME_PALETTE_COMMANDS); inert in the Home surface
     setReasoningEffort: () => undefined, // `/effort` is chat-only (ADR-0066); inert in the bare-Home surface
+    toggleReasoning: () => undefined, // `/thinking` is chat-only (2.5.H); inert in the bare-Home surface (no live session)
     compactHistory: () => undefined, // `/compact` is chat-only (ADR-0062); inert in the Home surface
     trimHistory: () => undefined, // `/trim` is chat-only (ADR-0062); inert in the Home surface
     // `/clear` (ADR-0062 §7) IS offered in the Home palette (availableIn ['home','chat']), but the BARE Home has no
@@ -1282,6 +1283,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'cycle-mode':
         // Shift+Tab: advance the chat mode on the SAME session (ADR-0057; no reseat) — parity with `relavium chat`.
         active.onModeChange?.(nextMode(active.store.getSnapshot().mode));
+        return;
+      case 'toggle-reasoning':
+        // Ctrl+T: flip the "thinking" panel (2.5.H) — a pure store-view toggle, no session effect. Parity with `relavium chat`.
+        active.store.toggleReasoning();
         return;
       case 'abort':
         // Esc — mid-turn abort (keeps the session; distinct from /cancel). `onAbort` aborts the turn, whose

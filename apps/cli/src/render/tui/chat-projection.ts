@@ -2,7 +2,7 @@ import type { ToolApprovalRequest } from '@relavium/core';
 import type { ReasoningEffort } from '@relavium/shared';
 
 import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
-import { formatCostUsd, formatDuration, formatTokens } from './format.js';
+import { formatCostUsd, formatDuration, formatElapsed, formatTokens } from './format.js';
 import type { SessionViewState, ToolCallView, TurnSummary } from './session-view-model.js';
 
 /**
@@ -123,10 +123,190 @@ export function formatTurnSummary(summary: TurnSummary): string {
   }
   const parts = [
     head,
+    // The producing model (2.5.H) — present ONLY on a within-turn failover (the view-model omits it when it equals
+    // the bound model), so it surfaces exactly when attribution differs from the footer. Sanitized like every id.
+    summary.model === undefined ? undefined : `via ${sanitizeInline(summary.model)}`,
     formatTokens(summary.tokensUsed),
     summary.durationMs === undefined ? undefined : formatDuration(summary.durationMs),
   ].filter((part): part is string => part !== undefined);
   return parts.join(' · ');
+}
+
+/**
+ * Context-overflow heuristic (2.5.H): a request that exceeds the model context window surfaces as `validation` (a
+ * provider `bad_request`), a code shared with an authoring/shape error — so we can only DISTINGUISH the overflow by
+ * a keyword match on the (never-displayed) provider MESSAGE (`error.message`, never the error `code`). The markers
+ * cover the common provider message phrasings: OpenAI "maximum context length", Anthropic "prompt is too long" AND
+ * "…exceed context limit", Gemini "input token count … exceeds". They are deliberately CONTEXT/TOKEN-qualified (no
+ * bare "exceeds the maximum" / "token limit", which a param 400 like "temperature exceeds the maximum" would
+ * false-match). This is a SECONDARY net — 2.5.F auto-compaction (ADR-0062) pre-empts most overflows; it fires for a
+ * model with no known window or `auto_compact = false`. Reading the message for a keyword is NOT displaying it (the
+ * hint returned is a STATIC host string), so no provider text is echoed.
+ */
+const CONTEXT_OVERFLOW_MARKERS: readonly string[] = [
+  'context window',
+  'context length', // OpenAI "maximum context length is N tokens"
+  'context limit', // Anthropic "input length and max_tokens exceed context limit"
+  'maximum context',
+  'prompt is too long', // Anthropic
+  'too many tokens',
+  'input token count', // Gemini
+];
+
+function looksLikeContextOverflow(message: string | undefined): boolean {
+  if (message === undefined || message.length === 0) return false;
+  const lower = message.toLowerCase();
+  return CONTEXT_OVERFLOW_MARKERS.some((marker) => lower.includes(marker));
+}
+
+/**
+ * An **actionable, secret-free recovery hint** for a failed turn's `ErrorCode` (2.5.H) — a one-line next step that
+ * makes explicit **the session survives** (a failed turn settles `session:turn_completed`, never a terminal, so the
+ * REPL stays live). Extends the "say so plainly" philosophy from the 2.5.A capability gap to the transport / quota /
+ * limit classes. Returns `undefined` for a code that is structurally unreachable on the chat
+ * `session:turn_completed.error` path: a cancel settles as `stopReason: 'aborted'` with **no** `error`, so
+ * `cancelled` never appears there; `sandbox_error` and `run_timeout` are WorkflowEngine-only (a provider timeout on
+ * the session path classifies as `provider_unavailable`). The returned string is ALWAYS a static host label — it
+ * never interpolates the provider `message` (only the context-overflow heuristic READS it, to pick the right hint).
+ */
+export function errorRecoveryHint(code: string | undefined, message?: string): string | undefined {
+  switch (code) {
+    case 'provider_rate_limit':
+      return 'Rate-limited by the provider — Relavium already retried with backoff + failover. The session is still active; resend if the turn did not finish.';
+    case 'provider_unavailable':
+      return 'The provider was unavailable — Relavium tried the fallback chain. The session is still active; try again.';
+    case 'provider_auth':
+      return 'Provider authentication failed — check the API key, or unlock the OS keychain if it locked mid-session. The session is still active; fix the key (`relavium provider …`) and resend.';
+    case 'content_filter':
+      return 'The provider blocked the content by its policy. The session is still active; rephrase and resend.';
+    case 'validation':
+      // Only the context-overflow shape gets an actionable hint — a generic validation error has no chat-side remedy.
+      return looksLikeContextOverflow(message)
+        ? 'The request exceeded the model context window — run `/compact` or `/trim` to reclaim room, then resend. The session is still active.'
+        : undefined;
+    case 'tool_failed':
+      // A tool_failed reaching a completed turn is a NON-recoverable failure (a side-effecting or budget-exhausted
+      // tool) — the summary line already names the likely cause (a path / an unavailable target, e.g. an MCP
+      // server). Do NOT promise a retry (there is no session-level tool retry) or a blind "try again" (a
+      // side-effecting failure is fail-fast BECAUSE a re-run is unsafe); guide to fixing the cause.
+      return 'A tool call failed. The session is still active; fix the path or target (or check the MCP server) and resend.';
+    case 'tool_unavailable':
+      // A host/config gap — the capability arm (`fs`/`process`/`egress`/…) is not wired for the SESSION, so a plain
+      // resend re-fails identically (it is not a `/mode`-style runtime toggle). Do NOT promise the model can just
+      // proceed without it; guide to rephrasing / re-wiring — mirrors the tool_failed no-blind-retry correction.
+      return "That tool isn't wired for this session (a host/config gap). The session is still active; rephrase to avoid needing it, or wire the capability and start a fresh session.";
+    case 'tool_denied':
+      return 'The tool was denied by the current mode/policy — switch with `/mode` if that was intended. The session is still active.';
+    case 'budget_exceeded':
+      return 'The turn hit the session cost cap — raise `[chat].max_cost_microcents`, or `/clear` to reset the running total. The session is still active.';
+    case 'turn_limit':
+      // Two producers: the per-turn tool-call ceiling AND the session HARD round cap (agent-session.ts). "Send
+      // another message" fixes the first but is re-blocked by the second — so cover both without asserting a cause.
+      return 'The turn hit a turn/tool-call limit. The session is still active; send another message — if it is blocked again immediately, the session hit its hard turn cap (`/clear` to start fresh).';
+    case 'internal':
+      // No `correlationId` on the session path (that field is WorkflowEngine-only, ADR-0036), so do not send the
+      // user looking for a log id that this surface never produces — and no dangling "report it" with no channel.
+      return 'An unexpected error occurred. The session is still active; try again — `/doctor` can check your setup if it keeps happening.';
+    default:
+      // Structurally unreachable on the session `turn_completed.error` path (`cancelled` settles as `aborted` with
+      // no error; `sandbox_error` / `run_timeout` are WorkflowEngine-only) OR an unknown/future code — no hint.
+      return undefined;
+  }
+}
+
+/** The in-flight busy line: its text plus whether it renders as a DIM, truncate-end STATUS line (compaction /
+ *  shell / the pre-token "Working…" line) or as PLAIN, full-width streaming CONTENT (the answer token line). */
+export interface BusyLine {
+  readonly text: string;
+  readonly dim: boolean;
+}
+
+/**
+ * Assemble the in-flight busy line (2.5.H) — extracted from the ink render so its branch matrix is unit-tested
+ * without mounting React. Four states in priority order:
+ *  1. the labeled compaction moment (ADR-0062 §7);
+ *  2. the `!`-shell command line (2.5.D);
+ *  3. the pre-first-token live-turn STATUS — `Working… {elapsed} · Esc to stop`, a whole-second timer + the abort
+ *     hint, so a running turn never reads as a frozen bare spinner;
+ *  4. the streaming answer CONTENT — with a leading `…` elision marker when the live buffer's head scrolled out (a
+ *     VISIBLE loss, not the old silent drop).
+ * Every dynamic value (`busyCommand`, `liveTokens`) is terminal-sanitized here at the display boundary. `elapsedMs`
+ * is `undefined` before a turn starts; a status line then shows no timer. Returns the text + a `dim` flag the
+ * caller maps to `<Text dim wrap>` (status) vs `<Text>` (content).
+ */
+export function formatBusyLine(input: {
+  readonly spinner: string;
+  readonly compacting: boolean;
+  readonly busyCommand?: string | undefined;
+  readonly liveTokens: string;
+  readonly liveTokensTruncated: boolean;
+  readonly elapsedMs?: number | undefined;
+  /** True when the pre-token label should read "Thinking…" rather than "Working…" (2.5.H). This is the DERIVED
+   *  "the model is plausibly reasoning" signal — the caller computes it via {@link reasoningLabelActive} (reasoning
+   *  streamed this turn AND no tool call is currently executing), NOT the raw "any reasoning streamed" flag, so a
+   *  tool round shows "Working…". Absent/false ⇒ a plain (or tool-running) turn shows "Working…". */
+  readonly reasoningActive?: boolean | undefined;
+}): BusyLine {
+  const { spinner } = input;
+  if (input.compacting) {
+    return { text: `${spinner} ⟳ Summarizing conversation… · Esc to cancel`, dim: true };
+  }
+  if (input.busyCommand !== undefined) {
+    return {
+      text: `${spinner} ! ${sanitizeInline(input.busyCommand)} — running · Esc to cancel`,
+      dim: true,
+    };
+  }
+  const content = stripTerminalControls(input.liveTokens);
+  if (content.length === 0) {
+    const label = input.reasoningActive === true ? 'Thinking…' : 'Working…';
+    const elapsed = input.elapsedMs === undefined ? '' : ` ${formatElapsed(input.elapsedMs)}`;
+    return { text: `${spinner} ${label}${elapsed} · Esc to stop`, dim: true };
+  }
+  return { text: `${spinner} ${input.liveTokensTruncated ? '…' : ''}${content}`, dim: false };
+}
+
+/**
+ * Whether the pre-token busy line should read "Thinking…" (vs "Working…") — the turn streamed reasoning AND no tool
+ * call is currently executing (2.5.H). During a tool round the model idle-waits on the tool, so the label falls
+ * back to "Working…" rather than claiming the model is thinking while a tool runs. Extracted + exported so this
+ * derivation (the fix for the "Thinking… during tool execution" mislabel) is unit-tested, not just inline glue.
+ * NOTE: `liveToolCalls` is bounded (`MAX_LIVE_TOOL_CALLS`); in the pathological >bound parallel-tools case an
+ * evicted-but-still-unresolved old call could read as resolved here — cosmetic-only (the panel + tool lines are
+ * unaffected), acceptable given the generous bound and this engine's typically-ordered resolution.
+ */
+export function reasoningLabelActive(
+  hasReasoning: boolean,
+  liveToolCalls: readonly ToolCallView[],
+): boolean {
+  return hasReasoning && !liveToolCalls.some((call) => !call.resolved);
+}
+
+/** The collapsible "thinking" panel (2.5.H): a header (always, carrying the Ctrl+T toggle hint) + the reasoning
+ *  BODY only when EXPANDED. The caller renders it only when the turn actually streamed reasoning. */
+export interface ReasoningPanel {
+  readonly header: string;
+  /** The reasoning text — present only when EXPANDED (`visible`); absent when collapsed. */
+  readonly body?: string;
+}
+
+/**
+ * Project the in-flight reasoning into the collapsible panel (2.5.H). Collapsed (default): a dim header with the
+ * Ctrl+T toggle hint, so the user knows thinking is available without it flooding the view. Expanded: the header +
+ * the reasoning BODY — terminal-sanitized at this display boundary (newline-preserving, it is multi-line prose),
+ * with a leading `…` elision marker when the bounded buffer's head scrolled out (parity with the answer stream).
+ */
+export function formatReasoningPanel(input: {
+  readonly liveReasoning: string;
+  readonly liveReasoningTruncated: boolean;
+  readonly visible: boolean;
+}): ReasoningPanel {
+  const header = `✻ Reasoning · Ctrl+T ${input.visible ? 'hide' : 'show'}`;
+  if (!input.visible) {
+    return { header };
+  }
+  const body = `${input.liveReasoningTruncated ? '…' : ''}${stripTerminalControls(input.liveReasoning)}`;
+  return { header, body };
 }
 
 /**

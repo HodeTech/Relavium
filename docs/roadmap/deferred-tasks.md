@@ -355,10 +355,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   Deep conformance needs a JSON-Schema validator (Zod cannot consume an arbitrary JSON-Schema), which is a new
   runtime dependency requiring an ADR. *(medium · packages/core/src/engine/agent-runner.ts,
   packages/core/src/engine/node-handlers/transform.ts; error-handling.md)*
-- [ ] **Per-attempt model attribution for `agent:token`** — `cost:updated` is always per-attempt-accurate, but
-  `agent:token.model` uses `activeModel` (updated from the *succeeding* attempt record, which fires after the
-  stream), so a *cross-model pre-content failover* attributes that turn's tokens to the prior model. A precise
-  fix needs a `FallbackChain` `onAttemptStart`/attributed-stream hook (a seam change). *(low · packages/core/src/engine/agent-turn.ts; packages/llm/src/fallback-chain.ts)*
+- [ ] **Per-attempt model attribution for `agent:token` / `agent:reasoning`** — `cost:updated` is always
+  per-attempt-accurate, but the two mid-stream events `agent:token.model` and `agent:reasoning.model` (EA6, 2.5.H)
+  use `activeModel` (updated from the *succeeding* attempt record, which fires after the stream), so a
+  *cross-model pre-content failover* attributes that turn's tokens/reasoning to the prior model (reasoning arrives
+  before text, so it shares the same window). A precise fix needs a `FallbackChain` `onAttemptStart`/attributed-stream
+  hook (a seam change). *(low · packages/core/src/engine/agent-turn.ts; packages/llm/src/fallback-chain.ts)*
 - [ ] **Multi-tool result ordering in the turn core** — `dispatchToolCalls` appends tool-result messages in
   dispatch-completion order; for v1.0 (single tool call per `tool_use` stop) this is moot — and 1.V now reuses
   the core on that single-tool path. A parallel-tool provider should order by the accumulator's `toolOrder`;
@@ -744,6 +746,34 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   has no native knob for this; enforce as review policy now and revisit native enforcement
   (e.g. a minimum-release-age setting) when the toolchain moves to a pnpm major that has one.
   *(policy now, tooling later · pnpm-workspace.yaml, architectural-principles.md)*
+
+## Phase 2.5.H (reasoning rendering + live-turn feedback) follow-ups
+
+> **2026-07-07 2.5.H (EA6 + live-turn feedback).** The reasoning-event emit + the TUI reasoning/latency render
+> shipped. The bounded pieces below were deliberately deferred (each additive, none blocks the feature):
+
+- [ ] **CLI render-layer (ink component) test harness.** The CLI has **no** component-render test (no
+  `ink-testing-library` / `react-test-renderer`) by design — all logic lives in pure reducers/formatters that ARE
+  unit-tested. But this leaves the React **prop-plumbing / render-cadence** layer untestable: the 2.5.H Home
+  live-timer fix (threading the clock as a `now: () => number` FUNCTION so the per-frame `ChatRegion` re-reads it,
+  vs a frozen number captured at the parent `RootApp`'s render) is verified only by tracing + the type-shape guard,
+  not by a regression test. Adding a harness is a first-of-its-kind test-architecture decision for `apps/cli`
+  (a new devDependency; possibly an ADR) — track it, then a smoke test could tick a fake clock across two
+  `store.tick()`-driven renders and assert the displayed elapsed advances. *(low · apps/cli/src/render/tui/home-app.tsx
+  + chat-ink.tsx; testing.md "every bug fix lands with a regression test")*
+- [ ] **Compact abort hint during token streaming.** The `Esc to stop` affordance shows on the pre-first-token
+  status line but not once the answer streams (the content line needs the width) — yet `Esc` aborts throughout the
+  turn (EA7). A follow-up could keep a compact hint in the footer during streaming. *(low · apps/cli/src/render/tui/chat-ink.tsx)*
+- [ ] **Bound the EXPANDED reasoning panel by rendered LINES, not just chars.** The panel body is bounded to
+  `MAX_LIVE_TOKEN_CHARS` (4000) chars, which can wrap to 60+ lines of narrow prose in the live (non-`<Static>`)
+  region, re-painted each frame — a taller-than-viewport live block that can flicker on a short terminal (the same
+  risk class the `liveTokens` answer stream already carries; the panel is opt-in + collapsed by default, so LOW).
+  A follow-up could tail the expanded body to the last N rendered lines. *(low · apps/cli/src/render/tui/chat-ink.tsx)*
+- [ ] **Allow `Ctrl+T` / `/thinking` during a pending approval.** The fail-closed approval keyboard-ownership
+  (ADR-0057) swallows every key except `[y]/[a]/[n]/[esc]` — including the reasoning toggle, the one moment a user
+  might most want to expand the thinking to inform the decision. `toggle-reasoning` is a pure view flip (zero
+  session effect), so it would be safe to let it bypass the swallow. Deliberately left fail-closed for now (the
+  approval floor is security-sensitive). *(low · apps/cli/src/render/tui/chat-input.ts)*
 
 ## Sonar code-quality backlog
 

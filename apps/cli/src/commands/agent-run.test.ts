@@ -121,6 +121,32 @@ describe('agentRunCommand (2.Q)', () => {
     expect(existsSync(join(cwd, 'pwned.txt'))).toBe(false); // denied BEFORE any write — no file on disk
   });
 
+  it('a PLAIN-mode failed turn shows the bare code, NOT a session-continuity hint (2.5.H — one-shot)', async () => {
+    // The one-shot cancels its session in `finally`, so the chat recovery hints ("the session is still active",
+    // `/compact`, resend) would be FALSE here — the plain printer must suppress them (recoveryHints=false).
+    writeFileSync(
+      join(cwd, 'writer.agent.yaml'),
+      `${AGENT_YAML.replace('  - read_file', '  - write_file')}`,
+    );
+    const writeCall: StreamChunk[] = [
+      { type: 'tool_call_start', id: 'c1', name: 'write_file' },
+      {
+        type: 'tool_call_delta',
+        id: 'c1',
+        argsJsonDelta: JSON.stringify({ path: 'pwned.txt', content: 'x' }),
+      },
+      { type: 'tool_call_end', id: 'c1' },
+      { type: 'stop', stopReason: 'tool_use', usage: { inputTokens: 1, outputTokens: 1 } },
+    ];
+    const { d, out } = deps('write a file', {
+      json: false, // PLAIN mode — the surface that shares makePlainPrinter
+      providers: scriptedResolver([writeCall]),
+    });
+    await agentRunCommand({ agent: join(cwd, 'writer.agent.yaml'), input: [] }, d);
+    expect(out()).toContain('[turn failed: tool_denied]'); // the code IS shown
+    expect(out()).not.toContain('session is still active'); // …but no session-continuity hint on a one-shot
+  });
+
   it('an MCP-declaring agent: surfaces dropped tools to stderr and tears the connection down after the turn (2.R)', async () => {
     // The one-shot's OWN command-level MCP wiring: surfaceMcpSkipped (→ stderr, not the --json stdout) + the
     // closeMcp teardown in the finally. Drives the REAL buildChatSession over a fake connection (no spawn).

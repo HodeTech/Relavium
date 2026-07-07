@@ -29,6 +29,13 @@ const valid: Record<string, Record<string, unknown>> = {
     token: 'hi',
     model: 'claude-sonnet-4-6',
   },
+  'agent:reasoning': {
+    type: 'agent:reasoning',
+    ...env,
+    nodeId: 'n',
+    text: 'let me think',
+    model: 'claude-sonnet-4-6',
+  },
   'agent:tool_call': {
     type: 'agent:tool_call',
     ...env,
@@ -199,6 +206,13 @@ const reject: Record<string, Record<string, unknown>> = {
     nodeType: 'human_gate',
   },
   'agent:token (missing model)': { type: 'agent:token', ...env, nodeId: 'n', token: 'hi' },
+  'agent:reasoning (missing model)': { type: 'agent:reasoning', ...env, nodeId: 'n', text: 'hi' },
+  'agent:reasoning (missing text)': {
+    type: 'agent:reasoning',
+    ...env,
+    nodeId: 'n',
+    model: 'claude-sonnet-4-6',
+  },
   'agent:tool_call (missing toolId)': {
     type: 'agent:tool_call',
     ...env,
@@ -485,13 +499,14 @@ describe('RunEvent union — every variant', () => {
     }
   });
 
-  it('covers exactly the 22 canonical colon-namespaced names, pinned to a literal list', () => {
+  it('covers exactly the 23 canonical colon-namespaced names, pinned to a literal list', () => {
     // A hardcoded contract list — independent of RUN_EVENT_TYPES — so the union and the
     // constant cannot silently drift together.
     const CONTRACT_NAMES = [
       'run:started',
       'node:started',
       'agent:token',
+      'agent:reasoning', // EA6 (2.5.H) — the reasoning counterpart of agent:token
       'agent:tool_call',
       'agent:tool_result',
       'agent:approval_requested',
@@ -518,7 +533,7 @@ describe('RunEvent union — every variant', () => {
     // RunEventSchema wraps the union in the correlation-key refinement; reach the raw union.
     expect(RunEventSchema.innerType().options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
-    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 22
+    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 23
   });
 
   it('pins the RunEvent discriminant to RunEventType (type-level)', () => {
@@ -816,6 +831,25 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
     };
     expect(onCorrelationKey(dual)).toBe(true); // neither
     expect(onCorrelationKey({ ...dual, runId: 'run-1', sessionId: 'sess-1' })).toBe(true); // both
+  });
+
+  it('carries agent:reasoning on either envelope (dual), like agent:token (EA6, 2.5.H)', () => {
+    const base = {
+      type: 'agent:reasoning',
+      timestamp: '2026-06-04T00:00:00.000Z',
+      sequenceNumber: 5,
+      nodeId: 'n',
+      text: 'thinking about it',
+      model: 'claude-sonnet-4-6',
+    };
+    // exactly one correlation key → accepted (run-flavored, then session-flavored)
+    expect(RunEventSchema.safeParse({ ...base, runId: 'run-1' }).success).toBe(true);
+    expect(RunEventSchema.safeParse({ ...base, sessionId: 'sess-1' }).success).toBe(true);
+    // neither / both → rejected (the same dualBase invariant agent:token obeys)
+    expect(RunEventSchema.safeParse(base).success).toBe(false);
+    expect(RunEventSchema.safeParse({ ...base, runId: 'r', sessionId: 's' }).success).toBe(false);
+    // agent:reasoning carries no attemptNumber (it mirrors agent:token, not the cost/tool carriers)
+    expect(SessionEventSchema.safeParse({ ...base, sessionId: 'sess-1' }).success).toBe(false); // it's a RunEvent arm, not a session:* lifecycle arm
   });
 
   it('binds node:failed / run:failed error.code to the closed ErrorCode enum', () => {

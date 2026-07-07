@@ -143,7 +143,9 @@ async function runOneShotTurn(
   let turnErrorCode: string | undefined;
   const renderer: (event: SessionStreamHandleEvent) => void = deps.global.json
     ? (event) => deps.io.writeOut(`${JSON.stringify(event)}\n`)
-    : makePlainPrinter(deps.io);
+    : // A ONE-SHOT: the session is cancelled in `finally` right after, so suppress the session-continuity recovery
+      // hint (2.5.H) — "the session is still active / resend / `/compact`" would be false with no live REPL.
+      makePlainPrinter(deps.io, false);
   let unsubscribe: () => void = () => {};
   try {
     surfaceMcpSkipped(deps.io, built.mcpSkipped);

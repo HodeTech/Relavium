@@ -10,7 +10,7 @@
  * A node sees only its **declared inputs** (its config block + the settled upstream outputs it resolves
  * `{{ … }}` against), never the whole run state or another node's transcript — context isolation
  * ([shared-core-engine.md](../../../../docs/architecture/shared-core-engine.md)). Streaming events a
- * node produces mid-execution (`agent:token` / `agent:tool_call` / `agent:tool_result` /
+ * node produces mid-execution (`agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` /
  * `cost:updated` / `agent:file_patch_proposed`) are emitted through {@link NodeExecContext.emit}; the
  * envelope (`runId` / `timestamp` / `sequenceNumber`) is stamped centrally by the bus, so a node hands
  * over only the event body. A node is responsible for sanitizing its own `toolInput` (no secrets)
@@ -38,6 +38,7 @@ export type GateType = HumanGatePausedEvent['gateType'];
 /** The event types a node may emit *during* its own execution (carried on the run/session envelope). */
 type InNodeEventType =
   | 'agent:token'
+  | 'agent:reasoning'
   | 'agent:tool_call'
   | 'agent:tool_result'
   | 'cost:updated'

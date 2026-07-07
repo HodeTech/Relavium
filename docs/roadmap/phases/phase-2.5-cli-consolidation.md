@@ -8,8 +8,10 @@
 > — **the spine is complete**. Experience arm: **2.5.D** (chat input ergonomics + `@`/`!` chip model) ✅ **Done
 > (PR #64, 2026-07-03)** behind [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md).
 > **2.5.F** (`/clear` + the `session:compacting` "Summarizing…" moment + the context-fullness footer, completing
-> the ADR-0062 compaction story) ✅ **Done (PR #65, merged 2026-07-05)**. **Next: 2.5.G** (onboarding wizard +
-> Home `/models`). Additive lanes (no dependency chain): 2.5.H / I / J.
+> the ADR-0062 compaction story) ✅ **Done (PR #65, merged 2026-07-05)**. The additive lane **2.5.H** (reasoning
+> render + live-turn feedback + actionable errors, EA6 amending ADR-0036) ✅ **Done (2026-07-07)** — **milestone
+> M2.5-3 reached** (with 2.5.E). **Next: 2.5.G** (onboarding wizard + Home `/models`). Remaining additive lanes:
+> 2.5.I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
 
@@ -434,8 +436,10 @@ overlay** that closes the "cost cap will not apply" gap (ADR-0065 §1–2); `pro
 static model is dimmed and a deprecated entry is flagged; `models refresh` reports per-provider outcomes and one
 provider's failure never fails the whole refresh; a custom OpenAI-compatible `base_url` lists its models over an
 SSRF-validated hop; a model with **no static price**, once **user-priced**, is enforced by `max_cost_microcents`
-(the cost-cap gap is closed). (Mid-chat model switch via reseat stays Phase 2.6,
-[ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md).)
+(the cost-cap gap is closed). (Mid-chat model switch via reseat + normalized reasoning-effort control then landed as
+the **post-2.5.G model-UX follow-up** — [ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md) +
+[ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md), merged 2026-07-07; see the live status in
+[current.md](../current.md).)
 
 **Implementation steps** (each: implement + commit → Opus review → Sonnet review; **🔒** = an added security
 round): **S1** ADRs 0063/0064/0065 + roadmap reconciliation (design-lock) · **S2 🔒** seam `listModels?` + `kind`
@@ -447,7 +451,29 @@ auto-refresh + partial-failure · **S6 🔒** config-write primitive + global `[
 **S11** `provider list --verify` + `[chat].max_turns` reconcile · **S12** docs + adding-a-provider runbook. **Six**
 are security-flagged: S2, S5, S6, S8, S9, S10.
 
-### 2.5.H — Reasoning rendering and live-turn feedback
+### 2.5.H — Reasoning rendering and live-turn feedback — ✅ **Done (2026-07-07)**
+
+> **Status:** ✅ **Done (2026-07-07)** — EA6 amends [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)
+> (no new top-level ADR; the additive event in the shared union). Delivered across four reviewed steps, each with an
+> **opus + Sonnet** review round (~15 findings fixed incl. 3 HIGH: a run-path silent-drop of the new event, a
+> frozen Home live-timer, a persisted-scrollback elision loss; plus a one-shot `agent run` hint-leak). **Step 1**
+> — the dual-envelope **`agent:reasoning`** event (EA6): a pure host-emit from the correlation-agnostic turn core
+> per `reasoning_delta` chunk (the seam already carries the chunks, ADR-0030), added to the shared union +
+> `RUN_EVENT_TYPES` + the drift-pin, carried on both the run path (engine `#nodeEmit`, now exhaustiveness-guarded)
+> and the session sink; never the ephemeral `signature`. **Step 2a** — live-turn feedback: the `Thinking…/Working…
+> {elapsed}s · Esc to stop` timer (whole-second `formatElapsed`), a **visible `…` elision marker** on the bounded
+> live buffers (fixing the silent head-drop, baked into the finalized transcript entry too), and per-attempt
+> **model attribution** (`via {model}` on a within-turn failover, from the accurate `cost:updated.model`).
+> **Step 2b** — the collapsible **"thinking" panel** (default collapsed; `/thinking` + `Ctrl+T`, both surfaces,
+> mid-turn) over the `agent:reasoning` fold. **Step 3** — the **actionable error taxonomy**: a static, secret-free
+> per-`ErrorCode` recovery hint that makes "the session is still active" explicit (provider rate-limit /
+> unavailability / auth+keychain, a context-overflow message heuristic → `/compact`·`/trim`, tool_failed / MCP
+> timeout, budget / turn-cap / content-filter / internal), rendered on the TUI + the plain chat driver (suppressed
+> on the one-shot `agent run`; `--json` unchanged). Canonical homes updated:
+> [sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [chat-session.md](../../reference/cli/chat-session.md),
+> [commands.md](../../reference/cli/commands.md), ADR-0036's append-only note, and the
+> [deferred-tasks.md](../deferred-tasks.md) follow-ups (a CLI render-layer test harness; a line-bounded panel; an
+> approval-gated Ctrl+T). **With 2.5.H (+ 2.5.E) done, milestone M2.5-3 is reached.**
 
 The `@relavium/llm` seam already carries reasoning chunks (`StreamChunk` reasoning deltas, folded in
 `packages/core/src/engine/agent-turn.ts`); the gap is purely the host-emit + TUI render. Additive.
@@ -517,7 +543,7 @@ state; `NO_COLOR` is honoured.
 |----------|--------------|---------|
 | M2.5-1 Secure base ✅ **(PR #60, 2026-06-28)** | 2.5.A | Root-cause closed (capability gap + merge asymmetry); host seam reviewed |
 | M2.5-2 Home + entry + onboarding | 2.5.B + 2.5.C + 2.5.D + 2.5.F + 2.5.G | First-class entry + ergonomics + onboarding |
-| M2.5-3 Modes + observability | 2.5.E + 2.5.H | Safe reseat-less mode system + per-tool approval + reasoning |
+| M2.5-3 Modes + observability ✅ **(2026-07-07)** | 2.5.E + 2.5.H | Safe reseat-less mode system + per-tool approval + reasoning render + actionable errors |
 | M2.5-4 Consolidation | 2.5.I + 2.5.J | Harness + concurrency + docs-debt |
 
 ## Sequencing & parallelization
@@ -571,7 +597,8 @@ workstream begins.
 EA6 (the new `agent:reasoning` event) is an additive event in the shared event union; it does not need a new
 top-level ADR — it **amends** [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)
 (the event substrate) with a dated note and updates
-[sse-event-schema.md](../../reference/contracts/sse-event-schema.md) when 2.5.H lands.
+[sse-event-schema.md](../../reference/contracts/sse-event-schema.md). **Landed with 2.5.H (2026-07-07)** — the
+ADR-0036 amendment note + the schema/drift-pin updates are in.
 
 ## Engine amendments appendix (EA1–EA8)
 

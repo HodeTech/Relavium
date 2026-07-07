@@ -325,6 +325,20 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
   });
 
+  it('/thinking toggles the reasoning panel and reports the resulting state (2.5.H)', async () => {
+    const { d, err, store, sessionId } = deps(
+      ['/thinking', '/thinking', '/exit'],
+      [textTurn('hi')],
+    );
+    await chatCommand({ agent: undefined }, d);
+    const out = err();
+    expect(out).toContain('reasoning panel: shown'); // first /thinking: collapsed (default) → shown
+    expect(out).toContain('reasoning panel: hidden'); // second /thinking: shown → hidden
+    // /thinking is read-only (a pure view flip): the session continued, so the 'hello' turn is not persisted here
+    // (no user turn was sent — only slash commands ran + /exit); the row exists with no messages.
+    expect(store.loadFull(sessionId)?.messages ?? []).toHaveLength(0);
+  });
+
   it('rejects an invalid /mode value at the dispatch, LISTING the valid names (a positional not in the mode set)', async () => {
     const { d, err } = deps(['/mode bogus', '/exit'], [textTurn('hi')]);
     await chatCommand({ agent: undefined }, d);
@@ -1299,7 +1313,7 @@ describe('makePlainPrinter', () => {
     expect(out()).toBe('\n');
   });
 
-  it('marks a failed turn with its error code, secret-free', () => {
+  it('marks a failed turn with its error code + an actionable recovery hint, secret-free (2.5.H)', () => {
     const { io, out } = captureIo();
     const print = makePlainPrinter(io);
     print({
@@ -1310,7 +1324,54 @@ describe('makePlainPrinter', () => {
       error: { code: 'turn_limit', message: 'secret-ish detail', retryable: false },
     });
     expect(out()).toContain('turn_limit');
-    expect(out()).not.toContain('secret-ish detail'); // only the code, never the message
+    expect(out()).toContain('session is still active'); // the recovery hint reassures the session survives
+    expect(out()).not.toContain('secret-ish detail'); // only the code + a static hint, never the message
+  });
+
+  it('renders the /compact·/trim hint for a context-overflow validation, never echoing the message (2.5.H)', () => {
+    const { io, out } = captureIo();
+    makePlainPrinter(io)({
+      type: 'session:turn_completed',
+      ...STAMP,
+      stopReason: 'error',
+      tokensUsed: { input: 0, output: 0 },
+      error: {
+        code: 'validation',
+        message: 'maximum context length is 8192; key=sk-LEAK',
+        retryable: false,
+      },
+    });
+    expect(out()).toContain('/compact'); // the context-overflow heuristic matched the message
+    expect(out()).not.toContain('sk-LEAK'); // …but the raw message (secret-ish substring) is NOT echoed
+  });
+
+  it('emits ONLY the bare code line for a code with no hint (no stray hint text/newline)', () => {
+    const { io, out } = captureIo();
+    makePlainPrinter(io)({
+      type: 'session:turn_completed',
+      ...STAMP,
+      stopReason: 'error',
+      tokensUsed: { input: 0, output: 0 },
+      error: { code: 'sandbox_error', message: 'unused', retryable: false },
+    });
+    expect(out()).toBe('\n[turn failed: sandbox_error]\n'); // no trailing recovery-hint line
+  });
+
+  it('SUPPRESSES the session-continuity hint when recoveryHints=false (the one-shot agent-run path, 2.5.H)', () => {
+    const { io, out } = captureIo();
+    makePlainPrinter(
+      io,
+      false,
+    )({
+      type: 'session:turn_completed',
+      ...STAMP,
+      stopReason: 'error',
+      tokensUsed: { input: 0, output: 0 },
+      error: { code: 'turn_limit', message: 'session cap', retryable: false }, // a code that WOULD hint in a REPL
+    });
+    // A one-shot's session ends immediately after, so "the session is still active" would be false — only the code.
+    expect(out()).toBe('\n[turn failed: turn_limit]\n');
+    expect(out()).not.toContain('session is still active');
   });
 });
 
