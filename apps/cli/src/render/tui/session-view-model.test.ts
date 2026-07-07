@@ -56,11 +56,11 @@ function events() {
       success: true,
       outputSummary: 'ok',
     }),
-    cost: (cumulative: number): SessionStreamHandleEvent => ({
+    cost: (cumulative: number, model: string = MODEL): SessionStreamHandleEvent => ({
       type: 'cost:updated',
       ...stamp(),
       nodeId: NODE,
-      model: MODEL,
+      model, // defaults to the bound MODEL; a test passes a DIFFERENT id to simulate a within-turn failover
       inputTokens: 10,
       outputTokens: 5,
       costMicrocents: cumulative,
@@ -607,5 +607,82 @@ describe('session-view-model', () => {
     const seeded = initialSessionViewState({ model: 'claude-sonnet-4-6', turnCount: 3 });
     expect(seeded.contextWindowTokens).toBe(contextWindowForModel('claude-sonnet-4-6'));
     expect(seeded.lastInputTokens).toBeUndefined(); // no per-turn seed until the first resumed turn completes
+  });
+});
+
+describe('session-view-model — live-turn feedback + attribution (2.5.H)', () => {
+  it('flags liveTokensTruncated when the live buffer head scrolls out (the elision marker source)', () => {
+    const e = events();
+    const long = 'x'.repeat(MAX_LIVE_TOKEN_CHARS + 50);
+    const state = reduceAll([e.started(), e.turnStarted(), e.token(long)]);
+    expect(state.liveTokens.length).toBe(MAX_LIVE_TOKEN_CHARS); // only the trailing window is kept
+    expect(state.liveTokensTruncated).toBe(true); // …so the render shows a leading elision marker, not a silent loss
+  });
+
+  it('keeps liveTokensTruncated false under the cap and resets it on a tool-call boundary', () => {
+    const e = events();
+    const under = reduceAll([e.started(), e.turnStarted(), e.token('hello')]);
+    expect(under.liveTokensTruncated).toBe(false);
+    const afterTool = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('y'.repeat(MAX_LIVE_TOKEN_CHARS + 10)),
+      e.toolCall('read_file'),
+    ]);
+    expect(afterTool.liveTokens).toBe(''); // the segment after the last tool call starts fresh
+    expect(afterTool.liveTokensTruncated).toBe(false); // …and the elision flag resets with it
+  });
+
+  it('resets liveTokensTruncated on turn_completed and on cancel', () => {
+    const e = events();
+    const overflow = () => e.token('z'.repeat(MAX_LIVE_TOKEN_CHARS + 1));
+    const done = reduceAll([e.started(), e.turnStarted(), overflow(), e.turnCompleted()]);
+    expect(done.liveTokensTruncated).toBe(false);
+    const cancelled = reduceAll([e.started(), e.turnStarted(), overflow(), e.cancelled()]);
+    expect(cancelled.liveTokensTruncated).toBe(false);
+  });
+
+  it('attributes a completed turn to the committed model on a within-turn failover', () => {
+    const e = events();
+    // The LAST cost:updated of the turn carries the committed (failed-over) model, distinct from the bound model.
+    const state = reduceAll([
+      e.started(), // bound model = claude-sonnet-4-6
+      e.turnStarted(),
+      e.token('hi'),
+      e.cost(1, 'claude-opus-4-8'), // committed model differs ⇒ attributed on the summary
+      e.turnCompleted(),
+    ]);
+    const last = state.transcript.at(-1);
+    expect(last?.role === 'assistant' && last.summary.model).toBe('claude-opus-4-8');
+  });
+
+  it('omits the summary model when the committed model equals the bound model (no redundant noise)', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('hi'),
+      e.cost(1), // same as the bound model
+      e.turnCompleted(),
+    ]);
+    const last = state.transcript.at(-1);
+    expect(last?.role === 'assistant' && last.summary.model).toBeUndefined();
+  });
+
+  it('resets activeTurnModel between turns so a failover never leaks into the next turn', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('a'),
+      e.cost(1, 'claude-opus-4-8'),
+      e.turnCompleted(),
+      e.turnStarted(),
+      e.token('b'), // this turn engaged no cost:updated ⇒ activeTurnModel stays reset
+      e.turnCompleted(),
+    ]);
+    const last = state.transcript.at(-1);
+    expect(last?.role === 'assistant' && last.text).toBe('b');
+    expect(last?.role === 'assistant' && last.summary.model).toBeUndefined();
   });
 });

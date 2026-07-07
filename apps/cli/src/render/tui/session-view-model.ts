@@ -36,6 +36,10 @@ export interface TurnSummary {
   readonly stopReason: SessionStopReason;
   readonly tokensUsed: { readonly input: number; readonly output: number };
   readonly durationMs?: number;
+  /** The model that produced the turn's tokens (from the accurate per-attempt `cost:updated.model`, EA2). Set
+   *  ONLY when it differs from the session's bound `model` — i.e. a within-turn failover attributed the output to
+   *  a fallback model — so a plain turn's summary is unchanged (the footer already shows the bound model). */
+  readonly model?: string;
   /** The closed error-taxonomy code (safe to display) — the projection renders this, not the message. */
   readonly errorCode?: string;
   /** The classified error message. `formatTurnSummary` renders it ONLY for the vetted secret-free approval-floor
@@ -67,10 +71,18 @@ export interface SessionViewState {
   readonly transcript: readonly TranscriptEntry[];
   /** The in-flight assistant text — reset per turn AND on each tool call, so it holds the active segment. */
   readonly liveTokens: string;
+  /** Whether the head of `liveTokens` has been elided to stay within {@link MAX_LIVE_TOKEN_CHARS}. The render shows
+   *  a leading elision marker so the scroll-out is VISIBLE, not a silent loss (2.5.H). Reset with `liveTokens`. */
+  readonly liveTokensTruncated: boolean;
   /** The in-flight turn's tool calls (annotations), in first-seen order. */
   readonly liveToolCalls: readonly ToolCallView[];
   /** The session-wide running cost, authoritatively stamped onto every `cost:updated`. */
   readonly cumulativeCostMicrocents: number;
+  /** The model that produced the IN-FLIGHT turn's tokens, captured from the accurate per-attempt
+   *  `cost:updated.model` (EA2, 2.5.H) — the completed turn's summary is attributed to it when it differs from the
+   *  bound `model` (a within-turn failover). Required-nullable (like `turnStartedAtMs`) so it resets to `undefined`
+   *  between turns under exactOptionalPropertyTypes. */
+  readonly activeTurnModel: string | undefined;
   /**
    * The chat-mode turn counter — incremented on **every** `session:turn_completed` (success, failure, OR
    * an EA7 `aborted` turn). This is a monotonic UI display count, distinct from the engine's hard-cap
@@ -129,8 +141,10 @@ export function initialSessionViewState(seed?: SessionViewSeed): SessionViewStat
     compacting: false,
     transcript: [],
     liveTokens: '',
+    liveTokensTruncated: false,
     liveToolCalls: [],
     cumulativeCostMicrocents: seed?.cumulativeCostMicrocents ?? 0,
+    activeTurnModel: undefined,
     turnCount: seed?.turnCount ?? 0,
     turnStartedAtMs: undefined,
     gapDetected: false,
@@ -144,10 +158,20 @@ function pushBounded<T>(arr: readonly T[], item: T, max: number): T[] {
   return next.length > max ? next.slice(next.length - max) : next;
 }
 
-/** Append streamed token text, keeping only the trailing {@link MAX_LIVE_TOKEN_CHARS}. */
-function appendTokens(buffer: string, token: string): string {
-  const next = buffer + token;
-  return next.length > MAX_LIVE_TOKEN_CHARS ? next.slice(next.length - MAX_LIVE_TOKEN_CHARS) : next;
+/**
+ * Append streamed text to a bounded live buffer, keeping only the trailing `max` chars and reporting whether the
+ * head was elided — so the render can show a VISIBLE elision marker instead of the old silent head-drop (2.5.H).
+ * Shared by the `agent:token` (answer) and `agent:reasoning` (thinking) buffers.
+ */
+function appendBounded(
+  buffer: string,
+  text: string,
+  max: number,
+): { readonly text: string; readonly truncated: boolean } {
+  const next = buffer + text;
+  return next.length > max
+    ? { text: next.slice(next.length - max), truncated: true }
+    : { text: next, truncated: false };
 }
 
 /**
@@ -266,12 +290,21 @@ export function reduceSessionEvent(
         // a new turn is never mid-compaction, so this is the belt-and-suspenders reset.
         compacting: false,
         liveTokens: '',
+        liveTokensTruncated: false,
         liveToolCalls: [],
+        activeTurnModel: undefined,
         turnStartedAtMs: Date.parse(event.timestamp),
       };
 
-    case 'agent:token':
-      return { ...base, liveTokens: appendTokens(base.liveTokens, event.token) };
+    case 'agent:token': {
+      const appended = appendBounded(base.liveTokens, event.token, MAX_LIVE_TOKEN_CHARS);
+      return {
+        ...base,
+        liveTokens: appended.text,
+        // Sticky within the segment: once the head scrolled out, the elision marker stays until the buffer resets.
+        liveTokensTruncated: base.liveTokensTruncated || appended.truncated,
+      };
+    }
 
     case 'agent:tool_call':
       // The final assistant text is the segment AFTER the last tool call (mirrors the engine's result.text
@@ -279,6 +312,7 @@ export function reduceSessionEvent(
       return {
         ...base,
         liveTokens: '',
+        liveTokensTruncated: false,
         liveToolCalls: pushBounded(
           base.liveToolCalls,
           { id: `tc-${event.sequenceNumber}`, toolId: event.toolId, resolved: false },
@@ -290,7 +324,13 @@ export function reduceSessionEvent(
       return { ...base, liveToolCalls: markResolved(base.liveToolCalls, event.toolId) };
 
     case 'cost:updated':
-      return { ...base, cumulativeCostMicrocents: event.cumulativeCostMicrocents };
+      // Capture the accurate per-attempt model (EA2) — the LAST cost:updated of the turn is the committed model,
+      // which the completed-turn summary attributes to when it differs from the bound model (a within-turn failover).
+      return {
+        ...base,
+        cumulativeCostMicrocents: event.cumulativeCostMicrocents,
+        activeTurnModel: event.model,
+      };
 
     case 'session:turn_completed':
       return reduceTurnCompleted(base, event);
@@ -304,7 +344,9 @@ export function reduceSessionEvent(
         status: 'ended',
         compacting: false,
         liveTokens: '',
+        liveTokensTruncated: false,
         liveToolCalls: [],
+        activeTurnModel: undefined,
         turnStartedAtMs: undefined,
       };
 
@@ -385,10 +427,18 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
       ? Number.NaN
       : Date.parse(event.timestamp) - base.turnStartedAtMs;
   const durationMs = Number.isFinite(rawDuration) && rawDuration >= 0 ? rawDuration : undefined;
+  // Attribute the turn to the committed per-attempt model ONLY when it differs from the bound model — a within-turn
+  // failover (the footer already shows the bound model, so an unchanged model would be noise). `undefined` model /
+  // a zero-egress turn (no cost:updated) shows nothing.
+  const attributedModel =
+    base.activeTurnModel !== undefined && base.activeTurnModel !== base.model
+      ? base.activeTurnModel
+      : undefined;
   const summary: TurnSummary = {
     stopReason: event.stopReason,
     tokensUsed: { input: event.tokensUsed.input, output: event.tokensUsed.output },
     ...(durationMs === undefined ? {} : { durationMs }),
+    ...(attributedModel === undefined ? {} : { model: attributedModel }),
     ...(event.error === undefined
       ? {}
       : { errorCode: event.error.code, errorMessage: event.error.message }),
@@ -414,7 +464,9 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
     // "0% ctx" (an empty window) exactly when the window is actually full. A real turn (>0) overrides it.
     ...(event.tokensUsed.input > 0 ? { lastInputTokens: event.tokensUsed.input } : {}),
     liveTokens: '',
+    liveTokensTruncated: false,
     liveToolCalls: [],
+    activeTurnModel: undefined,
     turnStartedAtMs: undefined,
     transcript,
   };

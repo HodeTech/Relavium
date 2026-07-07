@@ -123,6 +123,9 @@ export function formatTurnSummary(summary: TurnSummary): string {
   }
   const parts = [
     head,
+    // The producing model (2.5.H) — present ONLY on a within-turn failover (the view-model omits it when it equals
+    // the bound model), so it surfaces exactly when attribution differs from the footer. Sanitized like every id.
+    summary.model === undefined ? undefined : `via ${sanitizeInline(summary.model)}`,
     formatTokens(summary.tokensUsed),
     summary.durationMs === undefined ? undefined : formatDuration(summary.durationMs),
   ].filter((part): part is string => part !== undefined);

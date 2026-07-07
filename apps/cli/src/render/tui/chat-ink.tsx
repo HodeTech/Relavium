@@ -83,7 +83,7 @@ import {
   shouldOpenPalette,
   type PaletteState,
 } from './palette-reducer.js';
-import { spinnerFrame } from './format.js';
+import { formatElapsed, spinnerFrame } from './format.js';
 import {
   formatApprovalTarget,
   formatSessionFooterWithMode,
@@ -182,6 +182,10 @@ interface ChatAppProps {
 interface ChatViewProps {
   readonly state: SessionViewState;
   readonly tick: number;
+  /** Wall-clock ms at render, for the live in-flight turn timer ("thinking…/working… {elapsed} · Esc to stop",
+   *  2.5.H). Render-only + cosmetic (no engine-purity concern — parity with `ModelPickerView`'s `nowMs`); the
+   *  owner (`ChatApp` / the Home's `RootApp`) passes `Date.now()` so it advances with the frame loop. */
+  readonly nowMs: number;
   readonly color: boolean;
   /** The current prompt editor — text + cursor (owned by the input owner — `ChatApp` or the Home's `RootApp`). */
   readonly editor: EditorState;
@@ -216,6 +220,12 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // When the palette is open it renders its own query line + hint below, so suppress the idle prompt + footer to
   // avoid two competing prompts (the palette owns the input focus until it closes).
   const showIdlePrompt = !running && paletteOpen !== true;
+  // The whole-second live-turn elapsed (2.5.H) — `undefined` before a turn starts (no `turnStartedAtMs`), so the
+  // pre-first-token status shows only when a turn is actually in flight.
+  const elapsedMs =
+    state.turnStartedAtMs === undefined
+      ? undefined
+      : Math.max(0, props.nowMs - state.turnStartedAtMs);
   // The in-flight busy line — extracted from a nested ternary: the labeled compaction moment (ADR-0062 §7), the
   // `!`-shell command line, or the streaming token line. Only rendered while `running`.
   const renderBusyLine = (): ReactElement => {
@@ -230,10 +240,22 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       );
     }
     if (props.busyCommand === undefined) {
+      const content = stripTerminalControls(state.liveTokens);
+      if (content.length === 0) {
+        // Before the first assistant token streams (the model is processing): show the LIVE elapsed + the abort
+        // hint (2.5.H live-turn feedback) so the turn never reads as a frozen bare spinner. Once reasoning render
+        // lands (Step 2b) the label becomes "Thinking…" when reasoning is streaming.
+        const elapsed = elapsedMs === undefined ? '' : ` ${formatElapsed(elapsedMs)}`;
+        return (
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {`${spinnerFrame(tick)} Working…${elapsed} · Esc to stop`}
+          </Text>
+        );
+      }
+      // A leading elision marker when the live buffer's head scrolled out (2.5.H) — the earlier text is VISIBLY
+      // dropped, not silently lost.
       return (
-        <Text>
-          {spinnerFrame(tick)} {stripTerminalControls(state.liveTokens)}
-        </Text>
+        <Text>{`${spinnerFrame(tick)} ${state.liveTokensTruncated ? '…' : ''}${content}`}</Text>
       );
     }
     return (
@@ -1003,6 +1025,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       <ChatView
         state={state}
         tick={tick}
+        nowMs={Date.now()}
         color={color}
         editor={editor}
         running={running || shellBusy || submitBusy}

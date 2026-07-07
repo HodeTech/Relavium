@@ -37,6 +37,35 @@ describe('chat-projection', () => {
       expect(line).toContain('error: turn_limit');
     });
 
+    it('renders the producing model as "via {model}" ONLY when set (2.5.H failover attribution)', () => {
+      const base = {
+        stopReason: 'stop' as const,
+        tokensUsed: { input: 10, output: 5 },
+        durationMs: 1200,
+      };
+      // A plain turn (no failover) carries no model ⇒ the summary is unchanged (the footer shows the bound model).
+      expect(formatTurnSummary(base)).not.toContain('via');
+      const withModel = formatTurnSummary({ ...base, model: 'claude-opus-4-8' });
+      expect(withModel).toContain('via claude-opus-4-8');
+      // Order: stop · via {model} · tokens · duration
+      expect(withModel.split(' · ')).toEqual([
+        'stop',
+        'via claude-opus-4-8',
+        formatTokens({ input: 10, output: 5 }),
+        formatDuration(1200),
+      ]);
+    });
+
+    it('sanitizes the producing model name (a control sequence cannot ride the attribution segment)', () => {
+      const line = formatTurnSummary({
+        stopReason: 'stop',
+        tokensUsed: { input: 1, output: 1 },
+        model: 'evil\x1b[31mmodel', // a real ANSI CSI color escape embedded in the id
+      });
+      expect(line).toContain('via evilmodel'); // the ANSI is stripped at the display boundary
+      expect(line).not.toContain('\x1b'); // …and no raw ESC byte reaches the terminal
+    });
+
     it('surfaces the secret-free REASON for a tool_denied / tool_unavailable turn (the actionable ADR-0057 codes)', () => {
       const denied = formatTurnSummary({
         stopReason: 'error',

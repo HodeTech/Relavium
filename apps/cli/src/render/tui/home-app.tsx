@@ -69,6 +69,7 @@ function ChatRegion(
       <ChatView
         state={state}
         tick={tick}
+        nowMs={props.nowMs}
         color={color}
         editor={props.editor}
         running={state.status === 'running' || props.shellBusy || props.submitBusy}
