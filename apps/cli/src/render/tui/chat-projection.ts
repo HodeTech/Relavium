@@ -159,6 +159,9 @@ export function formatBusyLine(input: {
   readonly liveTokens: string;
   readonly liveTokensTruncated: boolean;
   readonly elapsedMs?: number | undefined;
+  /** True while the turn streams reasoning with no answer text yet (2.5.H) — the pre-token label then reads
+   *  "Thinking…" instead of "Working…". Absent/false ⇒ a plain turn shows "Working…". */
+  readonly hasReasoning?: boolean | undefined;
 }): BusyLine {
   const { spinner } = input;
   if (input.compacting) {
@@ -172,10 +175,38 @@ export function formatBusyLine(input: {
   }
   const content = stripTerminalControls(input.liveTokens);
   if (content.length === 0) {
+    const label = input.hasReasoning === true ? 'Thinking…' : 'Working…';
     const elapsed = input.elapsedMs === undefined ? '' : ` ${formatElapsed(input.elapsedMs)}`;
-    return { text: `${spinner} Working…${elapsed} · Esc to stop`, dim: true };
+    return { text: `${spinner} ${label}${elapsed} · Esc to stop`, dim: true };
   }
   return { text: `${spinner} ${input.liveTokensTruncated ? '…' : ''}${content}`, dim: false };
+}
+
+/** The collapsible "thinking" panel (2.5.H): a header (always, carrying the Ctrl+T toggle hint) + the reasoning
+ *  BODY only when EXPANDED. The caller renders it only when the turn actually streamed reasoning. */
+export interface ReasoningPanel {
+  readonly header: string;
+  /** The reasoning text — present only when EXPANDED (`visible`); absent when collapsed. */
+  readonly body?: string;
+}
+
+/**
+ * Project the in-flight reasoning into the collapsible panel (2.5.H). Collapsed (default): a dim header with the
+ * Ctrl+T toggle hint, so the user knows thinking is available without it flooding the view. Expanded: the header +
+ * the reasoning BODY — terminal-sanitized at this display boundary (newline-preserving, it is multi-line prose),
+ * with a leading `…` elision marker when the bounded buffer's head scrolled out (parity with the answer stream).
+ */
+export function formatReasoningPanel(input: {
+  readonly liveReasoning: string;
+  readonly liveReasoningTruncated: boolean;
+  readonly visible: boolean;
+}): ReasoningPanel {
+  const header = `✻ Reasoning · Ctrl+T ${input.visible ? 'hide' : 'show'}`;
+  if (!input.visible) {
+    return { header };
+  }
+  const body = `${input.liveReasoningTruncated ? '…' : ''}${stripTerminalControls(input.liveReasoning)}`;
+  return { header, body };
 }
 
 /**

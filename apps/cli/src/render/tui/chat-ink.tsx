@@ -87,6 +87,7 @@ import { spinnerFrame } from './format.js';
 import {
   formatApprovalTarget,
   formatBusyLine,
+  formatReasoningPanel,
   formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
@@ -196,6 +197,9 @@ interface ChatViewProps {
   /** The active reasoning-effort tier (ADR-0066) — shown in the footer (parity with `mode`) so the tier is never a
    *  hidden state; absent ⇒ not shown (a non-reasoning model / no tier). */
   readonly reasoningEffort?: ReasoningEffort | undefined;
+  /** Whether the collapsible "thinking" panel is EXPANDED (2.5.H — `/thinking` / Ctrl+T). Only affects the render
+   *  when the turn streamed reasoning (`state.liveReasoning` non-empty). */
+  readonly reasoningVisible: boolean;
   /** An in-flight per-tool approval — when set, the `[y]/[a]/[n]` prompt replaces the idle prompt. */
   readonly approval?: PendingApproval | undefined;
   /** When the `/` palette is open it owns the bottom of the view, so the idle prompt + footer are suppressed (2.5.C S3b). */
@@ -215,9 +219,29 @@ interface ChatViewProps {
  * sequence cannot corrupt the terminal or inject ANSI/OSC.
  */
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
-  const { state, tick, color, editor, running, mode, reasoningEffort, approval, paletteOpen } =
-    props;
+  const {
+    state,
+    tick,
+    color,
+    editor,
+    running,
+    mode,
+    reasoningEffort,
+    reasoningVisible,
+    approval,
+    paletteOpen,
+  } = props;
   const attachments = props.attachments ?? [];
+  // The turn streamed reasoning ⇒ render the collapsible "thinking" panel (2.5.H) + label the pre-token line
+  // "Thinking…" rather than "Working…".
+  const hasReasoning = state.liveReasoning.length > 0;
+  const reasoningPanel = hasReasoning
+    ? formatReasoningPanel({
+        liveReasoning: state.liveReasoning,
+        liveReasoningTruncated: state.liveReasoningTruncated,
+        visible: reasoningVisible,
+      })
+    : undefined;
   // When the palette is open it renders its own query line + hint below, so suppress the idle prompt + footer to
   // avoid two competing prompts (the palette owns the input focus until it closes).
   const showIdlePrompt = !running && paletteOpen !== true;
@@ -239,6 +263,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       liveTokens: state.liveTokens,
       liveTokensTruncated: state.liveTokensTruncated,
       elapsedMs,
+      hasReasoning,
     });
     return line.dim ? (
       <Text {...dimProps(color)} wrap="truncate-end">
@@ -265,6 +290,18 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
               {formatToolCall(call)}
             </Text>
           ))}
+          {/* The collapsible "thinking" panel (2.5.H) — a dim header with the Ctrl+T toggle hint, and the reasoning
+              body only when expanded. Shown above the busy line whenever the turn streamed reasoning. */}
+          {reasoningPanel !== undefined && (
+            <Box flexDirection="column">
+              <Text {...dimProps(color)} wrap="truncate-end">
+                {reasoningPanel.header}
+              </Text>
+              {reasoningPanel.body !== undefined && (
+                <Text {...dimProps(color)}>{reasoningPanel.body}</Text>
+              )}
+            </Box>
+          )}
           {renderBusyLine()}
         </Box>
       )}
@@ -329,10 +366,8 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
 }
 
 export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
-  const { state, tick, color, mode, reasoningEffort, approval } = useSyncExternalStore(
-    props.store.subscribe,
-    props.store.getSnapshot,
-  );
+  const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
+    useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   const [editor, setEditor] = useState<EditorState>(emptyEditor());
   // A ref SHADOW of the editor is the SOURCE OF TRUTH for edits: in a coalesced stdin chunk ink dispatches every
   // event synchronously with no render flush, so React's queued-updater `prev` is stale for the 2nd+ event of the
@@ -982,6 +1017,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         // Shift+Tab: advance the mode (read fresh from the store, not the render closure) + re-apply the policy.
         props.onModeChange(nextMode(props.store.getSnapshot().mode));
         return;
+      case 'toggle-reasoning':
+        // Ctrl+T: flip the "thinking" panel (2.5.H) — a pure store-view toggle, no session effect. Works mid-turn.
+        props.store.toggleReasoning();
+        return;
       case 'abort':
         // Esc — mid-turn abort (keeps the session; distinct from Ctrl-C /cancel). `onAbort` aborts the turn,
         // whose signal also rejects any in-flight approval. If `onAbort` is absent (a driver/test wired without
@@ -1015,6 +1054,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         running={running || shellBusy || submitBusy}
         mode={mode}
         reasoningEffort={reasoningEffort}
+        reasoningVisible={reasoningVisible}
         approval={approval}
         attachments={attachments}
         busyCommand={busyCommand}

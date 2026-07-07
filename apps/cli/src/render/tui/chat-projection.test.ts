@@ -5,6 +5,7 @@ import type { ToolApprovalRequest } from '@relavium/core';
 import {
   formatApprovalTarget,
   formatBusyLine,
+  formatReasoningPanel,
   formatSessionFooter,
   formatSessionFooterWithMode,
   formatToolCall,
@@ -247,6 +248,51 @@ describe('chat-projection', () => {
       // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
       expect(line.text).not.toMatch(/\x1b/);
       expect(line.text).toBe('⠋ okclear');
+    });
+
+    it('labels the pre-token status "Thinking…" when reasoning is streaming, else "Working…" (2.5.H)', () => {
+      expect(formatBusyLine({ ...base, hasReasoning: true, elapsedMs: 2000 }).text).toBe(
+        '⠋ Thinking… 2s · Esc to stop',
+      );
+      expect(formatBusyLine({ ...base, elapsedMs: 2000 }).text).toBe('⠋ Working… 2s · Esc to stop');
+      // Once answer tokens stream, the content wins regardless of hasReasoning (no label).
+      expect(formatBusyLine({ ...base, hasReasoning: true, liveTokens: 'hi' }).text).toBe('⠋ hi');
+    });
+  });
+
+  describe('formatReasoningPanel (2.5.H thinking panel)', () => {
+    const base = { liveReasoning: 'weighing the options', liveReasoningTruncated: false } as const;
+
+    it('collapsed: a header with the "show" hint and NO body', () => {
+      const panel = formatReasoningPanel({ ...base, visible: false });
+      expect(panel).toEqual({ header: '✻ Reasoning · Ctrl+T show' });
+      expect(panel.body).toBeUndefined();
+    });
+
+    it('expanded: the header switches to "hide" and the sanitized body is present', () => {
+      const panel = formatReasoningPanel({ ...base, visible: true });
+      expect(panel.header).toBe('✻ Reasoning · Ctrl+T hide');
+      expect(panel.body).toBe('weighing the options');
+    });
+
+    it('prefixes a leading elision marker on the body when the buffer head scrolled out', () => {
+      const panel = formatReasoningPanel({
+        liveReasoning: 'tail thoughts',
+        liveReasoningTruncated: true,
+        visible: true,
+      });
+      expect(panel.body).toBe('…tail thoughts');
+    });
+
+    it('sanitizes the reasoning body (newline-preserving) so a control sequence cannot reach the terminal', () => {
+      const panel = formatReasoningPanel({
+        liveReasoning: 'line1\x1b[31m\nline2',
+        liveReasoningTruncated: false,
+        visible: true,
+      });
+      // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
+      expect(panel.body).not.toMatch(/\x1b/);
+      expect(panel.body).toBe('line1\nline2'); // ANSI stripped, the newline (multi-line prose) kept
     });
   });
 

@@ -54,6 +54,7 @@ A small, **alias-free**, curated set of slash commands drives the REPL itself (n
 | `/workflows` | List the project's discovered workflows + agents (the disk catalog) as an in-view **notice** (**2.5.C S4**). A project-less cwd is reported, not an error. Chat-only today. |
 | `/cost` | Show the session's cumulative spend as an in-view **notice** (**2.5.C S4**); the per-model breakdown is Phase 2.6.C. Chat-only. |
 | `/mode [name]` | Switch the chat **mode** — `ask` / `plan` / `accept-edits` / `auto` (**2.5.E**, below); bare `/mode` shows the current mode + explains each. `Shift+Tab` cycles them. Chat-only. |
+| `/thinking` | Show / hide the collapsible **reasoning ("thinking") panel** (**2.5.H**; also `Ctrl+T`). A pure UI-view toggle (no session/engine effect); the panel is only rendered while the model is actually streaming reasoning. Default collapsed. Chat-only. |
 | `/doctor` | Run a setup health check as a **notice** (**2.5.C S5**). Fast tier: OS keychain reachable · config valid · wired tool capabilities. `--deep` adds provider-key validation (a bounded, **redacted** live ping per configured key — the key never reaches the output) + the live session's MCP status (the bound agent's connected servers + any tools the manager dropped). The `--deep` MCP tier is **read-only** — it reports the already-connected session, never a fresh connect/spawn (a security-review decision). Available in **both** the chat and the bare Home (pre-chat diagnostics); the Home palette runs the fast tier, `--deep` is typed in a chat. |
 | `/compact` | **Model-summarise** the conversation so far into a compact preamble to reclaim context — an LLM call ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md), **2.5.F**; see § Context compaction below). Reports the token deltas + spend + the summary as a **notice**. Effect `write` (spends tokens). Chat-only. |
 | `/trim [n]` | **Deterministically** drop older messages down to the last `n` (default `[chat].max_messages`), **no LLM call** (ADR-0062, 2.5.F). A bare `/trim` with no config bound prints an actionable notice; a bound larger than the history is a reported no-op. Chat-only. |
@@ -127,6 +128,7 @@ The TTY prompt is a first-class line editor. All of these are **interactive-only
 | `Ctrl+J` | Insert a newline (compose a multi-line message); `Enter` sends. |
 | `↑` / `↓` | Recall the previous / next submitted line (at the top/bottom edge of a multi-line buffer); mid-buffer they move the cursor by line. History is per-session (not persisted; a `chat-resume` starts fresh). |
 | `Ctrl+R` | Reverse-incremental search of the session history — type to match, `Ctrl+R` steps older, `Enter` accepts, `Esc` cancels. |
+| `Ctrl+T` | Toggle the collapsible **reasoning ("thinking") panel** (**2.5.H**; same as `/thinking`) — works mid-turn, so you can expand the model's thinking while it streams. |
 | `Ctrl+A`/`Ctrl+E`, `Ctrl+←`/`Ctrl+→`, `Ctrl+W`, `Ctrl+U`/`Ctrl+K` | readline cursor / word / line motions + kills (word-back, to-line-start, to-line-end). |
 | `Backspace` / `Delete` | erase the char **before** the cursor. (On Unix terminals ink reports the physical Backspace as the `Delete` key, so both are bound to a backward delete.) |
 
@@ -138,7 +140,11 @@ Both data-moving affordances use a **pending-attachment (chip) model** (ADR-0061
 
 ## Streaming
 
-In interactive mode the REPL renders the assistant turn live: streaming token output, tool-call/tool-result lines, and a per-turn cost/duration summary — the same `agent:token` / `agent:tool_call` / `agent:tool_result` / `cost:updated` event shapes a workflow run renders, carried on the session envelope (see [sse-event-schema.md](../contracts/sse-event-schema.md#session-event-namespace)).
+In interactive mode the REPL renders the assistant turn live: streaming token output, tool-call/tool-result lines, and a per-turn cost/duration summary — the same `agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` / `cost:updated` event shapes a workflow run renders, carried on the session envelope (see [sse-event-schema.md](../contracts/sse-event-schema.md#session-event-namespace)).
+
+### Reasoning & live-turn feedback (2.5.H)
+
+A reasoning model streams its "thinking" over the `agent:reasoning` event (EA6, host-emit — the `@relavium/llm` seam already carries the reasoning chunks). The REPL renders it as a **collapsible "thinking" panel** (default **collapsed** — a dim `✻ Reasoning · Ctrl+T show` header; **`/thinking`** or **`Ctrl+T`** expands it, works mid-turn). While a turn is in flight the busy line shows **live-turn feedback** — `Thinking… {elapsed}s · Esc to stop` (or `Working…` when there is no reasoning) — a whole-second timer + the abort affordance, so a running turn never reads as a frozen spinner. When the bounded live buffer's head scrolls out (the answer or the reasoning) a leading **`…` elision marker** makes the drop **visible**, not silent (the durable session record via the persister keeps the full text — only the live terminal echo is bounded). The completed-turn summary attributes the tokens to the **producing model** (`via {model}`) when a within-turn failover committed a different model than the bound one. The redacted-reasoning case (a provider-withheld block) streams no `agent:reasoning` and shows no panel content (there is nothing to render).
 
 ## Tool availability
 

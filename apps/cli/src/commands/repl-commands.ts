@@ -42,6 +42,9 @@ export interface ReplCommandContext {
   /** Set the reasoning-effort tier (ADR-0066). Receives the raw tier token (empty ⇒ show the current tier + options).
    *  Pushes the session override (no reseat); chat-only, like `/mode`. */
   readonly setReasoningEffort: (effortArg: string) => void | Promise<void>;
+  /** `/thinking` (2.5.H) — toggle the collapsible reasoning ("thinking") panel's visibility. A pure UI-view flip
+   *  (no session/engine effect); chat-only, like `/mode`/`/effort`. The keyboard `Ctrl+T` does the same. */
+  readonly toggleReasoning: () => void | Promise<void>;
   /** Switch the chat mode (ADR-0057). Receives the raw mode-name token (empty ⇒ show the current mode + options).
    *  The surface parses + applies it (re-applying the turn policy on the same session) and reports the result. */
   readonly setMode: (modeArg: string) => void | Promise<void>;
@@ -198,6 +201,16 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     // tier + the options. A per-turn session override (no reseat) — chat-only, like `/mode`.
     positional: { name: 'effort', values: [...REASONING_EFFORTS] },
     run: (ctx, args) => ctx.setReasoningEffort(args[0] ?? ''),
+    availableIn: ['chat'],
+  },
+  {
+    name: 'thinking',
+    label: 'Thinking',
+    description: 'Show or hide the reasoning ("thinking") panel (or Ctrl+T to toggle).',
+    // Zero-arg toggle: a pure UI-view flip of the reasoning panel (2.5.H), no session effect. Chat-only (reasoning
+    // streams only in a live turn), like `/mode` / `/effort`.
+    effect: 'read',
+    run: (ctx) => ctx.toggleReasoning(),
     availableIn: ['chat'],
   },
   {

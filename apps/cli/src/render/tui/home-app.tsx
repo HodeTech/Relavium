@@ -64,10 +64,8 @@ function ChatRegion(
     attachments: readonly PendingAttachment[];
   }>,
 ): ReactElement {
-  const { state, tick, color, mode, reasoningEffort, approval } = useSyncExternalStore(
-    props.store.subscribe,
-    props.store.getSnapshot,
-  );
+  const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
+    useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   // Read the clock in THIS per-frame component (see the `now` prop doc) so the elapsed advances live.
   const nowMs = props.now();
   return (
@@ -81,6 +79,7 @@ function ChatRegion(
         running={state.status === 'running' || props.shellBusy || props.submitBusy}
         mode={mode}
         reasoningEffort={reasoningEffort}
+        reasoningVisible={reasoningVisible}
         approval={approval}
         attachments={props.attachments}
         busyCommand={props.shellCommand}

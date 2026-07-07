@@ -40,6 +40,13 @@ function events() {
       token,
       model: MODEL,
     }),
+    reasoning: (text: string): SessionStreamHandleEvent => ({
+      type: 'agent:reasoning',
+      ...stamp(),
+      nodeId: NODE,
+      text,
+      model: MODEL,
+    }),
     toolCall: (toolId: string): SessionStreamHandleEvent => ({
       type: 'agent:tool_call',
       ...stamp(),
@@ -726,5 +733,60 @@ describe('session-view-model — live-turn feedback + attribution (2.5.H)', () =
     const last = state.transcript.at(-1);
     expect(last?.role === 'assistant' && last.text).toBe('b');
     expect(last?.role === 'assistant' && last.summary.model).toBeUndefined();
+  });
+});
+
+describe('session-view-model — reasoning fold (EA6, 2.5.H)', () => {
+  it('accumulates agent:reasoning into liveReasoning', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.reasoning('let me '),
+      e.reasoning('think'),
+    ]);
+    expect(state.liveReasoning).toBe('let me think');
+    expect(state.liveReasoningTruncated).toBe(false);
+  });
+
+  it('flags liveReasoningTruncated when the reasoning buffer head scrolls out', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.reasoning('r'.repeat(MAX_LIVE_TOKEN_CHARS + 5)),
+    ]);
+    expect(state.liveReasoning.length).toBe(MAX_LIVE_TOKEN_CHARS);
+    expect(state.liveReasoningTruncated).toBe(true);
+  });
+
+  it('accumulates reasoning ACROSS a tool call (unlike liveTokens, which resets per tool round)', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.reasoning('before tool'),
+      e.toolCall('read_file'),
+      e.reasoning(' after tool'),
+    ]);
+    expect(state.liveReasoning).toBe('before tool after tool'); // the whole turn's thinking
+    expect(state.liveTokens).toBe(''); // liveTokens WAS reset by the tool call — they diverge by design
+  });
+
+  it('resets reasoning on turn_started, turn_completed, and cancel (per-turn lifecycle)', () => {
+    const e = events();
+    const nextTurn = reduceAll([e.started(), e.turnStarted(), e.reasoning('x'), e.turnStarted()]);
+    expect(nextTurn.liveReasoning).toBe('');
+    const done = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.reasoning('x'),
+      e.token('a'),
+      e.turnCompleted(),
+    ]);
+    expect(done.liveReasoning).toBe('');
+    expect(done.liveReasoningTruncated).toBe(false);
+    const cancelled = reduceAll([e.started(), e.turnStarted(), e.reasoning('x'), e.cancelled()]);
+    expect(cancelled.liveReasoning).toBe('');
   });
 });

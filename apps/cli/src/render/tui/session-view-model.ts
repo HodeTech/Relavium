@@ -74,6 +74,13 @@ export interface SessionViewState {
   /** Whether the head of `liveTokens` has been elided to stay within {@link MAX_LIVE_TOKEN_CHARS}. The render shows
    *  a leading elision marker so the scroll-out is VISIBLE, not a silent loss (2.5.H). Reset with `liveTokens`. */
   readonly liveTokensTruncated: boolean;
+  /** The in-flight turn's streamed reasoning ("thinking") text (EA6, 2.5.H) — the collapsible panel's content.
+   *  Unlike `liveTokens`, it is reset only per TURN (started / completed / cancelled), NOT on a tool call, so the
+   *  panel accumulates the whole turn's thinking across tool rounds. `''` when the model streamed no reasoning. */
+  readonly liveReasoning: string;
+  /** Whether the head of `liveReasoning` has been elided to stay within {@link MAX_LIVE_TOKEN_CHARS} — the panel
+   *  shows a leading elision marker (parity with `liveTokensTruncated`). Reset with `liveReasoning`. */
+  readonly liveReasoningTruncated: boolean;
   /** The in-flight turn's tool calls (annotations), in first-seen order. */
   readonly liveToolCalls: readonly ToolCallView[];
   /** The session-wide running cost, authoritatively stamped onto every `cost:updated`. */
@@ -142,6 +149,8 @@ export function initialSessionViewState(seed?: SessionViewSeed): SessionViewStat
     transcript: [],
     liveTokens: '',
     liveTokensTruncated: false,
+    liveReasoning: '',
+    liveReasoningTruncated: false,
     liveToolCalls: [],
     cumulativeCostMicrocents: seed?.cumulativeCostMicrocents ?? 0,
     activeTurnModel: undefined,
@@ -291,10 +300,23 @@ export function reduceSessionEvent(
         compacting: false,
         liveTokens: '',
         liveTokensTruncated: false,
+        liveReasoning: '',
+        liveReasoningTruncated: false,
         liveToolCalls: [],
         activeTurnModel: undefined,
         turnStartedAtMs: Date.parse(event.timestamp),
       };
+
+    case 'agent:reasoning': {
+      // Accumulate the turn's thinking (EA6, 2.5.H). Unlike `liveTokens`, reasoning is NOT reset on a tool call, so
+      // the collapsible panel shows the whole turn's reasoning across tool rounds — reset only at the turn boundary.
+      const appended = appendBounded(base.liveReasoning, event.text, MAX_LIVE_TOKEN_CHARS);
+      return {
+        ...base,
+        liveReasoning: appended.text,
+        liveReasoningTruncated: base.liveReasoningTruncated || appended.truncated,
+      };
+    }
 
     case 'agent:token': {
       const appended = appendBounded(base.liveTokens, event.token, MAX_LIVE_TOKEN_CHARS);
@@ -348,6 +370,8 @@ export function reduceSessionEvent(
         compacting: false,
         liveTokens: '',
         liveTokensTruncated: false,
+        liveReasoning: '',
+        liveReasoningTruncated: false,
         liveToolCalls: [],
         activeTurnModel: undefined,
         turnStartedAtMs: undefined,
@@ -476,6 +500,8 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
     ...(event.tokensUsed.input > 0 ? { lastInputTokens: event.tokensUsed.input } : {}),
     liveTokens: '',
     liveTokensTruncated: false,
+    liveReasoning: '',
+    liveReasoningTruncated: false,
     liveToolCalls: [],
     activeTurnModel: undefined,
     turnStartedAtMs: undefined,

@@ -973,6 +973,13 @@ export function createChatLineHandler(
           : `reasoning effort: ${tier} set, but ${built.agent.model} has no reasoning control — it will be ignored.`,
       );
     },
+    // `/thinking` (2.5.H): toggle the collapsible reasoning panel — a pure store-view flip (no session/engine
+    // effect), mirroring the Ctrl+T keybind. Report the resulting state so the toggle is confirmed (the panel only
+    // renders while the model is actually streaming reasoning).
+    toggleReasoning: () => {
+      store.toggleReasoning();
+      emitOutput(`reasoning panel: ${store.getSnapshot().reasoningVisible ? 'shown' : 'hidden'}`);
+    },
     // `/compact` (ADR-0062): model-summarise the working context. An LLM call — announce the moment, then
     // await, then report the deltas. The engine emits session:compacted (→ the persister writes the boundary
     // marker); this notice is the user-facing report. Never crashes the REPL — a failure is reported as output.

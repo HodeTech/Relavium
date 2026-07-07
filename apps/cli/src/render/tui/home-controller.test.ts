@@ -1528,6 +1528,14 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       expect(onModeChange).toHaveBeenCalledWith('plan'); // default ask → plan
     });
 
+    it('Ctrl+T toggles the reasoning panel via the store (2.5.H — parity with relavium chat)', async () => {
+      const made = makeSession({});
+      const c = await inChat(made);
+      expect(made.store.getSnapshot().reasoningVisible).toBe(false); // collapsed by default
+      c.handleKey('t', { ctrl: true });
+      expect(made.store.getSnapshot().reasoningVisible).toBe(true);
+    });
+
     it('Esc aborts the in-flight turn via onAbort (mid-turn; the session is not cancelled)', async () => {
       const onAbort = vi.fn();
       const made = makeSession({ onAbort, running: true });

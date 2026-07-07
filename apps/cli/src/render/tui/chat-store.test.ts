@@ -297,6 +297,18 @@ describe('createChatStore — chat mode + per-tool approval coordination (ADR-00
     expect(store.getSnapshot().mode).toBe('accept-edits');
   });
 
+  it('the reasoning panel defaults to collapsed; toggleReasoning flips it and flushes (2.5.H)', () => {
+    const store = createChatStore(false);
+    expect(store.getSnapshot().reasoningVisible).toBe(false); // collapsed by default
+    let repaints = 0;
+    store.subscribe(() => (repaints += 1));
+    store.toggleReasoning();
+    expect(repaints).toBe(1); // flushes immediately (a toggle feels instant)
+    expect(store.getSnapshot().reasoningVisible).toBe(true);
+    store.toggleReasoning();
+    expect(store.getSnapshot().reasoningVisible).toBe(false); // flips back
+  });
+
   it('requestApproval publishes a pending approval, then resolves when answerApproval is called', async () => {
     const store = createChatStore(false);
     expect(store.getSnapshot().approval).toBeUndefined();
