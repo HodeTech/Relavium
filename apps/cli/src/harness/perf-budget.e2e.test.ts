@@ -50,9 +50,13 @@ describe('query-shape perf budgets (2.5.I S5) — the hot reads stay index-serve
    * (If a future `.select()` narrows to only-indexed columns, SQLite emits `USING COVERING INDEX` — still
    * index-served, but the `USING INDEX` substring would need loosening then.)
    */
-  function expectIndexServedNoFilesort(plan: string[], table: string, indexName: string): void {
+  function expectIndexServedNoFilesort(
+    plan: string[],
+    table: 'agent_sessions' | 'runs' | 'session_messages', // closed union — no computed/metachar table names
+    indexName: string,
+  ): void {
     const joined = plan.join('\n');
-    expect(joined).toContain('USING INDEX'); // an index serves the scan, not a full-table SCAN
+    expect(joined).toMatch(/USING (COVERING )?INDEX/); // an index serves the scan, not a full-table SCAN
     expect(joined).toContain(indexName); // and specifically the intended index — the real teeth of the budget
     expect(joined).not.toMatch(/USE TEMP B-TREE/); // the ORDER BY is index-served — no filesort
     expect(joined).not.toMatch(new RegExp(`SCAN ${table}(?! USING)`)); // no bare full-table scan
