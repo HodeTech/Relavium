@@ -70,7 +70,7 @@ API calls:
 |------|----------------|-------|
 | Workflow definitions | `.relavium/*.relavium.yaml` on disk | git-committable; see [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md) |
 | Agent definitions | `*.agent.yaml` on disk | git-committable; see [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md) |
-| Run history, events, outputs | local SQLite (SQLCipher) | DDL in [database-schema.md](../reference/desktop/database-schema.md) |
+| Run history, events, outputs | local SQLite — **CLI: unencrypted** (`0600`/`0700` owner-only perms + keychain; no credentials at rest); **desktop: SQLCipher** | DDL + at-rest posture in [database-schema.md](../reference/desktop/database-schema.md); [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md) |
 | Cost records | local SQLite | per-node and per-run |
 | API keys | OS keychain | never on disk in plaintext, never in the DB |
 | Global config | `~/.relavium/` | global preferences, MCP registrations |

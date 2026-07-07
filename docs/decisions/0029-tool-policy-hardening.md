@@ -6,6 +6,8 @@
 
 > **Amended 2026-06-18 by [ADR-0044](0044-media-access-governance-read-media-save-to-cost.md).** A refinement, not a reversal: ADR-0044 adds the `read_media` scope-set authz and an **additive** `ToolPolicyDenyReason` member `media_scope_denied` (alongside this ADR's existing six reasons). This ADR's tool-policy decisions are unchanged.
 
+> **Amended 2026-07-07 (append-only, no reversal — surface-specific at-rest posture).** Rule (c)'s parenthetical below says user conversational content is "encrypted in `history.db`". That phrasing predates [ADR-0050](0050-cli-history-db-at-rest-posture.md) and is **surface-specific**: on the **CLI** surface `history.db` is **not** encrypted at rest — it is guarded by `0700`/`0600` owner-only permissions with API keys in the OS keychain only (no credentials at rest); only the **desktop** surface uses a SQLCipher-encrypted store. Read the phrase surface-specifically (mirrors the [ADR-0024](0024-agent-first-entry-point-agentsession.md) amendment note). This ADR's tool-policy decisions are unchanged.
+
 ## Context
 
 Four tool-policy ambiguities in the current specs are individually small and collectively a real

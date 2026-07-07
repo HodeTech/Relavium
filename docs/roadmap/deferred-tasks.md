@@ -599,6 +599,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   with the SSRF item above. Until the desktop host is wired, a desktop workflow calling a capability-backed
   built-in tool surfaces a clean "tool unavailable" failure, never a half-implemented or unsafe execution.
   *(medium · desktop tool host; Phase 3; security-review.md; egress → the SSRF item above)*
+- [ ] **VS Code docs claim a SQLCipher `history.db` "same store as CLI" — contradicts ADR-0050.** The
+  Phase-4 VS Code docs ([reference/vscode/extension-api.md](../reference/vscode/extension-api.md) L46/67,
+  [phases/phase-4-vscode.md](phases/phase-4-vscode.md) L376/378) still carry the pre-ADR-0050 assumption that
+  the extension host opens the **SQLCipher** `history.db` that is **"the same store as CLI/desktop"**. Per
+  [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md) the CLI store is `better-sqlite3`
+  **unencrypted** and a SQLCipher file cannot be the same physical file; there is no cross-surface shared
+  session/run store until a Phase-3/4 ADR reconciles it. Reword the VS Code at-rest posture once the
+  cross-host physical-store decision lands. *(low · Phase 4 forward-design docs; blocked on the cross-host
+  store decision; surfaced during the 2.5.J encrypted-wording sweep)*
 - [ ] **`relavium run` maps any `run:paused` to exit 3 (gate-paused); revisit when media host-wiring lands.**
   `run.ts` returns `EXIT_CODES.gatePaused` (3) for any `run:paused`, which is correct in 2.D because a
   human gate is the **only** `run:paused` source (no `mediaStore`/media-job host is wired, so a media-only

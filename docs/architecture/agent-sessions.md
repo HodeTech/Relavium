@@ -91,8 +91,8 @@ the `SessionContext`, and the `SessionMessage` shape are canonical in
 A session is **auto-persisted and resumable** — there is no separate "save" step and no
 `sessions.db`. Sessions and their transcripts live in the existing local `history.db` in two new tables
 (its at-rest posture is surface-specific per [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md):
-the **CLI** store is unencrypted, guarded by `0700`/`0600` owner-only permissions + the OS keychain; only the
-**desktop** surface uses a SQLCipher-encrypted store):
+the **CLI** store is unencrypted, guarded by `0700`/`0600` owner-only permissions (no credentials at rest —
+API keys live in the OS keychain); only the **desktop** surface uses a SQLCipher-encrypted store):
 
 - **`agent_sessions`** — one row per session: the bound `agentRef`/model, the
   `SessionContext`, and lifecycle timestamps.
