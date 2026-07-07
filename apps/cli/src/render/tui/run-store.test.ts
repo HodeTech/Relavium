@@ -49,16 +49,25 @@ describe('createRunStore', () => {
     expect(store.getSnapshot().state.activeTokens).toBe('abc');
   });
 
-  it('coalesces the whole high-frequency family (tool_call / tool_result), not just tokens', () => {
+  it('coalesces the whole high-frequency family (reasoning / tool_call / tool_result), not just tokens', () => {
     const store = createRunStore(true);
     store.apply(nodeStarted);
     let notified = 0;
     store.subscribe(() => (notified += 1));
     store.apply({
-      type: 'agent:tool_call',
+      type: 'agent:reasoning', // EA6 — a per-reasoning_delta firehose; must coalesce like a token
       runId: RUN,
       timestamp: TS,
       sequenceNumber: 2,
+      nodeId: 'a',
+      text: 'thinking',
+      model: 'm',
+    });
+    store.apply({
+      type: 'agent:tool_call',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 3,
       nodeId: 'a',
       model: 'm',
       toolId: 't',
@@ -67,13 +76,13 @@ describe('createRunStore', () => {
       type: 'agent:tool_result',
       runId: RUN,
       timestamp: TS,
-      sequenceNumber: 3,
+      sequenceNumber: 4,
       nodeId: 'a',
       toolId: 't',
       success: true,
       outputSummary: 'ok',
     });
-    expect(notified).toBe(0); // coalesced — no immediate repaint per tool event
+    expect(notified).toBe(0); // coalesced — no immediate repaint per reasoning/tool event
     store.tick();
     expect(notified).toBe(1); // one repaint for the whole burst
   });

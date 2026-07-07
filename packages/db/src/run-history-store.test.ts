@@ -701,15 +701,25 @@ describe('createRunHistoryReader', () => {
     await store.persistEvent(
       evRun('run-x', 'node:started', 1, { nodeId: 'g', nodeType: 'agent' }, ts),
     );
-    // ALL THREE excluded streaming types, so the test fails if any exclusion drifts or is misspelled.
+    // ALL FOUR excluded streaming types (incl. agent:reasoning, EA6/2.5.H), so the test fails if any exclusion
+    // drifts or is misspelled.
     await store.persistEvent(
       evRun('run-x', 'agent:token', 2, { nodeId: 'g', token: 'a', model: 'claude-opus-4-8' }, ts),
     );
     await store.persistEvent(
       evRun(
         'run-x',
-        'agent:tool_call',
+        'agent:reasoning',
         3,
+        { nodeId: 'g', text: 'thinking', model: 'claude-opus-4-8' },
+        ts,
+      ),
+    );
+    await store.persistEvent(
+      evRun(
+        'run-x',
+        'agent:tool_call',
+        4,
         { nodeId: 'g', model: 'claude-opus-4-8', toolId: 'read_file', toolInput: { path: 'x' } },
         ts,
       ),
@@ -718,7 +728,7 @@ describe('createRunHistoryReader', () => {
       evRun(
         'run-x',
         'agent:tool_result',
-        4,
+        5,
         { nodeId: 'g', toolId: 'read_file', success: true, outputSummary: 'ok' },
         ts,
       ),
@@ -727,7 +737,7 @@ describe('createRunHistoryReader', () => {
       evRun(
         'run-x',
         'human_gate:paused',
-        5,
+        6,
         { nodeId: 'g', gateId: 'g1', gateType: 'approval', message: 'ok?' },
         ts,
       ),
@@ -737,7 +747,12 @@ describe('createRunHistoryReader', () => {
     // streaming events checkpoint reconstruction + gate detection ignore — keeping the gate-relevant events.
     const full = reader.loadRunEvents('run-x').map((e) => e.type);
     expect(full).toEqual(
-      expect.arrayContaining(['agent:token', 'agent:tool_call', 'agent:tool_result']),
+      expect.arrayContaining([
+        'agent:token',
+        'agent:reasoning',
+        'agent:tool_call',
+        'agent:tool_result',
+      ]),
     );
     expect(reader.loadRunStateEvents('run-x').map((e) => e.type)).toEqual([
       'run:started',

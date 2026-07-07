@@ -182,6 +182,29 @@ describe('createChatStore', () => {
     expect(store.getSnapshot().state.cumulativeCostMicrocents).toBe(42);
   });
 
+  it('coalesces an agent:reasoning event like a token (dirty until tick) — EA6', () => {
+    // A reasoning-heavy model emits many thinking deltas; each must coalesce to the next frame, not flush a
+    // repaint per delta. Pins agent:reasoning's membership in HIGH_FREQUENCY_EVENTS (a drop reintroduces the
+    // per-delta thrash) — independent of whether the view yet RENDERS reasoning (Step 2).
+    const store = createChatStore(false);
+    store.apply(started);
+    store.apply(turnStarted);
+    let notified = 0;
+    store.subscribe(() => (notified += 1));
+    store.apply({
+      type: 'agent:reasoning',
+      sessionId: 'sess-1',
+      sequenceNumber: 3,
+      timestamp: '2026-06-25T00:00:03.000Z',
+      nodeId: 'relavium-chat',
+      text: 'let me think',
+      model: 'claude-sonnet-4-6',
+    });
+    expect(notified).toBe(0); // high-frequency ⇒ coalesced, no immediate flush
+    store.tick();
+    expect(notified).toBe(1); // the single frame flush
+  });
+
   it('coalesces an agent:tool_call like a token (dirty until tick), then shows the annotation', () => {
     const store = createChatStore(false);
     store.apply(started);
