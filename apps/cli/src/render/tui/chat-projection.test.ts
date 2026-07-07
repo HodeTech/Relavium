@@ -207,9 +207,12 @@ describe('chat-projection', () => {
       liveTokensTruncated: false,
     } as const;
 
-    it('renders the compaction moment first (dim, ADR-0062 §7)', () => {
+    it('renders the compaction moment first (dim, ADR-0062 §7), winning over every other state', () => {
       const line = formatBusyLine({ ...base, compacting: true, liveTokens: 'ignored' });
       expect(line).toEqual({ text: '⠋ ⟳ Summarizing conversation… · Esc to cancel', dim: true });
+      // Compaction has top priority — even paired with a (mutually-exclusive in practice) shell command it wins.
+      const withShell = formatBusyLine({ ...base, compacting: true, busyCommand: 'npm test' });
+      expect(withShell.text).toBe('⠋ ⟳ Summarizing conversation… · Esc to cancel');
     });
 
     it('renders the `!`-shell command line (dim) and sanitizes the command', () => {

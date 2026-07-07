@@ -446,11 +446,19 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
       ? {}
       : { errorCode: event.error.code, errorMessage: event.error.message }),
   };
-  const text = base.liveTokens;
+  const rawText = base.liveTokens;
+  // Preserve the elision marker into the FINALIZED entry (2.5.H). The live busy line prepends `…` at render, but a
+  // completed turn lands in ink `<Static>` (the terminal's permanent scrollback) rendered VERBATIM — so bake the
+  // marker into the display text here, else a truncated answer would silently lose its head the instant the turn
+  // completes (the very loss this makes visible). The view-model transcript is DISPLAY-ONLY and bounded to
+  // {@link MAX_LIVE_TOKEN_CHARS}; the durable session record (via the persister, from the raw events) keeps the FULL
+  // text — only this live terminal echo is short, so the marker signals "the live echo scrolled; see the full record".
+  const text = base.liveTokensTruncated ? `…${rawText}` : rawText;
   // Append an entry for a turn that produced text, that ERRORED, OR that was ABORTED (EA7) — so an Esc during
   // an approval prompt (before any assistant text streamed) still leaves a visible trace ("aborted · …" via the
-  // summary), confirming the abort took effect rather than silently clearing the live region.
-  const show = text.length > 0 || event.error !== undefined || event.stopReason === 'aborted';
+  // summary), confirming the abort took effect rather than silently clearing the live region. Guard on the RAW
+  // text (not the `…`-prefixed display text) so the marker can never fabricate a spurious empty-turn entry.
+  const show = rawText.length > 0 || event.error !== undefined || event.stopReason === 'aborted';
   const transcript = show
     ? appendTranscript(base.transcript, { role: 'assistant', text, summary })
     : base.transcript;

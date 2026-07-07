@@ -642,6 +642,33 @@ describe('session-view-model — live-turn feedback + attribution (2.5.H)', () =
     expect(cancelled.liveTokensTruncated).toBe(false);
   });
 
+  it('bakes the elision marker into the FINALIZED transcript entry so a truncated answer stays visible', () => {
+    // The marker must survive turn completion: a completed turn lands in ink <Static> (permanent scrollback)
+    // rendered verbatim, so the reducer bakes `…` into the display text — else the head silently vanishes exactly
+    // when the turn ends (the loss the feature exists to surface). (The DURABLE record via the persister is full.)
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('z'.repeat(MAX_LIVE_TOKEN_CHARS + 20)),
+      e.turnCompleted(),
+    ]);
+    const last = state.transcript.at(-1);
+    expect(last?.role === 'assistant' && last.text.startsWith('…')).toBe(true);
+  });
+
+  it('does NOT prefix the elision marker on a non-truncated completed turn', () => {
+    const e = events();
+    const state = reduceAll([
+      e.started(),
+      e.turnStarted(),
+      e.token('a short answer'),
+      e.turnCompleted(),
+    ]);
+    const last = state.transcript.at(-1);
+    expect(last?.role === 'assistant' && last.text).toBe('a short answer');
+  });
+
   it('attributes a completed turn to the committed model on a within-turn failover', () => {
     const e = events();
     // The LAST cost:updated of the turn carries the committed (failed-over) model, distinct from the bound model.

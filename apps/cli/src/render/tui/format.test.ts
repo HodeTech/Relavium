@@ -116,4 +116,9 @@ describe('formatElapsed (2.5.H live-turn timer)', () => {
   it('clamps a negative elapsed (clock skew) to 0s', () => {
     expect(formatElapsed(-5000)).toBe('0s');
   });
+
+  it('guards a non-finite input to 0s (never "NaNmNaNs")', () => {
+    expect(formatElapsed(Number.NaN)).toBe('0s');
+    expect(formatElapsed(Number.POSITIVE_INFINITY)).toBe('0s');
+  });
 });
