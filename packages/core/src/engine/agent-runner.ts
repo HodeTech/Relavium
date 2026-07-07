@@ -27,6 +27,7 @@ import {
   type MediaCostEstimate,
   type MediaSurface,
   type OutputModality,
+  type ReasoningEffort,
 } from '@relavium/shared';
 import {
   LlmConfigError,
@@ -43,6 +44,7 @@ import {
   type MediaJobStatus,
   type MediaUnitsEntry,
   type MediaUnitsEstimate,
+  type PricingOverlay,
   type ProviderId,
   type ResponseFormat,
   type ToolDef as LlmToolDef,
@@ -63,6 +65,7 @@ import {
   type PreEgressHook,
 } from './agent-turn.js';
 import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
+import { gateReasoningEffort } from './reasoning-effort.js';
 import type {
   MediaJobSubmission,
   NodeExecContext,
@@ -89,6 +92,14 @@ export interface AgentRunnerDeps {
    * lookup; the production catalog wiring is host-side (1.AH), like the other 1.AF/1.AG host-wiring obligations.
    */
   readonly resolveMediaSurface?: (model: string) => MediaSurface | undefined;
+  /**
+   * Whether a model supports reasoning ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md)) —
+   * the host-injected per-model catalog projection (`model_catalog.capabilities.reasoning`), mirroring
+   * {@link resolveMediaSurface}. The engine is platform-pure (no DB), so the host injects it. Gates the
+   * `reasoningEffort` send: a non-reasoning model would reject the field, so the tier is sent only when this
+   * returns `true`. Absent or `undefined` ⇒ treated as NOT reasoning (safe — the field is not sent).
+   */
+  readonly resolveReasoning?: (model: string) => boolean | undefined;
   /** The shared tool registry (1.T) the agent dispatches through (ADR-0037). */
   readonly registry: ToolRegistry;
   /** The registry's tool defs — the source of the LLM-visible schema + descriptions for granted tools. */
@@ -115,6 +126,9 @@ export interface AgentRunnerDeps {
   readonly limits?: AgentTurnLimits;
   /** Pre-egress budget hook (default no-op; 1.AC fills it). */
   readonly preEgress?: PreEgressHook;
+  /** The user-pricing overlay (2.5.G S10, ADR-0065 §2) — host-injected into the turn's realized cost tracker so a
+   *  workflow run's user-priced model is folded into cost governance. Absent ⇒ static-only. */
+  readonly resolvePrice?: PricingOverlay;
   /**
    * Per-modality media-output **unit-count** default (1.AF/D17, ADR-0044 §3) — the host-resolved
    * `[defaults].media_cost_estimate`. Used to build the per-turn media-unit estimate from a node's
@@ -328,7 +342,7 @@ async function executeAgent(
       planEntries: plan.entries,
       chainCapabilities: chainCapabilities(deps),
       ...(responseFormat === undefined ? {} : { responseFormat }),
-      ...resolveGenKnobs(agent, node),
+      ...resolveGenKnobs(agent, node, deps),
       nodeId: node.id,
       emit: ctx.emit,
       signal: ctx.signal,
@@ -336,6 +350,7 @@ async function executeAgent(
       dispatchContext,
       limits: deps.limits ?? DEFAULT_AGENT_TURN_LIMITS,
       ...(preEgress === undefined ? {} : { preEgress }),
+      ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }), // user-pricing overlay (S10)
       // Media cost governance (1.AF/D17): forward the node's requested output modalities + a per-modality
       // unit estimate so the budget governor prices a media-output turn pre-egress. Both omitted for a
       // text-only node (no `output_modalities`), so a text turn pays no media-estimate work.
@@ -783,12 +798,23 @@ function buildLlmTools(defs: readonly ToolDef[], granted: ReadonlySet<string>): 
 function resolveGenKnobs(
   agent: Agent,
   node: AgentNode,
-): { temperature?: number; maxTokens?: number } {
+  deps: AgentRunnerDeps,
+): { temperature?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort } {
   const temperature = node.temperature ?? agent.temperature;
   const maxTokens = node.max_tokens ?? agent.max_tokens;
+  // ADR-0066: send the reasoning-effort tier ONLY when the agent authored one AND the primary model is
+  // reasoning-capable (the shared {@link gateReasoningEffort} rule — a non-reasoning model would reject the field).
+  // The per-fallback-entry re-gate lives in the chain (a non-reasoning fallback entry strips the tier), so a failover
+  // to a different-capability model never carries an unsupported field.
+  const reasoningEffort = gateReasoningEffort(
+    agent.reasoning_effort,
+    agent.model,
+    deps.resolveReasoning,
+  );
   return {
     ...(temperature === undefined ? {} : { temperature }),
     ...(maxTokens === undefined ? {} : { maxTokens }),
+    ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
   };
 }
 

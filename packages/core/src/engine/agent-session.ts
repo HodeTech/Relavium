@@ -28,6 +28,7 @@ import type {
   AbortSignalLike,
   AgentApprovalRequestedEvent,
   ErrorCode,
+  ReasoningEffort,
   SessionContext,
   SessionEvent,
   SessionStopReason,
@@ -38,6 +39,7 @@ import {
   type FallbackPlanEntry,
   type LlmMessage,
   type LlmProvider,
+  type PricingOverlay,
   type ProviderId,
   type ToolDef as LlmToolDef,
 } from '@relavium/llm';
@@ -68,6 +70,7 @@ import {
 } from './agent-turn.js';
 import { BudgetPauseError } from './budget-governor.js';
 import type { AbortControllerLike } from './execution-host.js';
+import { gateReasoningEffort } from './reasoning-effort.js';
 import type { NodeStreamEvent } from './node-executor.js';
 import type { SessionResumeState } from './session-resume.js';
 
@@ -232,6 +235,21 @@ export interface SessionDeps {
   /** Pre-egress budget hook (default no-op; 1.AC fills it — ADR-0028). */
   readonly preEgress?: PreEgressHook;
   /**
+   * The user-pricing overlay (2.5.G S10, ADR-0065 §2) — host-injected (like {@link keyFor}) from the
+   * `model_catalog` `source='user'` rows, threaded into the turn's REALIZED cost tracker so a user-priced model
+   * the static registry lacks is folded into the cumulative cost (which `updateCost` feeds to the governor, so
+   * `max_cost_microcents` enforces it). Absent ⇒ static-only pricing. `@relavium/core` never imports `@relavium/db`.
+   */
+  readonly resolvePrice?: PricingOverlay;
+  /**
+   * Whether the bound model supports reasoning ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md))
+   * — the host-injected per-model `model_catalog.capabilities.reasoning` projection (mirrors the `AgentRunner`'s
+   * `resolveReasoning`). Gates the `reasoningEffort` send: the authored `agent.reasoning_effort` is passed to a turn
+   * only when this returns `true` (a non-reasoning model rejects the field). Absent/`undefined` ⇒ not reasoning
+   * ⇒ withheld. `@relavium/core` never imports `@relavium/db`, so the host injects the catalog lookup.
+   */
+  readonly resolveReasoning?: (model: string) => boolean | undefined;
+  /**
    * Feed the running session cost to a budget governor so a host that wires {@link preEgress} to
    * `BudgetGovernor.checkPreEgress` also keeps the governor's cumulative total current (ADR-0028, 1.AC).
    * Called after each `cost:updated` with the session-wide cumulative; without it the governor would stay
@@ -361,6 +379,15 @@ export class AgentSession {
    */
   #turnPolicy: SessionTurnPolicy | undefined;
   /**
+   * The session-level reasoning-effort OVERRIDE ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §5),
+   * mutated by {@link setReasoningEffort} and read per turn (like {@link #turnPolicy}). It is the top tier of the
+   * per-turn resolution `session override → agent.reasoning_effort → unset`, so an interactive surface (the
+   * `/models` effort sub-step, a `/effort` command) changes effort mid-session with **no reseat** — effort is a
+   * per-turn field (never plan-changing), so a reseat (which exists for a *model* change) would be unwarranted
+   * teardown. `undefined` ⇒ no override (fall through to the agent's authored tier).
+   */
+  #reasoningEffort: ReasoningEffort | undefined;
+  /**
    * Set by {@link abort} to mark the in-flight turn as **user-aborted** (EA7) — distinct from `cancel()`'s
    * terminal `'cancelled'` status. The `sendMessage` catch reads it to settle the turn as
    * `session:turn_completed{stopReason:'aborted'}` and keep the session alive (→ `idle`). Cleared each turn.
@@ -447,6 +474,30 @@ export class AgentSession {
    */
   setTurnPolicy(policy: SessionTurnPolicy | undefined): void {
     this.#turnPolicy = policy;
+  }
+
+  /**
+   * Set (or clear) the **session-level reasoning-effort override** ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §5)
+   * on this SAME session instance — the interactive `/models` effort sub-step + a `/effort` command call it. The
+   * change is **lossless** (no reseat, no tool/reasoning-context loss — effort changes neither the provider, the
+   * pricing, nor the memoized `#plan`) and applies on the **next** turn (each `sendMessage` reads the override at
+   * turn start). Pass `undefined` to clear it (fall back to the agent's authored `reasoning_effort`). Callable in
+   * **any** state incl. mid-turn (takes effect next turn); **inert once `cancelled`** (no further turn reads it).
+   * The tier is still gated per turn by the host's per-model capability ({@link AgentSessionDeps.resolveReasoning}),
+   * so setting it on a non-reasoning model is a harmless no-op at send time.
+   */
+  setReasoningEffort(effort: ReasoningEffort | undefined): void {
+    this.#reasoningEffort = effort;
+  }
+
+  /**
+   * The session's EFFECTIVE reasoning-effort tier ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §5)
+   * — the session override, else the agent's authored `reasoning_effort`, else `undefined`. This is the resolved
+   * tier BEFORE the per-model capability gate ({@link gateReasoningEffort}); a surface reads it to show the active
+   * tier (a footer indicator, the `/models` effort sub-list's ✓/highlight) without having to track it itself.
+   */
+  get reasoningEffort(): ReasoningEffort | undefined {
+    return this.#reasoningEffort ?? this.#agent.reasoning_effort;
   }
 
   /** Guard the send preconditions: the session must be started and idle (not running/cancelled/ended). */
@@ -852,6 +903,7 @@ export class AgentSession {
         dispatchContext: this.#buildDispatchContext(new Set(), undefined),
         limits: this.#limits,
         ...(this.#deps.preEgress === undefined ? {} : { preEgress: this.#deps.preEgress }),
+        ...(this.#deps.resolvePrice === undefined ? {} : { resolvePrice: this.#deps.resolvePrice }),
       });
       const summary = result.text.trim();
       if (summary.length === 0) {
@@ -1032,6 +1084,14 @@ export class AgentSession {
     // Advertise-filter (ADR-0057): narrow the model-visible tool set per the host's mode (best-effort; the
     // confirm floor stays authoritative). No policy / no filter ⇒ advertise every granted tool.
     const llmTools = buildLlmTools(this.#deps.tools, grantedToolIds, turnPolicy?.advertise);
+    // ADR-0066: resolve the effective reasoning-effort tier (session override → agent's authored tier) and gate it
+    // on the bound model's per-model capability (a non-reasoning model would reject it). Read at turn start so a
+    // mid-session setReasoningEffort applies to the NEXT turn — the no-reseat per-turn semantics (§5).
+    const reasoningEffort = gateReasoningEffort(
+      this.#reasoningEffort ?? this.#agent.reasoning_effort,
+      this.#agent.model,
+      this.#deps.resolveReasoning,
+    );
     return runAgentTurn({
       system: this.#systemPrompt(),
       messages: this.#messages,
@@ -1040,6 +1100,7 @@ export class AgentSession {
       chainCapabilities: this.#chainCapabilities(),
       ...(this.#agent.temperature === undefined ? {} : { temperature: this.#agent.temperature }),
       ...(this.#agent.max_tokens === undefined ? {} : { maxTokens: this.#agent.max_tokens }),
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
       nodeId: this.#agentRef,
       emit: (event) => {
         this.#onTurnEmit(event);
@@ -1049,6 +1110,7 @@ export class AgentSession {
       dispatchContext,
       limits: this.#limits,
       ...(this.#deps.preEgress === undefined ? {} : { preEgress: this.#deps.preEgress }),
+      ...(this.#deps.resolvePrice === undefined ? {} : { resolvePrice: this.#deps.resolvePrice }),
     });
   }
 

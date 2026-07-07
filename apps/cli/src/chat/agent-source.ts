@@ -1,4 +1,5 @@
 import { parseAgent, type AgentDefinition } from '@relavium/core';
+import type { ReasoningEffort } from '@relavium/shared';
 
 import { resolveYamlSource } from '../workflows/resolve.js';
 import { buildDefaultChatAgent, DEFAULT_CHAT_MODEL } from './default-agent.js';
@@ -8,6 +9,9 @@ export interface ResolveChatAgentOptions {
   readonly projectConfigDir: string | undefined;
   /** The resolved `[chat].default_model` — used only to build the default agent when no `--agent` is given. */
   readonly defaultModel: string | undefined;
+  /** The resolved `[chat].reasoning_effort` (ADR-0066) — baked onto the DEFAULT agent only (an authored `--agent`
+   *  owns its own `reasoning_effort`, never overridden by config). Absent ⇒ no reasoning control. */
+  readonly reasoningEffort?: ReasoningEffort;
 }
 
 /**
@@ -23,7 +27,7 @@ export function resolveChatAgent(
   opts: ResolveChatAgentOptions,
 ): AgentDefinition {
   if (agentRef === undefined) {
-    return buildDefaultChatAgent(opts.defaultModel ?? DEFAULT_CHAT_MODEL);
+    return buildDefaultChatAgent(opts.defaultModel ?? DEFAULT_CHAT_MODEL, opts.reasoningEffort);
   }
   const source = resolveYamlSource(agentRef, {
     cwd: opts.cwd,

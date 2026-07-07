@@ -4,6 +4,7 @@ import { CostTracker } from './cost-tracker.js';
 import {
   FallbackChain,
   stripReasoningParts,
+  withEntryModel,
   withFallback,
   type AttemptRecord,
   type FallbackChainOptions,
@@ -550,6 +551,44 @@ describe('stripReasoningParts', () => {
         { type: 'text', text: 'a' },
         { type: 'text', text: 'b' },
       ],
+    });
+  });
+});
+
+describe('withEntryModel (ADR-0066 §4 — per-fallback-entry reasoning gate)', () => {
+  it('STRIPS a reasoning-effort tier for a fallback entry model that does not reason', () => {
+    const req: LlmRequest = {
+      model: 'o1',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      reasoningEffort: 'high',
+    };
+    // Failover to a non-reasoning model (gpt-4o) must NOT carry the tier — the provider would 400-reject it, and a
+    // fatal unsupported-parameter error would abort the whole remaining chain.
+    const out = withEntryModel(req, 'gpt-4o');
+    expect(out.model).toBe('gpt-4o');
+    expect('reasoningEffort' in out).toBe(false);
+    expect(req.reasoningEffort).toBe('high'); // input untouched
+  });
+
+  it('KEEPS the tier for a fallback entry model that DOES reason', () => {
+    const req: LlmRequest = {
+      model: 'claude-opus-4-8',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      reasoningEffort: 'max',
+    };
+    const out = withEntryModel(req, 'gpt-5.5'); // a reasoning model ⇒ the tier rides
+    expect(out.model).toBe('gpt-5.5');
+    expect(out.reasoningEffort).toBe('max');
+  });
+
+  it('is a plain model swap when no tier is set', () => {
+    const req: LlmRequest = {
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    };
+    expect(withEntryModel(req, 'claude-sonnet-4-6')).toEqual({
+      ...req,
+      model: 'claude-sonnet-4-6',
     });
   });
 });

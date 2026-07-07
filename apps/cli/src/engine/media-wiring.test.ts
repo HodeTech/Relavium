@@ -34,6 +34,7 @@ const EMPTY_CONFIG: ResolvedConfig = {
     onExceed: undefined,
     allowedCommands: undefined,
     allowedCommandGlobs: undefined,
+    reasoningEffort: undefined,
   },
   variables: {},
   mcpServers: [],

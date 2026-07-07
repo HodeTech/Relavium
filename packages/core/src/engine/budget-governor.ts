@@ -3,6 +3,7 @@ import {
   estimateMediaCost,
   UnknownModelError,
   type MediaUnitsEstimate,
+  type PricingOverlay,
 } from '@relavium/llm';
 import type { Budget } from '@relavium/shared';
 
@@ -93,6 +94,7 @@ export class BudgetGovernor {
   readonly #emit: (
     event: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>,
   ) => Promise<void>;
+  readonly #overlay: PricingOverlay | undefined;
   #cumulativeCostMicrocents = 0;
   #warningEmitted = false;
 
@@ -102,10 +104,14 @@ export class BudgetGovernor {
     readonly emit: (
       event: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>,
     ) => Promise<void>;
+    /** The user-pricing overlay (2.5.G S10) — makes the PRE-EGRESS estimate price a user-priced model that the
+     *  static registry lacks, so `max_cost_microcents` enforces it (the cap-gap fix). Absent ⇒ static-only. */
+    readonly resolvePrice?: PricingOverlay;
   }) {
     this.#budget = params.budget;
     this.#defaultMaxTokensEstimate = params.defaultMaxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
     this.#emit = params.emit;
+    this.#overlay = params.resolvePrice;
   }
 
   /** Update the governor with the engine's authoritative running cumulative cost. */
@@ -136,8 +142,10 @@ export class BudgetGovernor {
       // modalities the model rates (a missing rate degrades to 0); both share the UnknownModelError
       // degrade-to-allow below, so an unpriced model never hard-fails the run.
       estimate =
-        estimateMaxNextCost(model, maxTokens ?? this.#defaultMaxTokensEstimate) +
-        (mediaUnitsEstimate === undefined ? 0 : estimateMediaCost(model, mediaUnitsEstimate));
+        estimateMaxNextCost(model, maxTokens ?? this.#defaultMaxTokensEstimate, this.#overlay) +
+        (mediaUnitsEstimate === undefined
+          ? 0
+          : estimateMediaCost(model, mediaUnitsEstimate, this.#overlay));
     } catch (err) {
       // An unpriced model (e.g. a custom base-URL / self-hosted id with no pricing row) throws
       // UnknownModelError. The pre-egress governor must NOT hard-fail an otherwise-valid run on it —

@@ -9,7 +9,7 @@ import {
   positiveInt,
   temperatureSchema,
 } from './common.js';
-import { LLM_PROVIDERS, RETRYABLE_ERROR_CODES } from './constants.js';
+import { LLM_PROVIDERS, REASONING_EFFORTS, RETRYABLE_ERROR_CODES } from './constants.js';
 
 /**
  * Agent schema (agent-yaml-spec.md). An agent is a named, reusable LLM
@@ -262,6 +262,10 @@ export const AgentSchema = z
     system_prompt: nonEmptyString,
     temperature: temperatureSchema.optional(), // provider-agnostic [0, 2] (common.ts)
     max_tokens: positiveInt.optional(),
+    // Normalized reasoning-effort tier (ADR-0066) — off/low/medium/high/max. Threaded into each turn's
+    // `LlmRequest.reasoningEffort`; the adapter maps it to the provider's native tier control. Absent ⇒ the
+    // `[chat].reasoning_effort` config default, else the provider default. Only sent to a reasoning-capable model.
+    reasoning_effort: z.enum(REASONING_EFFORTS).optional(),
     // Optional agent-level JSON-Schema metadata (agent-yaml-spec.md) — the engine validates
     // turn I/O against these when present; absent on most agents.
     input_schema: jsonSchemaMetadataSchema.optional(),

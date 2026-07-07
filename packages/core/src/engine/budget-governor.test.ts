@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { PricingOverlay } from '@relavium/llm';
 import type { Budget } from '@relavium/shared';
 
 import { BudgetExceededError, BudgetGovernor, BudgetPauseError } from './budget-governor.js';
@@ -7,7 +8,13 @@ import type { RunEventDraft } from './event-bus.js';
 describe('BudgetGovernor', () => {
   const budget: Budget = { max_cost_microcents: 1_000_000, on_exceed: 'warn' };
 
-  function makeGovernor(overrides: { budget?: Budget; defaultMaxTokensEstimate?: number } = {}): {
+  function makeGovernor(
+    overrides: {
+      budget?: Budget;
+      defaultMaxTokensEstimate?: number;
+      resolvePrice?: PricingOverlay;
+    } = {},
+  ): {
     governor: BudgetGovernor;
     warnings: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>[];
   } {
@@ -17,6 +24,7 @@ describe('BudgetGovernor', () => {
       ...(overrides.defaultMaxTokensEstimate === undefined
         ? {}
         : { defaultMaxTokensEstimate: overrides.defaultMaxTokensEstimate }),
+      ...(overrides.resolvePrice === undefined ? {} : { resolvePrice: overrides.resolvePrice }),
       emit: (event) => {
         warnings.push(event);
         return Promise.resolve();
@@ -138,5 +146,54 @@ describe('BudgetGovernor', () => {
     await expect(
       governor.checkPreEgress('my-self-hosted-model', 10_000, [{ modality: 'image', units: 2 }]),
     ).resolves.toBeUndefined();
+  });
+
+  describe('user-pricing overlay (2.5.G S10, ADR-0065 §2 — closes the cost-cap gap)', () => {
+    // A user price for a model the static registry does not know — output $9/MTok so 10_000 tok ⇒ 9_000_000µ¢.
+    const OVERLAY: PricingOverlay = new Map([
+      [
+        'acme-custom-1',
+        {
+          provider: 'openai',
+          nativeId: 'acme-custom-1',
+          displayName: 'Acme Custom 1',
+          contextWindowTokens: 32_000,
+          maxOutputTokens: 4_000,
+          inputPerMtokMicrocents: 300_000_000,
+          outputPerMtokMicrocents: 900_000_000,
+          cachedInputPerMtokMicrocents: 0,
+        },
+      ],
+    ]);
+
+    it('ENFORCES the cap on a user-priced model that WOULD have degraded to allow without the overlay', async () => {
+      // THE ACCEPTANCE: with the overlay, `acme-custom-1` is priced, so the projected 9_000_000µ¢ (10_000 out
+      // @ $9/MTok) far exceeds the 1_000_000µ¢ cap → fail (not the old silent degrade-to-allow).
+      const { governor } = makeGovernor({
+        budget: { ...budget, on_exceed: 'fail' },
+        resolvePrice: OVERLAY,
+      });
+      governor.updateCost(0);
+      await expect(governor.checkPreEgress('acme-custom-1', 10_000)).rejects.toBeInstanceOf(
+        BudgetExceededError,
+      );
+    });
+
+    it('the SAME model WITHOUT the overlay degrades to allow (proves the overlay is what closes the gap)', async () => {
+      const { governor } = makeGovernor({ budget: { ...budget, on_exceed: 'fail' } });
+      governor.updateCost(0);
+      await expect(governor.checkPreEgress('acme-custom-1', 10_000)).resolves.toBeUndefined();
+    });
+
+    it('a user-priced model UNDER the cap is allowed (no false positive)', async () => {
+      // 1_000 output tokens @ $9/MTok = 900_000µ¢, under the 1_000_000µ¢ cap → allow, no warning (warn-cap is 0.9).
+      const { governor, warnings } = makeGovernor({
+        budget: { ...budget, on_exceed: 'fail' },
+        resolvePrice: OVERLAY,
+      });
+      governor.updateCost(0);
+      await expect(governor.checkPreEgress('acme-custom-1', 1_000)).resolves.toBeUndefined();
+      expect(warnings).toHaveLength(0);
+    });
   });
 });

@@ -13,6 +13,7 @@ import type {
   Usage,
 } from './types.js';
 import { requestSupportReason } from './capabilities.js';
+import { modelSupportsReasoning } from './pricing.js';
 
 export type { BackoffStrategy };
 
@@ -204,6 +205,23 @@ export function stripReasoningParts(req: LlmRequest): LlmRequest {
     }
   }
   return { ...req, messages };
+}
+
+/**
+ * Point a request at a chain entry's model AND strip a reasoning-effort tier the entry model does NOT support
+ * ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §4). A failover to a
+ * non-reasoning model must not carry the primary's tier: the provider would reject the unsupported parameter, and a
+ * `400` on an unsupported param is fatal + non-retryable — so the whole remaining chain would abort rather than the
+ * failover rescuing the turn. The per-model capability is the SAME {@link modelSupportsReasoning} the host projects
+ * to the engine gate, so the primary is gated at the engine and each fallback entry is re-gated here. Exported for
+ * a focused unit test (like {@link stripReasoningParts}).
+ */
+export function withEntryModel(req: LlmRequest, model: string): LlmRequest {
+  const next = { ...req, model };
+  if (next.reasoningEffort !== undefined && !modelSupportsReasoning(model)) {
+    delete next.reasoningEffort;
+  }
+  return next;
 }
 
 /** The backoff delay before the `retryIndex`-th retry of an entry (0 = before the 2nd attempt). */
@@ -794,7 +812,7 @@ class ChainRun {
    * pollute `#lastProvider` (which would wrongly strip reasoning for a later same-provider entry).
    */
   previewRequest(entry: FallbackPlanEntry): LlmRequest {
-    return { ...this.#req, model: entry.model };
+    return withEntryModel(this.#req, entry.model);
   }
 
   /**
@@ -810,7 +828,7 @@ class ChainRun {
       this.#req = stripReasoningParts(this.#req);
     }
     this.#lastProvider = providerId;
-    return { ...this.#req, model: entry.model };
+    return withEntryModel(this.#req, entry.model);
   }
 
   /** Allocate the next 1-based attempt record skeleton for this entry. */

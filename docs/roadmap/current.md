@@ -182,8 +182,29 @@ flight left no host-visible busy signal, so a message typed mid-command could cr
 preview, expanded into the SAME UNTRUSTED nonce-fenced frame only at submit — byte-identical model context, a
 clean prompt), and two follow-up review passes hardened the `[chat]` allowlist resolution (exact + glob arrays are
 now a **coupled unit**) and fixed a Backspace regression (ink reports the Unix physical Backspace as `key.delete`);
-all recorded in the ADR-0061 "Refined at implementation" append. **Next in the experience arm: 2.5.F / G.** See the
-[Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md).
+all recorded in the ADR-0061 "Refined at implementation" append. **2.5.F** (the ADR-0062 context commands) is ✅
+**Done (PR #65, merged 2026-07-05)** behind [ADR-0062](../decisions/0062-context-compaction-and-cli-history-commands.md):
+`/clear` (a host-level fresh-session swap across `chat`/`chat-resume`/Home, TTY-interactive only), the
+`session:compacting` "Summarizing…" moment event (amending ADR-0036), and the footer context-fullness indicator —
+completing compaction alongside the earlier `/compact` + `/trim` + automatic compaction. **2.5.G is now
+underway**, its scope **expanded to Option A** — a **live** model catalog (per-key provider discovery + a DB
+cache + refresh + a static/live merge) and a complete model-pricing story (user-supplied pricing that governs
+cost) — behind three new ADRs ([ADR-0063](../decisions/0063-cli-config-write-contract.md) config-write ·
+[ADR-0064](../decisions/0064-live-model-catalog.md) live catalog ·
+[ADR-0065](../decisions/0065-provider-economics-and-extensibility.md) provider economics), across 12 reviewed
+steps; the additive lanes 2.5.H / I / J run in parallel. See the
+[Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md). A **post-2.5.G model-UX follow-up** (from six
+maintainer questions on model/provider/wizard behavior) then landed as a sequenced plan: `/models` key-awareness,
+the onboarding-wizard live key-validation + retry UX, wizard-dynamic provider docs, **mid-session model switching**
+(the `/models` reseat across `relavium chat` + the in-Home chat — [ADR-0059](../decisions/0059-cli-mid-session-model-reseat.md),
+now Accepted), and **normalized reasoning-effort control** ([ADR-0066](../decisions/0066-normalized-reasoning-effort-control.md),
+now Accepted): a provider-agnostic effort tier (`off`/`low`/`medium`/`high`/`max`) authored in agent YAML or the
+`[chat].reasoning_effort` config default, each adapter mapping it to its provider's **native** tier, gated per-model
+by a host-injected capability resolver (plus a conservative id heuristic for a live-discovered model), and changed
+live — via the `/effort` command or the `/models` picker's **effort sub-step** — as a **per-turn session override**
+(no reseat, §5), with the active tier shown in the footer. The comprehensive multi-agent review after the first
+implementation caught that the picker had (wrongly) routed the effort through a full model reseat; the P0 fix
+rebuilt it as the ADR-mandated session-level setter.
 
 Carry-over hardening is tracked in [deferred-tasks.md](deferred-tasks.md) — Phase 2 picks
 items up as it first touches each file. Notable inheritances: 1.AH's host-wiring half

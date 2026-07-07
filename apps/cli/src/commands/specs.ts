@@ -53,6 +53,7 @@ export function registerCommands(program: Command, ctx?: CommandContext): void {
   registerImport(program, ctx);
   registerAgent(program, ctx);
   registerGate(program, ctx);
+  registerModels(program, ctx);
   registerProvider(program, ctx);
   registerList(program, ctx);
   registerLogs(program, ctx);
@@ -442,6 +443,80 @@ function registerStatus(program: Command, ctx?: CommandContext): void {
   });
 }
 
+/**
+ * Register `relavium models` (list the cached catalog) + `relavium models refresh` (force a live re-fetch)
+ * (2.5.G S5, [ADR-0064](../../../../docs/decisions/0064-live-model-catalog.md)). The parent `models` action
+ * lists the cache (refreshing on first run if empty); the `refresh` subcommand blocks on a live re-fetch and
+ * reports per-provider outcomes. Both honor `--json`. Each dispatch opens the local db + keychain per invocation.
+ */
+function registerModels(program: Command, ctx?: CommandContext): void {
+  const models = program
+    .command('models')
+    .description('List the cached model catalog (refreshes on first run if empty).');
+  const refresh = models
+    .command('refresh')
+    .description("Re-fetch each connected provider's live model list into the local cache.");
+  const pricing = models
+    .command('pricing <model>')
+    .description(
+      'Set a user price for a model the registry does not know (custom / new provider models).',
+    )
+    .requiredOption('--provider <slug>', 'the provider that serves the model (must be registered)')
+    .requiredOption('--input <usd-per-mtok>', 'input (prompt) price, USD per million tokens')
+    .requiredOption('--output <usd-per-mtok>', 'output (completion) price, USD per million tokens')
+    .option('--cached <usd-per-mtok>', 'cache-read price, USD per million tokens (default 0)');
+
+  if (ctx === undefined) {
+    models.action(() => {
+      throw new CliError('not_implemented', '`relavium models` requires the CLI runtime context.');
+    });
+    refresh.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium models refresh` requires the CLI runtime context.',
+      );
+    });
+    pricing.action(() => {
+      throw new CliError(
+        'not_implemented',
+        '`relavium models pricing` requires the CLI runtime context.',
+      );
+    });
+    return;
+  }
+
+  models.action(async () => {
+    ctx.result.exitCode = await executeCommand('models', { positionals: [], options: {} }, ctx);
+  });
+  refresh.action(async () => {
+    ctx.result.exitCode = await executeCommand(
+      'models.refresh',
+      { positionals: [], options: {} },
+      ctx,
+    );
+  });
+  pricing.action(
+    async (
+      model: string,
+      opts: { provider?: string; input?: string; output?: string; cached?: string },
+    ) => {
+      ctx.result.exitCode = await executeCommand(
+        'models.pricing',
+        {
+          positionals: [model],
+          options: {
+            provider: opts.provider,
+            input: opts.input,
+            output: opts.output,
+            cached: opts.cached,
+          },
+        },
+        ctx,
+      );
+    },
+  );
+}
+
 /** Register `relavium provider` and its subcommands (2.C). Each dispatch opens the local db + keychain per invocation. */
 function registerProvider(program: Command, ctx?: CommandContext): void {
   const provider = program
@@ -449,11 +524,16 @@ function registerProvider(program: Command, ctx?: CommandContext): void {
     .description('Manage providers and API keys in the OS keychain.');
   const list = provider
     .command('list')
-    .description('List registered providers and whether a key is set.');
+    .description('List registered providers and whether a key is set.')
+    .option('--verify', 'additionally run a live key-verification probe per provider');
   const add = provider
     .command('add <name>')
     .description('Register a provider.')
-    .option('--base-url <url>', 'override the provider base URL');
+    .option('--base-url <url>', 'override the provider base URL')
+    .option(
+      '--pricing-url <url>',
+      'override the pricing reference page (where you find model prices)',
+    );
   const setKey = provider
     .command('set-key <name>')
     .description('Store a provider API key in the OS keychain (the key is read from stdin).');
@@ -478,17 +558,17 @@ function registerProvider(program: Command, ctx?: CommandContext): void {
     return;
   }
 
-  list.action(async () => {
+  list.action(async (opts: { verify?: boolean }) => {
     ctx.result.exitCode = await executeCommand(
       'provider.list',
-      { positionals: [], options: {} },
+      { positionals: [], options: { verify: opts.verify } },
       ctx,
     );
   });
-  add.action(async (name: string, opts: { baseUrl?: string }) => {
+  add.action(async (name: string, opts: { baseUrl?: string; pricingUrl?: string }) => {
     ctx.result.exitCode = await executeCommand(
       'provider.add',
-      { positionals: [name], options: { baseUrl: opts.baseUrl } },
+      { positionals: [name], options: { baseUrl: opts.baseUrl, pricingUrl: opts.pricingUrl } },
       ctx,
     );
   });

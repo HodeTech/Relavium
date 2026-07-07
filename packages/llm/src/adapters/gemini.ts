@@ -1,7 +1,13 @@
 import { GenerateVideosOperation, GoogleGenAI } from '@google/genai';
 
 import { MediaMimeTypeSchema, mediaModalityOf } from '@relavium/shared';
-import type { AbortSignalLike, ContentPart, OutputModality, StopReason } from '@relavium/shared';
+import type {
+  AbortSignalLike,
+  ContentPart,
+  OutputModality,
+  ReasoningEffort,
+  StopReason,
+} from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
@@ -17,6 +23,7 @@ import type {
   MediaGenRequest,
   MediaGenResult,
   MediaJobStatus,
+  ModelListing,
   StreamChunk,
   ToolChoice,
   ToolDef,
@@ -26,11 +33,16 @@ import type {
 import {
   CONTEXT_SEAM_DEFAULTS,
   REASONING_ID,
+  assertListModelsShape,
   assertMediaCapabilities,
   assertNoStreamingMediaOutput,
+  boundedListModels,
   decodeMediaJobId,
   encodeMediaJobId,
   isAbortSignal,
+  isRecord,
+  positiveModelInt,
+  toModelListing,
 } from './shared.js';
 
 /**
@@ -45,6 +57,16 @@ import {
  */
 
 const PROVIDER = 'gemini';
+/** ADR-0066: the normalized reasoning-effort tier → Gemini's native `thinkingConfig.thinkingLevel` enum values.
+ *  Gemini tops out at HIGH, so `max`→HIGH (a coarsening); it has no universal disable (a Pro model rejects budget
+ *  0), so `off` degrades to the lowest tier MINIMAL. The loose config Record takes the enum's string value directly. */
+const GEMINI_THINKING_LEVEL: Record<ReasoningEffort, 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH'> = {
+  off: 'MINIMAL',
+  low: 'LOW',
+  medium: 'MEDIUM',
+  high: 'HIGH',
+  max: 'HIGH',
+};
 
 /**
  * Gemini's common-path capability surface (restricted tool schema; ids synthesized). 1.AE wires
@@ -70,9 +92,6 @@ const GEMINI_SUPPORTS: CapabilityFlags = {
 };
 
 const ZERO_USAGE: Usage = { inputTokens: 0, outputTokens: 0 };
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
  * The canonical BARE media MIME (no RFC-2045 parameters) from a vendor-reported type, validated against the
@@ -201,6 +220,20 @@ export interface GeminiVideoPoll {
 }
 
 /**
+ * The minimal slice of a Gemini `models.list()` row the mapper reads (ADR-0064 §1) — a hand-rolled
+ * structural subset (parity with {@link GeminiResponse}) so no vendor `Model` type crosses the seam.
+ * `name` is the resource name (`models/<id>`); `supportedActions` is the `@google/genai` projection of the
+ * REST `supportedGenerationMethods` — the chat-capability filter keys on it (`includes('generateContent')`).
+ */
+export interface GeminiModelInfo {
+  name?: string | undefined;
+  displayName?: string | undefined;
+  inputTokenLimit?: number | undefined;
+  outputTokenLimit?: number | undefined;
+  supportedActions?: string[] | undefined;
+}
+
+/**
  * The injected network seam. The default wraps `@google/genai`; the conformance harness injects a
  * replay implementation. Keeping it here lets the one adapter run on every host (ADR-0018) and lets
  * tests drive the fold without a vendor import.
@@ -208,6 +241,12 @@ export interface GeminiVideoPoll {
 export interface GeminiTransport {
   generate(request: GeminiRequest, key: string): Promise<GeminiResponse>;
   stream(request: GeminiRequest, key: string): Promise<AsyncIterable<GeminiResponse>>;
+  /**
+   * Live model discovery (ADR-0064 §1). The default wraps `ai.models.list()` and normalizes each row to
+   * the vendor-type-free {@link GeminiModelInfo}; the conformance harness injects a replay. `signal` aborts
+   * the in-flight list request (a client-only cancel — see the SDK's `abortSignal` note).
+   */
+  listModels(key: string, signal?: AbortSignalLike): Promise<GeminiModelInfo[]>;
   /**
    * Imagen generative image endpoint (1.AH A2). The default wraps `ai.models.generateImages`; the
    * conformance harness injects a replay. Required so a transport honestly declares the generative
@@ -344,6 +383,37 @@ function mapGeminiPart(part: GeminiPart, ids: GeminiToolCallIds): ContentPart | 
   return part.thoughtSignature !== undefined && part.thoughtSignature.length > 0
     ? { type: 'reasoning', text: part.text, signature: part.thoughtSignature }
     : { type: 'reasoning', text: part.text };
+}
+
+/**
+ * Map one Gemini `models.list()` row to a canonical {@link ModelListing}, or `undefined` to drop it
+ * (ADR-0064 §3). FILTER: keep only chat-capable text models — `supportedActions` (the SDK's projection of
+ * the REST `supportedGenerationMethods`) must include `generateContent`. MAP: strip the `models/` prefix
+ * from `name`→id, `displayName`→displayName, `inputTokenLimit`→contextWindowTokens, `outputTokenLimit`→
+ * maxOutputTokens (a non-positive limit is unknown → omitted). Lenient-inbound: every field read defensively.
+ */
+export function mapGeminiModel(model: GeminiModelInfo): ModelListing | undefined {
+  if (
+    !Array.isArray(model.supportedActions) ||
+    !model.supportedActions.includes('generateContent')
+  ) {
+    return undefined; // not a chat/text model (e.g. embeddings, image-gen) — filtered out
+  }
+  const rawName = typeof model.name === 'string' ? model.name : '';
+  const id = rawName.startsWith('models/') ? rawName.slice('models/'.length) : rawName;
+  const candidate: Record<string, unknown> = { id }; // '' fails the schema's min(1) → the row is dropped
+  if (typeof model.displayName === 'string' && model.displayName.length > 0) {
+    candidate['displayName'] = model.displayName;
+  }
+  const context = positiveModelInt(model.inputTokenLimit);
+  if (context !== undefined) {
+    candidate['contextWindowTokens'] = context;
+  }
+  const maxOutput = positiveModelInt(model.outputTokenLimit);
+  if (maxOutput !== undefined) {
+    candidate['maxOutputTokens'] = maxOutput;
+  }
+  return toModelListing(candidate);
 }
 
 /** Classify any transport/SDK throwable into a normalized `LlmError` — no vendor shape escapes. */
@@ -488,6 +558,31 @@ const GEMINI_RESPONSE_MODALITY: Record<OutputModality, string> = {
   video: 'VIDEO',
 };
 
+/**
+ * The Gemini `thinkingConfig` for a reasoning-effort tier (ADR-0066): DEEP-merge onto a caller's
+ * `providerOptions.thinkingConfig` so the canonical `thinkingLevel` wins on THAT key while the caller's sibling
+ * knobs (`includeThoughts` / `thinkingBudget`) survive — a shallow replace would silently drop them, so turning
+ * effort up could paradoxically SILENCE the reasoning output the caller enabled while still billing thought tokens
+ * (mirrors the Anthropic adapter preserving `output_config.format`). A non-off tier defaults `includeThoughts: true`
+ * — the ONLY switch that returns thought parts (the adapter's reasoning stream depends on it) — so raising effort
+ * actually shows more reasoning, but never overriding a caller's explicit choice, and never forced for `'off'`.
+ */
+function buildThinkingConfig(
+  reasoningEffort: ReasoningEffort,
+  providerOptions: LlmRequest['providerOptions'],
+): Record<string, unknown> {
+  const poThinking: Record<string, unknown> =
+    providerOptions !== undefined && isRecord(providerOptions['thinkingConfig'])
+      ? providerOptions['thinkingConfig']
+      : {};
+  const surfaceThoughts = reasoningEffort !== 'off' && poThinking['includeThoughts'] === undefined;
+  return {
+    ...poThinking,
+    thinkingLevel: GEMINI_THINKING_LEVEL[reasoningEffort],
+    ...(surfaceThoughts ? { includeThoughts: true } : {}),
+  };
+}
+
 /** Lower a canonical request into the Gemini request shape (system → `systemInstruction`, etc.). */
 export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   const config: Record<string, unknown> = {};
@@ -510,6 +605,10 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   }
   if (req.maxTokens !== undefined) {
     config['maxOutputTokens'] = req.maxTokens;
+  }
+  if (req.reasoningEffort !== undefined) {
+    // ADR-0066: Gemini's tier-native thinking control — see {@link buildThinkingConfig} for the deep-merge rationale.
+    config['thinkingConfig'] = buildThinkingConfig(req.reasoningEffort, req.providerOptions);
   }
   if (req.outputModalities !== undefined && req.outputModalities.some((m) => m !== 'text')) {
     // Lower the node's non-text output_modalities to Gemini `responseModalities` (inline media-out,
@@ -549,6 +648,25 @@ const sdkTransport: GeminiTransport = {
   async stream(request: GeminiRequest, key: string): Promise<AsyncIterable<GeminiResponse>> {
     const client = new GoogleGenAI({ apiKey: key });
     return client.models.generateContentStream(request);
+  },
+  async listModels(key: string, signal?: AbortSignalLike): Promise<GeminiModelInfo[]> {
+    const client = new GoogleGenAI({ apiKey: key });
+    // models.list() returns an auto-paginating Pager<Model>; `for await` follows nextPageToken. Each row is
+    // normalized to the vendor-type-free GeminiModelInfo here so no @google/genai Model type crosses the seam.
+    const pager = await client.models.list({
+      config: isAbortSignal(signal) ? { abortSignal: signal } : {},
+    });
+    const rows: GeminiModelInfo[] = [];
+    for await (const model of pager) {
+      rows.push({
+        name: model.name,
+        displayName: model.displayName,
+        inputTokenLimit: model.inputTokenLimit,
+        outputTokenLimit: model.outputTokenLimit,
+        supportedActions: model.supportedActions,
+      });
+    }
+    return rows;
   },
   async generateImages(request: GeminiImageRequest, key: string): Promise<GeminiImageResponse> {
     const client = new GoogleGenAI({ apiKey: key });
@@ -998,6 +1116,53 @@ export function createGeminiAdapter(deps: GeminiAdapterDeps = {}): LlmProvider {
       assertMediaCapabilities(PROVIDER, GEMINI_SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(PROVIDER, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
       return streamChunks(transport, buildGeminiRequest(req), key);
+    },
+    /**
+     * Live model discovery (ADR-0064 §1) over the injected transport's `listModels` (default wraps
+     * `ai.models.list()`). Each vendor-type-free `GeminiModelInfo` is mapped + filtered to a chat-capable
+     * `ModelListing` (`supportedActions` must include `generateContent`, `models/` prefix stripped); a
+     * per-row parse failure drops only that row. Bounded + abortable + secret-free via `boundedListModels`.
+     */
+    async listModels(key: string, signal?: AbortSignalLike): Promise<ModelListing[]> {
+      return boundedListModels({
+        provider: PROVIDER,
+        key,
+        signal,
+        classify: geminiErrorToLlmError,
+        collect: async (innerSignal) => {
+          const rows = await transport.listModels(key, innerSignal);
+          const listings: ModelListing[] = [];
+          const seen = new Set<string>();
+          let rawCount = 0;
+          let droppedForShape = 0;
+          for (const row of rows) {
+            rawCount += 1;
+            if (!isRecord(row)) {
+              droppedForShape += 1; // a non-object row — drop it, never dereference
+              continue;
+            }
+            // A row filtered out for NOT being chat-capable is a legitimate CONTENT drop (never counted
+            // toward the §8 shape tally); only a chat-capable-but-id-less row is a shape drop.
+            const actions = row['supportedActions'];
+            if (!Array.isArray(actions) || !actions.includes('generateContent')) {
+              continue;
+            }
+            const listing = mapGeminiModel(row);
+            if (listing === undefined) {
+              droppedForShape += 1; // chat-capable but no usable id ⇒ shape-invalid
+              continue;
+            }
+            if (!seen.has(listing.id)) {
+              seen.add(listing.id);
+              listings.push(listing);
+            }
+          }
+          // ADR-0064 §8: a systemic id-removal (rows present, none usable, some shape-broken) THROWS so the
+          // host's per-provider isolation shows "last-known" rather than an empty picker.
+          assertListModelsShape(PROVIDER, { rawCount, kept: listings.length, droppedForShape });
+          return listings;
+        },
+      });
     },
     async generateMedia(req: MediaGenRequest, key: string): Promise<MediaGenResult> {
       // Separate-endpoint generation, dispatched by modality (ADR-0045 §1): image → Imagen (generateImages,

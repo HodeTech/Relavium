@@ -3,7 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { MEDIA_SURFACES, type StopReason } from '@relavium/shared';
 
 import { LlmProviderError } from '../llm-error.js';
-import { LlmResultSchema, MediaGenResultSchema, StreamChunkSchema } from '../types.js';
+import {
+  LlmResultSchema,
+  MediaGenResultSchema,
+  ModelListingSchema,
+  StreamChunkSchema,
+} from '../types.js';
 import type {
   LlmErrorKind,
   LlmProvider,
@@ -48,6 +53,25 @@ export interface ConformanceExpectations {
    *  implement `generateMedia` supply this. `data` is the exact base64 the recorded reply carries, so a
    *  bytes-mangling normalization regression fails the suite (parity with the text/structured scenarios). */
   readonly mediaGenerate?: { mimeType: string; data: string };
+  /** The canonical values a `listModels` reply normalizes to (ADR-0064 §1/§3) — providers that implement
+   *  `listModels` supply this. `ids` is the EXACT expected id set in order (proves the per-provider filter +
+   *  id strip); `sample` pins one row's mapped fields (display name / context / output — and that a `0`/absent
+   *  limit is OMITTED, not stored). */
+  readonly listModels?: {
+    readonly ids: readonly string[];
+    readonly sample?: {
+      readonly id: string;
+      readonly displayName?: string;
+      readonly contextWindowTokens?: number;
+      readonly maxOutputTokens?: number;
+    };
+  };
+  /** The ids a `listModelsDrift` reply should yield (ADR-0064 §8) — the id-less row dropped, the unknown
+   *  extra field ignored, never a throw. */
+  readonly listModelsDrift?: { readonly ids: readonly string[] };
+  /** The classified kind a failing `listModels` call should reject with (ADR-0064 §3) — providers with a
+   *  `listModelsError` fixture supply it (e.g. `auth` for a 401). */
+  readonly listModelsError?: { readonly kind: LlmErrorKind };
 }
 
 /** The recorded provider responses a conformance run needs — one per canonical scenario. */
@@ -72,6 +96,16 @@ export interface ConformanceFixtures {
    *  a provider with no `generateMedia` (`media_surface: 'chat'`-only). Drives the generative seam-contract
    *  scenario (1.AG Section C, A5). */
   readonly mediaGenerate?: RecordedResponse;
+  /** A recorded `models.list()` reply (ADR-0064 §1). For a `fetch`-based adapter (Anthropic/OpenAI/DeepSeek)
+   *  this is the raw HTTP page body the real SDK parses; for Gemini it is the SDK-output `GeminiModelInfo[]`
+   *  the fake transport returns. Omit for a provider without `listModels`. Drives the live-discovery scenario. */
+  readonly listModels?: RecordedResponse;
+  /** A recorded `models.list()` reply carrying an UNKNOWN extra field and an id-less row (ADR-0064 §8) — the
+   *  drift-resilience fixture: the extra field is ignored, the id-less row dropped, never a throw. */
+  readonly listModelsDrift?: RecordedResponse;
+  /** A recorded `models.list()` FAILURE reply (e.g. a 401/500 error body) — the error-path fixture: the call
+   *  must reject with a classified, key-redacted `LlmProviderError` (ADR-0064 §3). Omit if not recorded. */
+  readonly listModelsError?: RecordedResponse;
   /**
    * A multi-turn tool loop (the path every agent node exercises): `turn1` is a tool-call reply; `turn2` is
    * the continuation the provider returns AFTER the caller appends the tool result. The conformance test
@@ -393,6 +427,99 @@ export function defineConformanceSuite(
           }
         }
         expect(result.raw).toBeDefined();
+      },
+    );
+
+    it.skipIf(fixtures.listModels === undefined)(
+      'listModels: normalizes the live list to validated ModelListing[] with the expected ids + mapping (ADR-0064 §1/§3)',
+      async () => {
+        const recorded = fixtures.listModels;
+        const exp = expected.listModels;
+        if (recorded === undefined || exp === undefined) {
+          return; // narrow for skipIf
+        }
+        const adapter = makeReplayAdapter(recorded);
+        if (adapter.listModels === undefined) {
+          throw new Error('a listModels fixture requires the adapter to implement listModels');
+        }
+        const listings = await adapter.listModels(KEY);
+        // Strict-outbound: every row satisfies the canonical ModelListing schema.
+        for (const listing of listings) {
+          expect(ModelListingSchema.safeParse(listing).success).toBe(true);
+        }
+        // Exact id set (order + membership) — proves the per-provider chat-capability filter + id strip.
+        expect(listings.map((listing) => listing.id)).toEqual([...exp.ids]);
+        if (exp.sample !== undefined) {
+          const row = listings.find((listing) => listing.id === exp.sample?.id);
+          expect(row).toBeDefined();
+          if (row !== undefined) {
+            // Exact mapping incl. OMITTED (undefined) fields — a 0/absent limit must not become a stored 0.
+            expect(row.displayName).toBe(exp.sample.displayName);
+            expect(row.contextWindowTokens).toBe(exp.sample.contextWindowTokens);
+            expect(row.maxOutputTokens).toBe(exp.sample.maxOutputTokens);
+          }
+        }
+      },
+    );
+
+    it.skipIf(fixtures.listModelsDrift === undefined)(
+      'listModels (drift): ignores an unknown field and drops an id-less row, never throwing (ADR-0064 §8)',
+      async () => {
+        const recorded = fixtures.listModelsDrift;
+        const exp = expected.listModelsDrift;
+        if (recorded === undefined || exp === undefined) {
+          return; // narrow for skipIf
+        }
+        const adapter = makeReplayAdapter(recorded);
+        if (adapter.listModels === undefined) {
+          throw new Error('a listModelsDrift fixture requires the adapter to implement listModels');
+        }
+        // Must resolve, never throw — a breaking row degrades ONE model, not the whole provider.
+        const listings = await adapter.listModels(KEY);
+        for (const listing of listings) {
+          expect(ModelListingSchema.safeParse(listing).success).toBe(true);
+        }
+        // The id-less row is dropped; the unknown extra field never rode across the seam.
+        expect(listings.map((listing) => listing.id)).toEqual([...exp.ids]);
+        const allowedKeys = new Set([
+          'id',
+          'displayName',
+          'contextWindowTokens',
+          'maxOutputTokens',
+          'deprecatedAt',
+        ]);
+        for (const listing of listings) {
+          expect(Object.keys(listing).every((key) => allowedKeys.has(key))).toBe(true);
+        }
+      },
+    );
+
+    it.skipIf(fixtures.listModelsError === undefined)(
+      'listModels (error): a failing list rejects with a classified, key-redacted LlmProviderError (ADR-0064 §3)',
+      async () => {
+        const recorded = fixtures.listModelsError;
+        const exp = expected.listModelsError;
+        if (recorded === undefined || exp === undefined) {
+          return; // narrow for skipIf
+        }
+        const adapter = makeReplayAdapter(recorded);
+        if (adapter.listModels === undefined) {
+          throw new Error('a listModelsError fixture requires the adapter to implement listModels');
+        }
+        let caught: unknown;
+        try {
+          await adapter.listModels(KEY);
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(LlmProviderError);
+        if (caught instanceof LlmProviderError) {
+          expect(caught.llmError.provider).toBe(name);
+          expect(caught.llmError.kind).toBe(exp.kind);
+          // Redacted + cause-stripped: neither the resolved key nor a raw vendor payload crosses the seam.
+          expect(caught.llmError.message).not.toContain(KEY);
+          expect(caught.llmError.cause).toBeUndefined();
+        }
       },
     );
   });

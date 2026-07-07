@@ -2,7 +2,9 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-22
-- **Related**: [ADR-0020](0020-zod-runtime-schema-library.md), [ADR-0023](0023-strict-authored-yaml-validation.md), [ADR-0033](0033-strict-config-files-amends-0023.md), [ADR-0035](0035-yaml-parser-dependency.md), [config-spec.md](../reference/contracts/config-spec.md), [phase-2-cli.md](../roadmap/phases/phase-2-cli.md), [architectural-principles.md](../standards/architectural-principles.md), [tech-stack.md](../tech-stack.md)
+- **Related**: [ADR-0020](0020-zod-runtime-schema-library.md), [ADR-0023](0023-strict-authored-yaml-validation.md), [ADR-0033](0033-strict-config-files-amends-0023.md), [ADR-0035](0035-yaml-parser-dependency.md), [config-spec.md](../reference/contracts/config-spec.md), [phase-2-cli.md](../roadmap/phases/phase-2-cli.md), [architectural-principles.md](../standards/architectural-principles.md), [tech-stack.md](../tech-stack.md), [ADR-0063](0063-cli-config-write-contract.md) (**extends this parser to the config *writer***)
+
+> **Amended 2026-07-05 by [ADR-0063](0063-cli-config-write-contract.md)** (append-only — this body is unchanged): `smol-toml`'s use extends from the config **loader** to the config **writer**. ADR-0063 reuses `smol-toml.stringify` (already present — **no new dependency**) for a minimal, atomic, secret-incapable write of the global `~/.relavium/config.toml`, confined to the same `apps/cli/src/config` boundary this ADR drew. The parser choice and its confinement are unchanged.
 
 ## Context
 

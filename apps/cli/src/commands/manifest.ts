@@ -283,9 +283,61 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     effect: 'read',
   },
   {
+    id: 'models',
+    label: 'List models',
+    description: 'List the cached model catalog (refreshes on first run if empty).',
+    effect: 'read',
+  },
+  {
+    id: 'models.refresh',
+    label: 'Refresh models',
+    description: "Re-fetch each connected provider's live model list into the local cache.",
+    effect: 'write',
+  },
+  {
+    id: 'models.pricing',
+    label: 'Set model pricing',
+    description:
+      'Set a user price for a model the registry does not know (custom / new provider models).',
+    args: [
+      { name: 'model', type: 'string', required: true, description: 'the model id to price' },
+      {
+        name: 'provider',
+        type: 'string',
+        required: true,
+        description: 'the provider that serves the model (must be registered)',
+      },
+      {
+        name: 'input',
+        type: 'string',
+        required: true,
+        description: 'input (prompt) price, USD per million tokens',
+      },
+      {
+        name: 'output',
+        type: 'string',
+        required: true,
+        description: 'output (completion) price, USD per million tokens',
+      },
+      {
+        name: 'cached',
+        type: 'string',
+        description: 'cache-read price, USD per million tokens (default 0)',
+      },
+    ],
+    effect: 'write',
+  },
+  {
     id: 'provider.list',
     label: 'List providers',
     description: 'List registered providers and whether a key is set.',
+    args: [
+      {
+        name: 'verify',
+        type: 'boolean',
+        description: 'additionally run a live key-verification probe per provider',
+      },
+    ],
     effect: 'read',
   },
   {
@@ -300,6 +352,11 @@ const ENTRIES: readonly CommandManifestEntry[] = [
         description: 'provider name (e.g. anthropic)',
       },
       { name: 'baseUrl', type: 'string', description: 'override the provider base URL' },
+      {
+        name: 'pricingUrl',
+        type: 'string',
+        description: 'override the pricing reference page (where you find model prices)',
+      },
     ],
     effect: 'write',
   },

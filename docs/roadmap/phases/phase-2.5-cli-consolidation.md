@@ -7,7 +7,9 @@
 > → **2.5.E** (modes + per-tool approval + mid-turn abort) ✅ **Done (PR #63, 2026-07-03)** (ADR-0057 Accepted)
 > — **the spine is complete**. Experience arm: **2.5.D** (chat input ergonomics + `@`/`!` chip model) ✅ **Done
 > (PR #64, 2026-07-03)** behind [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md).
-> **Next: 2.5.F / G** (off the spine, depends on B/C). Additive lanes (no dependency chain): 2.5.H / I / J.
+> **2.5.F** (`/clear` + the `session:compacting` "Summarizing…" moment + the context-fullness footer, completing
+> the ADR-0062 compaction story) ✅ **Done (PR #65, merged 2026-07-05)**. **Next: 2.5.G** (onboarding wizard +
+> Home `/models`). Additive lanes (no dependency chain): 2.5.H / I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
 
@@ -62,9 +64,9 @@ Along the way, close the bounded engine amendments and docs-debt that Phase 2 de
   [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md).
 - `read_media` input (D12), full-fidelity reseat tool-context, in-app scrollback/pager, a **type-ahead
   message queue while a turn runs** (the in-flight key-swallow is handled for approval input in 2.5.E, but
-  queuing the *next* message is deferred), live provider `/v1/models` fetch, and a multi-pane dashboard —
+  queuing the *next* message is deferred), and a multi-pane dashboard —
   Phase 3 / later (tracked in [../deferred-tasks.md](../deferred-tasks.md)). (`/compact` model-summarised
-  compaction was originally listed here as Phase 3; it is now **built in 2.5.F** per [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md).)
+  compaction was originally listed here as Phase 3; it is now **built in 2.5.F** per [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md). The **live provider `/v1/models` fetch** was likewise listed here as Phase 3; it is now **built in 2.5.G** per [ADR-0064](../../decisions/0064-live-model-catalog.md) — the Option-A live model catalog.)
 
 ## Work breakdown
 
@@ -363,7 +365,7 @@ is sandbox-bounded with protected paths honoured. A security review of the resea
 (defense-in-depth trade-off) passes. **Required ADR: per-tool approval + reseat-less chat mode system
 (incl. mid-turn abort).**
 
-### 2.5.F — `/clear`, `/trim`, and `/compact` (context compaction)
+### 2.5.F — `/clear`, `/trim`, and `/compact` (context compaction) — ✅ **Done (PR #65, merged 2026-07-05)**
 
 > **Scope expanded (2026-07-04, [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)).**
 > The maintainer removed the Phase-3 deferral of `/compact`: we build the **full** context-compaction
@@ -387,30 +389,63 @@ host + docs), each with an Opus + Sonnet review round.
 context (append-only, resume-preserving, cost-accounted); auto-compaction bounds a long chat before it
 overflows the context window; the summary is inspectable and the moment is a designed state.
 
-> **Landed pending merge (PR for ADR-0062, three reviewed steps — shared/seam/db, engine primitive, CLI host —
+> **Landed & merged (PR #65 for ADR-0062, three reviewed steps — shared/seam/db, engine primitive, CLI host —
 > each with an Opus + Sonnet review round):** the compaction engine primitive, automatic compaction, append-only
 > resume/reseat-preserving persistence, `/compact`, and `/trim [n]` are **complete**. The final 2.5.F items then
-> landed (pending merge): **`/clear`** — the fresh-session lifecycle swap (ADR-0062 §7) across `relavium chat`,
+> landed: **`/clear`** — the fresh-session lifecycle swap (ADR-0062 §7) across `relavium chat`,
 > `chat-resume`, and the in-Home chat: a host-level re-drive (standalone) / build-first `clearChat` (Home) that ends
 > the current session (persisted + resumable) and rebinds the same agent under a new `sessionId`, TTY-interactive-only
 > (rejected under `--json`/plain), zero engine change; and the two compaction-moment UX polishes — the **labeled**
 > "Summarizing…" spinner off a new additive `session:compacting` engine event (amends ADR-0036's event substrate) and
 > the footer **context-fullness** indicator (last input ÷ the model's context window, via the new pure
-> `@relavium/llm` `contextWindowForModel` helper). **With these 2.5.F is feature-complete (roadmap-done-after-merge).**
+> `@relavium/llm` `contextWindowForModel` helper). **With these 2.5.F is ✅ Done (PR #65, merged 2026-07-05); the
+> merged PR also carried a parallel Opus + Sonnet review round — the compacting-latch spinner fix, the 0%-ctx
+> footer guard, the Home double-clear MCP-leak guard, best-effort auto-compaction, and the shared adapter
+> `CONTEXT_SEAM_DEFAULTS`.**
 
-### 2.5.G — Onboarding wizard and `/models` (Home model catalog)
+### 2.5.G — Onboarding wizard, `/models`, and the live model catalog
 
-**Tasks:** a `@clack` first-run wizard from the key-less Home (provider → **hidden** stdin key →
-keychain, with a write-failure fallback and an env-key import offer) — reusing the two existing
-ink↔clack custody patterns (the gate prompter and the 2.J create wizard); a shared `modelCatalog`
-helper deriving available models from the `@relavium/llm` pricing registry filtered to
-connected providers, with a staleness/deprecation guard; `/models` in Home sets the next session's
-model (writing `[chat].default_model`); `provider list` shows verification state; the `[chat].max_turns`
-surface wiring deferred from Phase 2 lands here.
+> **Scope expanded to Option A (2026-07-05).** The maintainer chose to build a **live** model catalog
+> (per-key provider discovery + a DB cache + refresh + a static/live merge) and a **complete model-pricing
+> story** (user-supplied pricing that actually governs cost) now, rather than the static-registry catalog
+> originally scoped. It lands behind three ADRs — [ADR-0063](../../decisions/0063-cli-config-write-contract.md)
+> (config-write contract), [ADR-0064](../../decisions/0064-live-model-catalog.md) (live catalog), and
+> [ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md) (provider economics & extensibility)
+> — across **12 dependency-ordered, individually-reviewed steps** (six security-flagged). It pulls the live
+> `/v1/models` fetch forward from Phase 3 (the § "Explicitly out of scope" note above is reconciled to match).
 
-**Acceptance:** a key-less first run reaches a working chat via the wizard (key in the keychain, never
-on disk); `/models` lists connected-provider models and sets the default; a deprecated catalog entry is
-flagged. (Mid-chat model switch via reseat is Phase 2.6.)
+**Tasks:** a `@clack` first-run wizard from the key-less Home (provider → **hidden** stdin key → keychain, with
+a write-failure fallback + env-key import) reusing the two ink↔clack custody patterns; the **`listModels?` seam
+capability** + a **`kind`** protocol abstraction + the four adapters ([ADR-0064](../../decisions/0064-live-model-catalog.md)
+§1–3); the **`model_catalog` live cache** widening + migration (`source`/freshness columns) + store methods; the
+pure **static/live/user merge** helper; the **refresh** lifecycle (`models refresh` + first-run + 24h-TTL
+non-blocking background + per-provider partial-failure isolation); the **config-write** primitive + global
+`[preferences].default_model` write + `resolveChat` global fallback ([ADR-0063](../../decisions/0063-cli-config-write-contract.md));
+the **`/models` Home picker** (first-class UX: pricing display, dimmed "not available on your key", deprecated
+flag, unpriced "cost cap will not apply" hint); the **resolveProvider host-rewiring** so a stored custom
+`base_url` is actually used + **custom OpenAI-compatible endpoints** over the SSRF floor
+([ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md) §3–4, fixing the dead-`base_url` bug);
+**user-supplied pricing** capture (`models pricing`, a `--pricing-url` reference) + the **cost-path pricing
+overlay** that closes the "cost cap will not apply" gap (ADR-0065 §1–2); `provider list --verify`; the
+`[chat].max_turns` docs/test reconcile (already wired); and a new **adding-a-provider runbook**.
+
+**Acceptance:** a key-less first run reaches a working chat via the wizard (key in the keychain, never on disk);
+`/models` lists the **live, connected-provider** catalog and sets the next session's default; an unavailable
+static model is dimmed and a deprecated entry is flagged; `models refresh` reports per-provider outcomes and one
+provider's failure never fails the whole refresh; a custom OpenAI-compatible `base_url` lists its models over an
+SSRF-validated hop; a model with **no static price**, once **user-priced**, is enforced by `max_cost_microcents`
+(the cost-cap gap is closed). (Mid-chat model switch via reseat stays Phase 2.6,
+[ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md).)
+
+**Implementation steps** (each: implement + commit → Opus review → Sonnet review; **🔒** = an added security
+round): **S1** ADRs 0063/0064/0065 + roadmap reconciliation (design-lock) · **S2 🔒** seam `listModels?` + `kind`
++ 4 adapters + drift + conformance · **S3** the pure static/live/user merge helper · **S4** `model_catalog`
+widening + `0007` migration + store methods · **S5 🔒** refresh + `models refresh` + non-blocking background
+auto-refresh + partial-failure · **S6 🔒** config-write primitive + global `[preferences]` fallback · **S7**
+`/models` Home picker (first-class UX) · **S8 🔒** onboarding wizard · **S9 🔒** custom `base_url` + `kind` wiring
+(dead-config fix) + `0008` migration · **S10 🔒** user-pricing capture + cost-path overlay (cap-gap fix) ·
+**S11** `provider list --verify` + `[chat].max_turns` reconcile · **S12** docs + adding-a-provider runbook. **Six**
+are security-flagged: S2, S5, S6, S8, S9, S10.
 
 ### 2.5.H — Reasoning rendering and live-turn feedback
 

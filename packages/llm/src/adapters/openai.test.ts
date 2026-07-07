@@ -1,7 +1,7 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIError, APIUserAbortError } from 'openai';
 import { describe, expect, it } from 'vitest';
 
-import type { AbortSignalLike } from '@relavium/shared';
+import type { AbortSignalLike, ReasoningEffort } from '@relavium/shared';
 
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
@@ -229,6 +229,84 @@ describe('OpenAI-compatible adapter', () => {
       type: 'input_audio',
       input_audio: { data: 'YXVkaW8=', format: 'mp3' },
     });
+  });
+
+  it('maps the reasoning-effort tier per provider: OpenAI reasoning_effort (max→xhigh, off→none) + DeepSeek thinking (ADR-0066)', async () => {
+    let sent: Record<string, unknown> = {};
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    const base = {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }],
+    };
+    // All FIVE tiers, so a valid-but-wrong within-domain swap on any row is caught (medium is the picker default).
+    await oai.generate({ ...base, reasoningEffort: 'low' }, 'k');
+    expect(sent['reasoning_effort']).toBe('low');
+    await oai.generate({ ...base, reasoningEffort: 'medium' }, 'k');
+    expect(sent['reasoning_effort']).toBe('medium');
+    await oai.generate({ ...base, reasoningEffort: 'high' }, 'k');
+    expect(sent['reasoning_effort']).toBe('high');
+    await oai.generate({ ...base, reasoningEffort: 'max' }, 'k');
+    expect(sent['reasoning_effort']).toBe('xhigh'); // `max` → the provider's HIGHEST tier
+    await oai.generate({ ...base, reasoningEffort: 'off' }, 'k');
+    expect(sent['reasoning_effort']).toBe('none');
+    await oai.generate({ ...base }, 'k'); // unset ⇒ omitted (provider default, unchanged behavior)
+    expect('reasoning_effort' in sent).toBe(false);
+
+    // DeepSeek (the other id this shared adapter serves) controls thinking via a `thinking` OBJECT, not the OpenAI
+    // `reasoning_effort` key (ADR-0066): off→disabled; DeepSeek has only two graded levels, so low/medium/high→high
+    // and max→max; unset ⇒ omitted.
+    let dsSent: Record<string, unknown> = {};
+    const ds = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: (_input, init) => {
+        dsSent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    const dsReq = (effort?: ReasoningEffort): Parameters<typeof ds.generate>[0] => ({
+      model: 'deepseek-v4-flash',
+      messages: base.messages,
+      ...(effort === undefined ? {} : { reasoningEffort: effort }),
+    });
+    await ds.generate(dsReq('high'), 'k');
+    expect('reasoning_effort' in dsSent).toBe(false); // never the OpenAI key
+    expect(dsSent['thinking']).toEqual({ type: 'enabled', reasoning_effort: 'high' });
+    await ds.generate(dsReq('off'), 'k');
+    expect(dsSent['thinking']).toEqual({ type: 'disabled' }); // off DISABLES thinking
+    await ds.generate(dsReq('max'), 'k');
+    expect(dsSent['thinking']).toEqual({ type: 'enabled', reasoning_effort: 'max' }); // top graded level
+    await ds.generate(dsReq('low'), 'k');
+    expect(dsSent['thinking']).toEqual({ type: 'enabled', reasoning_effort: 'high' }); // coarsened to high
+    await ds.generate(dsReq(), 'k'); // unset ⇒ omitted (provider default)
+    expect('thinking' in dsSent).toBe(false);
+
+    // The streaming path spreads the SAME buildCommonBody, so the `thinking` control must reach the wire there too.
+    let dsStreamSent: Record<string, unknown> = {};
+    const dsStream = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: (_input, init) => {
+        dsStreamSent = parseJsonBody(init);
+        return Promise.resolve(
+          sse([
+            {
+              id: 's',
+              object: 'chat.completion.chunk',
+              created: 0,
+              model: 'deepseek-v4-flash',
+              choices: [{ index: 0, delta: { content: 'hi' }, finish_reason: 'stop' }],
+            },
+          ]),
+        );
+      },
+      maxRetries: 0,
+    });
+    await collect(dsStream.stream(dsReq('max'), 'k'));
+    expect(dsStreamSent['thinking']).toEqual({ type: 'enabled', reasoning_effort: 'max' });
   });
 
   it('round-trips inline audio-out: lowers output_modalities → modalities+audio and parses the response (1.AG/ADR-0046)', async () => {
@@ -831,6 +909,29 @@ describe('openaiErrorToLlmError — classification', () => {
     expect(
       openaiErrorToLlmError(new APIError(undefined, undefined, 'mystery', undefined), 'openai'),
     ).toMatchObject({ kind: 'unknown', retryable: false });
+  });
+
+  it("EXACT-redacts the resolved key from an echoed error body (a custom endpoint's opaque key) (2.5.G S9)", () => {
+    // A custom OpenAI-compatible endpoint's key has no `sk-`/`Bearer` shape, so the shape-based scrubSecrets can't
+    // match it — a hostile/misconfigured proxy that echoes the received credential in its error body would leak the
+    // real key into history.db / --json / the TUI unless the resolved key is exact-redacted (CLAUDE.md #6).
+    const key = ['opaque', 'proxy', 'CREDENTIAL', '4f2a9'].join('-'); // no vendor key shape
+    const echoed = new APIError(
+      401,
+      undefined,
+      `rejected token '${key}' for this endpoint`,
+      undefined,
+    );
+    // WITHOUT the key (the listModels path redacts separately) the opaque token would pass through...
+    expect(openaiErrorToLlmError(echoed, 'openai').message).toContain(key);
+    // ...WITH the resolved key threaded (generate/stream/media), it is exact-redacted before it can escape.
+    const redacted = openaiErrorToLlmError(echoed, 'openai', key);
+    expect(redacted.message).not.toContain(key);
+    expect(redacted.kind).toBe('auth'); // classification is preserved
+    // Also redacts a key echoed in the error CODE field.
+    const codeEcho = new APIError(400, undefined, 'bad', undefined);
+    Object.assign(codeEcho, { code: `token_${key}_invalid` });
+    expect(openaiErrorToLlmError(codeEcho, 'openai', key).code).not.toContain(key);
   });
 
   it('classifies a content-policy / moderation code as content_filter regardless of HTTP status (1.AG §6)', () => {

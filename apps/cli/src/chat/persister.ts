@@ -4,10 +4,28 @@ import {
   type SessionHandle,
   type SessionStreamHandleEvent,
 } from '@relavium/core';
-import type { SessionStore } from '@relavium/db';
+import { createModelCatalogStore, type Db, type SessionStore } from '@relavium/db';
 import type { AgentSessionRecord, SessionContext, SessionStatus } from '@relavium/shared';
 
 import { deriveSessionTitle } from './session-title.js';
+
+/**
+ * A model-string → `model_catalog.id` resolver ([ADR-0059]) — the FK target of `session_messages.model_id` /
+ * `agent_sessions.model_id`. Returns the authoritative active catalog row's UUID for a model string, or `undefined`
+ * when the model is not cataloged (→ a NULL column, the "unknown" attribution bucket). Live per lookup, so a
+ * mid-session `/models` refresh that discovers the model makes SUBSEQUENT turns attributable.
+ */
+export type ModelCatalogIdResolver = (modelId: string) => string | undefined;
+
+/** Build a {@link ModelCatalogIdResolver} over a `history.db` handle — every `createSessionPersister` call site
+ *  derives one from the SAME `opened.db` the session store rides, so attribution needs no threading. */
+export function makeCatalogIdResolver(
+  db: Db,
+  deps: { readonly uuid: () => string; readonly now: () => number },
+): ModelCatalogIdResolver {
+  const catalog = createModelCatalogStore(db, deps);
+  return (modelId) => catalog.catalogIdByModelId(modelId);
+}
 
 /**
  * Write-side session persistence for `relavium chat` (2.M) — the CLI counterpart of the run-history writer.
@@ -47,6 +65,12 @@ export interface SessionPersisterDeps {
    * SessionPersister.start} hydrates automatically from the adopted row.
    */
   readonly initialSequenceNumber?: number;
+  /**
+   * Resolve a model STRING → the `model_catalog.id` FK target for the transcript's per-message + the session's
+   * coarse `modelId` attribution ([ADR-0059]; see {@link makeCatalogIdResolver}). Absent ⇒ no attribution (every
+   * `modelId` column stays NULL) — the safe default when the caller has no catalog handle (e.g. a unit test).
+   */
+  readonly resolveModelCatalogId?: ModelCatalogIdResolver;
 }
 
 export interface SessionPersister {
@@ -71,6 +95,15 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   let totalCostMicrocents = 0;
   let pendingUserText: string | undefined;
   let assistantText = '';
+  // ADR-0059: the CATALOG ID of the model that ACTUALLY produced the in-flight assistant turn — resolved from the
+  // LAST `cost:updated.model` of the turn (failover-aware: the final billed egress is the model that produced the
+  // committed text; a failed primary that never billed emits none) via {@link SessionPersisterDeps.resolveModelCatalogId}.
+  // Reset at each turn start; written onto the assistant row so a per-model cost breakdown survives a `/models` reseat.
+  // Undefined (a NULL column, the "unknown" bucket) when the turn never billed OR the model is not yet cataloged.
+  let turnModelCatalogId: string | undefined;
+  // The session's coarse primary model catalog id (the bound model), resolved ONCE — it is constant for a persister
+  // instance (a reseat builds a NEW persister with the switched model). NULL when the bound model is not cataloged.
+  const sessionModelCatalogId = deps.resolveModelCatalogId?.(deps.agent.model);
   let unsubscribe: (() => void) | undefined;
   let started = false;
   // ADR-0062: the ascending `sequenceNumber`s of the REAL (`user`/`assistant`) transcript rows — used to map a
@@ -79,8 +112,10 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   // prior marker is interleaved — the step-1-review trap). Seeded from the durable transcript on resume.
   const realMessageSeqs: number[] = [];
 
-  /** Append a REAL transcript row + record its sequence for the boundary mapping. */
-  const appendText = (role: 'user' | 'assistant', text: string): void => {
+  /** Append a REAL transcript row + record its sequence for the boundary mapping. `modelCatalogId` (assistant rows
+   *  only) is the already-resolved `model_catalog.id` FK target attributing the row to the model that produced it
+   *  (ADR-0059) — omitted (a NULL column) when unknown/uncataloged; a user row never carries one. */
+  const appendText = (role: 'user' | 'assistant', text: string, modelCatalogId?: string): void => {
     const seq = sequenceNumber++;
     realMessageSeqs.push(seq);
     deps.store.appendMessage({
@@ -89,6 +124,8 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       sequenceNumber: seq,
       role,
       content: [{ type: 'text', text }],
+      // Conditional spread ⇒ no explicit `undefined` under exactOptionalPropertyTypes; a user row never carries one.
+      ...(modelCatalogId === undefined ? {} : { modelId: modelCatalogId }),
       timestamp: iso(),
     });
   };
@@ -130,6 +167,10 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     createdAt,
     updatedAt: iso(),
     ...(title === undefined ? {} : { title }),
+    // The session's coarse primary model (ADR-0059) — the bound model's `model_catalog.id` (the FK target), so a
+    // reseat's new persister records the switched model. Omitted (NULL) when the model is not cataloged. Per-turn
+    // attribution rides each assistant `SessionMessage.modelId`; this is the row-level label.
+    ...(sessionModelCatalogId === undefined ? {} : { modelId: sessionModelCatalogId }),
   });
 
   const onEvent = (event: SessionStreamHandleEvent): void => {
@@ -145,6 +186,10 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       case 'cost:updated':
         // The sink stamps the session-wide running total here; the latest value is the session's cost.
         totalCostMicrocents = event.cumulativeCostMicrocents;
+        // ADR-0059: the invoking model of this billed egress — attributable across a failover. Resolve it to its
+        // catalog id NOW (the FK target); the LAST such event of the turn is the model that produced the committed
+        // text, so it becomes the assistant row's `modelId` in `session:turn_completed`. Undefined ⇒ NULL (uncataloged).
+        turnModelCatalogId = deps.resolveModelCatalogId?.(event.model);
         return;
       case 'session:turn_completed':
         // Only a COMPLETED exchange writes MESSAGES — both an ERROR turn AND an ABORTED turn (EA7,
@@ -170,13 +215,16 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           // undefined, so the next non-blank completed message becomes the title; a resumed session keeps its own.
           title ??= deriveSessionTitle(pendingUserText);
           appendText('user', pendingUserText);
-          if (assistantText.length > 0) appendText('assistant', assistantText);
+          // The assistant row carries the (resolved) catalog id of the model that produced it (ADR-0059):
+          // `turnModelCatalogId` from this turn's last `cost:updated`, or `undefined` (NULL) when uncataloged.
+          if (assistantText.length > 0) appendText('assistant', assistantText, turnModelCatalogId);
           totalInputTokens += event.tokensUsed.input;
           totalOutputTokens += event.tokensUsed.output;
         }
         deps.store.updateSession(record('active'));
         pendingUserText = undefined;
         assistantText = '';
+        turnModelCatalogId = undefined;
         return;
       case 'session:compacted':
         // ADR-0062: write the append-only boundary marker (summary + role-filtered droppedThroughSequence) and
@@ -237,6 +285,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       // errored first turn whose message rows are rolled back — a label with no transcript behind it.
       pendingUserText = text;
       assistantText = '';
+      turnModelCatalogId = undefined; // a fresh turn: attribute the assistant row to THIS turn's egress, never a prior one
     },
     close(): void {
       unsubscribe?.();

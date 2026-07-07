@@ -66,6 +66,7 @@ update_channel = "stable"          # stable | beta
 
 [preferences]
 default_model = "claude-sonnet-4-6"
+reasoning_effort = "medium"        # ADR-0066 §6: the GLOBAL default reasoning-effort tier — off | low | medium | high | max; the fallback BELOW any [chat].reasoning_effort. Written by the /models picker's effort sub-step. Absent ⇒ no reasoning control (the provider default).
 theme = "dark"
 
 [[mcp_servers]]                    # repeatable — an agent references one by name via `ref:` (ADR-0052 §5)
@@ -88,6 +89,24 @@ stdio-only fields (`command`/`args`/`env`) are rejected on a network registratio
 (`url`/`allow_local_endpoint`) on a stdio one. An agent consumes a registration with `- ref: filesystem` (see
 [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md)).
 
+> **Writing the global config** ([ADR-0063](../../decisions/0063-cli-config-write-contract.md)). Config is
+> almost entirely **read-only** (hand-edited, git-committed). The one write path is the CLI persisting a chosen
+> default: `/models` and the 2.5.G onboarding wizard set **`[preferences].default_model`**, and (ADR-0066 §6) the
+> `/models` picker's **effort sub-step** additionally sets **`[preferences].reasoning_effort`** for a reasoning
+> model — **only** those two `[preferences]` keys, and only through a **typed setter** (never a generic key/value
+> writer), so a secret can never be written by construction (there is no `api_key` field in the schema; keys live
+> only in the OS keychain, [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)). A partial write leaves
+> the other key unchanged (a model-only pick never clears a prior effort default).
+> The write is **atomic + durable** (a `0600` temp file in the `0700` `~/.relavium/`, `fsync` the file, `rename`
+> over the target, then `fsync` the parent directory so the rename itself survives a crash) and it both
+> re-validates the merged object against the strict `GlobalConfigSchema` AND re-parses the emitted TOML back
+> through the schema before the rename — so "the file always re-parses on the next load" is a **verified**
+> guarantee, and on any failure `config.toml` is left untouched. Two documented tradeoffs: re-serialization
+> **drops comments and key ordering** in `config.toml` (the global file is a preference store, not a
+> hand-curated artifact — project/workspace files are never written by the tool); and there is **no lock**, so
+> two concurrent writes resolve **last-writer-wins** (a lost update, never a torn file) — acceptable for a
+> single-user, rarely-written preference store.
+
 ## `project.toml` / `workspace.toml` (project) — keys
 
 ```toml
@@ -109,7 +128,8 @@ video = 10                         # assumed video-SECONDS per media-output turn
 focus_area = "security and type safety"
 
 [chat]                             # agent-session (chat-mode) defaults — see contracts/agent-session-spec.md
-default_model = "claude-sonnet-4-6"   # model for a chat session that names none
+default_model = "claude-sonnet-4-6"   # model for a chat session that names none; absent at every [chat] layer ⇒ falls back to global [preferences].default_model (ADR-0063)
+reasoning_effort = "medium"        # ADR-0066: reasoning-effort tier baked onto the DEFAULT chat agent — off | low | medium | high | max; absent ⇒ no reasoning control (the provider default). Ignored on a model without a controllable reasoning tier.
 fs_scope = "sandboxed"             # SAME tier enum as [defaults].fs_scope above (not re-listed here)
 max_turns = 50                     # hard session TURN cap → SessionDeps.maxTurns (DoS fail-safe; absent ⇒ engine default 50; positiveInt — 0 is rejected here) — DISTINCT from max_messages
 max_messages = 200                 # history-trim threshold — consumed by `/trim` + auto-compaction (ADR-0062); older turns trimmed/summarized
@@ -139,7 +159,9 @@ allowed_command_globs = []         # opt-in glob form of the !-shell allowlist (
 >
 > `max_messages` (revived in 2.5.F) is the bound `/trim` enforces (keep the last N messages, no LLM call) and the deterministic fallback if a summarization fails. `auto_compact` + `compact_threshold` ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)) drive **automatic** model-summarised compaction: after a turn completes, if its **real** input tokens exceed `compact_threshold` (default `0.8`, a fraction in (0, 1]) × the serving model's context window, the session compacts before the next turn. `auto_compact` absent ⇒ enabled; a model with no known context window (a custom base-URL id) skips auto-compaction, but manual `/compact` still works. The summarization spend is accounted to the session budget and surfaced, never silent.
 >
-> The `[chat]` block resolves **per field** (each key independently, last-writer-wins project → workspace) — a project that sets only `max_turns` still inherits `default_model`/`max_messages` from the workspace layer. (Contrast `[defaults].media_cost_estimate`, which resolves **whole-object**: the highest layer present replaces the table outright.) The `!`-shell allowlist is the **one exception**: `allowed_commands` (exact) + `allowed_command_globs` (globs) are a **coupled unit**, so a project that sets **either** array owns the **whole** allowlist and does **not** inherit the other array from the workspace. Otherwise a project narrowing `allowed_commands` would silently keep the workspace's broader globs — lock to `git status`, yet still allow `git push` via an inherited `git *`. Only when a project sets **neither** allowlist array do both fall through to the workspace; a present array otherwise REPLACES (never merges) the lower layer's. This is what guarantees a narrower project can never inherit a broader workspace entry.
+> `reasoning_effort` ([ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md)) is the normalized reasoning-effort tier — `off | low | medium | high | max` — baked onto the **built-in default chat agent** only (an explicit `--agent` owns its own `reasoning_effort` in its YAML). It resolves per-field project → workspace, and (ADR-0066 §6) — like `default_model` — additionally falls back to the global **`[preferences].reasoning_effort`** below both `[chat]` layers. Each adapter maps the tier to its provider's **native** control; a model with no controllable reasoning tier ignores it (the engine gates on the model's capability). Absent ⇒ no reasoning control (the provider default). Interactively, the `/effort` command and a **live chat**'s `/models` effort sub-step set the tier as a **per-turn session override** (no reseat) without editing config; the **bare-Home** `/models` effort sub-step instead writes the `[preferences].reasoning_effort` default for the next session. The active tier shows in the footer.
+>
+> The `[chat]` block resolves **per field** (each key independently, last-writer-wins project → workspace) — a project that sets only `max_turns` still inherits `default_model`/`max_messages` from the workspace layer. (Contrast `[defaults].media_cost_estimate`, which resolves **whole-object**: the highest layer present replaces the table outright.) **`default_model` and `reasoning_effort` each have one extra fallback**: absent at both `[chat]` layers, each falls through to its global **`[preferences]`** counterpart (`default_model` per [ADR-0063](../../decisions/0063-cli-config-write-contract.md) §1; `reasoning_effort` per [ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md) §6) — the write targets of `/models` (model + its effort sub-step) and the wizard — so a user's "preferred model / effort everywhere" governs chat too, exactly as `[preferences].default_model` already governs a workflow's `[defaults].model`. Full precedence for each: `[chat].<key>` (project → workspace) → `[preferences].<key>` (global). No OTHER `[chat]` field reads the global layer. The `!`-shell allowlist is the **one exception**: `allowed_commands` (exact) + `allowed_command_globs` (globs) are a **coupled unit**, so a project that sets **either** array owns the **whole** allowlist and does **not** inherit the other array from the workspace. Otherwise a project narrowing `allowed_commands` would silently keep the workspace's broader globs — lock to `git status`, yet still allow `git push` via an inherited `git *`. Only when a project sets **neither** allowlist array do both fall through to the workspace; a present array otherwise REPLACES (never merges) the lower layer's. This is what guarantees a narrower project can never inherit a broader workspace entry.
 >
 > `allowed_commands` / `allowed_command_globs` gate the **`!`-shell escape** (2.5.D, [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md)) — a chat user typing `!command` runs it through the **one** `run_command` boundary (they map to the engine's camelCase `allowedCommands` / `allowedCommandGlobs`, the SAME allowlist a workflow `run_command` uses). `allowed_commands` is **exact full-command-string** match (`git status`, `ls -la` — `git` never authorizes `git push --force`); `allowed_command_globs` is the opt-in, riskier pattern form. **Both default to EMPTY ⇒ `!`-shell is disabled** — the `empty ⇒ disabled` symmetry [security-review.md](../../standards/security-review.md) pins, with **no chat-specific relaxation** (there is no curated default: `run_command` has no argument/file confidentiality floor, so even a "read-only" default set — `cat`, `grep` — would reopen `!cat .env` → provider). `!`-shell is first-class via a first-class **opt-in** (the user lists commands, or the 2.5.G onboarding offers a reviewed seed), and a non-allowlisted `!cmd` gets an **actionable, secret-free deny hint** naming the exact line to add. `enforcePolicy(allowedCommands)` runs **before** the mode-aware `confirmAction`, so even `auto` mode never runs a command absent from the allowlist. Editing chat `allowed_commands` is a [security-review.md](../../standards/security-review.md) trigger.
 

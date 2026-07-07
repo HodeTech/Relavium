@@ -2,13 +2,19 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-05
-- **Related**: [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0005-sqlite-drizzle-local-postgres-cloud.md](0005-sqlite-drizzle-local-postgres-cloud.md), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [0009-git-native-workflow-yaml.md](0009-git-native-workflow-yaml.md), [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md), [0025-agent-surface-refines-desktop-scope.md](0025-agent-surface-refines-desktop-scope.md), [0026-session-export-to-workflow.md](0026-session-export-to-workflow.md), [../reference/contracts/agent-session-spec.md](../reference/contracts/agent-session-spec.md), [../reference/contracts/sse-event-schema.md](../reference/contracts/sse-event-schema.md), [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md), [0050-cli-history-db-at-rest-posture.md](0050-cli-history-db-at-rest-posture.md)
+- **Related**: [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0005-sqlite-drizzle-local-postgres-cloud.md](0005-sqlite-drizzle-local-postgres-cloud.md), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md), [0009-git-native-workflow-yaml.md](0009-git-native-workflow-yaml.md), [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md), [0025-agent-surface-refines-desktop-scope.md](0025-agent-surface-refines-desktop-scope.md), [0026-session-export-to-workflow.md](0026-session-export-to-workflow.md), [0059-cli-mid-session-model-reseat.md](0059-cli-mid-session-model-reseat.md), [../reference/contracts/agent-session-spec.md](../reference/contracts/agent-session-spec.md), [../reference/contracts/sse-event-schema.md](../reference/contracts/sse-event-schema.md), [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md), [0050-cli-history-db-at-rest-posture.md](0050-cli-history-db-at-rest-posture.md)
 
 > Amended 2026-06-28: the `history.db` is **not** encrypted at rest on the **CLI** surface — it is
 > guarded by `0700`/`0600` OS file permissions with API keys in the keychain only (see
 > [ADR-0050](0050-cli-history-db-at-rest-posture.md)). Only the **desktop** surface uses a SQLCipher-encrypted
 > store. The Context below originally said "encrypted" without that surface distinction; read it as
 > surface-specific.
+>
+> Amended 2026-07-06: the "one agent + one model bound for the session lifetime" rule is **refined** (not
+> reversed) by [ADR-0059](0059-cli-mid-session-model-reseat.md) — a mid-session `/models` **model switch** is a
+> host-side **reseat** (a new `AgentSession.resume` instance bound to the new model, carrying the text-only
+> transcript + cumulative cost/turns), so each instance still binds exactly one model for its lifetime; the
+> switch is a new instance, never an in-place rebind of the memoized fallback plan.
 
 ## Context
 

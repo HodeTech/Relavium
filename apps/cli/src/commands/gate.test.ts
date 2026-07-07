@@ -272,6 +272,43 @@ describe('gateCommand', () => {
     expect(sweptArgs?.graceMs).toBeUndefined(); // no [defaults].media_gc_grace_days ⇒ the GC default window
   });
 
+  it('wires the user-pricing overlay on a gate-resumed run so the post-gate segment stays capped (2.5.G S10)', async () => {
+    // Seed a `source='user'` price for a model the static registry does NOT know, into the SHARED db the gate
+    // path reads. Without the S10 wiring the resumed run would silently uncap this model past the gate.
+    const dbDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    const providerId = createProviderStore(db, dbDeps).upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    }).id;
+    createModelCatalogStore(db, dbDeps).upsert({
+      providerId,
+      modelId: 'acme-custom-1',
+      source: 'user',
+      inputCostPerMtokMicrocents: 300_000_000,
+      outputCostPerMtokMicrocents: 900_000_000,
+    });
+    const { runId } = await setupPausedRun();
+    const { io } = captureIo();
+    let captured: BuildEngineOptions | undefined;
+    const code = await gateCommand(
+      { runId, approve: true },
+      {
+        ...deps(io),
+        buildEngine: (opts) => {
+          captured = opts;
+          return buildEngine(opts);
+        },
+        sweepMedia: () => Promise.resolve(undefined),
+      },
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    // The overlay reached buildEngine (which threads it into BOTH the pre-egress governor and the realized
+    // CostTracker), and it prices the otherwise-unknown model.
+    expect(captured?.resolvePrice?.get('acme-custom-1')?.inputPerMtokMicrocents).toBe(300_000_000);
+    expect(captured?.resolvePrice?.get('acme-custom-1')?.outputPerMtokMicrocents).toBe(900_000_000);
+  });
+
   it('re-jails save_to under the ORIGINAL run project root on resume (persisted runs.project_root)', async () => {
     // Seed the paused run WITH project_root = a real dir A (distinct from the resumer cwd `root`), then resume.
     const originalRoot = mkdtempSync(join(tmpdir(), 'relavium-orig-root-'));
@@ -392,62 +429,50 @@ workflow:
     expect(code).toBe(EXIT_CODES.success); // the resume completed; the GC rejection was swallowed at the call site
   });
 
-  it('surfaces a corrupt stored inputs blob as a clean exit-2 fault (no silent empty-inputs resume)', async () => {
+  // Every DAMAGED-store shape resumes to the SAME clean exit-2 (`invalid_invocation`) — never a silent
+  // empty-inputs resume nor a raw escaping error. One case per corruption; only the corrupting statement differs.
+  it.each([
+    {
+      label: 'a corrupt stored inputs blob (non-JSON)',
+      corrupt: (runId: string) =>
+        client.sqlite
+          .prepare('UPDATE runs SET input_json = ? WHERE id = ?')
+          .run('{not json', runId),
+    },
+    {
+      label: 'a corrupt persisted event log (non-JSON payload)',
+      corrupt: (runId: string) =>
+        client.sqlite
+          .prepare('UPDATE run_events SET payload_json = ? WHERE run_id = ? AND seq = 0')
+          .run('{not json', runId),
+    },
+    {
+      label: 'a valid-JSON-but-non-object inputs blob (array)',
+      corrupt: (runId: string) =>
+        client.sqlite.prepare('UPDATE runs SET input_json = ? WHERE id = ?').run('[]', runId),
+    },
+    {
+      label: 'a corrupt workflow snapshot (bad JSON)',
+      corrupt: (runId: string) =>
+        client.sqlite
+          .prepare('UPDATE runs SET workflow_definition_snapshot = ? WHERE id = ?')
+          .run('{not json', runId),
+    },
+    {
+      label: 'a schema-invalid workflow snapshot',
+      corrupt: (runId: string) =>
+        client.sqlite
+          .prepare('UPDATE runs SET workflow_definition_snapshot = ? WHERE id = ?')
+          .run('{"workflow":{}}', runId),
+    },
+    {
+      label: 'a snapshot but no event log (no resumable state)',
+      corrupt: (runId: string) =>
+        client.sqlite.prepare('DELETE FROM run_events WHERE run_id = ?').run(runId),
+    },
+  ])('surfaces $label as a clean exit-2 fault', async ({ corrupt }) => {
     const { runId } = await setupPausedRun();
-    // Corrupt the persisted input_json to a non-JSON blob (simulating a damaged store row).
-    client.sqlite.prepare('UPDATE runs SET input_json = ? WHERE id = ?').run('{not json', runId);
-    const { io } = captureIo();
-    await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
-      code: 'invalid_invocation',
-    });
-  });
-
-  it('surfaces a corrupt persisted event log as a clean exit-2 fault (no raw escaping error)', async () => {
-    const { runId } = await setupPausedRun();
-    // Corrupt a run_events payload so the checkpoint reconstruction (loadRunEvents → JSON.parse) throws.
-    client.sqlite
-      .prepare('UPDATE run_events SET payload_json = ? WHERE run_id = ? AND seq = 0')
-      .run('{not json', runId);
-    const { io } = captureIo();
-    await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
-      code: 'invalid_invocation',
-    });
-  });
-
-  it('surfaces a valid-JSON-but-non-object inputs blob (array) as exit-2', async () => {
-    const { runId } = await setupPausedRun();
-    client.sqlite.prepare('UPDATE runs SET input_json = ? WHERE id = ?').run('[]', runId);
-    const { io } = captureIo();
-    await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
-      code: 'invalid_invocation',
-    });
-  });
-
-  it('surfaces a corrupt workflow snapshot (bad JSON) as exit-2', async () => {
-    const { runId } = await setupPausedRun();
-    client.sqlite
-      .prepare('UPDATE runs SET workflow_definition_snapshot = ? WHERE id = ?')
-      .run('{not json', runId);
-    const { io } = captureIo();
-    await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
-      code: 'invalid_invocation',
-    });
-  });
-
-  it('surfaces a schema-invalid workflow snapshot as exit-2', async () => {
-    const { runId } = await setupPausedRun();
-    client.sqlite
-      .prepare('UPDATE runs SET workflow_definition_snapshot = ? WHERE id = ?')
-      .run('{"workflow":{}}', runId);
-    const { io } = captureIo();
-    await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
-      code: 'invalid_invocation',
-    });
-  });
-
-  it('surfaces a run with a snapshot but no event log as exit-2 (no resumable state)', async () => {
-    const { runId } = await setupPausedRun();
-    client.sqlite.prepare('DELETE FROM run_events WHERE run_id = ?').run(runId);
+    corrupt(runId);
     const { io } = captureIo();
     await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
       code: 'invalid_invocation',

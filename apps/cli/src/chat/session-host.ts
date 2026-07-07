@@ -16,11 +16,13 @@ import {
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
+import { modelSupportsReasoning, type PricingOverlay, type ProviderId } from '@relavium/llm';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
 import type {
   AgentSessionRecord,
   Budget,
   McpServerRegistration,
+  ReasoningEffort,
   SessionContext,
   SessionMessage,
   ToolPolicy,
@@ -103,6 +105,14 @@ export interface BuildChatSessionOptions {
    * one-line notice. Absent ⇒ a no-op (the warn stays non-blocking either way).
    */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
+  /**
+   * The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a `ReadonlyMap<modelId, ModelPricing>` the command projects
+   * from the `model_catalog` `source='user'` rows (via `buildUserPricing`). It flows into BOTH the pre-egress
+   * governor (so a user-priced model is enforced by `[chat].max_cost_microcents`) AND `SessionDeps.resolvePrice`
+   * (so the realized cost of the same model is tracked). Static `MODEL_PRICING` still wins for a known id. Absent ⇒
+   * unknown models degrade cost governance to `allow` loudly, unchanged.
+   */
+  readonly resolvePrice?: PricingOverlay;
 }
 
 /** A pre-egress budget warning surfaced to the chat surface (`on_exceed: 'warn'`) — secret-free counts only. */
@@ -156,7 +166,7 @@ const DEFAULT_FS_SCOPE = 'sandboxed' as const;
 /** The fields {@link buildSessionRuntime} reads — the platform-capability inputs shared by a fresh + resumed session. */
 type SessionRuntimeOptions = Pick<
   BuildChatSessionOptions,
-  'chat' | 'now' | 'providers' | 'toolHost' | 'onBudgetWarning'
+  'chat' | 'now' | 'providers' | 'toolHost' | 'onBudgetWarning' | 'resolvePrice'
 >;
 
 /**
@@ -208,7 +218,7 @@ function buildSessionRuntime(
       ? {}
       : { allowedCommandGlobs: opts.chat.allowedCommandGlobs }),
   };
-  const governor = buildGovernorWiring(opts.chat, opts.onBudgetWarning);
+  const governor = buildGovernorWiring(opts.chat, opts.onBudgetWarning, opts.resolvePrice);
   // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
   // event (the in-REPL `/export`'s `session:exported`, 2.Q) can ride the same monotonic per-session counter.
   const emit = createSessionEventSink(bus, sessionId);
@@ -216,6 +226,9 @@ function buildSessionRuntime(
   const deps: SessionDeps = {
     resolveProvider: providers.resolveProvider,
     keyFor: providers.keyFor,
+    // ADR-0066: the per-model reasoning capability (static registry projection) — gates whether the authored
+    // reasoning_effort tier is sent (a non-reasoning / custom model returns false, so the field is withheld).
+    resolveReasoning: modelSupportsReasoning,
     registry,
     tools,
     sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
@@ -246,6 +259,10 @@ function buildSessionRuntime(
     ...(governor === undefined
       ? {}
       : { preEgress: governor.preEgress, updateCost: governor.updateCost }),
+    // The realized-cost overlay (2.5.G S10, ADR-0065 §2) — so the CostTracker prices a user-priced (otherwise
+    // unknown) model instead of throwing UnknownModelError. Same map the governor uses; both fill an UNKNOWN id
+    // only (static MODEL_PRICING wins). Absent ⇒ unchanged (an unknown model's realized cost degrades loudly).
+    ...(opts.resolvePrice === undefined ? {} : { resolvePrice: opts.resolvePrice }),
   };
   return { bus, deps, emit, host };
 }
@@ -260,6 +277,11 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       cwd: opts.cwd,
       projectConfigDir: opts.projectConfigDir,
       defaultModel: opts.chat.defaultModel,
+      // ADR-0066: the `[chat].reasoning_effort` default is baked onto the DEFAULT agent only (an authored agent
+      // owns its own). Threaded here so a config default lights up a default-agent chat without a picker step.
+      ...(opts.chat.reasoningEffort === undefined
+        ? {}
+        : { reasoningEffort: opts.chat.reasoningEffort }),
     });
   const context: SessionContext = {
     workingDir: opts.cwd,
@@ -346,6 +368,34 @@ function narrowToWired(
   return { ...agent, tools: wiredToolIds(agent.tools ?? [], host, defs) };
 }
 
+/**
+ * Return the bound agent for a mid-session model SWITCH ([ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md)):
+ * the snapshot with `model`/`provider` swapped to the picked pair and the original `fallback_chain` DROPPED (it
+ * belonged to the old model; the resumed instance builds its own default plan for the new model, exactly as a fresh
+ * session on it would). Operates on a fresh copy — never mutates the input. Shared by the standalone `chat` reseat
+ * (`buildReseatWiring`) and the in-Home chat reseat (`driveHome`) so the swap rule has ONE home.
+ *
+ * `reasoningEffort` ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md)) rides the
+ * picker's effort sub-step: a defined tier is bound onto the swapped agent; `undefined` DROPS any prior
+ * `reasoning_effort` (a non-reasoning target can't use one, and the picker only omits it for such a target), so the
+ * new binding never carries a stale tier from the old model.
+ */
+export function swapAgentModel(
+  agent: AgentDefinition,
+  modelId: string,
+  provider: ProviderId,
+  reasoningEffort?: ReasoningEffort,
+): AgentDefinition {
+  // A fresh copy, then `delete` the optional `fallback_chain` (removes the key entirely — never an explicit
+  // `undefined` under exactOptionalPropertyTypes — and mutates only this copy, never the loaded record).
+  const next: AgentDefinition = { ...agent, model: modelId, provider };
+  delete next.fallback_chain;
+  // Bind the picked tier, or drop any prior one (same `delete` discipline — never an explicit `undefined`).
+  if (reasoningEffort === undefined) delete next.reasoning_effort;
+  else next.reasoning_effort = reasoningEffort;
+  return next;
+}
+
 /** A resumed session (2.N) plus the two extra facts the REPL needs: the reconstructed state + the next seq. */
 export interface BuiltResumedChatSession extends BuiltChatSession {
   /** The reconstructed in-flight state the view seeds from (carried cost + prior completed-turn count). */
@@ -382,6 +432,9 @@ export interface BuildResumedChatSessionOptions {
   readonly mcpRegistrations?: readonly McpServerRegistration[];
   /** Sink for an `on_exceed: 'warn'` pre-egress budget warning (see {@link BuildChatSessionOptions}). */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
+  /** The ADR-0065 §2 user-pricing overlay (2.5.G S10; see {@link BuildChatSessionOptions.resolvePrice}) — so a
+   *  resumed session enforces + tracks a user-priced model exactly like a fresh one. */
+  readonly resolvePrice?: PricingOverlay;
 }
 
 /**
@@ -480,6 +533,7 @@ export interface GovernorWiring {
 export function buildGovernorWiring(
   chat: ResolvedChatConfig,
   onWarning?: (warning: ChatBudgetWarning) => void,
+  resolvePrice?: PricingOverlay,
 ): GovernorWiring | undefined {
   const cap = chat.maxCostMicrocents;
   if (cap === undefined || cap <= 0) return undefined;
@@ -489,6 +543,9 @@ export function buildGovernorWiring(
   };
   const governor = new BudgetGovernor({
     budget,
+    // The ADR-0065 §2 user-pricing overlay — so the PRE-EGRESS estimate can price a user-priced (otherwise
+    // unknown) model and enforce the cost cap on it. Omit ⇒ an unknown model degrades to `allow` loudly.
+    ...(resolvePrice === undefined ? {} : { resolvePrice }),
     emit: (event) => {
       // `warn` is non-blocking BY CONTRACT. A misbehaving warn surface must never reject this emit — a
       // rejection would propagate as an `internal` turn error and break sendMessage — so swallow a sync throw.

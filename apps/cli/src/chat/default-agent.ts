@@ -1,5 +1,5 @@
 import type { ProviderId } from '@relavium/llm';
-import type { Agent } from '@relavium/shared';
+import type { Agent, ReasoningEffort } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
 
@@ -56,8 +56,10 @@ export function inferProviderFromModel(model: string): ProviderId | undefined {
  * Build the built-in default chat agent over `model` (the resolved `[chat].default_model`, or
  * {@link DEFAULT_CHAT_MODEL}). Throws a clean exit-2 {@link CliError} when the provider cannot be inferred
  * from the model id — guiding the user to set a known `[chat].default_model` or bind an explicit `--agent`.
+ * `reasoningEffort` (the resolved `[chat].reasoning_effort`, ADR-0066) is baked onto the agent so the default
+ * chat honors the config default; absent ⇒ no reasoning control (the provider default).
  */
-export function buildDefaultChatAgent(model: string): Agent {
+export function buildDefaultChatAgent(model: string, reasoningEffort?: ReasoningEffort): Agent {
   const provider = inferProviderFromModel(model);
   if (provider === undefined) {
     throw new CliError(
@@ -74,5 +76,6 @@ export function buildDefaultChatAgent(model: string): Agent {
     provider,
     system_prompt: DEFAULT_CHAT_SYSTEM_PROMPT,
     tools: [...DEFAULT_CHAT_TOOLS],
+    ...(reasoningEffort === undefined ? {} : { reasoning_effort: reasoningEffort }),
   };
 }

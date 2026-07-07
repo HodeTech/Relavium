@@ -8,8 +8,13 @@ import {
   createHomeController,
   type HomeChatSession,
   type HomeController,
+  type HomeModelsPort,
 } from './home-controller.js';
 import type { UserCommandOutcome } from '@relavium/core';
+import type { ModelCatalogEntry } from '@relavium/llm';
+import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
+
+import type { RefreshReport } from '../../engine/model-refresh.js';
 
 import type { MentionReader } from './mention.js';
 
@@ -58,6 +63,7 @@ function makeSession(
     onModeChange?: (mode: ChatMode) => void;
     mentionReader?: MentionReader;
     runShellCommand?: (command: string, args: readonly string[]) => Promise<UserCommandOutcome>;
+    onSetEffort?: (effort: ReasoningEffort) => void;
   } = {},
 ): {
   session: HomeChatSession;
@@ -78,6 +84,7 @@ function makeSession(
     },
     shouldStop: opts.stop ?? (() => false),
     stopReason: opts.stopReason ?? (() => 'exit'),
+    ...(opts.onSetEffort === undefined ? {} : { onSetEffort: opts.onSetEffort }),
     ...(opts.onAbort === undefined ? {} : { onAbort: opts.onAbort }),
     ...(opts.onModeChange === undefined ? {} : { onModeChange: opts.onModeChange }),
     ...(opts.mentionReader === undefined ? {} : { mentionReader: opts.mentionReader }),
@@ -1576,5 +1583,645 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       cr.handleKey('n', {});
       await expect(rejectPending).resolves.toEqual({ outcome: 'reject' });
     });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------ *
+ * The `/models` picker (2.5.G S7 / ADR-0064 §10) — HOME-ONLY, opened via the Home `/` palette.
+ * ------------------------------------------------------------------------------------------------ */
+
+const CTRL_R = { ctrl: true } as const;
+
+/** A merged catalog entry with sensible defaults for the picker port fake. */
+function pickerEntry(
+  partial: Partial<ModelCatalogEntry> & Pick<ModelCatalogEntry, 'modelId'>,
+): ModelCatalogEntry {
+  return {
+    provider: 'anthropic',
+    displayName: partial.modelId,
+    pricingSource: 'registry',
+    priceKnown: true,
+    available: true,
+    deprecated: false,
+    supportsReasoning: false,
+    ...partial,
+  };
+}
+
+/**
+ * A controllable {@link HomeModelsPort} fake. `writeDefault` records the written id, and `currentDefault` returns
+ * it (so `accept` reports success) UNLESS `overrideDefault` is set — which simulates a project/workspace
+ * `[chat].default_model` shadowing the global write (the effective default stays the override). `writeThrows`
+ * simulates a config-write fault.
+ */
+function makeModelsPort(
+  opts: {
+    entries?: readonly ModelCatalogEntry[];
+    refreshedAt?: number;
+    overrideDefault?: string;
+    currentEffort?: ReasoningEffort; // the effective effort default (the bare-Home effort sub-list's ✓/highlight)
+    writeThrows?: boolean;
+    readFaults?: boolean; // currentDefault always returns undefined (a config re-read fault after a good write)
+    loadThrows?: boolean; // load() throws (a DB read fault)
+    refreshIfStale?: () => Promise<Awaited<ReturnType<HomeModelsPort['refreshIfStale']>>>;
+    refresh?: () => Promise<Awaited<ReturnType<HomeModelsPort['refresh']>>>;
+  } = {},
+): {
+  port: HomeModelsPort;
+  load: ReturnType<typeof vi.fn>;
+  refreshIfStale: ReturnType<typeof vi.fn>;
+  refresh: ReturnType<typeof vi.fn>;
+  writeDefault: ReturnType<typeof vi.fn>;
+} {
+  const entries = opts.entries ?? [pickerEntry({ modelId: 'a' }), pickerEntry({ modelId: 'b' })];
+  let written: string | undefined;
+  let writtenEffort: ReasoningEffort | undefined;
+  const load = vi.fn(() => {
+    if (opts.loadThrows === true) throw new Error('catalog read failed');
+    return { entries, refreshedAt: opts.refreshedAt };
+  });
+  const refreshIfStale = vi.fn(opts.refreshIfStale ?? (() => Promise.resolve(undefined)));
+  const refresh = vi.fn(opts.refresh ?? (() => Promise.resolve({ providers: [] })));
+  const writeDefault = vi.fn((modelId: string, reasoningEffort?: ReasoningEffort) => {
+    if (opts.writeThrows === true) throw new Error('config write failed');
+    written = modelId;
+    if (reasoningEffort !== undefined) writtenEffort = reasoningEffort;
+  });
+  const port: HomeModelsPort = {
+    load,
+    refreshIfStale,
+    refresh,
+    // The EFFECTIVE default: a read fault ⇒ undefined; else the override wins (shadows the global write), else the
+    // last written id.
+    currentDefault: () =>
+      opts.readFaults === true ? undefined : (opts.overrideDefault ?? written),
+    // The EFFECTIVE effort default: an explicit `currentEffort` opt wins (a pre-existing config default), else the
+    // last written effort (so a re-opened picker shows the ✓ on it).
+    currentEffort: () => opts.currentEffort ?? writtenEffort,
+    writeDefault,
+  };
+  return { port, load, refreshIfStale, refresh, writeDefault };
+}
+
+describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () => {
+  const EMPTY_HOME: HomeSnapshot = {
+    attention: { gates: [], failedRuns: [] },
+    recentSessions: [],
+    recentRuns: [],
+    recentAgents: [],
+    isEmpty: true,
+  };
+  const homeStore: HomeStore = { read: () => EMPTY_HOME };
+
+  /** Build a Home controller with the given models port, then open the picker via the `/` palette (the real path). */
+  function openPicker(port: HomeModelsPort): HomeController {
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: vi.fn(),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+      models: port,
+    });
+    c.handleKey('/', {}); // open the palette
+    type(c, 'models'); // filter HOME_PALETTE_COMMANDS → [/models]
+    c.handleKey('', ENTER); // run the highlighted /models → homeReplCtx.openModels → the picker opens
+    return c;
+  }
+
+  it('opens over the merged catalog and kicks a TTL-bounded background refresh', async () => {
+    const { port, load, refreshIfStale } = makeModelsPort({ refreshedAt: 1000 });
+    const c = openPicker(port);
+    const picker = c.getSnapshot().modelPicker;
+    expect(picker?.entries.map((e) => e.modelId)).toEqual(['a', 'b']);
+    expect(picker?.refreshedAt).toBe(1000);
+    expect(refreshIfStale).toHaveBeenCalledTimes(1); // the auto background refresh (ADR-0064 §5c)
+    await flush();
+    // Nothing was stale (refreshIfStale → undefined): the spinner clears, the cache stands.
+    expect(c.getSnapshot().modelPicker?.loading).toBe(false);
+    expect(load).toHaveBeenCalled();
+  });
+
+  it('selecting a model writes the NEXT session default, closes the picker, and confirms in the notice', async () => {
+    const { port, writeDefault } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER); // accept the selected (available) model
+    expect(writeDefault).toHaveBeenCalledWith('claude-x', undefined); // non-reasoning ⇒ model only, no effort
+    expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
+    expect(c.getSnapshot().notice).toContain('Claude X'); // the confirmation names the model
+    expect(c.getSnapshot().notice).toContain('next chat session'); // it is a NEXT-session action, not a live reseat
+  });
+
+  it('bare Home: a REASONING model offers the effort sub-step, writing BOTH model + effort defaults (ADR-0066 §6)', async () => {
+    // ADR-0066 §6: in the bare Home a reasoning model advances to the effort sub-step (opened on the config effort
+    // default), and accepting writes model + effort together — so the user sets both future-session defaults at once.
+    const { port, writeDefault } = makeModelsPort({
+      entries: [
+        pickerEntry({
+          modelId: 'deepseek-v4-flash',
+          displayName: 'DeepSeek V4 Flash',
+          supportsReasoning: true,
+        }),
+      ],
+      currentEffort: 'low', // the existing effort default — the sub-list opens highlighted on it
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER); // model phase: Enter on the reasoning model ⇒ advance to the effort sub-step
+    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
+    expect(c.getSnapshot().modelPicker?.currentEffort).toBe('low'); // opened on the config effort default
+    c.handleKey('', { downArrow: true }); // low → medium
+    c.handleKey('', { downArrow: true }); // medium → high
+    c.handleKey('', ENTER); // accept the model + 'high'
+
+    expect(writeDefault).toHaveBeenCalledWith('deepseek-v4-flash', 'high'); // BOTH written (one atomic call)
+    expect(c.getSnapshot().modelPicker).toBeUndefined(); // closed
+    expect(c.getSnapshot().notice).toContain('DeepSeek V4 Flash');
+    expect(c.getSnapshot().notice).toContain('effort high'); // the notice names the written effort
+    expect(c.getSnapshot().notice).toContain('next chat session');
+  });
+
+  it('bare Home: a reasoning model with NO prior effort default opens on medium; immediate Enter writes medium (ADR-0066 §6)', async () => {
+    // No `currentEffort` opt ⇒ the sub-list opens on the neutral 'medium' (initialEffortIndex(undefined)). There is
+    // no "model-only, skip effort" path for a reasoning model in the bare Home (Esc only backs to the model list), so
+    // accepting immediately writes the neutral default — pin that intended behavior (ADR-0066 §6).
+    const { port, writeDefault } = makeModelsPort({
+      entries: [
+        pickerEntry({
+          modelId: 'deepseek-v4-flash',
+          displayName: 'DeepSeek V4 Flash',
+          supportsReasoning: true,
+        }),
+      ],
+      // no currentEffort → port.currentEffort() is undefined
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER); // advance to the effort sub-step
+    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
+    expect(c.getSnapshot().modelPicker?.currentEffort).toBeUndefined(); // no config effort default
+    c.handleKey('', ENTER); // immediate Enter on the opening highlight (the neutral 'medium')
+
+    expect(writeDefault).toHaveBeenCalledWith('deepseek-v4-flash', 'medium'); // the neutral default is written
+    expect(c.getSnapshot().notice).toContain('effort medium');
+  });
+
+  it('an honest notice when a project/workspace setting overrides the global write (no false success)', async () => {
+    // The write lands on the global file, but the effective default stays the project/workspace override, so the
+    // notice must NOT claim "applies to your next chat session" — it says the override still wins here.
+    const { port, writeDefault } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
+      overrideDefault: 'project-pinned',
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER);
+    expect(writeDefault).toHaveBeenCalledWith('claude-x', undefined); // non-reasoning ⇒ model only, no effort
+    expect(c.getSnapshot().notice).toContain('overrides it here');
+    expect(c.getSnapshot().notice).not.toContain('next chat session'); // no false claim of effect
+  });
+
+  it('reports a DISTINCT notice when the config can\'t be re-read after a write (not "overrides")', async () => {
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
+      readFaults: true, // the write succeeds, but the re-read to confirm the effective default throws → undefined
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().notice).toContain('could not be re-read');
+    expect(c.getSnapshot().notice).not.toContain('overrides'); // a read fault is NOT an override
+    expect(c.getSnapshot().notice).not.toContain('next chat session'); // nor a confirmed success
+  });
+
+  it('a catalog read fault on OPEN degrades to a notice, never crashes the Home (never opens a broken picker)', () => {
+    const { port } = makeModelsPort({ loadThrows: true });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: vi.fn(),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+      models: port,
+    });
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER); // /models → openModelPicker → port.load() throws → caught
+    expect(c.getSnapshot().modelPicker).toBeUndefined(); // no half-open picker
+    expect(c.getSnapshot().notice).toContain('could not read the model catalog');
+  });
+
+  it('a write fault keeps the picker OPEN with a secret-free hint, never crashes the Home', async () => {
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-x', displayName: 'Claude X' })],
+      writeThrows: true,
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().modelPicker).toBeDefined(); // stays open (recoverable)
+    expect(c.getSnapshot().modelPicker?.hint).toContain('could not save');
+    expect(c.getSnapshot().notice).toBeUndefined(); // no success notice on a failed write
+  });
+
+  it('a DIMMED (unavailable) model is non-selectable: Enter shows a HINT, never a write', async () => {
+    const { port, writeDefault } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'gone', displayName: 'Gone', available: false })],
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER);
+    expect(writeDefault).not.toHaveBeenCalled(); // never write an unusable default
+    expect(c.getSnapshot().modelPicker).toBeDefined(); // stays open
+    expect(c.getSnapshot().modelPicker?.hint).toContain('Gone'); // an actionable action-hint (not the refresh banner)
+    // A navigation keystroke clears the transient hint (the user has moved on).
+    c.handleKey('x', {}); // a filter keystroke → 'state' step → hint cleared
+    expect(c.getSnapshot().modelPicker?.hint).toBeUndefined();
+  });
+
+  it('a `no-key` model is non-selectable with a hint NAMING the remedy (provider add) (2.5.G)', async () => {
+    const { port, writeDefault } = makeModelsPort({
+      entries: [
+        pickerEntry({
+          modelId: 'x',
+          displayName: 'Model X',
+          provider: 'openai',
+          available: false,
+          unavailableReason: 'no-key',
+        }),
+      ],
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER);
+    expect(writeDefault).not.toHaveBeenCalled(); // a keyless model can never become the default
+    const hint = c.getSnapshot().modelPicker?.hint ?? '';
+    expect(hint).toContain('openai'); // names the provider
+    expect(hint).toContain('provider set-key'); // and the actionable single-command remedy
+  });
+
+  it('Esc closes the picker without writing a default', async () => {
+    const { port, writeDefault } = makeModelsPort();
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', { escape: true });
+    expect(c.getSnapshot().modelPicker).toBeUndefined();
+    expect(writeDefault).not.toHaveBeenCalled();
+  });
+
+  it('Ctrl+R runs an unbounded refresh; a per-provider failure surfaces a secret-free banner', async () => {
+    const { port, refresh } = makeModelsPort({
+      refresh: () =>
+        Promise.resolve({
+          providers: [{ provider: 'openai', status: 'failed', error: 'redacted' }],
+        }),
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('r', CTRL_R);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await flush();
+    const picker = c.getSnapshot().modelPicker;
+    expect(picker?.loading).toBe(false);
+    expect(picker?.banner).toContain('openai'); // names the failed provider, not the (redacted) error body
+    expect(picker?.banner).not.toContain('redacted');
+  });
+
+  it("a reopened picker is NOT clobbered by a prior open's slow refresh (the epoch guard)", async () => {
+    // Open #1 kicks a SLOW refreshIfStale; open #2 (after a close) gets a fast one. When the slow first refresh
+    // finally resolves with a partial failure, it must NOT stamp the SECOND picker's banner (a different generation).
+    let resolveSlow: (report: RefreshReport) => void = () => undefined;
+    let call = 0;
+    const { port } = makeModelsPort({
+      refreshIfStale: () => {
+        call += 1;
+        return call === 1
+          ? new Promise<RefreshReport>((res) => {
+              resolveSlow = res;
+            })
+          : Promise.resolve(undefined);
+      },
+    });
+    const c = openPicker(port); // open #1 → the slow refresh is in flight (generation 1)
+    c.handleKey('', { escape: true }); // close it
+    // Reopen on the SAME controller (open #2, generation 2) via the palette.
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().modelPicker).toBeDefined(); // picker #2 is open
+
+    resolveSlow({ providers: [{ provider: 'openai', status: 'failed', error: 'redacted' }] }); // gen-1 refresh lands late
+    await flush();
+    // The stale gen-1 result is dropped — picker #2's banner is untouched (no ghost partial-failure).
+    expect(c.getSnapshot().modelPicker?.banner).toBeUndefined();
+  });
+
+  it('the picker owns the keyboard: typing filters, it does not edit the Home buffer', async () => {
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'alpha' }), pickerEntry({ modelId: 'beta' })],
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('b', {}); // a printable char → extends the picker filter, NOT the Home prompt
+    expect(c.getSnapshot().modelPicker?.filter).toBe('b');
+    expect(c.getSnapshot().input.text).toBe(''); // the Home buffer behind the overlay is untouched
+  });
+
+  it('degrades to an honest notice when no models port is wired (a test/partial host)', () => {
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: vi.fn(),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+      // no `models` port
+    });
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().modelPicker).toBeUndefined();
+    expect(c.getSnapshot().notice).toContain('unavailable');
+  });
+
+  it('in-Home chat: /models opens the reseat picker; accepting a model RESEATS the live session (ADR-0059)', async () => {
+    const sessionA = makeSession({ sessionId: 'sess-A' });
+    const sessionB = makeSession({ sessionId: 'sess-A' }); // a reseat continues the SAME sessionId
+    const startChat = vi.fn(() => Promise.resolve(sessionA.session));
+    const reseatChat = vi.fn(() => Promise.resolve(sessionB.session));
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat,
+      reseatChat,
+      models: port,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER); // start the chat (session A)
+    await flush();
+    expect(c.getSnapshot().mode).toBe('chat');
+
+    // Open the reseat picker from the chat palette (`/` → filter `models` → run) — the in-chat intercept opens the
+    // picker instead of dispatching `/models` to the "interactive terminal" hint.
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    await flush();
+    expect(c.getSnapshot().modelPicker).toBeDefined(); // the picker opened IN the chat
+
+    // Accept the (only, available) model → a LIVE reseat, not a next-session-default write.
+    c.handleKey('', ENTER);
+    await flush();
+
+    expect(reseatChat).toHaveBeenCalledWith('sess-A', {
+      modelId: 'claude-opus-4-8',
+      provider: 'anthropic',
+    });
+    expect(sessionA.teardown).toHaveBeenCalledTimes(1); // the old session torn down (bounded)
+    expect(c.getSnapshot().session).toBe(sessionB.session); // swapped to the reseated session
+    expect(c.getSnapshot().mode).toBe('chat'); // stayed in chat (the model switched underneath)
+    expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
+  });
+
+  it('in-Home chat: a SAME-model effort change calls the setter — NO reseat (ADR-0066 §5)', async () => {
+    // Bound to a reasoning-capable model at effort 'low'. Re-picking the SAME model then choosing 'high' in the
+    // effort sub-step must push the SESSION override (onSetEffort) — NOT a reseat (which would tear the session down).
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    boundStore.setReasoningEffort('low'); // the session's current tier (drives the sub-list's ✓/highlight)
+    const onSetEffort = vi.fn();
+    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
+    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
+    const { port } = makeModelsPort({
+      entries: [
+        pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic', supportsReasoning: true }),
+      ],
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(sessionA.session),
+      reseatChat,
+      models: port,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('', ENTER); // model phase: Enter on the reasoning model ⇒ advance to the effort sub-step
+    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
+    c.handleKey('', { downArrow: true }); // low → medium
+    c.handleKey('', { downArrow: true }); // medium → high
+    c.handleKey('', ENTER); // apply 'high'
+    await flush();
+
+    expect(onSetEffort).toHaveBeenCalledWith('high'); // the SESSION override (no reseat)
+    expect(reseatChat).not.toHaveBeenCalled(); // an effort change is NOT a reseat (ADR-0066 §5, not option (d))
+    expect(sessionA.teardown).not.toHaveBeenCalled(); // the live session is untouched (no teardown/MCP reconnect)
+    expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed after the effort pick
+  });
+
+  it('in-Home chat: re-picking the SAME model AND same effort is a no-op (no setter, no reseat) (ADR-0066)', async () => {
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    boundStore.setReasoningEffort('high');
+    const onSetEffort = vi.fn();
+    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
+    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
+    const { port } = makeModelsPort({
+      entries: [
+        pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic', supportsReasoning: true }),
+      ],
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(sessionA.session),
+      reseatChat,
+      models: port,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('', ENTER); // effort sub-step opens highlighted on the bound 'high'
+    c.handleKey('', ENTER); // accept 'high' (unchanged)
+    await flush();
+
+    expect(onSetEffort).not.toHaveBeenCalled(); // same tier ⇒ no setter call
+    expect(reseatChat).not.toHaveBeenCalled();
+    expect(c.getSnapshot().modelPicker).toBeUndefined();
+  });
+
+  it('in-Home chat: accepting the ALREADY-bound model does NOT reseat — a no-op hint (ADR-0059)', async () => {
+    // The session is bound to claude-opus-4-8; the only picker entry IS that model. Accepting it must NOT tear the
+    // session down + rebuild for zero change (which would wipe the approval cache) — it keeps the picker open + hints.
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore });
+    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
+    const { port } = makeModelsPort({
+      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
+    });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(sessionA.session),
+      reseatChat,
+      models: port,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('/', {});
+    type(c, 'models');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('', ENTER); // accept the (only, ALREADY-bound) model
+    await flush();
+
+    expect(reseatChat).not.toHaveBeenCalled(); // no pointless reseat onto the current model
+    expect(sessionA.teardown).not.toHaveBeenCalled(); // the live session is untouched
+    expect(c.getSnapshot().modelPicker?.hint).toContain('Already on'); // the picker stays open with a hint
+  });
+
+  it('in-Home chat: /effort opens the interactive tier overlay; applying pushes the setter — NO reseat (ADR-0066 §6)', async () => {
+    // The standalone `/effort` overlay (distinct from the `/models` effort sub-step): a reasoning-capable live chat
+    // opens a fixed tier list on the bound effort; picking a new tier pushes the per-turn session override, never a
+    // reseat. Reached via the `/` palette (typing `/` opens it), matching how a user runs it.
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    boundStore.setReasoningEffort('low'); // the session's current tier — drives the overlay's ✓/opening highlight
+    const onSetEffort = vi.fn();
+    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
+    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(sessionA.session),
+      reseatChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('/', {}); // open the `/` palette
+    type(c, 'effort'); // filter CHAT_PALETTE_COMMANDS → [/effort]
+    c.handleKey('', ENTER); // run /effort → the interactive overlay opens (NOT the model picker)
+    expect(c.getSnapshot().effortPicker?.current).toBe('low');
+    expect(c.getSnapshot().effortPicker?.selected).toBe(REASONING_EFFORTS.indexOf('low'));
+    expect(c.getSnapshot().modelPicker).toBeUndefined();
+    c.handleKey('', { downArrow: true }); // low → medium
+    c.handleKey('', { downArrow: true }); // medium → high
+    c.handleKey('', ENTER); // apply 'high'
+
+    expect(onSetEffort).toHaveBeenCalledWith('high'); // the per-turn SESSION override
+    expect(reseatChat).not.toHaveBeenCalled(); // an effort change is NOT a reseat (ADR-0066 §5)
+    expect(sessionA.teardown).not.toHaveBeenCalled(); // the live session is untouched
+    expect(c.getSnapshot().effortPicker).toBeUndefined(); // the overlay closed after applying
+  });
+
+  it('in-Home chat: /effort on a NON-reasoning model does NOT open the overlay — it dispatches to the notice (ADR-0066 §6)', async () => {
+    // A non-reasoning bound model has no controllable tier, so `/effort` must fall through to the slash dispatch
+    // (the ctx handler prints "no controllable tier"), never opening a dead overlay.
+    const boundStore = createChatStore(false, { model: 'gpt-4o' }); // gpt-4o is not a reasoning model
+    const onSetEffort = vi.fn();
+    const made = makeSession({ store: boundStore, onSetEffort });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('/', {});
+    type(c, 'effort');
+    c.handleKey('', ENTER);
+    await flush();
+
+    expect(c.getSnapshot().effortPicker).toBeUndefined(); // no overlay for a non-reasoning model
+    expect(made.lines).toContain('/effort'); // it dispatched (the ctx handler surfaces the "no tier" notice)
+    expect(onSetEffort).not.toHaveBeenCalled();
+  });
+
+  it('in-Home chat: a typed (pasted) /effort line opens the overlay via applySubmitAction (ADR-0066 §6)', async () => {
+    // Typing `/` at an empty prompt opens the palette, so a LITERAL `/effort` line reaches applySubmitAction only via
+    // paste (bracketed paste appends verbatim). This covers the typed-intercept branch, distinct from the palette one.
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    boundStore.setReasoningEffort('medium');
+    const onSetEffort = vi.fn();
+    const sessionA = makeSession({ store: boundStore, onSetEffort });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(sessionA.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey(PASTE_START, {});
+    c.handleKey('/effort', {}); // pasted literally — the palette does NOT open (a paste bypasses the `/` intercept)
+    c.handleKey(PASTE_END, {});
+    expect(c.getSnapshot().input.text).toBe('/effort');
+    c.handleKey('', ENTER); // submit the literal line → applySubmitAction → the typed intercept opens the overlay
+
+    expect(c.getSnapshot().effortPicker?.current).toBe('medium'); // opened on the bound tier
+    expect(c.getSnapshot().input.text).toBe(''); // the buffer was cleared
+    expect(sessionA.lines).not.toContain('/effort'); // it did NOT dispatch — it opened the overlay
+  });
+
+  it('in-Home chat: Esc closes the /effort overlay without applying; same-tier re-pick is a no-op (ADR-0066 §6)', async () => {
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    boundStore.setReasoningEffort('high'); // the overlay opens highlighted on 'high'
+    const onSetEffort = vi.fn();
+    const sessionA = makeSession({ store: boundStore, onSetEffort });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(sessionA.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    // Open via the palette, then Esc — closes the overlay without a setter call.
+    c.handleKey('/', {});
+    type(c, 'effort');
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().effortPicker).toBeDefined();
+    c.handleKey('', { escape: true });
+    expect(c.getSnapshot().effortPicker).toBeUndefined(); // Esc closed it
+    expect(onSetEffort).not.toHaveBeenCalled(); // …applying nothing
+
+    // Re-open and Enter on the ALREADY-bound 'high' → a gentle no-op (no setter call), overlay closed.
+    c.handleKey('/', {});
+    type(c, 'effort');
+    c.handleKey('', ENTER);
+    c.handleKey('', ENTER); // Enter on the opening highlight (the bound 'high')
+    expect(onSetEffort).not.toHaveBeenCalled(); // same tier ⇒ no setter call
+    expect(c.getSnapshot().effortPicker).toBeUndefined(); // closed
   });
 });

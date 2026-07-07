@@ -14,6 +14,7 @@ specs and links to them rather than restating them (see
 | Runbook | Task |
 |---------|------|
 | [local-dev-setup.md](local-dev-setup.md) | Set up the Turborepo monorepo locally: pnpm, the Tauri/Rust toolchain, and the engine-first build order. |
+| [add-a-provider.md](add-a-provider.md) | End-to-end CLI provider lifecycle: register (incl. a custom OpenAI-compatible endpoint), store + verify a key, discover models, and price an unknown model. |
 | [add-a-provider-key.md](add-a-provider-key.md) | Add or rotate an LLM provider API key into the OS keychain from the desktop app. |
 | [release-a-surface.md](release-a-surface.md) | Cut a release for the desktop (`.dmg`), CLI (npm), or VS Code extension (Marketplace). |
 

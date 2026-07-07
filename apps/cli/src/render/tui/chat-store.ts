@@ -1,5 +1,7 @@
 import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
 
+import type { ReasoningEffort } from '@relavium/shared';
+
 import {
   DEFAULT_CHAT_MODE,
   type ApprovalAnswer,
@@ -43,6 +45,13 @@ export interface ChatStoreSnapshot {
   readonly state: SessionViewState;
   /** The active chat mode (ADR-0057) — REPL-set (Shift+Tab / `/mode`), shown in the footer. */
   readonly mode: ChatMode;
+  /**
+   * The session's active reasoning-effort tier ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md))
+   * — the effective `session-override → agent` tier, shown in the footer (parity with `mode`) and read by the
+   * `/models` effort sub-list + `/effort`. Present only when the bound model is reasoning-capable (a non-reasoning
+   * model has no controllable tier), so the footer never shows an inert effort. `undefined` ⇒ no tier / not capable.
+   */
+  readonly reasoningEffort: ReasoningEffort | undefined;
   /** The in-flight approval prompt, if a governed tool dispatch is awaiting the user's decision. */
   readonly approval: PendingApproval | undefined;
   readonly tick: number;
@@ -75,6 +84,10 @@ export interface ChatStoreController extends ChatStore {
   /** Set the active chat mode (Shift+Tab / `/mode`) — updates the footer; the caller also re-applies the turn
    *  policy via `applyChatMode`. Flushes immediately (a mode switch feels instant). */
   setMode: (mode: ChatMode) => void;
+  /** Set the active reasoning-effort tier for the footer + the `/models`/`/effort` reads (ADR-0066) — `undefined`
+   *  clears it (a non-reasoning model / no tier). The caller also pushes the session override via
+   *  `AgentSession.setReasoningEffort`. Flushes immediately (an effort switch feels instant). */
+  setReasoningEffort: (effort: ReasoningEffort | undefined) => void;
   /** Clear the compaction "moment" flag (ADR-0062 §7). The host calls this when a MANUAL `/compact` settles — a
    *  failed/cancelled `/compact` emits NO `session:compacted`/`session:trimmed`, so the flag (set by
    *  `session:compacting`) would otherwise latch and a later slash command's busy render would show a stale
@@ -107,15 +120,23 @@ export function createChatStore(color: boolean, seed?: SessionViewSeed): ChatSto
   const listeners = new Set<() => void>();
   let state = initialSessionViewState(seed);
   let mode: ChatMode = DEFAULT_CHAT_MODE;
+  let reasoningEffort: ReasoningEffort | undefined;
   let approval: PendingApproval | undefined;
   // The resolver for the in-flight approval promise (set while `approval` is published; cleared on settle).
   let settleApproval: ((answer: ApprovalAnswer) => void) | undefined;
   let tickCount = 0;
   let dirty = false;
-  let snapshot: ChatStoreSnapshot = { state, mode, approval, tick: tickCount, color };
+  let snapshot: ChatStoreSnapshot = {
+    state,
+    mode,
+    reasoningEffort,
+    approval,
+    tick: tickCount,
+    color,
+  };
 
   const flush = (): void => {
-    snapshot = { state, mode, approval, tick: tickCount, color };
+    snapshot = { state, mode, reasoningEffort, approval, tick: tickCount, color };
     for (const listener of listeners) {
       listener();
     }
@@ -162,6 +183,10 @@ export function createChatStore(color: boolean, seed?: SessionViewSeed): ChatSto
     summaryText: () => formatSessionFooter(state),
     setMode: (next) => {
       mode = next;
+      flush();
+    },
+    setReasoningEffort: (next) => {
+      reasoningEffort = next;
       flush();
     },
     clearCompacting: () => {

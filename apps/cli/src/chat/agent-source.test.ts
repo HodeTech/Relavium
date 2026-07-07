@@ -45,6 +45,30 @@ describe('resolveChatAgent', () => {
     expect(agent.model).toBe(DEFAULT_CHAT_MODEL);
   });
 
+  it('bakes opts.reasoningEffort onto the DEFAULT agent (ADR-0066)', () => {
+    const agent = resolveChatAgent(undefined, {
+      cwd: dir,
+      projectConfigDir: undefined,
+      defaultModel: 'claude-opus-4-8',
+      reasoningEffort: 'high',
+    });
+    expect(agent.id).toBe(DEFAULT_CHAT_AGENT_ID);
+    expect(agent.reasoning_effort).toBe('high');
+  });
+
+  it('does NOT leak [chat].reasoning_effort into an explicit --agent — the authored tier wins (ADR-0066 §5)', () => {
+    const path = join(dir, 'coder.agent.yaml');
+    writeFileSync(path, `${AGENT_YAML}\nreasoning_effort: off`); // the authored agent pins 'off'
+    const agent = resolveChatAgent(path, {
+      cwd: dir,
+      projectConfigDir: undefined,
+      defaultModel: undefined,
+      reasoningEffort: 'high', // a config default MUST NOT override the authored agent's own tier
+    });
+    expect(agent.id).toBe('coder');
+    expect(agent.reasoning_effort).toBe('off'); // the authored 'off' survives — config did not leak in
+  });
+
   it('resolves an explicit --agent path through the strict core parseAgent', () => {
     const path = join(dir, 'coder.agent.yaml');
     writeFileSync(path, AGENT_YAML);
@@ -57,36 +81,16 @@ describe('resolveChatAgent', () => {
     expect(agent.provider).toBe('anthropic');
   });
 
-  it('discovers a bare --agent id under <projectConfigDir>/agents/ (.agent.yaml suffix)', () => {
+  // A bare `--agent id` is discovered under `<projectConfigDir>/agents/` by trying the idSuffix chain in order:
+  // `.agent.yaml` → `.relavium.yaml` → `.yaml`. One case per suffix, each proving that suffix ALONE resolves.
+  it.each([
+    { label: '.agent.yaml', filename: 'coder.agent.yaml' },
+    { label: 'the .relavium.yaml fallback (no .agent.yaml)', filename: 'coder.relavium.yaml' },
+    { label: 'the bare .yaml fallback (last in the chain)', filename: 'coder.yaml' },
+  ])('discovers a bare --agent id under agents/ via the $label suffix', ({ filename }) => {
     const projectConfigDir = join(dir, '.relavium');
     mkdirSync(join(projectConfigDir, 'agents'), { recursive: true });
-    writeFileSync(join(projectConfigDir, 'agents', 'coder.agent.yaml'), AGENT_YAML);
-    const agent = resolveChatAgent('coder', {
-      cwd: dir,
-      projectConfigDir,
-      defaultModel: undefined,
-    });
-    expect(agent.id).toBe('coder');
-  });
-
-  it('discovers a bare --agent id via the fallback suffixes (.relavium.yaml when no .agent.yaml)', () => {
-    const projectConfigDir = join(dir, '.relavium');
-    mkdirSync(join(projectConfigDir, 'agents'), { recursive: true });
-    // Only the .relavium.yaml exists — the resolver must try it after .agent.yaml misses.
-    writeFileSync(join(projectConfigDir, 'agents', 'coder.relavium.yaml'), AGENT_YAML);
-    const agent = resolveChatAgent('coder', {
-      cwd: dir,
-      projectConfigDir,
-      defaultModel: undefined,
-    });
-    expect(agent.id).toBe('coder');
-  });
-
-  it('discovers a bare --agent id via the bare .yaml suffix (last in the fallback chain)', () => {
-    const projectConfigDir = join(dir, '.relavium');
-    mkdirSync(join(projectConfigDir, 'agents'), { recursive: true });
-    // Neither .agent.yaml nor .relavium.yaml exists — only coder.yaml, the third/last idSuffix.
-    writeFileSync(join(projectConfigDir, 'agents', 'coder.yaml'), AGENT_YAML);
+    writeFileSync(join(projectConfigDir, 'agents', filename), AGENT_YAML);
     const agent = resolveChatAgent('coder', {
       cwd: dir,
       projectConfigDir,

@@ -101,7 +101,18 @@ behind [ADR-0061](docs/decisions/0061-cli-input-layer-file-injection-and-shell-e
 two-round maintainer security review): the accepted file / command output is queued as a compact chip and expanded
 into the shared UNTRUSTED nonce-fenced frame only at submit (byte-identical model context, a clean prompt); the
 `[chat]` command allowlist resolves as a **coupled unit** (a project setting either the exact or glob array owns
-the whole allowlist). **The next pickup is the rest of the 2.5 experience arm (2.5.F / G).**
+the whole allowlist); and **2.5.F** (the ADR-0062 context-history commands) is ✅ **Done (PR #65, merged 2026-07-05)**,
+behind [ADR-0062](docs/decisions/0062-context-compaction-and-cli-history-commands.md): **`/clear`** — a host-level
+fresh-session lifecycle swap across `relavium chat`, `chat-resume`, and the in-Home chat, rebinding the same agent
+under a new `sessionId` (TTY-interactive only, rejected under `--json`/plain per ADR-0049) — plus the two
+compaction-moment UX polishes (a `session:compacting` "Summarizing…" event amending ADR-0036, and the footer
+context-fullness indicator via a pure `@relavium/llm` `contextWindowForModel` helper), completing the ADR-0062
+compaction story alongside the earlier-landed model-summarised `/compact` + deterministic `/trim` + automatic
+compaction. **2.5.G is now underway** — its scope expanded to **Option A** (a **live** model catalog + a complete
+model-pricing story that governs cost) behind three new ADRs ([ADR-0063](docs/decisions/0063-cli-config-write-contract.md)
+config-write, [ADR-0064](docs/decisions/0064-live-model-catalog.md) live catalog,
+[ADR-0065](docs/decisions/0065-provider-economics-and-extensibility.md) provider economics), across 12 reviewed
+steps; the additive lanes 2.5.H / I / J run in parallel.
 For live status, per-PR history, milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the public overview.
 

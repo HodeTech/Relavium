@@ -27,6 +27,7 @@ import {
   buildChatSession,
   buildGovernorWiring,
   buildResumedChatSession,
+  swapAgentModel,
   type ChatBudgetWarning,
 } from './session-host.js';
 import {
@@ -88,6 +89,7 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   onExceed: undefined,
   allowedCommands: undefined,
   allowedCommandGlobs: undefined,
+  reasoningEffort: undefined,
 };
 
 function deterministicIds() {
@@ -715,6 +717,60 @@ describe('buildResumedChatSession (2.N)', () => {
   });
 });
 
+describe('swapAgentModel (ADR-0059 model-switch rule)', () => {
+  it('swaps model + provider and DROPS the original fallback_chain, without mutating the input', () => {
+    const original = {
+      ...buildDefaultChatAgent('claude-sonnet-4-6'),
+      fallback_chain: [{ model: 'gpt-5.5', provider: 'openai' as const, max_attempts: 2 }],
+    };
+    const frozenChain = original.fallback_chain;
+    const next = swapAgentModel(original, 'claude-opus-4-8', 'anthropic');
+
+    expect(next.model).toBe('claude-opus-4-8');
+    expect(next.provider).toBe('anthropic');
+    expect('fallback_chain' in next).toBe(false); // dropped — the new instance builds its own default plan
+    // The input is untouched (a fresh copy): the original keeps its model + fallback_chain.
+    expect(original.model).toBe('claude-sonnet-4-6');
+    expect(original.fallback_chain).toBe(frozenChain);
+  });
+
+  it('is a no-op on fallback_chain for an agent that has none (no key materialized)', () => {
+    const next = swapAgentModel(buildDefaultChatAgent('claude-sonnet-4-6'), 'gpt-5.5', 'openai');
+    expect(next.model).toBe('gpt-5.5');
+    expect(next.provider).toBe('openai');
+    expect('fallback_chain' in next).toBe(false);
+  });
+
+  it('BINDS a passed reasoning-effort tier onto the swapped agent (ADR-0066)', () => {
+    const next = swapAgentModel(
+      buildDefaultChatAgent('claude-sonnet-4-6'),
+      'claude-opus-4-8',
+      'anthropic',
+      'high',
+    );
+    expect(next.reasoning_effort).toBe('high');
+  });
+
+  it('DROPS a prior effort when none is passed (a non-reasoning target can’t carry a stale tier)', () => {
+    const withEffort = {
+      ...buildDefaultChatAgent('claude-opus-4-8'),
+      reasoning_effort: 'max' as const,
+    };
+    const next = swapAgentModel(withEffort, 'deepseek-chat', 'deepseek'); // no reasoningEffort arg
+    expect('reasoning_effort' in next).toBe(false); // dropped, not carried onto the new model
+    expect(withEffort.reasoning_effort).toBe('max'); // the input is untouched (a fresh copy)
+  });
+
+  it('OVERWRITES a prior effort with the newly-picked tier', () => {
+    const withEffort = {
+      ...buildDefaultChatAgent('claude-opus-4-8'),
+      reasoning_effort: 'low' as const,
+    };
+    const next = swapAgentModel(withEffort, 'claude-sonnet-4-6', 'anthropic', 'off');
+    expect(next.reasoning_effort).toBe('off');
+  });
+});
+
 describe('buildGovernorWiring', () => {
   // Seed the governor's cumulative directly via updateCost so the pre-egress projection trips the cap
   // regardless of model pricing — exercising the real fail/pause/warn behavior, not just the wiring shape.
@@ -882,6 +938,32 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
       'tool_denied',
     );
     expect(existsSync(join(workspace, 'x.txt'))).toBe(false);
+  });
+
+  it('createChatModeControl seeds the store effort from the agent + onSetEffort pushes a no-reseat override (ADR-0066)', async () => {
+    const built = await build({
+      chat: { ...EMPTY_CHAT, defaultModel: 'claude-opus-4-8', reasoningEffort: 'medium' },
+    });
+    const store = createChatStore(false);
+    const control = createChatModeControl(built, store);
+    // Seeded from the agent's effective tier — opus is reasoning-capable, so the footer shows it.
+    expect(store.getSnapshot().reasoningEffort).toBe('medium');
+    expect(built.session.reasoningEffort).toBe('medium');
+    // onSetEffort pushes the SESSION override (no reseat) + updates the footer — effective next turn.
+    control.onSetEffort('max');
+    expect(built.session.reasoningEffort).toBe('max');
+    expect(store.getSnapshot().reasoningEffort).toBe('max');
+  });
+
+  it('createChatModeControl surfaces NO effort on a non-reasoning model — the footer stays clear (ADR-0066)', async () => {
+    const built = await build({
+      chat: { ...EMPTY_CHAT, defaultModel: 'gpt-4o', reasoningEffort: 'high' },
+    });
+    const store = createChatStore(false);
+    createChatModeControl(built, store);
+    // The config default is baked onto the agent, but gpt-4o has no reasoning tier — the footer shows nothing
+    // (the tier is gated off at send anyway), so a user is never shown an inert effort.
+    expect(store.getSnapshot().reasoningEffort).toBeUndefined();
   });
 
   it('createChatModeControl ask: denies an EGRESS-class dispatch too (http_request), not just fs_write', async () => {

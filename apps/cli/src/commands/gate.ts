@@ -24,6 +24,7 @@ import {
   sweepMediaAtTerminal,
 } from '../engine/media-gc.js';
 import { buildMediaEngineWiring } from '../engine/media-wiring.js';
+import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
 import type { GatePrompter } from '../gate/prompter.js';
@@ -214,6 +215,11 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     // authored `output_modalities` against the CURRENT catalog, so a model that lost a capability between the
     // original run and this resume is rejected consistently (exit 2), not silently routed at runtime.
     assertWorkflowCatalogValid(workflow, wiring.workflowModelCatalog);
+    // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — read from the SAME durable `history.db`, so the resumed
+    // workflow's post-gate continuation enforces `budget.max_cost_microcents` on a user-priced model exactly like
+    // the original `run` did (pre-egress + realized). Without it a gated run would silently uncap that model on the
+    // far side of the gate — the very ADR-0064 §6 gap this closes. Non-fatal read (an empty map ⇒ no user pricing).
+    const resolvePrice = readUserPricingOverlay(opened.db);
     const engine = await (deps.buildEngine ?? defaultBuildEngine)({
       providers,
       // 2.5.A (ADR-0055): wire the SAME read+write fs + process ToolHost the `relavium run` path wires, jailed
@@ -227,6 +233,7 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       ...(wiring.mediaCostEstimate === undefined
         ? {}
         : { mediaCostEstimate: wiring.mediaCostEstimate }),
+      ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     });
     const handle = await resumeOrFail(engine, {
       runId: args.runId,

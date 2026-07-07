@@ -14,6 +14,7 @@ describe('resolveConfig', () => {
       mediaGcGraceMs: undefined,
       chat: {
         defaultModel: undefined,
+        reasoningEffort: undefined,
         fsScope: undefined,
         maxTurns: undefined,
         maxMessages: undefined,
@@ -73,6 +74,26 @@ describe('resolveConfig', () => {
     expect(resolved.onExceed).toBe('warn'); // only on project
   });
 
+  it('resolves [chat].reasoning_effort (ADR-0066) last-writer-wins project > workspace > global [preferences]', () => {
+    const workspace: ProjectConfig = { chat: { reasoning_effort: 'low' } };
+    const project: ProjectConfig = { chat: { reasoning_effort: 'high' } };
+    expect(resolveConfig({ workspace, project }).chat.reasoningEffort).toBe('high'); // project wins
+    // A project present but omitting it falls through to workspace (per-field, like the sibling keys).
+    expect(
+      resolveConfig({ workspace, project: { chat: { max_turns: 5 } } }).chat.reasoningEffort,
+    ).toBe('low');
+    // ADR-0066 §6: like `default_model`, it now ALSO falls back to the GLOBAL `[preferences].reasoning_effort`
+    // (the `/models` picker effort sub-step's write target) — BELOW any project/workspace `[chat]` override.
+    const global = { preferences: { reasoning_effort: 'max' as const } };
+    expect(resolveConfig({ global }).chat.reasoningEffort).toBe('max'); // global fallback applies…
+    expect(resolveConfig({ global, workspace }).chat.reasoningEffort).toBe('low'); // …but a workspace/project wins
+    // Absent at EVERY layer ⇒ undefined (the provider default; no reasoning control sent).
+    expect(resolveConfig({}).chat.reasoningEffort).toBeUndefined();
+    expect(
+      resolveConfig({ global: { preferences: { default_model: 'g' } } }).chat.reasoningEffort,
+    ).toBeUndefined();
+  });
+
   it('resolves [chat].auto_compact + compact_threshold (ADR-0062) last-writer-wins, per field', () => {
     const workspace: ProjectConfig = { chat: { auto_compact: false, compact_threshold: 0.7 } };
     const project: ProjectConfig = { chat: { compact_threshold: 0.9 } };
@@ -117,15 +138,31 @@ describe('resolveConfig', () => {
     expect(resolved.maxCostMicrocents).toBe(0);
   });
 
-  it('resolves an absent [chat] block (every layer) to all-undefined — [chat] is project/workspace-scoped, not global', () => {
+  it('resolves an absent [chat] block: non-model fields stay undefined; default_model falls back to global [preferences] (ADR-0063)', () => {
     const empty = resolveConfig({}).chat;
     expect(empty.maxTurns).toBeUndefined();
     expect(empty.defaultModel).toBeUndefined();
     expect(empty.maxCostMicrocents).toBeUndefined();
-    // A global layer carries no [chat] block, so it cannot supply chat defaults.
+    // A global layer carries no [chat] block, so it cannot supply the NON-model chat fields...
+    const g = resolveConfig({ global: { preferences: { default_model: 'g' } } }).chat;
+    expect(g.maxTurns).toBeUndefined();
+    expect(g.maxCostMicrocents).toBeUndefined();
+    // ...BUT chat.default_model DOES fall back to the global [preferences].default_model (the /models + wizard
+    // write target, ADR-0063 §1) so a user's "preferred model everywhere" applies to chat when no [chat] overrides.
+    expect(g.defaultModel).toBe('g');
+  });
+
+  it('resolves [chat].default_model precedence project > workspace > global [preferences] (ADR-0063 §1)', () => {
+    const global: GlobalConfig = { preferences: { default_model: 'g' } };
+    const workspace: ProjectConfig = { chat: { default_model: 'w' } };
+    const project: ProjectConfig = { chat: { default_model: 'p' } };
+    expect(resolveConfig({ global, workspace, project }).chat.defaultModel).toBe('p');
+    expect(resolveConfig({ global, workspace }).chat.defaultModel).toBe('w');
+    expect(resolveConfig({ global }).chat.defaultModel).toBe('g');
+    // A present [chat].default_model is NEVER shadowed by the global — the global is only the lowest fallback.
     expect(
-      resolveConfig({ global: { preferences: { default_model: 'g' } } }).chat.defaultModel,
-    ).toBeUndefined();
+      resolveConfig({ global, project: { chat: { default_model: 'p' } } }).chat.defaultModel,
+    ).toBe('p');
   });
 
   it('resolves media_gc_grace_days (2.S/D11) DAYS → ms, last-writer-wins, absent ⇒ undefined', () => {

@@ -127,8 +127,12 @@ function tomlPosition(err: unknown): string {
   return '';
 }
 
-/** First Zod issue as a field-attributed, **value-free** message (path + a code-derived reason). */
-function formatZodError(error: ZodError): string {
+/**
+ * First Zod issue as a field-attributed, **value-free** message (path + a code-derived reason).
+ * Exported so the config WRITER ([write.ts](./write.ts)) reuses the SAME value-free formatting — a
+ * schema-validation failure on the write path must never echo a received value either (ADR-0063).
+ */
+export function formatZodError(error: ZodError): string {
   const issue = error.issues[0];
   if (issue === undefined) {
     return 'failed schema validation';

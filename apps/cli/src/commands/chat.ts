@@ -8,6 +8,13 @@ import {
   type SessionStreamHandleEvent,
   type UserCommandOutcome,
 } from '@relavium/core';
+import { modelSupportsReasoning, type ProviderId } from '@relavium/llm';
+import {
+  EFFORT_TIER_HINT,
+  REASONING_EFFORTS,
+  type AgentSessionRecord,
+  type ReasoningEffort,
+} from '@relavium/shared';
 import { exportSession } from '../chat/export.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
@@ -16,6 +23,7 @@ import {
   clearedNotice,
   compactionNotice,
   costNotice,
+  modelSwitchNotice,
   trimNotice,
 } from '../chat/repl-info.js';
 import { discoverCatalog, type CatalogEntry, type CatalogKind } from '../workflows/catalog.js';
@@ -35,15 +43,23 @@ import {
   type ChatMode,
 } from '../chat/chat-mode.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
-import { createSessionPersister, type SessionPersister } from '../chat/persister.js';
+import {
+  createSessionPersister,
+  makeCatalogIdResolver,
+  type SessionPersister,
+} from '../chat/persister.js';
 import {
   buildChatSession,
   buildResumedChatSession,
+  swapAgentModel,
   type BuildChatSessionOptions,
   type BuiltChatSession,
+  type BuiltResumedChatSession,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
+import { createModelCatalogPort, type ModelCatalogPort } from '../engine/model-catalog-port.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
+import { loadUserPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
@@ -92,6 +108,55 @@ function closeQuietly(io: CliIo, label: string, close: () => void): void {
   }
 }
 
+/**
+ * A mid-session model-switch target ([ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md)):
+ * the picked model + its provider. The reseat rebuilds the session bound to this model (dropping the original
+ * `fallback_chain`), carrying the text-only transcript + cumulative cost/turns. Both fields come from the picker's
+ * chosen `ModelCatalogEntry`, so the provider is authoritative (never re-inferred from the id).
+ */
+export interface ReseatTarget {
+  readonly modelId: string;
+  readonly provider: ProviderId;
+  /**
+   * The reasoning-effort tier the picker's effort sub-step chose ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md)),
+   * bound onto the reseated agent. Present only when the picked model supports reasoning; absent ⇒ the reseat drops
+   * any prior tier (a non-reasoning target can't use one). Threaded verbatim to {@link swapAgentModel}.
+   */
+  readonly reasoningEffort?: ReasoningEffort;
+}
+
+/**
+ * WHY a chat driver's input loop ended (ADR-0062 §7 · [ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md)):
+ * `'exit'` (`/exit`, `/cancel`, or an input EOF), `'clear'` (`/clear`, TTY-interactive only — swap in a FRESH
+ * session), or `'reseat'` (a `/models` model switch, TTY-interactive only — swap in a NEW-model session carrying the
+ * transcript). Both interactive gates keep this at `'exit'` under `--json`/plain (one machine stream stays one
+ * session lifecycle, ADR-0049).
+ */
+export type ChatStopReason = 'exit' | 'clear' | 'reseat';
+
+/**
+ * The catalog port the ink `/models` reseat picker (ADR-0059) reads — the SHARED load/refresh trio
+ * ({@link ModelCatalogPort}) plus the session's currently-bound model (the picker's `✓` "you are here" marker).
+ * Built per session so `boundModel` reflects a reseat's switched model. Interactive (TTY) sessions only.
+ */
+export interface ChatModelsPort extends ModelCatalogPort {
+  readonly boundModel: string;
+}
+
+/** Assemble a {@link ChatModelsPort} over the session's shared db + provider resolver (the catalog the Home picker
+ *  also reads) plus the bound model — the one place the chat reseat picker's port is wired. The picker's current
+ *  effort (the effort sub-list's ✓ / footer) reads the live chat store (ADR-0066), not the port, so a no-reseat
+ *  `/effort` change is reflected without rebuilding the port. */
+function buildChatModelsPort(
+  opened: OpenedSessionStore,
+  providers: ProviderResolver,
+  boundModel: string,
+  now: () => number,
+  uuid: () => string,
+): ChatModelsPort {
+  return { ...createModelCatalogPort({ db: opened.db, providers, now, uuid }), boundModel };
+}
+
 /** What an interactive driver receives — the command core's seam, so a driver never touches the session directly. */
 export interface ChatDriveContext {
   /**
@@ -101,15 +166,31 @@ export interface ChatDriveContext {
   readonly startSession: () => void;
   /** Handle one line of user input (a slash command or a chat message). Awaits the turn for a message. */
   readonly processLine: (line: string, display?: string) => Promise<void>;
-  /** `true` once `/exit` or `/cancel` (or `/clear`) has run — the driver stops reading input. */
+  /** `true` once `/exit` or `/cancel` (or `/clear`, or a `/models` reseat) has run — the driver stops reading input. */
   readonly shouldStop: () => boolean;
   /**
-   * WHY the driver's input loop ended (ADR-0062 §7) — `'exit'` (`/exit`, `/cancel`, or an input EOF) or `'clear'`
-   * (`/clear`, TTY-interactive only). The driver returns `{ kind: ctx.stopReason() }`; the standalone re-drive loop
-   * ({@link runReplLoop}) reads a `'clear'` to swap in a FRESH session. The `/clear` interactive gate keeps
-   * `stopReason()` at `'exit'` under `--json` / plain non-TTY, so those drivers only ever return `'exit'`.
+   * WHY the driver's input loop ended (ADR-0062 §7 · [ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md))
+   * — `'exit'` (`/exit`, `/cancel`, or an input EOF), `'clear'` (`/clear`, TTY-interactive only), or `'reseat'`
+   * (a `/models` mid-session model switch, TTY-interactive only). The driver returns `{ kind: ctx.stopReason() }`;
+   * the standalone re-drive loop ({@link runReplLoop}) reads a `'clear'` to swap in a FRESH session and a `'reseat'`
+   * to swap in a NEW-model session carrying the transcript. Both interactive gates keep `stopReason()` at `'exit'`
+   * under `--json` / plain non-TTY, so those drivers only ever return `'exit'`.
    */
-  readonly stopReason: () => 'exit' | 'clear';
+  readonly stopReason: () => ChatStopReason;
+  /**
+   * Switch the bound model mid-session (ADR-0059) — the ink model-picker overlay calls this on accept. It signals a
+   * host-side reseat (a new instance bound to `target`), so like `/clear` it sets the stop state; the driver then
+   * ends and {@link runReplLoop} rebuilds. Absent on a non-interactive driver (plain/`--json`), where a live reseat
+   * is unavailable — one machine stream is one session lifecycle (ADR-0049), exactly as `/clear` is gated off there.
+   */
+  readonly onReseat?: (target: ReseatTarget) => void;
+  /**
+   * The `/models` reseat picker catalog port (ADR-0059) — the ink `ChatApp` opens the model-picker overlay off a
+   * typed `/models`, reads the merged catalog through this, and calls {@link onReseat} on accept. Present on an
+   * interactive (TTY, non-`--json`) session only; a plain/`--json` driver has no overlay, so a typed `/models`
+   * there falls through to the core surface guard's actionable "interactive terminal" hint. Absent ⇒ no picker.
+   */
+  readonly modelPicker?: ChatModelsPort;
   /** The live session stream (the driver renders it: ink reduces it into the store; plain prints it). */
   readonly handle: SessionHandle;
   /** The view store the ink renderer projects (`apply` already wired by the ink driver). */
@@ -148,6 +229,12 @@ export interface ChatDriveContext {
    */
   readonly onModeChange?: (mode: ChatMode) => void;
   /**
+   * Set the reasoning-effort tier ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §5)
+   * — pushes the SESSION override + updates the footer on the SAME session (no reseat). The ink driver wires the
+   * `/effort` command + the `/models` effort sub-step to this. Absent on a driver with no effort UI.
+   */
+  readonly onSetEffort?: (effort: ReasoningEffort) => void;
+  /**
    * The `@`-mention completion reader (2.5.D, [ADR-0061](../../../../docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md))
    * — a thin wrapper over a READ-ONLY `FsCapability` jailed to the SAME fs-scope tier + workspace as the session's
    * tools, so `@`-completion browses + injects files through the identical jail + confidentiality floor + listing-gate
@@ -169,12 +256,15 @@ export interface ChatDriveContext {
   ) => Promise<UserCommandOutcome>;
 }
 /**
- * How a {@link ChatDriver}'s input loop ended (ADR-0062 §7): `'exit'` ends the REPL (exit 4); `'clear'` tells the
- * standalone {@link runReplLoop} to tear the current session down and re-drive over a FRESH one. A `/clear` is
- * TTY-interactive only, so `--json` / plain drivers only ever return `'exit'`.
+ * How a {@link ChatDriver}'s input loop ended (ADR-0062 §7 · ADR-0059): `'exit'` ends the REPL (exit 4); `'clear'`
+ * tells the standalone {@link runReplLoop} to tear the current session down and re-drive over a FRESH one; `'reseat'`
+ * tells it to re-drive over a NEW-model session carrying the transcript (`target` is the picked model). Both `/clear`
+ * and a `/models` reseat are TTY-interactive only, so `--json` / plain drivers only ever return `'exit'`. `target` is
+ * present iff `kind === 'reseat'` — {@link driveOneSession} attaches it from the line handler's captured target.
  */
 export interface ChatDriveOutcome {
-  readonly kind: 'exit' | 'clear';
+  readonly kind: ChatStopReason;
+  readonly target?: ReseatTarget;
 }
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<ChatDriveOutcome>;
 
@@ -184,6 +274,9 @@ export interface ChatCommandDeps {
   readonly providers?: ProviderResolver;
   /** Injectable session builder (tests inject a scripted provider via providers). Default {@link buildChatSession}. */
   readonly buildSession?: typeof buildChatSession;
+  /** Injectable RESUMED-session builder — used by the `/models` reseat rebuild (ADR-0059), which continues the
+   *  just-ended session under a new-model agent. Default {@link buildResumedChatSession}. */
+  readonly buildResumedSession?: typeof buildResumedChatSession;
   /** Injectable session-store opener (tests pass an in-memory store). Default {@link openSessionStore}. */
   readonly openSessionStore?: (homeDir: string) => OpenedSessionStore;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one (specs.ts); default env-only. */
@@ -245,6 +338,10 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   const providers = deps.providers ?? createProviderResolver(deps.io.env);
   const mcpSecretResolver = deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
   const store = createChatStore(deps.global.color);
+  // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a transient read of the `model_catalog` `source='user'`
+  // rows, so a user-priced model is enforced by `[chat].max_cost_microcents` + tracked in realized cost. NON-FATAL:
+  // an unopenable db yields `undefined` here and surfaces cleanly through the session store open below.
+  const resolvePrice = loadUserPricingOverlay(homeDir);
 
   // An unknown --agent / un-inferrable default model throws a typed CliError here (exit 2), before any session.
   // The build is async (2.R): it connects the agent's inline stdio `mcp_servers` (a connect failure is a
@@ -259,6 +356,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     providers,
     mcpSecretResolver,
     mcpRegistrations: config.mcpServers,
+    ...(resolvePrice === undefined ? {} : { resolvePrice }),
     onBudgetWarning: (warning) =>
       deps.io.writeErr(
         `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
@@ -287,6 +385,9 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       context: built.context,
       now,
       uuid,
+      // ADR-0059 per-message/session model attribution — resolve a model string → its `model_catalog.id` (the FK
+      // target) over the SAME db, degrading to NULL when uncataloged. Shared across every persister site.
+      resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
     });
   } catch (err) {
     closeQuietly(deps.io, 'session store', () => opened.close());
@@ -322,6 +423,23 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     buildSession: deps.buildSession ?? buildChatSession,
     io: deps.io,
     global: deps.global,
+    // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring), so a
+    // mid-session `models pricing` write applies to the next cleared session — no captured value to thread here.
+  });
+
+  // The `/models` reseat rebuild (ADR-0059) — a NEW-model session carrying the transcript. It reloads the
+  // just-ended session from the SHARED db, so it does not close over `built.agent` (the reseat swaps the model).
+  const reseatRebuild = createReseatRebuild({
+    chat: config.chat,
+    now,
+    uuid,
+    providers,
+    mcpSecretResolver,
+    mcpRegistrations: config.mcpServers,
+    opened,
+    buildResumedSession: deps.buildResumedSession ?? buildResumedChatSession,
+    io: deps.io,
+    global: deps.global,
   });
 
   return runReplLoop(
@@ -332,12 +450,14 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       persister,
       doctorProbes,
       startSession: () => built.session.start(),
+      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
     },
     deps,
     rebuild,
+    reseatRebuild,
   );
 }
 
@@ -368,6 +488,8 @@ export async function chatResumeCommand(
   let store: ChatStoreController;
   let persister: SessionPersister;
   let intro: string;
+  // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — hoisted so the post-try `/clear` rebuild reuses it.
+  let resolvePrice: BuildChatSessionOptions['resolvePrice'];
   // The just-built resumed session OWNS its MCP connections; if a pre-loop step after a SUCCESSFUL build throws,
   // the catch must tear them down (the steady-state teardown is runReplLoop's finally, not yet entered). Undefined
   // when no server was declared OR the build self-cleaned its own post-connect fault (see buildResumedChatSession).
@@ -379,6 +501,10 @@ export async function chatResumeCommand(
     if (loaded === undefined) {
       throw new CliError('invalid_invocation', `no session found with id ${args.sessionId}`);
     }
+    // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the ALREADY-OPEN session db — so a resumed
+    // session enforces + tracks a user-priced model exactly like a fresh `chat`. Non-fatal (an empty map on a
+    // read fault): a corrupt pricing row must not fail an otherwise-valid resume.
+    resolvePrice = readUserPricingOverlay(opened.db);
     const resumed = await (deps.buildResumedSession ?? buildResumedChatSession)({
       chat: config.chat,
       record: loaded.session,
@@ -387,6 +513,7 @@ export async function chatResumeCommand(
       providers,
       mcpSecretResolver,
       mcpRegistrations: config.mcpServers,
+      resolvePrice,
       onBudgetWarning: (warning) =>
         deps.io.writeErr(
           `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
@@ -395,25 +522,10 @@ export async function chatResumeCommand(
     closeMcp = resumed.closeMcp;
     surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
     built = resumed;
-    // Seed the view header: a resumed session never re-emits `session:started`, so without this the footer
-    // would show no model and zero cost/turns until the first new turn (the durable record is unaffected).
-    store = createChatStore(deps.global.color, {
-      agentRef: resumed.agent.id,
-      model: resumed.agent.model,
-      cumulativeCostMicrocents: resumed.resumeState.cumulativeCostMicrocents,
-      turnCount: resumed.resumeState.turnCount,
-    });
-    persister = createSessionPersister({
-      store: opened.store,
-      handle: resumed.handle,
-      sessionId: resumed.sessionId,
-      agent: resumed.agent,
-      context: resumed.context,
-      now,
-      uuid,
-      // Continue the durable transcript past its last sequence number (start() adopts the row + its totals).
-      initialSequenceNumber: resumed.nextSequenceNumber,
-    });
+    // Seed the view header + persister via the SHARED resumed-wiring assembly (the same the `/models` reseat uses):
+    // a resumed session never re-emits `session:started`, so the seeded store shows the model + carried cost/turns
+    // from the first frame, and the persister continues past the last durable sequence number.
+    ({ store, persister } = seedResumedWiring(resumed, opened, deps.global.color, now, uuid));
     const turns = resumed.resumeState.turnCount;
     // `sessionId` is only schema-constrained to a non-empty string (the CLI mints a UUID, but `history.db` is
     // shared with other surfaces) — sanitize it before it reaches the TTY, exactly as `chat-list` does (the
@@ -467,6 +579,22 @@ export async function chatResumeCommand(
     buildSession: deps.buildSession ?? buildChatSession,
     io: deps.io,
     global: deps.global,
+    // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring).
+  });
+
+  // The `/models` reseat rebuild (ADR-0059) — a NEW-model session carrying the transcript, over the SHARED db.
+  // Reloads the just-ended session (which may itself already be a resume), so it needs no captured agent.
+  const reseatRebuild = createReseatRebuild({
+    chat: config.chat,
+    now,
+    uuid,
+    providers,
+    mcpSecretResolver,
+    mcpRegistrations: config.mcpServers,
+    opened,
+    buildResumedSession: deps.buildResumedSession ?? buildResumedChatSession,
+    io: deps.io,
+    global: deps.global,
   });
 
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
@@ -480,12 +608,14 @@ export async function chatResumeCommand(
       doctorProbes,
       startSession: () => {},
       intro,
+      modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
     },
     deps,
     rebuild,
+    reseatRebuild,
   );
 }
 
@@ -503,6 +633,9 @@ interface ReplWiring {
   readonly intro?: string;
   /** `[chat].max_messages` — the default bound a bare `/trim` uses (ADR-0062); absent ⇒ `/trim` needs an inline `n`. */
   readonly chatMaxMessages?: number;
+  /** The `/models` reseat picker port (ADR-0059) — built per session (its `boundModel` is the current model).
+   *  Forwarded to the ctx only on an interactive driver (`driveOneSession` gates it). */
+  readonly modelPicker?: ChatModelsPort;
 }
 
 /**
@@ -511,12 +644,19 @@ interface ReplWiring {
  * loop), and on teardown emit the session's sole terminal (`session:cancelled`, idempotent) + close the
  * persister and the db. `/exit`, `/cancel`, and an input-stream EOF all end the session with **exit code 4**.
  */
-/** The mode/abort control surface a driver wires to its keys + the `/mode` command (ADR-0057). */
+/** The session-control surface a driver wires to its keys + the `/mode`/`/effort` commands (ADR-0057/ADR-0066). */
 export interface ChatModeControl {
   /** Mid-turn abort (EA7) — abort the in-flight turn, keeping the session alive. */
   readonly onAbort: () => void;
   /** Switch the chat mode: update the footer + re-apply the turn policy on the same session (no reseat). */
   readonly onModeChange: (mode: ChatMode) => void;
+  /**
+   * Set the session's reasoning-effort tier ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §5)
+   * — the `/effort` command + the `/models` effort sub-step wire to this. It pushes the SESSION override (a per-turn
+   * update on the SAME instance — no reseat, no context/tool loss) and updates the footer; the effect lands on the
+   * next turn. The tier is still per-model gated at send, so on a non-reasoning model the footer stays clear.
+   */
+  readonly onSetEffort: (effort: ReasoningEffort) => void;
 }
 
 /**
@@ -541,7 +681,7 @@ export function chatIsInteractive(
 }
 
 export function createChatModeControl(
-  built: Pick<BuiltChatSession, 'session' | 'tools' | 'context'>,
+  built: Pick<BuiltChatSession, 'session' | 'tools' | 'context' | 'agent'>,
   store: ChatStoreController,
   opts?: { readonly interactive?: boolean },
 ): ChatModeControl {
@@ -565,6 +705,11 @@ export function createChatModeControl(
     prompt,
   });
   applyChatMode(modeEnv, store.getSnapshot().mode);
+  // ADR-0066: seed the footer's effort indicator from the session's initial effective tier (override ?? agent),
+  // shown only when the bound model is reasoning-capable (a non-reasoning model has no controllable tier, so its
+  // baked config default is not surfaced). Mirrors applyChatMode's initial-mode seed above.
+  const capable = modelSupportsReasoning(built.agent.model);
+  store.setReasoningEffort(capable ? built.session.reasoningEffort : undefined);
   return {
     onAbort: () => {
       built.session.abort(); // void-returning: block body so it never forwards abort()'s return value
@@ -572,6 +717,14 @@ export function createChatModeControl(
     onModeChange: (mode) => {
       store.setMode(mode);
       applyChatMode(modeEnv, mode);
+    },
+    // ADR-0066 §5: push the SESSION override (no reseat) + update the footer. The tier is gated per-model at send,
+    // so the footer reflects it only on a reasoning-capable model. The override lives on THIS session instance only
+    // (it does not survive a reseat — a model change rebuilds the session, carrying its own picked effort via the
+    // ReseatTarget); so on a non-reasoning model the tier is stored but inert until the very next same-model turn.
+    onSetEffort: (effort) => {
+      built.session.setReasoningEffort(effort);
+      store.setReasoningEffort(capable ? effort : undefined);
     },
   };
 }
@@ -582,11 +735,16 @@ export interface ChatLineHandler extends ChatModeControl {
   readonly processLine: (raw: string, display?: string) => Promise<void>;
   /** Emit the session's sole terminal (`session:cancelled`, idempotent) — the teardown caller fires it. */
   readonly cancelOnce: () => void;
-  /** `true` once `/exit`, `/cancel`, or `/clear` has run — the driver stops reading input. */
+  /** `true` once `/exit`, `/cancel`, `/clear`, or a `/models` reseat has run — the driver stops reading input. */
   readonly shouldStop: () => boolean;
-  /** WHY the loop stopped (ADR-0062 §7) — `'clear'` after a `/clear`, else `'exit'`. The standalone re-drive loop
-   *  swaps in a fresh session on `'clear'`; the Home reads it to swap-in-place vs. return to the bare Home. */
-  readonly stopReason: () => 'exit' | 'clear';
+  /** WHY the loop stopped (ADR-0062 §7 · ADR-0059) — `'reseat'` after a `/models` switch, `'clear'` after a `/clear`,
+   *  else `'exit'`. The standalone re-drive loop swaps in a new-model / fresh session accordingly; the Home reads it
+   *  to swap-in-place vs. return to the bare Home. */
+  readonly stopReason: () => ChatStopReason;
+  /** Request a mid-session model switch (ADR-0059) — sets the stop state + captures the target for the reseat. */
+  readonly onReseat: (target: ReseatTarget) => void;
+  /** The captured reseat target once {@link onReseat} fired (else `undefined`) — {@link driveOneSession} reads it. */
+  readonly reseatTarget: () => ReseatTarget | undefined;
 }
 
 /**
@@ -642,6 +800,10 @@ export function createChatLineHandler(
   // Set by `/clear` (ADR-0062 §7): the loop stopped to SWAP the session, not to end the REPL — `stopReason` reports
   // it so the surface (the standalone re-drive loop, or the Home) rebuilds a fresh session instead of exiting.
   let clearRequested = false;
+  // Set by a `/models` mid-session model switch (ADR-0059): like `/clear`, the loop stopped to SWAP the session —
+  // but to a NEW-model session carrying the transcript, not a fresh one. `stopReason` reports `'reseat'` and the
+  // surface rebuilds via the reseat path; the captured target is the picked model/provider.
+  let reseatRequested: ReseatTarget | undefined;
   const cancelOnce = (): void => {
     if (!cancelled) {
       cancelled = true;
@@ -777,6 +939,40 @@ export function createChatLineHandler(
       modeControl.onModeChange(mode);
       emitOutput(`mode: ${MODE_LABEL[mode]}`);
     },
+    // `/effort [tier]` (ADR-0066 §5): set the session's reasoning-effort override, or (bare `/effort`) show the
+    // current tier + explain each option. Applying pushes the SESSION override on the SAME instance — a per-turn
+    // update, NO reseat (effort changes neither provider, pricing, nor the plan), effective next turn. On a
+    // non-reasoning model the tier is stored but gated off at send, so the note says it will be ignored.
+    setReasoningEffort: (effortArg) => {
+      const requested = effortArg.trim();
+      const capable = modelSupportsReasoning(built.agent.model);
+      if (requested.length === 0) {
+        // Bare `/effort`: show the current tier + EXPLAIN each one (a discovery affordance — the palette submits
+        // this bare form), marking the active one. On a non-reasoning model, say so plainly instead of a tier.
+        const current = store.getSnapshot().reasoningEffort;
+        const rows = REASONING_EFFORTS.map(
+          (e) => `  ${e.padEnd(8)} ${EFFORT_TIER_HINT[e]}${e === current ? '  (current)' : ''}`,
+        );
+        const header = capable
+          ? `reasoning effort: ${current ?? 'default (provider)'}`
+          : `reasoning effort: ${built.agent.model} has no controllable reasoning tier — a tier would be ignored`;
+        emitOutput(`${header}\n${rows.join('\n')}`);
+        return;
+      }
+      const tier = REASONING_EFFORTS.find((e) => e === requested);
+      if (tier === undefined) {
+        emitOutput(
+          `/effort: unknown tier '${requested.replace(/[^\x20-\x7e]/g, '?').slice(0, 16)}'`,
+        );
+        return;
+      }
+      modeControl.onSetEffort(tier);
+      emitOutput(
+        capable
+          ? `reasoning effort: ${tier} — applies to your next message.`
+          : `reasoning effort: ${tier} set, but ${built.agent.model} has no reasoning control — it will be ignored.`,
+      );
+    },
     // `/compact` (ADR-0062): model-summarise the working context. An LLM call — announce the moment, then
     // await, then report the deltas. The engine emits session:compacted (→ the persister writes the boundary
     // marker); this notice is the user-facing report. Never crashes the REPL — a failure is reported as output.
@@ -829,6 +1025,16 @@ export function createChatLineHandler(
       clearRequested = true;
       stop = true;
     },
+    // `/models` on the chat surface (ADR-0059) opens the ink reseat-picker overlay — but that is intercepted at the
+    // RENDER layer (ChatApp), BEFORE this core handler, so `openModels` runs ONLY on a non-interactive driver
+    // (plain/`--json`), where there is no overlay. There, surface an actionable hint instead of a silent no-op: a
+    // live reseat needs an interactive terminal (one machine stream stays one session lifecycle, ADR-0049); the
+    // Home's `/models` is the alternative for setting the next-session default.
+    openModels: () =>
+      emitOutput(
+        '/models needs an interactive terminal to switch the model live. From a pipe, set `[chat].default_model` ' +
+          'in your config, or run `relavium` (the Home) to change the default.',
+      ),
   };
 
   // Parse + dispatch a `/name [args]` REPL line (extracted from processLine so each stays under the Sonar
@@ -846,6 +1052,16 @@ export function createChatLineHandler(
       // terminal control sequence (or a flood).
       const safe = line.replace(/[^\x20-\x7e]/g, '?').slice(0, 64);
       emitOutput(`unknown command '${safe}'. Available: ${replCommandList()}.`);
+      return;
+    }
+    // Surface-scope guard (2.5.G S7): a command not `availableIn` this (chat) surface — e.g. the HOME-ONLY `/models`
+    // — is rejected with an actionable pointer, never dispatched. The palette already filters by surface
+    // (CHAT_PALETTE_COMMANDS); this covers a command TYPED directly, keeping the home-only next-session `/models`
+    // config action distinct from the Phase-2.6 mid-chat `/models` live reseat (ADR-0059).
+    if (!command.availableIn.includes('chat')) {
+      emitOutput(
+        `/${command.name} is available from the Home (run \`relavium\` with no arguments), not inside a chat.`,
+      );
       return;
     }
     const rejection = validateSlashTokens(command, tokens);
@@ -874,9 +1090,21 @@ export function createChatLineHandler(
     processLine,
     cancelOnce,
     shouldStop: () => stop,
-    stopReason: () => (clearRequested ? 'clear' : 'exit'),
+    // Priority: a reseat is a swap-to-new-model, a clear is a swap-to-fresh, else the REPL ends. A `/models` reseat
+    // and a `/clear` are mutually exclusive in one settle (each sets `stop`), but order the check so an explicit
+    // reseat is never mis-read as a clear.
+    stopReason: (): ChatStopReason => {
+      if (reseatRequested !== undefined) return 'reseat';
+      return clearRequested ? 'clear' : 'exit';
+    },
+    onReseat: (target) => {
+      reseatRequested = target;
+      stop = true;
+    },
+    reseatTarget: () => reseatRequested,
     onAbort: modeControl.onAbort,
     onModeChange: modeControl.onModeChange,
+    onSetEffort: modeControl.onSetEffort,
   };
 }
 
@@ -907,6 +1135,11 @@ interface FreshChatWiringDeps {
 }
 
 async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): Promise<ReplWiring> {
+  // Re-read the ADR-0065 §2 user-pricing overlay FRESH from the shared db on each `/clear` rebuild (2.5.G S10) — so
+  // a `models pricing` write made in another terminal mid-session takes effect on the very next `/clear` session,
+  // the SAME freshness guarantee `readEffectiveDefault()` gives the default model (and the Home already gives
+  // pricing). Non-fatal (empty map on a read fault). Empty ⇒ omitted (unknown models degrade to allow, unchanged).
+  const resolvePrice = readUserPricingOverlay(deps.opened.db);
   const built = await deps.buildSession({
     chat: deps.chat,
     agent: deps.agent,
@@ -918,6 +1151,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     providers: deps.providers,
     mcpSecretResolver: deps.mcpSecretResolver,
     ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
+    ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
   });
   surfaceMcpSkipped(deps.io, built.mcpSkipped);
@@ -932,6 +1166,11 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
       context: built.context,
       now: deps.now,
       uuid: deps.uuid,
+      // ADR-0059 attribution — resolved over the SAME shared db (a `/clear` rebuild re-reads it fresh).
+      resolveModelCatalogId: makeCatalogIdResolver(deps.opened.db, {
+        uuid: deps.uuid,
+        now: deps.now,
+      }),
     });
   } catch (err) {
     // Acquire-then-guard: the fresh MCP children are already spawned — reclaim them before the failure propagates
@@ -954,6 +1193,13 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     doctorProbes,
     startSession: () => built.session.start(),
     intro,
+    modelPicker: buildChatModelsPort(
+      deps.opened,
+      deps.providers,
+      built.agent.model,
+      deps.now,
+      deps.uuid,
+    ),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
 }
@@ -1003,31 +1249,247 @@ function createClearRebuild(params: {
 }
 
 /**
+ * Seed the view store + persister for a RESUMED session — the SAME assembly both `chat-resume` (2.N) and the
+ * `/models` reseat (ADR-0059) need: a store pre-seeded with the carried model + cumulative cost/turns (a resumed
+ * session never re-emits `session:started`, so without this the footer shows nothing until the first new turn), and
+ * a persister continuing the durable transcript past its last `sequenceNumber`. One home so the two resume paths can
+ * never wire different seeds.
+ */
+function seedResumedWiring(
+  resumed: BuiltResumedChatSession,
+  opened: OpenedSessionStore,
+  color: boolean,
+  now: () => number,
+  uuid: () => string,
+): { store: ChatStoreController; persister: SessionPersister } {
+  const store = createChatStore(color, {
+    agentRef: resumed.agent.id,
+    model: resumed.agent.model,
+    cumulativeCostMicrocents: resumed.resumeState.cumulativeCostMicrocents,
+    turnCount: resumed.resumeState.turnCount,
+  });
+  const persister = createSessionPersister({
+    store: opened.store,
+    handle: resumed.handle,
+    sessionId: resumed.sessionId,
+    agent: resumed.agent,
+    context: resumed.context,
+    now,
+    uuid,
+    // Continue the durable transcript past its last sequence number (start() adopts the row + its totals).
+    initialSequenceNumber: resumed.nextSequenceNumber,
+    // ADR-0059 attribution — resolved over the SAME db; a reseat's new persister records the switched model.
+    resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
+  });
+  return { store, persister };
+}
+
+/** The deps `createReseatRebuild` closes over — the capability inputs to rebuild a resumed, model-swapped session
+ *  over the SHARED db. Mirrors {@link FreshChatWiringDeps} but RESUMES (carries the transcript) instead of starting
+ *  fresh, and swaps the bound model (so it has no fixed `agent` — the agent is loaded from the just-ended record). */
+interface ReseatWiringDeps {
+  readonly chat: BuildChatSessionOptions['chat'];
+  readonly now: () => number;
+  readonly uuid: () => string;
+  readonly providers: ProviderResolver;
+  readonly mcpSecretResolver: McpSecretResolver;
+  readonly mcpRegistrations: BuildChatSessionOptions['mcpRegistrations'];
+  readonly configPath: string | undefined;
+  readonly io: CliIo;
+  readonly global: GlobalOptions;
+  readonly opened: OpenedSessionStore;
+  readonly buildResumedSession: typeof buildResumedChatSession;
+  readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+}
+
+/**
+ * Rebuild a RESUMED session bound to a NEW model (ADR-0059 reseat). The just-ended session's transcript is reloaded
+ * from the SHARED db and continued under a fresh `AgentSession.resume` bound to `target` — a NEW instance, honoring
+ * ADR-0024's one-model-per-lifetime rule. The bound agent's `model`/`provider` are swapped to the picked pair and
+ * its `fallback_chain` is DROPPED (it belonged to the original model; the new instance memoizes the default plan for
+ * `target`, exactly as a fresh session on `target` would build). The user-pricing overlay is re-read FRESH from the
+ * shared db so a mid-session `models pricing` write applies. Mirrors {@link buildFreshChatWiring}'s acquire-then-guard
+ * so a persister-construction throw never orphans the just-spawned MCP children. The SHARED `opened` is NOT this
+ * function's to close — the caller's outer {@link runReplLoop} finally owns it across every swap.
+ */
+async function buildReseatWiring(
+  deps: ReseatWiringDeps,
+  oldSessionId: string,
+  target: ReseatTarget,
+): Promise<ReplWiring> {
+  const loaded = deps.opened.store.loadFull(oldSessionId);
+  if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
+    // The session we just drove is gone / has no snapshot — cannot resume it under a new model. Loud: runReplLoop
+    // surfaces it and the prior conversation stays resumable (it was persisted before this fault).
+    throw new CliError(
+      'invalid_invocation',
+      `cannot switch model: session ${oldSessionId} could not be reloaded for reseat`,
+    );
+  }
+  // Swap the bound model/provider (dropping the original fallback_chain) via the shared ADR-0059 rule; the picker's
+  // effort sub-step (ADR-0066) rides `target.reasoningEffort` onto the swapped agent (or drops any prior tier).
+  const newAgent = swapAgentModel(
+    loaded.session.agentSnapshot,
+    target.modelId,
+    target.provider,
+    target.reasoningEffort,
+  );
+  // The record the resumed session rebinds from: the just-ended row with the model-swapped agent snapshot.
+  // (The row's own `modelId` FK column stays as-is — per-message/session `modelId` attribution is deferred with
+  // the 2.6.C cost breakdown; see persister.ts. `reconstructSessionState` reads only the transcript + cost here.)
+  const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
+  // Re-read the user-pricing overlay FRESH from the shared db (mirrors buildFreshChatWiring) so a mid-session
+  // `models pricing` write applies to the reseated session. Empty ⇒ omitted (unknown models degrade to allow).
+  const resolvePrice = readUserPricingOverlay(deps.opened.db);
+  const resumed = await deps.buildResumedSession({
+    chat: deps.chat,
+    record,
+    messages: loaded.messages,
+    now: deps.now,
+    providers: deps.providers,
+    mcpSecretResolver: deps.mcpSecretResolver,
+    ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
+    ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
+    onBudgetWarning: deps.onBudgetWarning,
+  });
+  surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
+  let seeded: { store: ChatStoreController; persister: SessionPersister };
+  try {
+    seeded = seedResumedWiring(resumed, deps.opened, deps.global.color, deps.now, deps.uuid);
+  } catch (err) {
+    // Acquire-then-guard: the resumed session's MCP children are already spawned — reclaim them before the failure
+    // propagates so a persister-construction throw never orphans a stdio child (best-effort; never mask the primary).
+    await resumed.closeMcp?.().catch(() => undefined);
+    throw err;
+  }
+  const doctorProbes = assembleDoctorProbes({
+    cwd: deps.global.cwd,
+    ...(deps.configPath === undefined ? {} : { configPath: deps.configPath }),
+    resolver: deps.providers,
+    agentMcpServers: resumed.agent.mcp_servers ?? [],
+    mcpSkipped: resumed.mcpSkipped,
+  });
+  return {
+    built: resumed,
+    opened: deps.opened,
+    store: seeded.store,
+    persister: seeded.persister,
+    doctorProbes,
+    // A resumed session already landed at idle inside AgentSession.resume; start() would throw + re-emitting
+    // session:started would double a terminal-less lifecycle event — so startSession is a no-op (like chat-resume).
+    startSession: () => {},
+    intro: modelSwitchNotice(target.modelId, resumed.resumeState.turnCount),
+    // The picker's `boundModel` is now the SWITCHED model — a further reseat marks it as the ✓ "you are here".
+    modelPicker: buildChatModelsPort(
+      deps.opened,
+      deps.providers,
+      resumed.agent.model,
+      deps.now,
+      deps.uuid,
+    ),
+    ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
+  };
+}
+
+/**
+ * Build the `/models` reseat rebuild closure (ADR-0059) — SHARED by `chat` and `chat-resume` so the reseat CONTRACT
+ * lives in ONE place and cannot drift. Given the command's capability inputs, it returns a
+ * `(oldSessionId, target) => Promise<ReplWiring>` that reloads the just-ended session's transcript and resumes it
+ * under a new-model agent over the SHARED db.
+ */
+function createReseatRebuild(params: {
+  readonly chat: BuildChatSessionOptions['chat'];
+  readonly now: () => number;
+  readonly uuid: () => string;
+  readonly providers: ProviderResolver;
+  readonly mcpSecretResolver: McpSecretResolver;
+  readonly mcpRegistrations: BuildChatSessionOptions['mcpRegistrations'];
+  readonly opened: OpenedSessionStore;
+  readonly buildResumedSession: typeof buildResumedChatSession;
+  readonly io: CliIo;
+  readonly global: GlobalOptions;
+}): (oldSessionId: string, target: ReseatTarget) => Promise<ReplWiring> {
+  const wiringDeps: ReseatWiringDeps = {
+    chat: params.chat,
+    now: params.now,
+    uuid: params.uuid,
+    providers: params.providers,
+    mcpSecretResolver: params.mcpSecretResolver,
+    mcpRegistrations: params.mcpRegistrations,
+    configPath: params.global.configPath,
+    io: params.io,
+    global: params.global,
+    opened: params.opened,
+    buildResumedSession: params.buildResumedSession,
+    onBudgetWarning: (warning) =>
+      params.io.writeErr(
+        `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
+      ),
+  };
+  return (oldSessionId, target) => buildReseatWiring(wiringDeps, oldSessionId, target);
+}
+
+/**
  * Drive ONE session to its stop (`/exit`, `/cancel`, `/clear`, or EOF) and tear it down — the per-session unit the
  * re-drive {@link runReplLoop} runs once per conversation. Its finally fires the session's sole terminal
  * (`cancelOnce`, idempotent → the row flips to 'ended', still resumable), closes the persister, and tears the MCP
  * connections down — but NOT the shared db (the loop owns it across swaps). Returns the driver's outcome so the loop
  * can decide between ending and re-driving over a fresh session (`/clear`).
  */
+/**
+ * The `@`-mention completion reader for an INTERACTIVE driver (2.5.D, ADR-0061): a READ-ONLY fs jail at the
+ * session's fs-scope tier + workspace, so `@`-completion browses + injects through the identical confidentiality
+ * floor + listing-gate. `undefined` on a plain/`--json` driver (a leading `@` is a literal there) or when the fs
+ * arm is unavailable. READ-ONLY by construction — the mention path never writes. Pure (no I/O).
+ */
+function buildInteractiveMentionReader(
+  deps: ChatReplDeps,
+  built: ReplWiring['built'],
+): MentionReader | undefined {
+  if (!chatIsInteractive(deps.io, deps.global)) return undefined;
+  const fsArm = assembleToolEnv({
+    profile: 'chat-read-only',
+    fsScopeTier: built.context.fsScopeTier,
+    workspaceDir: built.context.workingDir,
+  }).host.fs;
+  return fsArm === undefined ? undefined : createMentionReader(fsArm);
+}
+
+/**
+ * Attach the captured reseat target to a `'reseat'` outcome (ADR-0059) — done in the ONE place holding the line
+ * handler, so every driver stays target-agnostic. A missing target (never expected: `onReseat` always captures one)
+ * degrades to a plain end rather than a broken rebuild loop.
+ */
+function finalizeReseatOutcome(
+  outcome: ChatDriveOutcome,
+  reseatTarget: () => ReseatTarget | undefined,
+): ChatDriveOutcome {
+  if (outcome.kind !== 'reseat') return outcome;
+  const target = reseatTarget();
+  return target === undefined ? { kind: 'exit' } : { kind: 'reseat', target };
+}
+
 async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<ChatDriveOutcome> {
   const { built, store, persister, startSession, intro } = wiring;
-  const { processLine, cancelOnce, shouldStop, stopReason, onAbort, onModeChange } =
-    createChatLineHandler(wiring, deps);
+  const {
+    processLine,
+    cancelOnce,
+    shouldStop,
+    stopReason,
+    onReseat,
+    reseatTarget,
+    onAbort,
+    onModeChange,
+    onSetEffort,
+  } = createChatLineHandler(wiring, deps);
+  // A live reseat is TTY-interactive only (like `/clear`): the ink model-picker overlay is the sole trigger, and a
+  // plain/`--json` driver has no picker. Wiring `onReseat` only on an interactive driver means `stopReason()` can
+  // never yield `'reseat'` under `--json`/plain — one machine stream stays one session lifecycle (ADR-0049).
+  const reseatEnabled = chatIsInteractive(deps.io, deps.global);
 
   // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the SAME fs-scope tier + workspace
-  // as the session's tools, so `@`-completion browses + injects through the identical confidentiality floor +
-  // listing-gate (a `.ssh`/`.env` entry is never listed nor read). READ-ONLY by construction — the mention path
-  // never writes. TTY-only: an interactive driver wires the completion; a plain/`--json` driver treats a leading
-  // `@` as a literal, so it needs no reader. Building it is pure (no I/O).
-  const mentionReader = ((): MentionReader | undefined => {
-    if (!chatIsInteractive(deps.io, deps.global)) return undefined;
-    const fsArm = assembleToolEnv({
-      profile: 'chat-read-only',
-      fsScopeTier: built.context.fsScopeTier,
-      workspaceDir: built.context.workingDir,
-    }).host.fs;
-    return fsArm === undefined ? undefined : createMentionReader(fsArm);
-  })();
+  // as the session's tools (a `.ssh`/`.env` entry is never listed nor read). TTY-only; see the helper.
+  const mentionReader = buildInteractiveMentionReader(deps, built);
 
   // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`. TTY-only.
   const runShellCommand = chatIsInteractive(deps.io, deps.global)
@@ -1040,7 +1502,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
   // is deferred to startSession() INSIDE the driver, after the driver has subscribed the view store.
   try {
     persister.start();
-    return await (deps.drive ?? drivePlain)({
+    const outcome = await (deps.drive ?? drivePlain)({
       startSession,
       processLine,
       shouldStop,
@@ -1058,9 +1520,18 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       ...(intro === undefined ? {} : { intro }),
       onAbort,
       onModeChange,
+      onSetEffort,
+      // The reseat trigger (onReseat) + its picker are wired together, interactive-only: the ink overlay reads the
+      // catalog through `modelPicker` and calls `onReseat` on accept. A plain/`--json` driver gets neither.
+      ...(reseatEnabled ? { onReseat } : {}),
+      ...(reseatEnabled && wiring.modelPicker !== undefined
+        ? { modelPicker: wiring.modelPicker }
+        : {}),
       ...(mentionReader === undefined ? {} : { mentionReader }),
       ...(runShellCommand === undefined ? {} : { runShellCommand }),
     });
+    // A `/models` reseat attaches the captured target here (the one place holding the line handler); see the helper.
+    return finalizeReseatOutcome(outcome, reseatTarget);
   } finally {
     cancelOnce(); // emit the terminal even on /exit, /clear, or EOF (idempotent); flips the row to 'ended'
     // Attempt EVERY teardown step (a reject in one must not skip the next) and never let a cleanup fault mask the
@@ -1073,36 +1544,60 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
 
 /**
  * The shared REPL loop driving both `chat` (fresh) and `chat-resume` (2.N). It drives the CURRENT session to its
- * stop ({@link driveOneSession}) and, on a `/clear` outcome (ADR-0062 §7, TTY-interactive only), rebuilds a FRESH
- * session over the SAME db and re-drives — otherwise it ends. The shared `history.db` handle survives every swap
- * and is closed exactly ONCE in the outer finally; each session's own teardown (terminal + persister + MCP) is
- * owned by `driveOneSession`. `/exit`, `/cancel`, and an input EOF all end the session with **exit code 4**.
+ * stop ({@link driveOneSession}) and, on a swap outcome (TTY-interactive only), rebuilds over the SAME db and
+ * re-drives — a `/clear` (ADR-0062 §7) rebuilds a FRESH session, a `/models` reseat (ADR-0059) rebuilds a NEW-model
+ * session carrying the transcript — otherwise it ends. The shared `history.db` handle survives every swap and is
+ * closed exactly ONCE in the outer finally; each session's own teardown (terminal + persister + MCP) is owned by
+ * `driveOneSession`. `/exit`, `/cancel`, and an input EOF all end the session with **exit code 4**.
  */
+/**
+ * The rebuild closure for a swap outcome (ADR-0062 §7 `/clear` → a FRESH session; ADR-0059 `reseat` → a NEW-model
+ * session carrying the transcript), or `undefined` to END the REPL (an `'exit'`, or a swap whose builder is not
+ * wired — both TTY-only, so a non-TTY outcome is always `'exit'`). The reseat target is captured into a const so
+ * the closure keeps its narrowed (non-undefined) type — no unsafe non-null assertion.
+ */
+function resolveSwapRebuild(
+  outcome: ChatDriveOutcome,
+  oldSessionId: string,
+  rebuild: ((oldSessionId: string) => Promise<ReplWiring>) | undefined,
+  reseatRebuild: ((oldSessionId: string, target: ReseatTarget) => Promise<ReplWiring>) | undefined,
+): (() => Promise<ReplWiring>) | undefined {
+  if (outcome.kind === 'clear' && rebuild !== undefined) return () => rebuild(oldSessionId);
+  if (outcome.kind === 'reseat' && reseatRebuild !== undefined && outcome.target !== undefined) {
+    const target = outcome.target;
+    return () => reseatRebuild(oldSessionId, target);
+  }
+  return undefined;
+}
+
 async function runReplLoop(
   wiring: ReplWiring,
   deps: ChatReplDeps,
   rebuild?: (oldSessionId: string) => Promise<ReplWiring>,
+  reseatRebuild?: (oldSessionId: string, target: ReseatTarget) => Promise<ReplWiring>,
 ): Promise<ExitCode> {
-  // The SHARED db handle — the same across every /clear swap (a fresh session reuses it), closed ONCE below.
+  // The SHARED db handle — the same across every swap (a fresh / reseated session reuses it), closed ONCE below.
   const opened = wiring.opened;
   let current = wiring;
   try {
     for (;;) {
       const outcome = await driveOneSession(current, deps);
-      // Only a TTY `/clear` yields 'clear' (the gate rejects it under `--json`/plain); with no rebuild wired, end.
-      if (outcome.kind !== 'clear' || rebuild === undefined) break;
       // The old session is ALREADY torn down (driveOneSession's finally fired its terminal → the row is 'ended' +
-      // resumable). Build the fresh session over the same db and re-drive; a build failure is surfaced actionably
-      // (the prior conversation is still resumable) and ends the REPL rather than looping on a broken build.
+      // resumable). Resolve the rebuild for this swap kind, or `undefined` to END the REPL (see resolveSwapRebuild).
       const oldSessionId = current.built.sessionId;
+      const next = resolveSwapRebuild(outcome, oldSessionId, rebuild, reseatRebuild);
+      if (next === undefined) break;
+      // Build the swap session over the same db and re-drive; a build failure is surfaced actionably (the prior
+      // conversation is still resumable) and ends the REPL rather than looping on a broken build.
       try {
-        current = await rebuild(oldSessionId);
+        current = await next();
       } catch (err) {
         deps.io.writeErr(
           // Sanitize the error text too (not just the id beside it) — a rebuild fault can rethrow an unclassified
           // message verbatim (session-host.ts), which could carry an ANSI/OSC escape from a spawned MCP server's
           // error text; strip it exactly as the id + every other display string on this surface is stripped.
-          `could not start a fresh session after /clear: ${sanitizeInline(err instanceof Error ? err.message : String(err))}. ` +
+          `could not start a new session after ${outcome.kind === 'reseat' ? 'a model switch' : '/clear'}: ` +
+            `${sanitizeInline(err instanceof Error ? err.message : String(err))}. ` +
             `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`,
         );
         break;

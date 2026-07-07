@@ -12,6 +12,10 @@ import { HomeView } from './home-view.js';
 import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
+import type { EffortPickerState } from './effort-picker.js';
+import { EffortTierList } from './effort-tier-list.js';
+import type { ModelPickerState } from './model-picker.js';
+import { ModelPickerView } from './model-picker-view.js';
 import { PaletteView } from './palette-view.js';
 import type { PaletteState } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
@@ -46,6 +50,9 @@ function ChatRegion(
     palette: PaletteState | undefined;
     search: ReverseSearchState | undefined;
     mention: MentionState | undefined;
+    modelPicker: ModelPickerState | undefined;
+    effortPicker: EffortPickerState | undefined;
+    nowMs: number;
     shellBusy: boolean;
     submitBusy: boolean;
     shellCommand: string | undefined;
@@ -53,7 +60,7 @@ function ChatRegion(
     attachments: readonly PendingAttachment[];
   }>,
 ): ReactElement {
-  const { state, tick, color, mode, approval } = useSyncExternalStore(
+  const { state, tick, color, mode, reasoningEffort, approval } = useSyncExternalStore(
     props.store.subscribe,
     props.store.getSnapshot,
   );
@@ -66,11 +73,16 @@ function ChatRegion(
         editor={props.editor}
         running={state.status === 'running' || props.shellBusy || props.submitBusy}
         mode={mode}
+        reasoningEffort={reasoningEffort}
         approval={approval}
         attachments={props.attachments}
         busyCommand={props.shellCommand}
         paletteOpen={
-          props.palette !== undefined || props.search !== undefined || props.mention !== undefined
+          props.palette !== undefined ||
+          props.search !== undefined ||
+          props.mention !== undefined ||
+          props.modelPicker !== undefined ||
+          props.effortPicker !== undefined
         }
       />
       {props.palette !== undefined && (
@@ -80,6 +92,20 @@ function ChatRegion(
         <ReverseSearchView state={props.search} entries={props.historyEntries} color={color} />
       )}
       {props.mention !== undefined && <MentionView state={props.mention} color={color} />}
+      {/* The `/models` reseat picker overlay in a live in-Home chat (ADR-0059) — mounted like the palette. */}
+      {props.modelPicker !== undefined && (
+        <ModelPickerView state={props.modelPicker} color={color} nowMs={props.nowMs} />
+      )}
+      {/* The standalone `/effort` overlay in a live in-Home chat (ADR-0066 §6) — the shared tier list. */}
+      {props.effortPicker !== undefined && (
+        <EffortTierList
+          selected={props.effortPicker.selected}
+          current={props.effortPicker.current}
+          labelSuffix={props.effortPicker.model}
+          footer="↑/↓ select · Enter apply · Esc cancel"
+          color={color}
+        />
+      )}
     </Box>
   );
 }
@@ -102,6 +128,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         palette={state.palette}
         search={state.search}
         mention={state.mention}
+        modelPicker={state.modelPicker}
+        effortPicker={state.effortPicker}
+        nowMs={props.nowMs()}
         shellBusy={state.shellBusy}
         submitBusy={state.submitBusy}
         shellCommand={state.shellCommand}
@@ -134,10 +163,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         cols={size.cols}
         rows={size.rows}
         color={color}
-        paletteOpen={state.palette !== undefined}
+        paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
       />
       {state.palette !== undefined && (
         <PaletteView commands={HOME_PALETTE_COMMANDS} state={state.palette} color={color} />
+      )}
+      {state.modelPicker !== undefined && (
+        <ModelPickerView state={state.modelPicker} color={color} nowMs={props.nowMs()} />
       )}
     </Box>
   );

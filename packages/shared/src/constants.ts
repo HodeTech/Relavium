@@ -268,6 +268,57 @@ export const LLM_PROVIDERS = ['anthropic', 'openai', 'gemini', 'deepseek'] as co
 export type LlmProviderId = (typeof LLM_PROVIDERS)[number];
 
 /**
+ * The normalized, provider-agnostic **reasoning-effort** tiers ([ADR-0066](../decisions/0066-normalized-reasoning-effort-control.md)).
+ * A closed vocabulary the caller picks; each `@relavium/llm` adapter maps it to its provider's NATIVE tier control
+ * (OpenAI `reasoning_effort`, Anthropic `output_config` effort, Gemini thinking-level, DeepSeek-v4 thinking on/off).
+ * `off` disables reasoning where the provider allows it (an always-on model degrades to the lowest); `low`/`medium`/
+ * `high` map to the matching tier; `max` maps to the provider's HIGHEST available tier. Absent on a request ⇒ the
+ * provider default (unchanged behavior). It rides `LlmRequest.reasoningEffort` (the seam), the authored agent
+ * `reasoning_effort`, and the `[chat].reasoning_effort` config default — all one vocabulary. Owned here (like
+ * {@link STOP_REASONS}/{@link FS_SCOPE_TIERS}) so `@relavium/llm` + `@relavium/core` derive the enum from one home.
+ */
+export const REASONING_EFFORTS = ['off', 'low', 'medium', 'high', 'max'] as const;
+export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+
+/**
+ * The one-line hint for each reasoning-effort tier — display-only text (latency/cost vs depth), so a surface (the
+ * CLI `/models` effort sub-list, the `/effort` command) can explain each tier without the user consulting the docs.
+ * Owned here beside {@link REASONING_EFFORTS} so it is a neutral, surface-agnostic home (no `render/tui` dependency).
+ */
+export const EFFORT_TIER_HINT: Record<ReasoningEffort, string> = {
+  off: 'no reasoning — fastest, lowest cost',
+  low: 'brief reasoning',
+  medium: 'balanced reasoning',
+  high: 'deep reasoning',
+  max: 'maximum reasoning — slowest, highest cost',
+};
+
+/**
+ * The three provider **protocol kinds** (the `kind` abstraction, [ADR-0064] §2) — a closed vocabulary
+ * that derives, **once per protocol rather than per provider**, the adapter factory, the list-models
+ * endpoint, the auth style, and the response mapper. `anthropic` and `gemini` map 1:1 to their id;
+ * `openai` and `deepseek` share `openai-compatible` (DeepSeek is the OpenAI-compatible adapter at a
+ * custom base URL). This is a SEPARATE axis from the provider **id** ({@link LLM_PROVIDERS}), which
+ * stays the closed persisted-contract enum; `kind` is the protocol axis `@relavium/llm` derives from
+ * it (`providerKind`). The enum itself stays closed — an open custom-provider registry is future work
+ * (ADR-0065), not this one.
+ */
+export const PROVIDER_KINDS = ['anthropic', 'openai-compatible', 'gemini'] as const;
+export type ProviderKind = (typeof PROVIDER_KINDS)[number];
+
+/**
+ * The provenance discriminant of a `model_catalog` row ([ADR-0064] §4) — the live-discovery cache's
+ * `source` column. `static` is a hardcoded capability/media seed (the media-routing upsert path's default);
+ * `live` is discovered via the seam's `listModels` (the refresh writes it); `user` is user-supplied pricing
+ * ([ADR-0065], a later step). A closed set mirroring {@link LLM_PROVIDERS}/{@link MEDIA_SURFACES}; because
+ * SQLite `ALTER TABLE ADD` cannot carry a CHECK, `@relavium/db` validates it at the store read boundary
+ * (`coerceModelCatalogSource`, degrading a foreign value to the safe `static` default). Lives here so the DB
+ * layer derives the vocabulary from `@relavium/shared`, never restating it.
+ */
+export const MODEL_CATALOG_SOURCES = ['static', 'live', 'user'] as const;
+export type ModelCatalogSource = (typeof MODEL_CATALOG_SOURCES)[number];
+
+/**
  * The three filesystem permission tiers (built-in-tools.md). The canonical vocabulary
  * for the config `fs_scope` (config-spec.md) and a session's `fsScopeTier`
  * (agent-session-spec.md), so both derive their enum from this one list.

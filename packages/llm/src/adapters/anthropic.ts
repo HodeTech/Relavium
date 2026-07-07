@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 import { mediaModalityOf } from '@relavium/shared';
-import type { ContentPart, StopReason } from '@relavium/shared';
+import type { AbortSignalLike, ContentPart, ReasoningEffort, StopReason } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
@@ -14,13 +14,23 @@ import type {
   LlmProvider,
   LlmRequest,
   LlmResult,
+  ModelListing,
   StreamChunk,
   ToolChoice,
   ToolDef,
   Usage,
 } from '../types.js';
 
-import { CONTEXT_SEAM_DEFAULTS, assertMediaCapabilities, isAbortSignal } from './shared.js';
+import {
+  CONTEXT_SEAM_DEFAULTS,
+  assertListModelsShape,
+  assertMediaCapabilities,
+  boundedListModels,
+  isAbortSignal,
+  isRecord,
+  positiveModelInt,
+  toModelListing,
+} from './shared.js';
 
 /**
  * The reference adapter over `@anthropic-ai/sdk` (1.C) — the seam fence's first real consumer and
@@ -36,6 +46,12 @@ const PROVIDER = 'anthropic';
 const DEFAULT_MAX_TOKENS = 4096;
 /** Anthropic's API caps `temperature` at 1 (the shared contract's envelope is the wider [0, 2]). */
 const MAX_TEMPERATURE = 1;
+/** ADR-0066: the normalized reasoning-effort tier → Anthropic's native `output_config.effort` levels. Anthropic has
+ *  a native `max`, so all four non-`off` tiers map 1:1; `off` is handled separately (thinking disabled). */
+const ANTHROPIC_REASONING_EFFORT: Record<
+  Exclude<ReasoningEffort, 'off'>,
+  'low' | 'medium' | 'high' | 'max'
+> = { low: 'low', medium: 'medium', high: 'high', max: 'max' };
 
 /**
  * Anthropic supports the full common-path surface; provider-specific features go via
@@ -134,6 +150,37 @@ export function mapContent(blocks: readonly Anthropic.ContentBlock[]): ContentPa
     // other server-tool blocks remain off the common path — reachable via LlmResult.raw.
   }
   return parts;
+}
+
+/**
+ * Map one Anthropic `models.list()` row (`ModelInfo`) to a canonical {@link ModelListing}, or `undefined`
+ * to drop it (ADR-0064 §3). Anthropic's list is rich: `display_name`→displayName, `max_input_tokens`→
+ * contextWindowTokens, `max_tokens`→maxOutputTokens — but Anthropic returns `0`/`null` for an unknown limit,
+ * so a non-positive limit is OMITTED (`positiveModelInt`). Lenient-inbound: the SDK types most fields, but
+ * each is read defensively (the live API can deviate from the pinned SDK); the rich `capabilities` object is
+ * intentionally ignored (nothing in the merge consumes it). No filter — Anthropic's list is clean.
+ */
+export function mapAnthropicModel(info: {
+  id?: string;
+  display_name?: string | null;
+  max_input_tokens?: number | null;
+  max_tokens?: number | null;
+}): ModelListing | undefined {
+  const candidate: Record<string, unknown> = {
+    id: typeof info.id === 'string' ? info.id : '', // '' fails the schema's min(1) → the row is dropped
+  };
+  if (typeof info.display_name === 'string' && info.display_name.length > 0) {
+    candidate['displayName'] = info.display_name;
+  }
+  const context = positiveModelInt(info.max_input_tokens);
+  if (context !== undefined) {
+    candidate['contextWindowTokens'] = context;
+  }
+  const maxOutput = positiveModelInt(info.max_tokens);
+  if (maxOutput !== undefined) {
+    candidate['maxOutputTokens'] = maxOutput;
+  }
+  return toModelListing(candidate);
 }
 
 /** Map an Anthropic error-body `type` to a kind — works even when there's no HTTP status (a stream `error` event). */
@@ -437,6 +484,21 @@ function buildCommonBody(
       format: { type: 'json_schema', schema: req.responseFormat.schema as Record<string, unknown> },
     };
   }
+  if (req.reasoningEffort !== undefined) {
+    // ADR-0066: Anthropic's tier-native reasoning control — `output_config.effort` (the level) + ADAPTIVE thinking
+    // to enable it (no token budget: the tier-native path avoids the legacy budget_tokens constraint). `off` DISABLES
+    // thinking. The effort level MERGES alongside any structured-output `format` already on output_config. Anthropic
+    // has a native `max` tier, so all five normalized tiers map 1:1 (no coarsening here).
+    if (req.reasoningEffort === 'off') {
+      body.thinking = { type: 'disabled' };
+    } else {
+      body.thinking = { type: 'adaptive' };
+      body.output_config = {
+        ...body.output_config,
+        effort: ANTHROPIC_REASONING_EFFORT[req.reasoningEffort],
+      };
+    }
+  }
   if (req.temperature !== undefined) {
     // The shared contract is the provider-agnostic [0, 2] envelope (common.ts); Anthropic's API
     // accepts temperature in [0, 1]. Fail fast (the adapter's "never silently drop" posture) rather
@@ -736,6 +798,47 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
       assertStreamable(PROVIDER, SUPPORTS);
       assertMediaCapabilities(PROVIDER, SUPPORTS, req); // per-modality input/output gate (ADR-0031, 1.AE)
       return streamChunks(createClient(key), req);
+    },
+    /**
+     * Live model discovery (ADR-0064 §1) over the SDK's `models.list()` — a rich, auto-paginating
+     * `PagePromise` (iterated with `for await`, which follows `has_more`/`last_id`). Each `ModelInfo` is
+     * mapped INSIDE the adapter to a canonical `ModelListing` (no vendor type escapes), and a per-row parse
+     * failure drops only that row. Bounded + abortable + secret-free via `boundedListModels`.
+     */
+    async listModels(key: string, signal?: AbortSignalLike): Promise<ModelListing[]> {
+      return boundedListModels({
+        provider: PROVIDER,
+        key,
+        signal,
+        classify: anthropicErrorToLlmError,
+        collect: async (innerSignal) => {
+          const client = createClient(key);
+          const listings: ModelListing[] = [];
+          const seen = new Set<string>();
+          let rawCount = 0;
+          let droppedForShape = 0;
+          for await (const info of client.models.list(undefined, { signal: innerSignal })) {
+            rawCount += 1;
+            if (!isRecord(info)) {
+              droppedForShape += 1; // a non-object row (e.g. a null in `data`) — drop it, never dereference
+              continue;
+            }
+            const listing = mapAnthropicModel(info);
+            if (listing === undefined) {
+              droppedForShape += 1; // no usable id (Anthropic's list is unfiltered — undefined ⇒ shape-invalid)
+              continue;
+            }
+            if (!seen.has(listing.id)) {
+              seen.add(listing.id);
+              listings.push(listing);
+            }
+          }
+          // ADR-0064 §8: a systemic id-removal (rows present, none usable, some shape-broken) THROWS so the
+          // host's per-provider isolation shows "last-known" rather than an empty picker.
+          assertListModelsShape(PROVIDER, { rawCount, kept: listings.length, droppedForShape });
+          return listings;
+        },
+      });
     },
     // ADR-0062 context-compaction seam — the shared defaults (a native token-count endpoint could specialize
     // estimateTokens later; real usage is authoritative, so the heuristic is only a pre-first-turn fallback).

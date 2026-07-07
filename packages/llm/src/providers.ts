@@ -1,3 +1,5 @@
+import type { ProviderKind } from '@relavium/shared';
+
 import { createAnthropicAdapter } from './adapters/anthropic.js';
 import { createGeminiAdapter } from './adapters/gemini.js';
 import { createOpenAiAdapter } from './adapters/openai.js';
@@ -18,4 +20,48 @@ export function defaultProviders(): Readonly<Record<ProviderId, LlmProvider>> {
     deepseek: createOpenAiAdapter({ providerId: 'deepseek' }),
     gemini: createGeminiAdapter(),
   };
+}
+
+/**
+ * Derive a provider's **protocol {@link ProviderKind}** from its id (ADR-0064 §2) — the pure axis that
+ * selects, once per protocol rather than per provider, the adapter factory / list-models endpoint / auth /
+ * response mapper. `anthropic` and `gemini` map 1:1; `openai` and `deepseek` share `openai-compatible`
+ * (DeepSeek being the OpenAI-compatible adapter at a custom base URL). Exhaustive over the closed
+ * `ProviderId` union (a new id is a compile error here), so the two stay in lock-step. Consumed by the
+ * later ADR-0064 steps (the refresh service + the static/live merge); the id enum stays closed.
+ */
+export function providerKind(id: ProviderId): ProviderKind {
+  switch (id) {
+    case 'anthropic':
+      return 'anthropic';
+    case 'gemini':
+      return 'gemini';
+    case 'openai':
+    case 'deepseek':
+      return 'openai-compatible';
+  }
+}
+
+/**
+ * Build a per-provider **OpenAI-compatible adapter for a CUSTOM `base_url`** (2.5.G S9,
+ * [ADR-0065](../../../docs/decisions/0065-provider-economics-and-extensibility.md) §3–4) — the seam factory a
+ * host wires for a provider whose stored row carries a custom endpoint, instead of the static
+ * {@link defaultProviders} map. It reuses the ONE openai-compatible adapter (so its construction-time
+ * `assertHttpsBaseUrl` HTTPS + private-range + no-credentials gate applies to the custom URL) and lets the host
+ * inject an **SSRF-validated `fetch`** so both the streaming chat and the `models.list` refresh over that custom
+ * endpoint ride the host's validated hop (§4). No vendor SDK type crosses the seam — `providerId` is a closed-enum
+ * subset, `fetch` is the standard web type, and the return is a Relavium {@link LlmProvider}. Throws
+ * `InvalidBaseUrlError` on a non-HTTPS / private / credential-bearing `baseURL`. The provider-id enum stays closed
+ * (a custom endpoint REUSES the `openai`/`deepseek` id, per ADR-0065 §6).
+ */
+export function createCustomOpenAiProvider(deps: {
+  readonly providerId: Extract<ProviderId, 'openai' | 'deepseek'>;
+  readonly baseURL: string;
+  readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+}): LlmProvider {
+  return createOpenAiAdapter({
+    providerId: deps.providerId,
+    baseURL: deps.baseURL,
+    ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
+  });
 }

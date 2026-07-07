@@ -24,6 +24,7 @@ provider: string            # required, e.g. 'anthropic' | 'openai' | 'gemini' |
 system_prompt: string       # required; supports {{variable}} interpolation
 temperature: number         # optional, default per-provider
 max_tokens: number          # optional output cap
+reasoning_effort: string    # optional: off | low | medium | high | max (ADR-0066); sent only to a reasoning-capable model
 
 input_schema: object        # optional JSON Schema for the agent's expected input shape
 output_schema: object       # optional JSON Schema for the agent's produced output shape
@@ -56,6 +57,7 @@ fallback_chain:             # ordered alternates tried after the primary is exha
 | `system_prompt` | yes | Multiline YAML scalar; `{{ctx.*}}` / `{{inputs.*}}` interpolation supported. |
 | `temperature` | no | Sampling temperature. |
 | `max_tokens` | no | Output token cap. |
+| `reasoning_effort` | no | Normalized reasoning-effort tier — `off` / `low` / `medium` / `high` / `max` ([ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md)). Each adapter maps it to its provider's native tier; sent only to a reasoning-capable model (else withheld). A chat surface can override it per-session via `/effort` / the `/models` picker without a reseat. |
 | `input_schema` | no | JSON Schema describing the input this agent expects. Purely additive metadata — it drives type-safe node chaining and editor (VS Code) completion; it does not change run-time execution. |
 | `output_schema` | no | JSON Schema describing the output this agent produces. Same role as `input_schema` for the downstream side of a node chain. |
 | `tools` | no | Tool ids — see [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md). |

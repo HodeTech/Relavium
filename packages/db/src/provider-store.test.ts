@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
@@ -71,6 +71,49 @@ describe('createProviderStore', () => {
     });
     expect(b.defaultHeaders).toEqual({ 'x-org': 'acme', 'x-beta': 'on' });
     expect(typeof b.defaultHeaders).toBe('object'); // a parsed object, not a double-encoded string
+  });
+
+  it('round-trips the provider kind + pricingReferenceUrl, preserving them on an update that omits them (ADR-0065 §5)', () => {
+    store.upsert({
+      name: 'deepseek',
+      displayName: 'DeepSeek',
+      baseUrl: 'https://my-proxy.example/v1',
+      kind: 'openai-compatible',
+      pricingReferenceUrl: 'https://prices.example',
+    });
+    const got = store.get('deepseek');
+    expect(got?.kind).toBe('openai-compatible');
+    expect(got?.pricingReferenceUrl).toBe('https://prices.example');
+    // An update that omits kind / pricingReferenceUrl keeps the stored values (like defaultHeaders).
+    const updated = store.upsert({
+      name: 'deepseek',
+      displayName: 'DeepSeek (proxied)',
+      baseUrl: 'https://my-proxy.example/v1',
+    });
+    expect(updated.kind).toBe('openai-compatible');
+    expect(updated.pricingReferenceUrl).toBe('https://prices.example');
+  });
+
+  it('reads an absent kind / pricingReferenceUrl as undefined (a plain add omits them)', () => {
+    store.upsert({
+      name: 'anthropic',
+      displayName: 'Anthropic',
+      baseUrl: 'https://api.anthropic.com',
+    });
+    const got = store.get('anthropic');
+    expect(got?.kind).toBeUndefined();
+    expect(got?.pricingReferenceUrl).toBeUndefined();
+  });
+
+  it('coerces a FOREIGN stored kind to undefined at the read boundary (fail-closed, no DB CHECK)', () => {
+    const rec = store.upsert({
+      name: 'openai',
+      displayName: 'OpenAI',
+      baseUrl: 'https://api.openai.com/v1',
+    });
+    // Simulate a tampered/foreign value written outside the typed setter (no DB CHECK on the ALTER-ADD column).
+    client.db.run(sql`update llm_providers set kind = 'rogue-protocol' where id = ${rec.id}`);
+    expect(store.get('openai')?.kind).toBeUndefined(); // a non-PROVIDER_KINDS value is never trusted
   });
 
   it('preserves createdAt and advances updatedAt on update', () => {

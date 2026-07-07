@@ -1,10 +1,16 @@
 import { randomUUID } from 'node:crypto';
 
-import { createProviderStore } from '@relavium/db';
+import { createModelCatalogStore, createProviderStore, type ProviderStore } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
-import { openLocalDb } from '../db/open.js';
-import { createProviderResolver } from '../engine/providers.js';
+import { openLocalDb, type OpenedDb } from '../db/open.js';
+import { createModelRefreshService } from '../engine/model-refresh.js';
+import {
+  KNOWN_PROVIDERS,
+  KNOWN_PROVIDER_IDS,
+  createProviderResolver,
+  type ProviderResolver,
+} from '../engine/providers.js';
 import { openHistoryStore } from '../history/open.js';
 import { openSessionStore } from '../history/session-open.js';
 import { CliError } from '../process/errors.js';
@@ -12,6 +18,7 @@ import { type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
+import type { KeychainStore } from '../secrets/keychain.js';
 import { createMcpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { readSecretFromStdin } from '../secrets/read-secret.js';
@@ -26,6 +33,8 @@ import { gateListCommand } from './gate-list.js';
 import { importCommand, type ImportCommandArgs } from './import.js';
 import { listCommand } from './list.js';
 import { logsCommand } from './logs.js';
+import { modelsCommand, type ModelsCommandArgs } from './models.js';
+import { modelsPricingCommand, type ModelsPricingCommandArgs } from './models-pricing.js';
 import {
   runProviderCommand,
   type ProviderCommandArgs,
@@ -168,12 +177,18 @@ export function buildGateArgs(input: CommandInput): GateCommandArgs {
   };
 }
 
+export function buildProviderListArgs(input: CommandInput): ProviderCommandArgs {
+  return { action: 'list', verify: boolFlag(input.options['verify']) };
+}
+
 export function buildProviderAddArgs(input: CommandInput): ProviderCommandArgs {
   const baseUrl = optString(input.options['baseUrl']);
+  const pricingUrl = optString(input.options['pricingUrl']);
   return {
     action: 'add',
     name: reqPositional(input, 0, 'name'),
     ...(baseUrl === undefined ? {} : { baseUrl }),
+    ...(pricingUrl === undefined ? {} : { pricingUrl }),
   };
 }
 
@@ -186,23 +201,95 @@ export function buildProviderTestArgs(input: CommandInput): ProviderCommandArgs 
   };
 }
 
+/** Parse one USD/Mtok option string → a finite number (invocation-level: shape only; the command core owns the
+ *  non-negative + ceiling domain rules). The raw value is NEVER echoed (a defensive no-terminal-injection habit). */
+function parseUsdPerMtok(raw: string, flag: string): number {
+  const trimmed = raw.trim();
+  const value = Number(trimmed);
+  if (trimmed === '' || !Number.isFinite(value)) {
+    throw new CliError(
+      'invalid_invocation',
+      `${flag} must be a finite number of USD per million tokens.`,
+    );
+  }
+  return value;
+}
+
+export function buildModelsPricingArgs(input: CommandInput): ModelsPricingCommandArgs {
+  const provider = optString(input.options['provider']);
+  if (provider === undefined) {
+    throw new CliError('invalid_invocation', 'missing required option --provider <slug>.');
+  }
+  const rawInput = optString(input.options['input']);
+  const rawOutput = optString(input.options['output']);
+  if (rawInput === undefined) {
+    throw new CliError('invalid_invocation', 'missing required option --input <usd-per-mtok>.');
+  }
+  if (rawOutput === undefined) {
+    throw new CliError('invalid_invocation', 'missing required option --output <usd-per-mtok>.');
+  }
+  const rawCached = optString(input.options['cached']);
+  return {
+    model: reqPositional(input, 0, 'model'),
+    provider,
+    inputUsdPerMtok: parseUsdPerMtok(rawInput, '--input'),
+    outputUsdPerMtok: parseUsdPerMtok(rawOutput, '--output'),
+    ...(rawCached === undefined
+      ? {}
+      : { cachedInputUsdPerMtok: parseUsdPerMtok(rawCached, '--cached') }),
+  };
+}
+
 // ── executors (production dep wiring, copied verbatim from the old register* bodies) ──
 
+/**
+ * Build a **store-aware** provider resolver (2.5.G S9, [ADR-0065](../../../../docs/decisions/0065-provider-economics-and-extensibility.md) §4):
+ * open the durable `history.db` briefly to read the provider registry so a stored **custom `base_url`** rebinds
+ * its adapter to the SSRF-validated endpoint, then close it. The custom adapters are built EAGERLY at resolver
+ * creation (`applyCustomEndpoints` reads `list()` once), so no db handle is held past this call — a self-contained
+ * short-lived read that needs no lifecycle threaded into the command's own db/teardown ordering.
+ *
+ * The `run`/`chat`/`gate` commands then re-open the same `history.db` for their own stores — a deliberate, PURELY
+ * SEQUENTIAL second open (the first handle is fully closed here first, so no WAL/lock race), accepted as the
+ * low-risk alternative to threading the db handle through each command's careful teardown. The `models` /
+ * `provider` paths avoid it entirely — they build the resolver from the db they already hold (`withModelsDeps` /
+ * `withProviderDeps`), and the long-lived Home builds it over its one open handle in the S7 port block.
+ */
+function storeAwareResolver(
+  ctx: DispatchContext,
+  keychain: KeychainStore,
+): ReturnType<typeof createProviderResolver> {
+  const { homeDir } = loadResolvedConfig({
+    cwd: ctx.global.cwd,
+    configPath: ctx.global.configPath,
+  });
+  const { db, close } = openLocalDb(homeDir);
+  try {
+    const providerStore = createProviderStore(db, {
+      uuid: () => randomUUID(),
+      now: () => Date.now(),
+    });
+    return createProviderResolver(ctx.io.env, keychain, { providerStore });
+  } finally {
+    close();
+  }
+}
+
 /** One native keychain accessor, shared by the key resolver (2.C) + the MCP named-secret resolver (2.R §6). */
-function keyResolvers(io: CliIo): {
+function keyResolvers(ctx: DispatchContext): {
   providers: ReturnType<typeof createProviderResolver>;
   mcpSecretResolver: ReturnType<typeof createMcpSecretResolver>;
 } {
   const keychain = createOsKeychainStore();
   return {
-    providers: createProviderResolver(io.env, keychain),
-    mcpSecretResolver: createMcpSecretResolver(io.env, keychain),
+    providers: storeAwareResolver(ctx, keychain),
+    mcpSecretResolver: createMcpSecretResolver(ctx.io.env, keychain),
   };
 }
 
-/** The env-backed provider resolver alone (a command — like `gate` — that needs keys but not MCP secrets). */
-function providerResolver(io: CliIo): ReturnType<typeof createProviderResolver> {
-  return createProviderResolver(io.env, createOsKeychainStore());
+/** The store-aware provider resolver alone (a command — like `gate` — that needs keys but not MCP secrets). */
+function providerResolver(ctx: DispatchContext): ReturnType<typeof createProviderResolver> {
+  return storeAwareResolver(ctx, createOsKeychainStore());
 }
 
 const executeRun: CommandExecutor = (input, ctx) =>
@@ -210,14 +297,14 @@ const executeRun: CommandExecutor = (input, ctx) =>
     io: ctx.io,
     global: ctx.global,
     openRunStore: openHistoryStore,
-    ...keyResolvers(ctx.io),
+    ...keyResolvers(ctx),
   });
 
 const executeChat: CommandExecutor = (input, ctx) =>
   chatCommand(buildChatArgs(input), {
     io: ctx.io,
     global: ctx.global,
-    ...keyResolvers(ctx.io),
+    ...keyResolvers(ctx),
     openSessionStore,
     drive: selectChatDriver,
   });
@@ -228,7 +315,7 @@ const executeChatResume: CommandExecutor = (input, ctx) =>
     {
       io: ctx.io,
       global: ctx.global,
-      ...keyResolvers(ctx.io),
+      ...keyResolvers(ctx),
       openSessionStore,
       drive: selectChatDriver,
     },
@@ -259,7 +346,7 @@ const executeAgentRun: CommandExecutor = (input, ctx) =>
   agentRunCommand(buildAgentRunArgs(input), {
     io: ctx.io,
     global: ctx.global,
-    ...keyResolvers(ctx.io),
+    ...keyResolvers(ctx),
   });
 
 const executeGate: CommandExecutor = (input, ctx) =>
@@ -267,7 +354,7 @@ const executeGate: CommandExecutor = (input, ctx) =>
     io: ctx.io,
     global: ctx.global,
     // Production resolves a post-gate agent's key via the OS keychain → env var (2.C), like `run`.
-    providers: providerResolver(ctx.io),
+    providers: providerResolver(ctx),
   });
 
 const executeGateList: CommandExecutor = (input, ctx) => {
@@ -290,6 +377,120 @@ const executeLogs: CommandExecutor = (input, ctx) =>
 const executeStatus: CommandExecutor = (_input, ctx) =>
   Promise.resolve(statusCommand({ io: ctx.io, global: ctx.global }));
 
+/**
+ * The lazy `llm_providers`-UUID → provider-slug (e.g. `anthropic`) resolver the `models` list path uses for its
+ * `--json` `provider` field + human table. The `id → name` map is built LAZILY on first call and memoized (`??=`):
+ * it is read only while RENDERING, which happens AFTER any first-run refresh has upserted its provider rows — so a
+ * provider DISCOVERED on this very invocation is captured too. Hoisting the map build ahead of the refresh would
+ * silently render a first-run provider's raw UUID instead of its slug. An unmapped uuid falls back to itself
+ * (never throws). Extracted (not inlined in {@link withModelsDeps}) so the lazy-after-refresh ordering is unit-tested.
+ */
+export function createProviderSlugResolver(
+  providerStore: Pick<ReturnType<typeof createProviderStore>, 'list'>,
+): (uuid: string) => string {
+  let slugByUuid: Map<string, string> | undefined;
+  return (uuid: string): string => {
+    slugByUuid ??= new Map(providerStore.list().map((p): [string, string] => [p.id, p.name]));
+    return slugByUuid.get(uuid) ?? uuid;
+  };
+}
+
+/**
+ * The I/O ports {@link withModelsDeps} owns — the local-db opener and the OS-keychain-backed provider resolver
+ * factory. Injectable (defaulting to {@link PRODUCTION_MODELS_PORTS}) so a test can drive the whole `models`
+ * wiring — including the close-on-fault lifecycle — over an in-memory db + a network-free stub resolver, without
+ * touching the real `history.db` or loading the native keychain.
+ */
+export interface ModelsDbPorts {
+  readonly openDb: (homeDir: string) => OpenedDb;
+  /** Build the key resolver over the models db — the `providerStore` (from the SAME db) makes it store-aware so a
+   *  custom `base_url` lists models over the SSRF-validated hop (2.5.G S9, ADR-0065 §4). A test stub may ignore it. */
+  readonly makeResolver: (
+    io: CliIo,
+    providerStore: Pick<ProviderStore, 'list'>,
+  ) => Pick<ProviderResolver, 'resolveProvider' | 'keyFor'>;
+}
+
+const PRODUCTION_MODELS_PORTS: ModelsDbPorts = {
+  openDb: openLocalDb,
+  makeResolver: (io, providerStore) =>
+    createProviderResolver(io.env, createOsKeychainStore(), { providerStore }),
+};
+
+/**
+ * Open the local db + OS keychain for one `models` invocation, wire the S5 refresh service over the S4 catalog
+ * store + the S2 `listModels?` seam, run the core, and ALWAYS close the db — even on a thrown fault (2.5.G S5,
+ * ADR-0064). The key resolver reads a provider key only inside the refresh (keychain → env); the catalog holds no
+ * key. `ports` is injectable for tests; production uses the real db + keychain-backed resolver.
+ */
+export async function withModelsDeps(
+  ctx: DispatchContext,
+  args: ModelsCommandArgs,
+  ports: ModelsDbPorts = PRODUCTION_MODELS_PORTS,
+): Promise<ExitCode> {
+  const { homeDir } = loadResolvedConfig({
+    cwd: ctx.global.cwd,
+    configPath: ctx.global.configPath,
+  });
+  const { db, close } = ports.openDb(homeDir);
+  try {
+    const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    const providerStore = createProviderStore(db, storeDeps);
+    const resolver = ports.makeResolver(ctx.io, providerStore); // store-aware ⇒ a custom base_url is used (S9)
+    const catalogStore = createModelCatalogStore(db, storeDeps);
+    const refreshService = createModelRefreshService({
+      resolveProvider: resolver.resolveProvider,
+      keyFor: resolver.keyFor,
+      providerStore,
+      catalogStore,
+      knownProviderIds: KNOWN_PROVIDER_IDS,
+      knownProviders: KNOWN_PROVIDERS,
+      now: () => Date.now(),
+    });
+    return await modelsCommand(args, {
+      io: ctx.io,
+      global: ctx.global,
+      catalog: catalogStore,
+      refreshService,
+      providerSlug: createProviderSlugResolver(providerStore),
+    });
+  } finally {
+    close();
+  }
+}
+
+const executeModels: CommandExecutor = (_input, ctx) => withModelsDeps(ctx, { refresh: false });
+const executeModelsRefresh: CommandExecutor = (_input, ctx) =>
+  withModelsDeps(ctx, { refresh: true });
+
+/**
+ * `models pricing <model>` (2.5.G S10, ADR-0065) — open the local db, build the catalog + provider stores over it,
+ * capture the user price, and ALWAYS close the db. No keychain / resolver / refresh service is needed (a pure local
+ * write), so this is a lighter path than {@link withModelsDeps}. Args are parsed FIRST (a bad flag fails exit-2
+ * before the db opens); the core is injected in unit tests directly (never touching `~/.relavium/history.db`).
+ */
+const executeModelsPricing: CommandExecutor = (input, ctx) => {
+  const args = buildModelsPricingArgs(input); // a bad/absent flag is an invocation fault before any db work
+  const { homeDir } = loadResolvedConfig({
+    cwd: ctx.global.cwd,
+    configPath: ctx.global.configPath,
+  });
+  const { db, close } = openLocalDb(homeDir);
+  try {
+    const storeDeps = { uuid: () => randomUUID(), now: () => Date.now() };
+    return Promise.resolve(
+      modelsPricingCommand(args, {
+        io: ctx.io,
+        global: ctx.global,
+        catalog: createModelCatalogStore(db, storeDeps),
+        providers: createProviderStore(db, storeDeps),
+      }),
+    );
+  } finally {
+    close();
+  }
+};
+
 /** Open the local db + OS keychain for one `provider` invocation, run the core, and always close the db. */
 async function withProviderDeps(
   ctx: DispatchContext,
@@ -302,12 +503,15 @@ async function withProviderDeps(
   const { db, close } = openLocalDb(homeDir);
   try {
     const keychain = createOsKeychainStore(); // one native accessor, shared by the store-ref writes + the resolver
+    const store = createProviderStore(db, { uuid: () => randomUUID(), now: () => Date.now() });
     const deps: ProviderCommandDeps = {
       io: ctx.io,
-      store: createProviderStore(db, { uuid: () => randomUUID(), now: () => Date.now() }),
+      store,
       keychain,
-      resolver: createProviderResolver(ctx.io.env, keychain),
+      // Store-aware so `provider test` pings a custom `base_url` provider at its CUSTOM endpoint (2.5.G S9).
+      resolver: createProviderResolver(ctx.io.env, keychain, { providerStore: store }),
       readSecret: readSecretFromStdin,
+      global: ctx.global, // for `provider list --json` (2.5.G S11, ADR-0049)
     };
     return await fn(deps);
   } finally {
@@ -342,7 +546,10 @@ const COMMAND_EXECUTORS: ReadonlyMap<string, CommandExecutor> = new Map<string, 
   ['list', executeList],
   ['logs', executeLogs],
   ['status', executeStatus],
-  ['provider.list', providerExecutor(() => ({ action: 'list' }))],
+  ['models', executeModels],
+  ['models.refresh', executeModelsRefresh],
+  ['models.pricing', executeModelsPricing],
+  ['provider.list', providerExecutor(buildProviderListArgs)],
   ['provider.add', providerExecutor(buildProviderAddArgs)],
   [
     'provider.set-key',

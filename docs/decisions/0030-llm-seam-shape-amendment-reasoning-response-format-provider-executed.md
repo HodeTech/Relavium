@@ -15,6 +15,12 @@
 > **Gemini part-level `thoughtSignature`** (incl. on a `functionCall`) need a canonical opaque-continuation
 > carrier and are recorded follow-ups against this ADR's shape.
 
+> **Amended 2026-07-05 by [ADR-0064](0064-live-model-catalog.md)** (append-only — this body is unchanged): the
+> same seam-shape-amendment move adds one more **optional capability method** — `listModels?` (a Relavium-typed
+> `ModelListing[]`; the vendor `models.list()` is mapped inside the adapter, no vendor type crosses) — alongside
+> a provider `kind` discriminant. Additive and capability-varying, in the same spirit as the reasoning channel
+> here; the seam's shape is otherwise unchanged.
+
 ## Context
 
 The `@relavium/llm` seam — the request/result/stream/usage/content shapes in

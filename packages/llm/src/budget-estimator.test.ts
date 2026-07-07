@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { estimateMaxNextCost, estimateMediaCost } from './budget-estimator.js';
-import { MODEL_PRICING } from './pricing.js';
+import { MODEL_PRICING, type ModelPricing } from './pricing.js';
 
 describe('estimateMaxNextCost', () => {
   it('estimates output-only worst case at maxTokens', () => {
@@ -49,5 +49,37 @@ describe('estimateMediaCost (1.AF/D17 — pre-egress per-modality media estimate
     expect(() => estimateMediaCost('not-a-real-model', [{ modality: 'image', units: 1 }])).toThrow(
       'unknown model id',
     );
+  });
+});
+
+describe('user-pricing overlay (2.5.G S10, ADR-0065 §2)', () => {
+  const OVERLAY: ReadonlyMap<string, ModelPricing> = new Map([
+    [
+      'acme-custom-1',
+      {
+        provider: 'openai',
+        nativeId: 'acme-custom-1',
+        displayName: 'Acme Custom 1',
+        contextWindowTokens: 32_000,
+        maxOutputTokens: 4_000,
+        inputPerMtokMicrocents: 300_000_000,
+        outputPerMtokMicrocents: 900_000_000, // $9/MTok
+        cachedInputPerMtokMicrocents: 0,
+      },
+    ],
+  ]);
+
+  it('estimateMaxNextCost prices a user-priced unknown model via the overlay', () => {
+    // 10_000 output tokens @ $9/MTok (900_000_000µ¢/MTok) = 10_000 × 900 = 9_000_000µ¢ — so
+    // `max_cost_microcents` can pre-egress-block it (the acceptance: the cost-cap gap is closed).
+    expect(estimateMaxNextCost('acme-custom-1', 10_000, OVERLAY)).toBe(9_000_000);
+  });
+
+  it('estimateMaxNextCost still throws for an id in neither tier (governor → degrade-to-allow)', () => {
+    expect(() => estimateMaxNextCost('not-anywhere', 10_000, OVERLAY)).toThrow('unknown model id');
+  });
+
+  it('estimateMediaCost accepts the overlay (a user row carries no media rate → 0, never a throw)', () => {
+    expect(estimateMediaCost('acme-custom-1', [{ modality: 'image', units: 4 }], OVERLAY)).toBe(0);
   });
 });

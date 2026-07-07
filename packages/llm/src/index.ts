@@ -24,6 +24,8 @@ export {
   MediaGenRequestSchema,
   MediaGenResultSchema,
   MediaJobStatusSchema,
+  // ADR-0064 live model catalog — the seam's live-discovery projection (no vendor type crosses).
+  ModelListingSchema,
 } from './types.js';
 
 export type {
@@ -48,6 +50,8 @@ export type {
   MediaGenRequest,
   MediaGenResult,
   MediaJobStatus,
+  // ADR-0064 — the live model-discovery entry returned by LlmProvider.listModels?.
+  ModelListing,
   LlmProvider,
 } from './types.js';
 
@@ -70,6 +74,8 @@ export {
   MediaMimeTypeSchema,
   OUTPUT_MODALITIES,
   MEDIA_BILLED_MODALITIES,
+  // ADR-0064 — the provider `kind` protocol vocabulary (shared-owned; the seam surfaces it here).
+  PROVIDER_KINDS,
   mediaModalityOf,
   decodedBase64ByteLength,
   containsInlineMediaBytes,
@@ -88,6 +94,7 @@ export type {
   MediaModality,
   OutputModality,
   MediaBilledModality,
+  ProviderKind,
   MediaStore,
   DeInlineMedia,
 } from '@relavium/shared';
@@ -122,10 +129,19 @@ export {
 } from './llm-error.js';
 
 // CostTracker + the canonical model-pricing table (1.B).
-export { MODEL_PRICING, KNOWN_MODEL_IDS, contextWindowForModel } from './pricing.js';
+export {
+  MODEL_PRICING,
+  KNOWN_MODEL_IDS,
+  isCanonicalModelId,
+  contextWindowForModel,
+  modelSupportsReasoning,
+} from './pricing.js';
 export type { ModelPricing, CanonicalModelId } from './pricing.js';
+// The pure live/static/user merge helper (ADR-0064 §6) — reused by every surface's model catalog / picker.
+export { mergeModelCatalog } from './model-catalog.js';
+export type { ModelCatalogEntry, MergeModelCatalogInput, PricingSource } from './model-catalog.js';
 export { priceModel, cost, mediaCost, CostTracker } from './cost-tracker.js';
-export type { CostUpdate } from './cost-tracker.js';
+export type { CostUpdate, PricingOverlay } from './cost-tracker.js';
 export { estimateMaxNextCost, estimateMediaCost } from './budget-estimator.js';
 export type { MediaUnitsEstimate } from './budget-estimator.js';
 
@@ -156,4 +172,6 @@ export type {
 
 // Default keyless provider registry — the provider→adapter mapping a host wires into
 // `resolveProvider` (ADR-0038); the key is injected per call via `keyFor`, never here (ADR-0011).
-export { defaultProviders } from './providers.js';
+// `providerKind` derives the ADR-0064 protocol `kind` from a provider id (used by the later merge/refresh steps).
+// `createCustomOpenAiProvider` builds a per-provider OpenAI-compatible adapter for a custom base_url (ADR-0065 §3, S9).
+export { createCustomOpenAiProvider, defaultProviders, providerKind } from './providers.js';

@@ -4,8 +4,16 @@ import { join } from 'node:path';
 import { PassThrough, Readable } from 'node:stream';
 
 import type { SessionStreamHandleEvent } from '@relavium/core';
-import type { StreamChunk } from '@relavium/llm';
-import { createClient, createSessionStore, runMigrations, type DbClient } from '@relavium/db';
+import type { ProviderId, StreamChunk } from '@relavium/llm';
+import {
+  createClient,
+  createModelCatalogStore,
+  createProviderStore,
+  createSessionStore,
+  runMigrations,
+  type Db,
+  type DbClient,
+} from '@relavium/db';
 import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -47,6 +55,7 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   onExceed: undefined,
   allowedCommands: undefined,
   allowedCommandGlobs: undefined,
+  reasoningEffort: undefined,
 };
 
 const HOME_ENV_VARS = ['HOME', 'USERPROFILE'] as const;
@@ -95,6 +104,32 @@ function mcpConn(): { conn: McpConnection; closed: () => number } {
     },
   };
   return { conn, closed: () => n };
+}
+
+// Seed a model into `model_catalog` (+ its provider row for the FK) so ADR-0059 attribution can resolve the model
+// STRING → the catalog row UUID. Returns that UUID (the `session_messages.model_id` FK target to assert against).
+let seedCatalogN = 0;
+function seedCatalogModel(db: Db, provider: ProviderId, modelId: string): string {
+  const storeDeps = {
+    uuid: () => `cat-${provider}-${seedCatalogN++}`,
+    now: () => Date.parse('2026-06-25T00:00:00.000Z'),
+  };
+  const providerRow = createProviderStore(db, storeDeps).upsert({
+    name: provider,
+    displayName: provider,
+    baseUrl: 'https://api.anthropic.com',
+  });
+  const catalog = createModelCatalogStore(db, storeDeps);
+  catalog.upsert({
+    providerId: providerRow.id,
+    modelId,
+    displayName: modelId,
+    contextWindowTokens: 200_000,
+    maxOutputTokens: 8_192,
+  });
+  const id = catalog.catalogIdByModelId(modelId);
+  if (id === undefined) throw new Error(`catalog seed failed for ${modelId}`);
+  return id;
 }
 
 describe('chatCommand', () => {
@@ -208,21 +243,29 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.session.status).toBe('ended');
   });
 
-  it('reports an unknown slash command on stderr without ending the session', async () => {
-    const { d, err, store, sessionId } = deps(['/bogus', 'hello', '/exit'], [textTurn('hi')]);
-    await chatCommand({ agent: undefined }, d);
-    expect(err()).toContain("unknown command '/bogus'");
-    // the session continued after the bad command — the 'hello' turn persisted.
-    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
-  });
-
-  it('/cost reports the session spend (no cost ⇒ $0.0000) on the non-TTY path, without ending the session', async () => {
-    const { d, err, store, sessionId } = deps(['/cost', 'hello', '/exit'], [textTurn('hi')]);
-    await chatCommand({ agent: undefined }, d);
-    expect(err()).toContain('Session cost: $0.0000');
-    // /cost is read-only: the session continued — the 'hello' turn persisted (user + assistant = 2).
-    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
-  });
+  // A read-only or rejected slash command is reported on stderr and the session CONTINUES (the following user turn
+  // still persists → 2 messages). One case per command; only that the session continued is asserted, not the content.
+  it.each([
+    { label: 'an unknown command', command: '/bogus', expectedErr: "unknown command '/bogus'" },
+    {
+      label: '/cost (read-only, $0 spend)',
+      command: '/cost',
+      expectedErr: 'Session cost: $0.0000',
+    },
+    {
+      label: 'an undeclared slash argument',
+      command: '/exit now',
+      expectedErr: "/exit: unknown argument 'now'",
+    },
+  ])(
+    '$label is reported on stderr without ending the session',
+    async ({ command, expectedErr }) => {
+      const { d, err, store, sessionId } = deps([command, 'hello', '/exit'], [textTurn('hi')]);
+      await chatCommand({ agent: undefined }, d);
+      expect(err()).toContain(expectedErr);
+      expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: the session continued
+    },
+  );
 
   // A fake fast-tier-passing probe set; `--deep` adds one ok provider + one warn MCP check (deterministic, no I/O).
   const fakeDoctorProbes: DoctorProbes = {
@@ -259,14 +302,6 @@ describe('chatCommand', () => {
     const out = err();
     expect(out).toContain('✓ anthropic: key works'); // the deep provider probe ran
     expect(out).toContain('⚠ MCP servers: none configured'); // the deep MCP probe ran
-  });
-
-  it('rejects an undeclared slash argument (a zero-arg command takes no tokens)', async () => {
-    const { d, err, store, sessionId } = deps(['/exit now', 'hi', '/exit'], [textTurn('hi')]);
-    await chatCommand({ agent: undefined }, d);
-    expect(err()).toContain("/exit: unknown argument 'now'");
-    // '/exit now' was rejected (not run as exit), so the session continued and the 'hi' turn persisted.
-    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
   });
 
   it('rejects an unknown flag on an arg-taking command (/doctor --bogus)', async () => {
@@ -520,7 +555,7 @@ describe('chatCommand', () => {
     const code = await chatCommand({ agent: undefined }, { ...d, buildSession, drive: driveClear });
 
     expect(code).toBe(EXIT_CODES.chatEnded); // ends cleanly despite the failed rebuild (never hangs/loops)
-    expect(err()).toContain('could not start a fresh session after /clear'); // actionable hint on stderr
+    expect(err()).toContain('could not start a new session after /clear'); // actionable, swap-kind-aware hint
     expect(err()).toContain('relavium chat-resume id-0'); // names the OLD, still-resumable conversation
     expect(store.loadFull('id-0')?.session.status).toBe('ended'); // the prior session is persisted + resumable
   });
@@ -537,6 +572,98 @@ describe('chatCommand', () => {
     const rows = store.loadFull(sessionId);
     expect(rows?.messages).toHaveLength(2); // user 'hello' + assistant 'hi there' — one session, not cleared
     expect(rows?.session.status).toBe('ended');
+  });
+
+  it('/models reseat: rebinds the model on the SAME session, carrying the transcript + per-turn attribution (ADR-0059)', async () => {
+    const { d, store } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
+    // Seed both models into the catalog so attribution resolves the model string → the FK-target UUID.
+    const sonnetId = seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    const opusId = seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
+    // A live reseat is TTY-interactive only (like `/clear`), so `onReseat` is wired only on an interactive io.
+    const interactiveIo = { ...d.io, stdoutIsTty: true };
+    const seen: string[] = [];
+    const intros: (string | undefined)[] = [];
+    let call = 0;
+    const reseatThenExit: ChatDriver = async (ctx) => {
+      seen.push(ctx.handle.sessionId);
+      intros.push(ctx.intro);
+      ctx.startSession();
+      if (call++ === 0) {
+        await ctx.processLine('first'); // a turn on the sonnet-bound session ⇒ persisted (attributed to sonnet)
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' }); // switch to opus
+        return { kind: ctx.stopReason() }; // 'reseat'
+      }
+      await ctx.processLine('second'); // a turn on the opus-bound session ⇒ persisted (attributed to opus)
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    const code = await chatCommand(
+      { agent: undefined },
+      { ...d, io: interactiveIo, drive: reseatThenExit },
+    );
+    expect(code).toBe(EXIT_CODES.chatEnded);
+
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toBe(seen[1]); // a reseat CONTINUES the same session (unlike /clear's new id)
+    expect(intros[0]).toBeUndefined(); // the original session has no intro
+    expect(intros[1]).toContain('Switched to claude-opus-4-8'); // the reseat disclosure intro
+    expect(intros[1]).toContain('text transcript only'); // the tool-context-not-carried disclosure
+
+    const full = store.loadFull('id-0');
+    expect(full?.session.agentSnapshot?.model).toBe('claude-opus-4-8'); // rebound to the target model
+    expect(full?.session.modelId).toBe(opusId); // the reseated session's coarse primary = the new model's catalog id
+    // The transcript carried across the switch: turn 1 (sonnet) + turn 2 (opus) — 4 sequenced rows, one session,
+    // each assistant row ATTRIBUTED to the model that produced it (its catalog UUID, ADR-0059).
+    expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(full?.messages[1]?.content[0]).toEqual({ type: 'text', text: 'sonnet reply' });
+    expect(full?.messages[1]?.modelId).toBe(sonnetId); // turn 1 produced by the ORIGINAL model
+    expect(full?.messages[3]?.content[0]).toEqual({ type: 'text', text: 'opus reply' });
+    expect(full?.messages[3]?.modelId).toBe(opusId); // turn 2 produced by the NEW model
+    expect(full?.messages[0]?.modelId).toBeUndefined(); // a user row carries no producing model
+    expect(full?.session.totalCostMicrocents).toBeGreaterThan(0); // both turns' cost accrued (carried, not reset)
+  });
+
+  it('/models reseat whose rebuild fails surfaces the resumable prior session and ends cleanly (ADR-0059)', async () => {
+    const { d, err, store } = deps([], [textTurn('hi there')]);
+    const interactiveIo = { ...d.io, stdoutIsTty: true };
+    // The reseat's resumed build REJECTS (e.g. a transient MCP/key fault binding the new model).
+    const buildResumedSession: typeof buildResumedChatSession = () =>
+      Promise.reject(new Error('reseat build failed'));
+    const reseat: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.processLine('hello'); // a real turn on the OLD session ⇒ persisted + resumable
+      ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+      return { kind: ctx.stopReason() };
+    };
+    const code = await chatCommand(
+      { agent: undefined },
+      { ...d, io: interactiveIo, buildResumedSession, drive: reseat },
+    );
+    expect(code).toBe(EXIT_CODES.chatEnded); // ends cleanly despite the failed rebuild (never hangs/loops)
+    expect(err()).toContain('could not start a new session after a model switch'); // swap-kind-aware hint
+    expect(err()).toContain('relavium chat-resume id-0'); // names the OLD, still-resumable conversation
+    expect(store.loadFull('id-0')?.session.status).toBe('ended'); // the prior session is persisted + resumable
+  });
+
+  it('a live reseat is gated OFF on a non-interactive surface — onReseat is not wired (ADR-0049 parity)', async () => {
+    // The default deps() harness io is non-TTY, so `chatIsInteractive` is false → `onReseat` is NOT wired (a
+    // machine/plain stream stays one session lifecycle, exactly as `/clear` is gated off there).
+    const { d, store } = deps([], [textTurn('hi there')]);
+    let onReseatWired = true;
+    const driver: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.processLine('hello');
+      onReseatWired = ctx.onReseat !== undefined;
+      ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' }); // a no-op when unwired
+      return { kind: ctx.stopReason() };
+    };
+    const code = await chatCommand({ agent: undefined }, { ...d, drive: driver });
+    expect(code).toBe(EXIT_CODES.chatEnded);
+    expect(onReseatWired).toBe(false); // no live reseat on a machine/plain stream
+    // NOT reseated: id-0 kept its one 'hello' exchange, still bound to the ORIGINAL model.
+    const full = store.loadFull('id-0');
+    expect(full?.messages).toHaveLength(2);
+    expect(full?.session.agentSnapshot?.model).toBe('claude-sonnet-4-6');
   });
 
   it('chat --json drives the headless stream: stdout pure NDJSON, the unknown-slash diagnostic on stderr', async () => {
