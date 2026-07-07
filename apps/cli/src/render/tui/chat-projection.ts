@@ -169,10 +169,7 @@ function looksLikeContextOverflow(message: string | undefined): boolean {
  * the session path classifies as `provider_unavailable`). The returned string is ALWAYS a static host label — it
  * never interpolates the provider `message` (only the context-overflow heuristic READS it, to pick the right hint).
  */
-export function errorRecoveryHint(
-  code: string | undefined,
-  message?: string | undefined,
-): string | undefined {
+export function errorRecoveryHint(code: string | undefined, message?: string): string | undefined {
   switch (code) {
     case 'provider_rate_limit':
       return 'Rate-limited by the provider — Relavium already retried with backoff + failover. The session is still active; resend if the turn did not finish.';
