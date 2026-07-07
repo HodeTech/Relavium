@@ -135,23 +135,22 @@ export function formatTurnSummary(summary: TurnSummary): string {
 /**
  * Context-overflow heuristic (2.5.H): a request that exceeds the model context window surfaces as `validation` (a
  * provider `bad_request`), a code shared with an authoring/shape error — so we can only DISTINGUISH the overflow by
- * a keyword match on the (never-displayed) provider message. The markers cover the common provider phrasings:
- * OpenAI `context_length_exceeded` / "maximum context length", Anthropic "prompt is too long" AND "…exceed context
- * limit", Gemini "input token count … exceeds". They are deliberately CONTEXT/TOKEN-qualified (no bare "exceeds the
- * maximum" / "token limit", which a param 400 like "temperature exceeds the maximum" would false-match). This is a
- * SECONDARY net — 2.5.F auto-compaction (ADR-0062) pre-empts most overflows; it fires for a model with no known
- * window or `auto_compact = false`. Reading the message for a keyword is NOT displaying it (the hint returned is a
- * STATIC host string), so no provider text is echoed.
+ * a keyword match on the (never-displayed) provider MESSAGE (`error.message`, never the error `code`). The markers
+ * cover the common provider message phrasings: OpenAI "maximum context length", Anthropic "prompt is too long" AND
+ * "…exceed context limit", Gemini "input token count … exceeds". They are deliberately CONTEXT/TOKEN-qualified (no
+ * bare "exceeds the maximum" / "token limit", which a param 400 like "temperature exceeds the maximum" would
+ * false-match). This is a SECONDARY net — 2.5.F auto-compaction (ADR-0062) pre-empts most overflows; it fires for a
+ * model with no known window or `auto_compact = false`. Reading the message for a keyword is NOT displaying it (the
+ * hint returned is a STATIC host string), so no provider text is echoed.
  */
 const CONTEXT_OVERFLOW_MARKERS: readonly string[] = [
   'context window',
-  'context length',
-  'context_length',
+  'context length', // OpenAI "maximum context length is N tokens"
   'context limit', // Anthropic "input length and max_tokens exceed context limit"
   'maximum context',
-  'prompt is too long',
+  'prompt is too long', // Anthropic
   'too many tokens',
-  'input token count',
+  'input token count', // Gemini
 ];
 
 function looksLikeContextOverflow(message: string | undefined): boolean {
@@ -164,11 +163,11 @@ function looksLikeContextOverflow(message: string | undefined): boolean {
  * An **actionable, secret-free recovery hint** for a failed turn's `ErrorCode` (2.5.H) — a one-line next step that
  * makes explicit **the session survives** (a failed turn settles `session:turn_completed`, never a terminal, so the
  * REPL stays live). Extends the "say so plainly" philosophy from the 2.5.A capability gap to the transport / quota /
- * limit classes. Returns `undefined` for a code with no actionable guidance OR one not reachable on the chat
- * `session:turn_completed.error` path (`cancelled` is user-initiated; `sandbox_error` and `run_timeout` are
- * WorkflowEngine-only — a provider timeout on the session path classifies as `provider_unavailable`). The returned
- * string is ALWAYS a static host label — it never interpolates the provider `message` (only the context-overflow
- * heuristic READS it, to pick the right static hint).
+ * limit classes. Returns `undefined` for a code that is structurally unreachable on the chat
+ * `session:turn_completed.error` path: a cancel settles as `stopReason: 'aborted'` with **no** `error`, so
+ * `cancelled` never appears there; `sandbox_error` and `run_timeout` are WorkflowEngine-only (a provider timeout on
+ * the session path classifies as `provider_unavailable`). The returned string is ALWAYS a static host label — it
+ * never interpolates the provider `message` (only the context-overflow heuristic READS it, to pick the right hint).
  */
 export function errorRecoveryHint(
   code: string | undefined,
@@ -193,9 +192,12 @@ export function errorRecoveryHint(
       // tool) — the summary line already names the likely cause (a path / an unavailable target, e.g. an MCP
       // server). Do NOT promise a retry (there is no session-level tool retry) or a blind "try again" (a
       // side-effecting failure is fail-fast BECAUSE a re-run is unsafe); guide to fixing the cause.
-      return 'The session is still active; fix the path or target (or check the MCP server) and resend.';
+      return 'A tool call failed. The session is still active; fix the path or target (or check the MCP server) and resend.';
     case 'tool_unavailable':
-      return "That tool isn't wired in this session — resend and the model will answer without it. The session is still active.";
+      // A host/config gap — the capability arm (`fs`/`process`/`egress`/…) is not wired for the SESSION, so a plain
+      // resend re-fails identically (it is not a `/mode`-style runtime toggle). Do NOT promise the model can just
+      // proceed without it; guide to rephrasing / re-wiring — mirrors the tool_failed no-blind-retry correction.
+      return "That tool isn't wired for this session (a host/config gap). The session is still active; rephrase to avoid needing it, or wire the capability and start a fresh session.";
     case 'tool_denied':
       return 'The tool was denied by the current mode/policy — switch with `/mode` if that was intended. The session is still active.';
     case 'budget_exceeded':
@@ -206,11 +208,11 @@ export function errorRecoveryHint(
       return 'The turn hit a turn/tool-call limit. The session is still active; send another message — if it is blocked again immediately, the session hit its hard turn cap (`/clear` to start fresh).';
     case 'internal':
       // No `correlationId` on the session path (that field is WorkflowEngine-only, ADR-0036), so do not send the
-      // user looking for a log id that this surface never produces.
-      return 'An unexpected error occurred. The session is still active; try again — if it keeps happening, please report it.';
+      // user looking for a log id that this surface never produces — and no dangling "report it" with no channel.
+      return 'An unexpected error occurred. The session is still active; try again — `/doctor` can check your setup if it keeps happening.';
     default:
-      // `cancelled` (user-initiated), `sandbox_error` / `run_timeout` (WorkflowEngine-only, not chat-reachable), or
-      // an unknown/future code — no hint.
+      // Structurally unreachable on the session `turn_completed.error` path (`cancelled` settles as `aborted` with
+      // no error; `sandbox_error` / `run_timeout` are WorkflowEngine-only) OR an unknown/future code — no hint.
       return undefined;
   }
 }

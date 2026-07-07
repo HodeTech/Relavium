@@ -1684,7 +1684,14 @@ export async function driveJson(ctx: ChatDriveContext): Promise<ChatDriveOutcome
  * A plain event printer for the non-TTY surface — streams the assistant tokens and annotates tool calls, both
  * SECRET-FREE (only the token text the model produced + the namespaced tool id, never tool arguments).
  */
-export function makePlainPrinter(io: CliIo): (event: SessionStreamHandleEvent) => void {
+export function makePlainPrinter(
+  io: CliIo,
+  // Whether to append the session-continuity recovery hint on a failed turn (2.5.H). TRUE for the plain CHAT REPL
+  // (`drivePlain`) — the session survives, so "the session is still active; resend / `/compact` / …" is accurate.
+  // FALSE for the ONE-SHOT `agent run`, which cancels the session in its `finally` right after: those hints would
+  // be false (no live session, no slash REPL to resend into), so a one-shot prints only `[turn failed: <code>]`.
+  recoveryHints = true,
+): (event: SessionStreamHandleEvent) => void {
   return (event) => {
     switch (event.type) {
       case 'agent:token':
@@ -1705,9 +1712,12 @@ export function makePlainPrinter(io: CliIo): (event: SessionStreamHandleEvent) =
           io.writeOut('\n');
           return;
         }
-        // A failed turn: the code + an actionable, secret-free recovery hint (2.5.H) making explicit the session is
-        // still active (a failed turn is never a terminal — the plain REPL continues on the next line).
-        const hint = errorRecoveryHint(event.error.code, event.error.message);
+        // A failed turn: the code + (in a continuing session only) an actionable, secret-free recovery hint (2.5.H)
+        // making explicit the session is still active. A one-shot `agent run` sets `recoveryHints = false` — its
+        // session is cancelled immediately after, so a session-continuity hint would be false there.
+        const hint = recoveryHints
+          ? errorRecoveryHint(event.error.code, event.error.message)
+          : undefined;
         io.writeOut(
           `\n[turn failed: ${event.error.code}]\n${hint === undefined ? '' : `${hint}\n`}`,
         );

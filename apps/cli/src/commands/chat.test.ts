@@ -1344,6 +1344,35 @@ describe('makePlainPrinter', () => {
     expect(out()).toContain('/compact'); // the context-overflow heuristic matched the message
     expect(out()).not.toContain('sk-LEAK'); // …but the raw message (secret-ish substring) is NOT echoed
   });
+
+  it('emits ONLY the bare code line for a code with no hint (no stray hint text/newline)', () => {
+    const { io, out } = captureIo();
+    makePlainPrinter(io)({
+      type: 'session:turn_completed',
+      ...STAMP,
+      stopReason: 'error',
+      tokensUsed: { input: 0, output: 0 },
+      error: { code: 'sandbox_error', message: 'unused', retryable: false },
+    });
+    expect(out()).toBe('\n[turn failed: sandbox_error]\n'); // no trailing recovery-hint line
+  });
+
+  it('SUPPRESSES the session-continuity hint when recoveryHints=false (the one-shot agent-run path, 2.5.H)', () => {
+    const { io, out } = captureIo();
+    makePlainPrinter(
+      io,
+      false,
+    )({
+      type: 'session:turn_completed',
+      ...STAMP,
+      stopReason: 'error',
+      tokensUsed: { input: 0, output: 0 },
+      error: { code: 'turn_limit', message: 'session cap', retryable: false }, // a code that WOULD hint in a REPL
+    });
+    // A one-shot's session ends immediately after, so "the session is still active" would be false — only the code.
+    expect(out()).toBe('\n[turn failed: turn_limit]\n');
+    expect(out()).not.toContain('session is still active');
+  });
 });
 
 describe('chatIsInteractive (the High-9 deadlock derivation — mirrors selectChatDriver`s ink-mount)', () => {
