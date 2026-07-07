@@ -433,7 +433,8 @@ const OPENAI_DENY_SUBSTRINGS = [
  *  (`dall-e`'s `-` is literal outside a character class), but this keeps the boundary match safe if one is
  *  ever added. */
 function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // `String.raw` avoids the doubled backslash of `'\\$&'` — the replacement is a literal `\` + the `$&` match ref.
+  return text.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 }
 
 /** True when a deny `token` occurs on a `-`/`_` segment boundary in `lower` — a word-boundary match, so

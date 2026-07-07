@@ -243,21 +243,29 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.session.status).toBe('ended');
   });
 
-  it('reports an unknown slash command on stderr without ending the session', async () => {
-    const { d, err, store, sessionId } = deps(['/bogus', 'hello', '/exit'], [textTurn('hi')]);
-    await chatCommand({ agent: undefined }, d);
-    expect(err()).toContain("unknown command '/bogus'");
-    // the session continued after the bad command — the 'hello' turn persisted.
-    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
-  });
-
-  it('/cost reports the session spend (no cost ⇒ $0.0000) on the non-TTY path, without ending the session', async () => {
-    const { d, err, store, sessionId } = deps(['/cost', 'hello', '/exit'], [textTurn('hi')]);
-    await chatCommand({ agent: undefined }, d);
-    expect(err()).toContain('Session cost: $0.0000');
-    // /cost is read-only: the session continued — the 'hello' turn persisted (user + assistant = 2).
-    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
-  });
+  // A read-only or rejected slash command is reported on stderr and the session CONTINUES (the following user turn
+  // still persists → 2 messages). One case per command; only that the session continued is asserted, not the content.
+  it.each([
+    { label: 'an unknown command', command: '/bogus', expectedErr: "unknown command '/bogus'" },
+    {
+      label: '/cost (read-only, $0 spend)',
+      command: '/cost',
+      expectedErr: 'Session cost: $0.0000',
+    },
+    {
+      label: 'an undeclared slash argument',
+      command: '/exit now',
+      expectedErr: "/exit: unknown argument 'now'",
+    },
+  ])(
+    '$label is reported on stderr without ending the session',
+    async ({ command, expectedErr }) => {
+      const { d, err, store, sessionId } = deps([command, 'hello', '/exit'], [textTurn('hi')]);
+      await chatCommand({ agent: undefined }, d);
+      expect(err()).toContain(expectedErr);
+      expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // read-only: the session continued
+    },
+  );
 
   // A fake fast-tier-passing probe set; `--deep` adds one ok provider + one warn MCP check (deterministic, no I/O).
   const fakeDoctorProbes: DoctorProbes = {
@@ -294,14 +302,6 @@ describe('chatCommand', () => {
     const out = err();
     expect(out).toContain('✓ anthropic: key works'); // the deep provider probe ran
     expect(out).toContain('⚠ MCP servers: none configured'); // the deep MCP probe ran
-  });
-
-  it('rejects an undeclared slash argument (a zero-arg command takes no tokens)', async () => {
-    const { d, err, store, sessionId } = deps(['/exit now', 'hi', '/exit'], [textTurn('hi')]);
-    await chatCommand({ agent: undefined }, d);
-    expect(err()).toContain("/exit: unknown argument 'now'");
-    // '/exit now' was rejected (not run as exit), so the session continued and the 'hi' turn persisted.
-    expect(store.loadFull(sessionId)?.messages).toHaveLength(2);
   });
 
   it('rejects an unknown flag on an arg-taking command (/doctor --bogus)', async () => {

@@ -331,7 +331,8 @@ describe('createProviderResolver custom endpoints (2.5.G S9 / ADR-0065 §3–4)'
       validatedFetch: fetch,
     });
     const openai = resolver.resolveProvider('openai');
-    expect(openai?.listModels !== undefined).toBe(true); // the openai-compatible adapter carries the live-list capability
+    // `typeof` (not a bare `expect(openai?.listModels)`) keeps the specific assertion without an unbound-method ref.
+    expect(typeof openai?.listModels).toBe('function'); // the openai-compatible adapter carries the live-list capability
     // The listModels egress hits the CUSTOM endpoint (the dead-base_url bug is fixed) — via the validated fetch.
     await openai?.listModels?.('sk-test')?.catch(() => undefined); // the ROUTING is the assertion, not the parse result
     expect(urls.some((url) => url.startsWith('https://my-proxy.example/v1'))).toBe(true);

@@ -30,7 +30,7 @@ const userPricing = (provider: ProviderId): ModelPricing => ({
 describe('mergeModelCatalog (ADR-0064 §6)', () => {
   it('with no live/user data, surfaces every static model as registry-priced and available (static presence)', () => {
     const entries = mergeModelCatalog({ now: BEFORE_DEEPSEEK_DEPRECATION });
-    expect(entries.length).toBe(Object.keys(MODEL_PRICING).length);
+    expect(entries).toHaveLength(Object.keys(MODEL_PRICING).length);
     const opus = byId(entries, 'claude-opus-4-8');
     expect(opus).toMatchObject({
       provider: 'anthropic',

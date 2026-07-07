@@ -493,6 +493,6 @@ describe('runOnboardingWizard', () => {
         validate: () => Promise.reject(new Error('probe boom')),
       }),
     ).rejects.toThrow('probe boom'); // propagates (not swallowed) to the Home's cleanup
-    expect(stops.length).toBe(1); // the finally stopped the spinner despite the rejection
+    expect(stops).toHaveLength(1); // the finally stopped the spinner despite the rejection
   });
 });

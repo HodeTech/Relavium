@@ -40,7 +40,7 @@ function slugResolver(map: Record<string, string>): (uuid: string) => string {
 describe('buildMergedCatalog', () => {
   it('seeds the full static registry even with no live rows (never an empty picker)', () => {
     const view = buildMergedCatalog({ rows: [], providerSlug: slugResolver({}), now: 0 });
-    expect(view.entries.length).toBe(Object.keys(MODEL_PRICING).length);
+    expect(view.entries).toHaveLength(Object.keys(MODEL_PRICING).length);
     expect(view.refreshedAt).toBeUndefined();
     // With NO live data for any provider, every static model falls back to static presence (ADR-0064 §6).
     expect(view.entries.every((e) => e.available)).toBe(true);
