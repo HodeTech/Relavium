@@ -349,97 +349,111 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
 
     upsert: (input) => {
       const t = deps.now();
-      const existing = db
-        .select()
-        .from(modelCatalog)
-        .where(
-          and(
-            eq(modelCatalog.providerId, input.providerId),
-            eq(modelCatalog.modelId, input.modelId),
-            isNull(modelCatalog.deletedAt),
-          ),
-        )
-        .get();
-      const id = existing?.id ?? deps.uuid();
-      const shared = {
-        // Display name + token limits also follow the "never clobber an omitted field on update" invariant (2.5.G
-        // S10): a pricing-only `models pricing` patch omits them, so they PRESERVE the existing row's values — incl.
-        // a soft-deactivated live row the command's active-only read cannot see (else a re-price would silently zero
-        // the discovered name/context). A true INSERT defaults `displayName` → the model id, tokens → the `0`
-        // "unknown" sentinel; a full-row caller (media fixture / a sync) passes all three, so it is unchanged.
-        displayName: input.displayName ?? existing?.displayName ?? input.modelId,
-        contextWindowTokens: input.contextWindowTokens ?? existing?.contextWindowTokens ?? 0,
-        maxOutputTokens: input.maxOutputTokens ?? existing?.maxOutputTokens ?? 0,
-        // Media routing / capability columns follow the SAME "never clobber an omitted field on update" invariant
-        // as the pricing + provenance columns below (2.5.G S10): a partial upsert — e.g. `models pricing` writing a
-        // `source='user'` row over a model the live refresh discovered — must NOT reset a live/seed row's
-        // `media_surface` back to `'chat'` (silently disabling generative routing) or blank its capabilities. On a
-        // true INSERT (`existing` undefined) each still falls to its documented default, so every full-row caller
-        // (the media fixture, a re-seed) is byte-for-byte unchanged (it always passes these).
-        mediaSurface: input.mediaSurface ?? existing?.mediaSurface ?? 'chat',
-        supportsVision: input.supportsVision ?? existing?.supportsVision ?? false,
-        capabilities:
-          input.capabilities !== undefined
-            ? JSON.stringify(input.capabilities)
-            : (existing?.capabilities ?? JSON.stringify({})),
-        // The media cost fields are `number | null` (unlike the NOT-NULL text-token prices below): OMITTED
-        // (`undefined`) preserves the existing row's value (the "never clobber" invariant), an explicit `null`
-        // CLEARS it, and a number writes it — so a `!== undefined` check (not `??`, which would treat a clearing
-        // `null` as an omission and preserve the old rate). A true INSERT (`existing` undefined) still defaults to
-        // `null`.
-        mediaImageCostMicrocents:
-          input.mediaImageCostMicrocents !== undefined
-            ? input.mediaImageCostMicrocents
-            : (existing?.mediaImageCostMicrocents ?? null),
-        mediaAudioCostMicrocents:
-          input.mediaAudioCostMicrocents !== undefined
-            ? input.mediaAudioCostMicrocents
-            : (existing?.mediaAudioCostMicrocents ?? null),
-        mediaVideoCostMicrocents:
-          input.mediaVideoCostMicrocents !== undefined
-            ? input.mediaVideoCostMicrocents
-            : (existing?.mediaVideoCostMicrocents ?? null),
-        // USER text-token pricing (2.5.G S10) — write the supplied prices, else PRESERVE the existing row's (an
-        // update that omits them must not zero a hand-entered price), else the NOT-NULL default `0`.
-        inputCostPerMtokMicrocents:
-          input.inputCostPerMtokMicrocents ?? existing?.inputCostPerMtokMicrocents ?? 0,
-        outputCostPerMtokMicrocents:
-          input.outputCostPerMtokMicrocents ?? existing?.outputCostPerMtokMicrocents ?? 0,
-        cachedInputCostPerMtokMicrocents:
-          input.cachedInputCostPerMtokMicrocents ?? existing?.cachedInputCostPerMtokMicrocents ?? 0,
-        // Provenance + freshness (ADR-0064 §4/§5). On a true INSERT (`existing` undefined) these fall to
-        // `'static'` / `null`, so every existing media-routing caller (which passes neither) writes a static,
-        // never-refreshed row unchanged. On an UPDATE they PRESERVE the existing row's `source`/`lastRefreshedAt`
-        // when the caller omits them — a caller that omits `source` (e.g. a future provider-sync patch) must
-        // NEVER demote a live-refreshed row back to `'static'` or null its stamp (the "never clobber" invariant,
-        // symmetric with `replaceProviderModels`).
-        source: input.source ?? existing?.source ?? 'static',
-        lastRefreshedAt: input.lastRefreshedAt ?? existing?.lastRefreshedAt ?? null,
-        // An upsert (re)activates the row: keep `isActive` in lockstep with `activeRow`'s `isActive = true`
-        // filter so a re-upserted, previously-deactivated row is reachable again and the returned record never
-        // disagrees with a subsequent `getByModelId` (which filters inactive rows out).
-        isActive: true,
-        updatedAt: t,
-      } satisfies Partial<NewModelCatalogRow>;
-      if (existing === undefined) {
-        const row: NewModelCatalogRow = {
-          id,
-          providerId: input.providerId,
-          modelId: input.modelId,
-          createdAt: t,
-          ...shared,
-        };
-        db.insert(modelCatalog).values(row).run();
-      } else {
-        db.update(modelCatalog).set(shared).where(eq(modelCatalog.id, id)).run();
-      }
-      // Re-read by the exact id written (not by modelId — that would return the earliest row for a model id
-      // offered by multiple providers, not necessarily the one just upserted).
-      const row = rowById(id);
-      if (row === undefined) {
-        throw new Error(`model_catalog '${input.modelId}' not found after upsert`); // unreachable — just inserted/updated
-      }
-      return fromRow(row);
+      // Read-then-write upsert under ONE IMMEDIATE transaction (the twin of provider `upsert`): a `models
+      // pricing` write racing a concurrent `models refresh` (`replaceProviderModels`) on the same
+      // (provider, model) must not straddle the read→write — BEGIN IMMEDIATE serializes them, avoiding both a
+      // lost update and a UNIQUE(provider_id, model_id) crash from two concurrent INSERTs; `withBusyRetry`
+      // waits out residual cross-process contention (ADR-0064 amendment note — DB write-path concurrency).
+      return withBusyRetry(() =>
+        db.transaction(
+          () => {
+            const existing = db
+              .select()
+              .from(modelCatalog)
+              .where(
+                and(
+                  eq(modelCatalog.providerId, input.providerId),
+                  eq(modelCatalog.modelId, input.modelId),
+                  isNull(modelCatalog.deletedAt),
+                ),
+              )
+              .get();
+            const id = existing?.id ?? deps.uuid();
+            const shared = {
+              // Display name + token limits also follow the "never clobber an omitted field on update" invariant (2.5.G
+              // S10): a pricing-only `models pricing` patch omits them, so they PRESERVE the existing row's values — incl.
+              // a soft-deactivated live row the command's active-only read cannot see (else a re-price would silently zero
+              // the discovered name/context). A true INSERT defaults `displayName` → the model id, tokens → the `0`
+              // "unknown" sentinel; a full-row caller (media fixture / a sync) passes all three, so it is unchanged.
+              displayName: input.displayName ?? existing?.displayName ?? input.modelId,
+              contextWindowTokens: input.contextWindowTokens ?? existing?.contextWindowTokens ?? 0,
+              maxOutputTokens: input.maxOutputTokens ?? existing?.maxOutputTokens ?? 0,
+              // Media routing / capability columns follow the SAME "never clobber an omitted field on update" invariant
+              // as the pricing + provenance columns below (2.5.G S10): a partial upsert — e.g. `models pricing` writing a
+              // `source='user'` row over a model the live refresh discovered — must NOT reset a live/seed row's
+              // `media_surface` back to `'chat'` (silently disabling generative routing) or blank its capabilities. On a
+              // true INSERT (`existing` undefined) each still falls to its documented default, so every full-row caller
+              // (the media fixture, a re-seed) is byte-for-byte unchanged (it always passes these).
+              mediaSurface: input.mediaSurface ?? existing?.mediaSurface ?? 'chat',
+              supportsVision: input.supportsVision ?? existing?.supportsVision ?? false,
+              capabilities:
+                input.capabilities !== undefined
+                  ? JSON.stringify(input.capabilities)
+                  : (existing?.capabilities ?? JSON.stringify({})),
+              // The media cost fields are `number | null` (unlike the NOT-NULL text-token prices below): OMITTED
+              // (`undefined`) preserves the existing row's value (the "never clobber" invariant), an explicit `null`
+              // CLEARS it, and a number writes it — so a `!== undefined` check (not `??`, which would treat a clearing
+              // `null` as an omission and preserve the old rate). A true INSERT (`existing` undefined) still defaults to
+              // `null`.
+              mediaImageCostMicrocents:
+                input.mediaImageCostMicrocents !== undefined
+                  ? input.mediaImageCostMicrocents
+                  : (existing?.mediaImageCostMicrocents ?? null),
+              mediaAudioCostMicrocents:
+                input.mediaAudioCostMicrocents !== undefined
+                  ? input.mediaAudioCostMicrocents
+                  : (existing?.mediaAudioCostMicrocents ?? null),
+              mediaVideoCostMicrocents:
+                input.mediaVideoCostMicrocents !== undefined
+                  ? input.mediaVideoCostMicrocents
+                  : (existing?.mediaVideoCostMicrocents ?? null),
+              // USER text-token pricing (2.5.G S10) — write the supplied prices, else PRESERVE the existing row's (an
+              // update that omits them must not zero a hand-entered price), else the NOT-NULL default `0`.
+              inputCostPerMtokMicrocents:
+                input.inputCostPerMtokMicrocents ?? existing?.inputCostPerMtokMicrocents ?? 0,
+              outputCostPerMtokMicrocents:
+                input.outputCostPerMtokMicrocents ?? existing?.outputCostPerMtokMicrocents ?? 0,
+              cachedInputCostPerMtokMicrocents:
+                input.cachedInputCostPerMtokMicrocents ??
+                existing?.cachedInputCostPerMtokMicrocents ??
+                0,
+              // Provenance + freshness (ADR-0064 §4/§5). On a true INSERT (`existing` undefined) these fall to
+              // `'static'` / `null`, so every existing media-routing caller (which passes neither) writes a static,
+              // never-refreshed row unchanged. On an UPDATE they PRESERVE the existing row's `source`/`lastRefreshedAt`
+              // when the caller omits them — a caller that omits `source` (e.g. a future provider-sync patch) must
+              // NEVER demote a live-refreshed row back to `'static'` or null its stamp (the "never clobber" invariant,
+              // symmetric with `replaceProviderModels`).
+              source: input.source ?? existing?.source ?? 'static',
+              lastRefreshedAt: input.lastRefreshedAt ?? existing?.lastRefreshedAt ?? null,
+              // An upsert (re)activates the row: keep `isActive` in lockstep with `activeRow`'s `isActive = true`
+              // filter so a re-upserted, previously-deactivated row is reachable again and the returned record never
+              // disagrees with a subsequent `getByModelId` (which filters inactive rows out).
+              isActive: true,
+              updatedAt: t,
+            } satisfies Partial<NewModelCatalogRow>;
+            if (existing === undefined) {
+              const row: NewModelCatalogRow = {
+                id,
+                providerId: input.providerId,
+                modelId: input.modelId,
+                createdAt: t,
+                ...shared,
+              };
+              db.insert(modelCatalog).values(row).run();
+            } else {
+              db.update(modelCatalog).set(shared).where(eq(modelCatalog.id, id)).run();
+            }
+            // Re-read by the exact id written (not by modelId — that would return the earliest row for a model id
+            // offered by multiple providers, not necessarily the one just upserted).
+            const row = rowById(id);
+            if (row === undefined) {
+              throw new Error(`model_catalog '${input.modelId}' not found after upsert`); // unreachable — just inserted/updated
+            }
+            return fromRow(row);
+          },
+          { behavior: 'immediate' },
+        ),
+      );
     },
 
     listByProvider: (providerId) =>

@@ -35,6 +35,25 @@ describe('withBusyRetry — unit (2.5.I)', () => {
     expect(sleeps).toEqual([25, 50]);
   });
 
+  it('the full default budget follows the exact linear schedule [25, 50, 75, 100] (locks base×attempt)', () => {
+    const sleeps: number[] = [];
+    let caught: unknown;
+    try {
+      // Never succeeds → spend the whole default budget (5 attempts ⇒ 4 backoffs). Pins the formula end-to-end
+      // so a mutation to a constant delay, or base×(attempt−1), would fail here even though the 2-sleep case passes.
+      withBusyRetry(
+        () => {
+          throw lockError('SQLITE_BUSY');
+        },
+        { baseDelayMs: 25, sleep: (ms) => sleeps.push(ms) },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(sleeps).toEqual([25, 50, 75, 100]);
+  });
+
   it('retries SQLITE_LOCKED as well', () => {
     let calls = 0;
     const result = withBusyRetry(
@@ -147,9 +166,15 @@ describe('withBusyRetry — real SQLITE_BUSY contention (2.5.I)', () => {
         2,
       );
     } finally {
-      holder.sqlite.close();
-      writer.sqlite.close();
-      rmSync(dir, { recursive: true, force: true });
+      try {
+        holder.sqlite.close();
+      } finally {
+        try {
+          writer.sqlite.close();
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
     }
   });
 
@@ -178,9 +203,15 @@ describe('withBusyRetry — real SQLITE_BUSY contention (2.5.I)', () => {
       expect(attempts).toBe(3); // the whole budget was spent before failing loud
       holder.sqlite.exec('COMMIT'); // release for teardown
     } finally {
-      holder.sqlite.close();
-      writer.sqlite.close();
-      rmSync(dir, { recursive: true, force: true });
+      try {
+        holder.sqlite.close();
+      } finally {
+        try {
+          writer.sqlite.close();
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
     }
   });
 });

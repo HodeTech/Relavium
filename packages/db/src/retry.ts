@@ -16,8 +16,14 @@
  * (ADR-0050's durability-first `persistEvent` posture: a swallowed write is silent data loss).
  *
  * The wrapped `fn` MUST be re-runnable: a lock fault rolls the transaction back with no partial write, and the
- * retry re-runs the whole `fn` from scratch. Both engine writers (`persistEvent`'s fold, the model-catalog
- * `replaceProviderModels` upsert, the provider `upsert`) are idempotent given the same input + DB state.
+ * retry re-runs the whole `fn` from scratch. The wrapped writers (`persistEvent`'s fold, the model-catalog
+ * `replaceProviderModels` bulk-upsert + `upsert`, the provider `upsert`) are idempotent given the same input +
+ * DB state.
+ *
+ * CAVEAT: `{ behavior: 'immediate' }` only applies to the OUTERMOST `BEGIN`. If a wrapped store method is ever
+ * called INSIDE another `db.transaction`, better-sqlite3 demotes it to a `SAVEPOINT` and the IMMEDIATE behavior
+ * is silently ignored. All current call sites invoke these as top-level store methods; a future batch-in-one-
+ * transaction caller must take the outer `BEGIN IMMEDIATE` itself.
  */
 
 /** Driver error codes we wait out: a lock we can retry. Anything else is a real fault → rethrow. */
@@ -64,7 +70,8 @@ function sleepSync(ms: number): void {
  * or an exhausted budget (fail-loud). Synchronous — it wraps a synchronous `db.transaction(...)` call.
  */
 export function withBusyRetry<T>(fn: () => T, options: BusyRetryOptions = {}): T {
-  const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+  // Floor at 1 so a stray `0`/negative can never disable the first attempt (or spin) — always at least one try.
+  const maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS);
   const baseDelayMs = options.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
   const sleep = options.sleep ?? sleepSync;
   for (let attempt = 1; ; attempt += 1) {

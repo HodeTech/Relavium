@@ -615,6 +615,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   state, so a torn read self-heals on the next fold. If tightened, wrap the caller-level reconstruction in one
   read transaction (as `loadFull` now does). *(low · packages/db run-history-store consumers + the resume
   caller; surfaced during 2.5.I S1 review)*
+- [ ] **The CLI chat persister writes a turn non-atomically — messages then session totals in separate
+  auto-committed statements.** `apps/cli/src/chat/persister.ts` appends the user + assistant messages and then
+  `updateSession`s the running totals as separate writes, so the DB legitimately passes through a state where a
+  turn's messages are present but its totals are stale. `sessionStore.loadFull`'s read transaction (2.5.I S1)
+  guarantees *snapshot* consistency (both reads see one DB snapshot) but not *turn* atomicity — a snapshot can
+  observe messages ahead of their totals. To make "totals always match the returned messages" hold, wrap each
+  turn's message-appends + `updateSession` in one host-side `db.transaction` (BEGIN IMMEDIATE). Bounded, host-side.
+  *(low · apps/cli/src/chat/persister.ts; surfaced during 2.5.I S2 review)*
 - [ ] **`relavium run` maps any `run:paused` to exit 3 (gate-paused); revisit when media host-wiring lands.**
   `run.ts` returns `EXIT_CODES.gatePaused` (3) for any `run:paused`, which is correct in 2.D because a
   human gate is the **only** `run:paused` source (no `mediaStore`/media-job host is wired, so a media-only
