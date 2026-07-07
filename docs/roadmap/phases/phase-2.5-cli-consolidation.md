@@ -11,7 +11,7 @@
 > the ADR-0062 compaction story) ✅ **Done (PR #65, merged 2026-07-05)**. The additive lane **2.5.H** (reasoning
 > render + live-turn feedback + actionable errors, EA6 amending ADR-0036) ✅ **Done (PR #67, 2026-07-07)** — **milestone
 > M2.5-3 reached** (with 2.5.E). **2.5.G** (onboarding wizard + Home `/models` + the live model catalog) ✅
-> **Done (PR #66, 2026-07-06)** behind [ADR-0063](../../decisions/0063-cli-config-write-contract.md)/[ADR-0064](../../decisions/0064-live-model-catalog.md)/[ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md)
+> **Done (PR #66, 2026-07-07)** behind [ADR-0063](../../decisions/0063-cli-config-write-contract.md)/[ADR-0064](../../decisions/0064-live-model-catalog.md)/[ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md)
 > (+ the ADR-0059/0066 model-UX follow-up) — **milestone M2.5-2 reached**. Remaining: the consolidation lanes 2.5.I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
@@ -408,9 +408,9 @@ overflows the context window; the summary is inspectable and the moment is a des
 > footer guard, the Home double-clear MCP-leak guard, best-effort auto-compaction, and the shared adapter
 > `CONTEXT_SEAM_DEFAULTS`.**
 
-### 2.5.G — Onboarding wizard, `/models`, and the live model catalog — ✅ **Done (PR #66, 2026-07-06)**
+### 2.5.G — Onboarding wizard, `/models`, and the live model catalog — ✅ **Done (PR #66, 2026-07-07)**
 
-> **Status:** ✅ **Done (PR #66, 2026-07-06)** — all **12** dependency-ordered steps (S1–S12) landed behind
+> **Status:** ✅ **Done (PR #66, 2026-07-07)** — all **12** dependency-ordered steps (S1–S12) landed behind
 > [ADR-0063](../../decisions/0063-cli-config-write-contract.md)/[ADR-0064](../../decisions/0064-live-model-catalog.md)/[ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md),
 > each with an Opus + Sonnet review round (six with an added security round: S2/S5/S6/S8/S9/S10); the post-2.5.G
 > model-UX follow-up ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md) mid-session reseat +
@@ -552,7 +552,7 @@ state; `NO_COLOR` is honoured.
 | In-phase | Completed by | Outcome |
 |----------|--------------|---------|
 | M2.5-1 Secure base ✅ **(PR #60, 2026-06-28)** | 2.5.A | Root-cause closed (capability gap + merge asymmetry); host seam reviewed |
-| M2.5-2 Home + entry + onboarding ✅ **(PR #66, 2026-07-06)** | 2.5.B + 2.5.C + 2.5.D + 2.5.F + 2.5.G | First-class entry + ergonomics + onboarding |
+| M2.5-2 Home + entry + onboarding ✅ **(PR #66, 2026-07-07)** | 2.5.B + 2.5.C + 2.5.D + 2.5.F + 2.5.G | First-class entry + ergonomics + onboarding |
 | M2.5-3 Modes + observability ✅ **(2026-07-07)** | 2.5.E + 2.5.H | Safe reseat-less mode system + per-tool approval + reasoning render + actionable errors |
 | M2.5-4 Consolidation | 2.5.I + 2.5.J | Harness + concurrency + docs-debt |
 

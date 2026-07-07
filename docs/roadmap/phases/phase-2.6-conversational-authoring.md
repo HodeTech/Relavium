@@ -3,6 +3,10 @@
 > Status: Planned. Depends on the Phase 2.5 spine (the wired tool-environment and the per-tool
 > approval / mode system). Spine: 2.6.A (`@relavium/authoring` package) → 2.6.B (conversational
 > authoring agent). Additive: 2.6.C / D / E.
+>
+> **Note (2026-07-07):** **2.6.C**'s mid-session `/models` model **reseat shipped early in 2.5.G** (ADR-0059,
+> PR #66, merged 2026-07-07); the "mid-session model switching" mentions in the Goal / Outcomes / In-scope /
+> Milestones / Exit-criteria below are therefore already realized — see §2.6.C. This phase is otherwise Planned.
 
 - **Related**: [../README.md](../README.md), [phase-2.5-cli-consolidation.md](phase-2.5-cli-consolidation.md), [phase-2-cli.md](phase-2-cli.md), [phase-3-desktop.md](phase-3-desktop.md), [phase-4-vscode.md](phase-4-vscode.md), [../../reference/contracts/workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md), [../../reference/contracts/agent-yaml-spec.md](../../reference/contracts/agent-yaml-spec.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0058–0060)
 
@@ -119,7 +123,7 @@ shared with 2.6.A.**
 ### 2.6.C — Mid-session model reseat (`/models` mid-chat)
 
 > **Note (2026-07-07):** ADR-0059 was pulled forward and the `/models` mid-chat reseat **shipped early in
-> 2.5.G**'s model-UX follow-up (PR #66, merged 2026-07-06). This workstream is retained for any residual
+> 2.5.G**'s model-UX follow-up (PR #66, merged 2026-07-07). This workstream is retained for any residual
 > Phase-2.6 polish and as the cross-reference home.
 
 A session binds one model for its lifetime ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md);

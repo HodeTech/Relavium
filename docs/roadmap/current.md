@@ -187,7 +187,7 @@ all recorded in the ADR-0061 "Refined at implementation" append. **2.5.F** (the 
 `/clear` (a host-level fresh-session swap across `chat`/`chat-resume`/Home, TTY-interactive only), the
 `session:compacting` "Summarizing…" moment event (amending ADR-0036), and the footer context-fullness indicator —
 completing compaction alongside the earlier `/compact` + `/trim` + automatic compaction. **2.5.G** (onboarding
-wizard + Home `/models` + the live model catalog) is ✅ **Done (PR #66, 2026-07-06)** — its scope **expanded to
+wizard + Home `/models` + the live model catalog) is ✅ **Done (PR #66, 2026-07-07)** — its scope **expanded to
 Option A**: a **live** model catalog (per-key provider discovery + a DB cache + refresh + a static/live merge)
 and a complete model-pricing story (user-supplied pricing that governs cost), behind three ADRs
 ([ADR-0063](../decisions/0063-cli-config-write-contract.md) config-write ·
