@@ -1,7 +1,7 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIError, APIUserAbortError } from 'openai';
 import { describe, expect, it } from 'vitest';
 
-import type { AbortSignalLike } from '@relavium/shared';
+import type { AbortSignalLike, ReasoningEffort } from '@relavium/shared';
 
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
@@ -231,7 +231,7 @@ describe('OpenAI-compatible adapter', () => {
     });
   });
 
-  it('maps the reasoning-effort tier to OpenAI reasoning_effort (max→xhigh, off→none, unset omitted); DeepSeek is not mapped (ADR-0066)', async () => {
+  it('maps the reasoning-effort tier per provider: OpenAI reasoning_effort (max→xhigh, off→none) + DeepSeek thinking (ADR-0066)', async () => {
     let sent: Record<string, unknown> = {};
     const oai = createOpenAiAdapter({
       fetch: (_input, init) => {
@@ -257,7 +257,9 @@ describe('OpenAI-compatible adapter', () => {
     await oai.generate({ ...base }, 'k'); // unset ⇒ omitted (provider default, unchanged behavior)
     expect('reasoning_effort' in sent).toBe(false);
 
-    // DeepSeek (the other id this shared adapter serves) controls thinking differently — reasoning_effort is NOT sent.
+    // DeepSeek (the other id this shared adapter serves) controls thinking via a `thinking` OBJECT, not the OpenAI
+    // `reasoning_effort` key (ADR-0066): off→disabled; DeepSeek has only two graded levels, so low/medium/high→high
+    // and max→max; unset ⇒ omitted.
     let dsSent: Record<string, unknown> = {};
     const ds = createOpenAiAdapter({
       providerId: 'deepseek',
@@ -266,11 +268,45 @@ describe('OpenAI-compatible adapter', () => {
         return Promise.resolve(okResponse());
       },
     });
-    await ds.generate(
-      { model: 'deepseek-v4-flash', messages: base.messages, reasoningEffort: 'high' },
-      'k',
-    );
-    expect('reasoning_effort' in dsSent).toBe(false);
+    const dsReq = (effort?: ReasoningEffort): Parameters<typeof ds.generate>[0] => ({
+      model: 'deepseek-v4-flash',
+      messages: base.messages,
+      ...(effort === undefined ? {} : { reasoningEffort: effort }),
+    });
+    await ds.generate(dsReq('high'), 'k');
+    expect('reasoning_effort' in dsSent).toBe(false); // never the OpenAI key
+    expect(dsSent['thinking']).toEqual({ type: 'enabled', reasoning_effort: 'high' });
+    await ds.generate(dsReq('off'), 'k');
+    expect(dsSent['thinking']).toEqual({ type: 'disabled' }); // off DISABLES thinking
+    await ds.generate(dsReq('max'), 'k');
+    expect(dsSent['thinking']).toEqual({ type: 'enabled', reasoning_effort: 'max' }); // top graded level
+    await ds.generate(dsReq('low'), 'k');
+    expect(dsSent['thinking']).toEqual({ type: 'enabled', reasoning_effort: 'high' }); // coarsened to high
+    await ds.generate(dsReq(), 'k'); // unset ⇒ omitted (provider default)
+    expect('thinking' in dsSent).toBe(false);
+
+    // The streaming path spreads the SAME buildCommonBody, so the `thinking` control must reach the wire there too.
+    let dsStreamSent: Record<string, unknown> = {};
+    const dsStream = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: (_input, init) => {
+        dsStreamSent = parseJsonBody(init);
+        return Promise.resolve(
+          sse([
+            {
+              id: 's',
+              object: 'chat.completion.chunk',
+              created: 0,
+              model: 'deepseek-v4-flash',
+              choices: [{ index: 0, delta: { content: 'hi' }, finish_reason: 'stop' }],
+            },
+          ]),
+        );
+      },
+      maxRetries: 0,
+    });
+    await collect(dsStream.stream(dsReq('max'), 'k'));
+    expect(dsStreamSent['thinking']).toEqual({ type: 'enabled', reasoning_effort: 'max' });
   });
 
   it('round-trips inline audio-out: lowers output_modalities → modalities+audio and parses the response (1.AG/ADR-0046)', async () => {

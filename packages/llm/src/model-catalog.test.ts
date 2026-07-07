@@ -46,10 +46,11 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
 
   it('surfaces supportsReasoning from the STATIC registry tier (ADR-0066) — true for a reasoning model, false otherwise', () => {
     const entries = mergeModelCatalog({ now: BEFORE_DEEPSEEK_DEPRECATION });
-    // A registry model tagged `reasoning: true` (flagship) exposes the effort-controllable capability…
+    // A registry model tagged `reasoning: true` exposes the effort-controllable capability (incl. DeepSeek v4)…
     expect(byId(entries, 'claude-opus-4-8')?.supportsReasoning).toBe(true);
-    // …a registry model NOT so tagged (DeepSeek is deferred, ADR-0066) is false — the picker skips its effort sub-step.
-    expect(byId(entries, 'deepseek-v4-flash')?.supportsReasoning).toBe(false);
+    expect(byId(entries, 'deepseek-v4-flash')?.supportsReasoning).toBe(true);
+    // …a registry model NOT so tagged (the legacy non-thinking `deepseek-chat`) is false — no effort sub-step.
+    expect(byId(entries, 'deepseek-chat')?.supportsReasoning).toBe(false);
   });
 
   it('a LIVE-only model gates via the §4 id heuristic — a known reasoning family ON, an ambiguous id OFF (ADR-0066)', () => {

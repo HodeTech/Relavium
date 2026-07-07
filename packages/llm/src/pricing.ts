@@ -178,8 +178,10 @@ export const MODEL_PRICING = {
   // --- DeepSeek (verified 2026-07-03: api-docs.deepseek.com/quick_start/pricing; via the OpenAI-compatible
   // adapter) — the current ids are `deepseek-v4-flash` (default tier) and `deepseek-v4-pro` (premium tier). Each
   // serves BOTH non-thinking and thinking (default) modes on ONE id — the mode is a request param, not a
-  // separate model — so there is no per-mode row. The legacy `deepseek-chat` / `deepseek-reasoner` ids (the old
-  // non-thinking / thinking aliases of v4-flash) are kept below until they deprecate on 2026-07-24 15:59 UTC.
+  // separate model — so there is no per-mode row. Reasoning-effort IS controllable (ADR-0066): the create-chat-
+  // completion API takes a `thinking` object (`type: enabled|disabled` + `reasoning_effort: high|max`), mapped in
+  // openai.ts (`reasoning: true` below). The legacy `deepseek-chat` (non-thinking) / `deepseek-reasoner` (thinking)
+  // aliases are kept below until they deprecate on 2026-07-24 15:59 UTC and stay reasoning-uncontrollable.
   'deepseek-v4-flash': {
     provider: 'deepseek',
     nativeId: 'deepseek-v4-flash',
@@ -189,6 +191,7 @@ export const MODEL_PRICING = {
     inputPerMtokMicrocents: usd(0.14),
     outputPerMtokMicrocents: usd(0.28),
     cachedInputPerMtokMicrocents: usd(0.0028), // cache-hit input
+    reasoning: true, // ADR-0066: v4 exposes a controllable `thinking` param (off / high / max)
   },
   'deepseek-v4-pro': {
     provider: 'deepseek',
@@ -199,6 +202,7 @@ export const MODEL_PRICING = {
     inputPerMtokMicrocents: usd(0.435),
     outputPerMtokMicrocents: usd(0.87),
     cachedInputPerMtokMicrocents: usd(0.003625), // cache-hit input
+    reasoning: true, // ADR-0066: v4 exposes a controllable `thinking` param (off / high / max)
   },
   // Legacy aliases — deprecating 2026-07-24 15:59 UTC. Kept so an existing agent/config that still names them
   // keeps costing correctly until then; the pricing page no longer lists them, so these hold the last verified
@@ -252,16 +256,20 @@ export const KNOWN_MODEL_IDS: readonly CanonicalModelId[] =
  * live-discovered model whose list endpoint omits a reasoning flag). Each arm is a family/pattern where the WHOLE
  * matched set reasons, so a new member of a known reasoning family (e.g. a next o-series id) gates correctly before
  * the registry is updated. Deliberately **narrow**: it does NOT prefix-match ambiguous families whose lineup mixes
- * reasoning and non-reasoning members (base Claude Sonnet, Gemini by version, DeepSeek — reasoning deferred), because
- * OVER-matching would send the tier to a non-reasoning model and earn a provider rejection — strictly worse than the
- * safe under-match (no effort UX until the registry adds the model, the same maintenance shape as pricing). The
- * `-chat` exclusion keeps OpenAI's non-reasoning `gpt-5-chat` conversational variant out.
+ * reasoning and non-reasoning members by *version* (base Claude Sonnet, Gemini by version), because OVER-matching
+ * would send the tier to a non-reasoning model and earn a provider rejection — strictly worse than the safe
+ * under-match (no effort UX until the registry adds the model, the same maintenance shape as pricing). DeepSeek IS
+ * matched, but only the `deepseek-v[4-9]` prefix (whose whole set serves the `thinking` param); its legacy
+ * `deepseek-chat`/`-reasoner` aliases are not `v`-prefixed, so they never match. The `-chat` exclusion keeps
+ * OpenAI's non-reasoning `gpt-5-chat` conversational variant — and any future `deepseek-v_-chat` non-thinking
+ * variant — out.
  */
 export function reasoningModelIdHeuristic(model: string): boolean {
   const m = model.toLowerCase();
   if (/^o\d/.test(m)) return true; // OpenAI o-series (o1 / o3 / o4 / o5+) — the entire family reasons
   if (m.startsWith('gpt-5') && !m.includes('chat')) return true; // the reasoning gpt-5 line (gpt-5-chat is non-reasoning)
   if (m.startsWith('claude-opus')) return true; // Claude Opus reasons (extended thinking)
+  if (/^deepseek-v[4-9]/.test(m) && !m.includes('chat')) return true; // DeepSeek v4+ serves the `thinking` param; a future `-chat` non-thinking variant stays out (ADR-0066 §4)
   if (m.includes('thinking')) return true; // an explicit "thinking" model id (e.g. a Gemini thinking variant)
   return false;
 }

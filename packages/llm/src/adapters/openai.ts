@@ -664,6 +664,24 @@ const OPENAI_REASONING_EFFORT: Record<
   max: 'xhigh',
 };
 
+/** DeepSeek's native reasoning control (a Relavium-local shape — NOT a vendor SDK type — so nothing crosses the
+ *  seam): the create-chat-completion `thinking` object (verified 2026-07-07, api-docs.deepseek.com). */
+interface DeepSeekThinking {
+  readonly type: 'enabled' | 'disabled';
+  readonly reasoning_effort?: 'high' | 'max';
+}
+
+/** ADR-0066: the normalized tier → DeepSeek's `thinking` object. `off` DISABLES thinking; DeepSeek's thinking has
+ *  only two graded levels (`high`/`max`), so `low`/`medium`/`high` coarsen to `high` and `max` → `max` (an honest,
+ *  documented coarsening onto v4's actual capability). */
+const DEEPSEEK_THINKING: Record<ReasoningEffort, DeepSeekThinking> = {
+  off: { type: 'disabled' },
+  low: { type: 'enabled', reasoning_effort: 'high' },
+  medium: { type: 'enabled', reasoning_effort: 'high' },
+  high: { type: 'enabled', reasoning_effort: 'high' },
+  max: { type: 'enabled', reasoning_effort: 'max' },
+};
+
 function toOpenAiToolChoice(choice: ToolChoice): OpenAI.ChatCompletionToolChoiceOption {
   if (choice === 'auto') {
     return 'auto';
@@ -686,11 +704,14 @@ function toJsonSchemaName(name: string | undefined): string {
   return sanitized.length > 0 ? sanitized : 'response';
 }
 
+/** The shared request body: the OpenAI non-streaming params PLUS DeepSeek's `thinking` extension (a Relavium-local
+ *  optional field the OpenAI-compatible endpoint accepts; assignable to the SDK create() param as an extra key). */
+type OpenAiCompatibleBody = Omit<OpenAI.ChatCompletionCreateParamsNonStreaming, 'stream'> & {
+  thinking?: DeepSeekThinking;
+};
+
 /** The shared request body (everything except the `stream` discriminant each method sets). */
-function buildCommonBody(
-  req: LlmRequest,
-  provider: ProviderId,
-): Omit<OpenAI.ChatCompletionCreateParamsNonStreaming, 'stream'> {
+function buildCommonBody(req: LlmRequest, provider: ProviderId): OpenAiCompatibleBody {
   const messages: OpenAI.ChatCompletionMessageParam[] = [];
   if (req.system !== undefined) {
     messages.push({ role: 'system', content: req.system });
@@ -698,7 +719,7 @@ function buildCommonBody(
   for (const message of req.messages) {
     messages.push(...toOpenAiMessages(message, provider));
   }
-  const body: Omit<OpenAI.ChatCompletionCreateParamsNonStreaming, 'stream'> = {
+  const body: OpenAiCompatibleBody = {
     model: req.model,
     messages,
   };
@@ -717,12 +738,16 @@ function buildCommonBody(
   if (req.maxTokens !== undefined) {
     body.max_tokens = req.maxTokens;
   }
-  // ADR-0066: map the normalized reasoning-effort tier to OpenAI's native `reasoning_effort` (also a tier). ONLY for
-  // the `openai` provider — DeepSeek (the other id this shared adapter serves) controls thinking differently (its
-  // own follow-up), so its effort is not sent here. The host gates this to reasoning-capable models (a non-reasoning
-  // model would reject it), and `body` is spread LAST below so this mapped field wins over any providerOptions echo.
-  if (provider === 'openai' && req.reasoningEffort !== undefined) {
-    body.reasoning_effort = OPENAI_REASONING_EFFORT[req.reasoningEffort];
+  // ADR-0066: map the normalized reasoning-effort tier to each provider's NATIVE control. OpenAI takes a
+  // `reasoning_effort` tier; DeepSeek (the other id this shared adapter serves) takes a `thinking` object
+  // (off→disabled, else enabled + high/max). The host gates this to reasoning-capable models (a non-reasoning model
+  // would reject it), and `body` is spread LAST below so the mapped field wins over any providerOptions echo.
+  if (req.reasoningEffort !== undefined) {
+    if (provider === 'openai') {
+      body.reasoning_effort = OPENAI_REASONING_EFFORT[req.reasoningEffort];
+    } else if (provider === 'deepseek') {
+      body.thinking = DEEPSEEK_THINKING[req.reasoningEffort];
+    }
   }
   if (req.stopSequences !== undefined) {
     body.stop = req.stopSequences;
