@@ -290,7 +290,12 @@ describe('sweepHostMediaBestEffort (the run/gate run-end wrapper — real db + C
       db: client.db,
       casRoot,
       currentRunId: 'run-1',
-      orphanMinAgeMs: 0, // treat the just-written blob as settled for the test
+      orphanMinAgeMs: 0,
+      // Inject a clock a minute in the FUTURE so `settledBefore` (now − 0) is unambiguously past the orphan's
+      // filesystem `mtimeMs`. Without it (`now = Date.now`), a coarse/rounded-up mtime can land above the
+      // just-captured `now`, so `mtimeMs <= settledBefore` is false and the orphan is skipped as a concurrent
+      // writer — the source of this test's flake.
+      now: () => Date.now() + 60_000,
     });
     expect(report?.orphanSweepRan).toBe(true);
     expect(report?.orphansDeleted).toBe(1);

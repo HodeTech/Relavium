@@ -1,4 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -181,6 +182,33 @@ describe('buildChatSession', () => {
     expect(toolCall?.type === 'agent:tool_call' && toolCall.toolId).toBe('read_file');
     const tokens = events.flatMap((e) => (e.type === 'agent:token' ? [e.token] : [])).join('');
     expect(tokens).toContain('the answer'); // the post-tool answer reached the stream
+  });
+
+  it('dispatches git_status through the process arm end-to-end (2.5.A union pin: session→host→process)', async () => {
+    // The process arm and the session→host dispatch are each covered separately (assemble.test.ts / the
+    // read_file case above); this pins the UNION for a real process-arm tool. git_status is granted to the
+    // default agent, pre-approved (no confirm gate), and takes no model-controlled args, so it reaches the host.
+    const repo = mkdtempSync(join(tmpdir(), 'relavium-git-'));
+    execFileSync('git', ['init', '-q'], { cwd: repo }); // `git status` needs no user identity (unlike commits)
+    try {
+      const built = await build({
+        cwd: repo,
+        providers: scriptedResolver([callWithArgs('c1', 'git_status', {}), textTurn('clean')]),
+      });
+      built.session.start();
+      await built.session.sendMessage('what changed?');
+      built.session.cancel();
+      const events = await drainHandle(built.handle.events);
+
+      // The git_status tool call was annotated on the stream (the session routed it to the host)…
+      const toolCall = events.find((e) => e.type === 'agent:tool_call');
+      expect(toolCall?.type === 'agent:tool_call' && toolCall.toolId).toBe('git_status');
+      // …the process arm ran it and the result folded back, so the post-tool answer streamed (the loop completed).
+      const tokens = events.flatMap((e) => (e.type === 'agent:token' ? [e.token] : [])).join('');
+      expect(tokens).toContain('clean');
+    } finally {
+      rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 
   it('enforces [chat].max_turns: an over-cap sendMessage settles loudly as turn_limit with no provider call', async () => {
