@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,7 +14,6 @@ import {
   runMigrations,
 } from '@relavium/db';
 import { RunEventSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
-import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import { runCommand } from '../commands/run.js';
@@ -30,12 +30,16 @@ import { captureIo } from '../test-support.js';
  *    interleaved. Proves the run and chat write paths coexist on one file with no interference and consistent
  *    reads. A single Node process (synchronous better-sqlite3) can't truly overlap two transactions, so this
  *    proves coexistence, not lock contention —
- * 2. **Two-process contention** (real child processes): the genuine cross-process WAL path. Two child
- *    processes race a burst of provider `upsert`s (the BEGIN IMMEDIATE + `withBusyRetry` write path) against
- *    the same file; both must land every write with no escaped `SQLITE_BUSY`. This is the only form that
- *    reproduces the real write-lock contention ADR-0064 §5 names. It needs the built `@relavium/db` (the child
- *    can't use vitest's source resolution); it is visibly SKIPPED — never silently passed — if the dist is
- *    absent (a `pnpm turbo run build` produces it; CI builds upstream packages before this test).
+ * 2. **Two-process cross-process safety** (real child processes): the genuine two-OS-process WAL path a
+ *    single synchronous process cannot reach (separate SQLite instances + real OS file locks). Two children
+ *    race a burst of provider `upsert`s (the BEGIN IMMEDIATE + `withBusyRetry` write path) while the parent
+ *    briefly HOLDS the write lock, forcing a real cross-process busy-wait every run; both children must then
+ *    land every write with no escaped `SQLITE_BUSY`. This is a cross-process *safety/coexistence* smoke — the
+ *    precise clause-guards for the Step-4 fix are the DETERMINISTIC white-box tests in `@relavium/db`:
+ *    `provider-store.test.ts` (spies `db.transaction(..., { behavior: 'immediate' })`) and `retry.test.ts`
+ *    (a held-lock released mid-backoff exercising `withBusyRetry` + the fail-loud budget). It needs the built
+ *    `@relavium/db` (the child can't use vitest's source resolution); it is visibly SKIPPED — never silently
+ *    passed — if the dist is absent (a `pnpm turbo run build` produces it; CI builds upstream packages first).
  */
 
 const FIXTURES_DIR = fileURLToPath(new URL('./fixtures/', import.meta.url));
@@ -164,7 +168,7 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
   });
 
   it.skipIf(!existsSync(DB_DIST))(
-    'contention: two child processes race provider upserts on one file — all writes land, no SQLITE_BUSY escapes',
+    'cross-process safety: two child processes contend on one file (parent holds the lock) — all writes land',
     async () => {
       const dir = mkdtempSync(join(tmpdir(), 'relavium-concurrency-2p-'));
       const dbPath = join(dir, 'history.db');
@@ -173,16 +177,39 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
       runMigrations(setup.db);
       setup.sqlite.close();
       const PER_CHILD = 40;
+      // A third connection that HOLDS the single WAL write lock while the children start, so their first
+      // upsert genuinely busy-waits cross-process every run (not luck-of-the-overlap). Released after a short
+      // hold; both children then acquire the lock in turn and complete.
+      const holder = createClient(dbPath);
+      let released = false;
+      const releaseLock = (): void => {
+        if (!released) {
+          released = true;
+          holder.sqlite.exec('COMMIT');
+        }
+      };
       try {
-        const [a, b] = await Promise.all([
+        holder.sqlite.exec('BEGIN IMMEDIATE'); // acquire the write lock; the children block on it
+        const childrenDone = Promise.all([
           runChild([DB_DIST, dbPath, 'a', String(PER_CHILD)]),
           runChild([DB_DIST, dbPath, 'b', String(PER_CHILD)]),
         ]);
-        // Both children exited cleanly (no escaped SQLITE_BUSY / no thrown write) — a failure prints to stderr.
-        expect(a.stderr).toBe('');
+        // Give both children time to spawn + reach their first (blocked) write, then release the lock. If the
+        // release beats a slow spawn, the run simply proceeds without contention — the pass condition never
+        // depends on the timing, so this is a best-effort force, not a flake vector.
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 150);
+        });
+        releaseLock();
+        const [a, b] = await childrenDone;
+
+        // Both children exited cleanly. A real failure prints the error to stderr + exits 1; a benign Node
+        // warning line (deprecation, experimental flag) is tolerated — assert the exit code and the ABSENCE
+        // of a SQLite/Error line, not exact-empty stderr (which a CI runner's warnings could break).
         expect(a.code).toBe(0);
-        expect(b.stderr).toBe('');
+        expect(a.stderr).not.toMatch(/SQLITE|Error/i);
         expect(b.code).toBe(0);
+        expect(b.stderr).not.toMatch(/SQLITE|Error/i);
 
         // Every write of BOTH children landed: 2 × PER_CHILD distinct providers, none lost or corrupted.
         const verify = createClient(dbPath);
@@ -201,6 +228,8 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
           verify.sqlite.close();
         }
       } finally {
+        releaseLock(); // release even if an assertion threw before the release point
+        holder.sqlite.close();
         rmSync(dir, { recursive: true, force: true });
       }
     },
