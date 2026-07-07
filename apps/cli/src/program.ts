@@ -26,11 +26,14 @@ export const CLI_VERSION =
 const GLOBAL_OPTIONS_HELP = `
 Global options (usable anywhere on the command line):
   --json            emit machine-readable NDJSON output (disables the TUI)
+  --color           force colored output on
   --no-color        disable colored output
   --cwd <dir>       run as if started in <dir>
   --config <path>   use an explicit config file
   -v, --verbose     print verbose diagnostics to stderr
-  -q, --quiet       suppress non-essential output`;
+  -q, --quiet       suppress non-essential output
+
+Color precedence: --color/--no-color > NO_COLOR (any value ⇒ off) > FORCE_COLOR (⇒ on) > on.`;
 
 /**
  * Build the `commander` program: the full subcommand surface plus a bare-invocation help

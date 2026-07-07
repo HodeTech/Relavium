@@ -29,8 +29,12 @@ describe('extractGlobalOptions', () => {
     expect(extractGlobalOptions(argv('--cwd=/y', 'list')).raw.cwd).toBe('/y');
   });
 
-  it('treats --no-color as color off', () => {
+  it('treats --no-color as color off and --color as color on', () => {
     expect(extractGlobalOptions(argv('--no-color')).raw.color).toBe(false);
+    expect(extractGlobalOptions(argv('--color')).raw.color).toBe(true);
+    // Both present ⇒ last flag wins (idempotent boolean flags, applied in argv order).
+    expect(extractGlobalOptions(argv('--no-color', '--color')).raw.color).toBe(true);
+    expect(extractGlobalOptions(argv('--color', '--no-color')).raw.color).toBe(false);
   });
 
   it('reports (not throws) invalid_invocation when --cwd / --config has no argument', () => {
@@ -91,6 +95,43 @@ describe('resolveGlobalOptions', () => {
     expect(() => resolveGlobalOptions({ verbose: true, quiet: true }, '/w')).toThrowError(
       'cannot be combined',
     );
+  });
+
+  describe('color precedence (2.5.J): flag > NO_COLOR > FORCE_COLOR > on', () => {
+    const color = (
+      raw: Parameters<typeof resolveGlobalOptions>[0],
+      env: Record<string, string | undefined> = {},
+    ): boolean => resolveGlobalOptions(raw, '/w', env).color;
+
+    it('defaults ON with no flag and no env', () => {
+      expect(color({})).toBe(true);
+    });
+
+    it('an explicit flag wins over any env (both directions)', () => {
+      expect(color({ color: false }, { FORCE_COLOR: '1' })).toBe(false); // --no-color beats FORCE_COLOR
+      expect(color({ color: true }, { NO_COLOR: '1' })).toBe(true); // --color beats NO_COLOR
+    });
+
+    it('NO_COLOR turns color OFF for ANY non-empty value (no-color.org)', () => {
+      expect(color({}, { NO_COLOR: '1' })).toBe(false);
+      expect(color({}, { NO_COLOR: 'anything' })).toBe(false);
+      expect(color({}, { NO_COLOR: '0' })).toBe(false); // even '0' is non-empty ⇒ off
+      expect(color({}, { NO_COLOR: '' })).toBe(true); // empty ⇒ not set ⇒ falls through
+    });
+
+    it('NO_COLOR beats FORCE_COLOR (opt-out wins over opt-in)', () => {
+      expect(color({}, { NO_COLOR: '1', FORCE_COLOR: '1' })).toBe(false);
+    });
+
+    it('FORCE_COLOR turns color ON only for a truthy value; 0/false/empty fall through to default-on', () => {
+      expect(color({}, { FORCE_COLOR: '1' })).toBe(true);
+      expect(color({}, { FORCE_COLOR: 'true' })).toBe(true);
+      // These do not FORCE on (and there is no NO_COLOR), so the default-on applies — FORCE_COLOR never
+      // turns color OFF; that is NO_COLOR / --no-color's job.
+      expect(color({}, { FORCE_COLOR: '0' })).toBe(true);
+      expect(color({}, { FORCE_COLOR: 'false' })).toBe(true);
+      expect(color({}, { FORCE_COLOR: '' })).toBe(true);
+    });
   });
 });
 

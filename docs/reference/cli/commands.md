@@ -37,9 +37,16 @@ environment disables the interactive TUI but does not by itself switch stdout to
 ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). Exit codes are CI-friendly
 (see [Exit codes](#exit-codes)).
 
-`--no-color` does **not** change the mode — the interactive TUI stays active and only ANSI color/dim
-are suppressed (plain output without a renderer swap). A swap to the Plain renderer happens only on
+`--no-color` (and `--color`) do **not** change the mode — the interactive TUI stays active and only ANSI
+color/dim are suppressed (plain output without a renderer swap). A swap to the Plain renderer happens only on
 no-TTY / `CI=true`, and to NDJSON only on `--json`.
+
+**Color precedence.** ANSI styling is orthogonal to the output mode above, resolved with this precedence:
+an explicit `--color` / `--no-color` flag > the `NO_COLOR` env var (**any** non-empty value ⇒ off, the
+[no-color.org](https://no-color.org) accessibility contract) > the `FORCE_COLOR` env var (any value other than
+`0`/`false`/empty ⇒ on) > **on** by default. `NO_COLOR` intentionally beats `FORCE_COLOR` — a user who opts
+out of color wins over a tool/CI that opts in. (A `--json`/CI/no-TTY stream carries no ANSI regardless — that
+is the separate output-mode selection above.)
 
 ### The `--json` machine-output contract
 
@@ -86,7 +93,8 @@ before parsing the subcommand).
 | Flag | Effect |
 |------|--------|
 | `--json` | Emit machine-readable NDJSON output (disables the TUI) — see [Output modes](#output-modes). |
-| `--no-color` | Disable colored output. |
+| `--color` | Force colored (ANSI) output on. |
+| `--no-color` | Disable colored (ANSI) output. |
 | `--cwd <dir>` | Run as if started in `<dir>` (project discovery and relative paths resolve from here). |
 | `--config <path>` | Use an explicit global config file instead of `~/.relavium/config.toml` — the project `.relavium/` layers still apply ([config-spec.md](../contracts/config-spec.md)). |
 | `-v, --verbose` | Print verbose diagnostics to stderr. |
