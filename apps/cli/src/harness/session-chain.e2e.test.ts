@@ -154,7 +154,11 @@ describe('session chain e2e (2.5.I S4) — Home→chat→resume→export over a 
       const freshInput = loaded.session.totalInputTokens;
       const freshOutput = loaded.session.totalOutputTokens;
       const freshCost = loaded.session.totalCostMicrocents;
-      expect(freshInput).toBeGreaterThan(0); // the fresh turn recorded real usage (so the doubling below has teeth)
+      // The fresh turn recorded real usage on every axis, so the doubling below has teeth on all three (a 0
+      // would make `2 × 0 === 0` pass trivially and silently lose the accumulation guarantee).
+      expect(freshInput).toBeGreaterThan(0);
+      expect(freshOutput).toBeGreaterThan(0);
+      expect(freshCost).toBeGreaterThan(0);
 
       const capture = capturingResolver('reply from the resumed session');
       const resumed = await buildResumedChatSession({
@@ -181,13 +185,16 @@ describe('session chain e2e (2.5.I S4) — Home→chat→resume→export over a 
       persister.close();
 
       // The resumed turn's provider request carried the reconstructed PRIOR transcript into the model's context
-      // (the defining behavior of resume) — not merely appended DB rows.
+      // (the defining behavior of resume) — not merely appended DB rows. Assert the exact role + order + text of
+      // the reconstructed history followed by the new user turn, so a scrambled/duplicated/mis-tagged
+      // reconstruction (which a substring check would miss) fails here.
+      expect(capture.requests).toHaveLength(1); // exactly one provider call drove the resumed turn
       const resumedRequest = capture.requests[0];
-      expect(resumedRequest).toBeDefined();
-      const requestJson = JSON.stringify(resumedRequest?.messages);
-      expect(requestJson).toContain('first user message');
-      expect(requestJson).toContain('reply from the fresh session');
-      expect(requestJson).toContain('second user message');
+      expect(resumedRequest?.messages).toEqual([
+        { role: 'user', content: [{ type: 'text', text: 'first user message' }] },
+        { role: 'assistant', content: [{ type: 'text', text: 'reply from the fresh session' }] },
+        { role: 'user', content: [{ type: 'text', text: 'second user message' }] },
+      ]);
 
       // The full chain persisted, in order, gap-free: two complete turns.
       const full = second.store.loadFull(SESSION_ID);
