@@ -132,6 +132,79 @@ export function formatTurnSummary(summary: TurnSummary): string {
   return parts.join(' · ');
 }
 
+/**
+ * Context-overflow heuristic (2.5.H): a request that exceeds the model context window surfaces as `validation` (a
+ * provider `bad_request`), a code shared with an authoring/shape error — so we can only DISTINGUISH the overflow by
+ * a keyword match on the (never-displayed) provider message. Matched substrings cover the common provider phrasings
+ * (OpenAI `context_length_exceeded` / "maximum context length", Anthropic "prompt is too long", Gemini "input token
+ * count … exceeds"). This is a SECONDARY net — 2.5.F auto-compaction (ADR-0062) pre-empts most overflows; this fires
+ * for a model with no known window or `auto_compact = false`. Reading the message for a keyword is NOT displaying it
+ * (the hint returned is a STATIC host string), so no provider text is echoed.
+ */
+const CONTEXT_OVERFLOW_MARKERS: readonly string[] = [
+  'context window',
+  'context length',
+  'context_length',
+  'maximum context',
+  'prompt is too long',
+  'too many tokens',
+  'token limit',
+  'input token count',
+  'exceeds the maximum',
+];
+
+function looksLikeContextOverflow(message: string | undefined): boolean {
+  if (message === undefined || message.length === 0) return false;
+  const lower = message.toLowerCase();
+  return CONTEXT_OVERFLOW_MARKERS.some((marker) => lower.includes(marker));
+}
+
+/**
+ * An **actionable, secret-free recovery hint** for a failed turn's `ErrorCode` (2.5.H) — a one-line next step that
+ * makes explicit **the session survives** (a failed turn settles `session:turn_completed`, never a terminal, so the
+ * REPL stays live). Extends the "say so plainly" philosophy from the 2.5.A capability gap to the transport / quota /
+ * limit classes. Returns `undefined` for a code with no actionable guidance (`cancelled` is user-initiated;
+ * `sandbox_error` is not reachable on the chat path). The returned string is ALWAYS a static host label — it never
+ * interpolates the provider `message` (only the context-overflow heuristic READS it, to pick the right static hint).
+ */
+export function errorRecoveryHint(
+  code: string | undefined,
+  message?: string | undefined,
+): string | undefined {
+  switch (code) {
+    case 'provider_rate_limit':
+      return 'Rate-limited by the provider — Relavium already retried with backoff + failover. The session is still active; resend if the turn did not finish.';
+    case 'provider_unavailable':
+      return 'The provider was unavailable — Relavium tried the fallback chain. The session is still active; try again.';
+    case 'provider_auth':
+      return 'Provider authentication failed — check the API key, or unlock the OS keychain if it locked mid-session. The session is still active; fix the key (`relavium provider …`) and resend.';
+    case 'content_filter':
+      return 'The provider blocked the content by its policy. The session is still active; rephrase and resend.';
+    case 'validation':
+      // Only the context-overflow shape gets an actionable hint — a generic validation error has no chat-side remedy.
+      return looksLikeContextOverflow(message)
+        ? 'The request exceeded the model context window — run `/compact` or `/trim` to reclaim room, then resend. The session is still active.'
+        : undefined;
+    case 'tool_failed':
+      return 'A tool call failed (a transient error — e.g. an MCP-server timeout); Relavium retried within budget. The session is still active; try again.';
+    case 'tool_unavailable':
+      return "That tool isn't wired in this session — the model can answer without it. The session is still active.";
+    case 'tool_denied':
+      return 'The tool was denied by the current mode/policy — switch with `/mode` if that was intended. The session is still active.';
+    case 'budget_exceeded':
+      return 'The turn hit the session cost cap — raise `[chat].max_cost_microcents`, or `/clear` to reset the running total. The session is still active.';
+    case 'run_timeout':
+      return 'The turn timed out. The session is still active; try again.';
+    case 'turn_limit':
+      return 'The turn hit the tool-call limit. The session is still active; send another message to continue.';
+    case 'internal':
+      return 'An unexpected error occurred. The session is still active; try again — if it persists, quote the correlation id from the logs.';
+    default:
+      // `cancelled` (user-initiated), `sandbox_error` (not chat-reachable), or an unknown code — no extra hint.
+      return undefined;
+  }
+}
+
 /** The in-flight busy line: its text plus whether it renders as a DIM, truncate-end STATUS line (compaction /
  *  shell / the pre-token "Working…" line) or as PLAIN, full-width streaming CONTENT (the answer token line). */
 export interface BusyLine {

@@ -1313,7 +1313,7 @@ describe('makePlainPrinter', () => {
     expect(out()).toBe('\n');
   });
 
-  it('marks a failed turn with its error code, secret-free', () => {
+  it('marks a failed turn with its error code + an actionable recovery hint, secret-free (2.5.H)', () => {
     const { io, out } = captureIo();
     const print = makePlainPrinter(io);
     print({
@@ -1324,7 +1324,25 @@ describe('makePlainPrinter', () => {
       error: { code: 'turn_limit', message: 'secret-ish detail', retryable: false },
     });
     expect(out()).toContain('turn_limit');
-    expect(out()).not.toContain('secret-ish detail'); // only the code, never the message
+    expect(out()).toContain('session is still active'); // the recovery hint reassures the session survives
+    expect(out()).not.toContain('secret-ish detail'); // only the code + a static hint, never the message
+  });
+
+  it('renders the /compact·/trim hint for a context-overflow validation, never echoing the message (2.5.H)', () => {
+    const { io, out } = captureIo();
+    makePlainPrinter(io)({
+      type: 'session:turn_completed',
+      ...STAMP,
+      stopReason: 'error',
+      tokensUsed: { input: 0, output: 0 },
+      error: {
+        code: 'validation',
+        message: 'maximum context length is 8192; key=sk-LEAK',
+        retryable: false,
+      },
+    });
+    expect(out()).toContain('/compact'); // the context-overflow heuristic matched the message
+    expect(out()).not.toContain('sk-LEAK'); // …but the raw message (secret-ish substring) is NOT echoed
   });
 });
 

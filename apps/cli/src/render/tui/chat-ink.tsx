@@ -85,6 +85,7 @@ import {
 } from './palette-reducer.js';
 import { spinnerFrame } from './format.js';
 import {
+  errorRecoveryHint,
   formatApprovalTarget,
   formatBusyLine,
   formatReasoningPanel,
@@ -130,10 +131,15 @@ function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean
     // every line after an over-wide one — silent data loss for the catalog list.
     return <Text {...dimProps(color)}>{stripTerminalControls(entry.text)}</Text>;
   }
+  // An actionable, secret-free recovery hint for a failed turn (2.5.H) — a yellow one-liner below the gray summary
+  // that names the next step and makes explicit the session is still active. `undefined` (a success/aborted turn, or
+  // a code with no guidance) renders nothing.
+  const hint = errorRecoveryHint(entry.summary.errorCode, entry.summary.errorMessage);
   return (
     <Box flexDirection="column">
       <Text>{stripTerminalControls(entry.text)}</Text>
       <Text {...colorProps(color, 'gray')}> {formatTurnSummary(entry.summary)}</Text>
+      {hint !== undefined && <Text {...colorProps(color, 'yellow')}> → {hint}</Text>}
     </Box>
   );
 }

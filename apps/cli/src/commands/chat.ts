@@ -68,6 +68,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import {
+  errorRecoveryHint,
   formatToolCall,
   sanitizeInline,
   stripTerminalControls,
@@ -1699,9 +1700,19 @@ export function makePlainPrinter(io: CliIo): (event: SessionStreamHandleEvent) =
         io.writeOut(`\n${annotation}\n`);
         return;
       }
-      case 'session:turn_completed':
-        io.writeOut(event.error === undefined ? '\n' : `\n[turn failed: ${event.error.code}]\n`);
+      case 'session:turn_completed': {
+        if (event.error === undefined) {
+          io.writeOut('\n');
+          return;
+        }
+        // A failed turn: the code + an actionable, secret-free recovery hint (2.5.H) making explicit the session is
+        // still active (a failed turn is never a terminal — the plain REPL continues on the next line).
+        const hint = errorRecoveryHint(event.error.code, event.error.message);
+        io.writeOut(
+          `\n[turn failed: ${event.error.code}]\n${hint === undefined ? '' : `${hint}\n`}`,
+        );
         return;
+      }
       default:
         return;
     }

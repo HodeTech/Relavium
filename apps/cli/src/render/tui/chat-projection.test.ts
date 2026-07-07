@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { ToolApprovalRequest } from '@relavium/core';
 
 import {
+  errorRecoveryHint,
   formatApprovalTarget,
   formatBusyLine,
   formatReasoningPanel,
@@ -176,6 +177,62 @@ describe('chat-projection', () => {
       expect(parts).toHaveLength(2); // stop · tokens — the duration segment is ABSENT
       expect(parts[0]).toBe('stop');
       expect(parts[1]).toBe(formatTokens({ input: 1, output: 1 }));
+    });
+  });
+
+  describe('errorRecoveryHint (2.5.H actionable error taxonomy)', () => {
+    const OPERATIONAL = [
+      'provider_rate_limit',
+      'provider_unavailable',
+      'provider_auth',
+      'content_filter',
+      'tool_failed',
+      'tool_unavailable',
+      'tool_denied',
+      'budget_exceeded',
+      'run_timeout',
+      'turn_limit',
+      'internal',
+    ] as const;
+
+    it('gives every operational error class a session-survives recovery hint', () => {
+      for (const code of OPERATIONAL) {
+        const hint = errorRecoveryHint(code);
+        expect(hint, code).toBeDefined();
+        expect(hint, code).toContain('session is still active'); // the reassurance is on every operational hint
+      }
+    });
+
+    it('returns no hint for a user-initiated / non-chat-reachable code or a success', () => {
+      expect(errorRecoveryHint('cancelled')).toBeUndefined(); // user-initiated
+      expect(errorRecoveryHint('sandbox_error')).toBeUndefined(); // not reachable on the chat path
+      expect(errorRecoveryHint(undefined)).toBeUndefined(); // a successful/aborted turn
+    });
+
+    it('hints /compact·/trim for a context-overflow validation (the message heuristic), else no hint', () => {
+      for (const msg of [
+        "This model's maximum context length is 8192 tokens",
+        'prompt is too long: 210000 tokens > 200000 maximum',
+        'input token count 1050000 exceeds the maximum',
+      ]) {
+        const hint = errorRecoveryHint('validation', msg);
+        expect(hint, msg).toContain('/compact');
+        expect(hint, msg).toContain('context window');
+      }
+      // A generic validation error (no context markers) has no chat-side remedy ⇒ no hint (just the bare code shows).
+      expect(errorRecoveryHint('validation', 'field `model` is required')).toBeUndefined();
+      expect(errorRecoveryHint('validation')).toBeUndefined();
+    });
+
+    it('NEVER echoes the provider message — the hint is a static host string (security)', () => {
+      // The heuristic READS the message to pick the hint, but the returned text is static — a secret-ish substring
+      // in the message must never reach the terminal through the hint.
+      const hint = errorRecoveryHint(
+        'validation',
+        'context length exceeded; key=sk-LEAK-should-not-appear',
+      );
+      expect(hint).toContain('/compact'); // the heuristic matched ("context length")
+      expect(hint).not.toContain('sk-LEAK'); // …but the raw message is NOT echoed
     });
   });
 
