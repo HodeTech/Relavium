@@ -33,8 +33,10 @@ import { captureIo } from '../test-support.js';
  * 2. **Two-process cross-process safety** (real child processes): the genuine two-OS-process WAL path a
  *    single synchronous process cannot reach (separate SQLite instances + real OS file locks). Two children
  *    race a burst of provider `upsert`s (the BEGIN IMMEDIATE + `withBusyRetry` write path) while the parent
- *    briefly HOLDS the write lock, forcing a real cross-process busy-wait every run; both children must then
- *    land every write with no escaped `SQLITE_BUSY`. This is a cross-process *safety/coexistence* smoke — the
+ *    HOLDS the write lock and releases it only after a **READY handshake** — each child signals just before
+ *    its first write — so a real cross-process busy-wait happens every run (deterministic, not overlap-luck).
+ *    Both children must then land every write with no escaped `SQLITE_BUSY`. This is a cross-process
+ *    *safety/coexistence* smoke — the
  *    precise clause-guards for the Step-4 fix are the DETERMINISTIC white-box tests in `@relavium/db`:
  *    `provider-store.test.ts` (spies `db.transaction(..., { behavior: 'immediate' })`) and `retry.test.ts`
  *    (a held-lock released mid-backoff exercising `withBusyRetry` + the fail-loud budget). It needs the built
@@ -78,19 +80,39 @@ const message = (sessionId: string, seq: number): SessionMessage => ({
   timestamp: ISO,
 });
 
-/** Spawn a child process; resolve with its exit code + captured stderr (empty on a clean run). */
-function runChild(args: readonly string[]): Promise<{ code: number; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [CHILD_SCRIPT, ...args], {
-      stdio: ['ignore', 'ignore', 'pipe'],
-    });
-    let stderr = '';
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf8');
-    });
-    child.on('error', reject);
-    child.on('close', (code) => resolve({ code: code ?? -1, stderr }));
+interface SpawnedChild {
+  /** Resolves when the child prints `READY` (about to write) OR exits — so the parent never hangs on a dead child. */
+  readonly ready: Promise<void>;
+  /** Resolves with the child's exit code + captured stderr once it closes. */
+  readonly done: Promise<{ code: number; stderr: string }>;
+}
+
+/** Spawn a child; expose a `ready` handshake (printed just before its first write) + its final exit/stderr. */
+function runChild(args: readonly string[]): SpawnedChild {
+  const child = spawn(process.execPath, [CHILD_SCRIPT, ...args], {
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+  let stdout = '';
+  let stderr = '';
+  let signalReady: () => void = () => {};
+  const ready = new Promise<void>((resolve) => {
+    signalReady = resolve;
+  });
+  child.stdout.on('data', (chunk: Buffer) => {
+    stdout += chunk.toString('utf8');
+    if (stdout.includes('READY')) signalReady();
+  });
+  child.stderr.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString('utf8');
+  });
+  const done = new Promise<{ code: number; stderr: string }>((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code) => {
+      signalReady(); // a child that died before printing READY must not hang the parent's ready-wait
+      resolve({ code: code ?? -1, stderr });
+    });
+  });
+  return { ready, done };
 }
 
 describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db', () => {
@@ -178,30 +200,28 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
       setup.sqlite.close();
       const PER_CHILD = 40;
       // A third connection that HOLDS the single WAL write lock while the children start, so their first
-      // upsert genuinely busy-waits cross-process every run (not luck-of-the-overlap). Released after a short
-      // hold; both children then acquire the lock in turn and complete.
+      // upsert genuinely busy-waits cross-process. `inTransaction` is the truth of whether the lock is held —
+      // it double-guards release and never COMMITs when no transaction is open.
       const holder = createClient(dbPath);
-      let released = false;
       const releaseLock = (): void => {
-        if (!released) {
-          released = true;
-          holder.sqlite.exec('COMMIT');
-        }
+        if (holder.sqlite.inTransaction) holder.sqlite.exec('COMMIT');
       };
       try {
         holder.sqlite.exec('BEGIN IMMEDIATE'); // acquire the write lock; the children block on it
-        const childrenDone = Promise.all([
-          runChild([DB_DIST, dbPath, 'a', String(PER_CHILD)]),
-          runChild([DB_DIST, dbPath, 'b', String(PER_CHILD)]),
-        ]);
-        // Give both children time to spawn + reach their first (blocked) write, then release the lock. If the
-        // release beats a slow spawn, the run simply proceeds without contention — the pass condition never
-        // depends on the timing, so this is a best-effort force, not a flake vector.
+        const childA = runChild([DB_DIST, dbPath, 'a', String(PER_CHILD)]);
+        const childB = runChild([DB_DIST, dbPath, 'b', String(PER_CHILD)]);
+
+        // Deterministic handshake: both children print READY the instant before their first write, so once
+        // both signal they are (about to be) busy-waiting on the held lock. A small margin then covers the
+        // microgap between the signal and the child's BEGIN IMMEDIATE, so releasing here guarantees a real
+        // cross-process busy-wait every run — independent of Node/import startup speed (which can exceed a
+        // fixed timer). The `close`-resolves-`ready` fallback means a dead child can never hang this wait.
+        await Promise.all([childA.ready, childB.ready]);
         await new Promise<void>((resolve) => {
-          setTimeout(resolve, 150);
+          setTimeout(resolve, 100);
         });
         releaseLock();
-        const [a, b] = await childrenDone;
+        const [a, b] = await Promise.all([childA.done, childB.done]);
 
         // Both children exited cleanly. A real failure prints the error to stderr + exits 1; a benign Node
         // warning line (deprecation, experimental flag) is tolerated — assert the exit code and the ABSENCE
@@ -228,9 +248,16 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
           verify.sqlite.close();
         }
       } finally {
-        releaseLock(); // release even if an assertion threw before the release point
-        holder.sqlite.close();
-        rmSync(dir, { recursive: true, force: true });
+        // Nested so a failure in one cleanup step never skips the rest (release → close → remove temp dir).
+        try {
+          releaseLock();
+        } finally {
+          try {
+            holder.sqlite.close();
+          } finally {
+            rmSync(dir, { recursive: true, force: true });
+          }
+        }
       }
     },
   );

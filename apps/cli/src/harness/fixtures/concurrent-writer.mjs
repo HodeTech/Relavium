@@ -25,6 +25,10 @@ try {
     uuid: () => `${prefix}0000000-0000-4000-8000-${String(++uuidN).padStart(12, '0')}`,
     now: () => 1_700_000_000_000,
   });
+  // Signal readiness (the import + the connection are up) so the parent releases the held write lock only
+  // once we are about to write — a deterministic handshake that forces real cross-process contention every
+  // run, independent of Node/import startup latency (which can exceed a fixed parent-side timer).
+  process.stdout.write('READY\n');
   for (let i = 0; i < count; i += 1) {
     providers.upsert({
       name: `${prefix}-${i}`,
