@@ -192,7 +192,16 @@ cache + refresh + a static/live merge) and a complete model-pricing story (user-
 cost) — behind three new ADRs ([ADR-0063](../decisions/0063-cli-config-write-contract.md) config-write ·
 [ADR-0064](../decisions/0064-live-model-catalog.md) live catalog ·
 [ADR-0065](../decisions/0065-provider-economics-and-extensibility.md) provider economics), across 12 reviewed
-steps; the additive lanes 2.5.H / I / J run in parallel. See the
+steps. The additive lane **2.5.H** (reasoning render + live-turn feedback + an actionable error taxonomy) is ✅
+**Done (2026-07-07)** — behind **EA6** (a new dual-envelope `agent:reasoning` stream event that *amends*
+[ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md); no new top-level ADR): a
+host-emit of the reasoning the `@relavium/llm` seam already carries (ADR-0030), a collapsible "thinking" panel
+(`/thinking` / `Ctrl+T`), the `Thinking…/Working… {elapsed}s · Esc to stop` timer, a visible `…` elision marker
+(fixing the silent live-buffer head-drop), per-attempt `via {model}` failover attribution, and a static,
+secret-free per-`ErrorCode` recovery hint (session-survives; a context-overflow message heuristic → `/compact`·
+`/trim`). Four steps, each opus + Sonnet reviewed (3 HIGH fixed: a run-path silent-drop, a frozen Home timer, a
+scrollback elision loss; + a one-shot `agent run` hint-leak). **With 2.5.E this reaches milestone M2.5-3.** The
+remaining additive lanes 2.5.I / J run in parallel. See the
 [Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md). A **post-2.5.G model-UX follow-up** (from six
 maintainer questions on model/provider/wizard behavior) then landed as a sequenced plan: `/models` key-awareness,
 the onboarding-wizard live key-validation + retry UX, wizard-dynamic provider docs, **mid-session model switching**
