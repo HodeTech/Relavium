@@ -171,11 +171,12 @@ function resolveVerbosity(raw: RawGlobalOptions): Verbosity {
  * (which suppresses ANSI separately in `detectOutputMode`, output-mode.ts). Precedence (2.5.J; the flag pair
  * is [ADR-0047](../../../../docs/decisions/0047-cli-framework-commander-ink-clack.md)'s global-flag set):
  *   1. an explicit `--color` / `--no-color` flag (a per-invocation override);
- *   2. `NO_COLOR` — ANY non-empty value ⇒ OFF (the no-color.org accessibility contract; wins over FORCE_COLOR);
+ *   2. `NO_COLOR` — ANY non-empty value ⇒ OFF (the no-color.org accessibility contract);
  *   3. `FORCE_COLOR` — `0`/`false` ⇒ OFF (the `supports-color` convention; the value is checked, unlike NO_COLOR);
- *   4. default ON (a truthy `FORCE_COLOR` is consistent with this — it can only opt OUT here, since color already
- *      defaults on and is consulted only on a TTY where it is on).
- * `NO_COLOR` intentionally beats `FORCE_COLOR`: a user who opts OUT of color must win over a tool/CI opting in.
+ *   4. default ON.
+ * Both env vars are opt-OUT signals here: a truthy `FORCE_COLOR` has NO independent effect (color already
+ * defaults on, and is consulted only on a TTY where it is on), so there is no `NO_COLOR`-vs-`FORCE_COLOR`
+ * conflict to resolve — the flag overrides both, and either env opt-out disables.
  */
 function resolveColor(
   raw: RawGlobalOptions,

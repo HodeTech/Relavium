@@ -119,7 +119,7 @@ describe('resolveGlobalOptions', () => {
       expect(color({}, { NO_COLOR: '' })).toBe(true); // empty ⇒ not set ⇒ falls through
     });
 
-    it('NO_COLOR beats FORCE_COLOR (opt-out wins over opt-in)', () => {
+    it('NO_COLOR turns off even alongside FORCE_COLOR=1 (a truthy FORCE_COLOR never force-ONs over NO_COLOR)', () => {
       expect(color({}, { NO_COLOR: '1', FORCE_COLOR: '1' })).toBe(false);
     });
 
