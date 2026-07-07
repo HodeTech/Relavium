@@ -32,11 +32,13 @@ CLI surface.
 | Session-chain e2e — Home→chat→resume→export over a real file-backed db (2.5.I S4) | `apps/cli/src/harness/session-chain.e2e.test.ts` |
 | Query-shape perf budgets — `EXPLAIN QUERY PLAN` of the hot reads (2.5.I S5) | `apps/cli/src/harness/perf-budget.e2e.test.ts` |
 
-The harness is an **in-process** suite: it drives the CLI's `runCommand` boundary with a captured
-`CliIo` through the **default engine** (the standard node executor + expression sandbox over the real
+The **`run`-fixture** harness is an **in-process** suite: it drives the CLI's `runCommand` boundary with a
+captured `CliIo` through the **default engine** (the standard node executor + expression sandbox over the real
 `createCliHost`), exactly as a real `relavium run --json` invocation does (the same
 `createJsonRenderer` produces byte-identical NDJSON). It does **not** spawn the built binary — that
-would add a build dependency and process flakiness for no fidelity gain. It runs inside the standard
+would add a build dependency and process flakiness for no fidelity gain. (The additive §2.5.I concurrency
+suite below is the one exception — its cross-process case deliberately spawns child `node` processes to
+reach the real two-OS-process WAL path a single process cannot.) It runs inside the standard
 `pnpm turbo run test` task, so it is part of the required CI gate on every push/PR
 (`.github/workflows/ci.yml`).
 
@@ -126,7 +128,8 @@ journey, and the read-path query shapes. These are additive `.e2e.test.ts` suite
 ### The Windows lane (2.5.I S6)
 
 An advisory `windows-concurrency` job in [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) runs
-the `@relavium/db` concurrency suite + the CLI concurrency/perf/session-chain harness on `windows-latest`
+the full `@relavium/db` test suite (the concurrency/retry white-box tests among it) + the CLI
+concurrency/perf/session-chain harness on `windows-latest`
 (the WAL locking, the retry's `Atomics.wait` sleep, the two-process child spawn + `file://` import, and the
 native `better-sqlite3` addon are the parts most likely to diverge), plus a headless no-TTY smoke. It is a
 **separate, advisory** job — the required check stays the ubuntu `ci` job. POSIX `0600`/`0700` permission
