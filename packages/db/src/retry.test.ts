@@ -121,6 +121,22 @@ describe('withBusyRetry — unit (2.5.I)', () => {
     ).toThrow();
     expect(calls).toBe(1);
   });
+
+  it('a stray maxAttempts of 0 is floored to one attempt (never disables the first try, never spins)', () => {
+    const sleep = vi.fn();
+    let calls = 0;
+    expect(() =>
+      withBusyRetry(
+        () => {
+          calls += 1;
+          throw lockError('SQLITE_BUSY');
+        },
+        { maxAttempts: 0, sleep },
+      ),
+    ).toThrow();
+    expect(calls).toBe(1); // Math.max(1, 0) — the fn still ran exactly once
+    expect(sleep).not.toHaveBeenCalled();
+  });
 });
 
 /**

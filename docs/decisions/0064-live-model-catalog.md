@@ -14,8 +14,9 @@
 > realization across every `history.db` writer, establishing two conventions the next store author follows.
 > **(1)** Every write transaction opens with **`BEGIN IMMEDIATE`** (not drizzle's `DEFERRED` default), taking
 > the write lock up front to close the read→write lock-upgrade race — applied to `persistEvent` (run history),
-> the model-catalog `replaceProviderModels` bulk live-upsert and its per-model `upsert`, and the provider
-> `upsert` read-then-write. **(2)** Every such
+> the model-catalog `replaceProviderModels` bulk live-upsert and its per-model `upsert`, the provider
+> `upsert` read-then-write, and the media-reference GC writes (`addReference` / `removeRunReferences` /
+> `reclaimExpired`). **(2)** Every such
 > write routes through a bounded, **fail-loud** `SQLITE_BUSY`/`SQLITE_LOCKED` retry helper
 > ([retry.ts](../../packages/db/src/retry.ts)) with **deterministic** backoff — **no jitter**, never
 > `Math.random`, following the no-jitter/deterministic-replay convention of
