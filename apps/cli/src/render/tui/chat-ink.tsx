@@ -94,6 +94,7 @@ import {
   formatTurnSummary,
   reasoningLabelActive,
   sanitizeInline,
+  streamingAbortHint,
   stripTerminalControls,
 } from './chat-projection.js';
 import type { ReasoningEffort } from '@relavium/shared';
@@ -216,6 +217,11 @@ interface ChatViewProps {
   /** The in-flight `!`-shell command line (2.5.D) — when set, the busy indicator labels WHAT is running (a `!`-
    *  command emits no session tokens, so without this the spinner would be bare) + how to cancel (Esc). */
   readonly busyCommand?: string | undefined;
+  /** Live terminal width, to bound the EXPANDED reasoning panel to the last N rendered rows (2.5.H) so a full
+   *  4000-char buffer cannot wrap into a flickering, screen-filling panel on a short terminal. Render-only +
+   *  cosmetic (parity with `nowMs`); the owner passes `process.stdout.columns` (ChatApp) or its resize-tracked
+   *  width (the Home). Absent ⇒ the formatter's 80-col fallback. `| undefined` for the createElement passthrough. */
+  readonly columns?: number | undefined;
 }
 
 /**
@@ -246,6 +252,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         liveReasoning: state.liveReasoning,
         liveReasoningTruncated: state.liveReasoningTruncated,
         visible: reasoningVisible,
+        columns: props.columns,
       })
     : undefined;
   // The pre-token busy line reads "Thinking…" ONLY while the model is plausibly reasoning (reasoning streamed AND no
@@ -274,12 +281,25 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       elapsedMs,
       reasoningActive,
     });
-    return line.dim ? (
-      <Text {...dimProps(color)} wrap="truncate-end">
-        {line.text}
-      </Text>
-    ) : (
-      <Text>{line.text}</Text>
+    // A STATUS line (compaction / shell / pre-token) already carries its inline "· Esc to …" hint; a streaming
+    // CONTENT line has no room for it, so surface the abort affordance on a compact dim line beneath it — `Esc`
+    // aborts the whole turn (EA7), so the hint must persist for the ENTIRE turn, not just the pre-token wait.
+    const abortHint = streamingAbortHint(line);
+    return (
+      <Box flexDirection="column">
+        {line.dim ? (
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {line.text}
+          </Text>
+        ) : (
+          <Text>{line.text}</Text>
+        )}
+        {abortHint !== undefined && (
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {abortHint}
+          </Text>
+        )}
+      </Box>
     );
   };
   return (
@@ -1067,6 +1087,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         approval={approval}
         attachments={attachments}
         busyCommand={busyCommand}
+        // Live terminal width for the reasoning-panel row bound (2.5.H) — read fresh each render (parity with
+        // `nowMs={Date.now()}`); the frame loop re-renders, so a resize is picked up on the next tick.
+        columns={process.stdout.columns}
         paletteOpen={
           palette !== undefined ||
           search !== undefined ||

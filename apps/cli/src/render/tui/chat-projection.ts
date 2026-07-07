@@ -267,6 +267,19 @@ export function formatBusyLine(input: {
 }
 
 /**
+ * The compact mid-stream abort hint (2.5.H / EA7). The pre-first-token STATUS line carries "· Esc to stop"
+ * inline, and the compaction/shell status lines carry their own "· Esc to cancel" — but once answer CONTENT
+ * streams the busy line becomes full-width, wrapping text with no room for the affordance, even though `Esc`
+ * still aborts the whole turn. Returns the standalone hint the caller renders as a dim line BENEATH the streaming
+ * content, or `undefined` for a STATUS line (`busy.dim`) that already shows its inline hint — so the affordance
+ * is visible for the ENTIRE turn without ever double-printing. Keyed off the same `dim` flag the caller maps, so
+ * there is one source of truth for status-vs-content.
+ */
+export function streamingAbortHint(busy: BusyLine): string | undefined {
+  return busy.dim ? undefined : 'Esc to stop';
+}
+
+/**
  * Whether the pre-token busy line should read "Thinking…" (vs "Working…") — the turn streamed reasoning AND no tool
  * call is currently executing (2.5.H). During a tool round the model idle-waits on the tool, so the label falls
  * back to "Working…" rather than claiming the model is thinking while a tool runs. Extracted + exported so this
@@ -291,22 +304,78 @@ export interface ReasoningPanel {
 }
 
 /**
+ * The max terminal ROWS the EXPANDED reasoning body may occupy (2.5.H). The store already bounds the reasoning
+ * buffer to {@link MAX_LIVE_TOKEN_CHARS} (4000) CHARACTERS, but on a short/narrow terminal that wraps to many
+ * dozens of rows in the live (non-`<Static>`) region — a churning, flickering panel that buries the answer below
+ * it. Tailing the DISPLAYED body to the last N rendered rows (see {@link formatReasoningPanel}) keeps the panel
+ * compact regardless of terminal size, while the FULL reasoning is still persisted from the raw events.
+ */
+export const MAX_REASONING_PANEL_LINES = 12;
+
+/** The assumed width when the caller passes no live column count (a headless/test render, or a non-TTY stdout with
+ *  no `.columns`). 80 is the conventional terminal width + the 80×24 degrade floor the harness pins. */
+const REASONING_PANEL_FALLBACK_COLUMNS = 80;
+
+/**
+ * Tail `text` to its last {@link MAX_REASONING_PANEL_LINES} RENDERED rows at the given width — a long logical line
+ * counts as `⌈len / columns⌉` wrapped rows (never < 1), so both many short lines AND one very long line are bounded.
+ * When the single most-recent logical line alone exceeds the row budget its HEAD is sliced so the tail still fits.
+ * Returns the kept body + whether anything was dropped (`tailed`), so the caller can show the head-elision marker.
+ */
+function tailToRenderedRows(
+  text: string,
+  columns: number | undefined,
+): { body: string; tailed: boolean } {
+  const width =
+    columns !== undefined && columns > 0 ? Math.floor(columns) : REASONING_PANEL_FALLBACK_COLUMNS;
+  const rowsOf = (line: string): number => Math.max(1, Math.ceil(line.length / width));
+  const lines = text.split('\n');
+  const kept: string[] = [];
+  let rows = 0;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i] ?? '';
+    if (rows + rowsOf(line) > MAX_REASONING_PANEL_LINES) {
+      // The tail is full. If we have kept nothing yet, this single (oldest-included) line is itself taller than the
+      // whole budget — keep only its last budget×width chars so the most recent reasoning still shows. Otherwise
+      // stop: the already-kept newer lines fill the budget and older ones are dropped.
+      if (kept.length === 0) {
+        kept.unshift(line.slice(line.length - MAX_REASONING_PANEL_LINES * width));
+      }
+      return { body: kept.join('\n'), tailed: true };
+    }
+    kept.unshift(line);
+    rows += rowsOf(line);
+  }
+  return { body: kept.join('\n'), tailed: false };
+}
+
+/**
  * Project the in-flight reasoning into the collapsible panel (2.5.H). Collapsed (default): a dim header with the
  * Ctrl+T toggle hint, so the user knows thinking is available without it flooding the view. Expanded: the header +
  * the reasoning BODY — terminal-sanitized at this display boundary (newline-preserving, it is multi-line prose),
- * with a leading `…` elision marker when the bounded buffer's head scrolled out (parity with the answer stream).
+ * bounded to the last {@link MAX_REASONING_PANEL_LINES} rendered rows so a full 4000-char buffer cannot wrap into a
+ * flickering, screen-filling panel on a short terminal, with a leading `…` elision marker when the buffer's head
+ * scrolled out — via the store's char cap (`liveReasoningTruncated`) OR this row tail (parity with the answer stream).
  */
 export function formatReasoningPanel(input: {
   readonly liveReasoning: string;
   readonly liveReasoningTruncated: boolean;
   readonly visible: boolean;
+  /** Live terminal width in columns, for bounding the expanded body to the last N RENDERED rows. Render-only +
+   *  cosmetic (parity with `nowMs`): the owner passes `process.stdout.columns` / its resize-tracked width. Absent
+   *  or ≤0 ⇒ the {@link REASONING_PANEL_FALLBACK_COLUMNS} default, so the row bound still applies headless/in tests. */
+  readonly columns?: number | undefined;
 }): ReasoningPanel {
   const header = `✻ Reasoning · Ctrl+T ${input.visible ? 'hide' : 'show'}`;
   if (!input.visible) {
     return { header };
   }
-  const body = `${input.liveReasoningTruncated ? '…' : ''}${stripTerminalControls(input.liveReasoning)}`;
-  return { header, body };
+  const { body, tailed } = tailToRenderedRows(
+    stripTerminalControls(input.liveReasoning),
+    input.columns,
+  );
+  const elided = input.liveReasoningTruncated || tailed;
+  return { header, body: `${elided ? '…' : ''}${body}` };
 }
 
 /**

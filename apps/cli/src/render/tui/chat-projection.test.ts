@@ -12,7 +12,9 @@ import {
   formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
+  MAX_REASONING_PANEL_LINES,
   reasoningLabelActive,
+  streamingAbortHint,
   stripTerminalControls,
 } from './chat-projection.js';
 import { formatDuration, formatTokens } from './format.js';
@@ -327,6 +329,30 @@ describe('chat-projection', () => {
     });
   });
 
+  describe('streamingAbortHint (2.5.H / EA7 — the abort affordance persists during streaming)', () => {
+    const base = {
+      spinner: '⠋',
+      compacting: false,
+      liveTokens: '',
+      liveTokensTruncated: false,
+    } as const;
+
+    it('returns the standalone hint for a streaming CONTENT line (which has no inline hint)', () => {
+      const content = formatBusyLine({ ...base, liveTokens: 'the answer streams' });
+      expect(content.dim).toBe(false);
+      expect(streamingAbortHint(content)).toBe('Esc to stop');
+    });
+
+    it('returns undefined for every STATUS line — they already carry their own inline hint (no double-print)', () => {
+      // Pre-token ("· Esc to stop"), compaction ("· Esc to cancel"), and shell ("· Esc to cancel") are all dim.
+      expect(streamingAbortHint(formatBusyLine({ ...base, elapsedMs: 1000 }))).toBeUndefined();
+      expect(streamingAbortHint(formatBusyLine({ ...base, compacting: true }))).toBeUndefined();
+      expect(
+        streamingAbortHint(formatBusyLine({ ...base, busyCommand: 'npm test' })),
+      ).toBeUndefined();
+    });
+  });
+
   describe('reasoningLabelActive (2.5.H — Thinking… only when no tool is executing)', () => {
     const call = (resolved: boolean) => ({ id: 't', toolId: 'read_file', resolved });
 
@@ -379,6 +405,82 @@ describe('chat-projection', () => {
       // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
       expect(panel.body).not.toMatch(/\x1b/);
       expect(panel.body).toBe('line1\nline2'); // ANSI stripped, the newline (multi-line prose) kept
+    });
+
+    describe('bounds the expanded body to the last N rendered rows (2.5.H)', () => {
+      it('keeps every line when the body fits within the row budget', () => {
+        const body = ['a', 'b', 'c'].join('\n');
+        const panel = formatReasoningPanel({
+          liveReasoning: body,
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 80,
+        });
+        expect(panel.body).toBe(body); // under budget ⇒ no tail, no marker
+      });
+
+      it('tails MANY short lines to the last N and prefixes the elision marker', () => {
+        // 30 one-char lines = 30 rendered rows (each short line is its own row) — well over the 12-row budget.
+        const lines = Array.from({ length: 30 }, (_, i) => String(i));
+        const panel = formatReasoningPanel({
+          liveReasoning: lines.join('\n'),
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 80,
+        });
+        const kept = lines.slice(lines.length - MAX_REASONING_PANEL_LINES); // the most-recent N
+        expect(panel.body).toBe(`…${kept.join('\n')}`);
+      });
+
+      it('counts WRAPPED rows: one long logical line spends multiple rows of the budget (narrow terminal)', () => {
+        // At width 10, a 25-char line wraps to ceil(25/10)=3 rows. With three such lines (9 rows) plus a fourth
+        // (→12) the budget is exactly full; a fifth older line (would be 15) is dropped.
+        const long = (tag: string): string => `${tag}`.padEnd(25, '.');
+        const lines = [long('oldest'), long('l2'), long('l3'), long('l4'), long('newest')];
+        const panel = formatReasoningPanel({
+          liveReasoning: lines.join('\n'),
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 10,
+        });
+        // 4 lines × 3 rows = 12 rows = the budget; the oldest is dropped, so the marker shows.
+        expect(panel.body).toBe(`…${lines.slice(1).join('\n')}`);
+      });
+
+      it('slices the HEAD of a single line that alone exceeds the whole budget (keeps its tail)', () => {
+        // One 200-char line at width 10 = 20 rows > the 12-row budget; keep only the last 12×10 = 120 chars.
+        const line = 'x'.repeat(200);
+        const panel = formatReasoningPanel({
+          liveReasoning: line,
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 10,
+        });
+        expect(panel.body).toBe(`…${'x'.repeat(MAX_REASONING_PANEL_LINES * 10)}`);
+      });
+
+      it('ORs the row-tail elision with the store char-cap marker (one leading marker either way)', () => {
+        const lines = Array.from({ length: 30 }, (_, i) => String(i));
+        const panel = formatReasoningPanel({
+          liveReasoning: lines.join('\n'),
+          liveReasoningTruncated: true, // the store already elided the head too
+          visible: true,
+          columns: 80,
+        });
+        expect(panel.body?.startsWith('…')).toBe(true);
+        expect(panel.body?.startsWith('……')).toBe(false); // exactly one marker, not doubled
+      });
+
+      it('falls back to an 80-col assumption when no width is passed (headless/test render)', () => {
+        // A 400-char single line: at the 80-col fallback that is 5 rows (< budget) ⇒ kept whole, no tail.
+        const line = 'y'.repeat(400);
+        const panel = formatReasoningPanel({
+          liveReasoning: line,
+          liveReasoningTruncated: false,
+          visible: true,
+        });
+        expect(panel.body).toBe(line);
+      });
     });
   });
 

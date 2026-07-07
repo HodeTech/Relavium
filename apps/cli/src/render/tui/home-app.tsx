@@ -57,6 +57,8 @@ function ChatRegion(
      *  re-renders on controller state changes. So the live-turn timer (2.5.H) MUST read the clock here, per frame —
      *  a number prop frozen at the parent's last render would stick the elapsed at 0s for the whole pre-token wait. */
     now: () => number;
+    /** The live terminal width (resize-tracked in `RootApp`) — bounds the reasoning panel to N rendered rows (2.5.H). */
+    cols: number;
     shellBusy: boolean;
     submitBusy: boolean;
     shellCommand: string | undefined;
@@ -83,6 +85,7 @@ function ChatRegion(
         approval={approval}
         attachments={props.attachments}
         busyCommand={props.shellCommand}
+        columns={props.cols}
         paletteOpen={
           props.palette !== undefined ||
           props.search !== undefined ||
@@ -137,6 +140,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         modelPicker={state.modelPicker}
         effortPicker={state.effortPicker}
         now={props.nowMs}
+        cols={size.cols}
         shellBusy={state.shellBusy}
         submitBusy={state.submitBusy}
         shellCommand={state.shellCommand}
