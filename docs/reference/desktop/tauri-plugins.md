@@ -30,7 +30,7 @@ flowchart LR
 |--------|---------|---------|
 | `tauri-plugin-fs` | Scoped filesystem read/write. Path access is validated against a configured scope before any syscall. | Loading/saving `.relavium.yaml` & `.agent.yaml`; the `read_file` / `write_file` / `list_directory` built-in tools |
 | `tauri-plugin-shell` | Spawning OS child processes from an explicit allowlist. | The `run_command` / `git_status` / `git_commit` built-in tools; stdio MCP server processes |
-| `tauri-plugin-sql` | SQLite access, with the **SQLCipher** feature for encryption at rest. | The local run-history database (`history.db`, `runs.db`) — see [database-schema.md](database-schema.md) |
+| `tauri-plugin-sql` | SQLite access, with the **SQLCipher** feature for encryption at rest. | The desktop `history.db` (SQLCipher-encrypted at rest); the per-project `runs.db` is intentionally **unencrypted** (git-committed metadata) — see [database-schema.md](database-schema.md) |
 | `tauri-plugin-keychain` | OS-native secret storage (macOS Keychain / Windows Credential Manager / Linux libsecret). | API-key and DB-passphrase storage — see [keychain-and-secrets.md](keychain-and-secrets.md) |
 | `tauri-plugin-tray` | System tray icon, menu, and badge. | Active-run monitor, awaiting-gate badge, "New Run" quick menu |
 | `tauri-plugin-global-shortcut` | OS-level global hotkeys. | Command-palette hotkey (`Cmd/Ctrl+Shift+A`) and "run on selection" (`Cmd/Ctrl+Shift+R`) |
