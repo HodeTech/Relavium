@@ -9,7 +9,7 @@
 > (PR #64, 2026-07-03)** behind [ADR-0061](../../decisions/0061-cli-input-layer-file-injection-and-shell-escape.md).
 > **2.5.F** (`/clear` + the `session:compacting` "Summarizing…" moment + the context-fullness footer, completing
 > the ADR-0062 compaction story) ✅ **Done (PR #65, merged 2026-07-05)**. The additive lane **2.5.H** (reasoning
-> render + live-turn feedback + actionable errors, EA6 amending ADR-0036) ✅ **Done (2026-07-07)** — **milestone
+> render + live-turn feedback + actionable errors, EA6 amending ADR-0036) ✅ **Done (PR #67, 2026-07-07)** — **milestone
 > M2.5-3 reached** (with 2.5.E). **Next: 2.5.G** (onboarding wizard + Home `/models`). Remaining additive lanes:
 > 2.5.I / J.
 
@@ -451,9 +451,9 @@ auto-refresh + partial-failure · **S6 🔒** config-write primitive + global `[
 **S11** `provider list --verify` + `[chat].max_turns` reconcile · **S12** docs + adding-a-provider runbook. **Six**
 are security-flagged: S2, S5, S6, S8, S9, S10.
 
-### 2.5.H — Reasoning rendering and live-turn feedback — ✅ **Done (2026-07-07)**
+### 2.5.H — Reasoning rendering and live-turn feedback — ✅ **Done (PR #67, 2026-07-07)**
 
-> **Status:** ✅ **Done (2026-07-07)** — EA6 amends [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)
+> **Status:** ✅ **Done (PR #67, 2026-07-07)** — EA6 amends [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)
 > (no new top-level ADR; the additive event in the shared union). Delivered across four reviewed steps, each with an
 > **opus + Sonnet** review round (~15 findings fixed incl. 3 HIGH: a run-path silent-drop of the new event, a
 > frozen Home live-timer, a persisted-scrollback elision loss; plus a one-shot `agent run` hint-leak). **Step 1**

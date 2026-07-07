@@ -193,7 +193,7 @@ cost) — behind three new ADRs ([ADR-0063](../decisions/0063-cli-config-write-c
 [ADR-0064](../decisions/0064-live-model-catalog.md) live catalog ·
 [ADR-0065](../decisions/0065-provider-economics-and-extensibility.md) provider economics), across 12 reviewed
 steps. The additive lane **2.5.H** (reasoning render + live-turn feedback + an actionable error taxonomy) is ✅
-**Done (2026-07-07)** — behind **EA6** (a new dual-envelope `agent:reasoning` stream event that *amends*
+**Done (PR #67, 2026-07-07)** — behind **EA6** (a new dual-envelope `agent:reasoning` stream event that *amends*
 [ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md); no new top-level ADR): a
 host-emit of the reasoning the `@relavium/llm` seam already carries (ADR-0030), a collapsible "thinking" panel
 (`/thinking` / `Ctrl+T`), the `Thinking…/Working… {elapsed}s · Esc to stop` timer, a visible `…` elision marker

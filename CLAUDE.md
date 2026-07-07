@@ -114,7 +114,7 @@ config-write, [ADR-0064](docs/decisions/0064-live-model-catalog.md) live catalog
 [ADR-0065](docs/decisions/0065-provider-economics-and-extensibility.md) provider economics), across 12 reviewed
 steps. The additive lane **2.5.H** (reasoning render + live-turn feedback + an actionable error taxonomy — behind
 **EA6**, a dual-envelope `agent:reasoning` stream event that *amends* [ADR-0036](docs/decisions/0036-run-loop-substrate-event-bus-and-execution-host.md);
-no new top-level ADR) is ✅ **Done (2026-07-07)**, reaching milestone **M2.5-3** with 2.5.E; the remaining additive
+no new top-level ADR) is ✅ **Done (PR #67, 2026-07-07)**, reaching milestone **M2.5-3** with 2.5.E; the remaining additive
 lanes 2.5.I / J run in parallel.
 For live status, per-PR history, milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the public overview.
