@@ -339,7 +339,12 @@ function tailToRenderedRows(
       ? Math.floor(columns)
       : REASONING_PANEL_FALLBACK_COLUMNS;
   const rowsOf = (line: string): number => Math.max(1, Math.ceil(line.length / width));
-  const lines = text.split('\n');
+  // Drop ONE trailing newline before splitting: a live buffer cut off right after a line break (very common
+  // between stream chunks) ends in '\n', which `split` turns into a phantom empty last segment. That segment
+  // would cost a full budget row (`rowsOf('')` clamps to 1) and could prematurely drop a REAL line + flash the
+  // elision marker for content that hasn't arrived yet. Stripping exactly one '\n' treats the not-yet-filled
+  // next line as zero rows while KEEPING any intentional trailing blank line (a "\n\n" loses only the last).
+  const lines = (text.endsWith('\n') ? text.slice(0, -1) : text).split('\n');
   const kept: string[] = [];
   let rows = 0;
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -374,7 +379,7 @@ export function formatReasoningPanel(input: {
   readonly visible: boolean;
   /** Live terminal width in columns, for bounding the expanded body to the last N RENDERED rows. Render-only +
    *  cosmetic (parity with `nowMs`): the owner passes `process.stdout.columns` / its resize-tracked width. Absent
-   *  or ≤0 ⇒ the {@link REASONING_PANEL_FALLBACK_COLUMNS} default, so the row bound still applies headless/in tests. */
+   *  or < 1 ⇒ the {@link REASONING_PANEL_FALLBACK_COLUMNS} default, so the row bound still applies headless/in tests. */
   readonly columns?: number | undefined;
 }): ReasoningPanel {
   const header = `✻ Reasoning · Ctrl+T ${input.visible ? 'hide' : 'show'}`;

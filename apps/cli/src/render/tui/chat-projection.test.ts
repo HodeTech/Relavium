@@ -495,6 +495,45 @@ describe('chat-projection', () => {
         });
         expect(panel.body).toBe(line);
       });
+
+      it('falls back to 80 cols for a non-positive/fractional width (guards the div-by-zero floor)', () => {
+        // The width guard is `Math.floor(columns) >= 1` — 0 / 0.5 / negative / NaN all take the 80-col fallback
+        // (no divide-by-zero, no negative slice). A 400-char line = 5 rows at 80 ⇒ kept whole, proving the width.
+        const line = 'y'.repeat(400);
+        for (const columns of [0, 0.5, -5, Number.NaN]) {
+          const panel = formatReasoningPanel({
+            liveReasoning: line,
+            liveReasoningTruncated: false,
+            visible: true,
+            columns,
+          });
+          expect(panel.body).toBe(line); // 80-col fallback ⇒ under budget ⇒ no crash, no tail
+        }
+      });
+
+      it('does NOT count a trailing newline as a rendered row (no premature drop between stream chunks)', () => {
+        // A live buffer cut off right after a line break ends in '\n'. The MAX real lines alone fit the budget
+        // exactly; the trailing '\n' must not spend a phantom row that drops the oldest real line + flashes `…`.
+        const lines = Array.from({ length: MAX_REASONING_PANEL_LINES }, (_, i) => String(i));
+        const panel = formatReasoningPanel({
+          liveReasoning: `${lines.join('\n')}\n`, // trailing newline (mid-stream cut)
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 80,
+        });
+        expect(panel.body).toBe(lines.join('\n')); // every real line kept, no leading marker
+      });
+
+      it('keeps an INTENTIONAL trailing blank line (only the final cursor newline is dropped)', () => {
+        // "a\n\n" is a line + a deliberate blank line + the cursor newline; stripping ONE '\n' keeps the blank.
+        const panel = formatReasoningPanel({
+          liveReasoning: 'a\n\n',
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 80,
+        });
+        expect(panel.body).toBe('a\n'); // the intentional blank line survives; only the trailing cursor newline goes
+      });
     });
   });
 
