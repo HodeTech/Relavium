@@ -487,10 +487,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   session cannot yet **narrow** them per-session (it may only ever narrow, never widen). Add a session-level
   narrow when a surface needs to restrict a session's tools below the agent's grant.
   *(low · packages/core/src/engine/agent-session.ts; ADR-0029)*
-- [ ] **`[chat].max_turns` surface wiring.** The hard turn cap is an **engine-API** knob in 1.V
-  (`SessionDeps.maxTurns`, finite default 50); mapping the `[chat]` config default onto it is a surface task
-  (the CLI/desktop read `[chat]` and pass `maxTurns`). It is deliberately **not** a Phase-1 `[chat]` field.
-  *(low · config-spec.md + surfaces; Phase 2+)*
+- [x] **`[chat].max_turns` surface wiring — RESOLVED in 2.5.G S11 (PR #66).** The hard turn cap is an
+  **engine-API** knob in 1.V (`SessionDeps.maxTurns`, finite default 50); the CLI now maps the `[chat].max_turns`
+  config default onto `SessionDeps.maxTurns` (`config/resolve.ts` `max_turns`→`maxTurns`, threaded through
+  `session-host.ts`, enforced by a `session-host.test.ts` pin). *(config-spec.md + surfaces)*
 - [ ] **Session `output_schema`.** 1.V ignores `agent.output_schema` (a chat session is free-form text);
   structured output stays a workflow concern. If a session ever needs it, lower it to `responseFormat` +
   validate node-side (as the AgentRunner does for an `agent` node). *(low · packages/core/src/engine/agent-session.ts)*
@@ -589,16 +589,16 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > status* note in [../reference/cli/commands.md](../reference/cli/commands.md), so they are **not**
 > duplicated here. The one item below is an unscheduled security follow-up with no numbered workstream yet.
 
-- [ ] **CLI `ToolHost` is fail-closed — built-in tool host capabilities (filesystem / process / egress)
-  are not wired.** 2.D builds the engine's tool registry with an empty `ToolHost` (`createToolRegistry({
-  tools: BUILTIN_TOOLS, host: {} })`), so every built-in tool that needs a host capability is cleanly
-  *unavailable* rather than backed by an insecure stub. Wiring these capabilities is deliberately deferred
-  to a dedicated, **security-reviewed** workstream: the egress half is the existing host-side SSRF item
-  above (DNS-resolve + connect-by-validated-IP + per-hop redirect re-validation in `EgressCapability.fetch`),
-  and the filesystem/process halves need their own scope/permission model ([security-review.md](../standards/security-review.md)).
-  Until then, a workflow whose agent calls a capability-backed built-in tool surfaces a clean "tool
-  unavailable" failure, never a half-implemented or unsafe execution. *(medium · apps/cli/src/engine/build-engine.ts;
-  security-review.md; egress → the SSRF item above)*
+- [ ] **CLI `ToolHost` — the built-in host capabilities are wired for the CLI; the DESKTOP surface remains.**
+  2.D originally built the tool registry with an empty `ToolHost` (`createToolRegistry({ tools: BUILTIN_TOOLS,
+  host: {} })`). For the CLI this is now **closed**: 2.5.A wired the `fs` + `process` arms and 2.5.E wired the
+  `egress` + `os` arms via `assembleToolEnv`, all behind the fail-closed approval floor (see the **RESOLVED**
+  block below, [ADR-0055](../decisions/0055-cli-host-capability-seam-tool-environment-factory.md) +
+  [ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md)). What remains: the **desktop/Tauri**
+  surface still binds an empty host (Phase 3), and its host-side `EgressCapability.fetch` SSRF hardening tracks
+  with the SSRF item above. Until the desktop host is wired, a desktop workflow calling a capability-backed
+  built-in tool surfaces a clean "tool unavailable" failure, never a half-implemented or unsafe execution.
+  *(medium · desktop tool host; Phase 3; security-review.md; egress → the SSRF item above)*
 - [ ] **`relavium run` maps any `run:paused` to exit 3 (gate-paused); revisit when media host-wiring lands.**
   `run.ts` returns `EXIT_CODES.gatePaused` (3) for any `run:paused`, which is correct in 2.D because a
   human gate is the **only** `run:paused` source (no `mediaStore`/media-job host is wired, so a media-only

@@ -10,8 +10,9 @@
 > **2.5.F** (`/clear` + the `session:compacting` "Summarizing…" moment + the context-fullness footer, completing
 > the ADR-0062 compaction story) ✅ **Done (PR #65, merged 2026-07-05)**. The additive lane **2.5.H** (reasoning
 > render + live-turn feedback + actionable errors, EA6 amending ADR-0036) ✅ **Done (PR #67, 2026-07-07)** — **milestone
-> M2.5-3 reached** (with 2.5.E). **Next: 2.5.G** (onboarding wizard + Home `/models`). Remaining additive lanes:
-> 2.5.I / J.
+> M2.5-3 reached** (with 2.5.E). **2.5.G** (onboarding wizard + Home `/models` + the live model catalog) ✅
+> **Done (PR #66, 2026-07-06)** behind [ADR-0063](../../decisions/0063-cli-config-write-contract.md)/[ADR-0064](../../decisions/0064-live-model-catalog.md)/[ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md)
+> (+ the ADR-0059/0066 model-UX follow-up) — **milestone M2.5-2 reached**. Remaining: the consolidation lanes 2.5.I / J.
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
 
@@ -405,16 +406,23 @@ overflows the context window; the summary is inspectable and the moment is a des
 > footer guard, the Home double-clear MCP-leak guard, best-effort auto-compaction, and the shared adapter
 > `CONTEXT_SEAM_DEFAULTS`.**
 
-### 2.5.G — Onboarding wizard, `/models`, and the live model catalog
+### 2.5.G — Onboarding wizard, `/models`, and the live model catalog — ✅ **Done (PR #66, 2026-07-06)**
+
+> **Status:** ✅ **Done (PR #66, 2026-07-06)** — all **12** dependency-ordered steps (S1–S12) landed behind
+> [ADR-0063](../../decisions/0063-cli-config-write-contract.md)/[ADR-0064](../../decisions/0064-live-model-catalog.md)/[ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md),
+> each with an Opus + Sonnet review round (six with an added security round: S2/S5/S6/S8/S9/S10); the post-2.5.G
+> model-UX follow-up ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md) mid-session reseat +
+> [ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md) reasoning-effort) landed in the same PR.
+> With 2.5.G done, **milestone M2.5-2** (Home + entry + onboarding) is reached.
 
 > **Scope expanded to Option A (2026-07-05).** The maintainer chose to build a **live** model catalog
 > (per-key provider discovery + a DB cache + refresh + a static/live merge) and a **complete model-pricing
-> story** (user-supplied pricing that actually governs cost) now, rather than the static-registry catalog
-> originally scoped. It lands behind three ADRs — [ADR-0063](../../decisions/0063-cli-config-write-contract.md)
+> story** (user-supplied pricing that actually governs cost), rather than the static-registry catalog
+> originally scoped. It landed behind three ADRs — [ADR-0063](../../decisions/0063-cli-config-write-contract.md)
 > (config-write contract), [ADR-0064](../../decisions/0064-live-model-catalog.md) (live catalog), and
 > [ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md) (provider economics & extensibility)
-> — across **12 dependency-ordered, individually-reviewed steps** (six security-flagged). It pulls the live
-> `/v1/models` fetch forward from Phase 3 (the § "Explicitly out of scope" note above is reconciled to match).
+> — across **12 dependency-ordered, individually-reviewed steps** (six security-flagged). It pulled the live
+> `/v1/models` fetch forward from Phase 3 (the § "Explicitly out of scope" note above was reconciled to match).
 
 **Tasks:** a `@clack` first-run wizard from the key-less Home (provider → **hidden** stdin key → keychain, with
 a write-failure fallback + env-key import) reusing the two ink↔clack custody patterns; the **`listModels?` seam
@@ -542,7 +550,7 @@ state; `NO_COLOR` is honoured.
 | In-phase | Completed by | Outcome |
 |----------|--------------|---------|
 | M2.5-1 Secure base ✅ **(PR #60, 2026-06-28)** | 2.5.A | Root-cause closed (capability gap + merge asymmetry); host seam reviewed |
-| M2.5-2 Home + entry + onboarding | 2.5.B + 2.5.C + 2.5.D + 2.5.F + 2.5.G | First-class entry + ergonomics + onboarding |
+| M2.5-2 Home + entry + onboarding ✅ **(PR #66, 2026-07-06)** | 2.5.B + 2.5.C + 2.5.D + 2.5.F + 2.5.G | First-class entry + ergonomics + onboarding |
 | M2.5-3 Modes + observability ✅ **(2026-07-07)** | 2.5.E + 2.5.H | Safe reseat-less mode system + per-tool approval + reasoning render + actionable errors |
 | M2.5-4 Consolidation | 2.5.I + 2.5.J | Harness + concurrency + docs-debt |
 
@@ -557,9 +565,9 @@ parallel at any point.
 
 - **Phase 2** complete (chat REPL, history, providers, MCP, the 2.J authoring core that 2.5.A's tool
   host and Phase 2.6 build on).
-- The pure engine amendments EA1–EA7 are filed back against `@relavium/core` / `@relavium/shared` as
-  Phase-1 amendments, each behind the ADR mapped in the [Engine amendments appendix](#engine-amendments-appendix-ea1ea7)
-  (EA1/EA2 → ADR-0055; EA3/EA4/EA5/EA7 → ADR-0057; EA6 amends ADR-0036); the engine architecture and the
+- The pure engine amendments EA1–EA8 are filed back against `@relavium/core` / `@relavium/shared` as
+  Phase-1 amendments, each behind the ADR mapped in the [Engine amendments appendix](#engine-amendments-appendix-ea1ea8)
+  (EA1/EA2 → ADR-0055; EA3/EA4/EA5/EA7 → ADR-0057; EA6 amends ADR-0036; EA8 → ADR-0061); the engine architecture and the
   platform boundary are unchanged.
 
 ## Exit criteria (go / no-go → Phase 2.6)

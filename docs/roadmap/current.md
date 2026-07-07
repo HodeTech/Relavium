@@ -186,13 +186,14 @@ all recorded in the ADR-0061 "Refined at implementation" append. **2.5.F** (the 
 **Done (PR #65, merged 2026-07-05)** behind [ADR-0062](../decisions/0062-context-compaction-and-cli-history-commands.md):
 `/clear` (a host-level fresh-session swap across `chat`/`chat-resume`/Home, TTY-interactive only), the
 `session:compacting` "Summarizing…" moment event (amending ADR-0036), and the footer context-fullness indicator —
-completing compaction alongside the earlier `/compact` + `/trim` + automatic compaction. **2.5.G is now
-underway**, its scope **expanded to Option A** — a **live** model catalog (per-key provider discovery + a DB
-cache + refresh + a static/live merge) and a complete model-pricing story (user-supplied pricing that governs
-cost) — behind three new ADRs ([ADR-0063](../decisions/0063-cli-config-write-contract.md) config-write ·
+completing compaction alongside the earlier `/compact` + `/trim` + automatic compaction. **2.5.G** (onboarding
+wizard + Home `/models` + the live model catalog) is ✅ **Done (PR #66, 2026-07-06)** — its scope **expanded to
+Option A**: a **live** model catalog (per-key provider discovery + a DB cache + refresh + a static/live merge)
+and a complete model-pricing story (user-supplied pricing that governs cost), behind three ADRs
+([ADR-0063](../decisions/0063-cli-config-write-contract.md) config-write ·
 [ADR-0064](../decisions/0064-live-model-catalog.md) live catalog ·
 [ADR-0065](../decisions/0065-provider-economics-and-extensibility.md) provider economics), across 12 reviewed
-steps. The additive lane **2.5.H** (reasoning render + live-turn feedback + an actionable error taxonomy) is ✅
+steps (all landed); with it **milestone M2.5-2** is reached. The additive lane **2.5.H** (reasoning render + live-turn feedback + an actionable error taxonomy) is ✅
 **Done (PR #67, 2026-07-07)** — behind **EA6** (a new dual-envelope `agent:reasoning` stream event that *amends*
 [ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md); no new top-level ADR): a
 host-emit of the reasoning the `@relavium/llm` seam already carries (ADR-0030), a collapsible "thinking" panel
