@@ -12,7 +12,7 @@ import {
 } from './home-controller.js';
 import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
-import type { ReasoningEffort } from '@relavium/shared';
+import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
 
 import type { RefreshReport } from '../../engine/model-refresh.js';
 
@@ -2040,5 +2040,128 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(reseatChat).not.toHaveBeenCalled(); // no pointless reseat onto the current model
     expect(sessionA.teardown).not.toHaveBeenCalled(); // the live session is untouched
     expect(c.getSnapshot().modelPicker?.hint).toContain('Already on'); // the picker stays open with a hint
+  });
+
+  it('in-Home chat: /effort opens the interactive tier overlay; applying pushes the setter — NO reseat (ADR-0066 §6)', async () => {
+    // The standalone `/effort` overlay (distinct from the `/models` effort sub-step): a reasoning-capable live chat
+    // opens a fixed tier list on the bound effort; picking a new tier pushes the per-turn session override, never a
+    // reseat. Reached via the `/` palette (typing `/` opens it), matching how a user runs it.
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    boundStore.setReasoningEffort('low'); // the session's current tier — drives the overlay's ✓/opening highlight
+    const onSetEffort = vi.fn();
+    const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
+    const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(sessionA.session),
+      reseatChat,
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('/', {}); // open the `/` palette
+    type(c, 'effort'); // filter CHAT_PALETTE_COMMANDS → [/effort]
+    c.handleKey('', ENTER); // run /effort → the interactive overlay opens (NOT the model picker)
+    expect(c.getSnapshot().effortPicker?.current).toBe('low');
+    expect(c.getSnapshot().effortPicker?.selected).toBe(REASONING_EFFORTS.indexOf('low'));
+    expect(c.getSnapshot().modelPicker).toBeUndefined();
+    c.handleKey('', { downArrow: true }); // low → medium
+    c.handleKey('', { downArrow: true }); // medium → high
+    c.handleKey('', ENTER); // apply 'high'
+
+    expect(onSetEffort).toHaveBeenCalledWith('high'); // the per-turn SESSION override
+    expect(reseatChat).not.toHaveBeenCalled(); // an effort change is NOT a reseat (ADR-0066 §5)
+    expect(sessionA.teardown).not.toHaveBeenCalled(); // the live session is untouched
+    expect(c.getSnapshot().effortPicker).toBeUndefined(); // the overlay closed after applying
+  });
+
+  it('in-Home chat: /effort on a NON-reasoning model does NOT open the overlay — it dispatches to the notice (ADR-0066 §6)', async () => {
+    // A non-reasoning bound model has no controllable tier, so `/effort` must fall through to the slash dispatch
+    // (the ctx handler prints "no controllable tier"), never opening a dead overlay.
+    const boundStore = createChatStore(false, { model: 'gpt-4o' }); // gpt-4o is not a reasoning model
+    const onSetEffort = vi.fn();
+    const made = makeSession({ store: boundStore, onSetEffort });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey('/', {});
+    type(c, 'effort');
+    c.handleKey('', ENTER);
+    await flush();
+
+    expect(c.getSnapshot().effortPicker).toBeUndefined(); // no overlay for a non-reasoning model
+    expect(made.lines).toContain('/effort'); // it dispatched (the ctx handler surfaces the "no tier" notice)
+    expect(onSetEffort).not.toHaveBeenCalled();
+  });
+
+  it('in-Home chat: a typed (pasted) /effort line opens the overlay via applySubmitAction (ADR-0066 §6)', async () => {
+    // Typing `/` at an empty prompt opens the palette, so a LITERAL `/effort` line reaches applySubmitAction only via
+    // paste (bracketed paste appends verbatim). This covers the typed-intercept branch, distinct from the palette one.
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    boundStore.setReasoningEffort('medium');
+    const onSetEffort = vi.fn();
+    const sessionA = makeSession({ store: boundStore, onSetEffort });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(sessionA.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    c.handleKey(PASTE_START, {});
+    c.handleKey('/effort', {}); // pasted literally — the palette does NOT open (a paste bypasses the `/` intercept)
+    c.handleKey(PASTE_END, {});
+    expect(c.getSnapshot().input.text).toBe('/effort');
+    c.handleKey('', ENTER); // submit the literal line → applySubmitAction → the typed intercept opens the overlay
+
+    expect(c.getSnapshot().effortPicker?.current).toBe('medium'); // opened on the bound tier
+    expect(c.getSnapshot().input.text).toBe(''); // the buffer was cleared
+    expect(sessionA.lines).not.toContain('/effort'); // it did NOT dispatch — it opened the overlay
+  });
+
+  it('in-Home chat: Esc closes the /effort overlay without applying; same-tier re-pick is a no-op (ADR-0066 §6)', async () => {
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    boundStore.setReasoningEffort('high'); // the overlay opens highlighted on 'high'
+    const onSetEffort = vi.fn();
+    const sessionA = makeSession({ store: boundStore, onSetEffort });
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(sessionA.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'hi');
+    c.handleKey('', ENTER);
+    await flush();
+    // Open via the palette, then Esc — closes the overlay without a setter call.
+    c.handleKey('/', {});
+    type(c, 'effort');
+    c.handleKey('', ENTER);
+    expect(c.getSnapshot().effortPicker).toBeDefined();
+    c.handleKey('', { escape: true });
+    expect(c.getSnapshot().effortPicker).toBeUndefined(); // Esc closed it
+    expect(onSetEffort).not.toHaveBeenCalled(); // …applying nothing
+
+    // Re-open and Enter on the ALREADY-bound 'high' → a gentle no-op (no setter call), overlay closed.
+    c.handleKey('/', {});
+    type(c, 'effort');
+    c.handleKey('', ENTER);
+    c.handleKey('', ENTER); // Enter on the opening highlight (the bound 'high')
+    expect(onSetEffort).not.toHaveBeenCalled(); // same tier ⇒ no setter call
+    expect(c.getSnapshot().effortPicker).toBeUndefined(); // closed
   });
 });

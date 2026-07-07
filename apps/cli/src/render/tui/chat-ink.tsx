@@ -13,6 +13,13 @@ import {
 import { CHAT_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
 import {
+  canControlEffort,
+  foldEffortPickerKey,
+  initialEffortPickerState,
+  type EffortPickerState,
+} from './effort-picker.js';
+import { EffortTierList } from './effort-tier-list.js';
+import {
   foldModelPickerKey,
   partialFailureBanner,
   type ModelPickerKey,
@@ -378,6 +385,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     setModelPicker(next);
   };
   const pickerEpochRef = useRef(0);
+  // The standalone `/effort` overlay (ADR-0066 §6) — a keyboard-owning submode like `/models`, ref-shadowed so a
+  // coalesced stdin chunk sees a just-applied open/close/accept. Opened only on a reasoning-capable bound model.
+  const [effortPicker, setEffortPicker] = useState<EffortPickerState | undefined>(undefined);
+  const effortPickerRef = useRef<EffortPickerState | undefined>(undefined);
+  const applyEffortPicker = (next: EffortPickerState | undefined): void => {
+    effortPickerRef.current = next;
+    setEffortPicker(next);
+  };
   // A monotonic submit generation: bumped every time the compose buffer is submitted (cleared). An async mention
   // read captures it at accept time and DROPS its inject if a submit has since happened — so a slow read that
   // resolves after Enter can never splice the file into the (now-empty) buffer meant for the NEXT message.
@@ -669,11 +684,57 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   };
 
+  // ---- The standalone `/effort` overlay (ADR-0066 §6) — interactive tier selection (no reseat) ----------------
+  // Open on the LIVE bound model + the LIVE store tier (so it opens on the currently-bound effort). The caller
+  // (submit) gates this on a reasoning-capable model + a wired setter, so opening here is unconditional.
+  const openEffortPicker = (): void => {
+    const snap = props.store.getSnapshot();
+    if (snap.state.model === undefined) return; // defensive — submit only opens on a bound reasoning-capable model
+    applyEffortPicker(initialEffortPickerState(snap.state.model, snap.reasoningEffort));
+  };
+  // The open effort overlay owns every key (mirrors routeModelPickerKey). Accept applies the tier via the per-turn
+  // setter (no reseat); a re-pick of the same tier is a gentle no-op with visible store feedback.
+  const routeEffortPickerKey = (char: string, key: ModelPickerKey): void => {
+    const open = effortPickerRef.current;
+    if (open === undefined) return;
+    const step = foldEffortPickerKey(char, key, open);
+    switch (step.kind) {
+      case 'close':
+        applyEffortPicker(undefined);
+        return;
+      case 'accept':
+        applyEffortPicker(undefined);
+        if (step.effort === open.current) {
+          props.store.note(`Already at reasoning effort ${step.effort}.`);
+        } else {
+          props.onSetEffort?.(step.effort);
+          props.store.note(
+            `Reasoning effort set to ${step.effort} — applies to your next message.`,
+          );
+        }
+        return;
+      case 'state':
+        applyEffortPicker(step.state);
+        return;
+    }
+  };
+
   const submit = (message: string, display?: string): void => {
     // A typed `/models` opens the reseat picker overlay (ADR-0059) instead of sending — interactive only (the port
     // is wired). Covers a directly-typed `/models` AND a chat-palette selection (both route through `submit`).
     if (props.modelPicker !== undefined && message.trim() === '/models') {
       openModelPicker();
+      return;
+    }
+    // A typed (or palette-selected) bare `/effort` opens the interactive tier overlay (ADR-0066 §6) instead of the
+    // informational notice — but ONLY when the setter is wired AND the bound model is reasoning-capable; a
+    // non-reasoning model falls through to the dispatch, whose ctx handler prints the "no controllable tier" notice.
+    // `/effort <tier>` (with an arg) is NOT intercepted (exact match) — it dispatches and sets the tier directly.
+    if (
+      message.trim() === '/effort' &&
+      canControlEffort(props.store.getSnapshot().state.model, props.onSetEffort !== undefined)
+    ) {
+      openEffortPicker();
       return;
     }
     // Mark the submit in flight so input is gated + the spinner runs for the WHOLE operation (streaming AND any
@@ -716,6 +777,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // open/close/accept; on accept it triggers the reseat + ends the loop (see routeModelPickerKey).
     if (modelPickerRef.current !== undefined) {
       routeModelPickerKey(char, key);
+      return;
+    }
+    // The open `/effort` overlay owns every key (ADR-0066 §6) — mutually exclusive with the other submodes (it only
+    // opens at an idle prompt). Read the REF so a coalesced same-chunk key sees a just-applied open/close/accept.
+    if (effortPickerRef.current !== undefined) {
+      routeEffortPickerKey(char, key);
       return;
     }
     // The open `@`-mention completion owns every key (2.5.D step 4): Esc/Ctrl-C cancels + restores the literal
@@ -948,7 +1015,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           palette !== undefined ||
           search !== undefined ||
           mention !== undefined ||
-          modelPicker !== undefined
+          modelPicker !== undefined ||
+          effortPicker !== undefined
         }
       />
       {palette !== undefined && (
@@ -962,6 +1030,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           (cosmetic, render-only, so `Date.now()` is fine on this UI path — no engine-purity concern here). */}
       {modelPicker !== undefined && (
         <ModelPickerView state={modelPicker} color={color} nowMs={Date.now()} />
+      )}
+      {/* The standalone `/effort` overlay (ADR-0066 §6) — the shared tier list; `Esc` cancels (not a back-out). */}
+      {effortPicker !== undefined && (
+        <EffortTierList
+          selected={effortPicker.selected}
+          current={effortPicker.current}
+          labelSuffix={effortPicker.model}
+          footer="↑/↓ select · Enter apply · Esc cancel"
+          color={color}
+        />
       )}
     </Box>
   );

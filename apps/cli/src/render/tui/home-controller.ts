@@ -8,6 +8,12 @@ import {
   type ReplCommandContext,
 } from '../../commands/repl-commands.js';
 import type { RefreshReport } from '../../engine/model-refresh.js';
+import {
+  canControlEffort,
+  foldEffortPickerKey,
+  initialEffortPickerState,
+  type EffortPickerState,
+} from './effort-picker.js';
 import { foldModelPickerKey, partialFailureBanner, type ModelPickerState } from './model-picker.js';
 import type { ReseatTarget } from '../../commands/chat.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
@@ -165,6 +171,10 @@ export interface HomeControllerState {
    *  action); a keyboard-owning overlay like the palette. Opened from the Home palette's `/models`; on selection it
    *  writes the next session's default (ADR-0063), never rebinding the live session. Mutually exclusive with the palette. */
   readonly modelPicker: ModelPickerState | undefined;
+  /** The open standalone `/effort` overlay (ADR-0066 §6) — `undefined` ⇒ closed. CHAT-scoped (a live in-Home chat
+   *  with the effort setter wired + a reasoning-capable model); a keyboard-owning overlay like the mention/search
+   *  submodes. On accept it pushes the per-turn session override via `active.onSetEffort` (no reseat). */
+  readonly effortPicker: EffortPickerState | undefined;
 }
 
 /**
@@ -244,6 +254,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     historyEntries: [],
     notice: undefined,
     modelPicker: undefined,
+    effortPicker: undefined,
   };
   // Per-session command history for the in-Home chat (2.5.D step 3) — accumulates submitted lines across the Home
   // process; Up/Down recall, Ctrl+R reverse-searches. Not persisted (a chat-resume starts fresh).
@@ -330,6 +341,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           palette: undefined, // a palette left open when /exit ran must not leak into the returned Home
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
+          effortPicker: undefined, // ditto the `/effort` overlay (chat-scoped — closed on return to the bare Home)
           modelPicker: undefined, // ditto the `/models` picker (Home-only, so never open here — reset for hygiene)
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
           submitBusy: false, // ditto a submit/compaction in flight — the returned Home must not be left gated
@@ -391,6 +403,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           search: undefined,
           mention: undefined,
           modelPicker: undefined,
+          effortPicker: undefined,
           shellBusy: false,
           submitBusy: false, // the swap is done — un-gate the fresh chat
           shellCommand: undefined,
@@ -463,6 +476,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           search: undefined,
           mention: undefined,
           modelPicker: undefined,
+          effortPicker: undefined,
           shellBusy: false,
           submitBusy: false, // the swap is done — un-gate the reseated chat
           shellCommand: undefined,
@@ -534,6 +548,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       search: undefined,
       mention: undefined,
       modelPicker: undefined,
+      effortPicker: undefined,
       historyEntries: history.entries,
     });
     // Track the in-flight build so a signal (or a mid-build exit) during `loading` can reclaim its just-spawned
@@ -808,6 +823,46 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     return true;
   };
 
+  // ---- The in-Home `/effort` overlay (ADR-0066 §6) — interactive tier selection (no reseat) -------------------
+  // Whether `/effort` should open the overlay: a live chat with the setter wired AND a reasoning-capable bound model.
+  // A non-reasoning model returns false, so the surface falls through to the `/effort` notice (parity with ChatApp).
+  const canOpenEffortPicker = (active: HomeChatSession): boolean =>
+    canControlEffort(active.store.getSnapshot().state.model, active.onSetEffort !== undefined);
+  // Open on the LIVE bound model + the LIVE store tier (so it opens on the currently-bound effort). Callers gate on
+  // `canOpenEffortPicker`, so the model is present here (the guard is defensive).
+  const openEffortPicker = (active: HomeChatSession): void => {
+    const snap = active.store.getSnapshot();
+    if (snap.state.model === undefined) return;
+    set({ effortPicker: initialEffortPickerState(snap.state.model, snap.reasoningEffort) });
+  };
+  // The open effort overlay owns every key (mirrors routeModelPickerKey). Accept applies the tier via the session's
+  // per-turn setter (no reseat); a re-pick of the same tier is a gentle no-op with visible store feedback.
+  const routeEffortPickerKey = (active: HomeChatSession, input: string, key: ChatKey): boolean => {
+    const open = state.effortPicker;
+    if (open === undefined) return false;
+    const step = foldEffortPickerKey(input, key, open);
+    switch (step.kind) {
+      case 'close':
+        set({ effortPicker: undefined });
+        break;
+      case 'accept':
+        set({ effortPicker: undefined });
+        if (step.effort === open.current) {
+          active.store.note(`Already at reasoning effort ${step.effort}.`);
+        } else {
+          active.onSetEffort?.(step.effort);
+          active.store.note(
+            `Reasoning effort set to ${step.effort} — applies to your next message.`,
+          );
+        }
+        break;
+      case 'state':
+        set({ effortPicker: step.state });
+        break;
+    }
+    return true;
+  };
+
   // Drive the open `/` palette (2.5.C S3b): fold the keystroke, then apply — keep open with new state, run the
   // highlighted command by submitting its slash line through the SAME chat dispatch, or close. Ctrl-C closes it
   // (a gentle escape back to the prompt — never trapping the user).
@@ -885,6 +940,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           // chat: `/models` opens the reseat picker (ADR-0059) — parity with the typed-`/models` intercept, so the
           // palette route + the typed route behave identically (never the "interactive terminal" dispatch hint).
           openModelPicker();
+        } else if (step.command.name === 'effort' && canOpenEffortPicker(active)) {
+          // chat: bare `/effort` on a reasoning-capable model opens the interactive overlay (ADR-0066 §6) — parity
+          // with the typed-`/effort` intercept; a non-reasoning model falls through to the notice below.
+          openEffortPicker(active);
         } else {
           sendChatLine(active, `/${step.command.name}`); // chat: reuse the S3a slash dispatch (createChatLineHandler)
         }
@@ -1143,6 +1202,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       openModelPicker();
       return;
     }
+    // Bare `/effort` on a reasoning-capable model opens the interactive tier overlay (ADR-0066 §6) instead of the
+    // informational notice — parity with the standalone ChatApp. A non-reasoning model falls through to the slash
+    // dispatch (the ctx handler's "no controllable tier" notice). `/effort <tier>` (with an arg) is not intercepted.
+    if (trimmed === '/effort' && canOpenEffortPicker(active)) {
+      history = recordHistory(history, line);
+      set({ input: emptyEditor(), historyEntries: history.entries });
+      openEffortPicker(active);
+      return;
+    }
     if (trimmed.startsWith('/') || state.attachments.length === 0) {
       // a slash command, or a plain message with no attachments — the simple path
       history = recordHistory(history, line);
@@ -1312,7 +1380,8 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
             state.palette === undefined &&
             state.search === undefined &&
             state.mention === undefined &&
-            state.modelPicker === undefined; // a paste while the picker owns the keyboard must not leak into the buffer
+            state.modelPicker === undefined && // a paste while the picker owns the keyboard must not leak into the buffer
+            state.effortPicker === undefined; // ditto the `/effort` overlay
           const pasted = input.replace(/\r\n?/g, '\n');
           if (pasted.length > 0 && editable) {
             // Match the typed-edit path: appending clears any stale `/doctor` report + invalidates an in-flight run.
@@ -1328,10 +1397,19 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         handlePaletteKey(input, key);
         return;
       }
-      // The `/models` picker (2.5.G S7) likewise owns every key while open — a Home-only overlay, mutually exclusive
-      // with the palette (the palette closes before running `/models`), so this can be reached only in `mode: 'home'`.
+      // The `/models` picker (2.5.G S7) likewise owns every key while open — mutually exclusive with the palette
+      // (the palette closes before running `/models`). Opened from the bare-Home palette (next-session default,
+      // ADR-0063) OR a live in-Home chat (a typed/palette `/models` → the reseat picker, ADR-0059), so it is routed
+      // before the mode branches rather than assuming a single mode.
       if (state.modelPicker !== undefined) {
         routeModelPickerKey(input, key);
+        return;
+      }
+      // The `/effort` overlay (ADR-0066 §6) likewise owns every key while open — chat-scoped, so it always has a
+      // live session; the guard keeps `routeEffortPickerKey`'s `active` non-null (a stale overlay with no session,
+      // never expected, falls through instead of driving a torn-down session).
+      if (state.effortPicker !== undefined && state.session !== undefined) {
+        routeEffortPickerKey(state.session, input, key);
         return;
       }
       if (state.mode === 'chat' && state.session !== undefined) {

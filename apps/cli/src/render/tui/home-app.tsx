@@ -12,6 +12,8 @@ import { HomeView } from './home-view.js';
 import type { ReverseSearchState } from './input-history.js';
 import type { MentionState } from './mention.js';
 import { MentionView } from './mention-view.js';
+import type { EffortPickerState } from './effort-picker.js';
+import { EffortTierList } from './effort-tier-list.js';
 import type { ModelPickerState } from './model-picker.js';
 import { ModelPickerView } from './model-picker-view.js';
 import { PaletteView } from './palette-view.js';
@@ -49,6 +51,7 @@ function ChatRegion(
     search: ReverseSearchState | undefined;
     mention: MentionState | undefined;
     modelPicker: ModelPickerState | undefined;
+    effortPicker: EffortPickerState | undefined;
     nowMs: number;
     shellBusy: boolean;
     submitBusy: boolean;
@@ -78,7 +81,8 @@ function ChatRegion(
           props.palette !== undefined ||
           props.search !== undefined ||
           props.mention !== undefined ||
-          props.modelPicker !== undefined
+          props.modelPicker !== undefined ||
+          props.effortPicker !== undefined
         }
       />
       {props.palette !== undefined && (
@@ -91,6 +95,16 @@ function ChatRegion(
       {/* The `/models` reseat picker overlay in a live in-Home chat (ADR-0059) — mounted like the palette. */}
       {props.modelPicker !== undefined && (
         <ModelPickerView state={props.modelPicker} color={color} nowMs={props.nowMs} />
+      )}
+      {/* The standalone `/effort` overlay in a live in-Home chat (ADR-0066 §6) — the shared tier list. */}
+      {props.effortPicker !== undefined && (
+        <EffortTierList
+          selected={props.effortPicker.selected}
+          current={props.effortPicker.current}
+          labelSuffix={props.effortPicker.model}
+          footer="↑/↓ select · Enter apply · Esc cancel"
+          color={color}
+        />
       )}
     </Box>
   );
@@ -115,6 +129,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         search={state.search}
         mention={state.mention}
         modelPicker={state.modelPicker}
+        effortPicker={state.effortPicker}
         nowMs={props.nowMs()}
         shellBusy={state.shellBusy}
         submitBusy={state.submitBusy}
