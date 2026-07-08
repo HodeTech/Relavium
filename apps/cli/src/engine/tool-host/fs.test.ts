@@ -85,16 +85,33 @@ describe('createNodeFsCapability — read (jailed)', () => {
     expect((await sandboxed().readFile('sub/x.txt', {})).content).toBe('deep');
   });
 
-  it('rejects a `..` traversal that escapes the workspace — FATAL tool_denied, not retryable', async () => {
+  it('rejects a `..` traversal that escapes the workspace — tool_denied, not retryable, but RECOVERABLE (Step 14)', async () => {
     await writeFile(join(outside, 'secret.txt'), 'TOP SECRET');
     const err: unknown = await sandboxed()
       .readFile('../outside/secret.txt', {})
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(FsScopeDeniedError);
-    // A deterministic scope denial must be fatal so it never burns the node-retry budget (error-handling.md).
     if (err instanceof FsScopeDeniedError) {
       expect(err.code).toBe('tool_denied');
-      expect(err.retryable).toBe(false);
+      expect(err.retryable).toBe(false); // never burns the node-retry budget (error-handling.md)
+      // The PURE scope-tier escape is refused before any side effect, so it is fed back for conversational
+      // recovery on the chat surface (the model adapts to an in-bounds path); the floor still denies every try.
+      expect(err.recoverable).toBe(true);
+    }
+  });
+
+  it('a confidentiality-floor read refusal is FATAL (recoverable:false) — no secret-store probe oracle (Step 14)', async () => {
+    // A secret/credential store read (.ssh here) is refused as a FsScopeDeniedError like a scope escape, but it
+    // must NOT be fed back to the model (that would leak a "this path is a secret store" oracle) — it stays fatal.
+    await mkdir(join(workspace, '.ssh'), { recursive: true });
+    await writeFile(join(workspace, '.ssh', 'id_rsa'), 'PRIVATE');
+    const err: unknown = await sandboxed()
+      .readFile('.ssh/id_rsa', {})
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(FsScopeDeniedError);
+    if (err instanceof FsScopeDeniedError) {
+      expect(err.code).toBe('tool_denied');
+      expect(err.recoverable).toBe(false); // the confidentiality boundary stays fatal (unlike a scope escape)
     }
   });
 

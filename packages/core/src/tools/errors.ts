@@ -31,12 +31,29 @@ export abstract class ToolDispatchError extends Error {
   abstract readonly retryable: boolean;
   /** The tool id involved, when one is known (a name, never a secret). */
   readonly toolId?: ToolId;
+  /**
+   * Whether this failure is safe to FEED BACK to the model as an `isError` tool result for in-turn CONVERSATIONAL
+   * recovery (ADR-0057 `recoverToolFailures`, the interactive chat surface only) instead of ending the turn.
+   * Default **false** (fatal — the safe direction; a forgotten opt-in just stays fatal). Set true by the specific
+   * throwing class ONLY when re-attempting is safe: an IDEMPOTENT host execution failure (a read — no side-effect
+   * hazard), or a SCOPE denial refused BEFORE any side effect (a Step-14 fs scope-tier escape / a media scope
+   * denial) so the model can adapt to an in-bounds path. A user / guardrail / SSRF / **confidentiality** /
+   * side-effecting denial stays false — re-issuing re-denies, would risk a re-execution, or would leak a
+   * probe oracle. Distinct from {@link retryable} (a fresh whole-node retry); this is the stricter in-turn re-attempt.
+   */
+  readonly recoverable: boolean;
 
-  protected constructor(message: string, toolId: ToolId | undefined, cause: unknown) {
+  protected constructor(
+    message: string,
+    toolId: ToolId | undefined,
+    cause: unknown,
+    recoverable = false,
+  ) {
     super(message, cause === undefined ? undefined : { cause });
     if (toolId !== undefined) {
       this.toolId = toolId;
     }
+    this.recoverable = recoverable;
   }
 }
 
@@ -68,7 +85,9 @@ export class ToolPolicyError extends ToolDispatchError {
   readonly reason: ToolPolicyDenyReason;
 
   constructor(toolId: ToolId, reason: ToolPolicyDenyReason, message: string) {
-    super(message, toolId, undefined);
+    // A `media_scope_denied` is a SCOPE denial of an idempotent read (read_media) refused before any effect, so
+    // it is RECOVERABLE — fed back so the model can adapt (Step 14). Every other guardrail reason stays fatal.
+    super(message, toolId, undefined, reason === 'media_scope_denied');
     this.name = 'ToolPolicyError';
     this.reason = reason;
   }
@@ -149,21 +168,14 @@ export class ToolExecutionError extends ToolDispatchError {
   readonly code = 'execution_failed';
   readonly runErrorCode: ErrorCode = 'tool_failed';
   readonly retryable = true;
-  /**
-   * Whether this failure is safe to FEED BACK to the model for a within-turn retry (ADR-0057
-   * `recoverToolFailures`, the interactive chat surface) — vs ending the turn. `retryable` (above) means a
-   * fresh node-retry may re-run the whole node; `recoverable` is the STRICTER "the model may re-attempt this
-   * specific call in-turn without a side-effect hazard". True ONLY for an IDEMPOTENT tool (a read — no
-   * `fs_write`/`egress`/`process`/`os` action), stamped by the registry from {@link governedAction}. A
-   * governed / side-effecting tool defaults to **false**, so a non-idempotent failure (a half-run command, a
-   * POST that may have reached the server) ends the turn rather than risking a re-execution.
-   */
-  readonly recoverable: boolean;
 
   constructor(toolId: ToolId, message: string, cause?: unknown, opts?: { recoverable?: boolean }) {
-    super(message, toolId, cause);
+    // `recoverable` (the inherited base flag) is true ONLY for an IDEMPOTENT tool (a read — no
+    // `fs_write`/`egress`/`process`/`os` action), stamped by the registry from `governedAction`; a governed /
+    // side-effecting failure (a half-run command, a POST that may have reached the server) stays false so it ends
+    // the turn rather than risking a re-execution.
+    super(message, toolId, cause, opts?.recoverable ?? false);
     this.name = 'ToolExecutionError';
-    this.recoverable = opts?.recoverable ?? false;
   }
 }
 

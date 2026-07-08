@@ -29,8 +29,11 @@ export class HostDeniedError extends ToolDispatchError {
   readonly code = 'tool_denied';
   readonly runErrorCode: ErrorCode = 'tool_denied';
   readonly retryable = false;
-  constructor(message: string) {
-    super(message, undefined, undefined);
+  /** `recoverable` (the inherited base flag) is FALSE by default (fatal — the safe direction): a host denial ends
+   *  the turn. A specific SCOPE denial refused before any side effect (an fs scope-tier escape — Step 14) opts in
+   *  by passing `true`; egress SSRF / a confidentiality refusal stays fatal. */
+  constructor(message: string, recoverable = false) {
+    super(message, undefined, undefined, recoverable);
     this.name = new.target.name;
   }
 }
