@@ -121,7 +121,7 @@ no new top-level ADR) is ✅ **Done (PR #67, 2026-07-07)**, reaching milestone *
 lanes **2.5.I** (regression harness + DB concurrency hardening: `loadFull` read-txn snapshot, `BEGIN IMMEDIATE` writes with a
 deterministic `SQLITE_BUSY` retry, the concurrent chat+run + cassette-chain + perf-budget e2es, an advisory Windows CI lane) and
 **2.5.J** (docs-debt: the accurate unencrypted-history posture per ADR-0050 + `NO_COLOR`/`FORCE_COLOR`/`--color` resolution) are
-✅ **Done (2.5-close-out, 2026-07-08)** — **reaching milestone M2.5-4, so Phase 2.5 is complete** — landed with the doable-now
+✅ **Done (2.5-close-out, PR #69, 2026-07-08)** — **reaching milestone M2.5-4, so Phase 2.5 is complete** — landed with the doable-now
 Batch A–E backlog (test-hardening; 2.5.H TUI polish; `AgentParseError` line/col; the ADR-0057 approval/security batch — `[c]`
 reject-with-reason + non-TTY policy + SCOPE-denial recovery + Ctrl+T-in-approval + the Trojan-Source bidi floor, behind an
 append-only ADR-0057 amendment; the profile-aware advertise-filter + the in-house `.gitignore` matcher), each implement → Opus →
