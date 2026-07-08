@@ -518,7 +518,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > untrusted injection) shipped. These bounded pieces were deliberately deferred (each is additive; the
 > confidentiality floor + jail + injection framing hold without them):
 
-- [x] **Advisory `.gitignore` / `.relaviumignore` completion trim — DONE (2.5-close Step 15, Batch E).** A
+- [x] **Advisory `.gitignore` / `.relaviumignore` completion trim — DONE (2.5-close Step 15, Batch E; PR #69).** A
   dependency-free, ReDoS-safe in-house matcher ([gitignore.ts](../../apps/cli/src/render/tui/gitignore.ts)) folds
   the workspace-root `.gitignore` + `.relaviumignore` into the `@`-mention candidate filter (comments/blanks, `!`
   negation, dir-only `/`, anchoring, `*`/`**`/`?` globs; a LINEAR two-pointer glob matcher — no regex, so no
@@ -530,7 +530,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   expansion is deferred (ADR-0061). *(low · apps/cli/src/render/tui/mention.ts)*
 - [ ] **`@`-mention of a binary / media file.** The reader fail-closes on a binary file (parity with `read_file`);
   a durable media-handle injection path (ADR-0031) is a follow-up. *(low · apps/cli/src/render/tui/mention.ts)*
-- [x] **Strip Unicode bidi/format controls at the shared display boundary — DONE (2.5-close Step 14, D-5).** The
+- [x] **Strip Unicode bidi/format controls at the shared display boundary — DONE (2.5-close Step 14, D-5; PR #69).** The
   shared `stripTerminalControls` (chat-projection.ts) now strips the Trojan-Source reordering family (U+202A–202E,
   U+2066–2069, LRM/RLM/ALM) at every display boundary; ZWJ/ZWNJ preserved; the source uses `\u` escapes (no literal
   bidi bytes). *(apps/cli/src/render/tui/chat-projection.ts)*
@@ -541,17 +541,17 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > reseat-less mode system + per-tool approval + mid-turn abort + the host arms shipped. These bounded pieces
 > were deliberately deferred (each is additive, none blocks the mode system's security guarantees):
 
-- [x] **`[c]` reject-with-typed-reason approval prompt — DONE (2.5-close Step 14, D-1).** A `[c]` at the approval
+- [x] **`[c]` reject-with-typed-reason approval prompt — DONE (2.5-close Step 14, D-1; PR #69).** A `[c]` at the approval
   prompt opens a keyboard-owning reason-input sub-mode (both `relavium chat` + the Home); on submit it rejects with
   the sanitized + 300-char-bounded reason via the existing `ToolApprovalDecision.reject.reason` seam. The floor is
   unchanged. *(apps/cli/src/render/tui/chat-input.ts + chat-ink.tsx + home-controller.ts)*
-- [x] **Conversationally recover from a SCOPE denial in chat — DONE (2.5-close Step 14, D-3).** The `recoverable`
+- [x] **Conversationally recover from a SCOPE denial in chat — DONE (2.5-close Step 14, D-3; PR #69).** The `recoverable`
   flag moved to the base `ToolDispatchError`; exactly two `tool_denied`s opt in — `ToolPolicyError('media_scope_denied')`
   and the fs **pure scope-tier escape** (`FsScopeDeniedError` from `assertInScope`) — so on the `recoverToolFailures`
   surfaces the model is fed the denial and adapts to an in-bounds path. The confidentiality / protected-path / symlink
   / SSRF / user / guardrail denials stay FATAL. *(packages/core/src/tools/errors.ts; apps/cli/src/engine/tool-host/fs.ts; ADR-0057)*
 - [x] **Plain / non-TTY non-interactive approval policy — DONE (2.5.E "High 9" + consolidated in 2.5-close Step 14,
-  D-2).** A non-interactive driver (plain non-TTY / `--json` / one-shot `agent run`) uses the one canonical
+  D-2; PR #69).** A non-interactive driver (plain non-TTY / `--json` / one-shot `agent run`) uses the one canonical
   `nonInteractiveApprovalPrompt` — every governed dispatch is DENIED (never a hang, never an auto-approve).
   *(apps/cli/src/chat/chat-mode.ts; apps/cli/src/commands/chat.ts + agent-run.ts)*
 - [ ] **Approval-consent-line zero-width hardening (2.5-close Step 14 security-review, optional).** The shared render
@@ -696,7 +696,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   *commands* (`relavium list` / `loadLatestRunPerWorkflow` still return the full set) — genuinely unneeded at
   single-user CLI scale; add a cursor API before the desktop/cloud surfaces drive these reads at volume.
   *(low → scale · packages/db/src/run-history-store.ts; database-schema.md)*
-- [x] **`AgentParseError` line/column — DONE (2.5-close Step 13, `fix(core)`).** `agentSyntaxErrorFrom` (the
+- [x] **`AgentParseError` line/column — DONE (2.5-close Step 13, `fix(core)`; PR #69).** `agentSyntaxErrorFrom` (the
   agent sibling of parser.ts's `syntaxErrorFrom`) now threads `LineCounter` positions into a positioned
   `YAMLParseError`: optional 1-based `line`/`column` fields (parity with `WorkflowSyntaxError`) plus a folded
   `(source — line L, column C)` locator in the message so the position reaches every `.message`-surfacing
@@ -745,10 +745,11 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `sandboxed`-minus-tmp). It did **not** land in 2.5.E — carried forward under the *Phase 2.5.E follow-ups*
   entry above (single tracking point). *(low · apps/cli/src/engine/tool-host/assemble.ts; ADR-0057; built-in-tools.md fs-tier note)*
 - [x] **Write-capable chat — RESOLVED in 2.5.E.** *Landed in 2.5.E ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md), PR #63, merged 2026-07-03):* the `relavium chat` default profile is now the full-capability `chat-read-write` host — `write_file` is wired and gated by the per-tool approval floor (denied in the default `ask` mode as `tool_denied`, not `tool_unavailable`); a declared `full` tier is still **clamped to `project`** for the chat surface (an unjailed read exfiltrates `~/.ssh` / `~/.aws`, a write-capable chat shares that risk). *(apps/cli/src/chat/session-host.ts; ADR-0057)*
-- [ ] **Profile-unaware advertise-filter.** `wiredToolIds` narrows the grant by which `ToolHost` **arm** is wired,
-  not by the profile's *read-only* posture — `write_file` is still advertised on a read-only chat host and only
-  fail-closes at dispatch (`tool_unavailable`). Correct and safe (the dispatch backstop is authoritative), but a
-  profile-aware advertise-filter would stop offering an always-denied tool. *(low · apps/cli/src/engine/tool-host/assemble.ts)*
+- [x] **Profile-unaware advertise-filter — DONE (2.5-close Step 15, Batch E; PR #69).** `wiredToolIds` now takes a
+  `{ readOnly }` option: on a read-only host a WRITE-class (`fsWrite`) tool is no longer advertised (its `fs` arm is
+  wired but always denies the write — an always-denied advertisement), the advertise-side complement to the
+  read-only fs arm's dispatch refusal. The default (read-write) is unchanged, so the live `chat-read-write` session
+  host is inert. *(apps/cli/src/engine/tool-host/assemble.ts)*
 - [ ] **Residual fs TOCTOU on the PARENT directory (no `openat` in Node).** The read path (`readJailedFile`)
   and the write paths (append + temp/rename) all open the FINAL component with `O_NOFOLLOW`, so a final-component
   symlink swapped in after the jail's `realpath` fails closed. The unclosable residual is a swap of a PARENT
@@ -769,10 +770,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   would need `toolName` threading for marginal gain (write-only messages *are* prefixed); (c) the generic
   `guarded()` catch-all stays **reason-only** (the I3 boundary). Re-open only if a concrete need appears.
   *(nit · apps/cli/src/engine/tool-host/)*
-- [ ] **Two transitively-covered test gaps.** A chat-session-dispatches-`git_status` e2e (the process arm + the
-  session→host dispatch are each tested; the union covers it) and a persister fold of a failed-turn's **real**
-  tokens (the fold is error-agnostic and tested; the failed-turn flush fires `turn_completed`). Add explicit
-  pins opportunistically. *(low · apps/cli/src/**/*.test.ts; testing.md)*
+- [x] **Two transitively-covered test gaps — DONE (2.5-close Step 11, Batch A; PR #69).** Both now have an
+  explicit pin: the chat-session-dispatches-`git_status` e2e was ADDED this round (session-host.test.ts —
+  "dispatches git_status through the process arm end-to-end", asserting the tool_result folded back with a clean
+  `{"exitCode":0}`); the failed-turn **real**-token persister fold was CONFIRMED already explicitly pinned
+  (persister.test.ts — "flushes the running cost on a failed turn so a resumed budget governor sees the true
+  spend"). *(apps/cli/src/chat/session-host.test.ts + persister.test.ts; testing.md)*
 
 ## Schema / validation hardening
 
@@ -839,19 +842,20 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   (a new devDependency; possibly an ADR) — track it, then a smoke test could tick a fake clock across two
   `store.tick()`-driven renders and assert the displayed elapsed advances. *(low · apps/cli/src/render/tui/home-app.tsx
   + chat-ink.tsx; testing.md "every bug fix lands with a regression test")*
-- [ ] **Compact abort hint during token streaming.** The `Esc to stop` affordance shows on the pre-first-token
-  status line but not once the answer streams (the content line needs the width) — yet `Esc` aborts throughout the
-  turn (EA7). A follow-up could keep a compact hint in the footer during streaming. *(low · apps/cli/src/render/tui/chat-ink.tsx)*
-- [ ] **Bound the EXPANDED reasoning panel by rendered LINES, not just chars.** The panel body is bounded to
-  `MAX_LIVE_TOKEN_CHARS` (4000) chars, which can wrap to 60+ lines of narrow prose in the live (non-`<Static>`)
-  region, re-painted each frame — a taller-than-viewport live block that can flicker on a short terminal (the same
-  risk class the `liveTokens` answer stream already carries; the panel is opt-in + collapsed by default, so LOW).
-  A follow-up could tail the expanded body to the last N rendered lines. *(low · apps/cli/src/render/tui/chat-ink.tsx)*
-- [ ] **Allow `Ctrl+T` / `/thinking` during a pending approval.** The fail-closed approval keyboard-ownership
-  (ADR-0057) swallows every key except `[y]/[a]/[n]/[esc]` — including the reasoning toggle, the one moment a user
-  might most want to expand the thinking to inform the decision. `toggle-reasoning` is a pure view flip (zero
-  session effect), so it would be safe to let it bypass the swallow. Deliberately left fail-closed for now (the
-  approval floor is security-sensitive). *(low · apps/cli/src/render/tui/chat-input.ts)*
+- [x] **Compact abort hint during token streaming — DONE (2.5-close Step 12, Batch B; PR #69).** A pure
+  `streamingAbortHint(busy)` renders a compact dim `Esc to stop` line beneath the streaming CONTENT (a STATUS line
+  already carries its inline hint), so the abort affordance persists for the whole turn (EA7). *(apps/cli/src/render/tui/chat-projection.ts + chat-ink.tsx)*
+- [x] **Bound the EXPANDED reasoning panel by rendered LINES, not just chars — DONE (2.5-close Step 12, Batch B; PR #69).**
+  `formatReasoningPanel` now tails the expanded body to the last `MAX_REASONING_PANEL_LINES` (12) RENDERED rows
+  (each logical line counts as `ceil(len/columns)` wrapped rows; a single over-budget line is head-sliced), so a
+  full 4000-char buffer cannot wrap into a flickering, screen-filling panel on a short terminal. The live width is
+  threaded via a `columns` prop (ChatApp reads `process.stdout?.columns`; the Home passes its resize-tracked
+  `size.cols`). *(apps/cli/src/render/tui/chat-projection.ts + chat-ink.tsx + home-app.tsx)*
+- [x] **Allow `Ctrl+T` / `/thinking` during a pending approval — DONE (2.5-close Step 14, D-4; PR #69).**
+  `reduceApprovalKey` whitelists exactly the view-only reasoning toggle (Ctrl-without-meta `t` → `toggle-reasoning`,
+  a pure store repaint with zero session/approval/decision effect) through the fail-closed swallow, so a user can
+  expand the thinking to inform the decision; every other key (mode cycle, edits, the most-permissive approve/reject
+  chord) stays swallowed. *(apps/cli/src/render/tui/chat-input.ts)*
 
 ## Sonar code-quality backlog
 
