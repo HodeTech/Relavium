@@ -246,8 +246,9 @@ export function codeForLlmError(error: LlmError): ErrorCode {
 /**
  * A tool throw the turn recovers by feeding the model an `isError` tool result (which increments the shared
  * `maxToolCorrections` budget) instead of ending the turn. Always the model's own syntactic mistakes
- * (`unknown_tool` / `invalid_args`); PLUS — ONLY on the interactive chat surface (`limits.recoverToolFailures`,
- * see {@link AgentTurnLimits.recoverToolFailures}) — any error the throwing class flagged `recoverable`
+ * (`unknown_tool` / `invalid_args`); PLUS — ONLY on the `recoverToolFailures` surfaces (chat / Home / one-shot
+ * `agent run`; a workflow node never sets it — see {@link AgentTurnLimits.recoverToolFailures}) — any error the
+ * throwing class flagged `recoverable`
  * ({@link ToolDispatchError.recoverable}): an IDEMPOTENT host execution failure (a read, stamped by the registry
  * from `governedAction`), OR a SCOPE denial refused BEFORE any side effect (a Step-14 fs scope-tier escape / a
  * media scope denial) so the model can adapt to an in-bounds path (conversational recovery). Everything else

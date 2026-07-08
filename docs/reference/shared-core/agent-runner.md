@@ -46,7 +46,7 @@ The error mapping to the closed `ErrorCode` ([error-handling.md](../../standards
 | Source | `ErrorCode` | Retryable | Note |
 |--------|-------------|-----------|------|
 | abort (`ctx.signal`) / `ToolCancelledError` / chain `cancelled` | `cancelled` | false | precedence over every other classification |
-| `ToolPolicyError` | `tool_denied` | false | **not** fed back as a correctable result (re-asking a denied tool burns budget) — EXCEPT `media_scope_denied`, a Step-14 `recoverable` SCOPE denial fed back on the interactive chat surface (`recoverToolFailures`); see the `recoverable` note in [tool-registry.md §error taxonomy](tool-registry.md#error-taxonomy) |
+| `ToolPolicyError` | `tool_denied` | false | **not** fed back as a correctable result (re-asking a denied tool burns budget) — EXCEPT `media_scope_denied`, a Step-14 `recoverable` SCOPE denial fed back on the `recoverToolFailures` surfaces (chat / Home / one-shot `agent run`); see the `recoverable` note in [tool-registry.md §error taxonomy](tool-registry.md#error-taxonomy) |
 | `UnknownToolError` / `ToolArgsInvalidError` | (model-correctable) | — | converted to an `isError` tool result fed back, within a bounded correction budget; after it ⇒ `tool_failed` |
 | `ToolExecutionError` | `tool_failed` | true | |
 | absent host capability (`ToolUnavailableError`) | `tool_unavailable` | false | a host/config gap — names the unwired arm actionably, never a bare `internal` (EA1, [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)) |

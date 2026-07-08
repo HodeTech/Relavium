@@ -33,7 +33,8 @@ export abstract class ToolDispatchError extends Error {
   readonly toolId?: ToolId;
   /**
    * Whether this failure is safe to FEED BACK to the model as an `isError` tool result for in-turn CONVERSATIONAL
-   * recovery (ADR-0057 `recoverToolFailures`, the interactive chat surface only) instead of ending the turn.
+   * recovery (the ADR-0057 `recoverToolFailures` surfaces — `relavium chat` / the Home / one-shot `agent run`;
+   * a WORKFLOW node never sets the flag) instead of ending the turn.
    * Default **false** (fatal — the safe direction; a forgotten opt-in just stays fatal). Set true by the specific
    * throwing class ONLY when re-attempting is safe: an IDEMPOTENT host execution failure (a read — no side-effect
    * hazard), or a SCOPE denial refused BEFORE any side effect (a Step-14 fs scope-tier escape / a media scope

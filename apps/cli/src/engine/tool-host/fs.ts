@@ -96,8 +96,9 @@ export class FsCapabilityError extends HostCapabilityError {}
  *
  * Recoverability (Step 14): fatal by default (`recoverable=false`, inherited). ONE throw opts in — the pure
  * **scope-tier escape** ("the path escapes the allowed filesystem scope") passes `recoverable: true`, so on the
- * interactive chat surface it is fed back as a correctable tool result and the model can adapt to an in-bounds
- * path (conversational recovery). The **confidentiality** refusal (a secret/credential store read), the protected
+ * `recoverToolFailures` surface (chat / Home / one-shot `agent run`) it is fed back as a correctable tool result
+ * and the model can adapt to an in-bounds path (conversational recovery). The **confidentiality** refusal (a
+ * secret/credential store read), the protected
  * -path write, and the symlink/hard-link refusals stay fatal — feeding those back would leak a probe oracle or
  * risk nothing useful.
  */
