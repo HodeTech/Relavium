@@ -332,20 +332,26 @@ codes by [sse-event-schema.md](../contracts/sse-event-schema.md#error-code-taxon
 | *(AbortSignal abort)* | the run was cancelled mid-tool | `cancelled` | fatal (cancel path, not `tool_failed`) |
 
 **`recoverable` (the base `ToolDispatchError` flag; default `false`).** STRICTER than `retryable` (which lets a
-*fresh node-retry* re-run the whole node): `recoverable` gates the interactive-chat WITHIN-TURN recovery
-([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) `recoverToolFailures`) — a recoverable
-error is fed back to the model as an `isError` tool result so it can adapt (conversational recovery), while
-everything else ends the turn. Two disjoint sources set it (a WORKFLOW node ignores the flag — fail-fast always):
+*fresh node-retry* re-run the whole node): `recoverable` gates the WITHIN-TURN recovery on the
+`recoverToolFailures` surfaces (the chat-read-write host —
+[ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md): `relavium chat` / the Home / the one-shot
+`agent run`; a WORKFLOW node never sets `recoverToolFailures`, so it ignores the flag — fail-fast always) — a
+recoverable error is fed back to the model as an `isError` tool result so it can adapt (conversational recovery),
+while everything else ends the turn. Two disjoint sources set it:
 - `ToolExecutionError` — `true` only for an **idempotent read** (no `fs_write` / `process` / `egress` / `os` side
   effect), stamped at the wrap from `governedAction`; a governed / side-effecting failure stays `false` (fail-fast,
   so the model never re-attempts a non-idempotent side effect — a half-run command, a POST that may have landed).
 - A **SCOPE denial** (Step 14) — a `tool_denied` refused BEFORE any side effect, so it is safe to feed back and the
   model can adapt to an in-bounds path (the floor still denies every attempt). Exactly two carry it: the engine's
   `ToolPolicyError('media_scope_denied')`, and the CLI `fs` arm's **pure scope-tier escape** (`FsScopeDeniedError`
-  `'the path escapes the allowed filesystem scope'`). Every OTHER `tool_denied` stays fatal (`false`): a
-  `ToolDeniedByUserError` (user reject / fail-closed), the other `ToolPolicyError` guardrail reasons, an egress
-  **SSRF** denial, and the fs **confidentiality** (secret-store read) / protected-path / symlink refusals — feeding
-  those back would re-deny, risk a re-execution, or leak a probe oracle.
+  `'the path escapes the allowed filesystem scope'`, thrown by `assertInScope` before any write; the only residual
+  is an already-accepted parent-symlink-swap race whose sole preceding effect is an idempotent empty `mkdir`, never
+  the payload write). Every OTHER `tool_denied` stays fatal (`false`): a `ToolDeniedByUserError` (user reject /
+  fail-closed), the other `ToolPolicyError` guardrail reasons, an egress **SSRF** denial, and the fs
+  **confidentiality** (secret-store read) / protected-path / symlink refusals — feeding those back would re-deny,
+  risk a re-execution, or leak a probe oracle. (The scope-escape signal a model can gather across the bounded
+  `maxToolCorrections` rounds is a secret-free workspace-boundary probe, accepted — the reason interpolates no path
+  and the same round-bounded feedback already existed for an idempotent not-found read.)
 
 ## Instantiation
 

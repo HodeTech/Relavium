@@ -32,8 +32,9 @@ import {
  * rate is capped).
  */
 
-/** A pending per-tool approval the REPL renders as a `[y] yes / [a] always / [n] no / [esc] abort` prompt
- *  (ADR-0057, EA3/EA5). A reject-with-typed-reason (`[c]` comment) is a deferred follow-up. */
+/** A pending per-tool approval the REPL renders as a `[y] yes / [a] always / [n] no / [c] reason / [esc] abort`
+ *  prompt (ADR-0057, EA3/EA5). `[c]` opens the typed-reason capture (Step 14) — a reject carrying WHY, via the
+ *  `ToolApprovalDecision.reject.reason` seam. */
 export interface PendingApproval {
   readonly request: ToolApprovalRequest;
   /** Whether an "always" answer will be remembered (accept-edits) — the prompt greys it out when false. */

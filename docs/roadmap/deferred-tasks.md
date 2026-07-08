@@ -527,11 +527,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   expansion is deferred (ADR-0061). *(low · apps/cli/src/render/tui/mention.ts)*
 - [ ] **`@`-mention of a binary / media file.** The reader fail-closes on a binary file (parity with `read_file`);
   a durable media-handle injection path (ADR-0031) is a follow-up. *(low · apps/cli/src/render/tui/mention.ts)*
-- [ ] **Strip Unicode bidi/format controls at the shared display boundary.** `formatMentionInjection` strips the
-  bidi range (U+202A–U+202E, U+2066–U+2069, LRM/RLM/ALM) from the injected PATH, but the shared
-  `stripTerminalControls` / `sanitizeInline` (chat-projection.ts) that render every transcript / candidate / prompt
-  string still pass bidi controls through — a general spoofing gap beyond `@`. Extending the shared sanitizer would
-  harden all surfaces at once. *(low · apps/cli/src/render/tui/chat-projection.ts)*
+- [x] **Strip Unicode bidi/format controls at the shared display boundary — DONE (2.5-close Step 14, D-5).** The
+  shared `stripTerminalControls` (chat-projection.ts) now strips the Trojan-Source reordering family (U+202A–202E,
+  U+2066–2069, LRM/RLM/ALM) at every display boundary; ZWJ/ZWNJ preserved; the source uses `\u` escapes (no literal
+  bidi bytes). *(apps/cli/src/render/tui/chat-projection.ts)*
 
 ## Phase 2.5.E (chat modes + per-tool approval) follow-ups
 
@@ -539,22 +538,31 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > reseat-less mode system + per-tool approval + mid-turn abort + the host arms shipped. These bounded pieces
 > were deliberately deferred (each is additive, none blocks the mode system's security guarantees):
 
-- [ ] **`[c]` reject-with-typed-reason approval prompt.** The `ApprovalAnswer` reject variant already carries an
-  optional `reason` (surfaced in the `tool_denied` message), but the REPL prompt only wires `[y]`/`[a]`/`[n]`/`[esc]`
-  — a `[c]` that captures a free-text comment (a rejection with feedback for the model) is a bounded input-mode
-  addition to `reduceChatKey` + the ink/Home prompt. *(low · apps/cli/src/render/tui/chat-input.ts + chat-ink.tsx + home-controller.ts)*
-- [ ] **Conversationally recover from a SCOPE denial in chat.** The PR #63 follow-up made an idempotent host
-  EXECUTION failure (a file-not-found READ) fed-back-recoverable via `ToolExecutionError.recoverable`
-  (`recoverToolFailures`), but a `tool_denied` SCOPE denial (reading a path outside the session workspace — a
-  common launch-cwd gotcha) still ends the turn (informative: the reason is shown). Feeding a *scope* denial back
-  so the model explains ("that path is outside my workspace — relaunch `chat` from …") would improve UX, but needs
-  a sub-class split so a SCOPE denial is distinguishable from an approval / protected-path denial (which must stay
-  fatal — never nag). *(low · packages/core/src/tools/errors.ts `HostDeniedError`; apps/cli/src/engine/tool-host/fs.ts; ADR-0057)*
-- [ ] **Plain / non-TTY non-interactive approval policy.** The interactive `[y]/[a]/[n]` prompt is TTY/controller-only.
-  A non-TTY chat defaults to `ask` (which denies governed WITHOUT prompting, so no deadlock), and `auto` auto-approves
-  a non-protected target; the only unhandled niche is a non-TTY session switched to `accept-edits` (or `auto` hitting a
-  protected path) — its `requestApproval` would publish an unanswerable prompt. Add an explicit non-interactive policy
-  (deny, or a configured default) for the plain/`--json` driver so that niche is deterministic. *(low · apps/cli/src/commands/chat.ts drivePlain/driveJson)*
+- [x] **`[c]` reject-with-typed-reason approval prompt — DONE (2.5-close Step 14, D-1).** A `[c]` at the approval
+  prompt opens a keyboard-owning reason-input sub-mode (both `relavium chat` + the Home); on submit it rejects with
+  the sanitized + 300-char-bounded reason via the existing `ToolApprovalDecision.reject.reason` seam. The floor is
+  unchanged. *(apps/cli/src/render/tui/chat-input.ts + chat-ink.tsx + home-controller.ts)*
+- [x] **Conversationally recover from a SCOPE denial in chat — DONE (2.5-close Step 14, D-3).** The `recoverable`
+  flag moved to the base `ToolDispatchError`; exactly two `tool_denied`s opt in — `ToolPolicyError('media_scope_denied')`
+  and the fs **pure scope-tier escape** (`FsScopeDeniedError` from `assertInScope`) — so on the `recoverToolFailures`
+  surfaces the model is fed the denial and adapts to an in-bounds path. The confidentiality / protected-path / symlink
+  / SSRF / user / guardrail denials stay FATAL. *(packages/core/src/tools/errors.ts; apps/cli/src/engine/tool-host/fs.ts; ADR-0057)*
+- [x] **Plain / non-TTY non-interactive approval policy — DONE (2.5.E "High 9" + consolidated in 2.5-close Step 14,
+  D-2).** A non-interactive driver (plain non-TTY / `--json` / one-shot `agent run`) uses the one canonical
+  `nonInteractiveApprovalPrompt` — every governed dispatch is DENIED (never a hang, never an auto-approve).
+  *(apps/cli/src/chat/chat-mode.ts; apps/cli/src/commands/chat.ts + agent-run.ts)*
+- [ ] **Approval-consent-line zero-width hardening (2.5-close Step 14 security-review, optional).** The shared render
+  floor strips the Trojan-Source REORDERING controls everywhere (the CVE-2021-42574 vector is closed), but the
+  highest-trust surface — the approval consent line's target (`formatApprovalTarget` → `sanitizeInline`) — still
+  passes NON-reordering zero-width chars (ZWSP U+200B / word-joiner U+2060 / BOM U+FEFF), which the provider-URL echo
+  already strips. Running the stricter zero-width superset on the consent-line target would be defense-in-depth. Not
+  a CVE gap (those chars cannot reorder a command to masquerade). *(low · apps/cli/src/render/tui/chat-projection.ts)*
+- [ ] **Extract the `[c]` reason-capture to a shared pure reducer (2.5-close Step 14 review, test-parity).** The
+  reason-capture keystroke glue is duplicated inline in `ChatApp` (chat-ink.tsx) and the Home controller; the shared
+  primitives (`reduceApprovalKey`, `sanitizeApprovalReason`, `reduceEditorMotion`) are unit-tested and the Home path
+  has an integration test, but the ChatApp inline copy has no direct test (matching the existing no-ChatApp-integration
+  boundary). Extracting the capture step to one pure reducer (like the mention/effort submodes) would let both
+  surfaces test the same function. *(low · apps/cli/src/render/tui/chat-ink.tsx + home-controller.ts)*
 - [ ] **Live `web_search` / `http_request` egress credential resolver.** `assembleToolEnv` accepts an
   `egressCredentialResolver` and the egress arm attaches it host-side as a Bearer, but the chat/Home session-host does
   not yet wire it to the keychain — so a `web_search` needing a provider key currently 401s (surfaced, never a crash).

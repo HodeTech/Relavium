@@ -79,9 +79,15 @@ export const MAX_APPROVAL_REASON_CHARS = 300;
 export function sanitizeApprovalReason(text: string): string | undefined {
   const clean = sanitizeInline(text).trim();
   if (clean.length === 0) return undefined;
-  return clean.length > MAX_APPROVAL_REASON_CHARS
-    ? clean.slice(0, MAX_APPROVAL_REASON_CHARS)
-    : clean;
+  if (clean.length <= MAX_APPROVAL_REASON_CHARS) return clean;
+  // Cap by code UNIT, but back off one unit if the boundary splits a surrogate pair (a high surrogate with its
+  // low half beyond the cap) so the truncation never leaves a lone surrogate (a `�` in the error line / --json).
+  const lastUnit = clean.charCodeAt(MAX_APPROVAL_REASON_CHARS - 1);
+  const end =
+    lastUnit >= 0xd800 && lastUnit <= 0xdbff
+      ? MAX_APPROVAL_REASON_CHARS - 1
+      : MAX_APPROVAL_REASON_CHARS;
+  return clean.slice(0, end);
 }
 
 /**

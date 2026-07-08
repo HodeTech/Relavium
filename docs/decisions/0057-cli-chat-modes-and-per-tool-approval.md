@@ -33,9 +33,10 @@
 >    driver and one-shot `agent run` (was hand-rolled in two places).
 > 3. **SCOPE-denial conversational recovery (a denial-taxonomy change).** The `recoverable` flag moves onto the base
 >    `ToolDispatchError` (default false). Exactly two `tool_denied`s — a media scope denial (`media_scope_denied`)
->    and the CLI fs arm's **pure scope-tier escape** — now carry `recoverable:true`, so on the interactive chat
->    surface (`recoverToolFailures`) they are fed back as a correctable tool result and the model adapts to an
->    in-bounds path (the floor still denies every attempt). A user / guardrail / SSRF / **confidentiality**
+>    and the CLI fs arm's **pure scope-tier escape** — now carry `recoverable:true`, so on the `recoverToolFailures`
+>    surfaces (the chat-read-write host — `relavium chat` / the Home / the one-shot `agent run`) they are fed back as
+>    a correctable tool result and the model adapts to an in-bounds path (the floor still denies every attempt; a
+>    WORKFLOW run never sets `recoverToolFailures`, so it stays fatal/deterministic). A user / guardrail / SSRF / **confidentiality**
 >    (secret-store) / protected-path / symlink denial stays fatal — feeding those back would re-deny, risk a
 >    re-execution, or leak a probe oracle. Canonical taxonomy: [../reference/shared-core/tool-registry.md](../reference/shared-core/tool-registry.md#error-taxonomy).
 > 4. **Ctrl+T through the approval swallow.** The fail-closed key-swallow now whitelists exactly the VIEW-ONLY

@@ -348,12 +348,16 @@ security invariants** a review must confirm are:
   the one canonical `nonInteractiveApprovalPrompt` DENIES every governed dispatch — never a hang,
   never an auto-approve.
 - **A recoverable SCOPE denial is safe by construction.** Only two `tool_denied`s are fed back to
-  the model for in-turn conversational recovery (chat surface only): a media scope denial and the
-  fs **pure scope-tier escape** — both refused BEFORE any side effect, with a secret-free reason,
-  so the model adapts to an in-bounds path while the floor still denies every attempt (no bypass,
-  bounded by the correction budget). The **confidentiality** (secret-store read), protected-path,
-  symlink/hard-link, egress-SSRF, and user/guardrail denials stay FATAL — feeding those back would
-  re-deny, risk a re-execution, or leak a probe oracle.
+  the model for in-turn conversational recovery on the `recoverToolFailures` surfaces (the
+  chat-read-write host — `relavium chat` / the Home / the one-shot `agent run`; a WORKFLOW run stays
+  fatal/deterministic): a media scope denial and the fs **pure scope-tier escape** — both refused
+  BEFORE any side effect, with a **secret-free, path-free** reason, so the model adapts to an
+  in-bounds path while the floor still denies every attempt (no bypass, bounded by
+  `maxToolCorrections`). The scope-membership signal a probing model can gather over that bounded
+  window is an accepted, secret-free workspace-boundary oracle (the same round-bounded feedback
+  already existed for an idempotent not-found read). The **confidentiality** (secret-store read),
+  protected-path, symlink/hard-link, egress-SSRF, and user/guardrail denials stay FATAL — feeding
+  those back would re-deny, risk a re-execution, or leak a probe oracle.
 
 ## Never hand-roll crypto
 

@@ -734,5 +734,16 @@ describe('chat-projection', () => {
       const long = 'x'.repeat(MAX_APPROVAL_REASON_CHARS + 50);
       expect(sanitizeApprovalReason(long)).toHaveLength(MAX_APPROVAL_REASON_CHARS);
     });
+
+    it('does not leave a lone surrogate when the cap lands mid-astral-pair', () => {
+      // A run of (MAX-1) ASCII then an astral emoji (2 UTF-16 units): the naive slice(0, MAX) would keep the
+      // high surrogate and drop the low — a `�`. The back-off drops the whole pair (result is MAX-1 chars).
+      const reason = `${'a'.repeat(MAX_APPROVAL_REASON_CHARS - 1)}😀tail`;
+      const out = sanitizeApprovalReason(reason);
+      expect(out).toHaveLength(MAX_APPROVAL_REASON_CHARS - 1); // the split emoji was dropped whole
+      expect(out).toBe('a'.repeat(MAX_APPROVAL_REASON_CHARS - 1));
+      // No unpaired surrogate survived (each code unit is a full BMP code point).
+      for (const ch of out ?? '') expect(ch.codePointAt(0)).toBeLessThan(0xd800);
+    });
   });
 });
