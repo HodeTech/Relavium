@@ -7,9 +7,13 @@
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
 This page tracks what is active **right now** and the immediate next concrete actions.
-The full phase plan and the global milestone spine are in [README.md](README.md); the
-granular work breakdown for the active phase (now **Phase 2.5**) is in
-[phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md).
+The full phase plan and the global milestone spine are in [README.md](README.md).
+**Phase 2.5 (CLI Consolidation) is complete** (milestone **M2.5-4**, PR #69, 2026-07-08) — its
+breakdown, now historical, is in
+[phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md). The next phase,
+**Phase 2.6 — Conversational Authoring and the First-Class CLI** (Planned; unblocked by the 2.5
+close; re-scoped 2026-07-08), is in
+[phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md).
 
 ## Where we are
 
@@ -205,8 +209,8 @@ scrollback elision loss; + a one-shot `agent run` hint-leak). **With 2.5.E this 
 consolidation lanes **2.5.I** (regression harness + DB concurrency hardening — `loadFull` read-txn snapshot,
 `BEGIN IMMEDIATE` writes with a deterministic `SQLITE_BUSY` retry, the concurrent chat+run + cassette-chain +
 perf-budget e2es, an advisory Windows CI lane) and **2.5.J** (docs-debt: the accurate unencrypted-history
-posture per ADR-0050, and `NO_COLOR`/`FORCE_COLOR`/`--color` resolution) are ✅ **Done (2.5-close-out,
-2026-07-08)** — **reaching milestone M2.5-4, so Phase 2.5 is complete** — landed alongside the doable-now
+posture per ADR-0050, and `NO_COLOR`/`FORCE_COLOR`/`--color` resolution) are ✅ **Done (2.5-close-out, PR #69,
+2026-07-08)** — **reaching milestone M2.5-4, so Phase 2.5 is complete, merged to `main`** — landed alongside the doable-now
 Batch A–E backlog (test-hardening; 2.5.H TUI polish; `AgentParseError` line/col; the ADR-0057 approval/security
 batch — `[c]` reject-with-reason, non-TTY policy, SCOPE-denial recovery, Ctrl+T-in-approval, the Trojan-Source
 bidi floor, behind an append-only ADR-0057 amendment; the profile-aware advertise-filter + the in-house
@@ -238,8 +242,15 @@ keychain no-raw-key IPC test.
 
 ## Not started yet
 
-The surfaces and the cloud — everything after the engine critical path: the desktop app
-(Phase 3) and the VS Code extension (Phase 4), then **Product Phase 2** — first **managed
+The immediate next phase is **Phase 2.6 — Conversational Authoring and the First-Class CLI**
+([phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), Planned,
+unblocked by the 2.5 close and **re-scoped 2026-07-08** from maintainer UX findings + a competitor
+research pass + the deferred-tasks triage): a full-screen, Home-managed CLI (browsers for
+workflows/runs/agents, provider + MCP + settings management, onboarding v2 with the Relavium-account
+stub), competitor-breadth tools under the governance floor, settings/theming/`en`+`tr` localization,
+the run-ops resume follow-up — plus the original spine: the shared `@relavium/authoring` package and
+a chat that **authors** standards-valid `.relavium.yaml`. Then the surfaces and the cloud —
+everything after the engine critical path: the desktop app (Phase 3) and the VS Code extension (Phase 4), then **Product Phase 2** — first **managed
 inference** ([phase-5-managed-inference.md](phases/phase-5-managed-inference.md), the opt-in
 `managed` gateway, engine still local), then the **cloud execution layer and web portal**
 ([phase-6-cloud-execution-portal.md](phases/phase-6-cloud-execution-portal.md)), the two

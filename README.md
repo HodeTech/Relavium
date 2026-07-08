@@ -14,7 +14,7 @@ machine unless you choose it.
 
 ## Why Relavium?
 
-- **Four surfaces, one engine.** Desktop (Tauri), CLI, VS Code, and (Phase 2) the web
+- **Four surfaces, one engine.** Desktop (Tauri), CLI, VS Code, and (planned) the web
   portal run the _identical_ pure-TypeScript engine. No Python sidecar, no single-tool
   lock-in — every surface is a first-class execution target.
 - **A chat-to-workflow continuum.** Other tools make every session ephemeral. Relavium
@@ -23,16 +23,16 @@ machine unless you choose it.
 - **You own your LLM seam.** Multi-provider routing with fallback chains
   (`[claude → gpt-4o → gemini]`) is first-class through Relavium's own `@relavium/llm`
   abstraction over the official provider SDKs — no Vercel AI SDK, no LangChain.
-- **Local-first by design.** Phase 1 ships with zero cloud and no account required; keys
-  live in your OS keychain. BYOK-local stays first-class forever; Phase 2 _adds_ optional
-  managed inference and cloud execution on the same engine.
+- **Local-first by design.** Zero cloud, no account required. Your API keys live in your
+  OS keychain — never in plaintext, never in logs. Optional managed inference and cloud
+  execution are planned extensions on the same engine.
 - **Workflows are git objects.** `.relavium.yaml` files are diffable, reviewable,
   PR-able, and shareable — team infrastructure, not a proprietary JSON blob or buried
   Python.
 - **Multimodal, end-to-end.** Image / audio / video as input and output — including
   rule-driven media generation — flow through the same seam and engine.
 
-## Highlights (Phase 1)
+## Highlights
 
 - **Chat-to-workflow export** — turn a proven session into a reusable `.relavium.yaml`.
 - **Persistent, resumable agent sessions** — no run is ever ephemeral.
@@ -41,7 +41,12 @@ machine unless you choose it.
 - **Checkpoint & resume** — pause and resume at any node boundary, even across processes.
 - **Human gates with timeout policy** — pause for an approve / reject / input decision.
 - **Per-node cost waterfall** — token and dollar attribution per node, per model.
-- **Local-first, zero-install posture** — BYOK, OS keychain, no sign-up in Phase 1.
+- **Interactive Home** — a bare `relavium` invocation opens a management center: start agents,
+  monitor runs, browse history, manage providers.
+- **MCP client** — agents consume tools from external MCP servers over stdio, HTTP, SSE, and
+  WebSocket, with secrets in the keychain.
+- **Live model catalog** — browse and switch models mid-session; per-model cost tracking.
+- **Local-first, zero-install posture** — BYOK, OS keychain, no sign-up.
 
 ## Getting started
 
@@ -76,7 +81,7 @@ flowchart TD
         D[Desktop · Tauri]
         C[CLI]
         V[VS Code extension]
-        P[Web portal · Phase 2]
+        P[Web portal · planned]
     end
     subgraph Engine["@relavium/core — one pure-TypeScript engine"]
         WE[WorkflowEngine]
@@ -98,47 +103,39 @@ One engine, **two co-equal entry points** — `WorkflowEngine` (runs YAML pipeli
 `AgentSession` (runs conversational chat) — sharing the same tool registry, the same
 `@relavium/llm` multi-provider seam, and the same event bus. The engine has **zero
 platform-specific imports**, so the same source runs in the Tauri WebView, the VS Code
-host, the Node CLI, and (Phase 2) a Bun server. Supporting packages: `@relavium/shared`
-(Zod contracts), `@relavium/db` (Drizzle — SQLite locally, PostgreSQL in Phase 2), and
+host, the Node CLI, and (planned) a Bun server. Supporting packages: `@relavium/shared`
+(Zod contracts), `@relavium/db` (Drizzle — SQLite locally, PostgreSQL planned), and
 `@relavium/ui` (ReactFlow canvas + shadcn). See [docs/architecture/](docs/architecture/).
 
 ## Execution modes
 
 One engine, three modes behind the one `LLMProvider` seam:
 
-- **Local (BYOK)** — Phase 1 default. Your keys, your machine, zero Relavium data.
-- **Managed inference** — Phase 2, opt-in. Relavium's metered keys; the engine still runs
-  locally.
-- **Cloud execution** — Phase 2. Run workflows on cloud workers for 24/7 automation and
+- **Local (BYOK)** — the default. Your keys, your machine, zero Relavium data.
+- **Managed inference** — planned. Relavium's metered keys; the engine still runs locally.
+- **Cloud execution** — planned. Run workflows on cloud workers for 24/7 automation and
   team sharing.
 
 ## Status
 
-**Phase 1 — Engine and LLM is complete** (2026-06-21): the engine runs end-to-end on
-local-first BYOK — workflow parsing, DAG execution, live streaming, checkpoint/resume,
-multi-provider failover, cost governance, and multimodal media I/O. **Phase 2 (the CLI) is
-feature-complete** — the CLI skeleton, config resolution, `relavium run` (wired to the engine), its
-`--json` CI machine-output contract, the engine regression harness, durable local run history, the
-provider/key commands (API keys in the OS keychain), the live `ink` streaming TUI, the human-gate
-prompt + out-of-band `relavium gate` resume, the read commands (`list` / `logs` / `status` / `gate list`)
-over durable history, and the published, cross-OS-installable `npm i -g relavium` binary (packaging &
-install verification) have landed (milestone **M3** reached; with packaging shipped, all seven Phase-3
-go/no-go exit criteria now hold). The first additive lanes have since landed too — media host-wiring
-(a generative media-output fixture runs end-to-end on the CLI); the full agent-first chat family: the
-`relavium chat` REPL plus session resume / list / export, a headless `chat --json` event stream, and a
-one-shot `agent run` with deterministic offline `--fixture` replay (the first user-facing `AgentSession`
-surface); and the **inbound MCP client** — agents consume external MCP servers' tools over stdio + the
-`http`/`sse`/`websocket` network transports (behind an SSRF floor and isolated keychain-resolved secrets),
-proven by a real-spawn end-to-end test; and the **YAML-authoring lifecycle** — `relavium create` (a wizard
-scaffolding an agent or a minimal single-agent workflow), `import`, and a share-safe `export` (re-serialized
-from the validated AST, no provider key by construction). With every in-phase workstream merged, the CLI is
-cut as **v0.1.1** (the public npm publish is the pending final maintainer step). **Phase 2.5 (CLI
-Consolidation) is complete** (milestone **M2.5-4**, 2026-07-08) — the conversational Home, the slash-command
-system, reseat-less chat modes with per-tool approval, context compaction, a live model catalog with provider
-economics, reasoning render, and the closing consolidation lanes (regression harness + DB-concurrency
-hardening + documentation reconciliation) have all landed. For live status and the full roadmap, see
-[docs/roadmap/current.md](docs/roadmap/current.md) and the
-[roadmap](docs/roadmap/README.md).
+The engine is complete and the CLI is feature-complete (cut as **v0.1.1**, npm publish pending).
+What's shipped:
+
+- **Agent sessions** — `relavium chat` with persistent, resumable, exportable multi-turn sessions.
+- **Workflow engine** — `relavium run` executes `.relavium.yaml` pipelines with live streaming,
+  checkpoint/resume, multi-model fallback, cost governance, and human gates.
+- **Interactive Home** — the bare `relavium` invocation opens a management center with a
+  slash-command system, per-tool approval modes (ask/plan/accept-edits/auto), and context compaction.
+- **MCP client** — agents consume tools from external MCP servers over stdio + network
+  transports, with secrets in the OS keychain.
+- **Live model catalog** — onboard with a wizard, browse models, switch mid-session, track
+  per-model cost.
+- **YAML authoring** — `relavium create` (wizard), `import`, and share-safe `export`.
+
+**Next: Phase 2.6 (Conversational Authoring and the First-Class CLI)** — a full-screen
+Home-managed CLI with conversational workflow authoring, management browsers, competitor-breadth
+tools, settings/theming, and `en`/`tr` localization. For live status and the full roadmap, see
+[docs/roadmap/current.md](docs/roadmap/current.md) and the [roadmap](docs/roadmap/README.md).
 
 ## Documentation
 

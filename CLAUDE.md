@@ -38,98 +38,25 @@ A run executes in one of **three execution modes** behind the one `LLMProvider` 
 engine is identical across all three. See [ADR-0012](docs/decisions/0012-managed-inference-dual-mode.md) to [ADR-0015](docs/decisions/0015-managed-mode-data-handling-and-compliance.md)
 and [docs/architecture/managed-inference.md](docs/architecture/managed-inference.md).
 
-**Status:** Phase 1 is **complete** (2026-06-21). The engine runs end-to-end behind
-the `LLMProvider` seam: YAML→DAG parse, the multi-model run loop (agent + the six
-non-agent node handlers) with live streaming, per-node-boundary checkpoint/resume
-(cross-process), node retry, provider failover, cost governance, the human gate, and
-multimodal media I/O (input, inline output, and the async generation job loop). All
-three adapters (Anthropic, OpenAI/DeepSeek, Gemini) and the agent-first `AgentSession`
-entry point (multi-turn sessions, persistence, export-to-workflow) are shipped.
-**Phase 2 (CLI) is underway and milestone M3 is reached** — the CLI skeleton (2.A) and config
-resolution (2.B) landed (PR #40), `relavium run` is wired to the engine
-(2.D, the M3 keystone — PR #41), the `--json` CI machine-output contract
-landed (2.F — PR #42, ADR-0049), the engine regression harness (2.K — PR #43)
-completes M3, and durable run history landed (2.H — PR #44, ADR-0050); the provider/key
-commands with OS-keychain storage landed (2.C — PR #45, behind ADR-0019 + ADR-0006); the `ink`
-streaming TUI landed (2.E — PR #46, behind ADR-0047); the interactive human-gate prompt + the
-out-of-band `relavium gate` cross-process resume landed (2.G — PR #47, behind ADR-0047), **fully closing
-2.K's deferred gate-resume half**; and the read commands `list` / `logs` / `status` / `gate list` over durable
-history landed (2.I — PR #48, no new ADR); and CLI packaging, distribution & install verification landed
-(2.L — PR #49, behind ADR-0051) — the last gate-closing spine PR, **closing go/no-go #7 so all seven Phase-3
-exit criteria now hold and Phase 3 may start**; and media host-wiring landed (2.S — PR #52, behind ADR-0042–0046,
-no new ADR), **the first additive lane done**; and the agent-first `relavium chat` REPL landed (2.M — PR #54,
-2026-06-26, no new ADR — covered by ADR-0024/0047/0028/0050/0029; `read_media` **input** access split into a
-dedicated, security-reviewed follow-up, so 2.M's REPL shipped without it); and the rest of the agent-first chat
-family landed — `relavium chat-resume` (2.N), `chat-list` (2.O), `chat-export` + the in-REPL `/export` (2.P),
-and `chat --json` + one-shot `agent run` (with `--fixture` cassette replay) (2.Q) — **PR #55, no new ADR**,
-completing the agent-first CLI lane; and **2.R (the inbound MCP client) is ✅ Done** — the `@relavium/mcp`
-foundation (the SDK-fenced package, the dependency-free JSON-Schema→Zod compiler, the fail-loud connect-all
-manager) landed **PR #56**, and the host wiring (chat + run + one-shot `agent run`), the network transports
-(`http`/`sse`/`websocket`) behind the SSRF floor, named secrets via the isolated `mcp-secret:*` keychain
-namespace, the by-name `ref` form, and the real-spawn e2e landed **PR #57 (2026-06-27)** — behind
-[ADR-0034](docs/decisions/0034-mcp-client-sdk-dependency.md) + [ADR-0052](docs/decisions/0052-inbound-mcp-client-package-lifecycle-registration.md)
-+ [ADR-0053](docs/decisions/0053-mcp-network-transport-egress-security.md). 2.R was off the M3 critical path and
-the Phase-3 go/no-go, so it adds capability without gating; and **2.J** (the `create`/`import`/`export` YAML
-lifecycle) landed **PR #58 (2026-06-28)** — **with it every Phase-2 workstream is complete and the CLI is
-feature-complete (published v0.1.1)**. **Phase 2.5 (CLI Consolidation) is now underway:** its spine's secure
-base **2.5.A** — the shared `assembleToolEnv` tool-environment factory (host `fs`+`process` arms, the
-advertise-filter, **EA1** `tool_unavailable`, **EA2** real failed-turn usage) wired into both the chat and
-run paths — landed **PR #60 (2026-06-28)**, behind [ADR-0055](docs/decisions/0055-cli-host-capability-seam-tool-environment-factory.md),
-**reaching milestone M2.5-1**; the `egress`/`os` arms + write-capable chat are deferred to 2.5.E/ADR-0057; and
-**2.5.B** (the bare-invocation interactive Home — the TTY-gated bare `relavium` → a read-only management strip
-over `history.db` that graduates into in-process chat, one ink tree + one SIGINT/SIGTERM lifecycle + bracketed
-paste) landed **PR #61 (2026-06-29)**, behind [ADR-0054](docs/decisions/0054-cli-bare-invocation-interactive-home.md);
-and **2.5.C** (the in-app command system — a curated **two-registry** model: the shell `COMMAND_MANIFEST`
-(`commander` + `--help --json` + the `executeCommand` dispatch) vs the in-REPL `REPL_COMMANDS` (a filterable `/`
-palette + slash commands in **both** chat and the bare Home, no command in both); `/help`, the `notice` channel,
-`/workflows`, `/cost`, and `/doctor` — fast tier plus a `--deep` tier with a **redacted** provider-key probe + a
-**read-only** MCP-status report that never connects/spawns (a security-review decision); the `name + args` slash
-dispatch + a context-aware footer hint-bar) landed **PR #62 (2026-06-30)**, behind [ADR-0056](docs/decisions/0056-cli-in-app-slash-command-system-and-manifest.md);
-and **2.5.E** (the reseat-less chat mode system — ask / plan / accept-edits / auto on `Shift+Tab` + `/mode` — the
-fail-closed per-tool `confirmAction` floor (`[y]/[a]/[n]` + a session once/always cache), the `Esc` mid-turn abort
-(EA7), and the host arms closing the 2.5.A deferral: a write-capable `fs` tier + **protected paths** refused in
-every mode incl. `auto`, the SSRF-hardened `egress` arm shared with media, and the `os` arm as a governed action
-class — wired live into `relavium chat`, one-shot `agent run`, and the Home, each activating the regime before its
-first turn) is ✅ **Done (PR #63, 2026-07-03)**, behind [ADR-0057](docs/decisions/0057-cli-chat-modes-and-per-tool-approval.md)
-(**Accepted** after the mandatory holistic security review); a same-PR chat-UX follow-up also landed — a host tool
-EXECUTION failure on the interactive surface (a file-not-found READ) is fed back to the model to recover
-(`recoverToolFailures`, scoped to IDEMPOTENT tools via a stamped `ToolExecutionError.recoverable`; a governed /
-side-effecting failure stays fail-fast) plus a static secret-free `tool_failed` chat hint. **With 2.5.E the CLI
-Consolidation spine (2.5.A/B/C/E) is complete.** The first experience-arm workstream **2.5.D** (chat input
-ergonomics + the `@`-mention / `!`-shell **pending-attachment "chip" model**) is ✅ **Done (PR #64, 2026-07-03)**,
-behind [ADR-0061](docs/decisions/0061-cli-input-layer-file-injection-and-shell-escape.md) (**Accepted** after a
-two-round maintainer security review): the accepted file / command output is queued as a compact chip and expanded
-into the shared UNTRUSTED nonce-fenced frame only at submit (byte-identical model context, a clean prompt); the
-`[chat]` command allowlist resolves as a **coupled unit** (a project setting either the exact or glob array owns
-the whole allowlist); and **2.5.F** (the ADR-0062 context-history commands) is ✅ **Done (PR #65, merged 2026-07-05)**,
-behind [ADR-0062](docs/decisions/0062-context-compaction-and-cli-history-commands.md): **`/clear`** — a host-level
-fresh-session lifecycle swap across `relavium chat`, `chat-resume`, and the in-Home chat, rebinding the same agent
-under a new `sessionId` (TTY-interactive only, rejected under `--json`/plain per ADR-0049) — plus the two
-compaction-moment UX polishes (a `session:compacting` "Summarizing…" event amending ADR-0036, and the footer
-context-fullness indicator via a pure `@relavium/llm` `contextWindowForModel` helper), completing the ADR-0062
-compaction story alongside the earlier-landed model-summarised `/compact` + deterministic `/trim` + automatic
-compaction. **2.5.G** (onboarding wizard + Home `/models` + the live model catalog) is ✅ **Done (PR #66,
-2026-07-07)** — its scope expanded to **Option A** (a **live** model catalog + a complete model-pricing story that
-governs cost) behind three ADRs ([ADR-0063](docs/decisions/0063-cli-config-write-contract.md)
-config-write, [ADR-0064](docs/decisions/0064-live-model-catalog.md) live catalog,
-[ADR-0065](docs/decisions/0065-provider-economics-and-extensibility.md) provider economics); all 12 steps landed,
-plus the post-2.5.G model-UX follow-up ([ADR-0059](docs/decisions/0059-cli-mid-session-model-reseat.md) mid-session reseat +
-[ADR-0066](docs/decisions/0066-normalized-reasoning-effort-control.md) reasoning-effort). With it **milestone
-M2.5-2** is reached. The additive lane **2.5.H** (reasoning render + live-turn feedback + an actionable error taxonomy — behind
-**EA6**, a dual-envelope `agent:reasoning` stream event that *amends* [ADR-0036](docs/decisions/0036-run-loop-substrate-event-bus-and-execution-host.md);
-no new top-level ADR) is ✅ **Done (PR #67, 2026-07-07)**, reaching milestone **M2.5-3** with 2.5.E; and the consolidation
-lanes **2.5.I** (regression harness + DB concurrency hardening: `loadFull` read-txn snapshot, `BEGIN IMMEDIATE` writes with a
-deterministic `SQLITE_BUSY` retry, the concurrent chat+run + cassette-chain + perf-budget e2es, an advisory Windows CI lane) and
-**2.5.J** (docs-debt: the accurate unencrypted-history posture per ADR-0050 + `NO_COLOR`/`FORCE_COLOR`/`--color` resolution) are
-✅ **Done (2.5-close-out, 2026-07-08)** — **reaching milestone M2.5-4, so Phase 2.5 is complete** — landed with the doable-now
-Batch A–E backlog (test-hardening; 2.5.H TUI polish; `AgentParseError` line/col; the ADR-0057 approval/security batch — `[c]`
-reject-with-reason + non-TTY policy + SCOPE-denial recovery + Ctrl+T-in-approval + the Trojan-Source bidi floor, behind an
-append-only ADR-0057 amendment; the profile-aware advertise-filter + the in-house `.gitignore` matcher), each implement → Opus →
-Sonnet with a security-review pass on the approval batch. Deferred to a focused follow-up (both refactor the security-sensitive
-`gate.ts` resume path): the `relavium budget resume` command + secret re-provide on gate resume; the session `{{ctx.*}}`
-interpolation stays with the Proposed [ADR-0060](docs/decisions/0060-session-ctx-prompt-interpolation.md) (Phase-2.6).
-For live status, per-PR history, milestone dates, and open obligations, see the canonical home
-[docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the public overview.
+**Status: Phase 1 is complete** (2026-06-21) — the engine runs end-to-end behind the
+`LLMProvider` seam with all three adapters, `AgentSession`, multimodal I/O, and the full
+run-loop. **Phase 2 (CLI) is feature-complete** (v0.1.1 release cut, publish pending):
+`relavium chat` / `chat-resume` / `agent run`, `relavium run` with `--json`, the
+inbound MCP client, and the full YAML lifecycle (`create`/`import`/`export`).
+**Phase 2.5 (CLI Consolidation) is complete** (M2.5-4, PR #69, 2026-07-08): the bare-invocation
+Home, the two-registry command system (`/` palette + shell commands), per-tool
+approval/modes (ask/plan/accept-edits/auto), `@`-mention file injection, context
+compaction, the onboarding wizard + live model catalog, reasoning rendering, and regression
+hardening. **Phase 2.6 (Conversational Authoring and the First-Class CLI) is next up**
+— a full-screen Home-managed CLI with conversational workflow authoring, management
+browsers, competitor-breadth tools, settings/theming/`en`+`tr` localization, and the
+run-ops resume follow-up.
+
+For live status, per-PR history, milestone dates, and open obligations, see the canonical
+home [docs/roadmap/current.md](docs/roadmap/current.md);
+[README.md](README.md) is the public overview;
+[docs/roadmap/phases/phase-2.6-conversational-authoring.md](docs/roadmap/phases/phase-2.6-conversational-authoring.md)
+has the full Phase 2.6 plan.
 
 ## Non-negotiable rules for AI agents
 
@@ -202,7 +129,7 @@ These apply to every AI agent in this repo, regardless of model, runner, or tool
 
 ## Build, test, lint
 
-Once Phase 0 lands the monorepo, all work goes through pnpm + Turborepo:
+All work goes through pnpm + Turborepo:
 
 ```bash
 pnpm install

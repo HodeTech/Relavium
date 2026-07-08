@@ -22,17 +22,10 @@ Turborepo + pnpm monorepo (`packages/shared`, `packages/llm`, `packages/core`,
 **cloud** (BYOK-central, Phase 2), and **managed** (Relavium's own keys via a metered egress
 gateway; engine stays local, Phase 2) — split across build phase 5 (managed inference) and
 phase 6 (cloud execution + portal); the engine is identical across all three (ADR-0012..0015).
-**Status: Phase 1 in progress — milestone M1 (LLM seam proven) reached (PR #9, 2026-06-07);**
-`@relavium/llm` (the seam + all three adapters) is landed and green. Phase 0 (M0) landed
-the monorepo + `@relavium/shared` + CI + `@relavium/db`. The
-[`@relavium/core` engine](docs/roadmap/phases/phase-1-engine-and-llm.md) has since landed the full
-run-loop + node stack — parser, interpolation, DAG/`RunPlan`, the run loop + `RunEventBus`, the tool
-registry, the `AgentRunner`, the six node-type handlers, the human gate, checkpoint/resume, node retry,
-the expression sandbox, and the pre-egress budget governor — plus the agent-first `AgentSession` (1.V),
-**completing milestone 1.m4** (PRs #13–#26); then the **1.U** end-to-end Node harness landed (**PR #27,
-2026-06-16**), **reaching milestone M2** (the engine runs end-to-end) — the Phase-1 engine critical path is
-complete, and Phase 2 (the CLI) is unblocked. The remaining Phase-1 work is the additive agent-first +
-multimodal sub-spines; see [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
+**Status: Phase 1 is complete; Phase 2 (CLI) is feature-complete (v0.1.1 release cut, publish
+pending); Phase 2.5 (CLI Consolidation) is complete (M2.5-4, 2026-07-08); Phase 2.6
+(Conversational Authoring and the First-Class CLI) is next up.**
+See [docs/roadmap/current.md](docs/roadmap/current.md) for live status.
 
 ## The non-negotiable rules
 

@@ -1,6 +1,8 @@
 # Phase 2.5 — CLI Consolidation and Conversational Home
 
-> Status: In progress. **2.5.A** (shared tool-environment factory + capability-gap root-cause fix) is
+> Status: ✅ **COMPLETE** (milestone **M2.5-4**, merged to `main` via **PR #69**, 2026-07-08) — all workstreams
+> **2.5.A–J** shipped; the go/no-go exit criteria hold; Phase 2.6 (conversational authoring) is next. History below.
+> **2.5.A** (shared tool-environment factory + capability-gap root-cause fix) is
 > ✅ **Done (PR #60, 2026-06-28)**, behind [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)
 > — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home) ✅ → **2.5.C** (slash registry
 > + palette + `/help`/`/doctor`/`/workflows`/`/cost` + footer hint-bar) ✅ **Done (PR #62, 2026-06-30)**
@@ -14,9 +16,9 @@
 > **Done (PR #66, 2026-07-07)** behind [ADR-0063](../../decisions/0063-cli-config-write-contract.md)/[ADR-0064](../../decisions/0064-live-model-catalog.md)/[ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md)
 > (+ the ADR-0059/0066 model-UX follow-up) — **milestone M2.5-2 reached**. The consolidation lanes **2.5.I**
 > (harness + concurrency) and **2.5.J** (docs-debt + `NO_COLOR`/`FORCE_COLOR`/`--color`) ✅ **Done (2.5-close-out,
-> 2026-07-08)** — **milestone M2.5-4 reached**, alongside the doable-now Batch A–E backlog (two `gate.ts`-resume
-> items — `budget resume` + secret re-provide — deferred to a focused follow-up; `extraRoots` blocked on its
-> config source). **Phase 2.5 is complete.**
+> PR #69, 2026-07-08)** — **milestone M2.5-4 reached**, alongside the doable-now Batch A–E backlog (two
+> `gate.ts`-resume items — `budget resume` + secret re-provide — deferred to a focused follow-up; `extraRoots`
+> blocked on its config source). **Phase 2.5 is complete — merged to `main` via PR #69.**
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
 
@@ -517,9 +519,9 @@ follow-up) lands with EA2's accuracy surface.
 truncation is visible; each operational error class renders an actionable recovery hint with the session
 intact; the seam is not modified.
 
-### 2.5.I — Regression harness and concurrency hardening — ✅ **Done (2.5-close, 2026-07-08)**
+### 2.5.I — Regression harness and concurrency hardening — ✅ **Done (2.5-close, PR #69, 2026-07-08)**
 
-> **Status:** ✅ **Done (2.5-close-out, 2026-07-08).** `loadFull` is wrapped in a single read transaction
+> **Status:** ✅ **Done (2.5-close-out, PR #69, 2026-07-08).** `loadFull` is wrapped in a single read transaction
 > (torn-read guard); every multi-statement write txn is `BEGIN IMMEDIATE` with a bounded, deterministic
 > `SQLITE_BUSY`/`SQLITE_LOCKED` retry (`withBusyRetry`, over the pre-existing WAL + `busy_timeout`); the
 > concurrent chat+run e2e (two-connection coexistence + two-process contention), the `Home → chat → resume →
@@ -545,9 +547,9 @@ Windows.
 performance budgets (Home cold-open at 1000 sessions; 80×24 minimum) hold; the harness gates the
 backward-compatibility exit criterion.
 
-### 2.5.J — Documentation reconciliation and dead-code cleanup — ✅ **Done (2.5-close, 2026-07-08)**
+### 2.5.J — Documentation reconciliation and dead-code cleanup — ✅ **Done (2.5-close, PR #69, 2026-07-08)**
 
-> **Status:** ✅ **Done (2.5-close-out, 2026-07-08).** The "encrypted history" wording is corrected to the
+> **Status:** ✅ **Done (2.5-close-out, PR #69, 2026-07-08).** The "encrypted history" wording is corrected to the
 > accurate CLI posture (unencrypted, protected by `0700`/`0600` + keychain, ADR-0050) across `uvp.md` /
 > `vision.md` / the CLI tutorial + the README milestone spine; color resolution honors `--color` /
 > `--no-color` > `NO_COLOR` (any non-empty ⇒ off) > `FORCE_COLOR` (`0`/`false` ⇒ off, the supports-color
@@ -575,7 +577,8 @@ correct); reconcile the roadmap status surfaces (`docs/roadmap/current.md`,
 [phase-2-cli.md](phase-2-cli.md), [CLAUDE.md](../../../CLAUDE.md)) now that **2.R and 2.J have both
 landed**, and complete the central roadmap narrative for 2.5/2.6 ([../README.md](../README.md) — the phase
 index and the dependency graph already include them; reconcile the milestone-spine prose); handle the
-`NO_COLOR` / `FORCE_COLOR` env standards (today only the `--no-color` flag is honoured).
+`NO_COLOR` / `FORCE_COLOR` env standards — now resolved per the `--color` / `--no-color` > `NO_COLOR` > `FORCE_COLOR` > default-on order,
+orthogonal to `--json`/CI, with a full test matrix.
 
 **Acceptance:** no tracked doc claims the CLI `history.db` is encrypted; the roadmap reflects the landed
 state; `NO_COLOR` is honoured.
@@ -587,7 +590,7 @@ state; `NO_COLOR` is honoured.
 | M2.5-1 Secure base ✅ **(PR #60, 2026-06-28)** | 2.5.A | Root-cause closed (capability gap + merge asymmetry); host seam reviewed |
 | M2.5-2 Home + entry + onboarding ✅ **(PR #66, 2026-07-07)** | 2.5.B + 2.5.C + 2.5.D + 2.5.F + 2.5.G | First-class entry + ergonomics + onboarding |
 | M2.5-3 Modes + observability ✅ **(2026-07-07)** | 2.5.E + 2.5.H | Safe reseat-less mode system + per-tool approval + reasoning render + actionable errors |
-| M2.5-4 Consolidation ✅ **(2.5-close, 2026-07-08)** | 2.5.I + 2.5.J | Harness + concurrency + docs-debt (+ the doable-now Batch A–E backlog; two `gate.ts`-resume items deferred to a follow-up) |
+| M2.5-4 Consolidation ✅ **(2.5-close, PR #69, 2026-07-08)** | 2.5.I + 2.5.J | Harness + concurrency + docs-debt (+ the doable-now Batch A–E backlog; two `gate.ts`-resume items deferred to a follow-up) |
 
 ## Sequencing & parallelization
 
@@ -606,6 +609,8 @@ parallel at any point.
   platform boundary are unchanged.
 
 ## Exit criteria (go / no-go → Phase 2.6)
+
+> ✅ **All five met** at phase close (PR #69, 2026-07-08) — Phase 2.6 (conversational authoring) is unblocked.
 
 1. `relavium` opens Home in a TTY; the `--json` / CI / non-TTY backward-compatibility is proven by the
    extended regression harness.
