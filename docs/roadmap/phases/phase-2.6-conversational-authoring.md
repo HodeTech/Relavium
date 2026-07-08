@@ -1,7 +1,8 @@
 # Phase 2.6 — Conversational Authoring and Parity
 
-> Status: Planned. Depends on the Phase 2.5 spine (the wired tool-environment and the per-tool
-> approval / mode system). Spine: 2.6.A (`@relavium/authoring` package) → 2.6.B (conversational
+> Status: Planned — **next up**. Depends on the Phase 2.5 spine (the wired tool-environment and the
+> per-tool approval / mode system), which is **complete** (M2.5-4, PR #69, 2026-07-08), so this phase is
+> now unblocked. Spine: 2.6.A (`@relavium/authoring` package) → 2.6.B (conversational
 > authoring agent). Additive: 2.6.C / D / E.
 >
 > **Note (2026-07-07):** **2.6.C**'s mid-session `/models` model **reseat shipped early in 2.5.G** (ADR-0059,

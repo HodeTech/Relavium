@@ -1,6 +1,8 @@
 # Phase 2.5 — CLI Consolidation and Conversational Home
 
-> Status: In progress. **2.5.A** (shared tool-environment factory + capability-gap root-cause fix) is
+> Status: ✅ **COMPLETE** (milestone **M2.5-4**, merged to `main` via **PR #69**, 2026-07-08) — all workstreams
+> **2.5.A–J** shipped; the go/no-go exit criteria hold; Phase 2.6 (conversational authoring) is next. History below.
+> **2.5.A** (shared tool-environment factory + capability-gap root-cause fix) is
 > ✅ **Done (PR #60, 2026-06-28)**, behind [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)
 > — **milestone M2.5-1 (secure base) reached**. Spine continues: **2.5.B** (Home) ✅ → **2.5.C** (slash registry
 > + palette + `/help`/`/doctor`/`/workflows`/`/cost` + footer hint-bar) ✅ **Done (PR #62, 2026-06-30)**
@@ -606,6 +608,8 @@ parallel at any point.
   platform boundary are unchanged.
 
 ## Exit criteria (go / no-go → Phase 2.6)
+
+> ✅ **All five met** at phase close (PR #69, 2026-07-08) — Phase 2.6 (conversational authoring) is unblocked.
 
 1. `relavium` opens Home in a TTY; the `--json` / CI / non-TTY backward-compatibility is proven by the
    extended regression harness.
