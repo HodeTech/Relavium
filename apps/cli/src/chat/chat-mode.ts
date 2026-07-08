@@ -92,6 +92,20 @@ export type ApprovalPrompt = (
 ) => Promise<ApprovalAnswer>;
 
 /**
+ * The canonical fail-closed {@link ApprovalPrompt} for a NON-INTERACTIVE surface (Step 14 — the one home for the
+ * no-TTY policy, previously hand-rolled in `chat.ts` and `agent-run.ts`). When there is no user at a TTY to answer
+ * an interactive consent prompt — a plain non-TTY / `--json` chat, or a one-shot `agent run` — a governed dispatch
+ * must be DENIED immediately: never a hang (an unanswerable `store.requestApproval` promise), and never an
+ * auto-approve (that would be the "bypass all permissions" valve ADR-0057 forbids). So every request resolves to a
+ * reject, regardless of the tool / mode; the `context` names the surface in the secret-free denial reason. This is
+ * the ADR-0057 fail-closed floor with no interactive answerer — the model-facing outcome is the same `tool_denied`.
+ */
+export function nonInteractiveApprovalPrompt(context: string): ApprovalPrompt {
+  const reason = `interactive approval is unavailable ${context}`;
+  return () => Promise.resolve({ outcome: 'reject', reason });
+}
+
+/**
  * The session-scoped, IN-MEMORY once/always cache (ADR-0057 — NOT persisted across resume, so a `chat-resume`
  * re-prompts). `always` = a tool id approved for the remainder of this session instance; `once` caches
  * nothing (it approves a single invocation, then the next identical call re-prompts).

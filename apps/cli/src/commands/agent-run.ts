@@ -3,6 +3,7 @@ import { StringDecoder } from 'node:string_decoder';
 
 import type { SessionStreamHandleEvent } from '@relavium/core';
 
+import { nonInteractiveApprovalPrompt } from '../chat/chat-mode.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { cassetteResolver, loadCassette } from '../chat/fixture.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
@@ -164,11 +165,9 @@ async function runOneShotTurn(
       session: built.session,
       tools: built.tools,
       workspaceDir: built.context.workingDir,
-      prompt: () =>
-        Promise.resolve({
-          outcome: 'reject',
-          reason: 'interactive approval is unavailable in a one-shot agent run',
-        }),
+      // The one canonical no-TTY fail-closed policy (Step 14) — a one-shot has no user to approve, so every
+      // governed dispatch is denied (never a hang / auto-approve). Shared with the non-interactive chat driver.
+      prompt: nonInteractiveApprovalPrompt('in a one-shot agent run'),
     });
     applyChatMode(modeEnv, 'ask');
     built.session.start();
