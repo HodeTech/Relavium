@@ -190,6 +190,16 @@ describe('wiredToolIds (advertise-filter)', () => {
     expect(wiredToolIds(['write_file'], fsHost, defs)).toEqual(['write_file']);
   });
 
+  it('profile-aware (readOnly): drops a WRITE tool but keeps read/list on a read-only host (Step 15)', () => {
+    // With `{ readOnly: true }` the filter stops advertising an always-denied write (its fs arm is wired but the
+    // read-only arm refuses the write), the complement to the dispatch refusal — a read/list fs tool is unaffected.
+    expect(
+      wiredToolIds(['read_file', 'list_directory', 'write_file'], fsHost, defs, { readOnly: true }),
+    ).toEqual(['read_file', 'list_directory']);
+    // Default (read-write) is unchanged — write_file stays advertised.
+    expect(wiredToolIds(['write_file'], fsHost, defs)).toEqual(['write_file']);
+  });
+
   it('routes MCP tools (discovered + the mcp_call built-in) to host.mcp, not host.egress', () => {
     expect(wiredToolIds(['mcp__server__read', 'mcp_call'], fsHost, defs)).toEqual([]); // no host.mcp ⇒ dropped
     expect(wiredToolIds(['mcp__server__read', 'mcp_call'], mcpHost, defs)).toEqual([

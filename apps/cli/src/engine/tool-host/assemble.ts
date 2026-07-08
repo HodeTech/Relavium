@@ -144,12 +144,14 @@ export function wiredToolIds(
   grantedIds: Iterable<string>,
   host: ToolHost,
   defs: readonly ToolDef[],
+  opts?: { readonly readOnly?: boolean },
 ): string[] {
+  const readOnly = opts?.readOnly ?? false;
   const byId = new Map(defs.map((d) => [d.id, d]));
   const out: string[] = [];
   for (const id of grantedIds) {
     const def = byId.get(id);
-    if (def === undefined || requiredArmPresent(def, host)) out.push(id);
+    if (def === undefined || requiredArmPresent(def, host, readOnly)) out.push(id);
   }
   return out;
 }
@@ -159,10 +161,16 @@ export function wiredToolIds(
  * `policy.egress` *kind*: a discovered MCP tool and the `mcp_call` built-in both route via `host.mcp` (the
  * `mcp` egress kind is a guardrail label, not the arm), while `http`/`search` egress route via `host.egress`.
  * An armless tool (os/delegate) is kept and left to the dispatch `tool_unavailable` backstop (EA1).
+ *
+ * `readOnly` makes the filter **profile-aware** (Step 14/2.5.I close-out): on a read-only host a WRITE-class tool
+ * (`fsWrite`) is not merely armless — its `fs` arm IS wired but always DENIES the write, so it must never be
+ * offered to the model (an always-denied advertisement). Dropping it here is the advertise-side complement to the
+ * read-only `fs` arm's dispatch refusal (still authoritative). A read/list fs tool is unaffected.
  */
-function requiredArmPresent(def: ToolDef, host: ToolHost): boolean {
+function requiredArmPresent(def: ToolDef, host: ToolHost, readOnly: boolean): boolean {
   if (def.source === 'mcp') return host.mcp !== undefined; // discovered MCP tools route via host.mcp
-  if (def.policy.fsScoped) return host.fs !== undefined;
+  if (def.policy.fsScoped)
+    return host.fs !== undefined && !(readOnly && def.policy.fsWrite === true);
   if (def.policy.spawnsProcess) return host.process !== undefined;
   if (def.policy.egress === 'mcp') return host.mcp !== undefined; // the `mcp_call` built-in also uses host.mcp
   if (def.policy.egress !== undefined) return host.egress !== undefined; // `http` / `search` → host.egress
