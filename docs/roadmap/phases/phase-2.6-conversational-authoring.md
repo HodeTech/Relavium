@@ -893,30 +893,127 @@ scale-gated) remain in [deferred-tasks.md](../deferred-tasks.md) with their reas
 
 ## Sequencing & parallelization
 
-```mermaid
-flowchart LR
-    F["2.6.F<br/>floor + full-screen<br/>foundation"] --> G["2.6.G<br/>browsers"]
-    F --> L["2.6.L<br/>settings · theme · i18n"]
-    F --> E["2.6.E<br/>chat polish"]
-    H["2.6.H<br/>run-detail data"] --> G
-    K["2.6.K<br/>run-ops resume core"] --> G
-    A["2.6.A<br/>authoring package"] --> B["2.6.B<br/>conversational authoring"]
-    D["2.6.D<br/>ctx interpolation"] --> B
-    M["2.6.M<br/>toolbelt"] -. render v2 after F .-> F
-    I["2.6.I<br/>provider + MCP mgmt"]
-    J["2.6.J<br/>onboarding v2"]
-    N["2.6.N<br/>child-session + nested<br/>workflows"] -. after A .-> A
-    N -. after H .-> H
+### Dependency matrix
+
+→ = "must land before"; empty = independent (can start immediately).
+
+| Workstream | Depends on | Blocks |
+|------------|-----------|--------|
+| **2.6.A** | — | 2.6.B, 2.6.N |
+| **2.6.B** | 2.6.A, 2.6.D | 2.6.N (generation path) |
+| **2.6.C** | — | — (residual, any time) |
+| **2.6.D** | — | 2.6.B |
+| **2.6.E** | 2.6.F, 2.6.L (theme) | — |
+| **2.6.F** | — | 2.6.E, 2.6.G, 2.6.L, 2.6.M (render-v2), 2.6.N (chat UX) |
+| **2.6.G** | 2.6.F, 2.6.H, 2.6.K | — |
+| **2.6.H** | — | 2.6.G, 2.6.N |
+| **2.6.I** | — | — |
+| **2.6.J** | — | — |
+| **2.6.K** | — | 2.6.G (shared resume core) |
+| **2.6.L** | 2.6.F | 2.6.E (theme integration) |
+| **2.6.M** | 2.6.F (render-v2), 2.6.N (invoke_agent wiring) | — |
+| **2.6.N** | 2.6.A, 2.6.B (generation), 2.6.H (lineage), 2.6.F (chat UX) | 2.6.M (invoke_agent acceptance) |
+
+### Critical path
+
+```text
+2.6.F ─────────────────────────────────────────────→ 2.6.M (render-v2) ─→ phase close
+   │                                                    ↗
+   ├─→ 2.6.L → 2.6.E                                    │
+   ├─→ 2.6.G (via H + K)                                │
+   └─→ 2.6.N (chat UX, part of N)                       │
+                                                        │
+2.6.A → 2.6.B → 2.6.N (orchestration) ─────────────────┘
+            D ↗        ↗ H ↗
 ```
 
-**2.6.F runs first** (the floor decision + renderer + harness gate every TUI-heavy arm). Then two parallel
-spines: **(i) authoring** — 2.6.A → 2.6.B, with 2.6.D alongside; **(ii) experience** — 2.6.H and 2.6.K
-early (data + resume core), then 2.6.G on top; 2.6.I and 2.6.J are independent and can land any time;
-2.6.M's engine-pure tools can start immediately (only its render-v2 half waits on F); 2.6.E and 2.6.L
-follow F. 2.6.C's residual is a small read, any time. **2.6.N** (child-session/nested execution) requires
-the authoring package (2.6.A — for catalog-resolved agent/workflow targets) and the durable run-detail
-data layer (2.6.H — for child run lineage in history.db); its engine work can start in parallel with 2.6.B
-while the chat UX (sub-agent status indicators) waits on F.
+**2.6.F is the bottleneck** — the full-screen renderer gates 5 workstreams (E, G, L, M render-v2, N chat UX). Ship it first, unblock the rest. The **authoring spine** (A → D+B → N) and the **data spine** (H → G) run in parallel with F. **2.6.M (render-v2)** depends only on F (not G — the details view and diff rendering need the full-screen viewport, not the browser data). **2.6.M (invoke_agent acceptance)** gates on N, making M the final integration step on the orchestration track.
+
+### Parallelization tracks
+
+Seven independent streams after 2.6.F lands:
+
+| Track | Workstreams | Starts when | Produces |
+|-------|------------|-------------|----------|
+| **Substrate** | 2.6.F | Day 1 | Full-screen Home, Node 22 floor, TUI harness |
+| **Data** | 2.6.H | Day 1 | Attributed run history, tool traces, gate uniqueness |
+| **Authoring core** | 2.6.A | Day 1 | `@relavium/authoring` package |
+| **Run-ops** | 2.6.K | Day 1 | Shared resume core, budget resume, secret re-provide |
+| **Ctx** | 2.6.D | Day 1 | `{{ctx.*}}` interpolation, `agent run --input` |
+| **Toolbelt engine** | 2.6.M (tools only) | Day 1 | `edit_file`, `search_files`, `find_files`, `todo`, `ask_user`, `web_search` |
+| **Management** | 2.6.I, 2.6.J | Any time | Provider/MCP mgmt, onboarding v2 |
+
+Once F + A + D land:
+
+| Track | Workstreams | Starts when | Produces |
+|-------|------------|-------------|----------|
+| **Authoring** | 2.6.B | A + D landed | Conversational YAML authoring, /create wizard |
+| **Browsers** | 2.6.G | F + H + K landed | /workflows, /agents, actionable strip, permissions |
+| **N engine** | 2.6.N (catalog spawn) | A + H landed | Child-session spawn (catalog agents only) |
+
+Once F + B + L land:
+
+| Track | Workstreams | Starts when | Produces |
+|-------|------------|-------------|----------|
+| **Chat UX** | 2.6.E | F + L landed | Syntax highlighting, rewind/fork, message queue, /copy, cheat sheet |
+| **Theme/i18n** | 2.6.L | F landed | Theme system, /settings, 5-locale catalog |
+| **N generation** | 2.6.N (on-the-fly) | B landed | Model-generated agents/workflows |
+| **N chat UX** | 2.6.N (UX half) | F landed | Sub-agent status indicators, child result panel |
+| **M render-v2** | 2.6.M (render half) | F landed | Tool-call details view, diff rendering |
+
+Last to land:
+
+| Track | Workstreams | Depends on | Produces |
+|-------|------------|-----------|----------|
+| **Orchestration final** | 2.6.N (complete) | A + B + H + F all landed | Parallel spawn, subworkflow node, complete child-session |
+| **Toolbelt final** | 2.6.M (invoke_agent) | 2.6.N landed | invoke_agent acceptance |
+| **Residual** | 2.6.C | Any time | /cost per-model breakdown |
+
+```mermaid
+flowchart LR
+    subgraph Day1["Independent (start Day 1)"]
+        F["2.6.F<br/>full-screen foundation"]
+        H["2.6.H<br/>run-detail data"]
+        A["2.6.A<br/>authoring package"]
+        K["2.6.K<br/>run-ops resume"]
+        D["2.6.D<br/>ctx interpolation"]
+        M_t["2.6.M<br/>tools (<i>engine-pure</i>)"]
+        I["2.6.I<br/>provider + MCP mgmt"]
+        J["2.6.J<br/>onboarding v2"]
+        C["2.6.C<br/>/cost residual"]
+    end
+
+    subgraph AfterF["After 2.6.F"]
+        L["2.6.L<br/>settings · theme · i18n"]
+        G["2.6.G<br/>browsers"]
+        E["2.6.E<br/>chat polish"]
+        N_ux["2.6.N<br/>chat UX"]
+    end
+
+    subgraph AfterA["After 2.6.A"]
+        B["2.6.B<br/>conversational authoring"]
+    end
+
+    subgraph Final["Final integration"]
+        N["2.6.N<br/>orchestration complete"]
+        M_r["2.6.M<br/>render-v2 + invoke_agent"]
+    end
+
+    F --> L
+    F --> G
+    F --> E
+    F --> N_ux
+    H --> G
+    K --> G
+    A --> B
+    D --> B
+    B --> N
+    H --> N
+    L --> E
+    N --> M_r
+    N_ux -. part of .-> N
+    M_t -. part of .-> M_r
+```
 
 ## Dependencies
 
