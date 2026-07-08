@@ -136,8 +136,10 @@ cut as **v0.1.1** (the public npm publish is the pending final maintainer step).
 Consolidation) is complete** (milestone **M2.5-4**, PR #69, 2026-07-08) — the conversational Home, the slash-command
 system, reseat-less chat modes with per-tool approval, context compaction, a live model catalog with provider
 economics, reasoning render, and the closing consolidation lanes (regression harness + DB-concurrency
-hardening + documentation reconciliation) have all landed. For live status and the full roadmap, see
-[docs/roadmap/current.md](docs/roadmap/current.md) and the
+hardening + documentation reconciliation) have all landed. **Phase 2.6 (Conversational Authoring) is next**
+— promoting the authoring core to a shared `@relavium/authoring` package so a chat can **author**
+standards-valid `.relavium.yaml`, delivering *"Start as an agent. Ship the workflow."* at the terminal. For
+live status and the full roadmap, see [docs/roadmap/current.md](docs/roadmap/current.md) and the
 [roadmap](docs/roadmap/README.md).
 
 ## Documentation
