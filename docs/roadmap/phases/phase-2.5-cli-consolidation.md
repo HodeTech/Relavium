@@ -12,7 +12,11 @@
 > render + live-turn feedback + actionable errors, EA6 amending ADR-0036) ✅ **Done (PR #67, 2026-07-07)** — **milestone
 > M2.5-3 reached** (with 2.5.E). **2.5.G** (onboarding wizard + Home `/models` + the live model catalog) ✅
 > **Done (PR #66, 2026-07-07)** behind [ADR-0063](../../decisions/0063-cli-config-write-contract.md)/[ADR-0064](../../decisions/0064-live-model-catalog.md)/[ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md)
-> (+ the ADR-0059/0066 model-UX follow-up) — **milestone M2.5-2 reached**. Remaining: the consolidation lanes 2.5.I / J.
+> (+ the ADR-0059/0066 model-UX follow-up) — **milestone M2.5-2 reached**. The consolidation lanes **2.5.I**
+> (harness + concurrency) and **2.5.J** (docs-debt + `NO_COLOR`/`FORCE_COLOR`/`--color`) ✅ **Done (2.5-close-out,
+> 2026-07-08)** — **milestone M2.5-4 reached**, alongside the doable-now Batch A–E backlog (two `gate.ts`-resume
+> items — `budget resume` + secret re-provide — deferred to a focused follow-up; `extraRoots` blocked on its
+> config source). **Phase 2.5 is complete.**
 
 - **Related**: [../README.md](../README.md), [phase-2-cli.md](phase-2-cli.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [phase-3-desktop.md](phase-3-desktop.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/cli/regression-harness.md](../../reference/cli/regression-harness.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0054–0057)
 
@@ -513,7 +517,16 @@ follow-up) lands with EA2's accuracy surface.
 truncation is visible; each operational error class renders an actionable recovery hint with the session
 intact; the seam is not modified.
 
-### 2.5.I — Regression harness and concurrency hardening
+### 2.5.I — Regression harness and concurrency hardening — ✅ **Done (2.5-close, 2026-07-08)**
+
+> **Status:** ✅ **Done (2.5-close-out, 2026-07-08).** `loadFull` is wrapped in a single read transaction
+> (torn-read guard); every multi-statement write txn is `BEGIN IMMEDIATE` with a bounded, deterministic
+> `SQLITE_BUSY`/`SQLITE_LOCKED` retry (`withBusyRetry`, over the pre-existing WAL + `busy_timeout`); the
+> concurrent chat+run e2e (two-connection coexistence + two-process contention), the `Home → chat → resume →
+> export` cassette-chain e2e, and the query-shape perf-budget checks (EXPLAIN QUERY PLAN: index-served, no
+> filesort) + the 80×24 degrade assertion are green; an advisory Windows CI lane runs the DB + harness suites +
+> a headless no-TTY smoke. `regression-harness.md` documents them; ADR-0064 §5 records the DB write-path
+> concurrency amendment. Each step went implement → Opus → Sonnet review.
 
 **Tasks:** extend the regression harness ([regression-harness.md](../../reference/cli/regression-harness.md))
 to cover `Home → chat → resume → export` with an agent/chat replay cassette (the recorded-LLM replay
@@ -532,7 +545,27 @@ Windows.
 performance budgets (Home cold-open at 1000 sessions; 80×24 minimum) hold; the harness gates the
 backward-compatibility exit criterion.
 
-### 2.5.J — Documentation reconciliation and dead-code cleanup
+### 2.5.J — Documentation reconciliation and dead-code cleanup — ✅ **Done (2.5-close, 2026-07-08)**
+
+> **Status:** ✅ **Done (2.5-close-out, 2026-07-08).** The "encrypted history" wording is corrected to the
+> accurate CLI posture (unencrypted, protected by `0700`/`0600` + keychain, ADR-0050) across `uvp.md` /
+> `vision.md` / the CLI tutorial + the README milestone spine; color resolution honors `--color` /
+> `--no-color` > `NO_COLOR` (any non-empty ⇒ off) > `FORCE_COLOR` (`0`/`false` ⇒ off, the supports-color
+> convention) > default-on, orthogonal to the `--json`/CI output mode, with a full test matrix; the roadmap
+> status surfaces are reconciled (this doc, `current.md`, `CLAUDE.md`).
+>
+> **2.5-close-out backlog (Batches A–E), 2026-07-08.** The doable-now deferred items landed alongside 2.5.I/J,
+> each implement → Opus → Sonnet (security items with a security-review pass first): **A** test-hardening
+> (media-gc flake fix + a 2.5.A `git_status` union pin); **B** 2.5.H TUI polish (persistent Esc-to-stop abort
+> hint + a line-bounded reasoning panel); **C** `AgentParseError` line/col (the session `{{ctx.*}}` half
+> DEFERRED — governed by the Proposed ADR-0060, Phase-2.6); **D** the ADR-0057 approval/security batch
+> (`[c]` reject-with-typed-reason, the consolidated non-TTY fail-closed policy, SCOPE-denial conversational
+> recovery, the Ctrl+T-in-approval whitelist, the Trojan-Source bidi floor) — behind an append-only ADR-0057
+> amendment note; **E** the profile-aware advertise-filter + the in-house `.gitignore`/`.relaviumignore`
+> matcher. **Deferred to a focused follow-up** (both refactor the security-sensitive `gate.ts` cross-process
+> resume path, so best landed together with fresh context): the `relavium budget resume` command and the
+> secret re-provide on gate resume; the `project`-tier `extraRoots` allowlist stays blocked on its config
+> source. All tracked in [deferred-tasks.md](../deferred-tasks.md).
 
 **Tasks:** correct the surface-blind "encrypted history" wording (`docs/uvp.md`, `docs/vision.md`,
 `docs/tutorials/cli/start-a-chat-session.md`) to the accurate CLI posture — **unencrypted**, protected
@@ -554,7 +587,7 @@ state; `NO_COLOR` is honoured.
 | M2.5-1 Secure base ✅ **(PR #60, 2026-06-28)** | 2.5.A | Root-cause closed (capability gap + merge asymmetry); host seam reviewed |
 | M2.5-2 Home + entry + onboarding ✅ **(PR #66, 2026-07-07)** | 2.5.B + 2.5.C + 2.5.D + 2.5.F + 2.5.G | First-class entry + ergonomics + onboarding |
 | M2.5-3 Modes + observability ✅ **(2026-07-07)** | 2.5.E + 2.5.H | Safe reseat-less mode system + per-tool approval + reasoning render + actionable errors |
-| M2.5-4 Consolidation | 2.5.I + 2.5.J | Harness + concurrency + docs-debt |
+| M2.5-4 Consolidation ✅ **(2.5-close, 2026-07-08)** | 2.5.I + 2.5.J | Harness + concurrency + docs-debt (+ the doable-now Batch A–E backlog; two `gate.ts`-resume items deferred to a follow-up) |
 
 ## Sequencing & parallelization
 

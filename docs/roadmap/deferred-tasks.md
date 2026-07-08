@@ -573,6 +573,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   abort + approval; the ADR-0028 session budget `pause_for_approval` can now ride the same machine (today a chat
   cost-cap trip settles the turn loudly as `budget_exceeded` — the REPL is the approval gate). See also the 1.V
   session-budget follow-up above. *(medium · apps/cli/src/chat + agent-session.ts)*
+- [ ] **`relavium budget resume` CLI command (2.5-close Step 15 / Batch E — DEFERRED to a focused follow-up).** The
+  engine ALREADY supports resuming a budget-paused run (`engine.resume(runId, budgetGateId, decision)`,
+  budget-governor.ts / checkpoint.ts `isBudgetGate`), and `relavium gate` deliberately EXCLUDES budget gates
+  (`selectGate` filters `!isBudgetGate`), naming this the "`budget resume` surface." The remaining work is the
+  documented CLI command — a new manifest entry + dispatch handler + a command core that ~90% overlaps `gate.ts`'s
+  resume machinery (so the clean form extracts a shared resume core rather than duplicating). Low, dependency-free.
+  **Why deferred (maintainer call, 2026-07-08):** it modifies the security-sensitive `gate.ts` cross-process resume
+  path and is coupled to the secret-re-provide follow-up below (both refactor that path), so both are best landed
+  together with fresh context rather than at the tail of the 2.5-close session. *(low · apps/cli/src/commands/{gate,budget}.ts + manifest.ts + dispatch.ts; ADR-0028)*
 - [ ] **`project`-tier `extraRoots` allowlist (carried from 2.5.A).** The `project` fs tier behaves as
   workspace-only until the path-allowlist lands (it can only NARROW the jail, never open a hole). *(low · apps/cli/src/engine/tool-host/assemble.ts)*
 - [ ] **fs hard-link aliasing — the pnpm virtual-store read exemption (accepted residual, ADR-0057 review record).**
@@ -665,7 +674,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   value. The proper fix lets the operator re-supply the secret on resume (e.g. `relavium gate <runId> --secret
   token=…` read from stdin like `provider set-key`, or a keychain/env re-resolution keyed by the input
   `ref`) so a secret-bearing run becomes resumable. Until then the fail-closed + the
-  [commands.md](../reference/cli/commands.md) note stand. *(medium · apps/cli/src/commands/gate.ts; ADR-0006)*
+  [commands.md](../reference/cli/commands.md) note stand. **2.5-close Step 15 / Batch E status (maintainer call,
+  2026-07-08):** selected IN by D8 but DEFERRED to a focused follow-up — this RELAXES a fail-closed security
+  guarantee (allow-with-re-provisioning), demands the stdin-not-argv secret discipline (`provider set-key` pattern)
+  + a mandatory security-review pass, and is coupled to the `budget resume` command above (both refactor the
+  `gate.ts` resume path). Best landed together with fresh context, not at the tail of the 2.5-close session.
+  *(medium · apps/cli/src/commands/gate.ts; ADR-0006)*
 
 ### 2.I read-command follow-ups (PR #48 multi-agent review, 2026-06-24)
 

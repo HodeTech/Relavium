@@ -202,7 +202,18 @@ host-emit of the reasoning the `@relavium/llm` seam already carries (ADR-0030), 
 secret-free per-`ErrorCode` recovery hint (session-survives; a context-overflow message heuristic → `/compact`·
 `/trim`). Four steps, each opus + Sonnet reviewed (3 HIGH fixed: a run-path silent-drop, a frozen Home timer, a
 scrollback elision loss; + a one-shot `agent run` hint-leak). **With 2.5.E this reaches milestone M2.5-3.** The
-remaining additive lanes 2.5.I / J run in parallel. See the
+consolidation lanes **2.5.I** (regression harness + DB concurrency hardening — `loadFull` read-txn snapshot,
+`BEGIN IMMEDIATE` writes with a deterministic `SQLITE_BUSY` retry, the concurrent chat+run + cassette-chain +
+perf-budget e2es, an advisory Windows CI lane) and **2.5.J** (docs-debt: the accurate unencrypted-history
+posture per ADR-0050, and `NO_COLOR`/`FORCE_COLOR`/`--color` resolution) are ✅ **Done (2.5-close-out,
+2026-07-08)** — **reaching milestone M2.5-4, so Phase 2.5 is complete** — landed alongside the doable-now
+Batch A–E backlog (test-hardening; 2.5.H TUI polish; `AgentParseError` line/col; the ADR-0057 approval/security
+batch — `[c]` reject-with-reason, non-TTY policy, SCOPE-denial recovery, Ctrl+T-in-approval, the Trojan-Source
+bidi floor, behind an append-only ADR-0057 amendment; the profile-aware advertise-filter + the in-house
+`.gitignore` matcher), each implement → Opus → Sonnet with a security-review pass on the approval batch. Two
+`gate.ts`-resume items (`relavium budget resume` + secret re-provide) are deferred to a focused follow-up, and
+the session `{{ctx.*}}` interpolation stays with the Proposed ADR-0060 (Phase-2.6); all tracked in
+[deferred-tasks.md](deferred-tasks.md). See the
 [Phase 2.5 workstreams](phases/phase-2.5-cli-consolidation.md). A **post-2.5.G model-UX follow-up** (from six
 maintainer questions on model/provider/wizard behavior) then landed as a sequenced plan: `/models` key-awareness,
 the onboarding-wizard live key-validation + retry UX, wizard-dynamic provider docs, **mid-session model switching**
