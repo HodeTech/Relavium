@@ -518,11 +518,13 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > untrusted injection) shipped. These bounded pieces were deliberately deferred (each is additive; the
 > confidentiality floor + jail + injection framing hold without them):
 
-- [ ] **Advisory `.gitignore` / `.relaviumignore` completion trim.** The picker's advisory noise filter is a fixed
-  `NOISE_DIRS` set (`node_modules`, `dist`, `.git`, …) as the v1 trim; ADR-0061's promised in-house, ReDoS-safe
-  ignore-file matcher (fold a workspace `.gitignore` / `.relaviumignore` into the candidate filter, no new `ignore`
-  dependency) is deferred. It is a UX nicety, NOT a security control — the confidentiality floor + listing-gate are
-  enforced separately by the fs capability regardless. *(low · apps/cli/src/render/tui/mention.ts `NOISE_DIRS`; ADR-0061)*
+- [x] **Advisory `.gitignore` / `.relaviumignore` completion trim — DONE (2.5-close Step 15, Batch E).** A
+  dependency-free, ReDoS-safe in-house matcher ({@link gitignore.ts}) folds the workspace-root `.gitignore` +
+  `.relaviumignore` into the `@`-mention candidate filter (comments/blanks, `!` negation, dir-only `/`, anchoring,
+  `*`/`**`/`?` globs; glob→regex is linear — no nested quantifiers), complementing the fixed `NOISE_DIRS` set. A
+  UX/privacy nicety, NOT a security control — the confidentiality floor + listing-gate remain the authoritative
+  fs-capability enforcement. Documented subset limits: nested per-dir ignore files + `[a-z]` char classes deferred
+  (they only UNDER-hide, never a security gap). *(apps/cli/src/render/tui/gitignore.ts + mention.ts; ADR-0061)*
 - [ ] **`@`-glob / directory expansion.** Single-file injection ships; `@src/**/*.ts` glob / whole-directory
   expansion is deferred (ADR-0061). *(low · apps/cli/src/render/tui/mention.ts)*
 - [ ] **`@`-mention of a binary / media file.** The reader fail-closes on a binary file (parity with `read_file`);

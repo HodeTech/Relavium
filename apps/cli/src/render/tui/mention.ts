@@ -1,6 +1,7 @@
 import type { FsCapability } from '@relavium/core';
 
 import { dropLastCodePoint } from './chat-input.js';
+import { compileIgnore, type IgnoreMatcher } from './gitignore.js';
 import { frameUntrusted } from './injection.js';
 
 // The `@`-injection content bounds + fence nonce — the shared injection primitives ({@link injection.ts}),
@@ -189,10 +190,11 @@ export function foldMentionKey(char: string, key: MentionKey, state: MentionStat
  * The reader — a thin wrapper over the session's FsCapability (the ONE audited jail + floor).
  * -------------------------------------------------------------------------------------------------- */
 
-/** Directories always skipped from the completion candidate list (advisory noise — build output, VCS, deps). This
- *  fixed set is the **v1 advisory trim**; the ADR-0061 `.gitignore` / `.relaviumignore` matcher is a deferred
- *  follow-up (docs/roadmap/deferred-tasks.md) — NOT a security control (the confidentiality floor is enforced
- *  SEPARATELY by the fs listing-gate, `.git`/`.ssh`/`.env`/… never appear here regardless of this set). */
+/** Directories always skipped from the completion candidate list (advisory noise — build output, VCS, deps),
+ *  regardless of any `.gitignore`. This fixed set complements the workspace `.gitignore` / `.relaviumignore`
+ *  matcher (Step 15, {@link compileIgnore}) — it guarantees the universal noise dirs are trimmed even in a repo
+ *  with no ignore file. NEITHER is a security control (the confidentiality floor is enforced SEPARATELY by the fs
+ *  listing-gate, so `.git`/`.ssh`/`.env`/… never appear here regardless of this set or the ignore files). */
 const NOISE_DIRS: ReadonlySet<string> = new Set([
   'node_modules',
   'dist',
@@ -227,20 +229,42 @@ function joinRelative(dir: string, name: string): string {
   return dir.length === 0 ? name : `${dir}/${name}`;
 }
 
-/** Build a {@link MentionReader} over an `FsCapability` — the read/list go through that one audited boundary. */
+/** Build a {@link MentionReader} over an `FsCapability` — the read/list go through that one audited boundary. The
+ *  completion list is additionally trimmed by the workspace's `.gitignore` / `.relaviumignore` (Step 15) — a
+ *  NOISE/privacy filter (never the security control; the confidentiality floor is enforced by the fs capability). */
 export function createMentionReader(fs: FsCapability): MentionReader {
+  // Lazily read the root ignore files ONCE (best-effort — a missing/unreadable file degrades to no rules), then
+  // cache the compiled matcher for the reader's lifetime. `.relaviumignore` layers over `.gitignore` (last wins).
+  let ignorePromise: Promise<IgnoreMatcher> | undefined;
+  const loadIgnore = (): Promise<IgnoreMatcher> => {
+    ignorePromise ??= Promise.all(
+      ['.gitignore', '.relaviumignore'].map((name) =>
+        fs.readFile(name, {}).then(
+          (file) => file.content,
+          () => '', // missing / unreadable / refused ⇒ no rules from that source (never a crash)
+        ),
+      ),
+    ).then((bodies) => compileIgnore(...bodies));
+    return ignorePromise;
+  };
   return {
     async list(dir) {
       // `''` lists the workspace root ('.'); the fs capability jails every path + the listing skips a sensitive
       // store (the listing-gate), so a `.ssh`/`.env`/`.aws` entry is never even offered.
-      const listing = await fs.listDirectory(dir.length === 0 ? '.' : dir, {});
+      const [listing, ignore] = await Promise.all([
+        fs.listDirectory(dir.length === 0 ? '.' : dir, {}),
+        loadIgnore(),
+      ]);
       const candidates = listing.entries
         .filter((entry) => !(entry.type === 'directory' && NOISE_DIRS.has(entry.name)))
         .map((entry) => ({
           name: entry.name,
           type: entry.type,
           path: joinRelative(dir, entry.name),
-        }));
+        }))
+        // Drop a gitignored entry (an ignored DIRECTORY is dropped too, so its children are never listed — the
+        // per-entry filter naturally respects "an ignored dir hides everything under it").
+        .filter((candidate) => !ignore.ignores(candidate.path, candidate.type === 'directory'));
       // Directories first, then case-insensitive by name — a stable, glanceable order.
       const sorted = [...candidates].sort((a, b) => {
         if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
