@@ -193,6 +193,17 @@ describe('reduceChatKey — approval-prompt intercept (in-flight key-swallow byp
     expect(reduceChatKey('', { escape: true }, '', true, PENDING)).toEqual({ kind: 'abort' });
   });
 
+  it('maps [c] to reject-with-reason — OPENS the typed-reason capture (Step 14), a distinct action from reject', () => {
+    // `[c]` does NOT itself answer the prompt — it opens the reason-input sub-mode; the surface then captures the
+    // text and submits a `{ outcome: 'reject', reason }`. The bare `[n]`/`[r]`/`3` reject (no reason) is unchanged.
+    expect(reduceChatKey('c', KEY, '', true, PENDING)).toEqual({ kind: 'reject-with-reason' });
+    expect(reduceChatKey('n', KEY, '', true, PENDING)).toEqual({ kind: 'reject' }); // still a bare reject
+    // A modified `c` (Ctrl+C / Alt+C) is NOT the reason chord — it stays swallowed (fail-closed; Ctrl+C never
+    // silently rejects, and an ESC-prefixed Alt+C cannot open the capture either).
+    expect(reduceChatKey('c', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' });
+    expect(reduceChatKey('c', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' });
+  });
+
   it('a modified CHORD (Ctrl+A/Y/N, Alt+A, Alt+1/2/3) does NOT answer a pending approval (fail-closed floor)', () => {
     // Ctrl+A is now a line-start motion; during a pending approval it must be SWALLOWED, never silently taken as
     // the persistent approve-always — that would subvert the ADR-0057 fail-closed confirmAction floor. The DIGIT

@@ -26,6 +26,7 @@ import {
   emptyEditor,
   insertAtCursor,
   reduceChatKey,
+  reduceEditorMotion,
   type ChatKey,
   type ChatKeyAction,
   type EditorState,
@@ -42,6 +43,7 @@ import {
   type ReverseSearchState,
 } from './input-history.js';
 import type { ChatStoreController } from './chat-store.js';
+import { sanitizeApprovalReason } from './chat-projection.js';
 import {
   foldMentionKey,
   mentionOpensAt,
@@ -175,6 +177,9 @@ export interface HomeControllerState {
    *  with the effort setter wired + a reasoning-capable model); a keyboard-owning overlay like the mention/search
    *  submodes. On accept it pushes the per-turn session override via `active.onSetEffort` (no reseat). */
   readonly effortPicker: EffortPickerState | undefined;
+  /** The in-flight `[c]` typed-reason capture (Step 14) — `undefined` ⇒ closed. CHAT-scoped; opened FROM a pending
+   *  approval to record WHY the user denies. A keyboard-owning submode; on submit it rejects with the reason. */
+  readonly reasonDraft: EditorState | undefined;
 }
 
 /**
@@ -260,6 +265,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     notice: undefined,
     modelPicker: undefined,
     effortPicker: undefined,
+    reasonDraft: undefined,
   };
   // Per-session command history for the in-Home chat (2.5.D step 3) — accumulates submitted lines across the Home
   // process; Up/Down recall, Ctrl+R reverse-searches. Not persisted (a chat-resume starts fresh).
@@ -347,6 +353,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           search: undefined, // ditto a reverse-search submode
           mention: undefined, // ditto an `@`-completion submode
           effortPicker: undefined, // ditto the `/effort` overlay (chat-scoped — closed on return to the bare Home)
+          reasonDraft: undefined,
           modelPicker: undefined, // ditto the `/models` picker (Home-only, so never open here — reset for hygiene)
           shellBusy: false, // a `!`-command in flight when the chat ended must not leave the returned Home gated
           submitBusy: false, // ditto a submit/compaction in flight — the returned Home must not be left gated
@@ -409,6 +416,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           mention: undefined,
           modelPicker: undefined,
           effortPicker: undefined,
+          reasonDraft: undefined,
           shellBusy: false,
           submitBusy: false, // the swap is done — un-gate the fresh chat
           shellCommand: undefined,
@@ -482,6 +490,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           mention: undefined,
           modelPicker: undefined,
           effortPicker: undefined,
+          reasonDraft: undefined,
           shellBusy: false,
           submitBusy: false, // the swap is done — un-gate the reseated chat
           shellCommand: undefined,
@@ -554,6 +563,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       mention: undefined,
       modelPicker: undefined,
       effortPicker: undefined,
+      reasonDraft: undefined,
       historyEntries: history.entries,
     });
     // Track the in-flight build so a signal (or a mid-build exit) during `loading` can reclaim its just-spawned
@@ -1304,6 +1314,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'reject':
         active.store.answerApproval({ outcome: 'reject' });
         return;
+      case 'reject-with-reason':
+        // `[c]` — open the typed-reason capture (Step 14); the next keys fill it (handleChatKey routes them),
+        // then submit rejects WITH the reason. The approval stays pending until then (parity with `relavium chat`).
+        set({ reasonDraft: emptyEditor() });
+        return;
       case 'none':
         return;
     }
@@ -1311,6 +1326,33 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
 
   const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
     if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
+    // The `[c]` typed-reason capture (Step 14) owns the keyboard while open — checked FIRST. It ONLY opens from a
+    // pending approval; if that approval settled out-of-band, the capture is stale → drop it. Else Esc CANCELS back
+    // to the [y]/[a]/[n] prompt (still pending — not an abort); plain Enter rejects WITH the sanitized+bounded
+    // reason; every other key edits the buffer. Parity with the standalone ChatApp; the floor is unchanged (this
+    // only enriches a reject — a governed dispatch still cannot proceed without an explicit decision).
+    const openReason = state.reasonDraft;
+    if (openReason !== undefined) {
+      if (active.store.getSnapshot().approval === undefined) {
+        set({ reasonDraft: undefined }); // the approval vanished — discard the orphaned capture
+        return;
+      }
+      if (key.escape === true) {
+        set({ reasonDraft: undefined }); // cancel the reason; the approval stays pending
+        return;
+      }
+      if (key.return === true && key.shift !== true) {
+        const reason = sanitizeApprovalReason(openReason.text);
+        set({ reasonDraft: undefined });
+        active.store.answerApproval(
+          reason === undefined ? { outcome: 'reject' } : { outcome: 'reject', reason },
+        );
+        return;
+      }
+      const edit = reduceEditorMotion(input, key);
+      if (edit !== undefined) set({ reasonDraft: applyEditorAction(openReason, edit) });
+      return;
+    }
     // Busy = a streaming turn OR a `!`-shell command in flight (`state.shellBusy` — the session has no store status
     // for it). A gated keystroke can't reach `sendMessage` → no `SessionStateError` crash.
     const running =

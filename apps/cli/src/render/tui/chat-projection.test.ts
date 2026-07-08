@@ -12,8 +12,10 @@ import {
   formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
+  MAX_APPROVAL_REASON_CHARS,
   MAX_REASONING_PANEL_LINES,
   reasoningLabelActive,
+  sanitizeApprovalReason,
   sanitizeInline,
   streamingAbortHint,
   stripTerminalControls,
@@ -705,6 +707,32 @@ describe('chat-projection', () => {
     it('strips bidi controls through sanitizeInline too (shared primitive, all surfaces)', () => {
       // sanitizeInline builds on stripTerminalControls, so an id/model/path field is bidi-safe everywhere.
       expect(sanitizeInline('git\u202Estatus')).toBe('gitstatus');
+    });
+  });
+
+  describe('sanitizeApprovalReason ([c] typed denial reason, Step 14)', () => {
+    it('returns undefined for an empty / whitespace-only reason (degrades to a plain reject)', () => {
+      expect(sanitizeApprovalReason('')).toBeUndefined();
+      expect(sanitizeApprovalReason('   \t  ')).toBeUndefined();
+    });
+
+    it('trims + collapses to one line and keeps a normal reason', () => {
+      expect(sanitizeApprovalReason('  use the project config instead  ')).toBe(
+        'use the project config instead',
+      );
+      expect(sanitizeApprovalReason('line1\nline2')).toBe('line1 line2'); // newline collapsed to a space
+    });
+
+    it('strips terminal + bidi controls (secret-free-shaped, spoof-free) from the reason', () => {
+      const RLO = String.fromCharCode(0x202e);
+      const ESC = String.fromCharCode(0x1b);
+      expect(sanitizeApprovalReason(`no ${RLO}spoof`)).toBe('no spoof'); // bidi gone
+      expect(sanitizeApprovalReason(`no ${ESC}[31mansi`)).toBe('no ansi'); // ANSI gone
+    });
+
+    it('caps the reason at MAX_APPROVAL_REASON_CHARS (a pasted wall of text cannot blow up an error line)', () => {
+      const long = 'x'.repeat(MAX_APPROVAL_REASON_CHARS + 50);
+      expect(sanitizeApprovalReason(long)).toHaveLength(MAX_APPROVAL_REASON_CHARS);
     });
   });
 });

@@ -65,6 +65,25 @@ export function sanitizeInline(text: string): string {
   return stripTerminalControls(text).replace(/[\t\n]+/g, ' ');
 }
 
+/** The max length of a typed denial reason (`[c]`, Step 14) — bounds what rides the `ToolDeniedByUserError` into
+ *  the turn outcome / `--json` / logs, so a pasted wall of text can't blow up one error line. */
+export const MAX_APPROVAL_REASON_CHARS = 300;
+
+/**
+ * Sanitize + bound a USER-typed denial reason for the approval seam (`[c]`, Step 14): strip terminal/bidi controls
+ * and collapse to a single line ({@link sanitizeInline}), trim, and cap the length. Returns `undefined` for an
+ * empty/whitespace reason so the answer degrades to a plain reject (no dangling `": "` in the denial). The value
+ * flows into `ToolApprovalDecision.reject.reason`; it is the user's own text (not a secret they'd hide from
+ * themselves), but bounding + control-stripping keep it safe for the error line, logs, and `--json`.
+ */
+export function sanitizeApprovalReason(text: string): string | undefined {
+  const clean = sanitizeInline(text).trim();
+  if (clean.length === 0) return undefined;
+  return clean.length > MAX_APPROVAL_REASON_CHARS
+    ? clean.slice(0, MAX_APPROVAL_REASON_CHARS)
+    : clean;
+}
+
 /**
  * Error codes whose `errorMessage` is safe to render in-chat. This leans on a load-bearing project-wide
  * contract, not a two-string allowlist: EVERY `tool_denied` / `tool_unavailable` message across the engine is,

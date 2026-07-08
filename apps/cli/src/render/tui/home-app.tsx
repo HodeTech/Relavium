@@ -64,6 +64,8 @@ function ChatRegion(
     shellCommand: string | undefined;
     historyEntries: readonly string[];
     attachments: readonly PendingAttachment[];
+    /** The in-flight `[c]` typed-reason capture buffer (Step 14) — shows the reason input in the approval prompt. */
+    reasonDraft: EditorState | undefined;
   }>,
 ): ReactElement {
   const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
@@ -86,6 +88,7 @@ function ChatRegion(
         attachments={props.attachments}
         busyCommand={props.shellCommand}
         columns={props.cols}
+        reasonDraft={props.reasonDraft}
         paletteOpen={
           props.palette !== undefined ||
           props.search !== undefined ||
@@ -141,6 +144,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         effortPicker={state.effortPicker}
         now={props.nowMs}
         cols={size.cols}
+        reasonDraft={state.reasonDraft}
         shellBusy={state.shellBusy}
         submitBusy={state.submitBusy}
         shellCommand={state.shellCommand}

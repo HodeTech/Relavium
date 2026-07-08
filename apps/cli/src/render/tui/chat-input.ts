@@ -76,7 +76,11 @@ export type ChatKeyAction =
   /** An approval-prompt decision (accept-edits / auto's protected-path fallback): `[y]` once / `[a]` always. */
   | { readonly kind: 'approve'; readonly scope: 'once' | 'always' }
   /** An approval-prompt rejection (`[n]`). */
-  | { readonly kind: 'reject' };
+  | { readonly kind: 'reject' }
+  /** `[c]` at the approval prompt — START capturing a typed denial reason (Step 14). The surface opens a small
+   *  reason-input buffer; on submit it rejects with `{ outcome: 'reject', reason }`, so the model/turn outcome
+   *  carries WHY (not a bare "denied by the user"). A pure UI transition — it does not itself answer the prompt. */
+  | { readonly kind: 'reject-with-reason' };
 
 /**
  * The approval-prompt keystroke intercept (accept-edits / auto's protected-path fallback), extracted so
@@ -103,6 +107,10 @@ function reduceApprovalKey(char: string, key: ChatKey): ChatKeyAction {
   if (char === 'y' || char === '1') return { kind: 'approve', scope: 'once' };
   if (char === 'a' || char === '2') return { kind: 'approve', scope: 'always' };
   if (char === 'n' || char === 'r' || char === '3') return { kind: 'reject' };
+  // `[c]` opens the typed-reason capture (Step 14) — a reject that records WHY the user denied, instead of a bare
+  // "denied by the user". A separate keyboard-owning sub-mode captures the text (the surface owns its buffer), so
+  // it does not collide with the `[n]`/`[r]`/`3` bare reject here.
+  if (char === 'c') return { kind: 'reject-with-reason' };
   return { kind: 'none' };
 }
 
