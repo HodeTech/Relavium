@@ -499,8 +499,17 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `#context.variables` the way the workflow `AgentRunner` interpolates an `agent` node's prompt. So
   `relavium agent run --input k=v` (2.Q) carries the variables in `SessionContext` (visible on `session:started`)
   but a `{{ctx.k}}` placeholder in the agent's prompt is sent to the model **literally**. Wire a `resolveTemplate`
-  pass over the session prompt against a `RunScope` built from `context.variables` (deliberately deferred —
-  no surface needed it before 2.Q). *(medium · packages/core/src/engine/agent-session.ts)*
+  pass over the session prompt against a `RunScope` built from `context.variables`. **Governed by
+  [ADR-0060](../decisions/0060-session-ctx-prompt-interpolation.md) (Proposed, Phase-2.6 / workstream 2.6.D)** —
+  it is NOT a plain `resolveTemplate` reuse: the safe implementation requires a **new per-variable
+  provenance/taint marker on `SessionContext`** (today a flat record) so `--input`-derived (untrusted) values
+  can never reach the `system` position, plus the ADR's **mandatory security review of the session-prompt taint
+  path before Accept**. **2.5-close decision (2026-07-08):** the phase-2.5 close-plan (Step 13, Batch C) proposed
+  landing this here; the maintainer chose to **DEFER to Phase 2.6 / 2.6.D** — where ADR-0060 is finalized
+  (Proposed→Accepted) with its taint-provenance marker + security review — rather than pull an unaccepted,
+  security-critical Phase-2.6 ADR forward into the consolidation close-out. Only the sibling
+  `AgentParseError` line/col half of Step 13 landed. *(medium · packages/core/src/engine/agent-session.ts;
+  ADR-0060)*
 
 ## Phase 2.5.D (`@`-mention / input ergonomics) follow-ups
 
