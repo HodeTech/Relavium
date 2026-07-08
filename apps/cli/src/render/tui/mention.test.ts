@@ -221,6 +221,27 @@ describe('createMentionReader — over the FsCapability jail (2.5.D step 4)', ()
     expect(out.some((c) => c.name === '..')).toBe(false); // the ROOT has no ascend row
   });
 
+  it('trims candidates by the workspace .gitignore / .relaviumignore (Step 15)', async () => {
+    const reader = createMentionReader(
+      fsMock(
+        {
+          '.': [
+            { name: 'dist', type: 'directory' }, // /dist (gitignored dir)
+            { name: 'src', type: 'directory' },
+            { name: 'secret.txt', type: 'file' }, // gitignored file
+            { name: 'app.ts', type: 'file' },
+            { name: 'keep.tmp', type: 'file' }, // *.tmp but re-included by the .relaviumignore negation
+            { name: 'scratch.tmp', type: 'file' }, // *.tmp (relaviumignore) ⇒ dropped
+          ],
+        },
+        { '.gitignore': '/dist\nsecret.txt', '.relaviumignore': '*.tmp\n!keep.tmp' },
+      ),
+    );
+    const out = await reader.list('');
+    // dist / secret.txt / scratch.tmp filtered; keep.tmp survives (negation); dirs-first then by name.
+    expect(out.map((c) => c.name)).toEqual(['src', 'app.ts', 'keep.tmp']);
+  });
+
   it('list of a subdir prepends a `..` ascend row, builds nested paths; read goes through fs.readFile', async () => {
     const reader = createMentionReader(
       fsMock({ 'src/lib': [{ name: 'app.ts', type: 'file' }] }, { 'src/lib/app.ts': 'hello' }),

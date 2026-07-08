@@ -40,7 +40,7 @@ export async function run(
 
   let global: GlobalOptions;
   try {
-    global = resolveGlobalOptions(raw, process.cwd()); // also enforces the --verbose/--quiet rule
+    global = resolveGlobalOptions(raw, process.cwd(), io.env); // env feeds NO_COLOR/FORCE_COLOR; also enforces --verbose/--quiet
   } catch (err) {
     renderError(err, renderCtx, io);
     return toUserFacing(err).exitCode;

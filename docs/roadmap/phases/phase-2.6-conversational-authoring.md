@@ -3,6 +3,10 @@
 > Status: Planned. Depends on the Phase 2.5 spine (the wired tool-environment and the per-tool
 > approval / mode system). Spine: 2.6.A (`@relavium/authoring` package) → 2.6.B (conversational
 > authoring agent). Additive: 2.6.C / D / E.
+>
+> **Note (2026-07-07):** **2.6.C**'s mid-session `/models` model **reseat shipped early in 2.5.G** (ADR-0059,
+> PR #66, merged 2026-07-07); the "mid-session model switching" mentions in the Goal / Outcomes / In-scope /
+> Milestones / Exit-criteria below are therefore already realized — see §2.6.C. This phase is otherwise Planned.
 
 - **Related**: [../README.md](../README.md), [phase-2.5-cli-consolidation.md](phase-2.5-cli-consolidation.md), [phase-2-cli.md](phase-2-cli.md), [phase-3-desktop.md](phase-3-desktop.md), [phase-4-vscode.md](phase-4-vscode.md), [../../reference/contracts/workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md), [../../reference/contracts/agent-yaml-spec.md](../../reference/contracts/agent-yaml-spec.md), [../../reference/shared-core/node-types.md](../../reference/shared-core/node-types.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0058–0060)
 
@@ -118,6 +122,10 @@ shared with 2.6.A.**
 
 ### 2.6.C — Mid-session model reseat (`/models` mid-chat)
 
+> **Note (2026-07-07):** ADR-0059 was pulled forward and the `/models` mid-chat reseat **shipped early in
+> 2.5.G**'s model-UX follow-up (PR #66, merged 2026-07-07). This workstream is retained for any residual
+> Phase-2.6 polish and as the cross-reference home.
+
 A session binds one model for its lifetime ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md);
 the fallback plan is memoized). Switching the **model** mid-chat is therefore a host-side **reseat**:
 reconstruct the transcript (`reconstructSessionState`) and start a new `AgentSession.resume` bound to the
@@ -132,10 +140,10 @@ breakdown.
 
 **Acceptance:** `/models` mid-chat continues the conversation on a new model from the next turn; cost/turn
 carry; per-message model attribution persists; the context-loss notice is shown; "carries full context" is
-never claimed. When [ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md) flips to Accepted, its
-refinement of [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md) is recorded **in
-place** on ADR-0024 with a dated `> Amended …` note + a Related forward-link (documentation-style §7), since
-it refines without reversing. **Required ADR: mid-session reseat (model-only) — refines ADR-0024.**
+never claimed. [ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md) is **Accepted (2026-07-06)** and
+its refinement of [ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md) is recorded **in
+place** on ADR-0024 (the dated `> Amended 2026-07-06 …` note + the Related forward-link, documentation-style §7),
+since it refines without reversing. **Required ADR: mid-session reseat (model-only) — refines ADR-0024 (done).**
 
 ### 2.6.D — Session `{{ctx.*}}` prompt interpolation
 

@@ -12,7 +12,12 @@ import {
   formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
+  MAX_APPROVAL_REASON_CHARS,
+  MAX_REASONING_PANEL_LINES,
   reasoningLabelActive,
+  sanitizeApprovalReason,
+  sanitizeInline,
+  streamingAbortHint,
   stripTerminalControls,
 } from './chat-projection.js';
 import { formatDuration, formatTokens } from './format.js';
@@ -327,6 +332,30 @@ describe('chat-projection', () => {
     });
   });
 
+  describe('streamingAbortHint (2.5.H / EA7 — the abort affordance persists during streaming)', () => {
+    const base = {
+      spinner: '⠋',
+      compacting: false,
+      liveTokens: '',
+      liveTokensTruncated: false,
+    } as const;
+
+    it('returns the standalone hint for a streaming CONTENT line (which has no inline hint)', () => {
+      const content = formatBusyLine({ ...base, liveTokens: 'the answer streams' });
+      expect(content.dim).toBe(false);
+      expect(streamingAbortHint(content)).toBe('Esc to stop');
+    });
+
+    it('returns undefined for every STATUS line — they already carry their own inline hint (no double-print)', () => {
+      // Pre-token ("· Esc to stop"), compaction ("· Esc to cancel"), and shell ("· Esc to cancel") are all dim.
+      expect(streamingAbortHint(formatBusyLine({ ...base, elapsedMs: 1000 }))).toBeUndefined();
+      expect(streamingAbortHint(formatBusyLine({ ...base, compacting: true }))).toBeUndefined();
+      expect(
+        streamingAbortHint(formatBusyLine({ ...base, busyCommand: 'npm test' })),
+      ).toBeUndefined();
+    });
+  });
+
   describe('reasoningLabelActive (2.5.H — Thinking… only when no tool is executing)', () => {
     const call = (resolved: boolean) => ({ id: 't', toolId: 'read_file', resolved });
 
@@ -379,6 +408,135 @@ describe('chat-projection', () => {
       // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
       expect(panel.body).not.toMatch(/\x1b/);
       expect(panel.body).toBe('line1\nline2'); // ANSI stripped, the newline (multi-line prose) kept
+    });
+
+    describe('bounds the expanded body to the last N rendered rows (2.5.H)', () => {
+      it('keeps every line when the body fits within the row budget', () => {
+        const body = ['a', 'b', 'c'].join('\n');
+        const panel = formatReasoningPanel({
+          liveReasoning: body,
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 80,
+        });
+        expect(panel.body).toBe(body); // under budget ⇒ no tail, no marker
+      });
+
+      it('keeps everything with NO marker when the rows sum to EXACTLY the budget', () => {
+        // Exactly MAX one-char lines at width 80 = exactly 12 rendered rows — the boundary case: the loop ends
+        // naturally (nothing dropped), so `tailed` is false and no leading marker is added.
+        const lines = Array.from({ length: MAX_REASONING_PANEL_LINES }, (_, i) => String(i));
+        const body = lines.join('\n');
+        const panel = formatReasoningPanel({
+          liveReasoning: body,
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 80,
+        });
+        expect(panel.body).toBe(body); // == budget ⇒ kept whole, no `…`
+      });
+
+      it('tails MANY short lines to the last N and prefixes the elision marker', () => {
+        // 30 one-char lines = 30 rendered rows (each short line is its own row) — well over the 12-row budget.
+        const lines = Array.from({ length: 30 }, (_, i) => String(i));
+        const panel = formatReasoningPanel({
+          liveReasoning: lines.join('\n'),
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 80,
+        });
+        const kept = lines.slice(lines.length - MAX_REASONING_PANEL_LINES); // the most-recent N
+        expect(panel.body).toBe(`…${kept.join('\n')}`);
+      });
+
+      it('counts WRAPPED rows: one long logical line spends multiple rows of the budget (narrow terminal)', () => {
+        // At width 10, a 25-char line wraps to ceil(25/10)=3 rows. With three such lines (9 rows) plus a fourth
+        // (→12) the budget is exactly full; a fifth older line (would be 15) is dropped.
+        const long = (tag: string): string => `${tag}`.padEnd(25, '.');
+        const lines = [long('oldest'), long('l2'), long('l3'), long('l4'), long('newest')];
+        const panel = formatReasoningPanel({
+          liveReasoning: lines.join('\n'),
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 10,
+        });
+        // 4 lines × 3 rows = 12 rows = the budget; the oldest is dropped, so the marker shows.
+        expect(panel.body).toBe(`…${lines.slice(1).join('\n')}`);
+      });
+
+      it('slices the HEAD of a single line that alone exceeds the whole budget (keeps its tail)', () => {
+        // One 200-char line at width 10 = 20 rows > the 12-row budget; keep only the last 12×10 = 120 chars.
+        const line = 'x'.repeat(200);
+        const panel = formatReasoningPanel({
+          liveReasoning: line,
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 10,
+        });
+        expect(panel.body).toBe(`…${'x'.repeat(MAX_REASONING_PANEL_LINES * 10)}`);
+      });
+
+      it('ORs the row-tail elision with the store char-cap marker (one leading marker either way)', () => {
+        const lines = Array.from({ length: 30 }, (_, i) => String(i));
+        const panel = formatReasoningPanel({
+          liveReasoning: lines.join('\n'),
+          liveReasoningTruncated: true, // the store already elided the head too
+          visible: true,
+          columns: 80,
+        });
+        expect(panel.body?.startsWith('…')).toBe(true);
+        expect(panel.body?.startsWith('……')).toBe(false); // exactly one marker, not doubled
+      });
+
+      it('falls back to an 80-col assumption when no width is passed (headless/test render)', () => {
+        // A 400-char single line: at the 80-col fallback that is 5 rows (< budget) ⇒ kept whole, no tail.
+        const line = 'y'.repeat(400);
+        const panel = formatReasoningPanel({
+          liveReasoning: line,
+          liveReasoningTruncated: false,
+          visible: true,
+        });
+        expect(panel.body).toBe(line);
+      });
+
+      it('falls back to 80 cols for a non-positive/fractional width (guards the div-by-zero floor)', () => {
+        // The width guard is `Math.floor(columns) >= 1` — 0 / 0.5 / negative / NaN all take the 80-col fallback
+        // (no divide-by-zero, no negative slice). A 400-char line = 5 rows at 80 ⇒ kept whole, proving the width.
+        const line = 'y'.repeat(400);
+        for (const columns of [0, 0.5, -5, Number.NaN]) {
+          const panel = formatReasoningPanel({
+            liveReasoning: line,
+            liveReasoningTruncated: false,
+            visible: true,
+            columns,
+          });
+          expect(panel.body).toBe(line); // 80-col fallback ⇒ under budget ⇒ no crash, no tail
+        }
+      });
+
+      it('does NOT count a trailing newline as a rendered row (no premature drop between stream chunks)', () => {
+        // A live buffer cut off right after a line break ends in '\n'. The MAX real lines alone fit the budget
+        // exactly; the trailing '\n' must not spend a phantom row that drops the oldest real line + flashes `…`.
+        const lines = Array.from({ length: MAX_REASONING_PANEL_LINES }, (_, i) => String(i));
+        const panel = formatReasoningPanel({
+          liveReasoning: `${lines.join('\n')}\n`, // trailing newline (mid-stream cut)
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 80,
+        });
+        expect(panel.body).toBe(lines.join('\n')); // every real line kept, no leading marker
+      });
+
+      it('keeps an INTENTIONAL trailing blank line (only the final cursor newline is dropped)', () => {
+        // "a\n\n" is a line + a deliberate blank line + the cursor newline; stripping ONE '\n' keeps the blank.
+        const panel = formatReasoningPanel({
+          liveReasoning: 'a\n\n',
+          liveReasoningTruncated: false,
+          visible: true,
+          columns: 80,
+        });
+        expect(panel.body).toBe('a\n'); // the intentional blank line survives; only the trailing cursor newline goes
+      });
     });
   });
 
@@ -506,6 +664,86 @@ describe('chat-projection', () => {
       // DCS ESC P … ST and APC ESC _ … BEL are stripped whole — no leftover payload (the old 3rd arm left it).
       expect(stripTerminalControls('a\x1bPpayload\x1b\\b')).toBe('ab');
       expect(stripTerminalControls('a\x1b_apc\x07b')).toBe('ab');
+    });
+
+    it('strips Unicode bidi/format controls - the Trojan-Source floor (Step 14)', () => {
+      // The standard Trojan-Source family: overrides/embeddings U+202A-202E, isolates U+2066-2069, and the
+      // marks LRM/RLM/ALM. None is in the C0/C1 range BARE_CONTROLS strips, so each would otherwise survive.
+      const bidi = [
+        '\u202A',
+        '\u202B',
+        '\u202C',
+        '\u202D',
+        '\u202E',
+        '\u2066',
+        '\u2067',
+        '\u2068',
+        '\u2069',
+        '\u200E',
+        '\u200F',
+        '\u061C',
+      ];
+      for (const c of bidi) {
+        expect(stripTerminalControls(`a${c}b`)).toBe('ab');
+      }
+    });
+
+    it('flattens a Trojan-Source-style RLO spoof to its logical byte order', () => {
+      // RLO then PDF would render the middle reversed as a visual spoof; stripped, only the logical text
+      // survives, so what the user SEES equals the bytes (an approval-prompt path cannot lie).
+      const spoof = `rm -rf \u202E/nimda\u202C safe`;
+      const clean = stripTerminalControls(spoof);
+      expect(clean).toBe('rm -rf /nimda safe'); // both controls gone; logical order preserved
+      expect(clean).not.toMatch(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/);
+    });
+
+    it('preserves ZWJ / ZWNJ (legitimate in emoji sequences + Indic/Arabic shaping)', () => {
+      // ZWJ (U+200D) joins emoji; ZWNJ (U+200C) is a real letter-shaping control - neither reorders text, so
+      // both must survive (an over-broad strip would mangle names / emoji).
+      expect(stripTerminalControls('a\u200Db')).toBe('a\u200Db');
+      expect(stripTerminalControls('a\u200Cb')).toBe('a\u200Cb');
+    });
+
+    it('strips bidi controls through sanitizeInline too (shared primitive, all surfaces)', () => {
+      // sanitizeInline builds on stripTerminalControls, so an id/model/path field is bidi-safe everywhere.
+      expect(sanitizeInline('git\u202Estatus')).toBe('gitstatus');
+    });
+  });
+
+  describe('sanitizeApprovalReason ([c] typed denial reason, Step 14)', () => {
+    it('returns undefined for an empty / whitespace-only reason (degrades to a plain reject)', () => {
+      expect(sanitizeApprovalReason('')).toBeUndefined();
+      expect(sanitizeApprovalReason('   \t  ')).toBeUndefined();
+    });
+
+    it('trims + collapses to one line and keeps a normal reason', () => {
+      expect(sanitizeApprovalReason('  use the project config instead  ')).toBe(
+        'use the project config instead',
+      );
+      expect(sanitizeApprovalReason('line1\nline2')).toBe('line1 line2'); // newline collapsed to a space
+    });
+
+    it('strips terminal + bidi controls (secret-free-shaped, spoof-free) from the reason', () => {
+      const RLO = String.fromCharCode(0x202e);
+      const ESC = String.fromCharCode(0x1b);
+      expect(sanitizeApprovalReason(`no ${RLO}spoof`)).toBe('no spoof'); // bidi gone
+      expect(sanitizeApprovalReason(`no ${ESC}[31mansi`)).toBe('no ansi'); // ANSI gone
+    });
+
+    it('caps the reason at MAX_APPROVAL_REASON_CHARS (a pasted wall of text cannot blow up an error line)', () => {
+      const long = 'x'.repeat(MAX_APPROVAL_REASON_CHARS + 50);
+      expect(sanitizeApprovalReason(long)).toHaveLength(MAX_APPROVAL_REASON_CHARS);
+    });
+
+    it('does not leave a lone surrogate when the cap lands mid-astral-pair', () => {
+      // A run of (MAX-1) ASCII then an astral emoji (2 UTF-16 units): the naive slice(0, MAX) would keep the
+      // high surrogate and drop the low — a `�`. The back-off drops the whole pair (result is MAX-1 chars).
+      const reason = `${'a'.repeat(MAX_APPROVAL_REASON_CHARS - 1)}😀tail`;
+      const out = sanitizeApprovalReason(reason);
+      expect(out).toHaveLength(MAX_APPROVAL_REASON_CHARS - 1); // the split emoji was dropped whole
+      expect(out).toBe('a'.repeat(MAX_APPROVAL_REASON_CHARS - 1));
+      // No unpaired surrogate survived (each code unit is a full BMP code point).
+      for (const ch of out ?? '') expect(ch.codePointAt(0)).toBeLessThan(0xd800);
     });
   });
 });

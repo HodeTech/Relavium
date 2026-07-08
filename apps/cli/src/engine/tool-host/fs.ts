@@ -93,8 +93,20 @@ export class FsCapabilityError extends HostCapabilityError {}
  * A **deterministic scope/security denial** — a path escapes the tier, a UNC path, or a refusal to write through
  * a symlink — mapping to the **fatal**, non-retryable `tool_denied` (the shared {@link HostDeniedError}): a
  * denied path just re-denies, so it must NOT burn the node-retry budget (error-handling.md §tool-dispatch codes).
+ *
+ * Recoverability (Step 14): fatal by default (`recoverable=false`, inherited). ONE throw opts in — the pure
+ * **scope-tier escape** ("the path escapes the allowed filesystem scope") passes `recoverable: true`, so on the
+ * `recoverToolFailures` surface (chat / Home / one-shot `agent run`) it is fed back as a correctable tool result
+ * and the model can adapt to an in-bounds path (conversational recovery). The **confidentiality** refusal (a
+ * secret/credential store read), the protected
+ * -path write, and the symlink/hard-link refusals stay fatal — feeding those back would leak a probe oracle or
+ * risk nothing useful.
  */
-export class FsScopeDeniedError extends HostDeniedError {}
+export class FsScopeDeniedError extends HostDeniedError {
+  constructor(message: string, opts?: { recoverable?: boolean }) {
+    super(message, opts?.recoverable ?? false);
+  }
+}
 
 /**
  * Build a node-backed {@link FsCapability} jailed to `config`'s scope tier. The returned object is the value a
@@ -784,10 +796,15 @@ async function jailWriteTarget(
   return { realDir, finalTarget: join(realDir, basename(lexical)) };
 }
 
-/** Throw a fatal scope denial if `real` is not in scope (the authoritative post-realpath jail). */
+/** Throw a scope denial if `real` is not in scope (the authoritative post-realpath jail). RECOVERABLE on the chat
+ *  surface (Step 14) — the pure scope-tier escape is refused before any side effect, so the model may adapt to an
+ *  in-bounds path; the floor still denies every attempt. (The confidentiality / symlink / protected-path denials
+ *  keep the default fatal, so this is the ONLY fs denial fed back.) */
 function assertInScope(inScope: ScopeChecker, real: string): void {
   if (!inScope(real)) {
-    throw new FsScopeDeniedError('the path escapes the allowed filesystem scope');
+    throw new FsScopeDeniedError('the path escapes the allowed filesystem scope', {
+      recoverable: true,
+    });
   }
 }
 

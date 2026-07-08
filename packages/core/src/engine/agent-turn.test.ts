@@ -721,6 +721,67 @@ describe('runAgentTurn — tool loop', () => {
     ).rejects.toMatchObject({ code: 'tool_failed', retryable: true });
   });
 
+  it('recovers a RECOVERABLE SCOPE denial (media_scope_denied) when recoverToolFailures is set (Step 14)', async () => {
+    // A SCOPE denial refused BEFORE any side effect (media_scope_denied / an fs scope-tier escape) is `tool_denied`
+    // but flagged `recoverable` — on the chat surface it is fed back as an isError result so the model adapts to
+    // an in-bounds path (conversational recovery), instead of the turn dying. It shares the recoverToolFailures gate.
+    let dispatched = 0;
+    const registry = stubRegistry((call) => {
+      dispatched += 1;
+      if (dispatched === 1) throw new ToolPolicyError('echo', 'media_scope_denied', 'out of scope');
+      const result: ToolResultPart = { type: 'tool_result', toolCallId: call.id, result: 'OK' };
+      return {
+        output: 'OK',
+        toolResult: markUntrusted(result),
+        truncated: false,
+        events: {
+          call: { toolId: call.name, toolInput: {} },
+          result: { toolId: call.name, success: true, outputSummary: 'OK' },
+        },
+      };
+    });
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'tool_call_start', id: 'c1', name: 'echo' },
+        { type: 'tool_call_end', id: 'c1' },
+        STOP('tool_use'),
+      ],
+      [
+        { type: 'tool_call_start', id: 'c2', name: 'echo' },
+        { type: 'tool_call_end', id: 'c2' },
+        STOP('tool_use'),
+      ],
+      [{ type: 'text_delta', text: 'recovered' }, STOP()],
+    ]);
+    const params = baseParams(provider, {
+      registry,
+      limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
+    });
+    const result = await runAgentTurn(params);
+    expect(result.text).toBe('recovered'); // the turn continued past the scope denial
+    expect(
+      eventsOf(params).find((e) => e.type === 'agent:tool_result' && !e.success),
+    ).toBeDefined();
+  });
+
+  it('does NOT recover a NON-scope tool_denied (a guardrail denial) even with recoverToolFailures (Step 14)', async () => {
+    // The taxonomy split: only a SCOPE denial (recoverable) is fed back — a guardrail/grant denial (`not_granted`,
+    // and equally a user reject / SSRF / confidentiality) is NOT recoverable, so it ends the turn LOUDLY even on
+    // the chat surface. Re-issuing the same denied call would just re-deny (or leak a probe oracle).
+    const registry = stubRegistry(() => {
+      throw new ToolPolicyError('echo', 'not_granted', 'tool not granted'); // recoverable=false
+    });
+    const provider = scriptedProvider('anthropic', [toolUseTurn('c1')]);
+    await expect(
+      runAgentTurn(
+        baseParams(provider, {
+          registry,
+          limits: { ...DEFAULT_AGENT_TURN_LIMITS, recoverToolFailures: true },
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'tool_denied', retryable: false });
+  });
+
   it('attaches the turn’s REAL accumulated usage to a failed turn (EA2)', async () => {
     // The tool-use turn settled an attempt (STOP carries usage 10/5) BEFORE the tool throws, so the
     // accumulated usage is non-zero — the wrapper attaches it to the thrown AgentTurnError rather than

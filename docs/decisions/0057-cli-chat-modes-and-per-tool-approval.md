@@ -19,6 +19,33 @@
 > reject-with-typed-reason prompt, a plain/non-TTY non-interactive approval policy, a live `web_search`/http
 > egress credential resolver, and the session-level budget pause/resume that rides the same EA4 machine.
 
+> **Amended 2026-07-08 (2.5-close Step 14 — approval/security batch; security-reviewed).** The deferred
+> approval follow-ups above landed, each in its own reviewed diff, plus two rendering/recovery hardenings — the
+> core guarantees are **unchanged** (no governed dispatch runs ungated; no mode escapes protected-paths / the fs
+> jail; the default stays read-only `ask`):
+> 1. **`[c]` reject-with-typed-reason.** The approval prompt gains a `[c]` branch that opens a small keyboard-owning
+>    reason-input sub-mode; on submit it rejects with the (sanitized + 300-char-bounded, terminal/bidi-stripped)
+>    reason via the EXISTING `ToolApprovalDecision.reject.reason` seam, so the denial records WHY. It only enriches a
+>    reject — the fail-closed floor and "a user deny is final" (`tool_denied`) are untouched.
+> 2. **Non-TTY approval policy = one canonical `nonInteractiveApprovalPrompt`.** The no-TTY fail-closed deny (a
+>    governed dispatch is denied — never a hang, never an auto-approve — when nothing can answer a consent prompt)
+>    already shipped as the 2.5.E "High 9" fix; it is now a single named helper shared by the non-interactive chat
+>    driver and one-shot `agent run` (was hand-rolled in two places).
+> 3. **SCOPE-denial conversational recovery (a denial-taxonomy change).** The `recoverable` flag moves onto the base
+>    `ToolDispatchError` (default false). Exactly two `tool_denied`s — a media scope denial (`media_scope_denied`)
+>    and the CLI fs arm's **pure scope-tier escape** — now carry `recoverable:true`, so on the `recoverToolFailures`
+>    surfaces (the chat-read-write host — `relavium chat` / the Home / the one-shot `agent run`) they are fed back as
+>    a correctable tool result and the model adapts to an in-bounds path (the floor still denies every attempt; a
+>    WORKFLOW run never sets `recoverToolFailures`, so it stays fatal/deterministic). A user / guardrail / SSRF / **confidentiality**
+>    (secret-store) / protected-path / symlink denial stays fatal — feeding those back would re-deny, risk a
+>    re-execution, or leak a probe oracle. Canonical taxonomy: [../reference/shared-core/tool-registry.md](../reference/shared-core/tool-registry.md#error-taxonomy).
+> 4. **Ctrl+T through the approval swallow.** The fail-closed key-swallow now whitelists exactly the VIEW-ONLY
+>    reasoning toggle (Ctrl+T — a pure store repaint, zero session/decision effect), so a user can expand the
+>    model's reasoning to inform the decision; the approval input set is otherwise unchanged.
+> 5. **Trojan-Source (bidi) floor.** The shared render sanitizer (`stripTerminalControls`) now also strips the
+>    Unicode bidirectional/directional format controls (U+202A–202E, U+2066–2069, LRM/RLM/ALM) so a streamed/pasted
+>    line can't visually spoof its logical bytes in an approval prompt (CVE-2021-42574); ZWJ/ZWNJ are preserved.
+
 ## Context
 
 We want Claude-Code-style chat modes (ask / plan / accept-edits / auto) and per-tool approval for writes

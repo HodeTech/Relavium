@@ -20,7 +20,8 @@ export interface ResolveChatAgentOptions {
  * discovered under `<projectConfigDir>/agents/`) parsed by the same strict core {@link parseAgent} a
  * workflow uses, or — when omitted — the {@link buildDefaultChatAgent built-in default agent} over
  * `[chat].default_model`. The host owns the file read ({@link resolveYamlSource}); the parser stays pure.
- * A missing ref is a clean exit-2 invocation error; an invalid `.agent.yaml` is a field-named parse error.
+ * A missing ref is a clean exit-2 invocation error; an invalid `.agent.yaml` surfaces the raw, field-named
+ * {@link AgentParseError} (deliberately NOT re-tagged as a CliError — see agent-source.test.ts).
  */
 export function resolveChatAgent(
   agentRef: string | undefined,

@@ -1,5 +1,5 @@
 import { eq, sql } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
 import { llmProviders } from './schema.js';
@@ -23,7 +23,20 @@ describe('createProviderStore', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     client.sqlite.close();
+  });
+
+  it('upsert opens an IMMEDIATE write transaction (2.5.I — read-then-write serialized, no lock-upgrade race)', () => {
+    const txnSpy = vi.spyOn(client.db, 'transaction');
+    store.upsert({
+      name: 'anthropic',
+      displayName: 'Anthropic',
+      baseUrl: 'https://api.anthropic.com',
+    });
+    // The read (`activeRow`) then write (insert/update) run under one BEGIN IMMEDIATE; a DEFERRED begin would
+    // drop this config arg (and reintroduce the read→write upgrade race two concurrent writers could hit).
+    expect(txnSpy).toHaveBeenCalledWith(expect.any(Function), { behavior: 'immediate' });
   });
 
   it('upserts a provider row and reads it back', () => {

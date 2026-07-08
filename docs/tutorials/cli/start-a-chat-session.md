@@ -111,7 +111,9 @@ chat` opened an [agent session](../../reference/contracts/agent-session-spec.md)
 same `@relavium/core` engine `relavium run` uses, each turn drove the agent loop through
 the shared `ToolRegistry` and the `@relavium/llm` seam, every tool call ran under the same
 filesystem scope and command allowlist a workflow would enforce, and the whole transcript
-was checkpointed to the encrypted `history.db` — so it is resumable and, when you are
+was checkpointed to `history.db` (unencrypted at rest, guarded by `0700`/`0600` owner-only file
+permissions per [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md); no credentials are
+stored there — API keys live in the OS keychain) — so it is resumable and, when you are
 ready, exportable. Harden once, both entry points inherit (see
 [shared-core-engine.md](../../architecture/shared-core-engine.md)).
 

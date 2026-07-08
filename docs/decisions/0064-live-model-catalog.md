@@ -8,6 +8,33 @@
 
 > **Clarified 2026-07-06 (2.5.G key-awareness — append-only, body unchanged):** §6 availability also requires a **resolvable key**. The merge gains an optional `keyedProviders` input (the providers with a keychain/env key); a model whose provider is **not** keyed is `available: false` with `unavailableReason: 'no-key'`, regardless of live/static presence — because with no key the model is genuinely uncallable (a chat started on it would only fail `provider_auth`), so the `/models` picker dims it (naming the remedy) and makes it **non-selectable**. This **refines, not reverses**, §6's "never everything unavailable" static-presence safe default: that default applies only to a **keyed** provider with no live data (never dimming a whole provider the user can actually use). `keyedProviders` is optional — **absent ⇒ availability is not key-gated**: the `available` BOOLEAN is unchanged from the pre-clarification behavior (the only new output is the additive-optional `unavailableReason`), so only a key-resolving surface (the CLI Home) opts in. The pre-existing "not available on your key" dim (a keyed provider whose live list omits a static model) is now labeled `unavailableReason: 'not-on-key'`.
 
+> **Clarified 2026-07-07 (2.5.I — DB write-path concurrency — append-only, body unchanged):** §5's Negative
+> bullet already requires the background refresh to "tolerate two concurrent `relavium` processes racing the DB
+> write (WAL + `busy_timeout` already exist)". 2.5.I gives that requirement its concrete, **repo-wide**
+> realization across every `history.db` writer, establishing two conventions the next store author follows.
+> **(1)** Every write transaction opens with **`BEGIN IMMEDIATE`** (not drizzle's `DEFERRED` default), taking
+> the write lock up front to close the read→write lock-upgrade race — applied to `persistEvent` (run history),
+> the model-catalog `replaceProviderModels` bulk live-upsert and its per-model `upsert`, the provider
+> `upsert` read-then-write, and the media-reference GC writes (`addReference` / `removeRunReferences` /
+> `reclaimExpired`). **(2)** Every such
+> write routes through a bounded, **fail-loud** `SQLITE_BUSY`/`SQLITE_LOCKED` retry helper
+> ([retry.ts](../../packages/db/src/retry.ts)) with **deterministic** backoff — **no jitter**, never
+> `Math.random`, following the no-jitter/deterministic-replay convention of
+> [ADR-0040](0040-node-retry-budget-above-the-chain.md) — that **surfaces** the error (never silently drops a
+> write) once the bounded attempt budget is exhausted, preserving
+> [ADR-0050](0050-cli-history-db-at-rest-posture.md)'s durability-first `persistEvent` posture. Single-statement
+> writes rely on SQLite's built-in busy handler (`busy_timeout`). Symmetrically, `sessionStore.loadFull` reads
+> its session row and its messages inside one **read transaction**, for a torn-read-free snapshot. This
+> **extends** §5's already-accepted concurrent-process clause: it reverses nothing, adds **no dependency**
+> (`retry.ts` is an in-house helper), and changes **no** at-rest/credential posture (ADR-0050 /
+> [ADR-0006](0006-os-keychain-for-api-keys.md) /
+> [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) untouched — concurrency is a
+> data-integrity/liveness concern, not the credential boundary). The mechanism's one canonical home is the
+> "Concurrency & transaction behavior" section of
+> [database-schema.md](../reference/desktop/database-schema.md); the `0600`/`0700` guard is a documented Windows
+> no-op (ADR-0050), so the 2.5.I test lane gates POSIX-permission assertions off Windows, while the
+> `BEGIN IMMEDIATE` + retry mechanism behaves identically cross-OS.
+
 ## Context
 
 The model catalog is **static in-code**: `MODEL_PRICING` ([pricing.ts](../../packages/llm/src/pricing.ts))

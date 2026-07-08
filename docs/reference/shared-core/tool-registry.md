@@ -176,7 +176,7 @@ host is touched once, in the middle.
 7. **Bound the model-facing result** (§Result bounding and spill-to-file) from the result via `ctx.limits` + the host `outputStore` — over the ceiling the model gets a preview + a spill handle, the full result still flows to `output_mapping`.
 8. **Mark the result untrusted** (§Untrusted-data taint) and hand the structured `tool_call` / `tool_result` data + its taint/secret markers to the bus's single translation point ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) for `agent:tool_call` / `agent:tool_result` emission.
 
-> **Loop-correctable vs terminal.** `UnknownToolError` and `ToolArgsInvalidError` are **thrown** by the registry; the agent loop (1.O) **catches** them and synthesizes a correctable `isError` `tool_result` (from the secret-free `error.message`) so the model can fix its call, within a **bounded correction budget** it owns — escalating to a node `ErrorCode` only when that budget is spent. A `ToolPolicyError` — and, identically, a `ToolDeniedByUserError` (the per-tool approval denial, ADR-0057) — is structurally fatal (`tool_denied`) and **never** fed back as a correctable result (re-asking a denied tool just burns budget). See [agent-runner.md §the failure ladder](agent-runner.md). A `ToolCancelledError` maps to `cancelled` ahead of all other classifications (cancel wins).
+> **Loop-correctable vs terminal.** `UnknownToolError` and `ToolArgsInvalidError` are **thrown** by the registry; the agent loop (1.O) **catches** them and synthesizes a correctable `isError` `tool_result` (from the secret-free `error.message`) so the model can fix its call, within a **bounded correction budget** it owns — escalating to a node `ErrorCode` only when that budget is spent. A `ToolPolicyError` — and, identically, a `ToolDeniedByUserError` (the per-tool approval denial, ADR-0057) — is structurally fatal (`tool_denied`) and **never** fed back as a correctable result (re-asking a denied tool just burns budget), with **one Step-14 exception**: a `recoverable` SCOPE denial (`media_scope_denied` / the fs pure scope-tier escape — refused before any side effect) IS fed back on the `recoverToolFailures` surfaces (chat / Home / one-shot `agent run`) so the model can adapt to an in-bounds path (see the `recoverable` note under the error taxonomy). See [agent-runner.md §the failure ladder](agent-runner.md). A `ToolCancelledError` maps to `cancelled` ahead of all other classifications (cancel wins).
 
 ```ts
 interface ToolDispatchContext {
@@ -324,20 +324,34 @@ codes by [sse-event-schema.md](../contracts/sse-event-schema.md#error-code-taxon
 | Error | When | Run `ErrorCode` | Class |
 |-------|------|-----------------|-------|
 | `UnknownToolError` | id not an exact match | `tool_failed` | fatal (loop-correctable first) |
-| `ToolPolicyError` | a guardrail / grant denial — `not_granted`, `provider_executed`, `command_not_allowed`, `domain_not_allowed`, `insecure_url`, `gate_required`, `media_scope_denied` (the full `ToolPolicyDenyReason` union; `media_scope_denied` is `read_media`'s scope-set denial, [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1) | `tool_denied` | **fatal** (never retried) |
+| `ToolPolicyError` | a guardrail / grant denial — `not_granted`, `provider_executed`, `command_not_allowed`, `domain_not_allowed`, `insecure_url`, `gate_required`, `media_scope_denied` (the full `ToolPolicyDenyReason` union; `media_scope_denied` is `read_media`'s scope-set denial, [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §1) | `tool_denied` | **fatal** — EXCEPT `media_scope_denied` is `recoverable` (a Step-14 SCOPE denial; see the note below) |
 | `ToolDeniedByUserError` | an interactive **per-tool approval** denial ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) EA3) — `user_rejected` (rejected by the user / mode policy), `no_approval_hook` (fail-closed: a governed dispatch under an active regime with no confirm hook wired), `approval_error` (fail-closed: the hook threw a non-abort error, so consent could not be obtained) | `tool_denied` | **fatal** (never retried; not loop-correctable — re-asking re-prompts/re-denies, like `ToolPolicyError`) |
 | `ToolArgsInvalidError` | effective args fail `parseArgs` / secret-taint | `validation` | fatal (loop-correctable first) |
 | `ToolUnavailableError` | the required `ToolHost` capability is absent (host/config gap, not the model's fault) | `tool_unavailable` | **fatal** (names the tool + the unwired arm actionably — never a bare `internal`; EA1, [ADR-0055](../../decisions/0055-cli-host-capability-seam-tool-environment-factory.md)) |
 | `ToolExecutionError` | the host capability threw a non-cancel error (cause kept off the message, for logs) | `tool_failed` | retryable (node budget) |
 | *(AbortSignal abort)* | the run was cancelled mid-tool | `cancelled` | fatal (cancel path, not `tool_failed`) |
 
-`ToolExecutionError` additionally carries a `recoverable` flag (stamped at the wrap from `governedAction` — `true`
-only for an **idempotent read**: no `fs_write` / `process` / `egress` / `os` side effect). It is STRICTER than
-`retryable` (which lets a *fresh node-retry* re-run the whole node): `recoverable` gates the interactive-chat
-within-turn recovery ([ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md) `recoverToolFailures`) —
-a recoverable failure is fed back to the model as an `isError` tool result so it can adapt, while a governed /
-side-effecting failure ends the turn (fail-fast, so the model never re-attempts a non-idempotent side effect). A
-WORKFLOW node ignores the flag (fail-fast always).
+**`recoverable` (the base `ToolDispatchError` flag; default `false`).** STRICTER than `retryable` (which lets a
+*fresh node-retry* re-run the whole node): `recoverable` gates the WITHIN-TURN recovery on the
+`recoverToolFailures` surfaces (the chat-read-write host —
+[ADR-0057](../../decisions/0057-cli-chat-modes-and-per-tool-approval.md): `relavium chat` / the Home / the one-shot
+`agent run`; a WORKFLOW node never sets `recoverToolFailures`, so it ignores the flag — fail-fast always) — a
+recoverable error is fed back to the model as an `isError` tool result so it can adapt (conversational recovery),
+while everything else ends the turn. Two disjoint sources set it:
+- `ToolExecutionError` — `true` only for an **idempotent read** (no `fs_write` / `process` / `egress` / `os` side
+  effect), stamped at the wrap from `governedAction`; a governed / side-effecting failure stays `false` (fail-fast,
+  so the model never re-attempts a non-idempotent side effect — a half-run command, a POST that may have landed).
+- A **SCOPE denial** (Step 14) — a `tool_denied` refused BEFORE any side effect, so it is safe to feed back and the
+  model can adapt to an in-bounds path (the floor still denies every attempt). Exactly two carry it: the engine's
+  `ToolPolicyError('media_scope_denied')`, and the CLI `fs` arm's **pure scope-tier escape** (`FsScopeDeniedError`
+  `'the path escapes the allowed filesystem scope'`, thrown by `assertInScope` before any write; the only residual
+  is an already-accepted parent-symlink-swap race whose sole preceding effect is an idempotent empty `mkdir`, never
+  the payload write). Every OTHER `tool_denied` stays fatal (`false`): a `ToolDeniedByUserError` (user reject /
+  fail-closed), the other `ToolPolicyError` guardrail reasons, an egress **SSRF** denial, and the fs
+  **confidentiality** (secret-store read) / protected-path / symlink refusals — feeding those back would re-deny,
+  risk a re-execution, or leak a probe oracle. (The scope-escape signal a model can gather across the bounded
+  `maxToolCorrections` rounds is a secret-free workspace-boundary probe, accepted — the reason interpolates no path
+  and the same round-bounded feedback already existed for an idempotent not-found read.)
 
 ## Instantiation
 

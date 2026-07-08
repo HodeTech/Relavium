@@ -326,6 +326,38 @@ security invariants** a review must confirm are:
   `ToolRegistry` / `AgentSession` implementations (1.O / 1.T / 1.V); it is an engine-layer
   rule and changes **no** seam shape — `LlmMessage` stays as the seam defines it.
 
+### CLI terminal-render safety + interactive approval (2.5.E / 2.5-close Step 14)
+
+- **Terminal-control + Trojan-Source floor (a rendering-safety primitive).** Every dynamic
+  string written to the terminal — streamed model output, a tool id, a path in an approval
+  prompt, a pasted line — passes the shared `stripTerminalControls` sanitizer at the DISPLAY
+  boundary (the persisted transcript keeps the raw bytes). It strips ANSI/OSC/DCS escapes, C0/C1
+  control bytes, AND the Unicode bidirectional/directional format controls (U+202A–202E,
+  U+2066–2069, LRM/RLM/ALM — the CVE-2021-42574 family) so untrusted text cannot inject a
+  cursor/title/clipboard escape NOR visually reorder a line to spoof its logical bytes (a faked
+  path/command in a consent prompt). ZWJ/ZWNJ are preserved (legitimate in emoji + shaping). The
+  provider-URL echo strips a stricter zero-width superset. **Never embed literal bidi bytes in
+  source** — the sanitizer regex uses `\u` escapes.
+- **Interactive per-tool approval is fail-closed and cannot be widened by a keystroke.** During a
+  pending approval the key-swallow answers ONLY `[y]/[a]/[n]/[esc]` plus `[c]` (open a
+  reject-with-reason capture) and the VIEW-ONLY reasoning toggle (Ctrl+T — a pure repaint, zero
+  session/decision effect). A modified chord (Ctrl/Alt) never silently picks the most-permissive
+  approve/reject. The `[c]` reason is a USER-typed reject enrichment only — sanitized (terminal +
+  bidi stripped, one line) and length-bounded before it rides the secret-free denial; it never
+  changes the floor or "a user deny is final". Off a TTY (`--json` / piped / one-shot `agent run`)
+  the one canonical `nonInteractiveApprovalPrompt` DENIES every governed dispatch — never a hang,
+  never an auto-approve.
+- **A recoverable SCOPE denial is safe by construction.** On the `recoverToolFailures` chat surfaces,
+  exactly the two SCOPE denials refused BEFORE any side effect (a media scope denial + the fs pure
+  scope-tier escape) are fed back to the model with a **secret-free, path-free** reason so it adapts to
+  an in-bounds path — the floor still denies every attempt (no bypass; the bounded workspace-boundary
+  signal a probing model could gather is accepted, matching the pre-existing not-found-read feedback).
+  Every OTHER `tool_denied` — confidentiality (secret-store read), protected-path, symlink/hard-link,
+  egress-SSRF, and user/guardrail — stays FATAL. The authoritative enumeration of which denials are
+  `recoverable` and which stay fatal (and why) is the canonical `recoverable` note in
+  [tool-registry.md §error taxonomy](../reference/shared-core/tool-registry.md#error-taxonomy) — not
+  restated here.
+
 ## Never hand-roll crypto
 
 - We **never implement cryptography, TLS, or keychain primitives ourselves**. We use vetted

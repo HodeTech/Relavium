@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
 import {
@@ -21,11 +21,28 @@ describe('MediaReferenceStore (1.AF/D12c + D11 — media_objects/media_reference
     let tick = 1_000;
     store = createMediaReferenceStore(client.db, () => (tick += 1));
   });
-  afterEach(() => client.sqlite.close());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    client.sqlite.close();
+  });
 
   function record(): void {
     store.recordObject({ handle: HANDLE, mimeType: 'image/png', modality: 'image', byteLength: 5 });
   }
+
+  it('the three multi-statement GC writers each open an IMMEDIATE transaction (2.5.I write-path convention)', () => {
+    record(); // recordObject (single-statement upsert) opens no transaction; it seeds the FK target
+    const txnSpy = vi.spyOn(client.db, 'transaction');
+    store.addReference(HANDLE, 'run', 'run-1'); // INSERT + cursor UPDATE
+    store.removeRunReferences('run-1'); // SELECT + DELETE + cursor UPDATE
+    store.reclaimExpired(0); // SELECT + SELECT + soft-delete
+    // All three serialize under BEGIN IMMEDIATE so a concurrent sweep/refresh can't straddle their statements
+    // (ADR-0064 §5); a DEFERRED begin would drop the config arg on any of them.
+    expect(txnSpy).toHaveBeenCalledTimes(3);
+    for (const call of txnSpy.mock.calls) {
+      expect(call[1]).toEqual({ behavior: 'immediate' });
+    }
+  });
 
   it('describe returns the durable metadata + only the session/workspace authz scopes', () => {
     record();

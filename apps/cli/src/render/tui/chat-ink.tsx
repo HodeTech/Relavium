@@ -36,6 +36,7 @@ import {
   emptyEditor,
   insertAtCursor,
   reduceChatKey,
+  reduceEditorMotion,
   type EditorState,
 } from './chat-input.js';
 import {
@@ -93,7 +94,9 @@ import {
   formatToolCall,
   formatTurnSummary,
   reasoningLabelActive,
+  sanitizeApprovalReason,
   sanitizeInline,
+  streamingAbortHint,
   stripTerminalControls,
 } from './chat-projection.js';
 import type { ReasoningEffort } from '@relavium/shared';
@@ -216,6 +219,14 @@ interface ChatViewProps {
   /** The in-flight `!`-shell command line (2.5.D) — when set, the busy indicator labels WHAT is running (a `!`-
    *  command emits no session tokens, so without this the spinner would be bare) + how to cancel (Esc). */
   readonly busyCommand?: string | undefined;
+  /** Live terminal width, to bound the EXPANDED reasoning panel to the last N rendered rows (2.5.H) so a full
+   *  4000-char buffer cannot wrap into a flickering, screen-filling panel on a short terminal. Render-only +
+   *  cosmetic (parity with `nowMs`); the owner passes `process.stdout.columns` (ChatApp) or its resize-tracked
+   *  width (the Home). Absent ⇒ the formatter's 80-col fallback. `| undefined` for the createElement passthrough. */
+  readonly columns?: number | undefined;
+  /** The in-flight `[c]` typed-reason capture buffer (Step 14) — when set (only while `approval` is pending), the
+   *  approval prompt shows the reason input instead of the `[y]/[a]/[n]` hint. `| undefined` ⇒ the normal prompt. */
+  readonly reasonDraft?: EditorState | undefined;
 }
 
 /**
@@ -246,6 +257,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         liveReasoning: state.liveReasoning,
         liveReasoningTruncated: state.liveReasoningTruncated,
         visible: reasoningVisible,
+        columns: props.columns,
       })
     : undefined;
   // The pre-token busy line reads "Thinking…" ONLY while the model is plausibly reasoning (reasoning streamed AND no
@@ -274,12 +286,25 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       elapsedMs,
       reasoningActive,
     });
-    return line.dim ? (
-      <Text {...dimProps(color)} wrap="truncate-end">
-        {line.text}
-      </Text>
-    ) : (
-      <Text>{line.text}</Text>
+    // A STATUS line (compaction / shell / pre-token) already carries its inline "· Esc to …" hint; a streaming
+    // CONTENT line has no room for it, so surface the abort affordance on a compact dim line beneath it — `Esc`
+    // aborts the whole turn (EA7), so the hint must persist for the ENTIRE turn, not just the pre-token wait.
+    const abortHint = streamingAbortHint(line);
+    return (
+      <Box flexDirection="column">
+        {line.dim ? (
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {line.text}
+          </Text>
+        ) : (
+          <Text>{line.text}</Text>
+        )}
+        {abortHint !== undefined && (
+          <Text {...dimProps(color)} wrap="truncate-end">
+            {abortHint}
+          </Text>
+        )}
+      </Box>
     );
   };
   return (
@@ -359,11 +384,24 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
                 : ''
             }?`}
           </Text>
-          <Text {...dimProps(color)}>
-            {approval.cacheable
-              ? '[y] yes   [a] always   [n] no   [esc] abort'
-              : '[y] yes   [n] no   [esc] abort'}
-          </Text>
+          {props.reasonDraft !== undefined ? (
+            // The `[c]` typed-reason capture (Step 14): a hint + the buffer echoed SANITIZED (bidi/control-stripped,
+            // one line) with a block cursor. Enter denies WITH this reason; Esc cancels back to the choices below.
+            <Box flexDirection="column">
+              <Text {...dimProps(color)} wrap="truncate-end">
+                reason to deny · Enter to send · Esc to cancel
+              </Text>
+              <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
+                {`> ${sanitizeInline(props.reasonDraft.text)}█`}
+              </Text>
+            </Box>
+          ) : (
+            <Text {...dimProps(color)}>
+              {approval.cacheable
+                ? '[y] yes   [a] always   [n] no   [c] reason   [esc] abort'
+                : '[y] yes   [n] no   [c] reason   [esc] abort'}
+            </Text>
+          )}
         </Box>
       )}
 
@@ -442,6 +480,15 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const applyEffortPicker = (next: EffortPickerState | undefined): void => {
     effortPickerRef.current = next;
     setEffortPicker(next);
+  };
+  // The `[c]` typed-reason capture (Step 14) — a small keyboard-owning buffer opened FROM a pending approval to
+  // record WHY the user denies. `undefined` ⇒ closed (the normal [y]/[a]/[n] prompt). React-local + ref-shadowed
+  // (survives a coalesced stdin chunk, like the other submodes); only ever open while an approval is pending.
+  const [reasonDraft, setReasonDraft] = useState<EditorState | undefined>(undefined);
+  const reasonDraftRef = useRef<EditorState | undefined>(undefined);
+  const applyReasonDraft = (next: EditorState | undefined): void => {
+    reasonDraftRef.current = next;
+    setReasonDraft(next);
   };
   // A monotonic submit generation: bumped every time the compose buffer is submitted (cleared). An async mention
   // read captures it at accept time and DROPS its inject if a submit has since happened — so a slow read that
@@ -822,6 +869,35 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.store.getSnapshot().state.status === 'running' ||
       shellBusyRef.current ||
       submitBusyRef.current;
+    // The `[c]` typed-reason capture (Step 14) owns the keyboard while open — checked FIRST. It ONLY opens from a
+    // pending approval, so if that approval settled out-of-band (an external abort while typing) the capture is
+    // stale: drop it. Else `Esc` CANCELS back to the [y]/[a]/[n] prompt (the approval is STILL pending — not an
+    // abort); plain `Enter` submits the reject with the sanitized+bounded reason; every other key edits the buffer
+    // (Ctrl-C / a non-edit chord is a harmless no-op, matching the approval floor's keyboard ownership). Read the
+    // REF so a coalesced same-chunk key sees a just-applied open/edit. The floor is unchanged — this only enriches
+    // a reject; a governed dispatch still cannot proceed without an explicit decision.
+    const openReason = reasonDraftRef.current;
+    if (openReason !== undefined) {
+      if (props.store.getSnapshot().approval === undefined) {
+        applyReasonDraft(undefined); // the approval vanished — discard the orphaned capture
+        return;
+      }
+      if (key.escape === true) {
+        applyReasonDraft(undefined); // cancel the reason; the approval stays pending ([y]/[a]/[n] again)
+        return;
+      }
+      if (key.return === true && key.shift !== true) {
+        applyReasonDraft(undefined);
+        const reason = sanitizeApprovalReason(openReason.text);
+        props.store.answerApproval(
+          reason === undefined ? { outcome: 'reject' } : { outcome: 'reject', reason },
+        );
+        return;
+      }
+      const edit = reduceEditorMotion(char, key);
+      if (edit !== undefined) applyReasonDraft(applyEditorAction(openReason, edit));
+      return;
+    }
     // The open `/models` reseat picker owns every key (ADR-0059) — checked FIRST (mutually exclusive with the other
     // submodes; it only opens at an idle prompt). Read the REF so a coalesced same-chunk key sees a just-applied
     // open/close/accept; on accept it triggers the reseat + ends the loop (see routeModelPickerKey).
@@ -1047,6 +1123,11 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       case 'reject':
         props.store.answerApproval({ outcome: 'reject' });
         return;
+      case 'reject-with-reason':
+        // `[c]` — open the typed-reason capture; the next keys fill it, then submit rejects WITH the reason
+        // (Step 14). The approval stays pending until then; the capture handler above owns the keyboard while open.
+        applyReasonDraft(emptyEditor());
+        return;
       case 'none':
         return;
     }
@@ -1067,6 +1148,14 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         approval={approval}
         attachments={attachments}
         busyCommand={busyCommand}
+        // Live terminal width for the reasoning-panel row bound (2.5.H) — read fresh each render (parity with
+        // `nowMs={Date.now()}`); the frame loop re-renders, so a resize is picked up on the next tick.
+        // `stdout.columns` is typed `number` but is `undefined` at runtime off a TTY — the formatter's 80-col
+        // fallback covers that (moot here anyway: ChatApp only mounts on a TTY via the driveInk gate). Optional-chain
+        // `process.stdout` too: it can be undefined in a headless/redirected-stream harness, and `.columns` on
+        // `undefined` would throw.
+        columns={process.stdout?.columns}
+        reasonDraft={reasonDraft}
         paletteOpen={
           palette !== undefined ||
           search !== undefined ||

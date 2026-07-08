@@ -1,3 +1,4 @@
+import { YAMLParseError } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 import { AgentParseError, parseAgent } from './agent-parser.js';
@@ -44,13 +45,63 @@ describe('parseAgent', () => {
     }
   });
 
-  it('rejects a YAML syntax fault as agent_syntax', () => {
+  it('rejects a YAML syntax fault as agent_syntax, attaching the fault line/column', () => {
     try {
-      parseAgent('id: x\n  : : :');
+      parseAgent('id: x\n  : : :', { source: 'agents/broken.agent.yaml' });
       expect.unreachable('should have thrown');
     } catch (err) {
       if (!(err instanceof AgentParseError)) throw err;
       expect(err.code).toBe('agent_syntax');
+      // The fault is on line 2 — line/column are attached (1-based) AND folded into the message for actionable
+      // diagnostics; the source label rides along. The YAML rule is the message body (secret-free, prettyErrors:false).
+      expect(err.line).toBe(2);
+      expect(typeof err.column).toBe('number');
+      expect(err.message).toContain(`line ${err.line}, column ${err.column}`);
+      expect(err.message).toContain('agents/broken.agent.yaml');
+      expect(err.cause).toBeInstanceOf(YAMLParseError); // the root cause is preserved (error-handling.md)
+    }
+  });
+
+  it('folds a bare (line L, column C) locator — no source label, no stray separator', () => {
+    // The pos-only branch of `locate()`: a syntax fault with NO source option ⇒ the message ends in a clean
+    // ` (line L, column C)` (the config-loader shape), with no leading `—` dash and no `(undefined` artifact.
+    try {
+      parseAgent('id: x\n  : : :'); // no `source`
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      if (!(err instanceof AgentParseError)) throw err;
+      expect(err.message).toMatch(/\(line 2, column \d+\)$/);
+      expect(err.message).not.toContain('—'); // no source ⇒ no em-dash separator
+      expect(err.message).not.toContain('undefined');
+    }
+  });
+
+  it('does not echo an authored value in a syntax-fault message (secret-free)', () => {
+    // A duplicate-key fault: the YAML rule ("Map keys must be unique") names no key/value, so no authored
+    // content (here a plausible secret-shaped value) can ride the message.
+    try {
+      parseAgent('id: sk-live-not-a-real-secret-000\nid: other\nmodel: m');
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      if (!(err instanceof AgentParseError)) throw err;
+      expect(err.code).toBe('agent_syntax');
+      expect(err.message).not.toContain('sk-live-not-a-real-secret-000');
+    }
+  });
+
+  it('rejects an anchor/alias with a clear message and no bogus position (maxAliasCount: 0)', () => {
+    // Aliases are disabled in the hardened profile → a ReferenceError (not a positioned YAMLParseError), so the
+    // message is the clear source-free label and no misleading line/column is attached.
+    try {
+      parseAgent('id: &x tiny\nmodel: *x\nprovider: anthropic\nsystem_prompt: hi');
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      if (!(err instanceof AgentParseError)) throw err;
+      expect(err.code).toBe('agent_syntax');
+      expect(err.message).toContain('anchors and aliases are not supported');
+      expect(err.line).toBeUndefined();
+      expect(err.column).toBeUndefined();
+      expect(err.cause).toBeInstanceOf(ReferenceError); // the root cause is preserved, not swallowed
     }
   });
 

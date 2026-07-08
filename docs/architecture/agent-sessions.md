@@ -89,8 +89,10 @@ the `SessionContext`, and the `SessionMessage` shape are canonical in
 ## Checkpoint and persist to `history.db`
 
 A session is **auto-persisted and resumable** — there is no separate "save" step and no
-`sessions.db`. Sessions and their transcripts live in the existing encrypted local
-`history.db` (SQLCipher) in two new tables:
+`sessions.db`. Sessions and their transcripts live in the existing local `history.db` in two new tables
+(its at-rest posture is surface-specific per [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md):
+the **CLI** store is unencrypted, guarded by `0700`/`0600` owner-only permissions (no credentials at rest —
+API keys live in the OS keychain); only the **desktop** surface uses a SQLCipher-encrypted store):
 
 - **`agent_sessions`** — one row per session: the bound `agentRef`/model, the
   `SessionContext`, and lifecycle timestamps.
@@ -124,7 +126,8 @@ The same tool-policy hardening applies as for workflows
 ([ADR-0029](../decisions/0029-tool-policy-hardening.md)): a session may only **narrow**
 the agent's tools (never escalate), a `secret`-typed value is **never** interpolated into
 a prompt or tool text, and `http_request`/MCP egress obeys the same SSRF policy. A user's
-own conversational content is the user's data — persisted in the encrypted `history.db`,
+own conversational content is the user's data — persisted in `history.db` (unencrypted at rest on the CLI
+per [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md); SQLCipher on desktop),
 not treated as a managed secret; that boundary is stated in
 [../standards/security-review.md](../standards/security-review.md).
 

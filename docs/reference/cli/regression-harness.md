@@ -1,11 +1,11 @@
 # Engine Regression Harness (2.K)
 
-> Last updated: 2026-06-22
+> Last updated: 2026-07-08
 
 - **Status**: Reference (Living) — the canonical home for the harness fixture + scenario format.
 - **Surface**: CLI (`relavium`), adopted as the engine's end-to-end regression gate.
-- **Scope**: Phase 2, build workstream **2.K**; completes milestone **M3** with 2.D + 2.F.
-- **Related**: [commands.md](commands.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../../decisions/0049-cli-machine-output-contract.md](../../decisions/0049-cli-machine-output-contract.md), [../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md), [../../standards/testing.md](../../standards/testing.md), [../../tutorials/cli/run-a-workflow-in-ci.md](../../tutorials/cli/run-a-workflow-in-ci.md)
+- **Scope**: Phase 2, build workstream **2.K** (completes milestone **M3** with 2.D + 2.F); **extended by Phase 2.5.I** with concurrency, session-chain, and query-shape coverage + a Windows lane.
+- **Related**: [commands.md](commands.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../desktop/database-schema.md](../desktop/database-schema.md), [../../decisions/0049-cli-machine-output-contract.md](../../decisions/0049-cli-machine-output-contract.md), [../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md), [../../decisions/0064-live-model-catalog.md](../../decisions/0064-live-model-catalog.md) (§5 concurrent-process write requirement), [../../decisions/0050-cli-history-db-at-rest-posture.md](../../decisions/0050-cli-history-db-at-rest-posture.md), [../../standards/testing.md](../../standards/testing.md), [../../tutorials/cli/run-a-workflow-in-ci.md](../../tutorials/cli/run-a-workflow-in-ci.md)
 
 ## What it is
 
@@ -27,13 +27,18 @@ CLI surface.
 | Artifact | Path |
 |----------|------|
 | Fixture workflows (committed `.relavium.yaml`) | `apps/cli/src/harness/fixtures/` |
-| The harness suite (in-process vitest e2e) | `apps/cli/src/harness/regression.e2e.test.ts` |
+| The `run`-fixture suite (in-process vitest e2e) | `apps/cli/src/harness/regression.e2e.test.ts` |
+| Concurrency e2e — a run + a chat share one `history.db`; a real two-process contention smoke (2.5.I S3) | `apps/cli/src/harness/concurrency.e2e.test.ts` (+ its child `fixtures/concurrent-writer.mjs`) |
+| Session-chain e2e — Home→chat→resume→export over a real file-backed db (2.5.I S4) | `apps/cli/src/harness/session-chain.e2e.test.ts` |
+| Query-shape perf budgets — `EXPLAIN QUERY PLAN` of the hot reads (2.5.I S5) | `apps/cli/src/harness/perf-budget.e2e.test.ts` |
 
-The harness is an **in-process** suite: it drives the CLI's `runCommand` boundary with a captured
-`CliIo` through the **default engine** (the standard node executor + expression sandbox over the real
+The **`run`-fixture** harness is an **in-process** suite: it drives the CLI's `runCommand` boundary with a
+captured `CliIo` through the **default engine** (the standard node executor + expression sandbox over the real
 `createCliHost`), exactly as a real `relavium run --json` invocation does (the same
 `createJsonRenderer` produces byte-identical NDJSON). It does **not** spawn the built binary — that
-would add a build dependency and process flakiness for no fidelity gain. It runs inside the standard
+would add a build dependency and process flakiness for no fidelity gain. (The additive §2.5.I concurrency
+suite below is the one exception — its cross-process case deliberately spawns child `node` processes to
+reach the real two-OS-process WAL path a single process cannot.) It runs inside the standard
 `pnpm turbo run test` task, so it is part of the required CI gate on every push/PR
 (`.github/workflows/ci.yml`).
 
@@ -90,6 +95,46 @@ run exit codes (`0` / `1` / `3`).
 2. Add a `Scenario` entry to `regression.e2e.test.ts` with its `input`, expected `exit`, the expected
    `type:nodeId` signature list, and `parallel: true` only if the fixture has a `parallel` node.
    **Capture** the real signatures by running the fixture once — never hand-guess them — then pin them.
+
+## §2.5.I extensions — concurrency, the session chain, and query-shape budgets
+
+Phase 2.5.I extended the harness beyond the `run`-fixture stream contract, to the parts a single
+`relavium run` cannot exercise: two `relavium` processes sharing one `history.db`, the chat→resume→export
+journey, and the read-path query shapes. These are additive `.e2e.test.ts` suites under
+`apps/cli/src/harness/`, run by the same `pnpm turbo run test` gate.
+
+- **Concurrency e2e** (`concurrency.e2e.test.ts`, 2.5.I S3) — proves a `run` and a `chat` share one
+  `history.db` safely ([ADR-0064](../../decisions/0064-live-model-catalog.md) §5). Two scenarios: an
+  **in-process two-connection** coexistence case (the real `runCommand` + a real `SessionStore` interleave
+  on one file — proves coexistence, not lock contention, since a single synchronous `better-sqlite3` process
+  can't overlap two transactions), and a **real two-process** case where the parent holds the WAL write lock
+  and releases it only after a **READY handshake** from both children, forcing genuine cross-process
+  busy-wait every run. The child (`fixtures/concurrent-writer.mjs`) imports the **built** `@relavium/db` by a
+  `file://` URL — so this case is skipped, visibly, when the dist is absent. The *precise* clause-guards for
+  the `BEGIN IMMEDIATE` + `withBusyRetry` write path are the deterministic white-box tests in `@relavium/db`
+  (`provider-store.test.ts` / `retry.test.ts`); this suite is a cross-process safety/coexistence smoke.
+- **Session-chain e2e** (`session-chain.e2e.test.ts`, 2.5.I S4) — the Home→chat→resume→export journey a
+  single `run` fixture cannot cover: a fresh cassette-driven session persists a turn, a `chat-resume` on a
+  **fresh connection** to the same file continues it (asserting the reconstructed transcript threads into the
+  resumed turn's provider request + the totals accumulate), and `exportSession` serializes it. The
+  interactive ink Home/chat TUI is out of scope (no render-test dependency); this drives the session-host +
+  persister + export seam the Home graduates into.
+- **Query-shape perf budgets** (`perf-budget.e2e.test.ts`, 2.5.I S5) — `EXPLAIN QUERY PLAN` asserts the hot
+  reads (`listSessions` / `listRuns` / `loadFull`'s messages) are **index-served with no filesort** (no
+  `USE TEMP B-TREE`, no full-table SCAN) — the shape the store docs claim, not a flaky wall-clock. The store
+  query sites back-reference this budget so a store `ORDER BY` edit trips the reviewer. (The sibling §2.5.I
+  perf item, the 80×24 narrow-terminal degrade, is asserted in `render/tui/home-projection.test.ts`.)
+
+### The Windows lane (2.5.I S6)
+
+An advisory `windows-concurrency` job in [`.github/workflows/ci.yml`](../../../.github/workflows/ci.yml) runs
+the full `@relavium/db` test suite (the concurrency/retry white-box tests among it) + the CLI
+concurrency/perf/session-chain harness on `windows-latest`
+(the WAL locking, the retry's `Atomics.wait` sleep, the two-process child spawn + `file://` import, and the
+native `better-sqlite3` addon are the parts most likely to diverge), plus a headless no-TTY smoke. It is a
+**separate, advisory** job — the required check stays the ubuntu `ci` job. POSIX `0600`/`0700` permission
+assertions are a documented Windows no-op ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md))
+and are not exercised there; `release.yml` separately smokes the built binary across ubuntu/macOS/Windows.
 
 ## Deferred (scope-split in [phase-2-cli.md §2.K](../../roadmap/phases/phase-2-cli.md))
 

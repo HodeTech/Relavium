@@ -211,6 +211,8 @@ export function createSessionStore(db: Db): SessionStore {
   };
 
   const listSessions = (opts?: { readonly limit?: number }): AgentSessionRecord[] => {
+    // This ORDER BY is index-served (idx_agent_sessions_updated, no filesort); its plan is pinned by
+    // apps/cli/src/harness/perf-budget.e2e.test.ts (2.5.I S5) — keep the WHERE/ORDER BY in sync with that budget.
     const query = db
       .select()
       .from(agentSessions)
@@ -228,6 +230,8 @@ export function createSessionStore(db: Db): SessionStore {
   };
 
   const loadMessages = (sessionId: string): SessionMessage[] =>
+    // Ordered range read by session_id — index-served (idx_session_messages_seq, no filesort); its plan is
+    // pinned by apps/cli/src/harness/perf-budget.e2e.test.ts (2.5.I S5).
     db
       .select()
       .from(sessionMessages)
@@ -255,9 +259,17 @@ export function createSessionStore(db: Db): SessionStore {
       db.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run();
     },
     loadMessages,
-    loadFull: (sessionId) => {
-      const session = loadSession(sessionId);
-      return session === undefined ? undefined : { session, messages: loadMessages(sessionId) };
-    },
+    loadFull: (sessionId) =>
+      // One read transaction so the session row and its transcript come from a SINGLE consistent snapshot.
+      // Without it the two SELECTs are independent reads: a concurrent writer — another `relavium` process, or
+      // a `run` sharing this `history.db` — committing an append + a session-total update BETWEEN them yields a
+      // torn read (a session whose totals do not match the returned messages). In WAL mode the deferred
+      // transaction pins one snapshot for both reads (2.5.I). A read-only body COMMITs a no-op. The write-side
+      // `BEGIN IMMEDIATE` + `SQLITE_BUSY` retry this pairs with lands in Step 4 (ADR-0064 amendment note —
+      // DB write-path concurrency).
+      db.transaction(() => {
+        const session = loadSession(sessionId);
+        return session === undefined ? undefined : { session, messages: loadMessages(sessionId) };
+      }),
   };
 }

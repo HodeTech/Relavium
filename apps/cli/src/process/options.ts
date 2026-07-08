@@ -19,7 +19,7 @@ export interface GlobalOptions {
 /** The raw global-flag values harvested from argv (before normalization). */
 export interface RawGlobalOptions {
   json?: boolean;
-  /** `false` for `--no-color`; otherwise absent (color on). */
+  /** `true` for `--color`, `false` for `--no-color`; absent ⇒ resolved from `NO_COLOR`/`FORCE_COLOR`/default. */
   color?: boolean;
   cwd?: string;
   config?: string;
@@ -45,6 +45,9 @@ const BOOLEAN_FLAGS: Readonly<Record<string, (raw: RawGlobalOptions) => void>> =
   },
   '--no-color': (raw) => {
     raw.color = false;
+  },
+  '--color': (raw) => {
+    raw.color = true;
   },
   '--verbose': (raw) => {
     raw.verbose = true;
@@ -163,11 +166,38 @@ function resolveVerbosity(raw: RawGlobalOptions): Verbosity {
   return 'normal';
 }
 
-export function resolveGlobalOptions(raw: RawGlobalOptions, defaultCwd: string): GlobalOptions {
+/**
+ * Resolve the effective color setting — ANSI STYLING only, orthogonal to the `--json`/CI/non-TTY output MODE
+ * (which suppresses ANSI separately in `detectOutputMode`, output-mode.ts). Precedence (2.5.J; the flag pair
+ * is [ADR-0047](../../../../docs/decisions/0047-cli-framework-commander-ink-clack.md)'s global-flag set):
+ *   1. an explicit `--color` / `--no-color` flag (a per-invocation override);
+ *   2. `NO_COLOR` — ANY non-empty value ⇒ OFF (the no-color.org accessibility contract);
+ *   3. `FORCE_COLOR` — `0`/`false` ⇒ OFF (the `supports-color` convention; the value is checked, unlike NO_COLOR);
+ *   4. default ON.
+ * Both env vars are opt-OUT signals here: a truthy `FORCE_COLOR` has NO independent effect (color already
+ * defaults on, and is consulted only on a TTY where it is on), so there is no `NO_COLOR`-vs-`FORCE_COLOR`
+ * conflict to resolve — the flag overrides both, and either env opt-out disables.
+ */
+function resolveColor(
+  raw: RawGlobalOptions,
+  env: Readonly<Record<string, string | undefined>>,
+): boolean {
+  if (raw.color !== undefined) return raw.color; // 1. the explicit flag wins
+  if ((env['NO_COLOR'] ?? '') !== '') return false; // 2. NO_COLOR opts out (any non-empty; accessibility floor)
+  const force = env['FORCE_COLOR']; // 3. FORCE_COLOR=0/false opts out (supports-color convention)
+  if (force === '0' || force === 'false') return false;
+  return true; // 4. default on (incl. a truthy FORCE_COLOR)
+}
+
+export function resolveGlobalOptions(
+  raw: RawGlobalOptions,
+  defaultCwd: string,
+  env: Readonly<Record<string, string | undefined>> = {},
+): GlobalOptions {
   assertNoGlobalOptionConflicts(raw);
   return {
     json: raw.json === true,
-    color: raw.color !== false,
+    color: resolveColor(raw, env),
     cwd: raw.cwd ?? defaultCwd,
     configPath: raw.config,
     verbosity: resolveVerbosity(raw),

@@ -132,7 +132,11 @@ surface); and the **inbound MCP client** — agents consume external MCP servers
 proven by a real-spawn end-to-end test; and the **YAML-authoring lifecycle** — `relavium create` (a wizard
 scaffolding an agent or a minimal single-agent workflow), `import`, and a share-safe `export` (re-serialized
 from the validated AST, no provider key by construction). With every in-phase workstream merged, the CLI is
-cut as **v0.1.1** (the public npm publish is the pending final maintainer step). For live status and the full roadmap, see
+cut as **v0.1.1** (the public npm publish is the pending final maintainer step). **Phase 2.5 (CLI
+Consolidation) is complete** (milestone **M2.5-4**, 2026-07-08) — the conversational Home, the slash-command
+system, reseat-less chat modes with per-tool approval, context compaction, a live model catalog with provider
+economics, reasoning render, and the closing consolidation lanes (regression harness + DB-concurrency
+hardening + documentation reconciliation) have all landed. For live status and the full roadmap, see
 [docs/roadmap/current.md](docs/roadmap/current.md) and the
 [roadmap](docs/roadmap/README.md).
 

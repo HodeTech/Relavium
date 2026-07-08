@@ -32,13 +32,27 @@ const BARE_CONTROLS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
 /* eslint-enable no-control-regex */
 
 /**
+ * Unicode bidirectional / directional FORMAT controls — the Trojan-Source floor (CVE-2021-42574; 2.5-close
+ * Step 14). These code points live ABOVE the C0/C1 range {@link BARE_CONTROLS} strips, so they survive it — yet
+ * they REORDER how a terminal visually renders a line, letting streamed model output or pasted input display in
+ * an order that differs from its logical bytes (a spoofed path/command in an approval prompt, a hidden argument,
+ * a reversed URL). The set is the standard Trojan-Source family: the embeddings/overrides U+202A–202E
+ * (LRE/RLE/PDF/LRO/RLO), the isolates U+2066–2069 (LRI/RLI/FSI/PDI), and the marks LRM (U+200E) / RLM (U+200F) /
+ * ALM (U+061C). ZWJ/ZWNJ (U+200D/U+200C) are deliberately NOT stripped — they are legitimate in emoji sequences
+ * and in Indic/Arabic/Persian shaping. Not in `no-control-regex`'s C0/C1 range, so no eslint-disable is needed.
+ * Written with `\u` escapes (never literal bidi bytes) so the source itself carries no Trojan-Source hazard.
+ */
+const BIDI_CONTROLS = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+
+/**
  * Strip terminal control sequences from text that will be written to a terminal — so model output (or pasted
  * input) cannot inject ANSI/OSC escapes (colors, a cursor jump, a window-title/clipboard/hyperlink write, a
- * `\r` line-overwrite). Applied at the **display** boundary only; the PERSISTED transcript keeps the raw text
- * (it is user/model data, not displayed back through a shell). Keeps printable text plus tabs and newlines.
+ * `\r` line-overwrite) NOR spoof the visual line order with Unicode bidi controls (the Trojan-Source floor).
+ * Applied at the **display** boundary only; the PERSISTED transcript keeps the raw text (it is user/model data,
+ * not displayed back through a shell). Keeps printable text plus tabs and newlines.
  */
 export function stripTerminalControls(text: string): string {
-  return text.replace(ESC_SEQUENCES, '').replace(BARE_CONTROLS, '');
+  return text.replace(ESC_SEQUENCES, '').replace(BARE_CONTROLS, '').replace(BIDI_CONTROLS, '');
 }
 
 /**
@@ -49,6 +63,33 @@ export function stripTerminalControls(text: string): string {
  */
 export function sanitizeInline(text: string): string {
   return stripTerminalControls(text).replace(/[\t\n]+/g, ' ');
+}
+
+/** The max length of a typed denial reason (`[c]`, Step 14) — bounds what rides the `ToolDeniedByUserError` into
+ *  the turn outcome / `--json` / logs, so a pasted wall of text can't blow up one error line. */
+export const MAX_APPROVAL_REASON_CHARS = 300;
+
+/**
+ * Sanitize + bound a USER-typed denial reason for the approval seam (`[c]`, Step 14): strip terminal/bidi controls
+ * and collapse to a single line ({@link sanitizeInline}), trim, and cap the length. Returns `undefined` for an
+ * empty/whitespace reason so the answer degrades to a plain reject (no dangling `": "` in the denial). The value
+ * flows into `ToolApprovalDecision.reject.reason`; it is the user's own text (not a secret they'd hide from
+ * themselves), but bounding + control-stripping keep it safe for the error line, logs, and `--json`.
+ */
+export function sanitizeApprovalReason(text: string): string | undefined {
+  const clean = sanitizeInline(text).trim();
+  if (clean.length === 0) return undefined;
+  if (clean.length <= MAX_APPROVAL_REASON_CHARS) return clean;
+  // Cap by code UNIT, but back off one unit if the boundary splits a surrogate pair (a high surrogate with its
+  // low half beyond the cap) so the truncation never leaves a lone surrogate (a `�` in the error line / --json).
+  // charCodeAt (NOT codePointAt) is REQUIRED here: we must see the raw UTF-16 unit to detect a LONE high surrogate;
+  // codePointAt would combine the pair into one code point, defeating the split-detection.
+  const lastUnit = clean.charCodeAt(MAX_APPROVAL_REASON_CHARS - 1); // NOSONAR — charCodeAt is intentional (lone-surrogate detection)
+  const end =
+    lastUnit >= 0xd800 && lastUnit <= 0xdbff
+      ? MAX_APPROVAL_REASON_CHARS - 1
+      : MAX_APPROVAL_REASON_CHARS;
+  return clean.slice(0, end);
 }
 
 /**
@@ -267,6 +308,19 @@ export function formatBusyLine(input: {
 }
 
 /**
+ * The compact mid-stream abort hint (2.5.H / EA7). The pre-first-token STATUS line carries "· Esc to stop"
+ * inline, and the compaction/shell status lines carry their own "· Esc to cancel" — but once answer CONTENT
+ * streams the busy line becomes full-width, wrapping text with no room for the affordance, even though `Esc`
+ * still aborts the whole turn. Returns the standalone hint the caller renders as a dim line BENEATH the streaming
+ * content, or `undefined` for a STATUS line (`busy.dim`) that already shows its inline hint — so the affordance
+ * is visible for the ENTIRE turn without ever double-printing. Keyed off the same `dim` flag the caller maps, so
+ * there is one source of truth for status-vs-content.
+ */
+export function streamingAbortHint(busy: BusyLine): string | undefined {
+  return busy.dim ? undefined : 'Esc to stop';
+}
+
+/**
  * Whether the pre-token busy line should read "Thinking…" (vs "Working…") — the turn streamed reasoning AND no tool
  * call is currently executing (2.5.H). During a tool round the model idle-waits on the tool, so the label falls
  * back to "Working…" rather than claiming the model is thinking while a tool runs. Extracted + exported so this
@@ -291,22 +345,94 @@ export interface ReasoningPanel {
 }
 
 /**
+ * The max terminal ROWS the EXPANDED reasoning body may occupy (2.5.H). The store already bounds the reasoning
+ * buffer to {@link MAX_LIVE_TOKEN_CHARS} (4000) CHARACTERS, but on a short/narrow terminal that wraps to many
+ * dozens of rows in the live (non-`<Static>`) region — a churning, flickering panel that buries the answer below
+ * it. Tailing the DISPLAYED body to the last N rendered rows (see {@link formatReasoningPanel}) keeps the panel
+ * compact regardless of terminal size, while the FULL reasoning is still persisted from the raw events.
+ */
+export const MAX_REASONING_PANEL_LINES = 12;
+
+/** The assumed width when the caller passes no live column count (a headless/test render, or a non-TTY stdout with
+ *  no `.columns`). 80 is the conventional terminal width + the 80×24 degrade floor the harness pins. */
+const REASONING_PANEL_FALLBACK_COLUMNS = 80;
+
+/**
+ * Tail `text` to its last {@link MAX_REASONING_PANEL_LINES} RENDERED rows at the given width — a long logical line
+ * counts as `⌈len / columns⌉` wrapped rows (never < 1), so both many short lines AND one very long line are bounded.
+ * When the single most-recent logical line alone exceeds the row budget its HEAD is sliced so the tail still fits.
+ * Returns the kept body + whether anything was dropped (`tailed`), so the caller can show the head-elision marker.
+ *
+ * The row count is APPROXIMATE, not exact: `.length` (UTF-16 units) stands in for ink's display-width wrap, so a
+ * wide-glyph (CJK/emoji) line under-counts and a combining-mark line over-counts — the panel can render up to ~2×
+ * on wide text; the prepended `…` marker in {@link formatReasoningPanel} can add one more row. This matches the
+ * store's existing `.length`-based 4000-char cap and avoids a `string-width` runtime dependency; the bound is a
+ * cosmetic anti-flicker guard, so an off-by-a-row on unusual scripts is acceptable.
+ */
+function tailToRenderedRows(
+  text: string,
+  columns: number | undefined,
+): { body: string; tailed: boolean } {
+  // `>= 1` (not `> 0`): a fractional 0<columns<1 would floor to 0 and make `rowsOf` divide by zero. In practice
+  // the caller always passes an integer ≥ 1 (`process.stdout.columns` / the Home's `size.cols`), so this is a floor.
+  const width =
+    columns !== undefined && Math.floor(columns) >= 1
+      ? Math.floor(columns)
+      : REASONING_PANEL_FALLBACK_COLUMNS;
+  const rowsOf = (line: string): number => Math.max(1, Math.ceil(line.length / width));
+  // Drop ONE trailing newline before splitting: a live buffer cut off right after a line break (very common
+  // between stream chunks) ends in '\n', which `split` turns into a phantom empty last segment. That segment
+  // would cost a full budget row (`rowsOf('')` clamps to 1) and could prematurely drop a REAL line + flash the
+  // elision marker for content that hasn't arrived yet. Stripping exactly one '\n' treats the not-yet-filled
+  // next line as zero rows while KEEPING any intentional trailing blank line (a "\n\n" loses only the last).
+  const lines = (text.endsWith('\n') ? text.slice(0, -1) : text).split('\n');
+  const kept: string[] = [];
+  let rows = 0;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i] ?? '';
+    if (rows + rowsOf(line) > MAX_REASONING_PANEL_LINES) {
+      // The tail is full. If we have kept nothing yet, this single (oldest-included) line is itself taller than the
+      // whole budget — keep only its last budget×width chars so the most recent reasoning still shows. Otherwise
+      // stop: the already-kept newer lines fill the budget and older ones are dropped.
+      if (kept.length === 0) {
+        kept.unshift(line.slice(line.length - MAX_REASONING_PANEL_LINES * width));
+      }
+      return { body: kept.join('\n'), tailed: true };
+    }
+    kept.unshift(line);
+    rows += rowsOf(line);
+  }
+  return { body: kept.join('\n'), tailed: false };
+}
+
+/**
  * Project the in-flight reasoning into the collapsible panel (2.5.H). Collapsed (default): a dim header with the
  * Ctrl+T toggle hint, so the user knows thinking is available without it flooding the view. Expanded: the header +
  * the reasoning BODY — terminal-sanitized at this display boundary (newline-preserving, it is multi-line prose),
- * with a leading `…` elision marker when the bounded buffer's head scrolled out (parity with the answer stream).
+ * bounded to ~the last {@link MAX_REASONING_PANEL_LINES} rendered rows (an approximate width count — see
+ * {@link tailToRenderedRows}) so a full 4000-char buffer cannot wrap into a flickering, screen-filling panel on a
+ * short terminal, with a leading `…` elision marker when the buffer's head scrolled out — via the store's char cap
+ * (`liveReasoningTruncated`) OR this row tail (parity with the answer stream).
  */
 export function formatReasoningPanel(input: {
   readonly liveReasoning: string;
   readonly liveReasoningTruncated: boolean;
   readonly visible: boolean;
+  /** Live terminal width in columns, for bounding the expanded body to the last N RENDERED rows. Render-only +
+   *  cosmetic (parity with `nowMs`): the owner passes `process.stdout.columns` / its resize-tracked width. Absent
+   *  or < 1 ⇒ the {@link REASONING_PANEL_FALLBACK_COLUMNS} default, so the row bound still applies headless/in tests. */
+  readonly columns?: number | undefined;
 }): ReasoningPanel {
   const header = `✻ Reasoning · Ctrl+T ${input.visible ? 'hide' : 'show'}`;
   if (!input.visible) {
     return { header };
   }
-  const body = `${input.liveReasoningTruncated ? '…' : ''}${stripTerminalControls(input.liveReasoning)}`;
-  return { header, body };
+  const { body, tailed } = tailToRenderedRows(
+    stripTerminalControls(input.liveReasoning),
+    input.columns,
+  );
+  const elided = input.liveReasoningTruncated || tailed;
+  return { header, body: `${elided ? '…' : ''}${body}` };
 }
 
 /**

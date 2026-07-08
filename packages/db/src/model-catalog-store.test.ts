@@ -1,5 +1,5 @@
 import { eq } from 'drizzle-orm';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
 import {
@@ -39,7 +39,28 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     client.sqlite.close();
+  });
+
+  it('replaceProviderModels opens an IMMEDIATE write transaction (2.5.I — the ADR-0064 §5 concurrent-refresh path)', () => {
+    const txnSpy = vi.spyOn(client.db, 'transaction');
+    store.replaceProviderModels(
+      providerId,
+      [{ modelId: 'bare-model', displayName: 'Bare' }],
+      TS_MS,
+    );
+    // The bulk live-upsert reads existing rows then writes — BEGIN IMMEDIATE is what lets two concurrent
+    // `relavium` refreshes race the DB write safely (ADR-0064 §5); a DEFERRED begin drops this config arg.
+    expect(txnSpy).toHaveBeenCalledWith(expect.any(Function), { behavior: 'immediate' });
+  });
+
+  it('upsert opens an IMMEDIATE write transaction (2.5.I — the models-pricing read-then-write path)', () => {
+    const txnSpy = vi.spyOn(client.db, 'transaction');
+    store.upsert({ providerId, modelId: 'gpt-4o', displayName: 'GPT-4o' });
+    // The `models pricing` read-then-write must serialize against a concurrent `models refresh` on the same
+    // (provider, model); a DEFERRED begin drops this config arg (and reopens the lost-update / UNIQUE race).
+    expect(txnSpy).toHaveBeenCalledWith(expect.any(Function), { behavior: 'immediate' });
   });
 
   it('upserts a generative-surface row and reads it back (record shape + parsed capabilities)', () => {

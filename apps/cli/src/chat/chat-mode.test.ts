@@ -9,6 +9,7 @@ import {
   governedToolIds,
   isGovernedTool,
   nextMode,
+  nonInteractiveApprovalPrompt,
   parseMode,
   type ApprovalAnswer,
   type ApprovalPrompt,
@@ -88,6 +89,33 @@ describe('isGovernedTool — mirrors the registry governedAction (advertise-filt
     for (const id of ['read_media', 'invoke_agent']) {
       expect(isGovernedTool(builtin(id))).toBe(false);
     }
+  });
+});
+
+describe('nonInteractiveApprovalPrompt — the fail-closed no-TTY policy (Step 14)', () => {
+  it('DENIES every request (any tool / mode) — never a hang, never an auto-approve', async () => {
+    const prompt = nonInteractiveApprovalPrompt('in a one-shot agent run');
+    // A governed write and a process action both reject — the outcome does not depend on the request.
+    await expect(prompt(req(), true)).resolves.toEqual({
+      outcome: 'reject',
+      reason: 'interactive approval is unavailable in a one-shot agent run',
+    });
+    const proc = await prompt(
+      req({ toolId: 'run_command', action: 'process', preview: {} }),
+      false,
+    );
+    expect(proc.outcome).toBe('reject'); // still a reject — no tool is ever auto-approved off a TTY
+  });
+
+  it('names the surface in the (secret-free) reason so the two call sites stay distinguishable', async () => {
+    const driver = await nonInteractiveApprovalPrompt('on this non-interactive driver')(
+      req(),
+      true,
+    );
+    expect(driver).toEqual({
+      outcome: 'reject',
+      reason: 'interactive approval is unavailable on this non-interactive driver',
+    });
   });
 });
 

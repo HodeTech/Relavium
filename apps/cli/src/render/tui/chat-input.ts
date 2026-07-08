@@ -76,16 +76,28 @@ export type ChatKeyAction =
   /** An approval-prompt decision (accept-edits / auto's protected-path fallback): `[y]` once / `[a]` always. */
   | { readonly kind: 'approve'; readonly scope: 'once' | 'always' }
   /** An approval-prompt rejection (`[n]`). */
-  | { readonly kind: 'reject' };
+  | { readonly kind: 'reject' }
+  /** `[c]` at the approval prompt — START capturing a typed denial reason (Step 14). The surface opens a small
+   *  reason-input buffer; on submit it rejects with `{ outcome: 'reject', reason }`, so the model/turn outcome
+   *  carries WHY (not a bare "denied by the user"). A pure UI transition — it does not itself answer the prompt. */
+  | { readonly kind: 'reject-with-reason' };
 
 /**
  * The approval-prompt keystroke intercept (accept-edits / auto's protected-path fallback), extracted so
  * {@link reduceChatKey} stays flat: `[y]`/`1` approve once, `[a]`/`2` approve always, `[n]`/`r`/`3` reject,
- * `Esc` aborts the whole turn (and this pending approval); every other key is ignored. It bypasses the
- * running-swallow so a pending approval can never deadlock.
+ * `Esc` aborts the whole turn (and this pending approval); the VIEW-ONLY reasoning toggle (Ctrl+T) is the one
+ * non-answer chord let through (Step 14); every other key is ignored. It bypasses the running-swallow so a
+ * pending approval can never deadlock.
  */
 function reduceApprovalKey(char: string, key: ChatKey): ChatKeyAction {
   if (key.escape === true) return { kind: 'abort' }; // Esc aborts regardless of modifiers
+  // The collapsible "thinking" panel toggle (Ctrl+T) is whitelisted through the fail-closed swallow (Step 14):
+  // it is a PURE store-view flip (`toggleReasoning` only flips `reasoningVisible` + repaints — zero session /
+  // approval / decision effect), so a user can expand the model's reasoning to INFORM the pending decision
+  // without it counting as an answer. It is the ONLY non-answer chord allowed — a mode cycle / edit / submit
+  // stays swallowed, so the approval input set is exactly {y/1, a/2, n/r/3, esc} plus this view-only toggle.
+  // Matched BEFORE the `bare` gate (Ctrl+T is a modified chord) but AFTER `escape` (abort wins).
+  if (key.ctrl === true && key.meta !== true && char === 't') return { kind: 'toggle-reasoning' };
   // Only an UNMODIFIED key answers the prompt. Otherwise a now-bound editor chord (Ctrl+A line-start, Ctrl+W kill,
   // Alt+B word-left) OR a meta+digit (Alt+1 — reachable via ink's ESC-prefixed parsing, `\x1b1` → char '1',
   // meta:true) would, during a pending approval, silently pick the most-permissive, session-persistent approve /
@@ -95,6 +107,10 @@ function reduceApprovalKey(char: string, key: ChatKey): ChatKeyAction {
   if (char === 'y' || char === '1') return { kind: 'approve', scope: 'once' };
   if (char === 'a' || char === '2') return { kind: 'approve', scope: 'always' };
   if (char === 'n' || char === 'r' || char === '3') return { kind: 'reject' };
+  // `[c]` opens the typed-reason capture (Step 14) — a reject that records WHY the user denied, instead of a bare
+  // "denied by the user". A separate keyboard-owning sub-mode captures the text (the surface owns its buffer), so
+  // it does not collide with the `[n]`/`[r]`/`3` bare reject here.
+  if (char === 'c') return { kind: 'reject-with-reason' };
   return { kind: 'none' };
 }
 

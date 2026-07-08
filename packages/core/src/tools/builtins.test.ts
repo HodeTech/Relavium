@@ -373,6 +373,9 @@ describe('read_media (1.AF/D12 — scope-set authz + Range gate)', () => {
     expect(err).toBeInstanceOf(ToolPolicyError);
     if (err instanceof ToolPolicyError) {
       expect(err.reason).toBe('media_scope_denied'); // narrow, never an unsafe `as` cast
+      // A media SCOPE denial is refused before any byte read, so it is RECOVERABLE (Step 14) — pinned at the
+      // source (the constructor ternary), not only via the agent-turn integration test.
+      expect(err.recoverable).toBe(true);
     }
   });
 

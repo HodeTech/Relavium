@@ -108,14 +108,26 @@ under a new `sessionId` (TTY-interactive only, rejected under `--json`/plain per
 compaction-moment UX polishes (a `session:compacting` "Summarizing…" event amending ADR-0036, and the footer
 context-fullness indicator via a pure `@relavium/llm` `contextWindowForModel` helper), completing the ADR-0062
 compaction story alongside the earlier-landed model-summarised `/compact` + deterministic `/trim` + automatic
-compaction. **2.5.G is now underway** — its scope expanded to **Option A** (a **live** model catalog + a complete
-model-pricing story that governs cost) behind three new ADRs ([ADR-0063](docs/decisions/0063-cli-config-write-contract.md)
+compaction. **2.5.G** (onboarding wizard + Home `/models` + the live model catalog) is ✅ **Done (PR #66,
+2026-07-07)** — its scope expanded to **Option A** (a **live** model catalog + a complete model-pricing story that
+governs cost) behind three ADRs ([ADR-0063](docs/decisions/0063-cli-config-write-contract.md)
 config-write, [ADR-0064](docs/decisions/0064-live-model-catalog.md) live catalog,
-[ADR-0065](docs/decisions/0065-provider-economics-and-extensibility.md) provider economics), across 12 reviewed
-steps. The additive lane **2.5.H** (reasoning render + live-turn feedback + an actionable error taxonomy — behind
+[ADR-0065](docs/decisions/0065-provider-economics-and-extensibility.md) provider economics); all 12 steps landed,
+plus the post-2.5.G model-UX follow-up ([ADR-0059](docs/decisions/0059-cli-mid-session-model-reseat.md) mid-session reseat +
+[ADR-0066](docs/decisions/0066-normalized-reasoning-effort-control.md) reasoning-effort). With it **milestone
+M2.5-2** is reached. The additive lane **2.5.H** (reasoning render + live-turn feedback + an actionable error taxonomy — behind
 **EA6**, a dual-envelope `agent:reasoning` stream event that *amends* [ADR-0036](docs/decisions/0036-run-loop-substrate-event-bus-and-execution-host.md);
-no new top-level ADR) is ✅ **Done (2026-07-07)**, reaching milestone **M2.5-3** with 2.5.E; the remaining additive
-lanes 2.5.I / J run in parallel.
+no new top-level ADR) is ✅ **Done (PR #67, 2026-07-07)**, reaching milestone **M2.5-3** with 2.5.E; and the consolidation
+lanes **2.5.I** (regression harness + DB concurrency hardening: `loadFull` read-txn snapshot, `BEGIN IMMEDIATE` writes with a
+deterministic `SQLITE_BUSY` retry, the concurrent chat+run + cassette-chain + perf-budget e2es, an advisory Windows CI lane) and
+**2.5.J** (docs-debt: the accurate unencrypted-history posture per ADR-0050 + `NO_COLOR`/`FORCE_COLOR`/`--color` resolution) are
+✅ **Done (2.5-close-out, 2026-07-08)** — **reaching milestone M2.5-4, so Phase 2.5 is complete** — landed with the doable-now
+Batch A–E backlog (test-hardening; 2.5.H TUI polish; `AgentParseError` line/col; the ADR-0057 approval/security batch — `[c]`
+reject-with-reason + non-TTY policy + SCOPE-denial recovery + Ctrl+T-in-approval + the Trojan-Source bidi floor, behind an
+append-only ADR-0057 amendment; the profile-aware advertise-filter + the in-house `.gitignore` matcher), each implement → Opus →
+Sonnet with a security-review pass on the approval batch. Deferred to a focused follow-up (both refactor the security-sensitive
+`gate.ts` resume path): the `relavium budget resume` command + secret re-provide on gate resume; the session `{{ctx.*}}`
+interpolation stays with the Proposed [ADR-0060](docs/decisions/0060-session-ctx-prompt-interpolation.md) (Phase-2.6).
 For live status, per-PR history, milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the public overview.
 

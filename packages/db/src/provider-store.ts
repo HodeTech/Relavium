@@ -2,6 +2,7 @@ import { PROVIDER_KINDS, type ProviderKind } from '@relavium/shared';
 import { and, asc, eq, isNull } from 'drizzle-orm';
 
 import type { Db } from './client.js';
+import { withBusyRetry } from './retry.js';
 import { llmProviders, type LlmProviderRow, type NewLlmProviderRow } from './schema.js';
 import { epochMsToIso } from './time.js';
 
@@ -137,48 +138,59 @@ export function createProviderStore(db: Db, deps: ProviderStoreDeps): ProviderSt
 
     upsert: (input) => {
       const t = deps.now();
-      const existing = activeRow(input.name);
-      if (existing === undefined) {
-        const row: NewLlmProviderRow = {
-          id: deps.uuid(),
-          name: input.name,
-          displayName: input.displayName,
-          baseUrl: input.baseUrl,
-          defaultHeaders: JSON.stringify(input.defaultHeaders ?? {}),
-          ...(input.kind === undefined ? {} : { kind: input.kind }),
-          ...(input.pricingReferenceUrl === undefined
-            ? {}
-            : { pricingReferenceUrl: input.pricingReferenceUrl }),
-          createdAt: t,
-          updatedAt: t,
-        };
-        db.insert(llmProviders).values(row).run();
-      } else {
-        db.update(llmProviders)
-          .set({
-            displayName: input.displayName,
-            baseUrl: input.baseUrl,
-            // `existing.defaultHeaders` is already the stored JSON STRING — keep it verbatim when the caller
-            // supplies none; stringify only a fresh value. (Re-stringifying the string would double-encode it.)
-            defaultHeaders:
-              input.defaultHeaders === undefined
-                ? existing.defaultHeaders
-                : JSON.stringify(input.defaultHeaders),
-            // Preserve an existing kind / pricing URL when the caller omits it (like defaultHeaders).
-            ...(input.kind === undefined ? {} : { kind: input.kind }),
-            ...(input.pricingReferenceUrl === undefined
-              ? {}
-              : { pricingReferenceUrl: input.pricingReferenceUrl }),
-            updatedAt: t,
-          })
-          .where(eq(llmProviders.id, existing.id))
-          .run();
-      }
-      const row = activeRow(input.name);
-      if (row === undefined) {
-        throw new Error(`provider '${input.name}' not found after upsert`); // unreachable — just inserted/updated
-      }
-      return fromRow(row);
+      // Read-then-write upsert under ONE IMMEDIATE transaction: two concurrent `provider add` (or a refresh)
+      // writers must not both read `existing === undefined` and double-insert, nor race a DEFERRED read→write
+      // lock upgrade. `BEGIN IMMEDIATE` serializes them; `withBusyRetry` waits out residual cross-process
+      // contention, fail-loud (ADR-0064 amendment note — DB write-path concurrency).
+      return withBusyRetry(() =>
+        db.transaction(
+          () => {
+            const existing = activeRow(input.name);
+            if (existing === undefined) {
+              const row: NewLlmProviderRow = {
+                id: deps.uuid(),
+                name: input.name,
+                displayName: input.displayName,
+                baseUrl: input.baseUrl,
+                defaultHeaders: JSON.stringify(input.defaultHeaders ?? {}),
+                ...(input.kind === undefined ? {} : { kind: input.kind }),
+                ...(input.pricingReferenceUrl === undefined
+                  ? {}
+                  : { pricingReferenceUrl: input.pricingReferenceUrl }),
+                createdAt: t,
+                updatedAt: t,
+              };
+              db.insert(llmProviders).values(row).run();
+            } else {
+              db.update(llmProviders)
+                .set({
+                  displayName: input.displayName,
+                  baseUrl: input.baseUrl,
+                  // `existing.defaultHeaders` is already the stored JSON STRING — keep it verbatim when the caller
+                  // supplies none; stringify only a fresh value. (Re-stringifying the string would double-encode it.)
+                  defaultHeaders:
+                    input.defaultHeaders === undefined
+                      ? existing.defaultHeaders
+                      : JSON.stringify(input.defaultHeaders),
+                  // Preserve an existing kind / pricing URL when the caller omits it (like defaultHeaders).
+                  ...(input.kind === undefined ? {} : { kind: input.kind }),
+                  ...(input.pricingReferenceUrl === undefined
+                    ? {}
+                    : { pricingReferenceUrl: input.pricingReferenceUrl }),
+                  updatedAt: t,
+                })
+                .where(eq(llmProviders.id, existing.id))
+                .run();
+            }
+            const row = activeRow(input.name);
+            if (row === undefined) {
+              throw new Error(`provider '${input.name}' not found after upsert`); // unreachable — just inserted/updated
+            }
+            return fromRow(row);
+          },
+          { behavior: 'immediate' },
+        ),
+      );
     },
 
     setKeychainRef: (name, ref) => {

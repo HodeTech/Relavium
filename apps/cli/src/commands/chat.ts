@@ -38,6 +38,7 @@ import {
   CHAT_MODES,
   MODE_DESCRIPTION,
   MODE_LABEL,
+  nonInteractiveApprovalPrompt,
   parseMode,
   type ApprovalPrompt,
   type ChatMode,
@@ -694,11 +695,7 @@ export function createChatModeControl(
   const interactive = opts?.interactive ?? true;
   const prompt: ApprovalPrompt = interactive
     ? store.requestApproval
-    : () =>
-        Promise.resolve({
-          outcome: 'reject',
-          reason: 'interactive approval is unavailable on this non-interactive driver',
-        });
+    : nonInteractiveApprovalPrompt('on this non-interactive driver');
   const modeEnv = makeChatModeEnv({
     session: built.session,
     tools: built.tools,

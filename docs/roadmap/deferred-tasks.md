@@ -487,10 +487,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   session cannot yet **narrow** them per-session (it may only ever narrow, never widen). Add a session-level
   narrow when a surface needs to restrict a session's tools below the agent's grant.
   *(low · packages/core/src/engine/agent-session.ts; ADR-0029)*
-- [ ] **`[chat].max_turns` surface wiring.** The hard turn cap is an **engine-API** knob in 1.V
-  (`SessionDeps.maxTurns`, finite default 50); mapping the `[chat]` config default onto it is a surface task
-  (the CLI/desktop read `[chat]` and pass `maxTurns`). It is deliberately **not** a Phase-1 `[chat]` field.
-  *(low · config-spec.md + surfaces; Phase 2+)*
+- [x] **`[chat].max_turns` surface wiring — RESOLVED in 2.5.G S11 (PR #66).** The hard turn cap is an
+  **engine-API** knob in 1.V (`SessionDeps.maxTurns`, finite default 50); the CLI now maps the `[chat].max_turns`
+  config default onto `SessionDeps.maxTurns` (`config/resolve.ts` `max_turns`→`maxTurns`, threaded through
+  `session-host.ts`, enforced by a `session-host.test.ts` pin). *(config-spec.md + surfaces)*
 - [ ] **Session `output_schema`.** 1.V ignores `agent.output_schema` (a chat session is free-form text);
   structured output stays a workflow concern. If a session ever needs it, lower it to `responseFormat` +
   validate node-side (as the AgentRunner does for an `agent` node). *(low · packages/core/src/engine/agent-session.ts)*
@@ -499,8 +499,17 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `#context.variables` the way the workflow `AgentRunner` interpolates an `agent` node's prompt. So
   `relavium agent run --input k=v` (2.Q) carries the variables in `SessionContext` (visible on `session:started`)
   but a `{{ctx.k}}` placeholder in the agent's prompt is sent to the model **literally**. Wire a `resolveTemplate`
-  pass over the session prompt against a `RunScope` built from `context.variables` (deliberately deferred —
-  no surface needed it before 2.Q). *(medium · packages/core/src/engine/agent-session.ts)*
+  pass over the session prompt against a `RunScope` built from `context.variables`. **Governed by
+  [ADR-0060](../decisions/0060-session-ctx-prompt-interpolation.md) (Proposed, Phase-2.6 / workstream 2.6.D)** —
+  it is NOT a plain `resolveTemplate` reuse: the safe implementation requires a **new per-variable
+  provenance/taint marker on `SessionContext`** (today a flat record) so `--input`-derived (untrusted) values
+  can never reach the `system` position, plus the ADR's **mandatory security review of the session-prompt taint
+  path before Accept**. **2.5-close decision (2026-07-08):** the phase-2.5 close-plan (Step 13, Batch C) proposed
+  landing this here; the maintainer chose to **DEFER to Phase 2.6 / 2.6.D** — where ADR-0060 is finalized
+  (Proposed→Accepted) with its taint-provenance marker + security review — rather than pull an unaccepted,
+  security-critical Phase-2.6 ADR forward into the consolidation close-out. Only the sibling
+  `AgentParseError` line/col half of Step 13 landed. *(medium · packages/core/src/engine/agent-session.ts;
+  ADR-0060)*
 
 ## Phase 2.5.D (`@`-mention / input ergonomics) follow-ups
 
@@ -509,20 +518,22 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > untrusted injection) shipped. These bounded pieces were deliberately deferred (each is additive; the
 > confidentiality floor + jail + injection framing hold without them):
 
-- [ ] **Advisory `.gitignore` / `.relaviumignore` completion trim.** The picker's advisory noise filter is a fixed
-  `NOISE_DIRS` set (`node_modules`, `dist`, `.git`, …) as the v1 trim; ADR-0061's promised in-house, ReDoS-safe
-  ignore-file matcher (fold a workspace `.gitignore` / `.relaviumignore` into the candidate filter, no new `ignore`
-  dependency) is deferred. It is a UX nicety, NOT a security control — the confidentiality floor + listing-gate are
-  enforced separately by the fs capability regardless. *(low · apps/cli/src/render/tui/mention.ts `NOISE_DIRS`; ADR-0061)*
+- [x] **Advisory `.gitignore` / `.relaviumignore` completion trim — DONE (2.5-close Step 15, Batch E).** A
+  dependency-free, ReDoS-safe in-house matcher ([gitignore.ts](../../apps/cli/src/render/tui/gitignore.ts)) folds
+  the workspace-root `.gitignore` + `.relaviumignore` into the `@`-mention candidate filter (comments/blanks, `!`
+  negation, dir-only `/`, anchoring, `*`/`**`/`?` globs; a LINEAR two-pointer glob matcher — no regex, so no
+  backtracking/ReDoS on a crafted pattern), complementing the fixed `NOISE_DIRS` set. A
+  UX/privacy nicety, NOT a security control — the confidentiality floor + listing-gate remain the authoritative
+  fs-capability enforcement. Documented subset limits: nested per-dir ignore files + `[a-z]` char classes deferred
+  (they only UNDER-hide, never a security gap). *(apps/cli/src/render/tui/gitignore.ts + mention.ts; ADR-0061)*
 - [ ] **`@`-glob / directory expansion.** Single-file injection ships; `@src/**/*.ts` glob / whole-directory
   expansion is deferred (ADR-0061). *(low · apps/cli/src/render/tui/mention.ts)*
 - [ ] **`@`-mention of a binary / media file.** The reader fail-closes on a binary file (parity with `read_file`);
   a durable media-handle injection path (ADR-0031) is a follow-up. *(low · apps/cli/src/render/tui/mention.ts)*
-- [ ] **Strip Unicode bidi/format controls at the shared display boundary.** `formatMentionInjection` strips the
-  bidi range (U+202A–U+202E, U+2066–U+2069, LRM/RLM/ALM) from the injected PATH, but the shared
-  `stripTerminalControls` / `sanitizeInline` (chat-projection.ts) that render every transcript / candidate / prompt
-  string still pass bidi controls through — a general spoofing gap beyond `@`. Extending the shared sanitizer would
-  harden all surfaces at once. *(low · apps/cli/src/render/tui/chat-projection.ts)*
+- [x] **Strip Unicode bidi/format controls at the shared display boundary — DONE (2.5-close Step 14, D-5).** The
+  shared `stripTerminalControls` (chat-projection.ts) now strips the Trojan-Source reordering family (U+202A–202E,
+  U+2066–2069, LRM/RLM/ALM) at every display boundary; ZWJ/ZWNJ preserved; the source uses `\u` escapes (no literal
+  bidi bytes). *(apps/cli/src/render/tui/chat-projection.ts)*
 
 ## Phase 2.5.E (chat modes + per-tool approval) follow-ups
 
@@ -530,22 +541,31 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > reseat-less mode system + per-tool approval + mid-turn abort + the host arms shipped. These bounded pieces
 > were deliberately deferred (each is additive, none blocks the mode system's security guarantees):
 
-- [ ] **`[c]` reject-with-typed-reason approval prompt.** The `ApprovalAnswer` reject variant already carries an
-  optional `reason` (surfaced in the `tool_denied` message), but the REPL prompt only wires `[y]`/`[a]`/`[n]`/`[esc]`
-  — a `[c]` that captures a free-text comment (a rejection with feedback for the model) is a bounded input-mode
-  addition to `reduceChatKey` + the ink/Home prompt. *(low · apps/cli/src/render/tui/chat-input.ts + chat-ink.tsx + home-controller.ts)*
-- [ ] **Conversationally recover from a SCOPE denial in chat.** The PR #63 follow-up made an idempotent host
-  EXECUTION failure (a file-not-found READ) fed-back-recoverable via `ToolExecutionError.recoverable`
-  (`recoverToolFailures`), but a `tool_denied` SCOPE denial (reading a path outside the session workspace — a
-  common launch-cwd gotcha) still ends the turn (informative: the reason is shown). Feeding a *scope* denial back
-  so the model explains ("that path is outside my workspace — relaunch `chat` from …") would improve UX, but needs
-  a sub-class split so a SCOPE denial is distinguishable from an approval / protected-path denial (which must stay
-  fatal — never nag). *(low · packages/core/src/tools/errors.ts `HostDeniedError`; apps/cli/src/engine/tool-host/fs.ts; ADR-0057)*
-- [ ] **Plain / non-TTY non-interactive approval policy.** The interactive `[y]/[a]/[n]` prompt is TTY/controller-only.
-  A non-TTY chat defaults to `ask` (which denies governed WITHOUT prompting, so no deadlock), and `auto` auto-approves
-  a non-protected target; the only unhandled niche is a non-TTY session switched to `accept-edits` (or `auto` hitting a
-  protected path) — its `requestApproval` would publish an unanswerable prompt. Add an explicit non-interactive policy
-  (deny, or a configured default) for the plain/`--json` driver so that niche is deterministic. *(low · apps/cli/src/commands/chat.ts drivePlain/driveJson)*
+- [x] **`[c]` reject-with-typed-reason approval prompt — DONE (2.5-close Step 14, D-1).** A `[c]` at the approval
+  prompt opens a keyboard-owning reason-input sub-mode (both `relavium chat` + the Home); on submit it rejects with
+  the sanitized + 300-char-bounded reason via the existing `ToolApprovalDecision.reject.reason` seam. The floor is
+  unchanged. *(apps/cli/src/render/tui/chat-input.ts + chat-ink.tsx + home-controller.ts)*
+- [x] **Conversationally recover from a SCOPE denial in chat — DONE (2.5-close Step 14, D-3).** The `recoverable`
+  flag moved to the base `ToolDispatchError`; exactly two `tool_denied`s opt in — `ToolPolicyError('media_scope_denied')`
+  and the fs **pure scope-tier escape** (`FsScopeDeniedError` from `assertInScope`) — so on the `recoverToolFailures`
+  surfaces the model is fed the denial and adapts to an in-bounds path. The confidentiality / protected-path / symlink
+  / SSRF / user / guardrail denials stay FATAL. *(packages/core/src/tools/errors.ts; apps/cli/src/engine/tool-host/fs.ts; ADR-0057)*
+- [x] **Plain / non-TTY non-interactive approval policy — DONE (2.5.E "High 9" + consolidated in 2.5-close Step 14,
+  D-2).** A non-interactive driver (plain non-TTY / `--json` / one-shot `agent run`) uses the one canonical
+  `nonInteractiveApprovalPrompt` — every governed dispatch is DENIED (never a hang, never an auto-approve).
+  *(apps/cli/src/chat/chat-mode.ts; apps/cli/src/commands/chat.ts + agent-run.ts)*
+- [ ] **Approval-consent-line zero-width hardening (2.5-close Step 14 security-review, optional).** The shared render
+  floor strips the Trojan-Source REORDERING controls everywhere (the CVE-2021-42574 vector is closed), but the
+  highest-trust surface — the approval consent line's target (`formatApprovalTarget` → `sanitizeInline`) — still
+  passes NON-reordering zero-width chars (ZWSP U+200B / word-joiner U+2060 / BOM U+FEFF), which the provider-URL echo
+  already strips. Running the stricter zero-width superset on the consent-line target would be defense-in-depth. Not
+  a CVE gap (those chars cannot reorder a command to masquerade). *(low · apps/cli/src/render/tui/chat-projection.ts)*
+- [ ] **Extract the `[c]` reason-capture to a shared pure reducer (2.5-close Step 14 review, test-parity).** The
+  reason-capture keystroke glue is duplicated inline in `ChatApp` (chat-ink.tsx) and the Home controller; the shared
+  primitives (`reduceApprovalKey`, `sanitizeApprovalReason`, `reduceEditorMotion`) are unit-tested and the Home path
+  has an integration test, but the ChatApp inline copy has no direct test (matching the existing no-ChatApp-integration
+  boundary). Extracting the capture step to one pure reducer (like the mention/effort submodes) would let both
+  surfaces test the same function. *(low · apps/cli/src/render/tui/chat-ink.tsx + home-controller.ts)*
 - [ ] **Live `web_search` / `http_request` egress credential resolver.** `assembleToolEnv` accepts an
   `egressCredentialResolver` and the egress arm attaches it host-side as a Bearer, but the chat/Home session-host does
   not yet wire it to the keychain — so a `web_search` needing a provider key currently 401s (surfaced, never a crash).
@@ -554,6 +574,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   abort + approval; the ADR-0028 session budget `pause_for_approval` can now ride the same machine (today a chat
   cost-cap trip settles the turn loudly as `budget_exceeded` — the REPL is the approval gate). See also the 1.V
   session-budget follow-up above. *(medium · apps/cli/src/chat + agent-session.ts)*
+- [ ] **`relavium budget resume` CLI command (2.5-close Step 15 / Batch E — DEFERRED to a focused follow-up).** The
+  engine ALREADY supports resuming a budget-paused run (`engine.resume(runId, budgetGateId, decision)`,
+  budget-governor.ts / checkpoint.ts `isBudgetGate`), and `relavium gate` deliberately EXCLUDES budget gates
+  (`selectGate` filters `!isBudgetGate`), naming this the "`budget resume` surface." The remaining work is the
+  documented CLI command — a new manifest entry + dispatch handler + a command core that ~90% overlaps `gate.ts`'s
+  resume machinery (so the clean form extracts a shared resume core rather than duplicating). Low, dependency-free.
+  **Why deferred (maintainer call, 2026-07-08):** it modifies the security-sensitive `gate.ts` cross-process resume
+  path and is coupled to the secret-re-provide follow-up below (both refactor that path), so both are best landed
+  together with fresh context rather than at the tail of the 2.5-close session. *(low · apps/cli/src/commands/{gate,budget}.ts + manifest.ts + dispatch.ts; ADR-0028)*
 - [ ] **`project`-tier `extraRoots` allowlist (carried from 2.5.A).** The `project` fs tier behaves as
   workspace-only until the path-allowlist lands (it can only NARROW the jail, never open a hole). *(low · apps/cli/src/engine/tool-host/assemble.ts)*
 - [ ] **fs hard-link aliasing — the pnpm virtual-store read exemption (accepted residual, ADR-0057 review record).**
@@ -589,16 +618,40 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > status* note in [../reference/cli/commands.md](../reference/cli/commands.md), so they are **not**
 > duplicated here. The one item below is an unscheduled security follow-up with no numbered workstream yet.
 
-- [ ] **CLI `ToolHost` is fail-closed — built-in tool host capabilities (filesystem / process / egress)
-  are not wired.** 2.D builds the engine's tool registry with an empty `ToolHost` (`createToolRegistry({
-  tools: BUILTIN_TOOLS, host: {} })`), so every built-in tool that needs a host capability is cleanly
-  *unavailable* rather than backed by an insecure stub. Wiring these capabilities is deliberately deferred
-  to a dedicated, **security-reviewed** workstream: the egress half is the existing host-side SSRF item
-  above (DNS-resolve + connect-by-validated-IP + per-hop redirect re-validation in `EgressCapability.fetch`),
-  and the filesystem/process halves need their own scope/permission model ([security-review.md](../standards/security-review.md)).
-  Until then, a workflow whose agent calls a capability-backed built-in tool surfaces a clean "tool
-  unavailable" failure, never a half-implemented or unsafe execution. *(medium · apps/cli/src/engine/build-engine.ts;
-  security-review.md; egress → the SSRF item above)*
+- [ ] **CLI `ToolHost` — the built-in host capabilities are wired for the CLI; the DESKTOP surface remains.**
+  2.D originally built the tool registry with an empty `ToolHost` (`createToolRegistry({ tools: BUILTIN_TOOLS,
+  host: {} })`). For the CLI this is now **closed**: 2.5.A wired the `fs` + `process` arms and 2.5.E wired the
+  `egress` + `os` arms via `assembleToolEnv`, all behind the fail-closed approval floor (see the **RESOLVED**
+  block below, [ADR-0055](../decisions/0055-cli-host-capability-seam-tool-environment-factory.md) +
+  [ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md)). What remains: the **desktop/Tauri**
+  surface has no tool host wired yet (Phase 3), and its host-side `EgressCapability.fetch` SSRF hardening tracks
+  with the SSRF item above. Until the desktop host is wired, a desktop workflow calling a capability-backed
+  built-in tool surfaces a clean "tool unavailable" failure, never a half-implemented or unsafe execution.
+  *(medium · desktop tool host; Phase 3; security-review.md; egress → the SSRF item above)*
+- [ ] **VS Code docs claim a SQLCipher `history.db` "same store as CLI" — contradicts ADR-0050.** The
+  Phase-4 VS Code docs ([reference/vscode/extension-api.md](../reference/vscode/extension-api.md) L46/67,
+  [phases/phase-4-vscode.md](phases/phase-4-vscode.md) L376/378) still carry the pre-ADR-0050 assumption that
+  the extension host opens the **SQLCipher** `history.db` that is **"the same store as CLI/desktop"**. Per
+  [ADR-0050](../decisions/0050-cli-history-db-at-rest-posture.md) the CLI store is `better-sqlite3`
+  **unencrypted** and a SQLCipher file cannot be the same physical file; there is no cross-surface shared
+  session/run store until a Phase-3/4 ADR reconciles it. Reword the VS Code at-rest posture once the
+  cross-host physical-store decision lands. *(low · Phase 4 forward-design docs; blocked on the cross-host
+  store decision; surfaced during the 2.5.J encrypted-wording sweep)*
+- [ ] **Run-resume reconstruction reads (`loadRun` + `loadRunEvents` + `loadStepExecutions`) are separate
+  reads at the caller level — the same torn-read class 2.5.I S1 fixed for session `loadFull`.** A concurrent
+  writer committing between them could yield a run row + event/step reads from different snapshots. Lower
+  impact than the session case: run history is **event-sourced** and the checkpoint fold tolerates partial
+  state, so a torn read self-heals on the next fold. If tightened, wrap the caller-level reconstruction in one
+  read transaction (as `loadFull` now does). *(low · packages/db run-history-store consumers + the resume
+  caller; surfaced during 2.5.I S1 review)*
+- [ ] **The CLI chat persister writes a turn non-atomically — messages then session totals in separate
+  auto-committed statements.** `apps/cli/src/chat/persister.ts` appends the user + assistant messages and then
+  `updateSession`s the running totals as separate writes, so the DB legitimately passes through a state where a
+  turn's messages are present but its totals are stale. `sessionStore.loadFull`'s read transaction (2.5.I S1)
+  guarantees *snapshot* consistency (both reads see one DB snapshot) but not *turn* atomicity — a snapshot can
+  observe messages ahead of their totals. To make "totals always match the returned messages" hold, wrap each
+  turn's message-appends + `updateSession` in one host-side `db.transaction` (BEGIN IMMEDIATE). Bounded, host-side.
+  *(low · apps/cli/src/chat/persister.ts; surfaced during 2.5.I S2 review)*
 - [ ] **`relavium run` maps any `run:paused` to exit 3 (gate-paused); revisit when media host-wiring lands.**
   `run.ts` returns `EXIT_CODES.gatePaused` (3) for any `run:paused`, which is correct in 2.D because a
   human gate is the **only** `run:paused` source (no `mediaStore`/media-job host is wired, so a media-only
@@ -622,7 +675,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   value. The proper fix lets the operator re-supply the secret on resume (e.g. `relavium gate <runId> --secret
   token=…` read from stdin like `provider set-key`, or a keychain/env re-resolution keyed by the input
   `ref`) so a secret-bearing run becomes resumable. Until then the fail-closed + the
-  [commands.md](../reference/cli/commands.md) note stand. *(medium · apps/cli/src/commands/gate.ts; ADR-0006)*
+  [commands.md](../reference/cli/commands.md) note stand. **2.5-close Step 15 / Batch E status (maintainer call,
+  2026-07-08):** selected IN by D8 but DEFERRED to a focused follow-up — this RELAXES a fail-closed security
+  guarantee (allow-with-re-provisioning), demands the stdin-not-argv secret discipline (`provider set-key` pattern)
+  + a mandatory security-review pass, and is coupled to the `budget resume` command above (both refactor the
+  `gate.ts` resume path). Best landed together with fresh context, not at the tail of the 2.5-close session.
+  *(medium · apps/cli/src/commands/gate.ts; ADR-0006)*
 
 ### 2.I read-command follow-ups (PR #48 multi-agent review, 2026-06-24)
 
@@ -638,9 +696,29 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   *commands* (`relavium list` / `loadLatestRunPerWorkflow` still return the full set) — genuinely unneeded at
   single-user CLI scale; add a cursor API before the desktop/cloud surfaces drive these reads at volume.
   *(low → scale · packages/db/src/run-history-store.ts; database-schema.md)*
-- [ ] **`AgentParseError` carries no line/column on a YAML syntax fault** — parity gap with `parseWorkflow`
-  (which threads `LineCounter` positions into `WorkflowSyntaxError`). Add line/col before the 2.J authoring
-  commands surface agent-parse errors to a user. *(low · packages/core/src/agent-parser.ts; before 2.J)*
+- [x] **`AgentParseError` line/column — DONE (2.5-close Step 13, `fix(core)`).** `agentSyntaxErrorFrom` (the
+  agent sibling of parser.ts's `syntaxErrorFrom`) now threads `LineCounter` positions into a positioned
+  `YAMLParseError`: optional 1-based `line`/`column` fields (parity with `WorkflowSyntaxError`) plus a folded
+  `(source — line L, column C)` locator in the message so the position reaches every `.message`-surfacing
+  consumer. The echoed YAML rule is secret-free (`prettyErrors: false`; verified across a 14-case + 12-case
+  adversarial sweep — no authored key/value ever rides the message). *(packages/core/src/agent-parser.ts)*
+- [ ] **`AgentParseError` diagnostics are invisible on the `chat --agent` / `agent run` surfaces** (surfaced by
+  the 2.5-close Step 13 Sonnet review, 2026-07-08). `resolveChatAgent` (agent-source.ts) deliberately surfaces
+  the RAW `AgentParseError` — pinned by `agent-source.test.ts` "surfaces an invalid .agent.yaml as a field-named
+  AgentParseError (not a silent default or CliError)" — and neither `buildChatSession` nor `agent-run.ts` catches
+  it, so a malformed-but-existing `.agent.yaml` reaches the top-level `renderError`/`toUserFacing` and is reduced
+  to exit **1** + the generic "An unexpected internal error occurred" (human AND `--json`). So the field-named,
+  position-enriched diagnostic Step 13 built only actually reaches a user via `list --agents` / `create` /
+  `import` (`catalog.ts` / `authoring.ts`, which DO catch it). **Pre-existing** (predates Step 13; the diff only
+  changed message CONTENT, not this catch-layer gap) and it **conflicts with the deliberate `isCliError === false`
+  test above**, so re-tagging is a cross-surface DESIGN decision, not a mechanical fix — deferred out of the
+  `fix(core)` close-out. Fix options (need a maintainer call on which): (a) wrap the `AgentParseError` into a
+  `CliError('invalid_invocation', err.message, { cause })` at `resolveChatAgent` / the `agent-run`/`chat` callers
+  (revising the pinned test), or (b) teach the top-level `renderError`/`toUserFacing` to render a typed
+  `AgentParseError` as an exit-2 invocation fault. Also relativize the `source` label at the `chat`/`agent run`
+  call site (`agent-source.ts` passes the ABSOLUTE `source.path`, unlike the catalog's workspace-relative `rel`;
+  no secret leak — it is the user-typed path — but it contradicts the parser docstring's "workspace-relative").
+  *(medium · apps/cli/src/chat/agent-source.ts + session-host.ts + commands/agent-run.ts + run.ts)*
 - [ ] **Residual read-command test pins.** A few low-risk coverage gaps remain after the PR's test additions:
   `pendingHumanGates` with `expiresAt` present and with multiple simultaneous gates; `list --json` no-project
   stderr + invalid-entry `error` machine-contract; the `status` "no node activity" fallback. The production code
