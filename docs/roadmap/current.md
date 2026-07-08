@@ -11,7 +11,8 @@ The full phase plan and the global milestone spine are in [README.md](README.md)
 **Phase 2.5 (CLI Consolidation) is complete** (milestone **M2.5-4**, PR #69, 2026-07-08) — its
 breakdown, now historical, is in
 [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md). The next phase,
-**Phase 2.6 — Conversational Authoring** (Planned; unblocked by the 2.5 close), is in
+**Phase 2.6 — Conversational Authoring and the First-Class CLI** (Planned; unblocked by the 2.5
+close; re-scoped 2026-07-08), is in
 [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md).
 
 ## Where we are
@@ -241,12 +242,15 @@ keychain no-raw-key IPC test.
 
 ## Not started yet
 
-The immediate next phase is **Phase 2.6 — Conversational Authoring and Parity**
+The immediate next phase is **Phase 2.6 — Conversational Authoring and the First-Class CLI**
 ([phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), Planned,
-unblocked by the 2.5 close): promote the authoring core to a shared `@relavium/authoring`
-package, let a chat **author** standards-valid `.relavium.yaml`, and reach competitor-parity
-polish. Then the surfaces and the cloud — everything after the engine critical path: the desktop
-app (Phase 3) and the VS Code extension (Phase 4), then **Product Phase 2** — first **managed
+unblocked by the 2.5 close and **re-scoped 2026-07-08** from maintainer UX findings + a competitor
+research pass + the deferred-tasks triage): a full-screen, Home-managed CLI (browsers for
+workflows/runs/agents, provider + MCP + settings management, onboarding v2 with the Relavium-account
+stub), competitor-breadth tools under the governance floor, settings/theming/`en`+`tr` localization,
+the run-ops resume follow-up — plus the original spine: the shared `@relavium/authoring` package and
+a chat that **authors** standards-valid `.relavium.yaml`. Then the surfaces and the cloud —
+everything after the engine critical path: the desktop app (Phase 3) and the VS Code extension (Phase 4), then **Product Phase 2** — first **managed
 inference** ([phase-5-managed-inference.md](phases/phase-5-managed-inference.md), the opt-in
 `managed` gateway, engine still local), then the **cloud execution layer and web portal**
 ([phase-6-cloud-execution-portal.md](phases/phase-6-cloud-execution-portal.md)), the two

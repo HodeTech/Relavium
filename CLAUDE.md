@@ -129,6 +129,10 @@ append-only ADR-0057 amendment; the profile-aware advertise-filter + the in-hous
 Sonnet with a security-review pass on the approval batch. Deferred to a focused follow-up (both refactor the security-sensitive
 `gate.ts` resume path): the `relavium budget resume` command + secret re-provide on gate resume; the session `{{ctx.*}}`
 interpolation stays with the Proposed [ADR-0060](docs/decisions/0060-session-ctx-prompt-interpolation.md) (Phase-2.6).
+**Phase 2.6 was re-scoped on 2026-07-08** into *Conversational Authoring and the First-Class CLI* — the
+full-screen Home-managed CLI (browsers, provider/MCP/settings management, onboarding v2), competitor-breadth
+tools, settings/theming/`en`+`tr` localization, and the run-ops resume follow-up, on top of the original
+`@relavium/authoring` spine; see [docs/roadmap/phases/phase-2.6-conversational-authoring.md](docs/roadmap/phases/phase-2.6-conversational-authoring.md).
 For live status, per-PR history, milestone dates, and open obligations, see the canonical home
 [docs/roadmap/current.md](docs/roadmap/current.md); [README.md](README.md) is the public overview.
 

@@ -2,7 +2,9 @@
 
 > Status: Living
 
-> Last updated: 2026-07-05
+> Last updated: 2026-07-08 — the Phase-2.6 rewrite triaged every open item; the now-doable ones carry a
+> **Scheduled → 2.6.X** marker pointing at their [phase-2.6](phases/phase-2.6-conversational-authoring.md)
+> workstream (they stay unchecked until the PR that lands them).
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
 
@@ -32,6 +34,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   a superseding ADR**. Recommendation: ship (A) now, do (B) in its own governed PR. **Full analysis, current
   version table, per-dependency verdicts, migration plans, and open questions:
   [phases/node-runtime-upgrade.md](phases/node-runtime-upgrade.md).** Out of scope for Phase 2.5.F.
+  **Scheduled → 2.6.F** (both halves: the immediate dev/CI bump + the governed floor decision).
   *(package.json engines + .nvmrc + pnpm-workspace catalog @types/node + tech-stack.md; cross-phase)*
 
 
@@ -57,10 +60,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   URL validation are construction-time / seam-ingestion-time policy; they catch malformed URLs but cannot
   catch DNS rebinding or a public hostname resolving to a private IP. **Scope split (resolving the earlier "Phase 2" framing):** the **media** url-carrier mechanism is **pulled into 1.AF** on a new bytes-shaped media-egress capability ([ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)); the **CLI tool** `EgressCapability.fetch` **landed in 2.5.E** ([ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md)) — `apps/cli/src/engine/tool-host/egress.ts` over the shared `connectValidated` connect-by-validated-IP mechanism (`packages/db/src/safe-egress.ts`), with the Host/`:authority`-header strip; the **desktop** surface's fetch hook still lands when the desktop implements it. *(packages/core/src/tools/types.ts; security-review.md; media → 1.AF/ADR-0043; CLI tool → 2.5.E/ADR-0057; desktop → surface fetch hook)*
 - [ ] **MCP SDK network transport — upgrade to connect-by-validated-IP ([ADR-0053](../decisions/0053-mcp-network-transport-egress-security.md) §2).** 2.R ships **pre-connect host validation** as the floor for the `http` (Streamable HTTP) / `websocket` MCP transports — the `@modelcontextprotocol/sdk` opens its **own** socket, architecturally distinct from the `EgressCapability.fetch` hook above. When the SDK transport exposes an injectable `fetch`/dialer hook, upgrade to **connect-by-validated-IP**: resolve DNS → validate the IP against the shared range-block primitive → connect to that IP, re-validating on each redirect hop — closing the residual DNS-rebind window. **The dialer + redirect re-validation MUST enforce the authored `host:port`** (ADR-0053 §3 / SEC-EGRESS-3), not just the host: an `allow_local_endpoint` server is permitted exactly its declared `host:port`, so a resolved/redirected target on a *different* port of the same permitted-private host (`:6379`/`:5432`/`:22`/the Docker socket) must be re-blocked. (2.R's pre-connect floor is host:port-safe by construction — the SDK dials exactly the one authored url — so this constraint binds the dialer, not the floor.) Each MCP network mechanism gets a dedicated security-review pass when it lands. *(packages/mcp/src; ADR-0053 §2/§3; ADR-0043 mechanism)*
-- [ ] **MCP `stdio` spawn — import-trust/consent gate + `npx` dependency pinning ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §2).** Spawning a declared `stdio` MCP server runs arbitrary local code / an `npx`-installed package. 2.R treats a server declared in the user's **own** committed YAML as author trust; the **imported/shared untrusted workflow** case is out of baseline scope. When the import/share path matures, gate the first spawn of a server from an untrusted-provenance `.relavium.yaml` behind explicit consent, and pin the `npx` package version/integrity for the built-in auto-install servers. *(packages/mcp/src; apps/cli; ADR-0052 §2; ADR-0029 trust model)*
+- [ ] **MCP `stdio` spawn — import-trust/consent gate + `npx` dependency pinning ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §2).** Spawning a declared `stdio` MCP server runs arbitrary local code / an `npx`-installed package. 2.R treats a server declared in the user's **own** committed YAML as author trust; the **imported/shared untrusted workflow** case is out of baseline scope. When the import/share path matures, gate the first spawn of a server from an untrusted-provenance `.relavium.yaml` behind explicit consent, and pin the `npx` package version/integrity for the built-in auto-install servers. **Scheduled → 2.6.B** (the authoring/import path this consent gate protects matures there). *(packages/mcp/src; apps/cli; ADR-0052 §2; ADR-0029 trust model)*
 - [x] **MCP host boundary — strip `McpConnectError.cause` from `--json` / event output (2.R Step 3, [ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §2).** *Resolved in the 2.R Step 3 host wiring:* `startMcpClientFailLoud` (apps/cli/src/engine/mcp-servers.ts) wraps an `McpError` into a typed `CliError` whose message is the secret-free MCP summary with **no** `{ cause }` attached, and the top-level `--json` renderer (apps/cli/src/process/render-error.ts) serializes only `{ type, code, message }` — never `cause`. Regression-locked by `run.test.ts` (`expect(err.cause).toBeUndefined()`). *(apps/cli; packages/mcp/src/errors.ts; 2.R Step 3)*
-- [ ] **MCP network transport — header-based auth ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §6).** 2.R injects `{{secrets.*}}` only into a **stdio** child's `env`; the network (`http`/`websocket`) specs carry only `{ url }`, so a network server's `env` is **rejected at parse** (fail-closed, never silently dropped). When network MCP servers need credentials, add a host-resolved auth-header field (e.g. `Authorization: 'Bearer {{secrets.<name>}}'`) wired through the SDK transport's `requestInit`/headers, resolved from the same isolated `mcp-secret:*` namespace and never logged/serialized. *(packages/mcp/src/sdk-http.ts; apps/cli/src/engine/mcp-servers.ts; ADR-0052 §6)*
-- [ ] **MCP follow-ups (non-security).** A durable cross-invocation **tool-list cache** (mcp-integration.md ~1h per-`(command,args)`, with a transport-covering key) — 2.R re-runs discovery per process ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §3); and a generalized **`SecretResolver`** seam beyond the 2.R `mcp-secret:*` keychain namespace ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §6); and reconciling the `types.ts` `ToolId` "register dynamically" comment to "host-side assembled" when 2.R touches `packages/core`; and **mid-call abort propagation** — the engine's `AbortSignalLike` is not forwarded to the in-flight MCP `tools/call` (the SDK transport wants a DOM `AbortSignal`), so a turn cancel tears the connection down but does not cancel an in-flight call (`@relavium/mcp` `manager.ts`). *(packages/mcp/src; packages/core; Phase-3)*
+- [ ] **MCP network transport — header-based auth ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §6).** 2.R injects `{{secrets.*}}` only into a **stdio** child's `env`; the network (`http`/`websocket`) specs carry only `{ url }`, so a network server's `env` is **rejected at parse** (fail-closed, never silently dropped). When network MCP servers need credentials, add a host-resolved auth-header field (e.g. `Authorization: 'Bearer {{secrets.<name>}}'`) wired through the SDK transport's `requestInit`/headers, resolved from the same isolated `mcp-secret:*` namespace and never logged/serialized. **Scheduled → 2.6.I.** *(packages/mcp/src/sdk-http.ts; apps/cli/src/engine/mcp-servers.ts; ADR-0052 §6)*
+- [ ] **MCP follow-ups (non-security).** A durable cross-invocation **tool-list cache** (mcp-integration.md ~1h per-`(command,args)`, with a transport-covering key) — 2.R re-runs discovery per process ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §3); and a generalized **`SecretResolver`** seam beyond the 2.R `mcp-secret:*` keychain namespace ([ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §6); and reconciling the `types.ts` `ToolId` "register dynamically" comment to "host-side assembled" when 2.R touches `packages/core`; and **mid-call abort propagation** — the engine's `AbortSignalLike` is not forwarded to the in-flight MCP `tools/call` (the SDK transport wants a DOM `AbortSignal`), so a turn cancel tears the connection down but does not cancel an in-flight call (`@relavium/mcp` `manager.ts`). **The tool-list-cache + mid-call-abort halves are scheduled → 2.6.I** (the rest stays opportunistic). *(packages/mcp/src; packages/core; Phase-3)*
 - [ ] **Streaming media triad (`media_start`/`media_delta`/`media_end`) — host-deferred ([ADR-0046](../decisions/0046-inline-media-out-via-generate-streaming-triad-deferred.md) §4).**
   1.AG Section B delivers inline media-out through the non-streaming `generate()` path (the in-flight
   `media` `ContentPart` is de-inlined at `#emitDurable`). The **streaming** triad stays RESERVED: its Node
@@ -76,13 +79,14 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   Responses API `image_generation` built-in tool — a **separate request surface** the Chat-Completions
   adapter does not call. Wire the Responses-API path (request + `image_generation_call` output-item parse →
   the already-defined providerExecuted media shape) when a Phase-1 model needs it. *(packages/llm/src/adapters/openai.ts; post-1.AG)*
-- [ ] **Per-model `media_surface` lookup — HOST WIRING deferred (1.AG Section C → 1.AH).** Section C added
-  `AgentRunnerDeps.resolveMediaSurface?(model) → MediaSurface` (the inline-vs-generative routing discriminator,
-  default `'chat'`; tests inject it). The production wiring — the host reading `model_catalog.media_surface` (the
-  column landed in Section A) and supplying the lookup — is **1.AH host-wiring**, exactly like the D12/D15/D17
-  host-wiring obligations. Until then `resolveMediaSurface` is absent and **every** model routes inline (`'chat'`),
-  so no generative model is runtime-reachable in Phase 1; the engine mechanism + the OpenAI-image adapter are proven
-  via injected-surface tests. *(packages/core/src/engine/agent-runner.ts; host catalog read → 1.AH)*
+- [x] **Per-model `media_surface` lookup — wired by the CLI (✅ PR #52, 2.S; verified + checked off 2026-07-08).**
+  Section C added `AgentRunnerDeps.resolveMediaSurface?(model) → MediaSurface` (the inline-vs-generative routing
+  discriminator, default `'chat'`; tests inject it). The production wiring — the host reading
+  `model_catalog.media_surface` and supplying the lookup — landed with 2.S: `media-wiring.ts` supplies
+  `catalog.resolveMediaSurface` (the `model_catalog` projection) and `build-engine.ts` threads it into
+  `AgentRunnerDeps`, so a generative model routes by its catalog surface on the CLI. The sibling D15/D17/D8
+  host-wiring items were checked off at PR #52; this one was missed then. The desktop/VS Code surfaces reuse the
+  same injectable port (Phase-3/Phase-4). *(apps/cli/src/engine/media-wiring.ts + build-engine.ts; PR #52)*
 - [ ] **Verified generative model rates + `MODEL_PRICING` rows (1.AG Section C → 1.AH).** The Section C cost
   mechanism (pre-egress estimate + the one realized `cost:updated`) reuses `estimateMediaCost`/`mediaCost`, which
   **degrade to 0 on a missing rate** (H4). No generative model rows were added to `MODEL_PRICING` — fabricating
@@ -291,11 +295,13 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **Run-submission idempotency / request-dedup (open — evaluate carefully).** Distinct from the content-addressed
   media cache and any managed-mode metering `request_id`: should an identical run-create request be
   de-duplicated so a double-submit does not start two runs? **Open:** a Phase-1 engine run-create hook vs a
-  surface concern. Low-stakes; recorded so it is not lost. *(WorkflowEngine run-create; 1.N)*
+  surface concern. Low-stakes; recorded so it is not lost. **Scheduled → 2.6.H** (the Home can start a
+  workflow there, making double-submit real). *(WorkflowEngine run-create; 1.N)*
 - [ ] **i18n CI key-parity + data/code separation (Phase 2+ surface).** When the desktop / CLI / VS Code
   surfaces add i18n: a CI test that **fails** on a missing/extra translation key (parity), **zero conditional
   logic in translation data** (data ≠ code), and a dead/unused-string lint. Recorded now; lands with the
-  Phase-2/3/4 surface i18n work (no consumer yet). *(a `docs/standards/` entry or skill; Phases 2–4)*
+  Phase-2/3/4 surface i18n work (no consumer yet). **Scheduled → 2.6.L** (the CLI `en`+`tr` catalog is the
+  first consumer). *(a `docs/standards/` entry or skill; Phases 2–4)*
 - [ ] **Pre-egress token-estimate accuracy — watch item (1.AC).** The ADR-0028 governor blocks on
   `worstCaseNextEstimate(maxTokens)` from `[defaults].max_tokens_estimate`. Record the open
   question: does the estimate need provider-accurate token counting (from the seam's model meta /
@@ -375,7 +381,8 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `{{ inputs }}`/`{{ ctx }}` in system fields must add a parse-time gate **rejecting** untrusted
   `run.outputs`/`read_file` references there (analogous to the secret-taint gate — do **not** drop the field
   from `nodeReferenceSites`, which would remove the existing secret-leak protection). A pinning test already
-  asserts an untrusted `run.outputs` value never reaches the system string. *(medium · packages/core/src/interpolation/analyze.ts, collect.ts; SEC-1)*
+  asserts an untrusted `run.outputs` value never reaches the system string.
+  **Scheduled → 2.6.D.** *(medium · packages/core/src/interpolation/analyze.ts, collect.ts; SEC-1)*
 - [ ] **Multimodal tool-result through the adjacent-message + redaction paths** — all 1.O coverage exercises
   text/JSON tool args + content; confirm image/media tool-result blocks survive the Anthropic adjacent-role
   merge (no dropped blocks / no double-merge with `stripReasoningParts`) and the redaction path. *(low · packages/llm/src/adapters/anthropic.ts; 1.AF)*
@@ -447,17 +454,17 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   the target gate's decision immediately, but a *remaining* pending gate (multi-gate run, crash-while-paused)
   is rehydrated without re-arming its timer, so its deadline is lost until the next restart. The data needed
   (`timeoutAction` + `expiresAt`) is now persisted on `human_gate:paused` (PR #22), so no backfill — Phase-2
-  crash-reconciliation re-arms from the log against a real clock. *(low · packages/core/src/engine/engine.ts `#seedFromCheckpoint`; Phase-2)*
+  crash-reconciliation re-arms from the log against a real clock. **Scheduled → 2.6.K.** *(low · packages/core/src/engine/engine.ts `#seedFromCheckpoint`; Phase-2)*
 - [ ] **Content-level workflow-identity guard on resume** — `resumeFromCheckpoint` compares the surrogate
   `workflowId` (catches resuming a *different* workflow → `workflow_mismatch`), but not a *same-slug,
   edited-content* workflow. The stronger guard rides on the frozen `runs.workflow_definition_snapshot` column
   ([database-schema.md](../reference/desktop/database-schema.md)) — a Phase-2 persistence concern wired with
-  the real `RunStore`, not the event-derived in-memory state. *(low · packages/core/src/engine/engine.ts; Phase-2)*
+  the real `RunStore`, not the event-derived in-memory state. **Scheduled → 2.6.H.** *(low · packages/core/src/engine/engine.ts; Phase-2)*
 - [ ] **Cross-process concurrent gate-resolve (TOCTOU)** — idempotent re-delivery holds within a process
   (`#resolvedGates`) and across processes once the prior process's `human_gate:resumed` is persisted (the
   checkpoint reconstructs `resolvedGateIds`). The residual window — two processes loading the *same* still-pending
   gate before either persists — is closed by a store-level uniqueness constraint on `human_gate:resumed` per
-  `(runId, gateId)`, a Phase-2 SQLite/cloud-store guarantee, not the in-memory reference. *(low · checkpoint.ts/engine.ts; Phase-2 store)*
+  `(runId, gateId)`, a Phase-2 SQLite/cloud-store guarantee, not the in-memory reference. **Scheduled → 2.6.H.** *(low · checkpoint.ts/engine.ts; Phase-2 store)*
 
 ## AgentSession (1.V) follow-ups
 
@@ -482,7 +489,8 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   pass-through but does **not** handle a `BudgetPauseError`: a non-`AgentTurnError` throw rolls the user message
   back and re-raises (a session has no pause/resume gate machinery in 1.V). The run path maps a budget pause to
   a `paused` node outcome via the human-gate seam; a budgeted session needs the analogous suspend/resume
-  lifecycle. Wire it when sessions gain a budget (surface phases). *(medium · packages/core/src/engine/agent-session.ts; ADR-0028)*
+  lifecycle. Wire it when sessions gain a budget (surface phases). **Scheduled → 2.6.K** (with the EA4-ride
+  sibling below). *(medium · packages/core/src/engine/agent-session.ts; ADR-0028)*
 - [ ] **Per-session tool narrowing (ADR-0029 narrow-only).** 1.V grants the bound agent's `tools` verbatim; a
   session cannot yet **narrow** them per-session (it may only ever narrow, never widen). Add a session-level
   narrow when a surface needs to restrict a session's tools below the agent's grant.
@@ -527,7 +535,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   fs-capability enforcement. Documented subset limits: nested per-dir ignore files + `[a-z]` char classes deferred
   (they only UNDER-hide, never a security gap). *(apps/cli/src/render/tui/gitignore.ts + mention.ts; ADR-0061)*
 - [ ] **`@`-glob / directory expansion.** Single-file injection ships; `@src/**/*.ts` glob / whole-directory
-  expansion is deferred (ADR-0061). *(low · apps/cli/src/render/tui/mention.ts)*
+  expansion is deferred (ADR-0061). **Scheduled → 2.6.E.** *(low · apps/cli/src/render/tui/mention.ts)*
 - [ ] **`@`-mention of a binary / media file.** The reader fail-closes on a binary file (parity with `read_file`);
   a durable media-handle injection path (ADR-0031) is a follow-up. *(low · apps/cli/src/render/tui/mention.ts)*
 - [x] **Strip Unicode bidi/format controls at the shared display boundary — DONE (2.5-close Step 14, D-5; PR #69).** The
@@ -559,21 +567,21 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   highest-trust surface — the approval consent line's target (`formatApprovalTarget` → `sanitizeInline`) — still
   passes NON-reordering zero-width chars (ZWSP U+200B / word-joiner U+2060 / BOM U+FEFF), which the provider-URL echo
   already strips. Running the stricter zero-width superset on the consent-line target would be defense-in-depth. Not
-  a CVE gap (those chars cannot reorder a command to masquerade). *(low · apps/cli/src/render/tui/chat-projection.ts)*
+  a CVE gap (those chars cannot reorder a command to masquerade). **Scheduled → 2.6.M** (with tool-render v2). *(low · apps/cli/src/render/tui/chat-projection.ts)*
 - [ ] **Extract the `[c]` reason-capture to a shared pure reducer (2.5-close Step 14 review, test-parity).** The
   reason-capture keystroke glue is duplicated inline in `ChatApp` (chat-ink.tsx) and the Home controller; the shared
   primitives (`reduceApprovalKey`, `sanitizeApprovalReason`, `reduceEditorMotion`) are unit-tested and the Home path
   has an integration test, but the ChatApp inline copy has no direct test (matching the existing no-ChatApp-integration
   boundary). Extracting the capture step to one pure reducer (like the mention/effort submodes) would let both
-  surfaces test the same function. *(low · apps/cli/src/render/tui/chat-ink.tsx + home-controller.ts)*
+  surfaces test the same function. **Scheduled → 2.6.M** (with tool-render v2). *(low · apps/cli/src/render/tui/chat-ink.tsx + home-controller.ts)*
 - [ ] **Live `web_search` / `http_request` egress credential resolver.** `assembleToolEnv` accepts an
   `egressCredentialResolver` and the egress arm attaches it host-side as a Bearer, but the chat/Home session-host does
   not yet wire it to the keychain — so a `web_search` needing a provider key currently 401s (surfaced, never a crash).
-  Wire the provider-key resolver through when the chat surface needs authenticated egress. *(low · apps/cli/src/chat/session-host.ts)*
+  Wire the provider-key resolver through when the chat surface needs authenticated egress. **Scheduled → 2.6.M** (the `web_search` activation). *(low · apps/cli/src/chat/session-host.ts)*
 - [ ] **Session-level budget pause/resume (rides the EA4 machine).** The EA4 pause/resume state landed for mid-turn
   abort + approval; the ADR-0028 session budget `pause_for_approval` can now ride the same machine (today a chat
   cost-cap trip settles the turn loudly as `budget_exceeded` — the REPL is the approval gate). See also the 1.V
-  session-budget follow-up above. *(medium · apps/cli/src/chat + agent-session.ts)*
+  session-budget follow-up above. **Scheduled → 2.6.K.** *(medium · apps/cli/src/chat + agent-session.ts)*
 - [ ] **`relavium budget resume` CLI command (2.5-close Step 15 / Batch E — DEFERRED to a focused follow-up).** The
   engine ALREADY supports resuming a budget-paused run (`engine.resume(runId, budgetGateId, decision)`,
   budget-governor.ts / checkpoint.ts `isBudgetGate`), and `relavium gate` deliberately EXCLUDES budget gates
@@ -582,9 +590,11 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   resume machinery (so the clean form extracts a shared resume core rather than duplicating). Low, dependency-free.
   **Why deferred (maintainer call, 2026-07-08):** it modifies the security-sensitive `gate.ts` cross-process resume
   path and is coupled to the secret-re-provide follow-up below (both refactor that path), so both are best landed
-  together with fresh context rather than at the tail of the 2.5-close session. *(low · apps/cli/src/commands/{gate,budget}.ts + manifest.ts + dispatch.ts; ADR-0028)*
+  together with fresh context rather than at the tail of the 2.5-close session. **Scheduled → 2.6.K** (that
+  focused follow-up). *(low · apps/cli/src/commands/{gate,budget}.ts + manifest.ts + dispatch.ts; ADR-0028)*
 - [ ] **`project`-tier `extraRoots` allowlist (carried from 2.5.A).** The `project` fs tier behaves as
-  workspace-only until the path-allowlist lands (it can only NARROW the jail, never open a hole). *(low · apps/cli/src/engine/tool-host/assemble.ts)*
+  workspace-only until the path-allowlist lands (it can only NARROW the jail, never open a hole).
+  **Scheduled → 2.6.M** (the `[chat].extra_roots` config key is the missing source). *(low · apps/cli/src/engine/tool-host/assemble.ts)*
 - [ ] **fs hard-link aliasing — the pnpm virtual-store read exemption (accepted residual, ADR-0057 review record).**
   The hard-link aliasing READ guard (`st.nlink > 1` ⇒ refused) is disabled ONLY for pnpm's `node_modules/.pnpm/…`
   virtual store (`isPnpmStorePath`), so dependency-source reads work on Linux (where pnpm hard-links). The bounded
@@ -601,7 +611,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   fs, a host for egress, a server for mcp) would make `always` track what the user actually reviewed. Pairs with:
   surface the MCP server/tool in `ToolActionPreview` (today `mcp_call`/`web_search` return a BLANK preview, so
   F3 correctly forbids caching their `always`) — a structured `{mcpServer,mcpTool}` preview would turn the
-  blank-check downgrade into a real, reviewable, cacheable per-server grant. *(medium · apps/cli/src/chat/chat-mode.ts + packages/core/src/tools/{types,registry,builtins}.ts + run-event.ts)*
+  blank-check downgrade into a real, reviewable, cacheable per-server grant. **Scheduled → 2.6.M.** *(medium · apps/cli/src/chat/chat-mode.ts + packages/core/src/tools/{types,registry,builtins}.ts + run-event.ts)*
 - [ ] **fs `.relavium` sensitive-read/write segment vs. the `~/.relavium/tmp` sandboxed root (latent).** Both the
   read floor (`SENSITIVE_READ_DIR_SEGMENTS`) and the write floor (`PROTECTED_DIR_SEGMENTS`) match a `.relavium`
   segment anywhere, so they would refuse the sanctioned `tmpDir` scratch root — inert today (no call site wires
@@ -642,7 +652,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   writer committing between them could yield a run row + event/step reads from different snapshots. Lower
   impact than the session case: run history is **event-sourced** and the checkpoint fold tolerates partial
   state, so a torn read self-heals on the next fold. If tightened, wrap the caller-level reconstruction in one
-  read transaction (as `loadFull` now does). *(low · packages/db run-history-store consumers + the resume
+  read transaction (as `loadFull` now does). **Scheduled → 2.6.H.** *(low · packages/db run-history-store consumers + the resume
   caller; surfaced during 2.5.I S1 review)*
 - [ ] **The CLI chat persister writes a turn non-atomically — messages then session totals in separate
   auto-committed statements.** `apps/cli/src/chat/persister.ts` appends the user + assistant messages and then
@@ -651,7 +661,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   guarantees *snapshot* consistency (both reads see one DB snapshot) but not *turn* atomicity — a snapshot can
   observe messages ahead of their totals. To make "totals always match the returned messages" hold, wrap each
   turn's message-appends + `updateSession` in one host-side `db.transaction` (BEGIN IMMEDIATE). Bounded, host-side.
-  *(low · apps/cli/src/chat/persister.ts; surfaced during 2.5.I S2 review)*
+  **Scheduled → 2.6.H.** *(low · apps/cli/src/chat/persister.ts; surfaced during 2.5.I S2 review)*
 - [ ] **`relavium run` maps any `run:paused` to exit 3 (gate-paused); revisit when media host-wiring lands.**
   `run.ts` returns `EXIT_CODES.gatePaused` (3) for any `run:paused`, which is correct in 2.D because a
   human gate is the **only** `run:paused` source (no `mediaStore`/media-job host is wired, so a media-only
@@ -659,7 +669,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   1.AG §D — can never be emitted). When the media host capability lands (the same surface as the deferred
   media-egress work, ~2.S), a media-only park would be reported as "gate-paused" with no gate; at that point
   decide whether exit 3 (and the rendered message) should distinguish a gate park from a media park.
-  *(low · apps/cli/src/commands/run.ts; media host-wiring / 2.S)*
+  **Scheduled → 2.6.K.** *(low · apps/cli/src/commands/run.ts; media host-wiring / 2.S)*
 - [ ] **`relavium budget resume <runId> [--approve | --abort]` is documented but has no numbered
   workstream.** [commands.md](../reference/cli/commands.md) (canonical) specifies it as the non-interactive
   operator path for a run suspended at a budget cap (`budget:paused`, `on_exceed: pause_for_approval` —
@@ -667,7 +677,8 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   reuses **2.G's** cross-process resume substrate (a budget pause resolves through the same checkpoint reload
   + resume path as a human gate, behind a budget-specific command + flags), so it is a small follow-up once
   2.G lands — candidate home: alongside 2.I, or its own short workstream. **Deliberately out of 2.G** (a
-  distinct ADR-0028 surface, not in 2.G's acceptance). *(low · apps/cli/src/commands/; ADR-0028)*
+  distinct ADR-0028 surface, not in 2.G's acceptance). **Scheduled → 2.6.K** (single tracking point: the
+  Batch-E entry above). *(low · apps/cli/src/commands/; ADR-0028)*
 - [ ] **Re-provide `secret`-typed inputs on cross-process resume.** The durable `run:started.inputs` are
   **masked** (a `secret` input is persisted as `{ secret: true, ref }`, never plaintext — ADR-0006/0036), so a
   fresh-process `relavium gate` resume cannot restore the real value. 2.G **fails closed (exit 2)** when a
@@ -680,7 +691,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   guarantee (allow-with-re-provisioning), demands the stdin-not-argv secret discipline (`provider set-key` pattern)
   + a mandatory security-review pass, and is coupled to the `budget resume` command above (both refactor the
   `gate.ts` resume path). Best landed together with fresh context, not at the tail of the 2.5-close session.
-  *(medium · apps/cli/src/commands/gate.ts; ADR-0006)*
+  **Scheduled → 2.6.K** (that focused follow-up). *(medium · apps/cli/src/commands/gate.ts; ADR-0006)*
 
 ### 2.I read-command follow-ups (PR #48 multi-agent review, 2026-06-24)
 
@@ -718,6 +729,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   `AgentParseError` as an exit-2 invocation fault. Also relativize the `source` label at the `chat`/`agent run`
   call site (`agent-source.ts` passes the ABSOLUTE `source.path`, unlike the catalog's workspace-relative `rel`;
   no secret leak — it is the user-typed path — but it contradicts the parser docstring's "workspace-relative").
+  **Scheduled → 2.6.B** (the conversational-authoring loop needs these diagnostics visible).
   *(medium · apps/cli/src/chat/agent-source.ts + session-host.ts + commands/agent-run.ts + run.ts)*
 - [ ] **Residual read-command test pins.** A few low-risk coverage gaps remain after the PR's test additions:
   `pendingHumanGates` with `expiresAt` present and with multiple simultaneous gates; `list --json` no-project
@@ -811,7 +823,9 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   / `GEMINI_API_KEY` / `DEEPSEEK_API_KEY`) as CI secrets. Until then live coverage is a known gap.
   **Decided (2026-06-21, maintainer): defer to Phase-2 workstream 2.K** — enable the live-nightly lane
   together with the 2.K regression harness rather than as a pre-Phase-2 ops chore; fixture coverage holds
-  the line until then.
+  the line until then. **Update (2026-07-08): 2.K has shipped; this is now a Phase-2.6 in-window
+  maintenance obligation** (see [phase-2.6](phases/phase-2.6-conversational-authoring.md) §"In-window
+  maintenance obligations") — enable when CI provider keys are available.
   *(minor → keys · ci.yml, packages/llm/src/conformance/*.conformance.test.ts)*
 - [ ] **Leakwatch secret-scanning CI gate** — CI has no secret-scan step. The HodeTech standard
   scanner is **Leakwatch** (never gitleaks); the blocking `ci.yml` step is wired once a
@@ -840,7 +854,8 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   vs a frozen number captured at the parent `RootApp`'s render) is verified only by tracing + the type-shape guard,
   not by a regression test. Adding a harness is a first-of-its-kind test-architecture decision for `apps/cli`
   (a new devDependency; possibly an ADR) — track it, then a smoke test could tick a fake clock across two
-  `store.tick()`-driven renders and assert the displayed elapsed advances. *(low · apps/cli/src/render/tui/home-app.tsx
+  `store.tick()`-driven renders and assert the displayed elapsed advances. **Scheduled → 2.6.F** (behind the
+  full-screen renderer + harness ADR). *(low · apps/cli/src/render/tui/home-app.tsx
   + chat-ink.tsx; testing.md "every bug fix lands with a regression test")*
 - [x] **Compact abort hint during token streaming — DONE (2.5-close Step 12, Batch B; PR #69).** A pure
   `streamingAbortHint(busy)` renders a compact dim `Esc to stop` line beneath the streaming CONTENT (a STATUS line
