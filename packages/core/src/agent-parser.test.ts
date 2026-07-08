@@ -1,3 +1,4 @@
+import { YAMLParseError } from 'yaml';
 import { describe, expect, it } from 'vitest';
 
 import { AgentParseError, parseAgent } from './agent-parser.js';
@@ -57,6 +58,21 @@ describe('parseAgent', () => {
       expect(typeof err.column).toBe('number');
       expect(err.message).toContain(`line ${err.line}, column ${err.column}`);
       expect(err.message).toContain('agents/broken.agent.yaml');
+      expect(err.cause).toBeInstanceOf(YAMLParseError); // the root cause is preserved (error-handling.md)
+    }
+  });
+
+  it('folds a bare (line L, column C) locator — no source label, no stray separator', () => {
+    // The pos-only branch of `locate()`: a syntax fault with NO source option ⇒ the message ends in a clean
+    // ` (line L, column C)` (the config-loader shape), with no leading `—` dash and no `(undefined` artifact.
+    try {
+      parseAgent('id: x\n  : : :'); // no `source`
+      expect.unreachable('should have thrown');
+    } catch (err) {
+      if (!(err instanceof AgentParseError)) throw err;
+      expect(err.message).toMatch(/\(line 2, column \d+\)$/);
+      expect(err.message).not.toContain('—'); // no source ⇒ no em-dash separator
+      expect(err.message).not.toContain('undefined');
     }
   });
 
@@ -85,6 +101,7 @@ describe('parseAgent', () => {
       expect(err.message).toContain('anchors and aliases are not supported');
       expect(err.line).toBeUndefined();
       expect(err.column).toBeUndefined();
+      expect(err.cause).toBeInstanceOf(ReferenceError); // the root cause is preserved, not swallowed
     }
   });
 

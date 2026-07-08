@@ -671,9 +671,29 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   *commands* (`relavium list` / `loadLatestRunPerWorkflow` still return the full set) — genuinely unneeded at
   single-user CLI scale; add a cursor API before the desktop/cloud surfaces drive these reads at volume.
   *(low → scale · packages/db/src/run-history-store.ts; database-schema.md)*
-- [ ] **`AgentParseError` carries no line/column on a YAML syntax fault** — parity gap with `parseWorkflow`
-  (which threads `LineCounter` positions into `WorkflowSyntaxError`). Add line/col before the 2.J authoring
-  commands surface agent-parse errors to a user. *(low · packages/core/src/agent-parser.ts; before 2.J)*
+- [x] **`AgentParseError` line/column — DONE (2.5-close Step 13, `fix(core)`).** `agentSyntaxErrorFrom` (the
+  agent sibling of parser.ts's `syntaxErrorFrom`) now threads `LineCounter` positions into a positioned
+  `YAMLParseError`: optional 1-based `line`/`column` fields (parity with `WorkflowSyntaxError`) plus a folded
+  `(source — line L, column C)` locator in the message so the position reaches every `.message`-surfacing
+  consumer. The echoed YAML rule is secret-free (`prettyErrors: false`; verified across a 14-case + 12-case
+  adversarial sweep — no authored key/value ever rides the message). *(packages/core/src/agent-parser.ts)*
+- [ ] **`AgentParseError` diagnostics are invisible on the `chat --agent` / `agent run` surfaces** (surfaced by
+  the 2.5-close Step 13 Sonnet review, 2026-07-08). `resolveChatAgent` (agent-source.ts) deliberately surfaces
+  the RAW `AgentParseError` — pinned by `agent-source.test.ts` "surfaces an invalid .agent.yaml as a field-named
+  AgentParseError (not a silent default or CliError)" — and neither `buildChatSession` nor `agent-run.ts` catches
+  it, so a malformed-but-existing `.agent.yaml` reaches the top-level `renderError`/`toUserFacing` and is reduced
+  to exit **1** + the generic "An unexpected internal error occurred" (human AND `--json`). So the field-named,
+  position-enriched diagnostic Step 13 built only actually reaches a user via `list --agents` / `create` /
+  `import` (`catalog.ts` / `authoring.ts`, which DO catch it). **Pre-existing** (predates Step 13; the diff only
+  changed message CONTENT, not this catch-layer gap) and it **conflicts with the deliberate `isCliError === false`
+  test above**, so re-tagging is a cross-surface DESIGN decision, not a mechanical fix — deferred out of the
+  `fix(core)` close-out. Fix options (need a maintainer call on which): (a) wrap the `AgentParseError` into a
+  `CliError('invalid_invocation', err.message, { cause })` at `resolveChatAgent` / the `agent-run`/`chat` callers
+  (revising the pinned test), or (b) teach the top-level `renderError`/`toUserFacing` to render a typed
+  `AgentParseError` as an exit-2 invocation fault. Also relativize the `source` label at the `chat`/`agent run`
+  call site (`agent-source.ts` passes the ABSOLUTE `source.path`, unlike the catalog's workspace-relative `rel`;
+  no secret leak — it is the user-typed path — but it contradicts the parser docstring's "workspace-relative").
+  *(medium · apps/cli/src/chat/agent-source.ts + session-host.ts + commands/agent-run.ts + run.ts)*
 - [ ] **Residual read-command test pins.** A few low-risk coverage gaps remain after the PR's test additions:
   `pendingHumanGates` with `expiresAt` present and with multiple simultaneous gates; `list --json` no-project
   stderr + invalid-entry `error` machine-contract; the `status` "no node activity" fallback. The production code

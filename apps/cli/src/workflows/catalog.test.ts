@@ -116,6 +116,17 @@ describe('discoverCatalog', () => {
     expect(broken?.error).toBeTruthy();
   });
 
+  it('surfaces the YAML syntax line/column in a broken agent entry (Step 13, end-to-end via parseReason)', () => {
+    write('agents', 'syntax.agent.yaml', 'id: x\n  : : :'); // a genuine YAML SYNTAX fault (not a schema miss)
+
+    const entries = discoverCatalog({ projectConfigDir: configDir, cwd: proj, kind: 'agents' });
+    const broken = entries.find((e) => e.slug === 'syntax');
+    expect(broken?.valid).toBe(false);
+    // parseReason passes the AgentParseError.message through — so the position Step 13 attached is visible on
+    // the catalog surface (the discipline: field paths / integers only, never an authored value).
+    expect(broken?.error).toMatch(/line \d+, column \d+/);
+  });
+
   it('throws an exit-2 invocation error when the catalog path is not a directory (ENOTDIR)', () => {
     // A regular file where the `workflows/` directory is expected → readdirSync raises ENOTDIR (not ENOENT),
     // which is a real fault, not an empty catalog. Cross-platform (no chmod/perms needed).
