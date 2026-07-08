@@ -28,6 +28,23 @@ closes, `relavium` in a terminal is a first-class experience on par with the bes
 keeping the postures they lack: OS-keychain-only secrets, a fail-closed approval floor, and git-committable
 YAML artifacts.
 
+## TL;DR
+
+Phase 2.6 makes bare `relavium` a **full-screen, Home-centric** product. Key outcomes in 5 milestones:
+
+- **Conversational authoring** — a free-text request produces a strict-valid `.relavium.yaml`,
+  authored and run from the Home; `{{ctx.*}}` interpolation and `agent run --input` land.
+- **Everything managed from the Home** — providers, MCP servers, agents, workflows, runs, and
+  run-ops (budget/gate resume) with no shell subcommand required.
+- **Drillable, attributed run history** — list → run → node drill-down with per-node model/agent/cost
+  attribution, bounded tool traces, and cross-process live watch.
+- **Competitor-toolbelt parity** — `edit_file`, `search_files`, `find_files`, `todo`, `ask_user`,
+  working `web_search`, each YAML-selectable and mode-gated.
+- **Settings, theming, localization** — `/settings` over the config-write contract; three built-in
+  themes (default / high-contrast / colorblind-safe); `en` + `tr` i18n with CI key-parity.
+- **Onboarding v2** — two auth paths: BYOK (live) + Relavium-account stub (disabled, Phase 5).
+- **13 workstreams** (2.6.A–M), substrate-first: 2.6.F (full-screen TUI + Node 22 floor) runs first.
+
 ## Goal
 
 Make the bare `relavium` invocation a **full-screen, Home-centric** surface from which the entire product
@@ -628,35 +645,32 @@ follow F. 2.6.C's residual is a small read, any time.
 
 ## Required ADRs
 
-Existing (drafted alongside the original plan; finalized → Accepted when their workstream begins):
+> **This table is the canonical tracker for ADR status, owning workstream, and disposition across
+> the phase.** Workstream sections reference it rather than restating ADR details.
 
-1. [ADR-0058](../../decisions/0058-relavium-authoring-package-and-conversational-authoring.md) —
-   `@relavium/authoring` + conversational authoring (2.6.A/2.6.B). *Proposed.*
-2. [ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md) — mid-session model reseat (2.6.C).
-   **Accepted** (shipped 2.5.G).
-3. [ADR-0060](../../decisions/0060-session-ctx-prompt-interpolation.md) — session `{{ctx.*}}`
-   interpolation (2.6.D). *Proposed; mandatory security review before Accept.*
+| # | ADR | Topic | Status | Workstream |
+|---|-----|-------|--------|------------|
+| 1 | [ADR-0058][] | `@relavium/authoring` + conversational authoring | Proposed | 2.6.A / 2.6.B |
+| 2 | [ADR-0059][] | Mid-session model reseat | **Accepted** (shipped 2.5.G) | 2.6.C (residual) |
+| 3 | [ADR-0060][] | Session `{{ctx.*}}` interpolation | Proposed | 2.6.D |
+| 4 | *(new)* | Node supported-floor bump (`>=22`; supersedes ADR-0021) | Drafted when 2.6.F starts | 2.6.F |
+| 5 | *(new)* | Full-screen TUI renderer + component test harness | Drafted when 2.6.F starts | 2.6.F |
+| 6 | *(new)* | Management browsers + durable run detail (amends ADR-0036) | Drafted when 2.6.G starts | 2.6.G / 2.6.H |
+| 7 | *(new)* | MCP management surface + config-write extension (extends ADR-0063) | Drafted when 2.6.I starts | 2.6.I |
+| 8 | *(new)* | Onboarding auth paths + Relavium-account forward design (rides ADR-0012–0015) | Drafted when 2.6.J starts | 2.6.J |
+| 9 | *(new)* | Toolbelt additions + tool-render/approval-preview contract (extends ADR-0029/ADR-0057) | Drafted when 2.6.M starts | 2.6.M |
+| 10 | *(new)* | i18n + theming architecture | Drafted when 2.6.L starts | 2.6.L |
 
-New (numbers assigned when drafted; each is drafted as Proposed when its workstream starts, per the
-established phase pattern):
-
-4. **Node supported-floor bump** (`>=22`) — SemVer-major; **supersedes**
-   [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md) (2.6.F).
-5. **Full-screen TUI renderer + component test harness** (alternate screen, viewport/auto-follow, the
-   inline fallback contract, the harness devDependency) (2.6.F).
-6. **Management browsers + durable run detail** (the drill-down contract; additive run-event fields
-   amending ADR-0036; step attribution; the bounded tool-trace posture) (2.6.G/2.6.H).
-7. **MCP management surface + config-write extension** (structured `[[mcp_servers]]` writes extending
-   ADR-0063; the `/mcp` + `relavium mcp` surface; header auth) (2.6.I).
-8. **Onboarding auth paths + Relavium-account forward design** (the disabled stub's contract; Phase-5
-   ownership; rides ADR-0012–0015) (2.6.J).
-9. **Toolbelt additions + tool-render/approval-preview contract** (the new built-ins; the sanctioned
-   details/diff rendering revising the never-render-args posture; target-scoped approval cache — extends
-   ADR-0029/ADR-0057) (2.6.M).
-10. **i18n + theming architecture** (string catalog, locale resolution, palette abstraction) (2.6.L).
+[ADR-0058]: ../../decisions/0058-relavium-authoring-package-and-conversational-authoring.md
+[ADR-0059]: ../../decisions/0059-cli-mid-session-model-reseat.md
+[ADR-0060]: ../../decisions/0060-session-ctx-prompt-interpolation.md
 
 > **Conditional:** 2.6.E requires a small dedicated ADR **only if** a markdown rendering dependency is
 > chosen (the in-house renderer is preferred); if the in-house path is taken, no 2.6.E ADR is needed.
+>
+> **Deferred:** A future validator-dependency ADR will be needed for `output_schema` deep JSON-Schema
+> conformance (currently out of scope for this phase; tracked in
+> [deferred-tasks.md](../deferred-tasks.md)).
 
 ## Risks & mitigations
 
@@ -664,7 +678,7 @@ established phase pattern):
 |------|------------|
 | **Scope breadth** — thirteen workstreams invite drift | Milestone gating (M2.6-1..5); the additive arms (E/L parts, M render-v2) can defer individual items without breaking the spine; the pull-in table keeps deferred-tasks as the single overflow home |
 | Full-screen renderer performance/fragility on ink | The floor bump unlocks ink 7; the component harness carries performance regression thresholds; the inline renderer is retained as a first-class fallback, and non-TTY paths never change |
-| Rendering args/diffs leaks sensitive data (reverses a 2.5 posture) | Sanctioned only by ADR #9 + a mandatory security review; every string passes the shared sanitize floor; bounded previews; secrets structurally excluded (keychain-only, never in tool args by construction) |
+| Rendering args/diffs leaks sensitive data (reverses a 2.5 posture) | Sanctioned only by the toolbelt-additions ADR + a mandatory security review; every string passes the shared sanitize floor; bounded previews; secrets structurally excluded (keychain-only, never in tool args by construction) |
 | Secret re-provide relaxes a fail-closed guarantee | stdin-only discipline, keychain re-resolution preferred, mandatory security review, and the shared resume core keeps one audited path |
 | Authoring knowledge drifts from the specs (restate) | Derived from the Zod schemas / reference docs; a no-duplication check is an acceptance gate |
 | Authored YAML smuggles secrets | The `parseWorkflow` secret-taint gate + the write-surface security review |

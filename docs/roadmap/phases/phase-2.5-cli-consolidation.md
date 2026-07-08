@@ -577,7 +577,8 @@ correct); reconcile the roadmap status surfaces (`docs/roadmap/current.md`,
 [phase-2-cli.md](phase-2-cli.md), [CLAUDE.md](../../../CLAUDE.md)) now that **2.R and 2.J have both
 landed**, and complete the central roadmap narrative for 2.5/2.6 ([../README.md](../README.md) — the phase
 index and the dependency graph already include them; reconcile the milestone-spine prose); handle the
-`NO_COLOR` / `FORCE_COLOR` env standards (today only the `--no-color` flag is honoured).
+`NO_COLOR` / `FORCE_COLOR` env standards — now resolved per the `--color` / `--no-color` > `NO_COLOR` > `FORCE_COLOR` > default-on order,
+orthogonal to `--json`/CI, with a full test matrix.
 
 **Acceptance:** no tracked doc claims the CLI `history.db` is encrypted; the roadmap reflects the landed
 state; `NO_COLOR` is honoured.
