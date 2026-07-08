@@ -4,13 +4,16 @@
 > per-tool approval / mode system), which is **complete** (M2.5-4, PR #69, 2026-07-08), so this phase is
 > now unblocked.
 >
-> **Rewritten 2026-07-08** (after the Phase-2.5 close), expanding the original authoring-and-parity scope
+> **Rewritten 2026-07-08**, last revised 2026-07-08 (2.6.N child-session orchestration added,
+> UX polish, syntax highlighting, expanded locales, Home mockup — after the Phase-2.5 close),
+> expanding the original authoring-and-parity scope
 > into the phase that makes the CLI a **first-class, Home-centric product**. The rewrite folds three
 > inputs: the maintainer's CLI-experience findings, a competitor research pass (opencode, Claude Code,
 > Codex CLI, Gemini CLI, Temporal/`gh run`-class run tooling, Aider/Goose/Amp/Cursor/Copilot), and a
 > line-by-line triage of [../deferred-tasks.md](../deferred-tasks.md) (the now-doable items are pulled in
 > below, each mapped to a workstream). Workstreams **2.6.A–E keep their original identities** (they are
-> referenced by ADR-0058/0059/0060 and the deferred-tasks doc); **2.6.F–M are new**.
+> referenced by ADR-0058/0059/0060 and the deferred-tasks doc); **2.6.F–N were added**
+> (2.6.N added 2026-07-08 by maintainer decision, moving child-session orchestration from Phase 3).
 >
 > **Note (2026-07-07):** **2.6.C**'s mid-session `/models` model **reseat shipped early in 2.5.G** (ADR-0059,
 > PR #66, merged 2026-07-07); 2.6.C is retained for the residual per-model cost-breakdown read and as the
@@ -21,16 +24,17 @@
 The second half of the consolidation work begun in
 [phase-2.5-cli-consolidation.md](phase-2.5-cli-consolidation.md), now widened into the phase that finishes
 the CLI as a product. It realizes the tagline — *"Start as an agent. Ship the workflow. Own every run."* —
-**entirely inside the terminal**: a conversation authors a standards-valid workflow, the Home starts and
-monitors it, the run history is drillable to per-node detail, and every management task (providers, models,
-MCP, settings, gates) is doable from the Home without dropping to a shell subcommand. When this phase
-closes, `relavium` in a terminal is a first-class experience on par with the best agentic CLIs — while
-keeping the postures they lack: OS-keychain-only secrets, a fail-closed approval floor, and git-committable
-YAML artifacts.
+**entirely inside the terminal**: a conversation authors a standards-valid workflow, agents spawn sub-agents
+and invoke workflows for complex tasks, the Home starts and monitors runs, the run history is drillable to
+per-node detail. Every management task (providers, models, MCP, settings, gates) is doable from the Home
+without dropping to a shell subcommand. The chat renders syntax-highlighted code blocks; the CLI speaks
+five languages. When this phase closes, `relavium` in a terminal is a first-class experience on par with the
+best agentic CLIs — while keeping the postures they lack: OS-keychain-only secrets, a fail-closed approval
+floor, and git-committable YAML artifacts.
 
 ## TL;DR
 
-Phase 2.6 makes bare `relavium` a **full-screen, Home-centric** product. Key outcomes in 5 milestones:
+Phase 2.6 makes bare `relavium` a **full-screen, Home-centric** product. Key outcomes in 6 milestones:
 
 - **Conversational authoring** — a free-text request produces a strict-valid `.relavium.yaml`,
   authored and run from the Home; `{{ctx.*}}` interpolation and `agent run --input` land.
@@ -39,11 +43,15 @@ Phase 2.6 makes bare `relavium` a **full-screen, Home-centric** product. Key out
 - **Drillable, attributed run history** — list → run → node drill-down with per-node model/agent/cost
   attribution, bounded tool traces, and cross-process live watch.
 - **Competitor-toolbelt parity** — `edit_file`, `search_files`, `find_files`, `todo`, `ask_user`,
-  working `web_search`, each YAML-selectable and mode-gated.
+  working `web_search`, wired `invoke_agent`; syntax-highlighted code blocks in chat — each
+  YAML-selectable and mode-gated.
+- **Agent orchestration** — chat agents autonomously spawn sub-agents and invoke workflows for
+  complex sub-tasks; workflows call workflows via `subworkflow` nodes; standardized I/O contracts;
+  parent-child lineage tracking; auto-cleaned artifacts.
 - **Settings, theming, localization** — `/settings` over the config-write contract; three built-in
-  themes (default / high-contrast / colorblind-safe); `en` + `tr` i18n with CI key-parity.
+  themes (default / high-contrast / colorblind-safe); `en`, `es`, `tr`, `fr`, `de` i18n with CI key-parity.
 - **Onboarding v2** — two auth paths: BYOK (live) + Relavium-account stub (disabled, Phase 5).
-- **13 workstreams** (2.6.A–M), substrate-first: 2.6.F (full-screen TUI + Node 22 floor) runs first.
+- **14 workstreams** (2.6.A–N), substrate-first: 2.6.F (full-screen TUI + Node 22 floor) runs first.
 
 ## Goal
 
@@ -51,9 +59,10 @@ Make the bare `relavium` invocation a **full-screen, Home-centric** surface from
 is used and managed; close the **tool-breadth gap** against competitor CLIs (edit, search, find, todo,
 ask-user, working web search) under the existing governance floor; land **conversational authoring** on the
 shared `@relavium/authoring` core; give runs a **three-level drill-down** (list → run → node) over durable,
-attributed history; and ship **settings, theming, and localization** — all without breaking the `--json` /
-CI / non-TTY contract ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)) or any existing
-subcommand.
+attributed history; enable **agent orchestration** — chat agents spawning sub-agents, workflows invoking
+workflows, standardized I/O, and on-the-fly agent generation; and ship **settings, theming, localization,
+and syntax-highlighted rendering** — all without breaking the `--json` / CI / non-TTY contract
+([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)) or any existing subcommand.
 
 ## Outcomes (Definition of Done)
 
@@ -68,15 +77,19 @@ subcommand.
 - A `@relavium/authoring` package is the shared authoring core; a conversational request produces a
   strict-valid, catalog-validated `.relavium.yaml`, written only under approval, offered to run it in-place.
 - The **toolbelt** reaches competitor breadth — `edit_file`, `search_files`, `find_files`, todo/plan,
-  `ask_user`, an actually-working `web_search` — each engine-pure, YAML-selectable, mode-gated, and
-  rendered first-class (collapsible detail, diffs at the approval prompt) behind a security-reviewed
-  render contract.
+  `ask_user`, an actually-working `web_search`, and `invoke_agent` (wired for chat) — each engine-pure,
+  YAML-selectable, mode-gated, and rendered first-class (collapsible detail, diffs at the approval
+  prompt, syntax-highlighted code blocks) behind a security-reviewed render contract.
 - Session `{{ctx.*}}` interpolation lands (ADR-0060) and `agent run --input` is unblocked.
 - Run history is **attributed and drillable**: per-node model/agent/cost durable, a bounded secret-free
   tool trace, gate-resolve TOCTOU closed at the store, crashed runs reconciled, cross-process runs
   watchable live at node granularity.
-- The CLI speaks **`en` and `tr`** over a string catalog with CI key-parity, and ships a real theme system
+- The CLI speaks **`en`, `es`, `tr`, `fr`, `de`** over a string catalog with CI key-parity, and ships a real theme system
   (default + high-contrast + colorblind-safe) with the color-free path staying legible.
+- An agent in a chat session can **autonomously spawn sub-agents and invoke workflows** for complex
+  sub-tasks, with standardized I/O contracts, parent-child lineage tracking, hierarchical cost
+  attribution, and auto-cleaned temporary artifacts in `~/.relavium/artifacts/` — closing the
+  largest deliberate parity gap. Workflows can invoke other workflows via `subworkflow` nodes.
 - The onboarding wizard offers **two auth paths** — BYOK (live) and *Sign in with a Relavium account*
   (visible, disabled, honestly labeled as coming with managed inference) — behind an Accepted
   forward-design ADR.
@@ -87,14 +100,12 @@ subcommand.
 
 The workstreams below: the authoring spine (2.6.A/B/D), the platform + full-screen TUI foundation (2.6.F),
 the Home management surfaces (2.6.G/H/I/J/K), the experience arms (2.6.C residual, 2.6.E, 2.6.L, 2.6.M),
+the **child-session and nested execution spine** (2.6.N),
 and the deferred-tasks items each workstream absorbs (mapped in the
 [pull-in table](#deferred-tasks-pulled-into-this-phase)).
 
 ### Explicitly out of scope (→ Phase 3 / later)
 
-- **Chat sub-agent spawn** (a child-session engine model — the largest deliberate parity gap left; it
-  belongs with the Phase-3 desktop multi-agent center and needs its own ADR; `invoke_agent` stays
-  workflow-only).
 - The **`read_media` D12 cluster** (host `MediaReadAccess`, scope population, the result-shape contract)
   and `@`-mention of media files — the dedicated, security-reviewed follow-up stands.
 - **Full-fidelity reseat tool-context** (the 1.X/1.Z persister/schema extension) — the reseat keeps its
@@ -224,24 +235,52 @@ The competitor-parity chat ergonomics (the theme system moved to 2.6.L; tool-cal
 
 **Tasks:**
 
-- **Markdown + code-block rendering** in the transcript (minimal in-house renderer preferred; a markdown
-  dependency, if chosen, needs an ADR); syntax highlighting stays Phase 3.
+- **Markdown + code-block rendering + syntax highlighting** in the transcript: a minimal in-house
+  markdown renderer (code fences, inline code, bold/italic, headings, lists, blockquotes) with
+  **`ink-syntax-highlight`** for first-class syntax highlighting in code blocks. `ink-syntax-highlight`
+  is a thin ink-native wrapper around `highlight.js` + `cli-highlight` — it outputs native ink
+  `<Text color>` elements (integrates with the 2.6.L theme system), supports 190+ languages with
+  automatic detection, and tree-shakes to specific languages for bundle control. This requires a
+  dedicated ADR (new dependency — `highlight.js` + `cli-highlight`; evaluated over the in-house
+  alternative on breadth, maintenance burden, and bundle impact), a catalog entry in
+  `pnpm-workspace.yaml`, and a tree-shaken language list (the built-in agent's default languages:
+  TypeScript, JavaScript, Python, YAML, JSON, Bash, Markdown, TOML; the rest load on demand). The
+  markdown-to-ink component maps rendered nodes to ink's `<Text>` / `<Box>` primitives under the
+  existing `stripTerminalControls` sanitization floor.
 - **Advanced `@`-injection**: glob / directory expansion respecting ignore files (the ADR-0061 follow-up;
   the in-house matcher from the 2.5 close is the substrate).
 - **`/rewind` + `/fork`** at conversation level: rewind truncates to a chosen prior message and continues
   (via the `/clear`-style host-swap + `reconstructSessionState` machinery); fork branches a session into a
   new `sessionId` preserving the original. File-change revert is explicitly out (see out-of-scope).
+  **Analysis gate:** the interaction with child sessions must be decided during implementation —
+  (a) `/rewind` past a point where sub-agents were spawned: are in-flight children cancelled? are
+  completed children's results retained in the truncated transcript? (b) `/fork` of a session that
+  spawned children: does the fork include the child lineage or start clean? The answer affects the
+  `reconstructSessionState` machinery and the parent-child DB model; a dedicated design spike during
+  2.6.E implementation will resolve both cases before the feature lands.
 - **Type-ahead message queue**: messages typed while a turn runs are queued (navigate/edit the queue), sent
   on turn end — with a steer-now affordance considered (send-as-interrupt).
 - **Input history search**: `Ctrl+R` reverse search over per-project prompt history.
 - **`$EDITOR` compose** (`Ctrl+G`): edit the pending prompt in the external editor.
-- **`/copy`**: copy the last assistant reply (OSC-52 with a plain fallback).
+- **`/copy`**: copy the last assistant reply (OSC-52 with a plain fallback). Additionally,
+  **copy-on-select**: text selected with the mouse in the terminal (the native terminal selection
+  mechanism) copies to the system clipboard automatically when the terminal emulator supports
+  OSC-52; no explicit command needed. The `/copy` command remains for keyboard-only workflows
+  and terminals without OSC-52 support.
 - **`/help` v2**: a full-screen, sectioned help screen (commands, keybindings, modes) replacing the flat
-  text list, once 2.6.F's renderer lands.
+  text list, once 2.6.F's renderer lands. Supplemented by a **quick-reference cheat sheet** overlay
+  (`Ctrl+O` or `?` — a half-screen modal summarizing current-context keybindings: the mode-aware
+  approval keys, the browser nav keys, the chat input keys — dismissible with any key). The footer
+  hint-bar remains the primary discoverability surface; the cheat sheet is the deliberate-lookup
+  companion.
+- **Transcript search** (`Ctrl+F` / `/find`): incremental text search within the visible chat
+  transcript — type to jump to the first matching assistant turn, Enter for next match, Esc to
+  dismiss. Scoped to the loaded transcript viewport (not a DB query); a full-history search is
+  deferred (scale-gated, needs the transcript-index follow-up).
 
 **Acceptance:** each affordance works in chat and the in-Home chat; `--json`/plain surfaces reject or
 ignore them exactly as the ADR-0049 contract requires; the message queue and rewind have reducer-level
-tests. **Required ADR:** none, unless a markdown dependency is chosen (then a small dedicated ADR).
+tests. **Required ADR:** `ink-syntax-highlight` dependency + markdown rendering architecture.
 
 ### 2.6.F — Platform floor + the full-screen TUI foundation
 
@@ -269,12 +308,24 @@ render-v2 (2.6.M) all build on it.
   behavior for long responses so that content above the visible area is never lost. Renderer choice is
   orthogonal to session state (switching relaunches the view in place, conversation intact). The run TUI's
   persistent plain-text exit summary is preserved on unmount.
+- **Branded Home banner**: a full-width, ink-native banner rendered at the top of the full-screen Home
+  on mount. The design is developed during implementation (ASCII-art or Unicode box-drawing character
+  variants evaluated against the three themes and `--no-color` degradation); the banner is shown on the
+  **first five** Home opens, then auto-dismissed — re-enabled via `[preferences].show_banner`. It must:
+  adapt to terminal width (truncated or centered at every supported width ≥80), degrade to plain ASCII
+  when `NO_COLOR` / `--no-color` is active, render in under one frame (no measure-then-draw flicker),
+  and never obscure the management strip or prompt on a 80×24 terminal. The banner is a cosmetic
+  substrate element — it does not gate any feature.
 - **TUI component test harness** *(deferred pull-in)*: the first CLI component-render harness (a new
   devDependency — part of this workstream's ADR), so render-cadence bugs (the 2.5.H frozen-clock class)
   get regression tests; add performance regression thresholds (frame time / render count) for the
   full-screen frame loop.
 - Resize/degrade behavior and the documented screen-reader constraint (raw-mode TUI) with the non-TTY
-  fallback — carried from the original 2.6.E and owned here.
+  fallback — carried from the original 2.6.E and owned here. The full-screen alternate-screen mode
+  (DECSET 1049) is inherently inaccessible to screen readers; the **`--no-alt-screen`** escape hatch
+  and the config key `[preferences].alt_screen` provide an explicit path back to the inline renderer
+  where the terminal emulator's own accessibility support applies. A dedicated accessibility note in
+  the user-facing docs will document this trade-off and the escape hatch.
 
 **Acceptance:** bare `relavium` on a TTY opens the full-screen Home; scroll + auto-follow work; the
 `--json` / CI / non-TTY paths are byte-identical to today (harness-proven); the floor-bump ADR is Accepted
@@ -289,6 +340,42 @@ proven three-level drill-down (list → detail → step detail) with `gh run`-st
 (every screen hints the next action) and picker-on-omitted-id semantics. The maintainer's separate-command
 sketch (`/active-workflows`, `/workflow-run-history`, …) is **deliberately simplified** into two tabbed
 browsers with argument deep-links — same reach, fewer commands.
+
+The post-2.6 full-screen Home renders with the branded banner, the management strip, and the chat prompt
+in a single viewport:
+
+```text
+╔══════════════════════════════════════════════════════════════╗
+║  relavium                                v0.2.0 · en · ask  ║  ← banner (dismissed after 5 opens)
+╚══════════════════════════════════════════════════════════════╝
+
+  /workflows  /agents  /providers  /mcp  /settings  /permissions   ← tab bar (^T / click)
+
+  ═══ Defined ─── Active ─── History ────────────────────────────
+  ▶ deploy · last run 3h ago · ✓ completed                [Run] [Export]
+    code-review · last run 1d ago · ✗ failed — Node 3     [Run] [Detach]
+    nightly-build · invalid — unknown model "claude-5"          [Fix]
+
+  ⭐ Pinned ─────────────────────────────────────────────────────
+  ★ deploy · completed 3h ago · $0.04
+
+  —————————————————————————————————————————————————————————————
+  Enter drill-down · p pin · q Home · /filter · ↑↓ navigate
+```
+
+The **tab bar** provides one-key access to every management surface — `/workflows`, `/agents`,
+`/providers`, `/mcp`, `/settings`, `/permissions`. `Ctrl+T` cycles tabs; each tab remembers its
+last drill-down position.
+
+> **Design note:** the ASCII mockup above illustrates the `/workflows` browser as a representative
+> example. Every management tab (`/workflows`, `/agents`, `/providers`, `/mcp`, `/settings`,
+> `/permissions`) will be designed with the same interaction model (drill-down navigation, breadcrumb
+> header, loading states, pinned items where applicable) but with surface-specific content and
+> actions. The exact visual design — layout, column widths, color assignments, status glyphs,
+> action-button placement — will be developed during implementation through a multi-alternative
+> evaluation (ASCII-art vs Unicode box-drawing, compact vs spacious, light vs dark, etc.) across
+> the three built-in themes, with the chosen design applied uniformly to all tabs. The mockup
+> above is a design *direction*, not a pixel-accurate spec.
 
 **Tasks:**
 
@@ -308,20 +395,55 @@ browsers with argument deep-links — same reach, fewer commands.
     attempt, tokens, cost) + a "jump to first failed node" key. Enter on a node → **node detail**: the
     input / output / duration / tokens / error quintet plus the bounded tool-trace and event timeline
     (Scheduled/Started/Completed triplets collapsed into one expandable row).
+  - **Navigation**: Enter drills down (list → run detail → node detail); **Backspace** or **Esc**
+    returns to the previous level; `q` returns to the Home strip from any level. The current
+    level and parent breadcrumb are shown in the header row of every screen. The browser
+    **preserves drill-down position** — returning from the Home to the browser restores the
+    last-viewed screen rather than resetting to the top-level list.
+  - **Loading states**: drill-down reads from `history.db` may encounter cold-cache latency;
+    each navigation shows a bounded `Loading…` spinner (with Esc to cancel). A read that exceeds
+    2s shows the elapsed time; a failed read surfaces a one-line error notice rather than a
+    white screen.
+  - **Bookmarking**: any run or workflow can be **pinned** from its detail screen (`p` key —
+    persisted to `history.db`). Pinned items appear in a **⭐ Pinned** section at the top of the
+    History tab, above the chronological list. Un-pin with `p` again. Pins survive across
+    sessions.
 - **`/agents` browser** (Home + chat): tabs **Defined | Sessions**. *Defined*: the agent catalog with
   **"start a chat with this agent"** (closing the Home's built-in-agent-only gap). *Sessions*: recent +
   in-progress sessions — Enter resumes **in place** (the in-Home chat machinery), with a detail view
-  (transcript summary, cost, model attribution).
+  (transcript summary, cost, model attribution). Child sessions spawned by a parent agent are shown
+  **indented beneath their parent** with a `└─` tree-drawing prefix and the sub-agent's name; a
+  collapsed parent hides its children (toggle with `Space`). A filter (`/sessions --roots`) shows
+  only root (user-initiated) sessions, hiding children.
 - **Actionable Home strip**: the Attention/Continue rows become focusable — a gate row opens an inline
   resolve card (approve / reject / input, via 2.6.K's shared resume core), a failed run opens its detail,
   a session row resumes, a run row opens detail. The strip refreshes on an idle tick while the Home is
   open (today it is snapshot-static).
+- **Permission management** *(new — script execution + tool grants via slash commands)*: when an agent
+  issues a `run_command` for a not-yet-allowlisted command (e.g. `python analyze.py`, `node build.js`,
+  `curl -s https://...`), the interactive surface prompts the user with a typed, informative approval
+  card — not a generic allow/deny, but one that names the exact command and offers three grant scopes:
+  **(a) once** (this turn only), **(b) this session** (in-memory, gone on `/exit`), **(c) this project**
+  (writes to `.relavium/project.toml` `[chat].allowed_commands` via the ADR-0063 config-write contract).
+  A **global grant** (writes to `~/.relavium/config.toml`) is available via an explicit `/permissions`
+  slash command in the Home and chat. The `/permissions` command opens a management screen listing all
+  active grants (command allowlist, domain allowlist, MCP servers, egress endpoints) with add/remove
+  actions — the single pane for the user to audit and revoke what an agent has been granted. A
+  **`once`-granted** command is never persisted; a **session/project/global** grant writes the
+  appropriate config layer atomically. An allowlist whose *only* entry is default-approved (like the
+  curl/wget research item in 2.6.M) is surfaced here as a built-in grant that can be revoked.
 - **Liveness**: wire `engine.reconcile()` (never invoked today) on Home open and the browser/status reads,
   so crashed runs settle `run:failed{internal}` instead of showing as zombie `running` rows; expired gates
   settle per their timeout policy via 2.6.K's re-arm.
 - Non-interactive parity: extend the read *commands* minimally (`relavium list --runs`, `status <runId>`
   for finished runs, `logs --follow/--failed`) so scripting keeps pace with the TUI —
   [ADR-0049](../../decisions/0049-cli-machine-output-contract.md)-conformant.
+- **Detached-run notification**: when a run is started as "Run detached" from the Home and completes
+  (or fails), surface a notification on the Home's next idle tick — an `Attention required` row with
+  the outcome, linked to the run detail. For a chat that remains open with a detached run in the
+  background, surface a one-line `notice` in the transcript on completion. This hooks into the
+  existing `notify` tool's desktop-notification path only when the OS-native notifier is configured;
+  the Home-side notice is the reliable default.
 
 **Acceptance:** every action above works from the Home without a shell command; the three-level drill-down
 is complete over 2.6.H's data; a run started in another terminal is watchable live at node granularity;
@@ -481,16 +603,18 @@ and the first localized agentic CLI (a genuine differentiator — competitor i18
   (new keys: `theme`, `language`; still global-preferences-only, atomic, secret-incapable by construction —
   project files stay hand-authored).
 - **i18n foundation**: an in-house string catalog (data ≠ code — zero conditional logic in translation
-  data; no runtime dependency expected, else ADR); `[preferences].language`; locales **`en` + `tr`**
-  in-phase; a CI **key-parity test** (fails on missing/extra keys) + a dead-string lint — landing the
-  deferred i18n standard as a `docs/standards/` entry. Acceptance includes IME-safe input and
-  wide-character-aware layout, laying the groundwork for future CJK locales.
+  data; no runtime dependency expected, else ADR); `[preferences].language`; locales **`en`, `es`, `tr`,
+  `fr`, `de`** in-phase; a CI **key-parity test** (fails on missing/extra keys across all locales)
+  + a dead-string lint — landing the deferred i18n standard as a `docs/standards/` entry. Acceptance
+  includes IME-safe input and wide-character-aware layout. Pluralization rules for German and French
+  are handled by a minimal in-house pluralization helper (selecting key variants by count); Spanish
+  and French accented characters are valid Unicode in the terminal and require no special handling.
 - Diagnostics/`--json` output stays English-stable (machine contract); localization applies to the
   interactive surfaces.
 
 **Acceptance:** `/settings` edits persist atomically and round-trip; themes switch live incl. the
-accessibility pair; the color-free path stays legible; interactive surfaces run fully in `tr` with
-CI-enforced key parity; diagnostics and `--json` remain English-stable per
+accessibility pair; the color-free path stays legible; interactive surfaces run fully in all five
+locales with CI-enforced key parity; diagnostics and `--json` remain English-stable per
 [ADR-0049](../../decisions/0049-cli-machine-output-contract.md); the machine-output contract is
 character-for-character unaffected. **Required ADR:** i18n +
 theming architecture.
@@ -517,10 +641,26 @@ sensitive-read floors).
   checklist (persists across compaction); ungoverned (no host arm).
 - **`ask_user`** — a structured mid-turn question (options + free text) on interactive surfaces via a
   keyboard-owning overlay; typed `tool_unavailable` on non-interactive surfaces; workflows keep
-  `human_gate`.
+  `human_gate`. When the agent emits `ask_user` mid-turn, the engine **pauses the turn** (stops
+  streaming, holds the in-flight state), renders the overlay, waits for user input, then **resumes**
+  the turn with the user's answer injected as the tool result — so there is no keyboard-ownership
+  race between streaming tokens and the overlay. A turn paused on `ask_user` shows
+  `Waiting for your input…` in the transcript; a timeout (configurable, default 5min) auto-dismisses
+  the overlay with a `timed_out` error the agent can handle.
 - **`web_search` activation** *(deferred pull-in)*: wire the `egressCredentialResolver` from the keychain
   (today a configured search 401s) and document the config-pinned provider contract; `http_request`
   unchanged.
+  - **Architecture note:** `web_search` is a **Relavium-engine-side HTTPS GET** to a config-pinned search
+    API endpoint (Brave Search / SearXNG / etc.). It does **not** use the LLM provider's built-in web
+    search feature — no provider SDK call, no model-side quota consumption. Search API credentials are
+    resolved from the OS keychain via the same `egressCredentialResolver` seam as `http_request`, never
+    stored in config files or YAML. The credential resolver plumbing already exists in
+    `apps/cli/src/engine/tool-host/egress.ts` but is **not wired** by any production caller (no
+    `egressCredentialResolver` is passed in `session-host.ts` or `build-engine.ts`). The Phase 2.6 task
+    is to: (a) add a per-provider search-API key store (keychain namespace `search:*`), (b) wire the
+    resolver in the chat-session and workflow-run tool-environment factories, (c) surface search-provider
+    configuration in `/providers` and the onboarding wizard, and (d) document the config-pinned provider
+    contract in `built-in-tools.md`.
 - **`extra_roots`** *(deferred pull-in)*: the `[chat].extra_roots` config key + factory wiring, unblocking
   the `project` fs tier's documented allowlist (narrow-only, never a jail hole).
 - **Tool-call rendering v2** (with 2.6.F's renderer): keep the collapsed one-line annotation as the
@@ -533,14 +673,176 @@ sensitive-read floors).
   (path prefix / host / MCP server) instead of tool id alone, and give `mcp_call`/`web_search` a structured
   `{server, tool}`/query preview so their blank-preview once-only downgrade becomes a real reviewable
   grant.
+- **Dynamic `invoke_workflow` from within a workflow agent node** *(analysis gate)*: the
+  `invoke_agent` tool is wired for chat in 2.6.N, and the `subworkflow` node provides static
+  workflow composition. An open question is whether a running workflow's agent node can
+  **dynamically** call `invoke_workflow` as a tool (just as a chat agent calls `invoke_agent`),
+  selecting a target workflow at runtime based on intermediate results. This would enable
+  orchestrator workflows that branch to different sub-workflows based on model judgment. The
+  ADR must evaluate: (a) whether `invoke_workflow` is a separate tool or an overload of
+  `invoke_agent` with a `target: 'workflow'` discriminator, (b) the event namespace for nested
+  workflow runs within a parent run, and (c) the cost/resource governance boundary. Decision
+  deferred to the 2.6.N implementation analysis step.
 - **Default chat agent grant review**: widen the built-in agent's grant to the new idempotent read tools
   (search/find/todo); write/exec/egress stay opt-in via mode + approval.
+- **Curl/wget as web-search substrate** *(research item)*: evaluate whether `curl` / `wget` / `httpie` /
+  `xh` should be **default-allowed** in the built-in chat agent's `allowed_commands` as an alternative
+  web-search path — the model can already use `web_search` (once credential-resolved), but a
+  `run_command`-backed `curl` gives the model raw HTTP access under the existing `shell: false`,
+  allowlist-exact-match, and mode-gated approval floor. The research must weigh: (a) the UX benefit of a
+  no-config web path vs (b) the security implications of a default-allowlisted network command (even
+  with `shell: false`, arg injection through the model is a concern), and (c) whether the answer differs
+  for the built-in agent vs explicitly-authored agents. Record the decision as an amendment to 2.6.M's
+  acceptance criteria or as a deferred Phase 2.6 follow-up.
 
-**Acceptance:** the toolbelt covers read / edit / search / find / exec / web / todo / ask-user; each tool
+**Acceptance:** the toolbelt covers read / edit / search / find / exec / web / todo / ask-user /
+`invoke_agent` (now wired for chat — 2.6.N); each tool
 is YAML-selectable and correctly mode-gated on every surface; render v2 ships with diffs and the details
 toggle behind a passed security review; the approval cache is target-scoped; the tool-gap table in the
 research record is closed or explicitly deferred per item. **Required ADR:** toolbelt additions +
 tool-render/approval-preview contract (extends ADR-0029/ADR-0057 posture).
+
+### 2.6.N — Child-session spawn, nested workflows, standardized agent I/O
+
+Close the largest deliberate parity gap: let a chat session **spawn sub-agents and invoke
+workflows** — both user-initiated and model-driven — with standardized input/output contracts,
+parent-child lineage tracking, and auto-cleaned temporary artifacts. This workstream is new
+(moved from Phase 3 into 2.6 by maintainer decision, 2026-07-08) and requires a dedicated ADR
+before implementation begins.
+
+**Tasks:**
+
+- **Child-session ADR**: record the architecture for parent-child execution relationships —
+  the child spawn lifecycle (start → run → collect → cleanup), the `parentSessionId` /
+  `parentRunId` schema additions to `agent_sessions` and `runs`, the cost-attribution model
+  (child costs roll up to the parent), the abort/cancel propagation contract (parent cancel
+  cascades to children; child failure surfaces in parent without killing the parent), and the
+  context-sharing model (a child agent receives the parent's task description as a system prompt,
+  never the full transcript). Extends ADR-0024 (AgentSession) and ADR-0036 (event bus); amends
+  the database schema additively.
+  **Analysis gate:** the child's intermediate steps (tool calls, reasoning, partial outputs)
+  must be visible to the parent in some form — the ADR must decide whether the parent sees a
+  real-time stream of child events (inline in the parent transcript), a terminal summary only,
+  or a collapsible detail panel. The trade-off is UX richness vs transcript noise.
+- **Standardized agent/workflow I/O contract**: define a canonical `AgentIO` interface —
+  `{ task: string, context?: Record<string, unknown>, files?: string[] }` for input,
+  `{ result: string, artifacts?: { path: string, summary: string }[], error?: { message: string, code: string } }`
+  for output — that every agent and workflow honors, so any agent can invoke any other without
+  ad-hoc prompt engineering. This contract is authored once in `@relavium/shared`, consumed by
+  the engine's `invokeAgent` delegate, and documented in a canonical reference spec. Existing
+  workflow `inputs`/`outputs` are mapped to this contract: a workflow's declared `inputs` schema
+  is the validation gate; its `output_mapping` shapes the result. Agents without declared schemas
+  get the free-form text contract.
+- **Engine: `invokeAgent` delegate wired for chat**: inject `ctx.invokeAgent` into the
+  `AgentSession`'s tool dispatch context. When an agent calls `invoke_agent` (or the model emits
+  it autonomously for a complex sub-task), the engine:
+  1. **Resolves or generates the target agent.** If the model names an agent slug or path that
+     exists in the catalog (`.relavium/agents/` or the built-in set), that agent is used. If
+     the model describes a task that needs a **new, one-off agent** (e.g. "analyze this CSV and
+     find outliers"), the engine uses the conversational authoring infrastructure (2.6.B) to
+     generate a valid `.agent.yaml` on the fly — written to
+     `~/.relavium/artifacts/<parentSessionId>/agents/<uuid>.agent.yaml`, validated against the
+     agent schema, and immediately spawned. The model can also generate and invoke a one-off
+     `.relavium.yaml` workflow via the same path. This is a critical capability: the model is
+     not limited to pre-existing catalog agents — it can **compose tooling on demand** for the
+     task at hand.
+  2. Creates a child `AgentSession` (or child `WorkflowEngine` run for a workflow) with
+     `parentSessionId` set, bound to the resolved or generated agent/workflow.
+  3. Injects the standardized input (task + context) as the child's first user message.
+  4. Runs the child to completion, collecting its output.
+  5. Returns the standardized result to the parent agent's turn as a tool result.
+  6. Records the child session/run in `history.db` with full lineage.
+  The parent agent sees the child's result as structured output and continues its turn.
+  **Analysis gate:** the model's ability to generate valid agent/workflow YAML on the fly
+  depends on the conversational authoring knowledge pack (2.6.B) and the Zod schema
+  validation loop. A dedicated analysis step during 2.6.N implementation must verify: (a)
+  the generation success rate across a representative task corpus, (b) that malformed
+  generated YAML never reaches execution (the `validateAuthoredWorkflow` pre-flight is the
+  gate), (c) that the generation latency is acceptable for an interactive chat turn, and (d)
+  that generated agents never carry secrets or unauthorized tool grants (they inherit the
+  parent's tool policy, narrowed, never escalated).
+- **Engine: `invokeWorkflow` for chat**: same pattern for workflows — resolves an existing
+  `.relavium.yaml` from the catalog **or** generates one on demand via the authoring
+  infrastructure, creates a child `WorkflowEngine` run with `parentRunId` set, streams its
+  progress as inline status events in the parent transcript, returns the workflow's terminal
+  output. A workflow invoked from chat runs **foreground** (the parent turn blocks until the
+  workflow completes). Detached execution is a Phase 3 follow-up.
+- **Parallel sub-agent spawn**: when the parent agent issues multiple `invoke_agent` calls within
+  a single turn (e.g. "review the frontend" + "review the backend" + "audit the database schema"),
+  the engine runs them **concurrently** — each child session starts independently, streams its
+  status into the parent transcript as parallel inline indicators, and the parent turn completes
+  when the **last** child finishes (or the first child fails fatally, configurable). The transcript
+  shows a parallel group: `⏳ 3 agents running · code-reviewer (12s) · security-audit (8s) · db-check (15s)`.
+  Children within a group are independent — one's failure does not cancel siblings unless the
+  parent's error policy is `fail_fast`. The max concurrent children is bounded (configurable, default
+  5) to prevent runaway resource consumption. This is the primary orchestration differentiator
+  over sequential spawn — a complex task fans out and collects in one turn.
+  **Analysis gate:** the exact `fail_fast` semantics (cancel in-flight siblings? wait for their
+  completion but discard results? allow the parent to inspect partial sibling results?) and the
+  `error_policy` configuration surface (`fail_fast` vs `collect_all` vs `timeout_per_child`) must
+  be decided during implementation, not in this phase doc.
+- **Workflow-in-workflow (`subworkflow` node)**: wire the reserved `subworkflow` node type
+  in the engine — authorable in YAML v1.1, executable in the run loop. A `subworkflow` node
+  references another `.relavium.yaml` by path or catalog id, passes mapped inputs, and collects
+  mapped outputs — exactly as a `tool` node routes data, but executing a full nested workflow
+  DAG. The child run is recorded with `parentRunId` linking back to the calling workflow; its
+  `run:*` events are nested under a `run:child_*` event namespace (or the existing event bus
+  carries a `parentRunId` discriminator — decided in the ADR). This enables **arbitrary
+  workflow composition** — a workflow can invoke any other workflow as a sub-graph, composing
+  complex pipelines from smaller, independently testable units (analysis, code review, security
+  audit, deployment, etc.) without the engine knowing about any specific workflow's domain.
+- **Auto-generated artifact management**: temporary agent definitions and workflow files
+  created during sub-agent spawn (when the model generates a new agent for a one-off task) live
+  under `~/.relavium/artifacts/<parentSessionId>/` — **never** in the project directory. The
+  directory is created lazily (`0700`) and cleaned up when the parent session ends (on `/exit`,
+  `/cancel`, or process exit). A session that crashes leaves its artifacts directory for
+  inspection (aged out by a later GC pass — the 2.6.F `engine.reconcile()` path). Memory files,
+  harness files, and intermediate outputs also land here. The project `.relavium/` directory
+  remains the sole home for **authored, committed** artifacts.
+- **Chat UX for sub-agent spawn**:
+  - **Model-driven spawn**: the agent autonomously calls `invoke_agent` / `invoke_workflow`
+    as part of a complex turn — the transcript shows an inline status indicator:
+    `→ delegated to "code-reviewer" · running… (12s)` then `✓ code-reviewer · completed (23s, $0.04)`
+    or `✗ code-reviewer · failed — type mismatch in output`.
+  - **User-driven spawn**: `/spawn <agent> <task>` — manually start a sub-agent from the
+    chat prompt. The sub-agent runs, returns its result as a notice in the transcript.
+  - **Child result panel**: the child's full output is available in a collapsible detail
+    panel (the same `/details` toggle from 2.6.M's render v2). The parent transcript carries
+    a one-line summary; expanding shows the full child transcript.
+  - **Permission model**: a sub-agent spawned automatically inherits the parent's mode and
+    approval cache — a child never escalates beyond the parent's grant (a child in `ask` mode
+    cannot spawn a child in `auto` mode; a child whose parent denied `run_command` cannot
+    run commands). A user-initiated `/spawn` runs under the current chat mode; the user can
+    override with `/mode auto` before spawning. **Analysis gate:** the permission inheritance
+    model must be stress-tested against edge cases: (a) a child agent that calls `invoke_agent`
+    itself (grandchild depth — bounded at a configurable max depth, default 3, to prevent
+    runaway fan-out), (b) a child that switches modes via its own `/mode` (denied — mode is
+    inherited, not ownable by children), (c) a child that requests permission escalation from the
+    user (surfaced to the parent's approval prompt with the child's identity, so the user knows
+    who is asking), (d) generated agents that try to self-grant dangerous tool access (the
+    generator's schema validation prevents this — a generated agent's `tools:` list is clamped
+    to the parent's granted set). The ADR must record the resolved policy for each case before
+    implementation.
+- **Cost attribution**: child run costs (tokens, tool usage) roll up to the parent's
+  `cost:updated` event with a `childRunId` discriminator. The `/cost` command shows a
+  hierarchical breakdown: parent session total, then per-child contributions indented.
+  Per-node drill-down in run history (2.6.H) includes child runs as expandable rows.
+- **Child abort / partial output**: when a child is cancelled (parent `/cancel`, `Esc` abort,
+  or timeout), the engine captures the child's **partial output** — any tool results and
+  intermediate text produced before the abort — and returns it to the parent as
+  `{ result: "<partial>", error: { code: "cancelled", message: "child was aborted" } }`.
+  The parent agent can inspect the partial work and decide whether to retry, continue with a
+  different approach, or report to the user. Partial output is bounded (same ceiling as the
+  standard tool-result bound) and sanitized.
+
+**Acceptance:** a chat agent resolves a complex request by autonomously spawning a sub-agent
+to handle a distinct sub-task and incorporates its result into the parent turn; a user types
+`/spawn code-reviewer "review the last change"` and sees the result inline; a workflow calls
+another workflow via a `subworkflow` node and the child's events are attributed to the
+parent run; all artifacts land in `~/.relavium/artifacts/`, never in the project directory;
+the child session and run records carry full parent lineage; a parent cancel propagates to
+children; child cost is attributed to the parent. **Required ADR:** child-session and nested
+execution architecture (new, numbered when drafted — extends ADR-0024/ADR-0036).
 
 ## Deferred-tasks pulled into this phase
 
@@ -573,8 +875,7 @@ workstreams — each stays checked off **only** in the PR that lands it:
 
 Items evaluated and **kept deferred** (Phase-3/1.AH homes, SDK-blocked, accepted residuals, or
 scale-gated) remain in [deferred-tasks.md](../deferred-tasks.md) with their reasons — notably the
-`read_media` D12 cluster, chat sub-agents, retry-from-node, the desktop tool host, and the media/seam
-1.AH cluster.
+`read_media` D12 cluster, retry-from-node, the desktop tool host, and the media/seam 1.AH cluster.
 
 ## Milestones
 
@@ -584,7 +885,8 @@ scale-gated) remain in [deferred-tasks.md](../deferred-tasks.md) with their reas
 | M2.6-2 Authoring core shared | 2.6.A | `@relavium/authoring` + catalog-aware pre-flight |
 | M2.6-3 Conversational authoring | 2.6.B + 2.6.D | "define a workflow…" → valid YAML in the Home; `{{ctx.*}}` lands |
 | M2.6-4 The Home-managed CLI | 2.6.G + 2.6.H + 2.6.I + 2.6.J + 2.6.K | Every management task doable from Home; drillable, attributed run history; onboarding v2 |
-| M2.6-5 First-class experience | 2.6.C + 2.6.E + 2.6.L + 2.6.M | Toolbelt parity + settings/theme/i18n + chat polish — **phase close** |
+| M2.6-5 First-class experience | 2.6.C + 2.6.E + 2.6.L + 2.6.M | Toolbelt parity + settings/theme/i18n + chat polish |
+| M2.6-6 Agent orchestration | 2.6.N | Child-session spawn + nested workflows + standardized I/O — **phase close** |
 
 ## Sequencing & parallelization
 
@@ -600,19 +902,28 @@ flowchart LR
     M["2.6.M<br/>toolbelt"] -. render v2 after F .-> F
     I["2.6.I<br/>provider + MCP mgmt"]
     J["2.6.J<br/>onboarding v2"]
+    N["2.6.N<br/>child-session + nested<br/>workflows"] -. after A .-> A
+    N -. after H .-> H
 ```
 
 **2.6.F runs first** (the floor decision + renderer + harness gate every TUI-heavy arm). Then two parallel
 spines: **(i) authoring** — 2.6.A → 2.6.B, with 2.6.D alongside; **(ii) experience** — 2.6.H and 2.6.K
 early (data + resume core), then 2.6.G on top; 2.6.I and 2.6.J are independent and can land any time;
 2.6.M's engine-pure tools can start immediately (only its render-v2 half waits on F); 2.6.E and 2.6.L
-follow F. 2.6.C's residual is a small read, any time.
+follow F. 2.6.C's residual is a small read, any time. **2.6.N** (child-session/nested execution) requires
+the authoring package (2.6.A — for catalog-resolved agent/workflow targets) and the durable run-detail
+data layer (2.6.H — for child run lineage in history.db); its engine work can start in parallel with 2.6.B
+while the chat UX (sub-agent status indicators) waits on F.
 
 ## Dependencies
 
 - **Phase 2.5** complete — specifically 2.5.A (the wired tool-environment), 2.5.E (per-tool approval /
   modes), 2.5.B/C (the Home + the two-registry command model), and ADR-0063 (config-write) — all met.
 - **2.J** (the in-tree authoring core 2.6.A promotes) — landed.
+- **2.6.B** (conversational authoring) — required by 2.6.N for on-the-fly agent/workflow generation;
+  the 2.6.N engine work (catalog-resolved spawn) can start as soon as 2.6.A lands, but
+  model-generated agents gate on 2.6.B's authoring loop being operational.
+- **2.6.H** (durable run detail) — required by 2.6.N for parent-child lineage in `history.db`.
 - The Node supported-floor decision (2.6.F) gates the ink-7 evaluation but **not** the rest of the phase
   (every workstream must land on the current floor if the maintainer defers the bump).
 
@@ -629,13 +940,18 @@ follow F. 2.6.C's residual is a small read, any time.
    (pre-flight-proven, security-reviewed); the knowledge pack is derived, not restated; `{{ctx.*}}` lands
    and `agent run --input` is unblocked.
 4. The **toolbelt** ships (`edit_file`, `search_files`, `find_files`, todo, `ask_user`, working
-   `web_search`) — YAML-selectable, mode-gated, rendered with diffs/details behind a passed security
-   review.
+   `web_search`, `invoke_agent` wired for chat) — YAML-selectable, mode-gated, rendered with diffs,
+   details, and syntax-highlighted code blocks behind a passed security review.
 5. Run history is attributed and drillable (list → run → node with the quintet + tool summaries); the
    gate TOCTOU is store-closed; crashed runs reconcile; cross-process live watch works.
-6. `/settings`, the theme system (incl. the accessibility pair), and **`en`+`tr`** localization ship with
+6. `/settings`, the theme system (incl. the accessibility pair), and **`en`, `es`, `tr`, `fr`, `de`** localization ship with
    CI key-parity.
-7. The required ADRs are Accepted, and every touched spec's canonical home
+7. An agent in chat **autonomously spawns sub-agents and invokes workflows** for complex sub-tasks;
+   `/spawn <agent> <task>` works from the chat prompt; a workflow calls another workflow via a
+   `subworkflow` node; child runs carry full parent lineage in `history.db`; child costs roll up to the
+   parent; auto-generated artifacts live in `~/.relavium/artifacts/`, never in the project directory; a
+   parent cancel propagates to children.
+8. The required ADRs are Accepted, and every touched spec's canonical home
    ([commands.md](../../reference/cli/commands.md), [home.md](../../reference/cli/home.md),
    [chat-session.md](../../reference/cli/chat-session.md),
    [built-in-tools.md](../../reference/shared-core/built-in-tools.md),
@@ -660,14 +976,13 @@ follow F. 2.6.C's residual is a small read, any time.
 | 8 | *(new)* | Onboarding auth paths + Relavium-account forward design (rides ADR-0012–0015) | Drafted when 2.6.J starts | 2.6.J |
 | 9 | *(new)* | Toolbelt additions + tool-render/approval-preview contract (extends ADR-0029/ADR-0057) | Drafted when 2.6.M starts | 2.6.M |
 | 10 | *(new)* | i18n + theming architecture | Drafted when 2.6.L starts | 2.6.L |
+| 11 | *(new)* | Syntax highlighting dependency (`highlight.js` + `cli-highlight` via `ink-syntax-highlight`) + markdown rendering architecture | Drafted when 2.6.E starts | 2.6.E |
+| 12 | *(new)* | Child-session and nested execution architecture (extends ADR-0024/ADR-0036; parent-child lineage, standardized I/O, `subworkflow` node, artifact lifecycle) | Drafted when 2.6.N starts | 2.6.N |
 
 [ADR-0058]: ../../decisions/0058-relavium-authoring-package-and-conversational-authoring.md
 [ADR-0059]: ../../decisions/0059-cli-mid-session-model-reseat.md
 [ADR-0060]: ../../decisions/0060-session-ctx-prompt-interpolation.md
 
-> **Conditional:** 2.6.E requires a small dedicated ADR **only if** a markdown rendering dependency is
-> chosen (the in-house renderer is preferred); if the in-house path is taken, no 2.6.E ADR is needed.
->
 > **Deferred:** A future validator-dependency ADR will be needed for `output_schema` deep JSON-Schema
 > conformance (currently out of scope for this phase; tracked in
 > [deferred-tasks.md](../deferred-tasks.md)).
@@ -676,14 +991,16 @@ follow F. 2.6.C's residual is a small read, any time.
 
 | Risk | Mitigation |
 |------|------------|
-| **Scope breadth** — thirteen workstreams invite drift | Milestone gating (M2.6-1..5); the additive arms (E/L parts, M render-v2) can defer individual items without breaking the spine; the pull-in table keeps deferred-tasks as the single overflow home |
+| **Scope breadth** — fourteen workstreams invite drift | Milestone gating (M2.6-1..6); the additive arms (E/L parts, M render-v2) can defer individual items without breaking the spine; the pull-in table keeps deferred-tasks as the single overflow home |
 | Full-screen renderer performance/fragility on ink | The floor bump unlocks ink 7; the component harness carries performance regression thresholds; the inline renderer is retained as a first-class fallback, and non-TTY paths never change |
+| Child-session cascade failure — a sub-agent failure kills the parent turn | Child failure surfaces as a structured error in the parent's tool result, never a crash; the parent agent can recover (retry with a different agent, rephrase the task, report to user); the `tool_failed` recovery path (2.5.H) handles the child-error class explicitly |
 | Rendering args/diffs leaks sensitive data (reverses a 2.5 posture) | Sanctioned only by the toolbelt-additions ADR + a mandatory security review; every string passes the shared sanitize floor; bounded previews; secrets structurally excluded (keychain-only, never in tool args by construction) |
 | Secret re-provide relaxes a fail-closed guarantee | stdin-only discipline, keychain re-resolution preferred, mandatory security review, and the shared resume core keeps one audited path |
 | Authoring knowledge drifts from the specs (restate) | Derived from the Zod schemas / reference docs; a no-duplication check is an acceptance gate |
 | Authored YAML smuggles secrets | The `parseWorkflow` secret-taint gate + the write-surface security review |
 | Browser complexity balloons | Hard cap at the three-level drill-down; keystroke filters, no query DSL; tabs + deep-links instead of six commands; the desktop canvas stays the rich escape hatch |
 | i18n churn destabilizes strings | Data ≠ code catalog; CI key-parity + dead-string lint land **with** the first locale, not after |
+| Syntax highlighting bundle size (highlight.js ~10MB untrimmed) | Tree-shake to the built-in agent's 8 default languages (~300KB); lazy-load the rest on first use; the `ink-syntax-highlight` ADR gates the cost decision |
 | ADR load stalls the phase | ADRs are drafted per-workstream as Proposed when the workstream starts (the 2.5 pattern), not all up front |
 | Competitor-copy erodes Relavium's posture | Patterns are stolen, postures are not: keychain-only secrets, fail-closed approval, YAML-first artifacts, and the ADR-0049 machine contract are non-negotiable filters on every borrowed idea |
 
