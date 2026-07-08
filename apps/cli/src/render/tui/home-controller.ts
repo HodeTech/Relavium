@@ -1324,35 +1324,35 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     }
   };
 
-  const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
-    if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
-    // The `[c]` typed-reason capture (Step 14) owns the keyboard while open — checked FIRST. It ONLY opens from a
-    // pending approval; if that approval settled out-of-band, the capture is stale → drop it. Else Esc CANCELS back
-    // to the [y]/[a]/[n] prompt (still pending — not an abort); plain Enter rejects WITH the sanitized+bounded
-    // reason; every other key edits the buffer. Parity with the standalone ChatApp; the floor is unchanged (this
-    // only enriches a reject — a governed dispatch still cannot proceed without an explicit decision).
+  // The `[c]` typed-reason capture (Step 14) owns the keyboard while open — returns `true` when it handled the key.
+  // It ONLY opens from a pending approval; if that approval settled out-of-band, the capture is stale → drop it.
+  // Esc CANCELS back to the [y]/[a]/[n] prompt (still pending — not an abort); plain Enter rejects WITH the
+  // sanitized+bounded reason; every other key edits the buffer. Parity with the standalone ChatApp; the floor is
+  // unchanged (this only enriches a reject — a governed dispatch still cannot proceed without an explicit decision).
+  // Extracted (like routeMentionKey/routeSearchKey) so handleChatKey stays flat.
+  const routeReasonKey = (active: HomeChatSession, input: string, key: ChatKey): boolean => {
     const openReason = state.reasonDraft;
-    if (openReason !== undefined) {
-      if (active.store.getSnapshot().approval === undefined) {
-        set({ reasonDraft: undefined }); // the approval vanished — discard the orphaned capture
-        return;
-      }
-      if (key.escape === true) {
-        set({ reasonDraft: undefined }); // cancel the reason; the approval stays pending
-        return;
-      }
-      if (key.return === true && key.shift !== true) {
-        const reason = sanitizeApprovalReason(openReason.text);
-        set({ reasonDraft: undefined });
-        active.store.answerApproval(
-          reason === undefined ? { outcome: 'reject' } : { outcome: 'reject', reason },
-        );
-        return;
-      }
+    if (openReason === undefined) return false;
+    if (active.store.getSnapshot().approval === undefined) {
+      set({ reasonDraft: undefined }); // the approval vanished — discard the orphaned capture
+    } else if (key.escape === true) {
+      set({ reasonDraft: undefined }); // cancel the reason; the approval stays pending
+    } else if (key.return === true && key.shift !== true) {
+      const reason = sanitizeApprovalReason(openReason.text);
+      set({ reasonDraft: undefined });
+      active.store.answerApproval(
+        reason === undefined ? { outcome: 'reject' } : { outcome: 'reject', reason },
+      );
+    } else {
       const edit = reduceEditorMotion(input, key);
       if (edit !== undefined) set({ reasonDraft: applyEditorAction(openReason, edit) });
-      return;
     }
+    return true; // while the capture is open it OWNS every key
+  };
+
+  const handleChatKey = (active: HomeChatSession, input: string, key: ChatKey): void => {
+    if (tearingDown === active) return; // a key arriving mid-teardown must not drive sendMessage on a cancelled session
+    if (routeReasonKey(active, input, key)) return; // the `[c]` typed-reason capture owns the keyboard while open
     // Busy = a streaming turn OR a `!`-shell command in flight (`state.shellBusy` — the session has no store status
     // for it). A gated keystroke can't reach `sendMessage` → no `SessionStateError` crash.
     const running =

@@ -47,6 +47,27 @@ describe('compileIgnore', () => {
     expect(m.ignores('node_modules/pkg/index.js', false)).toBe(true);
   });
 
+  it('a directory-only pattern ignores FILES under the directory (the descendant fix)', () => {
+    // `cache/` ignores the dir AND everything beneath it — a FILE `cache/a.txt` (isDir=false) must still match,
+    // even though the rule is directory-only (the matched `cache` segment is a directory, being a mid-path segment).
+    const m = compileIgnore('cache/');
+    expect(m.ignores('cache/a.txt', false)).toBe(true);
+    expect(m.ignores('cache/sub/b.txt', false)).toBe(true);
+    expect(m.ignores('cache', true)).toBe(true); // the dir itself
+    expect(m.ignores('cache', false)).toBe(false); // a FILE named `cache` is NOT dir-only-matched
+  });
+
+  it('stays fast on an adversarial many-`**` pattern + a long non-matching path (no ReDoS)', () => {
+    // A regex `.*` chain would backtrack super-linearly here; the linear two-pointer matcher returns immediately.
+    const pattern = `${'**/'.repeat(64)}zzz`;
+    const path = `${'a/'.repeat(200)}b.ts`;
+    const m = compileIgnore(pattern);
+    const start = process.hrtime.bigint();
+    expect(m.ignores(path, false)).toBe(false); // no `zzz` segment ⇒ no match
+    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+    expect(elapsedMs).toBeLessThan(50); // linear — nowhere near a backtracking stall
+  });
+
   it('`*` stays within a segment; `**` crosses directories', () => {
     const star = compileIgnore('/logs/*.txt');
     expect(star.ignores('logs/a.txt', false)).toBe(true);

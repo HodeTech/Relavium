@@ -33,14 +33,37 @@ describe('query-shape perf budgets (2.5.I S5) — the hot reads stay index-serve
     client.sqlite.close();
   });
 
+  /** A valid SQLite bind value — narrowed with a runtime guard (no unsafe cast at the DB boundary). */
+  function toBindValue(value: unknown): string | number | bigint | Buffer | null {
+    if (
+      value === null ||
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'bigint' ||
+      Buffer.isBuffer(value)
+    ) {
+      return value;
+    }
+    return null; // EXPLAIN ignores the value; a non-primitive param (drizzle never emits one) binds as NULL
+  }
+
+  /** Read the `detail` column off an EXPLAIN row via `in`-narrowing — no `as` cast. */
+  function detailOf(row: unknown): string {
+    return typeof row === 'object' &&
+      row !== null &&
+      'detail' in row &&
+      typeof row.detail === 'string'
+      ? row.detail
+      : '';
+  }
+
   /** The `EXPLAIN QUERY PLAN` `detail` lines for a drizzle query (its `?`-placeholder SQL + bound params). */
   function planFor(query: { toSQL: () => { sql: string; params: unknown[] } }): string[] {
     const { sql, params } = query.toSQL();
-    // The drizzle `params` are valid SQLite bind values (strings/numbers); EXPLAIN ignores their values but the
-    // `?` placeholders must still be bound. Read the `detail` column defensively at the DB boundary.
-    const bind = params as ReadonlyArray<string | number | bigint | Buffer | null>;
+    // The `?` placeholders must still be bound (EXPLAIN ignores their values); validate each at the DB boundary.
+    const bind = params.map(toBindValue);
     const rows = client.sqlite.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...bind);
-    return rows.map((row) => (row as { detail?: string }).detail ?? '');
+    return rows.map(detailOf);
   }
 
   /**

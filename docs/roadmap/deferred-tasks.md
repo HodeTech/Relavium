@@ -519,9 +519,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 > confidentiality floor + jail + injection framing hold without them):
 
 - [x] **Advisory `.gitignore` / `.relaviumignore` completion trim — DONE (2.5-close Step 15, Batch E).** A
-  dependency-free, ReDoS-safe in-house matcher ({@link gitignore.ts}) folds the workspace-root `.gitignore` +
-  `.relaviumignore` into the `@`-mention candidate filter (comments/blanks, `!` negation, dir-only `/`, anchoring,
-  `*`/`**`/`?` globs; glob→regex is linear — no nested quantifiers), complementing the fixed `NOISE_DIRS` set. A
+  dependency-free, ReDoS-safe in-house matcher ([gitignore.ts](../../apps/cli/src/render/tui/gitignore.ts)) folds
+  the workspace-root `.gitignore` + `.relaviumignore` into the `@`-mention candidate filter (comments/blanks, `!`
+  negation, dir-only `/`, anchoring, `*`/`**`/`?` globs; a LINEAR two-pointer glob matcher — no regex, so no
+  backtracking/ReDoS on a crafted pattern), complementing the fixed `NOISE_DIRS` set. A
   UX/privacy nicety, NOT a security control — the confidentiality floor + listing-gate remain the authoritative
   fs-capability enforcement. Documented subset limits: nested per-dir ignore files + `[a-z]` char classes deferred
   (they only UNDER-hide, never a security gap). *(apps/cli/src/render/tui/gitignore.ts + mention.ts; ADR-0061)*

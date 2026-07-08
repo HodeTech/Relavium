@@ -109,7 +109,10 @@ function runChild(args: readonly string[]): SpawnedChild {
     stderr += chunk.toString('utf8');
   });
   const done = new Promise<{ code: number; stderr: string }>((resolve, reject) => {
-    child.on('error', reject);
+    child.on('error', (err) => {
+      signalReady(); // a spawn failure (ENOENT/EAGAIN) must ALSO release the ready-wait, else `await child.ready` hangs
+      reject(err);
+    });
     child.on('close', (code) => {
       signalReady(); // a child that died before printing READY must not hang the parent's ready-wait
       resolve({ code: code ?? -1, stderr });

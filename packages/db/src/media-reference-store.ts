@@ -79,6 +79,64 @@ export function createMediaReferenceStore(
   db: Db,
   now: () => number = Date.now,
 ): MediaReferenceStore {
+  // The two write-transaction bodies, hoisted out of the `withBusyRetry(db.transaction(…))` nest so the map/loop
+  // callbacks stay within the function-nesting budget (2.5.I close-out). Each is invoked INSIDE one BEGIN IMMEDIATE.
+
+  /** Capture-then-delete a run's references + refresh the dropped handles' grace clock — atomic under BEGIN IMMEDIATE. */
+  function removeRunReferencesTxn(runId: string, ts: number): number {
+    // Capture the handles this run referenced BEFORE the delete, so the grace window of every handle this sweep
+    // drops toward zero starts NOW (ADR-0042 §4 — measured from `last_referenced_at`), not from the handle's
+    // production time. Without this, a long-lived handle losing its last reference is reclaimed on the next sweep
+    // with zero effective grace.
+    const affected = db
+      .selectDistinct({ handle: mediaReferences.handle })
+      .from(mediaReferences)
+      .where(and(eq(mediaReferences.scopeKind, 'run'), eq(mediaReferences.scopeId, runId)))
+      .all();
+    const result = db
+      .delete(mediaReferences)
+      .where(and(eq(mediaReferences.scopeKind, 'run'), eq(mediaReferences.scopeId, runId)))
+      .run();
+    const handles = affected.map((row) => row.handle);
+    // CHUNK the `handle IN (…)` refresh under SQLite's bound-parameter floor (a wide fan-out run can reference many
+    // handles); one shared `ts` keeps the batches consistent.
+    for (let i = 0; i < handles.length; i += SQLITE_INARRAY_CHUNK) {
+      db.update(mediaObjects)
+        .set({ lastReferencedAt: ts })
+        .where(inArray(mediaObjects.handle, handles.slice(i, i + SQLITE_INARRAY_CHUNK)))
+        .run();
+    }
+    return result.changes;
+  }
+
+  /** Soft-delete every 0-reference handle past its grace window — one atomic select-then-update snapshot. */
+  function reclaimExpiredTxn(cutoff: number, ts: number): string[] {
+    const referenced = db.select({ handle: mediaReferences.handle }).from(mediaReferences);
+    const expired = db
+      .select({ handle: mediaObjects.handle })
+      .from(mediaObjects)
+      .where(
+        and(
+          isNull(mediaObjects.deletedAt), // not already reclaimed
+          lte(mediaObjects.lastReferencedAt, cutoff), // past the grace window
+          notInArray(mediaObjects.handle, referenced), // zero references (refcount = row count)
+        ),
+      )
+      .all();
+    const handles = expired.map((row) => row.handle);
+    // Soft-delete EXACTLY the expired handles found above (not a re-run of the 0-ref filter, which would ignore the
+    // grace window). Serialized under BEGIN IMMEDIATE (2.5.I), so the select-then-update snapshot is consistent even
+    // across two `relavium` processes. CHUNK the `handle IN (…)` list so a large sweep never exceeds SQLite's
+    // bound-parameter limit (SQLITE_MAX_VARIABLE_NUMBER, 999 on older builds); one shared `ts` keeps the batches consistent.
+    for (let i = 0; i < handles.length; i += SQLITE_INARRAY_CHUNK) {
+      db.update(mediaObjects)
+        .set({ deletedAt: ts })
+        .where(inArray(mediaObjects.handle, handles.slice(i, i + SQLITE_INARRAY_CHUNK)))
+        .run();
+    }
+    return handles;
+  }
+
   return {
     recordObject(input: MediaObjectInput): void {
       const ts = now();
@@ -171,34 +229,7 @@ export function createMediaReferenceStore(
       // SELECT + DELETE + UPDATE-loop under ONE BEGIN IMMEDIATE (2.5.I write-path convention): the cursor
       // refresh must be atomic with the delete so a concurrent GC sweep never reclaims a handle mid-drop.
       return withBusyRetry(() =>
-        db.transaction(
-          () => {
-            // Capture the handles this run referenced BEFORE the delete, so the grace window of every handle this
-            // sweep drops toward zero starts NOW (ADR-0042 §4 — measured from `last_referenced_at`), not from the
-            // handle's production time. Without this, a long-lived handle losing its last reference is reclaimed
-            // on the very next sweep with zero effective grace.
-            const affected = db
-              .selectDistinct({ handle: mediaReferences.handle })
-              .from(mediaReferences)
-              .where(and(eq(mediaReferences.scopeKind, 'run'), eq(mediaReferences.scopeId, runId)))
-              .all();
-            const result = db
-              .delete(mediaReferences)
-              .where(and(eq(mediaReferences.scopeKind, 'run'), eq(mediaReferences.scopeId, runId)))
-              .run();
-            const handles = affected.map((row) => row.handle);
-            // CHUNK the `handle IN (…)` refresh under SQLite's bound-parameter floor (a wide fan-out run can
-            // reference many handles); one shared `ts` keeps the batches consistent.
-            for (let i = 0; i < handles.length; i += SQLITE_INARRAY_CHUNK) {
-              db.update(mediaObjects)
-                .set({ lastReferencedAt: ts })
-                .where(inArray(mediaObjects.handle, handles.slice(i, i + SQLITE_INARRAY_CHUNK)))
-                .run();
-            }
-            return result.changes;
-          },
-          { behavior: 'immediate' },
-        ),
+        db.transaction(() => removeRunReferencesTxn(runId, ts), { behavior: 'immediate' }),
       );
     },
 
@@ -227,38 +258,7 @@ export function createMediaReferenceStore(
       // "single-connection ⇒ select-then-update is consistent" note held only WITHIN one process; two `relavium`
       // processes share this file — ADR-0064 §5.)
       return withBusyRetry(() =>
-        db.transaction(
-          () => {
-            const referenced = db.select({ handle: mediaReferences.handle }).from(mediaReferences);
-            const expired = db
-              .select({ handle: mediaObjects.handle })
-              .from(mediaObjects)
-              .where(
-                and(
-                  isNull(mediaObjects.deletedAt), // not already reclaimed
-                  lte(mediaObjects.lastReferencedAt, cutoff), // past the grace window
-                  notInArray(mediaObjects.handle, referenced), // zero references (refcount = row count)
-                ),
-              )
-              .all();
-            const handles = expired.map((row) => row.handle);
-            if (handles.length > 0) {
-              // Soft-delete EXACTLY the expired handles found above (not a re-run of the 0-ref filter, which
-              // would ignore the grace window). Now serialized under BEGIN IMMEDIATE (2.5.I), so the select-then-
-              // update snapshot is consistent even across two `relavium` processes. CHUNK the `handle IN (…)` list
-              // so a large sweep never exceeds SQLite's bound-parameter limit (SQLITE_MAX_VARIABLE_NUMBER, 999 on
-              // older builds) — a multi-day orphan backlog can easily surpass it; one shared `ts` keeps the batches consistent.
-              for (let i = 0; i < handles.length; i += SQLITE_INARRAY_CHUNK) {
-                db.update(mediaObjects)
-                  .set({ deletedAt: ts })
-                  .where(inArray(mediaObjects.handle, handles.slice(i, i + SQLITE_INARRAY_CHUNK)))
-                  .run();
-              }
-            }
-            return handles;
-          },
-          { behavior: 'immediate' },
-        ),
+        db.transaction(() => reclaimExpiredTxn(cutoff, ts), { behavior: 'immediate' }),
       );
     },
   };

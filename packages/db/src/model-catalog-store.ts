@@ -335,6 +335,107 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
     return row === undefined ? undefined : fromRow(row);
   };
 
+  // The `replaceProviderModels` write body, hoisted out of the `withBusyRetry(db.transaction(…))` nest so its
+  // per-row loop/branches stay within the function-nesting budget (2.5.I close-out). Runs INSIDE one BEGIN
+  // IMMEDIATE, and RETURNS the tallies so they are observed from within the serialized write (a concurrent
+  // same-provider refresh can never miscount them; drizzle returns the callback value).
+  const replaceProviderModelsTxn = (
+    providerId: string,
+    rows: ReadonlyArray<ModelCatalogLiveModel>,
+    now: number,
+  ): ReplaceProviderModelsResult => {
+    // Only LIVE rows are tallied: `added` on a true INSERT, `updated` on an existing-live-row UPDATE (a non-live
+    // `static`/`user` row hits the provenance `continue` below and is counted in NEITHER), `deactivated` from the
+    // soft-deactivate UPDATE's `.changes` (its WHERE is already `source='live'`-scoped) — so the counts carry the
+    // same LIVE-only intent the write enforces, with no separate source filter needed.
+    let added = 0;
+    let updated = 0;
+    for (const input of rows) {
+      const displayName = input.displayName.trim() === '' ? input.modelId : input.displayName;
+      // `0` is the NOT-NULL "unknown" sentinel (ADR-0064 §3) — an absent live limit stores as 0.
+      const contextWindowTokens = input.contextWindowTokens ?? 0;
+      const maxOutputTokens = input.maxOutputTokens ?? 0;
+      // Find the existing (provider, model) row (deletedAt IS NULL — the partial-unique scope), whether it is
+      // active or soft-deactivated. Reuse its id so FK targets stay stable.
+      const existing = db
+        .select()
+        .from(modelCatalog)
+        .where(
+          and(
+            eq(modelCatalog.providerId, providerId),
+            eq(modelCatalog.modelId, input.modelId),
+            isNull(modelCatalog.deletedAt),
+          ),
+        )
+        .get();
+      if (existing !== undefined && existing.source !== 'live') {
+        // A `source='user'` (user pricing, ADR-0065 §1) or `source='static'` (a media-routing seed —
+        // media_surface/capabilities/rates) row already represents this model. A live refresh must NEVER clobber
+        // it (that would drop user pricing or regress media routing), so it is left UNTOUCHED and, being non-`live`,
+        // is also never deactivated below. Counted in neither `added` nor `updated` (provenance-protected).
+        continue;
+      }
+      if (existing === undefined) {
+        const row: NewModelCatalogRow = {
+          id: deps.uuid(),
+          providerId,
+          modelId: input.modelId,
+          displayName,
+          contextWindowTokens,
+          maxOutputTokens,
+          source: 'live',
+          lastRefreshedAt: now,
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        };
+        db.insert(modelCatalog).values(row).run();
+        added += 1;
+      } else {
+        // Reactivate + refresh the existing live row in place (id/created_at/FK refs preserved); only the discovery
+        // columns + provenance/freshness are written — pricing/media columns are left as-is.
+        db.update(modelCatalog)
+          .set({
+            displayName,
+            contextWindowTokens,
+            maxOutputTokens,
+            source: 'live',
+            lastRefreshedAt: now,
+            isActive: true,
+            updatedAt: now,
+          })
+          .where(eq(modelCatalog.id, existing.id))
+          .run();
+        updated += 1;
+      }
+    }
+    // Soft-deactivate the vanished live rows: every currently-active `source='live'` row of THIS provider whose
+    // model id is absent from the new list. `isActive=false` with `deletedAt` untouched keeps the partial-unique
+    // slot occupied so a reappearing model reuses the SAME row (reactivated above). NEVER a hard-DELETE (FK target
+    // from five tables); NEVER touches `source='user'`/`source='static'`.
+    const incomingModelIds = rows.map((r) => r.modelId);
+    const deactivateScope = and(
+      eq(modelCatalog.providerId, providerId),
+      eq(modelCatalog.isActive, true),
+      eq(modelCatalog.source, 'live'),
+      isNull(modelCatalog.deletedAt),
+    );
+    const deactivateResult = db
+      .update(modelCatalog)
+      .set({ isActive: false, updatedAt: now })
+      // An empty new list deactivates ALL of the provider's live rows (no `notInArray([])` — its semantics vary;
+      // the guard makes the "everything vanished" case explicit).
+      .where(
+        incomingModelIds.length === 0
+          ? deactivateScope
+          : and(deactivateScope, notInArray(modelCatalog.modelId, incomingModelIds)),
+      )
+      .run();
+    // better-sqlite3's `RunResult.changes` = the rows the UPDATE matched (each flips isActive true→false, so every
+    // matched row is genuinely modified) = the number of live rows soft-deactivated this refresh.
+    return { added, updated, deactivated: deactivateResult.changes };
+  };
+
   return {
     resolveMediaSurface: (modelId) => {
       const row = activeRow(modelId);
@@ -483,109 +584,14 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
         .map(toListing),
 
     replaceProviderModels: (providerId, rows, now) =>
-      // The transaction RETURNS the tallies so they are observed from WITHIN the serialized write — a concurrent
-      // same-provider refresh can never miscount them (an external before/after `listByProvider` diff would read a
-      // stale `before` and could double-count). drizzle's better-sqlite3 `transaction()` returns the callback value.
       // `BEGIN IMMEDIATE` — this reads existing rows then writes, so a DEFERRED begin would hit the read→write
       // lock-upgrade race — plus `withBusyRetry` for residual cross-process contention (ADR-0064 amendment note).
+      // The body (hoisted above) RETURNS the tallies, observed from WITHIN the serialized write so a concurrent
+      // same-provider refresh can never miscount them (drizzle's better-sqlite3 `transaction()` returns the value).
       withBusyRetry(() =>
-        db.transaction(
-          () => {
-            // Only LIVE rows are tallied: `added` on a true INSERT, `updated` on an existing-live-row UPDATE (a non-live
-            // `static`/`user` row hits the provenance `continue` below and is counted in NEITHER), `deactivated` from the
-            // soft-deactivate UPDATE's `.changes` (its WHERE is already `source='live'`-scoped) — so the counts carry the
-            // same LIVE-only intent the write enforces, with no separate source filter needed.
-            let added = 0;
-            let updated = 0;
-            for (const input of rows) {
-              const displayName =
-                input.displayName.trim() === '' ? input.modelId : input.displayName;
-              // `0` is the NOT-NULL "unknown" sentinel (ADR-0064 §3) — an absent live limit stores as 0.
-              const contextWindowTokens = input.contextWindowTokens ?? 0;
-              const maxOutputTokens = input.maxOutputTokens ?? 0;
-              // Find the existing (provider, model) row (deletedAt IS NULL — the partial-unique scope), whether it
-              // is active or soft-deactivated. Reuse its id so FK targets stay stable.
-              const existing = db
-                .select()
-                .from(modelCatalog)
-                .where(
-                  and(
-                    eq(modelCatalog.providerId, providerId),
-                    eq(modelCatalog.modelId, input.modelId),
-                    isNull(modelCatalog.deletedAt),
-                  ),
-                )
-                .get();
-              if (existing !== undefined && existing.source !== 'live') {
-                // A `source='user'` (user pricing, ADR-0065 §1) or `source='static'` (a media-routing seed —
-                // media_surface/capabilities/rates) row already represents this model. A live refresh must NEVER
-                // clobber it (that would drop user pricing or regress media routing), so it is left UNTOUCHED and,
-                // being non-`live`, is also never deactivated below — the model stays represented by its own row.
-                // It is counted in neither `added` nor `updated` (provenance-protected — never part of the live delta).
-                continue;
-              }
-              if (existing === undefined) {
-                const row: NewModelCatalogRow = {
-                  id: deps.uuid(),
-                  providerId,
-                  modelId: input.modelId,
-                  displayName,
-                  contextWindowTokens,
-                  maxOutputTokens,
-                  source: 'live',
-                  lastRefreshedAt: now,
-                  isActive: true,
-                  createdAt: now,
-                  updatedAt: now,
-                };
-                db.insert(modelCatalog).values(row).run();
-                added += 1;
-              } else {
-                // Reactivate + refresh the existing live row in place (id/created_at/FK refs preserved); only the
-                // discovery columns + provenance/freshness are written — pricing/media columns are left as-is.
-                db.update(modelCatalog)
-                  .set({
-                    displayName,
-                    contextWindowTokens,
-                    maxOutputTokens,
-                    source: 'live',
-                    lastRefreshedAt: now,
-                    isActive: true,
-                    updatedAt: now,
-                  })
-                  .where(eq(modelCatalog.id, existing.id))
-                  .run();
-                updated += 1;
-              }
-            }
-            // Soft-deactivate the vanished live rows: every currently-active `source='live'` row of THIS provider
-            // whose model id is absent from the new list. `isActive=false` with `deletedAt` untouched keeps the
-            // partial-unique slot occupied so a reappearing model reuses the SAME row (reactivated above). NEVER a
-            // hard-DELETE (FK target from five tables); NEVER touches `source='user'`/`source='static'`.
-            const incomingModelIds = rows.map((r) => r.modelId);
-            const deactivateScope = and(
-              eq(modelCatalog.providerId, providerId),
-              eq(modelCatalog.isActive, true),
-              eq(modelCatalog.source, 'live'),
-              isNull(modelCatalog.deletedAt),
-            );
-            const deactivateResult = db
-              .update(modelCatalog)
-              .set({ isActive: false, updatedAt: now })
-              // An empty new list deactivates ALL of the provider's live rows (no `notInArray([])` — its semantics
-              // vary; the guard makes the "everything vanished" case explicit).
-              .where(
-                incomingModelIds.length === 0
-                  ? deactivateScope
-                  : and(deactivateScope, notInArray(modelCatalog.modelId, incomingModelIds)),
-              )
-              .run();
-            // better-sqlite3's `RunResult.changes` = the rows the UPDATE matched (each flips isActive true→false, so
-            // every matched row is genuinely modified) = the number of live rows soft-deactivated this refresh.
-            return { added, updated, deactivated: deactivateResult.changes };
-          },
-          { behavior: 'immediate' },
-        ),
+        db.transaction(() => replaceProviderModelsTxn(providerId, rows, now), {
+          behavior: 'immediate',
+        }),
       ),
 
     providerRefreshedAt: (providerId) => {
