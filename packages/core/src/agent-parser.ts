@@ -92,10 +92,13 @@ function agentSyntaxErrorFrom(
   }
   if (err instanceof Error && /alias/i.test(err.message)) {
     // `maxAliasCount: 0` throws a plain `ReferenceError` ("Alias resolution is disabled") with no position —
-    // surface a clear, source-free message rather than the generic fallback (parity with parser.ts).
+    // surface a clear, source-free message rather than the generic fallback (parity with parser.ts). Keep the
+    // `cause` (the fixed, non-secret ReferenceError) so the root cause is never swallowed (error-handling.md).
     return new AgentParseError(
       'agent_syntax',
       `anchors and aliases are not supported${locate(source)}`,
+      [],
+      { cause: err },
     );
   }
   return new AgentParseError(
