@@ -211,8 +211,24 @@ describe('reduceChatKey — approval-prompt intercept (in-flight key-swallow byp
     });
   });
 
+  it('whitelists ONLY the view-only reasoning toggle (Ctrl+T) through the swallow (Step 14)', () => {
+    // Ctrl+T is a pure store-view flip (toggleReasoning: no session/approval/decision effect), so a user may
+    // expand the model's reasoning to INFORM the pending decision WITHOUT it counting as an answer.
+    expect(reduceChatKey('t', { ctrl: true }, '', true, PENDING)).toEqual({
+      kind: 'toggle-reasoning',
+    });
+    // The whitelist is TIGHT — only the exact Ctrl-without-meta 't' chord: a bare 't' is a non-answer key
+    // (swallowed), and Ctrl+Meta+T / Alt+T do NOT toggle (so an ESC-prefixed Alt-chord can't sneak through).
+    expect(reduceChatKey('t', KEY, '', true, PENDING)).toEqual({ kind: 'none' }); // bare t: swallowed
+    expect(reduceChatKey('t', { ctrl: true, meta: true }, '', true, PENDING)).toEqual({
+      kind: 'none',
+    });
+    expect(reduceChatKey('t', { meta: true }, '', true, PENDING)).toEqual({ kind: 'none' }); // Alt+T: swallowed
+  });
+
   it('SWALLOWS every other key while an approval is pending (no deadlock, no stray edit)', () => {
-    // Even Ctrl-C / Return / a printable are ignored during the approval — only y/a/n/1/2/3/Esc act.
+    // Even Ctrl-C / Return / a printable are ignored during the approval — only y/a/n/1/2/3/Esc answer, plus the
+    // view-only Ctrl+T toggle (tested above). Nothing else acts.
     expect(reduceChatKey('c', { ctrl: true }, '', true, PENDING)).toEqual({ kind: 'none' });
     expect(reduceChatKey('', { return: true }, '', true, PENDING)).toEqual({ kind: 'none' });
     expect(reduceChatKey('z', KEY, '', true, PENDING)).toEqual({ kind: 'none' });
