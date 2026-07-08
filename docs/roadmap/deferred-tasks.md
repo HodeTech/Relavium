@@ -901,24 +901,25 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **File-snapshot undo (opencode-style revert of message + file changes).** Phase 2.6.E ships
   conversation-level `/rewind`/`/fork` only — reverting the file changes a message made requires an
   engine-level file-snapshot mechanism (tracking which tool calls modified which files at which
-  conversation point). Deferred to **Phase 3 (desktop)** or a dedicated follow-up ADR. *(medium ·
-  packages/core engine; phase-3-desktop.md)*
+  conversation point). Deferred to [Phase 3 — desktop](../roadmap/phases/phase-3-desktop.md) or a
+  dedicated follow-up ADR. *(medium · packages/core engine)*
 - [ ] **Workflow-run `egress`/`os` arms in `build-engine.ts`.** The chat surface has `egress` and
   `os` wired behind the per-tool approval floor (2.5.E). The workflow-run path (`build-engine.ts`)
   deliberately wires only `fs`+`process` — the `egress`/`os` arms are not threaded into the workflow
   `ToolHost` factory. Revisiting this boundary requires its own ADR (the tool-environment factory
-  design in ADR-0055/ADR-0057 was scoped to chat-first). **Owner:** a dedicated ADR before any
-  implementation; likely Phase 3+ when workflows gain the full tool surface. *(medium ·
-  apps/cli/src/engine/build-engine.ts + assemble.ts; ADR-0055/0057)*
+  design in [ADR-0055](../decisions/0055-cli-host-capability-seam-tool-environment-factory.md) /
+  [ADR-0057](../decisions/0057-cli-chat-modes-and-per-tool-approval.md) was scoped to chat-first).
+  **Owner:** a dedicated ADR before any implementation; likely Phase 3+ when workflows gain the
+  full tool surface. *(medium · apps/cli/src/engine/build-engine.ts + assemble.ts)*
 - [ ] **Multi-pane dashboard.** A split-pane or multi-tab dashboard layout for the Home (e.g.
   chat on the left, run monitor on the right) is explicitly **desktop canvas territory**
   ([ADR-0007](../decisions/0007-desktop-is-not-an-ide.md) — the CLI is not an IDE shell). The
-  desktop app (Phase 3) owns the visual multi-pane experience; the CLI stays single-viewport.
-  *(medium · apps/desktop; phase-3-desktop.md; ADR-0007)*
+  desktop app ([Phase 3](../roadmap/phases/phase-3-desktop.md)) owns the visual multi-pane
+  experience; the CLI stays single-viewport. *(medium · apps/desktop)*
 - [ ] **`plugin` ToolSource loader.** The `ToolSource` type already defines `'builtin' | 'mcp' |
   'plugin'` (`packages/core/src/tools/types.ts`), but the `plugin` variant has no loader, no
   resolver, and no runtime wiring. Plugins loaded from npm packages or user-supplied JS/TS files
   need a sandboxed execution environment and an installation/security model distinct from both
   built-in tools and MCP. Deferred until there is concrete demand beyond the existing built-in +
   MCP tool surface (both of which are sufficient for Phase-2.6 toolbelt parity). *(medium ·
-  packages/core/src/tools; phase-4-vscode.md / post-Phase-3)*
+  packages/core/src/tools; [Phase 4 — VS Code](../roadmap/phases/phase-4-vscode.md) / post-Phase-3)*

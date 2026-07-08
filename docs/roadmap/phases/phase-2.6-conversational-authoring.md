@@ -916,14 +916,18 @@ scale-gated) remain in [deferred-tasks.md](../deferred-tasks.md) with their reas
 
 ### Critical path
 
-```
-2.6.F → 2.6.G → 2.6.M (render-v2) → phase close
-     ↘ 2.6.L → 2.6.E
-2.6.A → 2.6.B → 2.6.N → phase close
-     D → B ↗      ↗ H ↗
+```text
+2.6.F ─────────────────────────────────────────────→ 2.6.M (render-v2) ─→ phase close
+   │                                                    ↗
+   ├─→ 2.6.L → 2.6.E                                    │
+   ├─→ 2.6.G (via H + K)                                │
+   └─→ 2.6.N (chat UX, part of N)                       │
+                                                        │
+2.6.A → 2.6.B → 2.6.N (orchestration) ─────────────────┘
+            D ↗        ↗ H ↗
 ```
 
-**2.6.F is the bottleneck** — the full-screen renderer gates 5 workstreams (E, G, L, M render-v2, N chat UX). Ship it first, unblock the rest. The **authoring spine** (A → D+B → N) and the **data spine** (H → G) run in parallel with F.
+**2.6.F is the bottleneck** — the full-screen renderer gates 5 workstreams (E, G, L, M render-v2, N chat UX). Ship it first, unblock the rest. The **authoring spine** (A → D+B → N) and the **data spine** (H → G) run in parallel with F. **2.6.M (render-v2)** depends only on F (not G — the details view and diff rendering need the full-screen viewport, not the browser data). **2.6.M (invoke_agent acceptance)** gates on N, making M the final integration step on the orchestration track.
 
 ### Parallelization tracks
 
@@ -940,6 +944,7 @@ Seven independent streams after 2.6.F lands:
 | **Management** | 2.6.I, 2.6.J | Any time | Provider/MCP mgmt, onboarding v2 |
 
 Once F + A + D land:
+
 | Track | Workstreams | Starts when | Produces |
 |-------|------------|-------------|----------|
 | **Authoring** | 2.6.B | A + D landed | Conversational YAML authoring, /create wizard |
@@ -947,6 +952,7 @@ Once F + A + D land:
 | **N engine** | 2.6.N (catalog spawn) | A + H landed | Child-session spawn (catalog agents only) |
 
 Once F + B + L land:
+
 | Track | Workstreams | Starts when | Produces |
 |-------|------------|-------------|----------|
 | **Chat UX** | 2.6.E | F + L landed | Syntax highlighting, rewind/fork, message queue, /copy, cheat sheet |
@@ -956,6 +962,7 @@ Once F + B + L land:
 | **M render-v2** | 2.6.M (render half) | F landed | Tool-call details view, diff rendering |
 
 Last to land:
+
 | Track | Workstreams | Depends on | Produces |
 |-------|------------|-----------|----------|
 | **Orchestration final** | 2.6.N (complete) | A + B + H + F all landed | Parallel spawn, subworkflow node, complete child-session |
