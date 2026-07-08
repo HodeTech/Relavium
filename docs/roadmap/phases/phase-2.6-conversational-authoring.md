@@ -243,8 +243,8 @@ The competitor-parity chat ergonomics (the theme system moved to 2.6.L; tool-cal
   automatic detection, and tree-shakes to specific languages for bundle control. This requires a
   dedicated ADR (new dependency — `highlight.js` + `cli-highlight`; evaluated over the in-house
   alternative on breadth, maintenance burden, and bundle impact), a catalog entry in
-  `pnpm-workspace.yaml`, and a tree-shaken language list (the built-in agent's default languages:
-  TypeScript, JavaScript, Python, YAML, JSON, Bash, Markdown, TOML; the rest load on demand). The
+  `pnpm-workspace.yaml`, and a tree-shaken language set (a curated default set for the built-in
+  agent; additional languages load on demand). The
   markdown-to-ink component maps rendered nodes to ink's `<Text>` / `<Box>` primitives under the
   existing `stripTerminalControls` sanitization floor.
 - **Advanced `@`-injection**: glob / directory expansion respecting ignore files (the ADR-0061 follow-up;
@@ -262,11 +262,10 @@ The competitor-parity chat ergonomics (the theme system moved to 2.6.L; tool-cal
   on turn end — with a steer-now affordance considered (send-as-interrupt).
 - **Input history search**: `Ctrl+R` reverse search over per-project prompt history.
 - **`$EDITOR` compose** (`Ctrl+G`): edit the pending prompt in the external editor.
-- **`/copy`**: copy the last assistant reply (OSC-52 with a plain fallback). Additionally,
-  **copy-on-select**: text selected with the mouse in the terminal (the native terminal selection
-  mechanism) copies to the system clipboard automatically when the terminal emulator supports
-  OSC-52; no explicit command needed. The `/copy` command remains for keyboard-only workflows
-  and terminals without OSC-52 support.
+- **`/copy`**: copy the last assistant reply to the system clipboard. Additionally,
+  **copy-on-select**: text selected with the mouse in the terminal copies to the clipboard
+  automatically when the terminal supports it; no explicit command needed. The `/copy` command
+  remains for keyboard-only workflows and terminals without clipboard support.
 - **`/help` v2**: a full-screen, sectioned help screen (commands, keybindings, modes) replacing the flat
   text list, once 2.6.F's renderer lands. Supplemented by a **quick-reference cheat sheet** overlay
   (`Ctrl+O` or `?` — a half-screen modal summarizing current-context keybindings: the mode-aware
@@ -724,15 +723,15 @@ before implementation begins.
   must be visible to the parent in some form — the ADR must decide whether the parent sees a
   real-time stream of child events (inline in the parent transcript), a terminal summary only,
   or a collapsible detail panel. The trade-off is UX richness vs transcript noise.
-- **Standardized agent/workflow I/O contract**: define a canonical `AgentIO` interface —
-  `{ task: string, context?: Record<string, unknown>, files?: string[] }` for input,
-  `{ result: string, artifacts?: { path: string, summary: string }[], error?: { message: string, code: string } }`
-  for output — that every agent and workflow honors, so any agent can invoke any other without
-  ad-hoc prompt engineering. This contract is authored once in `@relavium/shared`, consumed by
-  the engine's `invokeAgent` delegate, and documented in a canonical reference spec. Existing
-  workflow `inputs`/`outputs` are mapped to this contract: a workflow's declared `inputs` schema
-  is the validation gate; its `output_mapping` shapes the result. Agents without declared schemas
-  get the free-form text contract.
+- **Standardized agent/workflow I/O contract**: define a canonical I/O contract that every agent
+  and workflow honors — a structured input (task description + optional context and file references)
+  and a structured output (result text + optional artifact references + optional error). The exact
+  schema is authored once in `@relavium/shared`, consumed by the engine's `invokeAgent` delegate,
+  and documented in its **one canonical reference spec** under `docs/reference/` (the phase doc
+  never restates it). Existing workflow `inputs`/`outputs` map to this contract: a workflow's
+  declared `inputs` schema is the validation gate; its `output_mapping` shapes the result. Agents
+  without declared schemas get a free-form text contract. Standardized I/O means any agent can
+  invoke any other without ad-hoc prompt engineering — the contract is the interop surface.
 - **Engine: `invokeAgent` delegate wired for chat**: inject `ctx.invokeAgent` into the
   `AgentSession`'s tool dispatch context. When an agent calls `invoke_agent` (or the model emits
   it autonomously for a complex sub-task), the engine:
@@ -813,16 +812,20 @@ before implementation begins.
     approval cache — a child never escalates beyond the parent's grant (a child in `ask` mode
     cannot spawn a child in `auto` mode; a child whose parent denied `run_command` cannot
     run commands). A user-initiated `/spawn` runs under the current chat mode; the user can
-    override with `/mode auto` before spawning. **Analysis gate:** the permission inheritance
-    model must be stress-tested against edge cases: (a) a child agent that calls `invoke_agent`
-    itself (grandchild depth — bounded at a configurable max depth, default 3, to prevent
-    runaway fan-out), (b) a child that switches modes via its own `/mode` (denied — mode is
-    inherited, not ownable by children), (c) a child that requests permission escalation from the
-    user (surfaced to the parent's approval prompt with the child's identity, so the user knows
-    who is asking), (d) generated agents that try to self-grant dangerous tool access (the
-    generator's schema validation prevents this — a generated agent's `tools:` list is clamped
-    to the parent's granted set). The ADR must record the resolved policy for each case before
-    implementation.
+    override with `/mode auto` before spawning.
+    - **Hard guardrails:** maximum nesting depth is **3** (parent → child → grandchild; a
+      grandchild cannot spawn further — enforced by the engine, not configurable). Maximum
+      concurrent children per turn is bounded at a configurable ceiling (default **5**). These
+      limits are hard-coded into the spawn path so downstream UX (error messages, history tree
+      views, cost breakdown indentation) can be designed against fixed bounds from day one.
+    - **Analysis gate:** the permission inheritance model must still be stress-tested against
+      edge cases: (a) a child that switches modes via its own `/mode` (denied — mode is
+      inherited, not ownable by children), (b) a child that requests permission escalation from
+      the user (surfaced to the parent's approval prompt with the child's identity, so the user
+      knows who is asking), (c) generated agents that try to self-grant dangerous tool access
+      (the generator's schema validation prevents this — a generated agent's `tools:` list is
+      clamped to the parent's granted set). The ADR must record the resolved policy for each
+      case before implementation.
 - **Cost attribution**: child run costs (tokens, tool usage) roll up to the parent's
   `cost:updated` event with a `childRunId` discriminator. The `/cost` command shows a
   hierarchical breakdown: parent session total, then per-child contributions indented.
@@ -1000,7 +1003,7 @@ while the chat UX (sub-agent status indicators) waits on F.
 | Authored YAML smuggles secrets | The `parseWorkflow` secret-taint gate + the write-surface security review |
 | Browser complexity balloons | Hard cap at the three-level drill-down; keystroke filters, no query DSL; tabs + deep-links instead of six commands; the desktop canvas stays the rich escape hatch |
 | i18n churn destabilizes strings | Data ≠ code catalog; CI key-parity + dead-string lint land **with** the first locale, not after |
-| Syntax highlighting bundle size (highlight.js ~10MB untrimmed) | Tree-shake to the built-in agent's 8 default languages (~300KB); lazy-load the rest on first use; the `ink-syntax-highlight` ADR gates the cost decision |
+| Syntax highlighting bundle size (highlight.js is large untrimmed) | Tree-shake to the built-in agent's curated default set; lazy-load the rest on first use; the `ink-syntax-highlight` ADR gates the cost decision |
 | ADR load stalls the phase | ADRs are drafted per-workstream as Proposed when the workstream starts (the 2.5 pattern), not all up front |
 | Competitor-copy erodes Relavium's posture | Patterns are stolen, postures are not: keychain-only secrets, fail-closed approval, YAML-first artifacts, and the ADR-0049 machine contract are non-negotiable filters on every borrowed idea |
 
