@@ -122,12 +122,16 @@ async function verifyProvider(
   return { verified: result.ok, detail: result.ok ? null : cleanDetail(result.detail) };
 }
 
-/** The Unicode bidi-override + zero-width "Trojan Source" family the ASCII-only {@link stripTerminalControls}
- *  MISSES: LRE/RLE/PDF/LRO/RLO (U+202A–E), the isolates LRI/RLI/FSI/PDI (U+2066–9), the zero-width + directional
- *  marks (U+200B–F), the word-joiner (U+2060), and the BOM (U+FEFF). None has a legitimate use in a URL or a probe
- *  detail; left in, they visually reorder/hide text (a spoof), so they are stripped from any provider-supplied
- *  value echoed inline here. NOT added to the shared `stripTerminalControls` — that also renders chat bodies, where
- *  bidi controls ARE legitimate for RTL text. */
+/** The Unicode bidi-override + zero-width "Trojan Source" family stripped from any provider-supplied value
+ *  echoed inline here - none has a legitimate use in a URL or a probe detail, and left in they visually
+ *  reorder/hide text (a spoof). This is a stricter SUPERSET of the shared render floor: the reordering bidi
+ *  controls (the isolates + embeddings/overrides + LRM/RLM/ALM) are now stripped by {@link stripTerminalControls}
+ *  itself (the Trojan-Source floor added in 2.5-close Step 14, which `stripInline` runs first), so the additive
+ *  coverage this constant contributes is the ZERO-WIDTH family that floor deliberately KEEPS for chat bodies -
+ *  ZWSP, ZWNJ/ZWJ (legitimate in emoji + Indic/Arabic shaping), the word-joiner, and the BOM - which a
+ *  structured URL/probe field must nonetheless reject. The overlap with the shared floor is harmless
+ *  defense-in-depth. (Legitimate RTL text needs no explicit control chars - it renders from the letters own
+ *  directionality - so stripping these controls never harms Arabic/Hebrew display.) */
 const BIDI_ZERO_WIDTH = /[\u200b-\u200f\u2060\u2066-\u2069\u202a-\u202e\ufeff]/gu;
 
 /** C0/C1 control bytes + the {@link BIDI_ZERO_WIDTH} spoof family, as a NON-global tester (safe for `.test`) \u2014 none

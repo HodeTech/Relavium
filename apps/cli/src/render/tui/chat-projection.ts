@@ -32,13 +32,27 @@ const BARE_CONTROLS = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
 /* eslint-enable no-control-regex */
 
 /**
+ * Unicode bidirectional / directional FORMAT controls — the Trojan-Source floor (CVE-2021-42574; 2.5-close
+ * Step 14). These code points live ABOVE the C0/C1 range {@link BARE_CONTROLS} strips, so they survive it — yet
+ * they REORDER how a terminal visually renders a line, letting streamed model output or pasted input display in
+ * an order that differs from its logical bytes (a spoofed path/command in an approval prompt, a hidden argument,
+ * a reversed URL). The set is the standard Trojan-Source family: the embeddings/overrides U+202A–202E
+ * (LRE/RLE/PDF/LRO/RLO), the isolates U+2066–2069 (LRI/RLI/FSI/PDI), and the marks LRM (U+200E) / RLM (U+200F) /
+ * ALM (U+061C). ZWJ/ZWNJ (U+200D/U+200C) are deliberately NOT stripped — they are legitimate in emoji sequences
+ * and in Indic/Arabic/Persian shaping. Not in `no-control-regex`'s C0/C1 range, so no eslint-disable is needed.
+ * Written with `\u` escapes (never literal bidi bytes) so the source itself carries no Trojan-Source hazard.
+ */
+const BIDI_CONTROLS = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+
+/**
  * Strip terminal control sequences from text that will be written to a terminal — so model output (or pasted
  * input) cannot inject ANSI/OSC escapes (colors, a cursor jump, a window-title/clipboard/hyperlink write, a
- * `\r` line-overwrite). Applied at the **display** boundary only; the PERSISTED transcript keeps the raw text
- * (it is user/model data, not displayed back through a shell). Keeps printable text plus tabs and newlines.
+ * `\r` line-overwrite) NOR spoof the visual line order with Unicode bidi controls (the Trojan-Source floor).
+ * Applied at the **display** boundary only; the PERSISTED transcript keeps the raw text (it is user/model data,
+ * not displayed back through a shell). Keeps printable text plus tabs and newlines.
  */
 export function stripTerminalControls(text: string): string {
-  return text.replace(ESC_SEQUENCES, '').replace(BARE_CONTROLS, '');
+  return text.replace(ESC_SEQUENCES, '').replace(BARE_CONTROLS, '').replace(BIDI_CONTROLS, '');
 }
 
 /**

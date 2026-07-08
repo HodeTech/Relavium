@@ -14,6 +14,7 @@ import {
   formatTurnSummary,
   MAX_REASONING_PANEL_LINES,
   reasoningLabelActive,
+  sanitizeInline,
   streamingAbortHint,
   stripTerminalControls,
 } from './chat-projection.js';
@@ -661,6 +662,49 @@ describe('chat-projection', () => {
       // DCS ESC P … ST and APC ESC _ … BEL are stripped whole — no leftover payload (the old 3rd arm left it).
       expect(stripTerminalControls('a\x1bPpayload\x1b\\b')).toBe('ab');
       expect(stripTerminalControls('a\x1b_apc\x07b')).toBe('ab');
+    });
+
+    it('strips Unicode bidi/format controls - the Trojan-Source floor (Step 14)', () => {
+      // The standard Trojan-Source family: overrides/embeddings U+202A-202E, isolates U+2066-2069, and the
+      // marks LRM/RLM/ALM. None is in the C0/C1 range BARE_CONTROLS strips, so each would otherwise survive.
+      const bidi = [
+        '\u202A',
+        '\u202B',
+        '\u202C',
+        '\u202D',
+        '\u202E',
+        '\u2066',
+        '\u2067',
+        '\u2068',
+        '\u2069',
+        '\u200E',
+        '\u200F',
+        '\u061C',
+      ];
+      for (const c of bidi) {
+        expect(stripTerminalControls(`a${c}b`)).toBe('ab');
+      }
+    });
+
+    it('flattens a Trojan-Source-style RLO spoof to its logical byte order', () => {
+      // RLO then PDF would render the middle reversed as a visual spoof; stripped, only the logical text
+      // survives, so what the user SEES equals the bytes (an approval-prompt path cannot lie).
+      const spoof = `rm -rf \u202E/nimda\u202C safe`;
+      const clean = stripTerminalControls(spoof);
+      expect(clean).toBe('rm -rf /nimda safe'); // both controls gone; logical order preserved
+      expect(clean).not.toMatch(/[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/);
+    });
+
+    it('preserves ZWJ / ZWNJ (legitimate in emoji sequences + Indic/Arabic shaping)', () => {
+      // ZWJ (U+200D) joins emoji; ZWNJ (U+200C) is a real letter-shaping control - neither reorders text, so
+      // both must survive (an over-broad strip would mangle names / emoji).
+      expect(stripTerminalControls('a\u200Db')).toBe('a\u200Db');
+      expect(stripTerminalControls('a\u200Cb')).toBe('a\u200Cb');
+    });
+
+    it('strips bidi controls through sanitizeInline too (shared primitive, all surfaces)', () => {
+      // sanitizeInline builds on stripTerminalControls, so an id/model/path field is bidi-safe everywhere.
+      expect(sanitizeInline('git\u202Estatus')).toBe('gitstatus');
     });
   });
 });
