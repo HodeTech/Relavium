@@ -143,7 +143,7 @@ jobs:
       - name: Set up Node (exact floor)
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22.0.0
+          node-version: 22.12.0
           cache: pnpm
       - name: Install (frozen lockfile — better-sqlite3 must resolve a prebuild, not source-build)
         run: pnpm install --frozen-lockfile

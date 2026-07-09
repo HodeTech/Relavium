@@ -262,19 +262,6 @@ export function errorRecoveryHint(code: string | undefined, message?: string): s
   }
 }
 
-/**
- * Flatten the completed transcript into width-wrapped, style-tagged {@link DisplayLine}s for the full-screen
- * alt-screen viewport (2.6.F Step 4b, ADR-0068 §c) — the counterpart of ink's `<Static>` on the inline renderer.
- * Reproduces `TranscriptLine`'s CONTENT + prefixes + styles + sanitization: a `user` entry becomes `> {text}` (style
- * `user`); a `notice` its dim text; an `assistant` entry its text, then the gray one-line summary (a leading space,
- * as `TranscriptLine`), then the optional yellow recovery-hint line. Every text is sanitized here at the display
- * boundary (`stripTerminalControls`, newlines kept) exactly as `TranscriptLine` does, so a streamed/pasted control
- * sequence can neither forge a row nor inject ANSI. The wrapping counts RENDERED terminal rows (the viewport scroll
- * math is defined over the returned line count). NOTE: this CHAR-wraps at `cols` where inline `TranscriptLine` lets
- * ink WORD-wrap, so a line longer than `cols` breaks at different points (and can differ in row count) between the
- * two renderers — the modes are mutually exclusive (inline OR alt), so this is a cosmetic Step-4b tradeoff, not a
- * correctness gap.
- */
 /** Wrap ONE transcript entry to its width-wrapped display lines — the per-entry unit {@link wrapTranscript} caches. */
 function wrapEntry(entry: TranscriptEntry, cols: number): DisplayLine[] {
   const lines: DisplayLine[] = [];
@@ -309,6 +296,19 @@ const entryWrapCache = new WeakMap<
   { cols: number; lines: readonly DisplayLine[] }
 >();
 
+/**
+ * Flatten the completed transcript into width-wrapped, style-tagged {@link DisplayLine}s for the full-screen
+ * alt-screen viewport (2.6.F Step 4b, ADR-0068 §c) — the counterpart of ink's `<Static>` on the inline renderer.
+ * Reproduces `TranscriptLine`'s CONTENT + prefixes + styles + sanitization: a `user` entry becomes `> {text}` (style
+ * `user`); a `notice` its dim text; an `assistant` entry its text, then the gray one-line summary (a leading space,
+ * as `TranscriptLine`), then the optional yellow recovery-hint line. Every text is sanitized here at the display
+ * boundary (`stripTerminalControls`, newlines kept) exactly as `TranscriptLine` does, so a streamed/pasted control
+ * sequence can neither forge a row nor inject ANSI. The wrapping counts RENDERED terminal rows (the viewport scroll
+ * math is defined over the returned line count). NOTE: this CHAR-wraps at `cols` where inline `TranscriptLine` lets
+ * ink WORD-wrap, so a line longer than `cols` breaks at different points (and can differ in row count) between the
+ * two renderers — the modes are mutually exclusive (inline OR alt), so this is a cosmetic Step-4b tradeoff, not a
+ * correctness gap.
+ */
 export function wrapTranscript(
   transcript: readonly TranscriptEntry[],
   cols: number,
@@ -317,7 +317,7 @@ export function wrapTranscript(
   for (const entry of transcript) {
     const cached = entryWrapCache.get(entry);
     let lines: readonly DisplayLine[];
-    if (cached !== undefined && cached.cols === cols) {
+    if (cached?.cols === cols) {
       lines = cached.lines;
     } else {
       lines = wrapEntry(entry, cols);

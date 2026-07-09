@@ -78,6 +78,15 @@ an independent migration on its own PR, never riding this governed floor bump. (
 only `>=20.19`, so it is reachable *below* this floor and is not newly unlocked by it; likewise its
 own PR.) See [node-runtime-upgrade.md §5/§8](../roadmap/phases/node-runtime-upgrade.md#5-migration-plans).
 
+> **Amended 2026-07-09 (effective floor + LTS terminology).** Two corrections to the text above; the DECISION —
+> the Node **22 line** is the supported floor — is unchanged. **(a) The effective installable floor is `22.12.0`,
+> not `22.0.0`.** A transitive dependency (`vite`, pulled by `vitest`) declares `engines.node`
+> `^20.19.0 || >=22.12.0`, so `pnpm install` refuses Node 22.0.0 and the CI floor leg (which installs on the *exact*
+> declared floor) fails. `engines.node` in the root + `apps/cli` manifests and the CI floor leg are therefore pinned
+> to **`>=22.12.0` / `22.12.0`**. **(b) "supported LTS lines (Node 22/24/26)" above overstates 26.** At the time of
+> writing, **22 and 24** are the LTS lines; **26 is a future line** that is not yet LTS. Read those passages as "the
+> even (LTS-track) lines at or above 22" — 26 joins the supported set once it ships and enters LTS.
+
 ## Consequences
 
 ### Positive

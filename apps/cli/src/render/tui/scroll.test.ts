@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import type { ChatKey } from './chat-input.js';
 import {
   effectiveOffset,
   INITIAL_SCROLL,
@@ -117,8 +118,10 @@ describe('scrollMotionForKey', () => {
 
   it('returns undefined for a non-scroll key (the caller falls through to the editor/overlay routing)', () => {
     expect(scrollMotionForKey({})).toBeUndefined();
-    expect(scrollMotionForKey({ ctrl: true })).toBeUndefined();
-    expect(scrollMotionForKey({ upArrow: true } as never)).toBeUndefined();
+    expect(scrollMotionForKey({ ctrl: true })).toBeUndefined(); // Ctrl alone, no Home/End
+    // A key the scroll keymap does not read at all (the surfaces hand it the full `ChatKey`).
+    const arrowUp: ChatKey = { upArrow: true };
+    expect(scrollMotionForKey(arrowUp)).toBeUndefined();
   });
 });
 

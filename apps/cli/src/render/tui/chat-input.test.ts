@@ -546,19 +546,11 @@ describe('pasteIsEditable (the SHARED bracketed-paste gate — ADR-0068 / ADR-00
 
   it('drops the paste while ANY busy state or keyboard-owning overlay/submode is active (exhaustive per AND-term)', () => {
     // Flipping any single gate on must drop the paste — a future edit that omits one AND-term fails HERE, not only
-    // in review, and the coverage holds for BOTH surfaces at once (they share this predicate).
-    const gates: (keyof PasteEditableFlags)[] = [
-      'running',
-      'shellBusy',
-      'submitBusy',
-      'paletteOpen',
-      'searchOpen',
-      'mentionOpen',
-      'modelPickerOpen',
-      'effortPickerOpen',
-      'reasonCaptureOpen',
-      'approvalPending',
-    ];
+    // in review, and the coverage holds for BOTH surfaces at once (they share this predicate). The gate list is
+    // DERIVED from `ALL_CLEAR` (whose `PasteEditableFlags` type makes omitting a flag a compile error) rather than
+    // restated, so a NEW flag is covered the moment it is added — a hand-kept list would silently under-test it.
+    const gates = Object.keys(ALL_CLEAR);
+    expect(gates.length).toBeGreaterThan(0);
     for (const gate of gates) {
       expect(pasteIsEditable({ ...ALL_CLEAR, [gate]: true })).toBe(false);
     }

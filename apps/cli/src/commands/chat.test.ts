@@ -489,10 +489,10 @@ describe('chatCommand', () => {
     expect(err()).toContain('budget warning');
   });
 
-  it('routes a budget warning to the TRANSCRIPT (view-store notice) while a session is LIVE — not raw stderr (Step-4b-3)', async () => {
-    // A raw io.writeErr while the hoisted alt buffer is entered would be overwritten by ink's next frame + lost; the
-    // warning must render as a transcript notice instead. Fire the captured onBudgetWarning mid-turn and assert it
-    // landed in the live view store (`ctx.store`), and NOT on stderr.
+  /** Fire the captured `onBudgetWarning` mid-turn and report where it landed (transcript notices + stderr). */
+  const budgetWarningDuringSession = async (
+    over: Partial<ChatCommandDeps>,
+  ): Promise<{ notices: string[]; err: string }> => {
     const { d, err } = deps([], [textTurn('x')]);
     let captured: ((w: BudgetWarn) => void) | undefined;
     let liveStore: ChatStoreController | undefined;
@@ -503,19 +503,38 @@ describe('chatCommand', () => {
     const fireDuringTurn: ChatDriver = async (ctx) => {
       liveStore = ctx.store;
       ctx.startSession();
-      captured?.({ spentMicrocents: 900, limitMicrocents: 1000, thresholdPct: 90 }); // fires WHILE the session is live
+      captured?.({ spentMicrocents: 900, limitMicrocents: 1000, thresholdPct: 90 }); // WHILE the session is live
       await ctx.processLine('/exit');
       return { kind: 'exit' };
     };
     await chatCommand(
       { agent: undefined },
-      { ...d, buildSession: withCapture, drive: fireDuringTurn },
+      { ...d, buildSession: withCapture, drive: fireDuringTurn, ...over },
     );
     const notices = (liveStore?.getSnapshot().state.transcript ?? [])
       .filter((e) => e.role === 'notice')
       .map((e) => e.text);
+    return { notices, err: err() };
+  };
+
+  it('routes a budget warning to the TRANSCRIPT (view-store notice) during a LIVE INTERACTIVE session (Step-4b-3)', async () => {
+    // On the ink driver a raw io.writeErr would be overwritten by the next frame inside the hoisted alt buffer + lost;
+    // the warning must render as a transcript notice instead.
+    const { d } = deps([], [textTurn('x')]);
+    const { notices, err } = await budgetWarningDuringSession({
+      ...INERT_HOIST,
+      io: { ...d.io, stdoutIsTty: true }, // interactive ⇒ the ink driver renders the view store
+    });
     expect(notices.some((t) => t.includes('budget warning'))).toBe(true); // routed to the transcript
-    expect(err()).not.toContain('budget warning'); // …and NOT to raw stderr (the alt buffer would eat it)
+    expect(err).not.toContain('budget warning'); // …and NOT to raw stderr (the alt buffer would eat it)
+  });
+
+  it('a NON-interactive (plain / --json) session keeps the budget warning on STDERR — those drivers never render the store', async () => {
+    // Regression: the live-notice sink must NOT be installed for drivePlain/driveJson, which stream to `io` and never
+    // read `store.notice` — a notice pushed there would vanish silently.
+    const { notices, err } = await budgetWarningDuringSession({}); // default io ⇒ non-TTY ⇒ plain path
+    expect(err).toContain('budget warning'); // visible on stderr, exactly as before the alt-screen work
+    expect(notices.some((t) => t.includes('budget warning'))).toBe(false); // not buried in an unrendered store
   });
 
   it('exports the session-so-far to a scaffold on /export, continues, and does NOT mark the live row', async () => {

@@ -342,6 +342,43 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     expect(frame()).toContain('HMSG59'); // the transcript did NOT scroll (follow was never paused behind the overlay)
   });
 
+  it('CONSUMES a mouse report on the BARE Home (no chat viewport) — its raw bytes never type into the prompt (Step 5)', async () => {
+    // `driveHome` enables mouse reporting for the whole alt-screen Home, so a wheel/click arrives in `home` mode too.
+    // Nothing to scroll there, but the report must still be swallowed rather than routed to `controller.handleKey`.
+    const store = createChatStore(false);
+    const { c, harness } = mountHome(store, { alternateScreen: true });
+    await waitFor(() => (harness.lastFrame() ?? '').length > 0);
+    expect(c.getSnapshot().mode).toBe('home');
+
+    harness.stdin.write('\x1b[<64;10;5M'); // wheel up
+    harness.stdin.write('\x1b[<0;10;5M'); // a left click
+    for (let i = 0; i < 4; i += 1) await flush();
+
+    expect(c.getSnapshot().input.text).toBe(''); // no raw mouse bytes typed into the Home prompt
+    expect(c.getSnapshot().mode).toBe('home'); // …and nothing else was triggered
+  });
+
+  it('CONSUMES a mouse report while an overlay owns the keyboard — never types into the palette filter (Step 5)', async () => {
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.appendUser(`HMSG${i}`);
+    const { c, harness } = mountHome(store, { alternateScreen: true });
+    await enterChat(c);
+    const frame = (): string => harness.lastFrame() ?? '';
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 4; i += 1) await flush();
+    };
+    await waitFor(() => frame().includes('HMSG59'));
+    await settle();
+
+    c.handleKey('/', {}); // the `/` palette owns the keyboard
+    await settle();
+    harness.stdin.write('\x1b[<64;10;5M'); // a wheel notch behind the overlay
+    await settle();
+
+    expect(c.getSnapshot().palette?.query).toBe(''); // the mouse bytes did NOT enter the palette filter
+    expect(frame()).toContain('HMSG59'); // …and the transcript did not scroll behind the overlay
+  });
+
   it('re-follows the tail across a /models reseat that PRESERVES the sessionId (object-identity reset, Step 4b-2 Sonnet)', async () => {
     // A `/models` reseat keeps the SAME sessionId across the swap (the reseated session adopts the durable row) but
     // hands back a NEW session OBJECT. The scroll-reset effect must key on that object identity, NOT the durable id —

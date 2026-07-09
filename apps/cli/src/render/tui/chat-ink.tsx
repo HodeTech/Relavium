@@ -966,6 +966,33 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // Ctrl-C reaches us (not the kernel) in raw mode — `reduceChatKey` maps it to `cancel` even mid-turn. Dispatch
   // /cancel at most once: cancelOnce() is idempotent, but a held Ctrl-C would otherwise fire redundant turns.
   useInput((char, key) => {
+    // Mouse reports (Step 5): the alt screen enables mouse reporting, so a wheel/click arrives in EVERY state —
+    // including while an overlay owns the keyboard. CONSUME every report HERE, ahead of the overlay routing below,
+    // so its raw bytes can never type into the prompt, the `/` palette filter, or the `[c]` reason capture. The wheel
+    // only SCROLLS when no overlay owns the keyboard (parity with the Home + the Step-4b-2 overlay gate).
+    if (props.alternateScreen === true) {
+      const mouse = parseMouseScroll(char);
+      if (mouse !== undefined) {
+        const overlayOwnsKeyboard =
+          reasonDraftRef.current !== undefined ||
+          paletteRef.current !== undefined ||
+          searchRef.current !== undefined ||
+          mentionRef.current !== undefined ||
+          modelPickerRef.current !== undefined ||
+          effortPickerRef.current !== undefined;
+        if (mouse !== 'ignore' && !overlayOwnsKeyboard) {
+          const geom = liveScrollGeometry(
+            props.store.getSnapshot().state.transcript,
+            windowSize.columns,
+            scrollGeomRef.current.height,
+          );
+          let next = scrollRef.current;
+          for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, mouse, geom);
+          applyScroll(next);
+        }
+        return;
+      }
+    }
     // Read `running` FRESH from the store (not the render closure) so a coalesced same-chunk event after a turn
     // settles sees the current status — matching the ref-shadow `editorRef`/`paletteRef` reads below.
     // Busy = a streaming turn OR a `!`-shell command in flight (the latter has no store status — read the ref so a
@@ -1147,19 +1174,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           windowSize.columns,
           scrollGeomRef.current.height,
         );
-      // Mouse-wheel (Step 5): the alt screen enables SGR mouse reporting, so a wheel notch arrives here as a mouse
-      // escape on `char`. A wheel scrolls WHEEL_LINES lines; ANY mouse report is CONSUMED (return) so its raw bytes
-      // never type into the editor.
-      const mouse = parseMouseScroll(char);
-      if (mouse !== undefined) {
-        if (mouse !== 'ignore') {
-          const geom = liveGeom();
-          let next = scrollRef.current;
-          for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, mouse, geom);
-          applyScroll(next);
-        }
-        return;
-      }
+      // (Mouse reports are consumed at the TOP of this handler, ahead of the overlay routing — see above.)
       const motion = scrollMotionForKey(key);
       if (motion !== undefined) {
         applyScroll(reduceScroll(scrollRef.current, motion, liveGeom()));

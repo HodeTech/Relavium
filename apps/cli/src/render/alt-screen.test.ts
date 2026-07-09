@@ -74,7 +74,7 @@ describe('createAltScreenController (2.6.F Step 4b-3)', () => {
     c.restore();
     const afterRestore = out.length;
     c.clearBetween(); // after restore → no-op (buffer is gone)
-    expect(out.length).toBe(afterRestore);
+    expect(out).toHaveLength(afterRestore);
   });
 
   it('the byte sequences match ink 7 exactly (so the hoisted toggle is indistinguishable from ink)', () => {

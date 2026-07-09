@@ -403,18 +403,31 @@ export const defaultReplLifecycle: ReplLifecycle = {
 };
 
 /**
- * The CURRENT interactive session's notice sink — its view-store `notice`, set by {@link driveOneSession} for the
+ * The CURRENT **interactive** session's notice sink — its view-store `notice`, set by {@link driveOneSession} for the
  * lifetime of each session and cleared in its finally (2.6.F Step 4b-3 Sonnet review). A REPL runs exactly ONE session
  * at a time per process, so this file-private pointer is that session, singular. A session-side callback that fires
  * MID-session (the budget-cap warning; a re-drive's MCP-skipped diagnostic) must route through it so its message lands
  * in the transcript — a raw `io.writeErr` would print onto the hoisted ALT buffer, where ink's next frame overwrites it
- * and it is lost when the buffer is torn down (the default full-screen path). Absent (pre-loop / between swaps /
- * non-interactive) ⇒ the raw-`io` fallback on the primary buffer, exactly as before.
+ * and it is lost when the buffer is torn down (the default full-screen path). Absent ⇒ the raw-`io` fallback on the
+ * primary buffer: pre-loop, between swaps, and — crucially — on the **plain / `--json`** drivers, which never render
+ * the view store, so a notice pushed there would vanish silently ({@link liveNoticeSinkFor}).
  */
 let liveSessionNotice: ((text: string) => void) | undefined;
 
-/** Emit a session-side notice through the live view-store (renders in the transcript, survives the alt buffer) when a
- *  session is live, else the raw-`io` fallback (primary buffer). */
+/**
+ * The live-notice sink for a session, or `undefined` to keep the raw-`io` fallback. ONLY the interactive (ink) driver
+ * renders the view store, so only it can show a transcript notice; `drivePlain` streams tokens straight to `io` and
+ * `driveJson` serializes the event stream — neither reads `store.notice`, so they must keep writing to stderr.
+ */
+function liveNoticeSinkFor(
+  interactive: boolean,
+  store: ChatStoreController,
+): ((text: string) => void) | undefined {
+  return interactive ? (text) => store.notice(text) : undefined;
+}
+
+/** Emit a session-side notice through the live view-store (renders in the transcript, survives the alt buffer) when an
+ *  interactive session is live, else the raw-`io` fallback (primary buffer / the plain + `--json` streams). */
 function emitLiveNotice(io: CliIo, text: string): void {
   if (liveSessionNotice !== undefined) liveSessionNotice(text);
   else io.writeErr(`${text}\n`);
@@ -1554,6 +1567,16 @@ function createReseatRebuild(params: {
  * connections down — but NOT the shared db (the loop owns it across swaps). Returns the driver's outcome so the loop
  * can decide between ending and re-driving over a fresh session (`/clear`).
  */
+/** The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`, wired ONLY on
+ *  the interactive driver (a plain / `--json` stream has no `!`-shell surface). Mirrors {@link buildInteractiveMentionReader}. */
+function buildInteractiveShellRunner(
+  interactive: boolean,
+  built: ReplWiring['built'],
+): ((command: string, args: readonly string[]) => Promise<UserCommandOutcome>) | undefined {
+  if (!interactive) return undefined;
+  return (command, args) => built.session.runUserCommand(command, args);
+}
+
 /**
  * The `@`-mention completion reader for an INTERACTIVE driver (2.5.D, ADR-0061): a READ-ONLY fs jail at the
  * session's fs-scope tier + workspace, so `@`-completion browses + injects through the identical confidentiality
@@ -1600,30 +1623,28 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     onModeChange,
     onSetEffort,
   } = createChatLineHandler(wiring, deps);
-  // A live reseat is TTY-interactive only (like `/clear`): the ink model-picker overlay is the sole trigger, and a
-  // plain/`--json` driver has no picker. Wiring `onReseat` only on an interactive driver means `stopReason()` can
-  // never yield `'reseat'` under `--json`/plain — one machine stream stays one session lifecycle (ADR-0049).
-  const reseatEnabled = chatIsInteractive(deps.io, deps.global);
+  // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store + the
+  // model-picker overlay. A live reseat is interactive-only (like `/clear`): wiring `onReseat` only there means
+  // `stopReason()` can never yield `'reseat'` under `--json`/plain — one machine stream stays one session (ADR-0049).
+  const interactive = chatIsInteractive(deps.io, deps.global);
 
   // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the SAME fs-scope tier + workspace
   // as the session's tools (a `.ssh`/`.env` entry is never listed nor read). TTY-only; see the helper.
   const mentionReader = buildInteractiveMentionReader(deps, built);
 
   // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`. TTY-only.
-  const runShellCommand = chatIsInteractive(deps.io, deps.global)
-    ? (command: string, args: readonly string[]): Promise<UserCommandOutcome> =>
-        built.session.runUserCommand(command, args)
-    : undefined;
+  const runShellCommand = buildInteractiveShellRunner(interactive, built);
 
   // persister.start() subscribes for the turn events + adopts/inserts the session row; it does NOT consume
   // session:started, so it is safe before the driver. The session-open action (fresh start() / resume no-op)
   // is deferred to startSession() INSIDE the driver, after the driver has subscribed the view store.
   try {
     persister.start();
-    // Point the live-notice sink at THIS session's view store for its lifetime (2.6.F Step 4b-3 Sonnet review): a
-    // mid-session `onBudgetWarning` then renders in the transcript (surviving the alt buffer) instead of a raw
-    // io.writeErr the hoisted alt buffer would discard. Cleared in the finally so it never outlives the session.
-    liveSessionNotice = (text) => store.notice(text);
+    // Point the live-notice sink at THIS session's view store for its lifetime (2.6.F Step 4b-3 Sonnet review), but
+    // ONLY on the interactive (ink) driver — it alone renders the store, so a mid-session `onBudgetWarning` shows in
+    // the transcript (surviving the alt buffer) instead of a raw io.writeErr the alt buffer would discard. On the
+    // plain / `--json` drivers the sink stays `undefined` so the warning keeps reaching stderr. Cleared in the finally.
+    liveSessionNotice = liveNoticeSinkFor(interactive, store);
     const outcome = await (deps.drive ?? drivePlain)({
       startSession,
       processLine,
@@ -1648,8 +1669,8 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       onSetEffort,
       // The reseat trigger (onReseat) + its picker are wired together, interactive-only: the ink overlay reads the
       // catalog through `modelPicker` and calls `onReseat` on accept. A plain/`--json` driver gets neither.
-      ...(reseatEnabled ? { onReseat } : {}),
-      ...(reseatEnabled && wiring.modelPicker !== undefined
+      ...(interactive ? { onReseat } : {}),
+      ...(interactive && wiring.modelPicker !== undefined
         ? { modelPicker: wiring.modelPicker }
         : {}),
       ...(mentionReader === undefined ? {} : { mentionReader }),

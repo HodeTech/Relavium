@@ -213,6 +213,33 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(c.getSnapshot().input).toEqual({ text: 'alpha', cursor: 5 });
   });
 
+  it('in-Home chat: a PASTE resets history nav so a following Down does not clobber it', async () => {
+    // A paste mutates the buffer exactly like a typed edit, so it must end history navigation — otherwise a stale
+    // navIndex lets the next Down restore the pre-Up draft over the pasted text.
+    const made = makeSession();
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(made.session),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    type(c, 'alpha');
+    c.handleKey('', ENTER); // records 'alpha', starts the chat
+    await flush();
+    type(c, 'beta');
+    c.handleKey('', ENTER); // records 'beta' → history ['alpha','beta']
+    await flush();
+
+    c.handleKey('', { upArrow: true }); // Up-recall makes history navigation active (navIndex set)
+    expect(c.getSnapshot().input.text).toBe('beta');
+    c.handlePaste('!'); // a real edit ⇒ must reset history nav
+    expect(c.getSnapshot().input.text).toBe('beta!');
+    // Down is now a no-op (nav reset by the paste), NOT a historyNext that clobbers the pasted buffer.
+    c.handleKey('', { downArrow: true });
+    expect(c.getSnapshot().input.text).toBe('beta!');
+  });
+
   it('the in-Home chat opens `@` file completion, descends a dir, and queues the accepted file as a chip that expands at submit (2.5.D step 4 / ADR-0061 chip model)', async () => {
     const mentionReader: MentionReader = {
       list: (dir) =>

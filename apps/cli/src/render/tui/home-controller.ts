@@ -1478,6 +1478,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       const pasted = text.replace(/\r\n?/g, '\n');
       if (pasted.length === 0 || !pasteEditable()) return;
       doctorRunId += 1; // an append clears a stale `/doctor` report + invalidates an in-flight run, like a typed edit
+      history = resetHistoryNav(history); // a paste is a real edit ⇒ end history nav (parity with append/backspace/kill)
       set({ input: insertAtCursor(state.input, pasted), notice: undefined });
     },
     async teardownActive() {

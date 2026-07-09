@@ -179,7 +179,7 @@ describe('ChatApp render economy — perf guard', () => {
       store.tick();
       await waitFor(() => frames.length > baseline, 3);
     }
-    expect(frames.length).toBe(baseline);
+    expect(frames).toHaveLength(baseline);
   });
 });
 
@@ -379,6 +379,35 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     await wheel(65);
     await wheel(65);
     expect(frame()).toContain('MSG59'); // back at the tail (following resumed)
+  });
+
+  it('a mouse report behind an OPEN OVERLAY is consumed — never types into the palette filter, never scrolls (Step 5)', async () => {
+    // The overlays `return` above the old mouse intercept, so a wheel used to reach `foldPaletteKey` and type into the
+    // filter. It must be swallowed at the top of the handler; the wheel also must not scroll behind the overlay.
+    const h = render(chatApp(seed(60)));
+    const frame = (): string => h.lastFrame() ?? '';
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 4; i += 1) await flush();
+    };
+    setWindowSize(h.stdout, 80, 24);
+    await waitFor(() => frame().includes('MSG59'));
+    await settle();
+    h.stdin.write('/'); // open the `/` palette
+    await settle();
+    for (const ch of 'zzz') {
+      h.stdin.write(ch); // filter to no match ⇒ the palette stays open but short
+      await settle();
+    }
+    expect(frame()).toContain('Enter run'); // the palette owns the keyboard
+
+    h.stdin.write('\x1b[<64;10;5M'); // a wheel notch behind the overlay
+    h.stdin.write('\x1b[<0;10;5M'); // …and a click
+    await settle();
+
+    expect(frame()).toContain('Enter run'); // the palette is still open
+    expect(frame()).not.toContain('<64;10'); // the mouse bytes did NOT enter the filter
+    expect(frame()).not.toContain('<0;10');
+    expect(frame()).toContain('MSG59'); // …and the transcript did not scroll behind the overlay
   });
 
   it('a MOUSE CLICK report is CONSUMED — its raw bytes never type into the prompt (Step 5)', async () => {

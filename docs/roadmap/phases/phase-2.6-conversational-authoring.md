@@ -782,11 +782,11 @@ before implementation.
   - **Permission model + hard guardrails (bind everything, incl. 2.6.O)**: an auto-spawned sub-agent
     inherits the parent's mode and approval cache — a child never escalates beyond the parent's grant (a
     child whose parent denied `run_command` cannot run commands; a child cannot switch to `auto` if the
-    parent is in `ask`). A user `/spawn` runs under the current chat mode. **Hard limits are engine-enforced
-    and non-configurable where noted:** maximum nesting depth **3** (parent → child → grandchild; a
-    grandchild cannot spawn further); maximum concurrent children per turn bounded at a configurable ceiling
-    (default **5**). Hard-coding these bounds lets downstream UX (error messages, history tree views, cost
-    indentation) design against fixed limits from day one.
+    parent is in `ask`). A user `/spawn` runs under the current chat mode. Two engine-enforced limits, one fixed and one
+    tunable: maximum nesting depth is **3** (parent → child → grandchild; a grandchild cannot spawn further)
+    and is **not configurable**; maximum concurrent children per turn is a **configurable ceiling**
+    (default **5**). Fixing the depth bound — and giving the concurrency ceiling a known default — lets
+    downstream UX (error messages, history tree views, cost indentation) design against stable limits from day one.
     **Analysis gate:** stress-test the inheritance model — (a) a child switching modes via its own `/mode`
     (denied — mode is inherited, not child-ownable); (b) a child requesting escalation, surfaced to the
     parent's approval prompt **with the child's identity** so the user knows who is asking. The ADR records

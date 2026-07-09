@@ -196,26 +196,28 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     state.reasonDraft === undefined;
   const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
   useInput((input, key) => {
-    if (altChat) {
-      // Reduce against LIVE geometry (parity with `ChatApp`): wrap the session store's CURRENT transcript at the
-      // keypress for a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream
-      // burst makes `settle` resume-follow against a stale bottom (Step-4b-2 Sonnet review). `altChat` already
-      // implies `state.session` is set; `getSnapshot()` reads the store fresh here regardless of closure staleness.
-      const liveGeom = (): ScrollGeometry => {
-        const store = state.session?.store;
-        return store === undefined
-          ? scrollGeomRef.current
-          : liveScrollGeometry(
-              store.getSnapshot().state.transcript,
-              size.cols,
-              scrollGeomRef.current.height,
-            );
-      };
-      // Mouse-wheel (Step 5): a wheel notch scrolls WHEEL_LINES lines; ANY mouse report is CONSUMED so its raw bytes
-      // never reach the controller / editor.
+    // Reduce against LIVE geometry (parity with `ChatApp`): wrap the session store's CURRENT transcript at the
+    // keypress for a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream
+    // burst makes `settle` resume-follow against a stale bottom (Step-4b-2 Sonnet review). `getSnapshot()` reads the
+    // store fresh here regardless of closure staleness; no session (bare Home) ⇒ the lifted geometry, nothing to move.
+    const liveGeom = (): ScrollGeometry => {
+      const store = state.session?.store;
+      return store === undefined
+        ? scrollGeomRef.current
+        : liveScrollGeometry(
+            store.getSnapshot().state.transcript,
+            size.cols,
+            scrollGeomRef.current.height,
+          );
+    };
+    // Mouse reports (Step 5): `driveHome` enables mouse reporting for the WHOLE alt-screen Home, so a wheel/click
+    // arrives in EVERY mode and behind EVERY overlay. CONSUME it here — ahead of all routing — so its raw bytes can
+    // never type into the Home prompt, the `/` palette filter, or the `[c]` reason capture. A wheel only SCROLLS
+    // when the chat transcript owns the screen (`altChat`); elsewhere there is no viewport to move.
+    if (props.alternateScreen === true) {
       const mouse = parseMouseScroll(input);
       if (mouse !== undefined) {
-        if (mouse !== 'ignore') {
+        if (mouse !== 'ignore' && altChat) {
           const geom = liveGeom();
           let next = scrollRef.current;
           for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, mouse, geom);
@@ -223,6 +225,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         }
         return;
       }
+    }
+    if (altChat) {
       const motion = scrollMotionForKey(key);
       if (motion !== undefined) {
         applyScroll(reduceScroll(scrollRef.current, motion, liveGeom()));
