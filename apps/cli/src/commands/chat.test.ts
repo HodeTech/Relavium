@@ -132,6 +132,19 @@ function seedCatalogModel(db: Db, provider: ProviderId, modelId: string): string
   return id;
 }
 
+/** Make the 2.6.F Step-4b-3 alt-buffer hoist INERT in an interactive-TTY test: no real DECSET-1049 writes to
+ *  `process.stdout`, no real `process.on('exit')`/SIGTERM/SIGHUP/SIGQUIT handlers — so a full-screen-by-default
+ *  session (`DEFAULT_ALT_SCREEN=true`) never flips the test's terminal nor hijacks the vitest process lifecycle. */
+const INERT_HOIST = {
+  writeControl: (): void => undefined,
+  lifecycle: {
+    onProcessExit: (): (() => void) => () => undefined,
+    onTerminationSignal: (): (() => void) => () => undefined,
+    setRawMode: (): void => undefined,
+    exit: (): void => undefined,
+  },
+} as const;
+
 describe('chatCommand', () => {
   let cwd: string;
   let home: string;
@@ -609,6 +622,7 @@ describe('chatCommand', () => {
       { agent: undefined },
       {
         ...d,
+        ...INERT_HOIST, // alt_screen=true here → altActive=true; keep the hoist off the real terminal (Step 4b-3)
         io: interactiveIo,
         global: { ...globalOptions(cwd), configPath: cfg },
         drive: reseatThenExit,
@@ -676,7 +690,7 @@ describe('chatCommand', () => {
     };
     const code = await chatCommand(
       { agent: undefined },
-      { ...d, io: interactiveIo, drive: reseatThenExit },
+      { ...d, ...INERT_HOIST, io: interactiveIo, drive: reseatThenExit },
     );
     expect(code).toBe(EXIT_CODES.chatEnded);
 
@@ -714,7 +728,7 @@ describe('chatCommand', () => {
     };
     const code = await chatCommand(
       { agent: undefined },
-      { ...d, io: interactiveIo, buildResumedSession, drive: reseat },
+      { ...d, ...INERT_HOIST, io: interactiveIo, buildResumedSession, drive: reseat },
     );
     expect(code).toBe(EXIT_CODES.chatEnded); // ends cleanly despite the failed rebuild (never hangs/loops)
     expect(err()).toContain('could not start a new session after a model switch'); // swap-kind-aware hint

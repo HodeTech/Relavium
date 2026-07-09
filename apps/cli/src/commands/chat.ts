@@ -300,6 +300,10 @@ export interface ChatCommandDeps {
   readonly doctorProbes?: DoctorProbes;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
   readonly drive?: ChatDriver;
+  /** Alt-buffer HOIST seams (2.6.F Step 4b-3) — forwarded to {@link runReplLoop}. A test injects a no-op
+   *  `writeControl` + `lifecycle` so the hoist never touches the REAL terminal / process signals; default = real. */
+  readonly writeControl?: (sequence: string) => void;
+  readonly lifecycle?: ReplLifecycle;
   /** Wall-clock (ms) + id sources (injectable for tests). */
   readonly now?: () => number;
   readonly uuid?: () => string;
@@ -327,6 +331,10 @@ export interface ChatResumeCommandDeps {
   readonly doctorProbes?: DoctorProbes;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
   readonly drive?: ChatDriver;
+  /** Alt-buffer HOIST seams (2.6.F Step 4b-3) — forwarded to {@link runReplLoop}; a test injects no-ops so the hoist
+   *  never touches the real terminal / process signals (default = real). */
+  readonly writeControl?: (sequence: string) => void;
+  readonly lifecycle?: ReplLifecycle;
   /** Wall-clock (ms) + id sources (injectable for tests). */
   readonly now?: () => number;
   readonly uuid?: () => string;
@@ -370,13 +378,21 @@ export const defaultReplLifecycle: ReplLifecycle = {
     return () => process.removeListener('exit', listener);
   },
   onTerminationSignal: (listener) => {
+    // SIGTERM(15), SIGHUP(1), SIGQUIT(3): the catchable external kills that terminate WITHOUT firing Node's `'exit'`
+    // event (so the `onProcessExit` net alone would miss them). With ink's render option `alternateScreen:false` ink's
+    // own signal-exit restore is inert, so this handler must exit the alt buffer itself; otherwise `kill -QUIT`/`-TERM`
+    // /`-HUP` would strand the terminal on the alt screen (Step-4b-3 Opus review). SIGINT stays with driveInk (the
+    // cooperative /cancel); uncatchable SIGKILL/SIGSTOP and inherent crash signals remain an accepted residual.
     const onTerm = (): void => listener(15);
     const onHup = (): void => listener(1);
+    const onQuit = (): void => listener(3);
     process.on('SIGTERM', onTerm);
     process.on('SIGHUP', onHup);
+    process.on('SIGQUIT', onQuit);
     return () => {
       process.removeListener('SIGTERM', onTerm);
       process.removeListener('SIGHUP', onHup);
+      process.removeListener('SIGQUIT', onQuit);
     };
   },
   setRawMode: (raw) => {
@@ -1659,9 +1675,12 @@ function resolveSwapRebuild(
   return undefined;
 }
 
-/** What {@link withHoistedAltScreen}'s loop body returns — the final `/exit` summary to print on the primary buffer. */
+/** What {@link withHoistedAltScreen}'s loop body returns — text to print AFTER the single alt-exit, on the primary
+ *  buffer: the final `/exit` summary and/or a rebuild-failure error (both would be discarded if written in the alt
+ *  buffer — Step-4b-3 Opus review). At most one is set per run. */
 export interface HoistedLoopResult {
   readonly summaryText?: string | undefined;
+  readonly errorText?: string | undefined;
 }
 
 /**
@@ -1686,6 +1705,7 @@ export async function withHoistedAltScreen(
     readonly write: (sequence: string) => void;
     readonly lifecycle: ReplLifecycle;
     readonly writeOut: (text: string) => void;
+    readonly writeErr: (text: string) => void;
   },
   runLoop: (alt: AltScreenController) => Promise<HoistedLoopResult>,
 ): Promise<void> {
@@ -1702,20 +1722,23 @@ export async function withHoistedAltScreen(
         } catch {
           // best-effort — a non-TTY / already-cooked stdin must not mask the exit
         }
-        opts.lifecycle.exit(128 + signo); // conventional 143 (SIGTERM) / 129 (SIGHUP)
+        opts.lifecycle.exit(128 + signo); // conventional 143 (SIGTERM) / 130+ (SIGHUP/SIGQUIT)
       })
     : noop;
-  let summaryText: string | undefined;
+  let result: HoistedLoopResult = {};
   try {
-    ({ summaryText } = await runLoop(alt));
+    result = await runLoop(alt);
   } finally {
-    // Exit the alt buffer FIRST (restores the primary buffer + scrollback), THEN print the summary, so it lands on the
-    // primary buffer (ADR-0068 §c). `restore()` is idempotent — the `onProcessExit` net may also have fired. Remove
+    // Exit the alt buffer FIRST (restores the primary buffer + scrollback), THEN emit the summary / error, so BOTH
+    // land on the primary buffer (ADR-0068 §c) — a message written while still in the alt buffer is discarded by the
+    // DECRST-1049 restore (the Step-4b-3 Opus-review regression: the rebuild-failure `chat-resume <id>` hint vanished
+    // once alt became the default). `restore()` is idempotent — the `onProcessExit` net may also have fired. Remove
     // the nets so they cannot outlive the loop.
     alt.restore();
     removeExitNet();
     removeSignalNet();
-    if (summaryText !== undefined) opts.writeOut(`${summaryText}\n`);
+    if (result.summaryText !== undefined) opts.writeOut(`${result.summaryText}\n`);
+    if (result.errorText !== undefined) opts.writeErr(result.errorText);
   }
 }
 
@@ -1753,6 +1776,7 @@ export async function runReplLoop(
         write: writeControl,
         lifecycle: deps.lifecycle ?? defaultReplLifecycle,
         writeOut: (text) => deps.io.writeOut(text),
+        writeErr: (text) => deps.io.writeErr(text),
       },
       async (alt): Promise<HoistedLoopResult> => {
         let current = wiring;
@@ -1771,19 +1795,20 @@ export async function runReplLoop(
           // never briefly shows two stacked transcripts (ink's non-fullscreen unmount does not erase). No-op inactive.
           alt.clearBetween();
           // Build the swap session over the same db and re-drive; a build failure is surfaced actionably (the prior
-          // conversation is still resumable) and ends the REPL rather than looping on a broken build.
+          // conversation is still resumable) and ends the REPL rather than looping on a broken build. The message is
+          // RETURNED (not written here) so the wrapper emits it AFTER the alt-exit — writing it inside the still-entered
+          // alt buffer would discard it (the recovery hint with the resumable session id — Step-4b-3 Opus review).
           try {
             current = await next();
           } catch (err) {
-            deps.io.writeErr(
+            const errorText =
               // Sanitize the error text too (not just the id beside it) — a rebuild fault can rethrow an unclassified
               // message verbatim (session-host.ts), which could carry an ANSI/OSC escape from a spawned MCP server's
               // error text; strip it exactly as the id + every other display string on this surface is stripped.
               `could not start a new session after ${outcome.kind === 'reseat' ? 'a model switch' : '/clear'}: ` +
-                `${sanitizeInline(err instanceof Error ? err.message : String(err))}. ` +
-                `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`,
-            );
-            return { summaryText };
+              `${sanitizeInline(err instanceof Error ? err.message : String(err))}. ` +
+              `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`;
+            return { summaryText, errorText };
           }
         }
       },

@@ -1388,9 +1388,10 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   let instance: ReturnType<typeof render> | undefined;
   // The full-screen render mode (2.6.F, ADR-0068 §e). driveInk only runs on a TTY (selectChatDriver), so the output
   // mode is 'tui'; the resolver still short-circuits a 'plain' path to inline defensively, then applies
-  // `--no-alt-screen` → `[preferences].alt_screen` (ctx.altScreen) → phase default (opt-in until Step 4b). `alt`
-  // mounts ink 7's native alternate screen; on unmount ink exits it, restoring the primary buffer BEFORE the final
-  // summary is written below (ADR-0068 §c — a summary written into the torn-down alt buffer would be lost).
+  // `--no-alt-screen` → `[preferences].alt_screen` (ctx.altScreen) → the phase default (alt-ON since Step 4b-3). This
+  // value drives ONLY the `ChatApp` component prop (the transcript viewport vs `<Static>`); ink's render OPTION is a
+  // hard `false` (Step 4b-3), so ink toggles NO DECSET-1049 per session — the hoisted `runReplLoop` owns the single
+  // alt-buffer enter/exit, and the end-of-session summary rides on the outcome + prints after that exit (ADR-0068 §c).
   const alternateScreen =
     resolveRenderMode({
       outputMode: detectOutputMode({

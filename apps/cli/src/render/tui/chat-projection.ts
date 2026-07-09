@@ -275,27 +275,57 @@ export function errorRecoveryHint(code: string | undefined, message?: string): s
  * two renderers — the modes are mutually exclusive (inline OR alt), so this is a cosmetic Step-4b tradeoff, not a
  * correctness gap.
  */
-export function wrapTranscript(
-  transcript: readonly TranscriptEntry[],
-  cols: number,
-): DisplayLine[] {
+/** Wrap ONE transcript entry to its width-wrapped display lines — the per-entry unit {@link wrapTranscript} caches. */
+function wrapEntry(entry: TranscriptEntry, cols: number): DisplayLine[] {
   const lines: DisplayLine[] = [];
   const push = (text: string, style: DisplayLine['style']): void => {
     for (const row of wrapText(text, cols)) lines.push({ text: row, style });
   };
-  for (const entry of transcript) {
-    if (entry.role === 'user') {
-      push(`> ${stripTerminalControls(entry.text)}`, 'user');
-    } else if (entry.role === 'notice') {
-      push(stripTerminalControls(entry.text), 'notice');
-    } else {
-      push(stripTerminalControls(entry.text), 'assistant');
-      push(` ${formatTurnSummary(entry.summary)}`, 'summary');
-      const hint = errorRecoveryHint(entry.summary.errorCode, entry.summary.errorMessage);
-      if (hint !== undefined) push(` → ${hint}`, 'hint');
-    }
+  if (entry.role === 'user') {
+    push(`> ${stripTerminalControls(entry.text)}`, 'user');
+  } else if (entry.role === 'notice') {
+    push(stripTerminalControls(entry.text), 'notice');
+  } else {
+    push(stripTerminalControls(entry.text), 'assistant');
+    push(` ${formatTurnSummary(entry.summary)}`, 'summary');
+    const hint = errorRecoveryHint(entry.summary.errorCode, entry.summary.errorMessage);
+    if (hint !== undefined) push(` → ${hint}`, 'hint');
   }
   return lines;
+}
+
+/**
+ * PER-ENTRY wrap cache (2.6.F Step 4b-3, ADR-0068 §c). A `WeakMap` keyed on the IMMUTABLE, append-only transcript
+ * ENTRY object → its last wrap `{ cols, lines }`. `wrapTranscript` re-wraps the whole transcript on each append (a new
+ * immutable transcript reference busts the render memo) + on each scroll keypress (`liveScrollGeometry`); caching per
+ * entry turns an append into O(history) map lookups + ONE `wrapEntry` (the new entry), and a re-render at an unchanged
+ * `cols` is all hits. Unlike a fixed-size LRU it NEVER thrashes on a transcript larger than the cache (the Step-4b-3
+ * Opus-review pathology): it holds exactly the live entries (GC reclaims a dropped one), and a resize REPLACES each
+ * entry's single cached wrap rather than accumulating. The cached `lines` are shared + read-only (the viewport only
+ * reads `text`/`style`).
+ */
+const entryWrapCache = new WeakMap<
+  TranscriptEntry,
+  { cols: number; lines: readonly DisplayLine[] }
+>();
+
+export function wrapTranscript(
+  transcript: readonly TranscriptEntry[],
+  cols: number,
+): DisplayLine[] {
+  const out: DisplayLine[] = [];
+  for (const entry of transcript) {
+    const cached = entryWrapCache.get(entry);
+    let lines: readonly DisplayLine[];
+    if (cached !== undefined && cached.cols === cols) {
+      lines = cached.lines;
+    } else {
+      lines = wrapEntry(entry, cols);
+      entryWrapCache.set(entry, { cols, lines });
+    }
+    for (const line of lines) out.push(line);
+  }
+  return out;
 }
 
 /**

@@ -8,7 +8,7 @@ import {
   CLEAR_ALT_SCREEN,
 } from '../render/alt-screen.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
-import { withHoistedAltScreen, type ReplLifecycle } from './chat.js';
+import { defaultReplLifecycle, withHoistedAltScreen, type ReplLifecycle } from './chat.js';
 
 /**
  * `withHoistedAltScreen` — the alt-buffer HOIST + its EXIT-SAFETY net (2.6.F Step 4b-3, ADR-0068 §c). This is the
@@ -22,9 +22,11 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
   interface Harness {
     readonly writes: string[];
     readonly outs: string[];
+    readonly errs: string[];
+    readonly events: string[]; // a COMBINED, ordered log across write/out/err so cross-sink ordering is assertable
     readonly lifecycle: ReplLifecycle;
     readonly fireExit: () => void; // the captured process.on('exit') listener
-    readonly fireSignal: (signo: number) => void; // the captured SIGTERM/SIGHUP listener
+    readonly fireSignal: (signo: number) => void; // the captured SIGTERM/SIGHUP/SIGQUIT listener
     readonly removeExit: ReturnType<typeof vi.fn>;
     readonly removeSignal: ReturnType<typeof vi.fn>;
     readonly setRawMode: ReturnType<typeof vi.fn>;
@@ -36,6 +38,8 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
   const harness = (): Harness => {
     const writes: string[] = [];
     const outs: string[] = [];
+    const errs: string[] = [];
+    const events: string[] = [];
     let exitCb: () => void = () => {};
     let signalCb: (signo: number) => void = () => {};
     const removeExit = vi.fn();
@@ -53,6 +57,8 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
     return {
       writes,
       outs,
+      errs,
+      events,
       lifecycle: { onProcessExit, onTerminationSignal, setRawMode, exit },
       fireExit: () => exitCb(),
       fireSignal: (signo) => signalCb(signo),
@@ -67,9 +73,19 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
 
   const opts = (h: Harness, active: boolean) => ({
     active,
-    write: (s: string) => h.writes.push(s),
+    write: (s: string) => {
+      h.writes.push(s);
+      h.events.push(`write:${s}`);
+    },
     lifecycle: h.lifecycle,
-    writeOut: (t: string) => h.outs.push(t),
+    writeOut: (t: string) => {
+      h.outs.push(t);
+      h.events.push(`out:${t}`);
+    },
+    writeErr: (t: string) => {
+      h.errs.push(t);
+      h.events.push(`err:${t}`);
+    },
   });
 
   it('active: enters once, runs the loop (which clears between swaps), exits once, prints the summary AFTER the exit', async () => {
@@ -114,13 +130,50 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
     expect(h.exit).toHaveBeenCalledWith(143); // 128 + 15 (SIGTERM)
   });
 
-  it('a SIGHUP is 128+1 = 129', async () => {
-    const h = harness();
-    await withHoistedAltScreen(opts(h, true), () => {
-      h.fireSignal(1); // SIGHUP
+  it('a SIGHUP is 128+1 = 129, a SIGQUIT is 128+3 = 131 (the external kills that skip Node’s exit event)', async () => {
+    const hup = harness();
+    await withHoistedAltScreen(opts(hup, true), () => {
+      hup.fireSignal(1); // SIGHUP
       return Promise.resolve({});
     });
-    expect(h.exit).toHaveBeenCalledWith(129);
+    expect(hup.exit).toHaveBeenCalledWith(129);
+    expect(hup.writes).toContain(EXIT_ALT_SCREEN + SHOW_CURSOR); // buffer exited (not stranded)
+
+    const quit = harness();
+    await withHoistedAltScreen(opts(quit, true), () => {
+      quit.fireSignal(3); // SIGQUIT — was stranding the terminal before Step-4b-3 Opus fold
+      return Promise.resolve({});
+    });
+    expect(quit.exit).toHaveBeenCalledWith(131);
+    expect(quit.writes).toContain(EXIT_ALT_SCREEN + SHOW_CURSOR);
+  });
+
+  it('a rebuild-failure errorText is emitted via writeErr AFTER the alt-exit — on the PRIMARY buffer (Step-4b-3 fix)', async () => {
+    const h = harness();
+    const msg = 'could not start a new session … resume with `relavium chat-resume abc123`.\n';
+    await withHoistedAltScreen(opts(h, true), () => Promise.resolve({ errorText: msg }));
+    expect(h.errs).toEqual([msg]); // the actionable resume hint is emitted, not discarded in the alt buffer
+    // …and AFTER the alt-exit: EXIT_ALT_SCREEN precedes the error in the combined event log, so it lands on primary.
+    const exitIdx = h.events.indexOf(`write:${EXIT_ALT_SCREEN + SHOW_CURSOR}`);
+    const errIdx = h.events.indexOf(`err:${msg}`);
+    expect(exitIdx).toBeGreaterThanOrEqual(0);
+    expect(errIdx).toBeGreaterThan(exitIdx); // written after DECRST-1049 → survives on the primary buffer
+  });
+
+  it('defaultReplLifecycle registers + cleanly removes SIGTERM/SIGHUP/SIGQUIT on process', () => {
+    const before = {
+      term: process.listenerCount('SIGTERM'),
+      hup: process.listenerCount('SIGHUP'),
+      quit: process.listenerCount('SIGQUIT'),
+    };
+    const remove = defaultReplLifecycle.onTerminationSignal(() => {});
+    expect(process.listenerCount('SIGTERM')).toBe(before.term + 1);
+    expect(process.listenerCount('SIGHUP')).toBe(before.hup + 1);
+    expect(process.listenerCount('SIGQUIT')).toBe(before.quit + 1);
+    remove();
+    expect(process.listenerCount('SIGTERM')).toBe(before.term);
+    expect(process.listenerCount('SIGHUP')).toBe(before.hup);
+    expect(process.listenerCount('SIGQUIT')).toBe(before.quit);
   });
 
   it('inactive (inline / non-TTY / --json / CI): writes NOTHING, registers NO nets — but still prints the summary', async () => {

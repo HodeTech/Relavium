@@ -977,8 +977,17 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   and the hoisted `runReplLoop` (`withHoistedAltScreen`) enters DECSET-1049 ONCE above the per-session loop, clears
   between re-drives, and exits ONCE, so a `/clear` / reseat no longer flips the terminal. Exit-safety net (ink's own
   1049-exit is now inert): idempotent `restore()` on the finally + a `process.on('exit')` net (the second-SIGINT force
-  quit) + explicit SIGTERM/SIGHUP handlers. Verified against ink 7.1.0's compiled build; unit-tested (`withHoistedAltScreen`,
-  6 cases); real-TTY signal validation (double-Ctrl-C, `kill -TERM`) is a manual PR-time check.
+  quit) + explicit SIGTERM/SIGHUP/SIGQUIT handlers. Verified against ink 7.1.0's compiled build; unit-tested
+  (`withHoistedAltScreen`, 10 cases); real-TTY signal validation (double-Ctrl-C, `kill -TERM`) is a manual PR-time check.
+- [ ] **Step 4b-3: on an EXTERNAL SIGTERM/SIGHUP/SIGQUIT, unmount the live ink instance BEFORE the alt-exit (avoid the
+  final-frame dump on the primary buffer).** With the ink render option `alternateScreen:false` (Step 4b-3), the hoist's
+  signal handler `alt.restore()`s (DECRST-1049 → primary) then `process.exit(128+signo)`; `process.exit` is intercepted
+  by ink's signal-exit, which fires ink's `unmount` → ink renders its FINAL frame onto stdout — now the PRIMARY buffer —
+  leaving a screenful of transcript above the recovered shell prompt (Step-4b-3 Opus review). COSMETIC (the terminal IS
+  recovered: buffer + cursor + raw mode + bracketed paste all restored; external-signal-only, not a keyboard path). The
+  clean fix is to thread the current session's `instance.unmount` up to the hoist (driveHome parity) and call it BEFORE
+  `alt.restore()`, so ink's final frame lands on the alt buffer that is then discarded — a small cross-seam wiring
+  (ChatDriveContext `onInstance` → a loop ref → the signal handler). *(low · apps/cli/src/{commands/chat.ts,render/tui/chat-ink.tsx})*
 - [ ] **`relavium run` TUI → full-screen + retained scrollable run-history.** [ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md)
   scopes the 2.6.F full-screen renderer to the **Home + `chat`**; the `relavium run` `RunApp` stays inline
   (no `useInput` → kernel `Ctrl-C → SIGINT` cooperative cancel preserved). Making it full-screen + giving it
