@@ -18,10 +18,6 @@ import type { RefreshReport } from '../../engine/model-refresh.js';
 
 import type { MentionReader } from './mention.js';
 
-// The paste-boundary markers exactly as ink 6.8's input layer surfaces them (the leading ESC is stripped).
-const PASTE_START = '[200~';
-const PASTE_END = '[201~';
-
 /** A no-op `/doctor` probe set — the fast-tier probes never throw, so a `/doctor` run reports all-ok. The
  *  `/doctor`-behavior tests below override individual probes; the rest just need a value for the required dep. */
 const STUB_DOCTOR_PROBES: DoctorProbes = {
@@ -1089,8 +1085,11 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     expect(onExit).toHaveBeenCalledTimes(1);
   });
 
-  describe('bracketed paste (DECSET 2004)', () => {
-    it('appends a multi-line paste literally (newlines kept) and does NOT submit early', () => {
+  describe('bracketed paste (native ink 7 usePaste → handlePaste)', () => {
+    // ink 7 delivers a whole bracketed paste as ONE native event on the usePaste channel (markers stripped, chunks
+    // reassembled by ink), routed to `handlePaste`. So a paste never arrives char-by-char, its embedded newlines
+    // never submit, and its content never masquerades as a key answer to the fail-closed approval floor.
+    it('appends a whole multi-line paste (CRLF/CR → LF) and does NOT submit', () => {
       const startChat = vi.fn();
       const c = createHomeController({
         doctorProbes: STUB_DOCTOR_PROBES,
@@ -1099,31 +1098,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
         onExit: vi.fn(),
         onError: vi.fn(),
       });
-      c.handleKey(PASTE_START, {});
-      c.handleKey('line1\nline2\r\nline3', {}); // ink delivers the bracketed content as one event (with a CRLF)
-      c.handleKey(PASTE_END, {});
-      // The whole EditorState: insertAtCursor advances the cursor past the multi-char pasted block (18 units).
-      // The pasted CRLF is normalized to a single LF (no stray '\r' reaches the model/transcript), so the block
-      // is 17 units, not 18 — matching the reduceEditorMotion append path.
+      c.handlePaste('line1\nline2\r\nline3'); // one native event; the CRLF normalizes to a single LF (17 units)
       expect(c.getSnapshot().input).toEqual({ text: 'line1\nline2\nline3', cursor: 17 });
-      expect(startChat).not.toHaveBeenCalled(); // nothing submitted by the embedded newlines
+      expect(startChat).not.toHaveBeenCalled(); // an embedded newline in a paste never submits
       expect(c.getSnapshot().mode).toBe('home');
     });
 
-    it('the markers themselves never reach the buffer', () => {
-      const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
-        startChat: vi.fn(),
-        homeStore,
-        onExit: vi.fn(),
-        onError: vi.fn(),
-      });
-      c.handleKey(PASTE_START, {});
-      c.handleKey(PASTE_END, {});
-      expect(c.getSnapshot().input.text).toBe('');
-    });
-
-    it('a literal Enter still submits once the paste has ended', async () => {
+    it('a real Enter still submits after a paste', async () => {
       const made = makeSession();
       const startChat = vi.fn(() => Promise.resolve(made.session));
       const c = createHomeController({
@@ -1133,72 +1114,14 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
         onExit: vi.fn(),
         onError: vi.fn(),
       });
-      c.handleKey(PASTE_START, {});
-      c.handleKey('deploy.yaml contents', {});
-      c.handleKey(PASTE_END, {});
+      c.handlePaste('deploy.yaml contents');
       c.handleKey('', ENTER); // a real key press AFTER the paste submits
       await flush();
       expect(startChat).toHaveBeenCalledTimes(1);
       expect(made.lines).toEqual(['deploy.yaml contents']);
     });
 
-    it('reassembles a paste delivered across MULTIPLE chunks (none submits, order + newlines preserved)', () => {
-      const startChat = vi.fn();
-      const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
-        startChat,
-        homeStore,
-        onExit: vi.fn(),
-        onError: vi.fn(),
-      });
-      c.handleKey(PASTE_START, {});
-      c.handleKey('first\n', {}); // ink can split a large paste across stdin reads
-      c.handleKey('\r', { return: true }); // even a lone CR chunk INSIDE the paste is literal, not a submit
-      c.handleKey('second', {});
-      c.handleKey(PASTE_END, {});
-      // The cursor advances across EVERY chunk's insert (6 + 1 + 6 = 13 units), not just the first.
-      // The lone CR chunk between the two lines normalizes to LF (never a stray '\r'); length is unchanged (13).
-      expect(c.getSnapshot().input).toEqual({ text: 'first\n\nsecond', cursor: 13 });
-      expect(startChat).not.toHaveBeenCalled();
-    });
-
-    it('Ctrl-C ALWAYS escapes a stuck paste (a lost end-marker must never trap the user) — Home exits', () => {
-      const onExit = vi.fn();
-      const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
-        startChat: vi.fn(),
-        homeStore,
-        onExit,
-        onError: vi.fn(),
-      });
-      c.handleKey(PASTE_START, {});
-      c.handleKey('half a paste', {}); // the [201~ end marker never arrives
-      c.handleKey('c', CTRL_C); // the user bails out
-      expect(onExit).toHaveBeenCalledTimes(1); // the latch is cleared and the Home exits cleanly
-    });
-
-    it('Ctrl-C escapes a stuck paste inside a chat as a /cancel (not swallowed)', async () => {
-      const made = makeSession();
-      const startChat = vi.fn(() => Promise.resolve(made.session));
-      const c = createHomeController({
-        doctorProbes: STUB_DOCTOR_PROBES,
-        startChat,
-        homeStore,
-        onExit: vi.fn(),
-        onError: vi.fn(),
-      });
-      type(c, 'hi');
-      c.handleKey('', ENTER);
-      await flush();
-      made.lines.length = 0;
-
-      c.handleKey(PASTE_START, {});
-      c.handleKey('oops', {}); // end marker lost mid-chat
-      c.handleKey('c', CTRL_C);
-      expect(made.lines).toEqual(['/cancel']); // the chat cancels rather than wedging
-    });
-
-    it('drops paste content while a chat turn is running (matches the mid-turn keystroke gate)', async () => {
+    it('drops a paste while a chat turn is running (matches the mid-turn keystroke gate)', async () => {
       const made = makeSession({ running: true });
       const startChat = vi.fn(() => Promise.resolve(made.session));
       const c = createHomeController({
@@ -1211,14 +1134,11 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       type(c, 'go');
       c.handleKey('', ENTER);
       await flush(); // mode 'chat', the (stubbed) store reports running
-
-      c.handleKey(PASTE_START, {});
-      c.handleKey('type-ahead block', {});
-      c.handleKey(PASTE_END, {});
+      c.handlePaste('type-ahead block');
       expect(c.getSnapshot().input.text).toBe(''); // dropped mid-turn, like every other key
     });
 
-    it('drops paste content during the `loading` build window, matching the keystroke gate (no leak into the chat prompt)', async () => {
+    it('drops a paste during the `loading` build window (no leak into the freshly-mounted chat prompt)', async () => {
       const made = makeSession();
       let resolveBuild: (s: HomeChatSession) => void = () => undefined;
       const startChat = vi.fn(() => new Promise<HomeChatSession>((r) => (resolveBuild = r)));
@@ -1232,36 +1152,79 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       type(c, 'hi');
       c.handleKey('', ENTER); // → loading, build pending
       expect(c.getSnapshot().mode).toBe('loading');
-
-      c.handleKey(PASTE_START, {});
-      c.handleKey('pasted-while-loading', {}); // a key typed here is dropped — so must a paste be
-      c.handleKey(PASTE_END, {});
-
+      const before = c.getSnapshot().input.text;
+      c.handlePaste('pasted-while-loading'); // a key typed here is dropped — so must a paste be
+      expect(c.getSnapshot().input.text).toBe(before);
       resolveBuild(made.session);
       await flush();
       expect(c.getSnapshot().mode).toBe('chat');
       expect(c.getSnapshot().input.text).toBe(''); // the paste did NOT leak into the freshly-mounted chat prompt
     });
 
-    it('drops EVERY chunk of a multi-chunk paste while a turn runs', async () => {
-      const made = makeSession({ running: true });
-      const startChat = vi.fn(() => Promise.resolve(made.session));
+    it('drops a paste while the `/` palette owns the keyboard (never leaks behind the overlay)', () => {
       const c = createHomeController({
         doctorProbes: STUB_DOCTOR_PROBES,
-        startChat,
+        startChat: vi.fn(),
         homeStore,
         onExit: vi.fn(),
         onError: vi.fn(),
       });
-      type(c, 'go');
-      c.handleKey('', ENTER);
-      await flush(); // chat, running (stub)
+      c.handleKey('/', {}); // open the Home palette at the empty prompt
+      expect(c.getSnapshot().palette).toBeDefined();
+      c.handlePaste('behind the palette');
+      expect(c.getSnapshot().input.text).toBe(''); // dropped — the palette owns the keyboard
+    });
 
-      c.handleKey(PASTE_START, {});
-      c.handleKey('chunk1\n', {});
-      c.handleKey('chunk2', {});
-      c.handleKey(PASTE_END, {});
-      expect(c.getSnapshot().input.text).toBe(''); // all chunks dropped, not just the first
+    it('SECURITY: a pasted approval token during a pending approval NEVER answers the fail-closed floor (ADR-0057)', async () => {
+      const made = makeSession();
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: () => Promise.resolve(made.session),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      type(c, 'hi');
+      c.handleKey('', ENTER);
+      await flush();
+      const pending = made.store.requestApproval(
+        { toolId: 'write_file', action: 'fs_write', preview: { path: 'notes.md' } } as const,
+        true,
+      );
+      // A paste whose CONTENT is exactly the most-permissive approval token must be DROPPED — on ink 7 a paste is a
+      // usePaste event, so it can never be routed to reduceApprovalKey and can never grant an auto-approve.
+      c.handlePaste('a'); // 'a' = approve-always as a KEY; as a paste it must do nothing
+      await flush();
+      expect(made.store.getSnapshot().approval).toBeDefined(); // STILL pending — the paste did not answer it
+      expect(c.getSnapshot().input.text).toBe(''); // nor did it leak into the hidden prompt buffer
+      c.handleKey('n', {}); // a real [n] key rejects, so the pending promise settles (no dangling handle)
+      await expect(pending).resolves.toEqual({ outcome: 'reject' });
+    });
+
+    it('drops a paste while the `[c]` reason capture owns the keyboard', async () => {
+      const made = makeSession();
+      const c = createHomeController({
+        doctorProbes: STUB_DOCTOR_PROBES,
+        startChat: () => Promise.resolve(made.session),
+        homeStore,
+        onExit: vi.fn(),
+        onError: vi.fn(),
+      });
+      type(c, 'hi');
+      c.handleKey('', ENTER);
+      await flush();
+      const pending = made.store.requestApproval(
+        { toolId: 'write_file', action: 'fs_write', preview: { path: 'notes.md' } } as const,
+        true,
+      );
+      c.handleKey('c', {}); // open the reason capture
+      expect(c.getSnapshot().reasonDraft).toEqual({ text: '', cursor: 0 });
+      c.handlePaste('pasted reason?');
+      expect(c.getSnapshot().reasonDraft?.text).toBe(''); // paste does not fill the reason buffer (dropped)
+      expect(c.getSnapshot().input.text).toBe(''); // nor the main prompt
+      c.handleKey('', { escape: true }); // cancel the capture
+      c.handleKey('n', {}); // reject so the pending promise settles
+      await expect(pending).resolves.toEqual({ outcome: 'reject' });
     });
   });
 
@@ -1561,9 +1524,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       c.handleKey('', ENTER);
       await flush();
       expect(c.getSnapshot().notice).toBeDefined();
-      c.handleKey(PASTE_START, {});
-      c.handleKey('pasted', {});
-      c.handleKey(PASTE_END, {});
+      c.handlePaste('pasted');
       expect(c.getSnapshot().notice).toBeUndefined();
       expect(c.getSnapshot().input.text).toBe('pasted');
     });
@@ -2257,9 +2218,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     type(c, 'hi');
     c.handleKey('', ENTER);
     await flush();
-    c.handleKey(PASTE_START, {});
-    c.handleKey('/effort', {}); // pasted literally — the palette does NOT open (a paste bypasses the `/` intercept)
-    c.handleKey(PASTE_END, {});
+    c.handlePaste('/effort'); // pasted literally — the `/` intercept is bypassed (paste is a usePaste event, not a key)
     expect(c.getSnapshot().input.text).toBe('/effort');
     c.handleKey('', ENTER); // submit the literal line → applySubmitAction → the typed intercept opens the overlay
 

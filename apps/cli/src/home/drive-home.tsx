@@ -45,7 +45,7 @@ import {
   type HomeController,
   type HomeModelsPort,
 } from '../render/tui/home-controller.js';
-import { DISABLE_BRACKETED_PASTE, ENABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
+import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
 import { createHomeStore } from './home-store.js';
@@ -449,7 +449,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       });
     }
 
-    writeControl(ENABLE_BRACKETED_PASTE); // ask the terminal to bracket pastes (DECSET 2004)
+    // Bracketed paste (DECSET 2004) is enabled by ink 7's `usePaste` on mount (home-app.tsx). The defensive
+    // `DISABLE_BRACKETED_PASTE` writes on the teardown paths below are belt-and-suspenders (usePaste also disables
+    // on unmount) so an external signal can never leave the terminal in bracketed-paste mode.
 
     // One external-signal lifecycle covering the Home, the in-Home chat, and MCP teardown.
     let signaled = false;

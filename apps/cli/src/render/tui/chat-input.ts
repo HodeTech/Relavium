@@ -164,11 +164,11 @@ export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction
   if (motion !== undefined) return motion;
   const kill = reduceKill(char, key);
   if (kill !== undefined) return kill;
-  // Delete the code point BEFORE the cursor. BOTH `key.backspace` AND `key.delete` map here: on Unix terminals the
-  // physical Backspace key sends DEL (`\x7f`), which ink reports as `key.delete` (NOT `key.backspace` — see ink's
-  // parse-keypress), and the true forward-Delete key (`\x1b[3~`) is reported as `key.delete` too and is
-  // indistinguishable at this layer. A backward delete is what a user pressing Backspace means (the common case),
-  // so both go here — consistent with the palette / reverse-search / mention submodes, which already fold both.
+  // Delete the code point BEFORE the cursor. BOTH `key.backspace` AND `key.delete` map here: on ink 7 the physical
+  // Backspace key is reported as `key.backspace` and the forward-Delete key as `key.delete`; the reducer dual-folds
+  // both to a backward delete — what a user pressing Backspace means (the common case). The fold is a defensive
+  // superset that ALSO covers ink-6-style hosts that reported the physical Backspace as `key.delete`, and it is
+  // consistent with the palette / reverse-search / mention submodes, which already fold both the same way.
   if (key.backspace === true || key.delete === true) return { kind: 'backspace' };
   if (char.length > 0 && char !== '\n' && key.ctrl !== true && key.meta !== true) {
     // Normalize any carriage return WITHIN the inserted text (a multi-char paste can carry CRLF / a bare CR):

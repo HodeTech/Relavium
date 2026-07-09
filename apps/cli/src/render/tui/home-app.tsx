@@ -1,4 +1,4 @@
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, usePaste } from 'ink';
 import { useEffect, useState, useSyncExternalStore, type ReactElement } from 'react';
 
 import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
@@ -131,6 +131,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   useEffect(() => subscribeResize(() => setSize(getSize())), [subscribeResize, getSize]);
 
   useInput((input, key) => controller.handleKey(input, key));
+  // Bracketed paste arrives on ink 7's native `usePaste` channel (separate from `useInput`): the whole paste is
+  // one `text` event, so a multi-line block appends verbatim and a pasted approval token never reaches the key
+  // reducers (ADR-0068). The controller gates it (drops behind an overlay / pending approval / mid-turn).
+  usePaste((text) => controller.handlePaste(text));
 
   if (state.mode === 'chat' && state.session !== undefined) {
     return (

@@ -42,31 +42,13 @@ export function reduceHomeKey(char: string, key: HomeKey): HomeKeyAction {
   return { kind: 'none' };
 }
 
-/**
- * Bracketed-paste support (DECSET 2004, 2.5.B). The control strings the host writes to ENABLE the mode on
- * mount and DISABLE it on teardown — with the mode on, a terminal wraps a paste in `ESC[200~ … ESC[201~`, so a
- * pasted multi-line block is delivered as bracketed literal text instead of its embedded newlines submitting
- * early. (ink 6.8 has no native 2004 support, so the host owns the enable/disable + the marker handling.)
- */
+// Bracketed paste (DECSET 2004) is handled NATIVELY by ink 7's `usePaste` (adopted 2.6.F Step 2, ADR-0068):
+// ink enables/disables 2004 itself and delivers a whole paste as one event on a channel separate from `useInput`,
+// routed to `HomeController.handlePaste`. The previous hand-rolled enable + marker parsing (isPasteStart/isPasteEnd
+// + the `pasting` latch) is removed — on ink 7 the markers never reach `useInput`, so it was dead code.
+//
+// The DISABLE sequence is kept as a defensive teardown belt-and-suspenders: `usePaste` disables 2004 on unmount
+// (React cleanup), but the signal/exit teardown ALSO writes it after `instance.unmount()` so the terminal is never
+// left in bracketed-paste mode if a render-cleanup edge is missed on an external signal. Enable is `usePaste`'s alone.
 const ESC = '\x1b';
-export const ENABLE_BRACKETED_PASTE = `${ESC}[?2004h`;
 export const DISABLE_BRACKETED_PASTE = `${ESC}[?2004l`;
-
-/**
- * The paste-boundary markers as `useInput` surfaces them. ink's input layer strips the single leading ESC from
- * an unrecognized escape sequence, so `ESC[200~` arrives as the literal `[200~`; the raw form is matched too for
- * defence across terminals/ink builds. A real user can only produce these as one coalesced event via an actual
- * paste (typing the five chars sends five single-char events), so a whole-string match cannot false-trigger.
- */
-const PASTE_START_FORMS = ['[200~', `${ESC}[200~`] as const; // ink-stripped form + the raw (ESC-prefixed) form
-const PASTE_END_FORMS = ['[201~', `${ESC}[201~`] as const;
-
-/** Whether this whole `useInput` chunk is the paste-start marker (host enters literal paste mode). */
-export function isPasteStart(input: string): boolean {
-  return (PASTE_START_FORMS as readonly string[]).includes(input);
-}
-
-/** Whether this whole `useInput` chunk is the paste-end marker (host leaves literal paste mode). */
-export function isPasteEnd(input: string): boolean {
-  return (PASTE_END_FORMS as readonly string[]).includes(input);
-}

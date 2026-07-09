@@ -16,7 +16,7 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
-import { ENABLE_BRACKETED_PASTE, DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
+import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
 
 // Regression for the `provider_auth` bug: the Home built an ENV-ONLY key resolver, so a key stored in the OS
@@ -140,14 +140,16 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     return { deps, unmount, writeControl };
   }
 
-  it('an init fault after the db is open (a throwing writeControl) still closes the db once', async () => {
+  it('an init fault after the db is open (a throwing render/mount) still closes the db once', async () => {
     // The cleanup scope opens right after `opened`, and the inner finally guarantees the close even though the
-    // terminal-restore writeControl also throws — so a faulty terminal can never leak the db handle.
-    const writeControl = vi.fn(() => {
-      throw new Error('stdout write failed');
+    // ink mount throws — so a faulty render can never leak the db handle. (Bracketed-paste enable is ink 7's
+    // usePaste now, not a mount-time writeControl, so the init fault is exercised via the mount itself.)
+    const { deps } = makeDeps(() => undefined, {
+      render: () => {
+        throw new Error('ink mount failed');
+      },
     });
-    const { deps } = makeDeps(() => undefined, { writeControl });
-    await expect(driveHome(deps)).rejects.toThrow('stdout write failed');
+    await expect(driveHome(deps)).rejects.toThrow('ink mount failed');
     expect(closeSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -184,8 +186,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
     expect(closeSpy).toHaveBeenCalledTimes(1);
     expect(unmount).toHaveBeenCalledTimes(1);
-    // DECSET 2004 enabled on mount, disabled on exit.
-    expect(writeControl.mock.calls[0]?.[0]).toBe(ENABLE_BRACKETED_PASTE);
+    // DECSET 2004 is disabled on exit as belt-and-suspenders (ink 7's usePaste enables it natively on mount, not
+    // via writeControl; this teardown write guards against a signal that skips the usePaste unmount cleanup).
     expect(writeControl.mock.calls.at(-1)?.[0]).toBe(DISABLE_BRACKETED_PASTE);
   });
 
