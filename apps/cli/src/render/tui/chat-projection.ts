@@ -3,7 +3,13 @@ import type { ReasoningEffort } from '@relavium/shared';
 
 import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
 import { formatCostUsd, formatDuration, formatElapsed, formatTokens } from './format.js';
-import type { SessionViewState, ToolCallView, TurnSummary } from './session-view-model.js';
+import type {
+  SessionViewState,
+  ToolCallView,
+  TranscriptEntry,
+  TurnSummary,
+} from './session-view-model.js';
+import { wrapText, type DisplayLine } from './viewport.js';
 
 /**
  * Pure projection helpers for the `relavium chat` ink `ChatApp` (workstream **2.M**) — extracted so the
@@ -253,6 +259,39 @@ export function errorRecoveryHint(code: string | undefined, message?: string): s
       // no error; `sandbox_error` / `run_timeout` are WorkflowEngine-only) OR an unknown/future code — no hint.
       return undefined;
   }
+}
+
+/**
+ * Flatten the completed transcript into width-wrapped, style-tagged {@link DisplayLine}s for the full-screen
+ * alt-screen viewport (2.6.F Step 4b, ADR-0068 §c) — the counterpart of ink's `<Static>` on the inline renderer.
+ * Mirrors `TranscriptLine`'s rendering EXACTLY so the two renderers are visually identical row-for-row: a `user`
+ * entry becomes `> {text}` (style `user`); a `notice` its dim text; an `assistant` entry its text, then the gray
+ * one-line summary (a leading space, as `TranscriptLine`), then the optional yellow recovery-hint line. Every text
+ * is sanitized here at the display boundary (`stripTerminalControls`, newlines kept) exactly as `TranscriptLine`
+ * does, so a streamed/pasted control sequence can neither forge a row nor inject ANSI. The wrapping counts RENDERED
+ * terminal rows, so the viewport scroll math is defined over the returned line count.
+ */
+export function wrapTranscript(
+  transcript: readonly TranscriptEntry[],
+  cols: number,
+): DisplayLine[] {
+  const lines: DisplayLine[] = [];
+  const push = (text: string, style: DisplayLine['style']): void => {
+    for (const row of wrapText(text, cols)) lines.push({ text: row, style });
+  };
+  for (const entry of transcript) {
+    if (entry.role === 'user') {
+      push(`> ${stripTerminalControls(entry.text)}`, 'user');
+    } else if (entry.role === 'notice') {
+      push(stripTerminalControls(entry.text), 'notice');
+    } else {
+      push(stripTerminalControls(entry.text), 'assistant');
+      push(` ${formatTurnSummary(entry.summary)}`, 'summary');
+      const hint = errorRecoveryHint(entry.summary.errorCode, entry.summary.errorMessage);
+      if (hint !== undefined) push(` → ${hint}`, 'hint');
+    }
+  }
+  return lines;
 }
 
 /** The in-flight busy line: its text plus whether it renders as a DIM, truncate-end STATUS line (compaction /

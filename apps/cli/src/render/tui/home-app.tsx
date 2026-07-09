@@ -38,6 +38,10 @@ export interface RootAppProps {
   readonly getSize: () => { cols: number; rows: number };
   /** Subscribe to terminal resizes; returns an unsubscribe. */
   readonly subscribeResize: (onResize: () => void) => () => void;
+  /** `true` ⇒ mounted on ink 7's alternate screen (2.6.F Step 4b, ADR-0068 §c) — the in-Home chat's transcript
+   *  renders through the scroll viewport (bounded to the resize-tracked size) instead of `<Static>`. Resolved by
+   *  `driveHome` (`resolveRenderMode`); absent/false ⇒ the inline renderer. */
+  readonly alternateScreen?: boolean;
 }
 
 /** The chat region: subscribes to the chat store (re-render on stream events) and renders the pure {@link ChatView},
@@ -59,6 +63,9 @@ function ChatRegion(
     now: () => number;
     /** The live terminal width (resize-tracked in `RootApp`) — bounds the reasoning panel to N rendered rows (2.5.H). */
     cols: number;
+    /** PRESENT ⇒ the alt-screen renderer (2.6.F Step 4b, ADR-0068 §c): the chat region is bounded to the terminal
+     *  size and the transcript renders through the scroll viewport instead of `<Static>`. Absent ⇒ inline. */
+    viewport: { readonly rows: number; readonly cols: number } | undefined;
     shellBusy: boolean;
     submitBusy: boolean;
     shellCommand: string | undefined;
@@ -72,8 +79,11 @@ function ChatRegion(
     useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   // Read the clock in THIS per-frame component (see the `now` prop doc) so the elapsed advances live.
   const nowMs = props.now();
+  const viewport = props.viewport;
   return (
-    <Box flexDirection="column">
+    // Alt-screen (Step 4b): bound the chat region to the terminal `rows` so `ChatView`'s flex-grow viewport has a
+    // height to fill below any keyboard-owning overlay (palette / search / model-picker / …); inline ⇒ unbounded.
+    <Box flexDirection="column" {...(viewport === undefined ? {} : { height: viewport.rows })}>
       <ChatView
         state={state}
         tick={tick}
@@ -88,6 +98,7 @@ function ChatRegion(
         attachments={props.attachments}
         busyCommand={props.shellCommand}
         columns={props.cols}
+        viewport={viewport}
         reasonDraft={props.reasonDraft}
         paletteOpen={
           props.palette !== undefined ||
@@ -148,6 +159,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         effortPicker={state.effortPicker}
         now={props.nowMs}
         cols={size.cols}
+        // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport.
+        viewport={props.alternateScreen === true ? { rows: size.rows, cols: size.cols } : undefined}
         reasonDraft={state.reasonDraft}
         shellBusy={state.shellBusy}
         submitBusy={state.submitBusy}

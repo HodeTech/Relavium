@@ -101,7 +101,9 @@ import {
   sanitizeInline,
   streamingAbortHint,
   stripTerminalControls,
+  wrapTranscript,
 } from './chat-projection.js';
+import { TranscriptViewport } from './transcript-viewport.js';
 import type { ReasoningEffort } from '@relavium/shared';
 
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
@@ -152,6 +154,10 @@ function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean
 
 interface ChatAppProps {
   readonly store: ChatStoreController;
+  /** `true` ⇒ mounted on ink 7's alternate screen (2.6.F Step 4b, ADR-0068 §c) — the transcript renders through the
+   *  scroll {@link TranscriptViewport} (constrained to the terminal size) instead of `<Static>`. Resolved by
+   *  `driveInk` (`resolveRenderMode`); absent/false ⇒ the inline renderer. */
+  readonly alternateScreen?: boolean;
   /** Handle a submitted turn; resolves when it settles. `message` is the full framed text sent to the model +
    *  persisted; the optional `display` is the compact transcript form (prose + a `[📎 …]` note for carried
    *  command outputs). When `display` is absent the two are identical. */
@@ -230,6 +236,11 @@ interface ChatViewProps {
   /** The in-flight `[c]` typed-reason capture buffer (Step 14) — when set (only while `approval` is pending), the
    *  approval prompt shows the reason input instead of the `[y]/[a]/[n]` hint. `| undefined` ⇒ the normal prompt. */
   readonly reasonDraft?: EditorState | undefined;
+  /** PRESENT ⇒ the full-screen **alt-screen** renderer (2.6.F Step 4b, ADR-0068 §c): the tree is constrained to
+   *  `rows` and the transcript renders through the scroll {@link TranscriptViewport} (wrapped at `cols`) instead of
+   *  ink's `<Static>` (the alt buffer has no scrollback). ABSENT ⇒ the default inline renderer (`<Static>` + native
+   *  scrollback). The owner (ChatApp / the Home's RootApp) passes it only when the resolved render mode is `alt`. */
+  readonly viewport?: { readonly rows: number; readonly cols: number } | undefined;
 }
 
 /**
@@ -310,12 +321,24 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       </Box>
     );
   };
+  // The full-screen alt-screen renderer (ADR-0068 §c, 2.6.F Step 4b) renders the transcript through the scroll
+  // VIEWPORT (the alt buffer has no scrollback for `<Static>` to use); the inline renderer (default) keeps `<Static>`
+  // + native scrollback. In alt mode this Box FLEX-GROWS to fill the leftover height its OWNER (ChatApp / the Home's
+  // ChatRegion) leaves below any keyboard-owning overlay, inside their terminal-`rows`-bounded container — so the
+  // TranscriptViewport inside has a bound to flex-grow into, and the overlays are never pushed off-screen.
+  const viewport = props.viewport;
   return (
-    <Box flexDirection="column">
-      {/* Completed transcript — ink Static prints each entry once, then it scrolls into terminal history. */}
-      <Static items={[...state.transcript]}>
-        {(entry, index) => <TranscriptLine key={index} entry={entry} color={color} />}
-      </Static>
+    <Box flexDirection="column" {...(viewport === undefined ? {} : { flexGrow: 1 })}>
+      {/* Completed transcript. Inline: ink `<Static>` prints each entry once → native scrollback. Alt-screen: the
+          {@link TranscriptViewport} flex-grows to the leftover height and renders only the visible window (tail-
+          following at Step 4b-1), since the alt buffer has no scrollback for `<Static>`. */}
+      {viewport === undefined ? (
+        <Static items={[...state.transcript]}>
+          {(entry, index) => <TranscriptLine key={index} entry={entry} color={color} />}
+        </Static>
+      ) : (
+        <TranscriptViewport lines={wrapTranscript(state.transcript, viewport.cols)} color={color} />
+      )}
 
       {/* The in-flight turn: tool annotations + the streaming assistant text + a spinner. A `!`-shell command in
           flight (busyCommand set) emits no session tokens, so it shows a distinct LABELED line — what is running +
@@ -1162,8 +1185,18 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   });
 
+  // Alt-screen (Step 4b, ADR-0068 §c): the outer container is bounded to the terminal `rows` so `ChatView`'s
+  // flex-grow viewport has a height to fill BELOW any keyboard-owning overlay (palette / search / …), and the
+  // transcript renders through the scroll {@link TranscriptViewport} instead of `<Static>`. Read fresh each render
+  // (parity with `columns`); `process.stdout` can be undefined in a harness, and the 80×24 fallback is moot on a real
+  // TTY (the only place alt mounts, via the driveInk gate). Absent ⇒ the inline `<Static>` renderer, unbounded height.
+  const viewport =
+    props.alternateScreen === true
+      ? { rows: process.stdout?.rows ?? 24, cols: process.stdout?.columns ?? 80 }
+      : undefined;
+
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" {...(viewport === undefined ? {} : { height: viewport.rows })}>
       <ChatView
         state={state}
         tick={tick}
@@ -1179,11 +1212,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         busyCommand={busyCommand}
         // Live terminal width for the reasoning-panel row bound (2.5.H) — read fresh each render (parity with
         // `nowMs={Date.now()}`); the frame loop re-renders, so a resize is picked up on the next tick.
-        // `stdout.columns` is typed `number` but is `undefined` at runtime off a TTY — the formatter's 80-col
-        // fallback covers that (moot here anyway: ChatApp only mounts on a TTY via the driveInk gate). Optional-chain
-        // `process.stdout` too: it can be undefined in a headless/redirected-stream harness, and `.columns` on
-        // `undefined` would throw.
         columns={process.stdout?.columns}
+        viewport={viewport}
         reasonDraft={reasonDraft}
         paletteOpen={
           palette !== undefined ||
@@ -1325,6 +1355,9 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     instance = render(
       createElement(ChatApp, {
         store: ctx.store,
+        // The resolved render mode (ADR-0068 §c, Step 4b) — the same `alternateScreen` passed to ink's render option
+        // above, so the component renders the transcript viewport iff it mounted on the alt screen.
+        alternateScreen,
         onSubmit: ctx.processLine,
         shouldStop: ctx.shouldStop,
         onExit: () => resolveExit(),

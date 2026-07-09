@@ -19,9 +19,10 @@ import {
   sanitizeInline,
   streamingAbortHint,
   stripTerminalControls,
+  wrapTranscript,
 } from './chat-projection.js';
 import { formatDuration, formatTokens } from './format.js';
-import { initialSessionViewState } from './session-view-model.js';
+import { initialSessionViewState, type TranscriptEntry } from './session-view-model.js';
 
 describe('chat-projection', () => {
   describe('formatTurnSummary', () => {
@@ -744,6 +745,76 @@ describe('chat-projection', () => {
       expect(out).toBe('a'.repeat(MAX_APPROVAL_REASON_CHARS - 1));
       // No unpaired surrogate survived (each code unit is a full BMP code point).
       for (const ch of out ?? '') expect(ch.codePointAt(0)).toBeLessThan(0xd800);
+    });
+  });
+
+  describe('wrapTranscript (2.6.F Step 4b — alt-screen viewport flattening, ADR-0068 §c)', () => {
+    it('flattens a user entry to a `> `-prefixed cyan line, wrapped at cols', () => {
+      const entries: TranscriptEntry[] = [{ role: 'user', text: 'hello world' }];
+      const lines = wrapTranscript(entries, 80);
+      expect(lines).toEqual([{ text: '> hello world', style: 'user' }]);
+      // Wrapped at a narrow width, the `> ` counts toward the first line's 6 cells; continuations carry no prefix.
+      expect(wrapTranscript(entries, 6)).toEqual([
+        { text: '> hell', style: 'user' },
+        { text: 'o worl', style: 'user' },
+        { text: 'd', style: 'user' },
+      ]);
+    });
+
+    it('flattens a notice entry to dim lines, splitting on embedded newlines', () => {
+      const entries: TranscriptEntry[] = [{ role: 'notice', text: 'line one\nline two' }];
+      expect(wrapTranscript(entries, 80)).toEqual([
+        { text: 'line one', style: 'notice' },
+        { text: 'line two', style: 'notice' },
+      ]);
+    });
+
+    it('flattens an assistant entry to its text, then the gray summary, then (if any) the yellow hint', () => {
+      const okEntry: TranscriptEntry = {
+        role: 'assistant',
+        text: 'the answer',
+        summary: { stopReason: 'stop', tokensUsed: { input: 10, output: 5 } },
+      };
+      const okLines = wrapTranscript([okEntry], 80);
+      expect(okLines[0]).toEqual({ text: 'the answer', style: 'assistant' });
+      expect(okLines[1]?.style).toBe('summary'); // the ` {summary}` line (leading space, mirrors TranscriptLine)
+      expect(okLines[1]?.text.startsWith(' ')).toBe(true);
+      expect(okLines).toHaveLength(2); // a successful turn has NO recovery-hint line
+
+      // A failed turn (a code with an actionable hint) appends the yellow hint line.
+      const failEntry: TranscriptEntry = {
+        role: 'assistant',
+        text: 'sorry',
+        summary: {
+          stopReason: 'stop',
+          tokensUsed: { input: 0, output: 0 },
+          errorCode: 'provider_auth',
+        },
+      };
+      const failLines = wrapTranscript([failEntry], 200);
+      expect(failLines.at(-1)?.style).toBe('hint');
+      expect(failLines.at(-1)?.text).toContain('→'); // the ` → {hint}` marker, mirroring TranscriptLine
+    });
+
+    it('strips terminal control sequences at the display boundary (no ANSI/OSC injection through the viewport)', () => {
+      const entries: TranscriptEntry[] = [{ role: 'user', text: 'a\x1b[31mred\x1b[0mb' }];
+      const lines = wrapTranscript(entries, 80);
+      expect(lines[0]?.text).toBe('> aredb'); // the CSI sequences are removed, exactly as TranscriptLine sanitizes
+      expect(lines[0]?.text).not.toContain('\x1b');
+    });
+
+    it('preserves order across a mixed transcript', () => {
+      const entries: TranscriptEntry[] = [
+        { role: 'user', text: 'q' },
+        {
+          role: 'assistant',
+          text: 'a',
+          summary: { stopReason: 'stop', tokensUsed: { input: 1, output: 1 } },
+        },
+        { role: 'notice', text: 'n' },
+      ];
+      const styles = wrapTranscript(entries, 80).map((l) => l.style);
+      expect(styles).toEqual(['user', 'assistant', 'summary', 'notice']);
     });
   });
 });

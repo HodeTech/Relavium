@@ -14,6 +14,16 @@
  * scroll-position corruption, because the SAME width function measures both the wrap and the window.
  */
 
+/** The per-entry render style a display line inherits from its transcript entry (mirrors `TranscriptLine`'s colors:
+ *  user = cyan, assistant = default, notice = dim, summary = gray, hint = yellow). */
+export type LineStyle = 'user' | 'assistant' | 'notice' | 'summary' | 'hint';
+
+/** One rendered display line (already ≤ cols wide) tagged with its source entry's {@link LineStyle}. */
+export interface DisplayLine {
+  readonly text: string;
+  readonly style: LineStyle;
+}
+
 /**
  * Terminal display width of a string in cells. Iterates by code point (so an astral char counts once, not as two
  * UTF-16 units). Zero-width (combining marks, ZWJ/ZWSP, variation selectors, BOM) → 0; East-Asian wide / fullwidth /

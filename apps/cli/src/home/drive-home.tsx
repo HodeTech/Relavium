@@ -523,14 +523,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         onExit: () => resolve(EXIT_CODES.success), // a clean Home exit is exit 0
         onError: (err) => reject(err instanceof Error ? err : new Error(String(err))),
       });
+      const alternateScreen = renderMode === 'alt';
       const props: RootAppProps = {
         controller,
         nowMs: now,
         color: deps.global.color,
         getSize,
         subscribeResize,
+        // The in-Home chat renders its transcript through the scroll viewport when mounted on the alt screen (Step 4b).
+        alternateScreen,
       };
-      const alternateScreen = renderMode === 'alt';
       instance =
         deps.render === undefined
           ? render(createElement(RootApp, props), {

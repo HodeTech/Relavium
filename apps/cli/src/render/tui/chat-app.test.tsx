@@ -181,3 +181,38 @@ describe('ChatApp render economy — perf guard', () => {
     expect(frames.length).toBe(baseline);
   });
 });
+
+describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)', () => {
+  const seed = (n: number): ChatStoreController => {
+    const store = createChatStore(false);
+    for (let i = 0; i < n; i += 1) store.appendUser(`MSG${i}`);
+    return store;
+  };
+
+  it('follows the tail: shows recent entries, drops the overflow off the top, bounded to the terminal rows', async () => {
+    const { lastFrame } = render(
+      <ChatApp
+        store={seed(40)}
+        alternateScreen
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+      />,
+    );
+    const frame = (): string => lastFrame() ?? '';
+    await waitFor(() => frame().includes('MSG39')); // the viewport measures + windows to the tail
+    expect(frame()).toContain('MSG39'); // the newest entry is shown (following the tail)
+    expect(frame()).not.toContain('MSG0'); // the oldest scrolled off the top — the alt buffer has no scrollback
+    expect(frame().split('\n').length).toBeLessThanOrEqual(24); // virtualized — bounded to the terminal rows
+  });
+
+  it('the INLINE renderer (no alternateScreen) keeps EVERY entry via <Static> — the mode discriminator', async () => {
+    const { lastFrame } = mountChat(seed(40)); // inline: no alternateScreen prop
+    const frame = (): string => lastFrame() ?? '';
+    await waitFor(() => frame().includes('MSG39'));
+    expect(frame()).toContain('MSG0'); // `<Static>` prints ALL entries (native scrollback) — the oldest survives
+    expect(frame()).toContain('MSG39');
+  });
+});
