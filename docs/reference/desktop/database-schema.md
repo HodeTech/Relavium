@@ -413,7 +413,7 @@ CREATE INDEX idx_session_messages_session    ON session_messages (session_id, cr
 
 > **Cross-host access (CLI / VS Code) and the at-rest divergence.** The same `history.db` path is
 > opened by the non-Tauri hosts: the **CLI** uses the `better-sqlite3` path
-> ([ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)); the **VS Code extension host**
+> ([ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md), re-affirmed under the `>=22` floor by [ADR-0067](../../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)); the **VS Code extension host**
 > uses a **wasm SQLite** build (no native module — respects
 > [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)'s no-arbitrary-native-modules
 > constraint). **At-rest encryption is per-surface and not yet unified:** the desktop opens the file with
@@ -487,7 +487,7 @@ CREATE INDEX idx_media_references_handle ON media_references (handle);
 
 ## Concurrency & transaction behavior
 
-`history.db` is a **single shared file** two concurrent `relavium` processes may write at once — e.g. a `run` persisting events while a `chat` refreshes the live model catalog ([ADR-0064](../../decisions/0064-live-model-catalog.md) §5). The Node/CLI path (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)) hardens this at the connection and the transaction level; this is the one canonical home for the policy that `packages/db/src/retry.ts` and the store doc-comments cite.
+`history.db` is a **single shared file** two concurrent `relavium` processes may write at once — e.g. a `run` persisting events while a `chat` refreshes the live model catalog ([ADR-0064](../../decisions/0064-live-model-catalog.md) §5). The Node/CLI path (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md), re-affirmed by [ADR-0067](../../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)) hardens this at the connection and the transaction level; this is the one canonical home for the policy that `packages/db/src/retry.ts` and the store doc-comments cite.
 
 - **Connection PRAGMAs** ([`client.ts`](../../../packages/db/src/client.ts)): `journal_mode = WAL` (readers never block the single writer, and vice-versa), `busy_timeout = 5000` (SQLite's built-in busy handler waits up to 5 s for a contended lock before returning `SQLITE_BUSY`), `synchronous = NORMAL` (the recommended durability/throughput trade-off under WAL), and `foreign_keys = ON`.
 - **Write transactions use `BEGIN IMMEDIATE`**, never drizzle's `DEFERRED` default. A DEFERRED transaction that reads before it writes takes a read lock first and must *upgrade* to a write lock on the first write — if another connection committed in between, that upgrade fails immediately with `SQLITE_BUSY` (`SQLITE_BUSY_SNAPSHOT`), which `busy_timeout` does **not** cover. `BEGIN IMMEDIATE` takes the write lock up front, so the upgrade race cannot occur. Applied to every multi-statement writer: `persistEvent` (run history), the model-catalog `replaceProviderModels` (bulk live-upsert) and `upsert` (per-model pricing), the provider `upsert` read-then-write, and the media-reference GC writes (`addReference`, `removeRunReferences`, `reclaimExpired`). It applies only to the OUTERMOST `BEGIN` — a store method called inside another transaction is demoted to a `SAVEPOINT` and the IMMEDIATE behavior is ignored, so a future batch-in-one-transaction caller must itself open `BEGIN IMMEDIATE`.

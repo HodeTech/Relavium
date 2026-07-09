@@ -24,18 +24,16 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ### Node.js runtime — dev/CI bump + supported-floor bump (the floor is now EOL)
 
-- [ ] **⚠ Supported floor (Node 20.12) is on an EOL Node line with no `better-sqlite3` prebuild
-  (2026-04-30).** As of 2026-07-05, Node 20 is EOL and `better-sqlite3` 12.x ships no prebuilt binary for
-  it, so a fresh `relavium` install on the *declared* floor already forces a C++ source build — partially
-  defeating [ADR-0021](../decisions/0021-node-sqlite-driver-better-sqlite3.md). **Two decoupled changes:**
-  **(A)** dev/CI bump `.nvmrc` 22 → 24 (Active LTS) — ~zero-risk, one line, no ADR, non-breaking; **(B)**
-  raise the supported floor 20.12 → `>=22` — a **SemVer-major** for published `relavium` that *restores*
-  prebuild coverage and unlocks ink 7 / `node:sqlite` / eslint 10 / vitest 5, and **reopens ADR-0021 → needs
-  a superseding ADR**. Recommendation: ship (A) now, do (B) in its own governed PR. **Full analysis, current
-  version table, per-dependency verdicts, migration plans, and open questions:
-  [phases/node-runtime-upgrade.md](phases/node-runtime-upgrade.md).** Out of scope for Phase 2.5.F.
-  **Scheduled → 2.6.F** (both halves: the immediate dev/CI bump + the governed floor decision).
-  *(package.json engines + .nvmrc + pnpm-workspace catalog @types/node + tech-stack.md; cross-phase)*
+- [x] **⚠ Supported floor (Node 20.12, EOL) → `>=22` — DONE (Phase 2.6.F Step 1, commit `367e4f5`).**
+  Node 20 was EOL (2026-04-30) with no `better-sqlite3` prebuild (forcing a C++ source build). **Both halves
+  shipped together** in Step 1: **(A)** `.nvmrc` 22 → 24 (Active LTS); **(B)** the supported floor 20.12 →
+  `>=22` — a **breaking release** for published `relavium` (pre-1.0 → a **0.x MINOR** bump, e.g. `0.2.0`, at
+  publish — *not* a SemVer-major) that restored `better-sqlite3` prebuild coverage and unlocked ink 7, and
+  superseded [ADR-0021](../decisions/0021-node-sqlite-driver-better-sqlite3.md) via
+  [ADR-0067](../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md) (`better-sqlite3`
+  re-affirmed over node:sqlite). `vitest` 5 / `eslint` 10 remain deferred to their own PRs (see the 2.6.F
+  deferral entries below). Analysis: [phases/node-runtime-upgrade.md](phases/node-runtime-upgrade.md).
+  *(package.json engines + .nvmrc + pnpm-workspace catalog @types/node + tech-stack.md + ci.yml floor leg)*
 
 
 ### Multimodal forward-obligations (carry the not-yet-coded pieces — see ADR-0031)

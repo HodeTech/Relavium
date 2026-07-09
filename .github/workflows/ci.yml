@@ -7,7 +7,7 @@
 # REQUIRED status check to merge into `main`. The `peer-dep-gate` job is advisory until the
 # surface packages land their peers in Phase 1. The `coverage` job is advisory too — it enforces
 # the testing.md >=90% line+branch engine floor (exit criterion #5) but stays non-required until the
-# thin core-branch margin is confirmed stable under CI's Node 22; promote it to a required check then.
+# thin core-branch margin is confirmed stable under CI's Node 24; promote it to a required check then.
 #
 # Caching: the always-on layer is the GitHub Actions `.turbo` cache (restored/saved below),
 # which makes a no-change re-run a Turborepo cache hit — the M0 "demonstrably hitting"
@@ -140,7 +140,10 @@ jobs:
       - name: Install (frozen lockfile — better-sqlite3 must resolve a prebuild, not source-build)
         run: pnpm install --frozen-lockfile
       - name: Typecheck, test, build on the exact floor
-        run: pnpm turbo run typecheck test build
+        # --force bypasses the shared Turbo (remote) cache so this genuinely RE-RUNS on Node 22 rather than
+        # replaying a cache hit produced by the Node-24 `ci` job (Turbo's task hash does not include the Node
+        # version) — otherwise the floor gate would be a silent false-green.
+        run: pnpm turbo run typecheck test build --force
 
   # CI-only strict peer-dependency gate (.npmrc keeps this OFF for local installs so fresh
   # checkouts resolve while the surface packages' peers are not all in the tree yet). Catch

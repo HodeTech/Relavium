@@ -47,7 +47,7 @@ const THIRD_PARTY_EXTERNAL = [
 export default defineConfig({
   entry: { index: 'src/index.ts' },
   format: ['esm'],
-  target: 'node20',
+  target: 'node22',
   platform: 'node',
   clean: true,
   sourcemap: false,
