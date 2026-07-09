@@ -52,6 +52,18 @@ describe('displayWidth (2.6.F Step 4b, ADR-0068 §c)', () => {
     expect(displayWidth('\u{1F44B}\u{1F3FD}')).toBe(2); // skin-tone modifier 👋🏽
     expect(displayWidth('\u{1F1F9}\u{1F1F7}')).toBe(2); // regional-indicator flag 🇹🇷 (a two-code-point pair, one glyph)
   });
+
+  it('BMP default-emoji-presentation singletons are 2 (as ink renders them) — text symbols stay 1 (Step-4b-2 Opus fix)', () => {
+    // ✅❌⭐⚡✨❗➕⌚⛄✋ render 2 in a terminal WITHOUT a VS16 selector (Emoji_Presentation=Yes) — the per-code-point
+    // table under-counted them to 1, drifting the scroll offset. Now 2.
+    for (const emoji of ['✅', '❌', '⭐', '⚡', '✨', '❗', '➕', '⌚', '⛄', '✋', '⚽', '⛔']) {
+      expect(displayWidth(emoji)).toBe(2);
+    }
+    // …but common TEXT symbols in the SAME blocks are NOT emoji-presentation → stay 1 (no cosmetic over-count).
+    for (const text of ['→', '←', '✓', '✗', '•', '©', '®']) {
+      expect(displayWidth(text)).toBe(1);
+    }
+  });
 });
 
 describe('wrapLogicalLine', () => {

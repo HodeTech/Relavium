@@ -166,11 +166,28 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // Re-measure on a terminal resize so the <80×24 degrade (and the strip width) tracks the live size.
   useEffect(() => subscribeResize(() => setSize(getSize())), [subscribeResize, getSize]);
 
+  // Reset the scroll to the TAIL when the chat SESSION changes — a fresh chat, a `/clear` swap, or a `/models` reseat
+  // (RootApp is NOT remounted across a swap the way driveInk remounts ChatApp, so without this a new session would
+  // inherit the prior one's frozen offset). Leaving chat (sessionId ⇒ undefined) also re-follows.
+  const sessionId = state.session?.sessionId;
+  useEffect(() => {
+    applyScroll(INITIAL_SCROLL); // reset on the session-identity transition only (deps = [sessionId])
+  }, [sessionId]);
+
   // In the alt-screen in-Home chat, PgUp/PgDn/Ctrl+Home/Ctrl+End SCROLL the transcript viewport (Step 4b-2) BEFORE
   // the key reaches the controller — inline mode keeps native scrollback, and a bare Home / a non-chat mode has no
-  // viewport, so those fall straight through to `controller.handleKey`. The approval prompt is in the fixed live
-  // region (always visible), so no force-follow is needed (parity with `ChatApp`).
-  const altChat = props.alternateScreen === true && state.mode === 'chat';
+  // viewport, so those fall straight through. Gated on NO keyboard-owning overlay (palette / search / mention /
+  // model-picker / effort-picker / reason-capture) — mirroring ChatApp's after-overlays ordering, so an overlay that
+  // later paged with PgUp/PgDn keeps its keys. The approval prompt is in the fixed live region (always visible), so
+  // no force-follow is needed (parity with `ChatApp`).
+  const noOverlay =
+    state.palette === undefined &&
+    state.search === undefined &&
+    state.mention === undefined &&
+    state.modelPicker === undefined &&
+    state.effortPicker === undefined &&
+    state.reasonDraft === undefined;
+  const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
   useInput((input, key) => {
     if (altChat) {
       const motion = scrollMotionForKey(key);

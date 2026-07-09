@@ -258,6 +258,27 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     expect(frame()).toContain('MSG59'); // back at the tail (following resumed)
   });
 
+  it('Ctrl+Home jumps to the TOP (pauses follow), Ctrl+End resumes the tail (Step 4b-2)', async () => {
+    const h = render(chatApp(seed(60)));
+    const frame = (): string => h.lastFrame() ?? '';
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 4; i += 1) await flush();
+    };
+    setWindowSize(h.stdout, 80, 12);
+    await waitFor(() => frame().includes('MSG59'));
+    await settle();
+
+    h.stdin.write('\x1b[1;5H'); // Ctrl+Home → jump to the very top (ink parses this to key.home + key.ctrl)
+    await settle();
+    expect(frame()).toContain('MSG0'); // the oldest entry is now at the top
+    expect(frame()).not.toContain('MSG59'); // the tail scrolled off the bottom (following paused)
+
+    h.stdin.write('\x1b[1;5F'); // Ctrl+End → jump back to the tail (resume following)
+    await settle();
+    expect(frame()).toContain('MSG59'); // back at the tail
+    expect(frame()).not.toContain('MSG0'); // the top scrolled off
+  });
+
   it('re-wraps + re-bounds the viewport on a terminal RESIZE (ink 7 useWindowSize — the Step-4b-1 Opus fix)', async () => {
     const h = render(chatApp(seed(40)));
     const frame = (): string => h.lastFrame() ?? '';

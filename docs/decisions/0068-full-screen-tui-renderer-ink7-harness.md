@@ -185,6 +185,19 @@ perf thresholds for the full-screen frame loop.
 > DEC-2026 synchronized output, the branded banner, the `[`/`v` escape hatches, and mouse-wheel. A known 4b-1 limit:
 > a live region taller than the terminal has no scrollback (deferred-tasks.md).
 
+> **Amended 2026-07-09 (Step 4b-2 landed).** The **scroll / auto-follow** state machine shipped for both surfaces:
+> a single `following` boolean (default true) pinned to the tail; **PgUp/PgDn** page + **Ctrl+Home/Ctrl+End** jump
+> to top/bottom (`scroll.ts` `reduceScroll`/`scrollMotionForKey`, shared by both surfaces); any upward scroll pauses
+> follow + freezes the offset, and a downward scroll landing at the bottom (or Ctrl+End) resumes. The viewport's
+> measured geometry is lifted to the input owner (`onMeasure` → a ref) so a scroll key reduces against the same
+> geometry the viewport windows with. `displayWidth`/`wrapLogicalLine` are now **grapheme-aware** (`Intl.Segmenter`)
+> and never UNDER-count vs ink — incl. the BMP default-emoji-presentation singletons (✅⭐⚡…). **The §c approval /
+> gate FORCE-SCROLL override is intentionally NOT wired**: the approval prompt renders in the FIXED live region below
+> the flex-grow viewport, so a paused transcript scroll can never hide a decision — the override's goal is met by the
+> layout, and a force-follow would only yank the user off history they are reading. **Deferred to Step 4b-3**: the
+> caps-lift + true virtualization + `DEFAULT_ALT_SCREEN`→`true`; **Step 5**: mouse-wheel scroll (reuses this same
+> viewport scroll + follow actions). Resolves the §e force-scroll deferred item by design.
+
 ## Consequences
 
 ### Positive

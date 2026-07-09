@@ -958,6 +958,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   cluster: a VS16 `❤️` / enclosing keycap `1️⃣` counts 2 (was 1 — the dangerous under-count), a ZWJ family counts 2 (was
   4), a flag/skin-tone counts 2, and a cluster is never split mid-glyph — so the 1-DisplayLine-==-1-real-row invariant
   holds under the persisted-offset scroll. Pinned in viewport.test.ts.
+- [ ] **Step 4b-3: memoize per-logical-line wrap so a resize doesn't re-segment the whole transcript.** On a `cols`
+  change the `wrapTranscript` memo busts and re-runs `Intl.Segmenter` over the ENTIRE transcript (~33ms for 2000
+  wrapped lines, ~165ms at 10k — a visible hitch on resize for a very large transcript, Step-4b-2 Opus review).
+  Acceptable now (resize is rare + the transcript is still capped), but the 4b-3 caps-lift makes the transcript
+  unbounded — fold an LRU per-logical-line wrap cache (keyed on line + cols) into the 4b-3 virtualization so only
+  newly-appended / newly-wrapped lines re-segment. *(low · apps/cli/src/render/tui/{viewport.ts,chat-ink.tsx})*
 - [ ] **Step 4b: keep the alt buffer entered across a `/clear` / `/models`-reseat re-drive (inter-session flicker).**
   `driveInk` mounts + unmounts ink **per session**, so a `/clear` or reseat swap unmounts (exits the alt buffer) and
   the next re-drive re-enters it — the terminal briefly flips to the primary buffer and back, and the intro/

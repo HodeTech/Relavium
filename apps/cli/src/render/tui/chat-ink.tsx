@@ -1129,9 +1129,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
     // Alt-screen transcript SCROLL (2.6.F Step 4b-2): PgUp/PgDn/Ctrl+Home/Ctrl+End reduce the scroll state against
     // the lifted viewport geometry. Only in the alt renderer (`props.alternateScreen`) — inline keeps native
-    // scrollback, so these keys fall through to the editor there. Reached only when no overlay/approval owns the
-    // keyboard (they return above), so a scroll never steals a decision/nav key; read the REF for coalesced-chunk
-    // safety. Not gated on `isRunning` — you can scroll history WHILE a turn streams.
+    // scrollback, so these keys fall through to the editor there. The overlays + the `[c]` reason capture `return`
+    // ABOVE this, so they keep their keys; a plain pending approval is still REACHED here (it is consumed by
+    // reduceChatKey below), which is safe because scroll keys never overlap the [y]/[a]/[n] answer set. Read the REF
+    // for coalesced-chunk safety. Not gated on `isRunning` — you can scroll history WHILE a turn streams.
     if (props.alternateScreen === true) {
       const motion = scrollMotionForKey(key);
       if (motion !== undefined) {
