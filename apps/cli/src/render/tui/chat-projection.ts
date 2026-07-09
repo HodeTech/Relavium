@@ -262,23 +262,51 @@ export function errorRecoveryHint(code: string | undefined, message?: string): s
   }
 }
 
+/**
+ * Project ONE transcript entry to its LOGICAL display lines — prefixes, styles, and display-boundary sanitization,
+ * but NO width-wrapping (a returned `text` may still contain `\n`). The single source of the transcript's rendered
+ * CONTENT: {@link wrapEntry} wraps these to terminal rows for the viewport, and {@link transcriptDocument} joins them
+ * unwrapped for the `/edit` hatch (2.6.F Step 5d) — so the on-screen transcript and the one handed to `$EDITOR` can
+ * never disagree about what the conversation said.
+ *
+ * Sanitization happens HERE, once, for every consumer: a `user` entry becomes `> {text}`; a `notice` its text; an
+ * `assistant` entry its text, then the one-line summary (a leading space, as `TranscriptLine`), then the optional
+ * recovery-hint line.
+ */
+export function entryLines(entry: TranscriptEntry): DisplayLine[] {
+  if (entry.role === 'user') {
+    return [{ text: `> ${stripTerminalControls(entry.text)}`, style: 'user' }];
+  }
+  if (entry.role === 'notice') {
+    return [{ text: stripTerminalControls(entry.text), style: 'notice' }];
+  }
+  const lines: DisplayLine[] = [
+    { text: stripTerminalControls(entry.text), style: 'assistant' },
+    { text: ` ${formatTurnSummary(entry.summary)}`, style: 'summary' },
+  ];
+  const hint = errorRecoveryHint(entry.summary.errorCode, entry.summary.errorMessage);
+  if (hint !== undefined) lines.push({ text: ` → ${hint}`, style: 'hint' });
+  return lines;
+}
+
 /** Wrap ONE transcript entry to its width-wrapped display lines — the per-entry unit {@link wrapTranscript} caches. */
 function wrapEntry(entry: TranscriptEntry, cols: number): DisplayLine[] {
-  const lines: DisplayLine[] = [];
-  const push = (text: string, style: DisplayLine['style']): void => {
-    for (const row of wrapText(text, cols)) lines.push({ text: row, style });
-  };
-  if (entry.role === 'user') {
-    push(`> ${stripTerminalControls(entry.text)}`, 'user');
-  } else if (entry.role === 'notice') {
-    push(stripTerminalControls(entry.text), 'notice');
-  } else {
-    push(stripTerminalControls(entry.text), 'assistant');
-    push(` ${formatTurnSummary(entry.summary)}`, 'summary');
-    const hint = errorRecoveryHint(entry.summary.errorCode, entry.summary.errorMessage);
-    if (hint !== undefined) push(` → ${hint}`, 'hint');
+  const wrapped: DisplayLine[] = [];
+  for (const line of entryLines(entry)) {
+    for (const row of wrapText(line.text, cols)) wrapped.push({ text: row, style: line.style });
   }
-  return lines;
+  return wrapped;
+}
+
+/**
+ * The whole transcript as ONE plain-text document for the `/edit` hatch (2.6.F Step 5d, ADR-0068 §e) — the same
+ * sanitized content the viewport shows ({@link entryLines}), joined UNWRAPPED so the user's editor re-flows it at its
+ * own width instead of inheriting the terminal's column count. Sanitized like every other display boundary: an editor
+ * renders bidi/RTL overrides, so a Trojan-Source reordering (CVE-2021-42574) in model output would spoof the reading
+ * order of the very transcript the user opened it to inspect.
+ */
+export function transcriptDocument(transcript: readonly TranscriptEntry[]): string {
+  return transcript.flatMap((entry) => entryLines(entry).map((line) => line.text)).join('\n');
 }
 
 /**
