@@ -118,6 +118,30 @@ jobs:
       - name: Engine dependency allowlist
         run: pnpm lint:engine-deps
 
+  # Supported-floor gate (ADR-0067): the published `engines.node` is `>=22`, but dev/CI run Node 24
+  # (.nvmrc). Prove the EXACT floor (22.0.0) still typechecks, tests, and builds — and that
+  # better-sqlite3 resolves its Node-22 prebuild (ABI 127, no node-gyp C++ source build) — so the
+  # published minimum is continuously exercised, not just the LTS the team builds on. A SEPARATE job
+  # (the required check stays the ubuntu `ci` job on Node 24); promote to required once confirmed stable.
+  floor-check:
+    name: node floor (22.0.0) · typecheck · test · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - name: Set up Node (exact floor)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.0.0
+          cache: pnpm
+      - name: Install (frozen lockfile — better-sqlite3 must resolve a prebuild, not source-build)
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck, test, build on the exact floor
+        run: pnpm turbo run typecheck test build
+
   # CI-only strict peer-dependency gate (.npmrc keeps this OFF for local installs so fresh
   # checkouts resolve while the surface packages' peers are not all in the tree yet). Catch
   # peer drift here without breaking local dev.
@@ -141,7 +165,7 @@ jobs:
   # SEPARATE job (not part of the required `ci` job) so it surfaces a regression without blocking merge
   # while the core-package branch margin is thin. `pnpm coverage` is a repo-ROOT run, which is what makes
   # the root-relative per-glob thresholds (packages/core, packages/llm) authoritative (vitest.config.ts).
-  # Promote to a required check once the margin is confirmed stable under CI's Node 22.
+  # Promote to a required check once the margin is confirmed stable under CI's Node 24.
   coverage:
     name: engine coverage floor (advisory)
     runs-on: ubuntu-latest

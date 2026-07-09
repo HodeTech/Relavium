@@ -16,15 +16,15 @@ catalog:
   typescript-eslint: ^8.18.1
   vitest: ^3.0.0
   # Type packages (dev): @types/node is pinned to the `engines` runtime FLOOR
-  # (node >=20.12.0), NOT .nvmrc's dev/CI version (22), so a Node-22-only API (e.g.
-  # `node:sqlite`, which ADR-0021 rejects for needing >=22.5) is a type error rather than
-  # a runtime break on the supported floor. (Floor moved 20.11→20.12 at 2.G when the current
-  # `@clack/prompts` (ADR-0047) raised its own engines floor to >=20.12.0 — see tech-stack.md.)
+  # (node >=22 — ADR-0067), NOT .nvmrc's dev/CI version (24), so a newer-than-floor Node API is a
+  # type error rather than a runtime break on the supported floor. (The floor rose 20.12 → >=22 at
+  # Phase 2.6.F to restore better-sqlite3 prebuild coverage + unlock ink 7; better-sqlite3 is
+  # re-affirmed over node:sqlite — see ADR-0067 / tech-stack.md.)
   '@types/better-sqlite3': ^7.6.13
   # Dev/type-only: the `JSONSchema7` type for the `@relavium/llm` seam's `ToolDef.parameters`
   # (a type-only import, erased at build — no runtime dependency, so no ADR needed).
   '@types/json-schema': ^7.0.15
-  '@types/node': ^20.12.0
+  '@types/node': ^22
   drizzle-kit: ^0.31.10
   # Runtime
   zod: ^3.23.0
