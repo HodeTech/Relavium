@@ -1,4 +1,4 @@
-import { Box, Static, Text, render, useInput } from 'ink';
+import { Box, Static, Text, render, useInput, usePaste } from 'ink';
 import { createElement, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
 
 import {
@@ -857,6 +857,31 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         props.onError(err);
       });
   };
+
+  // Bracketed paste on ink 7's native `usePaste` channel (separate from `useInput`, ADR-0068) — the whole paste is
+  // ONE `text` event, so a multi-line block appends verbatim and a pasted approval token can never reach
+  // `reduceApprovalKey` and answer the fail-closed floor (ADR-0057). Dropped unless the compose buffer is the active
+  // editable target (mirrors the keystroke gate + the Home's `pasteEditable`): no running turn / `!`-shell / submit
+  // in flight, no keyboard-owning overlay/submode, and NO pending approval (read FRESH from the store). This also
+  // closes the standalone-chat paste gap — it never enabled DECSET 2004 before; usePaste enables it natively now.
+  usePaste((text) => {
+    const pasted = text.replace(/\r\n?/g, '\n');
+    if (pasted.length === 0) return;
+    const snap = props.store.getSnapshot();
+    const editable =
+      snap.state.status !== 'running' &&
+      !shellBusyRef.current &&
+      !submitBusyRef.current &&
+      paletteRef.current === undefined &&
+      searchRef.current === undefined &&
+      mentionRef.current === undefined &&
+      modelPickerRef.current === undefined &&
+      effortPickerRef.current === undefined &&
+      reasonDraftRef.current === undefined &&
+      snap.approval === undefined;
+    if (!editable) return;
+    applyEditor((cur) => insertAtCursor(cur, pasted));
+  });
 
   // Ctrl-C reaches us (not the kernel) in raw mode — `reduceChatKey` maps it to `cancel` even mid-turn. Dispatch
   // /cancel at most once: cancelOnce() is idempotent, but a held Ctrl-C would otherwise fire redundant turns.
