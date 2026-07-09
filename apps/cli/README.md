@@ -19,7 +19,7 @@ nothing leaves your machine unless you choose it.
 npm install -g relavium
 ```
 
-Requires **Node.js ≥ 22.12** (supported lines: 22 and 24). The package is an engine-inlined bundle that installs
+Requires **Node.js ≥ 22** (supported lines: 22 and 24). The package is an engine-inlined bundle that installs
 prebuilt native binaries — no C/C++ toolchain, no Python sidecar.
 
 ## Quick start

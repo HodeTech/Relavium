@@ -118,13 +118,20 @@ jobs:
       - name: Engine dependency allowlist
         run: pnpm lint:engine-deps
 
-  # Supported-floor gate (ADR-0067): the published `engines.node` is `>=22`, but dev/CI run Node 24
-  # (.nvmrc). Prove the EXACT floor (22.0.0) still typechecks, tests, and builds — and that
-  # better-sqlite3 resolves its Node-22 prebuild (ABI 127, no node-gyp C++ source build) — so the
-  # published minimum is continuously exercised, not just the LTS the team builds on. A SEPARATE job
-  # (the required check stays the ubuntu `ci` job on Node 24); promote to required once confirmed stable.
+  # Supported-floor gate (ADR-0067). TWO floors, deliberately different:
+  #   * the PUBLISHED floor is `apps/cli` `engines.node` = `>=22` — the max constraint in the CLI's RUNTIME
+  #     dependency closure (`ink@7` / `cli-truncate` / `slice-ansi` → `>=22`); nothing runtime needs more.
+  #   * the DEV-INSTALL floor is the root `engines.node` = `>=22.13.0` — forced ONLY by devDependencies
+  #     (`vite` via vitest → `>=22.12.0`; `eslint-visitor-keys` via eslint → `^22.13.0`). `.npmrc` sets
+  #     `engine-strict=true`, so `pnpm install` on the whole workspace HARD-FAILS below it.
+  # A workspace install therefore cannot run at 22.0.0, so this leg pins the LOWEST Node the repo installs
+  # on (22.13.0). It still exercises the published 22 line end-to-end and proves better-sqlite3 resolves its
+  # Node-22 prebuild (ABI 127 — one binary for ALL of 22.x, so 22.13.0 loads the same artifact 22.0.0 would;
+  # no node-gyp C++ source build). What it does NOT prove is that no RUNTIME dep requires >22.0.0 — that is
+  # a property of the prod closure, verified at the ADR (see ADR-0067's amendment note) rather than here.
+  # A SEPARATE job (the required check stays the ubuntu `ci` job on Node 24); promote once confirmed stable.
   floor-check:
-    name: node floor (22.0.0) · typecheck · test · build
+    name: node 22-line floor (22.13.0) · typecheck · test · build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Fully isolate this job from the shared Turbo remote cache. Turbo's task hash does NOT include the
@@ -140,10 +147,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
-      - name: Set up Node (exact floor)
+      - name: Set up Node (the lowest 22.x the workspace installs on)
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: 22.12.0
+          node-version: 22.13.0
           cache: pnpm
       - name: Install (frozen lockfile — better-sqlite3 must resolve a prebuild, not source-build)
         run: pnpm install --frozen-lockfile

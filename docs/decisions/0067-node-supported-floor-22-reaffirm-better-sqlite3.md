@@ -78,14 +78,32 @@ an independent migration on its own PR, never riding this governed floor bump. (
 only `>=20.19`, so it is reachable *below* this floor and is not newly unlocked by it; likewise its
 own PR.) See [node-runtime-upgrade.md §5/§8](../roadmap/phases/node-runtime-upgrade.md#5-migration-plans).
 
-> **Amended 2026-07-09 (effective floor + LTS terminology).** Two corrections to the text above; the DECISION —
-> the Node **22 line** is the supported floor — is unchanged. **(a) The effective installable floor is `22.12.0`,
-> not `22.0.0`.** A transitive dependency (`vite`, pulled by `vitest`) declares `engines.node`
-> `^20.19.0 || >=22.12.0`, so `pnpm install` refuses Node 22.0.0 and the CI floor leg (which installs on the *exact*
-> declared floor) fails. `engines.node` in the root + `apps/cli` manifests and the CI floor leg are therefore pinned
-> to **`>=22.12.0` / `22.12.0`**. **(b) "supported LTS lines (Node 22/24/26)" above overstates 26.** At the time of
-> writing, **22 and 24** are the LTS lines; **26 is a future line** that is not yet LTS. Read those passages as "the
-> even (LTS-track) lines at or above 22" — 26 joins the supported set once it ships and enters LTS.
+> **Amended 2026-07-09 (two distinct floors + LTS terminology).** Two clarifications to the text above; the
+> DECISION — the Node **22 line** is the supported floor, `better-sqlite3` re-affirmed — is unchanged.
+>
+> **(a) There are TWO floors, and part 1's single `engines.node` conflated them.**
+>
+> - The **published floor** stays **`>=22`** and lives in `apps/cli` `engines.node`. Verified against the CLI's
+>   **runtime** dependency closure (239 packages, 144 declaring `engines.node`): the strictest constraint is
+>   `ink@7` / `cli-truncate` / `slice-ansi` → `>=22`, so **`22.0.0` satisfies every runtime dependency**. Nothing a
+>   user installs requires more.
+> - The **dev-install floor** is **`>=22.13.0`** and lives in the root (private) `engines.node`. It is forced
+>   **only by devDependencies** — `vite` (via `vitest`) declares `^20.19.0 || >=22.12.0`, and
+>   `eslint-visitor-keys` (via `eslint`) declares `^20.19.0 || ^22.13.0 || >=24`. Because
+>   [`.npmrc`](../../.npmrc) sets `engine-strict=true`, `pnpm install` on the workspace HARD-FAILS below it.
+>   Raising the *published* floor for a lint/test package would narrow the supported range for no runtime reason,
+>   so it is deliberately NOT done.
+>
+> Consequently the CI floor leg **cannot** install at `22.0.0`; it is pinned to **`22.13.0`** — the lowest Node the
+> workspace installs on — and renamed accordingly. It still exercises the published 22 line end-to-end and proves
+> the `better-sqlite3` Node-22 prebuild resolves (ABI 127 is one binary for all of `22.x`, so `22.13.0` loads the
+> same artifact `22.0.0` would; no `node-gyp` source build). **Residual gap:** the leg no longer *mechanically*
+> proves "no runtime dep requires `>22.0.0`" — that is a property of the prod closure, verified by hand here. A CI
+> assertion over `pnpm --filter relavium ls --prod` would restore it mechanically; tracked as an open obligation.
+>
+> **(b) "supported LTS lines (Node 22/24/26)" above overstates 26.** At the time of writing, **22 and 24** are the
+> LTS lines; **26 is a future line** that is not yet LTS. Read those passages as "the even (LTS-track) lines at or
+> above 22" — 26 joins the supported set once it ships and enters LTS.
 
 ## Consequences
 

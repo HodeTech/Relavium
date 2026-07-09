@@ -7,7 +7,7 @@
   "license": "SEE LICENSE IN LICENSE",
   "packageManager": "pnpm@9.12.3",
   "engines": {
-    "node": ">=22.12.0",
+    "node": ">=22.13.0",
     "pnpm": ">=9"
   },
   "scripts": {
