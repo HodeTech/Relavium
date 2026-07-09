@@ -2,6 +2,7 @@ import { Box, Text, measureElement, type DOMElement } from 'ink';
 import { useEffect, useRef, useState, type ComponentProps, type ReactElement } from 'react';
 
 import { colorProps, dimProps } from './projection.js';
+import { effectiveOffset, type ScrollGeometry, type ScrollState } from './scroll.js';
 import { windowLines, type DisplayLine } from './viewport.js';
 
 /**
@@ -49,8 +50,13 @@ export interface TranscriptViewportProps {
   /** The full transcript already flattened to width-wrapped, style-tagged display lines (`wrapTranscript`). */
   readonly lines: readonly DisplayLine[];
   readonly color: boolean;
-  /** The top-line index to show; omitted ⇒ follow the TAIL (the offset clamps to the last full screen). */
-  readonly offset?: number | undefined;
+  /** The owner-held scroll/auto-follow state (2.6.F Step 4b-2); the viewport derives the effective top-line offset
+   *  from it + its own measured height (tail while following, else the clamped frozen offset). */
+  readonly scroll: ScrollState;
+  /** Reports the live geometry (total wrapped lines + the measured visible-row height) UP after each measure, so the
+   *  owner's scroll keymap can `reduceScroll` against the SAME geometry the viewport windows with (the height lives
+   *  here, behind `measureElement`). Omitted ⇒ not lifted (a caller with no scroll keymap). */
+  readonly onMeasure?: ((geom: ScrollGeometry) => void) | undefined;
 }
 
 export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): ReactElement {
@@ -59,20 +65,23 @@ export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): Re
   // over-estimated terminal-rows height instead windowed past the real box capacity and rendered a garbled,
   // non-contiguous slice on the first frame (Step-4b-1 Sonnet review).
   const [height, setHeight] = useState(0);
-  // Measure AFTER every commit and re-clamp the window: the Box's height is flexbox-driven (the leftover space beside
-  // the fixed live region), so `setHeight` only fires on a real change (resize / a live-region size change / first
-  // layout), converging — never an unconditional loop (the `!==` guard). No dependency array on purpose: a live turn
-  // re-renders constantly and the leftover height can change (a growing prompt / warnings / an overlay), so we
-  // re-measure each frame. `ref.current` is null-guarded (a not-yet-mounted node).
+  // Measure AFTER every commit: re-clamp the window AND lift the live geometry up (so the owner's scroll keymap
+  // reduces against the SAME {totalLines, height} the viewport windows with). The Box's height is flexbox-driven (the
+  // leftover space beside the fixed live region), so `setHeight` only fires on a real change (resize / a live-region
+  // size change / first layout), converging — never an unconditional loop (the `!==` guard). No dependency array on
+  // purpose: a live turn re-renders constantly. `ref.current` is null-guarded (a not-yet-mounted node); `onMeasure`
+  // only updates a caller ref (no re-render), so firing it each commit is cheap.
   useEffect(() => {
     const node = ref.current;
     if (node === null) return;
     const measured = measureElement(node);
+    props.onMeasure?.({ totalLines: props.lines.length, height: measured.height });
     if (measured.height !== height) setHeight(measured.height);
   });
-  // `offset ?? lines.length` — an absent offset (follow) uses a past-the-end index that `windowLines` clamps to the
-  // tail (the last `height` rows). An explicit offset (Step 4b-2 scroll) is clamped into range there too.
-  const visible = windowLines(props.lines, props.offset ?? props.lines.length, height);
+  // The effective top-line offset from the scroll state: the tail (maxOffset) while following, else the clamped
+  // frozen offset (Step 4b-2). `windowLines` re-clamps too (belt-and-suspenders against a stale offset).
+  const offset = effectiveOffset(props.scroll, { totalLines: props.lines.length, height });
+  const visible = windowLines(props.lines, offset, height);
   return (
     <Box ref={ref} flexGrow={1} flexShrink={1} flexDirection="column" overflowY="hidden">
       {visible.map((line, index) => (

@@ -1,5 +1,5 @@
 import { Box, Text, useInput, usePaste } from 'ink';
-import { useEffect, useState, useSyncExternalStore, type ReactElement } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
 
 import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import type { PendingAttachment } from './attachments.js';
@@ -20,6 +20,13 @@ import { PaletteView } from './palette-view.js';
 import type { PaletteState } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
 import { ReverseSearchView } from './reverse-search-view.js';
+import {
+  INITIAL_SCROLL,
+  reduceScroll,
+  scrollMotionForKey,
+  type ScrollGeometry,
+  type ScrollState,
+} from './scroll.js';
 
 /**
  * The single-ink-tree shell for the bare-invocation Home (2.5.B / ADR-0054): ONE `useInput` owner over a
@@ -64,8 +71,16 @@ function ChatRegion(
     /** The live terminal width (resize-tracked in `RootApp`) — bounds the reasoning panel to N rendered rows (2.5.H). */
     cols: number;
     /** PRESENT ⇒ the alt-screen renderer (2.6.F Step 4b, ADR-0068 §c): the chat region is bounded to the terminal
-     *  size and the transcript renders through the scroll viewport instead of `<Static>`. Absent ⇒ inline. */
-    viewport: { readonly rows: number; readonly cols: number } | undefined;
+     *  size and the transcript renders through the scroll viewport instead of `<Static>`, carrying the RootApp-held
+     *  `scroll` state (4b-2) + the `onMeasure` geometry-lift. Absent ⇒ inline. */
+    viewport:
+      | {
+          readonly rows: number;
+          readonly cols: number;
+          readonly scroll: ScrollState;
+          readonly onMeasure: (geom: ScrollGeometry) => void;
+        }
+      | undefined;
     shellBusy: boolean;
     submitBusy: boolean;
     shellCommand: string | undefined;
@@ -137,11 +152,35 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   const { controller, getSize, subscribeResize, color } = props;
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   const [size, setSize] = useState(getSize);
+  // The alt-screen transcript SCROLL state (2.6.F Step 4b-2) — RootApp-local (a pure-render concern, like `size`;
+  // NOT session state), ref-shadowed for coalesced-chunk safety, and the viewport's live geometry lifted into
+  // `scrollGeomRef` via `onMeasure` so a scroll key reduces against the SAME geometry the viewport windows with.
+  const [scroll, setScroll] = useState<ScrollState>(INITIAL_SCROLL);
+  const scrollRef = useRef<ScrollState>(INITIAL_SCROLL);
+  const scrollGeomRef = useRef<ScrollGeometry>({ totalLines: 0, height: 0 });
+  const applyScroll = (next: ScrollState): void => {
+    scrollRef.current = next;
+    setScroll(next);
+  };
 
   // Re-measure on a terminal resize so the <80×24 degrade (and the strip width) tracks the live size.
   useEffect(() => subscribeResize(() => setSize(getSize())), [subscribeResize, getSize]);
 
-  useInput((input, key) => controller.handleKey(input, key));
+  // In the alt-screen in-Home chat, PgUp/PgDn/Ctrl+Home/Ctrl+End SCROLL the transcript viewport (Step 4b-2) BEFORE
+  // the key reaches the controller — inline mode keeps native scrollback, and a bare Home / a non-chat mode has no
+  // viewport, so those fall straight through to `controller.handleKey`. The approval prompt is in the fixed live
+  // region (always visible), so no force-follow is needed (parity with `ChatApp`).
+  const altChat = props.alternateScreen === true && state.mode === 'chat';
+  useInput((input, key) => {
+    if (altChat) {
+      const motion = scrollMotionForKey(key);
+      if (motion !== undefined) {
+        applyScroll(reduceScroll(scrollRef.current, motion, scrollGeomRef.current));
+        return;
+      }
+    }
+    controller.handleKey(input, key);
+  });
   // Bracketed paste arrives on ink 7's native `usePaste` channel (separate from `useInput`): the whole paste is
   // one `text` event, so a multi-line block appends verbatim and a pasted approval token never reaches the key
   // reducers (ADR-0068). The controller gates it (drops behind an overlay / pending approval / mid-turn).
@@ -159,8 +198,20 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         effortPicker={state.effortPicker}
         now={props.nowMs}
         cols={size.cols}
-        // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport.
-        viewport={props.alternateScreen === true ? { rows: size.rows, cols: size.cols } : undefined}
+        // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport, which
+        // carries the scroll state (4b-2) + reports its geometry back into `scrollGeomRef` for the scroll keymap.
+        viewport={
+          props.alternateScreen === true
+            ? {
+                rows: size.rows,
+                cols: size.cols,
+                scroll,
+                onMeasure: (g: ScrollGeometry): void => {
+                  scrollGeomRef.current = g;
+                },
+              }
+            : undefined
+        }
         reasonDraft={state.reasonDraft}
         shellBusy={state.shellBusy}
         submitBusy={state.submitBusy}

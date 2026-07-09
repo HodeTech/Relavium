@@ -6,7 +6,7 @@ import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
-import { bracketed, waitFor } from './harness-util.js';
+import { bracketed, flush, waitFor } from './harness-util.js';
 import { RootApp } from './home-app.js';
 import {
   createHomeController,
@@ -243,5 +243,32 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     expect(frame()).toContain('HMSG39'); // the newest entry (tail) is shown
     expect(frame()).not.toContain('HMSG0'); // the oldest scrolled off the top — the alt buffer has no scrollback
     expect(frame().split('\n').length).toBeLessThanOrEqual(30); // bounded to the size's rows (getSize ⇒ 30)
+  });
+
+  it('SCROLLS the in-Home transcript: PgUp leaves the tail, PgDn resumes it (RootApp keymap path, Step 4b-2)', async () => {
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.appendUser(`HMSG${i}`);
+    const { c, harness } = mountHome(store, { alternateScreen: true });
+    await enterChat(c);
+    const frame = (): string => harness.lastFrame() ?? '';
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 4; i += 1) await flush();
+    };
+    const press = async (seq: string): Promise<void> => {
+      harness.stdin.write(seq);
+      await settle();
+    };
+    await waitFor(() => frame().includes('HMSG59'));
+    await settle();
+    expect(frame()).toContain('HMSG59'); // following the tail
+
+    await press('\x1b[5~'); // PgUp
+    await press('\x1b[5~');
+    expect(frame()).not.toContain('HMSG59'); // scrolled up off the tail (the RootApp keymap paused follow)
+
+    await press('\x1b[6~'); // PgDn
+    await press('\x1b[6~');
+    await press('\x1b[6~');
+    expect(frame()).toContain('HMSG59'); // back at the tail (following resumed)
   });
 });

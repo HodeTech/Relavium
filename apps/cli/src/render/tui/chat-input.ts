@@ -21,6 +21,9 @@ export interface ChatKey {
   readonly downArrow?: boolean;
   readonly home?: boolean;
   readonly end?: boolean;
+  /** PgUp / PgDn — the full-screen alt-screen transcript SCROLL keys (2.6.F Step 4b-2, ADR-0068 §c). */
+  readonly pageUp?: boolean;
+  readonly pageDown?: boolean;
 }
 
 /** A cursor MOVE (no text change). A modified arrow (Ctrl/Alt) or Alt+B/F is a word motion; Home/End (or

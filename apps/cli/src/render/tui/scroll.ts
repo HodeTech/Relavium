@@ -80,3 +80,26 @@ function settle(target: number, max: number): ScrollState {
   const offset = Math.min(Math.max(0, target), max);
   return { offset, following: offset >= max };
 }
+
+/** The key fields the scroll keymap reads (a structural subset of the surfaces' `ChatKey`). */
+export interface ScrollKey {
+  readonly pageUp?: boolean;
+  readonly pageDown?: boolean;
+  readonly home?: boolean;
+  readonly end?: boolean;
+  readonly ctrl?: boolean;
+}
+
+/**
+ * The SHARED alt-screen scroll keymap (both surfaces route through it so they can never diverge, ADR-0068 §c):
+ * **PgUp/PgDn** page the viewport, **Ctrl+Home/Ctrl+End** jump to top/bottom. `undefined` ⇒ not a scroll key (the
+ * caller falls through to the editor/overlay routing). Bare Home/End are LEFT to the editor (line-start/line-end),
+ * so only the Ctrl-modified forms scroll — no collision with the line-editing keymap.
+ */
+export function scrollMotionForKey(key: ScrollKey): ScrollMotion | undefined {
+  if (key.pageUp === true) return 'page-up';
+  if (key.pageDown === true) return 'page-down';
+  if (key.ctrl === true && key.home === true) return 'top';
+  if (key.ctrl === true && key.end === true) return 'bottom';
+  return undefined;
+}

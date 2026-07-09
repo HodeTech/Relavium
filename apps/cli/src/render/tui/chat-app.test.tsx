@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import { ChatApp } from './chat-ink.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
-import { bracketed, waitFor } from './harness-util.js';
+import { bracketed, flush, waitFor } from './harness-util.js';
 
 /**
  * Mounted-`ChatApp` component tests (2.6.F Step 3, ADR-0068 part f) — the harness's first end-to-end renders of a
@@ -224,6 +224,38 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     expect(frame()).toContain('MSG39'); // the newest entry is shown (following the tail)
     expect(frame()).not.toContain('MSG0'); // the oldest scrolled off the top — the alt buffer has no scrollback
     expect(frame().split('\n').length).toBeLessThanOrEqual(24); // virtualized — bounded to the terminal rows
+  });
+
+  it('SCROLLS the transcript: PgUp leaves the tail (pauses follow), PgDn back to the bottom resumes it (Step 4b-2)', async () => {
+    const h = render(chatApp(seed(60)));
+    const frame = (): string => h.lastFrame() ?? '';
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 4; i += 1) await flush(); // let the commit + the geometry re-measure land
+    };
+    // Each keypress is its own stdin event, as a real terminal delivers them — a concatenated escape burst in one
+    // chunk is a harness artifact, not how PgUp/PgDn arrive, so settle between presses.
+    const press = async (seq: string): Promise<void> => {
+      h.stdin.write(seq);
+      await settle();
+    };
+    const PG_UP = '\x1b[5~';
+    const PG_DOWN = '\x1b[6~';
+
+    setWindowSize(h.stdout, 80, 12);
+    await waitFor(() => frame().includes('MSG59')); // following the tail
+    await settle();
+    expect(frame()).toContain('MSG59');
+
+    // PgUp twice — scroll up off the tail; the newest entry leaves the window (following paused).
+    await press(PG_UP);
+    await press(PG_UP);
+    expect(frame()).not.toContain('MSG59'); // scrolled up past the tail — the newest entry is off-screen
+
+    // PgDn three times back down to the bottom — RESUMES following, so the tail is pinned again.
+    await press(PG_DOWN);
+    await press(PG_DOWN);
+    await press(PG_DOWN);
+    expect(frame()).toContain('MSG59'); // back at the tail (following resumed)
   });
 
   it('re-wraps + re-bounds the viewport on a terminal RESIZE (ink 7 useWindowSize — the Step-4b-1 Opus fix)', async () => {

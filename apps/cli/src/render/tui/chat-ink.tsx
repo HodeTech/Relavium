@@ -111,6 +111,13 @@ import {
   wrapTranscript,
 } from './chat-projection.js';
 import { TranscriptViewport } from './transcript-viewport.js';
+import {
+  INITIAL_SCROLL,
+  reduceScroll,
+  scrollMotionForKey,
+  type ScrollGeometry,
+  type ScrollState,
+} from './scroll.js';
 import type { ReasoningEffort } from '@relavium/shared';
 
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
@@ -246,8 +253,16 @@ interface ChatViewProps {
   /** PRESENT ⇒ the full-screen **alt-screen** renderer (2.6.F Step 4b, ADR-0068 §c): the tree is constrained to
    *  `rows` and the transcript renders through the scroll {@link TranscriptViewport} (wrapped at `cols`) instead of
    *  ink's `<Static>` (the alt buffer has no scrollback). ABSENT ⇒ the default inline renderer (`<Static>` + native
-   *  scrollback). The owner (ChatApp / the Home's RootApp) passes it only when the resolved render mode is `alt`. */
-  readonly viewport?: { readonly rows: number; readonly cols: number } | undefined;
+   *  scrollback). The owner (ChatApp / the Home's RootApp) passes it only when the resolved render mode is `alt`,
+   *  carrying the owner-held `scroll` state (4b-2) + the `onMeasure` geometry-lift the scroll keymap reduces against. */
+  readonly viewport?:
+    | {
+        readonly rows: number;
+        readonly cols: number;
+        readonly scroll: ScrollState;
+        readonly onMeasure: (geom: ScrollGeometry) => void;
+      }
+    | undefined;
 }
 
 /**
@@ -352,7 +367,12 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           {(entry, index) => <TranscriptLine key={index} entry={entry} color={color} />}
         </Static>
       ) : (
-        <TranscriptViewport lines={wrappedTranscript} color={color} />
+        <TranscriptViewport
+          lines={wrappedTranscript}
+          color={color}
+          scroll={viewport.scroll}
+          onMeasure={viewport.onMeasure}
+        />
       )}
 
       {/* The in-flight turn: tool annotations + the streaming assistant text + a spinner. A `!`-shell command in
@@ -470,6 +490,21 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     setEditor(value);
   };
   const cancelFired = useRef(false);
+  // The alt-screen transcript SCROLL state (2.6.F Step 4b-2) — React-local here (the Home keeps it in the
+  // controller), ref-shadowed like the editor so a coalesced stdin chunk reduces off the latest. The live geometry
+  // (total wrapped lines + measured viewport rows) is lifted from `TranscriptViewport.onMeasure` into `scrollGeomRef`
+  // so a scroll key reduces against the SAME geometry the viewport windows with. Inert in the inline renderer.
+  const [scroll, setScroll] = useState<ScrollState>(INITIAL_SCROLL);
+  const scrollRef = useRef<ScrollState>(INITIAL_SCROLL);
+  const scrollGeomRef = useRef<ScrollGeometry>({ totalLines: 0, height: 0 });
+  const applyScroll = (next: ScrollState): void => {
+    scrollRef.current = next;
+    setScroll(next);
+  };
+  // NOTE (ADR-0068 §c force-scroll override): a per-tool approval prompt / human gate must never be HIDDEN by a
+  // paused scroll. In this layout it inherently cannot be — the [y]/[a]/[n] prompt renders in the FIXED live region
+  // BELOW the scrollable transcript viewport, so it is always on-screen regardless of the transcript scroll offset.
+  // A transcript force-follow would only yank the user off history they are reading, so it is deliberately NOT wired.
   const running = state.status === 'running';
   // The interactive `/` palette (2.5.C S3b) — `undefined` ⇒ closed. React-local here (the external-store Home
   // keeps it in HomeControllerState); both surfaces drive the SAME foldPaletteKey + render the SAME PaletteView.
@@ -1092,6 +1127,18 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.store.note('cleared pending attachments');
       return;
     }
+    // Alt-screen transcript SCROLL (2.6.F Step 4b-2): PgUp/PgDn/Ctrl+Home/Ctrl+End reduce the scroll state against
+    // the lifted viewport geometry. Only in the alt renderer (`props.alternateScreen`) — inline keeps native
+    // scrollback, so these keys fall through to the editor there. Reached only when no overlay/approval owns the
+    // keyboard (they return above), so a scroll never steals a decision/nav key; read the REF for coalesced-chunk
+    // safety. Not gated on `isRunning` — you can scroll history WHILE a turn streams.
+    if (props.alternateScreen === true) {
+      const motion = scrollMotionForKey(key);
+      if (motion !== undefined) {
+        applyScroll(reduceScroll(scrollRef.current, motion, scrollGeomRef.current));
+        return;
+      }
+    }
     const action = reduceChatKey(char, key, editorRef.current.text, isRunning, approvalPending);
     switch (action.kind) {
       case 'cancel':
@@ -1212,7 +1259,15 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // `<Static>` renderer, unbounded height.
   const viewport =
     props.alternateScreen === true
-      ? { rows: windowSize.rows, cols: windowSize.columns }
+      ? {
+          rows: windowSize.rows,
+          cols: windowSize.columns,
+          scroll,
+          // Lift the viewport's live geometry into the ref the scroll keymap reduces against (no re-render).
+          onMeasure: (g: ScrollGeometry): void => {
+            scrollGeomRef.current = g;
+          },
+        }
       : undefined;
 
   return (

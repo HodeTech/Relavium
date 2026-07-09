@@ -4,6 +4,7 @@ import {
   effectiveOffset,
   INITIAL_SCROLL,
   reduceScroll,
+  scrollMotionForKey,
   type ScrollGeometry,
   type ScrollState,
 } from './scroll.js';
@@ -94,5 +95,28 @@ describe('reduceScroll', () => {
   it('INITIAL_SCROLL follows the tail', () => {
     expect(INITIAL_SCROLL).toEqual({ offset: 0, following: true });
     expect(effectiveOffset(INITIAL_SCROLL, geom)).toBe(90);
+  });
+});
+
+describe('scrollMotionForKey', () => {
+  it('maps PgUp/PgDn to page motions', () => {
+    expect(scrollMotionForKey({ pageUp: true })).toBe('page-up');
+    expect(scrollMotionForKey({ pageDown: true })).toBe('page-down');
+  });
+
+  it('maps Ctrl+Home / Ctrl+End to top / bottom', () => {
+    expect(scrollMotionForKey({ ctrl: true, home: true })).toBe('top');
+    expect(scrollMotionForKey({ ctrl: true, end: true })).toBe('bottom');
+  });
+
+  it('leaves BARE Home/End to the editor (line-start/line-end) — no scroll collision', () => {
+    expect(scrollMotionForKey({ home: true })).toBeUndefined();
+    expect(scrollMotionForKey({ end: true })).toBeUndefined();
+  });
+
+  it('returns undefined for a non-scroll key (the caller falls through to the editor/overlay routing)', () => {
+    expect(scrollMotionForKey({})).toBeUndefined();
+    expect(scrollMotionForKey({ ctrl: true })).toBeUndefined();
+    expect(scrollMotionForKey({ upArrow: true } as never)).toBeUndefined();
   });
 });
