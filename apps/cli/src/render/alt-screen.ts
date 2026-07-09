@@ -28,6 +28,12 @@ export const SHOW_CURSOR = '\x1b[?25h';
  *  mount, so successive sessions never STACK (ink's non-fullscreen unmount `log.done()` does not erase, and a fresh
  *  mount starts at `previousLineCount=0`). */
 export const CLEAR_ALT_SCREEN = '\x1b[H\x1b[J';
+/** Enable terminal mouse reporting — X11 button events (DECSET 1000, which INCLUDES the wheel) + SGR extended
+ *  coordinates (1006, so columns past 223 report correctly), 2.6.F Step 5. This is what makes wheel-scroll possible;
+ *  the trade-off is that the terminal's NATIVE mouse text-selection now needs Shift/Option (see accessibility.md). */
+export const ENABLE_MOUSE = '\x1b[?1000h\x1b[?1006h';
+/** Disable mouse reporting — restore native mouse text-selection. Paired with the alt-buffer exit on every path. */
+export const DISABLE_MOUSE = '\x1b[?1006l\x1b[?1000l';
 
 export interface AltScreenController {
   /** Enter the alt buffer + hide the cursor, exactly ONCE (a repeat call and the inactive case are no-ops). */
@@ -57,12 +63,13 @@ export function createAltScreenController(opts: {
     enter: (): void => {
       if (!active || entered) return;
       entered = true;
-      write(ENTER_ALT_SCREEN + HIDE_CURSOR);
+      write(ENTER_ALT_SCREEN + HIDE_CURSOR + ENABLE_MOUSE);
     },
     restore: (): void => {
       if (!entered || restored) return; // never exit a buffer we never entered; never exit twice
       restored = true;
-      write(EXIT_ALT_SCREEN + SHOW_CURSOR);
+      // Disable mouse reporting FIRST (restore native selection), then exit the alt buffer + show the cursor.
+      write(DISABLE_MOUSE + EXIT_ALT_SCREEN + SHOW_CURSOR);
     },
     clearBetween: (): void => {
       if (!entered || restored) return;

@@ -16,6 +16,7 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
+import { DISABLE_MOUSE } from '../render/alt-screen.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
 
@@ -186,9 +187,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
     expect(closeSpy).toHaveBeenCalledTimes(1);
     expect(unmount).toHaveBeenCalledTimes(1);
-    // DECSET 2004 is disabled on exit as belt-and-suspenders (ink 7's usePaste enables it natively on mount, not
-    // via writeControl; this teardown write guards against a signal that skips the usePaste unmount cleanup).
-    expect(writeControl.mock.calls.at(-1)?.[0]).toBe(DISABLE_BRACKETED_PASTE);
+    // DECSET 2004 (bracketed paste) + mouse reporting are disabled on exit as belt-and-suspenders (guarding a signal
+    // that skips ink's own unmount cleanup) — so a clean exit restores both native paste + mouse text-selection.
+    const controls = writeControl.mock.calls.map((c) => c[0] as string);
+    expect(controls).toContain(DISABLE_BRACKETED_PASTE);
+    expect(controls).toContain(DISABLE_MOUSE);
   });
 
   it('resolves the render mode into ink’s alternateScreen: default ON (4b-3), config opts out, --no-alt-screen wins (ADR-0068 §e)', async () => {
@@ -469,7 +472,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     await flush();
 
     expect(unmount).toHaveBeenCalledTimes(1); // terminal restored first
-    expect(writeControl.mock.calls.at(-1)?.[0]).toBe(DISABLE_BRACKETED_PASTE);
+    const controls = writeControl.mock.calls.map((c) => c[0] as string);
+    expect(controls).toContain(DISABLE_BRACKETED_PASTE); // paste + mouse restored on the signal teardown
+    expect(controls).toContain(DISABLE_MOUSE);
     expect(closeSpy).toHaveBeenCalledTimes(1);
     expect(exitSpy).toHaveBeenCalledWith(130);
     expect(createSessionStore(client.db).listSessions({ limit: 10 })[0]?.status).toBe('ended');

@@ -22,8 +22,10 @@ import { colorProps, dimProps } from './projection.js';
 import { ReverseSearchView } from './reverse-search-view.js';
 import {
   INITIAL_SCROLL,
+  parseMouseScroll,
   reduceScroll,
   scrollMotionForKey,
+  WHEEL_LINES,
   type ScrollGeometry,
   type ScrollState,
 } from './scroll.js';
@@ -195,22 +197,35 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
   useInput((input, key) => {
     if (altChat) {
+      // Reduce against LIVE geometry (parity with `ChatApp`): wrap the session store's CURRENT transcript at the
+      // keypress for a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream
+      // burst makes `settle` resume-follow against a stale bottom (Step-4b-2 Sonnet review). `altChat` already
+      // implies `state.session` is set; `getSnapshot()` reads the store fresh here regardless of closure staleness.
+      const liveGeom = (): ScrollGeometry => {
+        const store = state.session?.store;
+        return store === undefined
+          ? scrollGeomRef.current
+          : liveScrollGeometry(
+              store.getSnapshot().state.transcript,
+              size.cols,
+              scrollGeomRef.current.height,
+            );
+      };
+      // Mouse-wheel (Step 5): a wheel notch scrolls WHEEL_LINES lines; ANY mouse report is CONSUMED so its raw bytes
+      // never reach the controller / editor.
+      const mouse = parseMouseScroll(input);
+      if (mouse !== undefined) {
+        if (mouse !== 'ignore') {
+          const geom = liveGeom();
+          let next = scrollRef.current;
+          for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, mouse, geom);
+          applyScroll(next);
+        }
+        return;
+      }
       const motion = scrollMotionForKey(key);
       if (motion !== undefined) {
-        // Reduce against LIVE geometry (parity with `ChatApp`): wrap the session store's CURRENT transcript at the
-        // keypress for a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream
-        // burst makes `settle` resume-follow against a stale bottom (Step-4b-2 Sonnet review). `altChat` already
-        // implies `state.session` is set; `getSnapshot()` reads the store fresh here regardless of closure staleness.
-        const store = state.session?.store;
-        const geom =
-          store === undefined
-            ? scrollGeomRef.current
-            : liveScrollGeometry(
-                store.getSnapshot().state.transcript,
-                size.cols,
-                scrollGeomRef.current.height,
-              );
-        applyScroll(reduceScroll(scrollRef.current, motion, geom));
+        applyScroll(reduceScroll(scrollRef.current, motion, liveGeom()));
         return;
       }
     }

@@ -47,6 +47,7 @@ import {
   type HomeController,
   type HomeModelsPort,
 } from '../render/tui/home-controller.js';
+import { DISABLE_MOUSE, ENABLE_MOUSE } from '../render/alt-screen.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
@@ -473,6 +474,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       try {
         instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
         writeControl(DISABLE_BRACKETED_PASTE);
+        writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
       } catch {
         // ignore — restoring the terminal is best-effort; the close + exit must still run
       }
@@ -544,6 +546,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
               alternateScreen,
             })
           : deps.render(props, { alternateScreen });
+      // Enable terminal mouse reporting so the in-Home chat's viewport wheel-scrolls (2.6.F Step 5). Only on the alt
+      // screen (ink owns 1049 on this single mount; mouse is ours). Disabled on EVERY teardown path below — the
+      // `DISABLE_MOUSE` writes are unconditional there (a no-op when it was never enabled, like DISABLE_BRACKETED_PASTE).
+      if (alternateScreen) writeControl(ENABLE_MOUSE);
     });
   } finally {
     // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the
@@ -554,6 +560,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     try {
       instance?.unmount();
       writeControl(DISABLE_BRACKETED_PASTE);
+      writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
     } catch {
       // ignore — restoring the terminal is best-effort; the session teardown + db close must still run
     }

@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  CLEAR_ALT_SCREEN,
+  DISABLE_MOUSE,
+  ENABLE_MOUSE,
   ENTER_ALT_SCREEN,
   EXIT_ALT_SCREEN,
   HIDE_CURSOR,
   SHOW_CURSOR,
-  CLEAR_ALT_SCREEN,
 } from '../render/alt-screen.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { defaultReplLifecycle, withHoistedAltScreen, type ReplLifecycle } from './chat.js';
+
+const ENTER_SEQ = ENTER_ALT_SCREEN + HIDE_CURSOR + ENABLE_MOUSE;
+const EXIT_SEQ = DISABLE_MOUSE + EXIT_ALT_SCREEN + SHOW_CURSOR;
 
 /**
  * `withHoistedAltScreen` — the alt-buffer HOIST + its EXIT-SAFETY net (2.6.F Step 4b-3, ADR-0068 §c). This is the
@@ -95,11 +100,7 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
       return Promise.resolve({ summaryText: 'session over' });
     });
     // Enter → clear (swap) → exit, then the summary on the PRIMARY buffer (after the exit).
-    expect(h.writes).toEqual([
-      ENTER_ALT_SCREEN + HIDE_CURSOR,
-      CLEAR_ALT_SCREEN,
-      EXIT_ALT_SCREEN + SHOW_CURSOR,
-    ]);
+    expect(h.writes).toEqual([ENTER_SEQ, CLEAR_ALT_SCREEN, EXIT_SEQ]);
     expect(h.outs).toEqual(['session over\n']);
     // The last write (the alt-exit) precedes the summary print — the summary lands on the primary buffer.
     expect(h.removeExit).toHaveBeenCalledTimes(1); // the exit net was removed (cannot outlive the loop)
@@ -113,8 +114,8 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
       return Promise.resolve({ summaryText: undefined });
     });
     // Exactly ONE alt-exit despite BOTH the net AND the finally calling restore() (the controller latch).
-    expect(h.writes.filter((w) => w === EXIT_ALT_SCREEN + SHOW_CURSOR)).toHaveLength(1);
-    expect(h.writes[0]).toBe(ENTER_ALT_SCREEN + HIDE_CURSOR);
+    expect(h.writes.filter((w) => w === EXIT_SEQ)).toHaveLength(1);
+    expect(h.writes[0]).toBe(ENTER_SEQ);
   });
 
   it('a SIGTERM/SIGHUP handler restores the FULL terminal state (buffer + paste + raw mode) then exits (128+signo)', async () => {
@@ -124,7 +125,7 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
       return Promise.resolve({ summaryText: undefined });
     });
     // The signal handler owns the whole restore since it suppresses ink's now-inert signal-exit.
-    expect(h.writes).toContain(EXIT_ALT_SCREEN + SHOW_CURSOR); // alt buffer + cursor
+    expect(h.writes).toContain(EXIT_SEQ); // alt buffer + cursor
     expect(h.writes).toContain(DISABLE_BRACKETED_PASTE); // bracketed paste off
     expect(h.setRawMode).toHaveBeenCalledWith(false); // raw mode restored
     expect(h.exit).toHaveBeenCalledWith(143); // 128 + 15 (SIGTERM)
@@ -137,7 +138,7 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
       return Promise.resolve({});
     });
     expect(hup.exit).toHaveBeenCalledWith(129);
-    expect(hup.writes).toContain(EXIT_ALT_SCREEN + SHOW_CURSOR); // buffer exited (not stranded)
+    expect(hup.writes).toContain(EXIT_SEQ); // buffer exited (not stranded)
 
     const quit = harness();
     await withHoistedAltScreen(opts(quit, true), () => {
@@ -145,7 +146,7 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
       return Promise.resolve({});
     });
     expect(quit.exit).toHaveBeenCalledWith(131);
-    expect(quit.writes).toContain(EXIT_ALT_SCREEN + SHOW_CURSOR);
+    expect(quit.writes).toContain(EXIT_SEQ);
   });
 
   it('a rebuild-failure errorText is emitted via writeErr AFTER the alt-exit — on the PRIMARY buffer (Step-4b-3 fix)', async () => {
@@ -154,7 +155,7 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
     await withHoistedAltScreen(opts(h, true), () => Promise.resolve({ errorText: msg }));
     expect(h.errs).toEqual([msg]); // the actionable resume hint is emitted, not discarded in the alt buffer
     // …and AFTER the alt-exit: EXIT_ALT_SCREEN precedes the error in the combined event log, so it lands on primary.
-    const exitIdx = h.events.indexOf(`write:${EXIT_ALT_SCREEN + SHOW_CURSOR}`);
+    const exitIdx = h.events.indexOf(`write:${EXIT_SEQ}`);
     const errIdx = h.events.indexOf(`err:${msg}`);
     expect(exitIdx).toBeGreaterThanOrEqual(0);
     expect(errIdx).toBeGreaterThan(exitIdx); // written after DECRST-1049 → survives on the primary buffer
@@ -194,7 +195,7 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
     await expect(withHoistedAltScreen(opts(h, true), () => Promise.reject(boom))).rejects.toBe(
       boom,
     );
-    expect(h.writes).toEqual([ENTER_ALT_SCREEN + HIDE_CURSOR, EXIT_ALT_SCREEN + SHOW_CURSOR]); // restored on throw
+    expect(h.writes).toEqual([ENTER_SEQ, EXIT_SEQ]); // restored on throw
     expect(h.outs).toEqual([]); // no summary (the loop never returned one)
     expect(h.removeExit).toHaveBeenCalledTimes(1);
     expect(h.removeSignal).toHaveBeenCalledTimes(1);

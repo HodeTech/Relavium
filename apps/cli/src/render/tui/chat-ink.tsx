@@ -114,8 +114,10 @@ import {
 import { TranscriptViewport } from './transcript-viewport.js';
 import {
   INITIAL_SCROLL,
+  parseMouseScroll,
   reduceScroll,
   scrollMotionForKey,
+  WHEEL_LINES,
   type ScrollGeometry,
   type ScrollState,
 } from './scroll.js';
@@ -1135,18 +1137,32 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // reduceChatKey below), which is safe because scroll keys never overlap the [y]/[a]/[n] answer set. Read the REF
     // for coalesced-chunk safety. Not gated on `isRunning` — you can scroll history WHILE a turn streams.
     if (props.alternateScreen === true) {
-      const motion = scrollMotionForKey(key);
-      if (motion !== undefined) {
+      const liveGeom = (): ScrollGeometry =>
         // Reduce against LIVE geometry: wrap the store's CURRENT transcript at the keypress (rare, user-driven) for
         // a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream burst makes
         // `settle` resume-follow against a stale bottom (Step-4b-2 Sonnet review). `props.store` is a stable prop, so
         // its snapshot is read fresh here regardless of any coalesced-chunk closure staleness.
-        const geom = liveScrollGeometry(
+        liveScrollGeometry(
           props.store.getSnapshot().state.transcript,
           windowSize.columns,
           scrollGeomRef.current.height,
         );
-        applyScroll(reduceScroll(scrollRef.current, motion, geom));
+      // Mouse-wheel (Step 5): the alt screen enables SGR mouse reporting, so a wheel notch arrives here as a mouse
+      // escape on `char`. A wheel scrolls WHEEL_LINES lines; ANY mouse report is CONSUMED (return) so its raw bytes
+      // never type into the editor.
+      const mouse = parseMouseScroll(char);
+      if (mouse !== undefined) {
+        if (mouse !== 'ignore') {
+          const geom = liveGeom();
+          let next = scrollRef.current;
+          for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, mouse, geom);
+          applyScroll(next);
+        }
+        return;
+      }
+      const motion = scrollMotionForKey(key);
+      if (motion !== undefined) {
+        applyScroll(reduceScroll(scrollRef.current, motion, liveGeom()));
         return;
       }
     }

@@ -356,6 +356,48 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     expect(frame()).toContain('MSG59');
   });
 
+  it('MOUSE-WHEEL scrolls the transcript: wheel-up leaves the tail, wheel-down returns to it (Step 5)', async () => {
+    const h = render(chatApp(seed(60)));
+    const frame = (): string => h.lastFrame() ?? '';
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 4; i += 1) await flush();
+    };
+    const wheel = async (button: number): Promise<void> => {
+      h.stdin.write(`\x1b[<${button};10;5M`); // SGR mouse: 64 = wheel up, 65 = wheel down
+      await settle();
+    };
+    setWindowSize(h.stdout, 80, 12);
+    await waitFor(() => frame().includes('MSG59'));
+    await settle();
+    expect(frame()).toContain('MSG59'); // following the tail
+
+    await wheel(64); // wheel up (WHEEL_LINES per notch)
+    await wheel(64);
+    expect(frame()).not.toContain('MSG59'); // scrolled up off the tail
+
+    await wheel(65); // wheel down back toward the tail
+    await wheel(65);
+    await wheel(65);
+    expect(frame()).toContain('MSG59'); // back at the tail (following resumed)
+  });
+
+  it('a MOUSE CLICK report is CONSUMED — its raw bytes never type into the prompt (Step 5)', async () => {
+    const h = render(chatApp(seed(5)));
+    const frame = (): string => h.lastFrame() ?? '';
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 4; i += 1) await flush();
+    };
+    setWindowSize(h.stdout, 80, 24);
+    await waitFor(() => frame().includes('MSG4'));
+    h.stdin.write('\x1b[<0;10;5M'); // a left-click report (button 0) — must be swallowed, not typed
+    await settle();
+    h.stdin.write('hi'); // a normal edit still works
+    await settle();
+    expect(frame()).toContain('hi'); // the typed text landed…
+    expect(frame()).not.toContain('[<0;10;5M'); // …and the click's raw bytes did NOT leak into the prompt
+    expect(frame()).not.toContain('<0;10'); // (defensive: no fragment of the SGR report either)
+  });
+
   it('the INLINE renderer (no alternateScreen) keeps EVERY entry via <Static> — the mode discriminator', async () => {
     const { lastFrame } = mountChat(seed(40)); // inline: no alternateScreen prop
     const frame = (): string => lastFrame() ?? '';

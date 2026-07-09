@@ -2,12 +2,17 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CLEAR_ALT_SCREEN,
+  DISABLE_MOUSE,
+  ENABLE_MOUSE,
   ENTER_ALT_SCREEN,
   EXIT_ALT_SCREEN,
   HIDE_CURSOR,
   SHOW_CURSOR,
   createAltScreenController,
 } from './alt-screen.js';
+
+const ENTER_SEQ = ENTER_ALT_SCREEN + HIDE_CURSOR + ENABLE_MOUSE;
+const EXIT_SEQ = DISABLE_MOUSE + EXIT_ALT_SCREEN + SHOW_CURSOR;
 
 /**
  * The hoisted DECSET-1049 controller (2.6.F Step 4b-3, ADR-0068 §c). These pin the two guarantees the flicker fix
@@ -26,7 +31,7 @@ describe('createAltScreenController (2.6.F Step 4b-3)', () => {
     const c = createAltScreenController({ write, active: true });
     c.enter();
     c.enter(); // repeat
-    expect(out).toEqual([ENTER_ALT_SCREEN + HIDE_CURSOR]); // exactly once
+    expect(out).toEqual([ENTER_SEQ]); // exactly once (alt + hide cursor + enable mouse)
     expect(c.isEntered()).toBe(true);
   });
 
@@ -37,7 +42,7 @@ describe('createAltScreenController (2.6.F Step 4b-3)', () => {
     c.restore(); // the finally
     c.restore(); // the process.on('exit') net
     c.restore(); // a signal handler
-    expect(out).toEqual([ENTER_ALT_SCREEN + HIDE_CURSOR, EXIT_ALT_SCREEN + SHOW_CURSOR]);
+    expect(out).toEqual([ENTER_SEQ, EXIT_SEQ]);
     expect(c.isEntered()).toBe(false);
   });
 
@@ -79,5 +84,7 @@ describe('createAltScreenController (2.6.F Step 4b-3)', () => {
     expect(HIDE_CURSOR).toBe('\x1b[?25l');
     expect(SHOW_CURSOR).toBe('\x1b[?25h');
     expect(CLEAR_ALT_SCREEN).toBe('\x1b[H\x1b[J');
+    expect(ENABLE_MOUSE).toBe('\x1b[?1000h\x1b[?1006h'); // X11 button (incl. wheel) + SGR coords
+    expect(DISABLE_MOUSE).toBe('\x1b[?1006l\x1b[?1000l'); // symmetric off
   });
 });

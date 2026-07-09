@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   effectiveOffset,
   INITIAL_SCROLL,
+  parseMouseScroll,
   reduceScroll,
   scrollMotionForKey,
   type ScrollGeometry,
@@ -118,5 +119,33 @@ describe('scrollMotionForKey', () => {
     expect(scrollMotionForKey({})).toBeUndefined();
     expect(scrollMotionForKey({ ctrl: true })).toBeUndefined();
     expect(scrollMotionForKey({ upArrow: true } as never)).toBeUndefined();
+  });
+});
+
+describe('parseMouseScroll (2.6.F Step 5 — mouse-wheel)', () => {
+  const wheelUp = '\x1b[<64;10;5M'; // SGR mouse: button 64 = wheel up
+  const wheelDown = '\x1b[<65;10;5M'; // button 65 = wheel down
+  const click = '\x1b[<0;10;5M'; // button 0 = left click (a non-wheel report)
+
+  it('maps a wheel notch to a line motion (up reveals older, down toward the tail)', () => {
+    expect(parseMouseScroll(wheelUp)).toBe('line-up');
+    expect(parseMouseScroll(wheelDown)).toBe('line-down');
+  });
+
+  it('parses with OR without the leading ESC (ink may hand the CSI to `input` either way)', () => {
+    expect(parseMouseScroll('[<64;10;5M')).toBe('line-up'); // no ESC
+    expect(parseMouseScroll('[<65;120;40m')).toBe('line-down'); // release form `m` too
+  });
+
+  it('returns `ignore` for a non-wheel mouse report (a click/drag) — CONSUMED, never typed, never scrolls', () => {
+    expect(parseMouseScroll(click)).toBe('ignore');
+    expect(parseMouseScroll('\x1b[<32;5;5M')).toBe('ignore'); // button 32 = drag
+  });
+
+  it('returns undefined for input that is not a mouse report (a normal key / typed text)', () => {
+    expect(parseMouseScroll('q')).toBeUndefined();
+    expect(parseMouseScroll('\x1b[5~')).toBeUndefined(); // PgUp — a key, not a mouse report
+    expect(parseMouseScroll('')).toBeUndefined();
+    expect(parseMouseScroll('[<64;10;5X')).toBeUndefined(); // malformed terminator
   });
 });
