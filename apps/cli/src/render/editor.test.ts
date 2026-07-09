@@ -1,6 +1,9 @@
+import { existsSync, statSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
+  nodeCreateTempDocument,
   openInEditor,
   parseEditorCommand,
   resolveEditor,
@@ -171,5 +174,83 @@ describe('openInEditor', () => {
         }),
     });
     await expect(openInEditor(deps, 'x')).resolves.toEqual({ kind: 'closed', exitCode: 0 });
+  });
+
+  it('SECURITY: a failed disposal is REPORTED with its path — a leaked transcript is never silently retained', async () => {
+    // The Step-5d-2 Sonnet review: `.catch(() => undefined)` was the one teardown in the codebase that swallowed its
+    // own failure, and the one whose whole job is keeping the conversation off disk (Windows EBUSY/EPERM).
+    const reported: { path: string; error: unknown }[] = [];
+    const boom = new Error('EBUSY');
+    const { deps } = harness({
+      onDisposeFailed: (path, error) => reported.push({ path, error }),
+      createTempDocument: () =>
+        Promise.resolve({
+          path: '/tmp/relavium-transcript-abc/transcript.md',
+          dispose: () => Promise.reject(boom),
+        }),
+    });
+    await expect(openInEditor(deps, 'x')).resolves.toEqual({ kind: 'closed', exitCode: 0 });
+    expect(reported).toEqual([{ path: '/tmp/relavium-transcript-abc/transcript.md', error: boom }]);
+  });
+
+  it('reports a failed disposal even when the EDITOR itself failed (both faults surface, neither masks the other)', async () => {
+    const reported: string[] = [];
+    const { deps } = harness({
+      spawnThrows: new Error('ENOENT'),
+      onDisposeFailed: (path) => reported.push(path),
+      createTempDocument: () =>
+        Promise.resolve({ path: '/tmp/x/t.md', dispose: () => Promise.reject(new Error('EBUSY')) }),
+    });
+    await expect(openInEditor(deps, 'x')).resolves.toEqual({
+      kind: 'failed',
+      message: 'could not start vim',
+    });
+    expect(reported).toEqual(['/tmp/x/t.md']);
+  });
+});
+
+/**
+ * `nodeCreateTempDocument` — the real filesystem adapter. It is tested against the real disk because the properties
+ * that matter (permissions, and the hard-exit net) are properties of the OS, not of our orchestration.
+ */
+describe('nodeCreateTempDocument — the private temp document + its hard-exit net', () => {
+  it('writes a 0600 file inside a 0700 private directory', async () => {
+    const doc = await nodeCreateTempDocument('the conversation');
+    try {
+      expect(existsSync(doc.path)).toBe(true);
+      expect(statSync(doc.path).mode & 0o777).toBe(0o600); // owner-only: it holds the conversation
+      expect(statSync(dirname(doc.path)).mode & 0o777).toBe(0o700);
+    } finally {
+      await doc.dispose();
+    }
+  });
+
+  it('dispose removes the WHOLE directory (any editor swap/backup file with it) and unregisters the exit net', async () => {
+    const before = process.listenerCount('exit');
+    const doc = await nodeCreateTempDocument('x');
+    expect(process.listenerCount('exit')).toBe(before + 1); // the net is armed while the file lives
+    const dir = dirname(doc.path);
+    await doc.dispose();
+    expect(existsSync(dir)).toBe(false);
+    expect(process.listenerCount('exit')).toBe(before); // …and disarmed after, so `/edit` cannot accumulate listeners
+  });
+
+  it('SECURITY: the exit net reclaims the transcript on a HARD process.exit() — the path the async finally never runs on', async () => {
+    // The Step-5d-2 Sonnet review's critical finding: during a suspension ink has raw mode OFF, so a keyboard Ctrl-C
+    // is delivered as a REAL SIGINT to the foreground group; the surface's second-press `process.exit()` halts the
+    // event loop while `openInEditor` still awaits the child, so its `async finally` never disposes. Only a
+    // synchronous `'exit'` listener can still reclaim the directory. Here we invoke exactly that listener.
+    const before = process.listeners('exit');
+    const doc = await nodeCreateTempDocument('the whole conversation');
+    const dir = dirname(doc.path);
+    const net = process.listeners('exit').find((l) => !before.includes(l));
+    expect(net).toBeDefined();
+    expect(existsSync(dir)).toBe(true);
+
+    net?.call(process, 0); // what Node runs on `process.exit()`
+
+    expect(existsSync(dir)).toBe(false); // the conversation is NOT left in the OS temp directory
+    await doc.dispose(); // idempotent (`force: true`), and it unregisters the net
+    expect(process.listenerCount('exit')).toBe(before.length);
   });
 });

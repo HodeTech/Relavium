@@ -36,9 +36,15 @@ import {
  * ORDERING, therefore: exit the alt buffer INSIDE the callback (after ink erased its frame). Doing it earlier would
  * make ink's `log.clear()` erase the *primary* buffer — scrolling the user's shell history away.
  *
- * EXIT SAFETY, in the spirit of `withHoistedAltScreen`: each terminal mode is restored only if it was actually
- * changed (a failed write cannot leave a half-restored terminal), the restores run in a `finally` so a throwing
- * `body` still gives the terminal back, and a throwing restore cannot skip the restore after it.
+ * EXIT SAFETY, in the spirit of `withHoistedAltScreen`. Three rules, and NOT a `finally` — see below:
+ *   - **Restore only what was changed.** A release write that throws part-way must not be "undone" (re-entering an
+ *     alt buffer we never exited would corrupt a terminal ink left intact).
+ *   - **The restores are isolated.** Each reclaim write has its own `try`, so a failing alt-buffer re-enter can
+ *     never skip the mouse restore after it — a stranded DECSET-1000 is the worst state we can leave.
+ *   - **The first error wins.** A `finally` cannot express this: a throw from a `finally` REPLACES the throw already
+ *     unwinding out of its `try`, so a failing restore write would mask the real cause and tell the user "stdout
+ *     closed" instead of "could not start $EDITOR" (`error-handling.md`). The body's error is captured into
+ *     `pending` and rethrown after the reclaim; a secondary write failure is dropped.
  */
 
 /** ink 7's `useApp().suspendTerminal` in its callback form. Rejects if the terminal is ALREADY suspended

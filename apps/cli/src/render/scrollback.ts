@@ -1,3 +1,5 @@
+import type { Readable, Writable } from 'node:stream';
+
 import { stripTerminalControls } from './tui/chat-projection.js';
 
 /**
@@ -29,9 +31,10 @@ export const DUMP_FOOTER = '───── end of transcript ─────';
 export const DUMP_PROMPT = 'Press Enter to return to Relavium.';
 
 export interface DumpToScrollbackDeps {
-  /** Write to the PRIMARY buffer (production: `process.stdout.write`). */
+  /** Write to the PRIMARY buffer. MUST NOT throw and MUST NOT let the stream's async `'error'` event escape — see
+   *  {@link nodeWriteOut}, the production adapter. */
   readonly writeOut: (text: string) => void;
-  /** Resolve when the user acknowledges (production: one line on stdin). Injected because it is pure terminal I/O. */
+  /** Resolve when the user acknowledges (production: one keypress/line on stdin). Injected: it is pure terminal I/O. */
   readonly waitForContinue: () => Promise<void>;
 }
 
@@ -50,3 +53,47 @@ export async function dumpToScrollback(
   );
   await deps.waitForContinue();
 }
+
+/**
+ * The production {@link DumpToScrollbackDeps.writeOut}. `process.stdout` surfaces an OS write fault (EPIPE on a
+ * closed pipe, EIO on a half-dead TTY) as an **asynchronous `'error'` event**, and Node throws an unhandled `'error'`
+ * as an uncaught exception — which, mid-suspension, would kill the process with the terminal still handed away
+ * (Step-5d-2 Sonnet review). The listener is attached for the write's lifetime and removed once it flushes, so we
+ * neither crash nor permanently swallow errors on a stream other code shares.
+ */
+export const nodeWriteOut =
+  (stdout: Writable) =>
+  (text: string): void => {
+    const swallow = (): void => undefined; // a dying TTY must not crash a suspension; there is nowhere to report to
+    stdout.once('error', swallow);
+    try {
+      stdout.write(text, () => {
+        stdout.removeListener('error', swallow);
+      });
+    } catch {
+      stdout.removeListener('error', swallow); // a SYNCHRONOUS throw (an already-destroyed stream)
+    }
+  };
+
+/**
+ * The production {@link DumpToScrollbackDeps.waitForContinue}: one line (or any keypress) on stdin. It runs INSIDE the
+ * suspension, where ink has already turned raw mode off and detached its own listeners — so we own stdin for the
+ * duration and hand it back untouched. `ref()` keeps the event loop alive while we wait (ink's `pauseInput` `unref`s
+ * it); the stream is re-paused on the way out so ink's `resumeInput` re-attaches to a quiet stream. An `end`/`error`
+ * (a piped or closed stdin) resolves rather than hangs: the dump is already in the scrollback, which is the point.
+ */
+export const nodeWaitForContinue = (stdin: Readable & { ref?: () => void }) => (): Promise<void> =>
+  new Promise<void>((resolve) => {
+    const done = (): void => {
+      stdin.removeListener('data', done);
+      stdin.removeListener('end', done);
+      stdin.removeListener('error', done);
+      stdin.pause();
+      resolve();
+    };
+    stdin.ref?.();
+    stdin.resume();
+    stdin.once('data', done);
+    stdin.once('end', done);
+    stdin.once('error', done);
+  });

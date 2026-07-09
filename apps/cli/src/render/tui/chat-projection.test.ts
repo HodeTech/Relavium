@@ -4,6 +4,7 @@ import type { ToolApprovalRequest } from '@relavium/core';
 import { ERROR_CODES } from '@relavium/shared';
 
 import {
+  entryLines,
   errorRecoveryHint,
   formatApprovalTarget,
   formatBusyLine,
@@ -18,6 +19,7 @@ import {
   reasoningLabelActive,
   sanitizeApprovalReason,
   sanitizeInline,
+  transcriptDocument,
   streamingAbortHint,
   stripTerminalControls,
   wrapTranscript,
@@ -874,5 +876,112 @@ describe('chat-projection', () => {
       expect(twice).toEqual(once); // stable across re-wraps of a transcript larger than any fixed cache (no thrash)
       expect(once).toHaveLength(big.length); // each short `> msg N` line is exactly one row at cols 40
     });
+  });
+});
+
+/**
+ * `entryLines` + `transcriptDocument` (2.6.F Step 5d) — the UNWRAPPED projection. Until now these were exercised only
+ * transitively through `wrapEntry`/`wrapTranscript`, which proves the WRAPPING, not the document shape `/edit` hands
+ * to `$EDITOR` (the Step-5d-2 Sonnet review). Tested directly here, because `transcriptDocument` is what the user
+ * reads, searches, and copies out of their editor.
+ */
+describe('entryLines — the shared, unwrapped per-entry projection', () => {
+  it('a user entry is one `> `-prefixed line', () => {
+    expect(entryLines({ role: 'user', text: 'hello' })).toEqual([
+      { text: '> hello', style: 'user' },
+    ]);
+  });
+
+  it('a notice entry is its bare text', () => {
+    expect(entryLines({ role: 'notice', text: 'session resumed' })).toEqual([
+      { text: 'session resumed', style: 'notice' },
+    ]);
+  });
+
+  it('an assistant entry is text, THEN the summary line (leading space) — in that order', () => {
+    const lines = entryLines({
+      role: 'assistant',
+      text: 'the answer',
+      summary: { stopReason: 'stop', tokensUsed: { input: 10, output: 5 } },
+    });
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toEqual({ text: 'the answer', style: 'assistant' });
+    expect(lines[1]?.style).toBe('summary');
+    expect(lines[1]?.text.startsWith(' ')).toBe(true);
+  });
+
+  it('an assistant entry with an actionable error code appends the hint line LAST', () => {
+    const lines = entryLines({
+      role: 'assistant',
+      text: 'sorry',
+      summary: {
+        stopReason: 'stop',
+        tokensUsed: { input: 0, output: 0 },
+        errorCode: 'provider_auth',
+      },
+    });
+    expect(lines).toHaveLength(3);
+    expect(lines[2]?.style).toBe('hint');
+    expect(lines[2]?.text.startsWith(' \u2192 ')).toBe(true);
+  });
+
+  it('does NOT wrap: a long line stays one line, and embedded newlines stay embedded', () => {
+    const long = 'x'.repeat(500);
+    expect(entryLines({ role: 'notice', text: long })).toEqual([{ text: long, style: 'notice' }]);
+    expect(entryLines({ role: 'user', text: 'a\nb' })).toEqual([{ text: '> a\nb', style: 'user' }]);
+  });
+
+  it('sanitizes at the projection boundary (every consumer inherits it)', () => {
+    expect(entryLines({ role: 'notice', text: '\x1b[31mred\x1b[0m' })).toEqual([
+      { text: 'red', style: 'notice' },
+    ]);
+  });
+});
+
+describe('transcriptDocument — what `/edit` hands to $EDITOR', () => {
+  it('joins every entry’s lines with a newline, in transcript order', () => {
+    expect(
+      transcriptDocument([
+        { role: 'user', text: 'hi' },
+        { role: 'notice', text: 'note' },
+      ]),
+    ).toBe('> hi\nnote');
+  });
+
+  it('an EMPTY transcript is the empty document (never `undefined`, never a stray newline)', () => {
+    expect(transcriptDocument([])).toBe('');
+  });
+
+  it('a multi-line assistant answer round-trips its internal newlines UNWRAPPED', () => {
+    const doc = transcriptDocument([
+      {
+        role: 'assistant',
+        text: 'line one\nline two',
+        summary: { stopReason: 'stop', tokensUsed: { input: 1, output: 1 } },
+      },
+    ]);
+    const [first, second, summary] = doc.split('\n');
+    expect(first).toBe('line one');
+    expect(second).toBe('line two');
+    expect(summary?.startsWith(' ')).toBe(true); // the summary line follows, not a re-wrap of the answer
+  });
+
+  it('is width-INDEPENDENT — a 500-char answer is one line, so the editor re-flows at ITS width', () => {
+    const long = 'y'.repeat(500);
+    expect(transcriptDocument([{ role: 'user', text: long }]).split('\n')).toHaveLength(1);
+  });
+
+  it('SECURITY: strips a Trojan-Source bidi OVERRIDE but leaves legitimate RTL text intact', () => {
+    // An editor renders bidi controls, so an RLO in model output would spoof the reading order of the very
+    // transcript the user opened `/edit` to inspect. But Arabic/Hebrew/Persian letters carry their direction
+    // IMPLICITLY (the Unicode bidi algorithm) — stripping the explicit overrides never touches them. Relavium
+    // ships `tr` today and may ship RTL locales; this must not mangle a legitimate conversation.
+    const rlo = '\u202E'; // RIGHT-TO-LEFT OVERRIDE
+    const doc = transcriptDocument([
+      { role: 'user', text: `safe${rlo}gnp.exe` },
+      { role: 'notice', text: 'مرحبا بالعالم' }, // Arabic: implicit RTL, no control characters at all
+    ]);
+    expect(doc).toBe('> safegnp.exe\nمرحبا بالعالم');
+    expect(doc).not.toContain(rlo);
   });
 });

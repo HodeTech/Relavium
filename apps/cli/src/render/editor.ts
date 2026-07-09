@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { rmSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -49,6 +50,13 @@ export interface TempDocument {
 export interface OpenInEditorDeps {
   /** The process environment — read for `$VISUAL` / `$EDITOR` (in that precedence, as `git` and `less` use). */
   readonly env: Readonly<Record<string, string | undefined>>;
+  /**
+   * Report a temp-file disposal failure. This is the ONE cleanup in the module whose purpose is to keep the user's
+   * conversation off disk, so a failure (a Windows `EBUSY` from an AV scanner or a not-yet-released editor handle)
+   * must never vanish into a bare `.catch()`. Mirrors `chat.ts`'s `warnTeardown`: warn, never throw — a cleanup
+   * fault must not turn a successful edit into a failure. Absent ⇒ the failure is dropped (a test/driver default).
+   */
+  readonly onDisposeFailed?: ((path: string, error: unknown) => void) | undefined;
   /** Spawn the editor with the TTY INHERITED; resolves when it exits, rejects if it could not be started. */
   readonly spawnEditor: (
     command: string,
@@ -145,20 +153,54 @@ export async function openInEditor(
     // it is safe and is the only actionable part of the message.
     return { kind: 'failed', message: `could not start ${editor.command}` };
   } finally {
-    // Best-effort: a leftover temp file must never turn a successful edit into a failure, but it also must not be
-    // silently retained — it holds the conversation.
-    await document.dispose().catch(() => undefined);
+    // Best-effort: a leftover temp file must never turn a successful edit into a failure — but it also must not be
+    // silently retained, because it holds the conversation. Report, never throw (`warnTeardown`'s contract).
+    await document.dispose().catch((error: unknown) => {
+      deps.onDisposeFailed?.(document.path, error);
+    });
   }
 }
 
-/** The production {@link OpenInEditorDeps.createTempDocument}: a `0700` private directory holding one `0600` file,
- *  both removed by `dispose`. `mkdtemp` (not a predictable name) closes the classic shared-`/tmp` symlink race, and
- *  the directory means `dispose` reclaims any sidecar/swap file the editor left behind (`.swp`, `~`). */
+/**
+ * The production {@link OpenInEditorDeps.createTempDocument}: a `0700` private directory holding one `0600` file,
+ * both removed by `dispose`. `mkdtemp` (not a predictable name) closes the classic shared-`/tmp` symlink race, and
+ * the directory means `dispose` reclaims any sidecar/swap file the editor left behind (`.swp`, `~`).
+ *
+ * It also registers a SYNCHRONOUS `process.on('exit')` net, mirroring the alt-screen exit-safety pattern in
+ * `alt-screen.ts` / `chat.ts`. This is not belt-and-braces — it closes a real hole found by the Step-5d-2 Sonnet
+ * review: during a suspension ink has turned raw mode OFF, so a keyboard **Ctrl-C reaches the kernel as a real
+ * SIGINT** to the whole foreground process group (the editor shares ours — it is not `detached`). A second press
+ * runs the surface's `process.exit(…)`, which halts the event loop while `openInEditor` is still awaiting the
+ * child — so its `async finally` NEVER runs and the directory holding the full conversation survives on disk.
+ * `rmSync` in an `'exit'` listener is the only cleanup that can still run there. `dispose` removes the listener
+ * after its async `rm`, so a long session opening `/edit` repeatedly cannot accumulate listeners.
+ */
 export const nodeCreateTempDocument = async (contents: string): Promise<TempDocument> => {
   const dir = await mkdtemp(join(tmpdir(), 'relavium-transcript-'));
   const path = join(dir, 'transcript.md');
   await writeFile(path, contents, { encoding: 'utf8', mode: 0o600 });
-  return { path, dispose: () => rm(dir, { recursive: true, force: true }) };
+
+  const exitNet = (): void => {
+    try {
+      rmSync(dir, { recursive: true, force: true }); // the only cleanup that survives a hard `process.exit()`
+    } catch {
+      // an 'exit' listener may not throw — and there is nowhere left to report to
+    }
+  };
+  process.on('exit', exitNet);
+
+  return {
+    path,
+    dispose: async () => {
+      try {
+        // `force: true` ⇒ an already-reclaimed dir is a silent no-op, so the exit net can never provoke a spurious
+        // disposal warning if both run.
+        await rm(dir, { recursive: true, force: true });
+      } finally {
+        process.removeListener('exit', exitNet);
+      }
+    },
+  };
 };
 
 /** The production {@link OpenInEditorDeps.spawnEditor}: inherit the TTY (the editor IS the foreground app while it
