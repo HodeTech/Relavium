@@ -203,9 +203,42 @@ describe('suspendFullScreen — a write that throws can never leave a HALF-resto
       DISABLE_MOUSE,
       EXIT_ALT_SCREEN + SHOW_CURSOR,
       'body',
-      ENABLE_MOUSE, // the nested finally — reached despite the throw above it
+      ENABLE_MOUSE, // the isolated reclaim — reached despite the throw above it
       'ink:end',
     ]);
+  });
+
+  it('DOUBLE FAULT: the body throws AND the re-enter write throws ⇒ the BODY’s error survives, mouse still restored', async () => {
+    // The Step-5d-1 Opus review's one surviving finding. A `finally` would let the restore-write error REPLACE the
+    // body's, so a failing `/edit` on a closed stdout would tell the user "stdout closed" instead of "could not
+    // start $EDITOR". The root cause must win (error-handling.md), and the mouse must come back regardless.
+    const trace: string[] = [];
+    const bodyError = new Error('could not start $EDITOR');
+    const writeError = new Error('stdout closed');
+    const opts: SuspendFullScreenOptions = {
+      suspendTerminal: async (callback) => {
+        trace.push('ink:begin');
+        try {
+          await callback();
+        } finally {
+          trace.push('ink:end');
+        }
+      },
+      writeControl: (sequence) => {
+        if (sequence === ENTER_ALT_SCREEN + HIDE_CURSOR) throw writeError;
+        trace.push(sequence);
+      },
+      inkOwnsAltScreen: false,
+      altActive: true,
+      mouseActive: true,
+    };
+    await expect(
+      suspendFullScreen(opts, () => {
+        trace.push('body');
+        return Promise.reject(bodyError);
+      }),
+    ).rejects.toBe(bodyError); // NOT writeError — the secondary failure is dropped, never the root cause
+    expect(trace).toContain(ENABLE_MOUSE); // and the worst-to-strand mode is restored despite the double fault
   });
 });
 

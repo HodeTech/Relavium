@@ -22,7 +22,11 @@ import {
  *    whether the terminal happens to be in the alt buffer. That option is `true` for the bare Home but HARD `false`
  *    for `relavium chat`, whose hoisted `AltScreenController` owns 1049 (Step 4b-3). Hence {@link
  *    SuspendFullScreenOptions.inkOwnsAltScreen}: on the chat surface we exit/re-enter 1049 ourselves, or `$EDITOR`
- *    would paint into the alt buffer and vanish on resume.
+ *    would paint into the alt buffer and vanish on resume. Both halves ALSO early-return under
+ *    `!interactive || isUnmounted || isUnmounting`, so ink's half of the work is skipped once the instance is torn
+ *    down — harmless, because `unmount()` itself writes `exitAlternativeScreen + showCursor` and clears the option,
+ *    and because `beginSuspend()` runs synchronously at the head of `suspendTerminal` (a mounted instance cannot
+ *    become unmounted between the check and our writes).
  * 3. ink writes **no mouse escapes at all** (verified: its whole build contains no `?1000`/`?1006`). Mouse reporting
  *    is entirely ours, so we suspend and restore it on both surfaces — leaving DECSET 1000 on while a child owns the
  *    TTY floods that child with `\x1b[<…M` reports.
@@ -77,6 +81,12 @@ export async function suspendFullScreen(
     // blind symmetric restore would, say, re-enter an alt buffer we never exited).
     let mouseSuspended = false;
     let altExited = false;
+    // The FIRST error seen — the root cause. A later restore-write failure must never replace it: the user needs to
+    // read "could not start $EDITOR", not "stdout closed" (error-handling.md — never swallow a root cause to
+    // re-throw a vaguer one). A `finally` cannot express this: a throw from a `finally` REPLACES the pending throw.
+    let pending: { readonly error: unknown } | undefined;
+
+    // RELEASE — hand the terminal over.
     try {
       if (mouseActive) {
         writeControl(DISABLE_MOUSE); // restore native selection + stop flooding the child with mouse reports
@@ -87,14 +97,23 @@ export async function suspendFullScreen(
         altExited = true;
       }
       await body();
-    } finally {
-      // Mirror the release, innermost-first. The nested `finally` guarantees the mouse is restored even if
-      // re-entering the alt buffer throws — a stranded DECSET-1000 is the worst terminal state we can leave.
-      try {
-        if (altExited) writeControl(ENTER_ALT_SCREEN + HIDE_CURSOR);
-      } finally {
-        if (mouseSuspended) writeControl(ENABLE_MOUSE);
-      }
+    } catch (error) {
+      pending = { error };
     }
+
+    // RECLAIM — mirror the release, innermost-first. Each write is isolated, so one failing sequence can never skip
+    // the next: a stranded DECSET-1000 (mouse reporting left on) is the worst terminal state we can leave, and it is
+    // restored even when re-entering the alt buffer throws.
+    const reclaim = (sequence: string): void => {
+      try {
+        writeControl(sequence);
+      } catch (error) {
+        pending ??= { error }; // only the root cause survives; a secondary write failure on a dead stdout is noise
+      }
+    };
+    if (altExited) reclaim(ENTER_ALT_SCREEN + HIDE_CURSOR);
+    if (mouseSuspended) reclaim(ENABLE_MOUSE);
+
+    if (pending !== undefined) throw pending.error;
   });
 }
