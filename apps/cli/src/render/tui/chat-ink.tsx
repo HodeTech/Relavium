@@ -1337,26 +1337,22 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
 /** The TTY ink driver: mount {@link ChatApp}, run the frame loop, and finalize on exit. Returns the drive OUTCOME
  *  ({@link ChatDriveOutcome}) so the re-drive loop can swap in a fresh session on `/clear` (ADR-0062 §7). */
 /**
- * Sequence the `driveInk` exit so the ADR-0068 §c ORDER is a single, unit-testable contract: on `exited` RESOLVE,
- * run `teardown` FIRST (it unmounts ink → exits the alternate screen) and only THEN `writeSummary`, so the summary
- * lands on the PRIMARY buffer, not the torn-down alt buffer; then resolve the `outcome`. On `exited` REJECT (an
- * unexpected turn-core throw), `teardown` still runs (the `.finally`) but the summary + outcome are skipped and the
- * rejection propagates unchanged (→ the command maps it to exit 1) — the pre-2.6.F behavior, preserved. Extracted
- * from `driveInk` because it uses the real ink `render` (untestable without a TTY + a full SessionHandle); this
- * helper isolates the ordering guarantee the reorder exists to establish.
+ * Sequence the `driveInk` exit: on `exited` RESOLVE, run `teardown` FIRST (unmount ink → restore raw mode + cursor)
+ * and only THEN resolve the `outcome`. On `exited` REJECT (an unexpected turn-core throw), `teardown` still runs (the
+ * `.finally`) but the `outcome` is skipped and the rejection propagates unchanged (→ the command maps it to exit 1) —
+ * the pre-2.6.F behavior, preserved. At 2.6.F Step 4b-3 the end-of-session SUMMARY is no longer written here: the
+ * alt-buffer exit moved UP to the hoisted `runReplLoop` (ADR-0068 §c), so the summary rides on the {@link
+ * ChatDriveOutcome} (`summaryText`) and the loop prints it AFTER the single alt-exit, on the primary buffer. Extracted
+ * from `driveInk` because it uses the real ink `render` (untestable without a TTY); this helper isolates the ordering.
  */
 export function finalizeInkExit(
   exited: Promise<void>,
   ops: {
     readonly teardown: () => void;
-    readonly writeSummary: () => void;
     readonly outcome: () => ChatDriveOutcome;
   },
 ): Promise<ChatDriveOutcome> {
-  return exited.finally(ops.teardown).then((): ChatDriveOutcome => {
-    ops.writeSummary();
-    return ops.outcome();
-  });
+  return exited.finally(ops.teardown).then((): ChatDriveOutcome => ops.outcome());
 }
 
 export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
@@ -1440,8 +1436,9 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     instance = render(
       createElement(ChatApp, {
         store: ctx.store,
-        // The resolved render mode (ADR-0068 §c, Step 4b) — the same `alternateScreen` passed to ink's render option
-        // above, so the component renders the transcript viewport iff it mounted on the alt screen.
+        // The COMPONENT prop `alternateScreen` (ADR-0068 §c) selects the transcript viewport (vs `<Static>`) — kept
+        // as the resolved mode. It is INDEPENDENT of ink's render OPTION below (now hard `false`, Step 4b-3): ink
+        // renders full-screen via log-update regardless, and the hoisted `runReplLoop` owns the alt-buffer toggle.
         alternateScreen,
         onSubmit: ctx.processLine,
         shouldStop: ctx.shouldStop,
@@ -1471,31 +1468,33 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         exitOnCtrlC: false,
         patchConsole: false,
         maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
-        // ADR-0068 §e: mount the alternate screen only when resolved to 'alt' (TTY + opt-in). ink 7 handles the
-        // DECSET-1049 enter/exit; `false` is a no-op (the inline default), so machine/opt-out paths are untouched.
-        alternateScreen,
+        // ink render OPTION is HARD `false` (2.6.F Step 4b-3, ADR-0068 §c): ink must NOT toggle DECSET-1049 per
+        // session — the hoisted `runReplLoop` enters the alt buffer ONCE above the loop and exits ONCE, so a `/clear`
+        // / reseat re-drive no longer flips the terminal (the flicker). ink still full-screen-renders via log-update.
+        alternateScreen: false,
       },
     );
 
     return finalizeInkExit(exited, {
-      // Tear down + UNMOUNT FIRST (ink exits the alternate screen here) so the summary lands on the PRIMARY buffer.
+      // Tear down + UNMOUNT (restores raw mode + cursor; with the option false it does NOT exit the alt buffer — the
+      // hoisted runReplLoop owns that). A throw here must not mask the outcome nor skip the SIGINT-listener removal.
       teardown: () => {
         clearInterval(frame);
         unsubscribe();
         try {
-          instance?.unmount(); // best-effort terminal restore (exits the alt screen) — a throw here must not mask
+          instance?.unmount(); // best-effort terminal restore — a guarded unmount (parity with driveHome).
         } catch {
-          // the outcome nor skip the SIGINT-listener removal below (parity with driveHome's guarded unmount).
+          // swallow — never mask the outcome nor skip the SIGINT-listener removal below.
         }
         process.removeListener('SIGINT', onSigint);
       },
-      // The persistent final summary — on any cooperative end (/exit, /cancel, Ctrl-C, external SIGINT), AFTER the
-      // teardown so it survives the alt-screen exit. SUPPRESSED on a `/clear` swap (ADR-0062 §7) — the fresh
-      // session's clearedNotice intro is the sole marker; a real end still prints the summary.
-      writeSummary: () => {
-        if (ctx.stopReason() === 'exit') ctx.io.writeOut(`${ctx.store.summaryText()}\n`);
-      },
-      outcome: () => ({ kind: ctx.stopReason() }),
+      // The end-of-session summary rides on the outcome (Step 4b-3): the hoisted runReplLoop prints it AFTER the
+      // single alt-buffer exit, on the primary buffer (ADR-0068 §c). Only a real end (`/exit`) carries one; a `/clear`
+      // / reseat swap carries none (ADR-0062 §7 — the fresh session's clearedNotice intro is the sole marker).
+      outcome: () =>
+        ctx.stopReason() === 'exit'
+          ? { kind: 'exit', summaryText: ctx.store.summaryText() }
+          : { kind: ctx.stopReason() },
     });
   } catch (err) {
     // render() threw synchronously — clean up the interval, subscription, and SIGINT handler set up above so
