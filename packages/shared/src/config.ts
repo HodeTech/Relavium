@@ -141,6 +141,11 @@ export const GlobalConfigSchema = z
         // write target of the `/models` picker's effort sub-step. Resolved BELOW project/workspace
         // `[chat].reasoning_effort` (config-spec.md), so a project override still wins; absent ⇒ the provider default.
         reasoning_effort: z.enum(REASONING_EFFORTS).optional(),
+        // Full-screen alt-screen renderer opt-in/out (2.6.F, ADR-0068 §e) — `false` (or the `--no-alt-screen` flag)
+        // keeps the byte-identical INLINE renderer (native scrollback + the emulator's own a11y), the screen-reader
+        // fallback. The `--no-alt-screen` flag overrides this key; a non-TTY / machine (`--json`/CI) path ignores
+        // both and always renders inline. Absent ⇒ the phase default (opt-in until the viewport lands — ADR-0068 §b).
+        alt_screen: z.boolean().optional(),
       })
       .strict()
       .optional(),

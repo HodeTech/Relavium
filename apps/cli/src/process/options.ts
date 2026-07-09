@@ -14,6 +14,12 @@ export interface GlobalOptions {
   readonly cwd: string;
   readonly configPath: string | undefined;
   readonly verbosity: Verbosity;
+  /** `true` when `--no-alt-screen` was passed — a per-invocation opt-out of the full-screen alt-screen renderer
+   *  (2.6.F, ADR-0068 §e). Overrides `[preferences].alt_screen`; the effective mode is resolved by
+   *  `resolveRenderMode` (render-mode.ts), which also gates on TTY + machine output. OPTIONAL (unlike the other
+   *  resolved fields) so the many test fixtures that predate it need no churn — `resolveGlobalOptions` always
+   *  populates it in production, and an absent value reads as `false` (alt-screen not force-disabled). */
+  readonly noAltScreen?: boolean;
 }
 
 /** The raw global-flag values harvested from argv (before normalization). */
@@ -25,6 +31,9 @@ export interface RawGlobalOptions {
   config?: string;
   verbose?: boolean;
   quiet?: boolean;
+  /** `true` for `--no-alt-screen` (the only alt-screen flag — the DISABLE opt-out; enabling is via
+   *  `[preferences].alt_screen`, ADR-0068 §e). Absent ⇒ fall to the config key / phase default. */
+  noAltScreen?: boolean;
 }
 
 export interface ExtractedArgv {
@@ -60,6 +69,9 @@ const BOOLEAN_FLAGS: Readonly<Record<string, (raw: RawGlobalOptions) => void>> =
   },
   '-q': (raw) => {
     raw.quiet = true;
+  },
+  '--no-alt-screen': (raw) => {
+    raw.noAltScreen = true;
   },
 };
 
@@ -201,5 +213,6 @@ export function resolveGlobalOptions(
     cwd: raw.cwd ?? defaultCwd,
     configPath: raw.config,
     verbosity: resolveVerbosity(raw),
+    noAltScreen: raw.noAltScreen === true,
   };
 }

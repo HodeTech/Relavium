@@ -36,6 +36,7 @@ const EMPTY_CONFIG: ResolvedConfig = {
     allowedCommandGlobs: undefined,
     reasoningEffort: undefined,
   },
+  altScreen: undefined,
   variables: {},
   mcpServers: [],
 };

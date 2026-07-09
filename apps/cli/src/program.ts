@@ -30,6 +30,7 @@ Global options (usable anywhere on the command line):
   --no-color        disable colored output
   --cwd <dir>       run as if started in <dir>
   --config <path>   use an explicit config file
+  --no-alt-screen   keep the inline renderer (no full-screen alt screen)
   -v, --verbose     print verbose diagnostics to stderr
   -q, --quiet       suppress non-essential output
 

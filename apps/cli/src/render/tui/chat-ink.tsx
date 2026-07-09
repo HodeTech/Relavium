@@ -28,6 +28,8 @@ import {
 } from './model-picker.js';
 import { ModelPickerView } from './model-picker-view.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
+import { detectOutputMode, isCiEnv } from '../../process/output-mode.js';
+import { resolveRenderMode } from '../render-mode.js';
 import { colorProps, dimProps } from './projection.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
 import {
@@ -1250,6 +1252,21 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // abort. Removed LAST in the finally (after unmount), so a Ctrl-C during unmount still hits us.
   // Hoisted so the SIGINT handler can unmount ink (restoring the terminal) before a forced exit.
   let instance: ReturnType<typeof render> | undefined;
+  // The full-screen render mode (2.6.F, ADR-0068 §e). driveInk only runs on a TTY (selectChatDriver), so the output
+  // mode is 'tui'; the resolver still short-circuits a 'plain' path to inline defensively, then applies
+  // `--no-alt-screen` → `[preferences].alt_screen` (ctx.altScreen) → phase default (opt-in until Step 4b). `alt`
+  // mounts ink 7's native alternate screen; on unmount ink exits it, restoring the primary buffer BEFORE the final
+  // summary is written below (ADR-0068 §c — a summary written into the torn-down alt buffer would be lost).
+  const alternateScreen =
+    resolveRenderMode({
+      outputMode: detectOutputMode({
+        stdoutIsTty: ctx.io.stdoutIsTty,
+        json: ctx.global.json,
+        ci: isCiEnv(ctx.io.env),
+      }),
+      noAltScreenFlag: ctx.global.noAltScreen === true,
+      configAltScreen: ctx.altScreen,
+    }) === 'alt';
   let cancelRequested = false;
   const onSigint = (): void => {
     if (cancelRequested) {
@@ -1313,24 +1330,31 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         exitOnCtrlC: false,
         patchConsole: false,
         maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
+        // ADR-0068 §e: mount the alternate screen only when resolved to 'alt' (TTY + opt-in). ink 7 handles the
+        // DECSET-1049 enter/exit; `false` is a no-op (the inline default), so machine/opt-out paths are untouched.
+        alternateScreen,
       },
     );
 
     return exited
-      .then(() => {
-        // The persistent final summary — written on any cooperative end (/exit, /cancel, keyboard Ctrl-C, or
-        // an external SIGINT, all of which resolve `exited`); an unexpected error reject skips it (→ exit 1).
-        // SUPPRESSED on a `/clear` swap (ADR-0062 §7): the old session's stats would clutter the transition — the
-        // fresh session's clearedNotice intro is the sole marker; a real end still prints the summary.
-        if (ctx.stopReason() === 'exit') ctx.io.writeOut(`${ctx.store.summaryText()}\n`);
-      })
       .finally(() => {
+        // Tear down + UNMOUNT FIRST — ink exits the alternate screen here (ADR-0068 §c), so the summary written below
+        // lands on the PRIMARY buffer, not the torn-down alt buffer. On the inline renderer the order is equivalent.
+        // Runs on both a cooperative end (resolve) and an error (reject); the outcome `.then` below is skipped on a
+        // reject, so an unexpected turn-core throw still tears down and propagates (→ exit 1).
         clearInterval(frame);
         unsubscribe();
         instance?.unmount();
         process.removeListener('SIGINT', onSigint);
       })
-      .then((): ChatDriveOutcome => ({ kind: ctx.stopReason() }));
+      .then((): ChatDriveOutcome => {
+        // The persistent final summary — written on any cooperative end (/exit, /cancel, keyboard Ctrl-C, or an
+        // external SIGINT, all of which resolve `exited`), AFTER the unmount above so it survives the alt-screen exit.
+        // SUPPRESSED on a `/clear` swap (ADR-0062 §7): the old session's stats would clutter the transition — the
+        // fresh session's clearedNotice intro is the sole marker; a real end still prints the summary.
+        if (ctx.stopReason() === 'exit') ctx.io.writeOut(`${ctx.store.summaryText()}\n`);
+        return { kind: ctx.stopReason() };
+      });
   } catch (err) {
     // render() threw synchronously — clean up the interval, subscription, and SIGINT handler set up above so
     // none leaks past the throw (the finally above is never reached when render() throws).

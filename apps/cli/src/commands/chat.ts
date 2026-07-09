@@ -199,6 +199,10 @@ export interface ChatDriveContext {
   readonly store: ChatStoreController;
   readonly io: CliIo;
   readonly global: GlobalOptions;
+  /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — the config opt-in for the full-screen renderer. Only the ink
+   *  driver (`driveInk`) reads it, resolving the effective mode via `resolveRenderMode` (flag → this → phase
+   *  default); the plain / `--json` drivers ignore it (they are always inline). Absent ⇒ the phase default. */
+  readonly altScreen?: boolean | undefined;
   /**
    * The session banner line (no trailing newline). A fresh session leaves it unset (the plain driver shows a
    * default greeting; the ink driver shows nothing); a 2.N resume sets the "Resuming session …" context line,
@@ -453,6 +457,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       doctorProbes,
       startSession: () => built.session.start(),
       modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
+      altScreen: config.altScreen,
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -611,6 +616,7 @@ export async function chatResumeCommand(
       startSession: () => {},
       intro,
       modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
+      altScreen: config.altScreen,
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -638,6 +644,9 @@ interface ReplWiring {
   /** The `/models` reseat picker port (ADR-0059) — built per session (its `boundModel` is the current model).
    *  Forwarded to the ctx only on an interactive driver (`driveOneSession` gates it). */
   readonly modelPicker?: ChatModelsPort;
+  /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded to the ink driver's ctx so it resolves the
+   *  full-screen render mode; the plain / `--json` drivers ignore it. Absent ⇒ the phase default. */
+  readonly altScreen?: boolean | undefined;
 }
 
 /**
@@ -1516,6 +1525,9 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       store,
       io: deps.io,
       global: deps.global,
+      // The full-screen render-mode opt-in (2.6.F, ADR-0068 §e) — only `driveInk` consumes it (resolving flag →
+      // this → phase default); plain / `--json` ignore it. Forwarded from the per-session config wiring.
+      ...(wiring.altScreen === undefined ? {} : { altScreen: wiring.altScreen }),
       // A headless driver flushes the terminal (session:cancelled) before unsubscribing; the finally's cancelOnce
       // below is then a no-op (idempotent). Other drivers ignore it — the finally fires it.
       finalize: cancelOnce,

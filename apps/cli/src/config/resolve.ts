@@ -65,6 +65,10 @@ export interface ResolvedConfig {
   readonly mediaGcGraceMs: number | undefined;
   /** The resolved `[chat]` block (agent-first chat defaults, ADR-0024) — see {@link ResolvedChatConfig}. */
   readonly chat: ResolvedChatConfig;
+  /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — the full-screen alt-screen renderer opt-in/out. A GLOBAL-only
+   *  preference (no project/workspace layer — it is a per-user UX choice, not a per-repo default), so it reads
+   *  straight from the global config. `undefined` ⇒ the phase default in `resolveRenderMode`. */
+  readonly altScreen: boolean | undefined;
   readonly variables: Readonly<Record<string, string>>;
   readonly mcpServers: readonly McpServerRegistration[];
 }
@@ -91,6 +95,7 @@ export function resolveConfig(layers: ConfigLayers): ResolvedConfig {
       project?.defaults?.media_cost_estimate ?? workspace?.defaults?.media_cost_estimate,
     mediaGcGraceMs: resolveGraceMs(project, workspace),
     chat: resolveChat(project, workspace, global),
+    altScreen: global?.preferences?.alt_screen,
     variables: { ...workspace?.variables, ...project?.variables },
     mcpServers: mergeMcpServers(global?.mcp_servers, workspace?.mcp_servers, project?.mcp_servers),
   };

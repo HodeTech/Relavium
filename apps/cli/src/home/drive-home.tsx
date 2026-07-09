@@ -35,6 +35,8 @@ import {
 import type { CliIo } from '../process/io.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
+import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
+import { resolveRenderMode } from '../render/render-mode.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
@@ -83,8 +85,13 @@ export interface HomeDeps {
   readonly onboardingPrompter?: ClackOnboardingDeps;
   readonly now?: () => number;
   readonly uuid?: () => string;
-  /** Injectable ink mount + the terminal-size seam (tests drive `RootApp` props without a real TTY). */
-  readonly render?: (props: RootAppProps) => { unmount: () => void };
+  /** Injectable ink mount + the terminal-size seam (tests drive `RootApp` props without a real TTY). `opts` carries
+   *  the resolved alt-screen decision (2.6.F, ADR-0068 §e) so a test can observe the mode driveHome resolved; the
+   *  production default passes it through as ink's `alternateScreen` render option. */
+  readonly render?: (
+    props: RootAppProps,
+    opts: { readonly alternateScreen: boolean },
+  ) => { unmount: () => void };
   readonly getSize?: () => { cols: number; rows: number };
   readonly subscribeResize?: (onResize: () => void) => () => void;
   /** Subscribe to SIGINT(2)/SIGTERM(15); returns an unsubscribe. Default registers on `process`. */
@@ -490,6 +497,22 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     };
     unsubscribeSignals = (deps.subscribeSignals ?? defaultSubscribeSignals)(onSignal);
 
+    // Resolve the effective render mode (2.6.F, ADR-0068 §e). driveHome only runs on a TTY interactive path
+    // (shouldOpenHome-gated), so the output mode is 'tui'; the resolver still short-circuits a 'plain' path to
+    // inline defensively, then applies `--no-alt-screen` → `[preferences].alt_screen` → phase default (opt-in until
+    // the viewport lands at Step 4b). `alt` mounts ink 7's native alternate screen (DECSET 1049 enter on mount /
+    // exit on unmount — the finally's `instance.unmount()` restores the primary buffer before the terminal-state
+    // cleanup below). An injected `deps.render` (tests) ignores the option — no real TTY to switch buffers on.
+    const renderMode = resolveRenderMode({
+      outputMode: detectOutputMode({
+        stdoutIsTty: deps.io.stdoutIsTty,
+        json: deps.global.json,
+        ci: isCiEnv(deps.io.env),
+      }),
+      noAltScreenFlag: deps.global.noAltScreen === true,
+      configAltScreen: config.altScreen,
+    });
+
     return await new Promise<ExitCode>((resolve, reject) => {
       controller = createHomeController({
         startChat,
@@ -507,14 +530,18 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         getSize,
         subscribeResize,
       };
+      const alternateScreen = renderMode === 'alt';
       instance =
         deps.render === undefined
           ? render(createElement(RootApp, props), {
               exitOnCtrlC: false, // the controller drives Ctrl-C, not ink's process.exit
               patchConsole: false,
               maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
+              // ADR-0068 §e: mount the alternate screen only when resolved to 'alt' (TTY + opt-in). ink 7 handles the
+              // DECSET-1049 enter/exit; `false` is a no-op (the inline default), so machine/opt-out paths are untouched.
+              alternateScreen,
             })
-          : deps.render(props);
+          : deps.render(props, { alternateScreen });
     });
   } finally {
     // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the
