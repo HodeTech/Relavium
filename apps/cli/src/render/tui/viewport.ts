@@ -31,15 +31,40 @@ export interface DisplayLine {
 }
 
 /**
- * Terminal display width of a string in cells. Iterates by code point (so an astral char counts once, not as two
- * UTF-16 units). Zero-width (combining marks, ZWJ/ZWSP, variation selectors, BOM) → 0; East-Asian wide / fullwidth /
- * emoji ranges → 2; control chars (which the display boundary sanitizes out anyway) → 0; everything else → 1.
+ * Grapheme segmenter (Node 22 has `Intl.Segmenter`, ADR-0067 floor) — so a composed glyph (an emoji ZWJ sequence, a
+ * VS16 emoji, an enclosing keycap, a regional-indicator flag, a base + combining marks) is measured + wrapped as ONE
+ * unit, never split mid-cluster and never mis-summed per code point. Created once (constructing one is not cheap).
+ */
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+/**
+ * Terminal display width of ONE grapheme cluster in cells. A cluster renders as a single glyph: an emoji-presentation
+ * cluster (one that carries VS16 `U+FE0F` or the enclosing keycap `U+20E3`, or whose base is a wide/emoji code point)
+ * is 2 cells; a base + combining marks is the base's width; a zero-width-only cluster is 0. Biased so it NEVER
+ * UNDER-counts vs a terminal (an under-count would make a wrapped line wider than `cols`, so ink re-wraps it to 2 real
+ * rows and the viewport clips the tail — the load-bearing 1-DisplayLine-==-1-real-row invariant, ADR-0068 §c).
+ */
+function graphemeWidth(cluster: string): number {
+  let base = 0;
+  let emojiPresentation = false;
+  for (const ch of cluster) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (cp === 0xfe0f || cp === 0x20e3) emojiPresentation = true; // VS16 / enclosing keycap ⇒ renders as 2 cells
+    const w = codePointWidth(cp);
+    if (w > base) base = w; // the widest constituent (a wide/emoji base survives its combining/joiner code points)
+  }
+  return emojiPresentation ? 2 : base;
+}
+
+/**
+ * Terminal display width of a string in cells — the sum over its GRAPHEME CLUSTERS, so an astral emoji, a ZWJ
+ * sequence, a keycap, or a flag each count once (2), and a base + combining marks counts as the base. See
+ * {@link graphemeWidth}. Zero-width-only content is 0. Never under-counts vs ink (the safe direction).
  */
 export function displayWidth(str: string): number {
   let width = 0;
-  for (const ch of str) {
-    const cp = ch.codePointAt(0) ?? 0;
-    width += codePointWidth(cp);
+  for (const { segment } of graphemeSegmenter.segment(str)) {
+    width += graphemeWidth(segment);
   }
   return width;
 }
@@ -91,23 +116,24 @@ function isWide(cp: number): boolean {
 
 /**
  * Break ONE logical line (must contain no `\n`) into segments each ≤ `cols` display cells, char-wrapping on a
- * width-aware boundary (no word-wrap — a URL/token never overflows the viewport width; word-wrap is a later polish).
+ * GRAPHEME-CLUSTER, width-aware boundary — so an emoji sequence / keycap / flag is never split mid-glyph and its
+ * width is measured once (no word-wrap: a URL/token never overflows the viewport width; word-wrap is a later polish).
  * An empty line → `['']` (it still occupies one rendered row). A non-positive `cols` degrades to `[line]` (never
- * loops). A single code point wider than `cols` (a wide glyph in a 1-col terminal) still lands alone on its row.
+ * loops). A single cluster wider than `cols` (a wide glyph in a 1-col terminal) still lands alone on its row.
  */
 export function wrapLogicalLine(line: string, cols: number): string[] {
   if (cols <= 0 || line === '') return [line];
   const rows: string[] = [];
   let current = '';
   let currentWidth = 0;
-  for (const ch of line) {
-    const w = codePointWidth(ch.codePointAt(0) ?? 0);
+  for (const { segment } of graphemeSegmenter.segment(line)) {
+    const w = graphemeWidth(segment);
     if (currentWidth + w > cols && current !== '') {
       rows.push(current);
       current = '';
       currentWidth = 0;
     }
-    current += ch;
+    current += segment;
     currentWidth += w;
   }
   rows.push(current); // the trailing segment (always at least '' if the input was non-empty per the guard above)

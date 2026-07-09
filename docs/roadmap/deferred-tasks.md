@@ -953,13 +953,11 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   fixed line (the compose prompt) silently vanishes — the alt buffer has no scrollback to reach the lost content.
   Long-term give the live region its own bounded/scrollable box or guarantee the viewport a minimum height.
   *(low · apps/cli/src/render/tui/chat-ink.tsx ChatView layout)*
-- [ ] **Step 4b-2: harden `displayWidth` so it never UNDER-counts vs ink (grapheme-aware).** The pragmatic
-  per-code-point `displayWidth` (viewport.ts) over-counts ZWJ emoji (safe) but can UNDER-count a composed
-  emoji-presentation cluster (a VS16 `❤️`, an enclosing keycap `1️⃣`) — ink then re-wraps that `<Text>` to 2 real rows
-  and `overflowY: hidden` clips the tail. Cosmetic at Step 4b-1 (tail-follow is a row INDEX, no persisted offset), but
-  the 1-DisplayLine-==-1-real-row invariant becomes LOAD-BEARING at Step 4b-2's persisted-offset scroll. Harden the
-  table (e.g. `Intl.Segmenter` grapheme clusters — Node 22 has it) so it never under-counts. Step-4b-1 Opus review.
-  *(low · apps/cli/src/render/tui/viewport.ts)*
+- [x] **Step 4b-2: harden `displayWidth` so it never UNDER-counts vs ink (grapheme-aware) — DONE (Step 4b-2).**
+  `displayWidth` + `wrapLogicalLine` now segment with `Intl.Segmenter` (Node 22, ADR-0067) + measure per grapheme
+  cluster: a VS16 `❤️` / enclosing keycap `1️⃣` counts 2 (was 1 — the dangerous under-count), a ZWJ family counts 2 (was
+  4), a flag/skin-tone counts 2, and a cluster is never split mid-glyph — so the 1-DisplayLine-==-1-real-row invariant
+  holds under the persisted-offset scroll. Pinned in viewport.test.ts.
 - [ ] **Step 4b: keep the alt buffer entered across a `/clear` / `/models`-reseat re-drive (inter-session flicker).**
   `driveInk` mounts + unmounts ink **per session**, so a `/clear` or reseat swap unmounts (exits the alt buffer) and
   the next re-drive re-enters it — the terminal briefly flips to the primary buffer and back, and the intro/

@@ -42,6 +42,16 @@ describe('displayWidth (2.6.F Step 4b, ADR-0068 §c)', () => {
     expect(displayWidth('a\tb')).toBe(2);
     expect(displayWidth('\x1b[31m')).toBe(4); // ESC(0) + '[31m' (4) — a raw escape shows as its printable tail width
   });
+
+  it('measures composed emoji clusters as ONE 2-cell glyph — never under- or over-counting (Step-4b-2 harden)', () => {
+    // These are exactly the clusters a per-code-point sum got wrong; a grapheme-aware count must never under-count
+    // (an under-count would make a wrapped line wider than cols → ink re-wraps → the viewport clips the tail).
+    expect(displayWidth('1\u{FE0F}\u{20E3}')).toBe(2); // enclosing keycap 1️⃣ (was 1 — the dangerous under-count)
+    expect(displayWidth('\u{2764}\u{FE0F}')).toBe(2); // VS16 heart ❤️ (a narrow base forced to emoji presentation)
+    expect(displayWidth('\u{1F468}\u{200D}\u{1F469}')).toBe(2); // ZWJ sequence 👨‍👩 (was 4 — a safe over-count, now exact)
+    expect(displayWidth('\u{1F44B}\u{1F3FD}')).toBe(2); // skin-tone modifier 👋🏽
+    expect(displayWidth('\u{1F1F9}\u{1F1F7}')).toBe(2); // regional-indicator flag 🇹🇷 (a two-code-point pair, one glyph)
+  });
 });
 
 describe('wrapLogicalLine', () => {
@@ -69,6 +79,16 @@ describe('wrapLogicalLine', () => {
   it('places a single glyph wider than cols alone on its row (never loops / drops it)', () => {
     expect(wrapLogicalLine('中', 1)).toEqual(['中']); // one 2-cell glyph in a 1-col terminal
     expect(wrapLogicalLine('a中b', 1)).toEqual(['a', '中', 'b']);
+  });
+
+  it('never splits a multi-code-point grapheme cluster mid-glyph (Step-4b-2 harden)', () => {
+    // A 2-cell emoji + a 1-cell char at cols=2: the emoji lands on its own row (1+2 > 2), never split into surrogates.
+    expect(wrapLogicalLine('a\u{1F680}b', 2)).toEqual(['a', '\u{1F680}', 'b']);
+    // A ZWJ family emoji is ONE 2-cell cluster — it wraps as a unit, not per joined code point.
+    expect(wrapLogicalLine('\u{1F468}\u{200D}\u{1F469}x', 2)).toEqual([
+      '\u{1F468}\u{200D}\u{1F469}',
+      'x',
+    ]);
   });
 
   it('degrades to the whole line on a non-positive width (never infinite-loops)', () => {
