@@ -48,6 +48,10 @@ import {
   type HomeModelsPort,
 } from '../render/tui/home-controller.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE } from '../render/alt-screen.js';
+import { nodeCreateTempDocument, nodeSpawnEditor } from '../render/editor.js';
+import type { HatchDeps } from '../render/hatches.js';
+import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
+import { createSuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
@@ -103,6 +107,9 @@ export interface HomeDeps {
   readonly writeControl?: (sequence: string) => void;
 }
 
+/** The assumed width for the `/scrollback` dump when the terminal reports no column count. */
+const DEFAULT_DUMP_COLS = 80;
+
 /** The default external-signal source: SIGINT(2) + SIGTERM(15) on `process`, registered with `on` (not `once`)
  *  so ink's signal-exit listener never re-raises while we still hold the cooperative teardown. */
 function defaultSubscribeSignals(onSignal: (signo: number) => void): () => void {
@@ -155,6 +162,57 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     ((sequence: string) => {
       process.stdout.write(sequence);
     });
+
+  /**
+   * Undo every terminal mode this command turned on, in reverse order: unmount ink FIRST (leaving raw mode and the
+   * alternate buffer), then disable bracketed paste (DECSET 2004, enabled by ink 7's `usePaste`) and mouse reporting
+   * (DECSET 1000/1006, ours). Both writes are unconditional — a disable is a no-op when the mode was never enabled.
+   * BEST-EFFORT by contract: it swallows its own throw so a faulty terminal can never skip the caller's session
+   * teardown + db close (the `finally`) nor the bounded teardown + exit (the signal handler). Shared by BOTH paths,
+   * which were byte-identical, so they can never drift.
+   */
+  const restoreTerminalControls = (): void => {
+    try {
+      instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
+      writeControl(DISABLE_BRACKETED_PASTE);
+      writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
+    } catch {
+      // ignore — restoring the terminal is best-effort; the teardown + exit/close must still run
+    }
+  };
+
+  // The ADR-0068 §e hatch ports (2.6.F Step 5d). `RootApp` attaches ink's `suspendTerminal` to the port on mount;
+  // `wireHomeChatSession` hands these ports to `createChatLineHandler` — the SAME builder `relavium chat` uses — so
+  // `/scrollback` and `/edit` are literally the same code on both surfaces. Unlike the chat, the bare Home mounts ink
+  // with `alternateScreen: true`, so ink itself toggles DECSET-1049 across a suspension; only the mouse is ours.
+  const suspendPort = createSuspendPort();
+  let altScreenActive = false; // assigned once the render mode resolves; read LAZILY by `terminal()` below
+  const hatchPorts: Omit<HatchDeps, 'transcript' | 'note'> = {
+    suspendPort,
+    writeControl,
+    terminal: () => ({
+      columns: process.stdout.columns ?? DEFAULT_DUMP_COLS,
+      altActive: altScreenActive,
+      mouseActive: altScreenActive, // enabled together with the alt buffer (the ENABLE_MOUSE write below)
+      inkOwnsAltScreen: true, // ink's `alternateScreen` render option is ON for this surface
+    }),
+    dump: {
+      writeOut: nodeWriteOut(process.stdout),
+      waitForContinue: nodeWaitForContinue(process.stdin),
+    },
+    editor: {
+      env: deps.io.env,
+      spawnEditor: nodeSpawnEditor,
+      createTempDocument: nodeCreateTempDocument,
+      onDisposeFailed: (path, error) => {
+        deps.io.writeErr(
+          `warning: transcript temp file teardown failed (${path}): ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      },
+    },
+  };
 
   try {
     const homeStore = createHomeStore({
@@ -282,7 +340,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           onSetEffort,
         } = createChatLineHandler(
           { built, opened, store, persister, doctorProbes: chatDoctorProbes },
-          deps,
+          { ...deps, hatchPorts },
         );
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
         unsubscribe = built.handle.subscribe((event) => store.apply(event));
@@ -458,8 +516,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     }
 
     // Bracketed paste (DECSET 2004) is enabled by ink 7's `usePaste` on mount (home-app.tsx). The defensive
-    // `DISABLE_BRACKETED_PASTE` writes on the teardown paths below are belt-and-suspenders (usePaste also disables
-    // on unmount) so an external signal can never leave the terminal in bracketed-paste mode.
+    // `DISABLE_BRACKETED_PASTE` writes in `restoreTerminalControls` are belt-and-suspenders (usePaste also
+    // disables on unmount) so an external signal can never leave the terminal in bracketed-paste mode.
 
     // One external-signal lifecycle covering the Home, the in-Home chat, and MCP teardown.
     let signaled = false;
@@ -469,15 +527,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         return;
       }
       signaled = true;
-      // Best-effort terminal restore — a throw here must NOT skip scheduling the bounded teardown + exit below
-      // (else an external signal could neither close the db nor exit).
-      try {
-        instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
-        writeControl(DISABLE_BRACKETED_PASTE);
-        writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
-      } catch {
-        // ignore — restoring the terminal is best-effort; the close + exit must still run
-      }
+      // Best-effort terminal restore — it swallows its own throw, so it can NOT skip scheduling the bounded
+      // teardown + exit below (else an external signal could neither close the db nor exit).
+      restoreTerminalControls();
       // The bound is REFERENCED until the race settles so the exit is guaranteed even if teardown hangs; it is
       // cleared the instant the race resolves so a fast teardown (the common case) neither waits nor dangles.
       let bound: ReturnType<typeof setTimeout> | undefined;
@@ -526,6 +578,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         onError: (err) => reject(err instanceof Error ? err : new Error(String(err))),
       });
       const alternateScreen = renderMode === 'alt';
+      altScreenActive = alternateScreen; // the hatch ports read this lazily (see `terminal()` above)
       const props: RootAppProps = {
         controller,
         nowMs: now,
@@ -534,6 +587,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         subscribeResize,
         // The in-Home chat renders its transcript through the scroll viewport when mounted on the alt screen (Step 4b).
         alternateScreen,
+        // `RootApp` attaches ink's `suspendTerminal` here while mounted (2.6.F Step 5d, ADR-0068 §e).
+        suspendPort,
       };
       instance =
         deps.render === undefined
@@ -553,17 +608,11 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     });
   } finally {
     // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the
-    // terminal state, reclaim a live session, and close the shared db ONCE. The terminal restore is best-effort —
-    // a throw there is swallowed so it neither turns a clean exit into a failure nor skips the teardown + close
-    // below (a faulty terminal can never leak the session or the db handle). Unmount BEFORE disabling paste.
+    // terminal state, reclaim a live session, and close the shared db ONCE. The terminal restore swallows its own
+    // throw, so it neither turns a clean exit into a failure nor skips the teardown + close below — a faulty
+    // terminal can never leak the session or the db handle.
     unsubscribeSignals?.();
-    try {
-      instance?.unmount();
-      writeControl(DISABLE_BRACKETED_PASTE);
-      writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
-    } catch {
-      // ignore — restoring the terminal is best-effort; the session teardown + db close must still run
-    }
+    restoreTerminalControls();
     await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
     closeDb(); // always close the shared db
   }

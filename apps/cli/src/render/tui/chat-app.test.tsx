@@ -4,6 +4,7 @@ import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
+import { createSuspendPort } from '../suspend.js';
 import { ChatApp } from './chat-ink.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
@@ -435,5 +436,62 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     expect(frame()).toContain('LASTLINE'); // the bottom of the over-tall entry (the tail)
     expect(frame()).not.toContain('FIRSTLINE'); // the top of the entry scrolled off — no scrollback
     expect(frame().split('\n').length).toBeLessThanOrEqual(24);
+  });
+});
+
+/**
+ * The ADR-0068 §e suspend PORT (2.6.F Step 5d) — the repo's first React→core capability bridge. `suspendTerminal`
+ * exists only inside a mounted ink tree, while the slash dispatch that runs `/scrollback` and `/edit` lives outside
+ * it. These pin both halves: the port is filled while mounted and EMPTIED on unmount — the latter is what makes a
+ * hatch say "needs an interactive terminal" between a `/clear` swap's unmount and the next mount, instead of calling
+ * into a dead ink instance.
+ */
+describe('ChatApp — the suspend port (ADR-0068 §e)', () => {
+  it('attaches a WORKING suspendTerminal while mounted, and detaches on unmount', async () => {
+    const port = createSuspendPort();
+    expect(port.current()).toBeUndefined();
+
+    const h = render(
+      <ChatApp
+        store={createChatStore(false)}
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+        suspendPort={port}
+      />,
+    );
+    await waitFor(() => port.current() !== undefined);
+    const suspend = port.current();
+    expect(suspend).toBeDefined();
+
+    // It must be ink's REAL suspendTerminal, not a stub: drive a callback through it. ink 7 hands the method out
+    // UNBOUND off its prototype, so this also pins that our method-call form never loses `this`.
+    let ran = false;
+    await suspend?.(() => {
+      ran = true;
+      return Promise.resolve();
+    });
+    expect(ran).toBe(true);
+
+    h.unmount();
+    await settleFrames();
+    expect(port.current()).toBeUndefined(); // a dead ink instance is never left reachable
+  });
+
+  it('mounts fine with NO port (a driver/test that wires none) — the hatches degrade, nothing throws', async () => {
+    const h = render(
+      <ChatApp
+        store={createChatStore(false)}
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+      />,
+    );
+    await settleFrames();
+    expect(h.lastFrame()).toBeDefined();
   });
 });

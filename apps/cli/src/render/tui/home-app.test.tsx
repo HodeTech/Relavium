@@ -7,6 +7,7 @@ import type { ReseatTarget } from '../../commands/chat.js';
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
+import { createSuspendPort } from '../suspend.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
 import { RootApp } from './home-app.js';
@@ -410,5 +411,45 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     expect(reseatChat).toHaveBeenCalledTimes(1);
     expect(c.getSnapshot().session?.sessionId).toBe('sess-A'); // the reseat PRESERVED the id (the trap the fix survives)
     expect(frame()).toContain('HMSG59'); // the view RE-FOLLOWED the tail after the swap (object-identity reset fired)
+  });
+});
+
+/**
+ * The ADR-0068 §e suspend PORT on the HOME surface (2.6.F Step 5d). Unlike `relavium chat`, `createHomeController` is
+ * built BEFORE this tree mounts and every existing Home port flows core→React — so this bridge is the inversion, and
+ * the in-Home chat's `/scrollback` and `/edit` depend entirely on it.
+ */
+describe('RootApp — the suspend port (ADR-0068 §e)', () => {
+  it('attaches a WORKING suspendTerminal while mounted, and detaches on unmount', async () => {
+    const port = createSuspendPort();
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(makeSession(createChatStore(false))),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    const harness = render(
+      <RootApp
+        controller={c}
+        nowMs={() => Date.now()}
+        color={false}
+        getSize={() => ({ cols: 80, rows: 24 })}
+        subscribeResize={() => () => {}}
+        suspendPort={port}
+      />,
+    );
+    await waitFor(() => port.current() !== undefined);
+
+    let ran = false;
+    await port.current()?.(() => {
+      ran = true;
+      return Promise.resolve();
+    });
+    expect(ran).toBe(true); // ink's REAL suspendTerminal, driven through the port
+
+    harness.unmount();
+    await settleFrames();
+    expect(port.current()).toBeUndefined();
   });
 });

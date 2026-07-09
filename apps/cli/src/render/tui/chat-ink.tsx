@@ -1,6 +1,7 @@
-import { Box, Static, Text, render, useInput, usePaste, useWindowSize } from 'ink';
+import { Box, Static, Text, render, useApp, useInput, usePaste, useWindowSize } from 'ink';
 import {
   createElement,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -8,6 +9,7 @@ import {
   type ReactElement,
 } from 'react';
 
+import type { SuspendPort } from '../suspend.js';
 import {
   driveJson,
   drivePlain,
@@ -215,6 +217,10 @@ interface ChatAppProps {
   readonly runShellCommand?:
     | ((command: string, args: readonly string[]) => Promise<UserCommandOutcome>)
     | undefined;
+  /** The ADR-0068 §e suspend port (2.6.F Step 5d). `ChatApp` attaches ink's `useApp().suspendTerminal` to it while
+   *  mounted, which is the ONLY way the non-React slash dispatch can reach `/scrollback` and `/edit`. Absent ⇒ the
+   *  hatches surface an honest "needs an interactive terminal" notice. */
+  readonly suspendPort?: SuspendPort | undefined;
 }
 
 interface ChatViewProps {
@@ -895,6 +901,20 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   };
 
+  // Attach ink's `suspendTerminal` to the ADR-0068 §e port while this tree is mounted (2.6.F Step 5d). `useApp()` is
+  // the only place it exists, and the slash dispatch that runs `/scrollback` / `/edit` lives outside React — so the
+  // port is the bridge. Detaching on unmount is what makes the hatches report "needs an interactive terminal" between
+  // a `/clear`-swap's unmount and the next mount, rather than calling into a dead ink instance.
+  // Invoked as a METHOD (`app.suspendTerminal(cb)`), never a bare destructured reference: ink 7 hands it out unbound
+  // off the prototype, so this form is immune to how the context object is shaped.
+  const app = useApp();
+  const suspendPort = props.suspendPort;
+  useEffect(() => {
+    if (suspendPort === undefined) return;
+    suspendPort.attach((callback) => app.suspendTerminal(callback));
+    return () => suspendPort.attach(undefined);
+  }, [app, suspendPort]);
+
   const submit = (message: string, display?: string): void => {
     // A typed `/models` opens the reseat picker overlay (ADR-0059) instead of sending — interactive only (the port
     // is wired). Covers a directly-typed `/models` AND a chat-palette selection (both route through `submit`).
@@ -1494,6 +1514,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         mentionReader: ctx.mentionReader,
         // `!`-shell runner (2.5.D, ADR-0061) — interactive-only; absent ⇒ a leading `!` is a literal message.
         runShellCommand: ctx.runShellCommand,
+        suspendPort: ctx.suspendPort,
       }),
       {
         // OUR /cancel (Ctrl-C) handler drives the cooperative cancel — never ink's process.exit.

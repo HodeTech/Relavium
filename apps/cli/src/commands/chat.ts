@@ -71,6 +71,10 @@ import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { createAltScreenController, type AltScreenController } from '../render/alt-screen.js';
+import { nodeCreateTempDocument, nodeSpawnEditor } from '../render/editor.js';
+import { createHatches, type HatchDeps, type Hatches } from '../render/hatches.js';
+import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
+import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
 import { resolveRenderMode } from '../render/render-mode.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import {
@@ -265,6 +269,12 @@ export interface ChatDriveContext {
     command: string,
     args: readonly string[],
   ) => Promise<UserCommandOutcome>;
+  /**
+   * The ADR-0068 §e suspend port (2.6.F Step 5d). An INK driver attaches `useApp().suspendTerminal` to it on mount
+   * and detaches on unmount, which is what lets the non-React slash dispatch run `/scrollback` and `/edit`. Absent on
+   * a plain / `--json` driver — the hatches then surface an honest "needs an interactive terminal" notice.
+   */
+  readonly suspendPort?: SuspendPort | undefined;
 }
 /**
  * How a {@link ChatDriver}'s input loop ended (ADR-0062 §7 · ADR-0059): `'exit'` ends the REPL (exit 4); `'clear'`
@@ -352,6 +362,13 @@ interface ChatReplDeps {
   /** The process lifecycle seam for the alt-buffer exit-safety net (Step 4b-3) — `process.on('exit')`, SIGTERM/SIGHUP,
    *  raw-mode, and exit. Default {@link defaultReplLifecycle}; a test injects fakes to drive the exit paths. */
   readonly lifecycle?: ReplLifecycle;
+  /**
+   * The ADR-0068 §e hatch ports (`/scrollback`, `/edit`) MINUS the two {@link createChatLineHandler} binds itself —
+   * the session's live transcript and its notice channel — so the hatches always read the CURRENT session, not a
+   * stale capture across a `/clear` or reseat swap. Built once per REPL by `runReplLoop` / `driveHome`, which own
+   * the alt-buffer state and the terminal-control sink. Absent (a unit test) ⇒ both hatches surface a notice.
+   */
+  readonly hatchPorts?: Omit<HatchDeps, 'transcript' | 'note'>;
 }
 
 /**
@@ -940,6 +957,24 @@ export function createChatLineHandler(
     }
   };
 
+  // The ADR-0068 §e copy-and-search hatches. Bound HERE — the one place the standalone chat and the in-Home chat
+  // share (both call `createChatLineHandler`) — so `/scrollback` and `/edit` cannot drift between the surfaces. The
+  // transcript is read from the LIVE store on every invocation (never captured across a `/clear` or reseat swap),
+  // and the result lands on the same channel every other command's output uses. Absent ports (a unit test) ⇒ the
+  // hatches say so; PRESENT ports with nothing attached to the suspend port (a plain / `--json` driver has no ink
+  // tree at all) ⇒ `createHatches` itself surfaces the same honest notice.
+  const hatches: Hatches | undefined =
+    deps.hatchPorts === undefined
+      ? undefined
+      : createHatches({
+          ...deps.hatchPorts,
+          transcript: () => store.getSnapshot().state.transcript,
+          note: emitOutput,
+        });
+  const hatchUnavailable = (name: string): void => {
+    emitOutput(`${name}: needs an interactive terminal.`);
+  };
+
   // The lifecycle capabilities the curated REPL commands (repl-commands.ts) run over — the slash names and the
   // /help + unknown-slash hint all derive from REPL_COMMANDS, so the three surfaces can never disagree.
   const replCtx: ReplCommandContext = {
@@ -1154,6 +1189,22 @@ export function createChatLineHandler(
         '/models needs an interactive terminal to switch the model live. From a pipe, set `[chat].default_model` ' +
           'in your config, or run `relavium` (the Home) to change the default.',
       ),
+    // The hatches (ADR-0068 §e). Unlike `/models` these need no render-layer interception: they open no overlay, so
+    // BOTH interactive surfaces reach them right here, through the suspend port `runReplLoop`/`driveHome` attached.
+    dumpScrollback: async () => {
+      if (hatches === undefined) {
+        hatchUnavailable('/scrollback');
+        return;
+      }
+      await hatches.dumpScrollback();
+    },
+    editTranscript: async () => {
+      if (hatches === undefined) {
+        hatchUnavailable('/edit');
+        return;
+      }
+      await hatches.editTranscript();
+    },
   };
 
   // Parse + dispatch a `/name [args]` REPL line (extracted from processLine so each stays under the Sonar
@@ -1675,6 +1726,12 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
         : {}),
       ...(mentionReader === undefined ? {} : { mentionReader }),
       ...(runShellCommand === undefined ? {} : { runShellCommand }),
+      // The ADR-0068 §e suspend port (Step 5d) — only an INK driver can attach to it (`suspendTerminal` lives inside
+      // the React tree). Handed to every driver; a plain / `--json` one simply never attaches, and the hatches then
+      // report "needs an interactive terminal" rather than failing.
+      ...(deps.hatchPorts?.suspendPort === undefined
+        ? {}
+        : { suspendPort: deps.hatchPorts.suspendPort }),
     });
     // A `/models` reseat attaches the captured target here (the one place holding the line handler); see the helper.
     return finalizeReseatOutcome(outcome, reseatTarget);
@@ -1716,6 +1773,10 @@ function resolveSwapRebuild(
   }
   return undefined;
 }
+
+/** The assumed width for the `/scrollback` dump when the terminal reports no column count (mirrors the projection's
+ *  own fallback). The dump is printed to a real terminal, so a wrong-but-sane width beats refusing to print. */
+const DEFAULT_DUMP_COLS = 80;
 
 /** What {@link withHoistedAltScreen}'s loop body returns — text to print AFTER the single alt-exit, on the primary
  *  buffer: the final `/exit` summary and/or a rebuild-failure error (both would be discarded if written in the alt
@@ -1811,6 +1872,43 @@ export async function runReplLoop(
       process.stdout.write(sequence);
     });
 
+  // ONE suspend port for the whole REPL: ink remounts per session (a `/clear` / reseat re-drive), and each mount
+  // re-attaches. The hatch ports read the terminal facts at CALL time — `alt.isEntered()` rather than the resolved
+  // `altActive`, because a hatch must reflect the buffer's LIVE state, not the mode we resolved at startup.
+  const suspendPort = deps.hatchPorts?.suspendPort ?? createSuspendPort();
+  const hatchPorts: Omit<HatchDeps, 'transcript' | 'note'> = deps.hatchPorts ?? {
+    suspendPort,
+    writeControl,
+    terminal: () => ({
+      columns: process.stdout.columns ?? DEFAULT_DUMP_COLS,
+      // `relavium chat` mounts ink with `alternateScreen: false` — the hoisted controller owns DECSET-1049, so the
+      // suspension must toggle it itself. Mouse reporting is enabled iff the buffer is entered (alt-screen.ts).
+      altActive: altScreenController?.isEntered() ?? false,
+      mouseActive: altScreenController?.isEntered() ?? false,
+      inkOwnsAltScreen: false,
+    }),
+    dump: {
+      writeOut: nodeWriteOut(process.stdout),
+      waitForContinue: nodeWaitForContinue(process.stdin),
+    },
+    editor: {
+      env: deps.io.env,
+      spawnEditor: nodeSpawnEditor,
+      createTempDocument: nodeCreateTempDocument,
+      onDisposeFailed: (path, error) => {
+        deps.io.writeErr(
+          `warning: transcript temp file teardown failed (${path}): ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      },
+    },
+  };
+  // The hoisted controller, captured so `hatchPorts.terminal()` can read the LIVE buffer state (it is created inside
+  // `withHoistedAltScreen` below, after `hatchPorts` is built — hence the mutable binding read lazily).
+  let altScreenController: AltScreenController | undefined;
+  const replDeps: ChatReplDeps = { ...deps, hatchPorts };
+
   try {
     await withHoistedAltScreen(
       {
@@ -1821,10 +1919,11 @@ export async function runReplLoop(
         writeErr: (text) => deps.io.writeErr(text),
       },
       async (alt): Promise<HoistedLoopResult> => {
+        altScreenController = alt; // so `hatchPorts.terminal()` reads the LIVE buffer state, not the startup decision
         let current = wiring;
         let summaryText: string | undefined; // the final `/exit` summary, printed after the single alt-exit
         for (;;) {
-          const outcome = await driveOneSession(current, deps);
+          const outcome = await driveOneSession(current, replDeps);
           // The end-of-session summary is LIFTED out of driveInk (ADR-0068 §c): the wrapper prints it after the single
           // alt-exit, on the PRIMARY buffer. Only a final `'exit'` carries one; a `/clear` / reseat swap carries none.
           if (outcome.kind === 'exit') summaryText = outcome.summaryText;

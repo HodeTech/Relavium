@@ -45,6 +45,8 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls }
     trimHistory: vi.fn(),
     clearSession: vi.fn(),
     openModels: vi.fn(),
+    dumpScrollback: vi.fn(),
+    editTranscript: vi.fn(),
   };
   return {
     ctx: spies,
@@ -54,6 +56,8 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls }
       exportSession: spies.exportSession.mock.calls.length,
       help: spies.help.mock.calls.length,
       showWorkflows: spies.showWorkflows.mock.calls.length,
+      dumpScrollback: spies.dumpScrollback.mock.calls.length,
+      editTranscript: spies.editTranscript.mock.calls.length,
       showCost: spies.showCost.mock.calls.length,
       setMode: spies.setMode.mock.calls.length,
       setReasoningEffort: spies.setReasoningEffort.mock.calls.length,
@@ -87,6 +91,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'trim',
       'clear',
       'models',
+      'scrollback',
+      'edit',
     ]);
   });
 
@@ -142,7 +148,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('replCommandList renders the slash hint, formatReplHelp lists every command', () => {
     expect(replCommandList()).toBe(
-      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /effort, /thinking, /compact, /trim, /clear, /models',
+      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /effort, /thinking, /compact, /trim, /clear, /models, /scrollback, /edit',
     );
     const help = formatReplHelp();
     for (const command of REPL_COMMANDS) {
@@ -191,6 +197,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'trim',
       'clear',
       'models',
+      'scrollback',
+      'edit',
     ]);
     // /models is availableIn ['home','chat'] (ADR-0059: the chat reseat) — so it appears in BOTH palettes.
     expect(CHAT_PALETTE_COMMANDS.map((c) => c.name)).toEqual([
@@ -207,6 +215,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'trim',
       'clear',
       'models',
+      'scrollback',
+      'edit',
     ]);
     // The bare Home offers /exit + /doctor (pre-chat diagnostics), /clear (availableIn ['home','chat']; an inert
     // "nothing to clear" notice — ADR-0062 §7), and /models (availableIn ['home','chat'] — the Home writes the

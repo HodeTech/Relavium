@@ -1,4 +1,4 @@
-import { Box, Text, useInput, usePaste } from 'ink';
+import { Box, Text, useApp, useInput, usePaste } from 'ink';
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
 
 import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
@@ -40,6 +40,8 @@ import {
 
 export type { HomeChatSession } from './home-controller.js';
 
+import type { SuspendPort } from '../suspend.js';
+
 export interface RootAppProps {
   readonly controller: HomeController;
   readonly nowMs: () => number;
@@ -51,6 +53,10 @@ export interface RootAppProps {
    *  renders through the scroll viewport (bounded to the resize-tracked size) instead of `<Static>`. Resolved by
    *  `driveHome` (`resolveRenderMode`); absent/false ⇒ the inline renderer. */
   readonly alternateScreen?: boolean;
+  /** The ADR-0068 §e suspend port (2.6.F Step 5d). `RootApp` attaches ink's `useApp().suspendTerminal` to it while
+   *  mounted — the ONLY way the non-React slash dispatch (`createHomeController` is built before this tree exists)
+   *  can reach `/scrollback` and `/edit`. Absent (a test) ⇒ the hatches notice "needs an interactive terminal". */
+  readonly suspendPort?: SuspendPort | undefined;
 }
 
 /** The chat region: subscribes to the chat store (re-render on stream events) and renders the pure {@link ChatView},
@@ -153,6 +159,17 @@ function ChatRegion(
 export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   const { controller, getSize, subscribeResize, color } = props;
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  // Attach ink's `suspendTerminal` to the ADR-0068 §e port while this tree is mounted (2.6.F Step 5d). `useApp()` is
+  // the only place it exists, and the in-Home chat's slash dispatch runs outside React — so the port is the bridge.
+  // Invoked as a METHOD (`app.suspendTerminal(cb)`), never as a bare destructured reference: ink 7 hands it out
+  // unbound off the prototype, so this form is immune to how the context object is shaped.
+  const app = useApp();
+  const suspendPort = props.suspendPort;
+  useEffect(() => {
+    if (suspendPort === undefined) return;
+    suspendPort.attach((callback) => app.suspendTerminal(callback));
+    return () => suspendPort.attach(undefined);
+  }, [app, suspendPort]);
   const [size, setSize] = useState(getSize);
   // The alt-screen transcript SCROLL state (2.6.F Step 4b-2) — RootApp-local (a pure-render concern, like `size`;
   // NOT session state), ref-shadowed for coalesced-chunk safety, and the viewport's live geometry lifted into

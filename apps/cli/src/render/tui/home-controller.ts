@@ -945,6 +945,14 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // over the merged catalog. Unlike the inert chat-only noops above, this wires the live picker.
     openModels: () => openModelPicker(),
 
+    // `/scrollback` + `/edit` (ADR-0068 §e) are chat-only (`availableIn: ['chat']`), so they never appear in
+    // HOME_PALETTE_COMMANDS and are unreachable from the bare Home — there is no transcript to dump or edit. An
+    // ACTIVE in-Home chat routes them through the chat handler's REAL capabilities (sendChatLine → the slash
+    // dispatch → `createChatLineHandler`'s hatches), never through this ctx. Inert here, like the other chat-only
+    // capabilities above.
+    dumpScrollback: () => undefined,
+    editTranscript: () => undefined,
+
     runDoctor: async (deep) => {
       if (exiting) return;
       const runId = (doctorRunId += 1); // a new run; a prompt edit/submit or a later run bumps this, invalidating us
