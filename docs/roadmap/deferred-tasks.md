@@ -616,7 +616,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   read floor (`SENSITIVE_READ_DIR_SEGMENTS`) and the write floor (`PROTECTED_DIR_SEGMENTS`) match a `.relavium`
   segment anywhere, so they would refuse the sanctioned `tmpDir` scratch root — inert today (no call site wires
   `tmpDir`). Resolve (home-anchored match, or exclude the wired tmp root) before any caller passes `tmpDir`.
-  *(low · apps/cli/src/engine/tool-host/fs.ts + assemble.ts)*
+  **Scheduled → 2.6.M / 2.6.N** — promoted from latent to a **prerequisite**: 2.6.N's central ephemeral
+  artifact root (`~/.relavium/artifacts/<sessionId>/`) needs tool read/write into a `~/.relavium/` subdir, so
+  the home-anchored fix (protect the secrets-bearing root + project `.relavium/`, exclude the wired sanctioned
+  scratch subroot) must land with the `extra_roots`/`tmpDir` wiring. *(low→prereq · apps/cli/src/engine/tool-host/fs.ts + assemble.ts)*
 
 ## Phase-2 CLI (2.D) follow-ups
 
