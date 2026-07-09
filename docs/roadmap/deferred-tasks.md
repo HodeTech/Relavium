@@ -972,17 +972,15 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   — `viewport.ts` `wrapText` is pure again. (The first cut was a fixed-size per-line LRU; the Step-4b-3 Opus review
   showed it thrashed to a 0% hit rate once a session exceeded the cache size, so it was replaced.) Pinned in
   chat-projection.test.ts (incremental append + same-object-on-hit + a >8192-entry repeatability case).
-- [ ] **Step 4b-3: route mid-session raw-`io` notices through the CURRENT session's view store so they survive alt mode
-  (Step-4b-3 Sonnet review).** Two callbacks still write via the raw `deps.io.writeErr` seam WHILE the hoisted alt buffer
-  is entered, so ink's next log-update frame overwrites them and they are LOST on the now-default full-screen path: the
-  budget-cap **`onBudgetWarning`** (chat.ts, fires mid-turn from the governor) and the `/clear`/reseat **`surfaceMcpSkipped`**
-  diagnostic (chat.ts rebuild path). Every OTHER in-session notice (cost/compaction/trim/mode) already renders via
-  `store.notice`. The fix is architectural: these callbacks are wired at BUILD time over a stable `io`, but the view store
-  is created AFTER the build and is fresh per session — so a fixed closure over one store would post to the wrong
-  (torn-down) transcript across a swap. Thread a mutable "current session view-store" ref (set per session by
-  `driveOneSession`, or an event the session emits) and route both callbacks through it → `store.notice`. Conditional
-  (needs a cost cap or an unreachable MCP server, AND alt mode — the flip WIDENED a pre-existing latent bug from opt-in
-  alt users to the default). *(med · apps/cli/src/commands/chat.ts + engine/mcp-servers.ts)*
+- [x] **Step 4b-3: route mid-session raw-`io` notices through the CURRENT session's view store so they survive alt mode
+  — DONE (Step-4b-3 Sonnet fold).** The budget-cap **`onBudgetWarning`** (fires mid-turn) and the `/clear`/reseat
+  **MCP-skipped** diagnostic were writing via raw `io.writeErr` WHILE the hoisted alt buffer was entered, so ink's next
+  frame overwrote them → LOST on the default full-screen path. Fixed with a file-private `liveSessionNotice` pointer
+  that `driveOneSession` sets to the live session's `store.notice` for its lifetime (a REPL runs one session at a time)
+  and clears in its finally: all four `onBudgetWarning` wiring sites now route through it (falling back to raw `io` only
+  when no session is live), so the warning renders as a transcript notice. The re-drive MCP-skipped diagnostic (which
+  fires between sessions, before the sink is live) routes to the fresh session's `store.notice` directly via the new
+  `mcpSkippedLines` helper. Pinned by a live-routing test (break-verified) + the fallback test + a `mcpSkippedLines` unit test.
 - [x] **Step 4b-3: keep the alt buffer entered across a `/clear` / `/models`-reseat re-drive (inter-session flicker) — DONE (Step 4b-3).**
   Fixed by the HOIST (chosen over DEC-2026, which cannot span a primary↔alt switch): `driveInk` now passes the ink
   render option `alternateScreen:false` (ink toggles the buffer no more — it still full-screen-renders via log-update),

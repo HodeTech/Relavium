@@ -29,7 +29,7 @@ import type { ResolvedChatConfig } from '../config/resolve.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
-import { createChatStore } from '../render/tui/chat-store.js';
+import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from '../render/alt-screen.js';
 import {
@@ -474,18 +474,48 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // exactly the one 'hello' exchange
   });
 
-  it('routes a budget warning to stderr via the onBudgetWarning seam', async () => {
+  type BudgetWarn = { spentMicrocents: number; limitMicrocents: number; thresholdPct: number };
+
+  it('routes a budget warning to stderr via the onBudgetWarning seam when NO session is live (the fallback)', async () => {
     const { d, err } = deps(['/exit'], [textTurn('x')]);
-    let captured:
-      | ((w: { spentMicrocents: number; limitMicrocents: number; thresholdPct: number }) => void)
-      | undefined;
+    let captured: ((w: BudgetWarn) => void) | undefined;
     const withCapture: typeof buildChatSession = (opts) => {
       captured = opts.onBudgetWarning;
       return buildChatSession(opts);
     };
     await chatCommand({ agent: undefined }, { ...d, buildSession: withCapture });
+    // Fired AFTER the session ended (liveSessionNotice cleared) ⇒ the raw-io fallback on the primary buffer.
     captured?.({ spentMicrocents: 900, limitMicrocents: 1000, thresholdPct: 90 });
     expect(err()).toContain('budget warning');
+  });
+
+  it('routes a budget warning to the TRANSCRIPT (view-store notice) while a session is LIVE — not raw stderr (Step-4b-3)', async () => {
+    // A raw io.writeErr while the hoisted alt buffer is entered would be overwritten by ink's next frame + lost; the
+    // warning must render as a transcript notice instead. Fire the captured onBudgetWarning mid-turn and assert it
+    // landed in the live view store (`ctx.store`), and NOT on stderr.
+    const { d, err } = deps([], [textTurn('x')]);
+    let captured: ((w: BudgetWarn) => void) | undefined;
+    let liveStore: ChatStoreController | undefined;
+    const withCapture: typeof buildChatSession = (opts) => {
+      captured = opts.onBudgetWarning;
+      return buildChatSession(opts);
+    };
+    const fireDuringTurn: ChatDriver = async (ctx) => {
+      liveStore = ctx.store;
+      ctx.startSession();
+      captured?.({ spentMicrocents: 900, limitMicrocents: 1000, thresholdPct: 90 }); // fires WHILE the session is live
+      await ctx.processLine('/exit');
+      return { kind: 'exit' };
+    };
+    await chatCommand(
+      { agent: undefined },
+      { ...d, buildSession: withCapture, drive: fireDuringTurn },
+    );
+    const notices = (liveStore?.getSnapshot().state.transcript ?? [])
+      .filter((e) => e.role === 'notice')
+      .map((e) => e.text);
+    expect(notices.some((t) => t.includes('budget warning'))).toBe(true); // routed to the transcript
+    expect(err()).not.toContain('budget warning'); // …and NOT to raw stderr (the alt buffer would eat it)
   });
 
   it('exports the session-so-far to a scaffold on /export, continues, and does NOT mark the live row', async () => {

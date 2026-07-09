@@ -9,6 +9,7 @@ import {
   buildChildEnv,
   connectAgentMcp,
   connectWorkflowMcp,
+  mcpSkippedLines,
   resolveMcpServerRef,
   resolveServerConfigs,
   surfaceMcpSkipped,
@@ -762,6 +763,19 @@ describe('resolveMcpServerRef (by-name resolution, 2.R Step 4b)', () => {
 });
 
 describe('surfaceMcpSkipped', () => {
+  it('mcpSkippedLines returns one secret-free line per dropped tool WITHOUT a trailing newline (for store routing)', () => {
+    // The re-drive path routes these to a transcript `notice` (Step-4b-3), so the lines must carry no `\n`.
+    expect(mcpSkippedLines([])).toEqual([]);
+    const lines = mcpSkippedLines([
+      { server: 'fs', name: 'danger', reason: 'not in tools_allowlist' },
+      { server: 'gh', name: 'bad-id!', reason: 'unsafe LLM tool name' },
+    ]);
+    expect(lines).toHaveLength(2);
+    expect(lines.every((l) => !l.includes('\n'))).toBe(true); // no terminator — the sink adds it (or renders a notice)
+    expect(lines[0]).toContain("MCP tool 'danger' (server 'fs')");
+    expect(lines[1]).toContain("MCP tool 'bad-id!' (server 'gh')");
+  });
+
   it('writes one stderr note per dropped tool (name + server + reason), nothing on an empty list', () => {
     const { io, err, out } = captureIo();
     surfaceMcpSkipped(io, []);

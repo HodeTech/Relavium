@@ -56,12 +56,13 @@ import {
   type BuildChatSessionOptions,
   type BuiltChatSession,
   type BuiltResumedChatSession,
+  type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { createModelCatalogPort, type ModelCatalogPort } from '../engine/model-catalog-port.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { loadUserPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
-import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
+import { mcpSkippedLines, surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { CliError } from '../process/errors.js';
@@ -401,6 +402,29 @@ export const defaultReplLifecycle: ReplLifecycle = {
   exit: (code) => process.exit(code),
 };
 
+/**
+ * The CURRENT interactive session's notice sink — its view-store `notice`, set by {@link driveOneSession} for the
+ * lifetime of each session and cleared in its finally (2.6.F Step 4b-3 Sonnet review). A REPL runs exactly ONE session
+ * at a time per process, so this file-private pointer is that session, singular. A session-side callback that fires
+ * MID-session (the budget-cap warning; a re-drive's MCP-skipped diagnostic) must route through it so its message lands
+ * in the transcript — a raw `io.writeErr` would print onto the hoisted ALT buffer, where ink's next frame overwrites it
+ * and it is lost when the buffer is torn down (the default full-screen path). Absent (pre-loop / between swaps /
+ * non-interactive) ⇒ the raw-`io` fallback on the primary buffer, exactly as before.
+ */
+let liveSessionNotice: ((text: string) => void) | undefined;
+
+/** Emit a session-side notice through the live view-store (renders in the transcript, survives the alt buffer) when a
+ *  session is live, else the raw-`io` fallback (primary buffer). */
+function emitLiveNotice(io: CliIo, text: string): void {
+  if (liveSessionNotice !== undefined) liveSessionNotice(text);
+  else io.writeErr(`${text}\n`);
+}
+
+/** The budget-cap warning line (formatted once, routed through {@link emitLiveNotice} at all four wiring sites). */
+function budgetWarningText(warning: ChatBudgetWarning): string {
+  return `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached`;
+}
+
 export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps): Promise<ExitCode> {
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
@@ -433,10 +457,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     mcpSecretResolver,
     mcpRegistrations: config.mcpServers,
     ...(resolvePrice === undefined ? {} : { resolvePrice }),
-    onBudgetWarning: (warning) =>
-      deps.io.writeErr(
-        `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-      ),
+    onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
   });
   // The session now OWNS the live MCP connections (built.closeMcp). `runReplLoop`'s finally is the steady-state
   // teardown, but the build→loop window (opening history.db can throw) runs first — guard it so a pre-loop fault
@@ -593,10 +614,7 @@ export async function chatResumeCommand(
       mcpSecretResolver,
       mcpRegistrations: config.mcpServers,
       resolvePrice,
-      onBudgetWarning: (warning) =>
-        deps.io.writeErr(
-          `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-        ),
+      onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
     });
     closeMcp = resumed.closeMcp;
     surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
@@ -1245,8 +1263,10 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
   });
-  surfaceMcpSkipped(deps.io, built.mcpSkipped);
   const store = createChatStore(deps.global.color);
+  // A re-drive (`/clear`/reseat) runs INSIDE the hoisted alt buffer, so the MCP-skipped diagnostic routes to the fresh
+  // session's transcript (`store.notice`) rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3).
+  for (const line of mcpSkippedLines(built.mcpSkipped)) store.notice(line);
   let persister: SessionPersister;
   try {
     persister = createSessionPersister({
@@ -1335,10 +1355,7 @@ function createClearRebuild(params: {
     opened: params.opened,
     buildSession: params.buildSession,
     altScreen: params.altScreen,
-    onBudgetWarning: (warning) =>
-      params.io.writeErr(
-        `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-      ),
+    onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
   };
   return (oldSessionId) => buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId));
 }
@@ -1450,7 +1467,6 @@ async function buildReseatWiring(
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
   });
-  surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
   let seeded: { store: ChatStoreController; persister: SessionPersister };
   try {
     seeded = seedResumedWiring(resumed, deps.opened, deps.global.color, deps.now, deps.uuid);
@@ -1460,6 +1476,9 @@ async function buildReseatWiring(
     await resumed.closeMcp?.().catch(() => undefined);
     throw err;
   }
+  // A reseat re-drive runs INSIDE the hoisted alt buffer — route the MCP-skipped diagnostic to the reseated session's
+  // transcript rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3 Sonnet review).
+  for (const line of mcpSkippedLines(resumed.mcpSkipped)) seeded.store.notice(line);
   const doctorProbes = assembleDoctorProbes({
     cwd: deps.global.cwd,
     ...(deps.configPath === undefined ? {} : { configPath: deps.configPath }),
@@ -1523,10 +1542,7 @@ function createReseatRebuild(params: {
     opened: params.opened,
     buildResumedSession: params.buildResumedSession,
     altScreen: params.altScreen,
-    onBudgetWarning: (warning) =>
-      params.io.writeErr(
-        `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-      ),
+    onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
   };
   return (oldSessionId, target) => buildReseatWiring(wiringDeps, oldSessionId, target);
 }
@@ -1604,6 +1620,10 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
   // is deferred to startSession() INSIDE the driver, after the driver has subscribed the view store.
   try {
     persister.start();
+    // Point the live-notice sink at THIS session's view store for its lifetime (2.6.F Step 4b-3 Sonnet review): a
+    // mid-session `onBudgetWarning` then renders in the transcript (surviving the alt buffer) instead of a raw
+    // io.writeErr the hoisted alt buffer would discard. Cleared in the finally so it never outlives the session.
+    liveSessionNotice = (text) => store.notice(text);
     const outcome = await (deps.drive ?? drivePlain)({
       startSession,
       processLine,
@@ -1638,6 +1658,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     // A `/models` reseat attaches the captured target here (the one place holding the line handler); see the helper.
     return finalizeReseatOutcome(outcome, reseatTarget);
   } finally {
+    liveSessionNotice = undefined; // the session is ending — never route a notice to a torn-down store
     cancelOnce(); // emit the terminal even on /exit, /clear, or EOF (idempotent); flips the row to 'ended'
     // Attempt EVERY teardown step (a reject in one must not skip the next) and never let a cleanup fault mask the
     // outcome — each is best-effort, surfacing a warning rather than throwing. MCP tears down LAST, AFTER the
