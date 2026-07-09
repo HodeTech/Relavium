@@ -9,6 +9,7 @@ import type {
   TranscriptEntry,
   TurnSummary,
 } from './session-view-model.js';
+import type { ScrollGeometry } from './scroll.js';
 import { wrapText, type DisplayLine } from './viewport.js';
 
 /**
@@ -295,6 +296,25 @@ export function wrapTranscript(
     }
   }
   return lines;
+}
+
+/**
+ * The LIVE alt-screen scroll geometry for a scroll keypress (2.6.F Step 4b-2, [ADR-0068](../../../../docs/decisions/0068-full-screen-tui-renderer-ink7-harness.md) §c):
+ * the transcript wrapped at the CURRENT width for an up-to-the-tick `totalLines`, paired with the viewport's
+ * last-measured `height`. The owner reads this by wrapping the store's transcript AT the keypress (a rare, user-driven
+ * event — never per frame) so `reduceScroll` sees the freshest bottom, rather than the `onMeasure`-lifted geometry ref
+ * which lags by up to one commit: a burst of streamed lines landing between a commit and its post-commit measure
+ * effect would leave the ref's `totalLines` UNDER-counted, and `settle` would then resume-follow against that stale
+ * (too-small) bottom — yanking a paused reader to the tail on a single PgDn (Step-4b-2 Sonnet review). The `height`
+ * lag is benign by contrast: it only changes on a resize / live-region reflow (which re-renders + re-measures), and
+ * the viewport re-clamps the window against its own fresh `props.lines.length` regardless.
+ */
+export function liveScrollGeometry(
+  transcript: readonly TranscriptEntry[],
+  cols: number,
+  measuredHeight: number,
+): ScrollGeometry {
+  return { totalLines: wrapTranscript(transcript, cols).length, height: measuredHeight };
 }
 
 /** The in-flight busy line: its text plus whether it renders as a DIM, truncate-end STATUS line (compaction /

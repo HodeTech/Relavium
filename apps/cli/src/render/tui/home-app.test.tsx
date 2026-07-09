@@ -1,7 +1,9 @@
 import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
+import type { ModelCatalogEntry } from '@relavium/llm';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { ReseatTarget } from '../../commands/chat.js';
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
@@ -12,6 +14,7 @@ import {
   createHomeController,
   type HomeChatSession,
   type HomeController,
+  type HomeModelsPort,
 } from './home-controller.js';
 
 /**
@@ -62,15 +65,46 @@ const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({
   timestamp,
 });
 
-/** A minimal in-Home chat session fake — only the fields the controller reads on the paste / timer paths. */
-function makeSession(store: ChatStoreController): HomeChatSession {
+/** A minimal in-Home chat session fake — only the fields the controller reads on the paste / timer paths. The
+ *  `sessionId` is parameterized so a `/models` reseat fake can hand back a DIFFERENT session object that keeps the
+ *  SAME id (the reseat invariant the scroll-reset test discriminates against). */
+function makeSession(store: ChatStoreController, sessionId = 'sess-fake'): HomeChatSession {
   return {
     store,
-    sessionId: 'sess-fake',
+    sessionId,
     processLine: async () => {},
     shouldStop: () => false,
     stopReason: () => 'exit',
     teardown: () => Promise.resolve(),
+  };
+}
+
+/** A single-entry {@link HomeModelsPort} fake — just enough to open the in-Home `/models` picker and accept the one
+ *  model (which triggers a live reseat when `reseatChat` is wired). Mirrors the fuller fake in home-controller.test.ts. */
+function makeModelsPort(
+  modelId: string,
+  provider: ModelCatalogEntry['provider'] = 'anthropic',
+): HomeModelsPort {
+  const entry: ModelCatalogEntry = {
+    modelId,
+    provider,
+    displayName: modelId,
+    pricingSource: 'registry',
+    priceKnown: true,
+    available: true,
+    deprecated: false,
+    supportsReasoning: false,
+  };
+  let written: string | undefined;
+  return {
+    load: () => ({ entries: [entry], refreshedAt: undefined }),
+    refreshIfStale: () => Promise.resolve(undefined),
+    refresh: () => Promise.resolve({ providers: [] }),
+    currentDefault: () => written,
+    currentEffort: () => undefined,
+    writeDefault: (id) => {
+      written = id;
+    },
   };
 }
 
@@ -88,13 +122,20 @@ interface MountedHome {
  *  subscription is captured (not stubbed inert) so the re-measure wiring can be exercised. */
 function mountHome(
   store: ChatStoreController,
-  opts: { alternateScreen?: boolean } = {},
+  opts: {
+    alternateScreen?: boolean;
+    startChat?: () => Promise<HomeChatSession>;
+    reseatChat?: (sessionId: string, target: ReseatTarget) => Promise<HomeChatSession>;
+    models?: HomeModelsPort;
+  } = {},
 ): MountedHome {
   let onResize: () => void = () => {};
   let size = { cols: 100, rows: 30 };
   const c = createHomeController({
     doctorProbes: STUB_DOCTOR_PROBES,
-    startChat: () => Promise.resolve(makeSession(store)),
+    startChat: opts.startChat ?? (() => Promise.resolve(makeSession(store))),
+    ...(opts.reseatChat !== undefined ? { reseatChat: opts.reseatChat } : {}),
+    ...(opts.models !== undefined ? { models: opts.models } : {}),
     homeStore,
     onExit: vi.fn(),
     onError: vi.fn(),
@@ -266,9 +307,83 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     await press('\x1b[5~');
     expect(frame()).not.toContain('HMSG59'); // scrolled up off the tail (the RootApp keymap paused follow)
 
+    await press('\x1b[6~'); // PgDn once — moves down a page but NOT yet to the tail
+    expect(frame()).not.toContain('HMSG59'); // STILL paused mid-page: a partial page-down must not resume follow
+
     await press('\x1b[6~'); // PgDn
     await press('\x1b[6~');
-    await press('\x1b[6~');
-    expect(frame()).toContain('HMSG59'); // back at the tail (following resumed)
+    expect(frame()).toContain('HMSG59'); // back at the tail (following resumed on reaching the bottom)
+  });
+
+  it('does NOT scroll the transcript while a keyboard-owning overlay is open (the noOverlay gate, Step 4b-2)', async () => {
+    // The scroll interception is gated on `noOverlay` so a PgUp/PgDn while the `/` palette (or any overlay) owns the
+    // keyboard reaches the OVERLAY, never the transcript scroll reducer — else opening the palette and paging would
+    // silently pause tail-follow behind the overlay. Following the tail, open the palette, then PgUp: the tail must
+    // STAY put (the key went to the palette, not the viewport) and the palette must still be open.
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.appendUser(`HMSG${i}`);
+    const { c, harness } = mountHome(store, { alternateScreen: true });
+    await enterChat(c);
+    const frame = (): string => harness.lastFrame() ?? '';
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 4; i += 1) await flush();
+    };
+    await waitFor(() => frame().includes('HMSG59'));
+    await settle();
+    expect(frame()).toContain('HMSG59'); // following the tail
+
+    c.handleKey('/', {}); // open the `/` command palette — it now owns the keyboard
+    await settle();
+    expect(c.getSnapshot().palette).toBeDefined();
+
+    harness.stdin.write('\x1b[5~'); // PgUp — must be consumed by the palette, NOT the transcript scroll keymap
+    await settle();
+    expect(c.getSnapshot().palette).toBeDefined(); // the palette still owns the keyboard
+    expect(frame()).toContain('HMSG59'); // the transcript did NOT scroll (follow was never paused behind the overlay)
+  });
+
+  it('re-follows the tail across a /models reseat that PRESERVES the sessionId (object-identity reset, Step 4b-2 Sonnet)', async () => {
+    // A `/models` reseat keeps the SAME sessionId across the swap (the reseated session adopts the durable row) but
+    // hands back a NEW session OBJECT. The scroll-reset effect must key on that object identity, NOT the durable id —
+    // else a scrolled-away transcript stays frozen after a live model switch. Scroll up off the tail, reseat, and the
+    // view must re-follow. (A sessionId-keyed effect would MISS this — same id in, same id out — so this discriminates.)
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.appendUser(`HMSG${i}`);
+    const sessionA = makeSession(store, 'sess-A');
+    const sessionB = makeSession(store, 'sess-A'); // reseat: DIFFERENT object, SAME sessionId, SAME transcript store
+    const reseatChat = vi.fn(() => Promise.resolve(sessionB));
+    const { c, harness } = mountHome(store, {
+      alternateScreen: true,
+      startChat: () => Promise.resolve(sessionA),
+      reseatChat,
+      models: makeModelsPort('claude-opus-4-8'),
+    });
+    await enterChat(c);
+    const frame = (): string => harness.lastFrame() ?? '';
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 4; i += 1) await flush();
+    };
+    await waitFor(() => frame().includes('HMSG59'));
+    await settle();
+
+    harness.stdin.write('\x1b[5~'); // PgUp
+    await settle();
+    harness.stdin.write('\x1b[5~');
+    await settle();
+    expect(frame()).not.toContain('HMSG59'); // scrolled up off the tail (follow paused)
+
+    // Drive the in-Home /models reseat via the controller (deterministic): `/` → filter `models` → run → accept.
+    c.handleKey('/', {});
+    for (const ch of 'models') c.handleKey(ch, {});
+    c.handleKey('', { return: true });
+    await settle();
+    expect(c.getSnapshot().modelPicker).toBeDefined(); // the picker opened in-chat
+    c.handleKey('', { return: true }); // accept the only model → live reseat
+    await waitFor(() => c.getSnapshot().session === sessionB);
+    await settle();
+
+    expect(reseatChat).toHaveBeenCalledTimes(1);
+    expect(c.getSnapshot().session?.sessionId).toBe('sess-A'); // the reseat PRESERVED the id (the trap the fix survives)
+    expect(frame()).toContain('HMSG59'); // the view RE-FOLLOWED the tail after the swap (object-identity reset fired)
   });
 });

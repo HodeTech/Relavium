@@ -103,6 +103,7 @@ import {
   formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
+  liveScrollGeometry,
   reasoningLabelActive,
   sanitizeApprovalReason,
   sanitizeInline,
@@ -1136,7 +1137,16 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     if (props.alternateScreen === true) {
       const motion = scrollMotionForKey(key);
       if (motion !== undefined) {
-        applyScroll(reduceScroll(scrollRef.current, motion, scrollGeomRef.current));
+        // Reduce against LIVE geometry: wrap the store's CURRENT transcript at the keypress (rare, user-driven) for
+        // a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream burst makes
+        // `settle` resume-follow against a stale bottom (Step-4b-2 Sonnet review). `props.store` is a stable prop, so
+        // its snapshot is read fresh here regardless of any coalesced-chunk closure staleness.
+        const geom = liveScrollGeometry(
+          props.store.getSnapshot().state.transcript,
+          windowSize.columns,
+          scrollGeomRef.current.height,
+        );
+        applyScroll(reduceScroll(scrollRef.current, motion, geom));
         return;
       }
     }

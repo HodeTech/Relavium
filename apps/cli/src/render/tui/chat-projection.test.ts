@@ -12,6 +12,7 @@ import {
   formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
+  liveScrollGeometry,
   MAX_APPROVAL_REASON_CHARS,
   MAX_REASONING_PANEL_LINES,
   reasoningLabelActive,
@@ -815,6 +816,29 @@ describe('chat-projection', () => {
       ];
       const styles = wrapTranscript(entries, 80).map((l) => l.style);
       expect(styles).toEqual(['user', 'assistant', 'summary', 'notice']);
+    });
+  });
+
+  describe('liveScrollGeometry (2.6.F Step 4b-2 — fresh keypress geometry, ADR-0068 §c)', () => {
+    it('reports totalLines as the CURRENT wrapped count + carries the measured height through', () => {
+      const entries: TranscriptEntry[] = [
+        { role: 'user', text: 'one' },
+        { role: 'user', text: 'two' },
+        { role: 'user', text: 'three' },
+      ];
+      // Each short user entry is one wrapped line at width 80 → totalLines === entry count; height passes through.
+      expect(liveScrollGeometry(entries, 80, 12)).toEqual({ totalLines: 3, height: 12 });
+      // The count is the WRAPPED count, not the entry count: a line wider than cols wraps to multiple rows.
+      const long: TranscriptEntry[] = [{ role: 'user', text: 'x'.repeat(30) }];
+      expect(liveScrollGeometry(long, 10, 8)).toEqual({
+        totalLines: wrapTranscript(long, 10).length,
+        height: 8,
+      });
+      expect(liveScrollGeometry(long, 10, 8).totalLines).toBeGreaterThan(1); // it genuinely wrapped
+    });
+
+    it('is empty-safe (a fresh session before any entry lands)', () => {
+      expect(liveScrollGeometry([], 80, 24)).toEqual({ totalLines: 0, height: 24 });
     });
   });
 });

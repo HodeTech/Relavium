@@ -39,21 +39,24 @@ const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme
 
 /**
  * Terminal display width of ONE grapheme cluster in cells. A cluster renders as a single glyph: an emoji-presentation
- * cluster (one that carries VS16 `U+FE0F` or the enclosing keycap `U+20E3`, or whose base is a wide/emoji code point)
- * is 2 cells; a base + combining marks is the base's width; a zero-width-only cluster is 0. Biased so it NEVER
- * UNDER-counts vs a terminal (an under-count would make a wrapped line wider than `cols`, so ink re-wraps it to 2 real
- * rows and the viewport clips the tail — the load-bearing 1-DisplayLine-==-1-real-row invariant, ADR-0068 §c).
+ * cluster (one that carries VS16 `U+FE0F` or the enclosing keycap `U+20E3` OVER a base, or whose base is a wide/emoji
+ * code point) is 2 cells; a base + combining marks is the base's width; a zero-width-only cluster is 0. Biased so it
+ * NEVER UNDER-counts vs a terminal (an under-count would make a wrapped line wider than `cols`, so ink re-wraps it to 2
+ * real rows and the viewport clips the tail — the load-bearing 1-DisplayLine-==-1-real-row invariant, ADR-0068 §c).
  */
 function graphemeWidth(cluster: string): number {
   let base = 0;
   let emojiPresentation = false;
   for (const ch of cluster) {
     const cp = ch.codePointAt(0) ?? 0;
-    if (cp === 0xfe0f || cp === 0x20e3) emojiPresentation = true; // VS16 / enclosing keycap ⇒ renders as 2 cells
+    if (cp === 0xfe0f || cp === 0x20e3) emojiPresentation = true; // VS16 / enclosing keycap ⇒ forces 2 cells (on a base)
     const w = codePointWidth(cp);
     if (w > base) base = w; // the widest constituent (a wide/emoji base survives its combining/joiner code points)
   }
-  return emojiPresentation ? 2 : base;
+  // The VS16/keycap width-2 override applies only when there IS a base: a DEGENERATE lone selector cluster (a stray
+  // `U+FE0F`/`U+20E3` that `Intl.Segmenter` returns as its own cluster with nothing to attach to) renders as 0 cells,
+  // like ink — forcing it to 2 would over-count that cluster (Step-4b-2 Sonnet review).
+  return emojiPresentation && base > 0 ? 2 : base;
 }
 
 /**

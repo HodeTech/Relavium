@@ -198,6 +198,22 @@ perf thresholds for the full-screen frame loop.
 > caps-lift + true virtualization + `DEFAULT_ALT_SCREEN`→`true`; **Step 5**: mouse-wheel scroll (reuses this same
 > viewport scroll + follow actions). Resolves the §e force-scroll deferred item by design.
 
+> **Amended 2026-07-09 (Step 4b-2 Sonnet-review fold).** Three verified fixes on top of the 4b-2 landing: **(a)** the
+> Home's scroll-reset effect now keys on the **session OBJECT identity** (`state.session`), not the durable `sessionId`
+> string — a `/models` reseat deliberately PRESERVES the id across the swap, so an id-keyed effect missed it and left a
+> scrolled-away transcript frozen after a live model switch; **(b)** the scroll keymap now reduces against **live
+> geometry read at the keypress** (`liveScrollGeometry` wraps the store's current transcript for a fresh `totalLines`)
+> instead of the `onMeasure` ref, which lags by up to a commit — a mid-stream burst landing between a commit and its
+> measure effect would let `settle` resume-follow against a stale (undercounted) bottom and yank a paused reader to the
+> tail on a single PgDn (the height lag stays benign — it changes only on resize, which re-renders + re-measures);
+> **(c)** `graphemeWidth`'s VS16/keycap width-2 override is now gated on a **base** (`base > 0`) so a DEGENERATE lone
+> variation-selector / keycap cluster counts 0 cells (as ink renders it), not an over-counting 2. Added the mounted
+> regression coverage the fold-round flagged as missing: a **`/models` reseat re-follow** pin (object-identity
+> discriminator), the **overlay scroll-gate** on both surfaces (a scroll key behind an open `/` palette reaches the
+> overlay, never the transcript), and the **paused-mid-page boundary** at the mount (a partial page-down does not
+> resume follow). The canonical render-mode docs (home.md / chat-session.md / config-spec.md `alt_screen` caveat) were
+> reconciled to reflect that scroll-back + auto-follow shipped at 4b-2.
+
 ## Consequences
 
 ### Positive

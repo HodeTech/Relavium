@@ -5,7 +5,7 @@ import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/rep
 import type { PendingAttachment } from './attachments.js';
 import { ChatView } from './chat-ink.js';
 import type { EditorState } from './chat-input.js';
-import { sanitizeInline } from './chat-projection.js';
+import { liveScrollGeometry, sanitizeInline } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
 import { HomeView } from './home-view.js';
@@ -168,11 +168,16 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
 
   // Reset the scroll to the TAIL when the chat SESSION changes — a fresh chat, a `/clear` swap, or a `/models` reseat
   // (RootApp is NOT remounted across a swap the way driveInk remounts ChatApp, so without this a new session would
-  // inherit the prior one's frozen offset). Leaving chat (sessionId ⇒ undefined) also re-follows.
-  const sessionId = state.session?.sessionId;
+  // inherit the prior one's frozen offset). Keyed on the session OBJECT identity, NOT `sessionId`: a `/models` reseat
+  // deliberately PRESERVES the sessionId across the swap (the reseated session adopts the same durable row —
+  // home-controller `reseatChat`), so a string-keyed effect would MISS a reseat and leave a scrolled-away transcript
+  // frozen (Step-4b-2 Sonnet review). The controller carries `state.session` by reference across non-swap updates and
+  // mints a fresh object only on startChat/clearChat/reseatChat, so the object identity fires exactly on a swap.
+  // Entering chat (undefined ⇒ session) and leaving it (session ⇒ undefined) also re-follow.
+  const session = state.session;
   useEffect(() => {
-    applyScroll(INITIAL_SCROLL); // reset on the session-identity transition only (deps = [sessionId])
-  }, [sessionId]);
+    applyScroll(INITIAL_SCROLL); // reset on the session-object transition only (deps = [session]); applyScroll only
+  }, [session]); // touches render-stable refs + setState, so it is intentionally omitted from the deps.
 
   // In the alt-screen in-Home chat, PgUp/PgDn/Ctrl+Home/Ctrl+End SCROLL the transcript viewport (Step 4b-2) BEFORE
   // the key reaches the controller — inline mode keeps native scrollback, and a bare Home / a non-chat mode has no
@@ -192,7 +197,20 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     if (altChat) {
       const motion = scrollMotionForKey(key);
       if (motion !== undefined) {
-        applyScroll(reduceScroll(scrollRef.current, motion, scrollGeomRef.current));
+        // Reduce against LIVE geometry (parity with `ChatApp`): wrap the session store's CURRENT transcript at the
+        // keypress for a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream
+        // burst makes `settle` resume-follow against a stale bottom (Step-4b-2 Sonnet review). `altChat` already
+        // implies `state.session` is set; `getSnapshot()` reads the store fresh here regardless of closure staleness.
+        const store = state.session?.store;
+        const geom =
+          store === undefined
+            ? scrollGeomRef.current
+            : liveScrollGeometry(
+                store.getSnapshot().state.transcript,
+                size.cols,
+                scrollGeomRef.current.height,
+              );
+        applyScroll(reduceScroll(scrollRef.current, motion, geom));
         return;
       }
     }

@@ -251,11 +251,44 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     await press(PG_UP);
     expect(frame()).not.toContain('MSG59'); // scrolled up past the tail — the newest entry is off-screen
 
-    // PgDn three times back down to the bottom — RESUMES following, so the tail is pinned again.
+    // PgDn once — down a page but NOT yet to the bottom: a partial page-down must NOT resume follow.
+    await press(PG_DOWN);
+    expect(frame()).not.toContain('MSG59'); // still paused mid-page (the following↔paused boundary at the mount)
+
+    // PgDn back down to the bottom — RESUMES following, so the tail is pinned again.
     await press(PG_DOWN);
     await press(PG_DOWN);
-    await press(PG_DOWN);
-    expect(frame()).toContain('MSG59'); // back at the tail (following resumed)
+    expect(frame()).toContain('MSG59'); // back at the tail (following resumed on reaching the bottom)
+  });
+
+  it('does NOT scroll the transcript while the `/` palette owns the keyboard (overlay gate parity, Step 4b-2)', async () => {
+    // Parity with the Home `noOverlay` gate: in `ChatApp` the overlays `return` ABOVE the scroll interception, so a
+    // PgUp while the `/` palette is open reaches the PALETTE, never the transcript scroll reducer — else opening the
+    // palette and paging would silently pause tail-follow behind the overlay. Following the tail, open the palette
+    // (filtered to no match so it stays short), then PgUp: the tail must STAY put and the palette must stay open.
+    const h = render(chatApp(seed(60)));
+    const frame = (): string => h.lastFrame() ?? '';
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 4; i += 1) await flush();
+    };
+    setWindowSize(h.stdout, 80, 24);
+    await waitFor(() => frame().includes('MSG59'));
+    await settle();
+    expect(frame()).toContain('MSG59'); // following the tail
+
+    h.stdin.write('/'); // open the `/` command palette
+    await settle();
+    for (const ch of 'zzz') {
+      h.stdin.write(ch); // filter to NO match → the palette stays open but short (leaves the viewport tall)
+      await settle();
+    }
+    expect(frame()).toContain('Enter run'); // the palette overlay is open (its nav hint is on-screen)
+    expect(frame()).toContain('MSG59'); // still following the tail
+
+    h.stdin.write('\x1b[5~'); // PgUp — must be consumed by the palette, NOT the transcript scroll keymap
+    await settle();
+    expect(frame()).toContain('Enter run'); // the palette still owns the keyboard
+    expect(frame()).toContain('MSG59'); // the transcript did NOT scroll (follow was never paused behind the overlay)
   });
 
   it('Ctrl+Home jumps to the TOP (pauses follow), Ctrl+End resumes the tail (Step 4b-2)', async () => {

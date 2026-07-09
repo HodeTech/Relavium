@@ -53,6 +53,13 @@ describe('displayWidth (2.6.F Step 4b, ADR-0068 §c)', () => {
     expect(displayWidth('\u{1F1F9}\u{1F1F7}')).toBe(2); // regional-indicator flag 🇹🇷 (a two-code-point pair, one glyph)
   });
 
+  it('a DEGENERATE lone variation-selector / keycap cluster is 0 cells — not forced to 2 (Step-4b-2 Sonnet fix)', () => {
+    // A stray VS16 / enclosing-keycap that `Intl.Segmenter` returns as its OWN cluster (no base to attach to) renders
+    // as 0 cells, like ink. The VS16/keycap width-2 override must be gated on a base, else it over-counts the stray.
+    expect(displayWidth('\u{FE0F}')).toBe(0); // lone VS16, no base
+    expect(displayWidth('\u{20E3}')).toBe(0); // lone enclosing keycap, no base
+  });
+
   it('BMP default-emoji-presentation singletons are 2 (as ink renders them) — text symbols stay 1 (Step-4b-2 Opus fix)', () => {
     // ✅❌⭐⚡✨❗➕⌚⛄✋ render 2 in a terminal WITHOUT a VS16 selector (Emoji_Presentation=Yes) — the per-code-point
     // table under-counted them to 1, drifting the scroll offset. Now 2.
