@@ -295,7 +295,7 @@ render-v2 (2.6.M) all build on it.
 
 - **Node dev/CI bump now**: `.nvmrc` 22 → 24 (Active LTS) — one line, non-breaking, no ADR.
 - **Supported-floor decision** *(maintainer decision, recommended: take it early in-phase)*: raise the
-  published floor 20.12 → `>=22` — a SemVer-major for `relavium` that restores `better-sqlite3` prebuild
+  published floor 20.12 → `>=22` — a breaking release for `relavium` (pre-1.0 → a 0.x MINOR bump, e.g. `0.2.0`, per [ADR-0067](../../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)) that restores `better-sqlite3` prebuild
   coverage (Node 20 is EOL) and unlocks ink 7 / `node:sqlite` / eslint 10 / vitest 5. Full analysis:
   [node-runtime-upgrade.md](node-runtime-upgrade.md). This **supersedes
   [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)** → its own governed PR behind a
@@ -333,7 +333,7 @@ render-v2 (2.6.M) all build on it.
 
 **Acceptance:** bare `relavium` on a TTY opens the full-screen Home; scroll + auto-follow work; the
 `--json` / CI / non-TTY paths are byte-identical to today (harness-proven); the floor-bump ADR is Accepted
-and released as a SemVer-major with migration notes; the component harness runs in CI with at least the
+and released as a breaking 0.x MINOR bump (e.g. `0.2.0`, per ADR-0067) with migration notes; the component harness runs in CI with at least the
 frozen-clock regression pinned. **Required ADRs:** the ADR-0021-superseding floor ADR + a full-screen
 renderer & TUI-harness ADR.
 

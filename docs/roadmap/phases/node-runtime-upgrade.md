@@ -6,6 +6,10 @@
 > re-affirmed (node:sqlite still rejected — RC + no `drizzle-kit` adapter + breaks the 2.5.I busy-retry).
 > Options **A** (dev/CI bump) and **B** (floor bump) were shipped together in that Step. `vitest` 5 /
 > `eslint` 10 remain deferred to their own PRs (§5/§8).
+> **Version framing correction:** the analysis body below calls the floor bump a "SemVer-major"; ADR-0067
+> refined this — `relavium` is **pre-1.0** (v0.1.x), so under SemVer §4 the breaking floor change is a
+> **0.x MINOR** bump (e.g. `0.2.0`), not a 1.0.0 major. Read every "SemVer-major" below as "breaking 0.x
+> MINOR release".
 >
 > Snapshot date: **2026-07-05.** Every version/EOL number below is a point-in-time fact from that
 > day (live web + [`endoflife.date/nodejs`](https://endoflife.date/nodejs) + npm/GitHub). Node

@@ -127,6 +127,14 @@ jobs:
     name: node floor (22.0.0) · typecheck · test · build
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Fully isolate this job from the shared Turbo remote cache. Turbo's task hash does NOT include the
+    # runtime Node version, so floor-check (Node 22) and the required `ci` job (Node 24) share a hash —
+    # either could replay the other's cached result and mask a version-specific failure. `--force` (below)
+    # stops floor-check READING the shared cache; blanking the inherited workflow-level tokens here stops it
+    # WRITING into it, so the required `ci` job can never replay a Node-22 result as Node-24-proven.
+    env:
+      TURBO_TOKEN: ''
+      TURBO_TEAM: ''
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -140,9 +148,9 @@ jobs:
       - name: Install (frozen lockfile — better-sqlite3 must resolve a prebuild, not source-build)
         run: pnpm install --frozen-lockfile
       - name: Typecheck, test, build on the exact floor
-        # --force bypasses the shared Turbo (remote) cache so this genuinely RE-RUNS on Node 22 rather than
-        # replaying a cache hit produced by the Node-24 `ci` job (Turbo's task hash does not include the Node
-        # version) — otherwise the floor gate would be a silent false-green.
+        # `--force` = no cache READ (genuine Node-22 run, not a Node-24 replay); the job-level blanked
+        # TURBO_TOKEN/TURBO_TEAM above = no cache WRITE (so `ci` never replays this Node-22 result). Both are
+        # needed — see the job-level comment.
         run: pnpm turbo run typecheck test build --force
 
   # CI-only strict peer-dependency gate (.npmrc keeps this OFF for local installs so fresh
