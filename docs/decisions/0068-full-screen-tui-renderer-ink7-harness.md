@@ -158,6 +158,20 @@ perf thresholds for the full-screen frame loop.
 > buy flakiness, not signal. Frame assertions poll (`waitFor`) rather than assume a single macrotask yield, because
 > React 19's commit can be deferred past one yield under parallel-file CPU contention.
 
+> **Amended 2026-07-09 (Step 4a landed).** The alt-screen renderer's **lifecycle substrate** shipped:
+> `resolveRenderMode` (`apps/cli/src/render/render-mode.ts`) resolving `alt | inline` with precedence
+> machine/non-TTY → `--no-alt-screen` flag → `[preferences].alt_screen` → phase default (`DEFAULT_ALT_SCREEN`, the
+> **single** flip-point for §b); the `--no-alt-screen` global flag + the `[preferences].alt_screen` config key; ink 7's
+> native `alternateScreen` wired into **both** mount sites (the bare Home's `driveHome` + `relavium chat`'s `driveInk`);
+> the §c unmount-before-summary order (extracted to the unit-tested `finalizeInkExit`); and the byte-identical
+> machine/non-TTY inline guarantee. **`DEFAULT_ALT_SCREEN` is `false` at 4a — alt-screen is OPT-IN** (via the config
+> key) until the viewport lands. **Deferred to Step 4b/5** (§b–§e): the hand-built transcript **viewport + scroll +
+> auto-follow**, the **caps-lift** (renderer-injected bound), **row measurement**, the approval **force-scroll
+> override**, resize re-clamp, the `[`-dump / `v`-open-in-`$EDITOR` **escape hatches**, **DEC-2026 synchronized
+> output**, the **branded banner**, and **mouse-wheel** scroll — after which `DEFAULT_ALT_SCREEN` flips to `true`
+> (alt-on with the `--no-alt-screen` opt-out). Until then, enabling `alt_screen` is a preview (no scrollback, no
+> hatches — see config-spec.md's caveat).
+
 ## Consequences
 
 ### Positive

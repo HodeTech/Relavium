@@ -554,6 +554,69 @@ describe('chatCommand', () => {
     expect(closeCount).toBe(1); // the SHARED db handle closed exactly ONCE across the swap (not per session)
   });
 
+  it('the [preferences].alt_screen preference SURVIVES a /clear re-drive (Step-4a threading regression, ADR-0068 §e)', async () => {
+    // The fabricated-outcome driver bypasses driveInk, so `ctx.altScreen` here is the raw threaded config pref (not
+    // the resolved mode) — exactly what pins the wiring: config.altScreen must reach BOTH the initial AND the
+    // /clear-rebuilt session. Before the Opus fix, buildFreshChatWiring dropped it → the second ctx read undefined.
+    const { d, store } = deps([], [textTurn('hi there')]);
+    const cfg = join(cwd, 'alt-clear.toml');
+    writeFileSync(cfg, '[preferences]\nalt_screen = true\n');
+    const alts: (boolean | undefined)[] = [];
+    let call = 0;
+    const clearThenExit: ChatDriver = async (ctx) => {
+      alts.push(ctx.altScreen); // capture on both the original + the rebuilt session
+      ctx.startSession();
+      if (call++ === 0) {
+        await ctx.processLine('hello');
+        return { kind: 'clear' };
+      }
+      await ctx.processLine('/exit');
+      return { kind: 'exit' };
+    };
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        global: { ...globalOptions(cwd), configPath: cfg },
+        openSessionStore: () => ({ store, db: client.db, close: () => undefined }),
+        drive: clearThenExit,
+      },
+    );
+    expect(alts).toEqual([true, true]); // NOT [true, undefined] — the /clear rebuild keeps the preference
+  });
+
+  it('the [preferences].alt_screen preference SURVIVES a /models reseat re-drive (Step-4a threading regression, ADR-0068 §e)', async () => {
+    const { d } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
+    seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
+    const cfg = join(cwd, 'alt-reseat.toml');
+    writeFileSync(cfg, '[preferences]\nalt_screen = true\n');
+    const interactiveIo = { ...d.io, stdoutIsTty: true }; // a reseat is TTY-interactive only (onReseat wired)
+    const alts: (boolean | undefined)[] = [];
+    let call = 0;
+    const reseatThenExit: ChatDriver = async (ctx) => {
+      alts.push(ctx.altScreen);
+      ctx.startSession();
+      if (call++ === 0) {
+        await ctx.processLine('first');
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+        return { kind: ctx.stopReason() }; // 'reseat'
+      }
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        io: interactiveIo,
+        global: { ...globalOptions(cwd), configPath: cfg },
+        drive: reseatThenExit,
+      },
+    );
+    expect(alts).toEqual([true, true]); // the reseat rebuild keeps the preference (buildReseatWiring threads it)
+  });
+
   it('/clear whose FRESH build fails surfaces the resumable prior session and ends cleanly (ADR-0062 §7)', async () => {
     const { d, err, store } = deps([], [textTurn('hi there')]);
     let builds = 0;

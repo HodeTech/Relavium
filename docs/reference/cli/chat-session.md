@@ -22,6 +22,8 @@ relavium chat --agent code-reviewer            # resolved inside .relavium/
 
 `relavium chat` opens an `ink`-rendered interactive REPL when a TTY is attached. The session is **auto-persisted and resumable** from the moment it starts — there is no separate save step (see [agent-session-spec.md](../contracts/agent-session-spec.md#validation-and-persistence)). Resume a prior conversation with `relavium chat-resume <sessionId>` and list past sessions with `relavium chat-list` (see [commands.md](commands.md)).
 
+The REPL renders in the default **inline** mode or the full-screen **alternate-screen** mode opted into with **`[preferences].alt_screen`** / forced off with **`--no-alt-screen`** ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e; the resolution is shared verbatim with the [Home](home.md)). A non-TTY / `--json` path is always inline (byte-identical). At 2.6.F Step 4a the alt screen is an opt-in preview — see [config-spec.md](../contracts/config-spec.md)'s `alt_screen` caveat.
+
 A chat also starts from the bare-invocation **Home** (2.5.B): typing a message at a bare `relavium` on a TTY graduates the Home into a chat in the **same** process — bound to the built-in default chat agent (the zero-config first run) — and returns to a freshly-read Home when the chat ends (the chat's exit code `4` is consumed by the Home loop, never leaked). The in-Home chat is the same REPL described here; see [home.md](home.md) for the Home shell, its TTY gate, and the signal/exit-code lifecycle.
 
 ## Agent and model selection

@@ -1364,7 +1364,11 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
       teardown: () => {
         clearInterval(frame);
         unsubscribe();
-        instance?.unmount();
+        try {
+          instance?.unmount(); // best-effort terminal restore (exits the alt screen) — a throw here must not mask
+        } catch {
+          // the outcome nor skip the SIGINT-listener removal below (parity with driveHome's guarded unmount).
+        }
         process.removeListener('SIGINT', onSigint);
       },
       // The persistent final summary — on any cooperative end (/exit, /cancel, Ctrl-C, external SIGINT), AFTER the
