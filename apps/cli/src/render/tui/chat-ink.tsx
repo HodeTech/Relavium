@@ -352,7 +352,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           {(entry, index) => <TranscriptLine key={index} entry={entry} color={color} />}
         </Static>
       ) : (
-        <TranscriptViewport lines={wrappedTranscript} color={color} initialHeight={viewport.rows} />
+        <TranscriptViewport lines={wrappedTranscript} color={color} />
       )}
 
       {/* The in-flight turn: tool annotations + the streaming assistant text + a spinner. A `!`-shell command in

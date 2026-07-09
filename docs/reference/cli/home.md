@@ -112,7 +112,7 @@ The Home receives a bracketed paste on **ink 7's native `usePaste` channel** (se
 
 ## Render mode (inline / alt-screen)
 
-The Home renders in one of two modes ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e): the default **inline** renderer (native scrollback, the screen-reader-friendly fallback), or the full-screen **alternate-screen** renderer opted into with **`[preferences].alt_screen`** ([config-spec.md](../contracts/config-spec.md)). The **`--no-alt-screen`** global flag ([commands.md](commands.md#global-options)) forces inline for one invocation, and a non-TTY / `--json` / CI path is **always** inline (byte-identical). At 2.6.F Step 4a the alt screen is an opt-in preview (no transcript viewport/scroll yet — see the config-spec caveat); the resolution is shared verbatim with `relavium chat` ([chat-session.md](chat-session.md)).
+The Home renders in one of two modes ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e): the default **inline** renderer (native scrollback, the screen-reader-friendly fallback), or the full-screen **alternate-screen** renderer opted into with **`[preferences].alt_screen`** ([config-spec.md](../contracts/config-spec.md)). The **`--no-alt-screen`** global flag ([commands.md](commands.md#global-options)) forces inline for one invocation, and a non-TTY / `--json` / CI path is **always** inline (byte-identical). At 2.6.F Step 4b-1 the alt screen renders the transcript through a tail-following, resize-tracked **viewport**, but scroll-back (PgUp/PgDn, Step 4b-2) is still pending — see the config-spec caveat; the resolution is shared verbatim with `relavium chat` ([chat-session.md](chat-session.md)).
 
 ## Minimum terminal size
 

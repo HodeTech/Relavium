@@ -1,5 +1,6 @@
 import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
 import { cleanup, render } from 'ink-testing-library';
+import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
@@ -189,23 +190,53 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     return store;
   };
 
+  const chatApp = (store: ChatStoreController): ReactElement => (
+    <ChatApp
+      store={store}
+      alternateScreen
+      onSubmit={async () => {}}
+      shouldStop={() => false}
+      onExit={() => {}}
+      onError={() => {}}
+      onModeChange={() => {}}
+    />
+  );
+
+  /** Force the harness's (otherwise environment-derived) window size to a DETERMINISTIC value + fire ink 7's resize
+   *  path, so `useWindowSize()` re-reads it — the harness `Stdout` has a hardcoded `columns` getter and NO `rows`
+   *  (ink would otherwise fall through to `terminal-size` → the real `/dev/tty`, making a row-count assertion
+   *  environment-dependent). Used to pin BOTH a stable size and the resize re-wrap/re-measure. */
+  const setWindowSize = (
+    stdout: ReturnType<typeof render>['stdout'],
+    cols: number,
+    rows: number,
+  ): void => {
+    Object.defineProperty(stdout, 'columns', { value: cols, configurable: true });
+    Object.defineProperty(stdout, 'rows', { value: rows, configurable: true });
+    stdout.emit('resize');
+  };
+
   it('follows the tail: shows recent entries, drops the overflow off the top, bounded to the terminal rows', async () => {
-    const { lastFrame } = render(
-      <ChatApp
-        store={seed(40)}
-        alternateScreen
-        onSubmit={async () => {}}
-        shouldStop={() => false}
-        onExit={() => {}}
-        onError={() => {}}
-        onModeChange={() => {}}
-      />,
-    );
-    const frame = (): string => lastFrame() ?? '';
+    const h = render(chatApp(seed(40)));
+    const frame = (): string => h.lastFrame() ?? '';
+    setWindowSize(h.stdout, 80, 24); // a deterministic 24-row terminal
     await waitFor(() => frame().includes('MSG39')); // the viewport measures + windows to the tail
     expect(frame()).toContain('MSG39'); // the newest entry is shown (following the tail)
     expect(frame()).not.toContain('MSG0'); // the oldest scrolled off the top — the alt buffer has no scrollback
     expect(frame().split('\n').length).toBeLessThanOrEqual(24); // virtualized — bounded to the terminal rows
+  });
+
+  it('re-wraps + re-bounds the viewport on a terminal RESIZE (ink 7 useWindowSize — the Step-4b-1 Opus fix)', async () => {
+    const h = render(chatApp(seed(40)));
+    const frame = (): string => h.lastFrame() ?? '';
+    setWindowSize(h.stdout, 80, 24);
+    await waitFor(() => frame().split('\n').length === 24); // settled at 24 rows
+    // Shrink the terminal: useWindowSize re-renders → the container re-bounds + the viewport re-measures to 10 rows.
+    setWindowSize(h.stdout, 80, 10);
+    await waitFor(() => frame().split('\n').length <= 10);
+    expect(frame().split('\n').length).toBeLessThanOrEqual(10); // re-bounded to the NEW rows (was 24)
+    expect(frame()).toContain('MSG39'); // still tail-following after the resize
+    expect(frame()).not.toContain('MSG0');
   });
 
   it('the INLINE renderer (no alternateScreen) keeps EVERY entry via <Static> — the mode discriminator', async () => {
@@ -217,18 +248,9 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
   });
 
   it('renders without crashing on an EMPTY transcript (the viewport has no rows, only the live region)', async () => {
-    const { lastFrame } = render(
-      <ChatApp
-        store={createChatStore(false)}
-        alternateScreen
-        onSubmit={async () => {}}
-        shouldStop={() => false}
-        onExit={() => {}}
-        onError={() => {}}
-        onModeChange={() => {}}
-      />,
-    );
-    const frame = (): string => lastFrame() ?? '';
+    const h = render(chatApp(createChatStore(false)));
+    const frame = (): string => h.lastFrame() ?? '';
+    setWindowSize(h.stdout, 80, 24);
     await waitFor(() => frame().includes('/ for commands')); // the idle hint (live region) renders
     expect(frame()).toContain('/ for commands'); // no crash; the prompt/footer are shown below the empty viewport
   });
@@ -239,18 +261,9 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
       '\n',
     );
     store.appendUser(big); // one user entry of 60 logical lines — taller than the ~20-row viewport
-    const { lastFrame } = render(
-      <ChatApp
-        store={store}
-        alternateScreen
-        onSubmit={async () => {}}
-        shouldStop={() => false}
-        onExit={() => {}}
-        onError={() => {}}
-        onModeChange={() => {}}
-      />,
-    );
-    const frame = (): string => lastFrame() ?? '';
+    const h = render(chatApp(store));
+    const frame = (): string => h.lastFrame() ?? '';
+    setWindowSize(h.stdout, 80, 24);
     await waitFor(() => frame().includes('LASTLINE'));
     expect(frame()).toContain('LASTLINE'); // the bottom of the over-tall entry (the tail)
     expect(frame()).not.toContain('FIRSTLINE'); // the top of the entry scrolled off — no scrollback

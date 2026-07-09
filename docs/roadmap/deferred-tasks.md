@@ -947,9 +947,11 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   bounds the whole tree to the terminal `rows` with the transcript viewport flex-growing above a FIXED live region
   (prompt / approval / warnings / footer). When the live region ALONE is taller than the terminal (a huge pasted
   multi-line prompt, or a big approval block + warnings on a short terminal), the viewport measures height ≤ 0 and
-  renders nothing (acceptable), but the fixed live region is then clipped by the `height={rows}` container — and the
-  alt buffer has no scrollback, so the top of the prompt/approval can be lost off-screen. Known limitation surfaced
-  by the Step-4b-1 Opus review; long-term give the live region its own bounded/scrollable box or a minimum viewport.
+  renders nothing (acceptable), but the fixed live region then overflows the `height={rows}` container — and the
+  observed failure mode is WORSE than a clean top-clip (Step-4b-1 Sonnet review, empirical): at `rows` 1–2 two
+  distinct fixed status lines visually MERGE onto one terminal row (character-level overlap), and at `rows` 3 a whole
+  fixed line (the compose prompt) silently vanishes — the alt buffer has no scrollback to reach the lost content.
+  Long-term give the live region its own bounded/scrollable box or guarantee the viewport a minimum height.
   *(low · apps/cli/src/render/tui/chat-ink.tsx ChatView layout)*
 - [ ] **Step 4b-2: harden `displayWidth` so it never UNDER-counts vs ink (grapheme-aware).** The pragmatic
   per-code-point `displayWidth` (viewport.ts) over-counts ZWJ emoji (safe) but can UNDER-count a composed

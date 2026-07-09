@@ -172,6 +172,19 @@ perf thresholds for the full-screen frame loop.
 > (alt-on with the `--no-alt-screen` opt-out). Until then, enabling `alt_screen` is a preview (no scrollback, no
 > hatches — see config-spec.md's caveat).
 
+> **Amended 2026-07-09 (Step 4b-1 landed).** The transcript **viewport** shipped for BOTH surfaces (the bare Home +
+> `relavium chat`): ink's `<Static>` is replaced on the alt screen by a `TranscriptViewport` that width-wraps the
+> transcript to display lines (`viewport.ts` `displayWidth`/`wrapText` — the row-measurement §c requires), renders
+> only the visible window via `measureElement`, **follows the tail** (an append pins to the bottom), and
+> **resize-tracks** (ink 7 `useWindowSize` on `relavium chat`, the resize-tracked size on the Home) so a SIGWINCH
+> re-wraps + re-measures. The inline renderer keeps `<Static>` + native scrollback unchanged. **Deferred to Step
+> 4b-2**: the scroll/auto-follow **keymap** (PgUp/PgDn/Ctrl+Home/End), the upward-scroll-pauses-follow state machine,
+> the approval/gate **force-scroll override**, and hardening `displayWidth` to never under-count vs ink (grapheme-
+> aware — load-bearing once a persisted scroll offset exists). **Deferred to Step 4b-3**: the **caps-lift** (the
+> renderer-injected unbounded transcript + true virtualization) + `DEFAULT_ALT_SCREEN`→`true`. **Deferred to Step 5**:
+> DEC-2026 synchronized output, the branded banner, the `[`/`v` escape hatches, and mouse-wheel. A known 4b-1 limit:
+> a live region taller than the terminal has no scrollback (deferred-tasks.md).
+
 ## Consequences
 
 ### Positive
