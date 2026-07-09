@@ -965,19 +965,20 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   UNDER-count class the emoji-presentation fix closed, only for rare glyphs no chat realistically emits. Safe-direction
   bias means over-counting is fine, so this is cosmetic. Fold the missing ranges into the deferred `Intl.Segmenter`/EAW
   wrap-cache hardening below rather than a one-off patch. *(low · apps/cli/src/render/tui/viewport.ts)*
-- [ ] **Step 4b-3: memoize per-logical-line wrap so a resize doesn't re-segment the whole transcript.** On a `cols`
-  change the `wrapTranscript` memo busts and re-runs `Intl.Segmenter` over the ENTIRE transcript (~33ms for 2000
-  wrapped lines, ~165ms at 10k — a visible hitch on resize for a very large transcript, Step-4b-2 Opus review).
-  Acceptable now (resize is rare + the transcript is still capped), but the 4b-3 caps-lift makes the transcript
-  unbounded — fold an LRU per-logical-line wrap cache (keyed on line + cols) into the 4b-3 virtualization so only
-  newly-appended / newly-wrapped lines re-segment. *(low · apps/cli/src/render/tui/{viewport.ts,chat-ink.tsx})*
-- [ ] **Step 4b: keep the alt buffer entered across a `/clear` / `/models`-reseat re-drive (inter-session flicker).**
-  `driveInk` mounts + unmounts ink **per session**, so a `/clear` or reseat swap unmounts (exits the alt buffer) and
-  the next re-drive re-enters it — the terminal briefly flips to the primary buffer and back, and the intro/
-  clearedNotice lands on primary in that window. Harmless at Step 4a (alt-screen is default OFF/opt-in), but it
-  becomes a **visible flicker once Step 4b flips `DEFAULT_ALT_SCREEN` to `true`**. When the viewport lands, evaluate
-  keeping the alt buffer entered across the re-drive (hoist the alt enter/exit above the per-session mount) or
-  wrapping the swap in DEC-2026 synchronized output. Surfaced by the Step-4a Opus review. *(low · apps/cli/src/render/tui/chat-ink.tsx + commands/chat.ts runReplLoop)*
+- [x] **Step 4b-3: memoize per-logical-line wrap so a resize doesn't re-segment the whole transcript — DONE (Step 4b-3).**
+  `wrapText`/`wrapTranscript` now front `wrapLogicalLine` with a bounded (8192-entry) LRU keyed on `(cols, line)`
+  (`viewport.ts`), so re-wrapping the unbounded append-only transcript on each append is O(history) cheap map lookups +
+  ONE segmentation (the new line), and a re-render at an unchanged size is all hits — no more re-running `Intl.Segmenter`
+  over all of history. Transparent (a warm wrap equals the cold wrap + the uncached primitive) + LRU-bumps hits; pinned
+  in viewport.test.ts (incl. a break-verified `(cols, line)`-collision test).
+- [x] **Step 4b-3: keep the alt buffer entered across a `/clear` / `/models`-reseat re-drive (inter-session flicker) — DONE (Step 4b-3).**
+  Fixed by the HOIST (chosen over DEC-2026, which cannot span a primary↔alt switch): `driveInk` now passes the ink
+  render option `alternateScreen:false` (ink toggles the buffer no more — it still full-screen-renders via log-update),
+  and the hoisted `runReplLoop` (`withHoistedAltScreen`) enters DECSET-1049 ONCE above the per-session loop, clears
+  between re-drives, and exits ONCE, so a `/clear` / reseat no longer flips the terminal. Exit-safety net (ink's own
+  1049-exit is now inert): idempotent `restore()` on the finally + a `process.on('exit')` net (the second-SIGINT force
+  quit) + explicit SIGTERM/SIGHUP handlers. Verified against ink 7.1.0's compiled build; unit-tested (`withHoistedAltScreen`,
+  6 cases); real-TTY signal validation (double-Ctrl-C, `kill -TERM`) is a manual PR-time check.
 - [ ] **`relavium run` TUI → full-screen + retained scrollable run-history.** [ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md)
   scopes the 2.6.F full-screen renderer to the **Home + `chat`**; the `relavium run` `RunApp` stays inline
   (no `useInput` → kernel `Ctrl-C → SIGINT` cooperative cancel preserved). Making it full-screen + giving it

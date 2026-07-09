@@ -191,7 +191,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(writeControl.mock.calls.at(-1)?.[0]).toBe(DISABLE_BRACKETED_PASTE);
   });
 
-  it('resolves the render mode into ink’s alternateScreen: default off, config opts in, --no-alt-screen wins (ADR-0068 §e)', async () => {
+  it('resolves the render mode into ink’s alternateScreen: default ON (4b-3), config opts out, --no-alt-screen wins (ADR-0068 §e)', async () => {
     // Capture the alt-screen decision driveHome passes to the (injected) render, driving a clean Ctrl-C exit so the
     // driveHome promise settles between cases. Exercises the resolver → render wiring end-to-end (flag + config).
     const resolveAlt = async (over: Partial<HomeDeps>): Promise<boolean> => {
@@ -212,18 +212,16 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       return alt;
     };
 
-    // 4a phase default is opt-IN, so an absent config + no flag ⇒ inline (alternateScreen false).
-    expect(await resolveAlt({})).toBe(false);
+    // 4b-3 phase default is alt-ON, so an absent config + no flag ⇒ full-screen (alternateScreen true).
+    expect(await resolveAlt({})).toBe(true);
 
-    // `[preferences].alt_screen = true` opts in ⇒ alternateScreen true.
-    const cfgOn = join(cwd, 'alt-screen-on.toml');
-    writeFileSync(cfgOn, '[preferences]\nalt_screen = true\n');
-    expect(await resolveAlt({ global: { ...global, configPath: cfgOn } })).toBe(true);
+    // `[preferences].alt_screen = false` opts OUT ⇒ inline (alternateScreen false).
+    const cfgOff = join(cwd, 'alt-screen-off.toml');
+    writeFileSync(cfgOff, '[preferences]\nalt_screen = false\n');
+    expect(await resolveAlt({ global: { ...global, configPath: cfgOff } })).toBe(false);
 
-    // `--no-alt-screen` overrides the opt-in config ⇒ back to inline.
-    expect(await resolveAlt({ global: { ...global, configPath: cfgOn, noAltScreen: true } })).toBe(
-      false,
-    );
+    // `--no-alt-screen` overrides even the default ⇒ inline (the per-invocation opt-out).
+    expect(await resolveAlt({ global: { ...global, noAltScreen: true } })).toBe(false);
   });
 
   it('hands the controller a homeStore that reads the live (empty) strip snapshot', async () => {

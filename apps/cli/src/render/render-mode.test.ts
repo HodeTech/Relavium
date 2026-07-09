@@ -42,9 +42,9 @@ describe('resolveRenderMode (2.6.F / ADR-0068 §e)', () => {
   it('falls to the phase default when neither flag nor config decides', () => {
     expect(resolveRenderMode(input({ defaultAltScreen: true }))).toBe('alt');
     expect(resolveRenderMode(input({ defaultAltScreen: false }))).toBe('inline');
-    // Omitting defaultAltScreen uses DEFAULT_ALT_SCREEN — inline at 4a (opt-in until the viewport lands).
+    // Omitting defaultAltScreen uses DEFAULT_ALT_SCREEN — alt since 4b-3 (full-screen is the first-class default).
     expect(resolveRenderMode(input())).toBe(DEFAULT_ALT_SCREEN ? 'alt' : 'inline');
-    expect(DEFAULT_ALT_SCREEN).toBe(false); // pin the 4a phase default explicitly
+    expect(DEFAULT_ALT_SCREEN).toBe(true); // pin the 4b-3 phase default explicitly (bare TTY opens full-screen)
   });
 
   it('precedence chain end-to-end: plain > flag > config > default', () => {

@@ -214,6 +214,29 @@ perf thresholds for the full-screen frame loop.
 > resume follow). The canonical render-mode docs (home.md / chat-session.md / config-spec.md `alt_screen` caveat) were
 > reconciled to reflect that scroll-back + auto-follow shipped at 4b-2.
 
+> **Amended 2026-07-09 (Step 4b-3 landed — caps-lift, flicker hoist, DEFAULT flip).** The full-screen renderer became
+> first-class and is now the **default on a TTY** (`DEFAULT_ALT_SCREEN = true`): a bare `relavium` / `relavium chat`
+> opens full-screen; `--no-alt-screen` (per invocation) or `[preferences].alt_screen = false` (durable) opts back into
+> the inline renderer, and a machine / non-TTY / `--json` / CI path stays inline + byte-identical. Three pieces landed:
+> **(a) caps-lift** — a bounded LRU per-logical-line wrap cache (`viewport.ts`) keyed on `(cols, line)`, so re-wrapping
+> the unbounded append-only transcript on each append is O(history) cheap map lookups + ONE segmentation instead of
+> re-running `Intl.Segmenter` over all of history; the resize re-clamp of a paused offset is pinned (already correct via
+> `effectiveOffset`). **(b) inter-session flicker HOIST** — `driveInk` mounts+unmounts ink per session and ink 7 tied
+> DECSET-1049 to mount/unmount, so a `/clear` / `/models` re-drive flipped the terminal primary↔alt (a flicker, and the
+> intro/clearedNotice on the primary buffer). A parallel investigation of ink 7.1.0's compiled build confirmed ink
+> renders full-screen via **log-update (relative cursor moves), fully decoupled from the `alternateScreen` option**, so
+> `driveInk` now passes the ink render OPTION `alternateScreen:false` (ink toggles nothing) while KEEPING the `ChatApp`
+> PROP (viewport vs `<Static>`), and the hoisted `runReplLoop` (`withHoistedAltScreen`) enters the alt buffer ONCE above
+> the loop, clears between re-drives, and exits ONCE. **(c) exit-safety** — since ink's own 1049-exit is now inert,
+> `restore()` (idempotent) runs on every path: the `finally`, a `process.on('exit')` net (the second-SIGINT force
+> `process.exit` that bypasses the finally), and explicit SIGTERM/SIGHUP handlers that restore the full terminal state
+> (buffer + cursor + bracketed paste + raw mode) then exit `128+signo`. The end-of-session summary is lifted onto the
+> `ChatDriveOutcome` and printed AFTER the single alt-exit (primary buffer, §c ordering preserved). The **Home needs no
+> hoist** — `driveHome` is a single long-lived mount, flicker-free by construction (the reference for the pattern). The
+> exit paths are unit-tested (`withHoistedAltScreen`, 6 cases) around injected write/lifecycle seams; the real-TTY
+> signal paths (double-Ctrl-C, `kill -TERM`/`-HUP`) are a manual PR-time check. **Still pending (Step 5):** the `[`-dump
+> / `v`-open-in-`$EDITOR` copy-and-search hatches, mouse-wheel scroll, the branded banner, and the a11y note.
+
 ## Consequences
 
 ### Positive

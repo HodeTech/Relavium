@@ -13,13 +13,14 @@ import type { OutputMode } from '../process/output-mode.js';
 export type RenderMode = 'alt' | 'inline';
 
 /**
- * The phase default when neither the flag nor the config key decides. `false` at 2.6.F Step 4a — the alt screen is
- * OPT-IN (via `[preferences].alt_screen = true`) until the hand-built viewport lands (ADR-0068 §b), because
- * rendering the transcript through ink's `<Static>` into an alt buffer (which has no scrollback) is incomplete
- * until then. Step 4b flips this to `true` (alt-on with the `--no-alt-screen` opt-out) once the viewport makes the
- * full-screen renderer first-class.
+ * The phase default when neither the flag nor the config key decides. `true` since 2.6.F Step 4b-3 (ADR-0068 §b): the
+ * hand-built viewport (Step 4b-1), the scroll / auto-follow keymap (Step 4b-2), the caps-lift wrap cache (Step 4b-3),
+ * and the inter-session alt-buffer HOIST (Step 4b-3 — no per-swap flicker) make the full-screen renderer first-class,
+ * so a bare `relavium` / `relavium chat` on a TTY opens full-screen by default. `--no-alt-screen` (per invocation) or
+ * `[preferences].alt_screen = false` (durable) opt back into the inline renderer (native scrollback + the emulator's
+ * own a11y — the screen-reader fallback), and a machine / non-TTY / `--json` / CI path is ALWAYS inline regardless.
  */
-export const DEFAULT_ALT_SCREEN = false;
+export const DEFAULT_ALT_SCREEN = true;
 
 export interface RenderModeInput {
   /** The detected output mode. `'plain'` (a `--json` / CI / non-TTY path) is ALWAYS `inline`, byte-identical. */
