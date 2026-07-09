@@ -926,3 +926,29 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   built-in tools and MCP. Deferred until there is concrete demand beyond the existing built-in +
   MCP tool surface (both of which are sufficient for Phase-2.6 toolbelt parity). *(medium ·
   packages/core/src/tools; [Phase 4 — VS Code](../roadmap/phases/phase-4-vscode.md) / post-Phase-3)*
+
+### 2.6.F (full-screen renderer) — deferred by ADR-0067 / ADR-0068 (recorded 2026-07-09)
+
+- [ ] **`vitest` 5 + `eslint` 10 toolchain migrations.** The [ADR-0067](../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)
+  floor bump to Node `>=22` makes `vitest` 5 (needs `>=22.12`) *eligible*; `eslint` 10 (needs `>=20.19`)
+  was already reachable. Both are **explicitly out of Step-scope** — each is its own independent migration
+  PR with its own breakage risk, never riding the governed floor bump ([node-runtime-upgrade.md §5/§8](phases/node-runtime-upgrade.md)).
+  Not Phase-2.6 work; pick up when the toolchain is bumped on its own track. *(med · pnpm-workspace catalog + configs)*
+- [ ] **Mouse click / drag / text-selection / copy-on-select / hover / URL-open.** [ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md)
+  ships **wheel-only** mouse (DECSET 1000+1006, codes 64/65) in 2.6.F. Full mouse — click-to-position,
+  click-to-expand, drag text-selection + copy-on-select (pbcopy/wl-copy/OSC-52), hover, Cmd/Ctrl-click
+  URL/file-open — and per-terminal scroll-speed normalization pull in motion tracking (1002/1003), hit-test
+  geometry, a clipboard bridge, and per-terminal quirks. **Deferred to [Phase 3 — desktop](phases/phase-3-desktop.md)
+  / a later CLI polish PR.** *(med · apps/cli/src/render/tui + a clipboard bridge)*
+- [ ] **Flip the mouse-wheel default OFF → ON-with-opt-out.** [ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md)
+  ships wheel-scroll **opt-in** (`[preferences].mouse` default off) for the first release — keyboard
+  PgUp/PgDn covers the core need and mouse capture disables native copy-on-select. After real-terminal
+  validation (SSH/tmux/VS Code/iTerm2/Warp) with the 2.6.F harness, flip the default to **on-with-`--no-mouse`**
+  (the field norm). A tracked 2.6.F follow-up, not a defect. *(low · apps/cli config default + validation matrix)*
+- [ ] **`relavium run` TUI → full-screen + retained scrollable run-history.** [ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md)
+  scopes the 2.6.F full-screen renderer to the **Home + `chat`**; the `relavium run` `RunApp` stays inline
+  (no `useInput` → kernel `Ctrl-C → SIGINT` cooperative cancel preserved). Making it full-screen + giving it
+  a retained, scrollable per-node token history requires the **COOKED→RAW cancel rework** (an in-process
+  SIGINT handler, as `ChatApp` has) — the single riskiest cancel change, deliberately kept out of 2.6.F.
+  **Owner:** a focused follow-up (candidate 2.6.G run-detail browser, or its own PR) with a real-TTY cancel
+  test. *(med · apps/cli/src/render/tui/{ink-renderer.ts,RunApp.tsx,run-view-model.ts})*

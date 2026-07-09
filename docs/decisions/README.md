@@ -64,7 +64,7 @@ flowchart TD
 | 0018 | [Desktop execution model — engine in WebView, Rust-delegated LLM egress](0018-desktop-execution-and-rust-egress.md) | Accepted | 2026-06-04 |
 | 0019 | [Node-side OS-keychain access for the CLI — a maintained library, not the archived keytar](0019-cli-node-keychain-library.md) | Accepted | 2026-06-04 |
 | 0020 | [Zod as the runtime schema and validation library](0020-zod-runtime-schema-library.md) | Accepted | 2026-06-04 |
-| 0021 | [better-sqlite3 as the Node-side SQLite driver for `@relavium/db`](0021-node-sqlite-driver-better-sqlite3.md) | Accepted | 2026-06-04 |
+| 0021 | [better-sqlite3 as the Node-side SQLite driver for `@relavium/db`](0021-node-sqlite-driver-better-sqlite3.md) | Superseded by [0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md) | 2026-06-04 |
 | 0022 | [Run records reference the workflow by surrogate UUID, not the authored slug](0022-run-references-workflow-by-uuid.md) | Accepted | 2026-06-04 |
 | 0023 | [Authored workflow/agent YAML is strictly validated — unknown keys rejected](0023-strict-authored-yaml-validation.md) | Accepted | 2026-06-04 |
 | 0024 | [Agent-first entry point — `AgentSession` alongside `WorkflowEngine`](0024-agent-first-entry-point-agentsession.md) | Accepted | 2026-06-05 |
@@ -110,6 +110,8 @@ flowchart TD
 | 0064 | [Live model catalog — the `listModels?` seam capability, the `kind` protocol abstraction, the `model_catalog` live cache, the refresh lifecycle, and the static/live merge](0064-live-model-catalog.md) | Accepted | 2026-07-05 |
 | 0065 | [Provider economics and extensibility — user-supplied pricing, the cost-path pricing-injection seam, pricing-reference capture, and custom OpenAI-compatible endpoints](0065-provider-economics-and-extensibility.md) | Accepted | 2026-07-05 |
 | 0066 | [Normalized reasoning-effort control — a provider-agnostic tier, per-adapter native mapping, and a per-model capability](0066-normalized-reasoning-effort-control.md) | Accepted | 2026-07-06 |
+| 0067 | [Node supported-floor `>=22` and re-affirmed `better-sqlite3` (supersedes ADR-0021)](0067-node-supported-floor-22-reaffirm-better-sqlite3.md) | Accepted | 2026-07-09 |
+| 0068 | [Full-screen TUI renderer, `ink` 7, and the CLI component test harness (refines ADR-0047)](0068-full-screen-tui-renderer-ink7-harness.md) | Accepted | 2026-07-09 |
 
 ## Creating a new ADR
 

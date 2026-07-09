@@ -2,7 +2,9 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-22
-- **Related**: [ADR-0003](0003-pure-ts-engine-not-langgraph-python.md), [ADR-0011](0011-internal-llm-abstraction.md), [ADR-0019](0019-cli-node-keychain-library.md), [ADR-0035](0035-yaml-parser-dependency.md), [phase-2-cli.md](../roadmap/phases/phase-2-cli.md), [cli/commands.md](../reference/cli/commands.md), [architectural-principles.md](../standards/architectural-principles.md), [tech-stack.md](../tech-stack.md)
+- **Related**: [ADR-0003](0003-pure-ts-engine-not-langgraph-python.md), [ADR-0011](0011-internal-llm-abstraction.md), [ADR-0019](0019-cli-node-keychain-library.md), [ADR-0035](0035-yaml-parser-dependency.md), [phase-2-cli.md](../roadmap/phases/phase-2-cli.md), [cli/commands.md](../reference/cli/commands.md), [architectural-principles.md](../standards/architectural-principles.md), [tech-stack.md](../tech-stack.md), [ADR-0068](0068-full-screen-tui-renderer-ink7-harness.md) (refines: `ink` 6→7)
+
+> **Amended 2026-07-09 ([ADR-0068](0068-full-screen-tui-renderer-ink7-harness.md)):** `ink`'s major is bumped **6 → 7** for the 2.6.F full-screen renderer (its native `alternateScreen` / `useWindowSize` / `usePaste`), gated on the Node `>=22` floor ([ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md)). `ink` **remains** the TUI framework and the confinement / framework-free-core discipline below is unchanged — [ADR-0068](0068-full-screen-tui-renderer-ink7-harness.md) **refines**, it does not reverse, this decision. The `@clack/prompts` bracketed-paste role is likewise unchanged; the Home's hand-rolled paste migrates to `ink` 7's native `usePaste` per [ADR-0061](0061-cli-input-layer-file-injection-and-shell-escape.md).
 
 ## Context
 
