@@ -68,6 +68,8 @@ update_channel = "stable"          # stable | beta
 default_model = "claude-sonnet-4-6"
 reasoning_effort = "medium"        # ADR-0066 §6: the GLOBAL default reasoning-effort tier — off | low | medium | high | max; the fallback BELOW any [chat].reasoning_effort. Written by the /models picker's effort sub-step. Absent ⇒ no reasoning control (the provider default).
 theme = "dark"
+alt_screen = false                 # ADR-0068 §e (2.6.F): the full-screen alternate-screen renderer for the bare Home + `relavium chat`. Since Step 4b-3 the DEFAULT is ON — a TTY opens full-screen — so this key is the durable OPT-OUT: `false` keeps the byte-identical INLINE renderer (native scrollback + the emulator's own a11y — the screen-reader fallback), `true` forces it on. The `--no-alt-screen` flag is the per-invocation opt-out and overrides this key; a non-TTY / `--json` / CI path always renders inline regardless. Absent ⇒ the phase default (alt-ON since 4b-3 — ADR-0068 §b).
+                                   # What the full-screen renderer actually does (viewport, scroll keymap, mouse-wheel) is NOT restated here — see [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) and, for the inline/screen-reader tradeoff this key controls, [accessibility.md](../cli/accessibility.md).
 
 [[mcp_servers]]                    # repeatable — an agent references one by name via `ref:` (ADR-0052 §5)
 name = "filesystem"

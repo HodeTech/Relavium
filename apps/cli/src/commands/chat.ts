@@ -56,18 +56,23 @@ import {
   type BuildChatSessionOptions,
   type BuiltChatSession,
   type BuiltResumedChatSession,
+  type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { createModelCatalogPort, type ModelCatalogPort } from '../engine/model-catalog-port.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { loadUserPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
-import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
+import { mcpSkippedLines, surfaceMcpSkipped } from '../engine/mcp-servers.js';
 import { createProviderResolver, type ProviderResolver } from '../engine/providers.js';
 import { openSessionStore, type OpenedSessionStore } from '../history/session-open.js';
 import { CliError } from '../process/errors.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
+import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
+import { createAltScreenController, type AltScreenController } from '../render/alt-screen.js';
+import { resolveRenderMode } from '../render/render-mode.js';
+import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import {
   errorRecoveryHint,
   formatToolCall,
@@ -199,6 +204,10 @@ export interface ChatDriveContext {
   readonly store: ChatStoreController;
   readonly io: CliIo;
   readonly global: GlobalOptions;
+  /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — the config opt-in for the full-screen renderer. Only the ink
+   *  driver (`driveInk`) reads it, resolving the effective mode via `resolveRenderMode` (flag → this → phase
+   *  default); the plain / `--json` drivers ignore it (they are always inline). Absent ⇒ the phase default. */
+  readonly altScreen?: boolean | undefined;
   /**
    * The session banner line (no trailing newline). A fresh session leaves it unset (the plain driver shows a
    * default greeting; the ink driver shows nothing); a 2.N resume sets the "Resuming session …" context line,
@@ -267,6 +276,10 @@ export interface ChatDriveContext {
 export interface ChatDriveOutcome {
   readonly kind: ChatStopReason;
   readonly target?: ReseatTarget;
+  /** On a final `'exit'`, the persistent end-of-session summary text (`store.summaryText()`) — LIFTED out of driveInk
+   *  so the hoisted {@link runReplLoop} prints it AFTER the single alt-buffer exit, on the primary buffer (ADR-0068
+   *  §c, 2.6.F Step 4b-3). Absent on `'clear'`/`'reseat'` (a swap prints no summary). */
+  readonly summaryText?: string;
 }
 export type ChatDriver = (ctx: ChatDriveContext) => Promise<ChatDriveOutcome>;
 
@@ -288,6 +301,10 @@ export interface ChatCommandDeps {
   readonly doctorProbes?: DoctorProbes;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
   readonly drive?: ChatDriver;
+  /** Alt-buffer HOIST seams (2.6.F Step 4b-3) — forwarded to {@link runReplLoop}. A test injects a no-op
+   *  `writeControl` + `lifecycle` so the hoist never touches the REAL terminal / process signals; default = real. */
+  readonly writeControl?: (sequence: string) => void;
+  readonly lifecycle?: ReplLifecycle;
   /** Wall-clock (ms) + id sources (injectable for tests). */
   readonly now?: () => number;
   readonly uuid?: () => string;
@@ -315,6 +332,10 @@ export interface ChatResumeCommandDeps {
   readonly doctorProbes?: DoctorProbes;
   /** The interactive driver — defaults to the plain non-TTY line loop; the TTY ink driver + tests override it. */
   readonly drive?: ChatDriver;
+  /** Alt-buffer HOIST seams (2.6.F Step 4b-3) — forwarded to {@link runReplLoop}; a test injects no-ops so the hoist
+   *  never touches the real terminal / process signals (default = real). */
+  readonly writeControl?: (sequence: string) => void;
+  readonly lifecycle?: ReplLifecycle;
   /** Wall-clock (ms) + id sources (injectable for tests). */
   readonly now?: () => number;
   readonly uuid?: () => string;
@@ -325,6 +346,96 @@ interface ChatReplDeps {
   readonly io: CliIo;
   readonly global: GlobalOptions;
   readonly drive?: ChatDriver;
+  /** The terminal-control write sink for the hoisted alt-buffer toggle (2.6.F Step 4b-3). Default `process.stdout`;
+   *  a test injects a capture to assert the DECSET-1049 enter/exit bytes. */
+  readonly writeControl?: (sequence: string) => void;
+  /** The process lifecycle seam for the alt-buffer exit-safety net (Step 4b-3) — `process.on('exit')`, SIGTERM/SIGHUP,
+   *  raw-mode, and exit. Default {@link defaultReplLifecycle}; a test injects fakes to drive the exit paths. */
+  readonly lifecycle?: ReplLifecycle;
+}
+
+/**
+ * The process-lifecycle seam the hoisted alt-buffer restore hooks into (2.6.F Step 4b-3, ADR-0068 §c). With the ink
+ * render option `alternateScreen:false`, ink no longer restores the primary buffer on any termination path, so the
+ * loop must: (a) restore on `process.on('exit')` — the UNIVERSAL net that fires on normal exit, every `process.exit()`
+ * (incl. the second-SIGINT force-quit that bypasses the finally), and after an uncaught throw; and (b) own SIGTERM/
+ * SIGHUP explicitly (an unhandled one kills WITHOUT firing `'exit'`). Injected so the paths are unit-testable.
+ */
+export interface ReplLifecycle {
+  /** Register a `process.on('exit')`-style listener; returns a remover. */
+  readonly onProcessExit: (listener: () => void) => () => void;
+  /** Register SIGTERM(15)/SIGHUP(1) listeners (the signo is passed); returns a remover. */
+  readonly onTerminationSignal: (listener: (signo: number) => void) => () => void;
+  /** Restore the terminal from raw mode (ink's own restore is bypassed on a signal we own). */
+  readonly setRawMode: (raw: boolean) => void;
+  /** Terminate the process (conventional `128 + signo`). */
+  readonly exit: (code: number) => void;
+}
+
+/** The production {@link ReplLifecycle} over `process` + `process.stdin`. */
+export const defaultReplLifecycle: ReplLifecycle = {
+  onProcessExit: (listener) => {
+    process.on('exit', listener);
+    return () => process.removeListener('exit', listener);
+  },
+  onTerminationSignal: (listener) => {
+    // SIGTERM(15), SIGHUP(1), SIGQUIT(3): the catchable external kills that terminate WITHOUT firing Node's `'exit'`
+    // event (so the `onProcessExit` net alone would miss them). With ink's render option `alternateScreen:false` ink's
+    // own signal-exit restore is inert, so this handler must exit the alt buffer itself; otherwise `kill -QUIT`/`-TERM`
+    // /`-HUP` would strand the terminal on the alt screen (Step-4b-3 Opus review). SIGINT stays with driveInk (the
+    // cooperative /cancel); uncatchable SIGKILL/SIGSTOP and inherent crash signals remain an accepted residual.
+    const onTerm = (): void => listener(15);
+    const onHup = (): void => listener(1);
+    const onQuit = (): void => listener(3);
+    process.on('SIGTERM', onTerm);
+    process.on('SIGHUP', onHup);
+    process.on('SIGQUIT', onQuit);
+    return () => {
+      process.removeListener('SIGTERM', onTerm);
+      process.removeListener('SIGHUP', onHup);
+      process.removeListener('SIGQUIT', onQuit);
+    };
+  },
+  setRawMode: (raw) => {
+    if (process.stdin.isTTY) process.stdin.setRawMode?.(raw);
+  },
+  exit: (code) => process.exit(code),
+};
+
+/**
+ * The CURRENT **interactive** session's notice sink — its view-store `notice`, set by {@link driveOneSession} for the
+ * lifetime of each session and cleared in its finally (2.6.F Step 4b-3 Sonnet review). A REPL runs exactly ONE session
+ * at a time per process, so this file-private pointer is that session, singular. A session-side callback that fires
+ * MID-session (the budget-cap warning; a re-drive's MCP-skipped diagnostic) must route through it so its message lands
+ * in the transcript — a raw `io.writeErr` would print onto the hoisted ALT buffer, where ink's next frame overwrites it
+ * and it is lost when the buffer is torn down (the default full-screen path). Absent ⇒ the raw-`io` fallback on the
+ * primary buffer: pre-loop, between swaps, and — crucially — on the **plain / `--json`** drivers, which never render
+ * the view store, so a notice pushed there would vanish silently ({@link liveNoticeSinkFor}).
+ */
+let liveSessionNotice: ((text: string) => void) | undefined;
+
+/**
+ * The live-notice sink for a session, or `undefined` to keep the raw-`io` fallback. ONLY the interactive (ink) driver
+ * renders the view store, so only it can show a transcript notice; `drivePlain` streams tokens straight to `io` and
+ * `driveJson` serializes the event stream — neither reads `store.notice`, so they must keep writing to stderr.
+ */
+function liveNoticeSinkFor(
+  interactive: boolean,
+  store: ChatStoreController,
+): ((text: string) => void) | undefined {
+  return interactive ? (text) => store.notice(text) : undefined;
+}
+
+/** Emit a session-side notice through the live view-store (renders in the transcript, survives the alt buffer) when an
+ *  interactive session is live, else the raw-`io` fallback (primary buffer / the plain + `--json` streams). */
+function emitLiveNotice(io: CliIo, text: string): void {
+  if (liveSessionNotice !== undefined) liveSessionNotice(text);
+  else io.writeErr(`${text}\n`);
+}
+
+/** The budget-cap warning line (formatted once, routed through {@link emitLiveNotice} at all four wiring sites). */
+function budgetWarningText(warning: ChatBudgetWarning): string {
+  return `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached`;
 }
 
 export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps): Promise<ExitCode> {
@@ -359,10 +470,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     mcpSecretResolver,
     mcpRegistrations: config.mcpServers,
     ...(resolvePrice === undefined ? {} : { resolvePrice }),
-    onBudgetWarning: (warning) =>
-      deps.io.writeErr(
-        `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-      ),
+    onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
   });
   // The session now OWNS the live MCP connections (built.closeMcp). `runReplLoop`'s finally is the steady-state
   // teardown, but the build→loop window (opening history.db can throw) runs first — guard it so a pre-loop fault
@@ -425,6 +533,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     buildSession: deps.buildSession ?? buildChatSession,
     io: deps.io,
     global: deps.global,
+    altScreen: config.altScreen,
     // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring), so a
     // mid-session `models pricing` write applies to the next cleared session — no captured value to thread here.
   });
@@ -442,6 +551,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     buildResumedSession: deps.buildResumedSession ?? buildResumedChatSession,
     io: deps.io,
     global: deps.global,
+    altScreen: config.altScreen,
   });
 
   return runReplLoop(
@@ -453,6 +563,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       doctorProbes,
       startSession: () => built.session.start(),
       modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
+      altScreen: config.altScreen,
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -516,10 +627,7 @@ export async function chatResumeCommand(
       mcpSecretResolver,
       mcpRegistrations: config.mcpServers,
       resolvePrice,
-      onBudgetWarning: (warning) =>
-        deps.io.writeErr(
-          `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-        ),
+      onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
     });
     closeMcp = resumed.closeMcp;
     surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
@@ -581,6 +689,7 @@ export async function chatResumeCommand(
     buildSession: deps.buildSession ?? buildChatSession,
     io: deps.io,
     global: deps.global,
+    altScreen: config.altScreen,
     // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring).
   });
 
@@ -597,6 +706,7 @@ export async function chatResumeCommand(
     buildResumedSession: deps.buildResumedSession ?? buildResumedChatSession,
     io: deps.io,
     global: deps.global,
+    altScreen: config.altScreen,
   });
 
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
@@ -611,6 +721,7 @@ export async function chatResumeCommand(
       startSession: () => {},
       intro,
       modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
+      altScreen: config.altScreen,
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -638,6 +749,9 @@ interface ReplWiring {
   /** The `/models` reseat picker port (ADR-0059) — built per session (its `boundModel` is the current model).
    *  Forwarded to the ctx only on an interactive driver (`driveOneSession` gates it). */
   readonly modelPicker?: ChatModelsPort;
+  /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded to the ink driver's ctx so it resolves the
+   *  full-screen render mode; the plain / `--json` drivers ignore it. Absent ⇒ the phase default. */
+  readonly altScreen?: boolean | undefined;
 }
 
 /**
@@ -1137,6 +1251,9 @@ interface FreshChatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildSession: typeof buildChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+  /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — carried into the rebuilt `ReplWiring` so a `/clear` re-drive
+   *  keeps the full-screen render mode (else the mode reverts to the phase default mid-conversation). */
+  readonly altScreen?: boolean | undefined;
 }
 
 async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): Promise<ReplWiring> {
@@ -1159,8 +1276,10 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
   });
-  surfaceMcpSkipped(deps.io, built.mcpSkipped);
   const store = createChatStore(deps.global.color);
+  // A re-drive (`/clear`/reseat) runs INSIDE the hoisted alt buffer, so the MCP-skipped diagnostic routes to the fresh
+  // session's transcript (`store.notice`) rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3).
+  for (const line of mcpSkippedLines(built.mcpSkipped)) store.notice(line);
   let persister: SessionPersister;
   try {
     persister = createSessionPersister({
@@ -1205,6 +1324,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
       deps.now,
       deps.uuid,
     ),
+    ...(deps.altScreen === undefined ? {} : { altScreen: deps.altScreen }),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
 }
@@ -1229,6 +1349,8 @@ function createClearRebuild(params: {
   readonly buildSession: typeof buildChatSession;
   readonly io: CliIo;
   readonly global: GlobalOptions;
+  /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded so a `/clear` re-drive keeps the render mode. */
+  readonly altScreen?: boolean | undefined;
 }): (oldSessionId: string) => Promise<ReplWiring> {
   const wiringDeps: FreshChatWiringDeps = {
     chat: params.chat,
@@ -1245,10 +1367,8 @@ function createClearRebuild(params: {
     global: params.global,
     opened: params.opened,
     buildSession: params.buildSession,
-    onBudgetWarning: (warning) =>
-      params.io.writeErr(
-        `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-      ),
+    altScreen: params.altScreen,
+    onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
   };
   return (oldSessionId) => buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId));
 }
@@ -1305,6 +1425,9 @@ interface ReseatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildResumedSession: typeof buildResumedChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+  /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — carried into the rebuilt `ReplWiring` so a `/models` reseat
+   *  keeps the full-screen render mode (else it reverts to the phase default after a mid-session model switch). */
+  readonly altScreen?: boolean | undefined;
 }
 
 /**
@@ -1357,7 +1480,6 @@ async function buildReseatWiring(
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
   });
-  surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
   let seeded: { store: ChatStoreController; persister: SessionPersister };
   try {
     seeded = seedResumedWiring(resumed, deps.opened, deps.global.color, deps.now, deps.uuid);
@@ -1367,6 +1489,9 @@ async function buildReseatWiring(
     await resumed.closeMcp?.().catch(() => undefined);
     throw err;
   }
+  // A reseat re-drive runs INSIDE the hoisted alt buffer — route the MCP-skipped diagnostic to the reseated session's
+  // transcript rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3 Sonnet review).
+  for (const line of mcpSkippedLines(resumed.mcpSkipped)) seeded.store.notice(line);
   const doctorProbes = assembleDoctorProbes({
     cwd: deps.global.cwd,
     ...(deps.configPath === undefined ? {} : { configPath: deps.configPath }),
@@ -1392,6 +1517,7 @@ async function buildReseatWiring(
       deps.now,
       deps.uuid,
     ),
+    ...(deps.altScreen === undefined ? {} : { altScreen: deps.altScreen }),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
 }
@@ -1413,6 +1539,8 @@ function createReseatRebuild(params: {
   readonly buildResumedSession: typeof buildResumedChatSession;
   readonly io: CliIo;
   readonly global: GlobalOptions;
+  /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded so a `/models` reseat keeps the render mode. */
+  readonly altScreen?: boolean | undefined;
 }): (oldSessionId: string, target: ReseatTarget) => Promise<ReplWiring> {
   const wiringDeps: ReseatWiringDeps = {
     chat: params.chat,
@@ -1426,21 +1554,22 @@ function createReseatRebuild(params: {
     global: params.global,
     opened: params.opened,
     buildResumedSession: params.buildResumedSession,
-    onBudgetWarning: (warning) =>
-      params.io.writeErr(
-        `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-      ),
+    altScreen: params.altScreen,
+    onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
   };
   return (oldSessionId, target) => buildReseatWiring(wiringDeps, oldSessionId, target);
 }
 
-/**
- * Drive ONE session to its stop (`/exit`, `/cancel`, `/clear`, or EOF) and tear it down — the per-session unit the
- * re-drive {@link runReplLoop} runs once per conversation. Its finally fires the session's sole terminal
- * (`cancelOnce`, idempotent → the row flips to 'ended', still resumable), closes the persister, and tears the MCP
- * connections down — but NOT the shared db (the loop owns it across swaps). Returns the driver's outcome so the loop
- * can decide between ending and re-driving over a fresh session (`/clear`).
- */
+/** The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`, wired ONLY on
+ *  the interactive driver (a plain / `--json` stream has no `!`-shell surface). Mirrors {@link buildInteractiveMentionReader}. */
+function buildInteractiveShellRunner(
+  interactive: boolean,
+  built: ReplWiring['built'],
+): ((command: string, args: readonly string[]) => Promise<UserCommandOutcome>) | undefined {
+  if (!interactive) return undefined;
+  return (command, args) => built.session.runUserCommand(command, args);
+}
+
 /**
  * The `@`-mention completion reader for an INTERACTIVE driver (2.5.D, ADR-0061): a READ-ONLY fs jail at the
  * session's fs-scope tier + workspace, so `@`-completion browses + injects through the identical confidentiality
@@ -1474,6 +1603,13 @@ function finalizeReseatOutcome(
   return target === undefined ? { kind: 'exit' } : { kind: 'reseat', target };
 }
 
+/**
+ * Drive ONE session to its stop (`/exit`, `/cancel`, `/clear`, or EOF) and tear it down — the per-session unit the
+ * re-drive {@link runReplLoop} runs once per conversation. Its finally fires the session's sole terminal
+ * (`cancelOnce`, idempotent → the row flips to 'ended', still resumable), closes the persister, and tears the MCP
+ * connections down — but NOT the shared db (the loop owns it across swaps). Returns the driver's outcome so the loop
+ * can decide between ending and re-driving over a fresh session (`/clear`).
+ */
 async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<ChatDriveOutcome> {
   const { built, store, persister, startSession, intro } = wiring;
   const {
@@ -1487,26 +1623,28 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     onModeChange,
     onSetEffort,
   } = createChatLineHandler(wiring, deps);
-  // A live reseat is TTY-interactive only (like `/clear`): the ink model-picker overlay is the sole trigger, and a
-  // plain/`--json` driver has no picker. Wiring `onReseat` only on an interactive driver means `stopReason()` can
-  // never yield `'reseat'` under `--json`/plain — one machine stream stays one session lifecycle (ADR-0049).
-  const reseatEnabled = chatIsInteractive(deps.io, deps.global);
+  // TTY-interactive (a TTY and not `--json`) ⇒ the ink driver, the ONLY one that renders the view store + the
+  // model-picker overlay. A live reseat is interactive-only (like `/clear`): wiring `onReseat` only there means
+  // `stopReason()` can never yield `'reseat'` under `--json`/plain — one machine stream stays one session (ADR-0049).
+  const interactive = chatIsInteractive(deps.io, deps.global);
 
   // The `@`-mention completion reader (2.5.D, ADR-0061): a READ-ONLY fs jail at the SAME fs-scope tier + workspace
   // as the session's tools (a `.ssh`/`.env` entry is never listed nor read). TTY-only; see the helper.
   const mentionReader = buildInteractiveMentionReader(deps, built);
 
   // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`. TTY-only.
-  const runShellCommand = chatIsInteractive(deps.io, deps.global)
-    ? (command: string, args: readonly string[]): Promise<UserCommandOutcome> =>
-        built.session.runUserCommand(command, args)
-    : undefined;
+  const runShellCommand = buildInteractiveShellRunner(interactive, built);
 
   // persister.start() subscribes for the turn events + adopts/inserts the session row; it does NOT consume
   // session:started, so it is safe before the driver. The session-open action (fresh start() / resume no-op)
   // is deferred to startSession() INSIDE the driver, after the driver has subscribed the view store.
   try {
     persister.start();
+    // Point the live-notice sink at THIS session's view store for its lifetime (2.6.F Step 4b-3 Sonnet review), but
+    // ONLY on the interactive (ink) driver — it alone renders the store, so a mid-session `onBudgetWarning` shows in
+    // the transcript (surviving the alt buffer) instead of a raw io.writeErr the alt buffer would discard. On the
+    // plain / `--json` drivers the sink stays `undefined` so the warning keeps reaching stderr. Cleared in the finally.
+    liveSessionNotice = liveNoticeSinkFor(interactive, store);
     const outcome = await (deps.drive ?? drivePlain)({
       startSession,
       processLine,
@@ -1516,6 +1654,9 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       store,
       io: deps.io,
       global: deps.global,
+      // The full-screen render-mode opt-in (2.6.F, ADR-0068 §e) — only `driveInk` consumes it (resolving flag →
+      // this → phase default); plain / `--json` ignore it. Forwarded from the per-session config wiring.
+      ...(wiring.altScreen === undefined ? {} : { altScreen: wiring.altScreen }),
       // A headless driver flushes the terminal (session:cancelled) before unsubscribing; the finally's cancelOnce
       // below is then a no-op (idempotent). Other drivers ignore it — the finally fires it.
       finalize: cancelOnce,
@@ -1528,8 +1669,8 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       onSetEffort,
       // The reseat trigger (onReseat) + its picker are wired together, interactive-only: the ink overlay reads the
       // catalog through `modelPicker` and calls `onReseat` on accept. A plain/`--json` driver gets neither.
-      ...(reseatEnabled ? { onReseat } : {}),
-      ...(reseatEnabled && wiring.modelPicker !== undefined
+      ...(interactive ? { onReseat } : {}),
+      ...(interactive && wiring.modelPicker !== undefined
         ? { modelPicker: wiring.modelPicker }
         : {}),
       ...(mentionReader === undefined ? {} : { mentionReader }),
@@ -1538,6 +1679,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
     // A `/models` reseat attaches the captured target here (the one place holding the line handler); see the helper.
     return finalizeReseatOutcome(outcome, reseatTarget);
   } finally {
+    liveSessionNotice = undefined; // the session is ending — never route a notice to a torn-down store
     cancelOnce(); // emit the terminal even on /exit, /clear, or EOF (idempotent); flips the row to 'ended'
     // Attempt EVERY teardown step (a reject in one must not skip the next) and never let a cleanup fault mask the
     // outcome — each is best-effort, surfacing a warning rather than throwing. MCP tears down LAST, AFTER the
@@ -1575,7 +1717,74 @@ function resolveSwapRebuild(
   return undefined;
 }
 
-async function runReplLoop(
+/** What {@link withHoistedAltScreen}'s loop body returns — text to print AFTER the single alt-exit, on the primary
+ *  buffer: the final `/exit` summary and/or a rebuild-failure error (both would be discarded if written in the alt
+ *  buffer — Step-4b-3 Opus review). At most one is set per run. */
+export interface HoistedLoopResult {
+  readonly summaryText?: string | undefined;
+  readonly errorText?: string | undefined;
+}
+
+/**
+ * The alt-buffer HOIST (2.6.F Step 4b-3, ADR-0068 §c): enter DECSET-1049 ONCE, run the per-session loop, exit ONCE.
+ * `driveInk` mounts + unmounts ink per session, so with ink owning the toggle a `/clear` / reseat re-drive would flip
+ * the terminal primary↔alt each swap (the flicker). With ink's render option `alternateScreen:false` ink toggles
+ * nothing (still full-screen-renders via log-update) and this wrapper owns the buffer — entering once, and restoring
+ * on EVERY termination path, since ink's own 1049-exit is now inert:
+ * - the `finally` covers the cooperative ends (`/exit`, EOF, a rebuild fault, a throw in the loop);
+ * - `onProcessExit` (a `process.on('exit')` net) covers the second-SIGINT force `process.exit` (chat-ink.tsx) that
+ *   BYPASSES the finally, plus an uncaught throw;
+ * - the SIGTERM/SIGHUP handler owns those signals (unhandled they kill WITHOUT an `'exit'`) and restores the FULL
+ *   terminal state itself (buffer + cursor via `restore`, bracketed paste, raw mode), since registering it suppresses
+ *   ink's now-inert signal-exit.
+ * `restore()` is idempotent (the controller latch), so every net is safe. The summary is printed AFTER `restore()` so
+ * it lands on the primary buffer, not the torn-down alt buffer. Extracted + exported so the exit-path safety is
+ * unit-testable with a fake `runLoop` + injected `write`/`lifecycle`, no TTY.
+ */
+export async function withHoistedAltScreen(
+  opts: {
+    readonly active: boolean;
+    readonly write: (sequence: string) => void;
+    readonly lifecycle: ReplLifecycle;
+    readonly writeOut: (text: string) => void;
+    readonly writeErr: (text: string) => void;
+  },
+  runLoop: (alt: AltScreenController) => Promise<HoistedLoopResult>,
+): Promise<void> {
+  const noop = (): void => undefined;
+  const alt = createAltScreenController({ write: opts.write, active: opts.active });
+  alt.enter();
+  const removeExitNet = opts.active ? opts.lifecycle.onProcessExit(() => alt.restore()) : noop;
+  const removeSignalNet = opts.active
+    ? opts.lifecycle.onTerminationSignal((signo) => {
+        alt.restore();
+        opts.write(DISABLE_BRACKETED_PASTE);
+        try {
+          opts.lifecycle.setRawMode(false);
+        } catch {
+          // best-effort — a non-TTY / already-cooked stdin must not mask the exit
+        }
+        opts.lifecycle.exit(128 + signo); // conventional 143 (SIGTERM) / 130+ (SIGHUP/SIGQUIT)
+      })
+    : noop;
+  let result: HoistedLoopResult = {};
+  try {
+    result = await runLoop(alt);
+  } finally {
+    // Exit the alt buffer FIRST (restores the primary buffer + scrollback), THEN emit the summary / error, so BOTH
+    // land on the primary buffer (ADR-0068 §c) — a message written while still in the alt buffer is discarded by the
+    // DECRST-1049 restore (the Step-4b-3 Opus-review regression: the rebuild-failure `chat-resume <id>` hint vanished
+    // once alt became the default). `restore()` is idempotent — the `onProcessExit` net may also have fired. Remove
+    // the nets so they cannot outlive the loop.
+    alt.restore();
+    removeExitNet();
+    removeSignalNet();
+    if (result.summaryText !== undefined) opts.writeOut(`${result.summaryText}\n`);
+    if (result.errorText !== undefined) opts.writeErr(result.errorText);
+  }
+}
+
+export async function runReplLoop(
   wiring: ReplWiring,
   deps: ChatReplDeps,
   rebuild?: (oldSessionId: string) => Promise<ReplWiring>,
@@ -1583,34 +1792,72 @@ async function runReplLoop(
 ): Promise<ExitCode> {
   // The SHARED db handle — the same across every swap (a fresh / reseated session reuses it), closed ONCE below.
   const opened = wiring.opened;
-  let current = wiring;
+  // Resolve alt-mode ONCE from the SAME signals `driveInk` uses, so the hoist and the per-session mount can never
+  // disagree about the mode (2.6.F Step 4b-3, ADR-0068 §c).
+  const altActive =
+    chatIsInteractive(deps.io, deps.global) &&
+    resolveRenderMode({
+      outputMode: detectOutputMode({
+        stdoutIsTty: deps.io.stdoutIsTty,
+        json: deps.global.json,
+        ci: isCiEnv(deps.io.env),
+      }),
+      noAltScreenFlag: deps.global.noAltScreen === true,
+      configAltScreen: wiring.altScreen,
+    }) === 'alt';
+  const writeControl =
+    deps.writeControl ??
+    ((sequence: string): void => {
+      process.stdout.write(sequence);
+    });
+
   try {
-    for (;;) {
-      const outcome = await driveOneSession(current, deps);
-      // The old session is ALREADY torn down (driveOneSession's finally fired its terminal → the row is 'ended' +
-      // resumable). Resolve the rebuild for this swap kind, or `undefined` to END the REPL (see resolveSwapRebuild).
-      const oldSessionId = current.built.sessionId;
-      const next = resolveSwapRebuild(outcome, oldSessionId, rebuild, reseatRebuild);
-      if (next === undefined) break;
-      // Build the swap session over the same db and re-drive; a build failure is surfaced actionably (the prior
-      // conversation is still resumable) and ends the REPL rather than looping on a broken build.
-      try {
-        current = await next();
-      } catch (err) {
-        deps.io.writeErr(
-          // Sanitize the error text too (not just the id beside it) — a rebuild fault can rethrow an unclassified
-          // message verbatim (session-host.ts), which could carry an ANSI/OSC escape from a spawned MCP server's
-          // error text; strip it exactly as the id + every other display string on this surface is stripped.
-          `could not start a new session after ${outcome.kind === 'reseat' ? 'a model switch' : '/clear'}: ` +
-            `${sanitizeInline(err instanceof Error ? err.message : String(err))}. ` +
-            `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`,
-        );
-        break;
-      }
-    }
+    await withHoistedAltScreen(
+      {
+        active: altActive,
+        write: writeControl,
+        lifecycle: deps.lifecycle ?? defaultReplLifecycle,
+        writeOut: (text) => deps.io.writeOut(text),
+        writeErr: (text) => deps.io.writeErr(text),
+      },
+      async (alt): Promise<HoistedLoopResult> => {
+        let current = wiring;
+        let summaryText: string | undefined; // the final `/exit` summary, printed after the single alt-exit
+        for (;;) {
+          const outcome = await driveOneSession(current, deps);
+          // The end-of-session summary is LIFTED out of driveInk (ADR-0068 §c): the wrapper prints it after the single
+          // alt-exit, on the PRIMARY buffer. Only a final `'exit'` carries one; a `/clear` / reseat swap carries none.
+          if (outcome.kind === 'exit') summaryText = outcome.summaryText;
+          // The old session is ALREADY torn down (driveOneSession's finally fired its terminal → the row is 'ended' +
+          // resumable). Resolve the rebuild for this swap kind, or `undefined` to END the REPL (see resolveSwapRebuild).
+          const oldSessionId = current.built.sessionId;
+          const next = resolveSwapRebuild(outcome, oldSessionId, rebuild, reseatRebuild);
+          if (next === undefined) return { summaryText };
+          // Clear the persistent alt buffer between the just-unmounted session and the next mount, so a `/clear` swap
+          // never briefly shows two stacked transcripts (ink's non-fullscreen unmount does not erase). No-op inactive.
+          alt.clearBetween();
+          // Build the swap session over the same db and re-drive; a build failure is surfaced actionably (the prior
+          // conversation is still resumable) and ends the REPL rather than looping on a broken build. The message is
+          // RETURNED (not written here) so the wrapper emits it AFTER the alt-exit — writing it inside the still-entered
+          // alt buffer would discard it (the recovery hint with the resumable session id — Step-4b-3 Opus review).
+          try {
+            current = await next();
+          } catch (err) {
+            const errorText =
+              // Sanitize the error text too (not just the id beside it) — a rebuild fault can rethrow an unclassified
+              // message verbatim (session-host.ts), which could carry an ANSI/OSC escape from a spawned MCP server's
+              // error text; strip it exactly as the id + every other display string on this surface is stripped.
+              `could not start a new session after ${outcome.kind === 'reseat' ? 'a model switch' : '/clear'}: ` +
+              `${sanitizeInline(err instanceof Error ? err.message : String(err))}. ` +
+              `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`;
+            return { summaryText, errorText };
+          }
+        }
+      },
+    );
   } finally {
-    // The shared db closes exactly once, after the last session's own teardown — never per-swap (that would strand
-    // the next session), never skipped (best-effort; a close fault warns rather than masking the loop outcome).
+    // The shared db closes exactly once, AFTER the alt-exit + summary — never per-swap (that would strand the next
+    // session), never skipped (best-effort; a close fault warns rather than masking the loop outcome).
     closeQuietly(deps.io, 'session store', () => opened.close());
   }
   // `/exit`, `/cancel`, an input EOF, and a `/clear` whose rebuild failed all END the chat — the canonical code.

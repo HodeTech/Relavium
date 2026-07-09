@@ -1,11 +1,11 @@
-import { Box, Text, useInput } from 'ink';
-import { useEffect, useState, useSyncExternalStore, type ReactElement } from 'react';
+import { Box, Text, useInput, usePaste } from 'ink';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
 
 import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import type { PendingAttachment } from './attachments.js';
 import { ChatView } from './chat-ink.js';
 import type { EditorState } from './chat-input.js';
-import { sanitizeInline } from './chat-projection.js';
+import { liveScrollGeometry, sanitizeInline } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
 import { HomeView } from './home-view.js';
@@ -20,6 +20,15 @@ import { PaletteView } from './palette-view.js';
 import type { PaletteState } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
 import { ReverseSearchView } from './reverse-search-view.js';
+import {
+  INITIAL_SCROLL,
+  parseMouseScroll,
+  reduceScroll,
+  scrollMotionForKey,
+  WHEEL_LINES,
+  type ScrollGeometry,
+  type ScrollState,
+} from './scroll.js';
 
 /**
  * The single-ink-tree shell for the bare-invocation Home (2.5.B / ADR-0054): ONE `useInput` owner over a
@@ -38,6 +47,10 @@ export interface RootAppProps {
   readonly getSize: () => { cols: number; rows: number };
   /** Subscribe to terminal resizes; returns an unsubscribe. */
   readonly subscribeResize: (onResize: () => void) => () => void;
+  /** `true` ⇒ mounted on ink 7's alternate screen (2.6.F Step 4b, ADR-0068 §c) — the in-Home chat's transcript
+   *  renders through the scroll viewport (bounded to the resize-tracked size) instead of `<Static>`. Resolved by
+   *  `driveHome` (`resolveRenderMode`); absent/false ⇒ the inline renderer. */
+  readonly alternateScreen?: boolean;
 }
 
 /** The chat region: subscribes to the chat store (re-render on stream events) and renders the pure {@link ChatView},
@@ -59,6 +72,17 @@ function ChatRegion(
     now: () => number;
     /** The live terminal width (resize-tracked in `RootApp`) — bounds the reasoning panel to N rendered rows (2.5.H). */
     cols: number;
+    /** PRESENT ⇒ the alt-screen renderer (2.6.F Step 4b, ADR-0068 §c): the chat region is bounded to the terminal
+     *  size and the transcript renders through the scroll viewport instead of `<Static>`, carrying the RootApp-held
+     *  `scroll` state (4b-2) + the `onMeasure` geometry-lift. Absent ⇒ inline. */
+    viewport:
+      | {
+          readonly rows: number;
+          readonly cols: number;
+          readonly scroll: ScrollState;
+          readonly onMeasure: (geom: ScrollGeometry) => void;
+        }
+      | undefined;
     shellBusy: boolean;
     submitBusy: boolean;
     shellCommand: string | undefined;
@@ -72,8 +96,11 @@ function ChatRegion(
     useSyncExternalStore(props.store.subscribe, props.store.getSnapshot);
   // Read the clock in THIS per-frame component (see the `now` prop doc) so the elapsed advances live.
   const nowMs = props.now();
+  const viewport = props.viewport;
   return (
-    <Box flexDirection="column">
+    // Alt-screen (Step 4b): bound the chat region to the terminal `rows` so `ChatView`'s flex-grow viewport has a
+    // height to fill below any keyboard-owning overlay (palette / search / model-picker / …); inline ⇒ unbounded.
+    <Box flexDirection="column" {...(viewport === undefined ? {} : { height: viewport.rows })}>
       <ChatView
         state={state}
         tick={tick}
@@ -88,6 +115,7 @@ function ChatRegion(
         attachments={props.attachments}
         busyCommand={props.shellCommand}
         columns={props.cols}
+        viewport={viewport}
         reasonDraft={props.reasonDraft}
         paletteOpen={
           props.palette !== undefined ||
@@ -126,11 +154,91 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   const { controller, getSize, subscribeResize, color } = props;
   const state = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
   const [size, setSize] = useState(getSize);
+  // The alt-screen transcript SCROLL state (2.6.F Step 4b-2) — RootApp-local (a pure-render concern, like `size`;
+  // NOT session state), ref-shadowed for coalesced-chunk safety, and the viewport's live geometry lifted into
+  // `scrollGeomRef` via `onMeasure` so a scroll key reduces against the SAME geometry the viewport windows with.
+  const [scroll, setScroll] = useState<ScrollState>(INITIAL_SCROLL);
+  const scrollRef = useRef<ScrollState>(INITIAL_SCROLL);
+  const scrollGeomRef = useRef<ScrollGeometry>({ totalLines: 0, height: 0 });
+  const applyScroll = (next: ScrollState): void => {
+    scrollRef.current = next;
+    setScroll(next);
+  };
 
   // Re-measure on a terminal resize so the <80×24 degrade (and the strip width) tracks the live size.
   useEffect(() => subscribeResize(() => setSize(getSize())), [subscribeResize, getSize]);
 
-  useInput((input, key) => controller.handleKey(input, key));
+  // Reset the scroll to the TAIL when the chat SESSION changes — a fresh chat, a `/clear` swap, or a `/models` reseat
+  // (RootApp is NOT remounted across a swap the way driveInk remounts ChatApp, so without this a new session would
+  // inherit the prior one's frozen offset). Keyed on the session OBJECT identity, NOT `sessionId`: a `/models` reseat
+  // deliberately PRESERVES the sessionId across the swap (the reseated session adopts the same durable row —
+  // home-controller `reseatChat`), so a string-keyed effect would MISS a reseat and leave a scrolled-away transcript
+  // frozen (Step-4b-2 Sonnet review). The controller carries `state.session` by reference across non-swap updates and
+  // mints a fresh object only on startChat/clearChat/reseatChat, so the object identity fires exactly on a swap.
+  // Entering chat (undefined ⇒ session) and leaving it (session ⇒ undefined) also re-follow.
+  const session = state.session;
+  useEffect(() => {
+    applyScroll(INITIAL_SCROLL); // reset on the session-object transition only (deps = [session]); applyScroll only
+  }, [session]); // touches render-stable refs + setState, so it is intentionally omitted from the deps.
+
+  // In the alt-screen in-Home chat, PgUp/PgDn/Ctrl+Home/Ctrl+End SCROLL the transcript viewport (Step 4b-2) BEFORE
+  // the key reaches the controller — inline mode keeps native scrollback, and a bare Home / a non-chat mode has no
+  // viewport, so those fall straight through. Gated on NO keyboard-owning overlay (palette / search / mention /
+  // model-picker / effort-picker / reason-capture) — mirroring ChatApp's after-overlays ordering, so an overlay that
+  // later paged with PgUp/PgDn keeps its keys. The approval prompt is in the fixed live region (always visible), so
+  // no force-follow is needed (parity with `ChatApp`).
+  const noOverlay =
+    state.palette === undefined &&
+    state.search === undefined &&
+    state.mention === undefined &&
+    state.modelPicker === undefined &&
+    state.effortPicker === undefined &&
+    state.reasonDraft === undefined;
+  const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
+  useInput((input, key) => {
+    // Reduce against LIVE geometry (parity with `ChatApp`): wrap the session store's CURRENT transcript at the
+    // keypress for a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream
+    // burst makes `settle` resume-follow against a stale bottom (Step-4b-2 Sonnet review). `getSnapshot()` reads the
+    // store fresh here regardless of closure staleness; no session (bare Home) ⇒ the lifted geometry, nothing to move.
+    const liveGeom = (): ScrollGeometry => {
+      const store = state.session?.store;
+      return store === undefined
+        ? scrollGeomRef.current
+        : liveScrollGeometry(
+            store.getSnapshot().state.transcript,
+            size.cols,
+            scrollGeomRef.current.height,
+          );
+    };
+    // Mouse reports (Step 5): `driveHome` enables mouse reporting for the WHOLE alt-screen Home, so a wheel/click
+    // arrives in EVERY mode and behind EVERY overlay. CONSUME it here — ahead of all routing — so its raw bytes can
+    // never type into the Home prompt, the `/` palette filter, or the `[c]` reason capture. A wheel only SCROLLS
+    // when the chat transcript owns the screen (`altChat`); elsewhere there is no viewport to move.
+    if (props.alternateScreen === true) {
+      const mouse = parseMouseScroll(input);
+      if (mouse !== undefined) {
+        if (mouse !== 'ignore' && altChat) {
+          const geom = liveGeom();
+          let next = scrollRef.current;
+          for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, mouse, geom);
+          applyScroll(next);
+        }
+        return;
+      }
+    }
+    if (altChat) {
+      const motion = scrollMotionForKey(key);
+      if (motion !== undefined) {
+        applyScroll(reduceScroll(scrollRef.current, motion, liveGeom()));
+        return;
+      }
+    }
+    controller.handleKey(input, key);
+  });
+  // Bracketed paste arrives on ink 7's native `usePaste` channel (separate from `useInput`): the whole paste is
+  // one `text` event, so a multi-line block appends verbatim and a pasted approval token never reaches the key
+  // reducers (ADR-0068). The controller gates it (drops behind an overlay / pending approval / mid-turn).
+  usePaste((text) => controller.handlePaste(text));
 
   if (state.mode === 'chat' && state.session !== undefined) {
     return (
@@ -144,6 +252,20 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         effortPicker={state.effortPicker}
         now={props.nowMs}
         cols={size.cols}
+        // Alt-screen (Step 4b): the resize-tracked size bounds the chat region + wraps the transcript viewport, which
+        // carries the scroll state (4b-2) + reports its geometry back into `scrollGeomRef` for the scroll keymap.
+        viewport={
+          props.alternateScreen === true
+            ? {
+                rows: size.rows,
+                cols: size.cols,
+                scroll,
+                onMeasure: (g: ScrollGeometry): void => {
+                  scrollGeomRef.current = g;
+                },
+              }
+            : undefined
+        }
         reasonDraft={state.reasonDraft}
         shellBusy={state.shellBusy}
         submitBusy={state.submitBusy}

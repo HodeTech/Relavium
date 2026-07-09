@@ -538,9 +538,15 @@ function serverFingerprint(ref: McpServerRef): string {
  * {@link sanitizeInline} (the terminal-escape strip the resume banner / slash echo / streamed tokens use).
  */
 export function surfaceMcpSkipped(io: CliIo, skipped: readonly ManagerSkippedTool[]): void {
-  for (const tool of skipped) {
-    io.writeErr(
-      `note: MCP tool '${sanitizeInline(tool.name)}' (server '${sanitizeInline(tool.server)}') skipped — ${sanitizeInline(tool.reason)}\n`,
-    );
-  }
+  for (const line of mcpSkippedLines(skipped)) io.writeErr(`${line}\n`);
+}
+
+/** The per-tool "MCP tool skipped" diagnostic lines (secret-free, terminal-sanitized), each WITHOUT a trailing
+ *  newline — so a caller can route them to a store `notice` (which renders in the transcript, surviving the alt
+ *  buffer on a `/clear`/reseat re-drive) instead of a raw `io.writeErr` (2.6.F Step 4b-3 Sonnet review). */
+export function mcpSkippedLines(skipped: readonly ManagerSkippedTool[]): string[] {
+  return skipped.map(
+    (tool) =>
+      `note: MCP tool '${sanitizeInline(tool.name)}' (server '${sanitizeInline(tool.server)}') skipped — ${sanitizeInline(tool.reason)}`,
+  );
 }

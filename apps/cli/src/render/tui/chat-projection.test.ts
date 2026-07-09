@@ -12,6 +12,7 @@ import {
   formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
+  liveScrollGeometry,
   MAX_APPROVAL_REASON_CHARS,
   MAX_REASONING_PANEL_LINES,
   reasoningLabelActive,
@@ -19,9 +20,10 @@ import {
   sanitizeInline,
   streamingAbortHint,
   stripTerminalControls,
+  wrapTranscript,
 } from './chat-projection.js';
 import { formatDuration, formatTokens } from './format.js';
-import { initialSessionViewState } from './session-view-model.js';
+import { initialSessionViewState, type TranscriptEntry } from './session-view-model.js';
 
 describe('chat-projection', () => {
   describe('formatTurnSummary', () => {
@@ -744,6 +746,133 @@ describe('chat-projection', () => {
       expect(out).toBe('a'.repeat(MAX_APPROVAL_REASON_CHARS - 1));
       // No unpaired surrogate survived (each code unit is a full BMP code point).
       for (const ch of out ?? '') expect(ch.codePointAt(0)).toBeLessThan(0xd800);
+    });
+  });
+
+  describe('wrapTranscript (2.6.F Step 4b — alt-screen viewport flattening, ADR-0068 §c)', () => {
+    it('flattens a user entry to a `> `-prefixed cyan line, wrapped at cols', () => {
+      const entries: TranscriptEntry[] = [{ role: 'user', text: 'hello world' }];
+      const lines = wrapTranscript(entries, 80);
+      expect(lines).toEqual([{ text: '> hello world', style: 'user' }]);
+      // Wrapped at a narrow width, the `> ` counts toward the first line's 6 cells; continuations carry no prefix.
+      expect(wrapTranscript(entries, 6)).toEqual([
+        { text: '> hell', style: 'user' },
+        { text: 'o worl', style: 'user' },
+        { text: 'd', style: 'user' },
+      ]);
+    });
+
+    it('flattens a notice entry to dim lines, splitting on embedded newlines', () => {
+      const entries: TranscriptEntry[] = [{ role: 'notice', text: 'line one\nline two' }];
+      expect(wrapTranscript(entries, 80)).toEqual([
+        { text: 'line one', style: 'notice' },
+        { text: 'line two', style: 'notice' },
+      ]);
+    });
+
+    it('flattens an assistant entry to its text, then the gray summary, then (if any) the yellow hint', () => {
+      const okEntry: TranscriptEntry = {
+        role: 'assistant',
+        text: 'the answer',
+        summary: { stopReason: 'stop', tokensUsed: { input: 10, output: 5 } },
+      };
+      const okLines = wrapTranscript([okEntry], 80);
+      expect(okLines[0]).toEqual({ text: 'the answer', style: 'assistant' });
+      expect(okLines[1]?.style).toBe('summary'); // the ` {summary}` line (leading space, mirrors TranscriptLine)
+      expect(okLines[1]?.text.startsWith(' ')).toBe(true);
+      expect(okLines).toHaveLength(2); // a successful turn has NO recovery-hint line
+
+      // A failed turn (a code with an actionable hint) appends the yellow hint line.
+      const failEntry: TranscriptEntry = {
+        role: 'assistant',
+        text: 'sorry',
+        summary: {
+          stopReason: 'stop',
+          tokensUsed: { input: 0, output: 0 },
+          errorCode: 'provider_auth',
+        },
+      };
+      const failLines = wrapTranscript([failEntry], 200);
+      expect(failLines.at(-1)?.style).toBe('hint');
+      expect(failLines.at(-1)?.text).toContain('→'); // the ` → {hint}` marker, mirroring TranscriptLine
+    });
+
+    it('strips terminal control sequences at the display boundary (no ANSI/OSC injection through the viewport)', () => {
+      const entries: TranscriptEntry[] = [{ role: 'user', text: 'a\x1b[31mred\x1b[0mb' }];
+      const lines = wrapTranscript(entries, 80);
+      expect(lines[0]?.text).toBe('> aredb'); // the CSI sequences are removed, exactly as TranscriptLine sanitizes
+      expect(lines[0]?.text).not.toContain('\x1b');
+    });
+
+    it('preserves order across a mixed transcript', () => {
+      const entries: TranscriptEntry[] = [
+        { role: 'user', text: 'q' },
+        {
+          role: 'assistant',
+          text: 'a',
+          summary: { stopReason: 'stop', tokensUsed: { input: 1, output: 1 } },
+        },
+        { role: 'notice', text: 'n' },
+      ];
+      const styles = wrapTranscript(entries, 80).map((l) => l.style);
+      expect(styles).toEqual(['user', 'assistant', 'summary', 'notice']);
+    });
+  });
+
+  describe('liveScrollGeometry (2.6.F Step 4b-2 — fresh keypress geometry, ADR-0068 §c)', () => {
+    it('reports totalLines as the CURRENT wrapped count + carries the measured height through', () => {
+      const entries: TranscriptEntry[] = [
+        { role: 'user', text: 'one' },
+        { role: 'user', text: 'two' },
+        { role: 'user', text: 'three' },
+      ];
+      // Each short user entry is one wrapped line at width 80 → totalLines === entry count; height passes through.
+      expect(liveScrollGeometry(entries, 80, 12)).toEqual({ totalLines: 3, height: 12 });
+      // The count is the WRAPPED count, not the entry count: a line wider than cols wraps to multiple rows.
+      const long: TranscriptEntry[] = [{ role: 'user', text: 'x'.repeat(30) }];
+      expect(liveScrollGeometry(long, 10, 8)).toEqual({
+        totalLines: wrapTranscript(long, 10).length,
+        height: 8,
+      });
+      expect(liveScrollGeometry(long, 10, 8).totalLines).toBeGreaterThan(1); // it genuinely wrapped
+    });
+
+    it('is empty-safe (a fresh session before any entry lands)', () => {
+      expect(liveScrollGeometry([], 80, 24)).toEqual({ totalLines: 0, height: 24 });
+    });
+  });
+
+  describe('wrapTranscript per-entry cache (2.6.F Step 4b-3 — no-thrash caps-lift, ADR-0068 §c)', () => {
+    it('is incremental: appending an entry only EXTENDS the output; the whole == the per-entry concatenation', () => {
+      const e1: TranscriptEntry = { role: 'user', text: 'hello world' };
+      const e2: TranscriptEntry = { role: 'user', text: 'a second message here' };
+      const first = wrapTranscript([e1], 80);
+      const second = wrapTranscript([e1, e2], 80);
+      expect(second.slice(0, first.length)).toEqual(first); // the appended entry only extends — history is stable
+      expect(second).toEqual([...wrapTranscript([e1], 80), ...wrapTranscript([e2], 80)]); // == the concatenation
+    });
+
+    it('reuses the cached wrap for an unchanged entry (same object on a hit) and re-wraps on a cols change', () => {
+      const entry: TranscriptEntry = {
+        role: 'user',
+        text: 'the quick brown fox jumped over the lazy dog',
+      };
+      const a = wrapTranscript([entry], 80);
+      const b = wrapTranscript([entry], 80); // same cols → cache HIT
+      expect(b[0]).toBe(a[0]); // the SAME DisplayLine object — proves the per-entry cache served it (not a re-wrap)
+      const narrow = wrapTranscript([entry], 8); // a cols change re-wraps
+      expect(narrow.length).toBeGreaterThan(a.length);
+      expect(narrow).not.toEqual(a);
+      expect(wrapTranscript([entry], 80)).toEqual(a); // back to 80 → identical content again
+    });
+
+    it('wraps a >8192-entry transcript correctly + repeatably — never thrashes or drifts (the fixed pathology)', () => {
+      const big: TranscriptEntry[] = [];
+      for (let i = 0; i < 12000; i += 1) big.push({ role: 'user', text: `msg ${i}` });
+      const once = wrapTranscript(big, 40);
+      const twice = wrapTranscript(big, 40);
+      expect(twice).toEqual(once); // stable across re-wraps of a transcript larger than any fixed cache (no thrash)
+      expect(once).toHaveLength(big.length); // each short `> msg N` line is exactly one row at cols 40
     });
   });
 });

@@ -12,9 +12,10 @@ import { connectSdkTransport } from './sdk-stdio.js';
  * Relavium {@link McpConnection} seam.
  *
  * **Runtime requirement: a global `WebSocket`.** The SDK's transport uses `new WebSocket(...)` (it has no `ws`
- * dependency), so this requires a runtime with a global `WebSocket` — Node **22+** (the CLI's `engines` floor is
- * 20.12). To avoid a new runtime dependency we fail loud with a clear, typed error on an older runtime rather
- * than silently. **SSRF is the host's gate** (the `wss`/`allow_local_endpoint` validation runs before this).
+ * dependency), so this requires a runtime with a global `WebSocket` — Node **22+**, which the CLI's `engines`
+ * floor now guarantees (`>=22`, [ADR-0067](../../../docs/decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)).
+ * The fail-loud typed error below is defense-in-depth for an off-floor runtime rather than a silent failure.
+ * **SSRF is the host's gate** (the `wss`/`allow_local_endpoint` validation runs before this).
  */
 
 /** The explicit spec for a WebSocket MCP server — a host-validated absolute `ws(s)` url. */

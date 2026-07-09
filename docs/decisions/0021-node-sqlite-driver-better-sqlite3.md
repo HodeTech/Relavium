@@ -1,8 +1,8 @@
 # ADR-0021: better-sqlite3 as the Node-side SQLite driver for `@relavium/db`
 
-- **Status**: Accepted
+- **Status**: Superseded by [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md)
 - **Date**: 2026-06-04
-- **Related**: [ADR-0005](0005-sqlite-drizzle-local-postgres-cloud.md), [ADR-0001](0001-tauri-v2-over-electron.md), [ADR-0018](0018-desktop-execution-and-rust-egress.md), [tech-stack.md](../tech-stack.md)
+- **Related**: [ADR-0005](0005-sqlite-drizzle-local-postgres-cloud.md), [ADR-0001](0001-tauri-v2-over-electron.md), [ADR-0018](0018-desktop-execution-and-rust-egress.md), [tech-stack.md](../tech-stack.md), [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md) (supersedes this — Node floor `>=22`, `better-sqlite3` re-affirmed)
 
 ## Context
 

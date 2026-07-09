@@ -37,6 +37,14 @@ describe('extractGlobalOptions', () => {
     expect(extractGlobalOptions(argv('--color', '--no-color')).raw.color).toBe(false);
   });
 
+  it('extracts --no-alt-screen (position-independent) and leaves command tokens intact', () => {
+    expect(extractGlobalOptions(argv('--no-alt-screen', 'chat')).raw.noAltScreen).toBe(true);
+    const { raw, rest } = extractGlobalOptions(argv('chat', '--no-alt-screen'));
+    expect(raw.noAltScreen).toBe(true);
+    expect(rest).toEqual(['node', 'relavium', 'chat']);
+    expect(extractGlobalOptions(argv('chat')).raw.noAltScreen).toBeUndefined(); // absent ⇒ unset
+  });
+
   it('reports (not throws) invalid_invocation when --cwd / --config has no argument', () => {
     const missingCwd = extractGlobalOptions(argv('--cwd'));
     expect(missingCwd.error?.code).toBe('invalid_invocation');
@@ -70,20 +78,33 @@ describe('extractGlobalOptions', () => {
 });
 
 describe('resolveGlobalOptions', () => {
-  it('applies defaults (normal verbosity, color on, json off, fallback cwd)', () => {
+  it('applies defaults (normal verbosity, color on, json off, fallback cwd, alt-screen not disabled)', () => {
     expect(resolveGlobalOptions({}, '/work')).toEqual({
       json: false,
       color: true,
       cwd: '/work',
       configPath: undefined,
       verbosity: 'normal',
+      noAltScreen: false,
     });
   });
 
   it('honors the raw flags', () => {
     expect(
       resolveGlobalOptions({ json: true, color: false, cwd: '/x', config: '/c.toml' }, '/work'),
-    ).toEqual({ json: true, color: false, cwd: '/x', configPath: '/c.toml', verbosity: 'normal' });
+    ).toEqual({
+      json: true,
+      color: false,
+      cwd: '/x',
+      configPath: '/c.toml',
+      verbosity: 'normal',
+      noAltScreen: false,
+    });
+  });
+
+  it('maps --no-alt-screen to noAltScreen (absent ⇒ false)', () => {
+    expect(resolveGlobalOptions({ noAltScreen: true }, '/w').noAltScreen).toBe(true);
+    expect(resolveGlobalOptions({}, '/w').noAltScreen).toBe(false);
   });
 
   it('maps --verbose / --quiet to verbosity', () => {

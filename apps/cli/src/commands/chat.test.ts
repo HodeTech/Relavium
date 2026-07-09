@@ -29,8 +29,9 @@ import type { ResolvedChatConfig } from '../config/resolve.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
-import { createChatStore } from '../render/tui/chat-store.js';
+import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { captureIo, parseNdjson } from '../test-support.js';
+import { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from '../render/alt-screen.js';
 import {
   chatCommand,
   chatIsInteractive,
@@ -130,6 +131,38 @@ function seedCatalogModel(db: Db, provider: ProviderId, modelId: string): string
   const id = catalog.catalogIdByModelId(modelId);
   if (id === undefined) throw new Error(`catalog seed failed for ${modelId}`);
   return id;
+}
+
+/** Make the 2.6.F Step-4b-3 alt-buffer hoist INERT in an interactive-TTY test: no real DECSET-1049 writes to
+ *  `process.stdout`, no real `process.on('exit')`/SIGTERM/SIGHUP/SIGQUIT handlers — so a full-screen-by-default
+ *  session (`DEFAULT_ALT_SCREEN=true`) never flips the test's terminal nor hijacks the vitest process lifecycle. */
+const INERT_HOIST = {
+  writeControl: (): void => undefined,
+  lifecycle: {
+    onProcessExit: (): (() => void) => () => undefined,
+    onTerminationSignal: (): (() => void) => () => undefined,
+    setRawMode: (): void => undefined,
+    exit: (): void => undefined,
+  },
+} as const;
+
+/** Like {@link INERT_HOIST} but RECORDS the control-sequence writes (still never touching the real fd) so a test can
+ *  assert WHETHER the hoist entered the alt buffer — pinning `runReplLoop`'s `altActive` derivation, the single wiring
+ *  the whole flicker fix depends on, which the fully-inert `INERT_HOIST` cannot observe (Step-4b-3 Sonnet review). */
+function recordingHoist(): {
+  hoist: { writeControl: (s: string) => void; lifecycle: typeof INERT_HOIST.lifecycle };
+  writes: string[];
+} {
+  const writes: string[] = [];
+  return {
+    writes,
+    hoist: {
+      writeControl: (s: string) => {
+        writes.push(s);
+      },
+      lifecycle: INERT_HOIST.lifecycle,
+    },
+  };
 }
 
 describe('chatCommand', () => {
@@ -441,18 +474,67 @@ describe('chatCommand', () => {
     expect(store.loadFull(sessionId)?.messages).toHaveLength(2); // exactly the one 'hello' exchange
   });
 
-  it('routes a budget warning to stderr via the onBudgetWarning seam', async () => {
+  type BudgetWarn = { spentMicrocents: number; limitMicrocents: number; thresholdPct: number };
+
+  it('routes a budget warning to stderr via the onBudgetWarning seam when NO session is live (the fallback)', async () => {
     const { d, err } = deps(['/exit'], [textTurn('x')]);
-    let captured:
-      | ((w: { spentMicrocents: number; limitMicrocents: number; thresholdPct: number }) => void)
-      | undefined;
+    let captured: ((w: BudgetWarn) => void) | undefined;
     const withCapture: typeof buildChatSession = (opts) => {
       captured = opts.onBudgetWarning;
       return buildChatSession(opts);
     };
     await chatCommand({ agent: undefined }, { ...d, buildSession: withCapture });
+    // Fired AFTER the session ended (liveSessionNotice cleared) ⇒ the raw-io fallback on the primary buffer.
     captured?.({ spentMicrocents: 900, limitMicrocents: 1000, thresholdPct: 90 });
     expect(err()).toContain('budget warning');
+  });
+
+  /** Fire the captured `onBudgetWarning` mid-turn and report where it landed (transcript notices + stderr). */
+  const budgetWarningDuringSession = async (
+    over: Partial<ChatCommandDeps>,
+  ): Promise<{ notices: string[]; err: string }> => {
+    const { d, err } = deps([], [textTurn('x')]);
+    let captured: ((w: BudgetWarn) => void) | undefined;
+    let liveStore: ChatStoreController | undefined;
+    const withCapture: typeof buildChatSession = (opts) => {
+      captured = opts.onBudgetWarning;
+      return buildChatSession(opts);
+    };
+    const fireDuringTurn: ChatDriver = async (ctx) => {
+      liveStore = ctx.store;
+      ctx.startSession();
+      captured?.({ spentMicrocents: 900, limitMicrocents: 1000, thresholdPct: 90 }); // WHILE the session is live
+      await ctx.processLine('/exit');
+      return { kind: 'exit' };
+    };
+    await chatCommand(
+      { agent: undefined },
+      { ...d, buildSession: withCapture, drive: fireDuringTurn, ...over },
+    );
+    const notices = (liveStore?.getSnapshot().state.transcript ?? [])
+      .filter((e) => e.role === 'notice')
+      .map((e) => e.text);
+    return { notices, err: err() };
+  };
+
+  it('routes a budget warning to the TRANSCRIPT (view-store notice) during a LIVE INTERACTIVE session (Step-4b-3)', async () => {
+    // On the ink driver a raw io.writeErr would be overwritten by the next frame inside the hoisted alt buffer + lost;
+    // the warning must render as a transcript notice instead.
+    const { d } = deps([], [textTurn('x')]);
+    const { notices, err } = await budgetWarningDuringSession({
+      ...INERT_HOIST,
+      io: { ...d.io, stdoutIsTty: true }, // interactive ⇒ the ink driver renders the view store
+    });
+    expect(notices.some((t) => t.includes('budget warning'))).toBe(true); // routed to the transcript
+    expect(err).not.toContain('budget warning'); // …and NOT to raw stderr (the alt buffer would eat it)
+  });
+
+  it('a NON-interactive (plain / --json) session keeps the budget warning on STDERR — those drivers never render the store', async () => {
+    // Regression: the live-notice sink must NOT be installed for drivePlain/driveJson, which stream to `io` and never
+    // read `store.notice` — a notice pushed there would vanish silently.
+    const { notices, err } = await budgetWarningDuringSession({}); // default io ⇒ non-TTY ⇒ plain path
+    expect(err).toContain('budget warning'); // visible on stderr, exactly as before the alt-screen work
+    expect(notices.some((t) => t.includes('budget warning'))).toBe(false); // not buried in an unrendered store
   });
 
   it('exports the session-so-far to a scaffold on /export, continues, and does NOT mark the live row', async () => {
@@ -554,6 +636,126 @@ describe('chatCommand', () => {
     expect(closeCount).toBe(1); // the SHARED db handle closed exactly ONCE across the swap (not per session)
   });
 
+  it('the alt-buffer hoist ENTERS on an interactive TTY by default, STAYS OUT with --no-alt-screen / on a non-TTY (Step-4b-3 wiring)', async () => {
+    // Pins `runReplLoop`'s `altActive` derivation — the ONE boolean deciding whether the hoist enters the alt buffer.
+    // A recording (never-real-fd) writeControl lets us assert the DECSET-1049 bytes were / were not attempted; the
+    // fully-inert INERT_HOIST used elsewhere cannot (a total regression here would otherwise pass silently).
+    const exitDrive: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    // (a) interactive TTY + phase default (DEFAULT_ALT_SCREEN=true) → altActive TRUE → the hoist enters + exits.
+    const a = deps([], [textTurn('hi')]);
+    const recA = recordingHoist();
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...a.d,
+        ...recA.hoist,
+        io: { ...a.d.io, stdoutIsTty: true },
+        openSessionStore: () => ({ store: a.store, db: client.db, close: () => undefined }),
+        drive: exitDrive,
+      },
+    );
+    expect(recA.writes.join('')).toContain(ENTER_ALT_SCREEN); // the buffer was entered (the flicker fix is wired)
+    expect(recA.writes.join('')).toContain(EXIT_ALT_SCREEN); // …and exited on the way out
+
+    // (b) interactive TTY + --no-alt-screen → altActive FALSE → not a single DECSET byte (the opt-out is honored).
+    const b = deps([], [textTurn('hi')]);
+    const recB = recordingHoist();
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...b.d,
+        ...recB.hoist,
+        io: { ...b.d.io, stdoutIsTty: true },
+        global: { ...globalOptions(cwd), noAltScreen: true },
+        openSessionStore: () => ({ store: b.store, db: client.db, close: () => undefined }),
+        drive: exitDrive,
+      },
+    );
+    expect(recB.writes).toEqual([]);
+
+    // (c) non-TTY (a pipe / CI) → altActive FALSE → byte-identical machine path (never alt-screened, ADR-0068 §e).
+    const c = deps([], [textTurn('hi')]);
+    const recC = recordingHoist();
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...c.d,
+        ...recC.hoist,
+        openSessionStore: () => ({ store: c.store, db: client.db, close: () => undefined }),
+        drive: exitDrive,
+      },
+    );
+    expect(recC.writes).toEqual([]);
+  });
+
+  it('the [preferences].alt_screen preference SURVIVES a /clear re-drive (Step-4a threading regression, ADR-0068 §e)', async () => {
+    // The fabricated-outcome driver bypasses driveInk, so `ctx.altScreen` here is the raw threaded config pref (not
+    // the resolved mode) — exactly what pins the wiring: config.altScreen must reach BOTH the initial AND the
+    // /clear-rebuilt session. Before the Opus fix, buildFreshChatWiring dropped it → the second ctx read undefined.
+    const { d, store } = deps([], [textTurn('hi there')]);
+    const cfg = join(cwd, 'alt-clear.toml');
+    writeFileSync(cfg, '[preferences]\nalt_screen = true\n');
+    const alts: (boolean | undefined)[] = [];
+    let call = 0;
+    const clearThenExit: ChatDriver = async (ctx) => {
+      alts.push(ctx.altScreen); // capture on both the original + the rebuilt session
+      ctx.startSession();
+      if (call++ === 0) {
+        await ctx.processLine('hello');
+        return { kind: 'clear' };
+      }
+      await ctx.processLine('/exit');
+      return { kind: 'exit' };
+    };
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        global: { ...globalOptions(cwd), configPath: cfg },
+        openSessionStore: () => ({ store, db: client.db, close: () => undefined }),
+        drive: clearThenExit,
+      },
+    );
+    expect(alts).toEqual([true, true]); // NOT [true, undefined] — the /clear rebuild keeps the preference
+  });
+
+  it('the [preferences].alt_screen preference SURVIVES a /models reseat re-drive (Step-4a threading regression, ADR-0068 §e)', async () => {
+    const { d } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
+    seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
+    const cfg = join(cwd, 'alt-reseat.toml');
+    writeFileSync(cfg, '[preferences]\nalt_screen = true\n');
+    const interactiveIo = { ...d.io, stdoutIsTty: true }; // a reseat is TTY-interactive only (onReseat wired)
+    const alts: (boolean | undefined)[] = [];
+    let call = 0;
+    const reseatThenExit: ChatDriver = async (ctx) => {
+      alts.push(ctx.altScreen);
+      ctx.startSession();
+      if (call++ === 0) {
+        await ctx.processLine('first');
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+        return { kind: ctx.stopReason() }; // 'reseat'
+      }
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST, // alt_screen=true here → altActive=true; keep the hoist off the real terminal (Step 4b-3)
+        io: interactiveIo,
+        global: { ...globalOptions(cwd), configPath: cfg },
+        drive: reseatThenExit,
+      },
+    );
+    expect(alts).toEqual([true, true]); // the reseat rebuild keeps the preference (buildReseatWiring threads it)
+  });
+
   it('/clear whose FRESH build fails surfaces the resumable prior session and ends cleanly (ADR-0062 §7)', async () => {
     const { d, err, store } = deps([], [textTurn('hi there')]);
     let builds = 0;
@@ -613,7 +815,7 @@ describe('chatCommand', () => {
     };
     const code = await chatCommand(
       { agent: undefined },
-      { ...d, io: interactiveIo, drive: reseatThenExit },
+      { ...d, ...INERT_HOIST, io: interactiveIo, drive: reseatThenExit },
     );
     expect(code).toBe(EXIT_CODES.chatEnded);
 
@@ -651,7 +853,7 @@ describe('chatCommand', () => {
     };
     const code = await chatCommand(
       { agent: undefined },
-      { ...d, io: interactiveIo, buildResumedSession, drive: reseat },
+      { ...d, ...INERT_HOIST, io: interactiveIo, buildResumedSession, drive: reseat },
     );
     expect(code).toBe(EXIT_CODES.chatEnded); // ends cleanly despite the failed rebuild (never hangs/loops)
     expect(err()).toContain('could not start a new session after a model switch'); // swap-kind-aware hint

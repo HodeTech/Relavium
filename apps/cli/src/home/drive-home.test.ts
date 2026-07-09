@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -16,7 +16,8 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
-import { ENABLE_BRACKETED_PASTE, DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
+import { DISABLE_MOUSE } from '../render/alt-screen.js';
+import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
 
 // Regression for the `provider_auth` bug: the Home built an ENV-ONLY key resolver, so a key stored in the OS
@@ -140,14 +141,16 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     return { deps, unmount, writeControl };
   }
 
-  it('an init fault after the db is open (a throwing writeControl) still closes the db once', async () => {
+  it('an init fault after the db is open (a throwing render/mount) still closes the db once', async () => {
     // The cleanup scope opens right after `opened`, and the inner finally guarantees the close even though the
-    // terminal-restore writeControl also throws — so a faulty terminal can never leak the db handle.
-    const writeControl = vi.fn(() => {
-      throw new Error('stdout write failed');
+    // ink mount throws — so a faulty render can never leak the db handle. (Bracketed-paste enable is ink 7's
+    // usePaste now, not a mount-time writeControl, so the init fault is exercised via the mount itself.)
+    const { deps } = makeDeps(() => undefined, {
+      render: () => {
+        throw new Error('ink mount failed');
+      },
     });
-    const { deps } = makeDeps(() => undefined, { writeControl });
-    await expect(driveHome(deps)).rejects.toThrow('stdout write failed');
+    await expect(driveHome(deps)).rejects.toThrow('ink mount failed');
     expect(closeSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -184,9 +187,44 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
     expect(closeSpy).toHaveBeenCalledTimes(1);
     expect(unmount).toHaveBeenCalledTimes(1);
-    // DECSET 2004 enabled on mount, disabled on exit.
-    expect(writeControl.mock.calls[0]?.[0]).toBe(ENABLE_BRACKETED_PASTE);
-    expect(writeControl.mock.calls.at(-1)?.[0]).toBe(DISABLE_BRACKETED_PASTE);
+    // DECSET 2004 (bracketed paste) + mouse reporting are disabled on exit as belt-and-suspenders (guarding a signal
+    // that skips ink's own unmount cleanup) — so a clean exit restores both native paste + mouse text-selection.
+    const controls = writeControl.mock.calls.map((c) => c[0] as string);
+    expect(controls).toContain(DISABLE_BRACKETED_PASTE);
+    expect(controls).toContain(DISABLE_MOUSE);
+  });
+
+  it('resolves the render mode into ink’s alternateScreen: default ON (4b-3), config opts out, --no-alt-screen wins (ADR-0068 §e)', async () => {
+    // Capture the alt-screen decision driveHome passes to the (injected) render, driving a clean Ctrl-C exit so the
+    // driveHome promise settles between cases. Exercises the resolver → render wiring end-to-end (flag + config).
+    const resolveAlt = async (over: Partial<HomeDeps>): Promise<boolean> => {
+      let alt = false;
+      let props: RootAppProps | undefined;
+      const { deps } = makeDeps(() => undefined, {
+        render: (p, opts) => {
+          props = p;
+          alt = opts.alternateScreen;
+          return { unmount: vi.fn() };
+        },
+        ...over,
+      });
+      const done = driveHome(deps);
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      props.controller.handleKey('c', CTRL_C); // clean Home exit ⇒ driveHome resolves
+      await done;
+      return alt;
+    };
+
+    // 4b-3 phase default is alt-ON, so an absent config + no flag ⇒ full-screen (alternateScreen true).
+    expect(await resolveAlt({})).toBe(true);
+
+    // `[preferences].alt_screen = false` opts OUT ⇒ inline (alternateScreen false).
+    const cfgOff = join(cwd, 'alt-screen-off.toml');
+    writeFileSync(cfgOff, '[preferences]\nalt_screen = false\n');
+    expect(await resolveAlt({ global: { ...global, configPath: cfgOff } })).toBe(false);
+
+    // `--no-alt-screen` overrides even the default ⇒ inline (the per-invocation opt-out).
+    expect(await resolveAlt({ global: { ...global, noAltScreen: true } })).toBe(false);
   });
 
   it('hands the controller a homeStore that reads the live (empty) strip snapshot', async () => {
@@ -434,7 +472,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     await flush();
 
     expect(unmount).toHaveBeenCalledTimes(1); // terminal restored first
-    expect(writeControl.mock.calls.at(-1)?.[0]).toBe(DISABLE_BRACKETED_PASTE);
+    const controls = writeControl.mock.calls.map((c) => c[0] as string);
+    expect(controls).toContain(DISABLE_BRACKETED_PASTE); // paste + mouse restored on the signal teardown
+    expect(controls).toContain(DISABLE_MOUSE);
     expect(closeSpy).toHaveBeenCalledTimes(1);
     expect(exitSpy).toHaveBeenCalledWith(130);
     expect(createSessionStore(client.db).listSessions({ limit: 10 })[0]?.status).toBe('ended');

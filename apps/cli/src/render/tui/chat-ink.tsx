@@ -1,5 +1,12 @@
-import { Box, Static, Text, render, useInput } from 'ink';
-import { createElement, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
+import { Box, Static, Text, render, useInput, usePaste, useWindowSize } from 'ink';
+import {
+  createElement,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+} from 'react';
 
 import {
   driveJson,
@@ -28,6 +35,8 @@ import {
 } from './model-picker.js';
 import { ModelPickerView } from './model-picker-view.js';
 import { EXIT_CODES } from '../../process/exit-codes.js';
+import { detectOutputMode, isCiEnv } from '../../process/output-mode.js';
+import { resolveRenderMode } from '../render-mode.js';
 import { colorProps, dimProps } from './projection.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
 import {
@@ -35,6 +44,7 @@ import {
   editorFromText,
   emptyEditor,
   insertAtCursor,
+  pasteIsEditable,
   reduceChatKey,
   reduceEditorMotion,
   type EditorState,
@@ -93,12 +103,24 @@ import {
   formatSessionFooterWithMode,
   formatToolCall,
   formatTurnSummary,
+  liveScrollGeometry,
   reasoningLabelActive,
   sanitizeApprovalReason,
   sanitizeInline,
   streamingAbortHint,
   stripTerminalControls,
+  wrapTranscript,
 } from './chat-projection.js';
+import { TranscriptViewport } from './transcript-viewport.js';
+import {
+  INITIAL_SCROLL,
+  parseMouseScroll,
+  reduceScroll,
+  scrollMotionForKey,
+  WHEEL_LINES,
+  type ScrollGeometry,
+  type ScrollState,
+} from './scroll.js';
 import type { ReasoningEffort } from '@relavium/shared';
 
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
@@ -149,6 +171,10 @@ function TranscriptLine(props: Readonly<{ entry: TranscriptEntry; color: boolean
 
 interface ChatAppProps {
   readonly store: ChatStoreController;
+  /** `true` ⇒ mounted on ink 7's alternate screen (2.6.F Step 4b, ADR-0068 §c) — the transcript renders through the
+   *  scroll {@link TranscriptViewport} (constrained to the terminal size) instead of `<Static>`. Resolved by
+   *  `driveInk` (`resolveRenderMode`); absent/false ⇒ the inline renderer. */
+  readonly alternateScreen?: boolean;
   /** Handle a submitted turn; resolves when it settles. `message` is the full framed text sent to the model +
    *  persisted; the optional `display` is the compact transcript form (prose + a `[📎 …]` note for carried
    *  command outputs). When `display` is absent the two are identical. */
@@ -227,6 +253,19 @@ interface ChatViewProps {
   /** The in-flight `[c]` typed-reason capture buffer (Step 14) — when set (only while `approval` is pending), the
    *  approval prompt shows the reason input instead of the `[y]/[a]/[n]` hint. `| undefined` ⇒ the normal prompt. */
   readonly reasonDraft?: EditorState | undefined;
+  /** PRESENT ⇒ the full-screen **alt-screen** renderer (2.6.F Step 4b, ADR-0068 §c): the tree is constrained to
+   *  `rows` and the transcript renders through the scroll {@link TranscriptViewport} (wrapped at `cols`) instead of
+   *  ink's `<Static>` (the alt buffer has no scrollback). ABSENT ⇒ the default inline renderer (`<Static>` + native
+   *  scrollback). The owner (ChatApp / the Home's RootApp) passes it only when the resolved render mode is `alt`,
+   *  carrying the owner-held `scroll` state (4b-2) + the `onMeasure` geometry-lift the scroll keymap reduces against. */
+  readonly viewport?:
+    | {
+        readonly rows: number;
+        readonly cols: number;
+        readonly scroll: ScrollState;
+        readonly onMeasure: (geom: ScrollGeometry) => void;
+      }
+    | undefined;
 }
 
 /**
@@ -307,12 +346,37 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       </Box>
     );
   };
+  // The full-screen alt-screen renderer (ADR-0068 §c, 2.6.F Step 4b) renders the transcript through the scroll
+  // VIEWPORT (the alt buffer has no scrollback for `<Static>` to use); the inline renderer (default) keeps `<Static>`
+  // + native scrollback. In alt mode this Box FLEX-GROWS to fill the leftover height its OWNER (ChatApp / the Home's
+  // ChatRegion) leaves below any keyboard-owning overlay, inside their terminal-`rows`-bounded container — so the
+  // TranscriptViewport inside has a bound to flex-grow into, and the overlays are never pushed off-screen.
+  const viewport = props.viewport;
+  // Alt-screen only: flatten + width-wrap the transcript to display lines, MEMOIZED on (transcript, cols) so a
+  // streaming turn (which re-renders each frame with the SAME completed-transcript reference) reuses the prior wrap
+  // instead of re-wrapping all history every frame. `state.transcript` is a stable reference until an entry is
+  // appended (immutable session-view-model), so the memo hits across ticks and busts on a real append or a resize.
+  const wrappedTranscript = useMemo(
+    () => (viewport === undefined ? undefined : wrapTranscript(state.transcript, viewport.cols)),
+    [viewport?.cols, state.transcript],
+  );
   return (
-    <Box flexDirection="column">
-      {/* Completed transcript — ink Static prints each entry once, then it scrolls into terminal history. */}
-      <Static items={[...state.transcript]}>
-        {(entry, index) => <TranscriptLine key={index} entry={entry} color={color} />}
-      </Static>
+    <Box flexDirection="column" {...(viewport === undefined ? {} : { flexGrow: 1 })}>
+      {/* Completed transcript. Inline: ink `<Static>` prints each entry once → native scrollback. Alt-screen: the
+          {@link TranscriptViewport} flex-grows to the leftover height and renders only the visible window (tail-
+          following at Step 4b-1), since the alt buffer has no scrollback for `<Static>`. */}
+      {viewport === undefined || wrappedTranscript === undefined ? (
+        <Static items={[...state.transcript]}>
+          {(entry, index) => <TranscriptLine key={index} entry={entry} color={color} />}
+        </Static>
+      ) : (
+        <TranscriptViewport
+          lines={wrappedTranscript}
+          color={color}
+          scroll={viewport.scroll}
+          onMeasure={viewport.onMeasure}
+        />
+      )}
 
       {/* The in-flight turn: tool annotations + the streaming assistant text + a spinner. A `!`-shell command in
           flight (busyCommand set) emits no session tokens, so it shows a distinct LABELED line — what is running +
@@ -429,6 +493,21 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     setEditor(value);
   };
   const cancelFired = useRef(false);
+  // The alt-screen transcript SCROLL state (2.6.F Step 4b-2) — React-local here (the Home keeps it in the
+  // controller), ref-shadowed like the editor so a coalesced stdin chunk reduces off the latest. The live geometry
+  // (total wrapped lines + measured viewport rows) is lifted from `TranscriptViewport.onMeasure` into `scrollGeomRef`
+  // so a scroll key reduces against the SAME geometry the viewport windows with. Inert in the inline renderer.
+  const [scroll, setScroll] = useState<ScrollState>(INITIAL_SCROLL);
+  const scrollRef = useRef<ScrollState>(INITIAL_SCROLL);
+  const scrollGeomRef = useRef<ScrollGeometry>({ totalLines: 0, height: 0 });
+  const applyScroll = (next: ScrollState): void => {
+    scrollRef.current = next;
+    setScroll(next);
+  };
+  // NOTE (ADR-0068 §c force-scroll override): a per-tool approval prompt / human gate must never be HIDDEN by a
+  // paused scroll. In this layout it inherently cannot be — the [y]/[a]/[n] prompt renders in the FIXED live region
+  // BELOW the scrollable transcript viewport, so it is always on-screen regardless of the transcript scroll offset.
+  // A transcript force-follow would only yank the user off history they are reading, so it is deliberately NOT wired.
   const running = state.status === 'running';
   // The interactive `/` palette (2.5.C S3b) — `undefined` ⇒ closed. React-local here (the external-store Home
   // keeps it in HomeControllerState); both surfaces drive the SAME foldPaletteKey + render the SAME PaletteView.
@@ -858,9 +937,62 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       });
   };
 
+  // Bracketed paste on ink 7's native `usePaste` channel (separate from `useInput`, ADR-0068) — the whole paste is
+  // ONE `text` event, so a multi-line block appends verbatim and a pasted approval token can never reach
+  // `reduceApprovalKey` and answer the fail-closed floor (ADR-0057). Dropped unless the compose buffer is the active
+  // editable target (mirrors the keystroke gate + the Home's `pasteEditable`): no running turn / `!`-shell / submit
+  // in flight, no keyboard-owning overlay/submode, and NO pending approval (read FRESH from the store). This also
+  // closes the standalone-chat paste gap — it never enabled DECSET 2004 before; usePaste enables it natively now.
+  usePaste((text) => {
+    const pasted = text.replace(/\r\n?/g, '\n');
+    if (pasted.length === 0) return;
+    const snap = props.store.getSnapshot();
+    const editable = pasteIsEditable({
+      running: snap.state.status === 'running',
+      shellBusy: shellBusyRef.current,
+      submitBusy: submitBusyRef.current,
+      paletteOpen: paletteRef.current !== undefined,
+      searchOpen: searchRef.current !== undefined,
+      mentionOpen: mentionRef.current !== undefined,
+      modelPickerOpen: modelPickerRef.current !== undefined,
+      effortPickerOpen: effortPickerRef.current !== undefined,
+      reasonCaptureOpen: reasonDraftRef.current !== undefined,
+      approvalPending: snap.approval !== undefined,
+    });
+    if (!editable) return;
+    applyEditor((cur) => insertAtCursor(cur, pasted));
+  });
+
   // Ctrl-C reaches us (not the kernel) in raw mode — `reduceChatKey` maps it to `cancel` even mid-turn. Dispatch
   // /cancel at most once: cancelOnce() is idempotent, but a held Ctrl-C would otherwise fire redundant turns.
   useInput((char, key) => {
+    // Mouse reports (Step 5): the alt screen enables mouse reporting, so a wheel/click arrives in EVERY state —
+    // including while an overlay owns the keyboard. CONSUME every report HERE, ahead of the overlay routing below,
+    // so its raw bytes can never type into the prompt, the `/` palette filter, or the `[c]` reason capture. The wheel
+    // only SCROLLS when no overlay owns the keyboard (parity with the Home + the Step-4b-2 overlay gate).
+    if (props.alternateScreen === true) {
+      const mouse = parseMouseScroll(char);
+      if (mouse !== undefined) {
+        const overlayOwnsKeyboard =
+          reasonDraftRef.current !== undefined ||
+          paletteRef.current !== undefined ||
+          searchRef.current !== undefined ||
+          mentionRef.current !== undefined ||
+          modelPickerRef.current !== undefined ||
+          effortPickerRef.current !== undefined;
+        if (mouse !== 'ignore' && !overlayOwnsKeyboard) {
+          const geom = liveScrollGeometry(
+            props.store.getSnapshot().state.transcript,
+            windowSize.columns,
+            scrollGeomRef.current.height,
+          );
+          let next = scrollRef.current;
+          for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, mouse, geom);
+          applyScroll(next);
+        }
+        return;
+      }
+    }
     // Read `running` FRESH from the store (not the render closure) so a coalesced same-chunk event after a turn
     // settles sees the current status — matching the ref-shadow `editorRef`/`paletteRef` reads below.
     // Busy = a streaming turn OR a `!`-shell command in flight (the latter has no store status — read the ref so a
@@ -1025,6 +1157,30 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       props.store.note('cleared pending attachments');
       return;
     }
+    // Alt-screen transcript SCROLL (2.6.F Step 4b-2): PgUp/PgDn/Ctrl+Home/Ctrl+End reduce the scroll state against
+    // the lifted viewport geometry. Only in the alt renderer (`props.alternateScreen`) — inline keeps native
+    // scrollback, so these keys fall through to the editor there. The overlays + the `[c]` reason capture `return`
+    // ABOVE this, so they keep their keys; a plain pending approval is still REACHED here (it is consumed by
+    // reduceChatKey below), which is safe because scroll keys never overlap the [y]/[a]/[n] answer set. Read the REF
+    // for coalesced-chunk safety. Not gated on `isRunning` — you can scroll history WHILE a turn streams.
+    if (props.alternateScreen === true) {
+      const liveGeom = (): ScrollGeometry =>
+        // Reduce against LIVE geometry: wrap the store's CURRENT transcript at the keypress (rare, user-driven) for
+        // a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream burst makes
+        // `settle` resume-follow against a stale bottom (Step-4b-2 Sonnet review). `props.store` is a stable prop, so
+        // its snapshot is read fresh here regardless of any coalesced-chunk closure staleness.
+        liveScrollGeometry(
+          props.store.getSnapshot().state.transcript,
+          windowSize.columns,
+          scrollGeomRef.current.height,
+        );
+      // (Mouse reports are consumed at the TOP of this handler, ahead of the overlay routing — see above.)
+      const motion = scrollMotionForKey(key);
+      if (motion !== undefined) {
+        applyScroll(reduceScroll(scrollRef.current, motion, liveGeom()));
+        return;
+      }
+    }
     const action = reduceChatKey(char, key, editorRef.current.text, isRunning, approvalPending);
     switch (action.kind) {
       case 'cancel':
@@ -1133,8 +1289,31 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   });
 
+  // The live terminal size via ink 7's `useWindowSize` (2.6.F Step 4b): unlike a raw `process.stdout.columns` read,
+  // this RE-RENDERS the component on a SIGWINCH resize (ink's own resize handler only re-lays-out yoga width; it does
+  // not re-execute React, and the idle frame loop does not repaint), so the alt-screen container height, the wrap
+  // width, and the viewport's re-measure all track a resize — parity with the Home's `subscribeResize`. It falls
+  // back to 80×24 off a TTY (a harness), moot on a real TTY (the only place alt mounts, via the driveInk gate).
+  const windowSize = useWindowSize();
+  // Alt-screen (Step 4b, ADR-0068 §c): the outer container is bounded to the terminal `rows` so `ChatView`'s
+  // flex-grow viewport has a height to fill BELOW any keyboard-owning overlay (palette / search / …), and the
+  // transcript renders through the scroll {@link TranscriptViewport} instead of `<Static>`. Absent ⇒ the inline
+  // `<Static>` renderer, unbounded height.
+  const viewport =
+    props.alternateScreen === true
+      ? {
+          rows: windowSize.rows,
+          cols: windowSize.columns,
+          scroll,
+          // Lift the viewport's live geometry into the ref the scroll keymap reduces against (no re-render).
+          onMeasure: (g: ScrollGeometry): void => {
+            scrollGeomRef.current = g;
+          },
+        }
+      : undefined;
+
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" {...(viewport === undefined ? {} : { height: viewport.rows })}>
       <ChatView
         state={state}
         tick={tick}
@@ -1148,13 +1327,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         approval={approval}
         attachments={attachments}
         busyCommand={busyCommand}
-        // Live terminal width for the reasoning-panel row bound (2.5.H) — read fresh each render (parity with
-        // `nowMs={Date.now()}`); the frame loop re-renders, so a resize is picked up on the next tick.
-        // `stdout.columns` is typed `number` but is `undefined` at runtime off a TTY — the formatter's 80-col
-        // fallback covers that (moot here anyway: ChatApp only mounts on a TTY via the driveInk gate). Optional-chain
-        // `process.stdout` too: it can be undefined in a headless/redirected-stream harness, and `.columns` on
-        // `undefined` would throw.
-        columns={process.stdout?.columns}
+        // Live terminal width for the reasoning-panel row bound (2.5.H) — resize-tracked via `useWindowSize` above.
+        columns={windowSize.columns}
+        viewport={viewport}
         reasonDraft={reasonDraft}
         paletteOpen={
           palette !== undefined ||
@@ -1192,6 +1367,25 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
 
 /** The TTY ink driver: mount {@link ChatApp}, run the frame loop, and finalize on exit. Returns the drive OUTCOME
  *  ({@link ChatDriveOutcome}) so the re-drive loop can swap in a fresh session on `/clear` (ADR-0062 §7). */
+/**
+ * Sequence the `driveInk` exit: on `exited` RESOLVE, run `teardown` FIRST (unmount ink → restore raw mode + cursor)
+ * and only THEN resolve the `outcome`. On `exited` REJECT (an unexpected turn-core throw), `teardown` still runs (the
+ * `.finally`) but the `outcome` is skipped and the rejection propagates unchanged (→ the command maps it to exit 1) —
+ * the pre-2.6.F behavior, preserved. At 2.6.F Step 4b-3 the end-of-session SUMMARY is no longer written here: the
+ * alt-buffer exit moved UP to the hoisted `runReplLoop` (ADR-0068 §c), so the summary rides on the {@link
+ * ChatDriveOutcome} (`summaryText`) and the loop prints it AFTER the single alt-exit, on the primary buffer. Extracted
+ * from `driveInk` because it uses the real ink `render` (untestable without a TTY); this helper isolates the ordering.
+ */
+export function finalizeInkExit(
+  exited: Promise<void>,
+  ops: {
+    readonly teardown: () => void;
+    readonly outcome: () => ChatDriveOutcome;
+  },
+): Promise<ChatDriveOutcome> {
+  return exited.finally(ops.teardown).then((): ChatDriveOutcome => ops.outcome());
+}
+
 export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // The resume banner (2.N): print it once before mounting ink so it scrolls into the terminal history above
   // the live region — the TTY counterpart of the line drivePlain writes, so a resumed session is visibly a
@@ -1223,6 +1417,22 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // abort. Removed LAST in the finally (after unmount), so a Ctrl-C during unmount still hits us.
   // Hoisted so the SIGINT handler can unmount ink (restoring the terminal) before a forced exit.
   let instance: ReturnType<typeof render> | undefined;
+  // The full-screen render mode (2.6.F, ADR-0068 §e). driveInk only runs on a TTY (selectChatDriver), so the output
+  // mode is 'tui'; the resolver still short-circuits a 'plain' path to inline defensively, then applies
+  // `--no-alt-screen` → `[preferences].alt_screen` (ctx.altScreen) → the phase default (alt-ON since Step 4b-3). This
+  // value drives ONLY the `ChatApp` component prop (the transcript viewport vs `<Static>`); ink's render OPTION is a
+  // hard `false` (Step 4b-3), so ink toggles NO DECSET-1049 per session — the hoisted `runReplLoop` owns the single
+  // alt-buffer enter/exit, and the end-of-session summary rides on the outcome + prints after that exit (ADR-0068 §c).
+  const alternateScreen =
+    resolveRenderMode({
+      outputMode: detectOutputMode({
+        stdoutIsTty: ctx.io.stdoutIsTty,
+        json: ctx.global.json,
+        ci: isCiEnv(ctx.io.env),
+      }),
+      noAltScreenFlag: ctx.global.noAltScreen === true,
+      configAltScreen: ctx.altScreen,
+    }) === 'alt';
   let cancelRequested = false;
   const onSigint = (): void => {
     if (cancelRequested) {
@@ -1258,6 +1468,10 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     instance = render(
       createElement(ChatApp, {
         store: ctx.store,
+        // The COMPONENT prop `alternateScreen` (ADR-0068 §c) selects the transcript viewport (vs `<Static>`) — kept
+        // as the resolved mode. It is INDEPENDENT of ink's render OPTION below (now hard `false`, Step 4b-3): ink
+        // renders full-screen via log-update regardless, and the hoisted `runReplLoop` owns the alt-buffer toggle.
+        alternateScreen,
         onSubmit: ctx.processLine,
         shouldStop: ctx.shouldStop,
         onExit: () => resolveExit(),
@@ -1286,24 +1500,34 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         exitOnCtrlC: false,
         patchConsole: false,
         maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
+        // ink render OPTION is HARD `false` (2.6.F Step 4b-3, ADR-0068 §c): ink must NOT toggle DECSET-1049 per
+        // session — the hoisted `runReplLoop` enters the alt buffer ONCE above the loop and exits ONCE, so a `/clear`
+        // / reseat re-drive no longer flips the terminal (the flicker). ink still full-screen-renders via log-update.
+        alternateScreen: false,
       },
     );
 
-    return exited
-      .then(() => {
-        // The persistent final summary — written on any cooperative end (/exit, /cancel, keyboard Ctrl-C, or
-        // an external SIGINT, all of which resolve `exited`); an unexpected error reject skips it (→ exit 1).
-        // SUPPRESSED on a `/clear` swap (ADR-0062 §7): the old session's stats would clutter the transition — the
-        // fresh session's clearedNotice intro is the sole marker; a real end still prints the summary.
-        if (ctx.stopReason() === 'exit') ctx.io.writeOut(`${ctx.store.summaryText()}\n`);
-      })
-      .finally(() => {
+    return finalizeInkExit(exited, {
+      // Tear down + UNMOUNT (restores raw mode + cursor; with the option false it does NOT exit the alt buffer — the
+      // hoisted runReplLoop owns that). A throw here must not mask the outcome nor skip the SIGINT-listener removal.
+      teardown: () => {
         clearInterval(frame);
         unsubscribe();
-        instance?.unmount();
+        try {
+          instance?.unmount(); // best-effort terminal restore — a guarded unmount (parity with driveHome).
+        } catch {
+          // swallow — never mask the outcome nor skip the SIGINT-listener removal below.
+        }
         process.removeListener('SIGINT', onSigint);
-      })
-      .then((): ChatDriveOutcome => ({ kind: ctx.stopReason() }));
+      },
+      // The end-of-session summary rides on the outcome (Step 4b-3): the hoisted runReplLoop prints it AFTER the
+      // single alt-buffer exit, on the primary buffer (ADR-0068 §c). Only a real end (`/exit`) carries one; a `/clear`
+      // / reseat swap carries none (ADR-0062 §7 — the fresh session's clearedNotice intro is the sole marker).
+      outcome: () =>
+        ctx.stopReason() === 'exit'
+          ? { kind: 'exit', summaryText: ctx.store.summaryText() }
+          : { kind: ctx.stopReason() },
+    });
   } catch (err) {
     // render() threw synchronously — clean up the interval, subscription, and SIGINT handler set up above so
     // none leaks past the throw (the finally above is never reached when render() throws).

@@ -24,18 +24,16 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 
 ### Node.js runtime — dev/CI bump + supported-floor bump (the floor is now EOL)
 
-- [ ] **⚠ Supported floor (Node 20.12) is on an EOL Node line with no `better-sqlite3` prebuild
-  (2026-04-30).** As of 2026-07-05, Node 20 is EOL and `better-sqlite3` 12.x ships no prebuilt binary for
-  it, so a fresh `relavium` install on the *declared* floor already forces a C++ source build — partially
-  defeating [ADR-0021](../decisions/0021-node-sqlite-driver-better-sqlite3.md). **Two decoupled changes:**
-  **(A)** dev/CI bump `.nvmrc` 22 → 24 (Active LTS) — ~zero-risk, one line, no ADR, non-breaking; **(B)**
-  raise the supported floor 20.12 → `>=22` — a **SemVer-major** for published `relavium` that *restores*
-  prebuild coverage and unlocks ink 7 / `node:sqlite` / eslint 10 / vitest 5, and **reopens ADR-0021 → needs
-  a superseding ADR**. Recommendation: ship (A) now, do (B) in its own governed PR. **Full analysis, current
-  version table, per-dependency verdicts, migration plans, and open questions:
-  [phases/node-runtime-upgrade.md](phases/node-runtime-upgrade.md).** Out of scope for Phase 2.5.F.
-  **Scheduled → 2.6.F** (both halves: the immediate dev/CI bump + the governed floor decision).
-  *(package.json engines + .nvmrc + pnpm-workspace catalog @types/node + tech-stack.md; cross-phase)*
+- [x] **⚠ Supported floor (Node 20.12, EOL) → `>=22` — DONE (Phase 2.6.F Step 1, commit `367e4f5`).**
+  Node 20 was EOL (2026-04-30) with no `better-sqlite3` prebuild (forcing a C++ source build). **Both halves
+  shipped together** in Step 1: **(A)** `.nvmrc` 22 → 24 (Active LTS); **(B)** the supported floor 20.12 →
+  `>=22` — a **breaking release** for published `relavium` (pre-1.0 → a **0.x MINOR** bump, e.g. `0.2.0`, at
+  publish — *not* a SemVer-major) that restored `better-sqlite3` prebuild coverage and unlocked ink 7, and
+  superseded [ADR-0021](../decisions/0021-node-sqlite-driver-better-sqlite3.md) via
+  [ADR-0067](../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md) (`better-sqlite3`
+  re-affirmed over node:sqlite). `vitest` 5 / `eslint` 10 remain deferred to their own PRs (see the 2.6.F
+  deferral entries below). Analysis: [phases/node-runtime-upgrade.md](phases/node-runtime-upgrade.md).
+  *(package.json engines + .nvmrc + pnpm-workspace catalog @types/node + tech-stack.md + ci.yml floor leg)*
 
 
 ### Multimodal forward-obligations (carry the not-yet-coded pieces — see ADR-0031)
@@ -616,7 +614,10 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   read floor (`SENSITIVE_READ_DIR_SEGMENTS`) and the write floor (`PROTECTED_DIR_SEGMENTS`) match a `.relavium`
   segment anywhere, so they would refuse the sanctioned `tmpDir` scratch root — inert today (no call site wires
   `tmpDir`). Resolve (home-anchored match, or exclude the wired tmp root) before any caller passes `tmpDir`.
-  *(low · apps/cli/src/engine/tool-host/fs.ts + assemble.ts)*
+  **Scheduled → 2.6.M / 2.6.N** — promoted from latent to a **prerequisite**: 2.6.N's central ephemeral
+  artifact root (`~/.relavium/artifacts/<sessionId>/`) needs tool read/write into a `~/.relavium/` subdir, so
+  the home-anchored fix (protect the secrets-bearing root + project `.relavium/`, exclude the wired sanctioned
+  scratch subroot) must land with the `extra_roots`/`tmpDir` wiring. *(low→prereq · apps/cli/src/engine/tool-host/fs.ts + assemble.ts)*
 
 ## Phase-2 CLI (2.D) follow-ups
 
@@ -923,3 +924,93 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   built-in tools and MCP. Deferred until there is concrete demand beyond the existing built-in +
   MCP tool surface (both of which are sufficient for Phase-2.6 toolbelt parity). *(medium ·
   packages/core/src/tools; [Phase 4 — VS Code](../roadmap/phases/phase-4-vscode.md) / post-Phase-3)*
+
+### 2.6.F (full-screen renderer) — deferred by ADR-0067 / ADR-0068 (recorded 2026-07-09)
+
+- [ ] **`vitest` 5 + `eslint` 10 toolchain migrations.** The [ADR-0067](../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)
+  floor bump to Node `>=22` makes `vitest` 5 (needs `>=22.12`) *eligible*; `eslint` 10 (needs `>=20.19`)
+  was already reachable. Both are **explicitly out of Step-scope** — each is its own independent migration
+  PR with its own breakage risk, never riding the governed floor bump ([node-runtime-upgrade.md §5/§8](phases/node-runtime-upgrade.md)).
+  Not Phase-2.6 work; pick up when the toolchain is bumped on its own track. *(med · pnpm-workspace catalog + configs)*
+- [ ] **Mouse click / drag / text-selection / copy-on-select / hover / URL-open.** [ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md)
+  ships **wheel-only** mouse (DECSET 1000+1006, codes 64/65) in 2.6.F. Full mouse — click-to-position,
+  click-to-expand, drag text-selection + copy-on-select (pbcopy/wl-copy/OSC-52), hover, Cmd/Ctrl-click
+  URL/file-open — and per-terminal scroll-speed normalization pull in motion tracking (1002/1003), hit-test
+  geometry, a clipboard bridge, and per-terminal quirks. **Deferred to [Phase 3 — desktop](phases/phase-3-desktop.md)
+  / a later CLI polish PR.** *(med · apps/cli/src/render/tui + a clipboard bridge)*
+- [ ] **Flip the mouse-wheel default OFF → ON-with-opt-out.** [ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md)
+  ships wheel-scroll **opt-in** (`[preferences].mouse` default off) for the first release — keyboard
+  PgUp/PgDn covers the core need and mouse capture disables native copy-on-select. After real-terminal
+  validation (SSH/tmux/VS Code/iTerm2/Warp) with the 2.6.F harness, flip the default to **on-with-`--no-mouse`**
+  (the field norm). A tracked 2.6.F follow-up, not a defect. *(low · apps/cli config default + validation matrix)*
+- [ ] **Step 4b: bound / scroll the LIVE REGION when it alone exceeds the terminal height.** The alt-screen chat
+  bounds the whole tree to the terminal `rows` with the transcript viewport flex-growing above a FIXED live region
+  (prompt / approval / warnings / footer). When the live region ALONE is taller than the terminal (a huge pasted
+  multi-line prompt, or a big approval block + warnings on a short terminal), the viewport measures height ≤ 0 and
+  renders nothing (acceptable), but the fixed live region then overflows the `height={rows}` container — and the
+  observed failure mode is WORSE than a clean top-clip (Step-4b-1 Sonnet review, empirical): at `rows` 1–2 two
+  distinct fixed status lines visually MERGE onto one terminal row (character-level overlap), and at `rows` 3 a whole
+  fixed line (the compose prompt) silently vanishes — the alt buffer has no scrollback to reach the lost content.
+  Long-term give the live region its own bounded/scrollable box or guarantee the viewport a minimum height.
+  *(low · apps/cli/src/render/tui/chat-ink.tsx ChatView layout)*
+- [x] **Step 4b-2: harden `displayWidth` so it never UNDER-counts vs ink (grapheme-aware) — DONE (Step 4b-2).**
+  `displayWidth` + `wrapLogicalLine` now segment with `Intl.Segmenter` (Node 22, ADR-0067) + measure per grapheme
+  cluster: a VS16 `❤️` / enclosing keycap `1️⃣` counts 2 (was 1 — the dangerous under-count), a ZWJ family counts 2 (was
+  4), a flag/skin-tone counts 2, and a cluster is never split mid-glyph — so the 1-DisplayLine-==-1-real-row invariant
+  holds under the persisted-offset scroll. Pinned in viewport.test.ts.
+- [ ] **`isWide` still under-counts a few non-emoji EAW=Wide BMP punctuation code points (Step-4b-2 Sonnet review, NIT).**
+  The per-code-point `isWide` table misses a handful of East-Asian-Width=Wide BMP points immediately adjacent to ranges
+  it already handles: U+2329/232A angle brackets, U+268A–268F (Yijing monogram/digram symbols), and the U+4DC0–4DFF
+  Yijing Hexagram Symbols block (just past the 0x4DBF CJK-Ext-A cutoff). These render 2 cells but count 1 — the same
+  UNDER-count class the emoji-presentation fix closed, only for rare glyphs no chat realistically emits. Safe-direction
+  bias means over-counting is fine, so this is cosmetic. Fold the missing ranges into the deferred `Intl.Segmenter`/EAW
+  wrap-cache hardening below rather than a one-off patch. *(low · apps/cli/src/render/tui/viewport.ts)*
+- [x] **Step 4b-3: memoize the transcript wrap so an append/resize doesn't re-segment all of history — DONE (Step 4b-3).**
+  `wrapTranscript` (`chat-projection.ts`) memoizes per ENTRY in a `WeakMap<TranscriptEntry, { cols, lines }>` keyed on
+  the immutable, append-only entry object: an append is O(history) map lookups + ONE `wrapEntry` (the new entry), a
+  resize replaces each entry's single cached wrap, and it NEVER thrashes (holds exactly the live entries, GC-reclaimable)
+  — `viewport.ts` `wrapText` is pure again. (The first cut was a fixed-size per-line LRU; the Step-4b-3 Opus review
+  showed it thrashed to a 0% hit rate once a session exceeded the cache size, so it was replaced.) Pinned in
+  chat-projection.test.ts (incremental append + same-object-on-hit + a >8192-entry repeatability case).
+- [x] **Step 4b-3: route mid-session raw-`io` notices through the CURRENT session's view store so they survive alt mode
+  — DONE (Step-4b-3 Sonnet fold).** The budget-cap **`onBudgetWarning`** (fires mid-turn) and the `/clear`/reseat
+  **MCP-skipped** diagnostic were writing via raw `io.writeErr` WHILE the hoisted alt buffer was entered, so ink's next
+  frame overwrote them → LOST on the default full-screen path. Fixed with a file-private `liveSessionNotice` pointer
+  that `driveOneSession` sets to the live session's `store.notice` for its lifetime (a REPL runs one session at a time)
+  and clears in its finally: all four `onBudgetWarning` wiring sites now route through it (falling back to raw `io` only
+  when no session is live), so the warning renders as a transcript notice. The re-drive MCP-skipped diagnostic (which
+  fires between sessions, before the sink is live) routes to the fresh session's `store.notice` directly via the new
+  `mcpSkippedLines` helper. Pinned by a live-routing test (break-verified) + the fallback test + a `mcpSkippedLines` unit test.
+- [x] **Step 4b-3: keep the alt buffer entered across a `/clear` / `/models`-reseat re-drive (inter-session flicker) — DONE (Step 4b-3).**
+  Fixed by the HOIST (chosen over DEC-2026, which cannot span a primary↔alt switch): `driveInk` now passes the ink
+  render option `alternateScreen:false` (ink toggles the buffer no more — it still full-screen-renders via log-update),
+  and the hoisted `runReplLoop` (`withHoistedAltScreen`) enters DECSET-1049 ONCE above the per-session loop, clears
+  between re-drives, and exits ONCE, so a `/clear` / reseat no longer flips the terminal. Exit-safety net (ink's own
+  1049-exit is now inert): idempotent `restore()` on the finally + a `process.on('exit')` net (the second-SIGINT force
+  quit) + explicit SIGTERM/SIGHUP/SIGQUIT handlers. Verified against ink 7.1.0's compiled build; unit-tested
+  (`withHoistedAltScreen`, 10 cases); real-TTY signal validation (double-Ctrl-C, `kill -TERM`) is a manual PR-time check.
+- [ ] **Step 4b-3: on an EXTERNAL SIGTERM/SIGHUP/SIGQUIT, unmount the live ink instance BEFORE the alt-exit (avoid the
+  final-frame dump on the primary buffer).** With the ink render option `alternateScreen:false` (Step 4b-3), the hoist's
+  signal handler `alt.restore()`s (DECRST-1049 → primary) then `process.exit(128+signo)`; `process.exit` is intercepted
+  by ink's signal-exit, which fires ink's `unmount` → ink renders its FINAL frame onto stdout — now the PRIMARY buffer —
+  leaving a screenful of transcript above the recovered shell prompt (Step-4b-3 Opus review). COSMETIC (the terminal IS
+  recovered: buffer + cursor + raw mode + bracketed paste all restored; external-signal-only, not a keyboard path). The
+  clean fix is to thread the current session's `instance.unmount` up to the hoist (driveHome parity) and call it BEFORE
+  `alt.restore()`, so ink's final frame lands on the alt buffer that is then discarded — a small cross-seam wiring
+  (ChatDriveContext `onInstance` → a loop ref → the signal handler). *(low · apps/cli/src/{commands/chat.ts,render/tui/chat-ink.tsx})*
+- [ ] **`relavium run` TUI → full-screen + retained scrollable run-history.** [ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md)
+  scopes the 2.6.F full-screen renderer to the **Home + `chat`**; the `relavium run` `RunApp` stays inline
+  (no `useInput` → kernel `Ctrl-C → SIGINT` cooperative cancel preserved). Making it full-screen + giving it
+  a retained, scrollable per-node token history requires the **COOKED→RAW cancel rework** (an in-process
+  SIGINT handler, as `ChatApp` has) — the single riskiest cancel change, deliberately kept out of 2.6.F.
+  **Owner:** a focused follow-up (candidate 2.6.G run-detail browser, or its own PR) with a real-TTY cancel
+  test. *(med · apps/cli/src/render/tui/{ink-renderer.ts,RunApp.tsx,run-view-model.ts})*
+- [ ] **Bracketed-paste teardown symmetry — drop the redundant Home `DISABLE_BRACKETED_PASTE` write (Step-2 Sonnet
+  review).** ink 7's `App` has an unconditional unmount-cleanup that writes `ESC[?2004l` on EVERY unmount (verified
+  against ink 7.1.0 source), so the Home's manual defensive `writeControl(DISABLE_BRACKETED_PASTE)` on the
+  signal/exit teardown (`drive-home.tsx`) is redundant, and the standalone `ChatApp` correctly relies on ink's
+  cleanup with no manual write (an asymmetry, not a bug). When **2.6.F Step 4** re-introduces `writeControl` for the
+  alt-screen (DECSET 1049) control writes, resolve this cleanly: drop the redundant Home paste-DISABLE (and its
+  `home-input` `DISABLE_BRACKETED_PASTE` export + the drive-home test assertion) so both surfaces rely on ink's
+  unmount cleanup uniformly. Low; deferred to ride Step 4's `writeControl` rework rather than churn it twice.
+  *(low · apps/cli/src/home/drive-home.tsx + render/tui/home-input.ts; Step 2.6.F-4)*

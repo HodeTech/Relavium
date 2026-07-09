@@ -25,6 +25,14 @@ describe('config schemas', () => {
     expect(GlobalConfigSchema.safeParse({ update_channel: 'nightly' }).success).toBe(false);
   });
 
+  it('accepts a boolean [preferences].alt_screen; rejects a non-boolean (2.6.F / ADR-0068)', () => {
+    expect(GlobalConfigSchema.safeParse({ preferences: { alt_screen: false } }).success).toBe(true);
+    expect(GlobalConfigSchema.safeParse({ preferences: { alt_screen: true } }).success).toBe(true);
+    expect(GlobalConfigSchema.safeParse({ preferences: { alt_screen: 'yes' } }).success).toBe(
+      false,
+    );
+  });
+
   it('accepts a project.toml / workspace.toml shape', () => {
     expect(
       ProjectConfigSchema.safeParse({

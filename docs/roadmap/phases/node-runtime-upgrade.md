@@ -1,8 +1,15 @@
 # Node.js runtime upgrade — analysis & deferred decision (off Node 22 / floor 20.12)
 
-> Status: **Analysis / deferred maintainer decision.** NOT scheduled into any phase; NOT part of
-> Phase 2.5.F. This note captures the findings so the decision isn't lost — acting on it is a
-> separate, governed change (see [§6 Governance](#6-governance--what-acting-on-this-requires)).
+> Status: **✅ Acted on by [ADR-0067](../../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)
+> (2026-07-09), implemented in Phase 2.6.F Step 1.** This note is retained as the source analysis behind
+> that decision: the floor was raised `20.12 → >=22`, dev/CI `.nvmrc` `22 → 24`, and `better-sqlite3` was
+> re-affirmed (node:sqlite still rejected — RC + no `drizzle-kit` adapter + breaks the 2.5.I busy-retry).
+> Options **A** (dev/CI bump) and **B** (floor bump) were shipped together in that Step. `vitest` 5 /
+> `eslint` 10 remain deferred to their own PRs (§5/§8).
+> **Version framing correction:** the analysis body below calls the floor bump a "SemVer-major"; ADR-0067
+> refined this — `relavium` is **pre-1.0** (v0.1.x), so under SemVer §4 the breaking floor change is a
+> **0.x MINOR** bump (e.g. `0.2.0`), not a 1.0.0 major. Read every "SemVer-major" below as "breaking 0.x
+> MINOR release".
 >
 > Snapshot date: **2026-07-05.** Every version/EOL number below is a point-in-time fact from that
 > day (live web + [`endoflife.date/nodejs`](https://endoflife.date/nodejs) + npm/GitHub). Node

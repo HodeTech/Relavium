@@ -25,6 +25,7 @@ import {
   editorFromText,
   emptyEditor,
   insertAtCursor,
+  pasteIsEditable,
   reduceChatKey,
   reduceEditorMotion,
   type ChatKey,
@@ -67,7 +68,7 @@ import {
   tokenizeCommand,
   type ShellCommand,
 } from './shell.js';
-import { isPasteEnd, isPasteStart, reduceHomeKey, type HomeKey } from './home-input.js';
+import { reduceHomeKey, type HomeKey } from './home-input.js';
 import {
   foldPaletteKey,
   INITIAL_PALETTE_STATE,
@@ -241,6 +242,10 @@ export interface HomeController {
   readonly getSnapshot: () => HomeControllerState;
   /** Dispatch one `useInput` event (the single raw-mode owner forwards every key here). */
   readonly handleKey: (input: string, key: HomeKey & ChatKey & PaletteKey) => void;
+  /** Handle a bracketed paste as ONE native event (ink 7 `usePaste`, a channel separate from `useInput`):
+   *  insert it into the prompt buffer, or drop it while a keyboard-owning overlay/submode, a pending approval,
+   *  or a mid-turn/build/`!`-shell/submit state is active. Paste never reaches the key reducers. */
+  readonly handlePaste: (text: string) => void;
   /** Tear down a live chat session (if any), for the signal handler — idempotent, never the shared db. */
   readonly teardownActive: () => Promise<void>;
 }
@@ -274,7 +279,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   let exiting = false; // set on the clean-exit / error / signal paths — guards deferred reads of a closed db
   let tearingDown: HomeChatSession | undefined;
   let activeTeardown: Promise<void> | undefined; // the in-flight teardown of `tearingDown`, so a signal can await it
-  let pasting = false; // inside a bracketed paste (DECSET 2004) — content is buffered literally, never submitted
   let buildInFlight: Promise<HomeChatSession> | undefined; // a `loading`-state build, so a signal can reap it
   // A monotonic token: a `/doctor` run captures it at start and lands its report only if it is still current —
   // any prompt edit / submit (which bumps it) invalidates a stale in-flight run so an old report can't reappear.
@@ -310,6 +314,24 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   /** Whether a chat turn is streaming — paste content (like every other key) is gated mid-turn. */
   const chatRunning = (): boolean =>
     state.mode === 'chat' && state.session?.store.getSnapshot().state.status === 'running';
+  /** Whether a native bracketed paste (ink 7 `usePaste`) may append to the prompt buffer — only when the main
+   *  Home/chat prompt is the active editable target: no build/turn/`!`-shell/submit in flight, no keyboard-owning
+   *  overlay/submode (palette, reverse-search, `@`-mention, `/models`, `/effort`, the `[c]` reason capture), and
+   *  NO pending approval (a paste must never reach the fail-closed approval floor — ADR-0057). */
+  const pasteEditable = (): boolean =>
+    state.mode !== 'loading' && // the build window is Home-only; every other gate is the SHARED paste predicate
+    pasteIsEditable({
+      running: chatRunning(),
+      shellBusy: state.shellBusy,
+      submitBusy: state.submitBusy,
+      paletteOpen: state.palette !== undefined,
+      searchOpen: state.search !== undefined,
+      mentionOpen: state.mention !== undefined,
+      modelPickerOpen: state.modelPicker !== undefined,
+      effortPickerOpen: state.effortPicker !== undefined,
+      reasonCaptureOpen: state.reasonDraft !== undefined,
+      approvalPending: state.session?.store.getSnapshot().approval !== undefined,
+    });
   const set = (patch: Partial<HomeControllerState>): void => {
     state = { ...state, ...patch };
     notify();
@@ -339,7 +361,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         if (activeTeardown === td) activeTeardown = undefined;
         tearingDown = undefined;
         cancelFired = false;
-        pasting = false; // a lost paste-end marker must not leak the latch into the returned Home
         if (exiting) return; // an error/exit closed the db while we awaited teardown — do not read it
         set({
           session: undefined,
@@ -402,7 +423,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           })
           .catch(() => undefined);
         cancelFired = false; // the fresh session starts with a clean cancel latch (parity with endChat)
-        pasting = false; // a lost paste-end marker must not leak the latch into the fresh chat
         fresh.store.notice(clearedNotice(oldId)); // name the prior (resumable) conversation in the fresh transcript
         set({
           session: fresh,
@@ -474,7 +494,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           })
           .catch(() => undefined);
         cancelFired = false; // the reseated session starts with a clean cancel latch (parity with clearChat)
-        pasting = false; // a lost paste-end marker must not leak the latch into the reseated chat
         next.store.notice(
           modelSwitchNotice(target.modelId, next.store.getSnapshot().state.turnCount),
         );
@@ -583,7 +602,6 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       (err: unknown) => {
         if (buildInFlight === build) buildInFlight = undefined;
         if (exiting) return;
-        pasting = false; // a paste latched during the build window must not leak into the returned Home
         set({
           errorText: err instanceof Error ? err.message : String(err),
           pendingMessage: '',
@@ -1447,51 +1465,21 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       return state;
     },
     handleKey(input, key) {
-      // Bracketed paste (DECSET 2004): the markers bound a literal block, so a pasted multi-line YAML appends
-      // verbatim (newlines kept) instead of an embedded newline submitting early. The markers themselves never
-      // reach the buffer; content between them is appended literally with no key interpretation.
-      if (isPasteStart(input)) {
-        pasting = true;
-        return;
-      }
-      if (isPasteEnd(input)) {
-        pasting = false;
-        return;
-      }
-      if (pasting) {
-        // Escape hatch: Ctrl-C ALWAYS breaks out (a lost paste-end marker must never trap the user with no way
-        // to exit/submit) — clear the latch and fall through to the normal dispatch (Home → exit, chat → /cancel).
-        if (!(key.ctrl === true && input === 'c')) {
-          // Literal content (newlines kept) ONLY when the buffer is editable — drop it while a session builds
-          // (`loading`), a chat turn streams (`chatRunning`), or the `/` palette is open, exactly as the keystroke
-          // gate does, so paste never diverges from typing (type-ahead is deferred, 2.5.B). CRLF/bare-CR are
-          // normalized to LF (matching the reduceEditorMotion append), so a pasted line break is a real newline in
-          // the buffer + sent to the model, never a stray '\r' the display strips but the transcript keeps.
-          // `state.search === undefined` / `state.mention === undefined`: while the Ctrl+R reverse-search or the `@`
-          // completion submode owns the keyboard, a paste is dropped (like the palette) — it must not leak into the
-          // hidden input buffer behind the overlay.
-          const editable =
-            state.mode !== 'loading' &&
-            !chatRunning() &&
-            !state.shellBusy && // a paste while a `!`-command runs must not leak into the buffer (input is gated)
-            !state.submitBusy && // ditto a submit/compaction in flight (ADR-0062) — input is gated during it
-            state.palette === undefined &&
-            state.search === undefined &&
-            state.mention === undefined &&
-            state.modelPicker === undefined && // a paste while the picker owns the keyboard must not leak into the buffer
-            state.effortPicker === undefined; // ditto the `/effort` overlay
-          const pasted = input.replace(/\r\n?/g, '\n');
-          if (pasted.length > 0 && editable) {
-            // Match the typed-edit path: appending clears any stale `/doctor` report + invalidates an in-flight run.
-            doctorRunId += 1;
-            set({ input: insertAtCursor(state.input, pasted), notice: undefined });
-          }
-          return;
-        }
-        pasting = false;
-      }
-      // Past the paste latch: the open-overlay + mode router owns the rest (palette → /models → /effort → chat → Home).
+      // Bracketed paste is handled natively by ink 7's `usePaste` → `handlePaste` (a channel separate from
+      // `useInput`), so a pasted multi-line block never arrives here char-by-char and a pasted approval token can
+      // never reach the approval reducer. Every real keystroke is dispatched by the open-overlay + mode router.
       dispatchKey(input, key);
+    },
+    handlePaste(text) {
+      // ink 7 delivers a whole bracketed paste as ONE native event; CRLF/CR → LF (matching a typed newline).
+      // Dropped (not char-inserted) unless the main prompt is the active editable target — `pasteEditable` mirrors
+      // the old bracketed-paste gate and additionally refuses a pending approval (the fail-closed floor, ADR-0057)
+      // and the `[c]` reason capture. Type-ahead behind a busy/overlay state is deferred (2.5.B).
+      const pasted = text.replace(/\r\n?/g, '\n');
+      if (pasted.length === 0 || !pasteEditable()) return;
+      doctorRunId += 1; // an append clears a stale `/doctor` report + invalidates an in-flight run, like a typed edit
+      history = resetHistoryNav(history); // a paste is a real edit ⇒ end history nav (parity with append/backspace/kill)
+      set({ input: insertAtCursor(state.input, pasted), notice: undefined });
     },
     async teardownActive() {
       exiting = true; // terminating: a deferred endChat/clearChat skips the (about-to-close) db; an in-flight build reclaims itself

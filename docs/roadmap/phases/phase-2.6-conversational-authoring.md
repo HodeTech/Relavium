@@ -4,16 +4,18 @@
 > per-tool approval / mode system), which is **complete** (M2.5-4, PR #69, 2026-07-08), so this phase is
 > now unblocked.
 >
-> **Rewritten 2026-07-08**, last revised 2026-07-08 (2.6.N child-session orchestration added,
-> UX polish, syntax highlighting, expanded locales, Home mockup — after the Phase-2.5 close),
-> expanding the original authoring-and-parity scope
+> **Rewritten 2026-07-08**, last revised **2026-07-09** (child-session orchestration split into
+> **2.6.N / 2.6.O / 2.6.P** along a safety gradient; the artifact-directory two-root model + the
+> `schema_version` 1.1 additive-migration decision finalized; UX polish, syntax highlighting, expanded
+> locales, Home mockup — after the Phase-2.5 close), expanding the original authoring-and-parity scope
 > into the phase that makes the CLI a **first-class, Home-centric product**. The rewrite folds three
 > inputs: the maintainer's CLI-experience findings, a competitor research pass (opencode, Claude Code,
 > Codex CLI, Gemini CLI, Temporal/`gh run`-class run tooling, Aider/Goose/Amp/Cursor/Copilot), and a
 > line-by-line triage of [../deferred-tasks.md](../deferred-tasks.md) (the now-doable items are pulled in
 > below, each mapped to a workstream). Workstreams **2.6.A–E keep their original identities** (they are
-> referenced by ADR-0058/0059/0060 and the deferred-tasks doc); **2.6.F–N were added**
-> (2.6.N added 2026-07-08 by maintainer decision, moving child-session orchestration from Phase 3).
+> referenced by ADR-0058/0059/0060 and the deferred-tasks doc); **2.6.F–P were added**
+> (child-session orchestration moved from Phase 3 by maintainer decision 2026-07-08, then split N/O/P
+> on 2026-07-09).
 >
 > **Note (2026-07-07):** **2.6.C**'s mid-session `/models` model **reseat shipped early in 2.5.G** (ADR-0059,
 > PR #66, merged 2026-07-07); 2.6.C is retained for the residual per-model cost-breakdown read and as the
@@ -34,7 +36,7 @@ floor, and git-committable YAML artifacts.
 
 ## TL;DR
 
-Phase 2.6 makes bare `relavium` a **full-screen, Home-centric** product. Key outcomes in 6 milestones:
+Phase 2.6 makes bare `relavium` a **full-screen, Home-centric** product. Key outcomes in 7 milestones:
 
 - **Conversational authoring** — a free-text request produces a strict-valid `.relavium.yaml`,
   authored and run from the Home; `{{ctx.*}}` interpolation and `agent run --input` land.
@@ -51,7 +53,9 @@ Phase 2.6 makes bare `relavium` a **full-screen, Home-centric** product. Key out
 - **Settings, theming, localization** — `/settings` over the config-write contract; three built-in
   themes (default / high-contrast / colorblind-safe); `en`, `es`, `tr`, `fr`, `de` i18n with CI key-parity.
 - **Onboarding v2** — two auth paths: BYOK (live) + Relavium-account stub (disabled, Phase 5).
-- **14 workstreams** (2.6.A–N), substrate-first: 2.6.F (full-screen TUI + Node 22 floor) runs first.
+- **16 workstreams** (2.6.A–P), substrate-first: 2.6.F (full-screen TUI + Node 22 floor) runs first;
+  agent orchestration is split by safety gradient into 2.6.N (safe mechanism) → 2.6.O (model-generated
+  execution, own security review) + 2.6.P (`subworkflow` node + schema v1.1).
 
 ## Goal
 
@@ -100,7 +104,8 @@ and syntax-highlighted rendering** — all without breaking the `--json` / CI / 
 
 The workstreams below: the authoring spine (2.6.A/B/D), the platform + full-screen TUI foundation (2.6.F),
 the Home management surfaces (2.6.G/H/I/J/K), the experience arms (2.6.C residual, 2.6.E, 2.6.L, 2.6.M),
-the **child-session and nested execution spine** (2.6.N),
+the **child-session and nested execution spine** (2.6.N foundation / 2.6.O generation + parallel /
+2.6.P `subworkflow` node + schema v1.1),
 and the deferred-tasks items each workstream absorbs (mapped in the
 [pull-in table](#deferred-tasks-pulled-into-this-phase)).
 
@@ -290,7 +295,7 @@ render-v2 (2.6.M) all build on it.
 
 - **Node dev/CI bump now**: `.nvmrc` 22 → 24 (Active LTS) — one line, non-breaking, no ADR.
 - **Supported-floor decision** *(maintainer decision, recommended: take it early in-phase)*: raise the
-  published floor 20.12 → `>=22` — a SemVer-major for `relavium` that restores `better-sqlite3` prebuild
+  published floor 20.12 → `>=22` — a breaking release for `relavium` (pre-1.0 → a 0.x MINOR bump, e.g. `0.2.0`, per [ADR-0067](../../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)) that restores `better-sqlite3` prebuild
   coverage (Node 20 is EOL) and unlocks ink 7 / `node:sqlite` / eslint 10 / vitest 5. Full analysis:
   [node-runtime-upgrade.md](node-runtime-upgrade.md). This **supersedes
   [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)** → its own governed PR behind a
@@ -328,7 +333,7 @@ render-v2 (2.6.M) all build on it.
 
 **Acceptance:** bare `relavium` on a TTY opens the full-screen Home; scroll + auto-follow work; the
 `--json` / CI / non-TTY paths are byte-identical to today (harness-proven); the floor-bump ADR is Accepted
-and released as a SemVer-major with migration notes; the component harness runs in CI with at least the
+and released as a breaking 0.x MINOR bump (e.g. `0.2.0`, per ADR-0067) with migration notes; the component harness runs in CI with at least the
 frozen-clock regression pinned. **Required ADRs:** the ADR-0021-superseding floor ADR + a full-screen
 renderer & TUI-harness ADR.
 
@@ -604,9 +609,13 @@ and the first localized agentic CLI (a genuine differentiator — competitor i18
 - **i18n foundation**: an in-house string catalog (data ≠ code — zero conditional logic in translation
   data; no runtime dependency expected, else ADR); `[preferences].language`; locales **`en`, `es`, `tr`,
   `fr`, `de`** in-phase; a CI **key-parity test** (fails on missing/extra keys across all locales)
-  + a dead-string lint — landing the deferred i18n standard as a `docs/standards/` entry. Acceptance
-  includes IME-safe input and wide-character-aware layout. Pluralization rules for German and French
-  are handled by a minimal in-house pluralization helper (selecting key variants by count); Spanish
+  + a dead-string lint — landing the deferred i18n standard as a `docs/standards/` entry. The five
+  in-phase locales are all **Latin-script**, so in-phase rendering needs only accent-safe (valid Unicode,
+  no special handling) and combining-character-safe layout; full **IME composition** and **wide-character /
+  bidi** handling are **not** in-phase acceptance gates. The catalog architecture stays CJK/RTL-ready
+  (data ≠ code, no hardcoded width assumptions) so a future CJK or RTL locale needs no re-architecture —
+  a deliberate forward-compat posture, not an in-phase deliverable. Pluralization rules for German and
+  French are handled by a minimal in-house pluralization helper (selecting key variants by count); Spanish
   and French accented characters are valid Unicode in the terminal and require no special handling.
 - Diagnostics/`--json` output stays English-stable (machine contract); localization applies to the
   interactive surfaces.
@@ -672,16 +681,9 @@ sensitive-read floors).
   (path prefix / host / MCP server) instead of tool id alone, and give `mcp_call`/`web_search` a structured
   `{server, tool}`/query preview so their blank-preview once-only downgrade becomes a real reviewable
   grant.
-- **Dynamic `invoke_workflow` from within a workflow agent node** *(analysis gate)*: the
-  `invoke_agent` tool is wired for chat in 2.6.N, and the `subworkflow` node provides static
-  workflow composition. An open question is whether a running workflow's agent node can
-  **dynamically** call `invoke_workflow` as a tool (just as a chat agent calls `invoke_agent`),
-  selecting a target workflow at runtime based on intermediate results. This would enable
-  orchestrator workflows that branch to different sub-workflows based on model judgment. The
-  ADR must evaluate: (a) whether `invoke_workflow` is a separate tool or an overload of
-  `invoke_agent` with a `target: 'workflow'` discriminator, (b) the event namespace for nested
-  workflow runs within a parent run, and (c) the cost/resource governance boundary. Decision
-  deferred to the 2.6.N implementation analysis step.
+- **Dynamic `invoke_workflow` from within a workflow agent node** — **moved to 2.6.P** (workflow
+  composition), where it sits with the `subworkflow` node and the nested-run event namespace. (`invoke_agent`
+  is wired for chat in 2.6.N; the dynamic runtime `invoke_workflow` question is analyzed in 2.6.P's ADR.)
 - **Default chat agent grant review**: widen the built-in agent's grant to the new idempotent read tools
   (search/find/todo); write/exec/egress stay opt-in via mode + approval.
 - **Curl/wget as web-search substrate** *(research item)*: evaluate whether `curl` / `wget` / `httpie` /
@@ -701,151 +703,209 @@ toggle behind a passed security review; the approval cache is target-scoped; the
 research record is closed or explicitly deferred per item. **Required ADR:** toolbelt additions +
 tool-render/approval-preview contract (extends ADR-0029/ADR-0057 posture).
 
-### 2.6.N — Child-session spawn, nested workflows, standardized agent I/O
+### 2.6.N — Child-session foundation: catalog spawn, standardized I/O, lineage
 
-Close the largest deliberate parity gap: let a chat session **spawn sub-agents and invoke
-workflows** — both user-initiated and model-driven — with standardized input/output contracts,
-parent-child lineage tracking, and auto-cleaned temporary artifacts. This workstream is new
-(moved from Phase 3 into 2.6 by maintainer decision, 2026-07-08) and requires a dedicated ADR
-before implementation begins.
+Close the largest deliberate parity gap — in three workstreams (**2.6.N / 2.6.O / 2.6.P**, split from a
+single over-large 2.6.N on 2026-07-09 along a safety gradient: **N is the safe mechanism**, **O the
+high-risk model-generated-and-executed half** with its own security review, **P the schema-versioned
+workflow-composition half**). 2.6.N is the foundation: let a chat session spawn a **catalog-resolved**
+sub-agent — user-initiated or model-driven — with a standardized I/O contract, parent-child lineage, cost
+roll-up, abort propagation, and the host artifact-store substrate. **On-the-fly generation is deliberately
+NOT here** (2.6.O); **the authored `subworkflow` node is NOT here** (2.6.P). Requires a dedicated ADR
+before implementation.
 
 **Tasks:**
 
-- **Child-session ADR**: record the architecture for parent-child execution relationships —
-  the child spawn lifecycle (start → run → collect → cleanup), the `parentSessionId` /
-  `parentRunId` schema additions to `agent_sessions` and `runs`, the cost-attribution model
-  (child costs roll up to the parent), the abort/cancel propagation contract (parent cancel
-  cascades to children; child failure surfaces in parent without killing the parent), and the
-  context-sharing model (a child agent receives the parent's task description as a system prompt,
-  never the full transcript). Extends ADR-0024 (AgentSession) and ADR-0036 (event bus); amends
-  the database schema additively.
-  **Analysis gate:** the child's intermediate steps (tool calls, reasoning, partial outputs)
-  must be visible to the parent in some form — the ADR must decide whether the parent sees a
-  real-time stream of child events (inline in the parent transcript), a terminal summary only,
-  or a collapsible detail panel. The trade-off is UX richness vs transcript noise.
-- **Standardized agent/workflow I/O contract**: define a canonical I/O contract that every agent
-  and workflow honors — a structured input (task description + optional context and file references)
-  and a structured output (result text + optional artifact references + optional error). The exact
-  schema is authored once in `@relavium/shared`, consumed by the engine's `invokeAgent` delegate,
-  and documented in its **one canonical reference spec** under `docs/reference/` (the phase doc
-  never restates it). Existing workflow `inputs`/`outputs` map to this contract: a workflow's
-  declared `inputs` schema is the validation gate; its `output_mapping` shapes the result. Agents
-  without declared schemas get a free-form text contract. Standardized I/O means any agent can
-  invoke any other without ad-hoc prompt engineering — the contract is the interop surface.
-- **Engine: `invokeAgent` delegate wired for chat**: inject `ctx.invokeAgent` into the
-  `AgentSession`'s tool dispatch context. When an agent calls `invoke_agent` (or the model emits
-  it autonomously for a complex sub-task), the engine:
-  1. **Resolves or generates the target agent.** If the model names an agent slug or path that
-     exists in the catalog (`.relavium/agents/` or the built-in set), that agent is used. If
-     the model describes a task that needs a **new, one-off agent** (e.g. "analyze this CSV and
-     find outliers"), the engine uses the conversational authoring infrastructure (2.6.B) to
-     generate a valid `.agent.yaml` on the fly — written to
-     `~/.relavium/artifacts/<parentSessionId>/agents/<uuid>.agent.yaml`, validated against the
-     agent schema, and immediately spawned. The model can also generate and invoke a one-off
-     `.relavium.yaml` workflow via the same path. This is a critical capability: the model is
-     not limited to pre-existing catalog agents — it can **compose tooling on demand** for the
-     task at hand.
-  2. Creates a child `AgentSession` (or child `WorkflowEngine` run for a workflow) with
-     `parentSessionId` set, bound to the resolved or generated agent/workflow.
-  3. Injects the standardized input (task + context) as the child's first user message.
-  4. Runs the child to completion, collecting its output.
-  5. Returns the standardized result to the parent agent's turn as a tool result.
-  6. Records the child session/run in `history.db` with full lineage.
-  The parent agent sees the child's result as structured output and continues its turn.
-  **Analysis gate:** the model's ability to generate valid agent/workflow YAML on the fly
-  depends on the conversational authoring knowledge pack (2.6.B) and the Zod schema
-  validation loop. A dedicated analysis step during 2.6.N implementation must verify: (a)
-  the generation success rate across a representative task corpus, (b) that malformed
-  generated YAML never reaches execution (the `validateAuthoredWorkflow` pre-flight is the
-  gate), (c) that the generation latency is acceptable for an interactive chat turn, and (d)
-  that generated agents never carry secrets or unauthorized tool grants (they inherit the
-  parent's tool policy, narrowed, never escalated).
-- **Engine: `invokeWorkflow` for chat**: same pattern for workflows — resolves an existing
-  `.relavium.yaml` from the catalog **or** generates one on demand via the authoring
-  infrastructure, creates a child `WorkflowEngine` run with `parentRunId` set, streams its
-  progress as inline status events in the parent transcript, returns the workflow's terminal
-  output. A workflow invoked from chat runs **foreground** (the parent turn blocks until the
-  workflow completes). Detached execution is a Phase 3 follow-up.
-- **Parallel sub-agent spawn**: when the parent agent issues multiple `invoke_agent` calls within
-  a single turn (e.g. "review the frontend" + "review the backend" + "audit the database schema"),
-  the engine runs them **concurrently** — each child session starts independently, streams its
-  status into the parent transcript as parallel inline indicators, and the parent turn completes
-  when the **last** child finishes (or the first child fails fatally, configurable). The transcript
-  shows a parallel group: `⏳ 3 agents running · code-reviewer (12s) · security-audit (8s) · db-check (15s)`.
-  Children within a group are independent — one's failure does not cancel siblings unless the
-  parent's error policy is `fail_fast`. The max concurrent children is bounded (configurable, default
-  5) to prevent runaway resource consumption. This is the primary orchestration differentiator
-  over sequential spawn — a complex task fans out and collects in one turn.
-  **Analysis gate:** the exact `fail_fast` semantics (cancel in-flight siblings? wait for their
-  completion but discard results? allow the parent to inspect partial sibling results?) and the
-  `error_policy` configuration surface (`fail_fast` vs `collect_all` vs `timeout_per_child`) must
-  be decided during implementation, not in this phase doc.
-- **Workflow-in-workflow (`subworkflow` node)**: wire the reserved `subworkflow` node type
-  in the engine — authorable in YAML v1.1, executable in the run loop. A `subworkflow` node
-  references another `.relavium.yaml` by path or catalog id, passes mapped inputs, and collects
-  mapped outputs — exactly as a `tool` node routes data, but executing a full nested workflow
-  DAG. The child run is recorded with `parentRunId` linking back to the calling workflow; its
-  `run:*` events are nested under a `run:child_*` event namespace (or the existing event bus
-  carries a `parentRunId` discriminator — decided in the ADR). This enables **arbitrary
-  workflow composition** — a workflow can invoke any other workflow as a sub-graph, composing
-  complex pipelines from smaller, independently testable units (analysis, code review, security
-  audit, deployment, etc.) without the engine knowing about any specific workflow's domain.
-- **Auto-generated artifact management**: temporary agent definitions and workflow files
-  created during sub-agent spawn (when the model generates a new agent for a one-off task) live
-  under `~/.relavium/artifacts/<parentSessionId>/` — **never** in the project directory. The
-  directory is created lazily (`0700`) and cleaned up when the parent session ends (on `/exit`,
-  `/cancel`, or process exit). A session that crashes leaves its artifacts directory for
-  inspection (aged out by a later GC pass — the 2.6.F `engine.reconcile()` path). Memory files,
-  harness files, and intermediate outputs also land here. The project `.relavium/` directory
-  remains the sole home for **authored, committed** artifacts.
-- **Chat UX for sub-agent spawn**:
-  - **Model-driven spawn**: the agent autonomously calls `invoke_agent` / `invoke_workflow`
-    as part of a complex turn — the transcript shows an inline status indicator:
-    `→ delegated to "code-reviewer" · running… (12s)` then `✓ code-reviewer · completed (23s, $0.04)`
-    or `✗ code-reviewer · failed — type mismatch in output`.
-  - **User-driven spawn**: `/spawn <agent> <task>` — manually start a sub-agent from the
-    chat prompt. The sub-agent runs, returns its result as a notice in the transcript.
-  - **Child result panel**: the child's full output is available in a collapsible detail
-    panel (the same `/details` toggle from 2.6.M's render v2). The parent transcript carries
-    a one-line summary; expanding shows the full child transcript.
-  - **Permission model**: a sub-agent spawned automatically inherits the parent's mode and
-    approval cache — a child never escalates beyond the parent's grant (a child in `ask` mode
-    cannot spawn a child in `auto` mode; a child whose parent denied `run_command` cannot
-    run commands). A user-initiated `/spawn` runs under the current chat mode; the user can
-    override with `/mode auto` before spawning.
-    - **Hard guardrails:** maximum nesting depth is **3** (parent → child → grandchild; a
-      grandchild cannot spawn further — enforced by the engine, not configurable). Maximum
-      concurrent children per turn is bounded at a configurable ceiling (default **5**). These
-      limits are hard-coded into the spawn path so downstream UX (error messages, history tree
-      views, cost breakdown indentation) can be designed against fixed bounds from day one.
-    - **Analysis gate:** the permission inheritance model must still be stress-tested against
-      edge cases: (a) a child that switches modes via its own `/mode` (denied — mode is
-      inherited, not ownable by children), (b) a child that requests permission escalation from
-      the user (surfaced to the parent's approval prompt with the child's identity, so the user
-      knows who is asking), (c) generated agents that try to self-grant dangerous tool access
-      (the generator's schema validation prevents this — a generated agent's `tools:` list is
-      clamped to the parent's granted set). The ADR must record the resolved policy for each
-      case before implementation.
-- **Cost attribution**: child run costs (tokens, tool usage) roll up to the parent's
-  `cost:updated` event with a `childRunId` discriminator. The `/cost` command shows a
-  hierarchical breakdown: parent session total, then per-child contributions indented.
-  Per-node drill-down in run history (2.6.H) includes child runs as expandable rows.
-- **Child abort / partial output**: when a child is cancelled (parent `/cancel`, `Esc` abort,
-  or timeout), the engine captures the child's **partial output** — any tool results and
-  intermediate text produced before the abort — and returns it to the parent as
-  `{ result: "<partial>", error: { code: "cancelled", message: "child was aborted" } }`.
-  The parent agent can inspect the partial work and decide whether to retry, continue with a
-  different approach, or report to the user. Partial output is bounded (same ceiling as the
-  standard tool-result bound) and sanitized.
+- **Child-session ADR (foundation)**: record the architecture for parent-child execution relationships —
+  the child spawn lifecycle (start → run → collect → cleanup), the `parentSessionId` / `parentRunId`
+  schema additions to `agent_sessions` and `runs`, the cost-attribution model (child costs roll up to the
+  parent), the abort/cancel propagation contract (parent cancel cascades to children; child failure
+  surfaces in parent without killing the parent), and the context-sharing model (a child agent receives the
+  parent's task description as a system prompt, never the full transcript). Extends ADR-0024 (AgentSession)
+  and ADR-0036 (event bus); amends the database schema additively.
+  **Analysis gate:** the child's intermediate steps (tool calls, reasoning, partial outputs) must be
+  visible to the parent in some form — the ADR must decide whether the parent sees a real-time stream of
+  child events (inline in the parent transcript), a terminal summary only, or a collapsible detail panel.
+  The trade-off is UX richness vs transcript noise.
+- **Standardized agent/workflow I/O contract**: define a canonical I/O contract that every agent and
+  workflow honors — a structured input (task description + optional context and file references) and a
+  structured output (result text + optional artifact references + optional error). The exact schema is
+  authored once in `@relavium/shared`, consumed by the engine's `invokeAgent` delegate, and documented in
+  its **one canonical reference spec** under `docs/reference/` (the phase doc never restates it). Existing
+  workflow `inputs`/`outputs` map to this contract: a workflow's declared `inputs` schema is the validation
+  gate; its `output_mapping` shapes the result. Agents without declared schemas get a free-form text
+  contract. Standardized I/O means any agent can invoke any other without ad-hoc prompt engineering — the
+  contract is the interop surface, and it is the seam 2.6.O's generation and 2.6.P's `subworkflow` node both
+  target.
+- **Engine: `invokeAgent` delegate wired for chat — catalog-resolved only**: inject `ctx.invokeAgent` into
+  the `AgentSession`'s tool dispatch context. When an agent calls `invoke_agent` (or the model emits it
+  autonomously for a complex sub-task) naming an agent slug/path in the catalog (`.relavium/agents/` or the
+  built-in set), the engine: (1) resolves the catalog agent; (2) creates a child `AgentSession` (or child
+  `WorkflowEngine` run) with `parentSessionId`/`parentRunId` set; (3) injects the standardized input as the
+  child's first message; (4) runs the child to completion, collecting its output; (5) returns the
+  standardized result to the parent turn as a tool result; (6) records the child in `history.db` with full
+  lineage. The parent sees structured output and continues. **Generation of a NEW one-off agent when no
+  catalog agent matches is 2.6.O** — in 2.6.N a no-match is a clean typed error, never a silent generation.
+  Spawn in 2.6.N is **sequential** (one child at a time); parallel fan-out is 2.6.O.
+- **Ephemeral artifact management — the two-root model + the host artifact-store port** *(resolved
+  2026-07-09 by the artifact-directory analysis; foundational infra 2.6.O/2.6.P build on)*: Relavium keeps
+  **two distinct artifact roots**, split by ownership, not convenience:
+  - **Project `.relavium/`** (walk-up-discovered) — the **user-facing, committable** artifacts (authored
+    workflows/agents the user reviews and commits). Unchanged.
+  - **A central device-level ephemeral root** under `~/.relavium/` — the **machine-scoped agent-harness**
+    artifacts (per-session memory, tool/agent intermediate outputs, harness scratch; and, in 2.6.O,
+    model-generated one-off YAML). Per-session isolation (`<parentSessionId>/`), `0700`, cleaned up on
+    parent session end (`/exit` / `/cancel` / process exit); a crashed session's dir is aged out by a GC
+    pass on the `engine.reconcile()` path (2.6.F). **Never** in the project directory.
+  - **Core-purity (rule #5):** `packages/core` cannot know `~/.relavium/` or do filesystem I/O. The engine
+    defines an **artifact-store port** (write/read/list/cleanup keyed by `parentSessionId`); the **CLI
+    host** implements it against the central root, injected like the `MediaStore` / `Checkpointer` ports.
+    "Relavium-core's central dir" is therefore a host-provided port, not an engine path.
+  - **fs-floor prerequisite (closes L605):** the `write_file`/read floors refuse a `.relavium` path
+    **segment anywhere** (`PROTECTED_DIR_SEGMENTS` / `SENSITIVE_READ_DIR_SEGMENTS`), so today a tool write
+    into `~/.relavium/…` is refused — and the `tmpDir` sanctioned-root machinery
+    ([`FsHostConfig.tmpDir`](../../../apps/cli/src/engine/tool-host/fs.ts), `~/.relavium/tmp/` created but
+    inert) collides with it. Before a child agent can read/write its scratch **via tools**, resolve the
+    floor to **home-anchored** matching: keep refusing the secrets-bearing `~/.relavium/` root
+    (`config.toml`, `history.db`) and every project `.relavium/`, but **exclude the explicitly-wired
+    sanctioned scratch subroot**. Lands as a shared prerequisite with 2.6.M's `extra_roots` / `tmpDir`
+    wiring (a small, security-reviewed fs-floor change). Engine host-side writes (like `history.db`) bypass
+    the tool floor and are unaffected; only tool-dispatched writes need the fix.
+- **Chat UX for sub-agent spawn (foundation)**:
+  - **Model-driven spawn**: the agent autonomously calls `invoke_agent` — the transcript shows an inline
+    status indicator: `→ delegated to "code-reviewer" · running… (12s)` then
+    `✓ code-reviewer · completed (23s, $0.04)` or `✗ code-reviewer · failed — type mismatch in output`.
+  - **User-driven spawn**: `/spawn <agent> <task>` — manually start a catalog sub-agent from the chat
+    prompt; its result returns as a notice in the transcript.
+  - **Child result panel**: the child's full output is available in a collapsible detail panel (the
+    `/details` toggle from 2.6.M's render v2); the parent transcript carries a one-line summary.
+  - **Permission model + hard guardrails (bind everything, incl. 2.6.O)**: an auto-spawned sub-agent
+    inherits the parent's mode and approval cache — a child never escalates beyond the parent's grant (a
+    child whose parent denied `run_command` cannot run commands; a child cannot switch to `auto` if the
+    parent is in `ask`). A user `/spawn` runs under the current chat mode. Two engine-enforced limits, one fixed and one
+    tunable: maximum nesting depth is **3** (parent → child → grandchild; a grandchild cannot spawn further)
+    and is **not configurable**; maximum concurrent children per turn is a **configurable ceiling**
+    (default **5**). Fixing the depth bound — and giving the concurrency ceiling a known default — lets
+    downstream UX (error messages, history tree views, cost indentation) design against stable limits from day one.
+    **Analysis gate:** stress-test the inheritance model — (a) a child switching modes via its own `/mode`
+    (denied — mode is inherited, not child-ownable); (b) a child requesting escalation, surfaced to the
+    parent's approval prompt **with the child's identity** so the user knows who is asking. The ADR records
+    the resolved policy per case. *(The generated-agent self-grant case is 2.6.O.)*
+- **Cost attribution**: child run costs (tokens, tool usage) roll up to the parent's `cost:updated` event
+  with a `childRunId` discriminator. `/cost` shows a hierarchical breakdown (parent total, then per-child
+  contributions indented); the 2.6.H run-history drill-down includes child runs as expandable rows.
+- **Child abort / partial output**: when a child is cancelled (parent `/cancel`, `Esc`, or timeout), the
+  engine captures the child's **partial output** (tool results + intermediate text before the abort) and
+  returns it to the parent as `{ result: "<partial>", error: { code: "cancelled", message: "child was
+  aborted" } }`. The parent can inspect the partial work and retry, continue differently, or report.
+  Partial output is bounded (the standard tool-result ceiling) and sanitized.
 
-**Acceptance:** a chat agent resolves a complex request by autonomously spawning a sub-agent
-to handle a distinct sub-task and incorporates its result into the parent turn; a user types
-`/spawn code-reviewer "review the last change"` and sees the result inline; a workflow calls
-another workflow via a `subworkflow` node and the child's events are attributed to the
-parent run; all artifacts land in `~/.relavium/artifacts/`, never in the project directory;
-the child session and run records carry full parent lineage; a parent cancel propagates to
-children; child cost is attributed to the parent. **Required ADR:** child-session and nested
-execution architecture (new, numbered when drafted — extends ADR-0024/ADR-0036).
+**Acceptance:** a chat agent resolves a complex request by spawning a **catalog** sub-agent and
+incorporates its result; `/spawn code-reviewer "review the last change"` works inline; child session/run
+records carry full parent lineage in `history.db`; a parent cancel propagates to children; child cost
+rolls up to the parent; the artifact-store port + central ephemeral root are wired (host-side) with the
+fs-floor home-anchoring fix landed; the depth-3 / concurrency-ceiling guardrails hold. On-the-fly
+generation and parallel fan-out are explicitly out (2.6.O). **Required ADR:** child-session foundation
+(new — extends ADR-0024/ADR-0036; the artifact-store port + standardized I/O + lineage schema).
+
+### 2.6.O — On-the-fly generation + parallel orchestration (highest-risk)
+
+The two highest-value, highest-risk orchestration capabilities, split out of the foundation because each
+carries a security surface the safe mechanism does not: the model **generating and immediately executing**
+a one-off agent/workflow, and **parallel** sub-agent fan-out. Gated behind 2.6.N (the spawn mechanism) and
+2.6.B (the authoring loop generation reuses), and behind a **dedicated security review** before the
+generation capability ships.
+
+**Tasks:**
+
+- **On-the-fly agent/workflow generation**: extend 2.6.N's `invokeAgent`/`invokeWorkflow` so that when the
+  model describes a task with **no matching catalog agent** (e.g. "analyze this CSV and find outliers"),
+  the engine uses the 2.6.B conversational-authoring infrastructure to generate a valid `.agent.yaml` (or
+  one-off `.relavium.yaml`) on the fly — written to the central ephemeral root (2.6.N's artifact-store
+  port, `<parentSessionId>/agents/<uuid>.agent.yaml`), **validated against the schema
+  (`validateAuthoredWorkflow`) before it can execute**, then spawned. The model is not limited to
+  pre-existing catalog agents — it **composes tooling on demand**.
+- **Generation security review (mandatory, dedicated — the plan's highest-risk surface):** generating and
+  running model-authored agents is a **prompt-injection → code-execution** path. Untrusted content in the
+  parent's context (a tool result, a fetched web page, a read file) can steer the model to generate an
+  agent whose **system prompt itself** — model-controlled persistent instruction text — becomes a new
+  injection surface, beyond "is the YAML schema-valid." The review must cover: (a) schema validity is
+  necessary but not sufficient; (b) a generated agent's `tools:` list is **clamped to the parent's granted
+  set** (narrow-only, never escalated — validator-enforced); (c) generated agents **never** carry secrets;
+  (d) the generated system-prompt-as-injection-vector explicitly, with the untrusted-content provenance
+  boundary (ADR-0060's taint model is the relevant precedent). This is the gate the capability ships behind.
+  **Analysis gate:** measure (a) generation success rate on a representative task corpus, (b) that
+  malformed generated YAML never reaches execution (the pre-flight is the gate), (c) generation latency
+  acceptable for an interactive turn.
+- **Parallel sub-agent spawn**: when the parent issues multiple `invoke_agent` calls in one turn (e.g.
+  "review frontend" + "review backend" + "audit db schema"), the engine runs them **concurrently** — each
+  child starts independently, streams status into the parent transcript as parallel inline indicators
+  (`⏳ 3 agents running · code-reviewer (12s) · security-audit (8s) · db-check (15s)`), and the turn
+  completes when the last finishes (or per the error policy). The concurrency ceiling (2.6.N's guardrail,
+  default 5) bounds fan-out. This is the primary orchestration differentiator over sequential spawn.
+  **Analysis gate:** the exact `fail_fast` semantics (cancel in-flight siblings? wait-but-discard? expose
+  partial sibling results?) and the `error_policy` surface (`fail_fast` vs `collect_all` vs
+  `timeout_per_child`) are decided during implementation.
+
+**Acceptance:** a chat agent with no suitable catalog agent **generates** a valid one-off agent, which
+passes the pre-flight and runs, its result folded into the parent turn — with the generation security
+review passed; a generated agent never escalates tools or carries a secret; a parent fans out to multiple
+children concurrently under an explicit error policy and collects their results in one turn. **Required
+ADR:** on-the-fly generation + parallel orchestration security (new — the generation-as-codegen threat
+model, tool-grant clamping, the parallel error-policy contract; sits on ADR-0060's taint precedent).
+
+### 2.6.P — Workflow composition: the `subworkflow` node + `schema_version` 1.1
+
+Authored **workflow-in-workflow** composition — a workflow invokes another as a sub-graph via the
+`subworkflow` node — plus the additive schema-version bump that makes it authorable. Separable from the
+chat-side orchestration (N/O) because it is a **YAML-surface, schema-versioned** change with its own
+migration story; depends on 2.6.N for the parent-child lineage substrate.
+
+**Tasks:**
+
+- **Wire the `subworkflow` node + `schema_version` 1.1** *(mechanics + decision finalized 2026-07-09 by
+  the schema-version analysis)*: the `subworkflow` engine node type is **already reserved**
+  ([node-types.md](../../reference/shared-core/node-types.md) — `subworkflow_config` =
+  `{workflow_id, input_mapping, output_mapping}` is spec'd; it is in `ENGINE_NODE_TYPES` but not the
+  authored `WORKFLOW_NODE_TYPES`). Promote it to the authored surface behind **`schema_version` 1.1** — a
+  **first-of-its-kind, additive, opt-in** bump. **Finalized decisions:**
+  - **Additive / opt-in, never force-migrated.** `WorkflowSchema.schema_version` (`z.literal('1.0')` today)
+    becomes version-aware (accepts `'1.0'` **or** `'1.1'`); `subworkflow` authoring gates on `>= 1.1`. **1.1
+    is a strict superset of 1.0** (adds an authorable type, changes nothing existing) — so **existing 1.0
+    files stay valid as 1.0 and are NOT force-migrated**; a file declares 1.1 only when it uses a 1.1
+    feature. This is the only design consistent with "workflows are versioned, git-committable public-API
+    objects" — old files must keep working (the `workflow.ts` comment already anticipates "evolution across
+    `schema_version`s … via the version literal and a migration path"). A 1.0 file using `subworkflow` is
+    **rejected** (must declare 1.1) — the strict-validation contract (ADR-0023) holds.
+  - **1.1 promotes `subworkflow` ONLY — NOT `loop`.** The invariant is **authored surface == executable
+    surface**: a reserved engine slot graduates to authorable only in the version that **also ships its
+    handler**. `subworkflow` ships an executable handler here, so it graduates; `loop` has no handler in
+    Phase 2.6, so promoting it would create a "parses under 1.1 but fails at runtime" trap — exactly the
+    anti-pattern reserved-rejected-at-parse avoids. `loop` stays a reserved engine slot, promoted to
+    authorable only in the future version that ships its handler (a later 1.2). This keeps `schema_version`
+    an honest capability marker.
+  - Establishes the **first version-migration path** in the codebase (there is none today): the parser
+    accepts both versions, the [workflow-yaml-spec](../../reference/contracts/workflow-yaml-spec.md) grows a
+    v1.1 section, and a migration note documents "1.0 files need no change."
+- **The `subworkflow` handler + nested-run events**: a `subworkflow` node references another `.relavium.yaml`
+  by path or catalog id, passes mapped inputs, and collects mapped outputs — like a `tool` node routes
+  data, but executing a full nested workflow DAG. The child run is recorded with `parentRunId` (2.6.N's
+  lineage); its `run:*` events nest under a `run:child_*` namespace (or the bus carries a `parentRunId`
+  discriminator — decided in the ADR). This enables **arbitrary workflow composition** — pipelines built
+  from smaller, independently testable units without the engine knowing any workflow's domain.
+- **Dynamic `invoke_workflow` from a workflow agent node** *(analysis gate, moved here from 2.6.M)*: an open
+  question — can a running workflow's agent node **dynamically** call `invoke_workflow` as a tool (as a chat
+  agent does), selecting a target at runtime by model judgment, enabling orchestrator workflows that branch
+  to sub-workflows? The ADR evaluates: (a) a separate tool vs an `invoke_agent` overload with a
+  `target: 'workflow'` discriminator; (b) the nested-run event namespace; (c) the cost/resource governance
+  boundary. Decided in this workstream's analysis step.
+
+**Acceptance:** a workflow invokes another via an authored `subworkflow` node under `schema_version: '1.1'`;
+existing `schema_version: '1.0'` files parse **unchanged** (no forced migration); a 1.0 file using
+`subworkflow` is rejected with a version-hint error; the child run carries `parentRunId` lineage and its
+events attribute to the parent; the parser/spec/migration-note establish the reusable version-migration
+path. **Required ADR:** `subworkflow` node + `schema_version` 1.1 additive migration (new — the
+first versioned-schema bump; the nested-run event namespace; the dynamic-`invoke_workflow` decision).
 
 ## Deferred-tasks pulled into this phase
 
@@ -873,6 +933,7 @@ workstreams — each stays checked off **only** in the PR that lands it:
 | i18n CI key-parity + data/code separation standard | 2.6.L |
 | Live `web_search`/`http_request` egress credential resolver | 2.6.M |
 | `project`-tier `extraRoots` allowlist (config source now exists) | 2.6.M |
+| fs-floor home-anchoring (`.relavium` segment vs. sanctioned scratch root — L605, now a **prerequisite**) | 2.6.M / 2.6.N |
 | Target-scoped approval cache + structured MCP preview | 2.6.M |
 | Approval-consent-line zero-width hardening · shared `[c]` reducer | 2.6.M (with render v2) |
 
@@ -889,7 +950,8 @@ scale-gated) remain in [deferred-tasks.md](../deferred-tasks.md) with their reas
 | M2.6-3 Conversational authoring | 2.6.B + 2.6.D | "define a workflow…" → valid YAML in the Home; `{{ctx.*}}` lands |
 | M2.6-4 The Home-managed CLI | 2.6.G + 2.6.H + 2.6.I + 2.6.J + 2.6.K | Every management task doable from Home; drillable, attributed run history; onboarding v2 |
 | M2.6-5 First-class experience | 2.6.C + 2.6.E + 2.6.L + 2.6.M | Toolbelt parity + settings/theme/i18n + chat polish |
-| M2.6-6 Agent orchestration | 2.6.N | Child-session spawn + nested workflows + standardized I/O — **phase close** |
+| M2.6-6 Orchestration foundation | 2.6.N | Catalog child-session spawn + standardized I/O + lineage + the artifact-store substrate |
+| M2.6-7 Nested execution & generation | 2.6.O + 2.6.P | On-the-fly generation (security-reviewed) + parallel fan-out + the authored `subworkflow` node (schema v1.1) — **phase close** |
 
 ## Sequencing & parallelization
 
@@ -899,35 +961,37 @@ scale-gated) remain in [deferred-tasks.md](../deferred-tasks.md) with their reas
 
 | Workstream | Depends on | Blocks |
 |------------|-----------|--------|
-| **2.6.A** | — | 2.6.B, 2.6.N |
-| **2.6.B** | 2.6.A, 2.6.D | 2.6.N (generation path) |
+| **2.6.A** | — | 2.6.B |
+| **2.6.B** | 2.6.A, 2.6.D | 2.6.O (generation path) |
 | **2.6.C** | — | — (residual, any time) |
 | **2.6.D** | — | 2.6.B |
 | **2.6.E** | 2.6.F, 2.6.L (theme) | — |
 | **2.6.F** | — | 2.6.E, 2.6.G, 2.6.L, 2.6.M (render-v2), 2.6.N (chat UX) |
 | **2.6.G** | 2.6.F, 2.6.H, 2.6.K | — |
-| **2.6.H** | — | 2.6.G, 2.6.N |
+| **2.6.H** | — | 2.6.G, 2.6.N (lineage), 2.6.P (lineage) |
 | **2.6.I** | — | — |
 | **2.6.J** | — | — |
 | **2.6.K** | — | 2.6.G (shared resume core) |
 | **2.6.L** | 2.6.F | 2.6.E (theme integration) |
 | **2.6.M** | 2.6.F (render-v2), 2.6.N (invoke_agent wiring) | — |
-| **2.6.N** | 2.6.A, 2.6.B (generation), 2.6.H (lineage), 2.6.F (chat UX) | 2.6.M (invoke_agent acceptance) |
+| **2.6.N** | 2.6.H (lineage), 2.6.F (chat UX) | 2.6.O, 2.6.P, 2.6.M (invoke_agent acceptance) |
+| **2.6.O** | 2.6.N (spawn mechanism), 2.6.B (generation) | — (phase close) |
+| **2.6.P** | 2.6.N (lineage) | — (phase close) |
 
 ### Critical path
 
 ```text
-2.6.F ─────────────────────────────────────────────→ 2.6.M (render-v2) ─→ phase close
-   │                                                    ↗
-   ├─→ 2.6.L → 2.6.E                                    │
-   ├─→ 2.6.G (via H + K)                                │
-   └─→ 2.6.N (chat UX, part of N)                       │
-                                                        │
-2.6.A → 2.6.B → 2.6.N (orchestration) ─────────────────┘
-            D ↗        ↗ H ↗
+2.6.F ──────────────────────────────→ 2.6.M (render-v2) ──────────────→ phase close
+   │                                                                       ↑
+   ├─→ 2.6.L → 2.6.E                                                       │
+   ├─→ 2.6.G (via H + K)                                                   │
+   └─→ 2.6.N (chat UX) ┐                                                   │
+                       ├─→ 2.6.N (foundation) ─→ 2.6.O (generation+parallel) ┤
+2.6.H (lineage) ───────┘                     └─→ 2.6.P (subworkflow + v1.1) ─┘
+2.6.A → 2.6.D → 2.6.B ─────────────────────────→ 2.6.O (generation path) ───┘
 ```
 
-**2.6.F is the bottleneck** — the full-screen renderer gates 5 workstreams (E, G, L, M render-v2, N chat UX). Ship it first, unblock the rest. The **authoring spine** (A → D+B → N) and the **data spine** (H → G) run in parallel with F. **2.6.M (render-v2)** depends only on F (not G — the details view and diff rendering need the full-screen viewport, not the browser data). **2.6.M (invoke_agent acceptance)** gates on N, making M the final integration step on the orchestration track.
+**2.6.F is the bottleneck** — the full-screen renderer gates 5 workstreams (E, G, L, M render-v2, N chat UX). Ship it first, unblock the rest. The **orchestration spine is now three-stage along a safety gradient**: 2.6.N (foundation — needs only F + H) → 2.6.O (generation + parallel — needs N + B) **and** 2.6.P (`subworkflow` + schema v1.1 — needs N), the two closing the phase (M2.6-7). The **authoring spine** (A → D+B) feeds 2.6.O's generation, and the **data spine** (H → G) runs in parallel with F. **2.6.M (render-v2)** depends only on F (the details view / diff rendering need the viewport, not the browser data); **2.6.M (invoke_agent acceptance)** gates on 2.6.N (catalog invoke_agent), not on O/P.
 
 ### Parallelization tracks
 
@@ -943,30 +1007,24 @@ Seven independent streams after 2.6.F lands:
 | **Toolbelt engine** | 2.6.M (tools only) | Day 1 | `edit_file`, `search_files`, `find_files`, `todo`, `ask_user`, `web_search` |
 | **Management** | 2.6.I, 2.6.J | Any time | Provider/MCP mgmt, onboarding v2 |
 
-Once F + A + D land:
+Once their deps land:
 
-| Track | Workstreams | Starts when | Produces |
+| Track | Workstream | Starts when | Produces |
 |-------|------------|-------------|----------|
 | **Authoring** | 2.6.B | A + D landed | Conversational YAML authoring, /create wizard |
 | **Browsers** | 2.6.G | F + H + K landed | /workflows, /agents, actionable strip, permissions |
-| **N engine** | 2.6.N (catalog spawn) | A + H landed | Child-session spawn (catalog agents only) |
-
-Once F + B + L land:
-
-| Track | Workstreams | Starts when | Produces |
-|-------|------------|-------------|----------|
+| **Orchestration foundation** | 2.6.N | F + H landed | Catalog child-session spawn, standardized I/O, artifact-store port + central root, lineage, cost roll-up, guardrails |
 | **Chat UX** | 2.6.E | F + L landed | Syntax highlighting, rewind/fork, message queue, /copy, cheat sheet |
 | **Theme/i18n** | 2.6.L | F landed | Theme system, /settings, 5-locale catalog |
-| **N generation** | 2.6.N (on-the-fly) | B landed | Model-generated agents/workflows |
-| **N chat UX** | 2.6.N (UX half) | F landed | Sub-agent status indicators, child result panel |
 | **M render-v2** | 2.6.M (render half) | F landed | Tool-call details view, diff rendering |
 
-Last to land:
+Final integration (last to land — **phase close**):
 
-| Track | Workstreams | Depends on | Produces |
+| Track | Workstream | Depends on | Produces |
 |-------|------------|-----------|----------|
-| **Orchestration final** | 2.6.N (complete) | A + B + H + F all landed | Parallel spawn, subworkflow node, complete child-session |
-| **Toolbelt final** | 2.6.M (invoke_agent) | 2.6.N landed | invoke_agent acceptance |
+| **Generation + parallel** | 2.6.O | N + B landed | Model-generated agents/workflows (**security-reviewed**), parallel fan-out + error policy |
+| **Workflow composition** | 2.6.P | N landed | Authored `subworkflow` node, `schema_version` 1.1 (additive), nested-run events |
+| **Toolbelt final** | 2.6.M (invoke_agent) | N landed | invoke_agent acceptance |
 | **Residual** | 2.6.C | Any time | /cost per-model breakdown |
 
 ```mermaid
@@ -983,35 +1041,37 @@ flowchart LR
         C["2.6.C<br/>/cost residual"]
     end
 
-    subgraph AfterF["After 2.6.F"]
+    subgraph AfterF["After 2.6.F (+ deps)"]
         L["2.6.L<br/>settings · theme · i18n"]
         G["2.6.G<br/>browsers"]
         E["2.6.E<br/>chat polish"]
-        N_ux["2.6.N<br/>chat UX"]
+        N["2.6.N<br/>orchestration foundation<br/>(catalog spawn)"]
     end
 
     subgraph AfterA["After 2.6.A"]
         B["2.6.B<br/>conversational authoring"]
     end
 
-    subgraph Final["Final integration"]
-        N["2.6.N<br/>orchestration complete"]
+    subgraph Final["Final integration — phase close"]
+        O["2.6.O<br/>generation + parallel<br/>(security-reviewed)"]
+        P["2.6.P<br/>subworkflow + schema v1.1"]
         M_r["2.6.M<br/>render-v2 + invoke_agent"]
     end
 
     F --> L
     F --> G
     F --> E
-    F --> N_ux
+    F --> N
     H --> G
     K --> G
     A --> B
     D --> B
-    B --> N
     H --> N
     L --> E
+    N --> O
+    N --> P
+    B --> O
     N --> M_r
-    N_ux -. part of .-> N
     M_t -. part of .-> M_r
 ```
 
@@ -1020,10 +1080,11 @@ flowchart LR
 - **Phase 2.5** complete — specifically 2.5.A (the wired tool-environment), 2.5.E (per-tool approval /
   modes), 2.5.B/C (the Home + the two-registry command model), and ADR-0063 (config-write) — all met.
 - **2.J** (the in-tree authoring core 2.6.A promotes) — landed.
-- **2.6.B** (conversational authoring) — required by 2.6.N for on-the-fly agent/workflow generation;
-  the 2.6.N engine work (catalog-resolved spawn) can start as soon as 2.6.A lands, but
-  model-generated agents gate on 2.6.B's authoring loop being operational.
-- **2.6.H** (durable run detail) — required by 2.6.N for parent-child lineage in `history.db`.
+- **2.6.N** (orchestration foundation) needs only **2.6.F** (chat UX) + **2.6.H** (lineage) — catalog-only
+  spawn does **not** depend on the authoring package. **2.6.O** (on-the-fly generation) additionally
+  requires **2.6.B**'s authoring loop; **2.6.P** (`subworkflow` node) requires **2.6.N**'s lineage
+  substrate. So the orchestration spine is F+H → N → {O (with B), P}.
+- **2.6.H** (durable run detail) — required by 2.6.N/2.6.P for parent-child lineage in `history.db`.
 - The Node supported-floor decision (2.6.F) gates the ink-7 evaluation but **not** the rest of the phase
   (every workstream must land on the current floor if the maintainer defers the bump).
 
@@ -1046,11 +1107,15 @@ flowchart LR
    gate TOCTOU is store-closed; crashed runs reconcile; cross-process live watch works.
 6. `/settings`, the theme system (incl. the accessibility pair), and **`en`, `es`, `tr`, `fr`, `de`** localization ship with
    CI key-parity.
-7. An agent in chat **autonomously spawns sub-agents and invokes workflows** for complex sub-tasks;
-   `/spawn <agent> <task>` works from the chat prompt; a workflow calls another workflow via a
-   `subworkflow` node; child runs carry full parent lineage in `history.db`; child costs roll up to the
-   parent; auto-generated artifacts live in `~/.relavium/artifacts/`, never in the project directory; a
-   parent cancel propagates to children.
+7. **Orchestration ships across the safety gradient**: (2.6.N) a chat agent spawns a **catalog** sub-agent
+   — `/spawn <agent> <task>` and model-driven — with standardized I/O, full parent lineage in `history.db`,
+   cost roll-up, and parent-cancel propagation, over the host artifact-store port + central ephemeral root
+   (the fs-floor home-anchoring fix landed); (2.6.O) the model **generates and runs** a one-off agent when
+   no catalog agent matches — **behind a passed dedicated generation security review** (tool-grants clamped
+   to the parent, secrets excluded) — and fans out to parallel children under an explicit error policy;
+   (2.6.P) a workflow calls another via an authored `subworkflow` node under `schema_version: '1.1'` while
+   existing `1.0` files parse unchanged. Auto-generated artifacts live in the central ephemeral root under
+   `~/.relavium/`, **never** in the project directory.
 8. The required ADRs are Accepted, and every touched spec's canonical home
    ([commands.md](../../reference/cli/commands.md), [home.md](../../reference/cli/home.md),
    [chat-session.md](../../reference/cli/chat-session.md),
@@ -1074,10 +1139,12 @@ flowchart LR
 | 6 | *(new)* | Management browsers + durable run detail (amends ADR-0036) | Drafted when 2.6.G starts | 2.6.G / 2.6.H |
 | 7 | *(new)* | MCP management surface + config-write extension (extends ADR-0063) | Drafted when 2.6.I starts | 2.6.I |
 | 8 | *(new)* | Onboarding auth paths + Relavium-account forward design (rides ADR-0012–0015) | Drafted when 2.6.J starts | 2.6.J |
-| 9 | *(new)* | Toolbelt additions + tool-render/approval-preview contract (extends ADR-0029/ADR-0057) | Drafted when 2.6.M starts | 2.6.M |
+| 9 | *(new)* | Toolbelt additions + tool-render/approval-preview contract + the `ask_user` mid-turn pause/resume **engine** interaction (rides the EA4 pause machine; a turn-level pause distinct from the approval pause) (extends ADR-0029/ADR-0057) | Drafted when 2.6.M starts | 2.6.M |
 | 10 | *(new)* | i18n + theming architecture | Drafted when 2.6.L starts | 2.6.L |
 | 11 | *(new)* | Syntax highlighting dependency (`highlight.js` + `cli-highlight` via `ink-syntax-highlight`) + markdown rendering architecture | Drafted when 2.6.E starts | 2.6.E |
-| 12 | *(new)* | Child-session and nested execution architecture (extends ADR-0024/ADR-0036; parent-child lineage, standardized I/O, `subworkflow` node, artifact lifecycle) | Drafted when 2.6.N starts | 2.6.N |
+| 12 | *(new)* | Child-session **foundation** (extends ADR-0024/ADR-0036; parent-child lineage schema, standardized I/O contract, the **host artifact-store port** + central ephemeral root + fs-floor home-anchoring, catalog spawn, cost roll-up, abort propagation, depth/concurrency guardrails) | Drafted when 2.6.N starts | 2.6.N |
+| 13 | *(new)* | On-the-fly **generation + parallel orchestration security** (the generation-as-codegen threat model, schema-valid≠safe, tool-grant clamping, the parallel error-policy contract; sits on ADR-0060's taint precedent) — **mandatory security review is the ship-gate** | Drafted when 2.6.O starts | 2.6.O |
+| 14 | *(new)* | `subworkflow` node + **`schema_version` 1.1** additive migration (the first versioned-schema bump — additive/opt-in, subworkflow-only not `loop`; the nested-run event namespace; the dynamic-`invoke_workflow` decision) | Drafted when 2.6.P starts | 2.6.P |
 
 [ADR-0058]: ../../decisions/0058-relavium-authoring-package-and-conversational-authoring.md
 [ADR-0059]: ../../decisions/0059-cli-mid-session-model-reseat.md
@@ -1091,7 +1158,8 @@ flowchart LR
 
 | Risk | Mitigation |
 |------|------------|
-| **Scope breadth** — fourteen workstreams invite drift | Milestone gating (M2.6-1..6); the additive arms (E/L parts, M render-v2) can defer individual items without breaking the spine; the pull-in table keeps deferred-tasks as the single overflow home |
+| **Scope breadth** — sixteen workstreams invite drift | Milestone gating (M2.6-1..7); the additive arms (E/L parts, M render-v2) can defer individual items without breaking the spine; the pull-in table keeps deferred-tasks as the single overflow home |
+| **Generation-as-codegen** — the model authors and runs agents (2.6.O) | Split out of the safe foundation (2.6.N) with its **own dedicated security review** as a ship-gate; schema-valid ≠ safe (the generated system-prompt is an injection surface); tool grants clamped to the parent's set, never escalated; secrets structurally excluded; sits on ADR-0060's taint precedent |
 | Full-screen renderer performance/fragility on ink | The floor bump unlocks ink 7; the component harness carries performance regression thresholds; the inline renderer is retained as a first-class fallback, and non-TTY paths never change |
 | Child-session cascade failure — a sub-agent failure kills the parent turn | Child failure surfaces as a structured error in the parent's tool result, never a crash; the parent agent can recover (retry with a different agent, rephrase the task, report to user); the `tool_failed` recovery path (2.5.H) handles the child-error class explicitly |
 | Rendering args/diffs leaks sensitive data (reverses a 2.5 posture) | Sanctioned only by the toolbelt-additions ADR + a mandatory security review; every string passes the shared sanitize floor; bounded previews; secrets structurally excluded (keychain-only, never in tool args by construction) |

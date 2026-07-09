@@ -3,7 +3,14 @@ import type { ReasoningEffort } from '@relavium/shared';
 
 import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
 import { formatCostUsd, formatDuration, formatElapsed, formatTokens } from './format.js';
-import type { SessionViewState, ToolCallView, TurnSummary } from './session-view-model.js';
+import type {
+  SessionViewState,
+  ToolCallView,
+  TranscriptEntry,
+  TurnSummary,
+} from './session-view-model.js';
+import type { ScrollGeometry } from './scroll.js';
+import { wrapText, type DisplayLine } from './viewport.js';
 
 /**
  * Pure projection helpers for the `relavium chat` ink `ChatApp` (workstream **2.M**) — extracted so the
@@ -253,6 +260,91 @@ export function errorRecoveryHint(code: string | undefined, message?: string): s
       // no error; `sandbox_error` / `run_timeout` are WorkflowEngine-only) OR an unknown/future code — no hint.
       return undefined;
   }
+}
+
+/** Wrap ONE transcript entry to its width-wrapped display lines — the per-entry unit {@link wrapTranscript} caches. */
+function wrapEntry(entry: TranscriptEntry, cols: number): DisplayLine[] {
+  const lines: DisplayLine[] = [];
+  const push = (text: string, style: DisplayLine['style']): void => {
+    for (const row of wrapText(text, cols)) lines.push({ text: row, style });
+  };
+  if (entry.role === 'user') {
+    push(`> ${stripTerminalControls(entry.text)}`, 'user');
+  } else if (entry.role === 'notice') {
+    push(stripTerminalControls(entry.text), 'notice');
+  } else {
+    push(stripTerminalControls(entry.text), 'assistant');
+    push(` ${formatTurnSummary(entry.summary)}`, 'summary');
+    const hint = errorRecoveryHint(entry.summary.errorCode, entry.summary.errorMessage);
+    if (hint !== undefined) push(` → ${hint}`, 'hint');
+  }
+  return lines;
+}
+
+/**
+ * PER-ENTRY wrap cache (2.6.F Step 4b-3, ADR-0068 §c). A `WeakMap` keyed on the IMMUTABLE, append-only transcript
+ * ENTRY object → its last wrap `{ cols, lines }`. `wrapTranscript` re-wraps the whole transcript on each append (a new
+ * immutable transcript reference busts the render memo) + on each scroll keypress (`liveScrollGeometry`); caching per
+ * entry turns an append into O(history) map lookups + ONE `wrapEntry` (the new entry), and a re-render at an unchanged
+ * `cols` is all hits. Unlike a fixed-size LRU it NEVER thrashes on a transcript larger than the cache (the Step-4b-3
+ * Opus-review pathology): it holds exactly the live entries (GC reclaims a dropped one), and a resize REPLACES each
+ * entry's single cached wrap rather than accumulating. The cached `lines` are shared + read-only (the viewport only
+ * reads `text`/`style`).
+ */
+const entryWrapCache = new WeakMap<
+  TranscriptEntry,
+  { cols: number; lines: readonly DisplayLine[] }
+>();
+
+/**
+ * Flatten the completed transcript into width-wrapped, style-tagged {@link DisplayLine}s for the full-screen
+ * alt-screen viewport (2.6.F Step 4b, ADR-0068 §c) — the counterpart of ink's `<Static>` on the inline renderer.
+ * Reproduces `TranscriptLine`'s CONTENT + prefixes + styles + sanitization: a `user` entry becomes `> {text}` (style
+ * `user`); a `notice` its dim text; an `assistant` entry its text, then the gray one-line summary (a leading space,
+ * as `TranscriptLine`), then the optional yellow recovery-hint line. Every text is sanitized here at the display
+ * boundary (`stripTerminalControls`, newlines kept) exactly as `TranscriptLine` does, so a streamed/pasted control
+ * sequence can neither forge a row nor inject ANSI. The wrapping counts RENDERED terminal rows (the viewport scroll
+ * math is defined over the returned line count). NOTE: this CHAR-wraps at `cols` where inline `TranscriptLine` lets
+ * ink WORD-wrap, so a line longer than `cols` breaks at different points (and can differ in row count) between the
+ * two renderers — the modes are mutually exclusive (inline OR alt), so this is a cosmetic Step-4b tradeoff, not a
+ * correctness gap.
+ */
+export function wrapTranscript(
+  transcript: readonly TranscriptEntry[],
+  cols: number,
+): DisplayLine[] {
+  const out: DisplayLine[] = [];
+  for (const entry of transcript) {
+    const cached = entryWrapCache.get(entry);
+    let lines: readonly DisplayLine[];
+    if (cached?.cols === cols) {
+      lines = cached.lines;
+    } else {
+      lines = wrapEntry(entry, cols);
+      entryWrapCache.set(entry, { cols, lines });
+    }
+    for (const line of lines) out.push(line);
+  }
+  return out;
+}
+
+/**
+ * The LIVE alt-screen scroll geometry for a scroll keypress (2.6.F Step 4b-2, [ADR-0068](../../../../docs/decisions/0068-full-screen-tui-renderer-ink7-harness.md) §c):
+ * the transcript wrapped at the CURRENT width for an up-to-the-tick `totalLines`, paired with the viewport's
+ * last-measured `height`. The owner reads this by wrapping the store's transcript AT the keypress (a rare, user-driven
+ * event — never per frame) so `reduceScroll` sees the freshest bottom, rather than the `onMeasure`-lifted geometry ref
+ * which lags by up to one commit: a burst of streamed lines landing between a commit and its post-commit measure
+ * effect would leave the ref's `totalLines` UNDER-counted, and `settle` would then resume-follow against that stale
+ * (too-small) bottom — yanking a paused reader to the tail on a single PgDn (Step-4b-2 Sonnet review). The `height`
+ * lag is benign by contrast: it only changes on a resize / live-region reflow (which re-renders + re-measures), and
+ * the viewport re-clamps the window against its own fresh `props.lines.length` regardless.
+ */
+export function liveScrollGeometry(
+  transcript: readonly TranscriptEntry[],
+  cols: number,
+  measuredHeight: number,
+): ScrollGeometry {
+  return { totalLines: wrapTranscript(transcript, cols).length, height: measuredHeight };
 }
 
 /** The in-flight busy line: its text plus whether it renders as a DIM, truncate-end STATUS line (compaction /

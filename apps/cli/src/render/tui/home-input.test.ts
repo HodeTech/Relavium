@@ -1,13 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  DISABLE_BRACKETED_PASTE,
-  ENABLE_BRACKETED_PASTE,
-  isPasteEnd,
-  isPasteStart,
-  reduceHomeKey,
-  type HomeKey,
-} from './home-input.js';
+import { DISABLE_BRACKETED_PASTE, reduceHomeKey, type HomeKey } from './home-input.js';
 
 const KEY = (over: Partial<HomeKey> = {}): HomeKey => ({ ...over });
 
@@ -20,9 +13,11 @@ describe('reduceHomeKey (2.5.B Home-mode keystrokes)', () => {
     expect(reduceHomeKey('', KEY({ return: true }))).toEqual({ kind: 'submit' });
   });
 
-  it('Backspace erases before the cursor; the terminal Delete key does too (ink reports DEL as key.delete)', () => {
+  it('Backspace erases before the cursor; the forward-Delete key does too (both fold to delete-left)', () => {
+    // ink 7: physical Backspace → key.backspace; the forward-Delete key → key.delete. The reducer dual-folds both to
+    // a delete-left (a defensive superset that also covers ink-6-style hosts that reported Backspace as key.delete).
     expect(reduceHomeKey('', KEY({ backspace: true }))).toEqual({ kind: 'backspace' });
-    expect(reduceHomeKey('', KEY({ delete: true }))).toEqual({ kind: 'backspace' }); // Unix Backspace ⇒ key.delete
+    expect(reduceHomeKey('', KEY({ delete: true }))).toEqual({ kind: 'backspace' });
   });
 
   it('a printable char appends', () => {
@@ -61,28 +56,12 @@ describe('reduceHomeKey (2.5.B Home-mode keystrokes)', () => {
   });
 });
 
-describe('bracketed-paste markers (DECSET 2004)', () => {
-  it('recognizes the paste-start marker in both the ink-stripped and the raw form', () => {
-    expect(isPasteStart('[200~')).toBe(true); // ink strips the leading ESC
-    expect(isPasteStart('\x1b[200~')).toBe(true); // raw, defensive
-    expect(isPasteStart('[201~')).toBe(false);
-    expect(isPasteStart('[200~x')).toBe(false); // a whole-string match only — no substring false-trigger
-    expect(isPasteStart('hello')).toBe(false);
-  });
-
-  it('recognizes the paste-end marker in both forms', () => {
-    expect(isPasteEnd('[201~')).toBe(true);
-    expect(isPasteEnd('\x1b[201~')).toBe(true);
-    expect(isPasteEnd('[200~')).toBe(false);
-    expect(isPasteEnd('')).toBe(false);
-  });
-
-  it('the DECSET 2004 enable/disable strings are REAL CSI sequences (first byte ESC, not a literal "[")', () => {
-    // A non-tautological guard: the first byte MUST be ESC (0x1b), else the terminal prints `[?2004h` as garbage
-    // and bracketed paste is silently never enabled (the whole feature dies on a real TTY).
-    expect(ENABLE_BRACKETED_PASTE.charCodeAt(0)).toBe(0x1b);
+describe('bracketed-paste teardown (DECSET 2004; enabled natively by ink 7 usePaste)', () => {
+  it('the defensive DISABLE string is a REAL CSI sequence (first byte ESC, not a literal "[")', () => {
+    // ink 7's usePaste enables 2004 on mount + disables it on unmount; this DISABLE is the belt-and-suspenders the
+    // signal/exit teardown ALSO writes, so a terminal is never left in bracketed-paste mode if a render-cleanup
+    // edge is missed. A non-tautological guard: the first byte MUST be ESC (0x1b), else `[?2004l` prints as garbage.
     expect(DISABLE_BRACKETED_PASTE.charCodeAt(0)).toBe(0x1b);
-    expect(ENABLE_BRACKETED_PASTE).toBe('\x1b[?2004h');
     expect(DISABLE_BRACKETED_PASTE).toBe('\x1b[?2004l');
   });
 });

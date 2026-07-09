@@ -35,6 +35,8 @@ import {
 import type { CliIo } from '../process/io.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
+import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
+import { resolveRenderMode } from '../render/render-mode.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
@@ -45,7 +47,8 @@ import {
   type HomeController,
   type HomeModelsPort,
 } from '../render/tui/home-controller.js';
-import { DISABLE_BRACKETED_PASTE, ENABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
+import { DISABLE_MOUSE, ENABLE_MOUSE } from '../render/alt-screen.js';
+import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
 import { createHomeStore } from './home-store.js';
@@ -83,8 +86,13 @@ export interface HomeDeps {
   readonly onboardingPrompter?: ClackOnboardingDeps;
   readonly now?: () => number;
   readonly uuid?: () => string;
-  /** Injectable ink mount + the terminal-size seam (tests drive `RootApp` props without a real TTY). */
-  readonly render?: (props: RootAppProps) => { unmount: () => void };
+  /** Injectable ink mount + the terminal-size seam (tests drive `RootApp` props without a real TTY). `opts` carries
+   *  the resolved alt-screen decision (2.6.F, ADR-0068 §e) so a test can observe the mode driveHome resolved; the
+   *  production default passes it through as ink's `alternateScreen` render option. */
+  readonly render?: (
+    props: RootAppProps,
+    opts: { readonly alternateScreen: boolean },
+  ) => { unmount: () => void };
   readonly getSize?: () => { cols: number; rows: number };
   readonly subscribeResize?: (onResize: () => void) => () => void;
   /** Subscribe to SIGINT(2)/SIGTERM(15); returns an unsubscribe. Default registers on `process`. */
@@ -449,7 +457,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       });
     }
 
-    writeControl(ENABLE_BRACKETED_PASTE); // ask the terminal to bracket pastes (DECSET 2004)
+    // Bracketed paste (DECSET 2004) is enabled by ink 7's `usePaste` on mount (home-app.tsx). The defensive
+    // `DISABLE_BRACKETED_PASTE` writes on the teardown paths below are belt-and-suspenders (usePaste also disables
+    // on unmount) so an external signal can never leave the terminal in bracketed-paste mode.
 
     // One external-signal lifecycle covering the Home, the in-Home chat, and MCP teardown.
     let signaled = false;
@@ -464,6 +474,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       try {
         instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
         writeControl(DISABLE_BRACKETED_PASTE);
+        writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
       } catch {
         // ignore — restoring the terminal is best-effort; the close + exit must still run
       }
@@ -488,6 +499,22 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     };
     unsubscribeSignals = (deps.subscribeSignals ?? defaultSubscribeSignals)(onSignal);
 
+    // Resolve the effective render mode (2.6.F, ADR-0068 §e). driveHome only runs on a TTY interactive path
+    // (shouldOpenHome-gated), so the output mode is 'tui'; the resolver still short-circuits a 'plain' path to
+    // inline defensively, then applies `--no-alt-screen` → `[preferences].alt_screen` → phase default (opt-in until
+    // the viewport lands at Step 4b). `alt` mounts ink 7's native alternate screen (DECSET 1049 enter on mount /
+    // exit on unmount — the finally's `instance.unmount()` restores the primary buffer before the terminal-state
+    // cleanup below). An injected `deps.render` (tests) ignores the option — no real TTY to switch buffers on.
+    const renderMode = resolveRenderMode({
+      outputMode: detectOutputMode({
+        stdoutIsTty: deps.io.stdoutIsTty,
+        json: deps.global.json,
+        ci: isCiEnv(deps.io.env),
+      }),
+      noAltScreenFlag: deps.global.noAltScreen === true,
+      configAltScreen: config.altScreen,
+    });
+
     return await new Promise<ExitCode>((resolve, reject) => {
       controller = createHomeController({
         startChat,
@@ -498,12 +525,15 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         onExit: () => resolve(EXIT_CODES.success), // a clean Home exit is exit 0
         onError: (err) => reject(err instanceof Error ? err : new Error(String(err))),
       });
+      const alternateScreen = renderMode === 'alt';
       const props: RootAppProps = {
         controller,
         nowMs: now,
         color: deps.global.color,
         getSize,
         subscribeResize,
+        // The in-Home chat renders its transcript through the scroll viewport when mounted on the alt screen (Step 4b).
+        alternateScreen,
       };
       instance =
         deps.render === undefined
@@ -511,8 +541,15 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
               exitOnCtrlC: false, // the controller drives Ctrl-C, not ink's process.exit
               patchConsole: false,
               maxFps: Math.max(1, Math.round(1000 / FRAME_MS)),
+              // ADR-0068 §e: mount the alternate screen only when resolved to 'alt' (TTY + opt-in). ink 7 handles the
+              // DECSET-1049 enter/exit; `false` is a no-op (the inline default), so machine/opt-out paths are untouched.
+              alternateScreen,
             })
-          : deps.render(props);
+          : deps.render(props, { alternateScreen });
+      // Enable terminal mouse reporting so the in-Home chat's viewport wheel-scrolls (2.6.F Step 5). Only on the alt
+      // screen (ink owns 1049 on this single mount; mouse is ours). Disabled on EVERY teardown path below — the
+      // `DISABLE_MOUSE` writes are unconditional there (a no-op when it was never enabled, like DISABLE_BRACKETED_PASTE).
+      if (alternateScreen) writeControl(ENABLE_MOUSE);
     });
   } finally {
     // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the
@@ -523,6 +560,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     try {
       instance?.unmount();
       writeControl(DISABLE_BRACKETED_PASTE);
+      writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
     } catch {
       // ignore — restoring the terminal is best-effort; the session teardown + db close must still run
     }

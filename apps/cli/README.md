@@ -1,6 +1,6 @@
 # relavium
 
-![Node](https://img.shields.io/badge/node-%E2%89%A5%2020.12-339933?logo=nodedotjs&logoColor=white)
+![Node](https://img.shields.io/badge/node-%E2%89%A5%2022-339933?logo=nodedotjs&logoColor=white)
 ![Local-first](https://img.shields.io/badge/local--first-BYOK-0aa)
 ![License](https://img.shields.io/badge/license-proprietary-555)
 
@@ -19,8 +19,8 @@ nothing leaves your machine unless you choose it.
 npm install -g relavium
 ```
 
-Requires **Node.js ≥ 20.12**. The package is an engine-inlined bundle that installs prebuilt native
-binaries — no C/C++ toolchain, no Python sidecar.
+Requires **Node.js ≥ 22** (supported lines: 22 and 24). The package is an engine-inlined bundle that installs
+prebuilt native binaries — no C/C++ toolchain, no Python sidecar.
 
 ## Quick start
 

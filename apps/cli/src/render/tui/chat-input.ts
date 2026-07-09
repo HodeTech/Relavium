@@ -21,6 +21,9 @@ export interface ChatKey {
   readonly downArrow?: boolean;
   readonly home?: boolean;
   readonly end?: boolean;
+  /** PgUp / PgDn — the full-screen alt-screen transcript SCROLL keys (2.6.F Step 4b-2, ADR-0068 §c). */
+  readonly pageUp?: boolean;
+  readonly pageDown?: boolean;
 }
 
 /** A cursor MOVE (no text change). A modified arrow (Ctrl/Alt) or Alt+B/F is a word motion; Home/End (or
@@ -164,11 +167,11 @@ export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction
   if (motion !== undefined) return motion;
   const kill = reduceKill(char, key);
   if (kill !== undefined) return kill;
-  // Delete the code point BEFORE the cursor. BOTH `key.backspace` AND `key.delete` map here: on Unix terminals the
-  // physical Backspace key sends DEL (`\x7f`), which ink reports as `key.delete` (NOT `key.backspace` — see ink's
-  // parse-keypress), and the true forward-Delete key (`\x1b[3~`) is reported as `key.delete` too and is
-  // indistinguishable at this layer. A backward delete is what a user pressing Backspace means (the common case),
-  // so both go here — consistent with the palette / reverse-search / mention submodes, which already fold both.
+  // Delete the code point BEFORE the cursor. BOTH `key.backspace` AND `key.delete` map here: on ink 7 the physical
+  // Backspace key is reported as `key.backspace` and the forward-Delete key as `key.delete`; the reducer dual-folds
+  // both to a backward delete — what a user pressing Backspace means (the common case). The fold is a defensive
+  // superset that ALSO covers ink-6-style hosts that reported the physical Backspace as `key.delete`, and it is
+  // consistent with the palette / reverse-search / mention submodes, which already fold both the same way.
   if (key.backspace === true || key.delete === true) return { kind: 'backspace' };
   if (char.length > 0 && char !== '\n' && key.ctrl !== true && key.meta !== true) {
     // Normalize any carriage return WITHIN the inserted text (a multi-char paste can carry CRLF / a bare CR):
@@ -177,6 +180,43 @@ export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction
     return { kind: 'append', char: char.replace(/\r\n?/g, '\n') };
   }
   return undefined;
+}
+
+/** The flags the bracketed-paste gate reads, surface-agnostically — the Home's `state`/store and the ChatApp's
+ *  ref-shadows both project into these, so the two surfaces' paste gates can never drift. */
+export interface PasteEditableFlags {
+  readonly running: boolean; // a chat turn is streaming
+  readonly shellBusy: boolean; // a `!`-shell command in flight
+  readonly submitBusy: boolean; // a submit/compaction in flight (ADR-0062)
+  readonly paletteOpen: boolean; // the `/` command palette
+  readonly searchOpen: boolean; // Ctrl+R reverse-search
+  readonly mentionOpen: boolean; // `@`-mention completion
+  readonly modelPickerOpen: boolean; // `/models`
+  readonly effortPickerOpen: boolean; // `/effort`
+  readonly reasonCaptureOpen: boolean; // the `[c]` typed-reason capture
+  readonly approvalPending: boolean; // a per-tool approval awaits — a paste must NEVER answer it (ADR-0057)
+}
+
+/**
+ * Whether a native bracketed paste (ink 7 `usePaste`) may append to the compose buffer — the SINGLE source of truth
+ * shared by both interactive surfaces (the Home's `HomeController.pasteEditable` and the standalone `ChatApp`), so
+ * their paste gates can never drift. A paste appends ONLY when the main prompt is the active editable target: no
+ * turn / `!`-shell / submit in flight, no keyboard-owning overlay/submode, and NO pending approval (a pasted approval
+ * token must never reach the fail-closed floor — ADR-0057). The Home ANDs its own `mode !== 'loading'` build gate on top.
+ */
+export function pasteIsEditable(f: PasteEditableFlags): boolean {
+  return (
+    !f.running &&
+    !f.shellBusy &&
+    !f.submitBusy &&
+    !f.paletteOpen &&
+    !f.searchOpen &&
+    !f.mentionOpen &&
+    !f.modelPickerOpen &&
+    !f.effortPickerOpen &&
+    !f.reasonCaptureOpen &&
+    !f.approvalPending
+  );
 }
 
 /**

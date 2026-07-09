@@ -7,7 +7,7 @@
 # REQUIRED status check to merge into `main`. The `peer-dep-gate` job is advisory until the
 # surface packages land their peers in Phase 1. The `coverage` job is advisory too — it enforces
 # the testing.md >=90% line+branch engine floor (exit criterion #5) but stays non-required until the
-# thin core-branch margin is confirmed stable under CI's Node 22; promote it to a required check then.
+# thin core-branch margin is confirmed stable under CI's Node 24; promote it to a required check then.
 #
 # Caching: the always-on layer is the GitHub Actions `.turbo` cache (restored/saved below),
 # which makes a no-change re-run a Turborepo cache hit — the M0 "demonstrably hitting"
@@ -118,6 +118,48 @@ jobs:
       - name: Engine dependency allowlist
         run: pnpm lint:engine-deps
 
+  # Supported-floor gate (ADR-0067). TWO floors, deliberately different:
+  #   * the PUBLISHED floor is `apps/cli` `engines.node` = `>=22` — the max constraint in the CLI's RUNTIME
+  #     dependency closure (`ink@7` / `cli-truncate` / `slice-ansi` → `>=22`); nothing runtime needs more.
+  #   * the DEV-INSTALL floor is the root `engines.node` = `>=22.13.0` — forced ONLY by devDependencies
+  #     (`vite` via vitest → `>=22.12.0`; `eslint-visitor-keys` via eslint → `^22.13.0`). `.npmrc` sets
+  #     `engine-strict=true`, so `pnpm install` on the whole workspace HARD-FAILS below it.
+  # A workspace install therefore cannot run at 22.0.0, so this leg pins the LOWEST Node the repo installs
+  # on (22.13.0). It still exercises the published 22 line end-to-end and proves better-sqlite3 resolves its
+  # Node-22 prebuild (ABI 127 — one binary for ALL of 22.x, so 22.13.0 loads the same artifact 22.0.0 would;
+  # no node-gyp C++ source build). What it does NOT prove is that no RUNTIME dep requires >22.0.0 — that is
+  # a property of the prod closure, verified at the ADR (see ADR-0067's amendment note) rather than here.
+  # A SEPARATE job (the required check stays the ubuntu `ci` job on Node 24); promote once confirmed stable.
+  floor-check:
+    name: node 22-line floor (22.13.0) · typecheck · test · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Fully isolate this job from the shared Turbo remote cache. Turbo's task hash does NOT include the
+    # runtime Node version, so floor-check (Node 22) and the required `ci` job (Node 24) share a hash —
+    # either could replay the other's cached result and mask a version-specific failure. `--force` (below)
+    # stops floor-check READING the shared cache; blanking the inherited workflow-level tokens here stops it
+    # WRITING into it, so the required `ci` job can never replay a Node-22 result as Node-24-proven.
+    env:
+      TURBO_TOKEN: ''
+      TURBO_TEAM: ''
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - name: Set up Node (the lowest 22.x the workspace installs on)
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22.13.0
+          cache: pnpm
+      - name: Install (frozen lockfile — better-sqlite3 must resolve a prebuild, not source-build)
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck, test, build on the exact floor
+        # `--force` = no cache READ (genuine Node-22 run, not a Node-24 replay); the job-level blanked
+        # TURBO_TOKEN/TURBO_TEAM above = no cache WRITE (so `ci` never replays this Node-22 result). Both are
+        # needed — see the job-level comment.
+        run: pnpm turbo run typecheck test build --force
+
   # CI-only strict peer-dependency gate (.npmrc keeps this OFF for local installs so fresh
   # checkouts resolve while the surface packages' peers are not all in the tree yet). Catch
   # peer drift here without breaking local dev.
@@ -141,7 +183,7 @@ jobs:
   # SEPARATE job (not part of the required `ci` job) so it surfaces a regression without blocking merge
   # while the core-package branch margin is thin. `pnpm coverage` is a repo-ROOT run, which is what makes
   # the root-relative per-glob thresholds (packages/core, packages/llm) authoritative (vitest.config.ts).
-  # Promote to a required check once the margin is confirmed stable under CI's Node 22.
+  # Promote to a required check once the margin is confirmed stable under CI's Node 24.
   coverage:
     name: engine coverage floor (advisory)
     runs-on: ubuntu-latest
