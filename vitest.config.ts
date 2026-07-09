@@ -20,7 +20,12 @@ export default defineConfig({
     // mistakenly named `*.spec.ts` simply does not run — which the coverage floor below surfaces
     // (its target code loses coverage). The `**/` prefix matches whether Vitest runs from the repo
     // root or inside a package (one ancestor-resolved config).
-    include: ['**/*.test.ts'],
+    //
+    // `.test.tsx` is the JSX-component-test convention (2.6.F Step 3, ADR-0068): ink components rendered
+    // through ink-testing-library must live in a `.tsx` file so `react-jsx` transforms the markup. It is the
+    // SAME `.test.` prefix — an additive extension, not the rejected `.spec.` suffix — and stays confined to
+    // apps/cli's renderer layer (the coverage `exclude` below drops it, and apps are coverage-excluded anyway).
+    include: ['**/*.test.ts', '**/*.test.tsx'],
     passWithNoTests: true,
     coverage: {
       provider: 'v8',
@@ -29,7 +34,7 @@ export default defineConfig({
       // cwd-tolerant: `**/src/**` matches whether the run is rooted at the repo or a package, so a
       // package-scoped `--coverage` run no longer reports a false 0%. Apps stay smoke-only (excluded).
       include: ['**/src/**/*.ts'],
-      exclude: ['**/*.test.ts', '**/apps/**'],
+      exclude: ['**/*.test.ts', '**/*.test.tsx', '**/apps/**'],
       // The enforced Phase-1 engine floor, scoped per-glob so it targets only the built engine
       // package(s) and never the not-yet-90% shared/db or the unbuilt core.
       //
