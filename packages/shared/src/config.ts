@@ -145,6 +145,8 @@ export const GlobalConfigSchema = z
         // keeps the byte-identical INLINE renderer (native scrollback + the emulator's own a11y), the screen-reader
         // fallback. The `--no-alt-screen` flag overrides this key; a non-TTY / machine (`--json`/CI) path ignores
         // both and always renders inline. Absent ⇒ the phase default (opt-in until the viewport lands — ADR-0068 §b).
+        // ⚠ PREVIEW at Step 4a: `true` mounts an alt buffer WITHOUT the transcript viewport/scroll or the `[`/`v`
+        // copy-and-search hatches yet, so scrolled-off history is unrecoverable — fully usable at Step 4b.
         alt_screen: z.boolean().optional(),
       })
       .strict()

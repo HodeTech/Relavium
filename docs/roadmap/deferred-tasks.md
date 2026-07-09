@@ -943,6 +943,13 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   PgUp/PgDn covers the core need and mouse capture disables native copy-on-select. After real-terminal
   validation (SSH/tmux/VS Code/iTerm2/Warp) with the 2.6.F harness, flip the default to **on-with-`--no-mouse`**
   (the field norm). A tracked 2.6.F follow-up, not a defect. *(low · apps/cli config default + validation matrix)*
+- [ ] **Step 4b: keep the alt buffer entered across a `/clear` / `/models`-reseat re-drive (inter-session flicker).**
+  `driveInk` mounts + unmounts ink **per session**, so a `/clear` or reseat swap unmounts (exits the alt buffer) and
+  the next re-drive re-enters it — the terminal briefly flips to the primary buffer and back, and the intro/
+  clearedNotice lands on primary in that window. Harmless at Step 4a (alt-screen is default OFF/opt-in), but it
+  becomes a **visible flicker once Step 4b flips `DEFAULT_ALT_SCREEN` to `true`**. When the viewport lands, evaluate
+  keeping the alt buffer entered across the re-drive (hoist the alt enter/exit above the per-session mount) or
+  wrapping the swap in DEC-2026 synchronized output. Surfaced by the Step-4a Opus review. *(low · apps/cli/src/render/tui/chat-ink.tsx + commands/chat.ts runReplLoop)*
 - [ ] **`relavium run` TUI → full-screen + retained scrollable run-history.** [ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md)
   scopes the 2.6.F full-screen renderer to the **Home + `chat`**; the `relavium run` `RunApp` stays inline
   (no `useInput` → kernel `Ctrl-C → SIGINT` cooperative cancel preserved). Making it full-screen + giving it

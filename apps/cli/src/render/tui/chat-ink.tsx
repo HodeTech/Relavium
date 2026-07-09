@@ -1221,6 +1221,29 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
 
 /** The TTY ink driver: mount {@link ChatApp}, run the frame loop, and finalize on exit. Returns the drive OUTCOME
  *  ({@link ChatDriveOutcome}) so the re-drive loop can swap in a fresh session on `/clear` (ADR-0062 §7). */
+/**
+ * Sequence the `driveInk` exit so the ADR-0068 §c ORDER is a single, unit-testable contract: on `exited` RESOLVE,
+ * run `teardown` FIRST (it unmounts ink → exits the alternate screen) and only THEN `writeSummary`, so the summary
+ * lands on the PRIMARY buffer, not the torn-down alt buffer; then resolve the `outcome`. On `exited` REJECT (an
+ * unexpected turn-core throw), `teardown` still runs (the `.finally`) but the summary + outcome are skipped and the
+ * rejection propagates unchanged (→ the command maps it to exit 1) — the pre-2.6.F behavior, preserved. Extracted
+ * from `driveInk` because it uses the real ink `render` (untestable without a TTY + a full SessionHandle); this
+ * helper isolates the ordering guarantee the reorder exists to establish.
+ */
+export function finalizeInkExit(
+  exited: Promise<void>,
+  ops: {
+    readonly teardown: () => void;
+    readonly writeSummary: () => void;
+    readonly outcome: () => ChatDriveOutcome;
+  },
+): Promise<ChatDriveOutcome> {
+  return exited.finally(ops.teardown).then((): ChatDriveOutcome => {
+    ops.writeSummary();
+    return ops.outcome();
+  });
+}
+
 export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // The resume banner (2.N): print it once before mounting ink so it scrolls into the terminal history above
   // the live region — the TTY counterpart of the line drivePlain writes, so a resumed session is visibly a
@@ -1336,25 +1359,22 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
       },
     );
 
-    return exited
-      .finally(() => {
-        // Tear down + UNMOUNT FIRST — ink exits the alternate screen here (ADR-0068 §c), so the summary written below
-        // lands on the PRIMARY buffer, not the torn-down alt buffer. On the inline renderer the order is equivalent.
-        // Runs on both a cooperative end (resolve) and an error (reject); the outcome `.then` below is skipped on a
-        // reject, so an unexpected turn-core throw still tears down and propagates (→ exit 1).
+    return finalizeInkExit(exited, {
+      // Tear down + UNMOUNT FIRST (ink exits the alternate screen here) so the summary lands on the PRIMARY buffer.
+      teardown: () => {
         clearInterval(frame);
         unsubscribe();
         instance?.unmount();
         process.removeListener('SIGINT', onSigint);
-      })
-      .then((): ChatDriveOutcome => {
-        // The persistent final summary — written on any cooperative end (/exit, /cancel, keyboard Ctrl-C, or an
-        // external SIGINT, all of which resolve `exited`), AFTER the unmount above so it survives the alt-screen exit.
-        // SUPPRESSED on a `/clear` swap (ADR-0062 §7): the old session's stats would clutter the transition — the
-        // fresh session's clearedNotice intro is the sole marker; a real end still prints the summary.
+      },
+      // The persistent final summary — on any cooperative end (/exit, /cancel, Ctrl-C, external SIGINT), AFTER the
+      // teardown so it survives the alt-screen exit. SUPPRESSED on a `/clear` swap (ADR-0062 §7) — the fresh
+      // session's clearedNotice intro is the sole marker; a real end still prints the summary.
+      writeSummary: () => {
         if (ctx.stopReason() === 'exit') ctx.io.writeOut(`${ctx.store.summaryText()}\n`);
-        return { kind: ctx.stopReason() };
-      });
+      },
+      outcome: () => ({ kind: ctx.stopReason() }),
+    });
   } catch (err) {
     // render() threw synchronously — clean up the interval, subscription, and SIGINT handler set up above so
     // none leaks past the throw (the finally above is never reached when render() throws).

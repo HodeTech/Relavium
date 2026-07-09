@@ -429,6 +429,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     buildSession: deps.buildSession ?? buildChatSession,
     io: deps.io,
     global: deps.global,
+    altScreen: config.altScreen,
     // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring), so a
     // mid-session `models pricing` write applies to the next cleared session — no captured value to thread here.
   });
@@ -446,6 +447,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     buildResumedSession: deps.buildResumedSession ?? buildResumedChatSession,
     io: deps.io,
     global: deps.global,
+    altScreen: config.altScreen,
   });
 
   return runReplLoop(
@@ -586,6 +588,7 @@ export async function chatResumeCommand(
     buildSession: deps.buildSession ?? buildChatSession,
     io: deps.io,
     global: deps.global,
+    altScreen: config.altScreen,
     // A `/clear` rebuild re-reads the user-pricing overlay FRESH from the shared db (buildFreshChatWiring).
   });
 
@@ -602,6 +605,7 @@ export async function chatResumeCommand(
     buildResumedSession: deps.buildResumedSession ?? buildResumedChatSession,
     io: deps.io,
     global: deps.global,
+    altScreen: config.altScreen,
   });
 
   // A resumed session already landed at idle inside `AgentSession.resume`; calling start() would throw and
@@ -1146,6 +1150,9 @@ interface FreshChatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildSession: typeof buildChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+  /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — carried into the rebuilt `ReplWiring` so a `/clear` re-drive
+   *  keeps the full-screen render mode (else the mode reverts to the phase default mid-conversation). */
+  readonly altScreen?: boolean | undefined;
 }
 
 async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): Promise<ReplWiring> {
@@ -1214,6 +1221,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
       deps.now,
       deps.uuid,
     ),
+    ...(deps.altScreen === undefined ? {} : { altScreen: deps.altScreen }),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
 }
@@ -1238,6 +1246,8 @@ function createClearRebuild(params: {
   readonly buildSession: typeof buildChatSession;
   readonly io: CliIo;
   readonly global: GlobalOptions;
+  /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded so a `/clear` re-drive keeps the render mode. */
+  readonly altScreen?: boolean | undefined;
 }): (oldSessionId: string) => Promise<ReplWiring> {
   const wiringDeps: FreshChatWiringDeps = {
     chat: params.chat,
@@ -1254,6 +1264,7 @@ function createClearRebuild(params: {
     global: params.global,
     opened: params.opened,
     buildSession: params.buildSession,
+    altScreen: params.altScreen,
     onBudgetWarning: (warning) =>
       params.io.writeErr(
         `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
@@ -1314,6 +1325,9 @@ interface ReseatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildResumedSession: typeof buildResumedChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+  /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — carried into the rebuilt `ReplWiring` so a `/models` reseat
+   *  keeps the full-screen render mode (else it reverts to the phase default after a mid-session model switch). */
+  readonly altScreen?: boolean | undefined;
 }
 
 /**
@@ -1401,6 +1415,7 @@ async function buildReseatWiring(
       deps.now,
       deps.uuid,
     ),
+    ...(deps.altScreen === undefined ? {} : { altScreen: deps.altScreen }),
     ...(deps.chat.maxMessages === undefined ? {} : { chatMaxMessages: deps.chat.maxMessages }),
   };
 }
@@ -1422,6 +1437,8 @@ function createReseatRebuild(params: {
   readonly buildResumedSession: typeof buildResumedChatSession;
   readonly io: CliIo;
   readonly global: GlobalOptions;
+  /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded so a `/models` reseat keeps the render mode. */
+  readonly altScreen?: boolean | undefined;
 }): (oldSessionId: string, target: ReseatTarget) => Promise<ReplWiring> {
   const wiringDeps: ReseatWiringDeps = {
     chat: params.chat,
@@ -1435,6 +1452,7 @@ function createReseatRebuild(params: {
     global: params.global,
     opened: params.opened,
     buildResumedSession: params.buildResumedSession,
+    altScreen: params.altScreen,
     onBudgetWarning: (warning) =>
       params.io.writeErr(
         `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
