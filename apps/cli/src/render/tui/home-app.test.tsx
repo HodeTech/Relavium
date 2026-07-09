@@ -8,7 +8,7 @@ import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
-import { bracketed, flush, waitFor } from './harness-util.js';
+import { bracketed, settleFrames, waitFor } from './harness-util.js';
 import { RootApp } from './home-app.js';
 import {
   createHomeController,
@@ -292,15 +292,12 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     const { c, harness } = mountHome(store, { alternateScreen: true });
     await enterChat(c);
     const frame = (): string => harness.lastFrame() ?? '';
-    const settle = async (): Promise<void> => {
-      for (let i = 0; i < 4; i += 1) await flush();
-    };
     const press = async (seq: string): Promise<void> => {
       harness.stdin.write(seq);
-      await settle();
+      await settleFrames();
     };
     await waitFor(() => frame().includes('HMSG59'));
-    await settle();
+    await settleFrames();
     expect(frame()).toContain('HMSG59'); // following the tail
 
     await press('\x1b[5~'); // PgUp
@@ -325,19 +322,16 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     const { c, harness } = mountHome(store, { alternateScreen: true });
     await enterChat(c);
     const frame = (): string => harness.lastFrame() ?? '';
-    const settle = async (): Promise<void> => {
-      for (let i = 0; i < 4; i += 1) await flush();
-    };
     await waitFor(() => frame().includes('HMSG59'));
-    await settle();
+    await settleFrames();
     expect(frame()).toContain('HMSG59'); // following the tail
 
     c.handleKey('/', {}); // open the `/` command palette — it now owns the keyboard
-    await settle();
+    await settleFrames();
     expect(c.getSnapshot().palette).toBeDefined();
 
     harness.stdin.write('\x1b[5~'); // PgUp — must be consumed by the palette, NOT the transcript scroll keymap
-    await settle();
+    await settleFrames();
     expect(c.getSnapshot().palette).toBeDefined(); // the palette still owns the keyboard
     expect(frame()).toContain('HMSG59'); // the transcript did NOT scroll (follow was never paused behind the overlay)
   });
@@ -352,7 +346,7 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
 
     harness.stdin.write('\x1b[<64;10;5M'); // wheel up
     harness.stdin.write('\x1b[<0;10;5M'); // a left click
-    for (let i = 0; i < 4; i += 1) await flush();
+    await settleFrames();
 
     expect(c.getSnapshot().input.text).toBe(''); // no raw mouse bytes typed into the Home prompt
     expect(c.getSnapshot().mode).toBe('home'); // …and nothing else was triggered
@@ -364,16 +358,13 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     const { c, harness } = mountHome(store, { alternateScreen: true });
     await enterChat(c);
     const frame = (): string => harness.lastFrame() ?? '';
-    const settle = async (): Promise<void> => {
-      for (let i = 0; i < 4; i += 1) await flush();
-    };
     await waitFor(() => frame().includes('HMSG59'));
-    await settle();
+    await settleFrames();
 
     c.handleKey('/', {}); // the `/` palette owns the keyboard
-    await settle();
+    await settleFrames();
     harness.stdin.write('\x1b[<64;10;5M'); // a wheel notch behind the overlay
-    await settle();
+    await settleFrames();
 
     expect(c.getSnapshot().palette?.query).toBe(''); // the mouse bytes did NOT enter the palette filter
     expect(frame()).toContain('HMSG59'); // …and the transcript did not scroll behind the overlay
@@ -397,27 +388,24 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     });
     await enterChat(c);
     const frame = (): string => harness.lastFrame() ?? '';
-    const settle = async (): Promise<void> => {
-      for (let i = 0; i < 4; i += 1) await flush();
-    };
     await waitFor(() => frame().includes('HMSG59'));
-    await settle();
+    await settleFrames();
 
     harness.stdin.write('\x1b[5~'); // PgUp
-    await settle();
+    await settleFrames();
     harness.stdin.write('\x1b[5~');
-    await settle();
+    await settleFrames();
     expect(frame()).not.toContain('HMSG59'); // scrolled up off the tail (follow paused)
 
     // Drive the in-Home /models reseat via the controller (deterministic): `/` → filter `models` → run → accept.
     c.handleKey('/', {});
     for (const ch of 'models') c.handleKey(ch, {});
     c.handleKey('', { return: true });
-    await settle();
+    await settleFrames();
     expect(c.getSnapshot().modelPicker).toBeDefined(); // the picker opened in-chat
     c.handleKey('', { return: true }); // accept the only model → live reseat
     await waitFor(() => c.getSnapshot().session === sessionB);
-    await settle();
+    await settleFrames();
 
     expect(reseatChat).toHaveBeenCalledTimes(1);
     expect(c.getSnapshot().session?.sessionId).toBe('sess-A'); // the reseat PRESERVED the id (the trap the fix survives)

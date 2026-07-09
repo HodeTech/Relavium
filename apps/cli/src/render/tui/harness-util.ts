@@ -24,6 +24,19 @@
 export const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 /**
+ * Yield the macrotask queue `frames` times (4 by default) so a FULL-SCREEN frame settles. One {@link flush} drains
+ * the microtask chain, but the alt-screen viewport needs a round-trip the inline renderer does not: commit → the
+ * post-commit `measureElement` effect → `setHeight` → re-window → re-render. Four yields cover that with slack under
+ * parallel-worker CPU contention. Prefer {@link waitFor} whenever the settled state is OBSERVABLE in the frame (it
+ * returns the instant the commit lands); reach for this only when the assertion is about the ABSENCE of an effect
+ * (no bytes typed, no scroll) — where there is nothing to poll for and the bad outcome needs a bounded window to
+ * fail to manifest. Lives here, not in each suite, so the 4 is a single number rather than a dozen copies that drift.
+ */
+export const settleFrames = async (frames = 4): Promise<void> => {
+  for (let i = 0; i < frames; i += 1) await flush();
+};
+
+/**
  * Poll until `predicate` holds, yielding the macrotask queue between checks, bounded by `maxYields`. Returns as soon
  * as the predicate is true; if it never becomes true it returns anyway, so the CALLER's own `expect` fails against
  * the actual (stale) frame for a useful diff — this helper never throws or asserts.

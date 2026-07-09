@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import { ChatApp } from './chat-ink.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
-import { bracketed, flush, waitFor } from './harness-util.js';
+import { bracketed, settleFrames, waitFor } from './harness-util.js';
 
 /**
  * Mounted-`ChatApp` component tests (2.6.F Step 3, ADR-0068 part f) — the harness's first end-to-end renders of a
@@ -229,21 +229,18 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
   it('SCROLLS the transcript: PgUp leaves the tail (pauses follow), PgDn back to the bottom resumes it (Step 4b-2)', async () => {
     const h = render(chatApp(seed(60)));
     const frame = (): string => h.lastFrame() ?? '';
-    const settle = async (): Promise<void> => {
-      for (let i = 0; i < 4; i += 1) await flush(); // let the commit + the geometry re-measure land
-    };
     // Each keypress is its own stdin event, as a real terminal delivers them — a concatenated escape burst in one
     // chunk is a harness artifact, not how PgUp/PgDn arrive, so settle between presses.
     const press = async (seq: string): Promise<void> => {
       h.stdin.write(seq);
-      await settle();
+      await settleFrames();
     };
     const PG_UP = '\x1b[5~';
     const PG_DOWN = '\x1b[6~';
 
     setWindowSize(h.stdout, 80, 12);
     await waitFor(() => frame().includes('MSG59')); // following the tail
-    await settle();
+    await settleFrames();
     expect(frame()).toContain('MSG59');
 
     // PgUp twice — scroll up off the tail; the newest entry leaves the window (following paused).
@@ -268,25 +265,22 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     // (filtered to no match so it stays short), then PgUp: the tail must STAY put and the palette must stay open.
     const h = render(chatApp(seed(60)));
     const frame = (): string => h.lastFrame() ?? '';
-    const settle = async (): Promise<void> => {
-      for (let i = 0; i < 4; i += 1) await flush();
-    };
     setWindowSize(h.stdout, 80, 24);
     await waitFor(() => frame().includes('MSG59'));
-    await settle();
+    await settleFrames();
     expect(frame()).toContain('MSG59'); // following the tail
 
     h.stdin.write('/'); // open the `/` command palette
-    await settle();
+    await settleFrames();
     for (const ch of 'zzz') {
       h.stdin.write(ch); // filter to NO match → the palette stays open but short (leaves the viewport tall)
-      await settle();
+      await settleFrames();
     }
     expect(frame()).toContain('Enter run'); // the palette overlay is open (its nav hint is on-screen)
     expect(frame()).toContain('MSG59'); // still following the tail
 
     h.stdin.write('\x1b[5~'); // PgUp — must be consumed by the palette, NOT the transcript scroll keymap
-    await settle();
+    await settleFrames();
     expect(frame()).toContain('Enter run'); // the palette still owns the keyboard
     expect(frame()).toContain('MSG59'); // the transcript did NOT scroll (follow was never paused behind the overlay)
   });
@@ -294,20 +288,17 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
   it('Ctrl+Home jumps to the TOP (pauses follow), Ctrl+End resumes the tail (Step 4b-2)', async () => {
     const h = render(chatApp(seed(60)));
     const frame = (): string => h.lastFrame() ?? '';
-    const settle = async (): Promise<void> => {
-      for (let i = 0; i < 4; i += 1) await flush();
-    };
     setWindowSize(h.stdout, 80, 12);
     await waitFor(() => frame().includes('MSG59'));
-    await settle();
+    await settleFrames();
 
     h.stdin.write('\x1b[1;5H'); // Ctrl+Home → jump to the very top (ink parses this to key.home + key.ctrl)
-    await settle();
+    await settleFrames();
     expect(frame()).toContain('MSG0'); // the oldest entry is now at the top
     expect(frame()).not.toContain('MSG59'); // the tail scrolled off the bottom (following paused)
 
     h.stdin.write('\x1b[1;5F'); // Ctrl+End → jump back to the tail (resume following)
-    await settle();
+    await settleFrames();
     expect(frame()).toContain('MSG59'); // back at the tail
     expect(frame()).not.toContain('MSG0'); // the top scrolled off
   });
@@ -331,18 +322,15 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     // the end) and Ctrl+End must still resume the tail. Pins the resize re-clamp of a paused offset at the mount.
     const h = render(chatApp(seed(60)));
     const frame = (): string => h.lastFrame() ?? '';
-    const settle = async (): Promise<void> => {
-      for (let i = 0; i < 4; i += 1) await flush();
-    };
     setWindowSize(h.stdout, 80, 24);
     await waitFor(() => frame().includes('MSG59'));
-    await settle();
+    await settleFrames();
 
     // Pause well up the transcript at the tall size (a large frozen offset), then shrink hard.
     h.stdin.write('\x1b[1;5H'); // Ctrl+Home → top (following paused, offset 0)
-    await settle();
+    await settleFrames();
     h.stdin.write('\x1b[6~'); // PgDn a page → a mid, non-tail frozen offset that was valid at 24 rows
-    await settle();
+    await settleFrames();
     expect(frame()).not.toContain('MSG59'); // paused, not at the tail
 
     setWindowSize(h.stdout, 80, 8); // shrink: maxOffset drops — the frozen offset must re-clamp, not blank out
@@ -352,23 +340,20 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     expect(shrunk).toMatch(/MSG\d+/); // a VALID contiguous slice is shown (not a blank past-the-end window)
 
     h.stdin.write('\x1b[1;5F'); // Ctrl+End still reaches the tail after the shrink+re-clamp
-    await settle();
+    await settleFrames();
     expect(frame()).toContain('MSG59');
   });
 
   it('MOUSE-WHEEL scrolls the transcript: wheel-up leaves the tail, wheel-down returns to it (Step 5)', async () => {
     const h = render(chatApp(seed(60)));
     const frame = (): string => h.lastFrame() ?? '';
-    const settle = async (): Promise<void> => {
-      for (let i = 0; i < 4; i += 1) await flush();
-    };
     const wheel = async (button: number): Promise<void> => {
       h.stdin.write(`\x1b[<${button};10;5M`); // SGR mouse: 64 = wheel up, 65 = wheel down
-      await settle();
+      await settleFrames();
     };
     setWindowSize(h.stdout, 80, 12);
     await waitFor(() => frame().includes('MSG59'));
-    await settle();
+    await settleFrames();
     expect(frame()).toContain('MSG59'); // following the tail
 
     await wheel(64); // wheel up (WHEEL_LINES per notch)
@@ -386,23 +371,20 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     // filter. It must be swallowed at the top of the handler; the wheel also must not scroll behind the overlay.
     const h = render(chatApp(seed(60)));
     const frame = (): string => h.lastFrame() ?? '';
-    const settle = async (): Promise<void> => {
-      for (let i = 0; i < 4; i += 1) await flush();
-    };
     setWindowSize(h.stdout, 80, 24);
     await waitFor(() => frame().includes('MSG59'));
-    await settle();
+    await settleFrames();
     h.stdin.write('/'); // open the `/` palette
-    await settle();
+    await settleFrames();
     for (const ch of 'zzz') {
       h.stdin.write(ch); // filter to no match ⇒ the palette stays open but short
-      await settle();
+      await settleFrames();
     }
     expect(frame()).toContain('Enter run'); // the palette owns the keyboard
 
     h.stdin.write('\x1b[<64;10;5M'); // a wheel notch behind the overlay
     h.stdin.write('\x1b[<0;10;5M'); // …and a click
-    await settle();
+    await settleFrames();
 
     expect(frame()).toContain('Enter run'); // the palette is still open
     expect(frame()).not.toContain('<64;10'); // the mouse bytes did NOT enter the filter
@@ -413,15 +395,12 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
   it('a MOUSE CLICK report is CONSUMED — its raw bytes never type into the prompt (Step 5)', async () => {
     const h = render(chatApp(seed(5)));
     const frame = (): string => h.lastFrame() ?? '';
-    const settle = async (): Promise<void> => {
-      for (let i = 0; i < 4; i += 1) await flush();
-    };
     setWindowSize(h.stdout, 80, 24);
     await waitFor(() => frame().includes('MSG4'));
     h.stdin.write('\x1b[<0;10;5M'); // a left-click report (button 0) — must be swallowed, not typed
-    await settle();
+    await settleFrames();
     h.stdin.write('hi'); // a normal edit still works
-    await settle();
+    await settleFrames();
     expect(frame()).toContain('hi'); // the typed text landed…
     expect(frame()).not.toContain('[<0;10;5M'); // …and the click's raw bytes did NOT leak into the prompt
     expect(frame()).not.toContain('<0;10'); // (defensive: no fragment of the SGR report either)

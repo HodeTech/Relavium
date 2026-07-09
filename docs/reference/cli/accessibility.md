@@ -13,6 +13,7 @@ path back to the accessible one — an escape hatch, never a trap.
 | Terminal buffer | the **alternate screen** (DECSET 1049) — a fresh buffer with **no scrollback** | the **primary** buffer + its native **scrollback** |
 | Scroll-back | in-app only (**PgUp/PgDn**, **Ctrl+Home/Ctrl+End**, auto-follow) | the terminal emulator's own scrollback |
 | Screen readers | **inherently inaccessible** — a raw-mode, full-screen redraw loop carries no live-region / document semantics for assistive tech to follow | the emulator's own accessibility support applies (it is ordinary line output) |
+| Mouse text-selection | needs the terminal's **bypass modifier** — mouse reporting is on so the wheel scrolls | native click-drag selection |
 
 The full-screen mode is a keyboard-driven, `ink`-redrawn viewport: it takes over the whole
 terminal, runs in **raw mode**, and repaints frames in place. That is what makes long responses
@@ -20,6 +21,13 @@ scrollable in-app, but it is also **inherently inaccessible to screen readers** 
 DOM/live-region model for assistive technology to track, and the alternate buffer discards the
 scrollback a screen reader would otherwise read. This limitation is intrinsic to a full-screen TUI,
 not specific to Relavium.
+
+Full-screen mode also enables terminal **mouse reporting** (DECSET 1000 + 1006) so the wheel scrolls the
+transcript. The cost is that the emulator forwards clicks to Relavium instead of running its own
+selection, so **click-drag select-and-copy needs the emulator's bypass modifier** — commonly **Shift**
+(xterm, GNOME Terminal, Konsole, Windows Terminal), **Option (⌥)** on iTerm2. Which modifier applies is a
+property of the terminal, not of Relavium. The inline renderer never enables mouse reporting, so selection
+there is untouched.
 
 ## The escape hatch — the inline renderer
 

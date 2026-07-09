@@ -1560,13 +1560,6 @@ function createReseatRebuild(params: {
   return (oldSessionId, target) => buildReseatWiring(wiringDeps, oldSessionId, target);
 }
 
-/**
- * Drive ONE session to its stop (`/exit`, `/cancel`, `/clear`, or EOF) and tear it down — the per-session unit the
- * re-drive {@link runReplLoop} runs once per conversation. Its finally fires the session's sole terminal
- * (`cancelOnce`, idempotent → the row flips to 'ended', still resumable), closes the persister, and tears the MCP
- * connections down — but NOT the shared db (the loop owns it across swaps). Returns the driver's outcome so the loop
- * can decide between ending and re-driving over a fresh session (`/clear`).
- */
 /** The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`, wired ONLY on
  *  the interactive driver (a plain / `--json` stream has no `!`-shell surface). Mirrors {@link buildInteractiveMentionReader}. */
 function buildInteractiveShellRunner(
@@ -1610,6 +1603,13 @@ function finalizeReseatOutcome(
   return target === undefined ? { kind: 'exit' } : { kind: 'reseat', target };
 }
 
+/**
+ * Drive ONE session to its stop (`/exit`, `/cancel`, `/clear`, or EOF) and tear it down — the per-session unit the
+ * re-drive {@link runReplLoop} runs once per conversation. Its finally fires the session's sole terminal
+ * (`cancelOnce`, idempotent → the row flips to 'ended', still resumable), closes the persister, and tears the MCP
+ * connections down — but NOT the shared db (the loop owns it across swaps). Returns the driver's outcome so the loop
+ * can decide between ending and re-driving over a fresh session (`/clear`).
+ */
 async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<ChatDriveOutcome> {
   const { built, store, persister, startSession, intro } = wiring;
   const {
