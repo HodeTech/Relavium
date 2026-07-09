@@ -215,4 +215,45 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     expect(frame()).toContain('MSG0'); // `<Static>` prints ALL entries (native scrollback) — the oldest survives
     expect(frame()).toContain('MSG39');
   });
+
+  it('renders without crashing on an EMPTY transcript (the viewport has no rows, only the live region)', async () => {
+    const { lastFrame } = render(
+      <ChatApp
+        store={createChatStore(false)}
+        alternateScreen
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+      />,
+    );
+    const frame = (): string => lastFrame() ?? '';
+    await waitFor(() => frame().includes('/ for commands')); // the idle hint (live region) renders
+    expect(frame()).toContain('/ for commands'); // no crash; the prompt/footer are shown below the empty viewport
+  });
+
+  it('a SINGLE entry taller than the window shows its BOTTOM rows (tail), bounded to the terminal', async () => {
+    const store = createChatStore(false);
+    const big = ['FIRSTLINE', ...Array.from({ length: 58 }, (_, i) => `mid${i}`), 'LASTLINE'].join(
+      '\n',
+    );
+    store.appendUser(big); // one user entry of 60 logical lines — taller than the ~20-row viewport
+    const { lastFrame } = render(
+      <ChatApp
+        store={store}
+        alternateScreen
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+      />,
+    );
+    const frame = (): string => lastFrame() ?? '';
+    await waitFor(() => frame().includes('LASTLINE'));
+    expect(frame()).toContain('LASTLINE'); // the bottom of the over-tall entry (the tail)
+    expect(frame()).not.toContain('FIRSTLINE'); // the top of the entry scrolled off — no scrollback
+    expect(frame().split('\n').length).toBeLessThanOrEqual(24);
+  });
 });

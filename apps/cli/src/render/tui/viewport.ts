@@ -8,10 +8,16 @@
  * unit-testable with no ink mount.
  *
  * Display width is a PRAGMATIC hand-roll (wide/emoji = 2, zero-width/combining = 0, else 1) — the repo deliberately
- * avoids a `string-width` runtime dependency (see chat-projection.ts). It over-counts a ZWJ emoji sequence (each
- * joined code point is measured on its own) and does not consult the full Unicode East-Asian-Width table, so a rare
- * exotic glyph can wrap a cell early/late; that is cosmetic and self-corrects on the next resize/measure — never a
- * scroll-position corruption, because the SAME width function measures both the wrap and the window.
+ * avoids a `string-width` runtime dependency (see chat-projection.ts). The load-bearing invariant is **1 DisplayLine
+ * == 1 real terminal row**: each wrapped line must fit ink's own re-measure of it. That holds as long as
+ * `displayWidth` never UNDER-counts relative to ink (which uses the full Unicode tables via `string-width`) — an
+ * under-count makes a DisplayLine wider than `cols`, so ink re-wraps that `<Text>` to 2 real rows and the viewport's
+ * `overflowY: hidden` clips the tail. OVER-counting is the safe direction (the wrap just breaks a cell early → a
+ * slightly narrower line). Today's condensed table over-counts a ZWJ emoji sequence (safe) but can under-count a
+ * composed emoji-presentation cluster (a VS16 `❤️` / an enclosing keycap `1️⃣`) — cosmetic at Step 4b-1 (tail-follow
+ * is a row-INDEX with no persisted offset, so nothing corrupts), but the 1:1 invariant becomes load-bearing for the
+ * Step-4b-2 persisted-offset scroll, where the table should be hardened (grapheme-aware, e.g. `Intl.Segmenter`) so it
+ * never under-counts. Tracked as a Step-4b-2 obligation.
  */
 
 /** The per-entry render style a display line inherits from its transcript entry (mirrors `TranscriptLine`'s colors:

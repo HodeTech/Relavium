@@ -943,6 +943,21 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   PgUp/PgDn covers the core need and mouse capture disables native copy-on-select. After real-terminal
   validation (SSH/tmux/VS Code/iTerm2/Warp) with the 2.6.F harness, flip the default to **on-with-`--no-mouse`**
   (the field norm). A tracked 2.6.F follow-up, not a defect. *(low · apps/cli config default + validation matrix)*
+- [ ] **Step 4b: bound / scroll the LIVE REGION when it alone exceeds the terminal height.** The alt-screen chat
+  bounds the whole tree to the terminal `rows` with the transcript viewport flex-growing above a FIXED live region
+  (prompt / approval / warnings / footer). When the live region ALONE is taller than the terminal (a huge pasted
+  multi-line prompt, or a big approval block + warnings on a short terminal), the viewport measures height ≤ 0 and
+  renders nothing (acceptable), but the fixed live region is then clipped by the `height={rows}` container — and the
+  alt buffer has no scrollback, so the top of the prompt/approval can be lost off-screen. Known limitation surfaced
+  by the Step-4b-1 Opus review; long-term give the live region its own bounded/scrollable box or a minimum viewport.
+  *(low · apps/cli/src/render/tui/chat-ink.tsx ChatView layout)*
+- [ ] **Step 4b-2: harden `displayWidth` so it never UNDER-counts vs ink (grapheme-aware).** The pragmatic
+  per-code-point `displayWidth` (viewport.ts) over-counts ZWJ emoji (safe) but can UNDER-count a composed
+  emoji-presentation cluster (a VS16 `❤️`, an enclosing keycap `1️⃣`) — ink then re-wraps that `<Text>` to 2 real rows
+  and `overflowY: hidden` clips the tail. Cosmetic at Step 4b-1 (tail-follow is a row INDEX, no persisted offset), but
+  the 1-DisplayLine-==-1-real-row invariant becomes LOAD-BEARING at Step 4b-2's persisted-offset scroll. Harden the
+  table (e.g. `Intl.Segmenter` grapheme clusters — Node 22 has it) so it never under-counts. Step-4b-1 Opus review.
+  *(low · apps/cli/src/render/tui/viewport.ts)*
 - [ ] **Step 4b: keep the alt buffer entered across a `/clear` / `/models`-reseat re-drive (inter-session flicker).**
   `driveInk` mounts + unmounts ink **per session**, so a `/clear` or reseat swap unmounts (exits the alt buffer) and
   the next re-drive re-enters it — the terminal briefly flips to the primary buffer and back, and the intro/

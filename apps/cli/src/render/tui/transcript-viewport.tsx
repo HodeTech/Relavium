@@ -13,8 +13,11 @@ import { windowLines, type DisplayLine } from './viewport.js';
  * The window height is the box's flexbox-allocated leftover space: this Box is `flexGrow` beside the fixed live
  * region (the prompt / busy line / footer), so ink sizes it to `terminalRows − liveRegion`. We read that back with
  * `measureElement` (post-commit, in the effect) rather than re-deriving the live-region height — a stale offset or a
- * wrong count would corrupt the scroll position (the named risk in ADR-0068 §c). `overflowY: hidden` clips the one
- * settling frame after a resize before the re-measure lands.
+ * wrong count would corrupt the scroll position (the named risk in ADR-0068 §c). At steady state the height is
+ * stable, so the measure/re-window CONVERGES; when the live region changes size (an overlay opens, a reasoning panel
+ * appears) the height re-settles over a few frames, and `overflowY: hidden` clips the transient — cosmetic. The
+ * height state seeds from the caller's `initialHeight` (the terminal rows, an upper bound) so the FIRST paint already
+ * shows a near-tail window instead of a one-frame blank before the effect lands.
  *
  * SCROLL (Step 4b-2) passes an explicit `offset`; at Step 4b-1 `offset` is omitted and the window follows the TAIL
  * (an offset past the end clamps to the last full screen), so every append pins to the bottom.
@@ -42,15 +45,19 @@ export interface TranscriptViewportProps {
   readonly color: boolean;
   /** The top-line index to show; omitted ⇒ follow the TAIL (the offset clamps to the last full screen). */
   readonly offset?: number | undefined;
+  /** Seed for the measured-height state (the terminal rows — an upper bound), so the FIRST paint shows a near-tail
+   *  window instead of a one-frame blank before the post-commit measure lands. Omitted ⇒ 0 (blank first frame). */
+  readonly initialHeight?: number | undefined;
 }
 
 export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): ReactElement {
   const ref = useRef<DOMElement | null>(null);
-  const [height, setHeight] = useState(0);
-  // Measure AFTER every commit: the Box's height is flexbox-driven (the leftover space beside the fixed live region),
-  // so it is content-independent and settles — `setHeight` only fires on a real change (resize / first layout), never
-  // an oscillating loop. No dependency array on purpose: a live turn re-renders constantly and the leftover height
-  // can change (a growing prompt / warnings), so we re-measure each frame and re-clamp the window.
+  const [height, setHeight] = useState(props.initialHeight ?? 0);
+  // Measure AFTER every commit and re-clamp the window: the Box's height is flexbox-driven (the leftover space beside
+  // the fixed live region), so `setHeight` only fires on a real change (resize / a live-region size change / first
+  // layout), converging — never an unconditional loop (the `!==` guard). No dependency array on purpose: a live turn
+  // re-renders constantly and the leftover height can change (a growing prompt / warnings / an overlay), so we
+  // re-measure each frame. `ref.current` is null-guarded (a not-yet-mounted node).
   useEffect(() => {
     const node = ref.current;
     if (node === null) return;

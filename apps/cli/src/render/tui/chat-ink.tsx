@@ -1,5 +1,12 @@
-import { Box, Static, Text, render, useInput, usePaste } from 'ink';
-import { createElement, useRef, useState, useSyncExternalStore, type ReactElement } from 'react';
+import { Box, Static, Text, render, useInput, usePaste, useWindowSize } from 'ink';
+import {
+  createElement,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+} from 'react';
 
 import {
   driveJson,
@@ -327,17 +334,25 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // ChatRegion) leaves below any keyboard-owning overlay, inside their terminal-`rows`-bounded container — so the
   // TranscriptViewport inside has a bound to flex-grow into, and the overlays are never pushed off-screen.
   const viewport = props.viewport;
+  // Alt-screen only: flatten + width-wrap the transcript to display lines, MEMOIZED on (transcript, cols) so a
+  // streaming turn (which re-renders each frame with the SAME completed-transcript reference) reuses the prior wrap
+  // instead of re-wrapping all history every frame. `state.transcript` is a stable reference until an entry is
+  // appended (immutable session-view-model), so the memo hits across ticks and busts on a real append or a resize.
+  const wrappedTranscript = useMemo(
+    () => (viewport === undefined ? undefined : wrapTranscript(state.transcript, viewport.cols)),
+    [viewport?.cols, state.transcript],
+  );
   return (
     <Box flexDirection="column" {...(viewport === undefined ? {} : { flexGrow: 1 })}>
       {/* Completed transcript. Inline: ink `<Static>` prints each entry once → native scrollback. Alt-screen: the
           {@link TranscriptViewport} flex-grows to the leftover height and renders only the visible window (tail-
           following at Step 4b-1), since the alt buffer has no scrollback for `<Static>`. */}
-      {viewport === undefined ? (
+      {viewport === undefined || wrappedTranscript === undefined ? (
         <Static items={[...state.transcript]}>
           {(entry, index) => <TranscriptLine key={index} entry={entry} color={color} />}
         </Static>
       ) : (
-        <TranscriptViewport lines={wrapTranscript(state.transcript, viewport.cols)} color={color} />
+        <TranscriptViewport lines={wrappedTranscript} color={color} initialHeight={viewport.rows} />
       )}
 
       {/* The in-flight turn: tool annotations + the streaming assistant text + a spinner. A `!`-shell command in
@@ -1185,14 +1200,19 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   });
 
+  // The live terminal size via ink 7's `useWindowSize` (2.6.F Step 4b): unlike a raw `process.stdout.columns` read,
+  // this RE-RENDERS the component on a SIGWINCH resize (ink's own resize handler only re-lays-out yoga width; it does
+  // not re-execute React, and the idle frame loop does not repaint), so the alt-screen container height, the wrap
+  // width, and the viewport's re-measure all track a resize — parity with the Home's `subscribeResize`. It falls
+  // back to 80×24 off a TTY (a harness), moot on a real TTY (the only place alt mounts, via the driveInk gate).
+  const windowSize = useWindowSize();
   // Alt-screen (Step 4b, ADR-0068 §c): the outer container is bounded to the terminal `rows` so `ChatView`'s
   // flex-grow viewport has a height to fill BELOW any keyboard-owning overlay (palette / search / …), and the
-  // transcript renders through the scroll {@link TranscriptViewport} instead of `<Static>`. Read fresh each render
-  // (parity with `columns`); `process.stdout` can be undefined in a harness, and the 80×24 fallback is moot on a real
-  // TTY (the only place alt mounts, via the driveInk gate). Absent ⇒ the inline `<Static>` renderer, unbounded height.
+  // transcript renders through the scroll {@link TranscriptViewport} instead of `<Static>`. Absent ⇒ the inline
+  // `<Static>` renderer, unbounded height.
   const viewport =
     props.alternateScreen === true
-      ? { rows: process.stdout?.rows ?? 24, cols: process.stdout?.columns ?? 80 }
+      ? { rows: windowSize.rows, cols: windowSize.columns }
       : undefined;
 
   return (
@@ -1210,9 +1230,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         approval={approval}
         attachments={attachments}
         busyCommand={busyCommand}
-        // Live terminal width for the reasoning-panel row bound (2.5.H) — read fresh each render (parity with
-        // `nowMs={Date.now()}`); the frame loop re-renders, so a resize is picked up on the next tick.
-        columns={process.stdout?.columns}
+        // Live terminal width for the reasoning-panel row bound (2.5.H) — resize-tracked via `useWindowSize` above.
+        columns={windowSize.columns}
         viewport={viewport}
         reasonDraft={reasonDraft}
         paletteOpen={

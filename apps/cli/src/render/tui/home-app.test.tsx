@@ -86,7 +86,10 @@ interface MountedHome {
 /** Build a controller whose `startChat` yields a session over the given store, then mount `RootApp` on the harness.
  *  `nowMs` is `() => Date.now()` so a `Date`-only fake clock drives the Home's per-frame timer; the resize
  *  subscription is captured (not stubbed inert) so the re-measure wiring can be exercised. */
-function mountHome(store: ChatStoreController): MountedHome {
+function mountHome(
+  store: ChatStoreController,
+  opts: { alternateScreen?: boolean } = {},
+): MountedHome {
   let onResize: () => void = () => {};
   let size = { cols: 100, rows: 30 };
   const c = createHomeController({
@@ -106,6 +109,7 @@ function mountHome(store: ChatStoreController): MountedHome {
         onResize = cb;
         return () => {};
       }}
+      {...(opts.alternateScreen === true ? { alternateScreen: true } : {})}
     />,
   );
   return {
@@ -222,5 +226,22 @@ describe('RootApp (Home) terminal resize — subscribeResize → setSize re-meas
     fireResize();
     await waitFor(() => harness.frames.length > baseline);
     expect(harness.frames.length).toBeGreaterThan(baseline);
+  });
+});
+
+describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)', () => {
+  it('renders the in-Home chat transcript through the viewport, following the tail + bounded to the terminal', async () => {
+    // The Home threads the viewport DIFFERENTLY from ChatApp ({rows,cols} from the resize-tracked size; the height
+    // bound on ChatRegion's container), so it gets its own mounted pin — a regression that dropped it back to
+    // `<Static>` (unscrollable in the alt buffer) or passed the wrong rows would be caught by nothing otherwise.
+    const store = createChatStore(false);
+    for (let i = 0; i < 40; i += 1) store.appendUser(`HMSG${i}`);
+    const { c, harness } = mountHome(store, { alternateScreen: true });
+    await enterChat(c);
+    const frame = (): string => harness.lastFrame() ?? '';
+    await waitFor(() => frame().includes('HMSG39'));
+    expect(frame()).toContain('HMSG39'); // the newest entry (tail) is shown
+    expect(frame()).not.toContain('HMSG0'); // the oldest scrolled off the top — the alt buffer has no scrollback
+    expect(frame().split('\n').length).toBeLessThanOrEqual(30); // bounded to the size's rows (getSize ⇒ 30)
   });
 });
