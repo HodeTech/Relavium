@@ -1,10 +1,11 @@
 import type { SessionStreamHandleEvent, ToolApprovalRequest } from '@relavium/core';
-import { render } from 'ink-testing-library';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, render } from 'ink-testing-library';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import { ChatApp } from './chat-ink.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
+import { bracketed, flush } from './harness-util.js';
 
 /**
  * Mounted-`ChatApp` component tests (2.6.F Step 3, ADR-0068 part f) — the harness's first end-to-end renders of a
@@ -15,13 +16,19 @@ import { createChatStore, type ChatStoreController } from './chat-store.js';
  *
  * The two load-bearing pins here:
  *   • SECURITY (ADR-0057) — a bracketed paste can never answer the fail-closed per-tool approval floor, because ink 7
- *     routes the whole DECSET-2004 block to `usePaste` (dropped behind the approval gate), never to `useInput`.
+ *     routes the whole DECSET-2004 block to `usePaste` (dropped behind the approval gate), never to `useInput`. The
+ *     paste payload is a SINGLE char ('y') on purpose: if the `usePaste` handler were removed, ink's no-listener
+ *     fallback re-emits the paste body to `useInput`, where a lone 'y' WOULD answer the floor (`reduceApprovalKey`
+ *     matches single chars) — so this test fails iff the handler regresses. A multi-char payload would match nothing
+ *     on that fallback path and false-pass.
  *   • 2.5.H frozen-clock — the live-turn elapsed counter tracks WALL time (re-read each render), not a value frozen
  *     at turn start.
+ *
+ * `afterEach(cleanup)` unmounts every mounted instance even when an assertion throws, so a failing test cannot leak
+ * a live ink tree (with its store + stdin listeners) into the rest of the run.
  */
 
-/** Yield until ink's React-19 reconciler has committed the frame scheduled by the preceding stdin/store change. */
-const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+afterEach(cleanup);
 
 /** Mount `ChatApp` with the minimal REQUIRED props (no optional ports) — the surface under test is the ink
  *  lifecycle + the raw-mode input/paste handlers, so the driver callbacks are inert stubs. */
@@ -51,34 +58,36 @@ const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({
   timestamp,
 });
 
-/** Wrap a payload in the DECSET-2004 markers ink 7's input parser recognizes → a single `usePaste` event. */
-const bracketed = (body: string): string => `\x1b[200~${body}\x1b[201~`;
-
 describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => {
   it('inserts an idle paste into the compose buffer', async () => {
     const store = createChatStore(false);
-    const { lastFrame, stdin, unmount } = mountChat(store);
+    const { lastFrame, stdin } = mountChat(store);
     await flush();
     stdin.write(bracketed('hello world'));
     await flush();
     expect(lastFrame()).toContain('hello world');
-    unmount();
   });
 
-  it('collapses CRLF/CR in a pasted block to LF (byte-normalized, no stray carriage returns)', async () => {
+  it('collapses CRLF/CR in a pasted block to LF (three lines survive, no stray carriage returns)', async () => {
     const store = createChatStore(false);
-    const { lastFrame, stdin, unmount } = mountChat(store);
+    const { lastFrame, stdin } = mountChat(store);
     await flush();
-    stdin.write(bracketed('a\r\nb\rc'));
+    // Distinctive per-line tokens so the POSITIVE assertion is meaningful: `X1\r\nY2\rZ3` must normalize to
+    // `X1\nY2\nZ3` — three rendered lines. Asserting each token is present rules out a dropped paste, and asserting
+    // no CR survives rules out a no-op; together they distinguish real CR→LF from CR-stripping (which would join
+    // the tokens onto fewer lines) and from an inserted-nothing regression (which the no-CR check alone would miss).
+    stdin.write(bracketed('X1\r\nY2\rZ3'));
     await flush();
-    // The normalized buffer is three lines (a / b / c) — no CR survives to corrupt the terminal render.
-    expect(lastFrame()).not.toContain('\r');
-    unmount();
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('X1');
+    expect(frame).toContain('Y2');
+    expect(frame).toContain('Z3');
+    expect(frame).not.toContain('\r');
   });
 
-  it('SECURITY: a paste during a pending approval neither answers the floor nor leaks into the buffer (ADR-0057)', async () => {
+  it('SECURITY: a pasted approval token cannot answer the fail-closed floor (ADR-0057)', async () => {
     const store = createChatStore(false);
-    const { lastFrame, stdin, unmount } = mountChat(store);
+    const { stdin } = mountChat(store);
     await flush();
     let answered: ApprovalAnswer | undefined;
     void store.requestApproval(approvalReq, false).then((a) => {
@@ -87,23 +96,20 @@ describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => 
     await flush();
     expect(store.getSnapshot().approval).toBeDefined(); // the prompt is up and owns the keyboard
 
-    // Paste a string whose characters, AS KEYSTROKES, would answer the fail-closed floor ('y' = approve-once,
-    // 'a' = approve-always). ink 7 delivers the whole block to `usePaste`, which drops it behind the approval gate.
-    stdin.write(bracketed('yaya'));
-    await flush();
+    // Paste a LONE 'y' — the exact char that answers the floor if it reached `useInput`. ink 7 delivers it to
+    // `usePaste`, which drops it behind the approval gate; it never reaches `reduceApprovalKey`.
+    stdin.write(bracketed('y'));
     await flush();
 
-    // The floor is untouched: the approval is still pending and the awaiting promise has NOT resolved.
+    // The floor is untouched: still pending, and the awaiting dispatch never resolved. If the `usePaste` handler
+    // regressed (paste → `useInput` fallback), the lone 'y' would have answered it and both assertions would flip.
     expect(store.getSnapshot().approval).toBeDefined();
     expect(answered).toBeUndefined();
-    // …and the pasted token did not leak into the (still-rendered) idle compose buffer either.
-    expect(lastFrame()).not.toContain('yaya');
-    unmount();
   });
 
   it('a REAL "y" keystroke DOES answer the pending approval (the floor is answerable — just not by paste)', async () => {
     const store = createChatStore(false);
-    const { stdin, unmount } = mountChat(store);
+    const { stdin } = mountChat(store);
     await flush();
     let answered: ApprovalAnswer | undefined;
     void store.requestApproval(approvalReq, false).then((a) => {
@@ -114,7 +120,6 @@ describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => 
     await flush();
     expect(answered).toEqual({ outcome: 'approve', scope: 'once' });
     expect(store.getSnapshot().approval).toBeUndefined();
-    unmount();
   });
 });
 
@@ -127,7 +132,7 @@ describe('ChatApp live-turn timer — 2.5.H frozen-clock regression', () => {
     try {
       vi.setSystemTime(new Date('2026-07-09T10:00:00.000Z'));
       const store = createChatStore(false);
-      const { lastFrame, unmount } = mountChat(store);
+      const { lastFrame } = mountChat(store);
       await flush();
       store.apply(turnStarted('2026-07-09T10:00:00.000Z')); // turnStartedAtMs = T0
       store.tick();
@@ -140,7 +145,6 @@ describe('ChatApp live-turn timer — 2.5.H frozen-clock regression', () => {
       store.tick();
       await flush();
       expect(lastFrame()).toContain('Working… 3s');
-      unmount();
     } finally {
       vi.useRealTimers();
     }
@@ -148,16 +152,21 @@ describe('ChatApp live-turn timer — 2.5.H frozen-clock regression', () => {
 });
 
 describe('ChatApp render economy — perf guard', () => {
-  it('a burst of idle ticks does not repaint (the store skips clean frames)', async () => {
+  it('idle ticks do not repaint — each tick is flushed separately so a per-tick over-flush would show', async () => {
     const store = createChatStore(false);
-    const { frames, unmount } = mountChat(store);
+    const { frames } = mountChat(store);
     await flush();
     const baseline = frames.length;
-    for (let i = 0; i < 20; i += 1) store.tick(); // 20 idle ticks — no dirty state, no running turn
-    await flush();
-    // `tick()` repaints ONLY when dirty or streaming; at idle it must not emit a frame per tick (else the frame loop
-    // would thrash the terminal). Allow a single slack frame for a coalesced initial paint.
-    expect(frames.length - baseline).toBeLessThanOrEqual(1);
-    unmount();
+    // Flush AFTER EACH tick (not one trailing flush) so every would-be repaint commits its OWN frame — mirroring the
+    // real setInterval frame loop. A correct store `tick()`s at idle WITHOUT flushing (no dirty state, no running
+    // turn), so `frames` must not grow at all; a regressed store that flushed on every tick would add ~20 frames and
+    // fail here. `frames.length` is the ink-testing-library debug-mode React-commit count (un-deduped), so it is an
+    // exact repaint counter. (The synchronous-burst shape this replaces coalesced all 20 ticks into one commit,
+    // which masked the regression — Step-3 Opus review.)
+    for (let i = 0; i < 20; i += 1) {
+      store.tick();
+      await flush();
+    }
+    expect(frames.length).toBe(baseline);
   });
 });

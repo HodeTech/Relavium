@@ -1,8 +1,10 @@
 import { Box, Text, useInput } from 'ink';
-import { render } from 'ink-testing-library';
+import { cleanup, render } from 'ink-testing-library';
 import { useState } from 'react';
 import type { ReactElement } from 'react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { flush } from './harness-util.js';
 
 /**
  * The ink-7 harness smoke test (2.6.F Step 3, ADR-0068 part f) — the workspace's FIRST `.test.tsx`.
@@ -12,23 +14,30 @@ import { describe, expect, it } from 'vitest';
  * PINNED here empirically. This proves the harness capabilities the renderer suite depends on hold under ink 7's
  * pure-ESM, React-19 reconciler:
  *   1. mount + `lastFrame()` frame capture,
- *   2. `stdin.write(...)` key delivery reaching a `useInput` handler (incl. the ink-7 raw backspace byte `\x7f`),
- *   3. clean `unmount()` teardown.
+ *   2. `stdin.write(...)` key delivery reaching a `useInput` handler,
+ *   3. the ink-7-SPECIFIC contract: the raw DEL byte `\x7f` is labelled `key.backspace` (ink 6 labelled it
+ *      `key.delete` — ADR-0068(a)); the backspace Probe below checks `key.backspace` ONLY, so this test would FAIL
+ *      under ink-6 semantics — it is a genuine ink-major discriminator, not merely a liveness canary,
+ *   4. clean `unmount()` teardown.
  *
  * TIMING CONTRACT (load-bearing for every renderer `.test.tsx`): ink renders through React 19's reconciler, which
  * flushes a state update scheduled from a stdin `data` event on a LATER microtask — so a frame assertion must
- * `await flush()` after a `stdin.write(...)`, never read `lastFrame()` synchronously on the same tick. `flush()`
- * yields the macrotask queue (`setImmediate`) so the commit lands. This is the canonical pattern the component
- * suites reuse; if a future ink / ink-testing-library bump breaks the render/stdin contract, THIS test fails first.
+ * `await flush()` after a `stdin.write(...)`, never read `lastFrame()` synchronously on the same tick (see
+ * {@link flush} for why one macrotask yield suffices). If a future ink / ink-testing-library bump breaks the
+ * render/stdin contract or the `key.backspace` labelling, THIS test fails first — localizing the regression to the
+ * harness rather than to a component suite. `afterEach(cleanup)` unmounts every instance even when an assertion
+ * throws, so a failing test cannot leak a live ink tree (with its stdin/store listeners) into the rest of the run.
  */
 
-/** Yield until ink's React-19 reconciler has committed the frame scheduled by the preceding `stdin.write`. */
-const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+afterEach(cleanup);
 
 function Probe(): ReactElement {
   const [text, setText] = useState('start');
   useInput((input, key) => {
-    if (key.backspace || key.delete) {
+    // Check `key.backspace` ONLY (not `|| key.delete`) so the `\x7f` case discriminates ink 7 (backspace) from
+    // ink 6 (delete). The PRODUCTION reducers deliberately dual-fold both for defence — that belt-and-suspenders is
+    // unit-tested in chat-input.test.ts; here the point is to pin ink 7's raw labelling itself.
+    if (key.backspace) {
       setText((cur) => cur.slice(0, -1));
       return;
     }
@@ -47,45 +56,43 @@ function Probe(): ReactElement {
 
 describe('ink-7 harness smoke (ink-testing-library 4.0.0)', () => {
   it('mounts and captures the initial frame', async () => {
-    const { lastFrame, unmount } = render(<Probe />);
+    const { lastFrame } = render(<Probe />);
     await flush();
     expect(lastFrame()).toContain('value:start');
-    unmount();
   });
 
   it('delivers a printable keystroke to a useInput handler', async () => {
-    const { lastFrame, stdin, unmount } = render(<Probe />);
+    const { lastFrame, stdin } = render(<Probe />);
     await flush();
     stdin.write('X');
     await flush();
     expect(lastFrame()).toContain('value:startX');
-    unmount();
   });
 
-  it('maps the ink-7 raw backspace byte (\\x7f) to key.backspace', async () => {
-    const { lastFrame, stdin, unmount } = render(<Probe />);
+  it('labels the ink-7 raw backspace byte (\\x7f) as key.backspace, not key.delete', async () => {
+    const { lastFrame, stdin } = render(<Probe />);
     await flush();
-    // ink 7 emits the DEL byte (0x7f) as key.backspace (ink 6 mislabeled it key.delete — ADR-0068; the Step-2
-    // reducer already dual-folds both, so the raw parse path is what this pins). Assert the byte reaches the fold.
+    // The Probe folds `key.backspace` ONLY — under ink 6 the DEL byte arrives as key.delete and NOTHING would
+    // change, so this assertion (one char removed → "star") fails on ink 6. That makes it the suite's true ink-7
+    // discriminator (empirically: ink 7 reports `bs:1 del:0` for `\x7f`).
     stdin.write('\x7f');
     await flush();
     expect(lastFrame()).toContain('value:star');
-    unmount();
   });
 
   it('delivers Enter (\\r) as key.return', async () => {
-    const { lastFrame, stdin, unmount } = render(<Probe />);
+    const { lastFrame, stdin } = render(<Probe />);
     await flush();
     stdin.write('\r');
     await flush();
     expect(lastFrame()).toContain('value:submitted');
-    unmount();
   });
 
-  it('unmounts without throwing and keeps the final frame a string', async () => {
-    const { lastFrame, unmount } = render(<Probe />);
+  it('tears down cleanly — a second mount in the same file is unaffected (afterEach cleanup)', async () => {
+    const { lastFrame } = render(<Probe />);
     await flush();
-    unmount();
-    expect(typeof lastFrame()).toBe('string');
+    // The prior tests each mounted + relied on `afterEach(cleanup)` to unmount; this one only asserts a fresh mount
+    // still captures its own initial frame (no cross-test bleed from a leaked instance).
+    expect(lastFrame()).toContain('value:start');
   });
 });

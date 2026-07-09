@@ -77,7 +77,8 @@ catalog:
   # auto-follow state machine is unit-tested at the React layer (not just the pure reducers). Dev-only,
   # confined to apps/cli's `*.test.tsx`, never bundled by tsup. It declares NO `ink` peer (only
   # `@types/react` >=18 — satisfied by 19.2) and drives ink through its public render surface, so it is
-  # ink-major-agnostic; a smoke test pins the ink-7 render/stdin contract. §9a cooling window.
+  # ink-major-agnostic; `harness-smoke.test.tsx` PINS the ink-7 render/stdin contract empirically. Well past
+  # the §9a cooling window: 4.0.0 published 2024-05-22, ~778 days before adoption (2026-07-09).
   ink-testing-library: ^4.0.0
   # CLI setup-wizard / interactive-prompt layer (2.G + 2.J, ADR-0047) — `@clack/prompts` renders the
   # human-gate card (`relavium gate`/inline prompt) and the `create` wizard. The current 1.x line requires
