@@ -965,12 +965,24 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   UNDER-count class the emoji-presentation fix closed, only for rare glyphs no chat realistically emits. Safe-direction
   bias means over-counting is fine, so this is cosmetic. Fold the missing ranges into the deferred `Intl.Segmenter`/EAW
   wrap-cache hardening below rather than a one-off patch. *(low · apps/cli/src/render/tui/viewport.ts)*
-- [x] **Step 4b-3: memoize per-logical-line wrap so a resize doesn't re-segment the whole transcript — DONE (Step 4b-3).**
-  `wrapText`/`wrapTranscript` now front `wrapLogicalLine` with a bounded (8192-entry) LRU keyed on `(cols, line)`
-  (`viewport.ts`), so re-wrapping the unbounded append-only transcript on each append is O(history) cheap map lookups +
-  ONE segmentation (the new line), and a re-render at an unchanged size is all hits — no more re-running `Intl.Segmenter`
-  over all of history. Transparent (a warm wrap equals the cold wrap + the uncached primitive) + LRU-bumps hits; pinned
-  in viewport.test.ts (incl. a break-verified `(cols, line)`-collision test).
+- [x] **Step 4b-3: memoize the transcript wrap so an append/resize doesn't re-segment all of history — DONE (Step 4b-3).**
+  `wrapTranscript` (`chat-projection.ts`) memoizes per ENTRY in a `WeakMap<TranscriptEntry, { cols, lines }>` keyed on
+  the immutable, append-only entry object: an append is O(history) map lookups + ONE `wrapEntry` (the new entry), a
+  resize replaces each entry's single cached wrap, and it NEVER thrashes (holds exactly the live entries, GC-reclaimable)
+  — `viewport.ts` `wrapText` is pure again. (The first cut was a fixed-size per-line LRU; the Step-4b-3 Opus review
+  showed it thrashed to a 0% hit rate once a session exceeded the cache size, so it was replaced.) Pinned in
+  chat-projection.test.ts (incremental append + same-object-on-hit + a >8192-entry repeatability case).
+- [ ] **Step 4b-3: route mid-session raw-`io` notices through the CURRENT session's view store so they survive alt mode
+  (Step-4b-3 Sonnet review).** Two callbacks still write via the raw `deps.io.writeErr` seam WHILE the hoisted alt buffer
+  is entered, so ink's next log-update frame overwrites them and they are LOST on the now-default full-screen path: the
+  budget-cap **`onBudgetWarning`** (chat.ts, fires mid-turn from the governor) and the `/clear`/reseat **`surfaceMcpSkipped`**
+  diagnostic (chat.ts rebuild path). Every OTHER in-session notice (cost/compaction/trim/mode) already renders via
+  `store.notice`. The fix is architectural: these callbacks are wired at BUILD time over a stable `io`, but the view store
+  is created AFTER the build and is fresh per session — so a fixed closure over one store would post to the wrong
+  (torn-down) transcript across a swap. Thread a mutable "current session view-store" ref (set per session by
+  `driveOneSession`, or an event the session emits) and route both callbacks through it → `store.notice`. Conditional
+  (needs a cost cap or an unreachable MCP server, AND alt mode — the flip WIDENED a pre-existing latent bug from opt-in
+  alt users to the default). *(med · apps/cli/src/commands/chat.ts + engine/mcp-servers.ts)*
 - [x] **Step 4b-3: keep the alt buffer entered across a `/clear` / `/models`-reseat re-drive (inter-session flicker) — DONE (Step 4b-3).**
   Fixed by the HOIST (chosen over DEC-2026, which cannot span a primary↔alt switch): `driveInk` now passes the ink
   render option `alternateScreen:false` (ink toggles the buffer no more — it still full-screen-renders via log-update),

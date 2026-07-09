@@ -237,6 +237,22 @@ perf thresholds for the full-screen frame loop.
 > signal paths (double-Ctrl-C, `kill -TERM`/`-HUP`) are a manual PR-time check. **Still pending (Step 5):** the `[`-dump
 > / `v`-open-in-`$EDITOR` copy-and-search hatches, mouse-wheel scroll, the branded banner, and the a11y note.
 
+> **Amended 2026-07-09 (Step 4b-3 Opus + Sonnet review folds).** SUPERSEDES the caps-lift mechanism in the note above:
+> the bounded per-logical-line LRU (keyed on `(cols, line)`) thrashed to a 0% hit rate once a session exceeded the
+> cache size (a sequential re-scan from the head evicts the very lines it is about to re-read), so it was replaced by a
+> **`WeakMap<TranscriptEntry, { cols, lines }>` in `chat-projection.ts`** keyed on the immutable, append-only entry
+> object — an append is O(history) map lookups + ONE `wrapEntry`, a resize replaces each entry's single cached wrap,
+> and it NEVER thrashes (it holds exactly the live entries, GC-reclaimable); `viewport.ts` `wrapText` is pure again.
+> Other verified folds: the `/clear`/reseat rebuild-FAILURE hint (the resumable `chat-resume <id>`) is now lifted onto
+> `HoistedLoopResult.errorText` + printed AFTER the alt-exit (it was written into the still-entered alt buffer and
+> discarded once alt became the default); **SIGQUIT** joined the SIGTERM/SIGHUP net (an external `kill -QUIT` stranded
+> the terminal); the interactive-TTY tests inject an inert hoist (the flip drove them into the real alt buffer / real
+> signal handlers), and a recording-hoist test pins the `runReplLoop` `altActive` derivation. **Known limitations
+> (tracked in deferred-tasks.md):** a SIGTERM/SIGHUP/SIGQUIT dumps ink's final frame onto the primary buffer (cosmetic;
+> needs threading the instance unmount before the alt-exit), and session-side raw-`io` notices that fire mid-session —
+> the budget-cap **warning** and the `/clear`/reseat **MCP-skipped** diagnostic — still land on the alt buffer and are
+> lost in alt mode (they must route through the CURRENT session's view-store `notice`, an architectural follow-up).
+
 ## Consequences
 
 ### Positive

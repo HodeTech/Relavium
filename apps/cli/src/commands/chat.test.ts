@@ -31,6 +31,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore } from '../render/tui/chat-store.js';
 import { captureIo, parseNdjson } from '../test-support.js';
+import { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from '../render/alt-screen.js';
 import {
   chatCommand,
   chatIsInteractive,
@@ -144,6 +145,25 @@ const INERT_HOIST = {
     exit: (): void => undefined,
   },
 } as const;
+
+/** Like {@link INERT_HOIST} but RECORDS the control-sequence writes (still never touching the real fd) so a test can
+ *  assert WHETHER the hoist entered the alt buffer — pinning `runReplLoop`'s `altActive` derivation, the single wiring
+ *  the whole flicker fix depends on, which the fully-inert `INERT_HOIST` cannot observe (Step-4b-3 Sonnet review). */
+function recordingHoist(): {
+  hoist: { writeControl: (s: string) => void; lifecycle: typeof INERT_HOIST.lifecycle };
+  writes: string[];
+} {
+  const writes: string[] = [];
+  return {
+    writes,
+    hoist: {
+      writeControl: (s: string) => {
+        writes.push(s);
+      },
+      lifecycle: INERT_HOIST.lifecycle,
+    },
+  };
+}
 
 describe('chatCommand', () => {
   let cwd: string;
@@ -565,6 +585,62 @@ describe('chatCommand', () => {
     expect(freshRow?.session.agentSlug).toBe(oldRow?.session.agentSlug);
 
     expect(closeCount).toBe(1); // the SHARED db handle closed exactly ONCE across the swap (not per session)
+  });
+
+  it('the alt-buffer hoist ENTERS on an interactive TTY by default, STAYS OUT with --no-alt-screen / on a non-TTY (Step-4b-3 wiring)', async () => {
+    // Pins `runReplLoop`'s `altActive` derivation — the ONE boolean deciding whether the hoist enters the alt buffer.
+    // A recording (never-real-fd) writeControl lets us assert the DECSET-1049 bytes were / were not attempted; the
+    // fully-inert INERT_HOIST used elsewhere cannot (a total regression here would otherwise pass silently).
+    const exitDrive: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    // (a) interactive TTY + phase default (DEFAULT_ALT_SCREEN=true) → altActive TRUE → the hoist enters + exits.
+    const a = deps([], [textTurn('hi')]);
+    const recA = recordingHoist();
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...a.d,
+        ...recA.hoist,
+        io: { ...a.d.io, stdoutIsTty: true },
+        openSessionStore: () => ({ store: a.store, db: client.db, close: () => undefined }),
+        drive: exitDrive,
+      },
+    );
+    expect(recA.writes.join('')).toContain(ENTER_ALT_SCREEN); // the buffer was entered (the flicker fix is wired)
+    expect(recA.writes.join('')).toContain(EXIT_ALT_SCREEN); // …and exited on the way out
+
+    // (b) interactive TTY + --no-alt-screen → altActive FALSE → not a single DECSET byte (the opt-out is honored).
+    const b = deps([], [textTurn('hi')]);
+    const recB = recordingHoist();
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...b.d,
+        ...recB.hoist,
+        io: { ...b.d.io, stdoutIsTty: true },
+        global: { ...globalOptions(cwd), noAltScreen: true },
+        openSessionStore: () => ({ store: b.store, db: client.db, close: () => undefined }),
+        drive: exitDrive,
+      },
+    );
+    expect(recB.writes).toEqual([]);
+
+    // (c) non-TTY (a pipe / CI) → altActive FALSE → byte-identical machine path (never alt-screened, ADR-0068 §e).
+    const c = deps([], [textTurn('hi')]);
+    const recC = recordingHoist();
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...c.d,
+        ...recC.hoist,
+        openSessionStore: () => ({ store: c.store, db: client.db, close: () => undefined }),
+        drive: exitDrive,
+      },
+    );
+    expect(recC.writes).toEqual([]);
   });
 
   it('the [preferences].alt_screen preference SURVIVES a /clear re-drive (Step-4a threading regression, ADR-0068 §e)', async () => {
