@@ -49,7 +49,7 @@ import {
 } from '../render/tui/home-controller.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE } from '../render/alt-screen.js';
 import { nodeCreateTempDocument, nodeSpawnEditor } from '../render/editor.js';
-import type { HatchDeps } from '../render/hatches.js';
+import { inkOwnedTerminal, type HatchDeps } from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
 import { createSuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
@@ -106,9 +106,6 @@ export interface HomeDeps {
   /** Write a terminal control sequence (the bracketed-paste DECSET toggles). Default `process.stdout`. */
   readonly writeControl?: (sequence: string) => void;
 }
-
-/** The assumed width for the `/scrollback` dump when the terminal reports no column count. */
-const DEFAULT_DUMP_COLS = 80;
 
 /** The default external-signal source: SIGINT(2) + SIGTERM(15) on `process`, registered with `on` (not `once`)
  *  so ink's signal-exit listener never re-raises while we still hold the cooperative teardown. */
@@ -190,12 +187,12 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   const hatchPorts: Omit<HatchDeps, 'transcript' | 'note'> = {
     suspendPort,
     writeControl,
-    terminal: () => ({
-      columns: process.stdout.columns ?? DEFAULT_DUMP_COLS,
-      altActive: altScreenActive,
-      mouseActive: altScreenActive, // enabled together with the alt buffer (the ENABLE_MOUSE write below)
-      inkOwnsAltScreen: true, // ink's `alternateScreen` render option is ON for this surface
-    }),
+    // `inkOwnedTerminal` (not `hoistedTerminal`): this surface mounts ink with `alternateScreen: true`, so ink toggles
+    // DECSET-1049 across the suspension and only the mouse is ours. Read lazily — `altScreenActive` is set at mount.
+    terminal: inkOwnedTerminal(
+      () => altScreenActive,
+      () => process.stdout.columns,
+    ),
     dump: {
       writeOut: nodeWriteOut(process.stdout),
       waitForContinue: nodeWaitForContinue(process.stdin),

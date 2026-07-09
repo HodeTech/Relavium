@@ -1,6 +1,21 @@
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+/** A switchable `writeFile` fault, so the "a partial write must not strand the conversation" path is driven for real
+ *  (an ENOSPC/EIO cannot be provoked portably). Everything else in `node:fs/promises` stays real. */
+const fsFault = vi.hoisted(() => ({ writeFileError: undefined as Error | undefined }));
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
+      if (fsFault.writeFileError !== undefined) throw fsFault.writeFileError;
+      return actual.writeFile(...args);
+    },
+  };
+});
 
 import {
   nodeCreateTempDocument,
@@ -213,6 +228,11 @@ describe('openInEditor', () => {
  * `nodeCreateTempDocument` — the real filesystem adapter. It is tested against the real disk because the properties
  * that matter (permissions, and the hard-exit net) are properties of the OS, not of our orchestration.
  */
+/** The transcript directories currently in the OS temp dir — compared as a BEFORE/AFTER diff, never absolutely
+ *  (the temp dir is shared with other test files, other vitest workers, and stale runs). */
+const transcriptDirs = (): string[] =>
+  readdirSync(tmpdir()).filter((name) => name.startsWith('relavium-transcript-'));
+
 describe('nodeCreateTempDocument — the private temp document + its hard-exit net', () => {
   it('writes a 0600 file inside a 0700 private directory', async () => {
     const doc = await nodeCreateTempDocument('the conversation');
@@ -233,6 +253,24 @@ describe('nodeCreateTempDocument — the private temp document + its hard-exit n
     await doc.dispose();
     expect(existsSync(dir)).toBe(false);
     expect(process.listenerCount('exit')).toBe(before); // …and disarmed after, so `/edit` cannot accumulate listeners
+  });
+
+  it('SECURITY: a FAILED write reclaims the directory — a partial conversation is never stranded on disk', async () => {
+    // The Step-5d-3 Opus review: `mkdtemp` created the private dir and `writeFile` flushed the transcript BEFORE the
+    // exit net was armed and before `dispose` was returned. An ENOSPC/EIO mid-write therefore left the directory —
+    // holding part of the conversation — with nothing downstream able to reclaim it.
+    const before = process.listenerCount('exit');
+    const dirsBefore = transcriptDirs();
+    fsFault.writeFileError = new Error('ENOSPC: no space left on device');
+    try {
+      await expect(nodeCreateTempDocument('the whole conversation')).rejects.toThrow('ENOSPC');
+    } finally {
+      fsFault.writeFileError = undefined;
+    }
+    // No net armed for a document that never existed, and no NEW directory left behind. A before/after DIFF, never
+    // an absolute scan: the OS temp dir is shared with other test files, other vitest workers, and stale runs.
+    expect(process.listenerCount('exit')).toBe(before);
+    expect(transcriptDirs().filter((name) => !dirsBefore.includes(name))).toEqual([]);
   });
 
   it('SECURITY: the exit net reclaims the transcript on a HARD process.exit() — the path the async finally never runs on', async () => {

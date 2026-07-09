@@ -72,7 +72,13 @@ import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { createAltScreenController, type AltScreenController } from '../render/alt-screen.js';
 import { nodeCreateTempDocument, nodeSpawnEditor } from '../render/editor.js';
-import { createHatches, type HatchDeps, type Hatches } from '../render/hatches.js';
+import {
+  createHatches,
+  hoistedTerminal,
+  inertHatchPorts,
+  type HatchDeps,
+  type Hatches,
+} from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
 import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
 import { resolveRenderMode } from '../render/render-mode.js';
@@ -963,17 +969,13 @@ export function createChatLineHandler(
   // and the result lands on the same channel every other command's output uses. Absent ports (a unit test) ⇒ the
   // hatches say so; PRESENT ports with nothing attached to the suspend port (a plain / `--json` driver has no ink
   // tree at all) ⇒ `createHatches` itself surfaces the same honest notice.
-  const hatches: Hatches | undefined =
-    deps.hatchPorts === undefined
-      ? undefined
-      : createHatches({
-          ...deps.hatchPorts,
-          transcript: () => store.getSnapshot().state.transcript,
-          note: emitOutput,
-        });
-  const hatchUnavailable = (name: string): void => {
-    emitOutput(`${name}: needs an interactive terminal.`);
-  };
+  // No ports wired (a unit test) ⇒ INERT ports, whose empty suspend port makes `createHatches` emit its own
+  // `NO_RENDERER_NOTICE`. There is deliberately no second "unavailable" string here: one string, one place, no drift.
+  const hatches: Hatches = createHatches({
+    ...(deps.hatchPorts ?? inertHatchPorts()),
+    transcript: () => store.getSnapshot().state.transcript,
+    note: emitOutput,
+  });
 
   // The lifecycle capabilities the curated REPL commands (repl-commands.ts) run over — the slash names and the
   // /help + unknown-slash hint all derive from REPL_COMMANDS, so the three surfaces can never disagree.
@@ -1191,20 +1193,8 @@ export function createChatLineHandler(
       ),
     // The hatches (ADR-0068 §e). Unlike `/models` these need no render-layer interception: they open no overlay, so
     // BOTH interactive surfaces reach them right here, through the suspend port `runReplLoop`/`driveHome` attached.
-    dumpScrollback: async () => {
-      if (hatches === undefined) {
-        hatchUnavailable('/scrollback');
-        return;
-      }
-      await hatches.dumpScrollback();
-    },
-    editTranscript: async () => {
-      if (hatches === undefined) {
-        hatchUnavailable('/edit');
-        return;
-      }
-      await hatches.editTranscript();
-    },
+    dumpScrollback: () => hatches.dumpScrollback(),
+    editTranscript: () => hatches.editTranscript(),
   };
 
   // Parse + dispatch a `/name [args]` REPL line (extracted from processLine so each stays under the Sonar
@@ -1774,10 +1764,6 @@ function resolveSwapRebuild(
   return undefined;
 }
 
-/** The assumed width for the `/scrollback` dump when the terminal reports no column count (mirrors the projection's
- *  own fallback). The dump is printed to a real terminal, so a wrong-but-sane width beats refusing to print. */
-const DEFAULT_DUMP_COLS = 80;
-
 /** What {@link withHoistedAltScreen}'s loop body returns — text to print AFTER the single alt-exit, on the primary
  *  buffer: the final `/exit` summary and/or a rebuild-failure error (both would be discarded if written in the alt
  *  buffer — Step-4b-3 Opus review). At most one is set per run. */
@@ -1879,14 +1865,12 @@ export async function runReplLoop(
   const hatchPorts: Omit<HatchDeps, 'transcript' | 'note'> = deps.hatchPorts ?? {
     suspendPort,
     writeControl,
-    terminal: () => ({
-      columns: process.stdout.columns ?? DEFAULT_DUMP_COLS,
-      // `relavium chat` mounts ink with `alternateScreen: false` — the hoisted controller owns DECSET-1049, so the
-      // suspension must toggle it itself. Mouse reporting is enabled iff the buffer is entered (alt-screen.ts).
-      altActive: altScreenController?.isEntered() ?? false,
-      mouseActive: altScreenController?.isEntered() ?? false,
-      inkOwnsAltScreen: false,
-    }),
+    // The factory's NAME says which surface it is for; `inkOwnsAltScreen` is decided there, once, never at a call site.
+    // The predicate reads the hoisted controller LIVE, so a hatch reflects the buffer's real state — not the startup mode.
+    terminal: hoistedTerminal(
+      () => altScreenController?.isEntered() ?? false,
+      () => process.stdout.columns,
+    ),
     dump: {
       writeOut: nodeWriteOut(process.stdout),
       waitForContinue: nodeWaitForContinue(process.stdin),

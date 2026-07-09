@@ -26,6 +26,8 @@ interface CapabilityCalls {
   readonly trimHistory: number;
   readonly clearSession: number;
   readonly openModels: number;
+  readonly dumpScrollback: number;
+  readonly editTranscript: number;
 }
 
 /** A fully-spied REPL context — each capability is a spy so a command's `run` can be asserted to call exactly one. */
@@ -112,6 +114,11 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       ['trim', 'trimHistory'],
       ['clear', 'clearSession'],
       ['models', 'openModels'],
+      // ADR-0068 §e (Step 5d). Without these two rows the run→capability binding of the two newest commands was
+      // untested: cross-wiring `/scrollback` to `ctx.editTranscript` left the whole suite green (the name/palette/help
+      // assertions only check PRESENCE). Adding a command to the pinned lists is not enough — its binding needs a row.
+      ['scrollback', 'dumpScrollback'],
+      ['edit', 'editTranscript'],
     ];
     for (const [name, capability] of cases) {
       const { ctx, calls } = spyContext();
@@ -132,7 +139,9 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
         counts.compactHistory +
         counts.trimHistory +
         counts.clearSession +
-        counts.openModels;
+        counts.openModels +
+        counts.dumpScrollback +
+        counts.editTranscript;
       expect(total, `${name} calls exactly one capability`).toBe(1);
     }
   });

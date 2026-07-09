@@ -178,7 +178,16 @@ export async function openInEditor(
 export const nodeCreateTempDocument = async (contents: string): Promise<TempDocument> => {
   const dir = await mkdtemp(join(tmpdir(), 'relavium-transcript-'));
   const path = join(dir, 'transcript.md');
-  await writeFile(path, contents, { encoding: 'utf8', mode: 0o600 });
+  try {
+    await writeFile(path, contents, { encoding: 'utf8', mode: 0o600 });
+  } catch (error) {
+    // The write can fail AFTER flushing part of the conversation (ENOSPC on a full disk, EIO). At this point no exit
+    // net is armed and no `dispose` has been returned, so nothing downstream would ever reclaim the directory — the
+    // partial transcript would simply stay in the OS temp dir. Reclaim it here, then rethrow so `openInEditor` still
+    // classifies it as `{ kind: 'failed' }` (Step-5d-3 Opus review).
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
 
   const exitNet = (): void => {
     try {

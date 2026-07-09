@@ -1,6 +1,6 @@
 import { openInEditor, type EditorOutcome, type OpenInEditorDeps } from './editor.js';
 import { dumpToScrollback, type DumpToScrollbackDeps } from './scrollback.js';
-import { suspendFullScreen, type SuspendPort } from './suspend.js';
+import { createSuspendPort, suspendFullScreen, type SuspendPort } from './suspend.js';
 import { transcriptDocument, wrapTranscript } from './tui/chat-projection.js';
 import type { TranscriptEntry } from './tui/session-view-model.js';
 
@@ -56,6 +56,60 @@ export interface HatchDeps {
 
 /** The notice a hatch surfaces when no ink tree is mounted — a plain / `--json` driver has no terminal to suspend. */
 export const NO_RENDERER_NOTICE = 'needs an interactive terminal.';
+/** The assumed width when the terminal reports no column count (a detached / zero-sized TTY). The dump is printed to
+ *  a real terminal, so a sane fallback beats refusing to print. */
+export const DEFAULT_COLUMNS = 80;
+
+/**
+ * The terminal facts for **`relavium chat`**: ink mounts with `alternateScreen: false`, so the HOISTED
+ * `AltScreenController` owns DECSET-1049 and the suspension must toggle it itself. Mouse reporting is enabled with
+ * the buffer (alt-screen.ts bundles them), so both read the SAME live predicate — never the mode resolved at startup.
+ */
+export const hoistedTerminal =
+  (altEntered: () => boolean, columns: () => number | undefined) => (): HatchTerminal => ({
+    columns: columns() ?? DEFAULT_COLUMNS,
+    altActive: altEntered(),
+    mouseActive: altEntered(),
+    inkOwnsAltScreen: false,
+  });
+
+/**
+ * The terminal facts for the **bare Home**: ink mounts with `alternateScreen: true`, so ink's own begin/endSuspend
+ * exit and re-enter DECSET-1049 — the suspension must NOT touch it. Only the mouse is ours.
+ *
+ * The two factories exist so `inkOwnsAltScreen` is chosen ONCE per surface, by a name that says which surface it is
+ * for. Inverting it strands or garbles the terminal, and a bare boolean at a call site is exactly the kind of thing
+ * a future edit gets backwards (Step-5d-3 Opus review).
+ */
+export const inkOwnedTerminal =
+  (altActive: () => boolean, columns: () => number | undefined) => (): HatchTerminal => ({
+    columns: columns() ?? DEFAULT_COLUMNS,
+    altActive: altActive(),
+    mouseActive: altActive(),
+    inkOwnsAltScreen: true,
+  });
+
+/**
+ * Ports for a caller with NO full-screen renderer (a plain / `--json` driver, or a unit test). The suspend port is
+ * empty, so {@link createHatches} short-circuits on {@link NO_RENDERER_NOTICE} and never reaches the dump/editor
+ * ports. They exist to satisfy the type — and this is why there is no second, drifting "unavailable" string anywhere.
+ */
+export function inertHatchPorts(): Omit<HatchDeps, 'transcript' | 'note'> {
+  const unreachable = (): Promise<never> =>
+    Promise.reject(new Error('no full-screen renderer is attached'));
+  return {
+    suspendPort: createSuspendPort(),
+    writeControl: () => undefined,
+    terminal: () => ({
+      columns: DEFAULT_COLUMNS,
+      altActive: false,
+      mouseActive: false,
+      inkOwnsAltScreen: false,
+    }),
+    dump: { writeOut: () => undefined, waitForContinue: () => Promise.resolve() },
+    editor: { env: {}, spawnEditor: unreachable, createTempDocument: unreachable },
+  };
+}
 /** The notice a hatch surfaces before a single turn has completed — nothing to dump or edit yet. */
 export const EMPTY_TRANSCRIPT_NOTICE = 'the transcript is empty.';
 

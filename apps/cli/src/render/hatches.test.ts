@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { DISABLE_MOUSE, ENABLE_MOUSE, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from './alt-screen.js';
-import { createHatches, type HatchDeps } from './hatches.js';
+import {
+  createHatches,
+  DEFAULT_COLUMNS,
+  hoistedTerminal,
+  inertHatchPorts,
+  inkOwnedTerminal,
+  type HatchDeps,
+} from './hatches.js';
 import { createSuspendPort, type SuspendTerminal } from './suspend.js';
 import type { TranscriptEntry } from './tui/session-view-model.js';
 
@@ -224,5 +231,94 @@ describe('a rejected suspension never crashes the REPL', () => {
     await first;
     expect(trace.filter((t) => t === 'ink:begin')).toHaveLength(1); // never a second beginSuspend
     expect(notes).toEqual([]); // and the dropped hatch is silent, not an error
+  });
+});
+
+/**
+ * The per-surface terminal-fact factories (Step-5d-3 Opus review). `inkOwnsAltScreen` is the single most dangerous
+ * boolean in this feature: get it backwards and `/scrollback` either paints into the invisible alt buffer or
+ * double-toggles DECSET-1049 — a stranded or garbled terminal. It is therefore decided ONCE per surface, by a factory
+ * whose NAME says which surface it is for, and pinned here. Before this, both were bare booleans at call sites in
+ * `chat.ts` / `drive-home.tsx` with no test at all.
+ */
+describe('the per-surface terminal facts', () => {
+  it('hoistedTerminal (`relavium chat`): WE own 1049 — ink mounts with alternateScreen:false', () => {
+    const term = hoistedTerminal(
+      () => true,
+      () => 120,
+    )();
+    expect(term).toEqual({
+      columns: 120,
+      altActive: true,
+      mouseActive: true,
+      inkOwnsAltScreen: false,
+    });
+  });
+
+  it('inkOwnedTerminal (the bare Home): INK owns 1049 — it mounts with alternateScreen:true', () => {
+    const term = inkOwnedTerminal(
+      () => true,
+      () => 120,
+    )();
+    expect(term).toEqual({
+      columns: 120,
+      altActive: true,
+      mouseActive: true,
+      inkOwnsAltScreen: true,
+    });
+  });
+
+  it('both read their predicate LIVE, so a hatch reflects the buffer’s real state, not the startup mode', () => {
+    let entered = false;
+    const chat = hoistedTerminal(
+      () => entered,
+      () => 80,
+    );
+    const home = inkOwnedTerminal(
+      () => entered,
+      () => 80,
+    );
+    expect(chat().altActive).toBe(false);
+    expect(home().mouseActive).toBe(false);
+    entered = true; // the alt buffer is entered AFTER the ports were built
+    expect(chat().altActive).toBe(true);
+    expect(chat().mouseActive).toBe(true);
+    expect(home().altActive).toBe(true);
+  });
+
+  it('falls back to a sane width when the terminal reports no column count', () => {
+    expect(
+      hoistedTerminal(
+        () => true,
+        () => undefined,
+      )().columns,
+    ).toBe(DEFAULT_COLUMNS);
+    expect(
+      inkOwnedTerminal(
+        () => true,
+        () => undefined,
+      )().columns,
+    ).toBe(DEFAULT_COLUMNS);
+  });
+});
+
+describe('inertHatchPorts — a driver with no renderer (plain / --json, or a unit test)', () => {
+  it('short-circuits on the ONE "needs an interactive terminal" notice, never touching the dump/editor ports', async () => {
+    const notes: string[] = [];
+    const hatches = createHatches({
+      ...inertHatchPorts(),
+      transcript: () => [userEntry('hello')],
+      note: (text) => notes.push(text),
+    });
+    await hatches.dumpScrollback();
+    await hatches.editTranscript();
+    expect(notes).toEqual([
+      '/scrollback: needs an interactive terminal.',
+      '/edit: needs an interactive terminal.',
+    ]);
+    // The editor port would REJECT if reached — proving the short-circuit is what produced the notices.
+    await expect(inertHatchPorts().editor.spawnEditor('x', [], 'f')).rejects.toThrow(
+      'no full-screen renderer is attached',
+    );
   });
 });
