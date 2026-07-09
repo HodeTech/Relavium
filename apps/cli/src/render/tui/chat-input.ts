@@ -179,6 +179,43 @@ export function reduceEditorMotion(char: string, key: ChatKey): EditorEditAction
   return undefined;
 }
 
+/** The flags the bracketed-paste gate reads, surface-agnostically — the Home's `state`/store and the ChatApp's
+ *  ref-shadows both project into these, so the two surfaces' paste gates can never drift. */
+export interface PasteEditableFlags {
+  readonly running: boolean; // a chat turn is streaming
+  readonly shellBusy: boolean; // a `!`-shell command in flight
+  readonly submitBusy: boolean; // a submit/compaction in flight (ADR-0062)
+  readonly paletteOpen: boolean; // the `/` command palette
+  readonly searchOpen: boolean; // Ctrl+R reverse-search
+  readonly mentionOpen: boolean; // `@`-mention completion
+  readonly modelPickerOpen: boolean; // `/models`
+  readonly effortPickerOpen: boolean; // `/effort`
+  readonly reasonCaptureOpen: boolean; // the `[c]` typed-reason capture
+  readonly approvalPending: boolean; // a per-tool approval awaits — a paste must NEVER answer it (ADR-0057)
+}
+
+/**
+ * Whether a native bracketed paste (ink 7 `usePaste`) may append to the compose buffer — the SINGLE source of truth
+ * shared by both interactive surfaces (the Home's `HomeController.pasteEditable` and the standalone `ChatApp`), so
+ * their paste gates can never drift. A paste appends ONLY when the main prompt is the active editable target: no
+ * turn / `!`-shell / submit in flight, no keyboard-owning overlay/submode, and NO pending approval (a pasted approval
+ * token must never reach the fail-closed floor — ADR-0057). The Home ANDs its own `mode !== 'loading'` build gate on top.
+ */
+export function pasteIsEditable(f: PasteEditableFlags): boolean {
+  return (
+    !f.running &&
+    !f.shellBusy &&
+    !f.submitBusy &&
+    !f.paletteOpen &&
+    !f.searchOpen &&
+    !f.mentionOpen &&
+    !f.modelPickerOpen &&
+    !f.effortPickerOpen &&
+    !f.reasonCaptureOpen &&
+    !f.approvalPending
+  );
+}
+
 /**
  * Reduce one keystroke of the chat prompt to an action.
  *

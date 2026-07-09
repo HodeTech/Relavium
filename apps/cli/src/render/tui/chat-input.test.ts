@@ -9,10 +9,12 @@ import {
   insertAtCursor,
   killRange,
   moveCursor,
+  pasteIsEditable,
   reduceChatKey,
   type ChatKey,
   type ChatKeyAction,
   type EditorState,
+  type PasteEditableFlags,
 } from './chat-input.js';
 
 /** A bare key (no modifiers/specials set) — overlay only what a case exercises. */
@@ -515,5 +517,50 @@ describe('dropLastCodePoint (code-point-aware backspace)', () => {
       text: 'go',
       cursor: 2,
     });
+  });
+});
+
+describe('pasteIsEditable (the SHARED bracketed-paste gate — ADR-0068 / ADR-0057)', () => {
+  // The single source of truth both interactive surfaces call (the Home's HomeController.pasteEditable and the
+  // standalone ChatApp's usePaste handler), so their paste gates can never drift. Testing it here proves BOTH.
+  const ALL_CLEAR: PasteEditableFlags = {
+    running: false,
+    shellBusy: false,
+    submitBusy: false,
+    paletteOpen: false,
+    searchOpen: false,
+    mentionOpen: false,
+    modelPickerOpen: false,
+    effortPickerOpen: false,
+    reasonCaptureOpen: false,
+    approvalPending: false,
+  };
+
+  it('appends when the compose buffer is the active editable target (nothing else owns the keyboard)', () => {
+    expect(pasteIsEditable(ALL_CLEAR)).toBe(true);
+  });
+
+  it('SECURITY: drops the paste while an approval is pending (a pasted token can NEVER answer the fail-closed floor)', () => {
+    expect(pasteIsEditable({ ...ALL_CLEAR, approvalPending: true })).toBe(false);
+  });
+
+  it('drops the paste while ANY busy state or keyboard-owning overlay/submode is active (exhaustive per AND-term)', () => {
+    // Flipping any single gate on must drop the paste — a future edit that omits one AND-term fails HERE, not only
+    // in review, and the coverage holds for BOTH surfaces at once (they share this predicate).
+    const gates: (keyof PasteEditableFlags)[] = [
+      'running',
+      'shellBusy',
+      'submitBusy',
+      'paletteOpen',
+      'searchOpen',
+      'mentionOpen',
+      'modelPickerOpen',
+      'effortPickerOpen',
+      'reasonCaptureOpen',
+      'approvalPending',
+    ];
+    for (const gate of gates) {
+      expect(pasteIsEditable({ ...ALL_CLEAR, [gate]: true })).toBe(false);
+    }
   });
 });

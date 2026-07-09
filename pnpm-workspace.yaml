@@ -66,7 +66,8 @@ catalog:
   # CLI streaming TUI (2.E, ADR-0047) — `ink` (React for terminals) + its required `react` peer; the
   # `@types/react` peer is optional (dev-only, for typecheck). ink 7.x (adopted 2.6.F Step 2, ADR-0068 — its
   # native alternateScreen/useWindowSize/usePaste back the full-screen renderer); requires Node >=22 (ADR-0067)
-  # + React >=19.2 (pinned below) + react-devtools-core (dev peer) — ink 5 wants React 18 — see tech-stack.md.
+  # + React >=19.2 (pinned below). ink 7's `react-devtools-core` peer is OPTIONAL (ink gates the import behind a DEV
+  # env var; an unmet optional peer is harmless and does not trip the strict-peer CI gate) — ink 5 wants React 18.
   # Confined to apps/cli's renderer layer, inlined by tsup. §9a cooling window.
   ink: ^7.1.0
   react: ^19.2.7

@@ -950,3 +950,12 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   SIGINT handler, as `ChatApp` has) — the single riskiest cancel change, deliberately kept out of 2.6.F.
   **Owner:** a focused follow-up (candidate 2.6.G run-detail browser, or its own PR) with a real-TTY cancel
   test. *(med · apps/cli/src/render/tui/{ink-renderer.ts,RunApp.tsx,run-view-model.ts})*
+- [ ] **Bracketed-paste teardown symmetry — drop the redundant Home `DISABLE_BRACKETED_PASTE` write (Step-2 Sonnet
+  review).** ink 7's `App` has an unconditional unmount-cleanup that writes `ESC[?2004l` on EVERY unmount (verified
+  against ink 7.1.0 source), so the Home's manual defensive `writeControl(DISABLE_BRACKETED_PASTE)` on the
+  signal/exit teardown (`drive-home.tsx`) is redundant, and the standalone `ChatApp` correctly relies on ink's
+  cleanup with no manual write (an asymmetry, not a bug). When **2.6.F Step 4** re-introduces `writeControl` for the
+  alt-screen (DECSET 1049) control writes, resolve this cleanly: drop the redundant Home paste-DISABLE (and its
+  `home-input` `DISABLE_BRACKETED_PASTE` export + the drive-home test assertion) so both surfaces rely on ink's
+  unmount cleanup uniformly. Low; deferred to ride Step 4's `writeControl` rework rather than churn it twice.
+  *(low · apps/cli/src/home/drive-home.tsx + render/tui/home-input.ts; Step 2.6.F-4)*

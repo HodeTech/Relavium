@@ -35,6 +35,7 @@ import {
   editorFromText,
   emptyEditor,
   insertAtCursor,
+  pasteIsEditable,
   reduceChatKey,
   reduceEditorMotion,
   type EditorState,
@@ -868,17 +869,18 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     const pasted = text.replace(/\r\n?/g, '\n');
     if (pasted.length === 0) return;
     const snap = props.store.getSnapshot();
-    const editable =
-      snap.state.status !== 'running' &&
-      !shellBusyRef.current &&
-      !submitBusyRef.current &&
-      paletteRef.current === undefined &&
-      searchRef.current === undefined &&
-      mentionRef.current === undefined &&
-      modelPickerRef.current === undefined &&
-      effortPickerRef.current === undefined &&
-      reasonDraftRef.current === undefined &&
-      snap.approval === undefined;
+    const editable = pasteIsEditable({
+      running: snap.state.status === 'running',
+      shellBusy: shellBusyRef.current,
+      submitBusy: submitBusyRef.current,
+      paletteOpen: paletteRef.current !== undefined,
+      searchOpen: searchRef.current !== undefined,
+      mentionOpen: mentionRef.current !== undefined,
+      modelPickerOpen: modelPickerRef.current !== undefined,
+      effortPickerOpen: effortPickerRef.current !== undefined,
+      reasonCaptureOpen: reasonDraftRef.current !== undefined,
+      approvalPending: snap.approval !== undefined,
+    });
     if (!editable) return;
     applyEditor((cur) => insertAtCursor(cur, pasted));
   });

@@ -25,6 +25,7 @@ import {
   editorFromText,
   emptyEditor,
   insertAtCursor,
+  pasteIsEditable,
   reduceChatKey,
   reduceEditorMotion,
   type ChatKey,
@@ -318,17 +319,19 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
    *  overlay/submode (palette, reverse-search, `@`-mention, `/models`, `/effort`, the `[c]` reason capture), and
    *  NO pending approval (a paste must never reach the fail-closed approval floor — ADR-0057). */
   const pasteEditable = (): boolean =>
-    state.mode !== 'loading' &&
-    !chatRunning() &&
-    !state.shellBusy &&
-    !state.submitBusy &&
-    state.palette === undefined &&
-    state.search === undefined &&
-    state.mention === undefined &&
-    state.modelPicker === undefined &&
-    state.effortPicker === undefined &&
-    state.reasonDraft === undefined &&
-    state.session?.store.getSnapshot().approval === undefined;
+    state.mode !== 'loading' && // the build window is Home-only; every other gate is the SHARED paste predicate
+    pasteIsEditable({
+      running: chatRunning(),
+      shellBusy: state.shellBusy,
+      submitBusy: state.submitBusy,
+      paletteOpen: state.palette !== undefined,
+      searchOpen: state.search !== undefined,
+      mentionOpen: state.mention !== undefined,
+      modelPickerOpen: state.modelPicker !== undefined,
+      effortPickerOpen: state.effortPicker !== undefined,
+      reasonCaptureOpen: state.reasonDraft !== undefined,
+      approvalPending: state.session?.store.getSnapshot().approval !== undefined,
+    });
   const set = (patch: Partial<HomeControllerState>): void => {
     state = { ...state, ...patch };
     notify();
