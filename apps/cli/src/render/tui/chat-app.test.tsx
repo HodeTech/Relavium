@@ -325,6 +325,37 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     expect(frame()).not.toContain('MSG0');
   });
 
+  it('RE-CLAMPS a PAUSED (non-tail) scroll offset when the terminal SHRINKS — no blank/garbled frame (Step 4b-3)', async () => {
+    // A frozen offset valid at 24 rows can exceed maxOffset once the terminal shrinks. effectiveOffset/windowLines
+    // clamp on every render, so a paused scroll must re-settle to a valid contiguous window (never a blank slice past
+    // the end) and Ctrl+End must still resume the tail. Pins the resize re-clamp of a paused offset at the mount.
+    const h = render(chatApp(seed(60)));
+    const frame = (): string => h.lastFrame() ?? '';
+    const settle = async (): Promise<void> => {
+      for (let i = 0; i < 4; i += 1) await flush();
+    };
+    setWindowSize(h.stdout, 80, 24);
+    await waitFor(() => frame().includes('MSG59'));
+    await settle();
+
+    // Pause well up the transcript at the tall size (a large frozen offset), then shrink hard.
+    h.stdin.write('\x1b[1;5H'); // Ctrl+Home → top (following paused, offset 0)
+    await settle();
+    h.stdin.write('\x1b[6~'); // PgDn a page → a mid, non-tail frozen offset that was valid at 24 rows
+    await settle();
+    expect(frame()).not.toContain('MSG59'); // paused, not at the tail
+
+    setWindowSize(h.stdout, 80, 8); // shrink: maxOffset drops — the frozen offset must re-clamp, not blank out
+    await waitFor(() => frame().split('\n').length <= 8);
+    const shrunk = frame();
+    expect(shrunk.split('\n').length).toBeLessThanOrEqual(8); // re-bounded to the new rows
+    expect(shrunk).toMatch(/MSG\d+/); // a VALID contiguous slice is shown (not a blank past-the-end window)
+
+    h.stdin.write('\x1b[1;5F'); // Ctrl+End still reaches the tail after the shrink+re-clamp
+    await settle();
+    expect(frame()).toContain('MSG59');
+  });
+
   it('the INLINE renderer (no alternateScreen) keeps EVERY entry via <Static> — the mode discriminator', async () => {
     const { lastFrame } = mountChat(seed(40)); // inline: no alternateScreen prop
     const frame = (): string => lastFrame() ?? '';

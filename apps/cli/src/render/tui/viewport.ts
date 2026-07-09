@@ -190,11 +190,51 @@ export function wrapLogicalLine(line: string, cols: number): string[] {
 }
 
 /**
- * Wrap a multi-line block: split on `\n` (each logical line is a rendered row group) then width-wrap each. Preserves
- * empty lines as blank rows. This is the row count the viewport scroll math is defined over.
+ * Bounded LRU cache of `wrapLogicalLine` results, keyed on `${cols} ${line}` (2.6.F Step 4b-3, ADR-0068 §c). The
+ * transcript is UNBOUNDED + append-only, and `wrapTranscript` re-wraps every entry on each append (a new immutable
+ * transcript reference busts the render memo); re-segmenting all of history through `Intl.Segmenter` every append is
+ * O(history) — a visible hitch on a very large transcript (Step-4b-2 Opus review). Since a logical line's wrap is a
+ * PURE function of `(line, cols)` and history lines are STABLE across renders, memoizing the per-line wrap turns an
+ * append into O(history) cheap map lookups + ONE segmentation (the new line), and a re-render at an unchanged size is
+ * all hits. The ` ` separator can't occur in a sanitized display line, so `(cols, line)` keys never collide.
+ */
+const WRAP_CACHE_MAX = 8192; // caps memory for an unbounded transcript; evicts the least-recently-used logical line
+const wrapCache = new Map<string, readonly string[]>();
+
+/** Wrap ONE logical line with the LRU cache in front of {@link wrapLogicalLine}. A hit is re-inserted (bumped to
+ *  most-recent); a miss computes, then evicts the oldest key once over {@link WRAP_CACHE_MAX}. The returned array is
+ *  SHARED (frozen) — callers must not mutate it (both call sites only read/spread it). */
+function wrapLogicalLineCached(line: string, cols: number): readonly string[] {
+  const key = `${cols} ${line}`;
+  const hit = wrapCache.get(key);
+  if (hit !== undefined) {
+    wrapCache.delete(key); // re-insert to move it to the most-recently-used end (Map preserves insertion order)
+    wrapCache.set(key, hit);
+    return hit;
+  }
+  const rows = Object.freeze(wrapLogicalLine(line, cols));
+  wrapCache.set(key, rows);
+  if (wrapCache.size > WRAP_CACHE_MAX) {
+    const oldest = wrapCache.keys().next().value; // the least-recently-used key (front of insertion order)
+    if (oldest !== undefined) wrapCache.delete(oldest);
+  }
+  return rows;
+}
+
+/**
+ * Wrap a multi-line block: split on `\n` (each logical line is a rendered row group) then width-wrap each (through the
+ * LRU {@link wrapLogicalLineCached}, so a re-wrap of stable history is cache hits). Preserves empty lines as blank
+ * rows. This is the row count the viewport scroll math is defined over.
  */
 export function wrapText(text: string, cols: number): string[] {
-  return text.split('\n').flatMap((line) => wrapLogicalLine(line, cols));
+  // `flatMap` READS each (frozen, cached) row array into a fresh result — it never mutates them, so the shared cache
+  // entries are safe to hand back directly (no defensive copy).
+  return text.split('\n').flatMap((line) => wrapLogicalLineCached(line, cols));
+}
+
+/** Reset the {@link wrapLogicalLineCached} LRU — for tests asserting cold-cache behavior / eviction; not used in prod. */
+export function clearWrapCache(): void {
+  wrapCache.clear();
 }
 
 /** The maximum scroll offset — the top-line index at which the LAST full screen is shown (0 when it all fits). */

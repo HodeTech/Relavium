@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   clampOffset,
+  clearWrapCache,
   displayWidth,
   maxOffset,
   windowLines,
@@ -128,6 +129,38 @@ describe('wrapText (multi-line)', () => {
 
   it('a trailing newline yields a trailing blank row', () => {
     expect(wrapText('a\n', 10)).toEqual(['a', '']);
+  });
+});
+
+describe('wrapText LRU cache (2.6.F Step 4b-3 — caps-lift, ADR-0068 §c)', () => {
+  beforeEach(() => clearWrapCache());
+
+  it('is TRANSPARENT: a warm (cache-hit) wrap equals the cold wrap AND the uncached primitive', () => {
+    const line = 'the quick brown fox jumped over the lazy dog';
+    const cold = wrapText(line, 10);
+    const warm = wrapText(line, 10); // second call hits the cache
+    expect(warm).toEqual(cold);
+    expect(warm).toEqual(wrapLogicalLine(line, 10)); // identical to the uncached primitive (no drift)
+  });
+
+  it('keys on (line, cols) — a different width is a distinct entry, never a stale collision', () => {
+    const line = 'the quick brown fox jumped over the lazy dog';
+    const narrow = wrapText(line, 10); // primes cols=10
+    const wide = wrapText(line, 30); // MUST NOT return the cols=10 wrap
+    expect(wide).toEqual(wrapLogicalLine(line, 30));
+    expect(wide).not.toEqual(narrow);
+    expect(wrapText(line, 10)).toEqual(narrow); // cols=10 still intact after the cols=30 insert
+  });
+
+  it('survives eviction past the cap without corrupting a live entry (LRU bump keeps the hot line)', () => {
+    const hot = 'HOTLINE that stays referenced across the churn';
+    const expected = wrapText(hot, 12);
+    // Churn well past the 8192 cap with distinct lines, re-touching `hot` each round so its LRU recency is renewed.
+    for (let i = 0; i < 9000; i += 1) {
+      wrapText(`filler line number ${i} with enough text to wrap at twelve`, 12);
+      if (i % 500 === 0) wrapText(hot, 12); // keep `hot` most-recently-used → never evicted
+    }
+    expect(wrapText(hot, 12)).toEqual(expected); // still correct after heavy eviction
   });
 });
 
