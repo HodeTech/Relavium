@@ -6,7 +6,7 @@ import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
-import { bracketed, flush } from './harness-util.js';
+import { bracketed, waitFor } from './harness-util.js';
 import { RootApp } from './home-app.js';
 import {
   createHomeController,
@@ -16,22 +16,24 @@ import {
 
 /**
  * Mounted-Home component tests (2.6.F Step 3, ADR-0068 part f) — the second surface (after `chat-app.test.tsx`)
- * with an ink-7 `usePaste` channel AND its own live-turn timer. The Step-2 migration wired `RootApp`'s native paste
- * to `controller.handlePaste`; this pins that wiring END-TO-END through a mounted `RootApp` + a real stdin write,
- * complementing `home-controller.test.ts` (which drives `handlePaste` directly) and `chat-input.test.ts` (the pure
- * `pasteIsEditable` predicate).
+ * with an ink-7 `usePaste` channel AND its own live-turn timer + resize wiring. The Step-2 migration wired
+ * `RootApp`'s native paste to `controller.handlePaste`; this pins that wiring END-TO-END through a mounted `RootApp`
+ * + a real stdin write, complementing `home-controller.test.ts` (which drives `handlePaste` directly) and
+ * `chat-input.test.ts` (the pure `pasteIsEditable` predicate).
  *
- * Two load-bearing pins, one per surface-specific mechanism:
- *   • SECURITY (ADR-0057) — a bracketed paste can never answer the per-tool approval floor. As in the standalone
- *     chat, the payload is a LONE 'y': ink routes it to `usePaste` (dropped behind the gate), never to `useInput`;
- *     were the handler removed, the no-listener fallback would re-emit 'y' to `useInput` and answer the floor — so
- *     the test fails iff the wiring regresses.
+ * Load-bearing pins, one per surface-specific mechanism:
+ *   • SECURITY (ADR-0057) — a bracketed paste can neither answer the per-tool approval floor nor leak into the
+ *     buffer. As in the standalone chat, the payload is a LONE 'y': ink routes it to `usePaste` (dropped behind the
+ *     gate), never to `useInput`; were the handler removed, the no-listener fallback would re-emit 'y' to `useInput`
+ *     and answer the floor — so the test fails iff the wiring regresses.
  *   • 2.5.H frozen-clock — the Home renders the live timer through a DIFFERENT path than `ChatApp`: a `now()`
  *     FUNCTION prop read per-frame inside `ChatRegion` (home-app.tsx warns a frozen number prop would stick the
  *     elapsed at 0s). That distinct mechanism gets its own pin here.
+ *   • RESIZE — `RootApp`'s `subscribeResize` → `setSize(getSize())` re-measure wiring (Home substrate, not
+ *     Step-4/5-gated) is exercised by firing the captured resize callback.
  *
- * `afterEach(cleanup)` unmounts every mounted instance even when an assertion throws, so a failing test cannot leak
- * a live ink tree (with its store + stdin listeners) into the rest of the run.
+ * `afterEach(cleanup)` unmounts every mounted instance even when an assertion throws. Frame assertions poll via
+ * {@link waitFor} (never a fixed single yield) because React 19's commit can be deferred under load.
  */
 
 afterEach(cleanup);
@@ -72,12 +74,21 @@ function makeSession(store: ChatStoreController): HomeChatSession {
   };
 }
 
+interface MountedHome {
+  readonly c: HomeController;
+  readonly harness: ReturnType<typeof render>;
+  /** Invoke the resize callback `RootApp` registered via `subscribeResize` (the terminal-resize signal). */
+  readonly fireResize: () => void;
+  /** Mutate the size `getSize()` returns, so a subsequent `fireResize()` re-measures to it. */
+  readonly setSize: (size: { cols: number; rows: number }) => void;
+}
+
 /** Build a controller whose `startChat` yields a session over the given store, then mount `RootApp` on the harness.
- *  `nowMs` is `() => Date.now()` so a `Date`-only fake clock drives the Home's per-frame timer. */
-function mountHome(store: ChatStoreController): {
-  c: HomeController;
-  harness: ReturnType<typeof render>;
-} {
+ *  `nowMs` is `() => Date.now()` so a `Date`-only fake clock drives the Home's per-frame timer; the resize
+ *  subscription is captured (not stubbed inert) so the re-measure wiring can be exercised. */
+function mountHome(store: ChatStoreController): MountedHome {
+  let onResize: () => void = () => {};
+  let size = { cols: 100, rows: 30 };
   const c = createHomeController({
     doctorProbes: STUB_DOCTOR_PROBES,
     startChat: () => Promise.resolve(makeSession(store)),
@@ -90,11 +101,21 @@ function mountHome(store: ChatStoreController): {
       controller={c}
       nowMs={() => Date.now()}
       color={false}
-      getSize={() => ({ cols: 100, rows: 30 })}
-      subscribeResize={() => () => {}}
+      getSize={() => size}
+      subscribeResize={(cb) => {
+        onResize = cb;
+        return () => {};
+      }}
     />,
   );
-  return { c, harness };
+  return {
+    c,
+    harness,
+    fireResize: () => onResize(),
+    setSize: (next) => {
+      size = next;
+    },
+  };
 }
 
 /** Drive the mounted controller from the bare Home into an in-Home chat (type a first message + Enter). The chat is
@@ -103,7 +124,7 @@ async function enterChat(c: HomeController): Promise<void> {
   c.handleKey('h', {});
   c.handleKey('i', {});
   c.handleKey('', { return: true });
-  await flush();
+  await waitFor(() => c.getSnapshot().mode === 'chat'); // startChat resolves on a microtask
 }
 
 describe('RootApp (Home) bracketed paste — usePaste → controller.handlePaste wiring (ADR-0068)', () => {
@@ -114,7 +135,7 @@ describe('RootApp (Home) bracketed paste — usePaste → controller.handlePaste
     expect(c.getSnapshot().mode).toBe('chat');
 
     harness.stdin.write(bracketed('hello world'));
-    await flush();
+    await waitFor(() => c.getSnapshot().input.text.includes('hello world'));
     expect(c.getSnapshot().input.text).toContain('hello world');
   });
 
@@ -124,9 +145,9 @@ describe('RootApp (Home) bracketed paste — usePaste → controller.handlePaste
     await enterChat(c);
 
     harness.stdin.write(bracketed('a\r\nb\rc'));
-    await flush();
     // The Home exposes the raw compose buffer, so pin the normalization EXACTLY — this distinguishes real `\r\n?`→
     // `\n` from CR-stripping ('abc'), CR-preserving ('a\r\nb\rc'), and a dropped paste ('').
+    await waitFor(() => c.getSnapshot().input.text === 'a\nb\nc');
     expect(c.getSnapshot().input.text).toBe('a\nb\nc');
   });
 
@@ -138,14 +159,20 @@ describe('RootApp (Home) bracketed paste — usePaste → controller.handlePaste
     void store.requestApproval(approvalReq, true).then((a) => {
       answered = a;
     });
-    await flush();
+    await waitFor(() => store.getSnapshot().approval !== undefined);
     expect(store.getSnapshot().approval).toBeDefined(); // the prompt owns the keyboard
 
     // A LONE 'y' — the char that answers the floor via `useInput` if the paste wiring regressed. `usePaste` →
-    // `handlePaste` drops it behind the approval gate (`pasteEditable` refuses it).
+    // `handlePaste` drops it behind the approval gate (`pasteEditable` refuses it). Give any regression a bounded
+    // window to manifest (an answer, a cleared approval, or a leaked buffer), then confirm none did.
     harness.stdin.write(bracketed('y'));
-    await flush();
-
+    await waitFor(
+      () =>
+        answered !== undefined ||
+        store.getSnapshot().approval === undefined ||
+        c.getSnapshot().input.text !== '',
+      12,
+    );
     expect(store.getSnapshot().approval).toBeDefined(); // still pending — the floor was untouched
     expect(answered).toBeUndefined(); // the awaiting dispatch never resolved
     expect(c.getSnapshot().input.text).toBe(''); // and nothing leaked into the compose buffer
@@ -161,20 +188,39 @@ describe('RootApp (Home) live-turn timer — 2.5.H frozen-clock regression (func
       vi.setSystemTime(new Date('2026-07-09T10:00:00.000Z'));
       const store = createChatStore(false);
       const { c, harness } = mountHome(store);
+      const frame = (): string => harness.lastFrame() ?? '';
       await enterChat(c);
       expect(c.getSnapshot().mode).toBe('chat');
 
       store.apply(turnStarted('2026-07-09T10:00:00.000Z')); // turnStartedAtMs = T0
       store.tick();
-      await flush();
-      expect(harness.lastFrame()).toContain('Working… 0s');
+      await waitFor(() => frame().includes('Working… 0s'));
+      expect(frame()).toContain('Working… 0s');
 
       vi.setSystemTime(new Date('2026-07-09T10:00:03.000Z'));
       store.tick(); // running turn → ChatRegion re-renders → re-reads now()
-      await flush();
-      expect(harness.lastFrame()).toContain('Working… 3s');
+      await waitFor(() => frame().includes('Working… 3s'));
+      expect(frame()).toContain('Working… 3s');
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('RootApp (Home) terminal resize — subscribeResize → setSize re-measure wiring', () => {
+  it('re-renders on a resize signal without throwing (the useEffect re-measure path)', async () => {
+    const store = createChatStore(false);
+    const { harness, fireResize, setSize } = mountHome(store);
+    const frame = (): string => harness.lastFrame() ?? '';
+    await waitFor(() => frame().length > 0);
+    const baseline = harness.frames.length;
+
+    // The terminal shrank below the 80×24 degrade threshold — mutate the measured size, then fire the resize the
+    // production `useEffect(() => subscribeResize(() => setSize(getSize())))` registered. A new size object triggers
+    // a re-render (a new committed frame), exercising the re-measure wiring the other tests stub inert.
+    setSize({ cols: 60, rows: 20 });
+    fireResize();
+    await waitFor(() => harness.frames.length > baseline);
+    expect(harness.frames.length).toBeGreaterThan(baseline);
   });
 });

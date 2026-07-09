@@ -1,20 +1,49 @@
 /**
  * Shared helpers for the ink-7 TUI component-test harness (2.6.F Step 3, ADR-0068 part f). The `.test.tsx` suites
- * (`harness-smoke`, `chat-app`, `home-app`) import these so the flush-timing contract and the bracketed-paste
+ * (`harness-smoke`, `chat-app`, `home-app`) import these so the flush/wait timing contract and the bracketed-paste
  * framing have ONE home — a drift in either would otherwise have to be fixed in three places.
  *
  * Not a test file itself (no `.test.` suffix), so the runner never collects it; it lives under apps/cli, which the
- * coverage config excludes, so it never affects the engine coverage floor.
+ * coverage config excludes, so it never affects the engine coverage floor, and it is unreachable from the tsup
+ * entry so it is never bundled.
+ *
+ * TEARDOWN: every suite calls `afterEach(cleanup)` (from `ink-testing-library`) so a failing assertion cannot leak a
+ * live ink tree. Note a vendor quirk — ink-testing-library's `cleanup()` never clears its module-level `instances`
+ * array, so it re-`unmount()`s EVERY instance the worker has ever mounted on each `afterEach`, not just the current
+ * test's. Harmless today (ink's `unmount()` is idempotent: it early-returns when already unmounted), but if a future
+ * release makes a double-unmount throw, `afterEach(cleanup)` would start failing every test after the first — that
+ * is where to look.
  */
 
 /**
- * Yield until ink's React-19 reconciler has committed the frame scheduled by the preceding `stdin.write` / store
- * change. ink 7 runs a synchronous LegacyRoot (`updateContainerSync`/`flushSyncWork`) and ink-testing-library
- * renders in debug mode (no frame throttle), so ONE macrotask yield (`setImmediate`) reliably lands the commit AND
- * any settled promise `.then` (e.g. a resolved `requestApproval`) — a second yield is never needed. Read frames /
- * assert AFTER awaiting this, never synchronously on the same tick as the write.
+ * Yield the macrotask queue ONCE. This drains the pending MICROTASK chain — a synchronous state change plus a
+ * settled promise `.then` (e.g. a resolved `requestApproval`) both surface after one yield. Use it to let a
+ * synchronous+microtask effect settle; do NOT rely on it for a rendered FRAME (use {@link waitFor} — React's commit
+ * timing is not guaranteed within a single macrotask under load, see below).
  */
 export const flush = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+/**
+ * Poll until `predicate` holds, yielding the macrotask queue between checks, bounded by `maxYields`. Returns as soon
+ * as the predicate is true; if it never becomes true it returns anyway, so the CALLER's own `expect` fails against
+ * the actual (stale) frame for a useful diff — this helper never throws or asserts.
+ *
+ * WHY (not a fixed single `flush`): ink renders through React 19's reconciler + scheduler, whose commit for a store
+ * / stdin-driven update can be deferred PAST one macrotask under CPU contention — empirically flaky when the three
+ * `.test.tsx` files run in parallel (the default). So a FRAME assertion (`lastFrame()` shows X) must WAIT for the
+ * commit, not assume one yield landed it. Two shapes:
+ *   • POSITIVE — `await waitFor(() => frame().includes('X'))` then `expect(frame()).toContain('X')`: returns the
+ *     instant the commit lands (fast) and tolerates a slow one (robust).
+ *   • NEGATIVE — `await waitFor(() => badThingHappened(), 12)` then `expect(!badThingHappened())`: gives the bad
+ *     outcome a bounded window to manifest, then confirms it did not (a leak / an erroneous answer would commit
+ *     within that window; its absence after it is the guarantee).
+ */
+export async function waitFor(predicate: () => boolean, maxYields = 100): Promise<void> {
+  for (let i = 0; i < maxYields; i += 1) {
+    if (predicate()) return;
+    await flush();
+  }
+}
 
 /**
  * Wrap a payload in the DECSET-2004 bracketed-paste markers ink 7's input parser recognizes, so `stdin.write` of

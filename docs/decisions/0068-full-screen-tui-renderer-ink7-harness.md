@@ -148,6 +148,16 @@ harness must close. The harness pins the 2.5.H frozen-clock regression (a fake c
 `store.tick()`-driven renders asserting the displayed elapsed advances) and frame-time / render-count
 perf thresholds for the full-screen frame loop.
 
+> **Amended 2026-07-09 (Step 3 landed).** The harness shipped in
+> `apps/cli/src/render/tui/{harness-smoke,chat-app,home-app}.test.tsx` pins **both** frozen-clock paths — the
+> `ChatApp` inline `Date.now()` one AND the Home's per-frame `now()`-function-prop one — plus the ADR-0057
+> paste-cannot-answer-the-floor security property (both surfaces), CRLF→LF normalization, the ink-7 `key.backspace`
+> labelling, and a **render-COUNT** perf guard (`frames.length` equality across a tick burst). A wall-clock
+> **frame-time** threshold is **deferred** to when the Step-4/5 viewport/scroll math makes the frame loop
+> render-heavy — a per-frame wall-clock budget is notoriously CI-flaky on shared runners, so asserting it now would
+> buy flakiness, not signal. Frame assertions poll (`waitFor`) rather than assume a single macrotask yield, because
+> React 19's commit can be deferred past one yield under parallel-file CPU contention.
+
 ## Consequences
 
 ### Positive

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { flush } from './harness-util.js';
+import { waitFor } from './harness-util.js';
 
 /**
  * The ink-7 harness smoke test (2.6.F Step 3, ADR-0068 part f) — the workspace's FIRST `.test.tsx`.
@@ -54,45 +54,47 @@ function Probe(): ReactElement {
   );
 }
 
+const frameOf = (lastFrame: () => string | undefined): string => lastFrame() ?? '';
+
 describe('ink-7 harness smoke (ink-testing-library 4.0.0)', () => {
   it('mounts and captures the initial frame', async () => {
     const { lastFrame } = render(<Probe />);
-    await flush();
+    await waitFor(() => frameOf(lastFrame).includes('value:start'));
     expect(lastFrame()).toContain('value:start');
   });
 
   it('delivers a printable keystroke to a useInput handler', async () => {
     const { lastFrame, stdin } = render(<Probe />);
-    await flush();
+    await waitFor(() => frameOf(lastFrame).includes('value:start'));
     stdin.write('X');
-    await flush();
+    await waitFor(() => frameOf(lastFrame).includes('value:startX'));
     expect(lastFrame()).toContain('value:startX');
   });
 
   it('labels the ink-7 raw backspace byte (\\x7f) as key.backspace, not key.delete', async () => {
     const { lastFrame, stdin } = render(<Probe />);
-    await flush();
+    await waitFor(() => frameOf(lastFrame).includes('value:start'));
     // The Probe folds `key.backspace` ONLY — under ink 6 the DEL byte arrives as key.delete and NOTHING would
     // change, so this assertion (one char removed → "star") fails on ink 6. That makes it the suite's true ink-7
     // discriminator (empirically: ink 7 reports `bs:1 del:0` for `\x7f`).
     stdin.write('\x7f');
-    await flush();
+    await waitFor(() => frameOf(lastFrame).includes('value:star'));
     expect(lastFrame()).toContain('value:star');
   });
 
   it('delivers Enter (\\r) as key.return', async () => {
     const { lastFrame, stdin } = render(<Probe />);
-    await flush();
+    await waitFor(() => frameOf(lastFrame).includes('value:start'));
     stdin.write('\r');
-    await flush();
+    await waitFor(() => frameOf(lastFrame).includes('value:submitted'));
     expect(lastFrame()).toContain('value:submitted');
   });
 
   it('tears down cleanly — a second mount in the same file is unaffected (afterEach cleanup)', async () => {
     const { lastFrame } = render(<Probe />);
-    await flush();
     // The prior tests each mounted + relied on `afterEach(cleanup)` to unmount; this one only asserts a fresh mount
     // still captures its own initial frame (no cross-test bleed from a leaked instance).
+    await waitFor(() => frameOf(lastFrame).includes('value:start'));
     expect(lastFrame()).toContain('value:start');
   });
 });

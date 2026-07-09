@@ -49,7 +49,11 @@ conformance fixtures.
 
 Tests live beside the code (`*.test.ts`) and never reach across the LLM seam: a core test
 asserts on Relavium types only, never on a vendor SDK shape (see
-[code-style-typescript.md](code-style-typescript.md)).
+[code-style-typescript.md](code-style-typescript.md)). One sanctioned extension: **`*.test.tsx`** is the
+convention for ink-mounted component tests under `apps/cli`'s renderer layer — a JSX file is required to render
+an ink component through `ink-testing-library` and assert on captured frames / driven stdin
+([ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md)). It is the same `.test.` prefix (not
+the rejected `.spec.` suffix), collected by the root Vitest config alongside `*.test.ts`.
 
 ## Security-critical primitive tests (direct, negative-case)
 
