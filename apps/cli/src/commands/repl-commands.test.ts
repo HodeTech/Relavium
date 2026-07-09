@@ -182,6 +182,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'thinking',
       'trim',
       'models',
+      'scrollback',
+      'edit',
     ]) {
       expect(REPL_COMMANDS_BY_NAME.get(name)?.effect).toBe('read');
     }

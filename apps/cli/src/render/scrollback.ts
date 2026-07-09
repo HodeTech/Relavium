@@ -30,6 +30,13 @@ export const DUMP_FOOTER = '───── end of transcript ─────';
 /** The acknowledgement line. The dump is useless if the full-screen view repaints over it before the user looks. */
 export const DUMP_PROMPT = 'Press Enter to return to Relavium.';
 
+/** The SIGINT source {@link nodeWaitForContinue} listens on. `process` in production; a fake in tests, so a suite
+ *  never has to raise a real signal at its own runner. */
+export interface InterruptSource {
+  once: (event: 'SIGINT', listener: () => void) => void;
+  removeListener: (event: 'SIGINT', listener: () => void) => void;
+}
+
 export interface DumpToScrollbackDeps {
   /** Write to the PRIMARY buffer. MUST NOT throw and MUST NOT let the stream's async `'error'` event escape — see
    *  {@link nodeWriteOut}, the production adapter. */
@@ -82,18 +89,25 @@ export const nodeWriteOut =
  * it); the stream is re-paused on the way out so ink's `resumeInput` re-attaches to a quiet stream. An `end`/`error`
  * (a piped or closed stdin) resolves rather than hangs: the dump is already in the scrollback, which is the point.
  */
-export const nodeWaitForContinue = (stdin: Readable & { ref?: () => void }) => (): Promise<void> =>
-  new Promise<void>((resolve) => {
-    const done = (): void => {
-      stdin.removeListener('data', done);
-      stdin.removeListener('end', done);
-      stdin.removeListener('error', done);
-      stdin.pause();
-      resolve();
-    };
-    stdin.ref?.();
-    stdin.resume();
-    stdin.once('data', done);
-    stdin.once('end', done);
-    stdin.once('error', done);
-  });
+export const nodeWaitForContinue =
+  (stdin: Readable & { ref?: () => void }, interrupts: InterruptSource = process) =>
+  (): Promise<void> =>
+    new Promise<void>((resolve) => {
+      const done = (): void => {
+        stdin.removeListener('data', done);
+        stdin.removeListener('end', done);
+        stdin.removeListener('error', done);
+        interrupts.removeListener('SIGINT', done);
+        stdin.pause();
+        resolve();
+      };
+      stdin.ref?.();
+      stdin.resume();
+      stdin.once('data', done);
+      stdin.once('end', done);
+      stdin.once('error', done);
+      // Raw mode is OFF for the whole suspension, so Ctrl-C at this prompt arrives as a real SIGINT rather than a
+      // `\x03` byte on `data`. Treat it as "return to Relavium": without this the wait would hang, the surface's own
+      // SIGINT handler is deliberately inert here (chat-ink.tsx), and the user would have no way back but Enter.
+      interrupts.once('SIGINT', done);
+    });

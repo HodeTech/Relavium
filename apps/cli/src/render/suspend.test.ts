@@ -8,7 +8,7 @@ import {
   HIDE_CURSOR,
   SHOW_CURSOR,
 } from './alt-screen.js';
-import { suspendFullScreen, type SuspendFullScreenOptions } from './suspend.js';
+import { createSuspendPort, suspendFullScreen, type SuspendFullScreenOptions } from './suspend.js';
 
 /**
  * The suspend-full-screen primitive (2.6.F Step 5d, ADR-0068 §e). These pin the contract the `/scrollback` and
@@ -255,5 +255,44 @@ describe('suspendFullScreen — re-entrancy is the SURFACE’s job to gate', () 
     };
     await expect(suspendFullScreen(opts, body(trace))).rejects.toBe(already);
     expect(trace).toEqual([]); // no write escaped the failed suspension
+  });
+});
+
+/**
+ * `createSuspendPort().isSuspended()` (Step-5d-3 Sonnet review). Not diagnostic — LOAD-BEARING. During a suspension
+ * ink has raw mode OFF, so a keyboard Ctrl-C reaches the process as a real SIGINT. The chat's SIGINT handler must
+ * yield while a hatch owns the terminal, or it tears the session down behind the suspension's back and its pending
+ * reclaim later re-enters the alt buffer on the user's SHELL. The flag is owned by the PORT, wrapped around the ink
+ * call it hands out, so no caller can forget to maintain it.
+ */
+describe('createSuspendPort — the suspension window', () => {
+  it('is false before, TRUE for exactly the callback, and false after', async () => {
+    const port = createSuspendPort();
+    const seen: boolean[] = [];
+    port.attach(async (callback) => {
+      seen.push(port.isSuspended()); // ink has begun: the window is open
+      await callback();
+    });
+    expect(port.isSuspended()).toBe(false);
+    await port.current()?.(() => {
+      seen.push(port.isSuspended()); // inside the body: still open
+      return Promise.resolve();
+    });
+    expect(port.isSuspended()).toBe(false);
+    expect(seen).toEqual([true, true]);
+  });
+
+  it('CLOSES the window when the suspension throws (a stuck flag would deafen the surface to SIGINT forever)', async () => {
+    const port = createSuspendPort();
+    const boom = new Error('editor failed');
+    port.attach(() => Promise.reject(boom));
+    await expect(port.current()?.(() => Promise.resolve())).rejects.toBe(boom);
+    expect(port.isSuspended()).toBe(false);
+  });
+
+  it('is false when nothing is attached (a plain / --json driver never suspends)', () => {
+    const port = createSuspendPort();
+    expect(port.isSuspended()).toBe(false);
+    expect(port.current()).toBeUndefined();
   });
 });

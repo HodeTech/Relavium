@@ -1428,8 +1428,13 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     rejectExit = reject;
   });
 
-  // An EXTERNAL SIGINT (kill -INT / a parent's signal) — a keyboard Ctrl-C is intercepted by useInput in raw
-  // mode and never reaches the kernel as SIGINT, so this covers only the out-of-band case. Register with
+  // An EXTERNAL SIGINT (kill -INT / a parent's signal). A keyboard Ctrl-C is normally intercepted by useInput in raw
+  // mode and never reaches the kernel as SIGINT — EXCEPT while a `/scrollback` / `/edit` suspension owns the terminal,
+  // where ink's `pauseInput()` has turned raw mode OFF and the tty line discipline delivers a real SIGINT. Running the
+  // cooperative `/cancel` there would end the session, unmount ink, and exit the hoisted alt buffer behind the
+  // suspension's back — whose pending reclaim would later re-enter the alt buffer and re-enable the mouse on the
+  // user's SHELL (Step-5d-3 Sonnet review). So the handler yields while a hatch is suspended: the hatch's own wait
+  // resolves on SIGINT, and `$EDITOR` (same foreground process group) receives the signal directly. Register with
   // process.on (NOT once): ink registers a signal-exit SIGINT listener that RE-RAISES SIGINT (→ exit 130) when
   // it is the SOLE remaining listener, which would skip our finally and leave the row 'active'. Staying
   // registered keeps signal-exit from re-raising, so the cooperative /cancel (→ session:cancelled → persister
@@ -1482,7 +1487,13 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     cancelRequested = true;
     void ctx.processLine('/cancel').then(() => resolveExit(), rejectExit);
   };
-  process.on('SIGINT', onSigint);
+  /** Drop a SIGINT that arrives while a hatch owns the terminal — see the note above. Wraps `onSigint` so the guard
+   *  can never be forgotten by a later edit to the handler body. */
+  const onSigintGated = (): void => {
+    if (ctx.suspendPort?.isSuspended() === true) return;
+    onSigint();
+  };
+  process.on('SIGINT', onSigintGated);
 
   try {
     instance = render(
@@ -1539,7 +1550,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         } catch {
           // swallow — never mask the outcome nor skip the SIGINT-listener removal below.
         }
-        process.removeListener('SIGINT', onSigint);
+        process.removeListener('SIGINT', onSigintGated);
       },
       // The end-of-session summary rides on the outcome (Step 4b-3): the hoisted runReplLoop prints it AFTER the
       // single alt-buffer exit, on the primary buffer (ADR-0068 §c). Only a real end (`/exit`) carries one; a `/clear`
@@ -1554,7 +1565,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     // none leaks past the throw (the finally above is never reached when render() throws).
     clearInterval(frame);
     unsubscribe();
-    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGINT', onSigintGated);
     throw err;
   }
 }

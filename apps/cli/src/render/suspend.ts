@@ -144,14 +144,42 @@ export interface SuspendPort {
   readonly attach: (suspend: SuspendTerminal | undefined) => void;
   /** The live `suspendTerminal`, or `undefined` when no ink tree is mounted. Read at CALL time, never captured. */
   readonly current: () => SuspendTerminal | undefined;
+  /**
+   * `true` for exactly as long as a suspension obtained from {@link current} is in flight.
+   *
+   * LOAD-BEARING, not diagnostic. During a suspension ink has turned raw mode OFF, so a keyboard **Ctrl-C is no
+   * longer swallowed by `useInput`** — the tty line discipline delivers it as a REAL process SIGINT. The chat's
+   * `process.on('SIGINT')` handler would then run its cooperative `/cancel`, unmount ink, and exit the hoisted alt
+   * buffer *behind the suspension's back* — while the suspension is still awaiting `$EDITOR` or the "press Enter"
+   * prompt. Its reclaim would later re-enter the alt buffer and re-enable the mouse on the user's SHELL. A signal
+   * handler must therefore ask this before acting (Step-5d-3 Sonnet review).
+   */
+  readonly isSuspended: () => boolean;
 }
 
+/**
+ * The flag is maintained by the PORT, wrapped around the ink call it hands out — not by the caller. A caller cannot
+ * forget to set it, and it is impossible for `isSuspended()` to disagree with what the terminal is actually doing.
+ */
 export function createSuspendPort(): SuspendPort {
   let suspend: SuspendTerminal | undefined;
+  let suspended = false;
   return {
     attach: (next) => {
       suspend = next;
     },
-    current: () => suspend,
+    current: () => {
+      const live = suspend;
+      if (live === undefined) return undefined;
+      return async (callback) => {
+        suspended = true;
+        try {
+          await live(callback);
+        } finally {
+          suspended = false;
+        }
+      };
+    },
+    isSuspended: () => suspended,
   };
 }
