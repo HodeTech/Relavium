@@ -123,3 +123,35 @@ export async function suspendFullScreen(
     if (pending !== undefined) throw pending.error;
   });
 }
+
+/**
+ * The **suspend port** — the repo's first React→core capability bridge, and the reason the hatches need no
+ * surface-specific interception at all.
+ *
+ * `suspendTerminal` exists ONLY inside a mounted ink tree (`useApp()`), but the slash-command dispatch that must call
+ * it lives outside React: `relavium chat`'s `ReplCommandContext` is built before `driveInk` mounts, and the Home's
+ * `createHomeController` is built before `RootApp` mounts. Every existing port (`runShellCommand`, `modelPicker`,
+ * `mentionReader`) flows the other way — built outside React, consumed inside. This one inverts that: the non-React
+ * layer creates an empty port, hands it to both the command context and the component; the component `attach`es its
+ * `suspendTerminal` on mount and detaches on unmount.
+ *
+ * `current()` is therefore the honest answer to "is there a live full-screen renderer right now?" — `undefined` on a
+ * plain / `--json` driver (no ink at all), and between a session's unmount and the next mount. A hatch that reads
+ * `undefined` surfaces an actionable notice instead of failing.
+ */
+export interface SuspendPort {
+  /** Called by the ink tree: the live `suspendTerminal` on mount, `undefined` on unmount. */
+  readonly attach: (suspend: SuspendTerminal | undefined) => void;
+  /** The live `suspendTerminal`, or `undefined` when no ink tree is mounted. Read at CALL time, never captured. */
+  readonly current: () => SuspendTerminal | undefined;
+}
+
+export function createSuspendPort(): SuspendPort {
+  let suspend: SuspendTerminal | undefined;
+  return {
+    attach: (next) => {
+      suspend = next;
+    },
+    current: () => suspend,
+  };
+}
