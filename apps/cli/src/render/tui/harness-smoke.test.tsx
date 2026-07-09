@@ -16,9 +16,15 @@ import { waitFor } from './harness-util.js';
  *   1. mount + `lastFrame()` frame capture,
  *   2. `stdin.write(...)` key delivery reaching a `useInput` handler,
  *   3. the ink-7-SPECIFIC contract: the raw DEL byte `\x7f` is labelled `key.backspace` (ink 6 labelled it
- *      `key.delete` — ADR-0068(a)); the backspace Probe below checks `key.backspace` ONLY, so this test would FAIL
+ *      `key.delete` — ADR-0068(a)); the backspace Probe below checks `key.backspace` ONLY, so this test FAILS
  *      under ink-6 semantics — it is a genuine ink-major discriminator, not merely a liveness canary,
  *   4. clean `unmount()` teardown.
+ *
+ * Every frame assertion is an EXACT match on the (trimmed) one-line frame, never `toContain`. That is load-bearing,
+ * not style: `"value:start".includes("value:star")` is TRUE, so a `toContain('value:star')` backspace assertion
+ * passes against the UNCHANGED initial frame and silently stops discriminating ink 6 (where the DEL byte arrives as
+ * `key.delete`, the Probe ignores it, and nothing is deleted). The Probe renders exactly one line, so equality is
+ * both available and the only assertion that can fail for the right reason.
  *
  * TIMING CONTRACT (load-bearing for every renderer `.test.tsx`): ink renders through React 19's reconciler, which
  * flushes a state update scheduled from a stdin `data` event on a LATER microtask — so a frame assertion must
@@ -54,47 +60,46 @@ function Probe(): ReactElement {
   );
 }
 
-const frameOf = (lastFrame: () => string | undefined): string => lastFrame() ?? '';
+/** The Probe's single rendered line, trimmed — so every assertion below can be an EXACT match (see the header). */
+const frameOf = (lastFrame: () => string | undefined): string => (lastFrame() ?? '').trim();
 
 describe('ink-7 harness smoke (ink-testing-library 4.0.0)', () => {
   it('mounts and captures the initial frame', async () => {
     const { lastFrame } = render(<Probe />);
-    await waitFor(() => frameOf(lastFrame).includes('value:start'));
-    expect(lastFrame()).toContain('value:start');
+    await waitFor(() => frameOf(lastFrame) === 'value:start');
+    expect(frameOf(lastFrame)).toBe('value:start');
   });
 
-  it('delivers a printable keystroke to a useInput handler', async () => {
+  // The three key-delivery cases share ONE shape (mount → settle → write one byte → assert the next frame), so they
+  // are parameterized rather than restated. The `\x7f` case is the load-bearing one: the Probe folds `key.backspace`
+  // ONLY, so under ink 6 the DEL byte arrives as `key.delete`, nothing is deleted, and the frame stays `value:start`
+  // — which is NOT equal to `value:star`, so the case fails. That exact-equality is what makes this suite an ink-MAJOR
+  // discriminator rather than a liveness canary (empirically: ink 7 reports `bs:1 del:0` for `\x7f`).
+  it.each([
+    {
+      name: 'delivers a printable keystroke to a useInput handler',
+      bytes: 'X',
+      frame: 'value:startX',
+    },
+    {
+      name: 'labels the ink-7 raw backspace byte (\\x7f) as key.backspace, not key.delete',
+      bytes: '\x7f',
+      frame: 'value:star',
+    },
+    { name: 'delivers Enter (\\r) as key.return', bytes: '\r', frame: 'value:submitted' },
+  ])('$name', async ({ bytes, frame }) => {
     const { lastFrame, stdin } = render(<Probe />);
-    await waitFor(() => frameOf(lastFrame).includes('value:start'));
-    stdin.write('X');
-    await waitFor(() => frameOf(lastFrame).includes('value:startX'));
-    expect(lastFrame()).toContain('value:startX');
-  });
-
-  it('labels the ink-7 raw backspace byte (\\x7f) as key.backspace, not key.delete', async () => {
-    const { lastFrame, stdin } = render(<Probe />);
-    await waitFor(() => frameOf(lastFrame).includes('value:start'));
-    // The Probe folds `key.backspace` ONLY — under ink 6 the DEL byte arrives as key.delete and NOTHING would
-    // change, so this assertion (one char removed → "star") fails on ink 6. That makes it the suite's true ink-7
-    // discriminator (empirically: ink 7 reports `bs:1 del:0` for `\x7f`).
-    stdin.write('\x7f');
-    await waitFor(() => frameOf(lastFrame).includes('value:star'));
-    expect(lastFrame()).toContain('value:star');
-  });
-
-  it('delivers Enter (\\r) as key.return', async () => {
-    const { lastFrame, stdin } = render(<Probe />);
-    await waitFor(() => frameOf(lastFrame).includes('value:start'));
-    stdin.write('\r');
-    await waitFor(() => frameOf(lastFrame).includes('value:submitted'));
-    expect(lastFrame()).toContain('value:submitted');
+    await waitFor(() => frameOf(lastFrame) === 'value:start');
+    stdin.write(bytes);
+    await waitFor(() => frameOf(lastFrame) === frame);
+    expect(frameOf(lastFrame)).toBe(frame);
   });
 
   it('tears down cleanly — a second mount in the same file is unaffected (afterEach cleanup)', async () => {
     const { lastFrame } = render(<Probe />);
     // The prior tests each mounted + relied on `afterEach(cleanup)` to unmount; this one only asserts a fresh mount
     // still captures its own initial frame (no cross-test bleed from a leaked instance).
-    await waitFor(() => frameOf(lastFrame).includes('value:start'));
-    expect(lastFrame()).toContain('value:start');
+    await waitFor(() => frameOf(lastFrame) === 'value:start');
+    expect(frameOf(lastFrame)).toBe('value:start');
   });
 });

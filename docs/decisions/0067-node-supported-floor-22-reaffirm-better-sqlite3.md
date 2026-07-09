@@ -104,6 +104,14 @@ own PR.) See [node-runtime-upgrade.md §5/§8](../roadmap/phases/node-runtime-up
 > **(b) "supported LTS lines (Node 22/24/26)" above overstates 26.** At the time of writing, **22 and 24** are the
 > LTS lines; **26 is a future line** that is not yet LTS. Read those passages as "the even (LTS-track) lines at or
 > above 22" — 26 joins the supported set once it ships and enters LTS.
+>
+> **(c) This note also supersedes two bullets in the Consequences below** (left verbatim — an ADR is append-only, so
+> its body is never rewritten):
+>
+> - §Negative — *"A dedicated CI floor leg (Node `22.0.0`) is added so the published minimum is proven, not just the
+>   dev/CI `.nvmrc` LTS"*. The leg exists, but is pinned to **`22.13.0`** per (a), and what it proves is the **22
+>   line**, not the exact published minimum `22.0.0` (a workspace install cannot run there).
+> - §Positive — *"the supported LTS lines (22/24/26)"*. Read per (b).
 
 ## Consequences
 

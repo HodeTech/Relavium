@@ -84,8 +84,18 @@ export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): Re
   const visible = windowLines(props.lines, offset, height);
   return (
     <Box ref={ref} flexGrow={1} flexShrink={1} flexDirection="column" overflowY="hidden">
+      {/* The array index IS the row identity: `visible` is a positional `slice` of the wrapped transcript (a fixed
+          grid of `height` terminal rows), and each row is a STATELESS <Text>. So an index key lets React reuse row
+          `i` and just swap its text/props — the cheapest and most faithful reconciliation for a scrolling viewport.
+          A content-derived key would be strictly worse on both counts: blank rows all render as `' '` and repeated
+          lines are common, so keys would COLLIDE (duplicate-key warning + wrong reuse), and every scroll notch would
+          churn mounts instead of updating text. The usual index-key hazard (reordering items that own state) cannot
+          arise here — nothing below holds state. */}
       {visible.map((line, index) => (
-        <Text key={index} {...styleProps(line.style, props.color)}>
+        <Text
+          key={index} // NOSONAR — positional grid row, not a reorderable stateful item (see the comment above)
+          {...styleProps(line.style, props.color)}
+        >
           {line.text === '' ? ' ' : line.text}
         </Text>
       ))}
