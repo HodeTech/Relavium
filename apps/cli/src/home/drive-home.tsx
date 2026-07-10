@@ -223,6 +223,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   const suspendPort = createSuspendPort();
   let altScreenActive = false; // assigned once the render mode resolves; read LAZILY by `terminal()` below
   let mouseActive = false; // ditto — `--no-mouse` / `[preferences].mouse = false` leaves the alt buffer mouse-less
+  // Whether the mouse is captured RIGHT NOW. Distinct from `mouseActive` (the resolved mode) since Step 6g: the Home
+  // landing gives the mouse back to the emulator, and a suspension must not "restore" a mode that is not on.
+  let mouseCaptured = false;
   const hatchPorts: Omit<HatchDeps, 'transcript' | 'note'> = {
     suspendPort,
     writeControl,
@@ -231,7 +234,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     // separate from `altActive` because `--no-mouse` decouples them (Step 5e).
     terminal: inkOwnedTerminal(
       () => altScreenActive,
-      () => mouseActive,
+      () => mouseCaptured,
       () => process.stdout.columns,
     ),
     clipboard: (text: string) => copyToClipboard({ writeControl, env: deps.io.env }, text),
@@ -675,6 +678,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         suspendPort,
         // The branded banner's durable switch (Step 5g); `HomeView` owns the empty-Home rule when it is absent.
         showBanner: config.showBanner,
+        // Armed only while the in-Home chat owns the screen (Step 6g). `mouseActive` is the RESOLVED mode
+        // (`--no-mouse` / `[preferences].mouse`); when it is off, no port is passed and nothing is ever captured.
+        ...(mouseActive
+          ? {
+              setMouseCapture: (enabled: boolean) => {
+                mouseCaptured = enabled; // the hatch ports read this LIVE, like `altScreenActive`
+                writeControl(enabled ? ENABLE_MOUSE : DISABLE_MOUSE);
+              },
+            }
+          : {}),
         // Copy-on-select rides the SAME control-write sink as the alt-buffer + mouse toggles (Step 6). OSC 52 prints
         // nothing and moves no cursor, so writing it mid-frame cannot corrupt ink's line accounting. ABSENT when
         // `[preferences].copy_on_select = false`: the selection still highlights, and `/copy` still copies.
@@ -696,10 +709,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
               alternateScreen,
             })
           : deps.render(props, { alternateScreen });
-      // Enable terminal mouse reporting so the in-Home chat's viewport wheel-scrolls (2.6.F Step 5). Only on the alt
-      // screen (ink owns 1049 on this single mount; mouse is ours). Disabled on EVERY teardown path below — the
-      // `DISABLE_MOUSE` writes are unconditional there (a no-op when it was never enabled, like DISABLE_BRACKETED_PASTE).
-      if (mouseActive) writeControl(ENABLE_MOUSE);
+      // Mouse reporting is armed by `RootApp` as the in-Home CHAT takes the screen (`setMouseCapture`), not here:
+      // capturing it for the whole Home stripped the landing of the emulator's native selection and gave nothing back
+      // (2.6.F Step 6g). Disabled on EVERY teardown path below — the `DISABLE_MOUSE` writes are unconditional there
+      // (a no-op when it was never enabled, like DISABLE_BRACKETED_PASTE).
     });
   } finally {
     // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the

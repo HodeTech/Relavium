@@ -72,6 +72,14 @@ export interface RootAppProps {
   readonly clipboard?: ((text: string) => ClipboardOutcome) | undefined;
   /** `[preferences].show_banner` (2.6.F Step 5g) — forwarded verbatim to `HomeView`, which owns the visibility rule. */
   readonly showBanner?: boolean | undefined;
+  /**
+   * Turn terminal mouse reporting on/off as the in-Home CHAT takes and gives up the screen (2.6.F Step 6g).
+   *
+   * Capturing the mouse for the whole Home was a regression: the landing has no viewport to wheel-scroll and no in-app
+   * selection, so the user lost the emulator's native click-drag there and got nothing back — they could not even copy
+   * a session id off the strip. Absent (or `--no-mouse` / `[preferences].mouse = false`) ⇒ never captured.
+   */
+  readonly setMouseCapture?: ((enabled: boolean) => void) | undefined;
 }
 
 /** The chat region: subscribes to the chat store (re-render on stream events) and renders the pure {@link ChatView},
@@ -250,6 +258,13 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     state.effortPicker === undefined &&
     state.reasonDraft === undefined;
   const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
+  // Capture the mouse exactly while the CHAT owns the screen — not while an overlay is open over it (a transient
+  // state; toggling DECSET per overlay would be churn, and a report there is consumed and ignored anyway).
+  const mouseCaptured = props.alternateScreen === true && state.mode === 'chat';
+  const setMouseCapture = props.setMouseCapture;
+  useEffect(() => {
+    setMouseCapture?.(mouseCaptured);
+  }, [mouseCaptured, setMouseCapture]);
 
   // Reduce against LIVE geometry (parity with `ChatApp`): wrap the session store's CURRENT transcript at the keypress
   // for a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream burst makes

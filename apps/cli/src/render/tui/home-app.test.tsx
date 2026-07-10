@@ -138,6 +138,8 @@ function mountHome(
     size?: { cols: number; rows: number };
     /** `false` ⇒ the `NO_COLOR` / `--no-color` path (plain-ASCII banner). */
     color?: boolean;
+    /** Record the mouse-capture toggles `RootApp` requests (2.6.F Step 6g). */
+    setMouseCapture?: (enabled: boolean) => void;
   } = {},
 ): MountedHome {
   let onResize: () => void = () => {};
@@ -165,6 +167,7 @@ function mountHome(
       {...(opts.alternateScreen === true ? { alternateScreen: true } : {})}
       {...(opts.clipboard === undefined ? {} : { clipboard: opts.clipboard })}
       {...(opts.showBanner === undefined ? {} : { showBanner: opts.showBanner })}
+      {...(opts.setMouseCapture === undefined ? {} : { setMouseCapture: opts.setMouseCapture })}
     />,
   );
   return {
@@ -756,5 +759,54 @@ describe('RootApp — the branded Home banner', () => {
     const frame = await frameOf({ showBanner: true, snapshot: BUSY, size: { cols: 80, rows: 24 } });
     expect(frame).not.toContain('R E L A V I U M');
     expect(frame).toContain('a chat'); // the strip the banner would have pushed away
+  });
+});
+
+/**
+ * MOUSE CAPTURE FOLLOWS THE CHAT (2.6.F Step 6g, whole-phase Opus review). Capturing the mouse for the whole Home was
+ * a regression: the landing has no viewport to wheel-scroll and no in-app selection, so a user lost the emulator's own
+ * click-drag there and got nothing back — they could not even copy a session id off the strip.
+ */
+describe('RootApp — mouse capture follows the in-Home chat', () => {
+  it('the bare Home does NOT capture; entering the chat does', async () => {
+    // The release side (`setMouseCapture(false)` ⇒ DISABLE_MOUSE) is pinned at the port, in `drive-home.test.ts`.
+    // Here the claim is that the effect tracks `state.mode`: hardcoding `alternateScreen` would capture the landing.
+    const toggles: boolean[] = [];
+    const m = mountHome(createChatStore(false), {
+      alternateScreen: true,
+      setMouseCapture: (enabled) => toggles.push(enabled),
+    });
+    await settleFrames();
+    expect(toggles).toEqual([false]); // the landing keeps the emulator's own click-drag selection
+
+    await enterChat(m.c);
+    await settleFrames();
+    expect(toggles.at(-1)).toBe(true);
+  });
+
+  it('an OVERLAY over the chat does not release the mouse — that would be DECSET churn', async () => {
+    const toggles: boolean[] = [];
+    const m = mountHome(createChatStore(false), {
+      alternateScreen: true,
+      setMouseCapture: (enabled) => toggles.push(enabled),
+    });
+    await enterChat(m.c);
+    await settleFrames();
+    const before = toggles.length;
+
+    m.harness.stdin.write('/'); // open the palette over the chat
+    await settleFrames();
+    expect(toggles.length).toBe(before); // no new toggle
+  });
+
+  it('the INLINE Home never captures, whatever the mode', async () => {
+    const toggles: boolean[] = [];
+    const m = mountHome(createChatStore(false), {
+      setMouseCapture: (enabled) => toggles.push(enabled),
+    });
+    await settleFrames();
+    await enterChat(m.c);
+    await settleFrames();
+    expect(toggles.every((t) => t === false)).toBe(true);
   });
 });

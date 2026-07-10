@@ -215,11 +215,14 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(controls).toContain(DISABLE_MOUSE);
   });
 
-  it('MOUSE: armed by default on the alt screen, and `--no-mouse` reaches the real write (Step 5e, ADR-0068 §e)', async () => {
-    // The opt-out IS the safety mechanism this feature exists for: mouse reporting disables the emulator's native
-    // click-drag selection. The unit tests pin `resolveMouseMode` in isolation; this pins the ASSEMBLY —
-    // `deps.global.noMouse` → `resolveMouseMode` → `writeControl(ENABLE_MOUSE)`. A mis-threaded field would still be
-    // `boolean | undefined`, compile, and leave every test green (Step-5e Opus review).
+  it('MOUSE: the capture PORT exists by default, and `--no-mouse` withholds it (Step 5e/6g, ADR-0068 §e)', async () => {
+    // The opt-out IS the safety mechanism this feature exists for. The unit tests pin `resolveMouseMode` in isolation;
+    // this pins the ASSEMBLY — `deps.global.noMouse` → `resolveMouseMode` → whether `RootApp` gets a capture port at
+    // all. A mis-threaded field would still be `boolean | undefined`, compile, and leave every test green
+    // (Step-5e Opus review).
+    //
+    // Since Step 6g the port is what arms the mouse, not a mount-time write: capture belongs to the in-Home CHAT, and
+    // the Home landing keeps the emulator's own click-drag selection.
     const exitCleanly = async (
       captured: () => RootAppProps | undefined,
       drivePromise: Promise<number>,
@@ -230,17 +233,25 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       await drivePromise;
     };
 
-    // (a) the phase default arms the wheel.
+    // (a) the phase default hands `RootApp` a port, and NOTHING is captured until it is called.
     let onProps: RootAppProps | undefined;
     const on = makeDeps((p) => (onProps = p));
-    await exitCleanly(() => onProps, driveHome(on.deps));
-    expect(on.writeControl.mock.calls.map((c) => c[0] as string)).toContain(ENABLE_MOUSE);
+    const onDrive = driveHome(on.deps);
+    expect(onProps?.setMouseCapture).toBeTypeOf('function');
+    expect(on.writeControl.mock.calls.map((c) => c[0] as string)).not.toContain(ENABLE_MOUSE);
 
-    // (b) `--no-mouse` never arms it — while the alt screen itself is untouched (ink owns 1049 on this surface, so
-    // there is no DECSET-1049 byte here to assert; the absence of ENABLE_MOUSE is the whole claim).
+    onProps?.setMouseCapture?.(true); // the chat takes the screen
+    expect(on.writeControl.mock.calls.map((c) => c[0] as string)).toContain(ENABLE_MOUSE);
+    onProps?.setMouseCapture?.(false); // …and gives it back
+    expect(on.writeControl.mock.calls.map((c) => c[0] as string)).toContain(DISABLE_MOUSE);
+    await exitCleanly(() => onProps, onDrive);
+
+    // (b) `--no-mouse` withholds the port entirely — there is nothing to arm, however the Home is driven.
     let offProps: RootAppProps | undefined;
     const off = makeDeps((p) => (offProps = p), { global: { ...global, noMouse: true } });
-    await exitCleanly(() => offProps, driveHome(off.deps));
+    const offDrive = driveHome(off.deps);
+    expect(offProps?.setMouseCapture).toBeUndefined();
+    await exitCleanly(() => offProps, offDrive);
     const controls = off.writeControl.mock.calls.map((c) => c[0] as string);
     expect(controls).not.toContain(ENABLE_MOUSE);
     expect(controls).toContain(DISABLE_MOUSE); // …and the teardown still disables, unconditionally

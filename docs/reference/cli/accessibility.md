@@ -41,7 +41,7 @@ If you would rather keep the emulator's native selection than the wheel, turn mo
 **`--no-mouse`** for one invocation, or **`[preferences].mouse = false`** durably
 ([config-spec.md](../contracts/config-spec.md)). This also turns off in-app selection and copy-on-select — there
 is no gesture left to produce them. The keyboard scroll keys (PgUp/PgDn, Ctrl+Home/Ctrl+End) are unaffected.
-The inline renderer never enables mouse reporting at all.
+The inline renderer never enables mouse reporting at all, and the bare **Home landing** does not either — capture is armed only while a chat owns the screen.
 
 Even with mouse reporting on, the emulator's **bypass modifier** still reaches its own selection — commonly
 **Shift** (xterm, GNOME Terminal, Konsole, Windows Terminal), **Option (⌥)** on iTerm2. Which modifier applies is
