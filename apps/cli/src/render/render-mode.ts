@@ -50,12 +50,19 @@ export function resolveRenderMode(input: RenderModeInput): RenderMode {
  *
  * `true` — a maintainer decision that DEVIATES from ADR-0068 §e's "the first release defaults OFF (opt-in)". The
  * wheel is what most users expect of a full-screen TUI, and PgUp/PgDn alone surprised them. The ADR's reason for
- * defaulting off stands, though, and is why the opt-out below is mandatory rather than optional: mouse reporting
- * disables the emulator's native click-drag SELECTION (worst over SSH/tmux), and Relavium has no in-app
- * copy-on-select. The mitigations are `--no-mouse` / `[preferences].mouse = false`, the emulator's bypass modifier
- * (Shift; Option on iTerm2), and the `/scrollback` + `/edit` hatches (Step 5d).
+ * defaulting off — mouse reporting disables the emulator's native click-drag SELECTION, worst over SSH/tmux — was
+ * ANSWERED in Step 6: Relavium now runs its own selection and copy-on-select. The opt-out remains, for a user whose
+ * terminal drops OSC 52 or who simply prefers the emulator's own selection: `--no-mouse` / `[preferences].mouse`,
+ * plus the `/scrollback`, `/edit` and `/copy` hatches.
  */
 export const DEFAULT_MOUSE = true;
+
+/**
+ * The phase default for COPY-ON-SELECT (2.6.F Step 6e). `true`, matching every competing agent CLI: a released drag
+ * puts the selection on the system clipboard. Nothing about it is silent-but-harmful — the highlight shows exactly
+ * what will be copied — but it does overwrite whatever the user last copied elsewhere, so the opt-out exists.
+ */
+export const DEFAULT_COPY_ON_SELECT = true;
 
 export interface MouseModeInput {
   /** The already-resolved render mode. Mouse reporting exists ONLY in the alt screen — the inline renderer must never
@@ -71,11 +78,37 @@ export interface MouseModeInput {
 }
 
 /**
- * Resolve whether to enable mouse reporting (DECSET 1000 + 1006). Precedence mirrors {@link resolveRenderMode}:
+ * Resolve whether to enable mouse reporting (DECSET 1002 + 1006). Precedence mirrors {@link resolveRenderMode}:
  * inline short-circuits FIRST → `--no-mouse` flag → config key → phase default.
  */
 export function resolveMouseMode(input: MouseModeInput): boolean {
   if (input.renderMode === 'inline') return false; // never in the inline renderer, whatever the flag or key says
   if (input.noMouseFlag) return false; // the explicit flag opt-out overrides the config key
   return input.configMouse ?? input.defaultMouse ?? DEFAULT_MOUSE;
+}
+
+export interface CopyOnSelectInput {
+  /** The already-RESOLVED mouse decision. Copy-on-select is a property of a selection, and there are no selections
+   *  without mouse reporting — so an unmoused caller cannot accidentally ask for it. Same structural trick as
+   *  {@link MouseModeInput.renderMode}. */
+  readonly mouseEnabled: boolean;
+  /** `[preferences].copy_on_select`: `true` opts in, `false` opts out, `undefined` falls to {@link defaultCopyOnSelect}. */
+  readonly configCopyOnSelect: boolean | undefined;
+  /** The phase default when the config does not decide; {@link DEFAULT_COPY_ON_SELECT} when omitted. */
+  readonly defaultCopyOnSelect?: boolean;
+}
+
+/**
+ * Resolve whether a released drag writes to the system clipboard. There is deliberately NO flag: it is a durable
+ * preference, not a per-invocation one, and `--no-mouse` already turns off the gesture that produces it.
+ *
+ * NOT auto-disabled inside tmux/zellij, though the first design said it should be. tmux honours an application's
+ * OSC 52 only under `set-clipboard on` or `allow-passthrough on` (read from its source; see `clipboard.ts`), so a copy
+ * there may silently do nothing — but that is indistinguishable from VS Code Remote SSH dropping the escape, which we
+ * already accept and report honestly as `'written'` rather than `'copied'`. Guessing at a multiplexer's configuration
+ * and silently disabling a feature is worse than attempting it.
+ */
+export function resolveCopyOnSelect(input: CopyOnSelectInput): boolean {
+  if (!input.mouseEnabled) return false; // no mouse ⇒ no selection ⇒ nothing to copy
+  return input.configCopyOnSelect ?? input.defaultCopyOnSelect ?? DEFAULT_COPY_ON_SELECT;
 }

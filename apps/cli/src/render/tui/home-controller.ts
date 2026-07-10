@@ -952,6 +952,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     // capabilities above.
     dumpScrollback: () => undefined,
     editTranscript: () => undefined,
+    copyTranscript: () => undefined,
 
     runDoctor: async (deep) => {
       if (exiting) return;

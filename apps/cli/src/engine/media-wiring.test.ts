@@ -38,6 +38,7 @@ const EMPTY_CONFIG: ResolvedConfig = {
   },
   altScreen: undefined,
   mouse: undefined,
+  copyOnSelect: undefined,
   variables: {},
   mcpServers: [],
 };

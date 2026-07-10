@@ -80,7 +80,7 @@ import {
   type Hatches,
 } from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
-import { resolveMouseMode } from '../render/render-mode.js';
+import { resolveCopyOnSelect, resolveMouseMode } from '../render/render-mode.js';
 import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
 import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
 import { resolveRenderMode } from '../render/render-mode.js';
@@ -376,6 +376,12 @@ interface ChatReplDeps {
    *  raw-mode, and exit. Default {@link defaultReplLifecycle}; a test injects fakes to drive the exit paths. */
   readonly lifecycle?: ReplLifecycle;
   /**
+   * `[preferences].copy_on_select`, ALREADY resolved against the mouse decision (`resolveCopyOnSelect`). `false` (or
+   * absent, on a non-interactive path) means the ink tree gets no `clipboard` prop: a released drag still highlights,
+   * and never touches the system clipboard. `/copy` is unaffected — it binds the clipboard through `hatchPorts`.
+   */
+  readonly copyOnSelect?: boolean;
+  /**
    * The ADR-0068 §e hatch ports (`/scrollback`, `/edit`) MINUS the two {@link createChatLineHandler} binds itself —
    * the session's live transcript and its notice channel — so the hatches always read the CURRENT session, not a
    * stale capture across a `/clear` or reseat swap. Built once per REPL by `runReplLoop` / `driveHome`, which own
@@ -595,6 +601,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       altScreen: config.altScreen,
       mouse: config.mouse,
+      copyOnSelect: config.copyOnSelect,
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -754,6 +761,7 @@ export async function chatResumeCommand(
       modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       altScreen: config.altScreen,
       mouse: config.mouse,
+      copyOnSelect: config.copyOnSelect,
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -791,6 +799,9 @@ interface ReplWiring {
    * is forwarded to every per-session ink mount — the `/clear` and reseat REBUILD wirings deliberately omit it.
    */
   readonly mouse?: boolean | undefined;
+  /** `[preferences].copy_on_select` (2.6.F Step 6e) — read exactly ONCE by {@link runReplLoop}, alongside `mouse`,
+   *  and for the same reason: it is resolved against the hoisted mouse decision, above the session loop. */
+  readonly copyOnSelect?: boolean | undefined;
 }
 
 /**
@@ -1211,6 +1222,7 @@ export function createChatLineHandler(
     // BOTH interactive surfaces reach them right here, through the suspend port `runReplLoop`/`driveHome` attached.
     dumpScrollback: () => hatches.dumpScrollback(),
     editTranscript: () => hatches.editTranscript(),
+    copyTranscript: () => hatches.copyTranscript(),
   };
 
   // Parse + dispatch a `/name [args]` REPL line (extracted from processLine so each stays under the Sonar
@@ -1742,7 +1754,9 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
         : { suspendPort: deps.hatchPorts.suspendPort }),
       // The clipboard rides the SAME control-write sink as the alt-buffer toggles (Step 6). OSC 52 prints nothing and
       // moves no cursor, so writing it mid-frame cannot corrupt ink's line accounting.
-      ...(hatchPortsForClipboard === undefined
+      // ABSENT when `[preferences].copy_on_select = false` (or `--no-mouse`, which resolves it false): the selection
+      // still highlights, and `/copy` still copies the whole transcript.
+      ...(hatchPortsForClipboard === undefined || deps.copyOnSelect !== true
         ? {}
         : {
             clipboard: (text: string): ClipboardOutcome =>
@@ -1919,6 +1933,8 @@ export async function runReplLoop(
       writeOut: nodeWriteOut(process.stdout),
       waitForContinue: nodeWaitForContinue(process.stdin),
     },
+    // `/copy` writes OSC 52 through the SAME control sink the alt-buffer and mouse toggles use.
+    clipboard: (text: string) => copyToClipboard({ writeControl, env: deps.io.env }, text),
     editor: {
       env: deps.io.env,
       spawnEditor: nodeSpawnEditor,
@@ -1935,7 +1951,13 @@ export async function runReplLoop(
   // The hoisted controller, captured so `hatchPorts.terminal()` can read the LIVE buffer state (it is created inside
   // `withHoistedAltScreen` below, after `hatchPorts` is built — hence the mutable binding read lazily).
   let altScreenController: AltScreenController | undefined;
-  const replDeps: ChatReplDeps = { ...deps, hatchPorts };
+  // Copy-on-select (2.6.F Step 6e): a durable preference, resolved from the ALREADY-RESOLVED mouse decision, so
+  // `--no-mouse` structurally turns it off too. `/copy` is unaffected: it binds the clipboard through `hatchPorts`.
+  const copyOnSelect = resolveCopyOnSelect({
+    mouseEnabled,
+    configCopyOnSelect: wiring.copyOnSelect,
+  });
+  const replDeps: ChatReplDeps = { ...deps, hatchPorts, copyOnSelect };
 
   try {
     await withHoistedAltScreen(

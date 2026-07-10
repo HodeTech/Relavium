@@ -598,6 +598,49 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
    * does not perform, so the drive promise stays pending by design. The restore is SYNCHRONOUS — that is the point —
    * so every assertion below reads `writeControl` the moment the handler returns.
    */
+  /**
+   * `[preferences].copy_on_select` (2.6.F Step 6e). The switch reaches the ink tree as the PRESENCE of the `clipboard`
+   * prop: absent ⇒ a released drag still highlights and never touches the system clipboard. `/copy` binds its own
+   * clipboard through the hatch ports, so it keeps working either way.
+   */
+  describe('copy-on-select', () => {
+    const captureProps = async (over: Partial<HomeDeps>): Promise<RootAppProps> => {
+      let captured: RootAppProps | undefined;
+      const made = makeDeps((p) => (captured = p), over);
+      const drivePromise = driveHome({ ...made.deps, ...over });
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      props.controller.handleKey('c', CTRL_C);
+      await drivePromise;
+      return props;
+    };
+
+    it('is ON by default: the ink tree gets a clipboard', async () => {
+      const props = await captureProps({});
+      expect(props.clipboard).toBeTypeOf('function');
+    });
+
+    it('`copy_on_select = false` withholds the clipboard from the ink tree', async () => {
+      const cfg = join(cwd, 'copy-off.toml');
+      writeFileSync(cfg, '[preferences]\ncopy_on_select = false\n');
+      const props = await captureProps({ global: { ...global, configPath: cfg } });
+      expect(props.clipboard).toBeUndefined();
+    });
+
+    it('`--no-mouse` withholds it too — there is no selection to copy', async () => {
+      // Structural, not a second check: `resolveCopyOnSelect` takes the ALREADY-RESOLVED mouse decision.
+      const props = await captureProps({ global: { ...global, noMouse: true } });
+      expect(props.clipboard).toBeUndefined();
+    });
+
+    it('`copy_on_select = true` with `--no-mouse` STILL withholds it', async () => {
+      const cfg = join(cwd, 'copy-on-nomouse.toml');
+      writeFileSync(cfg, '[preferences]\ncopy_on_select = true\n');
+      const props = await captureProps({ global: { ...global, configPath: cfg, noMouse: true } });
+      expect(props.clipboard).toBeUndefined();
+    });
+  });
+
   describe('the terminal is restored on EVERY termination path', () => {
     const drive = (): ReturnType<typeof makeDeps> & { exitProcess: ReturnType<typeof vi.fn> } => {
       const exitProcess = vi.fn();

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DEFAULT_COPY_ON_SELECT,
+  resolveCopyOnSelect,
   DEFAULT_ALT_SCREEN,
   DEFAULT_MOUSE,
   resolveMouseMode,
@@ -97,5 +99,40 @@ describe('resolveMouseMode', () => {
 
   it('falls to the injected phase default when neither flag nor key decides', () => {
     expect(resolveMouseMode({ ...base, defaultMouse: false })).toBe(false);
+  });
+});
+
+/**
+ * `[preferences].copy_on_select` (2.6.F Step 6e). Deliberately has NO flag: it is a durable preference, and
+ * `--no-mouse` already removes the gesture that produces a copy.
+ */
+describe('resolveCopyOnSelect', () => {
+  it('defaults ON when the mouse is on', () => {
+    expect(resolveCopyOnSelect({ mouseEnabled: true, configCopyOnSelect: undefined })).toBe(
+      DEFAULT_COPY_ON_SELECT,
+    );
+    expect(DEFAULT_COPY_ON_SELECT).toBe(true);
+  });
+
+  it('the config key opts out durably, and can also opt IN explicitly', () => {
+    expect(resolveCopyOnSelect({ mouseEnabled: true, configCopyOnSelect: false })).toBe(false);
+    expect(resolveCopyOnSelect({ mouseEnabled: true, configCopyOnSelect: true })).toBe(true);
+  });
+
+  it('is STRUCTURALLY off without the mouse — no selection can exist, so nothing can be copied', () => {
+    // Taking the already-resolved mouse decision (not the raw flag/key) is what makes this unbypassable: an unmoused
+    // caller cannot ask for copy-on-select even by setting the key. Same trick as `resolveMouseMode(renderMode)`.
+    expect(resolveCopyOnSelect({ mouseEnabled: false, configCopyOnSelect: true })).toBe(false);
+    expect(resolveCopyOnSelect({ mouseEnabled: false, configCopyOnSelect: undefined })).toBe(false);
+  });
+
+  it('honours an injected phase default (so the default can move without touching call sites)', () => {
+    expect(
+      resolveCopyOnSelect({
+        mouseEnabled: true,
+        configCopyOnSelect: undefined,
+        defaultCopyOnSelect: false,
+      }),
+    ).toBe(false);
   });
 });

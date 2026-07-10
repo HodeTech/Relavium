@@ -146,13 +146,19 @@ export const GlobalConfigSchema = z
         // (native scrollback + the emulator's own a11y), the screen-reader fallback; `true` forces it on. The flag
         // overrides this key; a non-TTY / machine (`--json`/CI) path ignores both and always renders inline.
         alt_screen: z.boolean().optional(),
-        // Terminal MOUSE reporting (DECSET 1000+1006) in the full-screen renderer (2.6.F, ADR-0068 §e). It is what
-        // makes the wheel scroll the transcript; the cost is that the emulator forwards clicks to Relavium instead of
-        // running its own click-drag SELECTION, so copy-on-select then needs the emulator's bypass modifier (Shift, or
-        // Option on iTerm2). DEFAULT ON. `false` (like `--no-mouse`) turns it off durably: the wheel stops scrolling
-        // (PgUp/PgDn/Ctrl+Home/Ctrl+End still page) and native selection works again. The flag overrides this key.
+        // Terminal MOUSE reporting (DECSET 1002+1006) in the full-screen renderer (2.6.F, ADR-0068 §e). It is what
+        // makes the wheel scroll the transcript and what lets Relavium run its OWN click-drag selection, since the
+        // emulator forwards clicks to us instead of selecting. DEFAULT ON. `false` (like `--no-mouse`) turns it off
+        // durably: the wheel stops scrolling (PgUp/PgDn/Ctrl+Home/Ctrl+End still page), in-app selection goes with it,
+        // and the emulator's native selection works again. The flag overrides this key.
         // Ignored outside the alt screen — the inline renderer NEVER enables mouse reporting.
         mouse: z.boolean().optional(),
+        // COPY-ON-SELECT (2.6.F Step 6e, ADR-0068 §e amendment): releasing a drag writes the selection to the system
+        // clipboard over OSC 52. DEFAULT ON, matching every competing agent CLI. `false` keeps the highlight (and the
+        // wheel) but never touches the clipboard — for anyone who does not want a stray drag clobbering what they
+        // copied elsewhere. `/copy` still copies the whole transcript on demand. Meaningless without `mouse`, and
+        // ignored when it is off: there is no selection to copy.
+        copy_on_select: z.boolean().optional(),
       })
       .strict()
       .optional(),

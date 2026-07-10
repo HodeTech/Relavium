@@ -329,6 +329,44 @@ perf thresholds for the full-screen frame loop.
 > newlines, exactly as the terminal's own selection would have given, and exactly what the highlight showed. `/edit`
 > and (Step 6) `/copy` hand over the UNWRAPPED document when fidelity matters more than the visual.
 
+> ### Amendment — 2026-07-10 (2.6.F Steps 6e/6f, after the Step-6 adversarial review)
+>
+> Four claims made above, or in the Step-6 code, were **wrong**, and are corrected here rather than quietly patched.
+> Append-only: the text above is left verbatim.
+>
+> **(a) The tmux plan was backwards.** The Step-6 amendment says "inside `tmux`/Zellij both the multiplexer and the app
+> handle OSC 52 (the escape needs DCS passthrough)", and Step 6c shipped the DCS passthrough alone. Read from tmux's
+> source: `input_osc_52_parse()` returns early unless `set-clipboard` is `on`, whose **default is `external`**; and
+> `input_dcs_dispatch()` returns early unless `allow-passthrough` is on, whose **default is `off`**. Stock tmux honours
+> **neither** form. Relavium therefore emits **both** (Step 6f-2), so setting either option suffices. The ESC-doubling
+> inside the passthrough is confirmed correct by tmux's DCS state table.
+>
+> **(b) `$TMUX`/`$ZELLIJ` detection does NOT gate `copy_on_select`.** The plan was to auto-disable it inside a
+> multiplexer. That rested on (a), and (a) was false. A copy inside tmux may silently do nothing — but that is
+> indistinguishable from VS Code Remote SSH dropping the escape, which the design already accepts and reports honestly
+> (`'written'`, never `'copied'`). Guessing at a multiplexer's configuration and silently disabling a feature is worse
+> than attempting it. `copy_on_select` defaults ON whenever the mouse is on, and is a plain preference.
+>
+> **(c) "SGR does not encode which button was released"** — a comment in Step 6a's `mouse.ts`, on which the reducer was
+> built. xterm's `ctlseqs` says the opposite of the `m` final byte: *"A different final character is used for button
+> release to resolve the X10 ambiguity regarding which button was released."* Resolving that ambiguity is the reason
+> the byte exists. Until Step 6f-3, any button coming up while a selection was live re-emitted the whole selection over
+> OSC 52 — so every right-click re-copied.
+>
+> **(d) The coordinate mapping needed one more rule.** `cellAt` clamps a mouse row into the viewport, which is right for
+> a DRAG (the pointer leaves it constantly) and wrong for a PRESS: a press on the prompt or the status strip anchored
+> the selection to the viewport's last visible line. And because the focus is clamped, a drag could never select more
+> than one screenful. Step 6f-5 adds `containsRow` (a press outside the viewport starts nothing) and `dragScrollMotion`
+> (a drag on the viewport's first or last row scrolls a line **before** the focus is mapped). The boundary rows are
+> inside the edge zone deliberately: `relavium chat` binds its viewport to frame row 0, so the pointer can never go
+> above it and there would otherwise be no signal to scroll up at all — which is why vim and tmux copy-mode scroll on
+> the boundary row too.
+>
+> **Also settled here.** A press freezes auto-follow for the gesture (a completing turn would otherwise slide the
+> transcript out from under the pointer) and a plain click restores it. `Esc` dismisses a live selection while the chat
+> is idle, never mid-turn, where `Esc` is the abort. `/copy` (Step 6e) copies the UNWRAPPED transcript document and
+> suspends nothing — OSC 52 is one control write.
+
 ## Consequences
 
 ### Positive

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { DISABLE_MOUSE, ENABLE_MOUSE, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from './alt-screen.js';
 import {
+  EMPTY_TRANSCRIPT_NOTICE,
   createHatches,
   DEFAULT_COLUMNS,
   hoistedTerminal,
@@ -38,15 +39,27 @@ const harness = (
     noSuspend?: boolean;
     columns?: number;
   } = {},
-): { deps: HatchDeps; trace: string[]; notes: string[]; edited: string[] } => {
+): {
+  deps: HatchDeps;
+  trace: string[];
+  notes: string[];
+  edited: string[];
+  copied: string[];
+} => {
   const trace: string[] = [];
   const notes: string[] = [];
   const edited: string[] = [];
+  const copied: string[] = [];
   const port = createSuspendPort();
   if (over.noSuspend !== true) port.attach(inkSuspend(trace));
 
   const deps: HatchDeps = {
     suspendPort: port,
+    clipboard: (text) => {
+      copied.push(text);
+      trace.push('clipboard');
+      return { kind: 'written', characters: text.length };
+    },
     transcript: () => over.transcriptEntries ?? [userEntry('hello')],
     // Notes go into the SAME trace as the terminal writes: their ORDER relative to `ink:begin`/`ink:end` is the
     // property under test (a notice pushed mid-suspension is never painted — ink's frame is erased there).
@@ -81,7 +94,7 @@ const harness = (
     },
     ...over,
   };
-  return { deps, trace, notes, edited };
+  return { deps, trace, notes, edited, copied };
 };
 
 describe('/scrollback', () => {
@@ -346,5 +359,54 @@ describe('inertHatchPorts — a driver with no renderer (plain / --json, or a un
     await expect(inertHatchPorts().editor.spawnEditor('x', [], 'f')).rejects.toThrow(
       'no full-screen renderer is attached',
     );
+  });
+});
+
+/**
+ * `/copy` (2.6.F Step 6e). The third hatch, and the only one that suspends NOTHING: OSC 52 is a single control write,
+ * so the renderer never gives up the terminal. It copies the UNWRAPPED document — a paragraph the viewport folded
+ * across four rows comes back as one line, which is what a user pasting into a bug report wants. The mouse selection
+ * copies the VISUAL rows instead; they are different jobs.
+ */
+describe('createHatches — /copy', () => {
+  it('copies the unwrapped transcript document and never suspends the renderer', () => {
+    const { deps, trace, copied, notes } = harness({ columns: 20 });
+    createHatches(deps).copyTranscript();
+
+    expect(copied).toHaveLength(1);
+    expect(copied[0]).toContain('hello');
+    // The clipboard write happens, then the notice — and no `ink:begin` / `ink:end` between them.
+    expect(trace[0]).toBe('clipboard');
+    expect(trace.filter((t) => t.startsWith('ink:'))).toEqual([]);
+    expect(notes[0]).toMatch(/^\/copy: sent \d+ characters to the clipboard\.$/);
+  });
+
+  it('an EMPTY transcript is a notice, and the clipboard is never touched', () => {
+    const { deps, copied, notes } = harness({ transcriptEntries: [] });
+    createHatches(deps).copyTranscript();
+    expect(copied).toEqual([]);
+    expect(notes).toEqual([`/copy: ${EMPTY_TRANSCRIPT_NOTICE}`]);
+  });
+
+  it('a transcript past the terminal’s OSC 52 floor is REFUSED, and points at the hatches that scale', () => {
+    const { deps, notes } = harness({
+      clipboard: () => ({ kind: 'too-large', base64Length: 120_000, limit: 74_994 }),
+    });
+    createHatches(deps).copyTranscript();
+    expect(notes[0]).toContain('too large');
+    expect(notes[0]).toContain('/scrollback or /edit');
+  });
+
+  it('reports what it WROTE, never that it was copied — OSC 52 has no acknowledgement', () => {
+    const { deps, notes } = harness();
+    createHatches(deps).copyTranscript();
+    expect(notes[0]).toContain('sent');
+    expect(notes[0]).not.toContain('copied');
+  });
+
+  it('works with NO full-screen renderer attached — unlike /scrollback and /edit, it needs no suspension', () => {
+    const { deps, copied } = harness({ noSuspend: true });
+    createHatches(deps).copyTranscript();
+    expect(copied).toHaveLength(1); // a plain / `--json` chat can still `/copy`
   });
 });

@@ -73,6 +73,10 @@ export interface ResolvedConfig {
    *  A GLOBAL-only preference for the same reason as {@link altScreen}. `undefined` ⇒ the phase default in
    *  `resolveMouseMode`. */
   readonly mouse: boolean | undefined;
+  /** `[preferences].copy_on_select` (2.6.F Step 6e, ADR-0068 §e) — whether a released drag writes the selection to the
+   *  system clipboard. A GLOBAL-only preference for the same reason as {@link mouse}. `undefined` ⇒ the phase default
+   *  in `resolveCopyOnSelect`; meaningless (and ignored) when {@link mouse} is off. */
+  readonly copyOnSelect: boolean | undefined;
   readonly variables: Readonly<Record<string, string>>;
   readonly mcpServers: readonly McpServerRegistration[];
 }
@@ -101,6 +105,7 @@ export function resolveConfig(layers: ConfigLayers): ResolvedConfig {
     chat: resolveChat(project, workspace, global),
     altScreen: global?.preferences?.alt_screen,
     mouse: global?.preferences?.mouse,
+    copyOnSelect: global?.preferences?.copy_on_select,
     variables: { ...workspace?.variables, ...project?.variables },
     mcpServers: mergeMcpServers(global?.mcp_servers, workspace?.mcp_servers, project?.mcp_servers),
   };

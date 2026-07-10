@@ -82,6 +82,9 @@ export interface ReplCommandContext {
   /** `/edit` (2.6.F Step 5d, ADR-0068 §e) — open the transcript READ-ONLY in `$EDITOR` for search + copy, via ink's
    *  `suspendTerminal`. Edits are never read back. Same surface story as {@link dumpScrollback}. */
   readonly editTranscript: () => void | Promise<void>;
+  /** `/copy` (2.6.F Step 6e) — put the WHOLE transcript on the system clipboard over OSC 52. The UNWRAPPED document,
+   *  unlike a mouse selection's visual rows. Suspends nothing; a single control write. */
+  readonly copyTranscript: () => void | Promise<void>;
 }
 
 /** A flag a {@link ReplCommand} accepts after its name (e.g. `/doctor --deep`). Flags only — the curated set has
@@ -290,6 +293,17 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     // `read`: the editor gets a throwaway copy; edits are never read back into the session.
     effect: 'read',
     run: (ctx) => ctx.editTranscript(),
+    availableIn: ['chat'],
+  },
+  {
+    name: 'copy',
+    label: 'Copy',
+    description: 'Copy the whole transcript to the system clipboard (OSC 52).',
+    // `read`: it sends bytes to the terminal, and changes nothing in the session.
+    effect: 'read',
+    // Chat-only — the BARE Home has no transcript. Like `/scrollback` and `/edit` it opens no overlay, so the ONE
+    // capability reaches both surfaces and they cannot drift (ADR-0068 §e).
+    run: (ctx) => ctx.copyTranscript(),
     availableIn: ['chat'],
   },
 ];

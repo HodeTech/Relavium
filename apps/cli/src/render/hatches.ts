@@ -1,3 +1,4 @@
+import type { ClipboardOutcome } from './clipboard.js';
 import { openInEditor, type EditorOutcome, type OpenInEditorDeps } from './editor.js';
 import { dumpToScrollback, type DumpToScrollbackDeps } from './scrollback.js';
 import { createSuspendPort, suspendFullScreen, type SuspendPort } from './suspend.js';
@@ -54,6 +55,9 @@ export interface HatchDeps {
   readonly dump: DumpToScrollbackDeps;
   /** The `$EDITOR` ports (production: `nodeSpawnEditor` + `nodeCreateTempDocument`). */
   readonly editor: OpenInEditorDeps;
+  /** Put text on the system clipboard over OSC 52 (production: `copyToClipboard` bound to `writeControl` + `env`).
+   *  Used by `/copy`; the mouse selection has its own binding inside the ink tree. */
+  readonly clipboard: (text: string) => ClipboardOutcome;
 }
 
 /** The notice a hatch surfaces when no ink tree is mounted — a plain / `--json` driver has no terminal to suspend. */
@@ -112,6 +116,7 @@ export function inertHatchPorts(): Omit<HatchDeps, 'transcript' | 'note'> {
     }),
     dump: { writeOut: () => undefined, waitForContinue: () => Promise.resolve() },
     editor: { env: {}, spawnEditor: unreachable, createTempDocument: unreachable },
+    clipboard: () => ({ kind: 'empty' }),
   };
 }
 /** The notice a hatch surfaces before a single turn has completed — nothing to dump or edit yet. */
@@ -133,6 +138,7 @@ function editorNotice(outcome: EditorOutcome): string | undefined {
 export interface Hatches {
   readonly dumpScrollback: () => Promise<void>;
   readonly editTranscript: () => Promise<void>;
+  readonly copyTranscript: () => void;
 }
 
 /**
@@ -184,6 +190,38 @@ export function createHatches(deps: HatchDeps): Hatches {
       // Wrapped to the LIVE width, because it is printed to that terminal (unlike `/edit`, which the editor re-flows).
       const lines = wrapTranscript(transcript, deps.terminal().columns).map((line) => line.text);
       await withSuspension('/scrollback', () => dumpToScrollback(deps.dump, lines));
+    },
+
+    /**
+     * `/copy` — put the WHOLE transcript on the system clipboard (2.6.F Step 6e). Unlike its two siblings it suspends
+     * nothing: OSC 52 is one control write, and the renderer never has to give up the terminal.
+     *
+     * It copies the UNWRAPPED document (`transcriptDocument`), not the wrapped display rows a mouse selection yields:
+     * a paragraph the viewport folded across four rows comes back as one line, which is what a user pasting into a
+     * bug report or a chat wants. The visual fidelity of a selection is the selection's job.
+     */
+    copyTranscript: () => {
+      const transcript = deps.transcript();
+      if (transcript.length === 0) {
+        deps.note(`/copy: ${EMPTY_TRANSCRIPT_NOTICE}`);
+        return;
+      }
+      const outcome = deps.clipboard(transcriptDocument(transcript));
+      switch (outcome.kind) {
+        case 'written':
+          // `'written'`, never `'copied'`: OSC 52 has no acknowledgement, so a terminal that drops it (VS Code Remote
+          // SSH) is indistinguishable from one that honoured it. Say what we did, not what we cannot know.
+          deps.note(`/copy: sent ${String(outcome.characters)} characters to the clipboard.`);
+          return;
+        case 'too-large':
+          deps.note(
+            `/copy: the transcript is too large for the terminal's clipboard escape (${String(Math.ceil(outcome.base64Length / 1024))} KB) — use /scrollback or /edit.`,
+          );
+          return;
+        case 'empty':
+          deps.note(`/copy: ${EMPTY_TRANSCRIPT_NOTICE}`);
+          return;
+      }
     },
 
     editTranscript: async () => {
