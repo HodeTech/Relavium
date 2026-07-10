@@ -486,7 +486,7 @@ const REASONING_PANEL_FALLBACK_COLUMNS = 80;
  * The row count is APPROXIMATE, not exact: `.length` (UTF-16 units) stands in for ink's display-width wrap, so a
  * wide-glyph (CJK/emoji) line under-counts and a combining-mark line over-counts — the panel can render up to ~2×
  * on wide text; the prepended `…` marker in {@link formatReasoningPanel} can add one more row. This matches the
- * store's existing `.length`-based 4000-char cap and avoids a `string-width` runtime dependency; the bound is a
+ * store's existing `.length`-based cap; the bound is a
  * cosmetic anti-flicker guard, so an off-by-a-row on unusual scripts is acceptable.
  */
 function tailToRenderedRows(

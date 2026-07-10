@@ -1,4 +1,9 @@
+import stringWidth from 'string-width';
 import { describe, expect, it } from 'vitest';
+
+/** What ink measures with (`ink/build/output.js` imports `string-width`). The tests compare against IT, not against
+ *  `displayWidth`, so they still mean something if `displayWidth` is ever re-implemented. */
+const inkWidth = (s_: string): number => stringWidth(s_);
 
 import {
   clampOffset,
@@ -35,7 +40,9 @@ describe('displayWidth (2.6.F Step 4b, ADR-0068 §c)', () => {
     expect(displayWidth('​')).toBe(0); // zero-width space
     expect(displayWidth('a‍b')).toBe(2); // ZWJ contributes nothing
     expect(displayWidth('﻿')).toBe(0); // BOM
-    expect(displayWidth('🇹️')).toBe(2); // regional indicator (wide) + variation selector (0)
+    // A LONE regional indicator is not an RGI emoji (a flag needs a pair), so `string-width` — and therefore ink —
+    // gives it the East-Asian width of U+1F1F9, which is Neutral: 1. The old hand-rolled table said 2.
+    expect(displayWidth('🇹️')).toBe(1);
   });
 
   it('counts control chars as zero (defensive — they are sanitized before display)', () => {
@@ -178,5 +185,62 @@ describe('windowLines', () => {
 
   it('returns empty for a non-positive height', () => {
     expect(windowLines(lines, 0, 0)).toEqual([]);
+  });
+});
+
+/**
+ * `displayWidth` IS ink's width function (2.6.F Step 6g, ADR-0069). The load-bearing invariant is
+ * **1 DisplayLine == 1 real terminal row**: a line we think fits must fit ink's own re-measure, or ink re-wraps that
+ * `<Text>` to two rows, `overflowY: hidden` clips the tail, and every scroll offset and mouse row→line mapping below
+ * it shifts by one.
+ *
+ * The hand-rolled table this replaced claimed to "never under-count vs ink". Measured across the BMP and SMP it
+ * under-counted 8 539 code points, all East-Asian Wide. These are the biggest families.
+ */
+describe('displayWidth agrees with the terminal on the wide scripts the old table missed', () => {
+  it.each([
+    ['Tangut', '\u{17000}', 2], // 7 382 code points, every one counted as 1 before
+    ['Tangut components', '\u{18800}', 2],
+    ['Yijing hexagram', '\u{4DC0}', 2],
+    ['Kana Supplement', '\u{1B000}', 2],
+    ['Hangul Jamo Extended-A', '\u{A960}', 2],
+    ['Vertical form', '\u{FE10}', 2],
+    ['Small form variant', '\u{FE50}', 2],
+    ['Angle bracket', '\u{2329}', 2],
+    ['Tai Xuan Jing symbol', '\u{1D300}', 2],
+  ])('%s is two cells', (_name, char, cells) => {
+    expect(displayWidth(char)).toBe(cells);
+  });
+
+  it('a Tangut line fills twice the cells the old table budgeted for it', () => {
+    // 40 Tangut ideographs = 80 cells. The old table said 40, so the line was wrapped at 80 columns, rendered at 160,
+    // and every DisplayLine after it was one real row out of step.
+    const line = '\u{17000}'.repeat(40);
+    expect(displayWidth(line)).toBe(80);
+    expect(wrapLogicalLine(line, 80)).toHaveLength(1);
+    expect(wrapLogicalLine(line, 40)).toHaveLength(2);
+  });
+
+  it('NEVER under-counts a single grapheme cluster — the invariant the whole viewport rests on', () => {
+    // Exhaustive over the assigned planes a transcript can realistically carry. Structural today (it IS the same
+    // function), and the guard if anyone re-hand-rolls it.
+    const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    for (let cp = 0x20; cp <= 0x2ffff; cp += 1) {
+      if (cp >= 0xd800 && cp <= 0xdfff) continue; // lone surrogates are not text
+      const ch = String.fromCodePoint(cp);
+      if ([...seg.segment(ch)].length !== 1) continue;
+      expect(displayWidth(ch), `U+${cp.toString(16).toUpperCase()}`).toBeGreaterThanOrEqual(
+        inkWidth(ch),
+      );
+    }
+  });
+
+  it('a wrapped line never exceeds `cols` by ink’s own measure', () => {
+    const messy = '日本語です a👍b \u{17000}\u{17001} café \u{A960}\u{1160} ❤️ 1️⃣ 🇹🇷 end';
+    for (const cols of [10, 20, 37, 80]) {
+      for (const row of wrapLogicalLine(messy, cols)) {
+        expect(inkWidth(row), `cols=${cols} row=${JSON.stringify(row)}`).toBeLessThanOrEqual(cols);
+      }
+    }
   });
 });
