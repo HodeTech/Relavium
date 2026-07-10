@@ -55,9 +55,26 @@ describe('encodeOsc52', () => {
     expect(encodeOsc52(b64('?'))).not.toContain(';c;?');
   });
 
-  it('tmux: wraps in a DCS passthrough with every inner ESC DOUBLED', () => {
-    // Without the doubling tmux interprets the ESC instead of forwarding it, and the clipboard never updates.
-    expect(encodeOsc52('SGk=', 'tmux')).toBe('\x1bPtmux;\x1b\x1b]52;c;SGk=\x07\x1b\\');
+  it('tmux: emits BOTH the plain escape and a DCS passthrough — stock tmux honours neither alone', () => {
+    // Read from tmux's own source, not folklore. `input_osc_52_parse` bails unless `set-clipboard` == 2 (`on`), and
+    // the DEFAULT is `external` (1); `input_dcs_dispatch` bails unless `allow-passthrough` is on, and the DEFAULT is
+    // `off` (0). So a user who set EITHER option gets a working copy, and one who set both sets the clipboard twice
+    // to the same value. Shipping only the passthrough (as Step 6c did) silently failed for the common
+    // `set-clipboard on` recipe.
+    expect(encodeOsc52('SGk=', 'tmux')).toBe(
+      '\x1b]52;c;SGk=\x07' + // honoured under `set-clipboard on`
+        '\x1bPtmux;\x1b\x1b]52;c;SGk=\x07\x1b\\', // honoured under `allow-passthrough on`
+    );
+  });
+
+  it('tmux: the passthrough DOUBLES every inner ESC, and only inside the wrapper', () => {
+    // tmux's DCS table sends 0x1b to `dcs_escape` WITHOUT appending it; the next byte (if not `\`) is appended alone.
+    // So ESC ESC collapses to one ESC in the forwarded string, and an undoubled ESC would be eaten, forwarding `]52;…`.
+    const wrapped = encodeOsc52('SGk=', 'tmux');
+    const passthrough = wrapped.slice(wrapped.indexOf('\x1bPtmux;'));
+    expect(passthrough).toContain('\x1b\x1b]52'); // doubled
+    const plain = wrapped.slice(0, wrapped.indexOf('\x1bPtmux;'));
+    expect(plain).toBe('\x1b]52;c;SGk=\x07'); // NOT doubled
   });
 
   it('zellij: forwards a PLAIN OSC 52 (it does not need the tmux wrapper)', () => {
@@ -73,7 +90,7 @@ describe('copyToClipboard', () => {
   });
 
   it('SECURITY: an ESC or BEL inside the text cannot terminate the escape — base64 IS the boundary', () => {
-    const { deps, writes } = harness();
+    const { deps, writes } = harness(); // no multiplexer: exactly one escape goes out, so the counts below are exact
     copyToClipboard(deps, 'a\x1b]52;c;evil\x07b');
     const written = writes[0] ?? '';
     // Exactly one BEL (the real terminator) and one ESC (the introducer); the payload's own bytes are encoded away.
@@ -120,10 +137,12 @@ describe('copyToClipboard', () => {
     expect(over.writes).toEqual([]);
   });
 
-  it('inside tmux, the ONE write is the DCS-wrapped form', () => {
+  it('inside tmux, both forms go out in ONE write (never a half-sequence between them)', () => {
     const { deps, writes } = harness({ TMUX: '/tmp/tmux-501/default,1,0' });
     copyToClipboard(deps, 'hi');
-    expect(writes).toEqual([`\x1bPtmux;\x1b\x1b]52;c;${b64('hi')}\x07\x1b\\`]);
+    expect(writes).toEqual([
+      `\x1b]52;c;${b64('hi')}\x07\x1bPtmux;\x1b\x1b]52;c;${b64('hi')}\x07\x1b\\`,
+    ]);
   });
 
   it('is TOTAL: a throwing writeControl is the caller’s to handle, and no partial escape is emitted before it', () => {

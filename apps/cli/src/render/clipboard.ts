@@ -13,8 +13,16 @@
  *
  * KNOWN TERMINAL REALITY, designed for rather than discovered later (each is a live issue against a competing agent
  * CLI that shipped copy-on-select first):
- *   - **tmux** swallows a bare OSC 52; it must be wrapped in a DCS passthrough, and the user must have
- *     `set-clipboard on`. {@link encodeOsc52} does the wrapping; the tmux option is theirs to set.
+ *   - **tmux** honours NEITHER form out of the box, which is why {@link encodeOsc52} emits both. Read from tmux's own
+ *     source rather than assumed (`input.c`, `options-table.c`, `tty.c` @ tmux/tmux):
+ *       * `input_osc_52_parse()` opens with `if (options_get_number(global_options, "set-clipboard") != 2) return 0;`
+ *         and the choice list is `{off, external, on}` — so a **bare** OSC 52 from an application is honoured only
+ *         under `set-clipboard on`. The DEFAULT is `external` (`default_num = 1`), under which tmux sets the system
+ *         clipboard for its OWN copy-mode yanks but ignores an application's escape.
+ *       * `input_dcs_dispatch()` opens with `if (!allow_passthrough) return 0;`, and `allow-passthrough` defaults to
+ *         `off` (`default_num = 0`, choices `{off, on, all}`) — so the **DCS passthrough** is silently dropped.
+ *     Emitting both means whichever option the user set wins; if they set both, the outer terminal receives the same
+ *     clipboard twice, which is a no-op. If they set neither, nothing can help us.
  *   - **VS Code Remote SSH** silently drops OSC 52 entirely. There is no reply to detect that — OSC 52 write has no
  *     acknowledgement — so a copy can never be *confirmed*, only attempted. Callers must not claim success they
  *     cannot know: {@link ClipboardOutcome} says `'written'`, not `'copied'`.
@@ -27,10 +35,13 @@
 const CLIPBOARD_SELECTION = 'c';
 
 /**
- * The maximum base64 payload we will emit. tmux refuses a longer DCS, and several terminals bound the OSC string
- * similarly; taking the smallest documented limit keeps behaviour identical everywhere instead of "works until it
- * silently does not". ~74 KB of base64 ≈ ~56 KB of UTF-8 text — far more than any plausible selection, and less than
- * a large transcript, which is what `/scrollback` and `/edit` are for.
+ * The maximum base64 payload we will emit. Several terminal emulators bound the length of an OSC string and TRUNCATE
+ * past it rather than erroring; taking a conservative floor keeps behaviour identical everywhere instead of "works
+ * until it silently does not". ~74 KB of base64 ≈ ~56 KB of UTF-8 text — far more than any plausible selection, and
+ * less than a large transcript, which is what `/scrollback` and `/edit` are for.
+ *
+ * NOT a tmux limit, despite the folklore: tmux's `input_buffer_size` defaults to `INPUT_BUF_DEFAULT_SIZE` = 1 MiB
+ * (`tmux.h`), and both its OSC and DCS collectors grow to it before discarding.
  */
 export const OSC52_MAX_BASE64_LENGTH = 74_994;
 
@@ -49,16 +60,21 @@ export function detectMultiplexer(
 /**
  * Encode `text` as an OSC 52 clipboard-set escape.
  *
- * Inside **tmux** the escape is wrapped in a DCS passthrough (`ESC P tmux; … ESC \`) with every inner `ESC` DOUBLED —
- * that doubling is what tells tmux to forward the byte rather than interpret it. Without this, tmux consumes the
- * OSC 52 and nothing reaches the outer terminal.
+ * Inside **tmux** the plain escape is followed by the SAME escape wrapped in a DCS passthrough
+ * (`ESC P tmux; … ESC \`), because stock tmux honours neither on its own (see the module docstring): the plain form
+ * needs `set-clipboard on`, the passthrough needs `allow-passthrough on`. Sending both makes either option sufficient.
+ *
+ * Every inner `ESC` inside the passthrough is DOUBLED. tmux's DCS state machine (`input.c`,
+ * `input_state_dcs_handler_table`) sends `0x1b` to `dcs_escape` WITHOUT appending it; from there any byte other than
+ * `\` is appended alone. So `ESC ESC` collapses to one `ESC` in the forwarded string, and a single `ESC ]` would lose
+ * its `ESC` and forward a bare `]`. The `BEL` terminator (`0x07`) is in the `0x00-0x1a` range and is appended as-is.
  *
  * Zellij forwards OSC 52 unwrapped, so it takes the plain form.
  */
 export function encodeOsc52(base64: string, multiplexer?: Multiplexer): string {
   const osc = `\x1b]${52};${CLIPBOARD_SELECTION};${base64}\x07`;
   if (multiplexer !== 'tmux') return osc;
-  return `\x1bPtmux;${osc.replaceAll('\x1b', '\x1b\x1b')}\x1b\\`;
+  return `${osc}\x1bPtmux;${osc.replaceAll('\x1b', '\x1b\x1b')}\x1b\\`;
 }
 
 /** What a copy attempt did. Never `'copied'`: OSC 52 has no acknowledgement, so a terminal that drops the escape
