@@ -31,7 +31,12 @@ import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { captureIo, parseNdjson } from '../test-support.js';
-import { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from '../render/alt-screen.js';
+import {
+  DISABLE_MOUSE,
+  ENABLE_MOUSE,
+  ENTER_ALT_SCREEN,
+  EXIT_ALT_SCREEN,
+} from '../render/alt-screen.js';
 import {
   chatCommand,
   chatIsInteractive,
@@ -690,6 +695,74 @@ describe('chatCommand', () => {
       },
     );
     expect(recC.writes).toEqual([]);
+  });
+
+  it('MOUSE: on by default, and `--no-mouse` reaches the real controller (2.6.F Step 5e, ADR-0068 §e)', async () => {
+    const exitDrive: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    // The opt-out IS the safety mechanism this feature exists for: mouse reporting disables the emulator's native
+    // click-drag selection. The unit tests pin `resolveMouseMode` and the controller in isolation; this pins the
+    // ASSEMBLY — `deps.global.noMouse` → `resolveMouseMode` → `withHoistedAltScreen` → `enter()`. A mis-threaded field
+    // stays `boolean | undefined`-typed and would compile (Step-5e Opus review).
+    const a = deps([], [textTurn('hi')]);
+    const recA = recordingHoist();
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...a.d,
+        ...recA.hoist,
+        io: { ...a.d.io, stdoutIsTty: true },
+        openSessionStore: () => ({ store: a.store, db: client.db, close: () => undefined }),
+        drive: exitDrive,
+      },
+    );
+    expect(recA.writes.join('')).toContain(ENABLE_MOUSE); // the phase default arms the wheel
+
+    const b = deps([], [textTurn('hi')]);
+    const recB = recordingHoist();
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...b.d,
+        ...recB.hoist,
+        io: { ...b.d.io, stdoutIsTty: true },
+        global: { ...globalOptions(cwd), noMouse: true },
+        openSessionStore: () => ({ store: b.store, db: client.db, close: () => undefined }),
+        drive: exitDrive,
+      },
+    );
+    const written = recB.writes.join('');
+    expect(written).not.toContain(ENABLE_MOUSE); // the wheel is never armed…
+    expect(written).toContain(ENTER_ALT_SCREEN); // …while the full-screen renderer is untouched
+    expect(written).toContain(DISABLE_MOUSE); // …and the teardown still disables, unconditionally
+  });
+
+  it('MOUSE: `[preferences].mouse = false` reaches the real controller (the durable opt-out)', async () => {
+    const exitDrive: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    const c = deps([], [textTurn('hi')]);
+    const cfg = join(cwd, 'mouse-off.toml');
+    writeFileSync(cfg, '[preferences]\nmouse = false\n');
+    const rec = recordingHoist();
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...c.d,
+        ...rec.hoist,
+        io: { ...c.d.io, stdoutIsTty: true },
+        global: { ...globalOptions(cwd), configPath: cfg },
+        openSessionStore: () => ({ store: c.store, db: client.db, close: () => undefined }),
+        drive: exitDrive,
+      },
+    );
+    expect(rec.writes.join('')).not.toContain(ENABLE_MOUSE);
+    expect(rec.writes.join('')).toContain(ENTER_ALT_SCREEN);
   });
 
   it('the [preferences].alt_screen preference SURVIVES a /clear re-drive (Step-4a threading regression, ADR-0068 §e)', async () => {

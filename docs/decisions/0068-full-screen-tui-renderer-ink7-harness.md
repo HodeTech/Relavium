@@ -253,6 +253,48 @@ perf thresholds for the full-screen frame loop.
 > the budget-cap **warning** and the `/clear`/reseat **MCP-skipped** diagnostic — still land on the alt buffer and are
 > lost in alt mode (they must route through the CURRENT session's view-store `notice`, an architectural follow-up).
 
+> **Amended 2026-07-10 (Step 5 landed — a11y note, mouse-wheel, the copy-and-search hatches, the mouse opt-out).**
+> Step 5 is complete. Four clarifications; §e's *mechanisms* are unchanged, one of its *defaults* is not.
+>
+> **(a) The `[` / `v` escape hatches ship as PALETTE COMMANDS, not bare keys** — **`/scrollback`** (dump the transcript
+> into the terminal's native scrollback; press Enter to return) and **`/edit`** (open it read-only in `$EDITOR`;
+> edits are never read back). A bare `[` or `v` collides with the text prompt, where they are far commoner than `/`.
+> Both are `availableIn: ['chat']` — the bare Home has no transcript. They are ONE implementation shared by the
+> standalone chat and the in-Home chat, dispatched through the existing slash path with no render-layer interception:
+> unlike `/models` they open no React overlay, so a `SuspendPort` (the repo's first React→core capability bridge)
+> carries ink's `suspendTerminal` out of the tree to the command context.
+>
+> **(b) ink 7's `suspendTerminal` contract, read from its source, drives the design and is documented in
+> `apps/cli/src/render/suspend.ts`.** `beginSuspend()` erases ink's frame and turns raw mode AND bracketed paste off
+> (so we must touch neither); it toggles DECSET-1049 only when ink's `alternateScreen` **render option** is on — which
+> is `true` for the bare Home but hard-`false` for `relavium chat`, whose hoisted controller owns 1049 (§c). The
+> suspension is therefore surface-divergent. ink writes no mouse escapes anywhere, so 1000/1006 is entirely ours. And
+> because raw mode is off for the whole window, a keyboard **Ctrl-C arrives as a real SIGINT** — the chat's signal
+> handler must yield while a hatch owns the terminal, or it tears the session down behind the suspension's back and
+> the pending reclaim re-enters the alt buffer on the user's shell.
+>
+> **(c) §e's "the first release defaults OFF (opt-in)" for mouse reporting is SUPERSEDED: it ships ON, with the
+> mandatory opt-out.** Maintainer decision (2026-07-09). The wheel is what users expect of a full-screen TUI, and
+> PgUp/PgDn-only surprised them. §e's *reason* for defaulting off stands unchanged and is exactly why the opt-out is
+> no longer a follow-up but a shipped, tested part of this step: mouse capture disables the emulator's native
+> copy-on-select (worst over SSH/tmux) and Relavium still has no in-app copy-on-select. The mitigations are now all
+> live — **`--no-mouse`** / **`[preferences].mouse = false`**, the emulator's bypass modifier (Shift; Option on
+> iTerm2), and the `/scrollback` + `/edit` hatches above. Read §e's "(default off first release)" in Consequences,
+> and its "then flips to on-with-opt-out after real-terminal validation (a tracked follow-up)", as satisfied here:
+> the flip happened together with the opt-out rather than after it. `resolveMouseMode` (render-mode.ts) makes one
+> §e guarantee structural rather than conventional — it takes the ALREADY-RESOLVED render mode, so the inline
+> renderer can never enable the mouse whatever the flag or the key say.
+>
+> **(d) §e's "suspend mouse around any TTY-inheriting subprocess" was, until Step 5d, vacuous.** Every other spawn in
+> the repo (`run_command`, `git_*`, the `!`-shell) runs behind the tool sandbox with piped stdio and never touches the
+> terminal. `$EDITOR` is the first TTY-inheriting child, and `suspendFullScreen` discharges the obligation for it.
+>
+> **Still pending from §e:** **DEC-2026 synchronized output** framing and the **branded Home banner** (+
+> `[preferences].show_banner`). The banner's "evaluated against the three themes" acceptance criterion in
+> [phase-2.6](../roadmap/phases/phase-2.6-conversational-authoring.md) cannot be met here — the renderer has no theme
+> system at all (`[preferences].theme` exists in the config schema and nothing reads it); theming is 2.6.L, so the
+> banner ships with colour / `NO_COLOR` variants and its theme variants move there.
+
 ## Consequences
 
 ### Positive

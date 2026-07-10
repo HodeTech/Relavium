@@ -16,7 +16,7 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
-import { DISABLE_MOUSE } from '../render/alt-screen.js';
+import { DISABLE_MOUSE, ENABLE_MOUSE } from '../render/alt-screen.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { driveHome, type HomeDeps } from './drive-home.js';
 
@@ -192,6 +192,37 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const controls = writeControl.mock.calls.map((c) => c[0] as string);
     expect(controls).toContain(DISABLE_BRACKETED_PASTE);
     expect(controls).toContain(DISABLE_MOUSE);
+  });
+
+  it('MOUSE: armed by default on the alt screen, and `--no-mouse` reaches the real write (Step 5e, ADR-0068 §e)', async () => {
+    // The opt-out IS the safety mechanism this feature exists for: mouse reporting disables the emulator's native
+    // click-drag selection. The unit tests pin `resolveMouseMode` in isolation; this pins the ASSEMBLY —
+    // `deps.global.noMouse` → `resolveMouseMode` → `writeControl(ENABLE_MOUSE)`. A mis-threaded field would still be
+    // `boolean | undefined`, compile, and leave every test green (Step-5e Opus review).
+    const exitCleanly = async (
+      captured: () => RootAppProps | undefined,
+      drivePromise: Promise<number>,
+    ): Promise<void> => {
+      const props = captured();
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      props.controller.handleKey('c', CTRL_C);
+      await drivePromise;
+    };
+
+    // (a) the phase default arms the wheel.
+    let onProps: RootAppProps | undefined;
+    const on = makeDeps((p) => (onProps = p));
+    await exitCleanly(() => onProps, driveHome(on.deps));
+    expect(on.writeControl.mock.calls.map((c) => c[0] as string)).toContain(ENABLE_MOUSE);
+
+    // (b) `--no-mouse` never arms it — while the alt screen itself is untouched (ink owns 1049 on this surface, so
+    // there is no DECSET-1049 byte here to assert; the absence of ENABLE_MOUSE is the whole claim).
+    let offProps: RootAppProps | undefined;
+    const off = makeDeps((p) => (offProps = p), { global: { ...global, noMouse: true } });
+    await exitCleanly(() => offProps, driveHome(off.deps));
+    const controls = off.writeControl.mock.calls.map((c) => c[0] as string);
+    expect(controls).not.toContain(ENABLE_MOUSE);
+    expect(controls).toContain(DISABLE_MOUSE); // …and the teardown still disables, unconditionally
   });
 
   it('resolves the render mode into ink’s alternateScreen: default ON (4b-3), config opts out, --no-alt-screen wins (ADR-0068 §e)', async () => {

@@ -778,7 +778,12 @@ interface ReplWiring {
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded to the ink driver's ctx so it resolves the
    *  full-screen render mode; the plain / `--json` drivers ignore it. Absent ⇒ the phase default. */
   readonly altScreen?: boolean | undefined;
-  /** `[preferences].mouse` (2.6.F Step 5e, ADR-0068 §e) — mouse reporting inside the alt screen. Absent ⇒ default. */
+  /**
+   * `[preferences].mouse` (2.6.F Step 5e, ADR-0068 §e) — mouse reporting inside the alt screen. Absent ⇒ the phase
+   * default. Read exactly ONCE, by `runReplLoop`, from the INITIAL wiring: the mouse is a per-invocation decision that
+   * lives in the hoisted `AltScreenController` above the session loop. That is why — unlike {@link altScreen}, which
+   * is forwarded to every per-session ink mount — the `/clear` and reseat REBUILD wirings deliberately omit it.
+   */
   readonly mouse?: boolean | undefined;
 }
 
