@@ -165,6 +165,31 @@ describe('nodeWriteOut — an async stdout error must not kill the suspension', 
     expect(() => stream.emit('error', new Error('EPIPE'))).not.toThrow();
   });
 
+  it('a write that FAILS does not escape — the case the test above could not see', async () => {
+    // A real OS write fault reaches the completion callback WITH the error, and Node emits `'error'` AFTER it. The
+    // first version of this guard detached the listener in that callback, so the emit was unhandled and Node threw an
+    // uncaught exception — mid-suspension, terminal handed away. The test above emits `'error'` while the write is
+    // still PENDING, which is a different (and already-safe) shape (Step-6h Sonnet review).
+    const failing = new Writable({
+      write(_chunk: unknown, _enc: unknown, callback: (error?: Error) => void) {
+        callback(new Error('EPIPE'));
+      },
+    });
+    let escaped: unknown;
+    const onUncaught = (error: unknown): void => {
+      escaped = error;
+    };
+    process.on('uncaughtException', onUncaught);
+    try {
+      nodeWriteOut(failing)('hello');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      process.off('uncaughtException', onUncaught);
+    }
+    expect(escaped).toBeUndefined(); // the suspension survives a dying TTY
+    expect(failing.listenerCount('error')).toBe(0); // …and the `once` guard was consumed, not leaked
+  });
+
   it('the listener is REMOVED once the write flushes — it must not swallow another writer’s errors forever', () => {
     const stream = deferredStream();
     const before = stream.listenerCount('error');

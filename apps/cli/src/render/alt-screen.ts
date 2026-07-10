@@ -80,16 +80,32 @@ export function createAltScreenController(opts: {
   return {
     enter: (): void => {
       if (!active || entered) return;
-      entered = true;
+      // Latch AFTER the write, for the same reason as `restore` below: a `write` that throws did not enter anything,
+      // and pretending it did would make `restore` emit a DECRST-1049 for a buffer the terminal is not in.
       write(ENTER_ALT_SCREEN + HIDE_CURSOR + (mouse ? ENABLE_MOUSE : ''));
+      entered = true;
     },
     restore: (): void => {
       if (!entered || restored) return; // never exit a buffer we never entered; never exit twice
-      restored = true;
       // Disable mouse reporting FIRST (restore native selection), then exit the alt buffer + show the cursor. The
       // DISABLE is UNCONDITIONAL even when `mouse` is off: a disable of a mode that was never enabled is a no-op, and
-      // an unconditional teardown can never strand DECSET-1000 if the option is ever mis-threaded.
-      write(DISABLE_MOUSE + EXIT_ALT_SCREEN + SHOW_CURSOR);
+      // an unconditional teardown can never strand DECSET-1002 if the option is ever mis-threaded.
+      //
+      // The idempotence latch is set only AFTER the write SUCCEEDS. It used to be set first, so a single transient
+      // write fault (an EIO on a half-dead TTY, an EPIPE) marked the terminal "restored" and every later net — the
+      // `finally`, the `process.on('exit')` net, the signal handlers — silently declined to try again. The user was
+      // left on the alt buffer with mouse reporting on, permanently (Step-6h Sonnet review). This is the same
+      // "track what actually changed" discipline `suspend.ts`'s `suspendFullScreen` already applies.
+      //
+      // BEST-EFFORT, and it never throws: this runs from a `finally`, from an `'exit'` listener (where a throw is an
+      // uncaught exception) and from signal handlers. The latch staying DOWN is how a failure is reported — the next
+      // net retries.
+      try {
+        write(DISABLE_MOUSE + EXIT_ALT_SCREEN + SHOW_CURSOR);
+      } catch {
+        return; // a later net gets another chance at the terminal
+      }
+      restored = true;
     },
     clearBetween: (): void => {
       if (!entered || restored) return;

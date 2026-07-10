@@ -150,3 +150,72 @@ describe('createAltScreenController — the mouse opt-out', () => {
     expect(c.isMouseEnabled()).toBe(false);
   });
 });
+
+/**
+ * The idempotence latch and a FAILING terminal write (2.6.F Step 6h, Sonnet review). `restore()` runs from a
+ * `finally`, from a `process.on('exit')` listener and from signal handlers, deliberately overlapping. It used to set
+ * `restored = true` BEFORE the write, so one transient fault (an EIO on a half-dead TTY) marked the terminal restored
+ * and every later net declined to try — leaving the user on the alt buffer with mouse reporting on, permanently.
+ */
+describe('createAltScreenController — a failed restore must not disarm the later nets', () => {
+  /** A write sink that throws on the Nth call (1-based) and records every write that lands. */
+  const failOnCall = (n: number): { write: (s: string) => void; writes: string[] } => {
+    const writes: string[] = [];
+    let call = 0;
+    return {
+      writes,
+      write: (s: string) => {
+        call += 1;
+        if (call === n) throw new Error('EIO');
+        writes.push(s);
+      },
+    };
+  };
+
+  it('a THROWING restore leaves the latch down, so the next net retries and the terminal is reclaimed', () => {
+    // Call 1 is `enter`'s write; call 2 is the first `restore`'s, and it fails. Call 3 is the retry — the
+    // `process.on('exit')` net, or a signal handler, or the `finally`.
+    const sink = failOnCall(2);
+    const alt = createAltScreenController({ write: sink.write, active: true });
+    alt.enter();
+    expect(sink.writes).toHaveLength(1);
+
+    alt.restore(); // the write throws; swallowed, and the latch stays DOWN
+    expect(sink.writes).toHaveLength(1);
+
+    alt.restore(); // the retry
+    expect(sink.writes).toHaveLength(2);
+    expect(sink.writes[1]).toContain(EXIT_ALT_SCREEN);
+    expect(sink.writes[1]).toContain(DISABLE_MOUSE);
+  });
+
+  it('restore() NEVER throws — it runs from an `exit` listener, where a throw is an uncaught exception', () => {
+    const alt = createAltScreenController({
+      write: () => {
+        throw new Error('EIO');
+      },
+      active: true,
+    });
+    expect(() => alt.enter()).toThrow(); // enter may throw: the caller decides
+    expect(() => alt.restore()).not.toThrow(); // restore may not
+  });
+
+  it('a SUCCESSFUL restore still latches — the overlapping nets write exactly once', () => {
+    const sink = failOnCall(0); // never fails
+    const alt = createAltScreenController({ write: sink.write, active: true });
+    alt.enter();
+    alt.restore();
+    alt.restore();
+    alt.restore();
+    expect(sink.writes.filter((w) => w.includes(EXIT_ALT_SCREEN))).toHaveLength(1);
+  });
+
+  it('a THROWING enter does not latch, so restore never exits a buffer the terminal is not in', () => {
+    const flaky = failOnCall(1);
+    const alt = createAltScreenController({ write: flaky.write, active: true });
+    expect(() => alt.enter()).toThrow();
+    alt.restore();
+    expect(flaky.writes).toEqual([]); // nothing was entered, so nothing is exited
+    expect(alt.isEntered()).toBe(false);
+  });
+});

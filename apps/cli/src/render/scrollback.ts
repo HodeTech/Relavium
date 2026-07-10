@@ -74,7 +74,13 @@ export const nodeWriteOut =
     const swallow = (): void => undefined; // a dying TTY must not crash a suspension; there is nowhere to report to
     stdout.once('error', swallow);
     try {
-      stdout.write(text, () => {
+      stdout.write(text, (error) => {
+        // KEEP the guard when the write FAILED. Node hands the fault to this callback and THEN emits `'error'` on the
+        // stream; detaching here left that emit unhandled, and Node throws an unhandled `'error'` as an uncaught
+        // exception — mid-suspension, with the terminal handed away. Exactly the crash this function exists to
+        // prevent, and the original test missed it by emitting `'error'` while the write was still pending rather
+        // than completing the write WITH one (Step-6h Sonnet review). `once` consumes the listener on that emit.
+        if (error !== null && error !== undefined) return;
         stdout.removeListener('error', swallow);
       });
     } catch {
