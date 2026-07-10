@@ -224,15 +224,20 @@ describe('displayWidth agrees with the terminal on the wide scripts the old tabl
   it('NEVER under-counts a single grapheme cluster — the invariant the whole viewport rests on', () => {
     // Exhaustive over the assigned planes a transcript can realistically carry. Structural today (it IS the same
     // function), and the guard if anyone re-hand-rolls it.
+    //
+    // ONE `expect` at the end, not 196 000. Vitest's `expect` carries enough per-call overhead that the loop took
+    // ~7 s on a CI runner and timed out, while passing in ~2 s locally — a real defect in the test, not a flake.
     const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    const underCounted: string[] = [];
     for (let cp = 0x20; cp <= 0x2ffff; cp += 1) {
       if (cp >= 0xd800 && cp <= 0xdfff) continue; // lone surrogates are not text
       const ch = String.fromCodePoint(cp);
       if ([...seg.segment(ch)].length !== 1) continue;
-      expect(displayWidth(ch), `U+${cp.toString(16).toUpperCase()}`).toBeGreaterThanOrEqual(
-        inkWidth(ch),
-      );
+      if (displayWidth(ch) < inkWidth(ch) && underCounted.length < 10) {
+        underCounted.push(`U+${cp.toString(16).toUpperCase()}`);
+      }
     }
+    expect(underCounted).toEqual([]);
   });
 
   it('a wrapped line never exceeds `cols` by ink’s own measure', () => {
