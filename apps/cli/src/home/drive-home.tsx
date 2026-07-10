@@ -65,11 +65,12 @@ import { createHomeStore } from './home-store.js';
  * (`startChat`) so the strip shows immediately and a slow/failed build degrades to a loading state / a Home banner.
  *
  * Process lifetime lives here (the controller owns the session lifetime):
- * - **Signals** — one SIGINT/SIGTERM handler covering the Home, the in-Home chat, and MCP teardown: a clean Home
- *   exit (Ctrl-C / EOF in Home mode) resolves exit 0; an EXTERNAL signal unmounts ink, tears the live chat down
- *   (bounded so a stuck MCP teardown can't hang), closes the db, and exits with the conventional `128+signo`
- *   (`130` SIGINT / `143` SIGTERM) so a shell pipeline still sees the interruption. A chat's own exit-code-4 is
- *   consumed by the controller loop (a chat ending returns to Home), never leaked.
+ * - **Signals** — one handler for SIGINT(2)/SIGTERM(15)/SIGHUP(1)/SIGQUIT(3), covering the Home, the in-Home chat,
+ *   and MCP teardown: a clean Home exit (Ctrl-C / EOF in Home mode) resolves exit 0; an EXTERNAL signal unmounts ink,
+ *   tears the live chat down (bounded so a stuck MCP teardown can't hang), closes the db, and exits with the
+ *   conventional `128+signo` (`130` SIGINT / `143` SIGTERM / `129` SIGHUP / `131` SIGQUIT) so a shell pipeline still
+ *   sees the interruption. A chat's own exit-code-4 is consumed by the controller loop, never leaked. Behind all of
+ *   them sits a synchronous `process.on('exit')` net, the last chance to restore the terminal (2.6.F Step 6f).
  * - **Bracketed paste** — DECSET 2004 is enabled on mount and disabled on every exit path, so a pasted multi-line
  *   block is bracketed literal text (no embedded newline submits early); the controller strips the markers.
  */
@@ -100,25 +101,48 @@ export interface HomeDeps {
   ) => { unmount: () => void };
   readonly getSize?: () => { cols: number; rows: number };
   readonly subscribeResize?: (onResize: () => void) => () => void;
-  /** Subscribe to SIGINT(2)/SIGTERM(15); returns an unsubscribe. Default registers on `process`. */
+  /** Subscribe to SIGINT(2)/SIGTERM(15)/SIGHUP(1)/SIGQUIT(3); returns an unsubscribe. Default registers on `process`. */
   readonly subscribeSignals?: (onSignal: (signo: number) => void) => () => void;
+  /** Register a synchronous `process.on('exit')` net; returns a remover. Default registers on `process`. The LAST
+   *  chance to restore the terminal when something calls `process.exit()` past the `finally` (2.6.F Step 6f). */
+  readonly subscribeProcessExit?: (onExit: () => void) => () => void;
   /** Exit the process (tests inject a capture; production `process.exit`). */
   readonly exit?: (code: number) => void;
   /** Write a terminal control sequence (the bracketed-paste DECSET toggles). Default `process.stdout`. */
   readonly writeControl?: (sequence: string) => void;
 }
 
-/** The default external-signal source: SIGINT(2) + SIGTERM(15) on `process`, registered with `on` (not `once`)
- *  so ink's signal-exit listener never re-raises while we still hold the cooperative teardown. */
-function defaultSubscribeSignals(onSignal: (signo: number) => void): () => void {
+/**
+ * The default external-signal source, registered with `on` (not `once`) so ink's signal-exit listener never re-raises
+ * while we still hold the cooperative teardown.
+ *
+ * SIGINT(2) + SIGTERM(15) drive the cooperative teardown. SIGHUP(1) + SIGQUIT(3) were MISSING until Step 6f: they are
+ * catchable kills that terminate WITHOUT firing Node's `'exit'` event, and SIGHUP is what a user gets by closing the
+ * terminal window. Without them the Home left DECSET 1002+1006 enabled on the primary buffer, and the shell then
+ * echoed a mouse report on every click. `relavium chat`'s `defaultReplLifecycle` has covered all four since Step 4b-3;
+ * the two surfaces now agree.
+ */
+export function defaultSubscribeSignals(onSignal: (signo: number) => void): () => void {
   const onSigint = (): void => onSignal(2);
   const onSigterm = (): void => onSignal(15);
+  const onSighup = (): void => onSignal(1);
+  const onSigquit = (): void => onSignal(3);
   process.on('SIGINT', onSigint);
   process.on('SIGTERM', onSigterm);
+  process.on('SIGHUP', onSighup);
+  process.on('SIGQUIT', onSigquit);
   return () => {
     process.removeListener('SIGINT', onSigint);
     process.removeListener('SIGTERM', onSigterm);
+    process.removeListener('SIGHUP', onSighup);
+    process.removeListener('SIGQUIT', onSigquit);
   };
+}
+
+/** The default `process.on('exit')` net — synchronous by definition, which is why the restore it runs must be too. */
+export function defaultSubscribeProcessExit(onExit: () => void): () => void {
+  process.on('exit', onExit);
+  return () => process.removeListener('exit', onExit);
 }
 
 export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
@@ -149,6 +173,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   let instance: { unmount: () => void } | undefined;
   let controller: HomeController | undefined;
   let unsubscribeSignals: (() => void) | undefined;
+  let unsubscribeProcessExit: (() => void) | undefined;
   let dbClosed = false;
   const closeDb = (): void => {
     if (dbClosed) return;
@@ -164,12 +189,18 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   /**
    * Undo every terminal mode this command turned on, in reverse order: unmount ink FIRST (leaving raw mode and the
    * alternate buffer), then disable bracketed paste (DECSET 2004, enabled by ink 7's `usePaste`) and mouse reporting
-   * (DECSET 1000/1006, ours). Both writes are unconditional — a disable is a no-op when the mode was never enabled.
+   * (DECSET 1002+1006, ours). Both writes are unconditional — a disable is a no-op when the mode was never enabled.
    * BEST-EFFORT by contract: it swallows its own throw so a faulty terminal can never skip the caller's session
-   * teardown + db close (the `finally`) nor the bounded teardown + exit (the signal handler). Shared by BOTH paths,
-   * which were byte-identical, so they can never drift.
+   * teardown + db close (the `finally`) nor the bounded teardown + exit (the signal handler). Shared by EVERY path
+   * (the `finally`, the signal handler, and the `process.on('exit')` net), so they can never drift.
+   *
+   * IDEMPOTENT: the nets deliberately overlap, and `unmount()` on an already-unmounted tree plus a second `DISABLE`
+   * write would be harmless but noisy. The latch makes "call it from wherever, as often as you like" the contract.
    */
+  let terminalRestored = false;
   const restoreTerminalControls = (): void => {
+    if (terminalRestored) return;
+    terminalRestored = true;
     try {
       instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
       writeControl(DISABLE_BRACKETED_PASTE);
@@ -551,6 +582,12 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         });
     };
     unsubscribeSignals = (deps.subscribeSignals ?? defaultSubscribeSignals)(onSignal);
+    // The LAST net. `onSignal` covers the catchable kills; this covers everything that reaches Node's `'exit'` without
+    // unwinding our `finally` — a `process.exit()` from a nested command, an uncaught throw, an unhandled rejection.
+    // It must be synchronous, which `restoreTerminalControls` is; the latch makes the overlap with the other nets free.
+    unsubscribeProcessExit = (deps.subscribeProcessExit ?? defaultSubscribeProcessExit)(
+      restoreTerminalControls,
+    );
 
     // Resolve the effective render mode (2.6.F, ADR-0068 §e). driveHome only runs on a TTY interactive path
     // (shouldOpenHome-gated), so the output mode is 'tui'; the resolver still short-circuits a 'plain' path to
@@ -622,6 +659,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     // throw, so it neither turns a clean exit into a failure nor skips the teardown + close below — a faulty
     // terminal can never leak the session or the db handle.
     unsubscribeSignals?.();
+    unsubscribeProcessExit?.();
     restoreTerminalControls();
     await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
     closeDb(); // always close the shared db

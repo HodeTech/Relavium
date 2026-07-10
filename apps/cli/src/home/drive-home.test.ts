@@ -18,7 +18,12 @@ import type { GlobalOptions } from '../process/options.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE } from '../render/alt-screen.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
-import { driveHome, type HomeDeps } from './drive-home.js';
+import {
+  defaultSubscribeProcessExit,
+  defaultSubscribeSignals,
+  driveHome,
+  type HomeDeps,
+} from './drive-home.js';
 
 // Regression for the `provider_auth` bug: the Home built an ENV-ONLY key resolver, so a key stored in the OS
 // keychain (the normal `relavium provider add` path) was invisible while `relavium chat` (keychain-wired) worked.
@@ -107,7 +112,15 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   function makeDeps(
     capture: (props: RootAppProps) => void,
     overrides: Partial<HomeDeps> = {},
-  ): { deps: HomeDeps; unmount: ReturnType<typeof vi.fn>; writeControl: ReturnType<typeof vi.fn> } {
+  ): {
+    deps: HomeDeps;
+    unmount: ReturnType<typeof vi.fn>;
+    writeControl: ReturnType<typeof vi.fn>;
+    signalHandlers: ((signo: number) => void)[];
+    exitHandlers: (() => void)[];
+  } {
+    const signalHandlers: ((signo: number) => void)[] = [];
+    const exitHandlers: (() => void)[] = [];
     const opened: OpenedSessionStore = {
       store: createSessionStore(client.db),
       db: client.db,
@@ -129,7 +142,14 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       },
       getSize: () => ({ cols: 120, rows: 40 }),
       subscribeResize: () => () => undefined,
-      subscribeSignals: () => () => undefined, // no real process listeners in the default tests
+      subscribeSignals: (onSignal) => {
+        signalHandlers.push(onSignal);
+        return () => undefined;
+      }, // no real process listeners in the default tests
+      subscribeProcessExit: (onExit) => {
+        exitHandlers.push(onExit);
+        return () => undefined;
+      },
       writeControl,
       exit: () => undefined,
       // A cancel-immediately onboarding prompter by DEFAULT, so a key-less resolver (e.g. the real keychain-backed
@@ -138,7 +158,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       onboardingPrompter: CANCEL_ONBOARDING,
       ...overrides,
     };
-    return { deps, unmount, writeControl };
+    return { deps, unmount, writeControl, signalHandlers, exitHandlers };
   }
 
   it('an init fault after the db is open (a throwing render/mount) still closes the db once', async () => {
@@ -565,5 +585,99 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     void driveHome(deps); // the provider wiring runs synchronously before the ink mount
     await flush();
     expect(resolverKeychainArg.value).toBe(keychainSentinel); // the resolver received the keychain, not env-only
+  });
+
+  /**
+   * The terminal-restore NETS (2.6.F Step 6f, Opus review). Mouse reporting is a mode we set on the USER'S terminal,
+   * and every path out of the process must clear it — otherwise the shell they return to echoes an SGR report on every
+   * click and drag. `relavium chat` has covered SIGTERM/SIGHUP/SIGQUIT plus a `process.on('exit')` net since Step
+   * 4b-3; the bare Home listened only for SIGINT and SIGTERM, so closing the terminal window (SIGHUP) stranded
+   * DECSET 1002+1006.
+   *
+   * These tests never await `driveHome`: on a signal it hands off to `process.exit`, which the injected `exit` mock
+   * does not perform, so the drive promise stays pending by design. The restore is SYNCHRONOUS — that is the point —
+   * so every assertion below reads `writeControl` the moment the handler returns.
+   */
+  describe('the terminal is restored on EVERY termination path', () => {
+    const drive = (): ReturnType<typeof makeDeps> & { exitProcess: ReturnType<typeof vi.fn> } => {
+      const exitProcess = vi.fn();
+      let captured: RootAppProps | undefined;
+      const made = makeDeps((p) => (captured = p));
+      const deps: HomeDeps = { ...made.deps, exit: exitProcess as (code: number) => void };
+      void driveHome(deps).catch(() => undefined); // never resolves once a signal fires — see the docstring
+      if (captured === undefined) throw new Error('the injected render was never invoked');
+      return { ...made, exitProcess };
+    };
+
+    const controlsOf = (d: { writeControl: ReturnType<typeof vi.fn> }): string[] =>
+      d.writeControl.mock.calls.map((c) => c[0] as string);
+
+    it.each([
+      ['SIGINT', 2],
+      ['SIGTERM', 15],
+      ['SIGHUP', 1],
+      ['SIGQUIT', 3],
+    ])('%s disables mouse reporting before anything else can run', (_name, signo) => {
+      const d = drive();
+      expect(d.signalHandlers).toHaveLength(1);
+      d.signalHandlers[0]?.(signo);
+      expect(controlsOf(d)).toContain(DISABLE_MOUSE);
+      expect(controlsOf(d)).toContain(DISABLE_BRACKETED_PASTE);
+    });
+
+    it('the PRODUCTION subscriber registers all four signals, and unsubscribing removes them', () => {
+      // The `it.each` above drives an INJECTED subscriber, so it would stay green if `defaultSubscribeSignals` forgot
+      // SIGHUP — which is exactly the bug this step fixes. Pin the real thing against `process` itself.
+      const before = (['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const).map((s_) =>
+        process.listenerCount(s_),
+      );
+      const seen: number[] = [];
+      const off = defaultSubscribeSignals((signo) => seen.push(signo));
+      try {
+        const after = (['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const).map((s_) =>
+          process.listenerCount(s_),
+        );
+        expect(after).toEqual(before.map((n) => n + 1));
+        process.emit('SIGHUP');
+        process.emit('SIGQUIT');
+        expect(seen).toEqual([1, 3]); // the conventional signo, so the exit code is 128+signo
+      } finally {
+        off();
+      }
+      const restored = (['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const).map((s_) =>
+        process.listenerCount(s_),
+      );
+      expect(restored).toEqual(before); // no listener outlives the drive
+    });
+
+    it('the PRODUCTION exit net registers on `process` and is removable', () => {
+      const before = process.listenerCount('exit');
+      let fired = 0;
+      const off = defaultSubscribeProcessExit(() => (fired += 1));
+      try {
+        expect(process.listenerCount('exit')).toBe(before + 1);
+        process.emit('exit', 0);
+        expect(fired).toBe(1);
+      } finally {
+        off();
+      }
+      expect(process.listenerCount('exit')).toBe(before);
+    });
+
+    it('a `process.exit()` that never unwinds the finally is still caught by the exit net', () => {
+      const d = drive();
+      expect(d.exitHandlers).toHaveLength(1);
+      d.exitHandlers[0]?.(); // Node's synchronous 'exit' event
+      expect(controlsOf(d)).toContain(DISABLE_MOUSE);
+    });
+
+    it('the restore is IDEMPOTENT — overlapping nets must not write DISABLE_MOUSE twice', () => {
+      const d = drive();
+      d.exitHandlers[0]?.();
+      d.exitHandlers[0]?.();
+      d.signalHandlers[0]?.(1);
+      expect(controlsOf(d).filter((c) => c === DISABLE_MOUSE)).toHaveLength(1);
+      expect(d.unmount).toHaveBeenCalledTimes(1);
+    });
   });
 });
