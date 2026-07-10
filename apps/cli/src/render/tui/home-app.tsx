@@ -5,7 +5,7 @@ import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/rep
 import type { PendingAttachment } from './attachments.js';
 import { ChatView } from './chat-ink.js';
 import type { EditorState } from './chat-input.js';
-import { liveScrollGeometry, sanitizeInline } from './chat-projection.js';
+import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
 import type { HomeController } from './home-controller.js';
 import { HomeView } from './home-view.js';
@@ -20,9 +20,18 @@ import { PaletteView } from './palette-view.js';
 import type { PaletteState } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
 import { ReverseSearchView } from './reverse-search-view.js';
+import { parseMouseEvent, type MouseEvent as TerminalMouseEvent } from './mouse.js';
 import {
+  normalizeSelection,
+  reduceSelection,
+  selectionText,
+  type SelectionRange,
+  type SelectionState,
+  type SelectionViewport,
+} from './selection.js';
+import {
+  effectiveOffset,
   INITIAL_SCROLL,
-  parseMouseScroll,
   reduceScroll,
   scrollMotionForKey,
   WHEEL_LINES,
@@ -41,6 +50,7 @@ import {
 
 export type { HomeChatSession } from './home-controller.js';
 
+import type { ClipboardOutcome } from '../clipboard.js';
 import type { SuspendPort } from '../suspend.js';
 
 export interface RootAppProps {
@@ -58,6 +68,9 @@ export interface RootAppProps {
    *  mounted — the ONLY way the non-React slash dispatch (`createHomeController` is built before this tree exists)
    *  can reach `/scrollback` and `/edit`. Absent (a test) ⇒ the hatches notice "needs an interactive terminal". */
   readonly suspendPort?: SuspendPort | undefined;
+  /** Write the in-Home chat's mouse selection to the system clipboard over OSC 52 (2.6.F Step 6). Absent ⇒ the
+   *  selection still highlights but copy-on-select is inert (a test that wires no terminal). */
+  readonly clipboard?: ((text: string) => ClipboardOutcome) | undefined;
 }
 
 /** The chat region: subscribes to the chat store (re-render on stream events) and renders the pure {@link ChatView},
@@ -87,6 +100,8 @@ function ChatRegion(
           readonly rows: number;
           readonly cols: number;
           readonly scroll: ScrollState;
+          /** The active mouse selection, document-ordered (2.6.F Step 6). */
+          readonly selection?: SelectionRange | undefined;
           readonly onMeasure: (geom: ViewportGeometry) => void;
         }
       | undefined;
@@ -177,6 +192,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // `scrollGeomRef` via `onMeasure` so a scroll key reduces against the SAME geometry the viewport windows with.
   const [scroll, setScroll] = useState<ScrollState>(INITIAL_SCROLL);
   const scrollRef = useRef<ScrollState>(INITIAL_SCROLL);
+  // The mouse selection (2.6.F Step 6) — held exactly like `scroll`: state for the render, a ref so a coalesced drag
+  // burst (several SGR reports in ONE stdin read) reduces off the latest rather than the render closure.
+  const [selection, setSelection] = useState<SelectionState | undefined>(undefined);
+  const selectionRef = useRef<SelectionState | undefined>(undefined);
   // Seeded at zero: the post-commit measure fills it on the first frame. `top`/`left`/`width` are the box's position
   // in ink's frame — the mouse handler's half of the row→line mapping (Step 6).
   const scrollGeomRef = useRef<ViewportGeometry>({
@@ -186,6 +205,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     top: 0,
     left: 0,
   });
+  const applySelection = (next: SelectionState | undefined): void => {
+    selectionRef.current = next;
+    setSelection(next);
+  };
   const applyScroll = (next: ScrollState): void => {
     scrollRef.current = next;
     setScroll(next);
@@ -221,35 +244,95 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     state.effortPicker === undefined &&
     state.reasonDraft === undefined;
   const altChat = props.alternateScreen === true && state.mode === 'chat' && noOverlay;
-  useInput((input, key) => {
-    // Reduce against LIVE geometry (parity with `ChatApp`): wrap the session store's CURRENT transcript at the
-    // keypress for a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream
-    // burst makes `settle` resume-follow against a stale bottom (Step-4b-2 Sonnet review). `getSnapshot()` reads the
-    // store fresh here regardless of closure staleness; no session (bare Home) ⇒ the lifted geometry, nothing to move.
-    const liveGeom = (): ScrollGeometry => {
-      const store = state.session?.store;
-      return store === undefined
-        ? scrollGeomRef.current
-        : liveScrollGeometry(
-            store.getSnapshot().state.transcript,
-            size.cols,
-            scrollGeomRef.current.height,
-          );
+
+  // Reduce against LIVE geometry (parity with `ChatApp`): wrap the session store's CURRENT transcript at the keypress
+  // for a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream burst makes
+  // `settle` resume-follow against a stale bottom (Step-4b-2 Sonnet review). `getSnapshot()` reads the store fresh
+  // regardless of closure staleness; no session (bare Home) ⇒ the lifted geometry, nothing to move. Hoisted out of
+  // `useInput` at Step 6 so the scroll keymap and the selection reducer share ONE definition.
+  const liveGeom = (): ScrollGeometry => {
+    const store = state.session?.store;
+    return store === undefined
+      ? scrollGeomRef.current
+      : liveScrollGeometry(
+          store.getSnapshot().state.transcript,
+          size.cols,
+          scrollGeomRef.current.height,
+        );
+  };
+
+  /** Reduce one non-wheel mouse report into the in-Home chat's selection (2.6.F Step 6) — the same reducer, the same
+   *  viewport facts, and therefore the same behaviour as `relavium chat`. */
+  const routeSelection = (event: TerminalMouseEvent): void => {
+    const measured = scrollGeomRef.current;
+    const live = liveGeom();
+    const viewport: SelectionViewport = {
+      top: measured.top,
+      left: measured.left,
+      height: live.height,
+      totalLines: live.totalLines,
+      offset: effectiveOffset(scrollRef.current, live),
     };
+    const action = reduceSelection(selectionRef.current, event, viewport);
+    switch (action.kind) {
+      case 'none':
+        return;
+      case 'clear':
+        applySelection(undefined);
+        return;
+      case 'set':
+        applySelection(action.state);
+        return;
+      case 'copy':
+        applySelection(action.state); // keep the highlight, as every terminal does
+        copySelection(action.state);
+        return;
+    }
+  };
+
+  /** Copy on release. SILENT on success: a notice would append a transcript entry and shift the very lines the user
+   *  just selected. Only a refusal (past the terminal's OSC 52 length floor) is worth telling them about. */
+  const copySelection = (state_: SelectionState): void => {
+    const clipboard = props.clipboard;
+    const store = state.session?.store;
+    if (clipboard === undefined || store === undefined) return;
+    const rows = wrapTranscript(store.getSnapshot().state.transcript, size.cols).map(
+      (line) => line.text,
+    );
+    const outcome = clipboard(selectionText(rows, normalizeSelection(state_)));
+    if (outcome.kind === 'too-large') {
+      store.note(
+        `selection too large to copy (${Math.ceil(outcome.base64Length / 1024)} KB) — use /scrollback or /edit`,
+      );
+    }
+  };
+
+  // A resize re-wraps the transcript, and a session swap (`/clear`, a reseat) replaces it — either way every
+  // display-line index the selection holds moves. Drop it rather than highlight, and copy, the wrong text.
+  useEffect(() => {
+    applySelection(undefined);
+  }, [size.cols, state.session]);
+
+  useInput((input, key) => {
     // Mouse reports (Step 5): `driveHome` enables mouse reporting for the WHOLE alt-screen Home, so a wheel/click
     // arrives in EVERY mode and behind EVERY overlay. CONSUME it here — ahead of all routing — so its raw bytes can
     // never type into the Home prompt, the `/` palette filter, or the `[c]` reason capture. A wheel only SCROLLS
     // when the chat transcript owns the screen (`altChat`); elsewhere there is no viewport to move.
     if (props.alternateScreen === true) {
-      const mouse = parseMouseScroll(input);
+      const mouse = parseMouseEvent(input);
       if (mouse !== undefined) {
-        if (mouse !== 'ignore' && altChat) {
-          const geom = liveGeom();
-          let next = scrollRef.current;
-          for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, mouse, geom);
-          applyScroll(next);
+        if (altChat) {
+          if (mouse.kind === 'wheel') {
+            const geom = liveGeom();
+            const motion = mouse.direction === 'up' ? 'line-up' : 'line-down';
+            let next = scrollRef.current;
+            for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, motion, geom);
+            applyScroll(next);
+          } else {
+            routeSelection(mouse);
+          }
         }
-        return;
+        return; // CONSUMED in every mode — a mouse report's raw bytes must never type into a prompt
       }
     }
     if (altChat) {
@@ -286,6 +369,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
                 rows: size.rows,
                 cols: size.cols,
                 scroll,
+                // Document-ordered here, once: the viewport draws it, `copySelection` re-derives it for the clipboard.
+                ...(selection === undefined ? {} : { selection: normalizeSelection(selection) }),
                 onMeasure: (g: ViewportGeometry): void => {
                   scrollGeomRef.current = g;
                 },

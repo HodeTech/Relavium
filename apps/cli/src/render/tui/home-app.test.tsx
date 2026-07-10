@@ -128,6 +128,8 @@ function mountHome(
     startChat?: () => Promise<HomeChatSession>;
     reseatChat?: (sessionId: string, target: ReseatTarget) => Promise<HomeChatSession>;
     models?: HomeModelsPort;
+    /** Capture what copy-on-select would put on the clipboard (2.6.F Step 6). */
+    clipboard?: (text: string) => { kind: 'written'; characters: number };
   } = {},
 ): MountedHome {
   let onResize: () => void = () => {};
@@ -152,6 +154,7 @@ function mountHome(
         return () => {};
       }}
       {...(opts.alternateScreen === true ? { alternateScreen: true } : {})}
+      {...(opts.clipboard === undefined ? {} : { clipboard: opts.clipboard })}
     />,
   );
   return {
@@ -451,5 +454,116 @@ describe('RootApp — the suspend port (ADR-0068 §e)', () => {
     harness.unmount();
     await settleFrames();
     expect(port.current()).toBeUndefined();
+  });
+});
+
+/**
+ * Mouse SELECTION on the HOME surface (2.6.F Step 6). The in-Home chat and `relavium chat` share `reduceSelection`,
+ * `cellAt` and the highlight split, so what needs pinning here is the WIRING: that the Home's own `useInput` routes
+ * press/drag/release into the reducer with its own viewport geometry, and that the release reaches the clipboard.
+ */
+describe('RootApp — mouse selection in the in-Home chat', () => {
+  const seedThree = (): ChatStoreController => {
+    const store = createChatStore(false);
+    store.notice('AAAA');
+    store.notice('BBBB');
+    store.notice('CCCC');
+    return store;
+  };
+
+  it('a DRAG in the in-Home chat copies exactly the cells it covered', async () => {
+    const copied: string[] = [];
+    const store = seedThree();
+    const m = mountHome(store, {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
+
+    m.harness.stdin.write('\x1b[<0;1;1M'); // press line 0, column 0
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<32;3;1M'); // drag to column 2 (inclusive)
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<0;3;1m'); // release ⇒ copy
+    await settleFrames();
+
+    expect(copied).toEqual(['AAA']);
+  });
+
+  it('the BARE Home (no chat) consumes a mouse report and copies nothing — there is no transcript', async () => {
+    const copied: string[] = [];
+    const m = mountHome(seedThree(), {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await settleFrames();
+
+    m.harness.stdin.write('\x1b[<0;1;1M');
+    m.harness.stdin.write('\x1b[<32;5;1M');
+    m.harness.stdin.write('\x1b[<0;5;1m');
+    await settleFrames();
+
+    expect(copied).toEqual([]);
+    expect(m.c.getSnapshot().input.text).toBe(''); // …and no raw bytes typed into the Home prompt
+  });
+
+  it('a plain CLICK copies nothing; the WHEEL still scrolls and never copies', async () => {
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.notice(`row-${String(i).padStart(2, '0')}`);
+    const m = mountHome(store, {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('row-59'));
+
+    m.harness.stdin.write('\x1b[<0;2;2M');
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<0;2;2m'); // release at the same cell ⇒ a click
+    await settleFrames();
+    expect(copied).toEqual([]);
+
+    m.harness.stdin.write('\x1b[<64;5;5M'); // wheel up
+    await settleFrames();
+    expect(m.harness.lastFrame() ?? '').not.toContain('row-59');
+    expect(copied).toEqual([]);
+  });
+
+  it('a RESIZE drops the live selection — re-wrapping moves every display-line index it holds', async () => {
+    const copied: string[] = [];
+    const store = seedThree();
+    const m = mountHome(store, {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
+
+    m.harness.stdin.write('\x1b[<0;1;1M'); // press…
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<32;3;1M'); // …drag…
+    await settleFrames();
+
+    m.setSize({ cols: 60, rows: 30 });
+    m.fireResize();
+    await settleFrames();
+
+    m.harness.stdin.write('\x1b[<0;3;1m'); // …release AFTER the resize
+    await settleFrames();
+    expect(copied).toEqual([]); // the anchor was dropped, so there is nothing to copy
   });
 });

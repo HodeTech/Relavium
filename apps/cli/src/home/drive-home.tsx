@@ -51,6 +51,7 @@ import { DISABLE_MOUSE, ENABLE_MOUSE } from '../render/alt-screen.js';
 import { nodeCreateTempDocument, nodeSpawnEditor } from '../render/editor.js';
 import { inkOwnedTerminal, type HatchDeps } from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
+import { copyToClipboard } from '../render/clipboard.js';
 import { createSuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
@@ -595,6 +596,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         alternateScreen,
         // `RootApp` attaches ink's `suspendTerminal` here while mounted (2.6.F Step 5d, ADR-0068 §e).
         suspendPort,
+        // Copy-on-select rides the SAME control-write sink as the alt-buffer + mouse toggles (Step 6). OSC 52 prints
+        // nothing and moves no cursor, so writing it mid-frame cannot corrupt ink's line accounting.
+        clipboard: (text: string) => copyToClipboard({ writeControl, env: deps.io.env }, text),
       };
       instance =
         deps.render === undefined
