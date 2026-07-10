@@ -126,14 +126,16 @@ Below **80×24** the Home **degrades** to a single line — `Terminal too small 
 
 ## Signal lifecycle & exit codes
 
-The Home owns **one signal lifecycle (SIGINT/SIGTERM)** covering the Home, the in-Home chat, and MCP teardown (`closeMcp`):
+The Home owns **one signal lifecycle (SIGINT/SIGTERM/SIGHUP/SIGQUIT)** covering the Home, the in-Home chat, and MCP teardown (`closeMcp`), plus a synchronous `process.on('exit')` net behind all of them:
 
 | Outcome | How | Exit code |
 | --- | --- | --- |
 | **Clean Home exit** | Ctrl-C / EOF in `home` mode | `0` |
-| **Signal-driven** | an external SIGINT / SIGTERM (`kill -INT` / a parent's signal) | `128 + signo` — **`130`** (SIGINT) / **`143`** (SIGTERM) |
+| **Signal-driven** | an external SIGINT / SIGTERM / SIGHUP / SIGQUIT (`kill -INT`, closing the terminal window, a parent's signal) | `128 + signo` — **`130`** (SIGINT) / **`143`** (SIGTERM) / **`129`** (SIGHUP) / **`131`** (SIGQUIT) |
 
-On an external signal the handler restores the terminal (unmount ink, disable bracketed paste), tears the live chat — or an in-flight build — down **bounded** (a stuck MCP teardown can't hang the exit; a second signal force-exits immediately), closes the db once, and exits `128+signo` so a shell pipeline still detects the interruption. A keyboard Ctrl-C does **not** reach the process as SIGINT (raw mode), so the controller handles it (Home → `0`, chat → `/cancel`) and the `process.on('SIGINT')` handler covers only **out-of-band** signals.
+On an external signal the handler restores the terminal (unmount ink, disable bracketed paste, disable mouse reporting), tears the live chat — or an in-flight build — down **bounded** (a stuck MCP teardown can't hang the exit; a second signal force-exits immediately), closes the db once, and exits `128+signo` so a shell pipeline still detects the interruption.
+
+A keyboard Ctrl-C does **not** normally reach the process as SIGINT (raw mode), so the controller handles it (Home → `0`, chat → `/cancel`). There is **one exception**: while a `/scrollback` or `/edit` suspension owns the terminal, ink has turned raw mode off and the kernel delivers a real SIGINT. That signal belongs to the hatch — the Home's handler drops it (`suspendPort.isSuspended()`), the hatch's own listener resumes the renderer, and the session survives. An external SIGTERM/SIGHUP/SIGQUIT still tears down, suspended or not.
 
 A chat launched from the Home has its **own** exit code `4` ([chat-session.md](chat-session.md)) — but inside the Home that `4` is **consumed by the mode loop** (a chat ending returns to Home), **never leaked**. The Home's own exit code is `0` on a clean exit. See the canonical [Exit codes](commands.md#exit-codes) table.
 
