@@ -81,6 +81,7 @@ import {
 } from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
 import { resolveMouseMode } from '../render/render-mode.js';
+import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
 import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
 import { resolveRenderMode } from '../render/render-mode.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
@@ -282,6 +283,11 @@ export interface ChatDriveContext {
    * a plain / `--json` driver — the hatches then surface an honest "needs an interactive terminal" notice.
    */
   readonly suspendPort?: SuspendPort | undefined;
+  /**
+   * Write the mouse selection to the system clipboard over OSC 52 (2.6.F Step 6). Only an INK driver has a terminal
+   * to write to; a plain / `--json` driver never mounts the viewport, so nothing can be selected there.
+   */
+  readonly clipboard?: ((text: string) => ClipboardOutcome) | undefined;
 }
 /**
  * How a {@link ChatDriver}'s input loop ended (ADR-0062 §7 · ADR-0059): `'exit'` ends the REPL (exit 4); `'clear'`
@@ -1685,6 +1691,8 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
 
   // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`. TTY-only.
   const runShellCommand = buildInteractiveShellRunner(interactive, built);
+  // Captured once: `deps.hatchPorts` is the per-REPL port bundle that also owns `writeControl`.
+  const hatchPortsForClipboard = deps.hatchPorts;
 
   // persister.start() subscribes for the turn events + adopts/inserts the session row; it does NOT consume
   // session:started, so it is safe before the driver. The session-open action (fresh start() / resume no-op)
@@ -1732,6 +1740,17 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       ...(deps.hatchPorts?.suspendPort === undefined
         ? {}
         : { suspendPort: deps.hatchPorts.suspendPort }),
+      // The clipboard rides the SAME control-write sink as the alt-buffer toggles (Step 6). OSC 52 prints nothing and
+      // moves no cursor, so writing it mid-frame cannot corrupt ink's line accounting.
+      ...(hatchPortsForClipboard === undefined
+        ? {}
+        : {
+            clipboard: (text: string): ClipboardOutcome =>
+              copyToClipboard(
+                { writeControl: hatchPortsForClipboard.writeControl, env: deps.io.env },
+                text,
+              ),
+          }),
     });
     // A `/models` reseat attaches the captured target here (the one place holding the line handler); see the helper.
     return finalizeReseatOutcome(outcome, reseatTarget);

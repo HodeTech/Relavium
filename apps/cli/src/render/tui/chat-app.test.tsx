@@ -495,3 +495,186 @@ describe('ChatApp — the suspend port (ADR-0068 §e)', () => {
     expect(h.lastFrame()).toBeDefined();
   });
 });
+
+/**
+ * Mouse SELECTION + copy-on-select (2.6.F Step 6), driven through REAL SGR bytes. The unit tests pin the parser, the
+ * reducer, `cellAt` and the row splitting in isolation; this pins the WIRING — that a press/drag/release on the alt
+ * screen reaches the reducer with the viewport's measured geometry, and that the release hands the clipboard exactly
+ * the text the highlight covered.
+ */
+describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
+  /** Three one-row transcript lines: notices render as their bare text, so the wrapped rows are exactly these. */
+  const seedThree = (): ChatStoreController => {
+    const store = createChatStore(false);
+    store.notice('AAAA');
+    store.notice('BBBB');
+    store.notice('CCCC');
+    return store;
+  };
+
+  const mountWithClipboard = (
+    store: ChatStoreController,
+    copied: string[],
+  ): ReturnType<typeof render> =>
+    render(
+      <ChatApp
+        store={store}
+        alternateScreen
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+        clipboard={(text) => {
+          copied.push(text);
+          return { kind: 'written', characters: text.length };
+        }}
+      />,
+    );
+
+  it('a DRAG across the first row copies exactly the cells it covered', async () => {
+    const copied: string[] = [];
+    const h = mountWithClipboard(seedThree(), copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
+
+    h.stdin.write('\x1b[<0;1;1M'); // press at terminal row 1, column 1 ⇒ line 0, column 0
+    await settleFrames();
+    h.stdin.write('\x1b[<32;3;1M'); // drag to column 3 ⇒ column 2 (inclusive)
+    await settleFrames();
+    h.stdin.write('\x1b[<0;3;1m'); // release ⇒ copy
+    await settleFrames();
+
+    expect(copied).toEqual(['AAA']); // columns 0..2 of 'AAAA'
+  });
+
+  it('a MULTI-ROW drag copies first-partial + last-partial, newline-joined', async () => {
+    const copied: string[] = [];
+    const h = mountWithClipboard(seedThree(), copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('CCCC'));
+
+    h.stdin.write('\x1b[<0;3;1M'); // press line 0, column 2
+    await settleFrames();
+    h.stdin.write('\x1b[<32;2;3M'); // drag to line 2 ('CCCC'), column 1
+    await settleFrames();
+    h.stdin.write('\x1b[<0;2;3m');
+    await settleFrames();
+
+    // First row from column 2 to its end, the middle row whole, the last row to its INCLUSIVE end column.
+    expect(copied).toEqual(['AA\nBBBB\nCC']);
+  });
+
+  it('a plain CLICK copies NOTHING — it only clears any prior highlight', async () => {
+    const copied: string[] = [];
+    const h = mountWithClipboard(seedThree(), copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
+
+    h.stdin.write('\x1b[<0;2;2M');
+    await settleFrames();
+    h.stdin.write('\x1b[<0;2;2m'); // release at the same cell
+    await settleFrames();
+
+    expect(copied).toEqual([]);
+  });
+
+  it('the WHEEL still scrolls while drag reporting is on, and never starts a selection', async () => {
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.notice(`row-${i}`);
+    const h = mountWithClipboard(store, copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('row-59'));
+
+    h.stdin.write('\x1b[<64;5;5M'); // wheel up
+    await settleFrames();
+    expect(h.lastFrame() ?? '').not.toContain('row-59'); // the tail scrolled away
+    h.stdin.write('\x1b[<64;5;5m'); // a wheel "release" is `other`/release — must not copy
+    await settleFrames();
+    expect(copied).toEqual([]);
+  });
+
+  it('after SCROLLING, a drag on the top row copies the line now shown there — not line 0', async () => {
+    // The reason `offset` is in the viewport facts at all. A break that hardcodes `offset: 0` passes every test that
+    // never scrolls first, and then silently copies the wrong lines for any user who did.
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.notice(`row-${String(i).padStart(2, '0')}`);
+    const h = mountWithClipboard(store, copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('row-59'));
+
+    for (let i = 0; i < 4; i += 1) {
+      h.stdin.write('\x1b[<64;5;5M'); // wheel up: leave the tail
+      await settleFrames();
+    }
+    const topRow = (h.lastFrame() ?? '').split('\n')[0]?.trim();
+    expect(topRow).toMatch(/^row-\d\d$/);
+    expect(topRow).not.toBe('row-00'); // we really did scroll away from the head
+
+    h.stdin.write('\x1b[<0;1;1M'); // press the FIRST viewport row
+    await settleFrames();
+    h.stdin.write('\x1b[<32;99;1M'); // drag past its right edge ⇒ the whole row
+    await settleFrames();
+    h.stdin.write('\x1b[<0;99;1m');
+    await settleFrames();
+
+    expect(copied).toEqual([topRow]); // exactly the line the user could SEE on that row
+  });
+
+  it('reduces against the LIVE transcript, not the last measured one (an append between commits)', async () => {
+    // `onMeasure` lags by up to a commit. A drag on a row that only exists because of a just-appended line must still
+    // select it — otherwise the reducer clamps to the stale last line and copies the row above.
+    const copied: string[] = [];
+    const store = seedThree();
+    const h = mountWithClipboard(store, copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('CCCC'));
+
+    store.notice('DDDD'); // the ref still says 3 lines; the store says 4
+    h.stdin.write('\x1b[<0;1;4M'); // press terminal row 4 ⇒ the new line
+    h.stdin.write('\x1b[<32;4;4M');
+    h.stdin.write('\x1b[<0;4;4m');
+    await settleFrames();
+
+    expect(copied).toEqual(['DDDD']); // NOT 'CCCC' — the stale clamp would have landed one row up
+  });
+
+  it('selects the WRAPPED visual rows, not the raw entries — a dragged second row is the line’s second half', async () => {
+    // The viewport shows WRAPPED rows; the clipboard must index the same array. Copying from the raw transcript
+    // entries instead passes every test whose lines are short enough never to wrap — and then mis-selects for anyone
+    // whose model wrote a paragraph.
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    const long = 'x'.repeat(100) + 'TAIL'; // cols = 100 in the harness ⇒ wraps to two rows
+    store.notice(long);
+    const h = mountWithClipboard(store, copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('TAIL'));
+
+    h.stdin.write('\x1b[<0;1;2M'); // press the SECOND wrapped row
+    await settleFrames();
+    h.stdin.write('\x1b[<32;99;2M'); // drag to its end
+    await settleFrames();
+    h.stdin.write('\x1b[<0;99;2m');
+    await settleFrames();
+
+    expect(copied).toEqual(['TAIL']); // the continuation row, not the (nonexistent) second entry
+  });
+
+  it('mounts without a clipboard port: selection still highlights, copy is inert (no throw)', async () => {
+    const h = render(
+      <ChatApp
+        store={seedThree()}
+        alternateScreen
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+      />,
+    );
+    await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
+    h.stdin.write('\x1b[<0;1;1M');
+    await settleFrames();
+    h.stdin.write('\x1b[<32;3;1M');
+    await settleFrames();
+    h.stdin.write('\x1b[<0;3;1m');
+    await settleFrames();
+    expect(h.lastFrame()).toBeDefined();
+  });
+});
