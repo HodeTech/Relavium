@@ -20,7 +20,7 @@ import { PaletteView } from './palette-view.js';
 import type { PaletteState } from './palette-reducer.js';
 import { colorProps, dimProps } from './projection.js';
 import { ReverseSearchView } from './reverse-search-view.js';
-import { parseMouseEvent, type MouseEvent as TerminalMouseEvent } from './mouse.js';
+import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
 import {
   normalizeSelection,
   reduceSelection,
@@ -192,6 +192,9 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // `scrollGeomRef` via `onMeasure` so a scroll key reduces against the SAME geometry the viewport windows with.
   const [scroll, setScroll] = useState<ScrollState>(INITIAL_SCROLL);
   const scrollRef = useRef<ScrollState>(INITIAL_SCROLL);
+  // Survives an SGR mouse report SPLIT across two `useInput` calls (Step 6f). One reader per mount: it holds the
+  // fragment, so it must not be re-created on every render.
+  const mouseReaderRef = useRef(createMouseReportReader());
   // The mouse selection (2.6.F Step 6) — held exactly like `scroll`: state for the render, a ref so a coalesced drag
   // burst (several SGR reports in ONE stdin read) reduces off the latest rather than the render closure.
   const [selection, setSelection] = useState<SelectionState | undefined>(undefined);
@@ -319,9 +322,10 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     // never type into the Home prompt, the `/` palette filter, or the `[c]` reason capture. A wheel only SCROLLS
     // when the chat transcript owns the screen (`altChat`); elsewhere there is no viewport to move.
     if (props.alternateScreen === true) {
-      const mouse = parseMouseEvent(input);
-      if (mouse !== undefined) {
-        if (altChat) {
+      const read = mouseReaderRef.current.read(input);
+      if (read.kind !== 'none') {
+        const mouse = read.kind === 'event' ? read.event : undefined;
+        if (mouse !== undefined && altChat) {
           if (mouse.kind === 'wheel') {
             const geom = liveGeom();
             const motion = mouse.direction === 'up' ? 'line-up' : 'line-down';

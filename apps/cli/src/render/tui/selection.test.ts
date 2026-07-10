@@ -368,6 +368,24 @@ describe('reduceSelection — the shared gesture, so the two surfaces cannot dri
     expect(reduceSelection(clicked, ev('[<0;5;5m'), VP)).toEqual({ kind: 'clear' });
   });
 
+  it('a MIDDLE or RIGHT release leaves a live selection alone — it must NOT re-copy it', () => {
+    // SGR encodes the released button (xterm ctlseqs: the `m` byte exists "to resolve the X10 ambiguity regarding
+    // which button was released"). Without reading it, every right-click while a selection was live re-emitted the
+    // whole selection over OSC 52 (Step-6 Opus review).
+    const dragged = { anchor: cell(2, 3), focus: cell(2, 8) };
+    expect(reduceSelection(dragged, ev('[<2;9;7m'), VP)).toEqual({ kind: 'none' }); // right
+    expect(reduceSelection(dragged, ev('[<1;9;7m'), VP)).toEqual({ kind: 'none' }); // middle
+  });
+
+  it('a release from a terminal reporting the X10 "no button" code 3 still ENDS the gesture', () => {
+    // Honour the legacy meaning: "some button came up". Treating it as `none` would strand the drag — the selection
+    // would neither copy nor clear, and the next press would look like a drag continuation.
+    const dragged = { anchor: cell(2, 3), focus: cell(2, 8) };
+    expect(reduceSelection(dragged, ev('[<3;9;7m'), VP)).toEqual({ kind: 'copy', state: dragged });
+    const clicked = { anchor: cell(2, 3), focus: cell(2, 3) };
+    expect(reduceSelection(clicked, ev('[<3;4;5m'), VP)).toEqual({ kind: 'clear' });
+  });
+
   it('the WHEEL never touches the selection — it belongs to reduceScroll', () => {
     const live = { anchor: cell(100, 0), focus: cell(102, 3) };
     expect(reduceSelection(live, ev('[<64;5;5M'), VP)).toEqual({ kind: 'none' });

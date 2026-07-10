@@ -114,7 +114,7 @@ import {
   wrapTranscript,
 } from './chat-projection.js';
 import { TranscriptViewport } from './transcript-viewport.js';
-import { parseMouseEvent, type MouseEvent as TerminalMouseEvent } from './mouse.js';
+import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
 import {
   normalizeSelection,
   reduceSelection,
@@ -522,6 +522,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // so a scroll key reduces against the SAME geometry the viewport windows with. Inert in the inline renderer.
   const [scroll, setScroll] = useState<ScrollState>(INITIAL_SCROLL);
   const scrollRef = useRef<ScrollState>(INITIAL_SCROLL);
+  // Survives an SGR mouse report SPLIT across two `useInput` calls (Step 6f). One reader per mount: it holds the
+  // fragment, so it must not be re-created on every render.
+  const mouseReaderRef = useRef(createMouseReportReader());
   // The mouse selection (2.6.F Step 6), held exactly like `scroll`: React state for the render, a ref so a coalesced
   // stdin chunk (a drag burst arrives as several reports in ONE read) reduces off the latest, not the render closure.
   const [selection, setSelection] = useState<SelectionState | undefined>(undefined);
@@ -1079,8 +1082,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // so its raw bytes can never type into the prompt, the `/` palette filter, or the `[c]` reason capture. The wheel
     // only SCROLLS when no overlay owns the keyboard (parity with the Home + the Step-4b-2 overlay gate).
     if (props.alternateScreen === true) {
-      const mouse = parseMouseEvent(char);
-      if (mouse !== undefined) {
+      const read = mouseReaderRef.current.read(char);
+      if (read.kind !== 'none') {
+        const mouse = read.kind === 'event' ? read.event : undefined;
         const overlayOwnsKeyboard =
           reasonDraftRef.current !== undefined ||
           paletteRef.current !== undefined ||
@@ -1088,7 +1092,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           mentionRef.current !== undefined ||
           modelPickerRef.current !== undefined ||
           effortPickerRef.current !== undefined;
-        if (!overlayOwnsKeyboard) {
+        if (mouse !== undefined && !overlayOwnsKeyboard) {
           if (mouse.kind === 'wheel') {
             const geom = liveScrollGeometry(
               props.store.getSnapshot().state.transcript,

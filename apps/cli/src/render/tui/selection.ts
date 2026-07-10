@@ -190,6 +190,10 @@ export function reduceSelection(
     }
     case 'release': {
       if (current === undefined) return { kind: 'none' };
+      // Only the release that ENDS a left gesture copies. A middle/right button coming up while a selection is live
+      // must leave it alone — otherwise every right-click re-emits the whole selection over OSC 52. `undefined` is a
+      // terminal still reporting the X10 "no button" code 3: honour the legacy meaning and end the gesture.
+      if (event.button === 'middle' || event.button === 'right') return { kind: 'none' };
       // A click that never moved: clear the previous highlight rather than copy a single cell.
       if (isCollapsed(current)) return { kind: 'clear' };
       return { kind: 'copy', state: current };

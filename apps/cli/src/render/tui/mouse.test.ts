@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseMouseEvent } from './mouse.js';
+import { parseMouseEvent, createMouseReportReader } from './mouse.js';
 
 /**
  * The SGR mouse-report parser (2.6.F Step 6). The bit field is the whole contract: mistake the wheel bit for a button
@@ -53,14 +53,34 @@ describe('parseMouseEvent — buttons and motion', () => {
     expect(parseMouseEvent('[<33;1;1M')).toMatchObject({ kind: 'drag', button: 'middle' });
   });
 
-  it('the final `m` is a RELEASE — SGR does not encode WHICH button, and copy-on-select does not need it', () => {
+  it('the final `m` is a RELEASE, and it carries WHICH button came up', () => {
+    // xterm's ctlseqs on the SGR (1006) `m` byte: "A different final character is used for button release to resolve
+    // the X10 ambiguity regarding which button was released." Step 6a's comment claimed the opposite, which is why a
+    // right-click used to re-copy the live selection.
     expect(parseMouseEvent('[<0;12;5m')).toEqual({
       kind: 'release',
+      button: 'left',
       column: 12,
       row: 5,
       modifiers: NO_MODS,
     });
-    expect(parseMouseEvent('[<32;12;5m')).toMatchObject({ kind: 'release' }); // a release after a drag
+    expect(parseMouseEvent('[<2;12;5m')).toMatchObject({ kind: 'release', button: 'right' });
+    expect(parseMouseEvent('[<1;12;5m')).toMatchObject({ kind: 'release', button: 'middle' });
+    expect(parseMouseEvent('[<32;12;5m')).toMatchObject({ kind: 'release', button: 'left' }); // after a drag
+  });
+
+  it('a release reporting the legacy X10 "no button" code 3 leaves the button UNKNOWN, not `other`', () => {
+    // A press with code 3 is meaningless and becomes `other`; a RELEASE with code 3 is the X10 encoding and still
+    // means "a button came up". Dropping it would strand a live drag on such a terminal — the selection would never
+    // copy and never clear.
+    expect(parseMouseEvent('[<3;12;5m')).toEqual({
+      kind: 'release',
+      button: undefined,
+      column: 12,
+      row: 5,
+      modifiers: NO_MODS,
+    });
+    expect(parseMouseEvent('[<3;12;5M')).toEqual({ kind: 'other' });
   });
 
   it('decodes the modifier bits (shift 4, alt 8, ctrl 16)', () => {
@@ -119,5 +139,59 @@ describe('parseMouseEvent — the “no button” encoding', () => {
   it('button code 3 (no button) is `other`, not a right-click', () => {
     expect(parseMouseEvent('[<3;1;1M')).toEqual({ kind: 'other' });
     expect(parseMouseEvent('[<35;1;1M')).toEqual({ kind: 'other' }); // 3|32 — motion with no button (1003 mode)
+  });
+});
+
+/**
+ * A report SPLIT across two `useInput` calls (2.6.F Step 6f). Verified against a real ink 7.1.0 mount: three reports
+ * written as ONE chunk arrive as three separate calls (so the anchored regex is right), but a report written as
+ * `'\x1b[<0;1;'` then `'1M'` arrives as TWO calls. Before the reader, neither matched and both fell through to the
+ * editor — typing `[<0;1;` into the user's prompt on any laggy link during a drag.
+ */
+describe('createMouseReportReader — a report split across chunks', () => {
+  it('holds the fragment, CONSUMES it, and emits the event when the rest arrives', () => {
+    const reader = createMouseReportReader();
+    expect(reader.read('[<0;1;')).toEqual({ kind: 'partial' });
+    expect(reader.read('1M')).toEqual({
+      kind: 'event',
+      event: { kind: 'press', button: 'left', row: 1, column: 1, modifiers: NO_MODS },
+    });
+  });
+
+  it('a complete report in one chunk never touches the buffer', () => {
+    const reader = createMouseReportReader();
+    expect(reader.read('[<64;5;5M')).toMatchObject({ kind: 'event' });
+    expect(reader.read('a')).toEqual({ kind: 'none' }); // no stale fragment prepended
+  });
+
+  it('an ordinary keystroke is never mistaken for a fragment — the buffer needs a leading `[<`', () => {
+    const reader = createMouseReportReader();
+    for (const key of ['[', '<', ';', '0', 'a', '', '\x1b']) {
+      expect(reader.read(key), key).toEqual({ kind: 'none' });
+    }
+  });
+
+  it('a fragment that never completes is DROPPED, and the keystroke after it still types', () => {
+    const reader = createMouseReportReader();
+    expect(reader.read('[<32;9;')).toEqual({ kind: 'partial' });
+    // `a` does not complete the report. The fragment is discarded, and `a` is judged on its own — never swallowed.
+    expect(reader.read('a')).toEqual({ kind: 'none' });
+    expect(reader.read('[<0;1;1M')).toMatchObject({ kind: 'event' }); // the reader is not wedged
+  });
+
+  it('a fragment that grows past the cap is not held forever', () => {
+    const reader = createMouseReportReader();
+    const long = `[<${'9'.repeat(30)}`;
+    expect(reader.read(long)).toEqual({ kind: 'none' }); // too long to be a report prefix
+  });
+
+  it('a SECOND fragment can follow a dropped one (a burst of split reports)', () => {
+    const reader = createMouseReportReader();
+    expect(reader.read('[<32;9;')).toEqual({ kind: 'partial' });
+    expect(reader.read('[<32;')).toEqual({ kind: 'partial' }); // the first is dropped, this one starts fresh
+    expect(reader.read('8;2M')).toMatchObject({
+      kind: 'event',
+      event: { kind: 'drag', button: 'left', row: 2, column: 8 },
+    });
   });
 });
