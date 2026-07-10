@@ -295,6 +295,40 @@ perf thresholds for the full-screen frame loop.
 > system at all (`[preferences].theme` exists in the config schema and nothing reads it); theming is 2.6.L, so the
 > banner ships with colour / `NO_COLOR` variants and its theme variants move there.
 
+> **Amended 2026-07-10 (Step 6 — in-app text selection + copy-on-select; §e's mouse deferrals are WITHDRAWN).**
+> Maintainer decision, taken after using the shipped renderer. §e twice constrains this area and both constraints are
+> superseded here; the §e text is left verbatim (append-only).
+>
+> **(a) "never 1002/1003" → we enable DECSET 1002.** §e admits only button reporting (1000) so the wheel scrolls. But
+> a terminal either reports mouse events to the application or performs its own click-drag selection — never both, and
+> there is no mode in between. (DECSET 1007 "alternate scroll" converts the wheel into cursor keys, which collide
+> irrecoverably with the prompt's Up/Down history keys.) §e therefore forced a choice between a scrolling wheel and
+> native selection, and Step 5e's `--no-mouse` only lets the user pick which one to lose. Enabling **1002**
+> (button-event tracking: press, release, wheel, and motion *only while a button is held*) gives the app the drag it
+> needs to implement selection itself. **1003** (any-motion) stays forbidden — it reports every pointer move.
+>
+> **(b) "Mouse click / drag / text-selection / copy-on-select … deferred to Phase 3" → shipped now.** The alt screen's
+> copy regression is the renderer's single worst ergonomic cost, and §e's own mitigations (the bypass modifier, the
+> `/scrollback` + `/edit` hatches, `--no-mouse`) are workarounds, not the affordance users expect. Competing agent
+> CLIs (e.g. OpenCode) implement exactly this — the TUI captures the mouse, renders its own highlight, and writes the
+> selection to the system clipboard with **OSC 52** on release. Their published issues also map the hazards we must
+> design for up front rather than patch later: inside `tmux`/Zellij both the multiplexer and the app handle OSC 52
+> (the escape needs DCS passthrough); OSC 52 is silently dropped over VS Code Remote SSH; and users want the behaviour
+> switchable. So: `$TMUX`/`$ZELLIJ` detection, a `[preferences].copy_on_select` key, and `--no-mouse` continuing to
+> disable the whole subsystem and hand native selection back.
+>
+> **Coordinate mapping — measured, not assumed.** A mouse report carries an absolute 1-based terminal row; the
+> viewport needs a wrapped-transcript line index. Summing `yogaNode.getComputedTop()` up the `DOMElement.parentNode`
+> chain yields the box's frame row, which was verified against the rendered frame's own line index across three
+> layouts (with and without a header strip, with the live region grown). Both surfaces bind their ink root to
+> `height: terminal rows` and ink's `log-update` writes a frame without a trailing newline, so the frame is anchored
+> at terminal row 1. Hence `displayLine = scrollOffset + (mouseRow - 1 - viewportTop)`. The real-TTY confirmation of
+> that anchor is a PR-time check.
+>
+> **Selection copies the VISUAL rows** the user highlighted — a wrapped paragraph comes back with those wraps as
+> newlines, exactly as the terminal's own selection would have given, and exactly what the highlight showed. `/edit`
+> and (Step 6) `/copy` hand over the UNWRAPPED document when fidelity matters more than the visual.
+
 ## Consequences
 
 ### Positive

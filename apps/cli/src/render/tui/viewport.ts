@@ -72,6 +72,32 @@ export function displayWidth(str: string): number {
   return width;
 }
 
+/**
+ * Slice `str` to the DISPLAY-COLUMN half-open range `[startColumn, endColumn)` — the width-aware counterpart of
+ * `String.slice`, for mouse selection (2.6.F Step 6). A terminal reports the CELL a click landed on, not a character
+ * index, and a grapheme cluster may occupy 2 cells (CJK, emoji) or 0 (a combining mark).
+ *
+ * A cluster is included when its cell range INTERSECTS the selection — so clicking either half of a wide character
+ * takes the whole character, exactly as every terminal's own selection does. A zero-width cluster (a combining mark,
+ * a ZWJ) belongs to the cluster before it, so it rides along iff that one was included; it can never be orphaned onto
+ * a base it does not modify.
+ */
+export function sliceDisplayColumns(str: string, startColumn: number, endColumn: number): string {
+  if (endColumn <= startColumn) return '';
+  let column = 0;
+  let out = '';
+  for (const { segment } of graphemeSegmenter.segment(str)) {
+    const width = graphemeWidth(segment);
+    const included =
+      width === 0
+        ? column > startColumn && column <= endColumn // attaches to the preceding cluster
+        : column < endColumn && column + width > startColumn; // intersects the range
+    if (included) out += segment;
+    column += width;
+  }
+  return out;
+}
+
 function codePointWidth(cp: number): number {
   // Zero-width: C0/C1 controls (sanitized upstream, defensive here), combining marks, and the invisible joiners.
   if (cp === 0) return 0;
