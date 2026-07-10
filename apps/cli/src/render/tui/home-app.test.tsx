@@ -799,6 +799,16 @@ describe('RootApp — mouse capture follows the in-Home chat', () => {
     expect(toggles.length).toBe(before); // no new toggle
   });
 
+  it('the INLINE Home does not CONSUME mouse-report bytes either — nothing enables the mouse there', async () => {
+    // The `alternateScreen` guard in `consumeMouseReport` is what keeps the reader (and its partial-report buffer)
+    // out of a renderer that never receives a report. Without it, a user typing `[<0;1;1M` would have it swallowed.
+    const m = mountHome(createChatStore(false), {}); // no `alternateScreen`
+    await settleFrames();
+    m.harness.stdin.write('[<0;1;1M');
+    await settleFrames();
+    expect(m.c.getSnapshot().input.text).toBe('[<0;1;1M'); // typed, not eaten
+  });
+
   it('the INLINE Home never captures, whatever the mode', async () => {
     const toggles: boolean[] = [];
     const m = mountHome(createChatStore(false), {

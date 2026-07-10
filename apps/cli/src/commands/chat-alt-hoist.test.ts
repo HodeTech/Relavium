@@ -228,6 +228,24 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
    * WITHOUT firing `'exit'`, so the `onProcessExit` net never runs and the alt buffer, mouse reporting and the hidden
    * cursor are stranded on the user's shell.
    */
+  it('a THROWING alt.enter() still runs the finally — the nets are removed and the summary is not lost', async () => {
+    // `enter()`'s write can throw on a dead TTY. It used to run BEFORE the try, so the `finally` never ran, and the
+    // nets (had any been registered) would have outlived the loop. Flagged by the PR bot once 6h-1 made `enter` throw.
+    const h = harness();
+    const throwing = {
+      ...opts(h, true),
+      write: (s_: string) => {
+        if (s_.includes(ENTER_ALT_SCREEN)) throw new Error('EIO');
+        h.writes.push(s_);
+      },
+    };
+    await expect(
+      withHoistedAltScreen(throwing, () => Promise.resolve({ summaryText: 'never runs' })),
+    ).rejects.toThrow('EIO');
+    expect(h.writes).toEqual([]); // nothing entered ⇒ nothing exited
+    expect(h.outs).toEqual([]); // the loop never ran, so there is no summary
+  });
+
   describe('the SIGINT net covers the window where no ink tree is mounted', () => {
     /** A port that reports whether an ink tree is attached — exactly what `createSuspendPort().current()` does. */
     const portWith = (attached: boolean): SuspendPort => {

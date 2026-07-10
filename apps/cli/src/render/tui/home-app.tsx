@@ -338,29 +338,34 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
     applySelection(undefined);
   }, [size.cols, state.session]);
 
-  useInput((input, key) => {
-    // Mouse reports (Step 5): `driveHome` enables mouse reporting for the WHOLE alt-screen Home, so a wheel/click
-    // arrives in EVERY mode and behind EVERY overlay. CONSUME it here — ahead of all routing — so its raw bytes can
-    // never type into the Home prompt, the `/` palette filter, or the `[c]` reason capture. A wheel only SCROLLS
-    // when the chat transcript owns the screen (`altChat`); elsewhere there is no viewport to move.
-    if (props.alternateScreen === true) {
-      const read = mouseReaderRef.current.read(input);
-      if (read.kind !== 'none') {
-        const mouse = read.kind === 'event' ? read.event : undefined;
-        if (mouse !== undefined && altChat) {
-          if (mouse.kind === 'wheel') {
-            const geom = liveGeom();
-            const motion = mouse.direction === 'up' ? 'line-up' : 'line-down';
-            let next = scrollRef.current;
-            for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, motion, geom);
-            applyScroll(next);
-          } else {
-            routeSelection(mouse);
-          }
-        }
-        return; // CONSUMED in every mode — a mouse report's raw bytes must never type into a prompt
-      }
+  /** One wheel notch. Kept beside `routeSelection` so the two mouse verbs read alike. */
+  const routeWheel = (direction: 'up' | 'down'): void => {
+    const geom = liveGeom();
+    const motion = direction === 'up' ? 'line-up' : 'line-down';
+    let next = scrollRef.current;
+    for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, motion, geom);
+    applyScroll(next);
+  };
+
+  /**
+   * Consume a mouse report, if `input` is one. Returns `true` when it was — the caller must then type NOTHING: a
+   * report's raw bytes must never reach the Home prompt, the `/` palette filter, or the `[c]` reason capture. That is
+   * true in EVERY mode and behind EVERY overlay; only the ROUTING is gated on the chat owning the screen.
+   */
+  const consumeMouseReport = (input: string): boolean => {
+    if (props.alternateScreen !== true) return false;
+    const read = mouseReaderRef.current.read(input);
+    if (read.kind === 'none') return false;
+    const mouse = read.kind === 'event' ? read.event : undefined;
+    if (mouse !== undefined && altChat) {
+      if (mouse.kind === 'wheel') routeWheel(mouse.direction);
+      else routeSelection(mouse);
     }
+    return true;
+  };
+
+  useInput((input, key) => {
+    if (consumeMouseReport(input)) return;
     if (altChat) {
       // Esc DISMISSES a live selection. Gated on an IDLE chat: while a turn streams, Esc is the mid-turn ABORT that
       // `controller.handleKey` reduces, and shadowing an abort with a cosmetic clear would be a bad trade. Mirrors

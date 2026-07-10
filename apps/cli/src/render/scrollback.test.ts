@@ -62,13 +62,16 @@ describe('dumpToScrollback', () => {
   it('SECURITY: sanitizes at ITS OWN boundary — an ANSI escape in a line can never reach the terminal', async () => {
     const { deps, trace } = harness();
     // A model that emitted a cursor jump + a colour + a bidi override: all stripped before the terminal sees them.
-    await dumpToScrollback(deps, ['\x1b[31mred\x1b[0m', 'jump\x1b[2Jhere', 'rtl‮override']);
+    // `\u202e` is written as an ESCAPE, never as a literal character: a source file asserting Trojan-Source protection
+    // must not itself contain a bidi override, which would reorder what a human reviewer reads (SonarCloud S6389).
+    const RLO = '\u202e'; // RIGHT-TO-LEFT OVERRIDE
+    await dumpToScrollback(deps, ['\x1b[31mred\x1b[0m', 'jump\x1b[2Jhere', `rtl${RLO}override`]);
     const written = trace[0] ?? '';
     expect(written).toContain('red');
     expect(written).toContain('jumphere');
     expect(written).toContain('rtloverride');
     expect(written).not.toContain('\x1b'); // no escape byte survives
-    expect(written).not.toContain('‮'); // no Trojan-Source reordering survives
+    expect(written).not.toContain(RLO); // no Trojan-Source reordering survives
   });
 
   it('keeps newlines inside a single entry (a multi-line assistant answer stays multi-line)', async () => {

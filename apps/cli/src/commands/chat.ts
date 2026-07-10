@@ -1895,19 +1895,39 @@ export async function withHoistedAltScreen(
     active: opts.active,
     ...(opts.mouse === undefined ? {} : { mouse: opts.mouse }),
   });
-  alt.enter();
-  const removeExitNet = opts.active ? opts.lifecycle.onProcessExit(() => alt.restore()) : noop;
-  // SIGINT belongs to ink: while a tree is mounted, `driveInk`'s `onSigintGated` runs the cooperative `/cancel`, and
-  // during a `/scrollback` or `/edit` hatch it deliberately DROPS the signal so the suspension can reclaim. But a
-  // `/clear` or `/models` rebuild unmounts ink and mounts a fresh tree, and in that window NOTHING listens for
-  // SIGINT — Node's default action then kills the process WITHOUT firing `'exit'`, so the `onProcessExit` net never
-  // runs and the alt buffer, mouse reporting and the hidden cursor are stranded on the user's shell. This net covers
-  // exactly that window, and defers to ink whenever a tree is attached.
+  // The removers are `let`, and `alt.enter()` runs INSIDE the try: `enter()`'s write can throw on a dead TTY, and the
+  // `finally` must still run with valid bindings (a `const` declared after a throwing `enter` would be in the temporal
+  // dead zone). `restore()` is a no-op when nothing was entered, and each remover defaults to `noop`.
+  let removeExitNet = noop;
+  let removeSignalNet = noop;
+  let removeInterruptNet = noop;
   const suspendPortForSigint = opts.suspendPort;
-  const removeInterruptNet =
-    opts.active && suspendPortForSigint !== undefined
-      ? opts.lifecycle.onInterrupt(() => {
-          if (suspendPortForSigint.current() !== undefined) return; // ink owns it (mounted, or suspended)
+  let result: HoistedLoopResult = {};
+  try {
+    alt.enter();
+    removeExitNet = opts.active ? opts.lifecycle.onProcessExit(() => alt.restore()) : noop;
+    // SIGINT belongs to ink: while a tree is mounted, `driveInk`'s `onSigintGated` runs the cooperative `/cancel`, and
+    // during a `/scrollback` or `/edit` hatch it deliberately DROPS the signal so the suspension can reclaim. But a
+    // `/clear` or `/models` rebuild unmounts ink and mounts a fresh tree, and in that window NOTHING listens for
+    // SIGINT — Node's default action then kills the process WITHOUT firing `'exit'`, so the `onProcessExit` net never
+    // runs and the alt buffer, mouse reporting and the hidden cursor are stranded on the user's shell. This net covers
+    // exactly that window, and defers to ink whenever a tree is attached.
+    removeInterruptNet =
+      opts.active && suspendPortForSigint !== undefined
+        ? opts.lifecycle.onInterrupt(() => {
+            if (suspendPortForSigint.current() !== undefined) return; // ink owns it (mounted, or suspended)
+            alt.restore();
+            opts.write(DISABLE_BRACKETED_PASTE);
+            try {
+              opts.lifecycle.setRawMode(false);
+            } catch {
+              // best-effort — a non-TTY / already-cooked stdin must not mask the exit
+            }
+            opts.lifecycle.exit(130); // conventional 128 + SIGINT(2)
+          })
+        : noop;
+    removeSignalNet = opts.active
+      ? opts.lifecycle.onTerminationSignal((signo) => {
           alt.restore();
           opts.write(DISABLE_BRACKETED_PASTE);
           try {
@@ -1915,23 +1935,9 @@ export async function withHoistedAltScreen(
           } catch {
             // best-effort — a non-TTY / already-cooked stdin must not mask the exit
           }
-          opts.lifecycle.exit(130); // conventional 128 + SIGINT(2)
+          opts.lifecycle.exit(128 + signo); // conventional 143 (SIGTERM) / 130+ (SIGHUP/SIGQUIT)
         })
       : noop;
-  const removeSignalNet = opts.active
-    ? opts.lifecycle.onTerminationSignal((signo) => {
-        alt.restore();
-        opts.write(DISABLE_BRACKETED_PASTE);
-        try {
-          opts.lifecycle.setRawMode(false);
-        } catch {
-          // best-effort — a non-TTY / already-cooked stdin must not mask the exit
-        }
-        opts.lifecycle.exit(128 + signo); // conventional 143 (SIGTERM) / 130+ (SIGHUP/SIGQUIT)
-      })
-    : noop;
-  let result: HoistedLoopResult = {};
-  try {
     result = await runLoop(alt);
   } finally {
     // Exit the alt buffer FIRST (restores the primary buffer + scrollback), THEN emit the summary / error, so BOTH
