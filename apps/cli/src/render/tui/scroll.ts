@@ -29,6 +29,21 @@ export interface ScrollGeometry {
   readonly height: number;
 }
 
+/**
+ * What the viewport reports after each commit (2.6.F Step 6): the scroll geometry PLUS where the box actually sits in
+ * ink's frame. A terminal mouse report carries an absolute 1-based row; turning it into a wrapped-transcript line
+ * needs `top`. Both surfaces bind their ink root to `height: terminal rows` and ink writes a frame without a trailing
+ * newline, so frame row 0 IS terminal row 1 — hence `line = scrollOffset + (mouseRow - 1 - top)`.
+ */
+export interface ViewportGeometry extends ScrollGeometry {
+  /** The viewport's first rendered row, as a 0-based row in ink's frame. */
+  readonly top: number;
+  /** The viewport's left edge, as a 0-based column in ink's frame. */
+  readonly left: number;
+  /** The viewport's width in cells — the column a drag past the right edge clamps to. */
+  readonly width: number;
+}
+
 /** The scroll motions the keymap produces: PgUp/PgDn, line up/down, and jump to top/bottom (Ctrl+Home / Ctrl+End). */
 export type ScrollMotion = 'line-up' | 'line-down' | 'page-up' | 'page-down' | 'top' | 'bottom';
 

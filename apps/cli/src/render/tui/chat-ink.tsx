@@ -121,6 +121,7 @@ import {
   scrollMotionForKey,
   WHEEL_LINES,
   type ScrollGeometry,
+  type ViewportGeometry,
   type ScrollState,
 } from './scroll.js';
 import type { ReasoningEffort } from '@relavium/shared';
@@ -269,7 +270,7 @@ interface ChatViewProps {
         readonly rows: number;
         readonly cols: number;
         readonly scroll: ScrollState;
-        readonly onMeasure: (geom: ScrollGeometry) => void;
+        readonly onMeasure: (geom: ViewportGeometry) => void;
       }
     | undefined;
 }
@@ -505,7 +506,15 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // so a scroll key reduces against the SAME geometry the viewport windows with. Inert in the inline renderer.
   const [scroll, setScroll] = useState<ScrollState>(INITIAL_SCROLL);
   const scrollRef = useRef<ScrollState>(INITIAL_SCROLL);
-  const scrollGeomRef = useRef<ScrollGeometry>({ totalLines: 0, height: 0 });
+  // Seeded at zero: the post-commit measure fills it on the first frame. `top`/`left`/`width` are the box's position
+  // in ink's frame — the mouse handler's half of the row→line mapping (Step 6).
+  const scrollGeomRef = useRef<ViewportGeometry>({
+    totalLines: 0,
+    height: 0,
+    width: 0,
+    top: 0,
+    left: 0,
+  });
   const applyScroll = (next: ScrollState): void => {
     scrollRef.current = next;
     setScroll(next);
@@ -1326,7 +1335,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           cols: windowSize.columns,
           scroll,
           // Lift the viewport's live geometry into the ref the scroll keymap reduces against (no re-render).
-          onMeasure: (g: ScrollGeometry): void => {
+          onMeasure: (g: ViewportGeometry): void => {
             scrollGeomRef.current = g;
           },
         }

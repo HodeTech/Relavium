@@ -2,7 +2,7 @@ import { Box, Text, measureElement, type DOMElement } from 'ink';
 import { useEffect, useRef, useState, type ComponentProps, type ReactElement } from 'react';
 
 import { colorProps, dimProps } from './projection.js';
-import { effectiveOffset, type ScrollGeometry, type ScrollState } from './scroll.js';
+import { effectiveOffset, type ScrollState, type ViewportGeometry } from './scroll.js';
 import { windowLines, type DisplayLine } from './viewport.js';
 
 /**
@@ -53,10 +53,31 @@ export interface TranscriptViewportProps {
   /** The owner-held scroll/auto-follow state (2.6.F Step 4b-2); the viewport derives the effective top-line offset
    *  from it + its own measured height (tail while following, else the clamped frozen offset). */
   readonly scroll: ScrollState;
-  /** Reports the live geometry (total wrapped lines + the measured visible-row height) UP after each measure, so the
-   *  owner's scroll keymap can `reduceScroll` against the SAME geometry the viewport windows with (the height lives
-   *  here, behind `measureElement`). Omitted ⇒ not lifted (a caller with no scroll keymap). */
-  readonly onMeasure?: ((geom: ScrollGeometry) => void) | undefined;
+  /** Reports the live geometry UP after each measure — total wrapped lines, the measured visible-row height, and the
+   *  box's position in ink's frame — so the owner's scroll keymap can `reduceScroll` against the SAME geometry the
+   *  viewport windows with (the height lives here, behind `measureElement`), and its MOUSE handler can turn a terminal
+   *  row into a transcript line (Step 6). Omitted ⇒ not lifted (a caller with no scroll keymap). */
+  readonly onMeasure?: ((geom: ViewportGeometry) => void) | undefined;
+}
+
+/**
+ * The box's position in ink's FRAME, by summing yoga's computed offsets up the `parentNode` chain. `measureElement`
+ * only exposes width/height, and a mouse report carries an absolute terminal row — so this is the missing half of the
+ * mapping (2.6.F Step 6).
+ *
+ * MEASURED, not assumed: `transcript-viewport.test.tsx` renders a real ink tree and asserts this equals the frame's
+ * own line index for the viewport's first row, with and without a header above it and with the live region grown.
+ */
+function frameOffset(node: DOMElement): { top: number; left: number } {
+  let top = 0;
+  let left = 0;
+  let current: DOMElement | undefined = node;
+  while (current !== undefined) {
+    top += current.yogaNode?.getComputedTop() ?? 0;
+    left += current.yogaNode?.getComputedLeft() ?? 0;
+    current = current.parentNode;
+  }
+  return { top, left };
 }
 
 export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): ReactElement {
@@ -75,7 +96,14 @@ export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): Re
     const node = ref.current;
     if (node === null) return;
     const measured = measureElement(node);
-    props.onMeasure?.({ totalLines: props.lines.length, height: measured.height });
+    const { top, left } = frameOffset(node);
+    props.onMeasure?.({
+      totalLines: props.lines.length,
+      height: measured.height,
+      width: measured.width,
+      top,
+      left,
+    });
     if (measured.height !== height) setHeight(measured.height);
   });
   // The effective top-line offset from the scroll state: the tail (maxOffset) while following, else the clamped
