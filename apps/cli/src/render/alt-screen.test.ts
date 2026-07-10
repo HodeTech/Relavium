@@ -84,8 +84,13 @@ describe('createAltScreenController (2.6.F Step 4b-3)', () => {
     expect(HIDE_CURSOR).toBe('\x1b[?25l');
     expect(SHOW_CURSOR).toBe('\x1b[?25h');
     expect(CLEAR_ALT_SCREEN).toBe('\x1b[H\x1b[J');
-    expect(ENABLE_MOUSE).toBe('\x1b[?1000h\x1b[?1006h'); // X11 button (incl. wheel) + SGR coords
-    expect(DISABLE_MOUSE).toBe('\x1b[?1006l\x1b[?1000l'); // symmetric off
+    // Step 6: 1002 (button-EVENT tracking) not 1000 — it adds motion-while-held, i.e. the DRAG the in-app text
+    // selection is built on. Never 1003 (any-motion), which reports every pointer move with no button held.
+    expect(ENABLE_MOUSE).toBe('\x1b[?1002h\x1b[?1006h');
+    // The disable covers 1000 TOO: a disable of a never-enabled mode is a no-op, and an earlier Relavium — or any
+    // other program in this terminal — may have left 1000 armed. Stranding DECSET-1000 ruins the user's shell.
+    expect(DISABLE_MOUSE).toBe('\x1b[?1006l\x1b[?1002l\x1b[?1000l');
+    expect(DISABLE_MOUSE).toContain('?1000l');
   });
 });
 

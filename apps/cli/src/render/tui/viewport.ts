@@ -98,6 +98,39 @@ export function sliceDisplayColumns(str: string, startColumn: number, endColumn:
   return out;
 }
 
+/**
+ * Partition `str` into the three pieces around the display-column span `[startColumn, endColumn)`: the head before it,
+ * the span itself, and the tail after. Each grapheme cluster lands in EXACTLY ONE piece, so
+ * `before + selected + after === str` always.
+ *
+ * This is NOT three {@link sliceDisplayColumns} calls. That function's rule — a cluster is taken when its cells
+ * INTERSECT the range — is the right one for a selection (clicking either half of a wide character takes the whole
+ * character), but applied three times it puts a boundary-straddling cluster in two pieces at once and DUPLICATES it.
+ * Here the same intersect rule decides membership, once, and the head/tail take what is left.
+ */
+export function partitionDisplayColumns(
+  str: string,
+  startColumn: number,
+  endColumn: number,
+): { before: string; selected: string; after: string } {
+  let column = 0;
+  let before = '';
+  let selected = '';
+  let after = '';
+  for (const { segment } of graphemeSegmenter.segment(str)) {
+    const width = graphemeWidth(segment);
+    const inSpan =
+      width === 0
+        ? column > startColumn && column <= endColumn // a combining mark rides the cluster before it
+        : column < endColumn && column + width > startColumn;
+    if (inSpan) selected += segment;
+    else if (column < startColumn) before += segment;
+    else after += segment;
+    column += width;
+  }
+  return { before, selected, after };
+}
+
 function codePointWidth(cp: number): number {
   // Zero-width: C0/C1 controls (sanitized upstream, defensive here), combining marks, and the invisible joiners.
   if (cp === 0) return 0;

@@ -28,12 +28,22 @@ export const SHOW_CURSOR = '\x1b[?25h';
  *  mount, so successive sessions never STACK (ink's non-fullscreen unmount `log.done()` does not erase, and a fresh
  *  mount starts at `previousLineCount=0`). */
 export const CLEAR_ALT_SCREEN = '\x1b[H\x1b[J';
-/** Enable terminal mouse reporting — X11 button events (DECSET 1000, which INCLUDES the wheel) + SGR extended
- *  coordinates (1006, so columns past 223 report correctly), 2.6.F Step 5. This is what makes wheel-scroll possible;
- *  the trade-off is that the terminal's NATIVE mouse text-selection now needs Shift/Option (see accessibility.md). */
-export const ENABLE_MOUSE = '\x1b[?1000h\x1b[?1006h';
-/** Disable mouse reporting — restore native mouse text-selection. Paired with the alt-buffer exit on every path. */
-export const DISABLE_MOUSE = '\x1b[?1006l\x1b[?1000l';
+/**
+ * Enable terminal mouse reporting — **DECSET 1002** (button-event tracking: press, release, wheel, and motion ONLY
+ * while a button is held) + SGR extended coordinates (1006, so columns past 223 report correctly).
+ *
+ * 1002, not 1000: the drag reports are what let the app implement TEXT SELECTION itself (2.6.F Step 6). A terminal
+ * either reports mouse events or performs its own click-drag selection — never both — so with reporting on, giving
+ * selection back to the user means owning it. NOT 1003 (any-motion), which reports every pointer move even with no
+ * button held and floods the input stream for nothing.
+ */
+export const ENABLE_MOUSE = '\x1b[?1002h\x1b[?1006h';
+/**
+ * Disable mouse reporting — restore the emulator's native text-selection. Paired with the alt-buffer exit on every
+ * path. It disables **1000 as well as 1002**: a disable of a mode that was never enabled is a no-op, and an earlier
+ * Relavium (or any other program in this terminal) may have left 1000 armed.
+ */
+export const DISABLE_MOUSE = '\x1b[?1006l\x1b[?1002l\x1b[?1000l';
 
 export interface AltScreenController {
   /** Enter the alt buffer + hide the cursor, exactly ONCE (a repeat call and the inactive case are no-ops). */

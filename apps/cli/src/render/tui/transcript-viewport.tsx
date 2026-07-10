@@ -2,6 +2,7 @@ import { Box, Text, measureElement, type DOMElement } from 'ink';
 import { useEffect, useRef, useState, type ComponentProps, type ReactElement } from 'react';
 
 import { colorProps, dimProps } from './projection.js';
+import { lineSpan, splitRow, type SelectionRange } from './selection.js';
 import { effectiveOffset, type ScrollState, type ViewportGeometry } from './scroll.js';
 import { windowLines, type DisplayLine } from './viewport.js';
 
@@ -53,6 +54,9 @@ export interface TranscriptViewportProps {
   /** The owner-held scroll/auto-follow state (2.6.F Step 4b-2); the viewport derives the effective top-line offset
    *  from it + its own measured height (tail while following, else the clamped frozen offset). */
   readonly scroll: ScrollState;
+  /** The active mouse selection, in WRAPPED-transcript coordinates (2.6.F Step 6). Absent ⇒ nothing highlighted. The
+   *  viewport owns no selection state: it renders what its owner reduced, exactly as it does for `scroll`. */
+  readonly selection?: SelectionRange | undefined;
   /** Reports the live geometry UP after each measure — total wrapped lines, the measured visible-row height, and the
    *  box's position in ink's frame — so the owner's scroll keymap can `reduceScroll` against the SAME geometry the
    *  viewport windows with (the height lives here, behind `measureElement`), and its MOUSE handler can turn a terminal
@@ -119,14 +123,31 @@ export function TranscriptViewport(props: Readonly<TranscriptViewportProps>): Re
           lines are common, so keys would COLLIDE (duplicate-key warning + wrong reuse), and every scroll notch would
           churn mounts instead of updating text. The usual index-key hazard (reordering items that own state) cannot
           arise here — nothing below holds state. */}
-      {visible.map((line, index) => (
-        <Text
-          key={index} // NOSONAR — positional grid row, not a reorderable stateful item (see the comment above)
-          {...styleProps(line.style, props.color)}
-        >
-          {line.text === '' ? ' ' : line.text}
-        </Text>
-      ))}
+      {visible.map((line, index) => {
+        // A blank row renders as a single space so it still occupies a terminal row — and so a selection that spans it
+        // has something to highlight, exactly as the emulator's own selection would show.
+        const text = line.text === '' ? ' ' : line.text;
+        // `index` is the row on screen; the SELECTION lives in absolute wrapped-transcript coordinates, so translate.
+        const span =
+          props.selection === undefined ? undefined : lineSpan(offset + index, props.selection);
+        const segments = span === undefined ? undefined : splitRow(text, span);
+        return (
+          <Text
+            key={index} // NOSONAR — positional grid row, not a reorderable stateful item (see the comment above)
+            {...styleProps(line.style, props.color)}
+          >
+            {segments === undefined ? (
+              text
+            ) : (
+              <>
+                {segments.before}
+                <Text inverse>{segments.selected}</Text>
+                {segments.after}
+              </>
+            )}
+          </Text>
+        );
+      })}
     </Box>
   );
 }

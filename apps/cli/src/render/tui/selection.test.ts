@@ -5,6 +5,7 @@ import {
   lineSpan,
   normalizeSelection,
   selectionText,
+  splitRow,
   type SelectionRange,
 } from './selection.js';
 import { sliceDisplayColumns } from './viewport.js';
@@ -124,5 +125,102 @@ describe('selectionText — what lands on the clipboard', () => {
   it('a collapsed selection copies a single cell — the caller decides not to copy at all', () => {
     // `isCollapsed` is the guard; `selectionText` is total, so it must still behave on the degenerate range.
     expect(selectionText(lines, range([0, 0], [0, 0]))).toBe('f');
+  });
+});
+
+/**
+ * `splitRow` — what the viewport actually draws. The highlight is an ANSI `inverse` attribute, which a frame snapshot
+ * cannot see, so the SPLIT is where correctness has to be pinned: get it wrong and the user sees the wrong characters
+ * highlighted, then copies exactly what was highlighted, and never learns why.
+ */
+describe('splitRow — the three pieces the viewport renders', () => {
+  it('an open-ended span highlights to the end of the row (an inner row of a multi-line selection)', () => {
+    expect(splitRow('hello world', { from: 6, to: undefined })).toEqual({
+      before: 'hello ',
+      selected: 'world',
+      after: '',
+    });
+    expect(splitRow('hello', { from: 0, to: undefined })).toEqual({
+      before: '',
+      selected: 'hello',
+      after: '',
+    });
+  });
+
+  it('a bounded span leaves a tail (a single-line selection, or the last row)', () => {
+    expect(splitRow('hello world', { from: 0, to: 5 })).toEqual({
+      before: '',
+      selected: 'hello',
+      after: ' world',
+    });
+    expect(splitRow('hello world', { from: 2, to: 4 })).toEqual({
+      before: 'he',
+      selected: 'll',
+      after: 'o world',
+    });
+  });
+
+  it('a span that starts PAST the row selects nothing and leaves the row whole (a drag over a short line)', () => {
+    expect(splitRow('hi', { from: 40, to: undefined })).toEqual({
+      before: 'hi',
+      selected: '',
+      after: '',
+    });
+  });
+
+  it('reassembles losslessly — before + selected + after is always the original row', () => {
+    const rows = ['hello world', '日本語です', 'a👍b', 'x'];
+    const spans = [
+      { from: 0, to: undefined },
+      { from: 1, to: 3 },
+      { from: 2, to: undefined },
+      { from: 0, to: 1 },
+      { from: 99, to: undefined },
+    ];
+    for (const row of rows) {
+      for (const span of spans) {
+        const { before, selected, after } = splitRow(row, span);
+        expect(before + selected + after, `${row} @ ${span.from}..${String(span.to)}`).toBe(row);
+      }
+    }
+  });
+
+  it('never splits a wide character or an emoji cluster down the middle', () => {
+    expect(splitRow('日本語', { from: 1, to: 3 })).toEqual({
+      before: '',
+      selected: '日本', // both glyphs — cells 0-1 and 2-3 each intersect [1,3)
+      after: '語',
+    });
+    expect(splitRow('a👍b', { from: 1, to: 2 })).toEqual({
+      before: 'a',
+      selected: '👍',
+      after: 'b',
+    });
+  });
+});
+
+/**
+ * THE invariant of copy-on-select: what the user sees highlighted is EXACTLY what lands on their clipboard. The
+ * highlight comes from `splitRow` (a partition), the clipboard from `selectionText` (`sliceDisplayColumns`). They are
+ * different functions and could drift; a user would never discover it, because both look right in isolation.
+ */
+describe('the highlight and the clipboard agree, character for character', () => {
+  const rows = ['hello world', '日本語です', 'a👍b', '', 'x', 'aéb'];
+
+  it('splitRow().selected === the text selectionText would copy for that row', () => {
+    for (const row of rows) {
+      for (const from of [0, 1, 2, 3]) {
+        for (const to of [undefined, 1, 2, 4, 99]) {
+          if (to !== undefined && to <= from) continue;
+          const highlighted = splitRow(row, { from, to }).selected;
+          // `selectionText` indexes by ABSOLUTE line, so hand it a one-row transcript. `end` is inclusive.
+          const copied = selectionText([row], {
+            start: cell(0, from),
+            end: cell(0, (to ?? Number.MAX_SAFE_INTEGER) - 1),
+          });
+          expect(copied, `"${row}" @ ${from}..${String(to)}`).toBe(highlighted);
+        }
+      }
+    }
   });
 });

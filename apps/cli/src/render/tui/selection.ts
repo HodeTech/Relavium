@@ -1,4 +1,4 @@
-import { sliceDisplayColumns } from './viewport.js';
+import { partitionDisplayColumns, sliceDisplayColumns } from './viewport.js';
 
 /**
  * The pure text-selection state machine for the full-screen transcript viewport (2.6.F Step 6, ADR-0068 §e amendment)
@@ -89,4 +89,26 @@ export function selectionText(lines: readonly string[], range: SelectionRange): 
     out.push(sliceDisplayColumns(row, span.from, span.to ?? OPEN_END));
   }
   return out.join('\n');
+}
+
+/** One wrapped row, split by the selection into the three pieces the viewport renders: unselected head, highlighted
+ *  middle, unselected tail. Kept PURE (and exhaustively tested) so the component stays a three-`<Text>` arrangement —
+ *  an ANSI inverse attribute is invisible to a frame snapshot, so the splitting is where correctness must be pinned. */
+export interface RowSegments {
+  readonly before: string;
+  readonly selected: string;
+  readonly after: string;
+}
+
+/**
+ * Split `text` at the display-column span the selection covers on this row. An open-ended span (`to === undefined`)
+ * highlights to the end of the row, whatever its width — that is what a multi-line selection does to its inner rows.
+ * A span that starts past the row's width selects nothing and leaves the row whole, which is what a drag over a short
+ * line does.
+ */
+export function splitRow(
+  text: string,
+  span: { readonly from: number; readonly to: number | undefined },
+): RowSegments {
+  return partitionDisplayColumns(text, span.from, span.to ?? OPEN_END);
 }
