@@ -112,6 +112,7 @@ import {
   streamingAbortHint,
   stripTerminalControls,
   wrapTranscript,
+  liveAnswerRowBudget,
 } from './chat-projection.js';
 import { TranscriptViewport } from './transcript-viewport.js';
 import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
@@ -345,6 +346,12 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       liveTokensTruncated: state.liveTokensTruncated,
       elapsedMs,
       reasoningActive,
+      // `props.viewport` is present exactly on the ALT screen, and it carries the terminal's size. Only that surface
+      // has a FIXED-HEIGHT frame to overflow; the inline renderer's live region grows and the terminal scrolls it, so
+      // it passes no bound and its output stays byte-identical.
+      ...(props.viewport === undefined
+        ? {}
+        : { columns: props.viewport.cols, maxRows: liveAnswerRowBudget(props.viewport.rows) }),
     });
     // A STATUS line (compaction / shell / pre-token) already carries its inline "· Esc to …" hint; a streaming
     // CONTENT line has no room for it, so surface the abort affordance on a compact dim line beneath it — `Esc`

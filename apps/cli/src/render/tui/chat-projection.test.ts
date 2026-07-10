@@ -23,6 +23,7 @@ import {
   streamingAbortHint,
   stripTerminalControls,
   wrapTranscript,
+  liveAnswerRowBudget,
 } from './chat-projection.js';
 import { formatDuration, formatTokens } from './format.js';
 import { initialSessionViewState, type TranscriptEntry } from './session-view-model.js';
@@ -983,5 +984,72 @@ describe('transcriptDocument — what `/edit` hands to $EDITOR', () => {
     ]);
     expect(doc).toBe('> safegnp.exe\nمرحبا بالعالم');
     expect(doc).not.toContain(rlo);
+  });
+});
+
+/**
+ * THE STREAMING ANSWER'S ROW BUDGET (2.6.F Step 6h, Sonnet review).
+ *
+ * The alt screen's frame is `height: rows` and ink clips it there, so an unbounded busy line does not scroll — it
+ * COLLIDES with its siblings. Reproduced at 80x24 with a 900-character answer, well under `MAX_LIVE_TOKEN_CHARS`:
+ * the "Esc to stop" hint and the streamed text landed on the SAME frame row, overwriting each other.
+ */
+describe('liveAnswerRowBudget', () => {
+  it('is a third of the terminal, so the viewport, prompt and footer all survive', () => {
+    expect(liveAnswerRowBudget(24)).toBe(8);
+    expect(liveAnswerRowBudget(60)).toBe(20);
+  });
+
+  it('never returns zero — a one-row terminal still shows one row of the answer', () => {
+    expect(liveAnswerRowBudget(1)).toBe(1);
+    expect(liveAnswerRowBudget(2)).toBe(1);
+  });
+
+  it('falls back for a detached / zero-sized TTY rather than dividing by nothing', () => {
+    expect(liveAnswerRowBudget(undefined)).toBe(8);
+    expect(liveAnswerRowBudget(0)).toBe(8);
+    expect(liveAnswerRowBudget(-5)).toBe(8);
+  });
+});
+
+describe('formatBusyLine — the streaming content is bounded on the alt screen only', () => {
+  const busy = (
+    liveTokens: string,
+    over: Record<string, unknown> = {},
+  ): { text: string; dim: boolean } =>
+    formatBusyLine({
+      spinner: '*',
+      compacting: false,
+      liveTokens,
+      liveTokensTruncated: false,
+      ...over,
+    });
+
+  it('WITHOUT a row budget the content is untouched — the inline renderer stays byte-identical', () => {
+    const long = 'y'.repeat(2000);
+    expect(busy(long).text).toBe(`* ${long}`);
+  });
+
+  it('WITH a row budget it keeps the TAIL and marks the elision', () => {
+    const long = 'y'.repeat(2000);
+    const line = busy(long, { columns: 80, maxRows: 8 });
+    expect(line.text.startsWith('* …')).toBe(true);
+    expect(line.text.length).toBeLessThan(long.length); // …and it is a tail, not the whole thing
+    expect(line.text.endsWith('y')).toBe(true); // the NEWEST characters survive
+  });
+
+  it('short content is not marked, budget or no budget', () => {
+    expect(busy('hello', { columns: 80, maxRows: 8 }).text).toBe('* hello');
+  });
+
+  it('the character-cap marker still shows even when the row budget did not trigger', () => {
+    expect(busy('hello', { columns: 80, maxRows: 8, liveTokensTruncated: true }).text).toBe(
+      '* …hello',
+    );
+  });
+
+  it('a STATUS line (pre-token, compacting, shell) is never tailed — it has no content', () => {
+    expect(busy('', { columns: 80, maxRows: 8 }).dim).toBe(true);
+    expect(busy('x', { compacting: true, columns: 80, maxRows: 1 }).dim).toBe(true);
   });
 });

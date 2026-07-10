@@ -407,6 +407,11 @@ export function formatBusyLine(input: {
    *  streamed this turn AND no tool call is currently executing), NOT the raw "any reasoning streamed" flag, so a
    *  tool round shows "Working…". Absent/false ⇒ a plain (or tool-running) turn shows "Working…". */
   readonly reasoningActive?: boolean | undefined;
+  /** The terminal's width, for the row estimate. Absent ⇒ the projection's fallback. */
+  readonly columns?: number | undefined;
+  /** How many rendered rows the streaming content may occupy ({@link liveAnswerRowBudget}). Absent ⇒ unbounded, the
+   *  INLINE renderer's behaviour: it has no fixed-height frame to overflow. */
+  readonly maxRows?: number | undefined;
 }): BusyLine {
   const { spinner } = input;
   if (input.compacting) {
@@ -418,13 +423,21 @@ export function formatBusyLine(input: {
       dim: true,
     };
   }
-  const content = stripTerminalControls(input.liveTokens);
-  if (content.length === 0) {
+  const sanitized = stripTerminalControls(input.liveTokens);
+  if (sanitized.length === 0) {
     const label = input.reasoningActive === true ? 'Thinking…' : 'Working…';
     const elapsed = input.elapsedMs === undefined ? '' : ` ${formatElapsed(input.elapsedMs)}`;
     return { text: `${spinner} ${label}${elapsed} · Esc to stop`, dim: true };
   }
-  return { text: `${spinner} ${input.liveTokensTruncated ? '…' : ''}${content}`, dim: false };
+  // The alt screen's live region is a FIXED-HEIGHT box: an unbounded busy line does not scroll, it collides with its
+  // siblings and overwrites them. Bound it to the caller's row budget, the same discipline the reasoning panel uses.
+  // The inline renderer passes none — it has no frame to overflow.
+  const { body, tailed } =
+    input.maxRows === undefined
+      ? { body: sanitized, tailed: false }
+      : tailToRenderedRows(sanitized, input.columns, input.maxRows);
+  const elided = input.liveTokensTruncated || tailed;
+  return { text: `${spinner} ${elided ? '…' : ''}${body}`, dim: false };
 }
 
 /**
@@ -473,6 +486,29 @@ export interface ReasoningPanel {
  */
 export const MAX_REASONING_PANEL_LINES = 12;
 
+/** The fallback terminal height when the caller has none (a detached / zero-sized TTY). */
+const LIVE_ANSWER_FALLBACK_ROWS = 24;
+
+/**
+ * How many rendered rows the STREAMING answer may occupy in the alt screen's fixed-height live region.
+ *
+ * The frame is `height: rows` and ink clips it there, so an unbounded busy line does not scroll — it COLLIDES with
+ * its siblings. Reproduced at 80×24 with a 900-character answer (well under {@link MAX_LIVE_TOKEN_CHARS}): the
+ * "Esc to stop" hint and the streamed text landed on the SAME row, overwriting each other, and the transcript
+ * viewport was squeezed from 22 rows to 13 (2.6.F Step 6h, Sonnet review).
+ *
+ * A third of the terminal keeps the viewport, the prompt and the footer intact at every supported size. Nothing is
+ * lost: the live region shows a TAIL with the same `…` marker the character cap uses, and the completed turn lands
+ * in the transcript whole — since Step 6g's caps-lift, all of it.
+ */
+export function liveAnswerRowBudget(terminalRows: number | undefined): number {
+  const rows =
+    terminalRows !== undefined && Math.floor(terminalRows) >= 1
+      ? Math.floor(terminalRows)
+      : LIVE_ANSWER_FALLBACK_ROWS;
+  return Math.max(1, Math.floor(rows / 3));
+}
+
 /** The assumed width when the caller passes no live column count (a headless/test render, or a non-TTY stdout with
  *  no `.columns`). 80 is the conventional terminal width + the 80×24 degrade floor the harness pins. */
 const REASONING_PANEL_FALLBACK_COLUMNS = 80;
@@ -492,6 +528,7 @@ const REASONING_PANEL_FALLBACK_COLUMNS = 80;
 function tailToRenderedRows(
   text: string,
   columns: number | undefined,
+  maxRows: number = MAX_REASONING_PANEL_LINES,
 ): { body: string; tailed: boolean } {
   // `>= 1` (not `> 0`): a fractional 0<columns<1 would floor to 0 and make `rowsOf` divide by zero. In practice
   // the caller always passes an integer ≥ 1 (`process.stdout.columns` / the Home's `size.cols`), so this is a floor.
@@ -510,12 +547,12 @@ function tailToRenderedRows(
   let rows = 0;
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i] ?? '';
-    if (rows + rowsOf(line) > MAX_REASONING_PANEL_LINES) {
+    if (rows + rowsOf(line) > maxRows) {
       // The tail is full. If we have kept nothing yet, this single (oldest-included) line is itself taller than the
       // whole budget — keep only its last budget×width chars so the most recent reasoning still shows. Otherwise
       // stop: the already-kept newer lines fill the budget and older ones are dropped.
       if (kept.length === 0) {
-        kept.unshift(line.slice(line.length - MAX_REASONING_PANEL_LINES * width));
+        kept.unshift(line.slice(line.length - maxRows * width));
       }
       return { body: kept.join('\n'), tailed: true };
     }

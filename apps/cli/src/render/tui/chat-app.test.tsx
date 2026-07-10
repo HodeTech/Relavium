@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import { createSuspendPort } from '../suspend.js';
 import { ChatApp } from './chat-ink.js';
+import { liveAnswerRowBudget } from './chat-projection.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
 
@@ -436,6 +437,74 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     expect(frame()).toContain('LASTLINE'); // the bottom of the over-tall entry (the tail)
     expect(frame()).not.toContain('FIRSTLINE'); // the top of the entry scrolled off — no scrollback
     expect(frame().split('\n').length).toBeLessThanOrEqual(24);
+  });
+
+  /**
+   * THE STREAMING ANSWER MUST NOT OVERFLOW THE FIXED-HEIGHT FRAME (2.6.F Step 6h, Sonnet review).
+   *
+   * The alt screen's root Box is `height: rows`, and ink clips the frame there. An unbounded busy line therefore does
+   * not scroll — it COLLIDES with its siblings inside the box. Reproduced at 80x24 with a 900-character answer, well
+   * under `MAX_LIVE_TOKEN_CHARS = 4000`, i.e. an ordinary response: the "Esc to stop" hint and the streamed text landed
+   * on the SAME frame row, overwriting each other.
+   */
+  describe('ChatApp (alt screen) — the live streaming region is bounded', () => {
+    const streaming = (store: ChatStoreController, chars: number): void => {
+      store.apply({
+        type: 'session:turn_started',
+        sessionId: 's',
+        sequenceNumber: 1,
+        timestamp: '2026-01-01T00:00:00.000Z',
+      } as never);
+      store.apply({
+        type: 'agent:token',
+        sessionId: 's',
+        sequenceNumber: 2,
+        timestamp: '2026-01-01T00:00:01.000Z',
+        token: 'y'.repeat(chars),
+        model: 'm',
+        nodeId: 'n',
+      } as never);
+      store.flush();
+    };
+
+    it('the "Esc to stop" hint never shares a row with the streamed text', async () => {
+      const store = seed(30);
+      const h = render(chatApp(store));
+      setWindowSize(h.stdout, 80, 24);
+      await settleFrames();
+      streaming(store, 2000);
+      await settleFrames();
+
+      const rows = (h.lastFrame() ?? '').split('\n');
+      const hintRow = rows.find((r) => r.includes('Esc to stop'));
+      expect(hintRow).toBeDefined();
+      expect(hintRow?.trim()).toBe('Esc to stop'); // …and nothing else on it
+      expect(rows.length).toBeLessThanOrEqual(24);
+    });
+
+    it('the streamed content occupies at most a THIRD of the terminal, and shows the newest text', async () => {
+      const store = seed(30);
+      const h = render(chatApp(store));
+      setWindowSize(h.stdout, 80, 24);
+      await settleFrames();
+      streaming(store, 2000);
+      await settleFrames();
+
+      const rows = (h.lastFrame() ?? '').split('\n');
+      const contentRows = rows.filter((r) => r.includes('yyyy'));
+      expect(contentRows.length).toBeLessThanOrEqual(liveAnswerRowBudget(24));
+      expect(rows.some((r) => r.includes('…'))).toBe(true); // the tail is marked
+    });
+
+    it('the transcript viewport still renders — the live region does not swallow the whole frame', async () => {
+      const store = seed(30);
+      const h = render(chatApp(store));
+      setWindowSize(h.stdout, 80, 24);
+      await settleFrames();
+      streaming(store, 2000);
+      await settleFrames();
+      expect(h.lastFrame() ?? '').toContain('MSG29'); // the newest transcript entry is still visible
+    });
   });
 });
 
