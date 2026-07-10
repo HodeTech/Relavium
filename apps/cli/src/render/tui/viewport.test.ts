@@ -244,3 +244,62 @@ describe('displayWidth agrees with the terminal on the wide scripts the old tabl
     }
   });
 });
+
+/**
+ * `wrapLogicalLine`'s ASCII FAST PATH (2.6.F Step 6g). `Intl.Segmenter` costs ~32 ms on a 200 000-character line, and
+ * the caps-lift made such a line reachable — a long answer now enters the viewport whole instead of being clipped to
+ * 4 000 characters. Printable ASCII needs no segmentation: every character is its own cluster and every cluster is one
+ * cell. The risk is that the two paths DISAGREE, so they are compared directly.
+ */
+describe('wrapLogicalLine — the ASCII fast path is the general path', () => {
+  /** The general path, expressed independently, so this is a comparison and not a tautology. */
+  const generalPath = (line: string, cols: number): string[] => {
+    if (cols <= 0 || line === '') return [line];
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    const rows: string[] = [];
+    let current = '';
+    let width = 0;
+    for (const { segment } of segmenter.segment(line)) {
+      const w = displayWidth(segment);
+      if (width + w > cols && current !== '') {
+        rows.push(current);
+        current = '';
+        width = 0;
+      }
+      current += segment;
+      width += w;
+    }
+    rows.push(current);
+    return rows;
+  };
+
+  it('agrees with the general path on 3 200 (line, cols) pairs of printable ASCII', () => {
+    const alphabet = ' !"#$%&()*+,-./0123456789:;<=>?@ABCabc~';
+    for (let trial = 0; trial < 400; trial += 1) {
+      const length = 1 + ((trial * 7) % 60);
+      let line = '';
+      for (let i = 0; i < length; i += 1) {
+        line += alphabet[(trial * 13 + i * 5) % alphabet.length];
+      }
+      for (const cols of [1, 2, 3, 7, 20, 79, 80, 200]) {
+        expect(wrapLogicalLine(line, cols), `${JSON.stringify(line)} @ ${String(cols)}`).toEqual(
+          generalPath(line, cols),
+        );
+      }
+    }
+  });
+
+  it('a NON-ASCII line takes the general path — one wide glyph is enough to disqualify it', () => {
+    expect(wrapLogicalLine('ab日', 2)).toEqual(['ab', '日']); // fixed-width chunking would give ['ab', '日']… by luck
+    expect(wrapLogicalLine('a日b', 2)).toEqual(['a', '日', 'b']); // …here it would give ['a日', 'b'] and overflow
+  });
+
+  it('a TAB or an ESC is not printable ASCII, so it does not take the fast path', () => {
+    // 0x09 and 0x1b are outside [0x20,0x7e] and are ZERO-width, so fixed-width chunking would break the row. Both are
+    // stripped upstream; the guard is what keeps the paths honest. The width must be small enough for the zero-width
+    // control to matter — at `cols = 80` both paths agree by accident, which a break-verify proved.
+    for (const line of ['a\tbc', 'a\x1bbc', '\tabc']) {
+      expect(wrapLogicalLine(line, 2), JSON.stringify(line)).toEqual(generalPath(line, 2));
+    }
+  });
+});

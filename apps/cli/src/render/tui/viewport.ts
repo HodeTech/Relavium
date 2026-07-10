@@ -43,6 +43,9 @@ export interface DisplayLine {
  */
 const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
+/** Printable ASCII: one code unit, one cluster, one cell. `string-width`'s own fast-path predicate. */
+const ASCII_ONLY = /^[\u0020-\u007e]*$/;
+
 /**
  * Terminal display width of ONE grapheme cluster in cells, as ink measures it.
  *
@@ -167,6 +170,18 @@ export function partitionDisplayColumns(
  */
 export function wrapLogicalLine(line: string, cols: number): string[] {
   if (cols <= 0 || line === '') return [line];
+
+  // FAST PATH: printable ASCII. Every character is its own grapheme cluster and every cluster is one cell, so the
+  // wrap is a fixed-width chunking — no segmentation, no width lookup. This is the same predicate `string-width` uses
+  // to short-circuit, and it matters: `Intl.Segmenter` costs ~32ms on a 200 000-character line, which the Step-6g
+  // caps-lift made reachable (a long answer now enters the viewport whole instead of being clipped to 4 000 chars).
+  // English prose and code take this path; the general path below is unchanged.
+  if (ASCII_ONLY.test(line)) {
+    const rows: string[] = [];
+    for (let i = 0; i < line.length; i += cols) rows.push(line.slice(i, i + cols));
+    return rows;
+  }
+
   const rows: string[] = [];
   let current = '';
   let currentWidth = 0;
