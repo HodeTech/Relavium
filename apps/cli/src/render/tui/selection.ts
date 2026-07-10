@@ -1,3 +1,4 @@
+import type { MouseEvent } from './mouse.js';
 import { partitionDisplayColumns, sliceDisplayColumns } from './viewport.js';
 
 /**
@@ -111,4 +112,90 @@ export function splitRow(
   span: { readonly from: number; readonly to: number | undefined },
 ): RowSegments {
   return partitionDisplayColumns(text, span.from, span.to ?? OPEN_END);
+}
+
+/**
+ * What the reducer needs to know about the viewport at the instant a mouse event arrives: where it sits in ink's
+ * frame, how big it is, how far the transcript is scrolled, and how long the transcript is. Everything here is
+ * measured (`ViewportGeometry`) or derived (`effectiveOffset`) — the reducer computes none of it.
+ */
+export interface SelectionViewport {
+  /** The viewport's first row, as a 0-based row in ink's frame. Frame row 0 IS terminal row 1. */
+  readonly top: number;
+  /** The viewport's left edge, as a 0-based column in ink's frame. */
+  readonly left: number;
+  /** Visible rows. */
+  readonly height: number;
+  /** Total wrapped display lines in the transcript. */
+  readonly totalLines: number;
+  /** The top display-line index currently shown (`effectiveOffset` of the scroll state). */
+  readonly offset: number;
+}
+
+/**
+ * Translate a terminal's 1-based `row`/`column` into a wrapped-transcript {@link Cell}.
+ *
+ * Clamped on BOTH axes, because a drag legitimately leaves the viewport: pulling above the top row anchors to the
+ * first visible line, below the bottom row to the last, and past the left edge to column 0. Without the clamp a drag
+ * off the top would index a negative line and select nothing — the single most likely way to make selection feel
+ * broken.
+ */
+export function cellAt(row: number, column: number, viewport: SelectionViewport): Cell {
+  const visibleRow = Math.min(
+    Math.max(row - 1 - viewport.top, 0),
+    Math.max(viewport.height - 1, 0),
+  );
+  const lastLine = Math.max(viewport.totalLines - 1, 0);
+  return {
+    line: Math.min(viewport.offset + visibleRow, lastLine),
+    column: Math.max(column - 1 - viewport.left, 0),
+  };
+}
+
+/** What the surface should do with a mouse event. `'none'` ⇒ nothing changed (the event is still CONSUMED — a mouse
+ *  report's raw bytes must never reach the prompt). */
+export type SelectionAction =
+  | { readonly kind: 'none' }
+  /** Replace the live selection (a press starts one collapsed; a drag extends it). */
+  | { readonly kind: 'set'; readonly state: SelectionState }
+  /** Drop the highlight — a plain click, or a release with nothing selected. */
+  | { readonly kind: 'clear' }
+  /** The drag ended on a real selection: copy `text`, and KEEP the highlight (as every terminal does). */
+  | { readonly kind: 'copy'; readonly state: SelectionState };
+
+/**
+ * Reduce one mouse event into the next selection. PURE, and shared by both surfaces so `relavium chat` and the
+ * in-Home chat can never disagree about what a drag does.
+ *
+ * The WHEEL is not handled here — it belongs to `reduceScroll`, and routing it through the selection would start a
+ * highlight on every notch. The caller checks `event.kind === 'wheel'` first.
+ */
+export function reduceSelection(
+  current: SelectionState | undefined,
+  event: MouseEvent,
+  viewport: SelectionViewport,
+): SelectionAction {
+  switch (event.kind) {
+    case 'press': {
+      // Only the LEFT button selects. Middle pastes and right opens a menu in most emulators; neither should disturb
+      // a selection the user is about to copy.
+      if (event.button !== 'left') return { kind: 'none' };
+      const anchor = cellAt(event.row, event.column, viewport);
+      return { kind: 'set', state: { anchor, focus: anchor } }; // collapsed: a click alone highlights nothing
+    }
+    case 'drag': {
+      if (event.button !== 'left' || current === undefined) return { kind: 'none' };
+      const focus = cellAt(event.row, event.column, viewport);
+      return { kind: 'set', state: { anchor: current.anchor, focus } };
+    }
+    case 'release': {
+      if (current === undefined) return { kind: 'none' };
+      // A click that never moved: clear the previous highlight rather than copy a single cell.
+      if (isCollapsed(current)) return { kind: 'clear' };
+      return { kind: 'copy', state: current };
+    }
+    case 'wheel':
+    case 'other':
+      return { kind: 'none' };
+  }
 }

@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
+import { parseMouseEvent, type MouseEvent } from './mouse.js';
 import {
+  cellAt,
   isCollapsed,
   lineSpan,
   normalizeSelection,
+  reduceSelection,
   selectionText,
   splitRow,
   type SelectionRange,
+  type SelectionViewport,
 } from './selection.js';
 import { sliceDisplayColumns } from './viewport.js';
 
@@ -222,5 +226,101 @@ describe('the highlight and the clipboard agree, character for character', () =>
         }
       }
     }
+  });
+});
+
+/** A viewport starting at frame row 3 (a Home-style header above it), 10 rows tall, scrolled to line 100. */
+const VP: SelectionViewport = { top: 3, left: 0, height: 10, totalLines: 500, offset: 100 };
+
+/** Parse a real SGR report, so the reducer is exercised through the same bytes a terminal sends. Throws rather than
+ *  asserting non-null: a typo in a test's escape would otherwise silently reduce `undefined` and pass. */
+const ev = (sgr: string): MouseEvent => {
+  const parsed = parseMouseEvent(sgr);
+  if (parsed === undefined) throw new Error(`not a mouse report: ${JSON.stringify(sgr)}`);
+  return parsed;
+};
+
+describe('cellAt — terminal cell → wrapped-transcript cell', () => {
+  it('frame row 0 is TERMINAL row 1: the viewport’s first row maps to the scroll offset', () => {
+    expect(cellAt(4, 1, VP)).toEqual(cell(100, 0)); // row 4 = frame row 3 = the viewport's first
+    expect(cellAt(5, 7, VP)).toEqual(cell(101, 6));
+  });
+
+  it('CLAMPS a drag above the viewport to its first line — not to a negative index', () => {
+    expect(cellAt(1, 1, VP)).toEqual(cell(100, 0)); // the header rows
+    expect(cellAt(-5, 1, VP)).toEqual(cell(100, 0));
+  });
+
+  it('CLAMPS a drag below the viewport to its last visible line', () => {
+    expect(cellAt(13, 1, VP)).toEqual(cell(109, 0)); // top 3 + height 10 ⇒ last visible frame row 12
+    expect(cellAt(99, 1, VP)).toEqual(cell(109, 0));
+  });
+
+  it('CLAMPS a drag left of the viewport to column 0', () => {
+    expect(cellAt(4, 0, { ...VP, left: 2 })).toEqual(cell(100, 0));
+  });
+
+  it('never indexes past the transcript (a short transcript in a tall viewport)', () => {
+    const short: SelectionViewport = { top: 0, left: 0, height: 10, totalLines: 3, offset: 0 };
+    expect(cellAt(9, 1, short)).toEqual(cell(2, 0)); // row 9 ⇒ visible row 8, but only 3 lines exist
+  });
+
+  it('an EMPTY transcript maps everything to line 0 (never -1)', () => {
+    const empty: SelectionViewport = { top: 0, left: 0, height: 10, totalLines: 0, offset: 0 };
+    expect(cellAt(5, 5, empty)).toEqual(cell(0, 4));
+  });
+});
+
+describe('reduceSelection — the shared gesture, so the two surfaces cannot drift', () => {
+  it('a LEFT press starts a collapsed selection (a click alone highlights nothing)', () => {
+    const action = reduceSelection(undefined, ev('[<0;5;5M'), VP);
+    expect(action).toEqual({ kind: 'set', state: { anchor: cell(101, 4), focus: cell(101, 4) } });
+    expect(isCollapsed({ anchor: cell(101, 4), focus: cell(101, 4) })).toBe(true);
+  });
+
+  it('MIDDLE and RIGHT presses leave a live selection alone (they paste / open a menu in emulators)', () => {
+    const live = { anchor: cell(100, 0), focus: cell(102, 3) };
+    expect(reduceSelection(live, ev('[<1;5;5M'), VP)).toEqual({ kind: 'none' });
+    expect(reduceSelection(live, ev('[<2;5;5M'), VP)).toEqual({ kind: 'none' });
+  });
+
+  it('a DRAG moves the focus and keeps the anchor', () => {
+    const started = { anchor: cell(100, 0), focus: cell(100, 0) };
+    expect(reduceSelection(started, ev('[<32;9;7M'), VP)).toEqual({
+      kind: 'set',
+      state: { anchor: cell(100, 0), focus: cell(103, 8) },
+    });
+  });
+
+  it('a drag with NO press before it does nothing (a stray report after a re-render)', () => {
+    expect(reduceSelection(undefined, ev('[<32;9;7M'), VP)).toEqual({ kind: 'none' });
+  });
+
+  it('RELEASE after a real drag COPIES, and keeps the highlight (as every terminal does)', () => {
+    const dragged = { anchor: cell(100, 0), focus: cell(102, 5) };
+    expect(reduceSelection(dragged, ev('[<0;6;8m'), VP)).toEqual({ kind: 'copy', state: dragged });
+  });
+
+  it('RELEASE after a plain click CLEARS — it must not copy a single character', () => {
+    const clicked = { anchor: cell(101, 4), focus: cell(101, 4) };
+    expect(reduceSelection(clicked, ev('[<0;5;5m'), VP)).toEqual({ kind: 'clear' });
+  });
+
+  it('the WHEEL never touches the selection — it belongs to reduceScroll', () => {
+    const live = { anchor: cell(100, 0), focus: cell(102, 3) };
+    expect(reduceSelection(live, ev('[<64;5;5M'), VP)).toEqual({ kind: 'none' });
+    expect(reduceSelection(live, ev('[<65;5;5M'), VP)).toEqual({ kind: 'none' });
+  });
+
+  it('a horizontal wheel / exotic button is inert (still CONSUMED by the caller)', () => {
+    expect(reduceSelection(undefined, ev('[<66;1;1M'), VP)).toEqual({ kind: 'none' });
+  });
+
+  it('a BACKWARD drag (up-left) produces a selection that copies the same text', () => {
+    const started = { anchor: cell(105, 5), focus: cell(105, 5) };
+    const dragged = reduceSelection(started, ev('[<32;2;5M'), VP); // up and to the left
+    expect(dragged).toEqual({ kind: 'set', state: { anchor: cell(105, 5), focus: cell(101, 1) } });
+    if (dragged.kind !== 'set') throw new Error('unreachable');
+    expect(normalizeSelection(dragged.state)).toEqual({ start: cell(101, 1), end: cell(105, 5) });
   });
 });
