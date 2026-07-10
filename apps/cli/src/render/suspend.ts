@@ -28,7 +28,7 @@ import {
  *    and because `beginSuspend()` runs synchronously at the head of `suspendTerminal` (a mounted instance cannot
  *    become unmounted between the check and our writes).
  * 3. ink writes **no mouse escapes at all** (verified: its whole build contains no `?1000`/`?1006`). Mouse reporting
- *    is entirely ours, so we suspend and restore it on both surfaces — leaving DECSET 1000 on while a child owns the
+ *    is entirely ours, so we suspend and restore it on both surfaces — leaving DECSET 1002 on while a child owns the
  *    TTY floods that child with `\x1b[<…M` reports.
  * 4. `endSuspend()` calls `resumeInput()` **before** re-entering the alt buffer, then forces a full redraw. So every
  *    write we make must land inside the callback, while input is still paused — never after it returns.
@@ -66,7 +66,7 @@ export interface SuspendFullScreenOptions {
   /** `true` when the alt buffer is currently entered. `false` on the inline renderer — there is no buffer to leave,
    *  and `suspendFullScreen` degrades to "ink hands over raw mode" (which `/edit` still needs). */
   readonly altActive: boolean;
-  /** `true` when mouse reporting (DECSET 1000+1006) is currently on. Independent of {@link altActive} on purpose:
+  /** `true` when mouse reporting (DECSET 1002+1006) is currently on. Independent of {@link altActive} on purpose:
    *  once `--no-mouse` lands, the alt screen can be active with the mouse off. */
   readonly mouseActive: boolean;
 }

@@ -16,7 +16,7 @@ import { join } from 'node:path';
  * runs behind the tool sandbox with piped stdio (`apps/cli/src/engine/tool-host/process.ts`) and therefore never
  * touches the terminal. `$EDITOR` must inherit the TTY to be usable at all, which is exactly why it may only run
  * inside `suspendFullScreen` — see `suspend.ts` for which terminal modes must be off first (mouse reporting above
- * all: DECSET 1000 left on floods the editor with `\x1b[<…M` reports).
+ * all: DECSET 1002 left on floods the editor with `\x1b[<…M` reports).
  *
  * SECURITY. `$EDITOR` is the user's own environment, at the same trust level as `$PATH` — not untrusted input. Even
  * so it is spawned with **`shell: false`**, so every shell metacharacter in its value (`;`, `|`, `` ` ``, `$`) is an

@@ -32,7 +32,7 @@ export interface HatchTerminal {
   readonly columns: number;
   /** Whether the alt buffer is currently entered. */
   readonly altActive: boolean;
-  /** Whether mouse reporting (DECSET 1000+1006) is currently on. */
+  /** Whether mouse reporting (DECSET 1002+1006) is currently on. */
   readonly mouseActive: boolean;
   /** `true` on the bare Home (ink's `alternateScreen` render option owns 1049); `false` on `relavium chat`. */
   readonly inkOwnsAltScreen: boolean;

@@ -10,10 +10,12 @@ This page tracks what is active **right now** and the immediate next concrete ac
 The full phase plan and the global milestone spine are in [README.md](README.md).
 **Phase 2.5 (CLI Consolidation) is complete** (milestone **M2.5-4**, PR #69, 2026-07-08) — its
 breakdown, now historical, is in
-[phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md). The next phase,
-**Phase 2.6 — Conversational Authoring and the First-Class CLI** (Planned; unblocked by the 2.5
-close; re-scoped 2026-07-08), is in
+[phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md).
+**Phase 2.6 — Conversational Authoring and the First-Class CLI** is **in progress** (re-scoped
+2026-07-08); its plan is in
 [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md).
+Workstream **2.6.F (platform floor + the full-screen TUI renderer)** is **complete on `development`**
+(2026-07-10, pending PR to `main`) — see [Active now](#active-now).
 
 ## Where we are
 
@@ -39,6 +41,46 @@ and the [reference specs](../reference/).
 > [release-a-surface.md](../runbooks/release-a-surface.md)).
 
 ## What is active now
+
+### Phase 2.6.F — platform floor + the full-screen TUI renderer (complete on `development`, 2026-07-10)
+
+The first 2.6 workstream. Behind [ADR-0067](../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)
+(Node `>=22` published floor, `>=22.13.0` dev-install floor; `better-sqlite3` re-affirmed),
+[ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md) (`ink` 7 + a hand-built alternate-screen
+renderer + the `ink-testing-library` harness), and the **Proposed**
+[ADR-0069](../decisions/0069-string-width-for-the-cli-renderer.md) (`string-width` for display width —
+**awaiting maintainer approval**, since CLAUDE.md gates a new runtime dependency behind one).
+
+Shipped: `ink` 6→7 and the component-render harness; the alt-screen lifecycle with restore nets on every
+termination path; a hand-built transcript **viewport** (grapheme-aware wrapping, windowing, scroll + auto-follow, a
+per-entry wrap cache) and the inter-session alt-buffer **hoist**; the **`/scrollback`**, **`/edit`** and **`/copy`**
+copy-and-search hatches over a `suspendFullScreen` primitive; **in-app mouse text selection with copy-on-select over
+OSC 52** on both surfaces, with edge auto-scroll and a frozen auto-follow; `--no-mouse` /
+`[preferences].{alt_screen,mouse,copy_on_select,show_banner}`; a branded Home banner; and DEC-2026 synchronized
+output — which `ink` 7 turned out to already emit, so the step **pins** it rather than building the planned
+`stdout` Proxy.
+
+The full-screen renderer is now the **default on a TTY**; `--no-alt-screen` and a machine / non-TTY / `--json` / CI
+path stay on the byte-identical inline renderer.
+
+Two adversarial review rounds (one per step, one over the whole phase) drove the last third of the work. The
+whole-phase round found that **the caps-lift ADR-0068 exists to deliver was never implemented** — a name collision
+with the Step-4b-3 wrap cache — so a >4000-character answer was still clipped in the very viewport built to scroll
+it; that `displayWidth` under-counted 8 539 code points against `ink`'s own width function; and that a keyboard
+Ctrl-C during a Home hatch stranded mouse reporting on the user's shell. All folded, each with a break-verified
+regression test.
+
+**Open obligations carried out of 2.6.F:**
+
+- **ADR-0069 is Proposed.** The `string-width` runtime dependency needs the maintainer's accept (or a revert of two
+  functions and one manifest line).
+- **The Home landing can overflow a short terminal** — a populated "Attention required" section pushes the top off,
+  and the alt buffer has no scrollback to recover it. Predates 2.6.F (the strip is 2.5.B); **2.6.G**'s management
+  browsers replace the strip wholesale, which is the right place to fix it.
+- **`relavium run`'s TUI stays inline** (a deliberate 2.6.F scope cut); its retained-scrollable-history is tracked.
+- **Themes** (beyond colour / `NO_COLOR`) are deferred to **2.6.L**, per the maintainer's Step-5 decision.
+- Real-TTY signal paths (double-Ctrl-C, `kill -TERM`/`-HUP`/`-QUIT`, a hatch under `tmux`) remain a **manual PR-time
+  check** — the unit tests pin the orchestration around injected seams, not the kernel.
 
 **Phase 2 — CLI (milestone M3) is feature-complete** (every in-phase workstream 2.A–2.S merged; published as
 **v0.1.1**). The CLI is the first real
@@ -242,8 +284,9 @@ keychain no-raw-key IPC test.
 
 ## Not started yet
 
-The immediate next phase is **Phase 2.6 — Conversational Authoring and the First-Class CLI**
-([phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), Planned,
+The rest of **Phase 2.6 — Conversational Authoring and the First-Class CLI**
+([phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md), in progress —
+**2.6.F is done**,
 unblocked by the 2.5 close and **re-scoped 2026-07-08** from maintainer UX findings + a competitor
 research pass + the deferred-tasks triage): a full-screen, Home-managed CLI (browsers for
 workflows/runs/agents, provider + MCP + settings management, onboarding v2 with the Relavium-account

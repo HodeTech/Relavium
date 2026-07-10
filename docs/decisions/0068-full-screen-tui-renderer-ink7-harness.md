@@ -406,7 +406,57 @@ perf thresholds for the full-screen frame loop.
 >
 > Themes remain deferred to 2.6.L, per the maintainer's Step-5 decision; this ships colour + `NO_COLOR` only.
 
+> ### Amendment — 2026-07-10 (2.6.F Step 6g: the whole-phase review, and the caps-lift that was never built)
+>
+> A second adversarial review, over the WHOLE phase rather than one step, found what the per-step reviews could not.
+> The headline:
+>
+> **THE CAPS-LIFT WAS NEVER IMPLEMENTED.** The Context above names the defect this ADR exists to fix — "live output is
+> capped at 4000 chars *and* `reduceTurnCompleted` bakes the finalized transcript entry from that capped buffer, so a
+> long response is clipped and its full text survives only in SQLite — unreachable by scrolling" — and Decision (c)
+> promises the fix: "made a **renderer-injected bound** (not a constant)". `MAX_LIVE_TOKEN_CHARS = 4000` remained an
+> unconditional constant. The Step-4b-3 amendment's "caps-lift" was a NAME COLLISION: it delivered the per-entry wrap
+> cache, an unrelated performance fix. Measured against the real store, a 10 000-character answer landed in the
+> transcript as 4 001 characters, and `/scrollback`, `/edit`, `/copy` and copy-on-select all read that transcript.
+> Step 6g implements the ADR's own design: `liveTokens` stays bounded (the live region's render budget), `turnText`
+> carries the renderer's bound, and `reduceTurnCompleted` bakes from `turnText`.
+>
+> **Also folded:**
+> - A keyboard Ctrl-C during a Home `/scrollback`/`/edit` tore the Home down behind the suspension and stranded
+>   DECSET 1002+1006 on the shell. `relavium chat` had gated this since Step 5d; the Home never did. And `chat` had a
+>   SIGINT-uncovered window during a `/clear` / `/models` rebuild, between ink's unmount and the next mount.
+> - `displayWidth` **under-counted 8 539 code points** vs ink's `string-width` — Tangut, Kana Supplement, Yijing,
+>   Hangul Jamo Extended-A — breaking the 1-`DisplayLine`-==-1-row invariant. The hand-rolled table is deleted; see
+>   [ADR-0069](0069-string-width-for-the-cli-renderer.md).
+> - The `/clear` intro carrying `relavium chat-resume <id>` — the only pointer back to the conversation it ended — was
+>   written into the alt buffer before ink mounted, and painted over. So were the Home's budget warnings.
+> - `/edit`'s temp file, holding the whole conversation, survived the process when its cleanup `rm` failed: `dispose`
+>   removed the `process.on('exit')` net in a `finally`, disarming it exactly when it was needed.
+> - Mouse capture was armed for the whole Home, stripping the LANDING of the emulator's native selection while giving
+>   it no in-app selection. Capture now follows the chat.
+>
+> **Open, and deliberately not fixed here:** the Home LANDING can overflow a short terminal, and the alt buffer has no
+> scrollback to recover the top. That predates this phase (the strip is 2.5.B) and 2.6.G's management browsers replace
+> it wholesale.
+
 ## Consequences
+
+> **Read the dated amendments above first.** This section was written before Steps 5f, 5g, 6 and 6g and is left
+> verbatim (append-only). Four of its statements are SUPERSEDED:
+>
+> - *"sync-output framing"* as something this phase builds → **ink 7 already emits DEC-2026**; Step 5f pins it
+>   (amendment of 2026-07-10).
+> - *"Mouse capture disables native copy-on-select … the opt-out (default off first release) … deferred in-app
+>   copy-on-select"* → **mouse defaults ON, and in-app selection + copy-on-select shipped in Step 6**; capture is armed
+>   only while a chat owns the screen (Step 6g).
+> - *"the `[` / `v` hatches"* → they are the palette commands **`/scrollback`** and **`/edit`**, joined by **`/copy`**
+>   (Step-5 and Step-6e amendments).
+> - *"New `[preferences]` keys (`alt_screen`, `mouse`, `show_banner`)"* → also **`copy_on_select`** (Step 6e).
+>
+> And one statement it makes was NOT TRUE when written, and is now: *"The long-response clipping defect is
+> structurally fixed for chat — the viewport shows the full response and scrolls."* The caps-lift the Decision promised
+> was never implemented; a 10 000-character answer reached the transcript as 4 001 characters until **Step 6g**. See
+> the caps-lift amendment.
 
 ### Positive
 

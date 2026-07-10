@@ -312,14 +312,15 @@ render-v2 (2.6.M) all build on it.
   behavior for long responses so that content above the visible area is never lost. Renderer choice is
   orthogonal to session state (switching relaunches the view in place, conversation intact). The run TUI's
   persistent plain-text exit summary is preserved on unmount.
-- **Branded Home banner**: a full-width, ink-native banner rendered at the top of the full-screen Home
-  on mount. The design is developed during implementation (ASCII-art or Unicode box-drawing character
-  variants evaluated against the three themes and `--no-color` degradation); the banner is shown on the
-  **first five** Home opens, then auto-dismissed — re-enabled via `[preferences].show_banner`. It must:
-  adapt to terminal width (truncated or centered at every supported width ≥80), degrade to plain ASCII
-  when `NO_COLOR` / `--no-color` is active, render in under one frame (no measure-then-draw flicker),
-  and never obscure the management strip or prompt on a 80×24 terminal. The banner is a cosmetic
-  substrate element — it does not gate any feature.
+- **Branded Home banner** — ✅ **shipped in 2.6.F Step 5g**, with two recorded deviations (see the
+  dated amendments in [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md)):
+  the **"first five Home opens"** counter was replaced by an **empty-Home** trigger (`show_banner` is
+  tri-state: `true` always / `false` never / absent ⇒ only while the Home has nothing to continue), because
+  a durable counter needs either a `history.db` migration or an auto-write into the user's `config.toml`
+  on every open — both the wrong trade for an element this ADR calls cosmetic; and **themes** moved to
+  **2.6.L** per the maintainer's Step-5 decision, so 5g ships colour + `NO_COLOR` only. It does adapt to
+  terminal width, degrade to plain ASCII under `NO_COLOR` / `--no-color`, render in one frame, and stand
+  down rather than crowd the management strip or prompt on an 80×24 terminal.
 - **TUI component test harness** *(deferred pull-in)*: the first CLI component-render harness (a new
   devDependency — part of this workstream's ADR), so render-cadence bugs (the 2.5.H frozen-clock class)
   get regression tests; add performance regression thresholds (frame time / render count) for the

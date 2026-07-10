@@ -8,7 +8,7 @@ import { stripTerminalControls } from './tui/chat-projection.js';
  * select, and copy it with every native tool they already have.
  *
  * This exists because the alternate screen structurally removes those affordances — it has no scrollback at all, and
- * mouse reporting (DECSET 1000) captures the click-drag the emulator would otherwise use for selection. The dump is
+ * mouse reporting (DECSET 1002) captures the click-drag the emulator would otherwise use for selection. The dump is
  * the escape hatch, not a workaround: it is the ONLY path that puts the whole conversation, not just the visible
  * rows, into the emulator's hands.
  *
