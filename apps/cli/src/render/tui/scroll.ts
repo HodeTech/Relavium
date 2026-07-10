@@ -121,24 +121,3 @@ export function scrollMotionForKey(key: ScrollKey): ScrollMotion | undefined {
 
 /** How many display lines one mouse-wheel notch scrolls (the conventional 3-line step). */
 export const WHEEL_LINES = 3;
-
-/**
- * Classify a terminal SGR-mouse (DECSET 1006) escape (2.6.F Step 5): the alt screen enables mouse reporting
- * (1000 + 1006), so a report arrives on `useInput`'s `input` as `ESC [ < b ; col ; row (M|m)`. Returns the wheel
- * scroll motion (button **64** ⇒ wheel-up `line-up`, **65** ⇒ wheel-down `line-down`), `'ignore'` for ANY OTHER mouse
- * report (a click / drag / non-wheel button), or `undefined` when the input is not a mouse report at all. The caller
- * CONSUMES any non-`undefined` result — even `'ignore'` — so a mouse report's raw bytes never reach the editor; the
- * coordinates are dropped (scroll is not position-sensitive).
- */
-export type MouseScroll = ScrollMotion | 'ignore';
-
-export function parseMouseScroll(input: string): MouseScroll | undefined {
-  // The leading ESC is OPTIONAL — ink parse-keypress may hand the CSI to `input` with or without it.
-  // eslint-disable-next-line no-control-regex -- the SGR mouse report is introduced by ESC (U+001B)
-  const match = /^\x1b?\[<(\d+);\d+;\d+[Mm]$/.exec(input);
-  if (match === null) return undefined; // not a mouse report
-  const button = Number(match[1]);
-  if (button === 64) return 'line-up'; // wheel up ⇒ reveal older lines
-  if (button === 65) return 'line-down'; // wheel down ⇒ toward the tail
-  return 'ignore'; // a mouse report but not a wheel — consume it (don't scroll, don't type)
-}

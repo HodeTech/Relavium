@@ -1,3 +1,4 @@
+import './force-color.js';
 import { Box, Text } from 'ink';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -121,5 +122,106 @@ describe('TranscriptViewport — the reported frame offset', () => {
     expect(g?.height).toBe(10); // 12 rows − 2 live rows
     expect(g?.width).toBeGreaterThan(0);
     expect(g?.left).toBe(0);
+  });
+});
+
+/**
+ * The selection HIGHLIGHT itself (2.6.F Step 6f, Opus review). Every other selection test asserts what lands on the
+ * CLIPBOARD; nothing asserted what the user SEES. An `inverse` attribute is invisible to a default vitest frame
+ * snapshot (chalk level 0), so a viewport that highlighted the wrong row — or no row — passed every suite.
+ *
+ * `./force-color.js` is imported first so chalk emits `ESC[7m` … `ESC[27m` and the frame can be read.
+ */
+describe('TranscriptViewport — the rendered highlight', () => {
+  const INVERSE_OPEN = '\x1b[7m';
+
+  /** The 0-based frame rows that contain an inverse run, and the text inside each run. */
+  const inverseRuns = (frame: string): { row: number; text: string }[] =>
+    frame.split('\n').flatMap((line, row) => {
+      // eslint-disable-next-line no-control-regex -- ESC (U+001B) IS the thing under test
+      const m = /\x1b\[7m(.*?)\x1b\[27m/.exec(line);
+      return m?.[1] === undefined ? [] : [{ row, text: m[1] }];
+    });
+
+  const mount = async (
+    scroll: { offset: number; following: boolean },
+    selection: { start: { line: number; column: number }; end: { line: number; column: number } },
+  ): Promise<string> => {
+    const h = render(
+      <Box flexDirection="column" height={6}>
+        <TranscriptViewport
+          lines={lines(40)}
+          color={false}
+          scroll={scroll}
+          selection={selection}
+          onMeasure={() => undefined}
+        />
+      </Box>,
+    );
+    await settleFrames();
+    return h.lastFrame() ?? '';
+  };
+
+  it('highlights the selected cells, and ONLY them', async () => {
+    const frame = await mount(INITIAL_SCROLL, {
+      start: { line: 36, column: 0 },
+      end: { line: 36, column: 1 },
+    });
+    expect(inverseRuns(frame)).toEqual([{ row: 2, text: 'L3' }]); // rows 34..39 are shown; 36 is the third
+  });
+
+  it('a selection is placed by its ABSOLUTE line, so a scrolled viewport highlights the right row', async () => {
+    // The load-bearing case. `lineSpan(offset + index, …)` — drop the `offset` and the highlight lands on the row
+    // whose INDEX matches the line number, silently marking text the clipboard will not contain.
+    const frame = await mount(
+      { offset: 10, following: false },
+      {
+        start: { line: 12, column: 0 },
+        end: { line: 12, column: 2 },
+      },
+    );
+    expect(inverseRuns(frame)).toEqual([{ row: 2, text: 'L12' }]); // offset 10 ⇒ line 12 is the third visible row
+  });
+
+  it('a multi-line selection highlights every row it spans, to the end of each inner row', async () => {
+    const frame = await mount(
+      { offset: 0, following: false },
+      {
+        start: { line: 1, column: 1 },
+        end: { line: 3, column: 0 },
+      },
+    );
+    await settleFrames();
+    expect(inverseRuns(frame)).toEqual([
+      { row: 1, text: '1' }, // from column 1 to the end of `L1`
+      { row: 2, text: 'L2' }, // a whole inner row
+      { row: 3, text: 'L' }, // up to and including the inclusive end cell
+    ]);
+  });
+
+  it('the three pieces render IN ORDER — head, inverse span, tail', async () => {
+    // `inverseRuns` above reads only what is INSIDE the escape, so swapping `before` and `after` around the span
+    // stays green there. Assert the row's exact bytes: `L` then an inverse `1` then `2`.
+    const frame = await mount(
+      { offset: 10, following: false },
+      { start: { line: 12, column: 1 }, end: { line: 12, column: 1 } },
+    );
+    const row = frame.split('\n')[2] ?? '';
+    expect(row.trimEnd()).toBe('L\x1b[7m1\x1b[27m2');
+  });
+
+  it('NO selection means no inverse anywhere — the attribute is not left on', async () => {
+    const h = render(
+      <Box flexDirection="column" height={6}>
+        <TranscriptViewport
+          lines={lines(40)}
+          color={false}
+          scroll={INITIAL_SCROLL}
+          onMeasure={() => undefined}
+        />
+      </Box>,
+    );
+    await settleFrames();
+    expect(h.lastFrame() ?? '').not.toContain(INVERSE_OPEN);
   });
 });

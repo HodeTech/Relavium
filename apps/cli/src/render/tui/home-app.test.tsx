@@ -540,6 +540,102 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     expect(copied).toEqual([]);
   });
 
+  it('after SCROLLING, a drag copies the line now shown on that row — not line 0', async () => {
+    // The Home builds its own viewport facts, so `chat-app.test.tsx`'s equivalent proves nothing here: an `offset: 0`
+    // break in `home-app.tsx` alone would ship green (Step-6 Opus review).
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.notice(`row-${String(i).padStart(2, '0')}`);
+    const m = mountHome(store, {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('row-59'));
+
+    for (let i = 0; i < 4; i += 1) {
+      m.harness.stdin.write('\x1b[<64;5;5M'); // wheel up: leave the tail
+      await settleFrames();
+    }
+    const thirdRow = (m.harness.lastFrame() ?? '').split('\n')[2]?.trim();
+    expect(thirdRow).toMatch(/^row-\d\d$/);
+    expect(thirdRow).not.toBe('row-02');
+
+    m.harness.stdin.write('\x1b[<0;1;3M'); // press the third row (an INNER row: row 1 is the edge-scroll zone)
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<32;99;3M'); // drag past its right edge ⇒ the whole row
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<0;99;3m');
+    await settleFrames();
+
+    expect(copied).toEqual([thirdRow]);
+  });
+
+  it('a drag in the SAME tick as an append reduces against the LIVE wrap, not the last measured one', async () => {
+    // `onMeasure` fires after a render; a mouse report that arrives before the next one sees a stale `totalLines`,
+    // and while following the tail that shifts `effectiveOffset` by exactly the number of new lines. Substituting the
+    // measured count for the live one is invisible to every test that settles a frame in between (break-verified).
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.notice(`row-${String(i).padStart(2, '0')}`);
+    const m = mountHome(store, {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('row-59'));
+
+    // No `settleFrames` between the append and the gesture: `scrollGeomRef` still says 60 lines.
+    store.notice('row-60');
+    m.harness.stdin.write('\x1b[<0;1;3M');
+    m.harness.stdin.write('\x1b[<32;99;3M');
+    m.harness.stdin.write('\x1b[<0;99;3m');
+    await settleFrames();
+
+    const thirdRow = (m.harness.lastFrame() ?? '').split('\n')[2]?.trim();
+    expect(copied).toEqual([thirdRow]); // the row the append pushed there, not the one that was there before
+  });
+
+  it('a WRAPPED entry copies the VISUAL row under the pointer, not the whole logical line', async () => {
+    // The transcript the selection indexes is the WRAPPED one. Copying raw entries instead of wrapped rows stays green
+    // for as long as no line is wider than the terminal — so make one that is.
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    store.notice('A'.repeat(140)); // at 100 columns this wraps into two display rows
+    const m = mountHome(store, {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
+
+    const frame = (m.harness.lastFrame() ?? '').split('\n');
+    const firstRow = frame.findIndex((l) => l.startsWith('AAAA'));
+    expect(firstRow).toBeGreaterThanOrEqual(0);
+    expect(frame[firstRow + 1]?.startsWith('AAAA')).toBe(true); // it really wrapped
+
+    // Drag the SECOND visual row only. Terminal rows are 1-based.
+    const row = String(firstRow + 2);
+    m.harness.stdin.write(`\x1b[<0;1;${row}M`);
+    await settleFrames();
+    m.harness.stdin.write(`\x1b[<32;200;${row}M`);
+    await settleFrames();
+    m.harness.stdin.write(`\x1b[<0;200;${row}m`);
+    await settleFrames();
+
+    expect(copied).toHaveLength(1);
+    expect(copied[0]).toBe('A'.repeat(40)); // the 40-char remainder, not all 140
+  });
+
   it('a RESIZE drops the live selection — re-wrapping moves every display-line index it holds', async () => {
     const copied: string[] = [];
     const store = seedThree();
