@@ -156,7 +156,13 @@ export async function openInEditor(
     // Best-effort: a leftover temp file must never turn a successful edit into a failure — but it also must not be
     // silently retained, because it holds the conversation. Report, never throw (`warnTeardown`'s contract).
     await document.dispose().catch((error: unknown) => {
-      deps.onDisposeFailed?.(document.path, error);
+      // The reporter is injected, and a throwing one would replace the classified `EditorOutcome` with its own
+      // rejection — breaking this function's "never throws" contract from inside the very block meant to uphold it.
+      try {
+        deps.onDisposeFailed?.(document.path, error);
+      } catch {
+        // a faulty disposal reporter must not turn a successful edit into a failure
+      }
     });
   }
 }
@@ -172,9 +178,47 @@ export async function openInEditor(
  * SIGINT** to the whole foreground process group (the editor shares ours — it is not `detached`). A second press
  * runs the surface's `process.exit(…)`, which halts the event loop while `openInEditor` is still awaiting the
  * child — so its `async finally` NEVER runs and the directory holding the full conversation survives on disk.
- * `rmSync` in an `'exit'` listener is the only cleanup that can still run there. `dispose` removes the listener
- * after its async `rm`, so a long session opening `/edit` repeatedly cannot accumulate listeners.
+ * `rmSync` in an `'exit'` listener is the only cleanup that can still run there.
+ *
+ * ONE listener, for the whole process, over a SET of directories still awaiting cleanup — not one listener per
+ * document. A per-document listener was only removed when its `rm` SUCCEEDED (it must be: a failing `rm` is exactly
+ * when the last-ditch net is needed), so a host where cleanup persistently fails — a Windows AV scanner holding every
+ * newly-written file, an NFS delete race — accumulated one listener per `/edit` until Node printed a
+ * `MaxListenersExceededWarning` straight onto the alt buffer (2.6.F Step 6h, Sonnet review). Reproduced: five failing
+ * disposes left five listeners and five directories holding the conversation.
  */
+
+/** Directories awaiting cleanup. A document is removed on a SUCCESSFUL `dispose`; whatever remains at process exit is
+ *  reclaimed synchronously by the single net below. */
+const pendingTempDirs = new Set<string>();
+let exitNetArmed = false;
+
+/** Arm the process-wide `'exit'` net once. Idempotent, so `nodeCreateTempDocument` can call it every time. */
+function armTempDirExitNet(): void {
+  if (exitNetArmed) return;
+  exitNetArmed = true;
+  process.on('exit', () => {
+    for (const dir of pendingTempDirs) {
+      try {
+        rmSync(dir, { recursive: true, force: true }); // the only cleanup that survives a hard `process.exit()`
+      } catch {
+        // an 'exit' listener may not throw — and there is nowhere left to report to
+      }
+    }
+    pendingTempDirs.clear();
+  });
+}
+
+/** Reclaim every temp directory still pending. Exposed for the test that cannot call `process.exit()`. */
+export function disposePendingTempDirs(): void {
+  for (const dir of pendingTempDirs) rmSync(dir, { recursive: true, force: true });
+  pendingTempDirs.clear();
+}
+
+/** How many documents are still awaiting cleanup. Exposed for the accumulation test. */
+export function pendingTempDirCount(): number {
+  return pendingTempDirs.size;
+}
 export const nodeCreateTempDocument = async (contents: string): Promise<TempDocument> => {
   const dir = await mkdtemp(join(tmpdir(), 'relavium-transcript-'));
   const path = join(dir, 'transcript.md');
@@ -189,14 +233,8 @@ export const nodeCreateTempDocument = async (contents: string): Promise<TempDocu
     throw error;
   }
 
-  const exitNet = (): void => {
-    try {
-      rmSync(dir, { recursive: true, force: true }); // the only cleanup that survives a hard `process.exit()`
-    } catch {
-      // an 'exit' listener may not throw — and there is nowhere left to report to
-    }
-  };
-  process.on('exit', exitNet);
+  pendingTempDirs.add(dir);
+  armTempDirExitNet();
 
   return {
     path,
@@ -205,12 +243,12 @@ export const nodeCreateTempDocument = async (contents: string): Promise<TempDocu
       // disposal warning if both run.
       //
       // If this THROWS (a Windows `EBUSY` from an AV scanner, an editor that has not released its handle, `EPERM`),
-      // the exit net is deliberately LEFT ARMED and gets one more chance at process exit. It used to be removed in a
+      // the directory stays in `pendingTempDirs` and the exit net gets one more chance. It used to be removed in a
       // `finally`, which disarmed the last-ditch cleanup at exactly the moment it was needed — and the temp file
       // holding the WHOLE conversation survived the process (whole-phase Opus review). `openInEditor` still reports
       // the failure through `onDisposeFailed`; this only decides whether we keep trying.
       await rm(dir, { recursive: true, force: true });
-      process.removeListener('exit', exitNet);
+      pendingTempDirs.delete(dir);
     },
   };
 };

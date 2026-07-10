@@ -1,4 +1,3 @@
-import * as fsPromises from 'node:fs/promises';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
@@ -6,7 +5,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 /** A switchable `writeFile` fault, so the "a partial write must not strand the conversation" path is driven for real
  *  (an ENOSPC/EIO cannot be provoked portably). Everything else in `node:fs/promises` stays real. */
-const fsFault = vi.hoisted(() => ({ writeFileError: undefined as Error | undefined }));
+const fsFault = vi.hoisted(() => ({
+  writeFileError: undefined as Error | undefined,
+  rmError: undefined as Error | undefined,
+}));
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();
   return {
@@ -14,6 +16,10 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     writeFile: async (...args: Parameters<typeof actual.writeFile>) => {
       if (fsFault.writeFileError !== undefined) throw fsFault.writeFileError;
       return actual.writeFile(...args);
+    },
+    rm: async (...args: Parameters<typeof actual.rm>) => {
+      if (fsFault.rmError !== undefined) throw fsFault.rmError;
+      return actual.rm(...args);
     },
   };
 });
@@ -26,6 +32,8 @@ import {
   type EditorExit,
   type OpenInEditorDeps,
   type TempDocument,
+  disposePendingTempDirs,
+  pendingTempDirCount,
 } from './editor.js';
 
 /**
@@ -246,14 +254,51 @@ describe('nodeCreateTempDocument — the private temp document + its hard-exit n
     }
   });
 
-  it('dispose removes the WHOLE directory (any editor swap/backup file with it) and unregisters the exit net', async () => {
-    const before = process.listenerCount('exit');
+  it('dispose removes the WHOLE directory (any editor swap/backup file with it) and drops it from the pending set', async () => {
+    const pendingBefore = pendingTempDirCount();
     const doc = await nodeCreateTempDocument('x');
-    expect(process.listenerCount('exit')).toBe(before + 1); // the net is armed while the file lives
+    expect(pendingTempDirCount()).toBe(pendingBefore + 1); // pending while the file lives
     const dir = dirname(doc.path);
     await doc.dispose();
     expect(existsSync(dir)).toBe(false);
-    expect(process.listenerCount('exit')).toBe(before); // …and disarmed after, so `/edit` cannot accumulate listeners
+    expect(pendingTempDirCount()).toBe(pendingBefore); // …and reclaimed after
+  });
+
+  it('the exit net is ONE process listener, however many documents are open', async () => {
+    // A listener PER document only ever came off on a SUCCESSFUL `rm` — which it must, since a failing `rm` is
+    // exactly when the last-ditch net is needed. On a host where cleanup persistently fails (an AV scanner holding
+    // every new file), that accumulated one listener per `/edit` until Node printed a `MaxListenersExceededWarning`
+    // onto the alt buffer (Step-6h Sonnet review). Reproduced at five.
+    const before = process.listenerCount('exit');
+    const docs = await Promise.all([
+      nodeCreateTempDocument('a'),
+      nodeCreateTempDocument('b'),
+      nodeCreateTempDocument('c'),
+    ]);
+    expect(process.listenerCount('exit')).toBeLessThanOrEqual(before + 1);
+    await Promise.all(docs.map((d) => d.dispose()));
+    expect(process.listenerCount('exit')).toBeLessThanOrEqual(before + 1);
+  });
+
+  it('a FAILING dispose keeps the directory PENDING, and the one exit net reclaims every one of them', async () => {
+    const doc1 = await nodeCreateTempDocument('conversation one');
+    const doc2 = await nodeCreateTempDocument('conversation two');
+    const dirs = [dirname(doc1.path), dirname(doc2.path)];
+    const pendingBefore = pendingTempDirCount();
+
+    fsFault.rmError = new Error('EBUSY: resource busy or locked');
+    try {
+      await expect(doc1.dispose()).rejects.toThrow('EBUSY');
+      await expect(doc2.dispose()).rejects.toThrow('EBUSY');
+    } finally {
+      fsFault.rmError = undefined;
+    }
+    expect(pendingTempDirCount()).toBe(pendingBefore); // both still pending
+    for (const dir of dirs) expect(existsSync(dir)).toBe(true);
+
+    disposePendingTempDirs(); // what the single `'exit'` listener runs
+    for (const dir of dirs) expect(existsSync(dir)).toBe(false);
+    expect(pendingTempDirCount()).toBe(0);
   });
 
   it('SECURITY: a FAILED write reclaims the directory — a partial conversation is never stranded on disk', async () => {
@@ -279,18 +324,15 @@ describe('nodeCreateTempDocument — the private temp document + its hard-exit n
     // is delivered as a REAL SIGINT to the foreground group; the surface's second-press `process.exit()` halts the
     // event loop while `openInEditor` still awaits the child, so its `async finally` never disposes. Only a
     // synchronous `'exit'` listener can still reclaim the directory. Here we invoke exactly that listener.
-    const before = process.listeners('exit');
     const doc = await nodeCreateTempDocument('the whole conversation');
     const dir = dirname(doc.path);
-    const net = process.listeners('exit').find((l) => !before.includes(l));
-    expect(net).toBeDefined();
     expect(existsSync(dir)).toBe(true);
 
-    net?.call(process, 0); // what Node runs on `process.exit()`
+    disposePendingTempDirs(); // exactly what the single `'exit'` listener runs
 
     expect(existsSync(dir)).toBe(false); // the conversation is NOT left in the OS temp directory
-    await doc.dispose(); // idempotent (`force: true`), and it unregisters the net
-    expect(process.listenerCount('exit')).toBe(before.length);
+    await doc.dispose(); // idempotent (`force: true`), and it clears the (already-empty) pending entry
+    expect(pendingTempDirCount()).toBe(0);
   });
 });
 
@@ -300,35 +342,32 @@ describe('nodeCreateTempDocument — the private temp document + its hard-exit n
  * `EBUSY` from an AV scanner, an editor that has not released its handle — disarmed the very net that existed for
  * that case, and the transcript survived the process.
  */
-describe('nodeCreateTempDocument — the exit net outlives a failing dispose', () => {
-  const listeners = (): number => process.listenerCount('exit');
-
-  it('arms an exit net, and a SUCCESSFUL dispose removes it', async () => {
-    const before = listeners();
+describe('nodeCreateTempDocument — the pending set outlives a failing dispose', () => {
+  it('a SUCCESSFUL dispose reclaims the directory and clears it from the pending set', async () => {
+    const before = pendingTempDirCount();
     const doc = await nodeCreateTempDocument('hello');
-    expect(listeners()).toBe(before + 1);
+    expect(pendingTempDirCount()).toBe(before + 1);
     expect(existsSync(doc.path)).toBe(true);
 
     await doc.dispose();
-    expect(listeners()).toBe(before);
+    expect(pendingTempDirCount()).toBe(before);
     expect(existsSync(doc.path)).toBe(false);
   });
 
-  it('a FAILING dispose rethrows and LEAVES the net armed — the conversation gets one more chance', async () => {
-    const before = listeners();
+  it('a FAILING dispose rethrows and keeps it PENDING — the conversation gets one more chance', async () => {
+    const before = pendingTempDirCount();
     const doc = await nodeCreateTempDocument('secret conversation');
-    const boom = new Error('EBUSY');
-    const spy = vi.spyOn(fsPromises, 'rm').mockRejectedValueOnce(boom);
+    fsFault.rmError = new Error('EBUSY');
     try {
-      await expect(doc.dispose()).rejects.toBe(boom);
-      expect(listeners()).toBe(before + 1); // still armed
+      await expect(doc.dispose()).rejects.toThrow('EBUSY');
+      expect(pendingTempDirCount()).toBe(before + 1); // still pending
       expect(existsSync(doc.path)).toBe(true); // …and the file is still there, which is exactly why
     } finally {
-      spy.mockRestore();
+      fsFault.rmError = undefined;
     }
 
-    await doc.dispose(); // the retry succeeds and disarms
-    expect(listeners()).toBe(before);
+    await doc.dispose(); // the retry succeeds
+    expect(pendingTempDirCount()).toBe(before);
     expect(existsSync(doc.path)).toBe(false);
   });
 
@@ -340,5 +379,50 @@ describe('nodeCreateTempDocument — the exit net outlives a failing dispose', (
     } finally {
       await doc.dispose();
     }
+  });
+});
+
+/**
+ * `openInEditor` NEVER THROWS — its whole contract is to classify every fault into an `EditorOutcome`, because the
+ * caller runs it inside a terminal suspension where a rejection strands the terminal (2.6.F Step 6h, Sonnet review).
+ */
+describe('openInEditor — the cleanup block cannot break the never-throws contract', () => {
+  it('a THROWING onDisposeFailed does not override the classified outcome', async () => {
+    const outcome = await openInEditor(
+      {
+        env: { EDITOR: 'true' },
+        spawnEditor: () => Promise.resolve({ code: 0, signal: null }),
+        createTempDocument: () =>
+          Promise.resolve({
+            path: '/tmp/relavium-x/transcript.md',
+            dispose: () => Promise.reject(new Error('EBUSY')),
+          }),
+        onDisposeFailed: () => {
+          throw new Error('the reporter itself is broken');
+        },
+      },
+      'the whole conversation',
+    );
+    // Without the guard, the `finally`'s rejection replaces this and `openInEditor` rejects — inside a suspension.
+    expect(outcome).toEqual({ kind: 'closed', exitCode: 0 });
+  });
+
+  it('a failing dispose is still REPORTED when the reporter behaves', async () => {
+    const reported: unknown[] = [];
+    const outcome = await openInEditor(
+      {
+        env: { EDITOR: 'true' },
+        spawnEditor: () => Promise.resolve({ code: 0, signal: null }),
+        createTempDocument: () =>
+          Promise.resolve({
+            path: '/tmp/relavium-x/transcript.md',
+            dispose: () => Promise.reject(new Error('EBUSY')),
+          }),
+        onDisposeFailed: (path, error) => reported.push([path, String(error)]),
+      },
+      'the whole conversation',
+    );
+    expect(outcome.kind).toBe('closed');
+    expect(reported).toHaveLength(1);
   });
 });
