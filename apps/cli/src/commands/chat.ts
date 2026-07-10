@@ -81,6 +81,10 @@ import {
 } from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
 import { resolveCopyOnSelect, resolveMouseMode } from '../render/render-mode.js';
+import {
+  FULLSCREEN_TRANSCRIPT_BOUND,
+  INLINE_TRANSCRIPT_BOUND,
+} from '../render/tui/session-view-model.js';
 import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
 import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
 import { resolveRenderMode } from '../render/render-mode.js';
@@ -486,7 +490,10 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   });
   const providers = deps.providers ?? createProviderResolver(deps.io.env);
   const mcpSecretResolver = deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
-  const store = createChatStore(deps.global.color);
+  // The full-screen viewport can hold a whole answer; the inline `<Static>` path keeps its trailing tail (ADR-0068
+  // Decision (c)). Resolved from `chatAltActive` — the SAME function `runReplLoop` uses for the hoist.
+  const transcriptBound = transcriptBoundFor(chatAltActive(deps, config.altScreen));
+  const store = createChatStore(deps.global.color, undefined, transcriptBound);
   // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a transient read of the `model_catalog` `source='user'`
   // rows, so a user-priced model is enforced by `[chat].max_cost_microcents` + tracked in realized cost. NON-FATAL:
   // an unopenable db yields `undefined` here and surfaces cleanly through the session store open below.
@@ -673,7 +680,14 @@ export async function chatResumeCommand(
     // Seed the view header + persister via the SHARED resumed-wiring assembly (the same the `/models` reseat uses):
     // a resumed session never re-emits `session:started`, so the seeded store shows the model + carried cost/turns
     // from the first frame, and the persister continues past the last durable sequence number.
-    ({ store, persister } = seedResumedWiring(resumed, opened, deps.global.color, now, uuid));
+    ({ store, persister } = seedResumedWiring(
+      resumed,
+      opened,
+      deps.global.color,
+      now,
+      uuid,
+      transcriptBoundFor(chatAltActive(deps, config.altScreen)),
+    ));
     const turns = resumed.resumeState.turnCount;
     // `sessionId` is only schema-constrained to a non-empty string (the CLI mints a UUID, but `history.db` is
     // shared with other surfaces) — sanitize it before it reaches the TTY, exactly as `chat-list` does (the
@@ -1345,7 +1359,14 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
   });
-  const store = createChatStore(deps.global.color);
+  // The SAME signals `runReplLoop` used for the hoist (`deps.altScreen` is `[preferences].alt_screen`, carried here
+  // precisely so a `/clear` re-drive keeps the mode) — so a rebuilt session cannot silently re-acquire the 4000-char
+  // transcript bound mid-conversation.
+  const store = createChatStore(
+    deps.global.color,
+    undefined,
+    transcriptBoundFor(chatAltActive(deps, deps.altScreen)),
+  );
   // A re-drive (`/clear`/reseat) runs INSIDE the hoisted alt buffer, so the MCP-skipped diagnostic routes to the fresh
   // session's transcript (`store.notice`) rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3).
   for (const line of mcpSkippedLines(built.mcpSkipped)) store.notice(line);
@@ -1455,13 +1476,20 @@ function seedResumedWiring(
   color: boolean,
   now: () => number,
   uuid: () => string,
+  /** The renderer's transcript bake bound (ADR-0068 Decision (c)). Defaults to the inline tail so a caller that
+   *  forgets keeps today's behaviour; both real callers pass the resolved one. */
+  transcriptBound: number = INLINE_TRANSCRIPT_BOUND,
 ): { store: ChatStoreController; persister: SessionPersister } {
-  const store = createChatStore(color, {
-    agentRef: resumed.agent.id,
-    model: resumed.agent.model,
-    cumulativeCostMicrocents: resumed.resumeState.cumulativeCostMicrocents,
-    turnCount: resumed.resumeState.turnCount,
-  });
+  const store = createChatStore(
+    color,
+    {
+      agentRef: resumed.agent.id,
+      model: resumed.agent.model,
+      cumulativeCostMicrocents: resumed.resumeState.cumulativeCostMicrocents,
+      turnCount: resumed.resumeState.turnCount,
+    },
+    transcriptBound,
+  );
   const persister = createSessionPersister({
     store: opened.store,
     handle: resumed.handle,
@@ -1551,7 +1579,14 @@ async function buildReseatWiring(
   });
   let seeded: { store: ChatStoreController; persister: SessionPersister };
   try {
-    seeded = seedResumedWiring(resumed, deps.opened, deps.global.color, deps.now, deps.uuid);
+    seeded = seedResumedWiring(
+      resumed,
+      deps.opened,
+      deps.global.color,
+      deps.now,
+      deps.uuid,
+      transcriptBoundFor(chatAltActive(deps, deps.altScreen)),
+    );
   } catch (err) {
     // Acquire-then-guard: the resumed session's MCP children are already spawned — reclaim them before the failure
     // propagates so a persister-construction throw never orphans a stdio child (best-effort; never mask the primary).
@@ -1880,6 +1915,35 @@ export async function withHoistedAltScreen(
   }
 }
 
+/**
+ * The ONE alt-screen decision for `relavium chat`. `runReplLoop` needs it for the hoist; `chatCommand` needs it BEFORE
+ * the loop, to give the view store its transcript bound. Two independent copies of this expression is exactly the
+ * drift ADR-0068 §c warns about, so there is one.
+ */
+export function chatAltActive(
+  deps: Pick<ChatReplDeps, 'io' | 'global'>,
+  configAltScreen: boolean | undefined,
+): boolean {
+  return (
+    chatIsInteractive(deps.io, deps.global) &&
+    resolveRenderMode({
+      outputMode: detectOutputMode({
+        stdoutIsTty: deps.io.stdoutIsTty,
+        json: deps.global.json,
+        ci: isCiEnv(deps.io.env),
+      }),
+      noAltScreenFlag: deps.global.noAltScreen === true,
+      configAltScreen,
+    }) === 'alt'
+  );
+}
+
+/** The transcript bake bound the renderer can afford (ADR-0068 Decision (c)): none in the full-screen viewport, the
+ *  historical trailing tail inline. */
+export function transcriptBoundFor(altActive: boolean): number {
+  return altActive ? FULLSCREEN_TRANSCRIPT_BOUND : INLINE_TRANSCRIPT_BOUND;
+}
+
 export async function runReplLoop(
   wiring: ReplWiring,
   deps: ChatReplDeps,
@@ -1890,17 +1954,7 @@ export async function runReplLoop(
   const opened = wiring.opened;
   // Resolve alt-mode ONCE from the SAME signals `driveInk` uses, so the hoist and the per-session mount can never
   // disagree about the mode (2.6.F Step 4b-3, ADR-0068 §c).
-  const altActive =
-    chatIsInteractive(deps.io, deps.global) &&
-    resolveRenderMode({
-      outputMode: detectOutputMode({
-        stdoutIsTty: deps.io.stdoutIsTty,
-        json: deps.global.json,
-        ci: isCiEnv(deps.io.env),
-      }),
-      noAltScreenFlag: deps.global.noAltScreen === true,
-      configAltScreen: wiring.altScreen,
-    }) === 'alt';
+  const altActive = chatAltActive(deps, wiring.altScreen);
   // Mouse reporting (2.6.F Step 5e, ADR-0068 §e): only inside the alt screen, and only when not opted out. Resolved
   // from the SAME signals as the render mode, so the two can never disagree.
   const mouseEnabled = resolveMouseMode({

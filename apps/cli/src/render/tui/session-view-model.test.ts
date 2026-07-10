@@ -11,6 +11,8 @@ import {
   MAX_WARNINGS,
   reduceSessionEvent,
   type SessionViewState,
+  FULLSCREEN_TRANSCRIPT_BOUND,
+  INLINE_TRANSCRIPT_BOUND,
 } from './session-view-model.js';
 
 // --- A typed session-event factory: monotonic sequenceNumber + a 1ms-per-event clock (for durations). ----
@@ -799,5 +801,79 @@ describe('session-view-model — reasoning fold (EA6, 2.5.H)', () => {
     expect(done.liveReasoningTruncated).toBe(false);
     const cancelled = reduceAll([e.started(), e.turnStarted(), e.reasoning('x'), e.cancelled()]);
     expect(cancelled.liveReasoning).toBe('');
+  });
+});
+
+/**
+ * THE CAPS-LIFT (2.6.F Step 6g, ADR-0068 Decision (c)).
+ *
+ * ADR-0068 exists because "a long response is clipped and its full text survives only in SQLite — unreachable by
+ * scrolling". Until Step 6g the bound was a CONSTANT and `reduceTurnCompleted` baked the transcript entry from the
+ * live region's 4000-char render budget — so the full-screen viewport, built to scroll a long answer, could never be
+ * given one. The Step-4b-3 amendment's "caps-lift" was a name collision: it shipped the per-entry wrap cache.
+ */
+describe('the transcript bake is bounded by the RENDERER, not by a constant', () => {
+  /** Reduce `evs` from a state seeded with an explicit renderer bound. */
+  const reduceWithBound = (
+    bound: number,
+    evs: readonly SessionStreamHandleEvent[],
+  ): SessionViewState => evs.reduce(reduceSessionEvent, initialSessionViewState(undefined, bound));
+
+  const oneTurn = (bound: number, chars: number): SessionViewState => {
+    const e = events();
+    return reduceWithBound(bound, [e.turnStarted(), e.token('X'.repeat(chars)), e.turnCompleted()]);
+  };
+
+  const lastEntry = (state: SessionViewState): string => state.transcript.at(-1)?.text ?? '';
+
+  it('FULL-SCREEN keeps a 10 000-character answer whole — the defect this phase exists to fix', () => {
+    const state = oneTurn(FULLSCREEN_TRANSCRIPT_BOUND, 10_000);
+    expect(lastEntry(state)).toHaveLength(10_000);
+    expect(lastEntry(state).startsWith('…')).toBe(false);
+  });
+
+  it('INLINE keeps the historical trailing tail and its elision marker — byte-identical to before', () => {
+    const state = oneTurn(INLINE_TRANSCRIPT_BOUND, 10_000);
+    expect(lastEntry(state)).toHaveLength(MAX_LIVE_TOKEN_CHARS + 1);
+    expect(lastEntry(state).startsWith('…')).toBe(true);
+  });
+
+  it('the LIVE REGION stays bounded on BOTH renderers — it re-wraps every frame', () => {
+    // The two accumulators answer different questions. Unbounding `liveTokens` would re-segment 10 000 chars at 30fps.
+    for (const bound of [FULLSCREEN_TRANSCRIPT_BOUND, INLINE_TRANSCRIPT_BOUND]) {
+      const e = events();
+      const state = reduceWithBound(bound, [e.turnStarted(), e.token('X'.repeat(10_000))]);
+      expect(state.liveTokens).toHaveLength(MAX_LIVE_TOKEN_CHARS);
+      expect(state.liveTokensTruncated).toBe(true);
+      expect(state.turnText).toHaveLength(bound === INLINE_TRANSCRIPT_BOUND ? 4000 : 10_000);
+    }
+  });
+
+  it('a TOOL CALL resets the kept text too — the entry is the segment after the last tool call', () => {
+    // Mirrors the engine's `result.text` and the persister. Forgetting to reset `turnText` here would bake the
+    // pre-tool-call prose into the final entry, which the durable record does not contain.
+    const e = events();
+    const state = reduceWithBound(FULLSCREEN_TRANSCRIPT_BOUND, [
+      e.turnStarted(),
+      e.token('BEFORE'),
+      e.toolCall('read_file'),
+      e.token('AFTER'),
+      e.turnCompleted(),
+    ]);
+    expect(lastEntry(state)).toBe('AFTER');
+  });
+
+  it('a CANCELLED turn clears the kept text, so a later turn cannot inherit it', () => {
+    const e = events();
+    const state = reduceWithBound(FULLSCREEN_TRANSCRIPT_BOUND, [
+      e.turnStarted(),
+      e.token('partial'),
+      e.cancelled(),
+    ]);
+    expect(state.turnText).toBe('');
+  });
+
+  it('the default bound is the INLINE one — a caller that forgets keeps today’s behaviour', () => {
+    expect(initialSessionViewState().transcriptBound).toBe(INLINE_TRANSCRIPT_BOUND);
   });
 });

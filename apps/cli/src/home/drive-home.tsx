@@ -5,7 +5,7 @@ import type { AgentSessionRecord, ReasoningEffort } from '@relavium/shared';
 import { render } from 'ink';
 import { createElement } from 'react';
 
-import { createChatLineHandler, type ReseatTarget } from '../commands/chat.js';
+import { createChatLineHandler, transcriptBoundFor, type ReseatTarget } from '../commands/chat.js';
 import {
   buildChatSession,
   buildResumedChatSession,
@@ -437,7 +437,14 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
 
     // Build + wire + START a fresh chat session (the controller sends the first message on transition).
     const startChat = async (): Promise<HomeChatSession> => {
-      const store = createChatStore(deps.global.color);
+      // `altScreenActive` is assigned when the render mode resolves, BEFORE the first submit that calls this. The
+      // full-screen viewport can hold a whole answer; the inline `<Static>` path keeps its trailing tail (ADR-0068
+      // Decision (c)). Read lazily, like the hatch ports, so the mode is the LIVE one.
+      const store = createChatStore(
+        deps.global.color,
+        undefined,
+        transcriptBoundFor(altScreenActive),
+      );
       // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read FRESH per chat from the SAME `history.db` (empty map
       // on a read fault). Static `MODEL_PRICING` still wins.
       const resolvePrice = readUserPricingOverlay(opened.db);
@@ -507,12 +514,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       });
       // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
       // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
-      const store = createChatStore(deps.global.color, {
-        agentRef: built.agent.id,
-        model: built.agent.model,
-        cumulativeCostMicrocents: built.resumeState.cumulativeCostMicrocents,
-        turnCount: built.resumeState.turnCount,
-      });
+      const store = createChatStore(
+        deps.global.color,
+        {
+          agentRef: built.agent.id,
+          model: built.agent.model,
+          cumulativeCostMicrocents: built.resumeState.cumulativeCostMicrocents,
+          turnCount: built.resumeState.turnCount,
+        },
+        transcriptBoundFor(altScreenActive),
+      );
       return wireHomeChatSession(built, store, {
         open: false,
         initialSequenceNumber: built.nextSequenceNumber,

@@ -603,6 +603,50 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
    * prop: absent ⇒ a released drag still highlights and never touches the system clipboard. `/copy` binds its own
    * clipboard through the hatch ports, so it keeps working either way.
    */
+  /**
+   * THE CAPS-LIFT, END TO END (2.6.F Step 6g). `session-view-model.test.ts` pins the reducer; a break that makes
+   * `transcriptBoundFor` always return the inline bound stays GREEN there, because the unit tests inject the bound
+   * themselves. This drives the REAL `startChat` and asserts what the user's viewport would actually hold.
+   */
+  describe('a long assistant answer survives into the full-screen transcript', () => {
+    const LONG = 'X'.repeat(10_000);
+
+    const assistantText = async (over: Partial<HomeDeps>): Promise<string> => {
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p), {
+        providers: scriptedResolver([textTurn(LONG)]),
+        ...over,
+      });
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+
+      type(props, 'hello');
+      props.controller.handleKey('', ENTER); // submit ⇒ build + first turn
+      await flush();
+      await flush();
+      const transcript =
+        props.controller.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
+      const assistant = transcript.find((e) => e.role === 'assistant');
+
+      props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
+      await flush();
+      props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
+      await drivePromise;
+      return assistant?.text ?? '';
+    };
+
+    it('the alt-screen Home keeps all 10 000 characters', async () => {
+      expect(await assistantText({})).toHaveLength(10_000);
+    });
+
+    it('`--no-alt-screen` keeps the historical trailing tail — the inline renderer has no viewport', async () => {
+      const text = await assistantText({ global: { ...global, noAltScreen: true } });
+      expect(text).toHaveLength(4001);
+      expect(text.startsWith('…')).toBe(true);
+    });
+  });
+
   describe('copy-on-select', () => {
     const captureProps = async (over: Partial<HomeDeps>): Promise<RootAppProps> => {
       let captured: RootAppProps | undefined;
