@@ -73,9 +73,9 @@ export interface OpenInEditorDeps {
  * no globbing, no escape sequences, no operators — the value is spawned with `shell: false`, so anything it does not
  * understand stays an inert literal argument instead of becoming executable. Returns `undefined` for a blank value.
  */
-export function parseEditorCommand(
-  value: string,
-): { readonly command: string; readonly args: readonly string[] } | undefined {
+/** Split `value` into whitespace-separated tokens, honouring `"…"` / `'…'` quoting (an empty quoted token `""` is a
+ *  real, kept token; an unterminated quote runs to the end). NOT a shell parser — no expansion/globbing/operators. */
+function tokenizeEditorCommand(value: string): string[] {
   const tokens: string[] = [];
   let current = '';
   let quote: '"' | "'" | undefined;
@@ -101,8 +101,13 @@ export function parseEditorCommand(
     started = true;
   }
   if (started) tokens.push(current);
+  return tokens;
+}
 
-  const [command, ...args] = tokens;
+export function parseEditorCommand(
+  value: string,
+): { readonly command: string; readonly args: readonly string[] } | undefined {
+  const [command, ...args] = tokenizeEditorCommand(value);
   if (command === undefined || command.length === 0) return undefined;
   return { command, args };
 }

@@ -312,15 +312,13 @@ render-v2 (2.6.M) all build on it.
   behavior for long responses so that content above the visible area is never lost. Renderer choice is
   orthogonal to session state (switching relaunches the view in place, conversation intact). The run TUI's
   persistent plain-text exit summary is preserved on unmount.
-- **Branded Home banner** — ✅ **shipped in 2.6.F Step 5g**, with two recorded deviations (see the
-  dated amendments in [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md)):
-  the **"first five Home opens"** counter was replaced by an **empty-Home** trigger (`show_banner` is
-  tri-state: `true` always / `false` never / absent ⇒ only while the Home has nothing to continue), because
-  a durable counter needs either a `history.db` migration or an auto-write into the user's `config.toml`
-  on every open — both the wrong trade for an element this ADR calls cosmetic; and **themes** moved to
-  **2.6.L** per the maintainer's Step-5 decision, so 5g ships colour + `NO_COLOR` only. It does adapt to
-  terminal width, degrade to plain ASCII under `NO_COLOR` / `--no-color`, render in one frame, and stand
-  down rather than crowd the management strip or prompt on an 80×24 terminal.
+- **Branded Home banner** — ✅ **shipped in 2.6.F Step 5g**. `show_banner` is spec'd in
+  [config-spec.md](../../reference/contracts/config-spec.md) and its behaviour in
+  [home.md](../../reference/cli/home.md); this entry does not restate them. Two deviations from the plan
+  above, recorded in [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md)'s dated
+  amendments: the **"first five Home opens"** counter became an **empty-Home** trigger (a durable counter
+  would need a `history.db` migration or a `config.toml` auto-write per open — the wrong trade for a
+  cosmetic element), and **themes** moved to **2.6.L**, so 5g ships colour + `NO_COLOR` only.
 - **TUI component test harness** *(deferred pull-in)*: the first CLI component-render harness (a new
   devDependency — part of this workstream's ADR), so render-cadence bugs (the 2.5.H frozen-clock class)
   get regression tests; add performance regression thresholds (frame time / render count) for the

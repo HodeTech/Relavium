@@ -1143,7 +1143,7 @@ describe('chatCommand', () => {
         sessionId: 's',
         sequenceNumber: 1,
         timestamp: '2026-01-01T00:00:00.000Z',
-      } as never);
+      });
       store.apply({
         type: 'agent:token',
         sessionId: 's',
@@ -1152,7 +1152,7 @@ describe('chatCommand', () => {
         token: LONG,
         model: 'm',
         nodeId: 'n',
-      } as never);
+      });
       store.apply({
         type: 'session:turn_completed',
         sessionId: 's',
@@ -1160,7 +1160,7 @@ describe('chatCommand', () => {
         timestamp: '2026-01-01T00:00:02.000Z',
         stopReason: 'stop',
         tokensUsed: { input: 1, output: 1 },
-      } as never);
+      });
       const transcript = store.getSnapshot().state.transcript;
       return transcript.find((e) => e.role === 'assistant')?.text ?? '';
     };

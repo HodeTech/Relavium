@@ -80,14 +80,13 @@ import {
   type Hatches,
 } from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
-import { resolveCopyOnSelect, resolveMouseMode } from '../render/render-mode.js';
+import { resolveCopyOnSelect, resolveMouseMode, resolveRenderMode } from '../render/render-mode.js';
 import {
   FULLSCREEN_TRANSCRIPT_BOUND,
   INLINE_TRANSCRIPT_BOUND,
 } from '../render/tui/session-view-model.js';
 import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
 import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
-import { resolveRenderMode } from '../render/render-mode.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import {
   errorRecoveryHint,

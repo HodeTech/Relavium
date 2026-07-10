@@ -144,13 +144,13 @@ function mountHome(
 ): MountedHome {
   let onResize: () => void = () => {};
   let size = opts.size ?? { cols: 100, rows: 30 };
+  const snapshot = opts.snapshot; // captured so `read: () => snapshot` narrows without an `as` cast
   const c = createHomeController({
     doctorProbes: STUB_DOCTOR_PROBES,
     startChat: opts.startChat ?? (() => Promise.resolve(makeSession(store))),
     ...(opts.reseatChat !== undefined ? { reseatChat: opts.reseatChat } : {}),
     ...(opts.models !== undefined ? { models: opts.models } : {}),
-    homeStore:
-      opts.snapshot === undefined ? homeStore : { read: () => opts.snapshot as HomeSnapshot },
+    homeStore: snapshot === undefined ? homeStore : { read: () => snapshot },
     onExit: vi.fn(),
     onError: vi.fn(),
   });
@@ -796,7 +796,7 @@ describe('RootApp — mouse capture follows the in-Home chat', () => {
 
     m.harness.stdin.write('/'); // open the palette over the chat
     await settleFrames();
-    expect(toggles.length).toBe(before); // no new toggle
+    expect(toggles).toHaveLength(before); // no new toggle
   });
 
   it('the INLINE Home does not CONSUME mouse-report bytes either — nothing enables the mouse there', async () => {

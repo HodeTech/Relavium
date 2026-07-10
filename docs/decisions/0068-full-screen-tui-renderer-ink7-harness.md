@@ -157,7 +157,7 @@ perf thresholds for the full-screen frame loop.
 > render-heavy — a per-frame wall-clock budget is notoriously CI-flaky on shared runners, so asserting it now would
 > buy flakiness, not signal. Frame assertions poll (`waitFor`) rather than assume a single macrotask yield, because
 > React 19's commit can be deferred past one yield under parallel-file CPU contention.
-
+>
 > **Amended 2026-07-09 (Step 4a landed).** The alt-screen renderer's **lifecycle substrate** shipped:
 > `resolveRenderMode` (`apps/cli/src/render/render-mode.ts`) resolving `alt | inline` with precedence
 > machine/non-TTY → `--no-alt-screen` flag → `[preferences].alt_screen` → phase default (`DEFAULT_ALT_SCREEN`, the
@@ -171,7 +171,7 @@ perf thresholds for the full-screen frame loop.
 > output**, the **branded banner**, and **mouse-wheel** scroll — after which `DEFAULT_ALT_SCREEN` flips to `true`
 > (alt-on with the `--no-alt-screen` opt-out). Until then, enabling `alt_screen` is a preview (no scrollback, no
 > hatches — see config-spec.md's caveat).
-
+>
 > **Amended 2026-07-09 (Step 4b-1 landed).** The transcript **viewport** shipped for BOTH surfaces (the bare Home +
 > `relavium chat`): ink's `<Static>` is replaced on the alt screen by a `TranscriptViewport` that width-wraps the
 > transcript to display lines (`viewport.ts` `displayWidth`/`wrapText` — the row-measurement §c requires), renders
@@ -184,7 +184,7 @@ perf thresholds for the full-screen frame loop.
 > renderer-injected unbounded transcript + true virtualization) + `DEFAULT_ALT_SCREEN`→`true`. **Deferred to Step 5**:
 > DEC-2026 synchronized output, the branded banner, the `[`/`v` escape hatches, and mouse-wheel. A known 4b-1 limit:
 > a live region taller than the terminal has no scrollback (deferred-tasks.md).
-
+>
 > **Amended 2026-07-09 (Step 4b-2 landed).** The **scroll / auto-follow** state machine shipped for both surfaces:
 > a single `following` boolean (default true) pinned to the tail; **PgUp/PgDn** page + **Ctrl+Home/Ctrl+End** jump
 > to top/bottom (`scroll.ts` `reduceScroll`/`scrollMotionForKey`, shared by both surfaces); any upward scroll pauses
@@ -197,7 +197,7 @@ perf thresholds for the full-screen frame loop.
 > layout, and a force-follow would only yank the user off history they are reading. **Deferred to Step 4b-3**: the
 > caps-lift + true virtualization + `DEFAULT_ALT_SCREEN`→`true`; **Step 5**: mouse-wheel scroll (reuses this same
 > viewport scroll + follow actions). Resolves the §e force-scroll deferred item by design.
-
+>
 > **Amended 2026-07-09 (Step 4b-2 Sonnet-review fold).** Three verified fixes on top of the 4b-2 landing: **(a)** the
 > Home's scroll-reset effect now keys on the **session OBJECT identity** (`state.session`), not the durable `sessionId`
 > string — a `/models` reseat deliberately PRESERVES the id across the swap, so an id-keyed effect missed it and left a
@@ -213,7 +213,7 @@ perf thresholds for the full-screen frame loop.
 > overlay, never the transcript), and the **paused-mid-page boundary** at the mount (a partial page-down does not
 > resume follow). The canonical render-mode docs (home.md / chat-session.md / config-spec.md `alt_screen` caveat) were
 > reconciled to reflect that scroll-back + auto-follow shipped at 4b-2.
-
+>
 > **Amended 2026-07-09 (Step 4b-3 landed — caps-lift, flicker hoist, DEFAULT flip).** The full-screen renderer became
 > first-class and is now the **default on a TTY** (`DEFAULT_ALT_SCREEN = true`): a bare `relavium` / `relavium chat`
 > opens full-screen; `--no-alt-screen` (per invocation) or `[preferences].alt_screen = false` (durable) opts back into
@@ -236,7 +236,7 @@ perf thresholds for the full-screen frame loop.
 > exit paths are unit-tested (`withHoistedAltScreen`, 6 cases) around injected write/lifecycle seams; the real-TTY
 > signal paths (double-Ctrl-C, `kill -TERM`/`-HUP`) are a manual PR-time check. **Still pending (Step 5):** the `[`-dump
 > / `v`-open-in-`$EDITOR` copy-and-search hatches, mouse-wheel scroll, the branded banner, and the a11y note.
-
+>
 > **Amended 2026-07-09 (Step 4b-3 Opus + Sonnet review folds).** SUPERSEDES the caps-lift mechanism in the note above:
 > the bounded per-logical-line LRU (keyed on `(cols, line)`) thrashed to a 0% hit rate once a session exceeded the
 > cache size (a sequential re-scan from the head evicts the very lines it is about to re-read), so it was replaced by a
@@ -252,7 +252,7 @@ perf thresholds for the full-screen frame loop.
 > needs threading the instance unmount before the alt-exit), and session-side raw-`io` notices that fire mid-session —
 > the budget-cap **warning** and the `/clear`/reseat **MCP-skipped** diagnostic — still land on the alt buffer and are
 > lost in alt mode (they must route through the CURRENT session's view-store `notice`, an architectural follow-up).
-
+>
 > **Amended 2026-07-10 (Step 5 landed — a11y note, mouse-wheel, the copy-and-search hatches, the mouse opt-out).**
 > Step 5 is complete. Four clarifications; §e's *mechanisms* are unchanged, one of its *defaults* is not.
 >
@@ -294,7 +294,7 @@ perf thresholds for the full-screen frame loop.
 > [phase-2.6](../roadmap/phases/phase-2.6-conversational-authoring.md) cannot be met here — the renderer has no theme
 > system at all (`[preferences].theme` exists in the config schema and nothing reads it); theming is 2.6.L, so the
 > banner ships with colour / `NO_COLOR` variants and its theme variants move there.
-
+>
 > **Amended 2026-07-10 (Step 6 — in-app text selection + copy-on-select; §e's mouse deferrals are WITHDRAWN).**
 > Maintainer decision, taken after using the shipped renderer. §e twice constrains this area and both constraints are
 > superseded here; the §e text is left verbatim (append-only).
@@ -328,7 +328,7 @@ perf thresholds for the full-screen frame loop.
 > **Selection copies the VISUAL rows** the user highlighted — a wrapped paragraph comes back with those wraps as
 > newlines, exactly as the terminal's own selection would have given, and exactly what the highlight showed. `/edit`
 > and (Step 6) `/copy` hand over the UNWRAPPED document when fidelity matters more than the visual.
-
+>
 > ### Amendment — 2026-07-10 (2.6.F Steps 6e/6f, after the Step-6 adversarial review)
 >
 > Four claims made above, or in the Step-6 code, were **wrong**, and are corrected here rather than quietly patched.
@@ -366,7 +366,7 @@ perf thresholds for the full-screen frame loop.
 > transcript out from under the pointer) and a plain click restores it. `Esc` dismisses a live selection while the chat
 > is idle, never mid-turn, where `Esc` is the abort. `/copy` (Step 6e) copies the UNWRAPPED transcript document and
 > suspends nothing — OSC 52 is one control write.
-
+>
 > ### Amendment — 2026-07-10 (2.6.F Step 5f: there was nothing to build)
 >
 > The Decision above says flicker "is avoided with terminal **synchronized output** (DEC 2026, `\x1b[?2026h/l`)
@@ -383,7 +383,7 @@ perf thresholds for the full-screen frame loop.
 > wrapping every write would have nested the escapes. Step 5f therefore implements nothing and instead PINS the
 > behaviour (`synchronized-output.test.tsx`), so an ink bump that drops the framing fails loudly rather than silently
 > restoring the flicker this ADR set out to remove.
-
+>
 > ### Amendment — 2026-07-10 (2.6.F Step 5g: the banner ships, its trigger does not)
 >
 > The Decision says the banner is "shown on the first few Home opens, then auto-dismissed — re-enabled via
@@ -405,7 +405,7 @@ perf thresholds for the full-screen frame loop.
 > terminal we should assume renders conservatively, and a mis-rendered `╭` is worse than a `+`.
 >
 > Themes remain deferred to 2.6.L, per the maintainer's Step-5 decision; this ships colour + `NO_COLOR` only.
-
+>
 > ### Amendment — 2026-07-10 (2.6.F Step 6g: the whole-phase review, and the caps-lift that was never built)
 >
 > A second adversarial review, over the WHOLE phase rather than one step, found what the per-step reviews could not.

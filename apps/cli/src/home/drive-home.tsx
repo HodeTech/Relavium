@@ -57,7 +57,7 @@ import { DISABLE_MOUSE, ENABLE_MOUSE } from '../render/alt-screen.js';
 import { nodeCreateTempDocument, nodeSpawnEditor } from '../render/editor.js';
 import { inkOwnedTerminal, type HatchDeps } from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
-import { copyToClipboard } from '../render/clipboard.js';
+import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
 import { createSuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
@@ -226,6 +226,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   // Whether the mouse is captured RIGHT NOW. Distinct from `mouseActive` (the resolved mode) since Step 6g: the Home
   // landing gives the mouse back to the emulator, and a suspension must not "restore" a mode that is not on.
   let mouseCaptured = false;
+  // ONE clipboard closure over the SAME control-write sink as the alt-buffer + mouse toggles (Step 6). `/copy` (via
+  // `hatchPorts`) and copy-on-select (via `RootApp`'s `clipboard` prop, when enabled) both use it.
+  const clipboard = (text: string): ClipboardOutcome =>
+    copyToClipboard({ writeControl, env: deps.io.env }, text);
   const hatchPorts: Omit<HatchDeps, 'transcript' | 'note'> = {
     suspendPort,
     writeControl,
@@ -237,7 +241,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       () => mouseCaptured,
       () => process.stdout.columns,
     ),
-    clipboard: (text: string) => copyToClipboard({ writeControl, env: deps.io.env }, text),
+    clipboard,
     dump: {
       writeOut: nodeWriteOut(process.stdout),
       waitForContinue: nodeWaitForContinue(process.stdin),
@@ -691,12 +695,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // Copy-on-select rides the SAME control-write sink as the alt-buffer + mouse toggles (Step 6). OSC 52 prints
         // nothing and moves no cursor, so writing it mid-frame cannot corrupt ink's line accounting. ABSENT when
         // `[preferences].copy_on_select = false`: the selection still highlights, and `/copy` still copies.
-        ...(copyOnSelect
-          ? {
-              clipboard: (text: string) =>
-                copyToClipboard({ writeControl, env: deps.io.env }, text),
-            }
-          : {}),
+        ...(copyOnSelect ? { clipboard } : {}),
       };
       instance =
         deps.render === undefined

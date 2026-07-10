@@ -15,7 +15,7 @@ breakdown, now historical, is in
 2026-07-08); its plan is in
 [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md).
 Workstream **2.6.F (platform floor + the full-screen TUI renderer)** is **complete on `development`**
-(2026-07-10, pending PR to `main`) — see [Active now](#active-now).
+(2026-07-10, pending PR to `main`) — see [Active now](#what-is-active-now).
 
 ## Where we are
 

@@ -88,6 +88,20 @@ type ColumnPiece = 'before' | 'selected' | 'after';
  * emitted with the first cluster that does have a cell, so it stays where the user sees it. A string with no cells at
  * all is entirely `before`: there is nothing to select.
  */
+/** Which piece a cell-bearing cluster at `column` (width `width`) belongs to. `empty` ⇒ a degenerate span, so
+ *  nothing is `selected` however it straddles. Extracted so {@link walkDisplayColumns} is not a nested ternary. */
+function classifyColumn(
+  column: number,
+  width: number,
+  startColumn: number,
+  endColumn: number,
+  empty: boolean,
+): ColumnPiece {
+  if (!empty && column < endColumn && column + width > startColumn) return 'selected';
+  if (column < startColumn) return 'before';
+  return 'after';
+}
+
 function walkDisplayColumns(
   str: string,
   startColumn: number,
@@ -106,12 +120,7 @@ function walkDisplayColumns(
       else emit(segment, previous);
       continue;
     }
-    const piece: ColumnPiece =
-      !empty && column < endColumn && column + width > startColumn
-        ? 'selected'
-        : column < startColumn
-          ? 'before'
-          : 'after';
+    const piece = classifyColumn(column, width, startColumn, endColumn, empty);
     if (leading !== '') {
       emit(leading, piece);
       leading = '';

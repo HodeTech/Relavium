@@ -1109,11 +1109,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           effortPickerRef.current !== undefined;
         if (mouse !== undefined && !overlayOwnsKeyboard) {
           if (mouse.kind === 'wheel') {
-            const geom = liveScrollGeometry(
-              props.store.getSnapshot().state.transcript,
-              windowSize.columns,
-              scrollGeomRef.current.height,
-            );
+            const geom = chatLiveGeom();
             const motion = mouse.direction === 'up' ? 'line-up' : 'line-down';
             let next = scrollRef.current;
             for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, motion, geom);
@@ -1308,20 +1304,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // reduceChatKey below), which is safe because scroll keys never overlap the [y]/[a]/[n] answer set. Read the REF
     // for coalesced-chunk safety. Not gated on `isRunning` — you can scroll history WHILE a turn streams.
     if (props.alternateScreen === true) {
-      const liveGeom = (): ScrollGeometry =>
-        // Reduce against LIVE geometry: wrap the store's CURRENT transcript at the keypress (rare, user-driven) for
-        // a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream burst makes
-        // `settle` resume-follow against a stale bottom (Step-4b-2 Sonnet review). `props.store` is a stable prop, so
-        // its snapshot is read fresh here regardless of any coalesced-chunk closure staleness.
-        liveScrollGeometry(
-          props.store.getSnapshot().state.transcript,
-          windowSize.columns,
-          scrollGeomRef.current.height,
-        );
-      // (Mouse reports are consumed at the TOP of this handler, ahead of the overlay routing — see above.)
+      // (Mouse reports are consumed at the TOP of this handler, ahead of the overlay routing — see above.) The scroll
+      // reduces against LIVE geometry via `chatLiveGeom()` — the store's CURRENT transcript, not the `onMeasure` ref
+      // which lags by up to a commit (Step-4b-2 Sonnet review).
       const motion = scrollMotionForKey(key);
       if (motion !== undefined) {
-        applyScroll(reduceScroll(scrollRef.current, motion, liveGeom()));
+        applyScroll(reduceScroll(scrollRef.current, motion, chatLiveGeom()));
         return;
       }
     }

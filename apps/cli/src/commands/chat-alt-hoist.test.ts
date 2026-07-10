@@ -330,8 +330,11 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
     it('the PRODUCTION lifecycle registers SIGINT separately from the termination signals', () => {
       const before = process.listenerCount('SIGINT');
       const off = defaultReplLifecycle.onInterrupt(() => undefined);
-      expect(process.listenerCount('SIGINT')).toBe(before + 1);
-      off();
+      try {
+        expect(process.listenerCount('SIGINT')).toBe(before + 1);
+      } finally {
+        off(); // always remove the real `process` listener, even if the assertion above throws
+      }
       expect(process.listenerCount('SIGINT')).toBe(before);
     });
   });
