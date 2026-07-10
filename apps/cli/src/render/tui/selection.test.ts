@@ -11,6 +11,9 @@ import {
   splitRow,
   type SelectionRange,
   type SelectionViewport,
+  routeMouseSelection,
+  type SelectionRouterPorts,
+  type SelectionState,
 } from './selection.js';
 import { sliceDisplayColumns } from './viewport.js';
 
@@ -402,5 +405,167 @@ describe('reduceSelection — the shared gesture, so the two surfaces cannot dri
     expect(dragged).toEqual({ kind: 'set', state: { anchor: cell(105, 5), focus: cell(101, 1) } });
     if (dragged.kind !== 'set') throw new Error('unreachable');
     expect(normalizeSelection(dragged.state)).toEqual({ start: cell(101, 1), end: cell(105, 5) });
+  });
+});
+
+/**
+ * The three things the pure reducer cannot own, because they touch SCROLL state (2.6.F Step 6f, Opus review). Pinned
+ * against a fake port set rather than a mounted ink tree, so each rule is readable on its own; `chat-app.test.tsx`
+ * and `home-app.test.tsx` then pin the assembly.
+ */
+describe('routeMouseSelection — the scroll-aware half of a gesture', () => {
+  const VIEWPORT: SelectionViewport = { top: 2, left: 0, height: 5, totalLines: 100, offset: 40 };
+
+  /**
+   * The fake ports MODEL the scroll: `scrollBy` moves `offset`, and `geometry()` reads it. Without that a break that
+   * maps the focus BEFORE the scroll instead of after stays green — the whole point of the ordering is that the
+   * second `geometry()` call sees a different offset. `pauseFollow` likewise records the follow flag exactly as the
+   * surfaces do, so a double-`pauseFollow` loses the memory here too.
+   */
+  const ports = (
+    overrides: Partial<SelectionRouterPorts> = {},
+  ): SelectionRouterPorts & {
+    log: string[];
+    selection: () => SelectionState | undefined;
+    following: () => boolean;
+  } => {
+    const log: string[] = [];
+    let selection: SelectionState | undefined;
+    let offset = VIEWPORT.offset;
+    let following = true;
+    let followedBefore = false;
+    const base: SelectionRouterPorts = {
+      geometry: () => ({ ...VIEWPORT, offset }),
+      current: () => selection,
+      setSelection: (s_) => {
+        selection = s_;
+        log.push(s_ === undefined ? 'clear' : `set ${s_.anchor.line}->${s_.focus.line}`);
+      },
+      copy: () => log.push('copy'),
+      scrollBy: (m) => {
+        offset += m === 'line-down' ? 1 : -1;
+        log.push(`scroll ${m}`);
+      },
+      pauseFollow: () => {
+        followedBefore = following;
+        following = false;
+        log.push('pauseFollow');
+      },
+      restoreFollow: () => {
+        if (followedBefore) following = true;
+        log.push('restoreFollow');
+      },
+      ...overrides,
+    };
+    return { ...base, log, selection: () => selection, following: () => following };
+  };
+
+  it('a PRESS below the viewport (the prompt) starts nothing — it must not anchor on the last visible line', () => {
+    // `cellAt` clamps by design, for drags. Clamping a PRESS anchors it to the viewport's last line, so the user drags
+    // across, and copies, text they never pressed on (Step-6 completeness critic).
+    const p = ports();
+    routeMouseSelection(ev('[<0;5;9M'), p); // terminal row 9 = frame row 8; the viewport ends at frame row 6
+    expect(p.log).toEqual([]);
+    expect(p.selection()).toBeUndefined();
+  });
+
+  it('a PRESS above the viewport (the Home’s management strip) starts nothing', () => {
+    const p = ports();
+    routeMouseSelection(ev('[<0;5;1M'), p); // terminal row 1 = frame row 0; the viewport starts at frame row 2
+    expect(p.log).toEqual([]);
+  });
+
+  it('a PRESS on the viewport’s first and last rows DOES start a selection (they are inside it)', () => {
+    const first = ports();
+    routeMouseSelection(ev('[<0;5;3M'), first); // frame row 2 === top
+    expect(first.selection()).toBeDefined();
+    const last = ports();
+    routeMouseSelection(ev('[<0;5;7M'), last); // frame row 6 === top + height - 1
+    expect(last.selection()).toBeDefined();
+  });
+
+  it('a DRAG on the viewport’s LAST row scrolls down BEFORE the focus is mapped', () => {
+    // Without this a selection can never exceed one screenful: `cellAt` clamps the focus to the last visible line, so
+    // dragging further down just re-selects the same row. And the ORDER is load-bearing: the focus must be mapped
+    // against the offset the scroll just produced, or the selection lags a line behind the pointer forever.
+    const p = ports();
+    routeMouseSelection(ev('[<0;5;5M'), p); // press, inner row (frame row 4 ⇒ line 40 + 2 = 42)
+    p.log.length = 0;
+    routeMouseSelection(ev('[<32;5;7M'), p); // drag to the last row (frame row 6)
+    expect(p.log).toEqual(['scroll line-down', 'set 42->45']);
+    // offset 41 + visibleRow 4 = 45. Mapping before the scroll would give 44 — a line the pointer has left behind.
+  });
+
+  it('a sustained DRAG down the edge extends the selection one line per report', () => {
+    const p = ports();
+    routeMouseSelection(ev('[<0;5;5M'), p);
+    for (let i = 0; i < 3; i += 1) routeMouseSelection(ev('[<32;5;7M'), p);
+    expect(p.selection()?.focus.line).toBe(47); // 45, 46, 47 — it really keeps growing
+    expect(p.selection()?.anchor.line).toBe(42); // …and the anchor never moves
+  });
+
+  it('a DRAG on the viewport’s FIRST row scrolls up — the only signal there is, since nothing is above it', () => {
+    const p = ports();
+    routeMouseSelection(ev('[<0;5;5M'), p);
+    p.log.length = 0;
+    routeMouseSelection(ev('[<32;5;3M'), p); // drag to the first row
+    expect(p.log[0]).toBe('scroll line-up');
+  });
+
+  it('a DRAG on an INNER row never scrolls', () => {
+    const p = ports();
+    routeMouseSelection(ev('[<0;5;4M'), p);
+    p.log.length = 0;
+    routeMouseSelection(ev('[<32;9;5M'), p);
+    expect(p.log.filter((l) => l.startsWith('scroll'))).toEqual([]);
+  });
+
+  it('a DRAG with no press before it neither scrolls nor selects', () => {
+    const p = ports();
+    routeMouseSelection(ev('[<32;5;7M'), p); // last row, but no gesture in flight
+    expect(p.log).toEqual([]);
+  });
+
+  it('a PRESS freezes auto-follow, so a completing turn cannot slide the transcript under the pointer', () => {
+    const p = ports();
+    routeMouseSelection(ev('[<0;5;5M'), p);
+    expect(p.log).toContain('pauseFollow');
+  });
+
+  it('a plain CLICK restores auto-follow — pausing it for a click would silently stop the stream', () => {
+    const p = ports();
+    routeMouseSelection(ev('[<0;5;5M'), p); // press
+    routeMouseSelection(ev('[<0;5;5m'), p); // release at the same cell ⇒ collapsed ⇒ clear
+    expect(p.log).toEqual(['set 42->42', 'pauseFollow', 'clear', 'restoreFollow']);
+  });
+
+  it('a drag that RETURNS to its anchor still restores auto-follow — pauseFollow must run once, on the press', () => {
+    // A second `pauseFollow` overwrites the remembered flag with the already-false `following`, so the `clear` that
+    // follows silently fails to restore it. The user presses, wiggles, lets go on the same cell — and the transcript
+    // has quietly stopped following the stream, with nothing on screen to say why.
+    const p = ports();
+    routeMouseSelection(ev('[<0;5;5M'), p); // press
+    routeMouseSelection(ev('[<32;9;5M'), p); // drag away
+    routeMouseSelection(ev('[<32;5;5M'), p); // …and back to the anchor cell
+    routeMouseSelection(ev('[<0;5;5m'), p); // release ⇒ collapsed ⇒ clear
+    expect(p.log.filter((l) => l === 'pauseFollow')).toHaveLength(1);
+    expect(p.following()).toBe(true);
+  });
+
+  it('a real DRAG keeps auto-follow frozen after the copy', () => {
+    const p = ports();
+    routeMouseSelection(ev('[<0;5;5M'), p);
+    routeMouseSelection(ev('[<32;9;5M'), p);
+    routeMouseSelection(ev('[<0;9;5m'), p);
+    expect(p.log).toContain('copy');
+    expect(p.log).not.toContain('restoreFollow');
+  });
+
+  it('a MIDDLE/RIGHT press neither freezes follow nor disturbs the selection', () => {
+    const p = ports();
+    routeMouseSelection(ev('[<0;5;5M'), p);
+    p.log.length = 0;
+    routeMouseSelection(ev('[<2;9;5M'), p);
+    expect(p.log).toEqual([]);
   });
 });

@@ -117,11 +117,10 @@ import { TranscriptViewport } from './transcript-viewport.js';
 import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
 import {
   normalizeSelection,
-  reduceSelection,
   selectionText,
   type SelectionRange,
   type SelectionState,
-  type SelectionViewport,
+  routeMouseSelection,
 } from './selection.js';
 import {
   effectiveOffset,
@@ -525,6 +524,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // Survives an SGR mouse report SPLIT across two `useInput` calls (Step 6f). One reader per mount: it holds the
   // fragment, so it must not be re-created on every render.
   const mouseReaderRef = useRef(createMouseReportReader());
+  // Whether the transcript was following the tail when the current gesture began — a plain click restores it.
+  const followedBeforeSelectionRef = useRef(false);
   // The mouse selection (2.6.F Step 6), held exactly like `scroll`: React state for the render, a ref so a coalesced
   // stdin chunk (a drag burst arrives as several reports in ONE read) reduces off the latest, not the render closure.
   const [selection, setSelection] = useState<SelectionState | undefined>(undefined);
@@ -1026,35 +1027,42 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
    * geometry (`top`/`left` — where the box sits in ink's frame) plus the LIVE wrap (`totalLines`/`height`), so a
    * drag during a streaming turn reduces against the transcript as it is now, not as it was at the last commit.
    */
-  const routeSelection = (event: TerminalMouseEvent): void => {
-    const measured = scrollGeomRef.current;
-    const live = liveScrollGeometry(
+  const chatLiveGeom = (): ScrollGeometry =>
+    liveScrollGeometry(
       props.store.getSnapshot().state.transcript,
       windowSize.columns,
-      measured.height,
+      scrollGeomRef.current.height,
     );
-    const viewport: SelectionViewport = {
-      top: measured.top,
-      left: measured.left,
-      height: live.height,
-      totalLines: live.totalLines,
-      offset: effectiveOffset(scrollRef.current, live),
-    };
-    const action = reduceSelection(selectionRef.current, event, viewport);
-    switch (action.kind) {
-      case 'none':
-        return;
-      case 'clear':
-        applySelection(undefined);
-        return;
-      case 'set':
-        applySelection(action.state);
-        return;
-      case 'copy':
-        applySelection(action.state); // keep the highlight, as every terminal does
-        copySelection(action.state);
-        return;
-    }
+
+  const routeSelection = (event: TerminalMouseEvent): void => {
+    routeMouseSelection(event, {
+      geometry: () => {
+        const measured = scrollGeomRef.current;
+        const live = chatLiveGeom();
+        return {
+          top: measured.top,
+          left: measured.left,
+          height: live.height,
+          totalLines: live.totalLines,
+          offset: effectiveOffset(scrollRef.current, live),
+        };
+      },
+      current: () => selectionRef.current,
+      setSelection: applySelection,
+      copy: copySelection,
+      scrollBy: (motion: 'line-up' | 'line-down') =>
+        applyScroll(reduceScroll(scrollRef.current, motion, chatLiveGeom())),
+      pauseFollow: () => {
+        const scroll = scrollRef.current;
+        followedBeforeSelectionRef.current = scroll.following;
+        if (!scroll.following) return;
+        applyScroll({ offset: effectiveOffset(scroll, chatLiveGeom()), following: false });
+      },
+      restoreFollow: () => {
+        if (!followedBeforeSelectionRef.current) return;
+        applyScroll({ ...scrollRef.current, following: true });
+      },
+    });
   };
 
   /**
@@ -1260,6 +1268,18 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       mentionOpensAt(editorRef.current.text, editorRef.current.cursor)
     ) {
       openMention();
+      return;
+    }
+    // Esc DISMISSES a live selection first — it is the most recent thing the user did and the only one they can see.
+    // Gated on `!isRunning` on purpose: while a turn streams, Esc is the mid-turn ABORT, and shadowing an abort with a
+    // cosmetic clear would be a bad trade. A click still clears the highlight mid-turn.
+    if (
+      key.escape === true &&
+      !isRunning &&
+      !approvalPending &&
+      selectionRef.current !== undefined
+    ) {
+      applySelection(undefined);
       return;
     }
     // Esc at an IDLE prompt with pending `@`/`!` attachments discards them (a clean cancel affordance — parity with

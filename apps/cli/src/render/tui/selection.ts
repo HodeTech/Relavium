@@ -152,6 +152,42 @@ export function cellAt(row: number, column: number, viewport: SelectionViewport)
   };
 }
 
+/**
+ * Is a terminal's 1-based `row` inside the viewport?
+ *
+ * {@link cellAt} deliberately CLAMPS, which is what a drag needs — the pointer leaves the viewport all the time. A
+ * PRESS is different: clamping one that landed on the prompt, the status strip, or the live streaming region anchors
+ * the selection to the viewport's last visible line, so the user drags across text they never touched and copies it.
+ * A press outside the viewport starts nothing.
+ */
+export function containsRow(row: number, viewport: SelectionViewport): boolean {
+  const frameRow = row - 1; // frame row 0 IS terminal row 1
+  return frameRow >= viewport.top && frameRow < viewport.top + viewport.height;
+}
+
+/**
+ * The scroll motion a DRAG at `row` should trigger before its focus is mapped, or `undefined` when the pointer is
+ * comfortably inside the viewport.
+ *
+ * Without this a selection can never exceed one screenful: `cellAt` clamps the focus to the last visible line, so
+ * dragging further down just re-selects the same last row. Dragging to the top or bottom EDGE now scrolls a line and
+ * the focus is mapped against the new offset, exactly as a text editor does.
+ *
+ * KNOWN LIMIT, and it is the terminal's: DECSET 1002 reports motion only when the pointer enters a NEW CELL. Holding
+ * the pointer still at the edge sends nothing, so the scroll advances per movement rather than on a timer. Moving the
+ * pointer even one cell resumes it.
+ */
+export function dragScrollMotion(
+  row: number,
+  viewport: SelectionViewport,
+): 'line-up' | 'line-down' | undefined {
+  if (viewport.height <= 0) return undefined;
+  const frameRow = row - 1;
+  if (frameRow <= viewport.top) return 'line-up';
+  if (frameRow >= viewport.top + viewport.height - 1) return 'line-down';
+  return undefined;
+}
+
 /** What the surface should do with a mouse event. `'none'` ⇒ nothing changed (the event is still CONSUMED — a mouse
  *  report's raw bytes must never reach the prompt). */
 export type SelectionAction =
@@ -180,6 +216,10 @@ export function reduceSelection(
       // Only the LEFT button selects. Middle pastes and right opens a menu in most emulators; neither should disturb
       // a selection the user is about to copy.
       if (event.button !== 'left') return { kind: 'none' };
+      // A press on the prompt, the status strip, or the live streaming region is not a selection. `cellAt` would clamp
+      // it onto the viewport's last visible line and anchor there — the user would then drag across, and copy, text
+      // they never pressed on.
+      if (!containsRow(event.row, viewport)) return { kind: 'none' };
       const anchor = cellAt(event.row, event.column, viewport);
       return { kind: 'set', state: { anchor, focus: anchor } }; // collapsed: a click alone highlights nothing
     }
@@ -201,5 +241,67 @@ export function reduceSelection(
     case 'wheel':
     case 'other':
       return { kind: 'none' };
+  }
+}
+
+/**
+ * The surface's side of one mouse gesture. Everything here is a capability the ink tree owns (React state, the scroll
+ * reducer, the clipboard); `routeMouseSelection` orchestrates them and stays testable without a terminal.
+ */
+export interface SelectionRouterPorts {
+  /** The viewport as it is RIGHT NOW. Called again after a scroll, so the focus maps against the new offset. */
+  readonly geometry: () => SelectionViewport;
+  /** The live selection, read from a ref — a drag burst arrives in one tick, before React re-renders. */
+  readonly current: () => SelectionState | undefined;
+  readonly setSelection: (state: SelectionState | undefined) => void;
+  /** Write the selection to the system clipboard. */
+  readonly copy: (state: SelectionState) => void;
+  /** Scroll the transcript by one line (the surface applies `reduceScroll` against its live geometry). */
+  readonly scrollBy: (motion: 'line-up' | 'line-down') => void;
+  /** Pin the transcript where it is, so a completing turn cannot move it under the pointer. Returns whether the view
+   *  WAS following, which the caller stores for {@link SelectionRouterPorts.restoreFollow}. */
+  readonly pauseFollow: () => void;
+  /** Undo a {@link SelectionRouterPorts.pauseFollow} that turned out to belong to a plain click, not a drag. */
+  readonly restoreFollow: () => void;
+}
+
+/**
+ * Route one non-wheel mouse report into the selection. SHARED by `relavium chat` and the in-Home chat, which is the
+ * point: the two `useInput` handlers had byte-identical copies of this and would have drifted the moment either grew
+ * a behaviour (2.6.F Step 6f, Opus review).
+ *
+ * Beyond the pure {@link reduceSelection} it owns three things the reducer cannot, because they touch scroll state:
+ *
+ * 1. **Edge auto-scroll.** A drag on the viewport's first or last row scrolls a line BEFORE the focus is mapped, so a
+ *    selection can grow past one screenful. Without it `cellAt` clamps and the user just re-selects the last row.
+ * 2. **Freeze auto-follow on press.** While following, every completed turn re-pins the view to the tail — which would
+ *    slide the transcript out from under a drag and leave the highlight on different text than the pointer.
+ * 3. **Un-freeze on a plain click.** A click is a press+release with no movement. Pausing follow for it would silently
+ *    stop the transcript from following the stream, with nothing on screen to explain why. The `clear` a collapsed
+ *    release produces restores exactly what the press paused.
+ */
+export function routeMouseSelection(event: MouseEvent, ports: SelectionRouterPorts): void {
+  // The scroll must happen first: the focus is then mapped against the offset the user can actually see.
+  if (event.kind === 'drag' && event.button === 'left' && ports.current() !== undefined) {
+    const motion = dragScrollMotion(event.row, ports.geometry());
+    if (motion !== undefined) ports.scrollBy(motion);
+  }
+
+  const action = reduceSelection(ports.current(), event, ports.geometry());
+  switch (action.kind) {
+    case 'none':
+      return;
+    case 'clear':
+      ports.setSelection(undefined);
+      ports.restoreFollow(); // it was a click, not a drag
+      return;
+    case 'set':
+      ports.setSelection(action.state);
+      if (event.kind === 'press') ports.pauseFollow();
+      return;
+    case 'copy':
+      ports.setSelection(action.state); // keep the highlight, as every terminal does
+      ports.copy(action.state);
+      return;
   }
 }

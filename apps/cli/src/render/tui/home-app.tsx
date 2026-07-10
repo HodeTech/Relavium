@@ -23,11 +23,10 @@ import { ReverseSearchView } from './reverse-search-view.js';
 import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
 import {
   normalizeSelection,
-  reduceSelection,
   selectionText,
   type SelectionRange,
   type SelectionState,
-  type SelectionViewport,
+  routeMouseSelection,
 } from './selection.js';
 import {
   effectiveOffset,
@@ -195,6 +194,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // Survives an SGR mouse report SPLIT across two `useInput` calls (Step 6f). One reader per mount: it holds the
   // fragment, so it must not be re-created on every render.
   const mouseReaderRef = useRef(createMouseReportReader());
+  // Whether the transcript was following the tail when the current gesture began — a plain click restores it.
+  const followedBeforeSelectionRef = useRef(false);
   // The mouse selection (2.6.F Step 6) — held exactly like `scroll`: state for the render, a ref so a coalesced drag
   // burst (several SGR reports in ONE stdin read) reduces off the latest rather than the render closure.
   const [selection, setSelection] = useState<SelectionState | undefined>(undefined);
@@ -267,30 +268,34 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   /** Reduce one non-wheel mouse report into the in-Home chat's selection (2.6.F Step 6) — the same reducer, the same
    *  viewport facts, and therefore the same behaviour as `relavium chat`. */
   const routeSelection = (event: TerminalMouseEvent): void => {
-    const measured = scrollGeomRef.current;
-    const live = liveGeom();
-    const viewport: SelectionViewport = {
-      top: measured.top,
-      left: measured.left,
-      height: live.height,
-      totalLines: live.totalLines,
-      offset: effectiveOffset(scrollRef.current, live),
-    };
-    const action = reduceSelection(selectionRef.current, event, viewport);
-    switch (action.kind) {
-      case 'none':
-        return;
-      case 'clear':
-        applySelection(undefined);
-        return;
-      case 'set':
-        applySelection(action.state);
-        return;
-      case 'copy':
-        applySelection(action.state); // keep the highlight, as every terminal does
-        copySelection(action.state);
-        return;
-    }
+    routeMouseSelection(event, {
+      geometry: () => {
+        const measured = scrollGeomRef.current;
+        const live = liveGeom();
+        return {
+          top: measured.top,
+          left: measured.left,
+          height: live.height,
+          totalLines: live.totalLines,
+          offset: effectiveOffset(scrollRef.current, live),
+        };
+      },
+      current: () => selectionRef.current,
+      setSelection: applySelection,
+      copy: copySelection,
+      scrollBy: (motion: 'line-up' | 'line-down') =>
+        applyScroll(reduceScroll(scrollRef.current, motion, liveGeom())),
+      pauseFollow: () => {
+        const scroll = scrollRef.current;
+        followedBeforeSelectionRef.current = scroll.following;
+        if (!scroll.following) return;
+        applyScroll({ offset: effectiveOffset(scroll, liveGeom()), following: false });
+      },
+      restoreFollow: () => {
+        if (!followedBeforeSelectionRef.current) return;
+        applyScroll({ ...scrollRef.current, following: true });
+      },
+    });
   };
 
   /** Copy on release. SILENT on success: a notice would append a transcript entry and shift the very lines the user
@@ -340,6 +345,14 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       }
     }
     if (altChat) {
+      // Esc DISMISSES a live selection. Gated on an IDLE chat: while a turn streams, Esc is the mid-turn ABORT that
+      // `controller.handleKey` reduces, and shadowing an abort with a cosmetic clear would be a bad trade. Mirrors
+      // ChatApp exactly — a click still clears the highlight mid-turn.
+      const chatRunning = state.session?.store.getSnapshot().state.status === 'running';
+      if (key.escape === true && !chatRunning && selectionRef.current !== undefined) {
+        applySelection(undefined);
+        return;
+      }
       const motion = scrollMotionForKey(key);
       if (motion !== undefined) {
         applyScroll(reduceScroll(scrollRef.current, motion, liveGeom()));

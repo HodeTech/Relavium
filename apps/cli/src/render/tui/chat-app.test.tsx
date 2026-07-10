@@ -591,9 +591,10 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     expect(copied).toEqual([]);
   });
 
-  it('after SCROLLING, a drag on the top row copies the line now shown there — not line 0', async () => {
+  it('after SCROLLING, a drag copies the line now shown on that row — not line 0', async () => {
     // The reason `offset` is in the viewport facts at all. A break that hardcodes `offset: 0` passes every test that
-    // never scrolls first, and then silently copies the wrong lines for any user who did.
+    // never scrolls first, and then silently copies the wrong lines for any user who did. The drag stays on an INNER
+    // row: row 1 is the edge-scroll zone (see the auto-scroll tests below), and this test is about `offset`, not that.
     const copied: string[] = [];
     const store = createChatStore(false);
     for (let i = 0; i < 60; i += 1) store.notice(`row-${String(i).padStart(2, '0')}`);
@@ -604,18 +605,18 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
       h.stdin.write('\x1b[<64;5;5M'); // wheel up: leave the tail
       await settleFrames();
     }
-    const topRow = (h.lastFrame() ?? '').split('\n')[0]?.trim();
-    expect(topRow).toMatch(/^row-\d\d$/);
-    expect(topRow).not.toBe('row-00'); // we really did scroll away from the head
+    const thirdRow = (h.lastFrame() ?? '').split('\n')[2]?.trim();
+    expect(thirdRow).toMatch(/^row-\d\d$/);
+    expect(thirdRow).not.toBe('row-02'); // we really did scroll away from the head
 
-    h.stdin.write('\x1b[<0;1;1M'); // press the FIRST viewport row
+    h.stdin.write('\x1b[<0;1;3M'); // press the THIRD viewport row (terminal row 3)
     await settleFrames();
-    h.stdin.write('\x1b[<32;99;1M'); // drag past its right edge ⇒ the whole row
+    h.stdin.write('\x1b[<32;99;3M'); // drag past its right edge ⇒ the whole row
     await settleFrames();
-    h.stdin.write('\x1b[<0;99;1m');
+    h.stdin.write('\x1b[<0;99;3m');
     await settleFrames();
 
-    expect(copied).toEqual([topRow]); // exactly the line the user could SEE on that row
+    expect(copied).toEqual([thirdRow]); // exactly the line the user could SEE on that row
   });
 
   it('reduces against the LIVE transcript, not the last measured one (an append between commits)', async () => {
