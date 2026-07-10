@@ -17,6 +17,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE } from '../render/alt-screen.js';
+import type { SuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import {
   defaultSubscribeProcessExit,
@@ -683,6 +684,69 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       const props = await captureProps({ global: { ...global, configPath: cfg, noMouse: true } });
       expect(props.clipboard).toBeUndefined();
     });
+  });
+
+  /**
+   * A KEYBOARD Ctrl-C DURING A HATCH (2.6.F Step 6g, whole-phase Opus review — rated critical by three lenses).
+   *
+   * A `/scrollback` or `/edit` suspension turns raw mode OFF, so the kernel resumes translating Ctrl-C into a real
+   * SIGINT. On `relavium chat` that signal is DROPPED (`onSigintGated`, since Step 5d) and the hatch's own listener
+   * resumes the renderer. The Home never had that gate: the signal tore the whole session down behind the
+   * suspension's back, whose `reclaim` then re-emitted ENABLE_MOUSE on the way out — leaving DECSET 1002+1006 live
+   * on the user's shell, where every subsequent click types escape bytes.
+   */
+  describe('a keyboard Ctrl-C during a hatch does not tear the Home down', () => {
+    const drive = (): ReturnType<typeof makeDeps> & {
+      exitProcess: ReturnType<typeof vi.fn>;
+      port: SuspendPort;
+    } => {
+      const exitProcess = vi.fn();
+      let captured: RootAppProps | undefined;
+      const made = makeDeps((p) => (captured = p));
+      void driveHome({ ...made.deps, exit: exitProcess as (code: number) => void }).catch(
+        () => undefined,
+      );
+      const props = captured;
+      if (props?.suspendPort === undefined) throw new Error('driveHome passed no suspend port');
+      // `RootApp` attaches ink's `suspendTerminal` on mount; the INJECTED render does not, so stand in for it.
+      props.suspendPort.attach((callback) => callback());
+      return { ...made, exitProcess, port: props.suspendPort };
+    };
+
+    it('SIGINT while SUSPENDED is dropped — no exit, no terminal restore behind the hatch’s back', async () => {
+      const d = drive();
+      let sawSuspended = false;
+      await d.port.current()?.(() => {
+        sawSuspended = d.port.isSuspended();
+        d.signalHandlers[0]?.(2); // the keyboard Ctrl-C
+        return Promise.resolve();
+      });
+      expect(sawSuspended).toBe(true); // the port really was suspended when the signal arrived
+      expect(d.exitProcess).not.toHaveBeenCalled();
+      expect(d.writeControl.mock.calls.map((c) => c[0] as string)).not.toContain(DISABLE_MOUSE);
+    });
+
+    it('SIGINT when NOT suspended still exits 130 — the cooperative teardown is unchanged', () => {
+      const d = drive();
+      d.signalHandlers[0]?.(2);
+      expect(d.writeControl.mock.calls.map((c) => c[0] as string)).toContain(DISABLE_MOUSE);
+    });
+
+    it.each([
+      ['SIGTERM', 15],
+      ['SIGHUP', 1],
+      ['SIGQUIT', 3],
+    ])(
+      'an EXTERNAL %s tears down even while suspended — only SIGINT is the hatch’s',
+      async (_n, signo) => {
+        const d = drive();
+        await d.port.current()?.(() => {
+          d.signalHandlers[0]?.(signo);
+          return Promise.resolve();
+        });
+        expect(d.writeControl.mock.calls.map((c) => c[0] as string)).toContain(DISABLE_MOUSE);
+      },
+    );
   });
 
   describe('the terminal is restored on EVERY termination path', () => {

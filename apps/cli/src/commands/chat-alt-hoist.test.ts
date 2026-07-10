@@ -1,3 +1,4 @@
+import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -32,12 +33,15 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
     readonly lifecycle: ReplLifecycle;
     readonly fireExit: () => void; // the captured process.on('exit') listener
     readonly fireSignal: (signo: number) => void; // the captured SIGTERM/SIGHUP/SIGQUIT listener
+    readonly fireInterrupt: () => void; // the captured SIGINT listener (the rebuild-window net)
     readonly removeExit: ReturnType<typeof vi.fn>;
     readonly removeSignal: ReturnType<typeof vi.fn>;
+    readonly removeInterrupt: ReturnType<typeof vi.fn>;
     readonly setRawMode: ReturnType<typeof vi.fn>;
     readonly exit: ReturnType<typeof vi.fn>;
     readonly onProcessExit: ReturnType<typeof vi.fn>;
     readonly onTerminationSignal: ReturnType<typeof vi.fn>;
+    readonly onInterrupt: ReturnType<typeof vi.fn>;
   }
 
   const harness = (): Harness => {
@@ -59,16 +63,25 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
       signalCb = cb;
       return removeSignal;
     });
+    let interruptCb: () => void = () => undefined;
+    const removeInterrupt = vi.fn();
+    const onInterrupt = vi.fn((cb: () => void) => {
+      interruptCb = cb;
+      return removeInterrupt;
+    });
     return {
       writes,
       outs,
       errs,
       events,
-      lifecycle: { onProcessExit, onTerminationSignal, setRawMode, exit },
+      lifecycle: { onProcessExit, onTerminationSignal, onInterrupt, setRawMode, exit },
       fireExit: () => exitCb(),
       fireSignal: (signo) => signalCb(signo),
+      fireInterrupt: () => interruptCb(),
       removeExit,
       removeSignal,
+      removeInterrupt,
+      onInterrupt,
       setRawMode,
       exit,
       onProcessExit,
@@ -199,5 +212,103 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
     expect(h.outs).toEqual([]); // no summary (the loop never returned one)
     expect(h.removeExit).toHaveBeenCalledTimes(1);
     expect(h.removeSignal).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * THE REBUILD WINDOW (2.6.F Step 6g, whole-phase Opus review). SIGINT belongs to ink: while a tree is mounted,
+   * `driveInk`'s `onSigintGated` runs the cooperative `/cancel`, and during a `/scrollback` or `/edit` hatch it
+   * DROPS the signal so the suspension can reclaim the terminal. But a `/clear` or `/models` rebuild unmounts ink
+   * and mounts a fresh tree, and in that window nothing listens for SIGINT — Node's default action kills the process
+   * WITHOUT firing `'exit'`, so the `onProcessExit` net never runs and the alt buffer, mouse reporting and the hidden
+   * cursor are stranded on the user's shell.
+   */
+  describe('the SIGINT net covers the window where no ink tree is mounted', () => {
+    /** A port that reports whether an ink tree is attached — exactly what `createSuspendPort().current()` does. */
+    const portWith = (attached: boolean): SuspendPort => {
+      const port = createSuspendPort();
+      if (attached) port.attach((cb) => cb());
+      return port;
+    };
+
+    it('restores the terminal and exits 130 when NO ink tree is attached', async () => {
+      const h = harness();
+      await withHoistedAltScreen(
+        {
+          active: true,
+          write: (s_) => h.writes.push(s_),
+          lifecycle: h.lifecycle,
+          writeOut: () => undefined,
+          writeErr: () => undefined,
+          suspendPort: portWith(false),
+        },
+        () => {
+          h.fireInterrupt();
+          return Promise.resolve({});
+        },
+      );
+      expect(h.exit).toHaveBeenCalledWith(130);
+      expect(h.writes.join('')).toContain(DISABLE_MOUSE);
+      expect(h.writes.join('')).toContain(EXIT_ALT_SCREEN);
+      expect(h.setRawMode).toHaveBeenCalledWith(false);
+    });
+
+    it('DEFERS to ink when a tree IS attached — Ctrl-C there is the cooperative /cancel, not a kill', async () => {
+      const h = harness();
+      await withHoistedAltScreen(
+        {
+          active: true,
+          write: (s_) => h.writes.push(s_),
+          lifecycle: h.lifecycle,
+          writeOut: () => undefined,
+          writeErr: () => undefined,
+          suspendPort: portWith(true),
+        },
+        () => {
+          h.fireInterrupt();
+          return Promise.resolve({});
+        },
+      );
+      expect(h.exit).not.toHaveBeenCalled();
+    });
+
+    it('registers no SIGINT net when the alt screen is inactive (inline / --json)', async () => {
+      const h = harness();
+      await withHoistedAltScreen(
+        {
+          active: false,
+          write: (s_) => h.writes.push(s_),
+          lifecycle: h.lifecycle,
+          writeOut: () => undefined,
+          writeErr: () => undefined,
+          suspendPort: portWith(false),
+        },
+        () => Promise.resolve({}),
+      );
+      expect(h.onInterrupt).not.toHaveBeenCalled();
+    });
+
+    it('removes the SIGINT net when the loop ends — it must not outlive the hoist', async () => {
+      const h = harness();
+      await withHoistedAltScreen(
+        {
+          active: true,
+          write: (s_) => h.writes.push(s_),
+          lifecycle: h.lifecycle,
+          writeOut: () => undefined,
+          writeErr: () => undefined,
+          suspendPort: portWith(false),
+        },
+        () => Promise.resolve({}),
+      );
+      expect(h.removeInterrupt).toHaveBeenCalledTimes(1);
+    });
+
+    it('the PRODUCTION lifecycle registers SIGINT separately from the termination signals', () => {
+      const before = process.listenerCount('SIGINT');
+      const off = defaultReplLifecycle.onInterrupt(() => undefined);
+      expect(process.listenerCount('SIGINT')).toBe(before + 1);
+      off();
+      expect(process.listenerCount('SIGINT')).toBe(before);
+    });
   });
 });

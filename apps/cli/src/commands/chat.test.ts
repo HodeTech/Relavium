@@ -146,6 +146,7 @@ const INERT_HOIST = {
   lifecycle: {
     onProcessExit: (): (() => void) => () => undefined,
     onTerminationSignal: (): (() => void) => () => undefined,
+    onInterrupt: (): (() => void) => () => undefined,
     setRawMode: (): void => undefined,
     exit: (): void => undefined,
   },

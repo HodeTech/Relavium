@@ -406,6 +406,9 @@ export interface ReplLifecycle {
   readonly onProcessExit: (listener: () => void) => () => void;
   /** Register SIGTERM(15)/SIGHUP(1) listeners (the signo is passed); returns a remover. */
   readonly onTerminationSignal: (listener: (signo: number) => void) => () => void;
+  /** Register a SIGINT(2) listener; returns a remover. Kept SEPARATE from {@link onTerminationSignal} because SIGINT
+   *  is normally ink's (the cooperative `/cancel`) — the hoist only nets the window where no ink tree is mounted. */
+  readonly onInterrupt: (listener: () => void) => () => void;
   /** Restore the terminal from raw mode (ink's own restore is bypassed on a signal we own). */
   readonly setRawMode: (raw: boolean) => void;
   /** Terminate the process (conventional `128 + signo`). */
@@ -417,6 +420,10 @@ export const defaultReplLifecycle: ReplLifecycle = {
   onProcessExit: (listener) => {
     process.on('exit', listener);
     return () => process.removeListener('exit', listener);
+  },
+  onInterrupt: (listener) => {
+    process.on('SIGINT', listener);
+    return () => process.removeListener('SIGINT', listener);
   },
   onTerminationSignal: (listener) => {
     // SIGTERM(15), SIGHUP(1), SIGQUIT(3): the catchable external kills that terminate WITHOUT firing Node's `'exit'`
@@ -1875,6 +1882,9 @@ export async function withHoistedAltScreen(
     readonly lifecycle: ReplLifecycle;
     readonly writeOut: (text: string) => void;
     readonly writeErr: (text: string) => void;
+    /** The ONE suspend port for the loop. `current() === undefined` means NO ink tree is mounted — the only window in
+     *  which SIGINT is unowned. Absent ⇒ no SIGINT net (a caller with no ink, e.g. a unit test). */
+    readonly suspendPort?: SuspendPort;
   },
   runLoop: (alt: AltScreenController) => Promise<HoistedLoopResult>,
 ): Promise<void> {
@@ -1886,6 +1896,27 @@ export async function withHoistedAltScreen(
   });
   alt.enter();
   const removeExitNet = opts.active ? opts.lifecycle.onProcessExit(() => alt.restore()) : noop;
+  // SIGINT belongs to ink: while a tree is mounted, `driveInk`'s `onSigintGated` runs the cooperative `/cancel`, and
+  // during a `/scrollback` or `/edit` hatch it deliberately DROPS the signal so the suspension can reclaim. But a
+  // `/clear` or `/models` rebuild unmounts ink and mounts a fresh tree, and in that window NOTHING listens for
+  // SIGINT — Node's default action then kills the process WITHOUT firing `'exit'`, so the `onProcessExit` net never
+  // runs and the alt buffer, mouse reporting and the hidden cursor are stranded on the user's shell. This net covers
+  // exactly that window, and defers to ink whenever a tree is attached.
+  const suspendPortForSigint = opts.suspendPort;
+  const removeInterruptNet =
+    opts.active && suspendPortForSigint !== undefined
+      ? opts.lifecycle.onInterrupt(() => {
+          if (suspendPortForSigint.current() !== undefined) return; // ink owns it (mounted, or suspended)
+          alt.restore();
+          opts.write(DISABLE_BRACKETED_PASTE);
+          try {
+            opts.lifecycle.setRawMode(false);
+          } catch {
+            // best-effort — a non-TTY / already-cooked stdin must not mask the exit
+          }
+          opts.lifecycle.exit(130); // conventional 128 + SIGINT(2)
+        })
+      : noop;
   const removeSignalNet = opts.active
     ? opts.lifecycle.onTerminationSignal((signo) => {
         alt.restore();
@@ -1910,6 +1941,7 @@ export async function withHoistedAltScreen(
     alt.restore();
     removeExitNet();
     removeSignalNet();
+    removeInterruptNet();
     if (result.summaryText !== undefined) opts.writeOut(`${result.summaryText}\n`);
     if (result.errorText !== undefined) opts.writeErr(result.errorText);
   }
@@ -2022,6 +2054,7 @@ export async function runReplLoop(
         lifecycle: deps.lifecycle ?? defaultReplLifecycle,
         writeOut: (text) => deps.io.writeOut(text),
         writeErr: (text) => deps.io.writeErr(text),
+        suspendPort,
       },
       async (alt): Promise<HoistedLoopResult> => {
         altScreenController = alt; // so `hatchPorts.terminal()` reads the LIVE buffer state, not the startup decision

@@ -10,7 +10,8 @@ import { displayWidth } from './viewport.js';
  * prints `╭` into a terminal that cannot draw it.
  */
 
-const ASCII_ONLY = /^[\x20-\x7e]*$/; // eslint-disable-line no-control-regex -- the range IS printable ASCII
+/** Printable ASCII only — no box-drawing glyph, no control character. */
+const ASCII_ONLY = /^[\x20-\x7e]*$/;
 
 describe('bannerLines', () => {
   it('every line is EXACTLY the same display width — a ragged plaque looks broken, not branded', () => {

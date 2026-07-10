@@ -566,6 +566,14 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     // One external-signal lifecycle covering the Home, the in-Home chat, and MCP teardown.
     let signaled = false;
     const onSignal = (signo: number): void => {
+      // A KEYBOARD Ctrl-C during a `/scrollback` or `/edit` hatch arrives here as a REAL SIGINT: the suspension turns
+      // raw mode OFF, so the kernel resumes translating Ctrl-C. The hatch owns the terminal — `nodeWaitForContinue`
+      // resolves on that same SIGINT, and `$EDITOR` receives it directly. Tearing the Home down here would exit
+      // BEHIND the suspension's back: its `reclaim` re-emits ENABLE_MOUSE on the way out, and the latched
+      // `restoreTerminalControls` would never run again, stranding DECSET 1002+1006 on the user's shell.
+      // `relavium chat` has gated this since Step 5d (`onSigintGated`, chat-ink.tsx); the Home never did.
+      // Only SIGINT: an EXTERNAL kill (TERM/HUP/QUIT) must still tear down, suspended or not.
+      if (signo === 2 && suspendPort.isSuspended()) return;
       if (signaled) {
         exitProcess(128 + signo); // a second signal forces an immediate exit (a teardown ignoring the abort)
         return;
