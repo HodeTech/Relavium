@@ -221,24 +221,26 @@ describe('displayWidth agrees with the terminal on the wide scripts the old tabl
     expect(wrapLogicalLine(line, 40)).toHaveLength(2);
   });
 
-  it('NEVER under-counts a single grapheme cluster — the invariant the whole viewport rests on', () => {
-    // Exhaustive over the assigned planes a transcript can realistically carry. Structural today (it IS the same
-    // function), and the guard if anyone re-hand-rolls it.
+  it('NEVER under-counts a single code point — the invariant the whole viewport rests on', () => {
+    // Exhaustive over the assigned planes a transcript can realistically carry: ~196 000 code points. Structural
+    // today (`displayWidth` IS `inkWidth`), and the guard the moment anyone re-hand-rolls it.
     //
-    // ONE `expect` at the end, not 196 000. Vitest's `expect` carries enough per-call overhead that the loop took
-    // ~7 s on a CI runner and timed out, while passing in ~2 s locally — a real defect in the test, not a flake.
-    const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    // Two things it deliberately does NOT do, both learned from CI:
+    //   - it does not call `expect` per code point. Vitest's `expect` overhead alone took ~7 s on a runner.
+    //   - it does not segment each code point first. A single code point is ALWAYS exactly one grapheme cluster
+    //     (verified over the same range), so that guard was dead weight costing seconds.
+    // What remains is inherently a long sweep, so it carries an explicit timeout rather than sitting a hair under
+    // the default and flaking on a slow runner.
     const underCounted: string[] = [];
     for (let cp = 0x20; cp <= 0x2ffff; cp += 1) {
       if (cp >= 0xd800 && cp <= 0xdfff) continue; // lone surrogates are not text
       const ch = String.fromCodePoint(cp);
-      if ([...seg.segment(ch)].length !== 1) continue;
       if (displayWidth(ch) < inkWidth(ch) && underCounted.length < 10) {
         underCounted.push(`U+${cp.toString(16).toUpperCase()}`);
       }
     }
     expect(underCounted).toEqual([]);
-  });
+  }, 30_000);
 
   it('a wrapped line never exceeds `cols` by ink’s own measure', () => {
     const messy = '日本語です a👍b \u{17000}\u{17001} café \u{A960}\u{1160} ❤️ 1️⃣ 🇹🇷 end';
