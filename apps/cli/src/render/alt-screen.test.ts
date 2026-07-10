@@ -88,3 +88,60 @@ describe('createAltScreenController (2.6.F Step 4b-3)', () => {
     expect(DISABLE_MOUSE).toBe('\x1b[?1006l\x1b[?1000l'); // symmetric off
   });
 });
+
+/**
+ * The `mouse` option (2.6.F Step 5e, ADR-0068 §e). `--no-mouse` / `[preferences].mouse = false` must leave the
+ * emulator's native click-drag selection working — so `enter()` must not arm DECSET-1000. The DISABLE on `restore()`
+ * stays unconditional: disabling a mode that was never enabled is a no-op, and an unconditional teardown can never
+ * strand mouse reporting if the option is ever mis-threaded.
+ */
+describe('createAltScreenController — the mouse opt-out', () => {
+  const sink = (): { write: (s: string) => void; out: string[] } => {
+    const out: string[] = [];
+    return { write: (s) => out.push(s), out };
+  };
+
+  it('mouse: false ⇒ enters WITHOUT arming mouse reporting; native selection keeps working', () => {
+    const { write, out } = sink();
+    const c = createAltScreenController({ write, active: true, mouse: false });
+    c.enter();
+    expect(out).toEqual([ENTER_ALT_SCREEN + HIDE_CURSOR]);
+    expect(out[0]).not.toContain(ENABLE_MOUSE);
+    expect(c.isEntered()).toBe(true);
+    expect(c.isMouseEnabled()).toBe(false); // …and a hatch suspension must not "restore" what we never set
+  });
+
+  it('mouse: false ⇒ restore STILL disables (a no-op on a mode never enabled, but it can never strand DECSET-1000)', () => {
+    const { write, out } = sink();
+    const c = createAltScreenController({ write, active: true, mouse: false });
+    c.enter();
+    c.restore();
+    expect(out.at(-1)).toBe(DISABLE_MOUSE + EXIT_ALT_SCREEN + SHOW_CURSOR);
+  });
+
+  it('mouse defaults to ON when the option is omitted (every pre-Step-5e caller keeps its behaviour)', () => {
+    const { write, out } = sink();
+    const c = createAltScreenController({ write, active: true });
+    c.enter();
+    expect(out).toEqual([ENTER_ALT_SCREEN + HIDE_CURSOR + ENABLE_MOUSE]);
+    expect(c.isMouseEnabled()).toBe(true);
+  });
+
+  it('isMouseEnabled is false before enter and after restore (it tracks the LIVE terminal, not the option)', () => {
+    const { write } = sink();
+    const c = createAltScreenController({ write, active: true, mouse: true });
+    expect(c.isMouseEnabled()).toBe(false);
+    c.enter();
+    expect(c.isMouseEnabled()).toBe(true);
+    c.restore();
+    expect(c.isMouseEnabled()).toBe(false);
+  });
+
+  it('inactive (inline / non-TTY) ⇒ mouse is never enabled, whatever the option says', () => {
+    const { write, out } = sink();
+    const c = createAltScreenController({ write, active: false, mouse: true });
+    c.enter();
+    expect(out).toEqual([]);
+    expect(c.isMouseEnabled()).toBe(false);
+  });
+});

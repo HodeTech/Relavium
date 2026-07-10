@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_ALT_SCREEN, resolveRenderMode, type RenderModeInput } from './render-mode.js';
+import {
+  DEFAULT_ALT_SCREEN,
+  DEFAULT_MOUSE,
+  resolveMouseMode,
+  resolveRenderMode,
+  type RenderModeInput,
+} from './render-mode.js';
 
 const input = (over: Partial<RenderModeInput> = {}): RenderModeInput => ({
   outputMode: 'tui',
@@ -58,5 +64,38 @@ describe('resolveRenderMode (2.6.F / ADR-0068 §e)', () => {
         input({ configAltScreen: true, noAltScreenFlag: true, outputMode: 'plain' }),
       ),
     ).toBe('inline'); // plain beats all
+  });
+});
+
+/**
+ * `resolveMouseMode` (2.6.F Step 5e, ADR-0068 §e). Precedence mirrors `resolveRenderMode`, with one extra structural
+ * guarantee: the INLINE renderer can never enable mouse reporting, whatever the flag or the config key say — capturing
+ * the mouse there would break the emulator's native scrollback selection, which is the whole reason inline exists.
+ */
+describe('resolveMouseMode', () => {
+  const base = { renderMode: 'alt', noMouseFlag: false, configMouse: undefined } as const;
+
+  it('defaults to ON inside the alt screen (a maintainer deviation from §e, recorded in the ADR)', () => {
+    expect(resolveMouseMode(base)).toBe(true);
+    expect(DEFAULT_MOUSE).toBe(true);
+  });
+
+  it('the INLINE renderer never enables the mouse — not by config, not by the phase default', () => {
+    expect(resolveMouseMode({ ...base, renderMode: 'inline' })).toBe(false);
+    expect(resolveMouseMode({ ...base, renderMode: 'inline', configMouse: true })).toBe(false);
+    expect(resolveMouseMode({ ...base, renderMode: 'inline', defaultMouse: true })).toBe(false);
+  });
+
+  it('`--no-mouse` overrides the config key (the flag is the per-invocation opt-out)', () => {
+    expect(resolveMouseMode({ ...base, noMouseFlag: true, configMouse: true })).toBe(false);
+  });
+
+  it('`[preferences].mouse` is the durable opt-out / opt-in when no flag is passed', () => {
+    expect(resolveMouseMode({ ...base, configMouse: false })).toBe(false);
+    expect(resolveMouseMode({ ...base, configMouse: true, defaultMouse: false })).toBe(true);
+  });
+
+  it('falls to the injected phase default when neither flag nor key decides', () => {
+    expect(resolveMouseMode({ ...base, defaultMouse: false })).toBe(false);
   });
 });

@@ -36,7 +36,7 @@ import type { CliIo } from '../process/io.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
-import { resolveRenderMode } from '../render/render-mode.js';
+import { resolveMouseMode, resolveRenderMode } from '../render/render-mode.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
@@ -184,13 +184,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   // with `alternateScreen: true`, so ink itself toggles DECSET-1049 across a suspension; only the mouse is ours.
   const suspendPort = createSuspendPort();
   let altScreenActive = false; // assigned once the render mode resolves; read LAZILY by `terminal()` below
+  let mouseActive = false; // ditto — `--no-mouse` / `[preferences].mouse = false` leaves the alt buffer mouse-less
   const hatchPorts: Omit<HatchDeps, 'transcript' | 'note'> = {
     suspendPort,
     writeControl,
     // `inkOwnedTerminal` (not `hoistedTerminal`): this surface mounts ink with `alternateScreen: true`, so ink toggles
-    // DECSET-1049 across the suspension and only the mouse is ours. Read lazily — `altScreenActive` is set at mount.
+    // DECSET-1049 across the suspension and only the mouse is ours. Both read lazily — set at mount. `mouseActive` is
+    // separate from `altActive` because `--no-mouse` decouples them (Step 5e).
     terminal: inkOwnedTerminal(
       () => altScreenActive,
+      () => mouseActive,
       () => process.stdout.columns,
     ),
     dump: {
@@ -576,6 +579,12 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       });
       const alternateScreen = renderMode === 'alt';
       altScreenActive = alternateScreen; // the hatch ports read this lazily (see `terminal()` above)
+      // Mouse reporting (Step 5e, ADR-0068 §e) — resolved from the SAME render mode, so the two cannot disagree.
+      mouseActive = resolveMouseMode({
+        renderMode,
+        noMouseFlag: deps.global.noMouse === true,
+        configMouse: config.mouse,
+      });
       const props: RootAppProps = {
         controller,
         nowMs: now,
@@ -601,7 +610,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // Enable terminal mouse reporting so the in-Home chat's viewport wheel-scrolls (2.6.F Step 5). Only on the alt
       // screen (ink owns 1049 on this single mount; mouse is ours). Disabled on EVERY teardown path below — the
       // `DISABLE_MOUSE` writes are unconditional there (a no-op when it was never enabled, like DISABLE_BRACKETED_PASTE).
-      if (alternateScreen) writeControl(ENABLE_MOUSE);
+      if (mouseActive) writeControl(ENABLE_MOUSE);
     });
   } finally {
     // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the

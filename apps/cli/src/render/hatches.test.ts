@@ -245,6 +245,7 @@ describe('the per-surface terminal facts', () => {
   it('hoistedTerminal (`relavium chat`): WE own 1049 — ink mounts with alternateScreen:false', () => {
     const term = hoistedTerminal(
       () => true,
+      () => true,
       () => 120,
     )();
     expect(term).toEqual({
@@ -257,6 +258,7 @@ describe('the per-surface terminal facts', () => {
 
   it('inkOwnedTerminal (the bare Home): INK owns 1049 — it mounts with alternateScreen:true', () => {
     const term = inkOwnedTerminal(
+      () => true,
       () => true,
       () => 120,
     )();
@@ -272,9 +274,11 @@ describe('the per-surface terminal facts', () => {
     let entered = false;
     const chat = hoistedTerminal(
       () => entered,
+      () => entered,
       () => 80,
     );
     const home = inkOwnedTerminal(
+      () => entered,
       () => entered,
       () => 80,
     );
@@ -286,15 +290,37 @@ describe('the per-surface terminal facts', () => {
     expect(home().altActive).toBe(true);
   });
 
+  it('mouseActive is INDEPENDENT of altActive — the `--no-mouse` shape (alt buffer on, mouse off)', () => {
+    // Step 5e decoupled them: `--no-mouse` / `[preferences].mouse = false` leaves the alt buffer entered with mouse
+    // reporting never armed. A suspension must then NOT "restore" DECSET-1000 on the way back — it was never set.
+    const chat = hoistedTerminal(
+      () => true,
+      () => false,
+      () => 80,
+    )();
+    expect(chat.altActive).toBe(true);
+    expect(chat.mouseActive).toBe(false);
+
+    const home = inkOwnedTerminal(
+      () => true,
+      () => false,
+      () => 80,
+    )();
+    expect(home.altActive).toBe(true);
+    expect(home.mouseActive).toBe(false);
+  });
+
   it('falls back to a sane width when the terminal reports no column count', () => {
     expect(
       hoistedTerminal(
+        () => true,
         () => true,
         () => undefined,
       )().columns,
     ).toBe(DEFAULT_COLUMNS);
     expect(
       inkOwnedTerminal(
+        () => true,
         () => true,
         () => undefined,
       )().columns,

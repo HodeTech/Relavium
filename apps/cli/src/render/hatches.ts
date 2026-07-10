@@ -35,6 +35,8 @@ export interface HatchTerminal {
   readonly mouseActive: boolean;
   /** `true` on the bare Home (ink's `alternateScreen` render option owns 1049); `false` on `relavium chat`. */
   readonly inkOwnsAltScreen: boolean;
+  // NOTE `mouseActive` is INDEPENDENT of `altActive` since Step 5e: `--no-mouse` / `[preferences].mouse = false`
+  // leaves the alt buffer entered with mouse reporting off, so a suspension must not "restore" a mode we never set.
 }
 
 export interface HatchDeps {
@@ -66,10 +68,11 @@ export const DEFAULT_COLUMNS = 80;
  * the buffer (alt-screen.ts bundles them), so both read the SAME live predicate — never the mode resolved at startup.
  */
 export const hoistedTerminal =
-  (altEntered: () => boolean, columns: () => number | undefined) => (): HatchTerminal => ({
+  (altEntered: () => boolean, mouseEnabled: () => boolean, columns: () => number | undefined) =>
+  (): HatchTerminal => ({
     columns: columns() ?? DEFAULT_COLUMNS,
     altActive: altEntered(),
-    mouseActive: altEntered(),
+    mouseActive: mouseEnabled(),
     inkOwnsAltScreen: false,
   });
 
@@ -82,10 +85,11 @@ export const hoistedTerminal =
  * a future edit gets backwards (Step-5d-3 Opus review).
  */
 export const inkOwnedTerminal =
-  (altActive: () => boolean, columns: () => number | undefined) => (): HatchTerminal => ({
+  (altActive: () => boolean, mouseEnabled: () => boolean, columns: () => number | undefined) =>
+  (): HatchTerminal => ({
     columns: columns() ?? DEFAULT_COLUMNS,
     altActive: altActive(),
-    mouseActive: altActive(),
+    mouseActive: mouseEnabled(),
     inkOwnsAltScreen: true,
   });
 

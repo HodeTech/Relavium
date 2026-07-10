@@ -144,10 +144,15 @@ export const GlobalConfigSchema = z
         // Full-screen alt-screen renderer (2.6.F, ADR-0068 §e). The DEFAULT is ON for an interactive TTY, so this key
         // is the durable OPT-OUT: `false` (like the `--no-alt-screen` flag) keeps the byte-identical INLINE renderer
         // (native scrollback + the emulator's own a11y), the screen-reader fallback; `true` forces it on. The flag
-        // overrides this key; a non-TTY / machine (`--json`/CI) path ignores both and always renders inline. The
-        // transcript renders through a resize-tracked viewport with scroll-back + auto-follow (PgUp/PgDn,
-        // Ctrl+Home/Ctrl+End) and mouse-wheel; only the `[`/`v` copy-and-search hatches remain (Step 5).
+        // overrides this key; a non-TTY / machine (`--json`/CI) path ignores both and always renders inline.
         alt_screen: z.boolean().optional(),
+        // Terminal MOUSE reporting (DECSET 1000+1006) in the full-screen renderer (2.6.F, ADR-0068 §e). It is what
+        // makes the wheel scroll the transcript; the cost is that the emulator forwards clicks to Relavium instead of
+        // running its own click-drag SELECTION, so copy-on-select then needs the emulator's bypass modifier (Shift, or
+        // Option on iTerm2). DEFAULT ON. `false` (like `--no-mouse`) turns it off durably: the wheel stops scrolling
+        // (PgUp/PgDn/Ctrl+Home/Ctrl+End still page) and native selection works again. The flag overrides this key.
+        // Ignored outside the alt screen — the inline renderer NEVER enables mouse reporting.
+        mouse: z.boolean().optional(),
       })
       .strict()
       .optional(),

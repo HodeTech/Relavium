@@ -31,6 +31,7 @@ Global options (usable anywhere on the command line):
   --cwd <dir>       run as if started in <dir>
   --config <path>   use an explicit config file
   --no-alt-screen   keep the inline renderer (no full-screen alt screen)
+  --no-mouse        disable mouse reporting (restores native click-drag selection)
   -v, --verbose     print verbose diagnostics to stderr
   -q, --quiet       suppress non-essential output
 

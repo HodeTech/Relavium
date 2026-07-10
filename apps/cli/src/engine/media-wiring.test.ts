@@ -37,6 +37,7 @@ const EMPTY_CONFIG: ResolvedConfig = {
     reasoningEffort: undefined,
   },
   altScreen: undefined,
+  mouse: undefined,
   variables: {},
   mcpServers: [],
 };

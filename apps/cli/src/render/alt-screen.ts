@@ -38,6 +38,9 @@ export const DISABLE_MOUSE = '\x1b[?1006l\x1b[?1000l';
 export interface AltScreenController {
   /** Enter the alt buffer + hide the cursor, exactly ONCE (a repeat call and the inactive case are no-ops). */
   enter(): void;
+  /** Whether mouse reporting is currently ON — `enter()` ran AND the `mouse` option was set (2.6.F Step 5e,
+   *  ADR-0068 §e). The `/scrollback` + `/edit` suspension asks this so it suspends the mouse only if we enabled it. */
+  readonly isMouseEnabled: () => boolean;
   /** Exit the alt buffer + show the cursor, exactly ONCE — IDEMPOTENT, so the `finally`, the `process.on('exit')`
    *  net, and a signal handler can all call it without a double toggle. A no-op if `enter()` never ran. */
   restore(): void;
@@ -55,20 +58,27 @@ export interface AltScreenController {
 export function createAltScreenController(opts: {
   readonly write: (sequence: string) => void;
   readonly active: boolean;
+  /** Enable mouse reporting with the buffer (2.6.F Step 5e, ADR-0068 §e). `false` (`--no-mouse` /
+   *  `[preferences].mouse = false`) keeps the wheel inert and leaves the emulator's native click-drag selection
+   *  working. Defaults to `true` so every existing caller/test keeps the Step-5b behaviour. */
+  readonly mouse?: boolean;
 }): AltScreenController {
   const { write, active } = opts;
+  const mouse = opts.mouse ?? true;
   let entered = false;
   let restored = false;
   return {
     enter: (): void => {
       if (!active || entered) return;
       entered = true;
-      write(ENTER_ALT_SCREEN + HIDE_CURSOR + ENABLE_MOUSE);
+      write(ENTER_ALT_SCREEN + HIDE_CURSOR + (mouse ? ENABLE_MOUSE : ''));
     },
     restore: (): void => {
       if (!entered || restored) return; // never exit a buffer we never entered; never exit twice
       restored = true;
-      // Disable mouse reporting FIRST (restore native selection), then exit the alt buffer + show the cursor.
+      // Disable mouse reporting FIRST (restore native selection), then exit the alt buffer + show the cursor. The
+      // DISABLE is UNCONDITIONAL even when `mouse` is off: a disable of a mode that was never enabled is a no-op, and
+      // an unconditional teardown can never strand DECSET-1000 if the option is ever mis-threaded.
       write(DISABLE_MOUSE + EXIT_ALT_SCREEN + SHOW_CURSOR);
     },
     clearBetween: (): void => {
@@ -76,5 +86,6 @@ export function createAltScreenController(opts: {
       write(CLEAR_ALT_SCREEN);
     },
     isEntered: (): boolean => entered && !restored,
+    isMouseEnabled: (): boolean => mouse && entered && !restored,
   };
 }

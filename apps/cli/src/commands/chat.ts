@@ -80,6 +80,7 @@ import {
   type Hatches,
 } from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
+import { resolveMouseMode } from '../render/render-mode.js';
 import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
 import { resolveRenderMode } from '../render/render-mode.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
@@ -587,6 +588,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       startSession: () => built.session.start(),
       modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       altScreen: config.altScreen,
+      mouse: config.mouse,
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -745,6 +747,7 @@ export async function chatResumeCommand(
       intro,
       modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       altScreen: config.altScreen,
+      mouse: config.mouse,
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -775,6 +778,8 @@ interface ReplWiring {
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded to the ink driver's ctx so it resolves the
    *  full-screen render mode; the plain / `--json` drivers ignore it. Absent ⇒ the phase default. */
   readonly altScreen?: boolean | undefined;
+  /** `[preferences].mouse` (2.6.F Step 5e, ADR-0068 §e) — mouse reporting inside the alt screen. Absent ⇒ default. */
+  readonly mouse?: boolean | undefined;
 }
 
 /**
@@ -1791,6 +1796,8 @@ export interface HoistedLoopResult {
 export async function withHoistedAltScreen(
   opts: {
     readonly active: boolean;
+    /** Enable mouse reporting with the buffer (Step 5e). Absent ⇒ `true` (the Step-5b behaviour). */
+    readonly mouse?: boolean;
     readonly write: (sequence: string) => void;
     readonly lifecycle: ReplLifecycle;
     readonly writeOut: (text: string) => void;
@@ -1799,7 +1806,11 @@ export async function withHoistedAltScreen(
   runLoop: (alt: AltScreenController) => Promise<HoistedLoopResult>,
 ): Promise<void> {
   const noop = (): void => undefined;
-  const alt = createAltScreenController({ write: opts.write, active: opts.active });
+  const alt = createAltScreenController({
+    write: opts.write,
+    active: opts.active,
+    ...(opts.mouse === undefined ? {} : { mouse: opts.mouse }),
+  });
   alt.enter();
   const removeExitNet = opts.active ? opts.lifecycle.onProcessExit(() => alt.restore()) : noop;
   const removeSignalNet = opts.active
@@ -1852,6 +1863,13 @@ export async function runReplLoop(
       noAltScreenFlag: deps.global.noAltScreen === true,
       configAltScreen: wiring.altScreen,
     }) === 'alt';
+  // Mouse reporting (2.6.F Step 5e, ADR-0068 §e): only inside the alt screen, and only when not opted out. Resolved
+  // from the SAME signals as the render mode, so the two can never disagree.
+  const mouseEnabled = resolveMouseMode({
+    renderMode: altActive ? 'alt' : 'inline',
+    noMouseFlag: deps.global.noMouse === true,
+    configMouse: wiring.mouse,
+  });
   const writeControl =
     deps.writeControl ??
     ((sequence: string): void => {
@@ -1866,9 +1884,11 @@ export async function runReplLoop(
     suspendPort,
     writeControl,
     // The factory's NAME says which surface it is for; `inkOwnsAltScreen` is decided there, once, never at a call site.
-    // The predicate reads the hoisted controller LIVE, so a hatch reflects the buffer's real state — not the startup mode.
+    // Both predicates read the hoisted controller LIVE, so a hatch reflects the terminal's real state — not the startup
+    // decision. `mouseActive` is asked separately from `altActive` because `--no-mouse` decouples them (Step 5e).
     terminal: hoistedTerminal(
       () => altScreenController?.isEntered() ?? false,
+      () => altScreenController?.isMouseEnabled() ?? false,
       () => process.stdout.columns,
     ),
     dump: {
@@ -1897,6 +1917,7 @@ export async function runReplLoop(
     await withHoistedAltScreen(
       {
         active: altActive,
+        mouse: mouseEnabled,
         write: writeControl,
         lifecycle: deps.lifecycle ?? defaultReplLifecycle,
         writeOut: (text) => deps.io.writeOut(text),

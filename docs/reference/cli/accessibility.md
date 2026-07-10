@@ -29,6 +29,11 @@ selection, so **click-drag select-and-copy needs the emulator's bypass modifier*
 property of the terminal, not of Relavium. The inline renderer never enables mouse reporting, so selection
 there is untouched.
 
+If you would rather keep native selection than the wheel, turn mouse reporting off: **`--no-mouse`** for one
+invocation, or **`[preferences].mouse = false`** durably ([config-spec.md](../contracts/config-spec.md)). The
+keyboard scroll keys (PgUp/PgDn, Ctrl+Home/Ctrl+End) are unaffected — they are the primary way to scroll, and the
+wheel is a convenience. The inline renderer never enables mouse reporting at all.
+
 Two in-app **copy-and-search hatches** exist for exactly this, in a live chat on either surface:
 **`/scrollback`** prints the whole transcript to the primary buffer — where the emulator's own scrollback,
 search, selection and copy all work — and waits for Enter before repainting; **`/edit`** opens the transcript

@@ -97,7 +97,7 @@ before parsing the subcommand).
 | `--no-color` | Disable colored (ANSI) output. |
 | `--cwd <dir>` | Run as if started in `<dir>` (project discovery and relative paths resolve from here). |
 | `--config <path>` | Use an explicit global config file instead of `~/.relavium/config.toml` — the project `.relavium/` layers still apply ([config-spec.md](../contracts/config-spec.md)). |
-| `--no-alt-screen` | Keep the byte-identical inline renderer for the bare Home + `relavium chat` (no full-screen alternate screen) — the screen-reader fallback. Overrides `[preferences].alt_screen`; a non-TTY / `--json` / CI path is always inline regardless ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md)). |
+| `--no-mouse` (disable mouse reporting; restores native click-drag selection — [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e) · `--no-alt-screen` | Keep the byte-identical inline renderer for the bare Home + `relavium chat` (no full-screen alternate screen) — the screen-reader fallback. Overrides `[preferences].alt_screen`; a non-TTY / `--json` / CI path is always inline regardless ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md)). |
 | `-v, --verbose` | Print verbose diagnostics to stderr. |
 | `-q, --quiet` | Suppress non-essential output. (`--verbose` and `--quiet` cannot be combined → exit `2`.) |
 | `-V, --version` | Print the version and exit `0`. |

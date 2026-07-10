@@ -20,6 +20,11 @@ export interface GlobalOptions {
    *  resolved fields) so the many test fixtures that predate it need no churn — `resolveGlobalOptions` always
    *  populates it in production, and an absent value reads as `false` (alt-screen not force-disabled). */
   readonly noAltScreen?: boolean;
+  /** `true` when `--no-mouse` was passed — a per-invocation opt-out of terminal mouse reporting in the full-screen
+   *  renderer (2.6.F, ADR-0068 §e). Overrides `[preferences].mouse`; the effective decision is resolved by
+   *  `resolveMouseMode` (render-mode.ts), which also gates on the alt screen being active at all. OPTIONAL for the
+   *  same reason as {@link noAltScreen} — an absent value reads as `false` (mouse not force-disabled). */
+  readonly noMouse?: boolean;
 }
 
 /** The raw global-flag values harvested from argv (before normalization). */
@@ -34,6 +39,9 @@ export interface RawGlobalOptions {
   /** `true` for `--no-alt-screen` (the only alt-screen flag — the DISABLE opt-out; enabling is via
    *  `[preferences].alt_screen`, ADR-0068 §e). Absent ⇒ fall to the config key / phase default. */
   noAltScreen?: boolean;
+  /** `true` for `--no-mouse` (the DISABLE opt-out; enabling is via `[preferences].mouse`, ADR-0068 §e).
+   *  Absent ⇒ fall to the config key / phase default. */
+  noMouse?: boolean;
 }
 
 export interface ExtractedArgv {
@@ -72,6 +80,9 @@ const BOOLEAN_FLAGS: Readonly<Record<string, (raw: RawGlobalOptions) => void>> =
   },
   '--no-alt-screen': (raw) => {
     raw.noAltScreen = true;
+  },
+  '--no-mouse': (raw) => {
+    raw.noMouse = true;
   },
 };
 
@@ -214,5 +225,6 @@ export function resolveGlobalOptions(
     configPath: raw.config,
     verbosity: resolveVerbosity(raw),
     noAltScreen: raw.noAltScreen === true,
+    noMouse: raw.noMouse === true,
   };
 }
