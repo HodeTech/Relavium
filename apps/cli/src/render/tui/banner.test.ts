@@ -65,6 +65,19 @@ describe('bannerLines', () => {
     expect(a.map((l) => displayWidth(l.text))).toEqual(u.map((l) => displayWidth(l.text)));
   });
 
+  it('every line carries a UNIQUE, stable id — the two ASCII borders are byte-identical', () => {
+    // Keying the React children by `text` gave the top and bottom borders the same key under `NO_COLOR`
+    // (`+---…---+` both), and React printed "Encountered two children with the same key" onto the alt buffer,
+    // because the Home mounts ink with `patchConsole: false`. Verified against the real renderer before fixing.
+    for (const ascii of [true, false]) {
+      const lines = bannerLines(HOME_MIN_COLS, ascii);
+      expect(new Set(lines.map((l) => l.id)).size).toBe(lines.length);
+    }
+    const ascii = bannerLines(HOME_MIN_COLS, true);
+    expect(ascii[0]?.text).toBe(ascii.at(-1)?.text); // …and this is exactly why an id is needed
+    expect(ascii[0]?.id).not.toBe(ascii.at(-1)?.id);
+  });
+
   it('the plaque costs exactly BANNER_EXTRA_ROWS more than the one-line heading it replaces', () => {
     expect(bannerLines(HOME_MIN_COLS, false)).toHaveLength(1 + BANNER_EXTRA_ROWS);
   });

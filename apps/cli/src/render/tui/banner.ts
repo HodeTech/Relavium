@@ -25,6 +25,10 @@ const PADDING = 2;
 
 /** What a banner line is, so the renderer can style it without parsing it back. */
 export interface BannerLine {
+  /** A STABLE, unique React key. Not the text: under `NO_COLOR` the two ASCII borders are byte-identical
+   *  (`+---…---+`), and keying by text gave React two children with the same key — a runtime error printed straight
+   *  onto the alt buffer, because the Home mounts ink with `patchConsole: false`. */
+  readonly id: 'top' | 'wordmark' | 'tagline' | 'bottom';
   readonly text: string;
   readonly kind: 'border' | 'wordmark' | 'tagline';
 }
@@ -87,11 +91,11 @@ export function bannerLines(cols: number, ascii: boolean): readonly BannerLine[]
   const row = (text: string): string => `${g.vertical}${pad}${fit(text, inner)}${pad}${g.vertical}`;
 
   const lines: BannerLine[] = [
-    { text: `${g.topLeft}${rule}${g.topRight}`, kind: 'border' },
-    { text: row(WORDMARK), kind: 'wordmark' },
+    { id: 'top', text: `${g.topLeft}${rule}${g.topRight}`, kind: 'border' },
+    { id: 'wordmark', text: row(WORDMARK), kind: 'wordmark' },
   ];
-  if (withTagline) lines.push({ text: row(TAGLINE), kind: 'tagline' });
-  lines.push({ text: `${g.bottomLeft}${rule}${g.bottomRight}`, kind: 'border' });
+  if (withTagline) lines.push({ id: 'tagline', text: row(TAGLINE), kind: 'tagline' });
+  lines.push({ id: 'bottom', text: `${g.bottomLeft}${rule}${g.bottomRight}`, kind: 'border' });
   return lines;
 }
 

@@ -1,7 +1,7 @@
 import { Box, render, Text } from 'ink';
 import { Writable } from 'node:stream';
 import { PassThrough } from 'node:stream';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { FRAME_MS } from './tui-constants.js';
 
@@ -86,28 +86,29 @@ async function frames(
 
 const count = (haystack: string, needle: string): number => haystack.split(needle).length - 1;
 
+/**
+ * `shouldSynchronize(stream, interactive)` is `stream.isTTY && (interactive ?? !isInCi)`, and `is-in-ci` computes
+ * `isInCi` ONCE, at import, from `process.env`. A test therefore CANNOT un-set CI: deleting `process.env.CI` in a
+ * `beforeEach` is inert (the first version of this file did exactly that, and turned CI red — it was caught by the
+ * whole-phase review, not by CI, because it had not run there yet).
+ *
+ * So the TTY assertions pass `interactive: true` explicitly, which is the same branch production takes on a developer's
+ * terminal and bypasses the frozen constant. `interactiveDefault` below then pins the OTHER half — that ink really
+ * does gate on the env — without pretending the env is something it is not.
+ */
+const IN_CI = ['CI', 'CONTINUOUS_INTEGRATION'].some(
+  (k) => k in process.env && process.env[k] !== '0' && process.env[k] !== 'false',
+);
+
 describe('ink 7 already frames every write in DEC-2026 synchronized output', () => {
-  let previousCi: string | undefined;
-
-  beforeEach(() => {
-    // `shouldSynchronize` is `isTTY && (interactive ?? !isInCi)`, and `is-in-ci` reads the env at import. Vitest sets
-    // CI in some environments; clear it so `interactive` resolves from `isTTY` alone.
-    previousCi = process.env['CI'];
-    delete process.env['CI'];
-  });
-
-  afterEach(() => {
-    if (previousCi !== undefined) process.env['CI'] = previousCi;
-  });
-
   it('a TTY gets a balanced BSU/ESU pair around each frame it writes', async () => {
-    const { all } = await frames(true);
+    const { all } = await frames(true, { interactive: true });
     expect(count(all, BSU)).toBeGreaterThan(0);
     expect(count(all, ESU)).toBe(count(all, BSU)); // never a stranded BSU — that FREEZES the terminal
   });
 
   it('the BSU precedes the frame and the ESU follows it', async () => {
-    const { all } = await frames(true);
+    const { all } = await frames(true, { interactive: true });
     const open = all.indexOf(BSU);
     const body = all.indexOf('first');
     const close = all.indexOf(ESU);
@@ -116,20 +117,27 @@ describe('ink 7 already frames every write in DEC-2026 synchronized output', () 
     expect(body).toBeLessThan(close);
   });
 
-  it('a NON-TTY (a pipe, `--json`, CI) emits no 2026 byte at all — the inline path stays byte-identical', async () => {
-    const { all } = await frames(false);
+  it('a NON-TTY (a pipe, `--json`) emits no 2026 byte at all — the inline path stays byte-identical', async () => {
+    const { all } = await frames(false, { interactive: true });
     expect(all).not.toContain('\x1b[?2026');
   });
 
-  it('`interactive: false` disables it even on a TTY (the option ink resolves from `is-in-ci`)', async () => {
+  it('`interactive: false` disables it even on a TTY', async () => {
     const { all } = await frames(true, { interactive: false });
     expect(all).not.toContain('\x1b[?2026');
+  });
+
+  it('with `interactive` UNSET, ink gates on the CI environment — as production does', async () => {
+    // The one assertion that must hold in BOTH worlds. It is what makes the `interactive: true` tests above legitimate:
+    // production never passes the option, so this pins that the option we force is the one production would resolve.
+    const { all } = await frames(true);
+    expect(all.includes(BSU)).toBe(!IN_CI);
   });
 
   it('SANITY: the escapes are ink’s own, written as separate chunks — a stdout Proxy would have NESTED them', async () => {
     // This is why Step 5f built nothing. A `Proxy` wrapping every `write()` in `?2026h`…`?2026l`, as the ADR planned,
     // would have wrapped ink's own `bsu` write in a second pair.
-    const { chunks } = await frames(true);
+    const { chunks } = await frames(true, { interactive: true });
     expect(chunks).toContain(BSU);
     expect(chunks).toContain(ESU);
   });

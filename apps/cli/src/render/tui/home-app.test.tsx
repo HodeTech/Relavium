@@ -136,6 +136,8 @@ function mountHome(
     snapshot?: HomeSnapshot;
     /** The initial terminal size (`rows` decides whether the banner fits). */
     size?: { cols: number; rows: number };
+    /** `false` ⇒ the `NO_COLOR` / `--no-color` path (plain-ASCII banner). */
+    color?: boolean;
   } = {},
 ): MountedHome {
   let onResize: () => void = () => {};
@@ -154,7 +156,7 @@ function mountHome(
     <RootApp
       controller={c}
       nowMs={() => Date.now()}
-      color={false}
+      color={opts.color ?? false}
       getSize={() => size}
       subscribeResize={(cb) => {
         onResize = cb;
@@ -734,6 +736,20 @@ describe('RootApp — the branded Home banner', () => {
     // The prompt marker still renders, and no line wrapped past 80 columns.
     expect(frame).toContain('>');
     for (const line of frame.split('\n')) expect(line.length).toBeLessThanOrEqual(80);
+  });
+
+  it('renders WITHOUT a React duplicate-key error under NO_COLOR — the two ASCII borders are byte-identical', async () => {
+    // The Home mounts ink with `patchConsole: false`, so a React runtime error goes straight to stderr — printed onto
+    // the alt buffer, over the frame. Keying the plaque's rows by their TEXT did exactly that (whole-phase review).
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const m = mountHome(createChatStore(false), { color: false });
+      await settleFrames();
+      expect(m.harness.lastFrame() ?? '').toContain('R E L A V I U M');
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('a FORCED banner on a busy 80x24 Home stands down rather than crowd the strip', async () => {

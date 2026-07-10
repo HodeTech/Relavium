@@ -140,7 +140,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         <Box flexDirection="column">
           {bannerLines(cols, !color).map((line) => (
             <Text
-              key={line.text}
+              key={line.id}
               {...(line.kind === 'tagline' ? dimProps(color) : colorProps(color, 'cyan'))}
               {...(line.kind === 'wordmark' ? { bold: true } : {})}
               wrap="truncate-end"
