@@ -70,6 +70,8 @@ export interface RootAppProps {
   /** Write the in-Home chat's mouse selection to the system clipboard over OSC 52 (2.6.F Step 6). Absent ⇒ the
    *  selection still highlights but copy-on-select is inert (a test that wires no terminal). */
   readonly clipboard?: ((text: string) => ClipboardOutcome) | undefined;
+  /** `[preferences].show_banner` (2.6.F Step 5g) — forwarded verbatim to `HomeView`, which owns the visibility rule. */
+  readonly showBanner?: boolean | undefined;
 }
 
 /** The chat region: subscribes to the chat store (re-render on stream events) and renders the pure {@link ChatView},
@@ -428,6 +430,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         rows={size.rows}
         color={color}
         paletteOpen={state.palette !== undefined || state.modelPicker !== undefined}
+        showBanner={props.showBanner}
       />
       {state.palette !== undefined && (
         <PaletteView commands={HOME_PALETTE_COMMANDS} state={state.palette} color={color} />

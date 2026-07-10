@@ -384,6 +384,28 @@ perf thresholds for the full-screen frame loop.
 > behaviour (`synchronized-output.test.tsx`), so an ink bump that drops the framing fails loudly rather than silently
 > restoring the flicker this ADR set out to remove.
 
+> ### Amendment — 2026-07-10 (2.6.F Step 5g: the banner ships, its trigger does not)
+>
+> The Decision says the banner is "shown on the first few Home opens, then auto-dismissed — re-enabled via
+> `[preferences].show_banner`", and the phase plan pins that at **five** opens. A five-open counter needs durable
+> storage, and both places to keep one are the wrong trade for an element this ADR itself calls **cosmetic**:
+>
+> - a `history.db` migration in `@relavium/db` — schema, migration, store and tests, for a decoration; or
+> - auto-writing `[preferences]` on startup — mutating a `config.toml` the user may hand-author and commit, on every
+>   Home open, through a seam (ADR-0063) built for *user-initiated* writes.
+>
+> **An empty Home is the first-opens signal.** `show_banner` is therefore tri-state: `true` ⇒ always, `false` ⇒ never,
+> **absent ⇒ shown while `snapshot.isEmpty`**. It greets a fresh install and auto-dismisses the moment the user's first
+> chat gives them something to continue — the behaviour the counter was a proxy for, at zero storage cost, and legible
+> from the code rather than from a number in a file.
+>
+> Two guards keep it from crowding a small terminal: never below `HOME_MIN_ROWS`, and a FORCED banner (`true`) also
+> needs `BANNER_EXTRA_ROWS` of headroom, so it stands down rather than push the management strip off an 80x24 screen.
+> `NO_COLOR` / `--no-color` takes the box-drawing glyphs with it, not just the colour: a terminal told to be plain is a
+> terminal we should assume renders conservatively, and a mis-rendered `╭` is worse than a `+`.
+>
+> Themes remain deferred to 2.6.L, per the maintainer's Step-5 decision; this ships colour + `NO_COLOR` only.
+
 ## Consequences
 
 ### Positive

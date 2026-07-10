@@ -77,6 +77,9 @@ export interface ResolvedConfig {
    *  system clipboard. A GLOBAL-only preference for the same reason as {@link mouse}. `undefined` ⇒ the phase default
    *  in `resolveCopyOnSelect`; meaningless (and ignored) when {@link mouse} is off. */
   readonly copyOnSelect: boolean | undefined;
+  /** `[preferences].show_banner` (2.6.F Step 5g, ADR-0068) — the branded Home banner. A GLOBAL-only preference.
+   *  `undefined` ⇒ `shouldShowBanner`'s empty-Home rule. */
+  readonly showBanner: boolean | undefined;
   readonly variables: Readonly<Record<string, string>>;
   readonly mcpServers: readonly McpServerRegistration[];
 }
@@ -106,6 +109,7 @@ export function resolveConfig(layers: ConfigLayers): ResolvedConfig {
     altScreen: global?.preferences?.alt_screen,
     mouse: global?.preferences?.mouse,
     copyOnSelect: global?.preferences?.copy_on_select,
+    showBanner: global?.preferences?.show_banner,
     variables: { ...workspace?.variables, ...project?.variables },
     mcpServers: mergeMcpServers(global?.mcp_servers, workspace?.mcp_servers, project?.mcp_servers),
   };

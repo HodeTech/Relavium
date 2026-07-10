@@ -130,16 +130,23 @@ function mountHome(
     models?: HomeModelsPort;
     /** Capture what copy-on-select would put on the clipboard (2.6.F Step 6). */
     clipboard?: (text: string) => { kind: 'written'; characters: number };
+    /** `[preferences].show_banner` (2.6.F Step 5g). */
+    showBanner?: boolean;
+    /** A non-empty Home strip, so `isEmpty` is false (2.6.F Step 5g). */
+    snapshot?: HomeSnapshot;
+    /** The initial terminal size (`rows` decides whether the banner fits). */
+    size?: { cols: number; rows: number };
   } = {},
 ): MountedHome {
   let onResize: () => void = () => {};
-  let size = { cols: 100, rows: 30 };
+  let size = opts.size ?? { cols: 100, rows: 30 };
   const c = createHomeController({
     doctorProbes: STUB_DOCTOR_PROBES,
     startChat: opts.startChat ?? (() => Promise.resolve(makeSession(store))),
     ...(opts.reseatChat !== undefined ? { reseatChat: opts.reseatChat } : {}),
     ...(opts.models !== undefined ? { models: opts.models } : {}),
-    homeStore,
+    homeStore:
+      opts.snapshot === undefined ? homeStore : { read: () => opts.snapshot as HomeSnapshot },
     onExit: vi.fn(),
     onError: vi.fn(),
   });
@@ -155,6 +162,7 @@ function mountHome(
       }}
       {...(opts.alternateScreen === true ? { alternateScreen: true } : {})}
       {...(opts.clipboard === undefined ? {} : { clipboard: opts.clipboard })}
+      {...(opts.showBanner === undefined ? {} : { showBanner: opts.showBanner })}
     />,
   );
   return {
@@ -661,5 +669,76 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     m.harness.stdin.write('\x1b[<0;3;1m'); // …release AFTER the resize
     await settleFrames();
     expect(copied).toEqual([]); // the anchor was dropped, so there is nothing to copy
+  });
+});
+
+/**
+ * The branded Home banner ON SCREEN (2.6.F Step 5g). `banner.test.ts` pins the plaque itself; this pins that it
+ * REPLACES the plain heading, obeys `[preferences].show_banner`, and never pushes the prompt off an 80x24 terminal.
+ */
+describe('RootApp — the branded Home banner', () => {
+  const BUSY: HomeSnapshot = {
+    attention: { gates: [], failedRuns: [] },
+    recentSessions: [
+      {
+        sessionId: 'sess-9',
+        title: 'a chat',
+        agentSlug: 'default',
+        modelId: 'anthropic/claude-opus-4-8',
+        status: 'active',
+        updatedAt: '2026-07-10T00:00:00.000Z',
+        totalCostMicrocents: 0,
+      },
+    ],
+    recentRuns: [],
+    recentAgents: [],
+    isEmpty: false,
+  };
+
+  const frameOf = async (opts: Parameters<typeof mountHome>[1]): Promise<string> => {
+    const m = mountHome(createChatStore(false), opts);
+    await settleFrames();
+    return m.harness.lastFrame() ?? '';
+  };
+
+  /** The frame's lines, trimmed — so "is the plain heading anywhere on screen" is one question, not a position. */
+  const rows = (frame: string): string[] => frame.split('\n').map((l) => l.trim());
+
+  it('an EMPTY Home shows the plaque, and the plain heading is GONE (it is replaced, not stacked)', async () => {
+    const frame = await frameOf({});
+    expect(frame).toContain('R E L A V I U M');
+    expect(frame).toContain('Own every run.');
+    // Checking only row 0 would pass while the heading sat just BELOW the plaque (break-verified).
+    expect(rows(frame)).not.toContain('relavium');
+  });
+
+  it('a BUSY Home falls back to the plain heading — the banner auto-dismisses', async () => {
+    const frame = await frameOf({ snapshot: BUSY });
+    expect(frame).not.toContain('R E L A V I U M');
+    expect(rows(frame)).toContain('relavium');
+  });
+
+  it('`show_banner = false` hides it even on an empty Home', async () => {
+    const frame = await frameOf({ showBanner: false });
+    expect(frame).not.toContain('R E L A V I U M');
+  });
+
+  it('`show_banner = true` brings it back on a busy Home', async () => {
+    const frame = await frameOf({ showBanner: true, snapshot: BUSY });
+    expect(frame).toContain('R E L A V I U M');
+  });
+
+  it('on an 80x24 terminal the plaque never obscures the prompt', async () => {
+    const frame = await frameOf({ size: { cols: 80, rows: 24 } });
+    expect(frame).toContain('R E L A V I U M');
+    // The prompt marker still renders, and no line wrapped past 80 columns.
+    expect(frame).toContain('>');
+    for (const line of frame.split('\n')) expect(line.length).toBeLessThanOrEqual(80);
+  });
+
+  it('a FORCED banner on a busy 80x24 Home stands down rather than crowd the strip', async () => {
+    const frame = await frameOf({ showBanner: true, snapshot: BUSY, size: { cols: 80, rows: 24 } });
+    expect(frame).not.toContain('R E L A V I U M');
+    expect(frame).toContain('a chat'); // the strip the banner would have pushed away
   });
 });

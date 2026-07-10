@@ -159,6 +159,10 @@ export const GlobalConfigSchema = z
         // copied elsewhere. `/copy` still copies the whole transcript on demand. Meaningless without `mouse`, and
         // ignored when it is off: there is no selection to copy.
         copy_on_select: z.boolean().optional(),
+        // The branded Home BANNER (2.6.F Step 5g, ADR-0068). `true` ⇒ always shown, `false` ⇒ never.
+        // ABSENT ⇒ shown only while the Home is EMPTY (no sessions/runs/agents to continue) — an empty Home is the
+        // "first opens" signal the ADR wanted, without a durable counter. Cosmetic: it gates no feature.
+        show_banner: z.boolean().optional(),
       })
       .strict()
       .optional(),

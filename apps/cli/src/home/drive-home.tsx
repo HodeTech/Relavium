@@ -640,6 +640,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         alternateScreen,
         // `RootApp` attaches ink's `suspendTerminal` here while mounted (2.6.F Step 5d, ADR-0068 §e).
         suspendPort,
+        // The branded banner's durable switch (Step 5g); `HomeView` owns the empty-Home rule when it is absent.
+        showBanner: config.showBanner,
         // Copy-on-select rides the SAME control-write sink as the alt-buffer + mouse toggles (Step 6). OSC 52 prints
         // nothing and moves no cursor, so writing it mid-frame cannot corrupt ink's line accounting. ABSENT when
         // `[preferences].copy_on_select = false`: the selection still highlights, and `/copy` still copies.

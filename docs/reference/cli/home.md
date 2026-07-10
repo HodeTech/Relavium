@@ -112,6 +112,12 @@ The Home receives a bracketed paste on **ink 7's native `usePaste` channel** (se
 
 ## Render mode (inline / alt-screen)
 
+A **branded banner** — a wordmark + tagline plaque — is drawn where the plain `relavium` heading otherwise sits, on a
+fresh install: `[preferences].show_banner` is `true` (always) / `false` (never), and **absent** means *shown only while
+the Home is empty*, so it greets a first run and auto-dismisses once there is anything to continue. It degrades to
+plain ASCII under `NO_COLOR` / `--no-color`, and a forced banner stands down on a terminal too short to hold it beside
+the strip. It is cosmetic and gates no feature.
+
 The Home renders in one of two modes ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e): since Step 4b-3 the **default on a TTY is the full-screen alternate-screen renderer**, with the **inline** renderer (native scrollback, the screen-reader-friendly fallback) as the opt-out — **`--no-alt-screen`** ([commands.md](commands.md#global-options)) for one invocation, or **`[preferences].alt_screen = false`** ([config-spec.md](../contracts/config-spec.md)) durably. A non-TTY / `--json` / CI path is **always** inline (byte-identical). The alt screen renders the transcript through a resize-tracked **viewport** with **scroll-back + auto-follow** — **PgUp/PgDn** page, **Ctrl+Home/Ctrl+End** jump to top/tail, an upward scroll pauses the tail-follow and reaching the bottom resumes it (the scroll keymap is gated behind any keyboard-owning overlay) — and a per-entry wrap cache (keyed on the immutable transcript entry) keeps even a very large transcript cheap (Step 4b-3). The in-Home chat also carries the mouse **selection + copy-on-select** and the **`/scrollback`**, **`/edit`** and **`/copy`** copy-and-search hatches — the same code as `relavium chat` ([chat-session.md](chat-session.md)); the hatches are chat-only, so they never appear in the bare Home's palette, and a mouse report on the bare Home is consumed but routed nowhere. The full-screen mode is inherently inaccessible to screen readers — see [accessibility.md](accessibility.md) for the trade-off and the inline-renderer escape hatch.
 
 ## Minimum terminal size
