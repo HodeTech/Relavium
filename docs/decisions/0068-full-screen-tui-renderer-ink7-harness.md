@@ -367,6 +367,23 @@ perf thresholds for the full-screen frame loop.
 > is idle, never mid-turn, where `Esc` is the abort. `/copy` (Step 6e) copies the UNWRAPPED transcript document and
 > suspends nothing — OSC 52 is one control write.
 
+> ### Amendment — 2026-07-10 (2.6.F Step 5f: there was nothing to build)
+>
+> The Decision above says flicker "is avoided with terminal **synchronized output** (DEC 2026, `\x1b[?2026h/l`)
+> framing, **since `ink` does not emit it**", and Step 5f was scheduled to build it — a `Proxy` over `process.stdout`
+> wrapping every write. **That claim is false for `ink` 7.** It ships `build/write-synchronized.js`
+> (`bsu` = `\x1b[?2026h`, `esu` = `\x1b[?2026l`) and frames every write in it, gated on
+> `shouldSynchronize(stream, interactive)` = `stream.isTTY && (interactive ?? !isInCi)`.
+>
+> Measured against a real mount with Relavium's own render options: a TTY stdout receives one balanced BSU/ESU pair per
+> frame; a piped stdout, an `interactive: false` mount, and a `debug: true` mount receive none. The `--json` / CI /
+> non-TTY byte-identical guarantee is therefore already honoured by ink itself.
+>
+> Worse, the planned Proxy would have been actively wrong: ink writes `bsu` as its **own separate `write()` call**, so
+> wrapping every write would have nested the escapes. Step 5f therefore implements nothing and instead PINS the
+> behaviour (`synchronized-output.test.tsx`), so an ink bump that drops the framing fails loudly rather than silently
+> restoring the flicker this ADR set out to remove.
+
 ## Consequences
 
 ### Positive
