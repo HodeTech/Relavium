@@ -5,12 +5,18 @@ import type { AgentSessionRecord, ReasoningEffort } from '@relavium/shared';
 import { render } from 'ink';
 import { createElement } from 'react';
 
-import { createChatLineHandler, transcriptBoundFor, type ReseatTarget } from '../commands/chat.js';
+import {
+  budgetWarningText,
+  createChatLineHandler,
+  transcriptBoundFor,
+  type ReseatTarget,
+} from '../commands/chat.js';
 import {
   buildChatSession,
   buildResumedChatSession,
   swapAgentModel,
   type BuiltChatSession,
+  type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import type { DoctorProbes } from '../chat/doctor.js';
@@ -467,10 +473,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         mcpSecretResolver,
         mcpRegistrations: config.mcpServers,
         ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
-        onBudgetWarning: (warning) =>
-          deps.io.writeErr(
-            `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-          ),
+        // Into the chat's TRANSCRIPT, never raw stderr. `relavium chat` routes this through `emitLiveNotice` for
+        // exactly this reason (Step-4b-3 Sonnet fix): a raw write lands on the alt buffer, where ink's next frame
+        // overwrites it — the user is warned about their spend on a line that survives a single frame.
+        onBudgetWarning: (warning) => store.notice(budgetWarningText(warning)),
       });
       return wireHomeChatSession(built, store, { open: true });
     };
@@ -498,6 +504,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       );
       const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
       const resolvePrice = readUserPricingOverlay(opened.db);
+      // The store's SEED comes from the build, so it cannot be created first — yet `onBudgetWarning` closes over it and
+      // a pre-egress cap check can fire DURING the build. Hold it in a `let` and fall back to stderr until it exists,
+      // exactly as `emitLiveNotice` does on the standalone chat. Either way the warning is never written raw onto the
+      // alt buffer, where ink's next frame would erase it (Step-4b-3 Sonnet fix, carried here by the phase review).
+      const storeRef: { current?: ChatStoreController } = {};
+      const noteBudget = (warning: ChatBudgetWarning): void => {
+        const text = budgetWarningText(warning);
+        if (storeRef.current !== undefined) storeRef.current.notice(text);
+        else deps.io.writeErr(`${text}\n`);
+      };
       const built = await (deps.buildResumedSession ?? buildResumedChatSession)({
         chat: config.chat,
         record,
@@ -507,10 +523,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         mcpSecretResolver,
         mcpRegistrations: config.mcpServers,
         ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
-        onBudgetWarning: (warning) =>
-          deps.io.writeErr(
-            `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-          ),
+        onBudgetWarning: noteBudget,
       });
       // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
       // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
@@ -524,6 +537,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         },
         transcriptBoundFor(altScreenActive),
       );
+      storeRef.current = store; // from here a budget warning renders in the transcript, not on the alt buffer
       return wireHomeChatSession(built, store, {
         open: false,
         initialSequenceNumber: built.nextSequenceNumber,

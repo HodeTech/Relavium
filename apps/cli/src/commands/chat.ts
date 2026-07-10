@@ -480,8 +480,9 @@ function emitLiveNotice(io: CliIo, text: string): void {
   else io.writeErr(`${text}\n`);
 }
 
-/** The budget-cap warning line (formatted once, routed through {@link emitLiveNotice} at all four wiring sites). */
-function budgetWarningText(warning: ChatBudgetWarning): string {
+/** The budget-cap warning line (formatted once, routed through {@link emitLiveNotice} at all four wiring sites, and
+ *  through the in-Home chat's own view store — see `drive-home.tsx`). ONE text, so the two surfaces cannot drift. */
+export function budgetWarningText(warning: ChatBudgetWarning): string {
   return `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached`;
 }
 

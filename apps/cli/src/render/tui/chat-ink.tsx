@@ -1531,13 +1531,46 @@ export function finalizeInkExit(
   return exited.finally(ops.teardown).then((): ChatDriveOutcome => ops.outcome());
 }
 
+/**
+ * Where a session's INTRO goes — a resume banner (2.N), the `/clear` notice carrying `relavium chat-resume <id>`, or
+ * a `/models` reseat line. The renderer decides, and getting it wrong loses the line:
+ *
+ *  - INLINE: printed before ink mounts, so it scrolls into the terminal's history above the live region (the TTY
+ *    counterpart of what `drivePlain` writes).
+ *  - FULL-SCREEN: the alt buffer has no scrollback, and ink's first frame is `height: rows` — it paints straight over
+ *    a pre-mount write. So the intro goes into the fresh session's TRANSCRIPT, where the viewport keeps it and the
+ *    user can scroll back to it. Without this, `/clear` in the DEFAULT renderer silently discarded the only pointer
+ *    back to the conversation it had just ended (whole-phase Opus review). The MCP-skipped diagnostic already took
+ *    this route (chat.ts); the intro did not.
+ *
+ * `driveInk` mounts real ink and cannot be unit-tested, so the decision lives here, where it can be.
+ */
+export function emitIntro(
+  intro: string | undefined,
+  alternateScreen: boolean,
+  ports: { readonly notice: (text: string) => void; readonly writeOut: (text: string) => void },
+): void {
+  if (intro === undefined) return; // a fresh session has no intro
+  if (alternateScreen) ports.notice(intro);
+  else ports.writeOut(`${intro}\n`);
+}
+
 export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
-  // The resume banner (2.N): print it once before mounting ink so it scrolls into the terminal history above
-  // the live region — the TTY counterpart of the line drivePlain writes, so a resumed session is visibly a
-  // resume (not just an N-turn footer). A fresh session has no intro and prints nothing here.
-  if (ctx.intro !== undefined) {
-    ctx.io.writeOut(`${ctx.intro}\n`);
-  }
+  // Resolved here, BEFORE the intro: where the intro goes depends on the renderer (see `emitIntro`).
+  const alternateScreen =
+    resolveRenderMode({
+      outputMode: detectOutputMode({
+        stdoutIsTty: ctx.io.stdoutIsTty,
+        json: ctx.global.json,
+        ci: isCiEnv(ctx.io.env),
+      }),
+      noAltScreenFlag: ctx.global.noAltScreen === true,
+      configAltScreen: ctx.altScreen,
+    }) === 'alt';
+  emitIntro(ctx.intro, alternateScreen, {
+    notice: (text) => ctx.store.notice(text),
+    writeOut: (text) => ctx.io.writeOut(text),
+  });
   // Mirror the live stream into the view store the component projects.
   const unsubscribe = ctx.handle.subscribe((event) => ctx.store.apply(event));
   // Open the session ONLY now — the store is subscribed, so the synchronous session:started (which carries
@@ -1573,16 +1606,6 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // value drives ONLY the `ChatApp` component prop (the transcript viewport vs `<Static>`); ink's render OPTION is a
   // hard `false` (Step 4b-3), so ink toggles NO DECSET-1049 per session — the hoisted `runReplLoop` owns the single
   // alt-buffer enter/exit, and the end-of-session summary rides on the outcome + prints after that exit (ADR-0068 §c).
-  const alternateScreen =
-    resolveRenderMode({
-      outputMode: detectOutputMode({
-        stdoutIsTty: ctx.io.stdoutIsTty,
-        json: ctx.global.json,
-        ci: isCiEnv(ctx.io.env),
-      }),
-      noAltScreenFlag: ctx.global.noAltScreen === true,
-      configAltScreen: ctx.altScreen,
-    }) === 'alt';
   let cancelRequested = false;
   const onSigint = (): void => {
     if (cancelRequested) {

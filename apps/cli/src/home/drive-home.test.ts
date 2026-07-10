@@ -648,6 +648,47 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     });
   });
 
+  /**
+   * BUDGET WARNINGS GO INTO THE TRANSCRIPT, NEVER RAW STDERR (2.6.F Step 6g, whole-phase Opus review).
+   * `relavium chat` learned this in the Step-4b-3 Sonnet fold: on the alt screen a raw `writeErr` is painted over by
+   * ink's next frame, so the user is told they are near their spending cap on a line that lives for one frame.
+   * `driveHome` was still writing raw.
+   */
+  describe('a budget warning reaches the in-Home chat’s transcript', () => {
+    it('routes through the view store, and never to stderr', async () => {
+      let captured: RootAppProps | undefined;
+      let warn: ((w: { thresholdPct: number; limitMicrocents: number }) => void) | undefined;
+      const errs: string[] = [];
+      const made = makeDeps((p) => (captured = p), {
+        io: { ...io, writeErr: (t: string) => errs.push(t) },
+        buildSession: (async (opts: { onBudgetWarning?: typeof warn }) => {
+          warn = opts.onBudgetWarning;
+          return (await buildChatSession(opts as never)) as never;
+        }) as never,
+      });
+      const drivePromise = driveHome(made.deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+
+      type(props, 'hello');
+      props.controller.handleKey('', ENTER);
+      await flush();
+      await flush();
+      expect(warn).toBeTypeOf('function'); // driveHome really passed one
+
+      warn?.({ thresholdPct: 90, limitMicrocents: 1000 });
+      const transcript =
+        props.controller.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
+      expect(transcript.some((e) => (e.text ?? '').includes('budget warning'))).toBe(true);
+      expect(errs.join('')).not.toContain('budget warning');
+
+      props.controller.handleKey('c', CTRL_C);
+      await flush();
+      props.controller.handleKey('c', CTRL_C);
+      await drivePromise;
+    });
+  });
+
   describe('copy-on-select', () => {
     const captureProps = async (over: Partial<HomeDeps>): Promise<RootAppProps> => {
       let captured: RootAppProps | undefined;
