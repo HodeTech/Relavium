@@ -173,13 +173,29 @@ describe('splitRow — the three pieces the viewport renders', () => {
   });
 
   it('reassembles losslessly — before + selected + after is always the original row', () => {
-    const rows = ['hello world', '日本語です', 'a👍b', 'x'];
+    // The degenerate rows are the point. A LEADING zero-width cluster (a combining mark, a ZWJ, a lone variation
+    // selector) has no cell of its own and no cluster before it to ride. Until the Step-6 review it matched neither
+    // membership test and fell into `after`, physically moving it PAST its base — `'\u0301ab'` came back as
+    // `'ab\u0301'` — and dropping it from the copy. A row that is ENTIRELY zero-width has no cell at all.
+    const rows = [
+      'hello world',
+      '日本語です',
+      'a👍b',
+      'x',
+      '\u0301ab',
+      '\u200dab',
+      '\ufe0fab',
+      'aéb',
+      '\u0301',
+      'a\u0001b',
+    ];
     const spans = [
       { from: 0, to: undefined },
       { from: 1, to: 3 },
       { from: 2, to: undefined },
       { from: 0, to: 1 },
       { from: 99, to: undefined },
+      { from: 1, to: 1 }, // degenerate: selects nothing, and must still not lose or move a cluster
     ];
     for (const row of rows) {
       for (const span of spans) {
@@ -187,6 +203,42 @@ describe('splitRow — the three pieces the viewport renders', () => {
         expect(before + selected + after, `${row} @ ${span.from}..${String(span.to)}`).toBe(row);
       }
     }
+  });
+
+  it('a MID-ROW zero-width cluster rides the cluster before it (the defensive control-character path)', () => {
+    // UAX#29 (GB9) absorbs every combining mark / ZWJ into the preceding cluster, so the only way to get a width-0
+    // cluster that is NOT the first one is a C0/C1 control — which `sanitizeInline` strips upstream, making this the
+    // walker's DEFENSIVE branch. Pinned anyway: without it the control is emitted into the tail and the row no longer
+    // reassembles (`'a\u0001b'` comes back as `'ab\u0001'`), which a break-verify proved nothing else catches.
+    expect(splitRow('a\u0001b', { from: 1, to: 2 })).toEqual({
+      before: 'a\u0001',
+      selected: 'b',
+      after: '',
+    });
+  });
+
+  it('a DEGENERATE span selects nothing — and the wide glyph it straddles is not silently highlighted', () => {
+    // `sliceDisplayColumns` guards `endColumn <= startColumn` and copies ''. `partitionDisplayColumns` did not, so the
+    // intersect rule highlighted `日` (cells 0-1 straddle column 1) while the clipboard got '' — the one thing
+    // copy-on-select must never do (Step-6 Opus review). Unreachable through `lineSpan` today; structural now.
+    expect(splitRow('日本語です', { from: 1, to: 1 })).toEqual({
+      before: '日',
+      selected: '',
+      after: '本語です',
+    });
+  });
+
+  it('a LEADING zero-width cluster stays with the base it precedes, in both the highlight and the copy', () => {
+    expect(splitRow('\u0301ab', { from: 0, to: 1 })).toEqual({
+      before: '',
+      selected: '\u0301a', // the mark has no cell; it rides the first cluster that does
+      after: 'b',
+    });
+    expect(splitRow('\u0301ab', { from: 1, to: 2 })).toEqual({
+      before: '\u0301a',
+      selected: 'b',
+      after: '',
+    });
   });
 
   it('never splits a wide character or an emoji cluster down the middle', () => {
@@ -209,7 +261,17 @@ describe('splitRow — the three pieces the viewport renders', () => {
  * different functions and could drift; a user would never discover it, because both look right in isolation.
  */
 describe('the highlight and the clipboard agree, character for character', () => {
-  const rows = ['hello world', '日本語です', 'a👍b', '', 'x', 'aéb'];
+  const rows = [
+    'hello world',
+    '日本語です',
+    'a👍b',
+    '',
+    'x',
+    'aéb',
+    '\u0301ab',
+    '\u200dab',
+    '\u0301',
+  ];
 
   it('splitRow().selected === the text selectionText would copy for that row', () => {
     for (const row of rows) {

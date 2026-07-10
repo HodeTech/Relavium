@@ -72,62 +72,98 @@ export function displayWidth(str: string): number {
   return width;
 }
 
+/** Which of the three pieces a grapheme cluster belongs to, relative to a display-column span. */
+type ColumnPiece = 'before' | 'selected' | 'after';
+
+/**
+ * Walk `str`'s grapheme clusters and hand each one to `emit` exactly ONCE, tagged with the piece of the display-column
+ * span `[startColumn, endColumn)` it belongs to. Both {@link sliceDisplayColumns} and {@link partitionDisplayColumns}
+ * are thin readers of this walk, which is the whole point: they used to encode the same membership rule twice and
+ * DRIFTED (Step-6 Opus review). Two invariants are now structural rather than asserted —
+ *
+ *   `partitionDisplayColumns(s, a, b).selected === sliceDisplayColumns(s, a, b)`   (highlight === clipboard)
+ *   `before + selected + after === str`                                            (nothing lost, nothing moved)
+ *
+ * MEMBERSHIP. A cluster with width belongs to the span when its cell range INTERSECTS it — clicking either half of a
+ * wide character takes the whole character, exactly as every terminal's own selection does.
+ *
+ * A ZERO-WIDTH cluster (a combining mark, a ZWJ, a lone variation selector) occupies no cell, so no click can ever
+ * land on it. It rides the cluster it modifies: the one BEFORE it. A cluster that leads the string modifies nothing,
+ * has no cell of its own, and previously fell through both tests into `after` — which physically MOVED it past its
+ * base (`'́ab'` rendered as `'ab́'`) and dropped it from the copy. Such a leading run is held back and
+ * emitted with the first cluster that does have a cell, so it stays where the user sees it. A string with no cells at
+ * all is entirely `before`: there is nothing to select.
+ */
+function walkDisplayColumns(
+  str: string,
+  startColumn: number,
+  endColumn: number,
+  emit: (segment: string, piece: ColumnPiece) => void,
+): void {
+  const empty = endColumn <= startColumn; // a degenerate span selects nothing, whatever it straddles
+  let column = 0;
+  let leading = ''; // zero-width clusters seen before any cell — no cluster to ride yet
+  let previous: ColumnPiece | undefined;
+
+  for (const { segment } of graphemeSegmenter.segment(str)) {
+    const width = graphemeWidth(segment);
+    if (width === 0) {
+      if (previous === undefined) leading += segment;
+      else emit(segment, previous);
+      continue;
+    }
+    const piece: ColumnPiece =
+      !empty && column < endColumn && column + width > startColumn
+        ? 'selected'
+        : column < startColumn
+          ? 'before'
+          : 'after';
+    if (leading !== '') {
+      emit(leading, piece);
+      leading = '';
+    }
+    emit(segment, piece);
+    previous = piece;
+    column += width;
+  }
+  if (leading !== '') emit(leading, 'before'); // the whole string is zero-width: no cell, nothing selectable
+}
+
 /**
  * Slice `str` to the DISPLAY-COLUMN half-open range `[startColumn, endColumn)` — the width-aware counterpart of
  * `String.slice`, for mouse selection (2.6.F Step 6). A terminal reports the CELL a click landed on, not a character
  * index, and a grapheme cluster may occupy 2 cells (CJK, emoji) or 0 (a combining mark).
  *
- * A cluster is included when its cell range INTERSECTS the selection — so clicking either half of a wide character
- * takes the whole character, exactly as every terminal's own selection does. A zero-width cluster (a combining mark,
- * a ZWJ) belongs to the cluster before it, so it rides along iff that one was included; it can never be orphaned onto
- * a base it does not modify.
+ * This is what lands on the CLIPBOARD. See {@link walkDisplayColumns} for the membership rule.
  */
 export function sliceDisplayColumns(str: string, startColumn: number, endColumn: number): string {
-  if (endColumn <= startColumn) return '';
-  let column = 0;
   let out = '';
-  for (const { segment } of graphemeSegmenter.segment(str)) {
-    const width = graphemeWidth(segment);
-    const included =
-      width === 0
-        ? column > startColumn && column <= endColumn // attaches to the preceding cluster
-        : column < endColumn && column + width > startColumn; // intersects the range
-    if (included) out += segment;
-    column += width;
-  }
+  walkDisplayColumns(str, startColumn, endColumn, (segment, piece) => {
+    if (piece === 'selected') out += segment;
+  });
   return out;
 }
 
 /**
  * Partition `str` into the three pieces around the display-column span `[startColumn, endColumn)`: the head before it,
- * the span itself, and the tail after. Each grapheme cluster lands in EXACTLY ONE piece, so
- * `before + selected + after === str` always.
+ * the span itself, and the tail after. Each grapheme cluster lands in EXACTLY ONE piece.
  *
- * This is NOT three {@link sliceDisplayColumns} calls. That function's rule — a cluster is taken when its cells
- * INTERSECT the range — is the right one for a selection (clicking either half of a wide character takes the whole
- * character), but applied three times it puts a boundary-straddling cluster in two pieces at once and DUPLICATES it.
- * Here the same intersect rule decides membership, once, and the head/tail take what is left.
+ * This is what the viewport RENDERS (`before`, an inverse `selected`, `after`). It cannot disagree with
+ * {@link sliceDisplayColumns} because both read the one {@link walkDisplayColumns}.
  */
 export function partitionDisplayColumns(
   str: string,
   startColumn: number,
   endColumn: number,
 ): { before: string; selected: string; after: string } {
-  let column = 0;
   let before = '';
   let selected = '';
   let after = '';
-  for (const { segment } of graphemeSegmenter.segment(str)) {
-    const width = graphemeWidth(segment);
-    const inSpan =
-      width === 0
-        ? column > startColumn && column <= endColumn // a combining mark rides the cluster before it
-        : column < endColumn && column + width > startColumn;
-    if (inSpan) selected += segment;
-    else if (column < startColumn) before += segment;
+  walkDisplayColumns(str, startColumn, endColumn, (segment, piece) => {
+    if (piece === 'selected') selected += segment;
+    else if (piece === 'before') before += segment;
     else after += segment;
-    column += width;
-  }
+  });
   return { before, selected, after };
 }
 
