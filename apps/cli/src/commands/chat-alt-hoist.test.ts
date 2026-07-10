@@ -112,10 +112,16 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
       alt.clearBetween(); // a /clear swap mid-loop
       return Promise.resolve({ summaryText: 'session over' });
     });
-    // Enter → clear (swap) → exit, then the summary on the PRIMARY buffer (after the exit).
-    expect(h.writes).toEqual([ENTER_SEQ, CLEAR_ALT_SCREEN, EXIT_SEQ]);
-    expect(h.outs).toEqual(['session over\n']);
-    // The last write (the alt-exit) precedes the summary print — the summary lands on the primary buffer.
+    // Enter → clear (swap) → exit, THEN the summary. Asserted on the COMBINED `events` log, not on `writes` and `outs`
+    // separately: the whole claim of this test is a CROSS-SINK order, and two per-sink assertions cannot see it — the
+    // summary could print into the still-entered alt buffer (where DECRST-1049 discards it) and both arrays would be
+    // unchanged. That is the regression this test exists to catch, and it could not (whole-phase Opus review).
+    expect(h.events).toEqual([
+      `write:${ENTER_SEQ}`,
+      `write:${CLEAR_ALT_SCREEN}`,
+      `write:${EXIT_SEQ}`,
+      'out:session over\n',
+    ]);
     expect(h.removeExit).toHaveBeenCalledTimes(1); // the exit net was removed (cannot outlive the loop)
     expect(h.removeSignal).toHaveBeenCalledTimes(1);
   });

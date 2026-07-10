@@ -1,3 +1,5 @@
+import { Writable } from 'node:stream';
+
 import { describe, expect, it } from 'vitest';
 
 import { PassThrough } from 'node:stream';
@@ -10,6 +12,7 @@ import {
   nodeWaitForContinue,
   type DumpToScrollbackDeps,
   type InterruptSource,
+  nodeWriteOut,
 } from './scrollback.js';
 
 /**
@@ -130,5 +133,64 @@ describe('nodeWaitForContinue', () => {
     const wait = nodeWaitForContinue(stdin, fakeInterrupts())();
     stdin.end();
     await expect(wait).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * `nodeWriteOut` (2.6.F Step 6g, whole-phase Opus review). It is the only thing standing between a dying TTY and a
+ * dead process: `process.stdout` surfaces an OS write fault as an ASYNCHRONOUS `'error'` event, and Node throws an
+ * unhandled `'error'` as an uncaught exception — mid-suspension, with the terminal handed away. It had zero coverage.
+ */
+describe('nodeWriteOut — an async stdout error must not kill the suspension', () => {
+  /** A Writable whose flush is deferred, so a test can fire `'error'` while the write is still in flight. */
+  const deferredStream = (): Writable & { flush: () => void; written: string[] } => {
+    let done: (() => void) | undefined;
+    const written: string[] = [];
+    const stream = new Writable({
+      write(chunk: unknown, _enc: unknown, callback: () => void) {
+        written.push(String(chunk));
+        done = () => callback();
+      },
+    }) as Writable & { flush: () => void; written: string[] };
+    stream.flush = () => done?.();
+    stream.written = written;
+    return stream;
+  };
+
+  it('an async `error` DURING the write is swallowed — an unhandled one would be an uncaught exception', () => {
+    const stream = deferredStream();
+    nodeWriteOut(stream)('hello');
+    expect(stream.written).toEqual(['hello']);
+    // No listener ⇒ Node throws. With ours attached, this is inert.
+    expect(() => stream.emit('error', new Error('EPIPE'))).not.toThrow();
+  });
+
+  it('the listener is REMOVED once the write flushes — it must not swallow another writer’s errors forever', () => {
+    const stream = deferredStream();
+    const before = stream.listenerCount('error');
+    nodeWriteOut(stream)('hello');
+    expect(stream.listenerCount('error')).toBe(before + 1);
+    stream.flush();
+    expect(stream.listenerCount('error')).toBe(before);
+  });
+
+  it('a SYNCHRONOUS throw (an already-destroyed stream) removes the listener too, and does not escape', () => {
+    const stream = new Writable({ write() {} });
+    stream.write = () => {
+      throw new Error('write after end');
+    };
+    const before = stream.listenerCount('error');
+    expect(() => nodeWriteOut(stream)('hello')).not.toThrow();
+    expect(stream.listenerCount('error')).toBe(before);
+  });
+
+  it('does not leak a listener per write across a long dump', () => {
+    const stream = deferredStream();
+    const write = nodeWriteOut(stream);
+    for (let i = 0; i < 5; i += 1) {
+      write(`line ${String(i)}`);
+      stream.flush();
+    }
+    expect(stream.listenerCount('error')).toBe(0);
   });
 });

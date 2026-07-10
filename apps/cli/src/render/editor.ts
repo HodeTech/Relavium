@@ -201,13 +201,16 @@ export const nodeCreateTempDocument = async (contents: string): Promise<TempDocu
   return {
     path,
     dispose: async () => {
-      try {
-        // `force: true` ⇒ an already-reclaimed dir is a silent no-op, so the exit net can never provoke a spurious
-        // disposal warning if both run.
-        await rm(dir, { recursive: true, force: true });
-      } finally {
-        process.removeListener('exit', exitNet);
-      }
+      // `force: true` ⇒ an already-reclaimed dir is a silent no-op, so the exit net can never provoke a spurious
+      // disposal warning if both run.
+      //
+      // If this THROWS (a Windows `EBUSY` from an AV scanner, an editor that has not released its handle, `EPERM`),
+      // the exit net is deliberately LEFT ARMED and gets one more chance at process exit. It used to be removed in a
+      // `finally`, which disarmed the last-ditch cleanup at exactly the moment it was needed — and the temp file
+      // holding the WHOLE conversation survived the process (whole-phase Opus review). `openInEditor` still reports
+      // the failure through `onDisposeFailed`; this only decides whether we keep trying.
+      await rm(dir, { recursive: true, force: true });
+      process.removeListener('exit', exitNet);
     },
   };
 };

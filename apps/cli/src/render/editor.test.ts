@@ -1,3 +1,4 @@
+import * as fsPromises from 'node:fs/promises';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname } from 'node:path';
@@ -290,5 +291,54 @@ describe('nodeCreateTempDocument — the private temp document + its hard-exit n
     expect(existsSync(dir)).toBe(false); // the conversation is NOT left in the OS temp directory
     await doc.dispose(); // idempotent (`force: true`), and it unregisters the net
     expect(process.listenerCount('exit')).toBe(before.length);
+  });
+});
+
+/**
+ * The temp document's LAST-DITCH cleanup (2.6.F Step 6g, whole-phase Opus review). The file holds the whole
+ * conversation. `dispose()` used to remove the `process.on('exit')` net in a `finally`, so a failing `rm` — a Windows
+ * `EBUSY` from an AV scanner, an editor that has not released its handle — disarmed the very net that existed for
+ * that case, and the transcript survived the process.
+ */
+describe('nodeCreateTempDocument — the exit net outlives a failing dispose', () => {
+  const listeners = (): number => process.listenerCount('exit');
+
+  it('arms an exit net, and a SUCCESSFUL dispose removes it', async () => {
+    const before = listeners();
+    const doc = await nodeCreateTempDocument('hello');
+    expect(listeners()).toBe(before + 1);
+    expect(existsSync(doc.path)).toBe(true);
+
+    await doc.dispose();
+    expect(listeners()).toBe(before);
+    expect(existsSync(doc.path)).toBe(false);
+  });
+
+  it('a FAILING dispose rethrows and LEAVES the net armed — the conversation gets one more chance', async () => {
+    const before = listeners();
+    const doc = await nodeCreateTempDocument('secret conversation');
+    const boom = new Error('EBUSY');
+    const spy = vi.spyOn(fsPromises, 'rm').mockRejectedValueOnce(boom);
+    try {
+      await expect(doc.dispose()).rejects.toBe(boom);
+      expect(listeners()).toBe(before + 1); // still armed
+      expect(existsSync(doc.path)).toBe(true); // …and the file is still there, which is exactly why
+    } finally {
+      spy.mockRestore();
+    }
+
+    await doc.dispose(); // the retry succeeds and disarms
+    expect(listeners()).toBe(before);
+    expect(existsSync(doc.path)).toBe(false);
+  });
+
+  it('the file is 0600 inside a 0700 directory', async () => {
+    const doc = await nodeCreateTempDocument('hello');
+    try {
+      expect(statSync(doc.path).mode & 0o777).toBe(0o600);
+      expect(statSync(dirname(doc.path)).mode & 0o777).toBe(0o700);
+    } finally {
+      await doc.dispose();
+    }
   });
 });
