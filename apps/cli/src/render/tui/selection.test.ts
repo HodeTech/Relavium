@@ -434,6 +434,7 @@ describe('routeMouseSelection — the scroll-aware half of a gesture', () => {
     let offset = VIEWPORT.offset;
     let following = true;
     let followedBefore = false;
+    let gesture = false;
     const base: SelectionRouterPorts = {
       geometry: () => ({ ...VIEWPORT, offset }),
       current: () => selection,
@@ -454,6 +455,10 @@ describe('routeMouseSelection — the scroll-aware half of a gesture', () => {
       restoreFollow: () => {
         if (followedBefore) following = true;
         log.push('restoreFollow');
+      },
+      gestureActive: () => gesture,
+      setGestureActive: (active) => {
+        gesture = active;
       },
       ...overrides,
     };
@@ -567,5 +572,38 @@ describe('routeMouseSelection — the scroll-aware half of a gesture', () => {
     p.log.length = 0;
     routeMouseSelection(ev('[<2;9;5M'), p);
     expect(p.log).toEqual([]);
+  });
+
+  it('a stray click OUTSIDE the viewport after a copy does not re-copy the retained highlight', () => {
+    // The gesture-gating bug (Step-6h review): after a drag-copy the highlight is RETAINED, so `current` is a real
+    // non-collapsed selection. A left press on the prompt returns `none` (outside the viewport), leaving that
+    // selection — and the following release used to see a non-collapsed `current` and re-emit it over OSC 52.
+    const p = ports();
+    routeMouseSelection(ev('[<0;5;5M'), p); // press inside…
+    routeMouseSelection(ev('[<32;9;5M'), p); // …drag…
+    routeMouseSelection(ev('[<0;9;5m'), p); // …release ⇒ copy
+    expect(p.log.filter((l) => l === 'copy')).toHaveLength(1);
+    const held = p.selection();
+    p.log.length = 0;
+
+    // The prompt is at terminal row 9 = frame row 8; the viewport spans frame rows 2..6. Both press and release miss.
+    routeMouseSelection(ev('[<0;5;9M'), p); // press on the prompt ⇒ no gesture
+    routeMouseSelection(ev('[<0;5;9m'), p); // release ⇒ must NOT copy
+    expect(p.log).toEqual([]); // no copy, no clear, no mutation
+    expect(p.selection()).toBe(held); // the highlight is preserved, byte-for-byte
+  });
+
+  it('a DRAG whose press missed the viewport cannot resurrect a retained selection', () => {
+    const p = ports();
+    routeMouseSelection(ev('[<0;5;5M'), p); // a real gesture…
+    routeMouseSelection(ev('[<32;9;5M'), p);
+    routeMouseSelection(ev('[<0;9;5m'), p); // …copied, gesture closed
+    const held = p.selection();
+    p.log.length = 0;
+
+    routeMouseSelection(ev('[<0;5;9M'), p); // press on the prompt ⇒ no gesture
+    routeMouseSelection(ev('[<32;9;5M'), p); // a drag with the button held, back into the viewport
+    expect(p.log).toEqual([]); // no scroll, no set
+    expect(p.selection()).toBe(held);
   });
 });

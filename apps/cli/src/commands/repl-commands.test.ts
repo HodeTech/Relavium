@@ -17,10 +17,8 @@ import {
  * capabilities still totalled 1 (found twice: Step 5d, Step 6e). Adding a capability to the context now fails to
  * compile until the spy exists.
  */
-type CapabilityCalls = Record<keyof ReplCommandContext, number>;
-
 /** A fully-spied REPL context — each capability is a spy so a command's `run` can be asserted to call exactly one. */
-function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls } {
+function spyContext(): { ctx: ReplCommandContext; calls: () => Map<string, number> } {
   const spies = {
     exit: vi.fn(),
     cancel: vi.fn(),
@@ -43,11 +41,8 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls }
 
   return {
     ctx: spies,
-    // Object.fromEntries over the spy map itself: no second list to fall out of step with the first.
-    calls: () =>
-      Object.fromEntries(
-        Object.entries(spies).map(([name, spy]) => [name, spy.mock.calls.length]),
-      ) as CapabilityCalls,
+    // A Map built from the spy map itself: no second list to fall out of step with the first, and no cast.
+    calls: () => new Map(Object.entries(spies).map(([name, spy]) => [name, spy.mock.calls.length])),
   };
 }
 
@@ -78,7 +73,8 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
   });
 
   it('each command run() invokes EXACTLY its one capability', async () => {
-    const cases: Array<[string, keyof ReturnType<ReturnType<typeof spyContext>['calls']>]> = [
+    const cases: Array<[string, string]> = [
+      // [command name, the capability it must call]
       ['help', 'help'],
       ['exit', 'exit'],
       ['cancel', 'cancel'],
@@ -104,10 +100,10 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       const { ctx, calls } = spyContext();
       await REPL_COMMANDS_BY_NAME.get(name)?.run(ctx, []); // run may be async — await so the spy is recorded (+ no unhandled rejection)
       const counts = calls();
-      expect(counts[capability], `${name} → ${capability}`).toBe(1);
+      expect(counts.get(capability), `${name} → ${capability}`).toBe(1);
       // Sum EVERY capability, not a hand-kept list. The hand-kept version silently stopped counting each newly added
       // one — so a command that fired two capabilities would still have totalled 1 (Step-6e, and a Step-5d repeat).
-      const total = Object.values(counts).reduce((a, b) => a + b, 0);
+      const total = [...counts.values()].reduce((a, b) => a + b, 0);
       expect(total, `${name} calls exactly one capability`).toBe(1);
     }
   });

@@ -22,7 +22,8 @@ describe('bannerLines', () => {
   });
 
   it('never exceeds the terminal width — an overflowing line WRAPS and destroys the box', () => {
-    for (let cols = 20; cols <= 200; cols += 1) {
+    // Down to cols=1: the plaque's chrome floors at 7 cells, so a narrow terminal is where a naive builder overflows.
+    for (let cols = 1; cols <= 200; cols += 1) {
       for (const ascii of [false, true]) {
         const widest = Math.max(...bannerLines(cols, ascii).map((l) => displayWidth(l.text)));
         expect(widest, `cols=${cols} ascii=${String(ascii)}`).toBeLessThanOrEqual(cols);

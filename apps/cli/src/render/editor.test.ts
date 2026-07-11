@@ -301,22 +301,39 @@ describe('nodeCreateTempDocument — the private temp document + its hard-exit n
     expect(pendingTempDirCount()).toBe(0);
   });
 
-  it('SECURITY: a FAILED write reclaims the directory — a partial conversation is never stranded on disk', async () => {
-    // The Step-5d-3 Opus review: `mkdtemp` created the private dir and `writeFile` flushed the transcript BEFORE the
-    // exit net was armed and before `dispose` was returned. An ENOSPC/EIO mid-write therefore left the directory —
-    // holding part of the conversation — with nothing downstream able to reclaim it.
-    const before = process.listenerCount('exit');
+  it('SECURITY: a FAILED write whose reclaim SUCCEEDS leaves no directory and nothing pending', async () => {
+    // The Step-5d-3 Opus review: `mkdtemp` created the private dir and `writeFile` flushed the transcript, and an
+    // ENOSPC/EIO mid-write must not leave that directory — holding part of the conversation — on disk.
     const dirsBefore = transcriptDirs();
+    const pendingBefore = pendingTempDirCount();
     fsFault.writeFileError = new Error('ENOSPC: no space left on device');
     try {
       await expect(nodeCreateTempDocument('the whole conversation')).rejects.toThrow('ENOSPC');
     } finally {
       fsFault.writeFileError = undefined;
     }
-    // No net armed for a document that never existed, and no NEW directory left behind. A before/after DIFF, never
-    // an absolute scan: the OS temp dir is shared with other test files, other vitest workers, and stale runs.
-    expect(process.listenerCount('exit')).toBe(before);
+    // No NEW directory, and nothing left in the pending set. A before/after DIFF, never an absolute scan: the OS temp
+    // dir is shared with other test files, other vitest workers, and stale runs.
     expect(transcriptDirs().filter((name) => !dirsBefore.includes(name))).toEqual([]);
+    expect(pendingTempDirCount()).toBe(pendingBefore);
+  });
+
+  it('SECURITY: a FAILED write whose reclaim ALSO fails keeps the dir PENDING and rethrows the WRITE error', async () => {
+    // The Step-6h Sonnet finding: registering only AFTER the write meant a write-then-failed-rmSync left the directory
+    // with nothing to reclaim it, and a throwing rmSync would MASK the write error. Now the dir is registered first, so
+    // the exit net still covers it, and the write error — not the removal error — is what the caller classifies.
+    const pendingBefore = pendingTempDirCount();
+    fsFault.writeFileError = new Error('EIO: i/o error');
+    fsFault.rmError = new Error('EBUSY: resource busy or locked');
+    try {
+      await expect(nodeCreateTempDocument('the whole conversation')).rejects.toThrow('EIO'); // NOT 'EBUSY'
+      expect(pendingTempDirCount()).toBe(pendingBefore + 1); // still registered for the exit net
+    } finally {
+      fsFault.writeFileError = undefined;
+      fsFault.rmError = undefined;
+    }
+    disposePendingTempDirs(); // the exit net's reclaim — now that rm works again
+    expect(pendingTempDirCount()).toBe(0);
   });
 
   it('SECURITY: the exit net reclaims the transcript on a HARD process.exit() — the path the async finally never runs on', async () => {

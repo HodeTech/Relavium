@@ -882,5 +882,41 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       expect(controlsOf(d).filter((c) => c === DISABLE_MOUSE)).toHaveLength(1);
       expect(d.unmount).toHaveBeenCalledTimes(1);
     });
+
+    it('a step that THROWS on one net is RETRIED by the next — the latch is per-op, set only on success', () => {
+      // A transient EIO on a `writeControl` used to trip a single latch and make every later net decline to retry,
+      // stranding mouse reporting on the shell (Step-6h review). `DISABLE_MOUSE` fails on the first exit-net call and
+      // succeeds on the second (the signal handler).
+      const writes: string[] = [];
+      let failMouseOnce = true;
+      let captured: RootAppProps | undefined;
+      const exitHandlers: (() => void)[] = [];
+      const signalHandlers: ((signo: number) => void)[] = [];
+      const made = makeDeps((p) => (captured = p), {
+        writeControl: (seq: string) => {
+          if (seq === DISABLE_MOUSE && failMouseOnce) {
+            failMouseOnce = false;
+            throw new Error('EIO');
+          }
+          writes.push(seq);
+        },
+        subscribeProcessExit: (onExit) => {
+          exitHandlers.push(onExit);
+          return () => undefined;
+        },
+        subscribeSignals: (onSignal) => {
+          signalHandlers.push(onSignal);
+          return () => undefined;
+        },
+        exit: vi.fn() as unknown as (code: number) => void,
+      });
+      void driveHome(made.deps).catch(() => undefined);
+      if (captured === undefined) throw new Error('the injected render was never invoked');
+
+      exitHandlers[0]?.(); // DISABLE_MOUSE throws here — the latch must stay down
+      expect(writes).not.toContain(DISABLE_MOUSE);
+      signalHandlers[0]?.(1); // the retry succeeds
+      expect(writes).toContain(DISABLE_MOUSE);
+    });
   });
 });

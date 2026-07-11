@@ -533,6 +533,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   const mouseReaderRef = useRef(createMouseReportReader());
   // Whether the transcript was following the tail when the current gesture began — a plain click restores it.
   const followedBeforeSelectionRef = useRef(false);
+  // Whether a left-button gesture is in flight — set by a press inside the viewport, cleared on release. Distinct from
+  // a retained highlight, so a stray click after a copy cannot re-copy it (Step 6h review).
+  const gestureActiveRef = useRef(false);
   // The mouse selection (2.6.F Step 6), held exactly like `scroll`: React state for the render, a ref so a coalesced
   // stdin chunk (a drag burst arrives as several reports in ONE read) reduces off the latest, not the render closure.
   const [selection, setSelection] = useState<SelectionState | undefined>(undefined);
@@ -1068,6 +1071,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       restoreFollow: () => {
         if (!followedBeforeSelectionRef.current) return;
         applyScroll({ ...scrollRef.current, following: true });
+      },
+      gestureActive: () => gestureActiveRef.current,
+      setGestureActive: (active: boolean) => {
+        gestureActiveRef.current = active;
       },
     });
   };

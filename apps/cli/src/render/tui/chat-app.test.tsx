@@ -454,7 +454,7 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
         sessionId: 's',
         sequenceNumber: 1,
         timestamp: '2026-01-01T00:00:00.000Z',
-      } as never);
+      });
       store.apply({
         type: 'agent:token',
         sessionId: 's',
@@ -463,7 +463,7 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
         token: 'y'.repeat(chars),
         model: 'm',
         nodeId: 'n',
-      } as never);
+      });
       store.flush();
     };
 

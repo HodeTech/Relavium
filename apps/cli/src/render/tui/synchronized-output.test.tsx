@@ -1,4 +1,4 @@
-import { Box, render, Text } from 'ink';
+import { Box, render, Text, type RenderOptions } from 'ink';
 import { Writable } from 'node:stream';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
@@ -53,7 +53,9 @@ const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve,
 /** Mount a one-line tree with RELAVIUM's production render options, rerender once, and return everything written. */
 async function frames(
   isTTY: boolean,
-  options: Record<string, unknown> = {},
+  // `Partial<RenderOptions>` (ink's own public option type) rather than a broad record — an unknown key is rejected at
+  // the call site, not silently ignored.
+  options: Partial<RenderOptions> = {},
 ): Promise<{ all: string; chunks: string[] }> {
   const stdout = captureStdout(isTTY);
   const stdin = new PassThrough();

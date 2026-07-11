@@ -95,7 +95,10 @@ export interface ClipboardDeps {
 }
 
 /**
- * Put `text` on the system clipboard. Total: never throws, and never writes a truncated payload.
+ * Put `text` on the system clipboard. An empty selection (`'empty'`) and an over-long one (`'too-large'`) are REFUSED
+ * as return values — no escape is written, so a caller can trust a refusal left nothing half-emitted. A THROW from
+ * `deps.writeControl` (a closed stdout) propagates to the caller: this function never writes a truncated payload, but
+ * the terminal write itself is the caller's to guard.
  */
 export function copyToClipboard(deps: ClipboardDeps, text: string): ClipboardOutcome {
   if (text.length === 0) return { kind: 'empty' };

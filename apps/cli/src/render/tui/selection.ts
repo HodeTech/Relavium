@@ -263,6 +263,11 @@ export interface SelectionRouterPorts {
   readonly pauseFollow: () => void;
   /** Undo a {@link SelectionRouterPorts.pauseFollow} that turned out to belong to a plain click, not a drag. */
   readonly restoreFollow: () => void;
+  /** Whether a LEFT-button gesture is currently in flight — set by a press that lands inside the viewport, cleared on
+   *  its release. Distinct from a RETAINED selection (the highlight kept after a copy). Without it a stray release —
+   *  a click on the prompt after a copy — re-copies the retained highlight over OSC 52. */
+  readonly gestureActive: () => boolean;
+  readonly setGestureActive: (active: boolean) => void;
 }
 
 /**
@@ -281,8 +286,14 @@ export interface SelectionRouterPorts {
  *    release produces restores exactly what the press paused.
  */
 export function routeMouseSelection(event: MouseEvent, ports: SelectionRouterPorts): void {
+  // A DRAG or RELEASE only acts while a gesture is in flight (a press that landed inside the viewport). Without this
+  // gate a retained highlight — kept on screen after a copy — is re-copied by the release of a stray click on the
+  // prompt or the status strip, and a drag whose press missed the viewport would resurrect it. A PRESS always runs:
+  // it is what STARTS a gesture.
+  if ((event.kind === 'drag' || event.kind === 'release') && !ports.gestureActive()) return;
+
   // The scroll must happen first: the focus is then mapped against the offset the user can actually see.
-  if (event.kind === 'drag' && event.button === 'left' && ports.current() !== undefined) {
+  if (event.kind === 'drag' && event.button === 'left') {
     const motion = dragScrollMotion(event.row, ports.geometry());
     if (motion !== undefined) ports.scrollBy(motion);
   }
@@ -293,14 +304,19 @@ export function routeMouseSelection(event: MouseEvent, ports: SelectionRouterPor
       return;
     case 'clear':
       ports.setSelection(undefined);
+      ports.setGestureActive(false);
       ports.restoreFollow(); // it was a click, not a drag
       return;
     case 'set':
       ports.setSelection(action.state);
-      if (event.kind === 'press') ports.pauseFollow();
+      if (event.kind === 'press') {
+        ports.setGestureActive(true); // a valid press inside the viewport opens the gesture
+        ports.pauseFollow();
+      }
       return;
     case 'copy':
       ports.setSelection(action.state); // keep the highlight, as every terminal does
+      ports.setGestureActive(false);
       ports.copy(action.state);
       return;
   }

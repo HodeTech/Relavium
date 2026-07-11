@@ -203,16 +203,38 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
    * IDEMPOTENT: the nets deliberately overlap, and `unmount()` on an already-unmounted tree plus a second `DISABLE`
    * write would be harmless but noisy. The latch makes "call it from wherever, as often as you like" the contract.
    */
-  let terminalRestored = false;
+  // Each step latches INDEPENDENTLY, and only after it SUCCEEDS. A single latch set before the writes would let one
+  // transient fault (an EIO on a half-dead TTY unmounting ink, an EPIPE on a `writeControl`) mark the terminal
+  // "restored" and every later net (the signal handler, the `process.on('exit')` net, the `finally`) decline to retry
+  // — stranding mouse reporting / bracketed paste on the user's shell. This is the same discipline `alt-screen.ts`'s
+  // `restore()` applies (2.6.F Step 6h). Each swallows its own throw so teardown + exit/close still run.
+  let unmounted = false;
+  let pasteDisabled = false;
+  let mouseDisabled = false;
   const restoreTerminalControls = (): void => {
-    if (terminalRestored) return;
-    terminalRestored = true;
-    try {
-      instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
-      writeControl(DISABLE_BRACKETED_PASTE);
-      writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
-    } catch {
-      // ignore — restoring the terminal is best-effort; the teardown + exit/close must still run
+    if (!unmounted) {
+      try {
+        instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
+        unmounted = true;
+      } catch {
+        // a later net retries
+      }
+    }
+    if (!pasteDisabled) {
+      try {
+        writeControl(DISABLE_BRACKETED_PASTE);
+        pasteDisabled = true;
+      } catch {
+        // a later net retries
+      }
+    }
+    if (!mouseDisabled) {
+      try {
+        writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
+        mouseDisabled = true;
+      } catch {
+        // a later net retries
+      }
     }
   };
 

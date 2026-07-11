@@ -227,19 +227,25 @@ export function pendingTempDirCount(): number {
 export const nodeCreateTempDocument = async (contents: string): Promise<TempDocument> => {
   const dir = await mkdtemp(join(tmpdir(), 'relavium-transcript-'));
   const path = join(dir, 'transcript.md');
+  // Register + arm the exit net BEFORE the write: the write flushes (part of) the conversation, so a write that fails
+  // has still put transcript bytes in the directory, and the exit net must be able to reclaim it (Step-6h review).
+  pendingTempDirs.add(dir);
+  armTempDirExitNet();
   try {
     await writeFile(path, contents, { encoding: 'utf8', mode: 0o600 });
   } catch (error) {
-    // The write can fail AFTER flushing part of the conversation (ENOSPC on a full disk, EIO). At this point no exit
-    // net is armed and no `dispose` has been returned, so nothing downstream would ever reclaim the directory — the
-    // partial transcript would simply stay in the OS temp dir. Reclaim it here, then rethrow so `openInEditor` still
-    // classifies it as `{ kind: 'failed' }` (Step-5d-3 Opus review).
-    rmSync(dir, { recursive: true, force: true });
+    // Reclaim the partial transcript. If THAT fails (a locked dir), leave it registered so the exit net retries — and
+    // never let the removal's error MASK the write error the caller classifies as `{ kind: 'failed' }` (Step-5d-3 Opus
+    // review; the masking + never-registered gap is the Step-6h Sonnet finding). Async `rm` here (not `rmSync`) so this
+    // is the SAME reclaim `dispose` uses — the sync `rmSync` is reserved for the `'exit'` net, which cannot await.
+    try {
+      await rm(dir, { recursive: true, force: true });
+      pendingTempDirs.delete(dir);
+    } catch {
+      // keep it in the pending set — the exit net gets one more chance
+    }
     throw error;
   }
-
-  pendingTempDirs.add(dir);
-  armTempDirExitNet();
 
   return {
     path,

@@ -124,6 +124,8 @@ The Home renders in one of two modes ([ADR-0068](../../decisions/0068-full-scree
 
 Below **80×24** the Home **degrades** to a single line — `Terminal too small (WxH) — resize to at least 80×24.` plus a `Ctrl-C to exit` affordance — and **suspends** the strip render until a terminal **resize** arrives, rather than drawing a broken/garbled TUI. The resize is observed on `process.stdout`'s cross-platform `'resize'` event (backed by `SIGWINCH` on POSIX), not a bare `SIGWINCH` binding (unreliable on Windows). Every dynamic strip row and the prompt are truncated at the terminal edge (`truncate-end`), never soft-wrapped.
 
+> **Known limitation (tracked).** *At or above* 80×24, a very tall landing — a populated **Attention required** section (many pending gates) plus the Continue lists — can still exceed the terminal's rows, and the alt buffer has no scrollback to recover the top. This predates 2.6.F (the strip is 2.5.B) and is resolved by **2.6.G**'s management browsers, which replace the strip wholesale. See [docs/roadmap/current.md](../../roadmap/current.md).
+
 ## Signal lifecycle & exit codes
 
 The Home owns **one signal lifecycle (SIGINT/SIGTERM/SIGHUP/SIGQUIT)** covering the Home, the in-Home chat, and MCP teardown (`closeMcp`), plus a synchronous `process.on('exit')` net behind all of them:

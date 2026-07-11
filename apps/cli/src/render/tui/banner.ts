@@ -72,8 +72,10 @@ function fit(text: string, width: number): string {
  * Build the banner for a terminal `cols` wide.
  *
  * The plaque is as wide as its widest line needs, never wider than the terminal. When even the wordmark cannot fit,
- * the tagline is dropped first — the brand survives, the sentence does not. Below that, the caller should not have
- * asked: {@link shouldShowBanner} refuses under `HOME_MIN_COLS`.
+ * the tagline is dropped first — the brand survives, the sentence does not. In production the caller does not reach the
+ * degenerate case: the Home renders the banner only inside `homeFitsTerminal` (cols ≥ `HOME_MIN_COLS` = 80). But
+ * `bannerLines` is exported and must be TOTAL, so every returned line is clamped to `cols` — below the minimum chrome
+ * (2 borders + 4 padding = 6 cells) the plaque would otherwise floor at 7 and overflow a 1–6 column terminal.
  */
 export function bannerLines(cols: number, ascii: boolean): readonly BannerLine[] {
   const g = ascii ? ASCII : UNICODE;
@@ -88,14 +90,24 @@ export function bannerLines(cols: number, ascii: boolean): readonly BannerLine[]
 
   const pad = ' '.repeat(PADDING);
   const rule = g.horizontal.repeat(inner + PADDING * 2);
-  const row = (text: string): string => `${g.vertical}${pad}${fit(text, inner)}${pad}${g.vertical}`;
+  // Clamp every line to the terminal width. A no-op at any real width (the plaque fits `cols` for cols ≥ 7); it only
+  // trims the fixed 7-cell chrome on a 1–6 column terminal, where the Home is in its too-small mode and the banner is
+  // never actually shown — but the returned lines still never exceed `cols`.
+  const clamp = (text: string): string =>
+    displayWidth(text) > cols ? sliceDisplayColumns(text, 0, Math.max(cols, 0)) : text;
+  const row = (text: string): string =>
+    clamp(`${g.vertical}${pad}${fit(text, inner)}${pad}${g.vertical}`);
 
   const lines: BannerLine[] = [
-    { id: 'top', text: `${g.topLeft}${rule}${g.topRight}`, kind: 'border' },
+    { id: 'top', text: clamp(`${g.topLeft}${rule}${g.topRight}`), kind: 'border' },
     { id: 'wordmark', text: row(WORDMARK), kind: 'wordmark' },
   ];
   if (withTagline) lines.push({ id: 'tagline', text: row(TAGLINE), kind: 'tagline' });
-  lines.push({ id: 'bottom', text: `${g.bottomLeft}${rule}${g.bottomRight}`, kind: 'border' });
+  lines.push({
+    id: 'bottom',
+    text: clamp(`${g.bottomLeft}${rule}${g.bottomRight}`),
+    kind: 'border',
+  });
   return lines;
 }
 
