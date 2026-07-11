@@ -29,9 +29,13 @@ what will be copied, the selection extends past a screenful by auto-scrolling at
 the copy goes to the system clipboard over **OSC 52**, which works over SSH and inside a container.
 
 Copy-on-select is on by default. Turn it off with **`[preferences].copy_on_select = false`** and the highlight
-stays while the clipboard is left alone.
+stays while the clipboard is left alone. On a copy a brief **`✓ Copied` toast** flashes above the status footer for
+~2 s (a plain `[Copied]` under `NO_COLOR` / `--no-color`) — rendered outside the transcript so it never re-wraps the
+lines just selected. The toast fires when Relavium **emits** the OSC 52 write, which is *not* the same as the
+terminal accepting it (see below); a selection too large for the OSC 52 payload shows a transcript note instead.
 
-**OSC 52 has no acknowledgement**, so a copy can be attempted but never *confirmed*:
+**OSC 52 has no acknowledgement**, so a copy can be *emitted* — and the `✓ Copied` toast shown — but never
+independently *confirmed* to have reached the clipboard:
 
 - **tmux** honours an application's OSC 52 only under `set-clipboard on`, and the DCS passthrough only under
   `allow-passthrough on`. Relavium emits both forms, so setting *either* option works; stock tmux sets neither.

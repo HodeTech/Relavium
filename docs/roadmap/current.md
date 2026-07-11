@@ -2,7 +2,7 @@
 
 > Status: Living
 >
-> Last updated: 2026-07-08
+> Last updated: 2026-07-11
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -14,8 +14,8 @@ breakdown, now historical, is in
 **Phase 2.6 — Conversational Authoring and the First-Class CLI** is **in progress** (re-scoped
 2026-07-08); its plan is in
 [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md).
-Workstream **2.6.F (platform floor + the full-screen TUI renderer)** is **complete on `development`**
-(2026-07-10, pending PR to `main`) — see [Active now](#what-is-active-now).
+Workstream **2.6.F (platform floor + the full-screen TUI renderer)** is **merged to `main`**
+(PR #74, 2026-07-11) — see [Active now](#what-is-active-now).
 
 ## Where we are
 
@@ -42,20 +42,21 @@ and the [reference specs](../reference/).
 
 ## What is active now
 
-### Phase 2.6.F — platform floor + the full-screen TUI renderer (complete on `development`, 2026-07-10)
+### Phase 2.6.F — platform floor + the full-screen TUI renderer (merged to `main`, PR #74, 2026-07-11)
 
 The first 2.6 workstream. Behind [ADR-0067](../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)
 (Node `>=22` published floor, `>=22.13.0` dev-install floor; `better-sqlite3` re-affirmed),
 [ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md) (`ink` 7 + a hand-built alternate-screen
-renderer + the `ink-testing-library` harness), and the **Proposed**
-[ADR-0069](../decisions/0069-string-width-for-the-cli-renderer.md) (`string-width` for display width —
-**awaiting maintainer approval**, since CLAUDE.md gates a new runtime dependency behind one).
+renderer + the `ink-testing-library` harness), and
+[ADR-0069](../decisions/0069-string-width-for-the-cli-renderer.md) (`string-width` for display width — **Accepted**
+on the PR #74 merge, the CLAUDE.md rule-2 approval it gated).
 
 Shipped: `ink` 6→7 and the component-render harness; the alt-screen lifecycle with restore nets on every
 termination path; a hand-built transcript **viewport** (grapheme-aware wrapping, windowing, scroll + auto-follow, a
 per-entry wrap cache) and the inter-session alt-buffer **hoist**; the **`/scrollback`**, **`/edit`** and **`/copy`**
 copy-and-search hatches over a `suspendFullScreen` primitive; **in-app mouse text selection with copy-on-select over
-OSC 52** on both surfaces, with edge auto-scroll and a frozen auto-follow; `--no-mouse` /
+OSC 52** on both surfaces, with edge auto-scroll, a frozen auto-follow and a transient **`✓ Copied` toast** so the
+otherwise-silent copy is confirmed; `--no-mouse` /
 `[preferences].{alt_screen,mouse,copy_on_select,show_banner}`; a branded Home banner; and DEC-2026 synchronized
 output — which `ink` 7 turned out to already emit, so the step **pins** it rather than building the planned
 `stdout` Proxy.
@@ -72,8 +73,6 @@ regression test.
 
 **Open obligations carried out of 2.6.F:**
 
-- **ADR-0069 is Proposed.** The `string-width` runtime dependency needs the maintainer's accept (or a revert of two
-  functions and one manifest line).
 - **The Home landing can overflow a short terminal** — a populated "Attention required" section pushes the top off,
   and the alt buffer has no scrollback to recover it. Predates 2.6.F (the strip is 2.5.B); **2.6.G**'s management
   browsers replace the strip wholesale, which is the right place to fix it.
