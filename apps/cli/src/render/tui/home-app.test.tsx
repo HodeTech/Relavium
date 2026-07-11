@@ -17,6 +17,7 @@ import {
   type HomeController,
   type HomeModelsPort,
 } from './home-controller.js';
+import { COPIED_TOAST_MS } from './tui-constants.js';
 
 /**
  * Mounted-Home component tests (2.6.F Step 3, ADR-0068 part f) — the second surface (after `chat-app.test.tsx`)
@@ -674,6 +675,81 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     m.harness.stdin.write('\x1b[<0;3;1m'); // …release AFTER the resize
     await settleFrames();
     expect(copied).toEqual([]); // the anchor was dropped, so there is nothing to copy
+  });
+});
+
+/**
+ * THE COPY-ON-SELECT CONFIRMATION TOAST on the HOME surface (2.6.F Step 6i). The in-Home chat threads its OWN
+ * `useCopiedToast` through `ChatRegion` (a separate mount from `relavium chat`'s `ChatApp`), so `chat-app.test.tsx`'s
+ * toast tests prove nothing here — a `copied` prop dropped between `RootApp` and `ChatRegion`, or a `flashCopied()`
+ * left off the Home's `copySelection`, would ship green there and dark here. Colour is off by default (`mountHome`),
+ * so the toast renders as the plain `[Copied]` pill — `.toContain('Copied')` matches either rendering.
+ */
+describe('RootApp — the copy-on-select "Copied" toast', () => {
+  const seedThree = (): ChatStoreController => {
+    const store = createChatStore(false);
+    store.notice('AAAA');
+    store.notice('BBBB');
+    store.notice('CCCC');
+    return store;
+  };
+
+  /** Enter the in-Home chat, then drive a press-drag-release that copies one row. */
+  const copyOnce = async (m: MountedHome): Promise<void> => {
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
+    m.harness.stdin.write('\x1b[<0;1;1M'); // press line 0, column 0
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<32;3;1M'); // drag to column 2 (inclusive)
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<0;3;1m'); // release ⇒ copy
+    await settleFrames();
+  };
+
+  it('appears after a copy, ABOVE the footer, and leaves the transcript intact', async () => {
+    const copied: string[] = [];
+    const m = mountHome(seedThree(), {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await copyOnce(m);
+    expect(copied).toEqual(['AAA']); // the write happened
+    const rows = (m.harness.lastFrame() ?? '').split('\n');
+    const toastRow = rows.findIndex((r) => r.includes('Copied'));
+    const footerRow = rows.findIndex((r) => r.includes('turns'));
+    expect(toastRow).toBeGreaterThanOrEqual(0);
+    expect(toastRow).toBeLessThan(footerRow); // the toast sits just above the status footer
+    expect(rows.some((r) => r.includes('AAAA'))).toBe(true); // the transcript is untouched — the toast is not a line
+  });
+
+  it('auto-dismisses after COPIED_TOAST_MS', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const copied: string[] = [];
+      const m = mountHome(seedThree(), {
+        alternateScreen: true,
+        clipboard: (text) => {
+          copied.push(text);
+          return { kind: 'written', characters: text.length };
+        },
+      });
+      await copyOnce(m);
+      expect(m.harness.lastFrame() ?? '').toContain('Copied');
+      await vi.advanceTimersByTimeAsync(COPIED_TOAST_MS + 50);
+      await settleFrames();
+      expect(m.harness.lastFrame() ?? '').not.toContain('Copied');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('WITHOUT a clipboard port (copy-on-select off) there is no toast', async () => {
+    const m = mountHome(seedThree(), { alternateScreen: true }); // no `clipboard` ⇒ copy is inert
+    await copyOnce(m);
+    expect(m.harness.lastFrame() ?? '').not.toContain('Copied');
   });
 });
 

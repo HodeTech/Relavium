@@ -7,6 +7,7 @@ import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import { createSuspendPort } from '../suspend.js';
 import { ChatApp } from './chat-ink.js';
 import { liveAnswerRowBudget } from './chat-projection.js';
+import { COPIED_TOAST_MS } from './tui-constants.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
 
@@ -746,5 +747,87 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     h.stdin.write('\x1b[<0;3;1m');
     await settleFrames();
     expect(h.lastFrame()).toBeDefined();
+  });
+
+  /**
+   * THE COPY-ON-SELECT CONFIRMATION TOAST (2.6.F Step 6i). Success was silent because the only notice channel —
+   * `store.note` — appends a transcript entry that re-wraps and SHIFTS the lines just selected. The toast renders
+   * OUTSIDE the transcript, so it confirms the copy without disturbing the selection.
+   */
+  describe('the "Copied" toast', () => {
+    /** Drive a press-drag-release that copies, and return the frame right after. */
+    const copyOnce = async (h: ReturnType<typeof render>): Promise<void> => {
+      await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
+      h.stdin.write('\x1b[<0;1;1M');
+      await settleFrames();
+      h.stdin.write('\x1b[<32;3;1M');
+      await settleFrames();
+      h.stdin.write('\x1b[<0;3;1m');
+      await settleFrames();
+    };
+
+    it('appears after a copy, ABOVE the footer, and does not touch the transcript', async () => {
+      const copied: string[] = [];
+      const h = mountWithClipboard(seedThree(), copied);
+      await copyOnce(h);
+      expect(copied).toHaveLength(1); // the write happened
+      const rows = (h.lastFrame() ?? '').split('\n');
+      const toastRow = rows.findIndex((r) => r.includes('Copied'));
+      const footerRow = rows.findIndex((r) => r.includes('turns'));
+      expect(toastRow).toBeGreaterThanOrEqual(0);
+      expect(toastRow).toBeLessThan(footerRow); // the toast sits just above the status footer
+      // The transcript entries are unchanged — the toast is not a transcript line.
+      expect(rows.some((r) => r.includes('AAAA'))).toBe(true);
+    });
+
+    it('auto-dismisses after COPIED_TOAST_MS', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const copied: string[] = [];
+        const h = mountWithClipboard(seedThree(), copied);
+        await copyOnce(h);
+        expect(h.lastFrame() ?? '').toContain('Copied');
+        await vi.advanceTimersByTimeAsync(COPIED_TOAST_MS + 50);
+        await settleFrames();
+        expect(h.lastFrame() ?? '').not.toContain('Copied');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a TOO-LARGE selection shows the transcript note, NOT the toast', async () => {
+      const h = render(
+        <ChatApp
+          store={seedThree()}
+          alternateScreen
+          onSubmit={async () => {}}
+          shouldStop={() => false}
+          onExit={() => {}}
+          onError={() => {}}
+          onModeChange={() => {}}
+          clipboard={() => ({ kind: 'too-large', base64Length: 120_000, limit: 74_994 })}
+        />,
+      );
+      await copyOnce(h);
+      const frame = h.lastFrame() ?? '';
+      expect(frame).toContain('too large'); // the note
+      expect(frame).not.toContain('✓ Copied'); // …not the success toast
+    });
+
+    it('WITHOUT a clipboard port (copy-on-select off) there is no toast', async () => {
+      const h = render(
+        <ChatApp
+          store={seedThree()}
+          alternateScreen
+          onSubmit={async () => {}}
+          shouldStop={() => false}
+          onExit={() => {}}
+          onError={() => {}}
+          onModeChange={() => {}}
+        />,
+      );
+      await copyOnce(h);
+      expect(h.lastFrame() ?? '').not.toContain('Copied');
+    });
   });
 });

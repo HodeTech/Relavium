@@ -1,6 +1,7 @@
 import { Box, Static, Text, render, useApp, useInput, usePaste, useWindowSize } from 'ink';
 import {
   createElement,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -40,7 +41,7 @@ import { EXIT_CODES } from '../../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../../process/output-mode.js';
 import { resolveRenderMode } from '../render-mode.js';
 import { colorProps, dimProps } from './projection.js';
-import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
+import { COPIED_TOAST_MS, FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
 import {
   applyEditorAction,
   editorFromText,
@@ -260,6 +261,9 @@ interface ChatViewProps {
   readonly approval?: PendingApproval | undefined;
   /** When the `/` palette is open it owns the bottom of the view, so the idle prompt + footer are suppressed (2.5.C S3b). */
   readonly paletteOpen?: boolean;
+  /** `true` for ~2s after a copy-on-select (2.6.F Step 6i) — renders a transient "✓ Copied" toast above the footer,
+   *  confirming the copy WITHOUT appending to the transcript (which would re-wrap the lines just selected). */
+  readonly copied?: boolean;
   /** Pending `@`/`!` attachments (2.5.D chip redesign) — rendered as a compact chip bar above the idle prompt. */
   readonly attachments?: readonly PendingAttachment[];
   /** The in-flight `!`-shell command line (2.5.D) — when set, the busy indicator labels WHAT is running (a `!`-
@@ -297,6 +301,31 @@ interface ChatViewProps {
  * and every model/transcript string are sanitized at this display boundary so a pasted/streamed control
  * sequence cannot corrupt the terminal or inject ANSI/OSC.
  */
+/**
+ * The transient "✓ Copied" toast state (2.6.F Step 6i). Copy-on-select was silent on success because the only notice
+ * channel — `store.note` — appends a TRANSCRIPT entry, which re-wraps and shifts the very lines the user just selected
+ * (whole-phase review). This flag drives a toast rendered OUTSIDE the transcript, so it confirms the copy without
+ * touching the selection. Shared by both surfaces (`ChatApp` and the Home's `RootApp`), each of which calls
+ * `flashCopied()` on a `written` outcome.
+ */
+export function useCopiedToast(): { readonly copied: boolean; readonly flashCopied: () => void } {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Clear a pending timer on unmount so a late `setCopied(false)` never fires into an unmounted tree.
+  useEffect(
+    () => () => {
+      if (timer.current !== undefined) clearTimeout(timer.current);
+    },
+    [],
+  );
+  const flashCopied = useCallback(() => {
+    setCopied(true);
+    if (timer.current !== undefined) clearTimeout(timer.current); // a re-copy RESTARTS the 2s, never stacks timers
+    timer.current = setTimeout(() => setCopied(false), COPIED_TOAST_MS);
+  }, []);
+  return { copied, flashCopied };
+}
+
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   const {
     state,
@@ -498,6 +527,18 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         </Box>
       )}
 
+      {/* The copy-on-select confirmation (2.6.F Step 6i) — a transient pill above the footer, auto-dismissed by the
+          owner's timer. It lives OUTSIDE the transcript, so confirming a copy never re-wraps the selected lines. A
+          green pill when colour is on; a plain `[Copied]` under `NO_COLOR` / `--no-color` (parity with the banner). */}
+      {props.copied === true &&
+        (color ? (
+          <Text backgroundColor="green" color="black" bold>
+            {' ✓ Copied '}
+          </Text>
+        ) : (
+          <Text>[Copied]</Text>
+        ))}
+
       <Text {...colorProps(color, 'gray')}>
         {formatSessionFooterWithMode(state, mode, reasoningEffort)}
       </Text>
@@ -522,6 +563,9 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     setEditor(value);
   };
   const cancelFired = useRef(false);
+  // The copy-on-select confirmation toast (2.6.F Step 6i) — `flashCopied` on a `written` outcome, rendered as a
+  // transient pill by `ChatView` (not a transcript entry, so the selection never shifts).
+  const { copied, flashCopied } = useCopiedToast();
   // The alt-screen transcript SCROLL state (2.6.F Step 4b-2) — React-local here (the Home keeps it in the
   // controller), ref-shadowed like the editor so a coalesced stdin chunk reduces off the latest. The live geometry
   // (total wrapped lines + measured viewport rows) is lifted from `TranscriptViewport.onMeasure` into `scrollGeomRef`
@@ -1091,7 +1135,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       (line) => line.text,
     );
     const outcome = clipboard(selectionText(rows, normalizeSelection(state)));
-    if (outcome.kind === 'too-large') {
+    if (outcome.kind === 'written') flashCopied();
+    else if (outcome.kind === 'too-large') {
       props.store.note(
         `selection too large to copy (${Math.ceil(outcome.base64Length / 1024)} KB) — use /scrollback or /edit`,
       );
@@ -1478,6 +1523,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         columns={windowSize.columns}
         viewport={viewport}
         reasonDraft={reasonDraft}
+        copied={copied}
         paletteOpen={
           palette !== undefined ||
           search !== undefined ||

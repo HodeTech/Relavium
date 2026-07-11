@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, useSyncExternalStore, type ReactElement } 
 
 import { CHAT_PALETTE_COMMANDS, HOME_PALETTE_COMMANDS } from '../../commands/repl-commands.js';
 import type { PendingAttachment } from './attachments.js';
-import { ChatView } from './chat-ink.js';
+import { ChatView, useCopiedToast } from './chat-ink.js';
 import type { EditorState } from './chat-input.js';
 import { liveScrollGeometry, sanitizeInline, wrapTranscript } from './chat-projection.js';
 import type { ChatStoreController } from './chat-store.js';
@@ -121,6 +121,8 @@ function ChatRegion(
     attachments: readonly PendingAttachment[];
     /** The in-flight `[c]` typed-reason capture buffer (Step 14) — shows the reason input in the approval prompt. */
     reasonDraft: EditorState | undefined;
+    /** `true` for ~2s after a copy-on-select (2.6.F Step 6i) — forwarded to `ChatView`'s toast. */
+    copied: boolean;
   }>,
 ): ReactElement {
   const { state, tick, color, mode, reasoningEffort, reasoningVisible, approval } =
@@ -148,6 +150,7 @@ function ChatRegion(
         columns={props.cols}
         viewport={viewport}
         reasonDraft={props.reasonDraft}
+        copied={props.copied}
         paletteOpen={
           props.palette !== undefined ||
           props.search !== undefined ||
@@ -209,6 +212,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   // Whether a left-button gesture is in flight — set by a press inside the viewport, cleared on release. Distinct from
   // a retained highlight, so a stray click after a copy cannot re-copy it (Step 6h review).
   const gestureActiveRef = useRef(false);
+  // The copy-on-select confirmation toast (2.6.F Step 6i) — same as `relavium chat`.
+  const { copied, flashCopied } = useCopiedToast();
   // The mouse selection (2.6.F Step 6) — held exactly like `scroll`: state for the render, a ref so a coalesced drag
   // burst (several SGR reports in ONE stdin read) reduces off the latest rather than the render closure.
   const [selection, setSelection] = useState<SelectionState | undefined>(undefined);
@@ -332,7 +337,8 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
       (line) => line.text,
     );
     const outcome = clipboard(selectionText(rows, normalizeSelection(state_)));
-    if (outcome.kind === 'too-large') {
+    if (outcome.kind === 'written') flashCopied();
+    else if (outcome.kind === 'too-large') {
       store.note(
         `selection too large to copy (${Math.ceil(outcome.base64Length / 1024)} KB) — use /scrollback or /edit`,
       );
@@ -429,6 +435,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
         shellCommand={state.shellCommand}
         historyEntries={state.historyEntries}
         attachments={state.attachments}
+        copied={copied}
       />
     );
   }
