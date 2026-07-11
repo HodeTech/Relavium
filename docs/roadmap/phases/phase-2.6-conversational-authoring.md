@@ -1,8 +1,9 @@
 # Phase 2.6 — Conversational Authoring and the First-Class CLI
 
-> Status: Planned — **next up**. Depends on the Phase 2.5 spine (the wired tool-environment and the
-> per-tool approval / mode system), which is **complete** (M2.5-4, PR #69, 2026-07-08), so this phase is
-> now unblocked.
+> Status: **In progress** — the substrate workstream **2.6.F** (platform floor + full-screen TUI) is
+> ✅ **Done** (merged to `main`, PR #74, 2026-07-11); the rest of the phase follows. Depends on the Phase 2.5
+> spine (the wired tool-environment and the per-tool approval / mode system), which is **complete** (M2.5-4,
+> PR #69, 2026-07-08), so this phase is unblocked.
 >
 > **Rewritten 2026-07-08**, last revised **2026-07-09** (child-session orchestration split into
 > **2.6.N / 2.6.O / 2.6.P** along a safety gradient; the artifact-directory two-root model + the
@@ -286,7 +287,16 @@ The competitor-parity chat ergonomics (the theme system moved to 2.6.L; tool-cal
 ignore them exactly as the ADR-0049 contract requires; the message queue and rewind have reducer-level
 tests. **Required ADR:** `ink-syntax-highlight` dependency + markdown rendering architecture.
 
-### 2.6.F — Platform floor + the full-screen TUI foundation
+### 2.6.F — Platform floor + the full-screen TUI foundation — ✅ **Done (PR #74, 2026-07-11)**
+
+> **Status:** ✅ **Done (PR #74, 2026-07-11)** — merged to `main` behind
+> [ADR-0067](../../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md) (Node `>=22` floor,
+> `better-sqlite3` re-affirmed), [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md)
+> (ink 7 + the hand-built alt-screen renderer + the `ink-testing-library` harness) and
+> [ADR-0069](../../decisions/0069-string-width-for-the-cli-renderer.md) (`string-width`, Accepted on the merge).
+> The shipped inventory (incl. the `✓ Copied` copy-on-select toast), the two adversarial review rounds, and the
+> open obligations carried out (short-terminal Home overflow → 2.6.G; `relavium run` stays inline; themes → 2.6.L)
+> live in the canonical status home [current.md](../current.md); this entry is not restated there.
 
 The substrate workstream — it runs **first** because the browsers (2.6.G), settings screens (2.6.L), and
 render-v2 (2.6.M) all build on it.
