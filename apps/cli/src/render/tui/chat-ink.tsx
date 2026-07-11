@@ -1,6 +1,8 @@
-import { Box, Static, Text, render, useInput, usePaste, useWindowSize } from 'ink';
+import { Box, Static, Text, render, useApp, useInput, usePaste, useWindowSize } from 'ink';
 import {
   createElement,
+  useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -8,6 +10,7 @@ import {
   type ReactElement,
 } from 'react';
 
+import type { SuspendPort } from '../suspend.js';
 import {
   driveJson,
   drivePlain,
@@ -38,7 +41,7 @@ import { EXIT_CODES } from '../../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../../process/output-mode.js';
 import { resolveRenderMode } from '../render-mode.js';
 import { colorProps, dimProps } from './projection.js';
-import { FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
+import { COPIED_TOAST_MS, FORCE_TEARDOWN_MS, FRAME_MS } from './tui-constants.js';
 import {
   applyEditorAction,
   editorFromText,
@@ -110,20 +113,31 @@ import {
   streamingAbortHint,
   stripTerminalControls,
   wrapTranscript,
+  liveAnswerRowBudget,
 } from './chat-projection.js';
 import { TranscriptViewport } from './transcript-viewport.js';
+import { createMouseReportReader, type MouseEvent as TerminalMouseEvent } from './mouse.js';
 import {
+  normalizeSelection,
+  selectionText,
+  type SelectionRange,
+  type SelectionState,
+  routeMouseSelection,
+} from './selection.js';
+import {
+  effectiveOffset,
   INITIAL_SCROLL,
-  parseMouseScroll,
   reduceScroll,
   scrollMotionForKey,
   WHEEL_LINES,
   type ScrollGeometry,
+  type ViewportGeometry,
   type ScrollState,
 } from './scroll.js';
 import type { ReasoningEffort } from '@relavium/shared';
 
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
+import type { ClipboardOutcome } from '../clipboard.js';
 import type { ChatStoreController, PendingApproval } from './chat-store.js';
 import type { SessionViewState, TranscriptEntry } from './session-view-model.js';
 
@@ -215,6 +229,13 @@ interface ChatAppProps {
   readonly runShellCommand?:
     | ((command: string, args: readonly string[]) => Promise<UserCommandOutcome>)
     | undefined;
+  /** The ADR-0068 §e suspend port (2.6.F Step 5d). `ChatApp` attaches ink's `useApp().suspendTerminal` to it while
+   *  mounted, which is the ONLY way the non-React slash dispatch can reach `/scrollback` and `/edit`. Absent ⇒ the
+   *  hatches surface an honest "needs an interactive terminal" notice. */
+  readonly suspendPort?: SuspendPort | undefined;
+  /** Write the mouse selection to the system clipboard (OSC 52, 2.6.F Step 6). Absent ⇒ selection still highlights
+   *  but copy-on-select is inert (a driver/test that wires no terminal). */
+  readonly clipboard?: ((text: string) => ClipboardOutcome) | undefined;
 }
 
 interface ChatViewProps {
@@ -240,6 +261,9 @@ interface ChatViewProps {
   readonly approval?: PendingApproval | undefined;
   /** When the `/` palette is open it owns the bottom of the view, so the idle prompt + footer are suppressed (2.5.C S3b). */
   readonly paletteOpen?: boolean;
+  /** `true` for ~2s after a copy-on-select (2.6.F Step 6i) — renders a transient "✓ Copied" toast above the footer,
+   *  confirming the copy WITHOUT appending to the transcript (which would re-wrap the lines just selected). */
+  readonly copied?: boolean;
   /** Pending `@`/`!` attachments (2.5.D chip redesign) — rendered as a compact chip bar above the idle prompt. */
   readonly attachments?: readonly PendingAttachment[];
   /** The in-flight `!`-shell command line (2.5.D) — when set, the busy indicator labels WHAT is running (a `!`-
@@ -261,9 +285,11 @@ interface ChatViewProps {
   readonly viewport?:
     | {
         readonly rows: number;
+        /** The active mouse selection in WRAPPED-transcript coordinates (Step 6), already document-ordered. */
+        readonly selection?: SelectionRange | undefined;
         readonly cols: number;
         readonly scroll: ScrollState;
-        readonly onMeasure: (geom: ScrollGeometry) => void;
+        readonly onMeasure: (geom: ViewportGeometry) => void;
       }
     | undefined;
 }
@@ -275,6 +301,31 @@ interface ChatViewProps {
  * and every model/transcript string are sanitized at this display boundary so a pasted/streamed control
  * sequence cannot corrupt the terminal or inject ANSI/OSC.
  */
+/**
+ * The transient "✓ Copied" toast state (2.6.F Step 6i). Copy-on-select was silent on success because the only notice
+ * channel — `store.note` — appends a TRANSCRIPT entry, which re-wraps and shifts the very lines the user just selected
+ * (whole-phase review). This flag drives a toast rendered OUTSIDE the transcript, so it confirms the copy without
+ * touching the selection. Shared by both surfaces (`ChatApp` and the Home's `RootApp`), each of which calls
+ * `flashCopied()` on a `written` outcome.
+ */
+export function useCopiedToast(): { readonly copied: boolean; readonly flashCopied: () => void } {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Clear a pending timer on unmount so a late `setCopied(false)` never fires into an unmounted tree.
+  useEffect(
+    () => () => {
+      if (timer.current !== undefined) clearTimeout(timer.current);
+    },
+    [],
+  );
+  const flashCopied = useCallback(() => {
+    setCopied(true);
+    if (timer.current !== undefined) clearTimeout(timer.current); // a re-copy RESTARTS the 2s, never stacks timers
+    timer.current = setTimeout(() => setCopied(false), COPIED_TOAST_MS);
+  }, []);
+  return { copied, flashCopied };
+}
+
 export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   const {
     state,
@@ -324,6 +375,12 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
       liveTokensTruncated: state.liveTokensTruncated,
       elapsedMs,
       reasoningActive,
+      // `props.viewport` is present exactly on the ALT screen, and it carries the terminal's size. Only that surface
+      // has a FIXED-HEIGHT frame to overflow; the inline renderer's live region grows and the terminal scrolls it, so
+      // it passes no bound and its output stays byte-identical.
+      ...(props.viewport === undefined
+        ? {}
+        : { columns: props.viewport.cols, maxRows: liveAnswerRowBudget(props.viewport.rows) }),
     });
     // A STATUS line (compaction / shell / pre-token) already carries its inline "· Esc to …" hint; a streaming
     // CONTENT line has no room for it, so surface the abort affordance on a compact dim line beneath it — `Esc`
@@ -374,6 +431,7 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
           lines={wrappedTranscript}
           color={color}
           scroll={viewport.scroll}
+          selection={viewport.selection}
           onMeasure={viewport.onMeasure}
         />
       )}
@@ -469,6 +527,18 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
         </Box>
       )}
 
+      {/* The copy-on-select confirmation (2.6.F Step 6i) — a transient pill above the footer, auto-dismissed by the
+          owner's timer. It lives OUTSIDE the transcript, so confirming a copy never re-wraps the selected lines. A
+          green pill when colour is on; a plain `[Copied]` under `NO_COLOR` / `--no-color` (parity with the banner). */}
+      {props.copied === true &&
+        (color ? (
+          <Text backgroundColor="green" color="black" bold>
+            {' ✓ Copied '}
+          </Text>
+        ) : (
+          <Text>[Copied]</Text>
+        ))}
+
       <Text {...colorProps(color, 'gray')}>
         {formatSessionFooterWithMode(state, mode, reasoningEffort)}
       </Text>
@@ -493,13 +563,40 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     setEditor(value);
   };
   const cancelFired = useRef(false);
+  // The copy-on-select confirmation toast (2.6.F Step 6i) — `flashCopied` on a `written` outcome, rendered as a
+  // transient pill by `ChatView` (not a transcript entry, so the selection never shifts).
+  const { copied, flashCopied } = useCopiedToast();
   // The alt-screen transcript SCROLL state (2.6.F Step 4b-2) — React-local here (the Home keeps it in the
   // controller), ref-shadowed like the editor so a coalesced stdin chunk reduces off the latest. The live geometry
   // (total wrapped lines + measured viewport rows) is lifted from `TranscriptViewport.onMeasure` into `scrollGeomRef`
   // so a scroll key reduces against the SAME geometry the viewport windows with. Inert in the inline renderer.
   const [scroll, setScroll] = useState<ScrollState>(INITIAL_SCROLL);
   const scrollRef = useRef<ScrollState>(INITIAL_SCROLL);
-  const scrollGeomRef = useRef<ScrollGeometry>({ totalLines: 0, height: 0 });
+  // Survives an SGR mouse report SPLIT across two `useInput` calls (Step 6f). One reader per mount: it holds the
+  // fragment, so it must not be re-created on every render.
+  const mouseReaderRef = useRef(createMouseReportReader());
+  // Whether the transcript was following the tail when the current gesture began — a plain click restores it.
+  const followedBeforeSelectionRef = useRef(false);
+  // Whether a left-button gesture is in flight — set by a press inside the viewport, cleared on release. Distinct from
+  // a retained highlight, so a stray click after a copy cannot re-copy it (Step 6h review).
+  const gestureActiveRef = useRef(false);
+  // The mouse selection (2.6.F Step 6), held exactly like `scroll`: React state for the render, a ref so a coalesced
+  // stdin chunk (a drag burst arrives as several reports in ONE read) reduces off the latest, not the render closure.
+  const [selection, setSelection] = useState<SelectionState | undefined>(undefined);
+  const selectionRef = useRef<SelectionState | undefined>(undefined);
+  // Seeded at zero: the post-commit measure fills it on the first frame. `top`/`left`/`width` are the box's position
+  // in ink's frame — the mouse handler's half of the row→line mapping (Step 6).
+  const scrollGeomRef = useRef<ViewportGeometry>({
+    totalLines: 0,
+    height: 0,
+    width: 0,
+    top: 0,
+    left: 0,
+  });
+  const applySelection = (next: SelectionState | undefined): void => {
+    selectionRef.current = next;
+    setSelection(next);
+  };
   const applyScroll = (next: ScrollState): void => {
     scrollRef.current = next;
     setScroll(next);
@@ -895,6 +992,20 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     }
   };
 
+  // Attach ink's `suspendTerminal` to the ADR-0068 §e port while this tree is mounted (2.6.F Step 5d). `useApp()` is
+  // the only place it exists, and the slash dispatch that runs `/scrollback` / `/edit` lives outside React — so the
+  // port is the bridge. Detaching on unmount is what makes the hatches report "needs an interactive terminal" between
+  // a `/clear`-swap's unmount and the next mount, rather than calling into a dead ink instance.
+  // Invoked as a METHOD (`app.suspendTerminal(cb)`), never a bare destructured reference: ink 7 hands it out unbound
+  // off the prototype, so this form is immune to how the context object is shaped.
+  const app = useApp();
+  const suspendPort = props.suspendPort;
+  useEffect(() => {
+    if (suspendPort === undefined) return;
+    suspendPort.attach((callback) => app.suspendTerminal(callback));
+    return () => suspendPort.attach(undefined);
+  }, [app, suspendPort]);
+
   const submit = (message: string, display?: string): void => {
     // A typed `/models` opens the reseat picker overlay (ADR-0059) instead of sending — interactive only (the port
     // is wired). Covers a directly-typed `/models` AND a chat-palette selection (both route through `submit`).
@@ -965,14 +1076,82 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
 
   // Ctrl-C reaches us (not the kernel) in raw mode — `reduceChatKey` maps it to `cancel` even mid-turn. Dispatch
   // /cancel at most once: cancelOnce() is idempotent, but a held Ctrl-C would otherwise fire redundant turns.
+  /**
+   * Reduce one non-wheel mouse report into the selection (2.6.F Step 6). The viewport facts come from the measured
+   * geometry (`top`/`left` — where the box sits in ink's frame) plus the LIVE wrap (`totalLines`/`height`), so a
+   * drag during a streaming turn reduces against the transcript as it is now, not as it was at the last commit.
+   */
+  const chatLiveGeom = (): ScrollGeometry =>
+    liveScrollGeometry(
+      props.store.getSnapshot().state.transcript,
+      windowSize.columns,
+      scrollGeomRef.current.height,
+    );
+
+  const routeSelection = (event: TerminalMouseEvent): void => {
+    routeMouseSelection(event, {
+      geometry: () => {
+        const measured = scrollGeomRef.current;
+        const live = chatLiveGeom();
+        return {
+          top: measured.top,
+          left: measured.left,
+          height: live.height,
+          totalLines: live.totalLines,
+          offset: effectiveOffset(scrollRef.current, live),
+        };
+      },
+      current: () => selectionRef.current,
+      setSelection: applySelection,
+      copy: copySelection,
+      scrollBy: (motion: 'line-up' | 'line-down') =>
+        applyScroll(reduceScroll(scrollRef.current, motion, chatLiveGeom())),
+      pauseFollow: () => {
+        const scroll = scrollRef.current;
+        followedBeforeSelectionRef.current = scroll.following;
+        if (!scroll.following) return;
+        applyScroll({ offset: effectiveOffset(scroll, chatLiveGeom()), following: false });
+      },
+      restoreFollow: () => {
+        if (!followedBeforeSelectionRef.current) return;
+        applyScroll({ ...scrollRef.current, following: true });
+      },
+      gestureActive: () => gestureActiveRef.current,
+      setGestureActive: (active: boolean) => {
+        gestureActiveRef.current = active;
+      },
+    });
+  };
+
+  /**
+   * Copy the selection to the system clipboard on release. SILENT on success: `store.notice` appends a transcript
+   * entry, which would re-wrap and SHIFT the very lines the user just selected — the highlight would jump out from
+   * under their pointer. Only a refusal (a selection past the terminal's OSC 52 length floor) is worth a notice.
+   */
+  const copySelection = (state: SelectionState): void => {
+    const clipboard = props.clipboard;
+    if (clipboard === undefined) return;
+    const rows = wrapTranscript(props.store.getSnapshot().state.transcript, windowSize.columns).map(
+      (line) => line.text,
+    );
+    const outcome = clipboard(selectionText(rows, normalizeSelection(state)));
+    if (outcome.kind === 'written') flashCopied();
+    else if (outcome.kind === 'too-large') {
+      props.store.note(
+        `selection too large to copy (${Math.ceil(outcome.base64Length / 1024)} KB) — use /scrollback or /edit`,
+      );
+    }
+  };
+
   useInput((char, key) => {
     // Mouse reports (Step 5): the alt screen enables mouse reporting, so a wheel/click arrives in EVERY state —
     // including while an overlay owns the keyboard. CONSUME every report HERE, ahead of the overlay routing below,
     // so its raw bytes can never type into the prompt, the `/` palette filter, or the `[c]` reason capture. The wheel
     // only SCROLLS when no overlay owns the keyboard (parity with the Home + the Step-4b-2 overlay gate).
     if (props.alternateScreen === true) {
-      const mouse = parseMouseScroll(char);
-      if (mouse !== undefined) {
+      const read = mouseReaderRef.current.read(char);
+      if (read.kind !== 'none') {
+        const mouse = read.kind === 'event' ? read.event : undefined;
         const overlayOwnsKeyboard =
           reasonDraftRef.current !== undefined ||
           paletteRef.current !== undefined ||
@@ -980,17 +1159,18 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           mentionRef.current !== undefined ||
           modelPickerRef.current !== undefined ||
           effortPickerRef.current !== undefined;
-        if (mouse !== 'ignore' && !overlayOwnsKeyboard) {
-          const geom = liveScrollGeometry(
-            props.store.getSnapshot().state.transcript,
-            windowSize.columns,
-            scrollGeomRef.current.height,
-          );
-          let next = scrollRef.current;
-          for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, mouse, geom);
-          applyScroll(next);
+        if (mouse !== undefined && !overlayOwnsKeyboard) {
+          if (mouse.kind === 'wheel') {
+            const geom = chatLiveGeom();
+            const motion = mouse.direction === 'up' ? 'line-up' : 'line-down';
+            let next = scrollRef.current;
+            for (let i = 0; i < WHEEL_LINES; i += 1) next = reduceScroll(next, motion, geom);
+            applyScroll(next);
+          } else {
+            routeSelection(mouse);
+          }
         }
-        return;
+        return; // CONSUMED in every state — a mouse report's raw bytes must never type into the prompt
       }
     }
     // Read `running` FRESH from the store (not the render closure) so a coalesced same-chunk event after a turn
@@ -1145,6 +1325,18 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       openMention();
       return;
     }
+    // Esc DISMISSES a live selection first — it is the most recent thing the user did and the only one they can see.
+    // Gated on `!isRunning` on purpose: while a turn streams, Esc is the mid-turn ABORT, and shadowing an abort with a
+    // cosmetic clear would be a bad trade. A click still clears the highlight mid-turn.
+    if (
+      key.escape === true &&
+      !isRunning &&
+      !approvalPending &&
+      selectionRef.current !== undefined
+    ) {
+      applySelection(undefined);
+      return;
+    }
     // Esc at an IDLE prompt with pending `@`/`!` attachments discards them (a clean cancel affordance — parity with
     // home-controller.ts; when a turn is running Esc is the mid-turn abort, reduced below).
     if (
@@ -1164,20 +1356,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
     // reduceChatKey below), which is safe because scroll keys never overlap the [y]/[a]/[n] answer set. Read the REF
     // for coalesced-chunk safety. Not gated on `isRunning` — you can scroll history WHILE a turn streams.
     if (props.alternateScreen === true) {
-      const liveGeom = (): ScrollGeometry =>
-        // Reduce against LIVE geometry: wrap the store's CURRENT transcript at the keypress (rare, user-driven) for
-        // a fresh `totalLines`, not the `onMeasure` ref which lags by up to a commit — else a mid-stream burst makes
-        // `settle` resume-follow against a stale bottom (Step-4b-2 Sonnet review). `props.store` is a stable prop, so
-        // its snapshot is read fresh here regardless of any coalesced-chunk closure staleness.
-        liveScrollGeometry(
-          props.store.getSnapshot().state.transcript,
-          windowSize.columns,
-          scrollGeomRef.current.height,
-        );
-      // (Mouse reports are consumed at the TOP of this handler, ahead of the overlay routing — see above.)
+      // (Mouse reports are consumed at the TOP of this handler, ahead of the overlay routing — see above.) The scroll
+      // reduces against LIVE geometry via `chatLiveGeom()` — the store's CURRENT transcript, not the `onMeasure` ref
+      // which lags by up to a commit (Step-4b-2 Sonnet review).
       const motion = scrollMotionForKey(key);
       if (motion !== undefined) {
-        applyScroll(reduceScroll(scrollRef.current, motion, liveGeom()));
+        applyScroll(reduceScroll(scrollRef.current, motion, chatLiveGeom()));
         return;
       }
     }
@@ -1295,6 +1479,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   // width, and the viewport's re-measure all track a resize — parity with the Home's `subscribeResize`. It falls
   // back to 80×24 off a TTY (a harness), moot on a real TTY (the only place alt mounts, via the driveInk gate).
   const windowSize = useWindowSize();
+
+  // A resize re-wraps the transcript, so every display-line index the live selection holds moves. Drop it rather than
+  // highlight — and copy — the wrong text (2.6.F Step 6).
+  useEffect(() => {
+    applySelection(undefined);
+  }, [windowSize.columns]);
   // Alt-screen (Step 4b, ADR-0068 §c): the outer container is bounded to the terminal `rows` so `ChatView`'s
   // flex-grow viewport has a height to fill BELOW any keyboard-owning overlay (palette / search / …), and the
   // transcript renders through the scroll {@link TranscriptViewport} instead of `<Static>`. Absent ⇒ the inline
@@ -1305,8 +1495,10 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
           rows: windowSize.rows,
           cols: windowSize.columns,
           scroll,
+          // Document-ordered here, once: the viewport draws it, `copySelection` re-derives it for the clipboard.
+          ...(selection === undefined ? {} : { selection: normalizeSelection(selection) }),
           // Lift the viewport's live geometry into the ref the scroll keymap reduces against (no re-render).
-          onMeasure: (g: ScrollGeometry): void => {
+          onMeasure: (g: ViewportGeometry): void => {
             scrollGeomRef.current = g;
           },
         }
@@ -1331,6 +1523,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
         columns={windowSize.columns}
         viewport={viewport}
         reasonDraft={reasonDraft}
+        copied={copied}
         paletteOpen={
           palette !== undefined ||
           search !== undefined ||
@@ -1386,13 +1579,46 @@ export function finalizeInkExit(
   return exited.finally(ops.teardown).then((): ChatDriveOutcome => ops.outcome());
 }
 
+/**
+ * Where a session's INTRO goes — a resume banner (2.N), the `/clear` notice carrying `relavium chat-resume <id>`, or
+ * a `/models` reseat line. The renderer decides, and getting it wrong loses the line:
+ *
+ *  - INLINE: printed before ink mounts, so it scrolls into the terminal's history above the live region (the TTY
+ *    counterpart of what `drivePlain` writes).
+ *  - FULL-SCREEN: the alt buffer has no scrollback, and ink's first frame is `height: rows` — it paints straight over
+ *    a pre-mount write. So the intro goes into the fresh session's TRANSCRIPT, where the viewport keeps it and the
+ *    user can scroll back to it. Without this, `/clear` in the DEFAULT renderer silently discarded the only pointer
+ *    back to the conversation it had just ended (whole-phase Opus review). The MCP-skipped diagnostic already took
+ *    this route (chat.ts); the intro did not.
+ *
+ * `driveInk` mounts real ink and cannot be unit-tested, so the decision lives here, where it can be.
+ */
+export function emitIntro(
+  intro: string | undefined,
+  alternateScreen: boolean,
+  ports: { readonly notice: (text: string) => void; readonly writeOut: (text: string) => void },
+): void {
+  if (intro === undefined) return; // a fresh session has no intro
+  if (alternateScreen) ports.notice(intro);
+  else ports.writeOut(`${intro}\n`);
+}
+
 export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
-  // The resume banner (2.N): print it once before mounting ink so it scrolls into the terminal history above
-  // the live region — the TTY counterpart of the line drivePlain writes, so a resumed session is visibly a
-  // resume (not just an N-turn footer). A fresh session has no intro and prints nothing here.
-  if (ctx.intro !== undefined) {
-    ctx.io.writeOut(`${ctx.intro}\n`);
-  }
+  // Resolved here, BEFORE the intro: where the intro goes depends on the renderer (see `emitIntro`).
+  const alternateScreen =
+    resolveRenderMode({
+      outputMode: detectOutputMode({
+        stdoutIsTty: ctx.io.stdoutIsTty,
+        json: ctx.global.json,
+        ci: isCiEnv(ctx.io.env),
+      }),
+      noAltScreenFlag: ctx.global.noAltScreen === true,
+      configAltScreen: ctx.altScreen,
+    }) === 'alt';
+  emitIntro(ctx.intro, alternateScreen, {
+    notice: (text) => ctx.store.notice(text),
+    writeOut: (text) => ctx.io.writeOut(text),
+  });
   // Mirror the live stream into the view store the component projects.
   const unsubscribe = ctx.handle.subscribe((event) => ctx.store.apply(event));
   // Open the session ONLY now — the store is subscribed, so the synchronous session:started (which carries
@@ -1408,8 +1634,13 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     rejectExit = reject;
   });
 
-  // An EXTERNAL SIGINT (kill -INT / a parent's signal) — a keyboard Ctrl-C is intercepted by useInput in raw
-  // mode and never reaches the kernel as SIGINT, so this covers only the out-of-band case. Register with
+  // An EXTERNAL SIGINT (kill -INT / a parent's signal). A keyboard Ctrl-C is normally intercepted by useInput in raw
+  // mode and never reaches the kernel as SIGINT — EXCEPT while a `/scrollback` / `/edit` suspension owns the terminal,
+  // where ink's `pauseInput()` has turned raw mode OFF and the tty line discipline delivers a real SIGINT. Running the
+  // cooperative `/cancel` there would end the session, unmount ink, and exit the hoisted alt buffer behind the
+  // suspension's back — whose pending reclaim would later re-enter the alt buffer and re-enable the mouse on the
+  // user's SHELL (Step-5d-3 Sonnet review). So the handler yields while a hatch is suspended: the hatch's own wait
+  // resolves on SIGINT, and `$EDITOR` (same foreground process group) receives the signal directly. Register with
   // process.on (NOT once): ink registers a signal-exit SIGINT listener that RE-RAISES SIGINT (→ exit 130) when
   // it is the SOLE remaining listener, which would skip our finally and leave the row 'active'. Staying
   // registered keeps signal-exit from re-raising, so the cooperative /cancel (→ session:cancelled → persister
@@ -1423,16 +1654,6 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   // value drives ONLY the `ChatApp` component prop (the transcript viewport vs `<Static>`); ink's render OPTION is a
   // hard `false` (Step 4b-3), so ink toggles NO DECSET-1049 per session — the hoisted `runReplLoop` owns the single
   // alt-buffer enter/exit, and the end-of-session summary rides on the outcome + prints after that exit (ADR-0068 §c).
-  const alternateScreen =
-    resolveRenderMode({
-      outputMode: detectOutputMode({
-        stdoutIsTty: ctx.io.stdoutIsTty,
-        json: ctx.global.json,
-        ci: isCiEnv(ctx.io.env),
-      }),
-      noAltScreenFlag: ctx.global.noAltScreen === true,
-      configAltScreen: ctx.altScreen,
-    }) === 'alt';
   let cancelRequested = false;
   const onSigint = (): void => {
     if (cancelRequested) {
@@ -1462,7 +1683,13 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     cancelRequested = true;
     void ctx.processLine('/cancel').then(() => resolveExit(), rejectExit);
   };
-  process.on('SIGINT', onSigint);
+  /** Drop a SIGINT that arrives while a hatch owns the terminal — see the note above. Wraps `onSigint` so the guard
+   *  can never be forgotten by a later edit to the handler body. */
+  const onSigintGated = (): void => {
+    if (ctx.suspendPort?.isSuspended() === true) return;
+    onSigint();
+  };
+  process.on('SIGINT', onSigintGated);
 
   try {
     instance = render(
@@ -1494,6 +1721,8 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         mentionReader: ctx.mentionReader,
         // `!`-shell runner (2.5.D, ADR-0061) — interactive-only; absent ⇒ a leading `!` is a literal message.
         runShellCommand: ctx.runShellCommand,
+        suspendPort: ctx.suspendPort,
+        clipboard: ctx.clipboard,
       }),
       {
         // OUR /cancel (Ctrl-C) handler drives the cooperative cancel — never ink's process.exit.
@@ -1518,7 +1747,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         } catch {
           // swallow — never mask the outcome nor skip the SIGINT-listener removal below.
         }
-        process.removeListener('SIGINT', onSigint);
+        process.removeListener('SIGINT', onSigintGated);
       },
       // The end-of-session summary rides on the outcome (Step 4b-3): the hoisted runReplLoop prints it AFTER the
       // single alt-buffer exit, on the primary buffer (ADR-0068 §c). Only a real end (`/exit`) carries one; a `/clear`
@@ -1533,7 +1762,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
     // none leaks past the throw (the finally above is never reached when render() throws).
     clearInterval(frame);
     unsubscribe();
-    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGINT', onSigintGated);
     throw err;
   }
 }

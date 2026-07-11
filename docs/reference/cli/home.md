@@ -112,22 +112,32 @@ The Home receives a bracketed paste on **ink 7's native `usePaste` channel** (se
 
 ## Render mode (inline / alt-screen)
 
-The Home renders in one of two modes ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e): since Step 4b-3 the **default on a TTY is the full-screen alternate-screen renderer**, with the **inline** renderer (native scrollback, the screen-reader-friendly fallback) as the opt-out — **`--no-alt-screen`** ([commands.md](commands.md#global-options)) for one invocation, or **`[preferences].alt_screen = false`** ([config-spec.md](../contracts/config-spec.md)) durably. A non-TTY / `--json` / CI path is **always** inline (byte-identical). The alt screen renders the transcript through a resize-tracked **viewport** with **scroll-back + auto-follow** — **PgUp/PgDn** page, **Ctrl+Home/Ctrl+End** jump to top/tail, an upward scroll pauses the tail-follow and reaching the bottom resumes it (the scroll keymap is gated behind any keyboard-owning overlay) — and a per-entry wrap cache (keyed on the immutable transcript entry) keeps even a very large transcript cheap (Step 4b-3). Still pending (Step 5): the **`[`-dump / `v`-open-in-$EDITOR** copy-and-search hatches; the resolution is shared verbatim with `relavium chat` ([chat-session.md](chat-session.md)). The full-screen mode is inherently inaccessible to screen readers — see [accessibility.md](accessibility.md) for the trade-off and the inline-renderer escape hatch.
+A **branded banner** — a wordmark + tagline plaque — is drawn where the plain `relavium` heading otherwise sits, on a
+fresh install: `[preferences].show_banner` is `true` (always) / `false` (never), and **absent** means *shown only while
+the Home is empty*, so it greets a first run and auto-dismisses once there is anything to continue. It degrades to
+plain ASCII under `NO_COLOR` / `--no-color`, and a forced banner stands down on a terminal too short to hold it beside
+the strip. It is cosmetic and gates no feature.
+
+The Home renders in one of two modes ([ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e): since Step 4b-3 the **default on a TTY is the full-screen alternate-screen renderer**, with the **inline** renderer (native scrollback, the screen-reader-friendly fallback) as the opt-out — **`--no-alt-screen`** ([commands.md](commands.md#global-options)) for one invocation, or **`[preferences].alt_screen = false`** ([config-spec.md](../contracts/config-spec.md)) durably. A non-TTY / `--json` / CI path is **always** inline (byte-identical). The alt screen renders the transcript through a resize-tracked **viewport** with **scroll-back + auto-follow** — **PgUp/PgDn** page, **Ctrl+Home/Ctrl+End** jump to top/tail, an upward scroll pauses the tail-follow and reaching the bottom resumes it (the scroll keymap is gated behind any keyboard-owning overlay) — and a per-entry wrap cache (keyed on the immutable transcript entry) keeps even a very large transcript cheap (Step 4b-3). The in-Home chat also carries the mouse **selection + copy-on-select** and the **`/scrollback`**, **`/edit`** and **`/copy`** copy-and-search hatches — the same code as `relavium chat` ([chat-session.md](chat-session.md)); the hatches are chat-only, so they never appear in the bare Home's palette. **Mouse reporting is armed only while the chat owns the screen**: the Home landing has no viewport to wheel-scroll and no in-app selection, so it keeps the emulator's own click-drag selection instead. The full-screen mode is inherently inaccessible to screen readers — see [accessibility.md](accessibility.md) for the trade-off and the inline-renderer escape hatch.
 
 ## Minimum terminal size
 
 Below **80×24** the Home **degrades** to a single line — `Terminal too small (WxH) — resize to at least 80×24.` plus a `Ctrl-C to exit` affordance — and **suspends** the strip render until a terminal **resize** arrives, rather than drawing a broken/garbled TUI. The resize is observed on `process.stdout`'s cross-platform `'resize'` event (backed by `SIGWINCH` on POSIX), not a bare `SIGWINCH` binding (unreliable on Windows). Every dynamic strip row and the prompt are truncated at the terminal edge (`truncate-end`), never soft-wrapped.
 
+> **Known limitation (tracked).** *At or above* 80×24, a very tall landing — a populated **Attention required** section (many pending gates) plus the Continue lists — can still exceed the terminal's rows, and the alt buffer has no scrollback to recover the top. This predates 2.6.F (the strip is 2.5.B) and is resolved by **2.6.G**'s management browsers, which replace the strip wholesale. See [docs/roadmap/current.md](../../roadmap/current.md).
+
 ## Signal lifecycle & exit codes
 
-The Home owns **one signal lifecycle (SIGINT/SIGTERM)** covering the Home, the in-Home chat, and MCP teardown (`closeMcp`):
+The Home owns **one signal lifecycle (SIGINT/SIGTERM/SIGHUP/SIGQUIT)** covering the Home, the in-Home chat, and MCP teardown (`closeMcp`), plus a synchronous `process.on('exit')` net behind all of them:
 
 | Outcome | How | Exit code |
 | --- | --- | --- |
 | **Clean Home exit** | Ctrl-C / EOF in `home` mode | `0` |
-| **Signal-driven** | an external SIGINT / SIGTERM (`kill -INT` / a parent's signal) | `128 + signo` — **`130`** (SIGINT) / **`143`** (SIGTERM) |
+| **Signal-driven** | an external SIGINT / SIGTERM / SIGHUP / SIGQUIT (`kill -INT`, closing the terminal window, a parent's signal) | `128 + signo` — **`130`** (SIGINT) / **`143`** (SIGTERM) / **`129`** (SIGHUP) / **`131`** (SIGQUIT) |
 
-On an external signal the handler restores the terminal (unmount ink, disable bracketed paste), tears the live chat — or an in-flight build — down **bounded** (a stuck MCP teardown can't hang the exit; a second signal force-exits immediately), closes the db once, and exits `128+signo` so a shell pipeline still detects the interruption. A keyboard Ctrl-C does **not** reach the process as SIGINT (raw mode), so the controller handles it (Home → `0`, chat → `/cancel`) and the `process.on('SIGINT')` handler covers only **out-of-band** signals.
+On an external signal the handler restores the terminal (unmount ink, disable bracketed paste, disable mouse reporting), tears the live chat — or an in-flight build — down **bounded** (a stuck MCP teardown can't hang the exit; a second signal force-exits immediately), closes the db once, and exits `128+signo` so a shell pipeline still detects the interruption.
+
+A keyboard Ctrl-C does **not** normally reach the process as SIGINT (raw mode), so the controller handles it (Home → `0`, chat → `/cancel`). There is **one exception**: while a `/scrollback` or `/edit` suspension owns the terminal, ink has turned raw mode off and the kernel delivers a real SIGINT. That signal belongs to the hatch — the Home's handler drops it (`suspendPort.isSuspended()`), the hatch's own listener resumes the renderer, and the session survives. An external SIGTERM/SIGHUP/SIGQUIT still tears down, suspended or not.
 
 A chat launched from the Home has its **own** exit code `4` ([chat-session.md](chat-session.md)) — but inside the Home that `4` is **consumed by the mode loop** (a chat ending returns to Home), **never leaked**. The Home's own exit code is `0` on a clean exit. See the canonical [Exit codes](commands.md#exit-codes) table.
 

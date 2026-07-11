@@ -11,25 +11,14 @@ import {
   type ReplCommandContext,
 } from './repl-commands.js';
 
-interface CapabilityCalls {
-  readonly exit: number;
-  readonly cancel: number;
-  readonly exportSession: number;
-  readonly help: number;
-  readonly showWorkflows: number;
-  readonly showCost: number;
-  readonly runDoctor: number;
-  readonly setMode: number;
-  readonly setReasoningEffort: number;
-  readonly toggleReasoning: number;
-  readonly compactHistory: number;
-  readonly trimHistory: number;
-  readonly clearSession: number;
-  readonly openModels: number;
-}
-
+/**
+ * DERIVED from `ReplCommandContext`, never hand-kept. Both this map and the `total` sum below used to enumerate the
+ * capabilities by hand, and both silently stopped counting each newly added one — so a command that fired TWO
+ * capabilities still totalled 1 (found twice: Step 5d, Step 6e). Adding a capability to the context now fails to
+ * compile until the spy exists.
+ */
 /** A fully-spied REPL context — each capability is a spy so a command's `run` can be asserted to call exactly one. */
-function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls } {
+function spyContext(): { ctx: ReplCommandContext; calls: () => Map<string, number> } {
   const spies = {
     exit: vi.fn(),
     cancel: vi.fn(),
@@ -45,25 +34,15 @@ function spyContext(): { ctx: ReplCommandContext; calls: () => CapabilityCalls }
     trimHistory: vi.fn(),
     clearSession: vi.fn(),
     openModels: vi.fn(),
-  };
+    dumpScrollback: vi.fn(),
+    editTranscript: vi.fn(),
+    copyTranscript: vi.fn(),
+  } satisfies Record<keyof ReplCommandContext, unknown>;
+
   return {
     ctx: spies,
-    calls: () => ({
-      exit: spies.exit.mock.calls.length,
-      cancel: spies.cancel.mock.calls.length,
-      exportSession: spies.exportSession.mock.calls.length,
-      help: spies.help.mock.calls.length,
-      showWorkflows: spies.showWorkflows.mock.calls.length,
-      showCost: spies.showCost.mock.calls.length,
-      setMode: spies.setMode.mock.calls.length,
-      setReasoningEffort: spies.setReasoningEffort.mock.calls.length,
-      toggleReasoning: spies.toggleReasoning.mock.calls.length,
-      runDoctor: spies.runDoctor.mock.calls.length,
-      compactHistory: spies.compactHistory.mock.calls.length,
-      trimHistory: spies.trimHistory.mock.calls.length,
-      clearSession: spies.clearSession.mock.calls.length,
-      openModels: spies.openModels.mock.calls.length,
-    }),
+    // A Map built from the spy map itself: no second list to fall out of step with the first, and no cast.
+    calls: () => new Map(Object.entries(spies).map(([name, spy]) => [name, spy.mock.calls.length])),
   };
 }
 
@@ -87,11 +66,15 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'trim',
       'clear',
       'models',
+      'scrollback',
+      'edit',
+      'copy',
     ]);
   });
 
   it('each command run() invokes EXACTLY its one capability', async () => {
-    const cases: Array<[string, keyof ReturnType<ReturnType<typeof spyContext>['calls']>]> = [
+    const cases: Array<[string, string]> = [
+      // [command name, the capability it must call]
       ['help', 'help'],
       ['exit', 'exit'],
       ['cancel', 'cancel'],
@@ -106,27 +89,21 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       ['trim', 'trimHistory'],
       ['clear', 'clearSession'],
       ['models', 'openModels'],
+      // ADR-0068 §e (Step 5d). Without these two rows the run→capability binding of the two newest commands was
+      // untested: cross-wiring `/scrollback` to `ctx.editTranscript` left the whole suite green (the name/palette/help
+      // assertions only check PRESENCE). Adding a command to the pinned lists is not enough — its binding needs a row.
+      ['scrollback', 'dumpScrollback'],
+      ['edit', 'editTranscript'],
+      ['copy', 'copyTranscript'],
     ];
     for (const [name, capability] of cases) {
       const { ctx, calls } = spyContext();
       await REPL_COMMANDS_BY_NAME.get(name)?.run(ctx, []); // run may be async — await so the spy is recorded (+ no unhandled rejection)
       const counts = calls();
-      expect(counts[capability], `${name} → ${capability}`).toBe(1);
-      const total =
-        counts.exit +
-        counts.cancel +
-        counts.exportSession +
-        counts.help +
-        counts.showWorkflows +
-        counts.showCost +
-        counts.runDoctor +
-        counts.setMode +
-        counts.setReasoningEffort +
-        counts.toggleReasoning +
-        counts.compactHistory +
-        counts.trimHistory +
-        counts.clearSession +
-        counts.openModels;
+      expect(counts.get(capability), `${name} → ${capability}`).toBe(1);
+      // Sum EVERY capability, not a hand-kept list. The hand-kept version silently stopped counting each newly added
+      // one — so a command that fired two capabilities would still have totalled 1 (Step-6e, and a Step-5d repeat).
+      const total = [...counts.values()].reduce((a, b) => a + b, 0);
       expect(total, `${name} calls exactly one capability`).toBe(1);
     }
   });
@@ -142,7 +119,7 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
 
   it('replCommandList renders the slash hint, formatReplHelp lists every command', () => {
     expect(replCommandList()).toBe(
-      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /effort, /thinking, /compact, /trim, /clear, /models',
+      '/help, /exit, /cancel, /export, /workflows, /cost, /doctor, /mode, /effort, /thinking, /compact, /trim, /clear, /models, /scrollback, /edit, /copy',
     );
     const help = formatReplHelp();
     for (const command of REPL_COMMANDS) {
@@ -167,6 +144,9 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'thinking',
       'trim',
       'models',
+      'scrollback',
+      'edit',
+      'copy',
     ]) {
       expect(REPL_COMMANDS_BY_NAME.get(name)?.effect).toBe('read');
     }
@@ -191,6 +171,9 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'trim',
       'clear',
       'models',
+      'scrollback',
+      'edit',
+      'copy',
     ]);
     // /models is availableIn ['home','chat'] (ADR-0059: the chat reseat) — so it appears in BOTH palettes.
     expect(CHAT_PALETTE_COMMANDS.map((c) => c.name)).toEqual([
@@ -207,6 +190,9 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
       'trim',
       'clear',
       'models',
+      'scrollback',
+      'edit',
+      'copy',
     ]);
     // The bare Home offers /exit + /doctor (pre-chat diagnostics), /clear (availableIn ['home','chat']; an inert
     // "nothing to clear" notice — ADR-0062 §7), and /models (availableIn ['home','chat'] — the Home writes the

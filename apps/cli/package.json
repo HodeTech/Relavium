@@ -59,6 +59,7 @@
     "quickjs-emscripten-core": "catalog:",
     "react": "catalog:",
     "smol-toml": "catalog:",
+    "string-width": "catalog:",
     "yaml": "catalog:",
     "zod": "catalog:"
   },

@@ -71,7 +71,22 @@ import type { GlobalOptions } from '../process/options.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
 import { createAltScreenController, type AltScreenController } from '../render/alt-screen.js';
-import { resolveRenderMode } from '../render/render-mode.js';
+import { nodeCreateTempDocument, nodeSpawnEditor } from '../render/editor.js';
+import {
+  createHatches,
+  hoistedTerminal,
+  inertHatchPorts,
+  type HatchDeps,
+  type Hatches,
+} from '../render/hatches.js';
+import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
+import { resolveCopyOnSelect, resolveMouseMode, resolveRenderMode } from '../render/render-mode.js';
+import {
+  FULLSCREEN_TRANSCRIPT_BOUND,
+  INLINE_TRANSCRIPT_BOUND,
+} from '../render/tui/session-view-model.js';
+import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
+import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import {
   errorRecoveryHint,
@@ -265,6 +280,17 @@ export interface ChatDriveContext {
     command: string,
     args: readonly string[],
   ) => Promise<UserCommandOutcome>;
+  /**
+   * The ADR-0068 §e suspend port (2.6.F Step 5d). An INK driver attaches `useApp().suspendTerminal` to it on mount
+   * and detaches on unmount, which is what lets the non-React slash dispatch run `/scrollback` and `/edit`. Absent on
+   * a plain / `--json` driver — the hatches then surface an honest "needs an interactive terminal" notice.
+   */
+  readonly suspendPort?: SuspendPort | undefined;
+  /**
+   * Write the mouse selection to the system clipboard over OSC 52 (2.6.F Step 6). Only an INK driver has a terminal
+   * to write to; a plain / `--json` driver never mounts the viewport, so nothing can be selected there.
+   */
+  readonly clipboard?: ((text: string) => ClipboardOutcome) | undefined;
 }
 /**
  * How a {@link ChatDriver}'s input loop ended (ADR-0062 §7 · ADR-0059): `'exit'` ends the REPL (exit 4); `'clear'`
@@ -352,6 +378,19 @@ interface ChatReplDeps {
   /** The process lifecycle seam for the alt-buffer exit-safety net (Step 4b-3) — `process.on('exit')`, SIGTERM/SIGHUP,
    *  raw-mode, and exit. Default {@link defaultReplLifecycle}; a test injects fakes to drive the exit paths. */
   readonly lifecycle?: ReplLifecycle;
+  /**
+   * `[preferences].copy_on_select`, ALREADY resolved against the mouse decision (`resolveCopyOnSelect`). `false` (or
+   * absent, on a non-interactive path) means the ink tree gets no `clipboard` prop: a released drag still highlights,
+   * and never touches the system clipboard. `/copy` is unaffected — it binds the clipboard through `hatchPorts`.
+   */
+  readonly copyOnSelect?: boolean;
+  /**
+   * The ADR-0068 §e hatch ports (`/scrollback`, `/edit`) MINUS the two {@link createChatLineHandler} binds itself —
+   * the session's live transcript and its notice channel — so the hatches always read the CURRENT session, not a
+   * stale capture across a `/clear` or reseat swap. Built once per REPL by `runReplLoop` / `driveHome`, which own
+   * the alt-buffer state and the terminal-control sink. Absent (a unit test) ⇒ both hatches surface a notice.
+   */
+  readonly hatchPorts?: Omit<HatchDeps, 'transcript' | 'note'>;
 }
 
 /**
@@ -366,6 +405,9 @@ export interface ReplLifecycle {
   readonly onProcessExit: (listener: () => void) => () => void;
   /** Register SIGTERM(15)/SIGHUP(1) listeners (the signo is passed); returns a remover. */
   readonly onTerminationSignal: (listener: (signo: number) => void) => () => void;
+  /** Register a SIGINT(2) listener; returns a remover. Kept SEPARATE from {@link onTerminationSignal} because SIGINT
+   *  is normally ink's (the cooperative `/cancel`) — the hoist only nets the window where no ink tree is mounted. */
+  readonly onInterrupt: (listener: () => void) => () => void;
   /** Restore the terminal from raw mode (ink's own restore is bypassed on a signal we own). */
   readonly setRawMode: (raw: boolean) => void;
   /** Terminate the process (conventional `128 + signo`). */
@@ -377,6 +419,10 @@ export const defaultReplLifecycle: ReplLifecycle = {
   onProcessExit: (listener) => {
     process.on('exit', listener);
     return () => process.removeListener('exit', listener);
+  },
+  onInterrupt: (listener) => {
+    process.on('SIGINT', listener);
+    return () => process.removeListener('SIGINT', listener);
   },
   onTerminationSignal: (listener) => {
     // SIGTERM(15), SIGHUP(1), SIGQUIT(3): the catchable external kills that terminate WITHOUT firing Node's `'exit'`
@@ -433,8 +479,9 @@ function emitLiveNotice(io: CliIo, text: string): void {
   else io.writeErr(`${text}\n`);
 }
 
-/** The budget-cap warning line (formatted once, routed through {@link emitLiveNotice} at all four wiring sites). */
-function budgetWarningText(warning: ChatBudgetWarning): string {
+/** The budget-cap warning line (formatted once, routed through {@link emitLiveNotice} at all four wiring sites, and
+ *  through the in-Home chat's own view store — see `drive-home.tsx`). ONE text, so the two surfaces cannot drift. */
+export function budgetWarningText(warning: ChatBudgetWarning): string {
   return `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached`;
 }
 
@@ -450,7 +497,10 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   });
   const providers = deps.providers ?? createProviderResolver(deps.io.env);
   const mcpSecretResolver = deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env);
-  const store = createChatStore(deps.global.color);
+  // The full-screen viewport can hold a whole answer; the inline `<Static>` path keeps its trailing tail (ADR-0068
+  // Decision (c)). Resolved from `chatAltActive` — the SAME function `runReplLoop` uses for the hoist.
+  const transcriptBound = transcriptBoundFor(chatAltActive(deps, config.altScreen));
+  const store = createChatStore(deps.global.color, undefined, transcriptBound);
   // The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a transient read of the `model_catalog` `source='user'`
   // rows, so a user-priced model is enforced by `[chat].max_cost_microcents` + tracked in realized cost. NON-FATAL:
   // an unopenable db yields `undefined` here and surfaces cleanly through the session store open below.
@@ -564,6 +614,8 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       startSession: () => built.session.start(),
       modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       altScreen: config.altScreen,
+      mouse: config.mouse,
+      copyOnSelect: config.copyOnSelect,
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -635,7 +687,14 @@ export async function chatResumeCommand(
     // Seed the view header + persister via the SHARED resumed-wiring assembly (the same the `/models` reseat uses):
     // a resumed session never re-emits `session:started`, so the seeded store shows the model + carried cost/turns
     // from the first frame, and the persister continues past the last durable sequence number.
-    ({ store, persister } = seedResumedWiring(resumed, opened, deps.global.color, now, uuid));
+    ({ store, persister } = seedResumedWiring(
+      resumed,
+      opened,
+      deps.global.color,
+      now,
+      uuid,
+      transcriptBoundFor(chatAltActive(deps, config.altScreen)),
+    ));
     const turns = resumed.resumeState.turnCount;
     // `sessionId` is only schema-constrained to a non-empty string (the CLI mints a UUID, but `history.db` is
     // shared with other surfaces) — sanitize it before it reaches the TTY, exactly as `chat-list` does (the
@@ -722,6 +781,8 @@ export async function chatResumeCommand(
       intro,
       modelPicker: buildChatModelsPort(opened, providers, built.agent.model, now, uuid),
       altScreen: config.altScreen,
+      mouse: config.mouse,
+      copyOnSelect: config.copyOnSelect,
       ...(config.chat.maxMessages === undefined
         ? {}
         : { chatMaxMessages: config.chat.maxMessages }),
@@ -752,6 +813,16 @@ interface ReplWiring {
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded to the ink driver's ctx so it resolves the
    *  full-screen render mode; the plain / `--json` drivers ignore it. Absent ⇒ the phase default. */
   readonly altScreen?: boolean | undefined;
+  /**
+   * `[preferences].mouse` (2.6.F Step 5e, ADR-0068 §e) — mouse reporting inside the alt screen. Absent ⇒ the phase
+   * default. Read exactly ONCE, by `runReplLoop`, from the INITIAL wiring: the mouse is a per-invocation decision that
+   * lives in the hoisted `AltScreenController` above the session loop. That is why — unlike {@link altScreen}, which
+   * is forwarded to every per-session ink mount — the `/clear` and reseat REBUILD wirings deliberately omit it.
+   */
+  readonly mouse?: boolean | undefined;
+  /** `[preferences].copy_on_select` (2.6.F Step 6e) — read exactly ONCE by {@link runReplLoop}, alongside `mouse`,
+   *  and for the same reason: it is resolved against the hoisted mouse decision, above the session loop. */
+  readonly copyOnSelect?: boolean | undefined;
 }
 
 /**
@@ -939,6 +1010,20 @@ export function createChatLineHandler(
       deps.io.writeErr(`${text}\n`);
     }
   };
+
+  // The ADR-0068 §e copy-and-search hatches. Bound HERE — the one place the standalone chat and the in-Home chat
+  // share (both call `createChatLineHandler`) — so `/scrollback` and `/edit` cannot drift between the surfaces. The
+  // transcript is read from the LIVE store on every invocation (never captured across a `/clear` or reseat swap),
+  // and the result lands on the same channel every other command's output uses. Absent ports (a unit test) ⇒ the
+  // hatches say so; PRESENT ports with nothing attached to the suspend port (a plain / `--json` driver has no ink
+  // tree at all) ⇒ `createHatches` itself surfaces the same honest notice.
+  // No ports wired (a unit test) ⇒ INERT ports, whose empty suspend port makes `createHatches` emit its own
+  // `NO_RENDERER_NOTICE`. There is deliberately no second "unavailable" string here: one string, one place, no drift.
+  const hatches: Hatches = createHatches({
+    ...(deps.hatchPorts ?? inertHatchPorts()),
+    transcript: () => store.getSnapshot().state.transcript,
+    note: emitOutput,
+  });
 
   // The lifecycle capabilities the curated REPL commands (repl-commands.ts) run over — the slash names and the
   // /help + unknown-slash hint all derive from REPL_COMMANDS, so the three surfaces can never disagree.
@@ -1154,6 +1239,11 @@ export function createChatLineHandler(
         '/models needs an interactive terminal to switch the model live. From a pipe, set `[chat].default_model` ' +
           'in your config, or run `relavium` (the Home) to change the default.',
       ),
+    // The hatches (ADR-0068 §e). Unlike `/models` these need no render-layer interception: they open no overlay, so
+    // BOTH interactive surfaces reach them right here, through the suspend port `runReplLoop`/`driveHome` attached.
+    dumpScrollback: () => hatches.dumpScrollback(),
+    editTranscript: () => hatches.editTranscript(),
+    copyTranscript: () => hatches.copyTranscript(),
   };
 
   // Parse + dispatch a `/name [args]` REPL line (extracted from processLine so each stays under the Sonar
@@ -1276,7 +1366,14 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
   });
-  const store = createChatStore(deps.global.color);
+  // The SAME signals `runReplLoop` used for the hoist (`deps.altScreen` is `[preferences].alt_screen`, carried here
+  // precisely so a `/clear` re-drive keeps the mode) — so a rebuilt session cannot silently re-acquire the 4000-char
+  // transcript bound mid-conversation.
+  const store = createChatStore(
+    deps.global.color,
+    undefined,
+    transcriptBoundFor(chatAltActive(deps, deps.altScreen)),
+  );
   // A re-drive (`/clear`/reseat) runs INSIDE the hoisted alt buffer, so the MCP-skipped diagnostic routes to the fresh
   // session's transcript (`store.notice`) rather than a raw `io.writeErr` the alt buffer would discard (Step-4b-3).
   for (const line of mcpSkippedLines(built.mcpSkipped)) store.notice(line);
@@ -1386,13 +1483,20 @@ function seedResumedWiring(
   color: boolean,
   now: () => number,
   uuid: () => string,
+  /** The renderer's transcript bake bound (ADR-0068 Decision (c)). Defaults to the inline tail so a caller that
+   *  forgets keeps today's behaviour; both real callers pass the resolved one. */
+  transcriptBound: number = INLINE_TRANSCRIPT_BOUND,
 ): { store: ChatStoreController; persister: SessionPersister } {
-  const store = createChatStore(color, {
-    agentRef: resumed.agent.id,
-    model: resumed.agent.model,
-    cumulativeCostMicrocents: resumed.resumeState.cumulativeCostMicrocents,
-    turnCount: resumed.resumeState.turnCount,
-  });
+  const store = createChatStore(
+    color,
+    {
+      agentRef: resumed.agent.id,
+      model: resumed.agent.model,
+      cumulativeCostMicrocents: resumed.resumeState.cumulativeCostMicrocents,
+      turnCount: resumed.resumeState.turnCount,
+    },
+    transcriptBound,
+  );
   const persister = createSessionPersister({
     store: opened.store,
     handle: resumed.handle,
@@ -1482,7 +1586,14 @@ async function buildReseatWiring(
   });
   let seeded: { store: ChatStoreController; persister: SessionPersister };
   try {
-    seeded = seedResumedWiring(resumed, deps.opened, deps.global.color, deps.now, deps.uuid);
+    seeded = seedResumedWiring(
+      resumed,
+      deps.opened,
+      deps.global.color,
+      deps.now,
+      deps.uuid,
+      transcriptBoundFor(chatAltActive(deps, deps.altScreen)),
+    );
   } catch (err) {
     // Acquire-then-guard: the resumed session's MCP children are already spawned — reclaim them before the failure
     // propagates so a persister-construction throw never orphans a stdio child (best-effort; never mask the primary).
@@ -1634,6 +1745,8 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
 
   // The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`. TTY-only.
   const runShellCommand = buildInteractiveShellRunner(interactive, built);
+  // Captured once: `deps.hatchPorts` is the per-REPL port bundle that also owns `writeControl`.
+  const hatchPortsForClipboard = deps.hatchPorts;
 
   // persister.start() subscribes for the turn events + adopts/inserts the session row; it does NOT consume
   // session:started, so it is safe before the driver. The session-open action (fresh start() / resume no-op)
@@ -1675,6 +1788,25 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
         : {}),
       ...(mentionReader === undefined ? {} : { mentionReader }),
       ...(runShellCommand === undefined ? {} : { runShellCommand }),
+      // The ADR-0068 §e suspend port (Step 5d) — only an INK driver can attach to it (`suspendTerminal` lives inside
+      // the React tree). Handed to every driver; a plain / `--json` one simply never attaches, and the hatches then
+      // report "needs an interactive terminal" rather than failing.
+      ...(deps.hatchPorts?.suspendPort === undefined
+        ? {}
+        : { suspendPort: deps.hatchPorts.suspendPort }),
+      // The clipboard rides the SAME control-write sink as the alt-buffer toggles (Step 6). OSC 52 prints nothing and
+      // moves no cursor, so writing it mid-frame cannot corrupt ink's line accounting.
+      // ABSENT when `[preferences].copy_on_select = false` (or `--no-mouse`, which resolves it false): the selection
+      // still highlights, and `/copy` still copies the whole transcript.
+      ...(hatchPortsForClipboard === undefined || deps.copyOnSelect !== true
+        ? {}
+        : {
+            clipboard: (text: string): ClipboardOutcome =>
+              copyToClipboard(
+                { writeControl: hatchPortsForClipboard.writeControl, env: deps.io.env },
+                text,
+              ),
+          }),
     });
     // A `/models` reseat attaches the captured target here (the one place holding the line handler); see the helper.
     return finalizeReseatOutcome(outcome, reseatTarget);
@@ -1744,31 +1876,67 @@ export interface HoistedLoopResult {
 export async function withHoistedAltScreen(
   opts: {
     readonly active: boolean;
+    /** Enable mouse reporting with the buffer (Step 5e). Absent ⇒ `true` (the Step-5b behaviour). */
+    readonly mouse?: boolean;
     readonly write: (sequence: string) => void;
     readonly lifecycle: ReplLifecycle;
     readonly writeOut: (text: string) => void;
     readonly writeErr: (text: string) => void;
+    /** The ONE suspend port for the loop. `current() === undefined` means NO ink tree is mounted — the only window in
+     *  which SIGINT is unowned. Absent ⇒ no SIGINT net (a caller with no ink, e.g. a unit test). */
+    readonly suspendPort?: SuspendPort;
   },
   runLoop: (alt: AltScreenController) => Promise<HoistedLoopResult>,
 ): Promise<void> {
   const noop = (): void => undefined;
-  const alt = createAltScreenController({ write: opts.write, active: opts.active });
-  alt.enter();
-  const removeExitNet = opts.active ? opts.lifecycle.onProcessExit(() => alt.restore()) : noop;
-  const removeSignalNet = opts.active
-    ? opts.lifecycle.onTerminationSignal((signo) => {
-        alt.restore();
-        opts.write(DISABLE_BRACKETED_PASTE);
-        try {
-          opts.lifecycle.setRawMode(false);
-        } catch {
-          // best-effort — a non-TTY / already-cooked stdin must not mask the exit
-        }
-        opts.lifecycle.exit(128 + signo); // conventional 143 (SIGTERM) / 130+ (SIGHUP/SIGQUIT)
-      })
-    : noop;
+  const alt = createAltScreenController({
+    write: opts.write,
+    active: opts.active,
+    ...(opts.mouse === undefined ? {} : { mouse: opts.mouse }),
+  });
+  // The removers are `let`, and `alt.enter()` runs INSIDE the try: `enter()`'s write can throw on a dead TTY, and the
+  // `finally` must still run with valid bindings (a `const` declared after a throwing `enter` would be in the temporal
+  // dead zone). `restore()` is a no-op when nothing was entered, and each remover defaults to `noop`.
+  let removeExitNet = noop;
+  let removeSignalNet = noop;
+  let removeInterruptNet = noop;
+  const suspendPortForSigint = opts.suspendPort;
   let result: HoistedLoopResult = {};
   try {
+    alt.enter();
+    removeExitNet = opts.active ? opts.lifecycle.onProcessExit(() => alt.restore()) : noop;
+    // SIGINT belongs to ink: while a tree is mounted, `driveInk`'s `onSigintGated` runs the cooperative `/cancel`, and
+    // during a `/scrollback` or `/edit` hatch it deliberately DROPS the signal so the suspension can reclaim. But a
+    // `/clear` or `/models` rebuild unmounts ink and mounts a fresh tree, and in that window NOTHING listens for
+    // SIGINT — Node's default action then kills the process WITHOUT firing `'exit'`, so the `onProcessExit` net never
+    // runs and the alt buffer, mouse reporting and the hidden cursor are stranded on the user's shell. This net covers
+    // exactly that window, and defers to ink whenever a tree is attached.
+    removeInterruptNet =
+      opts.active && suspendPortForSigint !== undefined
+        ? opts.lifecycle.onInterrupt(() => {
+            if (suspendPortForSigint.current() !== undefined) return; // ink owns it (mounted, or suspended)
+            alt.restore();
+            opts.write(DISABLE_BRACKETED_PASTE);
+            try {
+              opts.lifecycle.setRawMode(false);
+            } catch {
+              // best-effort — a non-TTY / already-cooked stdin must not mask the exit
+            }
+            opts.lifecycle.exit(130); // conventional 128 + SIGINT(2)
+          })
+        : noop;
+    removeSignalNet = opts.active
+      ? opts.lifecycle.onTerminationSignal((signo) => {
+          alt.restore();
+          opts.write(DISABLE_BRACKETED_PASTE);
+          try {
+            opts.lifecycle.setRawMode(false);
+          } catch {
+            // best-effort — a non-TTY / already-cooked stdin must not mask the exit
+          }
+          opts.lifecycle.exit(128 + signo); // conventional 143 (SIGTERM) / 130+ (SIGHUP/SIGQUIT)
+        })
+      : noop;
     result = await runLoop(alt);
   } finally {
     // Exit the alt buffer FIRST (restores the primary buffer + scrollback), THEN emit the summary / error, so BOTH
@@ -1779,9 +1947,39 @@ export async function withHoistedAltScreen(
     alt.restore();
     removeExitNet();
     removeSignalNet();
+    removeInterruptNet();
     if (result.summaryText !== undefined) opts.writeOut(`${result.summaryText}\n`);
     if (result.errorText !== undefined) opts.writeErr(result.errorText);
   }
+}
+
+/**
+ * The ONE alt-screen decision for `relavium chat`. `runReplLoop` needs it for the hoist; `chatCommand` needs it BEFORE
+ * the loop, to give the view store its transcript bound. Two independent copies of this expression is exactly the
+ * drift ADR-0068 §c warns about, so there is one.
+ */
+export function chatAltActive(
+  deps: Pick<ChatReplDeps, 'io' | 'global'>,
+  configAltScreen: boolean | undefined,
+): boolean {
+  return (
+    chatIsInteractive(deps.io, deps.global) &&
+    resolveRenderMode({
+      outputMode: detectOutputMode({
+        stdoutIsTty: deps.io.stdoutIsTty,
+        json: deps.global.json,
+        ci: isCiEnv(deps.io.env),
+      }),
+      noAltScreenFlag: deps.global.noAltScreen === true,
+      configAltScreen,
+    }) === 'alt'
+  );
+}
+
+/** The transcript bake bound the renderer can afford (ADR-0068 Decision (c)): none in the full-screen viewport, the
+ *  historical trailing tail inline. */
+export function transcriptBoundFor(altActive: boolean): number {
+  return altActive ? FULLSCREEN_TRANSCRIPT_BOUND : INLINE_TRANSCRIPT_BOUND;
 }
 
 export async function runReplLoop(
@@ -1794,37 +1992,82 @@ export async function runReplLoop(
   const opened = wiring.opened;
   // Resolve alt-mode ONCE from the SAME signals `driveInk` uses, so the hoist and the per-session mount can never
   // disagree about the mode (2.6.F Step 4b-3, ADR-0068 §c).
-  const altActive =
-    chatIsInteractive(deps.io, deps.global) &&
-    resolveRenderMode({
-      outputMode: detectOutputMode({
-        stdoutIsTty: deps.io.stdoutIsTty,
-        json: deps.global.json,
-        ci: isCiEnv(deps.io.env),
-      }),
-      noAltScreenFlag: deps.global.noAltScreen === true,
-      configAltScreen: wiring.altScreen,
-    }) === 'alt';
+  const altActive = chatAltActive(deps, wiring.altScreen);
+  // Mouse reporting (2.6.F Step 5e, ADR-0068 §e): only inside the alt screen, and only when not opted out. Resolved
+  // from the SAME signals as the render mode, so the two can never disagree.
+  const mouseEnabled = resolveMouseMode({
+    renderMode: altActive ? 'alt' : 'inline',
+    noMouseFlag: deps.global.noMouse === true,
+    configMouse: wiring.mouse,
+  });
   const writeControl =
     deps.writeControl ??
     ((sequence: string): void => {
       process.stdout.write(sequence);
     });
 
+  // ONE suspend port for the whole REPL: ink remounts per session (a `/clear` / reseat re-drive), and each mount
+  // re-attaches. The hatch ports read the terminal facts at CALL time — `alt.isEntered()` rather than the resolved
+  // `altActive`, because a hatch must reflect the buffer's LIVE state, not the mode we resolved at startup.
+  const suspendPort = deps.hatchPorts?.suspendPort ?? createSuspendPort();
+  const hatchPorts: Omit<HatchDeps, 'transcript' | 'note'> = deps.hatchPorts ?? {
+    suspendPort,
+    writeControl,
+    // The factory's NAME says which surface it is for; `inkOwnsAltScreen` is decided there, once, never at a call site.
+    // Both predicates read the hoisted controller LIVE, so a hatch reflects the terminal's real state — not the startup
+    // decision. `mouseActive` is asked separately from `altActive` because `--no-mouse` decouples them (Step 5e).
+    terminal: hoistedTerminal(
+      () => altScreenController?.isEntered() ?? false,
+      () => altScreenController?.isMouseEnabled() ?? false,
+      () => process.stdout.columns,
+    ),
+    dump: {
+      writeOut: nodeWriteOut(process.stdout),
+      waitForContinue: nodeWaitForContinue(process.stdin),
+    },
+    // `/copy` writes OSC 52 through the SAME control sink the alt-buffer and mouse toggles use.
+    clipboard: (text: string) => copyToClipboard({ writeControl, env: deps.io.env }, text),
+    editor: {
+      env: deps.io.env,
+      spawnEditor: nodeSpawnEditor,
+      createTempDocument: nodeCreateTempDocument,
+      onDisposeFailed: (path, error) => {
+        deps.io.writeErr(
+          `warning: transcript temp file teardown failed (${path}): ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      },
+    },
+  };
+  // The hoisted controller, captured so `hatchPorts.terminal()` can read the LIVE buffer state (it is created inside
+  // `withHoistedAltScreen` below, after `hatchPorts` is built — hence the mutable binding read lazily).
+  let altScreenController: AltScreenController | undefined;
+  // Copy-on-select (2.6.F Step 6e): a durable preference, resolved from the ALREADY-RESOLVED mouse decision, so
+  // `--no-mouse` structurally turns it off too. `/copy` is unaffected: it binds the clipboard through `hatchPorts`.
+  const copyOnSelect = resolveCopyOnSelect({
+    mouseEnabled,
+    configCopyOnSelect: wiring.copyOnSelect,
+  });
+  const replDeps: ChatReplDeps = { ...deps, hatchPorts, copyOnSelect };
+
   try {
     await withHoistedAltScreen(
       {
         active: altActive,
+        mouse: mouseEnabled,
         write: writeControl,
         lifecycle: deps.lifecycle ?? defaultReplLifecycle,
         writeOut: (text) => deps.io.writeOut(text),
         writeErr: (text) => deps.io.writeErr(text),
+        suspendPort,
       },
       async (alt): Promise<HoistedLoopResult> => {
+        altScreenController = alt; // so `hatchPorts.terminal()` reads the LIVE buffer state, not the startup decision
         let current = wiring;
         let summaryText: string | undefined; // the final `/exit` summary, printed after the single alt-exit
         for (;;) {
-          const outcome = await driveOneSession(current, deps);
+          const outcome = await driveOneSession(current, replDeps);
           // The end-of-session summary is LIFTED out of driveInk (ADR-0068 §c): the wrapper prints it after the single
           // alt-exit, on the PRIMARY buffer. Only a final `'exit'` carries one; a `/clear` / reseat swap carries none.
           if (outcome.kind === 'exit') summaryText = outcome.summaryText;

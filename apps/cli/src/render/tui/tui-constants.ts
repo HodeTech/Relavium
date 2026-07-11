@@ -13,3 +13,8 @@ export const FRAME_MS = 80;
  * Home (the `endChat` path). The teardown still runs to completion in the background; only the UI/exit is bounded.
  */
 export const FORCE_TEARDOWN_MS = 2000;
+
+/** How long the "✓ Copied" toast lingers after a copy-on-select, before it auto-dismisses (2.6.F Step 6i). Long
+ *  enough to register, short enough not to linger over the next selection. It renders OUTSIDE the transcript, so it
+ *  never re-wraps the lines the user just selected — the reason success was silent until now. */
+export const COPIED_TOAST_MS = 2000;

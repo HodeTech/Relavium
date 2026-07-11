@@ -7,6 +7,7 @@ import type { ReseatTarget } from '../../commands/chat.js';
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
 import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
+import { createSuspendPort } from '../suspend.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
 import { RootApp } from './home-app.js';
@@ -16,6 +17,7 @@ import {
   type HomeController,
   type HomeModelsPort,
 } from './home-controller.js';
+import { COPIED_TOAST_MS } from './tui-constants.js';
 
 /**
  * Mounted-Home component tests (2.6.F Step 3, ADR-0068 part f) — the second surface (after `chat-app.test.tsx`)
@@ -127,16 +129,29 @@ function mountHome(
     startChat?: () => Promise<HomeChatSession>;
     reseatChat?: (sessionId: string, target: ReseatTarget) => Promise<HomeChatSession>;
     models?: HomeModelsPort;
+    /** Capture what copy-on-select would put on the clipboard (2.6.F Step 6). */
+    clipboard?: (text: string) => { kind: 'written'; characters: number };
+    /** `[preferences].show_banner` (2.6.F Step 5g). */
+    showBanner?: boolean;
+    /** A non-empty Home strip, so `isEmpty` is false (2.6.F Step 5g). */
+    snapshot?: HomeSnapshot;
+    /** The initial terminal size (`rows` decides whether the banner fits). */
+    size?: { cols: number; rows: number };
+    /** `false` ⇒ the `NO_COLOR` / `--no-color` path (plain-ASCII banner). */
+    color?: boolean;
+    /** Record the mouse-capture toggles `RootApp` requests (2.6.F Step 6g). */
+    setMouseCapture?: (enabled: boolean) => void;
   } = {},
 ): MountedHome {
   let onResize: () => void = () => {};
-  let size = { cols: 100, rows: 30 };
+  let size = opts.size ?? { cols: 100, rows: 30 };
+  const snapshot = opts.snapshot; // captured so `read: () => snapshot` narrows without an `as` cast
   const c = createHomeController({
     doctorProbes: STUB_DOCTOR_PROBES,
     startChat: opts.startChat ?? (() => Promise.resolve(makeSession(store))),
     ...(opts.reseatChat !== undefined ? { reseatChat: opts.reseatChat } : {}),
     ...(opts.models !== undefined ? { models: opts.models } : {}),
-    homeStore,
+    homeStore: snapshot === undefined ? homeStore : { read: () => snapshot },
     onExit: vi.fn(),
     onError: vi.fn(),
   });
@@ -144,13 +159,16 @@ function mountHome(
     <RootApp
       controller={c}
       nowMs={() => Date.now()}
-      color={false}
+      color={opts.color ?? false}
       getSize={() => size}
       subscribeResize={(cb) => {
         onResize = cb;
         return () => {};
       }}
       {...(opts.alternateScreen === true ? { alternateScreen: true } : {})}
+      {...(opts.clipboard === undefined ? {} : { clipboard: opts.clipboard })}
+      {...(opts.showBanner === undefined ? {} : { showBanner: opts.showBanner })}
+      {...(opts.setMouseCapture === undefined ? {} : { setMouseCapture: opts.setMouseCapture })}
     />,
   );
   return {
@@ -410,5 +428,471 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     expect(reseatChat).toHaveBeenCalledTimes(1);
     expect(c.getSnapshot().session?.sessionId).toBe('sess-A'); // the reseat PRESERVED the id (the trap the fix survives)
     expect(frame()).toContain('HMSG59'); // the view RE-FOLLOWED the tail after the swap (object-identity reset fired)
+  });
+});
+
+/**
+ * The ADR-0068 §e suspend PORT on the HOME surface (2.6.F Step 5d). Unlike `relavium chat`, `createHomeController` is
+ * built BEFORE this tree mounts and every existing Home port flows core→React — so this bridge is the inversion, and
+ * the in-Home chat's `/scrollback` and `/edit` depend entirely on it.
+ */
+describe('RootApp — the suspend port (ADR-0068 §e)', () => {
+  it('attaches a WORKING suspendTerminal while mounted, and detaches on unmount', async () => {
+    const port = createSuspendPort();
+    const c = createHomeController({
+      doctorProbes: STUB_DOCTOR_PROBES,
+      startChat: () => Promise.resolve(makeSession(createChatStore(false))),
+      homeStore,
+      onExit: vi.fn(),
+      onError: vi.fn(),
+    });
+    const harness = render(
+      <RootApp
+        controller={c}
+        nowMs={() => Date.now()}
+        color={false}
+        getSize={() => ({ cols: 80, rows: 24 })}
+        subscribeResize={() => () => {}}
+        suspendPort={port}
+      />,
+    );
+    await waitFor(() => port.current() !== undefined);
+
+    let ran = false;
+    await port.current()?.(() => {
+      ran = true;
+      return Promise.resolve();
+    });
+    expect(ran).toBe(true); // ink's REAL suspendTerminal, driven through the port
+
+    harness.unmount();
+    await settleFrames();
+    expect(port.current()).toBeUndefined();
+  });
+});
+
+/**
+ * Mouse SELECTION on the HOME surface (2.6.F Step 6). The in-Home chat and `relavium chat` share `reduceSelection`,
+ * `cellAt` and the highlight split, so what needs pinning here is the WIRING: that the Home's own `useInput` routes
+ * press/drag/release into the reducer with its own viewport geometry, and that the release reaches the clipboard.
+ */
+describe('RootApp — mouse selection in the in-Home chat', () => {
+  const seedThree = (): ChatStoreController => {
+    const store = createChatStore(false);
+    store.notice('AAAA');
+    store.notice('BBBB');
+    store.notice('CCCC');
+    return store;
+  };
+
+  it('a DRAG in the in-Home chat copies exactly the cells it covered', async () => {
+    const copied: string[] = [];
+    const store = seedThree();
+    const m = mountHome(store, {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
+
+    m.harness.stdin.write('\x1b[<0;1;1M'); // press line 0, column 0
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<32;3;1M'); // drag to column 2 (inclusive)
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<0;3;1m'); // release ⇒ copy
+    await settleFrames();
+
+    expect(copied).toEqual(['AAA']);
+  });
+
+  it('the BARE Home (no chat) consumes a mouse report and copies nothing — there is no transcript', async () => {
+    const copied: string[] = [];
+    const m = mountHome(seedThree(), {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await settleFrames();
+
+    m.harness.stdin.write('\x1b[<0;1;1M');
+    m.harness.stdin.write('\x1b[<32;5;1M');
+    m.harness.stdin.write('\x1b[<0;5;1m');
+    await settleFrames();
+
+    expect(copied).toEqual([]);
+    expect(m.c.getSnapshot().input.text).toBe(''); // …and no raw bytes typed into the Home prompt
+  });
+
+  it('a plain CLICK copies nothing; the WHEEL still scrolls and never copies', async () => {
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.notice(`row-${String(i).padStart(2, '0')}`);
+    const m = mountHome(store, {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('row-59'));
+
+    m.harness.stdin.write('\x1b[<0;2;2M');
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<0;2;2m'); // release at the same cell ⇒ a click
+    await settleFrames();
+    expect(copied).toEqual([]);
+
+    m.harness.stdin.write('\x1b[<64;5;5M'); // wheel up
+    await settleFrames();
+    expect(m.harness.lastFrame() ?? '').not.toContain('row-59');
+    expect(copied).toEqual([]);
+  });
+
+  it('after SCROLLING, a drag copies the line now shown on that row — not line 0', async () => {
+    // The Home builds its own viewport facts, so `chat-app.test.tsx`'s equivalent proves nothing here: an `offset: 0`
+    // break in `home-app.tsx` alone would ship green (Step-6 Opus review).
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.notice(`row-${String(i).padStart(2, '0')}`);
+    const m = mountHome(store, {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('row-59'));
+
+    for (let i = 0; i < 4; i += 1) {
+      m.harness.stdin.write('\x1b[<64;5;5M'); // wheel up: leave the tail
+      await settleFrames();
+    }
+    const thirdRow = (m.harness.lastFrame() ?? '').split('\n')[2]?.trim();
+    expect(thirdRow).toMatch(/^row-\d\d$/);
+    expect(thirdRow).not.toBe('row-02');
+
+    m.harness.stdin.write('\x1b[<0;1;3M'); // press the third row (an INNER row: row 1 is the edge-scroll zone)
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<32;99;3M'); // drag past its right edge ⇒ the whole row
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<0;99;3m');
+    await settleFrames();
+
+    expect(copied).toEqual([thirdRow]);
+  });
+
+  it('a drag in the SAME tick as an append reduces against the LIVE wrap, not the last measured one', async () => {
+    // `onMeasure` fires after a render; a mouse report that arrives before the next one sees a stale `totalLines`,
+    // and while following the tail that shifts `effectiveOffset` by exactly the number of new lines. Substituting the
+    // measured count for the live one is invisible to every test that settles a frame in between (break-verified).
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.notice(`row-${String(i).padStart(2, '0')}`);
+    const m = mountHome(store, {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('row-59'));
+
+    // No `settleFrames` between the append and the gesture: `scrollGeomRef` still says 60 lines.
+    store.notice('row-60');
+    m.harness.stdin.write('\x1b[<0;1;3M');
+    m.harness.stdin.write('\x1b[<32;99;3M');
+    m.harness.stdin.write('\x1b[<0;99;3m');
+    await settleFrames();
+
+    const thirdRow = (m.harness.lastFrame() ?? '').split('\n')[2]?.trim();
+    expect(copied).toEqual([thirdRow]); // the row the append pushed there, not the one that was there before
+  });
+
+  it('a WRAPPED entry copies the VISUAL row under the pointer, not the whole logical line', async () => {
+    // The transcript the selection indexes is the WRAPPED one. Copying raw entries instead of wrapped rows stays green
+    // for as long as no line is wider than the terminal — so make one that is.
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    store.notice('A'.repeat(140)); // at 100 columns this wraps into two display rows
+    const m = mountHome(store, {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
+
+    const frame = (m.harness.lastFrame() ?? '').split('\n');
+    const firstRow = frame.findIndex((l) => l.startsWith('AAAA'));
+    expect(firstRow).toBeGreaterThanOrEqual(0);
+    expect(frame[firstRow + 1]?.startsWith('AAAA')).toBe(true); // it really wrapped
+
+    // Drag the SECOND visual row only. Terminal rows are 1-based.
+    const row = String(firstRow + 2);
+    m.harness.stdin.write(`\x1b[<0;1;${row}M`);
+    await settleFrames();
+    m.harness.stdin.write(`\x1b[<32;200;${row}M`);
+    await settleFrames();
+    m.harness.stdin.write(`\x1b[<0;200;${row}m`);
+    await settleFrames();
+
+    expect(copied).toHaveLength(1);
+    expect(copied[0]).toBe('A'.repeat(40)); // the 40-char remainder, not all 140
+  });
+
+  it('a RESIZE drops the live selection — re-wrapping moves every display-line index it holds', async () => {
+    const copied: string[] = [];
+    const store = seedThree();
+    const m = mountHome(store, {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
+
+    m.harness.stdin.write('\x1b[<0;1;1M'); // press…
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<32;3;1M'); // …drag…
+    await settleFrames();
+
+    m.setSize({ cols: 60, rows: 30 });
+    m.fireResize();
+    await settleFrames();
+
+    m.harness.stdin.write('\x1b[<0;3;1m'); // …release AFTER the resize
+    await settleFrames();
+    expect(copied).toEqual([]); // the anchor was dropped, so there is nothing to copy
+  });
+});
+
+/**
+ * THE COPY-ON-SELECT CONFIRMATION TOAST on the HOME surface (2.6.F Step 6i). The in-Home chat threads its OWN
+ * `useCopiedToast` through `ChatRegion` (a separate mount from `relavium chat`'s `ChatApp`), so `chat-app.test.tsx`'s
+ * toast tests prove nothing here — a `copied` prop dropped between `RootApp` and `ChatRegion`, or a `flashCopied()`
+ * left off the Home's `copySelection`, would ship green there and dark here. Colour is off by default (`mountHome`),
+ * so the toast renders as the plain `[Copied]` pill — `.toContain('Copied')` matches either rendering.
+ */
+describe('RootApp — the copy-on-select "Copied" toast', () => {
+  const seedThree = (): ChatStoreController => {
+    const store = createChatStore(false);
+    store.notice('AAAA');
+    store.notice('BBBB');
+    store.notice('CCCC');
+    return store;
+  };
+
+  /** Enter the in-Home chat, then drive a press-drag-release that copies one row. */
+  const copyOnce = async (m: MountedHome): Promise<void> => {
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('AAAA'));
+    m.harness.stdin.write('\x1b[<0;1;1M'); // press line 0, column 0
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<32;3;1M'); // drag to column 2 (inclusive)
+    await settleFrames();
+    m.harness.stdin.write('\x1b[<0;3;1m'); // release ⇒ copy
+    await settleFrames();
+  };
+
+  it('appears after a copy, ABOVE the footer, and leaves the transcript intact', async () => {
+    const copied: string[] = [];
+    const m = mountHome(seedThree(), {
+      alternateScreen: true,
+      clipboard: (text) => {
+        copied.push(text);
+        return { kind: 'written', characters: text.length };
+      },
+    });
+    await copyOnce(m);
+    expect(copied).toEqual(['AAA']); // the write happened
+    const rows = (m.harness.lastFrame() ?? '').split('\n');
+    const toastRow = rows.findIndex((r) => r.includes('Copied'));
+    const footerRow = rows.findIndex((r) => r.includes('turns'));
+    expect(toastRow).toBeGreaterThanOrEqual(0);
+    expect(toastRow).toBeLessThan(footerRow); // the toast sits just above the status footer
+    expect(rows.some((r) => r.includes('AAAA'))).toBe(true); // the transcript is untouched — the toast is not a line
+  });
+
+  it('auto-dismisses after COPIED_TOAST_MS', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const copied: string[] = [];
+      const m = mountHome(seedThree(), {
+        alternateScreen: true,
+        clipboard: (text) => {
+          copied.push(text);
+          return { kind: 'written', characters: text.length };
+        },
+      });
+      await copyOnce(m);
+      expect(m.harness.lastFrame() ?? '').toContain('Copied');
+      await vi.advanceTimersByTimeAsync(COPIED_TOAST_MS + 50);
+      await settleFrames();
+      expect(m.harness.lastFrame() ?? '').not.toContain('Copied');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('WITHOUT a clipboard port (copy-on-select off) there is no toast', async () => {
+    const m = mountHome(seedThree(), { alternateScreen: true }); // no `clipboard` ⇒ copy is inert
+    await copyOnce(m);
+    expect(m.harness.lastFrame() ?? '').not.toContain('Copied');
+  });
+});
+
+/**
+ * The branded Home banner ON SCREEN (2.6.F Step 5g). `banner.test.ts` pins the plaque itself; this pins that it
+ * REPLACES the plain heading, obeys `[preferences].show_banner`, and never pushes the prompt off an 80x24 terminal.
+ */
+describe('RootApp — the branded Home banner', () => {
+  const BUSY: HomeSnapshot = {
+    attention: { gates: [], failedRuns: [] },
+    recentSessions: [
+      {
+        sessionId: 'sess-9',
+        title: 'a chat',
+        agentSlug: 'default',
+        modelId: 'anthropic/claude-opus-4-8',
+        status: 'active',
+        updatedAt: '2026-07-10T00:00:00.000Z',
+        totalCostMicrocents: 0,
+      },
+    ],
+    recentRuns: [],
+    recentAgents: [],
+    isEmpty: false,
+  };
+
+  const frameOf = async (opts: Parameters<typeof mountHome>[1]): Promise<string> => {
+    const m = mountHome(createChatStore(false), opts);
+    await settleFrames();
+    return m.harness.lastFrame() ?? '';
+  };
+
+  /** The frame's lines, trimmed — so "is the plain heading anywhere on screen" is one question, not a position. */
+  const rows = (frame: string): string[] => frame.split('\n').map((l) => l.trim());
+
+  it('an EMPTY Home shows the plaque, and the plain heading is GONE (it is replaced, not stacked)', async () => {
+    const frame = await frameOf({});
+    expect(frame).toContain('R E L A V I U M');
+    expect(frame).toContain('Own every run.');
+    // Checking only row 0 would pass while the heading sat just BELOW the plaque (break-verified).
+    expect(rows(frame)).not.toContain('relavium');
+  });
+
+  it('a BUSY Home falls back to the plain heading — the banner auto-dismisses', async () => {
+    const frame = await frameOf({ snapshot: BUSY });
+    expect(frame).not.toContain('R E L A V I U M');
+    expect(rows(frame)).toContain('relavium');
+  });
+
+  it('`show_banner = false` hides it even on an empty Home', async () => {
+    const frame = await frameOf({ showBanner: false });
+    expect(frame).not.toContain('R E L A V I U M');
+  });
+
+  it('`show_banner = true` brings it back on a busy Home', async () => {
+    const frame = await frameOf({ showBanner: true, snapshot: BUSY });
+    expect(frame).toContain('R E L A V I U M');
+  });
+
+  it('on an 80x24 terminal the plaque never obscures the prompt', async () => {
+    const frame = await frameOf({ size: { cols: 80, rows: 24 } });
+    expect(frame).toContain('R E L A V I U M');
+    // The prompt marker still renders, and no line wrapped past 80 columns.
+    expect(frame).toContain('>');
+    for (const line of frame.split('\n')) expect(line.length).toBeLessThanOrEqual(80);
+  });
+
+  it('renders WITHOUT a React duplicate-key error under NO_COLOR — the two ASCII borders are byte-identical', async () => {
+    // The Home mounts ink with `patchConsole: false`, so a React runtime error goes straight to stderr — printed onto
+    // the alt buffer, over the frame. Keying the plaque's rows by their TEXT did exactly that (whole-phase review).
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const m = mountHome(createChatStore(false), { color: false });
+      await settleFrames();
+      expect(m.harness.lastFrame() ?? '').toContain('R E L A V I U M');
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('a FORCED banner on a busy 80x24 Home stands down rather than crowd the strip', async () => {
+    const frame = await frameOf({ showBanner: true, snapshot: BUSY, size: { cols: 80, rows: 24 } });
+    expect(frame).not.toContain('R E L A V I U M');
+    expect(frame).toContain('a chat'); // the strip the banner would have pushed away
+  });
+});
+
+/**
+ * MOUSE CAPTURE FOLLOWS THE CHAT (2.6.F Step 6g, whole-phase Opus review). Capturing the mouse for the whole Home was
+ * a regression: the landing has no viewport to wheel-scroll and no in-app selection, so a user lost the emulator's own
+ * click-drag there and got nothing back — they could not even copy a session id off the strip.
+ */
+describe('RootApp — mouse capture follows the in-Home chat', () => {
+  it('the bare Home does NOT capture; entering the chat does', async () => {
+    // The release side (`setMouseCapture(false)` ⇒ DISABLE_MOUSE) is pinned at the port, in `drive-home.test.ts`.
+    // Here the claim is that the effect tracks `state.mode`: hardcoding `alternateScreen` would capture the landing.
+    const toggles: boolean[] = [];
+    const m = mountHome(createChatStore(false), {
+      alternateScreen: true,
+      setMouseCapture: (enabled) => toggles.push(enabled),
+    });
+    await settleFrames();
+    expect(toggles).toEqual([false]); // the landing keeps the emulator's own click-drag selection
+
+    await enterChat(m.c);
+    await settleFrames();
+    expect(toggles.at(-1)).toBe(true);
+  });
+
+  it('an OVERLAY over the chat does not release the mouse — that would be DECSET churn', async () => {
+    const toggles: boolean[] = [];
+    const m = mountHome(createChatStore(false), {
+      alternateScreen: true,
+      setMouseCapture: (enabled) => toggles.push(enabled),
+    });
+    await enterChat(m.c);
+    await settleFrames();
+    const before = toggles.length;
+
+    m.harness.stdin.write('/'); // open the palette over the chat
+    await settleFrames();
+    expect(toggles).toHaveLength(before); // no new toggle
+  });
+
+  it('the INLINE Home does not CONSUME mouse-report bytes either — nothing enables the mouse there', async () => {
+    // The `alternateScreen` guard in `consumeMouseReport` is what keeps the reader (and its partial-report buffer)
+    // out of a renderer that never receives a report. Without it, a user typing `[<0;1;1M` would have it swallowed.
+    const m = mountHome(createChatStore(false), {}); // no `alternateScreen`
+    await settleFrames();
+    m.harness.stdin.write('[<0;1;1M');
+    await settleFrames();
+    expect(m.c.getSnapshot().input.text).toBe('[<0;1;1M'); // typed, not eaten
+  });
+
+  it('the INLINE Home never captures, whatever the mode', async () => {
+    const toggles: boolean[] = [];
+    const m = mountHome(createChatStore(false), {
+      setMouseCapture: (enabled) => toggles.push(enabled),
+    });
+    await settleFrames();
+    await enterChat(m.c);
+    await settleFrames();
+    expect(toggles.every((t) => t === false)).toBe(true);
   });
 });

@@ -312,14 +312,13 @@ render-v2 (2.6.M) all build on it.
   behavior for long responses so that content above the visible area is never lost. Renderer choice is
   orthogonal to session state (switching relaunches the view in place, conversation intact). The run TUI's
   persistent plain-text exit summary is preserved on unmount.
-- **Branded Home banner**: a full-width, ink-native banner rendered at the top of the full-screen Home
-  on mount. The design is developed during implementation (ASCII-art or Unicode box-drawing character
-  variants evaluated against the three themes and `--no-color` degradation); the banner is shown on the
-  **first five** Home opens, then auto-dismissed — re-enabled via `[preferences].show_banner`. It must:
-  adapt to terminal width (truncated or centered at every supported width ≥80), degrade to plain ASCII
-  when `NO_COLOR` / `--no-color` is active, render in under one frame (no measure-then-draw flicker),
-  and never obscure the management strip or prompt on a 80×24 terminal. The banner is a cosmetic
-  substrate element — it does not gate any feature.
+- **Branded Home banner** — ✅ **shipped in 2.6.F Step 5g**. `show_banner` is spec'd in
+  [config-spec.md](../../reference/contracts/config-spec.md) and its behaviour in
+  [home.md](../../reference/cli/home.md); this entry does not restate them. Two deviations from the plan
+  above, recorded in [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md)'s dated
+  amendments: the **"first five Home opens"** counter became an **empty-Home** trigger (a durable counter
+  would need a `history.db` migration or a `config.toml` auto-write per open — the wrong trade for a
+  cosmetic element), and **themes** moved to **2.6.L**, so 5g ships colour + `NO_COLOR` only.
 - **TUI component test harness** *(deferred pull-in)*: the first CLI component-render harness (a new
   devDependency — part of this workstream's ADR), so render-cadence bugs (the 2.5.H frozen-clock class)
   get regression tests; add performance regression thresholds (frame time / render count) for the

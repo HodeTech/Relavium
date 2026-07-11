@@ -144,10 +144,25 @@ export const GlobalConfigSchema = z
         // Full-screen alt-screen renderer (2.6.F, ADR-0068 §e). The DEFAULT is ON for an interactive TTY, so this key
         // is the durable OPT-OUT: `false` (like the `--no-alt-screen` flag) keeps the byte-identical INLINE renderer
         // (native scrollback + the emulator's own a11y), the screen-reader fallback; `true` forces it on. The flag
-        // overrides this key; a non-TTY / machine (`--json`/CI) path ignores both and always renders inline. The
-        // transcript renders through a resize-tracked viewport with scroll-back + auto-follow (PgUp/PgDn,
-        // Ctrl+Home/Ctrl+End) and mouse-wheel; only the `[`/`v` copy-and-search hatches remain (Step 5).
+        // overrides this key; a non-TTY / machine (`--json`/CI) path ignores both and always renders inline.
         alt_screen: z.boolean().optional(),
+        // Terminal MOUSE reporting (DECSET 1002+1006) in the full-screen renderer (2.6.F, ADR-0068 §e). It is what
+        // makes the wheel scroll the transcript and what lets Relavium run its OWN click-drag selection, since the
+        // emulator forwards clicks to us instead of selecting. DEFAULT ON. `false` (like `--no-mouse`) turns it off
+        // durably: the wheel stops scrolling (PgUp/PgDn/Ctrl+Home/Ctrl+End still page), in-app selection goes with it,
+        // and the emulator's native selection works again. The flag overrides this key.
+        // Ignored outside the alt screen — the inline renderer NEVER enables mouse reporting.
+        mouse: z.boolean().optional(),
+        // COPY-ON-SELECT (2.6.F Step 6e, ADR-0068 §e amendment): releasing a drag writes the selection to the system
+        // clipboard over OSC 52. DEFAULT ON, matching every competing agent CLI. `false` keeps the highlight (and the
+        // wheel) but never touches the clipboard — for anyone who does not want a stray drag clobbering what they
+        // copied elsewhere. `/copy` still copies the whole transcript on demand. Meaningless without `mouse`, and
+        // ignored when it is off: there is no selection to copy.
+        copy_on_select: z.boolean().optional(),
+        // The branded Home BANNER (2.6.F Step 5g, ADR-0068). `true` ⇒ always shown, `false` ⇒ never.
+        // ABSENT ⇒ shown only while the Home is EMPTY (no sessions/runs/agents to continue) — an empty Home is the
+        // "first opens" signal the ADR wanted, without a durable counter. Cosmetic: it gates no feature.
+        show_banner: z.boolean().optional(),
       })
       .strict()
       .optional(),

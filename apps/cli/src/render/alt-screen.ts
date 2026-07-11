@@ -28,16 +28,29 @@ export const SHOW_CURSOR = '\x1b[?25h';
  *  mount, so successive sessions never STACK (ink's non-fullscreen unmount `log.done()` does not erase, and a fresh
  *  mount starts at `previousLineCount=0`). */
 export const CLEAR_ALT_SCREEN = '\x1b[H\x1b[J';
-/** Enable terminal mouse reporting — X11 button events (DECSET 1000, which INCLUDES the wheel) + SGR extended
- *  coordinates (1006, so columns past 223 report correctly), 2.6.F Step 5. This is what makes wheel-scroll possible;
- *  the trade-off is that the terminal's NATIVE mouse text-selection now needs Shift/Option (see accessibility.md). */
-export const ENABLE_MOUSE = '\x1b[?1000h\x1b[?1006h';
-/** Disable mouse reporting — restore native mouse text-selection. Paired with the alt-buffer exit on every path. */
-export const DISABLE_MOUSE = '\x1b[?1006l\x1b[?1000l';
+/**
+ * Enable terminal mouse reporting — **DECSET 1002** (button-event tracking: press, release, wheel, and motion ONLY
+ * while a button is held) + SGR extended coordinates (1006, so columns past 223 report correctly).
+ *
+ * 1002, not 1000: the drag reports are what let the app implement TEXT SELECTION itself (2.6.F Step 6). A terminal
+ * either reports mouse events or performs its own click-drag selection — never both — so with reporting on, giving
+ * selection back to the user means owning it. NOT 1003 (any-motion), which reports every pointer move even with no
+ * button held and floods the input stream for nothing.
+ */
+export const ENABLE_MOUSE = '\x1b[?1002h\x1b[?1006h';
+/**
+ * Disable mouse reporting — restore the emulator's native text-selection. Paired with the alt-buffer exit on every
+ * path. It disables **1000 as well as 1002**: a disable of a mode that was never enabled is a no-op, and an earlier
+ * Relavium (or any other program in this terminal) may have left 1000 armed.
+ */
+export const DISABLE_MOUSE = '\x1b[?1006l\x1b[?1002l\x1b[?1000l';
 
 export interface AltScreenController {
   /** Enter the alt buffer + hide the cursor, exactly ONCE (a repeat call and the inactive case are no-ops). */
   enter(): void;
+  /** Whether mouse reporting is currently ON — `enter()` ran AND the `mouse` option was set (2.6.F Step 5e,
+   *  ADR-0068 §e). The `/scrollback` + `/edit` suspension asks this so it suspends the mouse only if we enabled it. */
+  readonly isMouseEnabled: () => boolean;
   /** Exit the alt buffer + show the cursor, exactly ONCE — IDEMPOTENT, so the `finally`, the `process.on('exit')`
    *  net, and a signal handler can all call it without a double toggle. A no-op if `enter()` never ran. */
   restore(): void;
@@ -55,26 +68,50 @@ export interface AltScreenController {
 export function createAltScreenController(opts: {
   readonly write: (sequence: string) => void;
   readonly active: boolean;
+  /** Enable mouse reporting with the buffer (2.6.F Step 5e, ADR-0068 §e). `false` (`--no-mouse` /
+   *  `[preferences].mouse = false`) keeps the wheel inert and leaves the emulator's native click-drag selection
+   *  working. Defaults to `true` so every existing caller/test keeps the Step-5b behaviour. */
+  readonly mouse?: boolean;
 }): AltScreenController {
   const { write, active } = opts;
+  const mouse = opts.mouse ?? true;
   let entered = false;
   let restored = false;
   return {
     enter: (): void => {
       if (!active || entered) return;
+      // Latch AFTER the write, for the same reason as `restore` below: a `write` that throws did not enter anything,
+      // and pretending it did would make `restore` emit a DECRST-1049 for a buffer the terminal is not in.
+      write(ENTER_ALT_SCREEN + HIDE_CURSOR + (mouse ? ENABLE_MOUSE : ''));
       entered = true;
-      write(ENTER_ALT_SCREEN + HIDE_CURSOR + ENABLE_MOUSE);
     },
     restore: (): void => {
       if (!entered || restored) return; // never exit a buffer we never entered; never exit twice
+      // Disable mouse reporting FIRST (restore native selection), then exit the alt buffer + show the cursor. The
+      // DISABLE is UNCONDITIONAL even when `mouse` is off: a disable of a mode that was never enabled is a no-op, and
+      // an unconditional teardown can never strand DECSET-1002 if the option is ever mis-threaded.
+      //
+      // The idempotence latch is set only AFTER the write SUCCEEDS. It used to be set first, so a single transient
+      // write fault (an EIO on a half-dead TTY, an EPIPE) marked the terminal "restored" and every later net — the
+      // `finally`, the `process.on('exit')` net, the signal handlers — silently declined to try again. The user was
+      // left on the alt buffer with mouse reporting on, permanently (Step-6h Sonnet review). This is the same
+      // "track what actually changed" discipline `suspend.ts`'s `suspendFullScreen` already applies.
+      //
+      // BEST-EFFORT, and it never throws: this runs from a `finally`, from an `'exit'` listener (where a throw is an
+      // uncaught exception) and from signal handlers. The latch staying DOWN is how a failure is reported — the next
+      // net retries.
+      try {
+        write(DISABLE_MOUSE + EXIT_ALT_SCREEN + SHOW_CURSOR);
+      } catch {
+        return; // a later net gets another chance at the terminal
+      }
       restored = true;
-      // Disable mouse reporting FIRST (restore native selection), then exit the alt buffer + show the cursor.
-      write(DISABLE_MOUSE + EXIT_ALT_SCREEN + SHOW_CURSOR);
     },
     clearBetween: (): void => {
       if (!entered || restored) return;
       write(CLEAR_ALT_SCREEN);
     },
     isEntered: (): boolean => entered && !restored,
+    isMouseEnabled: (): boolean => mouse && entered && !restored,
   };
 }

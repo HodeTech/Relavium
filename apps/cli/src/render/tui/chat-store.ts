@@ -17,6 +17,7 @@ import {
   reduceSessionEvent,
   type SessionViewSeed,
   type SessionViewState,
+  INLINE_TRANSCRIPT_BOUND,
 } from './session-view-model.js';
 
 /**
@@ -125,9 +126,19 @@ const HIGH_FREQUENCY_EVENTS: ReadonlySet<SessionStreamHandleEvent['type']> = new
   'cost:updated',
 ]);
 
-export function createChatStore(color: boolean, seed?: SessionViewSeed): ChatStoreController {
+/**
+ * @param transcriptBound the RENDERER-injected bound on the text a completed turn bakes into the transcript
+ *   (ADR-0068 Decision (c)). `FULLSCREEN_TRANSCRIPT_BOUND` in the alt-screen viewport, `INLINE_TRANSCRIPT_BOUND`
+ *   otherwise. Defaults to the inline bound so a caller that forgets keeps today's behaviour rather than an
+ *   unbounded live buffer.
+ */
+export function createChatStore(
+  color: boolean,
+  seed?: SessionViewSeed,
+  transcriptBound: number = INLINE_TRANSCRIPT_BOUND,
+): ChatStoreController {
   const listeners = new Set<() => void>();
-  let state = initialSessionViewState(seed);
+  let state = initialSessionViewState(seed, transcriptBound);
   let mode: ChatMode = DEFAULT_CHAT_MODE;
   let reasoningEffort: ReasoningEffort | undefined;
   let reasoningVisible = false; // the "thinking" panel is collapsed by default (2.5.H); `/thinking` / Ctrl+T flips it

@@ -43,6 +43,8 @@ describe('extractGlobalOptions', () => {
     expect(raw.noAltScreen).toBe(true);
     expect(rest).toEqual(['node', 'relavium', 'chat']);
     expect(extractGlobalOptions(argv('chat')).raw.noAltScreen).toBeUndefined(); // absent ⇒ unset
+    expect(extractGlobalOptions(argv('--no-mouse', 'chat')).raw.noMouse).toBe(true);
+    expect(extractGlobalOptions(argv('chat')).raw.noMouse).toBeUndefined(); // absent ⇒ unset
   });
 
   it('reports (not throws) invalid_invocation when --cwd / --config has no argument', () => {
@@ -86,6 +88,7 @@ describe('resolveGlobalOptions', () => {
       configPath: undefined,
       verbosity: 'normal',
       noAltScreen: false,
+      noMouse: false,
     });
   });
 
@@ -99,12 +102,18 @@ describe('resolveGlobalOptions', () => {
       configPath: '/c.toml',
       verbosity: 'normal',
       noAltScreen: false,
+      noMouse: false,
     });
   });
 
   it('maps --no-alt-screen to noAltScreen (absent ⇒ false)', () => {
     expect(resolveGlobalOptions({ noAltScreen: true }, '/w').noAltScreen).toBe(true);
     expect(resolveGlobalOptions({}, '/w').noAltScreen).toBe(false);
+  });
+
+  it('maps --no-mouse to noMouse (absent ⇒ false) — the ADR-0068 §e mouse opt-out, Step 5e', () => {
+    expect(resolveGlobalOptions({ noMouse: true }, '/w').noMouse).toBe(true);
+    expect(resolveGlobalOptions({}, '/w').noMouse).toBe(false);
   });
 
   it('maps --verbose / --quiet to verbosity', () => {

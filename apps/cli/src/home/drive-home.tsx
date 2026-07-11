@@ -5,12 +5,18 @@ import type { AgentSessionRecord, ReasoningEffort } from '@relavium/shared';
 import { render } from 'ink';
 import { createElement } from 'react';
 
-import { createChatLineHandler, type ReseatTarget } from '../commands/chat.js';
+import {
+  budgetWarningText,
+  createChatLineHandler,
+  transcriptBoundFor,
+  type ReseatTarget,
+} from '../commands/chat.js';
 import {
   buildChatSession,
   buildResumedChatSession,
   swapAgentModel,
   type BuiltChatSession,
+  type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
 import type { DoctorProbes } from '../chat/doctor.js';
@@ -36,7 +42,7 @@ import type { CliIo } from '../process/io.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { detectOutputMode, isCiEnv } from '../process/output-mode.js';
-import { resolveRenderMode } from '../render/render-mode.js';
+import { resolveCopyOnSelect, resolveMouseMode, resolveRenderMode } from '../render/render-mode.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
@@ -48,6 +54,11 @@ import {
   type HomeModelsPort,
 } from '../render/tui/home-controller.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE } from '../render/alt-screen.js';
+import { nodeCreateTempDocument, nodeSpawnEditor } from '../render/editor.js';
+import { inkOwnedTerminal, type HatchDeps } from '../render/hatches.js';
+import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
+import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
+import { createSuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
@@ -60,11 +71,12 @@ import { createHomeStore } from './home-store.js';
  * (`startChat`) so the strip shows immediately and a slow/failed build degrades to a loading state / a Home banner.
  *
  * Process lifetime lives here (the controller owns the session lifetime):
- * - **Signals** — one SIGINT/SIGTERM handler covering the Home, the in-Home chat, and MCP teardown: a clean Home
- *   exit (Ctrl-C / EOF in Home mode) resolves exit 0; an EXTERNAL signal unmounts ink, tears the live chat down
- *   (bounded so a stuck MCP teardown can't hang), closes the db, and exits with the conventional `128+signo`
- *   (`130` SIGINT / `143` SIGTERM) so a shell pipeline still sees the interruption. A chat's own exit-code-4 is
- *   consumed by the controller loop (a chat ending returns to Home), never leaked.
+ * - **Signals** — one handler for SIGINT(2)/SIGTERM(15)/SIGHUP(1)/SIGQUIT(3), covering the Home, the in-Home chat,
+ *   and MCP teardown: a clean Home exit (Ctrl-C / EOF in Home mode) resolves exit 0; an EXTERNAL signal unmounts ink,
+ *   tears the live chat down (bounded so a stuck MCP teardown can't hang), closes the db, and exits with the
+ *   conventional `128+signo` (`130` SIGINT / `143` SIGTERM / `129` SIGHUP / `131` SIGQUIT) so a shell pipeline still
+ *   sees the interruption. A chat's own exit-code-4 is consumed by the controller loop, never leaked. Behind all of
+ *   them sits a synchronous `process.on('exit')` net, the last chance to restore the terminal (2.6.F Step 6f).
  * - **Bracketed paste** — DECSET 2004 is enabled on mount and disabled on every exit path, so a pasted multi-line
  *   block is bracketed literal text (no embedded newline submits early); the controller strips the markers.
  */
@@ -95,25 +107,48 @@ export interface HomeDeps {
   ) => { unmount: () => void };
   readonly getSize?: () => { cols: number; rows: number };
   readonly subscribeResize?: (onResize: () => void) => () => void;
-  /** Subscribe to SIGINT(2)/SIGTERM(15); returns an unsubscribe. Default registers on `process`. */
+  /** Subscribe to SIGINT(2)/SIGTERM(15)/SIGHUP(1)/SIGQUIT(3); returns an unsubscribe. Default registers on `process`. */
   readonly subscribeSignals?: (onSignal: (signo: number) => void) => () => void;
+  /** Register a synchronous `process.on('exit')` net; returns a remover. Default registers on `process`. The LAST
+   *  chance to restore the terminal when something calls `process.exit()` past the `finally` (2.6.F Step 6f). */
+  readonly subscribeProcessExit?: (onExit: () => void) => () => void;
   /** Exit the process (tests inject a capture; production `process.exit`). */
   readonly exit?: (code: number) => void;
   /** Write a terminal control sequence (the bracketed-paste DECSET toggles). Default `process.stdout`. */
   readonly writeControl?: (sequence: string) => void;
 }
 
-/** The default external-signal source: SIGINT(2) + SIGTERM(15) on `process`, registered with `on` (not `once`)
- *  so ink's signal-exit listener never re-raises while we still hold the cooperative teardown. */
-function defaultSubscribeSignals(onSignal: (signo: number) => void): () => void {
+/**
+ * The default external-signal source, registered with `on` (not `once`) so ink's signal-exit listener never re-raises
+ * while we still hold the cooperative teardown.
+ *
+ * SIGINT(2) + SIGTERM(15) drive the cooperative teardown. SIGHUP(1) + SIGQUIT(3) were MISSING until Step 6f: they are
+ * catchable kills that terminate WITHOUT firing Node's `'exit'` event, and SIGHUP is what a user gets by closing the
+ * terminal window. Without them the Home left DECSET 1002+1006 enabled on the primary buffer, and the shell then
+ * echoed a mouse report on every click. `relavium chat`'s `defaultReplLifecycle` has covered all four since Step 4b-3;
+ * the two surfaces now agree.
+ */
+export function defaultSubscribeSignals(onSignal: (signo: number) => void): () => void {
   const onSigint = (): void => onSignal(2);
   const onSigterm = (): void => onSignal(15);
+  const onSighup = (): void => onSignal(1);
+  const onSigquit = (): void => onSignal(3);
   process.on('SIGINT', onSigint);
   process.on('SIGTERM', onSigterm);
+  process.on('SIGHUP', onSighup);
+  process.on('SIGQUIT', onSigquit);
   return () => {
     process.removeListener('SIGINT', onSigint);
     process.removeListener('SIGTERM', onSigterm);
+    process.removeListener('SIGHUP', onSighup);
+    process.removeListener('SIGQUIT', onSigquit);
   };
+}
+
+/** The default `process.on('exit')` net — synchronous by definition, which is why the restore it runs must be too. */
+export function defaultSubscribeProcessExit(onExit: () => void): () => void {
+  process.on('exit', onExit);
+  return () => process.removeListener('exit', onExit);
 }
 
 export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
@@ -144,6 +179,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   let instance: { unmount: () => void } | undefined;
   let controller: HomeController | undefined;
   let unsubscribeSignals: (() => void) | undefined;
+  let unsubscribeProcessExit: (() => void) | undefined;
   let dbClosed = false;
   const closeDb = (): void => {
     if (dbClosed) return;
@@ -155,6 +191,96 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     ((sequence: string) => {
       process.stdout.write(sequence);
     });
+
+  /**
+   * Undo every terminal mode this command turned on, in reverse order: unmount ink FIRST (leaving raw mode and the
+   * alternate buffer), then disable bracketed paste (DECSET 2004, enabled by ink 7's `usePaste`) and mouse reporting
+   * (DECSET 1002+1006, ours). Both writes are unconditional — a disable is a no-op when the mode was never enabled.
+   * BEST-EFFORT by contract: it swallows its own throw so a faulty terminal can never skip the caller's session
+   * teardown + db close (the `finally`) nor the bounded teardown + exit (the signal handler). Shared by EVERY path
+   * (the `finally`, the signal handler, and the `process.on('exit')` net), so they can never drift.
+   *
+   * IDEMPOTENT: the nets deliberately overlap, and `unmount()` on an already-unmounted tree plus a second `DISABLE`
+   * write would be harmless but noisy. The latch makes "call it from wherever, as often as you like" the contract.
+   */
+  // Each step latches INDEPENDENTLY, and only after it SUCCEEDS. A single latch set before the writes would let one
+  // transient fault (an EIO on a half-dead TTY unmounting ink, an EPIPE on a `writeControl`) mark the terminal
+  // "restored" and every later net (the signal handler, the `process.on('exit')` net, the `finally`) decline to retry
+  // — stranding mouse reporting / bracketed paste on the user's shell. This is the same discipline `alt-screen.ts`'s
+  // `restore()` applies (2.6.F Step 6h). Each swallows its own throw so teardown + exit/close still run.
+  let unmounted = false;
+  let pasteDisabled = false;
+  let mouseDisabled = false;
+  const restoreTerminalControls = (): void => {
+    if (!unmounted) {
+      try {
+        instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
+        unmounted = true;
+      } catch {
+        // a later net retries
+      }
+    }
+    if (!pasteDisabled) {
+      try {
+        writeControl(DISABLE_BRACKETED_PASTE);
+        pasteDisabled = true;
+      } catch {
+        // a later net retries
+      }
+    }
+    if (!mouseDisabled) {
+      try {
+        writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
+        mouseDisabled = true;
+      } catch {
+        // a later net retries
+      }
+    }
+  };
+
+  // The ADR-0068 §e hatch ports (2.6.F Step 5d). `RootApp` attaches ink's `suspendTerminal` to the port on mount;
+  // `wireHomeChatSession` hands these ports to `createChatLineHandler` — the SAME builder `relavium chat` uses — so
+  // `/scrollback` and `/edit` are literally the same code on both surfaces. Unlike the chat, the bare Home mounts ink
+  // with `alternateScreen: true`, so ink itself toggles DECSET-1049 across a suspension; only the mouse is ours.
+  const suspendPort = createSuspendPort();
+  let altScreenActive = false; // assigned once the render mode resolves; read LAZILY by `terminal()` below
+  let mouseActive = false; // ditto — `--no-mouse` / `[preferences].mouse = false` leaves the alt buffer mouse-less
+  // Whether the mouse is captured RIGHT NOW. Distinct from `mouseActive` (the resolved mode) since Step 6g: the Home
+  // landing gives the mouse back to the emulator, and a suspension must not "restore" a mode that is not on.
+  let mouseCaptured = false;
+  // ONE clipboard closure over the SAME control-write sink as the alt-buffer + mouse toggles (Step 6). `/copy` (via
+  // `hatchPorts`) and copy-on-select (via `RootApp`'s `clipboard` prop, when enabled) both use it.
+  const clipboard = (text: string): ClipboardOutcome =>
+    copyToClipboard({ writeControl, env: deps.io.env }, text);
+  const hatchPorts: Omit<HatchDeps, 'transcript' | 'note'> = {
+    suspendPort,
+    writeControl,
+    // `inkOwnedTerminal` (not `hoistedTerminal`): this surface mounts ink with `alternateScreen: true`, so ink toggles
+    // DECSET-1049 across the suspension and only the mouse is ours. Both read lazily — set at mount. `mouseActive` is
+    // separate from `altActive` because `--no-mouse` decouples them (Step 5e).
+    terminal: inkOwnedTerminal(
+      () => altScreenActive,
+      () => mouseCaptured,
+      () => process.stdout.columns,
+    ),
+    clipboard,
+    dump: {
+      writeOut: nodeWriteOut(process.stdout),
+      waitForContinue: nodeWaitForContinue(process.stdin),
+    },
+    editor: {
+      env: deps.io.env,
+      spawnEditor: nodeSpawnEditor,
+      createTempDocument: nodeCreateTempDocument,
+      onDisposeFailed: (path, error) => {
+        deps.io.writeErr(
+          `warning: transcript temp file teardown failed (${path}): ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      },
+    },
+  };
 
   try {
     const homeStore = createHomeStore({
@@ -282,7 +408,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           onSetEffort,
         } = createChatLineHandler(
           { built, opened, store, persister, doctorProbes: chatDoctorProbes },
-          deps,
+          { ...deps, hatchPorts },
         );
         // Subscribe the view store BEFORE opening the session so the synchronous session:started is observed.
         unsubscribe = built.handle.subscribe((event) => store.apply(event));
@@ -346,7 +472,14 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
 
     // Build + wire + START a fresh chat session (the controller sends the first message on transition).
     const startChat = async (): Promise<HomeChatSession> => {
-      const store = createChatStore(deps.global.color);
+      // `altScreenActive` is assigned when the render mode resolves, BEFORE the first submit that calls this. The
+      // full-screen viewport can hold a whole answer; the inline `<Static>` path keeps its trailing tail (ADR-0068
+      // Decision (c)). Read lazily, like the hatch ports, so the mode is the LIVE one.
+      const store = createChatStore(
+        deps.global.color,
+        undefined,
+        transcriptBoundFor(altScreenActive),
+      );
       // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read FRESH per chat from the SAME `history.db` (empty map
       // on a read fault). Static `MODEL_PRICING` still wins.
       const resolvePrice = readUserPricingOverlay(opened.db);
@@ -369,10 +502,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         mcpSecretResolver,
         mcpRegistrations: config.mcpServers,
         ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
-        onBudgetWarning: (warning) =>
-          deps.io.writeErr(
-            `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-          ),
+        // Into the chat's TRANSCRIPT, never raw stderr. `relavium chat` routes this through `emitLiveNotice` for
+        // exactly this reason (Step-4b-3 Sonnet fix): a raw write lands on the alt buffer, where ink's next frame
+        // overwrites it — the user is warned about their spend on a line that survives a single frame.
+        onBudgetWarning: (warning) => store.notice(budgetWarningText(warning)),
       });
       return wireHomeChatSession(built, store, { open: true });
     };
@@ -400,6 +533,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       );
       const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
       const resolvePrice = readUserPricingOverlay(opened.db);
+      // The store's SEED comes from the build, so it cannot be created first — yet `onBudgetWarning` closes over it and
+      // a pre-egress cap check can fire DURING the build. Hold it in a `let` and fall back to stderr until it exists,
+      // exactly as `emitLiveNotice` does on the standalone chat. Either way the warning is never written raw onto the
+      // alt buffer, where ink's next frame would erase it (Step-4b-3 Sonnet fix, carried here by the phase review).
+      const storeRef: { current?: ChatStoreController } = {};
+      const noteBudget = (warning: ChatBudgetWarning): void => {
+        const text = budgetWarningText(warning);
+        if (storeRef.current !== undefined) storeRef.current.notice(text);
+        else deps.io.writeErr(`${text}\n`);
+      };
       const built = await (deps.buildResumedSession ?? buildResumedChatSession)({
         chat: config.chat,
         record,
@@ -409,19 +552,21 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         mcpSecretResolver,
         mcpRegistrations: config.mcpServers,
         ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
-        onBudgetWarning: (warning) =>
-          deps.io.writeErr(
-            `budget warning: ~${warning.thresholdPct}% of the ${warning.limitMicrocents}µ¢ cap reached\n`,
-          ),
+        onBudgetWarning: noteBudget,
       });
       // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
       // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
-      const store = createChatStore(deps.global.color, {
-        agentRef: built.agent.id,
-        model: built.agent.model,
-        cumulativeCostMicrocents: built.resumeState.cumulativeCostMicrocents,
-        turnCount: built.resumeState.turnCount,
-      });
+      const store = createChatStore(
+        deps.global.color,
+        {
+          agentRef: built.agent.id,
+          model: built.agent.model,
+          cumulativeCostMicrocents: built.resumeState.cumulativeCostMicrocents,
+          turnCount: built.resumeState.turnCount,
+        },
+        transcriptBoundFor(altScreenActive),
+      );
+      storeRef.current = store; // from here a budget warning renders in the transcript, not on the alt buffer
       return wireHomeChatSession(built, store, {
         open: false,
         initialSequenceNumber: built.nextSequenceNumber,
@@ -458,26 +603,28 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     }
 
     // Bracketed paste (DECSET 2004) is enabled by ink 7's `usePaste` on mount (home-app.tsx). The defensive
-    // `DISABLE_BRACKETED_PASTE` writes on the teardown paths below are belt-and-suspenders (usePaste also disables
-    // on unmount) so an external signal can never leave the terminal in bracketed-paste mode.
+    // `DISABLE_BRACKETED_PASTE` writes in `restoreTerminalControls` are belt-and-suspenders (usePaste also
+    // disables on unmount) so an external signal can never leave the terminal in bracketed-paste mode.
 
     // One external-signal lifecycle covering the Home, the in-Home chat, and MCP teardown.
     let signaled = false;
     const onSignal = (signo: number): void => {
+      // A KEYBOARD Ctrl-C during a `/scrollback` or `/edit` hatch arrives here as a REAL SIGINT: the suspension turns
+      // raw mode OFF, so the kernel resumes translating Ctrl-C. The hatch owns the terminal — `nodeWaitForContinue`
+      // resolves on that same SIGINT, and `$EDITOR` receives it directly. Tearing the Home down here would exit
+      // BEHIND the suspension's back: its `reclaim` re-emits ENABLE_MOUSE on the way out, and the latched
+      // `restoreTerminalControls` would never run again, stranding DECSET 1002+1006 on the user's shell.
+      // `relavium chat` has gated this since Step 5d (`onSigintGated`, chat-ink.tsx); the Home never did.
+      // Only SIGINT: an EXTERNAL kill (TERM/HUP/QUIT) must still tear down, suspended or not.
+      if (signo === 2 && suspendPort.isSuspended()) return;
       if (signaled) {
         exitProcess(128 + signo); // a second signal forces an immediate exit (a teardown ignoring the abort)
         return;
       }
       signaled = true;
-      // Best-effort terminal restore — a throw here must NOT skip scheduling the bounded teardown + exit below
-      // (else an external signal could neither close the db nor exit).
-      try {
-        instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
-        writeControl(DISABLE_BRACKETED_PASTE);
-        writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
-      } catch {
-        // ignore — restoring the terminal is best-effort; the close + exit must still run
-      }
+      // Best-effort terminal restore — it swallows its own throw, so it can NOT skip scheduling the bounded
+      // teardown + exit below (else an external signal could neither close the db nor exit).
+      restoreTerminalControls();
       // The bound is REFERENCED until the race settles so the exit is guaranteed even if teardown hangs; it is
       // cleared the instant the race resolves so a fast teardown (the common case) neither waits nor dangles.
       let bound: ReturnType<typeof setTimeout> | undefined;
@@ -498,6 +645,12 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         });
     };
     unsubscribeSignals = (deps.subscribeSignals ?? defaultSubscribeSignals)(onSignal);
+    // The LAST net. `onSignal` covers the catchable kills; this covers everything that reaches Node's `'exit'` without
+    // unwinding our `finally` — a `process.exit()` from a nested command, an uncaught throw, an unhandled rejection.
+    // It must be synchronous, which `restoreTerminalControls` is; the latch makes the overlap with the other nets free.
+    unsubscribeProcessExit = (deps.subscribeProcessExit ?? defaultSubscribeProcessExit)(
+      restoreTerminalControls,
+    );
 
     // Resolve the effective render mode (2.6.F, ADR-0068 §e). driveHome only runs on a TTY interactive path
     // (shouldOpenHome-gated), so the output mode is 'tui'; the resolver still short-circuits a 'plain' path to
@@ -526,6 +679,19 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         onError: (err) => reject(err instanceof Error ? err : new Error(String(err))),
       });
       const alternateScreen = renderMode === 'alt';
+      altScreenActive = alternateScreen; // the hatch ports read this lazily (see `terminal()` above)
+      // Mouse reporting (Step 5e, ADR-0068 §e) — resolved from the SAME render mode, so the two cannot disagree.
+      mouseActive = resolveMouseMode({
+        renderMode,
+        noMouseFlag: deps.global.noMouse === true,
+        configMouse: config.mouse,
+      });
+      // Copy-on-select (Step 6e): a durable preference, resolved from the ALREADY-RESOLVED mouse decision, so
+      // `--no-mouse` turns it off structurally. `/copy` is unaffected — it has its own clipboard binding.
+      const copyOnSelect = resolveCopyOnSelect({
+        mouseEnabled: mouseActive,
+        configCopyOnSelect: config.copyOnSelect,
+      });
       const props: RootAppProps = {
         controller,
         nowMs: now,
@@ -534,6 +700,24 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         subscribeResize,
         // The in-Home chat renders its transcript through the scroll viewport when mounted on the alt screen (Step 4b).
         alternateScreen,
+        // `RootApp` attaches ink's `suspendTerminal` here while mounted (2.6.F Step 5d, ADR-0068 §e).
+        suspendPort,
+        // The branded banner's durable switch (Step 5g); `HomeView` owns the empty-Home rule when it is absent.
+        showBanner: config.showBanner,
+        // Armed only while the in-Home chat owns the screen (Step 6g). `mouseActive` is the RESOLVED mode
+        // (`--no-mouse` / `[preferences].mouse`); when it is off, no port is passed and nothing is ever captured.
+        ...(mouseActive
+          ? {
+              setMouseCapture: (enabled: boolean) => {
+                mouseCaptured = enabled; // the hatch ports read this LIVE, like `altScreenActive`
+                writeControl(enabled ? ENABLE_MOUSE : DISABLE_MOUSE);
+              },
+            }
+          : {}),
+        // Copy-on-select rides the SAME control-write sink as the alt-buffer + mouse toggles (Step 6). OSC 52 prints
+        // nothing and moves no cursor, so writing it mid-frame cannot corrupt ink's line accounting. ABSENT when
+        // `[preferences].copy_on_select = false`: the selection still highlights, and `/copy` still copies.
+        ...(copyOnSelect ? { clipboard } : {}),
       };
       instance =
         deps.render === undefined
@@ -546,24 +730,19 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
               alternateScreen,
             })
           : deps.render(props, { alternateScreen });
-      // Enable terminal mouse reporting so the in-Home chat's viewport wheel-scrolls (2.6.F Step 5). Only on the alt
-      // screen (ink owns 1049 on this single mount; mouse is ours). Disabled on EVERY teardown path below — the
-      // `DISABLE_MOUSE` writes are unconditional there (a no-op when it was never enabled, like DISABLE_BRACKETED_PASTE).
-      if (alternateScreen) writeControl(ENABLE_MOUSE);
+      // Mouse reporting is armed by `RootApp` as the in-Home CHAT takes the screen (`setMouseCapture`), not here:
+      // capturing it for the whole Home stripped the landing of the emulator's native selection and gave nothing back
+      // (2.6.F Step 6g). Disabled on EVERY teardown path below — the `DISABLE_MOUSE` writes are unconditional there
+      // (a no-op when it was never enabled, like DISABLE_BRACKETED_PASTE).
     });
   } finally {
     // The clean-exit / error / INIT-FAULT path (NOT the signal path, which exits the process directly): undo the
-    // terminal state, reclaim a live session, and close the shared db ONCE. The terminal restore is best-effort —
-    // a throw there is swallowed so it neither turns a clean exit into a failure nor skips the teardown + close
-    // below (a faulty terminal can never leak the session or the db handle). Unmount BEFORE disabling paste.
+    // terminal state, reclaim a live session, and close the shared db ONCE. The terminal restore swallows its own
+    // throw, so it neither turns a clean exit into a failure nor skips the teardown + close below — a faulty
+    // terminal can never leak the session or the db handle.
     unsubscribeSignals?.();
-    try {
-      instance?.unmount();
-      writeControl(DISABLE_BRACKETED_PASTE);
-      writeControl(DISABLE_MOUSE); // restore native mouse text-selection (no-op if never enabled)
-    } catch {
-      // ignore — restoring the terminal is best-effort; the session teardown + db close must still run
-    }
+    unsubscribeProcessExit?.();
+    restoreTerminalControls();
     await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
     closeDb(); // always close the shared db
   }

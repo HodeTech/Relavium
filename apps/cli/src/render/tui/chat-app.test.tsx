@@ -4,7 +4,10 @@ import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApprovalAnswer } from '../../chat/chat-mode.js';
+import { createSuspendPort } from '../suspend.js';
 import { ChatApp } from './chat-ink.js';
+import { liveAnswerRowBudget } from './chat-projection.js';
+import { COPIED_TOAST_MS } from './tui-constants.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
 
@@ -435,5 +438,396 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     expect(frame()).toContain('LASTLINE'); // the bottom of the over-tall entry (the tail)
     expect(frame()).not.toContain('FIRSTLINE'); // the top of the entry scrolled off — no scrollback
     expect(frame().split('\n').length).toBeLessThanOrEqual(24);
+  });
+
+  /**
+   * THE STREAMING ANSWER MUST NOT OVERFLOW THE FIXED-HEIGHT FRAME (2.6.F Step 6h, Sonnet review).
+   *
+   * The alt screen's root Box is `height: rows`, and ink clips the frame there. An unbounded busy line therefore does
+   * not scroll — it COLLIDES with its siblings inside the box. Reproduced at 80x24 with a 900-character answer, well
+   * under `MAX_LIVE_TOKEN_CHARS = 4000`, i.e. an ordinary response: the "Esc to stop" hint and the streamed text landed
+   * on the SAME frame row, overwriting each other.
+   */
+  describe('ChatApp (alt screen) — the live streaming region is bounded', () => {
+    const streaming = (store: ChatStoreController, chars: number): void => {
+      store.apply({
+        type: 'session:turn_started',
+        sessionId: 's',
+        sequenceNumber: 1,
+        timestamp: '2026-01-01T00:00:00.000Z',
+      });
+      store.apply({
+        type: 'agent:token',
+        sessionId: 's',
+        sequenceNumber: 2,
+        timestamp: '2026-01-01T00:00:01.000Z',
+        token: 'y'.repeat(chars),
+        model: 'm',
+        nodeId: 'n',
+      });
+      store.flush();
+    };
+
+    it('the "Esc to stop" hint never shares a row with the streamed text', async () => {
+      const store = seed(30);
+      const h = render(chatApp(store));
+      setWindowSize(h.stdout, 80, 24);
+      await settleFrames();
+      streaming(store, 2000);
+      await settleFrames();
+
+      const rows = (h.lastFrame() ?? '').split('\n');
+      const hintRow = rows.find((r) => r.includes('Esc to stop'));
+      expect(hintRow).toBeDefined();
+      expect(hintRow?.trim()).toBe('Esc to stop'); // …and nothing else on it
+      expect(rows.length).toBeLessThanOrEqual(24);
+    });
+
+    it('the streamed content occupies at most a THIRD of the terminal, and shows the newest text', async () => {
+      const store = seed(30);
+      const h = render(chatApp(store));
+      setWindowSize(h.stdout, 80, 24);
+      await settleFrames();
+      streaming(store, 2000);
+      await settleFrames();
+
+      const rows = (h.lastFrame() ?? '').split('\n');
+      const contentRows = rows.filter((r) => r.includes('yyyy'));
+      expect(contentRows.length).toBeLessThanOrEqual(liveAnswerRowBudget(24));
+      expect(rows.some((r) => r.includes('…'))).toBe(true); // the tail is marked
+    });
+
+    it('the transcript viewport still renders — the live region does not swallow the whole frame', async () => {
+      const store = seed(30);
+      const h = render(chatApp(store));
+      setWindowSize(h.stdout, 80, 24);
+      await settleFrames();
+      streaming(store, 2000);
+      await settleFrames();
+      expect(h.lastFrame() ?? '').toContain('MSG29'); // the newest transcript entry is still visible
+    });
+  });
+});
+
+/**
+ * The ADR-0068 §e suspend PORT (2.6.F Step 5d) — the repo's first React→core capability bridge. `suspendTerminal`
+ * exists only inside a mounted ink tree, while the slash dispatch that runs `/scrollback` and `/edit` lives outside
+ * it. These pin both halves: the port is filled while mounted and EMPTIED on unmount — the latter is what makes a
+ * hatch say "needs an interactive terminal" between a `/clear` swap's unmount and the next mount, instead of calling
+ * into a dead ink instance.
+ */
+describe('ChatApp — the suspend port (ADR-0068 §e)', () => {
+  it('attaches a WORKING suspendTerminal while mounted, and detaches on unmount', async () => {
+    const port = createSuspendPort();
+    expect(port.current()).toBeUndefined();
+
+    const h = render(
+      <ChatApp
+        store={createChatStore(false)}
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+        suspendPort={port}
+      />,
+    );
+    await waitFor(() => port.current() !== undefined);
+    const suspend = port.current();
+    expect(suspend).toBeDefined();
+
+    // It must be ink's REAL suspendTerminal, not a stub: drive a callback through it. ink 7 hands the method out
+    // UNBOUND off its prototype, so this also pins that our method-call form never loses `this`.
+    let ran = false;
+    await suspend?.(() => {
+      ran = true;
+      return Promise.resolve();
+    });
+    expect(ran).toBe(true);
+
+    h.unmount();
+    await settleFrames();
+    expect(port.current()).toBeUndefined(); // a dead ink instance is never left reachable
+  });
+
+  it('mounts fine with NO port (a driver/test that wires none) — the hatches degrade, nothing throws', async () => {
+    const h = render(
+      <ChatApp
+        store={createChatStore(false)}
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+      />,
+    );
+    await settleFrames();
+    expect(h.lastFrame()).toBeDefined();
+  });
+});
+
+/**
+ * Mouse SELECTION + copy-on-select (2.6.F Step 6), driven through REAL SGR bytes. The unit tests pin the parser, the
+ * reducer, `cellAt` and the row splitting in isolation; this pins the WIRING — that a press/drag/release on the alt
+ * screen reaches the reducer with the viewport's measured geometry, and that the release hands the clipboard exactly
+ * the text the highlight covered.
+ */
+describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
+  /** Three one-row transcript lines: notices render as their bare text, so the wrapped rows are exactly these. */
+  const seedThree = (): ChatStoreController => {
+    const store = createChatStore(false);
+    store.notice('AAAA');
+    store.notice('BBBB');
+    store.notice('CCCC');
+    return store;
+  };
+
+  const mountWithClipboard = (
+    store: ChatStoreController,
+    copied: string[],
+  ): ReturnType<typeof render> =>
+    render(
+      <ChatApp
+        store={store}
+        alternateScreen
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+        clipboard={(text) => {
+          copied.push(text);
+          return { kind: 'written', characters: text.length };
+        }}
+      />,
+    );
+
+  it('a DRAG across the first row copies exactly the cells it covered', async () => {
+    const copied: string[] = [];
+    const h = mountWithClipboard(seedThree(), copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
+
+    h.stdin.write('\x1b[<0;1;1M'); // press at terminal row 1, column 1 ⇒ line 0, column 0
+    await settleFrames();
+    h.stdin.write('\x1b[<32;3;1M'); // drag to column 3 ⇒ column 2 (inclusive)
+    await settleFrames();
+    h.stdin.write('\x1b[<0;3;1m'); // release ⇒ copy
+    await settleFrames();
+
+    expect(copied).toEqual(['AAA']); // columns 0..2 of 'AAAA'
+  });
+
+  it('a MULTI-ROW drag copies first-partial + last-partial, newline-joined', async () => {
+    const copied: string[] = [];
+    const h = mountWithClipboard(seedThree(), copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('CCCC'));
+
+    h.stdin.write('\x1b[<0;3;1M'); // press line 0, column 2
+    await settleFrames();
+    h.stdin.write('\x1b[<32;2;3M'); // drag to line 2 ('CCCC'), column 1
+    await settleFrames();
+    h.stdin.write('\x1b[<0;2;3m');
+    await settleFrames();
+
+    // First row from column 2 to its end, the middle row whole, the last row to its INCLUSIVE end column.
+    expect(copied).toEqual(['AA\nBBBB\nCC']);
+  });
+
+  it('a plain CLICK copies NOTHING — it only clears any prior highlight', async () => {
+    const copied: string[] = [];
+    const h = mountWithClipboard(seedThree(), copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
+
+    h.stdin.write('\x1b[<0;2;2M');
+    await settleFrames();
+    h.stdin.write('\x1b[<0;2;2m'); // release at the same cell
+    await settleFrames();
+
+    expect(copied).toEqual([]);
+  });
+
+  it('the WHEEL still scrolls while drag reporting is on, and never starts a selection', async () => {
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.notice(`row-${i}`);
+    const h = mountWithClipboard(store, copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('row-59'));
+
+    h.stdin.write('\x1b[<64;5;5M'); // wheel up
+    await settleFrames();
+    expect(h.lastFrame() ?? '').not.toContain('row-59'); // the tail scrolled away
+    h.stdin.write('\x1b[<64;5;5m'); // a wheel "release" is `other`/release — must not copy
+    await settleFrames();
+    expect(copied).toEqual([]);
+  });
+
+  it('after SCROLLING, a drag copies the line now shown on that row — not line 0', async () => {
+    // The reason `offset` is in the viewport facts at all. A break that hardcodes `offset: 0` passes every test that
+    // never scrolls first, and then silently copies the wrong lines for any user who did. The drag stays on an INNER
+    // row: row 1 is the edge-scroll zone (see the auto-scroll tests below), and this test is about `offset`, not that.
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    for (let i = 0; i < 60; i += 1) store.notice(`row-${String(i).padStart(2, '0')}`);
+    const h = mountWithClipboard(store, copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('row-59'));
+
+    for (let i = 0; i < 4; i += 1) {
+      h.stdin.write('\x1b[<64;5;5M'); // wheel up: leave the tail
+      await settleFrames();
+    }
+    const thirdRow = (h.lastFrame() ?? '').split('\n')[2]?.trim();
+    expect(thirdRow).toMatch(/^row-\d\d$/);
+    expect(thirdRow).not.toBe('row-02'); // we really did scroll away from the head
+
+    h.stdin.write('\x1b[<0;1;3M'); // press the THIRD viewport row (terminal row 3)
+    await settleFrames();
+    h.stdin.write('\x1b[<32;99;3M'); // drag past its right edge ⇒ the whole row
+    await settleFrames();
+    h.stdin.write('\x1b[<0;99;3m');
+    await settleFrames();
+
+    expect(copied).toEqual([thirdRow]); // exactly the line the user could SEE on that row
+  });
+
+  it('reduces against the LIVE transcript, not the last measured one (an append between commits)', async () => {
+    // `onMeasure` lags by up to a commit. A drag on a row that only exists because of a just-appended line must still
+    // select it — otherwise the reducer clamps to the stale last line and copies the row above.
+    const copied: string[] = [];
+    const store = seedThree();
+    const h = mountWithClipboard(store, copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('CCCC'));
+
+    store.notice('DDDD'); // the ref still says 3 lines; the store says 4
+    h.stdin.write('\x1b[<0;1;4M'); // press terminal row 4 ⇒ the new line
+    h.stdin.write('\x1b[<32;4;4M');
+    h.stdin.write('\x1b[<0;4;4m');
+    await settleFrames();
+
+    expect(copied).toEqual(['DDDD']); // NOT 'CCCC' — the stale clamp would have landed one row up
+  });
+
+  it('selects the WRAPPED visual rows, not the raw entries — a dragged second row is the line’s second half', async () => {
+    // The viewport shows WRAPPED rows; the clipboard must index the same array. Copying from the raw transcript
+    // entries instead passes every test whose lines are short enough never to wrap — and then mis-selects for anyone
+    // whose model wrote a paragraph.
+    const copied: string[] = [];
+    const store = createChatStore(false);
+    const long = 'x'.repeat(100) + 'TAIL'; // cols = 100 in the harness ⇒ wraps to two rows
+    store.notice(long);
+    const h = mountWithClipboard(store, copied);
+    await waitFor(() => (h.lastFrame() ?? '').includes('TAIL'));
+
+    h.stdin.write('\x1b[<0;1;2M'); // press the SECOND wrapped row
+    await settleFrames();
+    h.stdin.write('\x1b[<32;99;2M'); // drag to its end
+    await settleFrames();
+    h.stdin.write('\x1b[<0;99;2m');
+    await settleFrames();
+
+    expect(copied).toEqual(['TAIL']); // the continuation row, not the (nonexistent) second entry
+  });
+
+  it('mounts without a clipboard port: selection still highlights, copy is inert (no throw)', async () => {
+    const h = render(
+      <ChatApp
+        store={seedThree()}
+        alternateScreen
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+      />,
+    );
+    await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
+    h.stdin.write('\x1b[<0;1;1M');
+    await settleFrames();
+    h.stdin.write('\x1b[<32;3;1M');
+    await settleFrames();
+    h.stdin.write('\x1b[<0;3;1m');
+    await settleFrames();
+    expect(h.lastFrame()).toBeDefined();
+  });
+
+  /**
+   * THE COPY-ON-SELECT CONFIRMATION TOAST (2.6.F Step 6i). Success was silent because the only notice channel —
+   * `store.note` — appends a transcript entry that re-wraps and SHIFTS the lines just selected. The toast renders
+   * OUTSIDE the transcript, so it confirms the copy without disturbing the selection.
+   */
+  describe('the "Copied" toast', () => {
+    /** Drive a press-drag-release that copies, and return the frame right after. */
+    const copyOnce = async (h: ReturnType<typeof render>): Promise<void> => {
+      await waitFor(() => (h.lastFrame() ?? '').includes('AAAA'));
+      h.stdin.write('\x1b[<0;1;1M');
+      await settleFrames();
+      h.stdin.write('\x1b[<32;3;1M');
+      await settleFrames();
+      h.stdin.write('\x1b[<0;3;1m');
+      await settleFrames();
+    };
+
+    it('appears after a copy, ABOVE the footer, and does not touch the transcript', async () => {
+      const copied: string[] = [];
+      const h = mountWithClipboard(seedThree(), copied);
+      await copyOnce(h);
+      expect(copied).toHaveLength(1); // the write happened
+      const rows = (h.lastFrame() ?? '').split('\n');
+      const toastRow = rows.findIndex((r) => r.includes('Copied'));
+      const footerRow = rows.findIndex((r) => r.includes('turns'));
+      expect(toastRow).toBeGreaterThanOrEqual(0);
+      expect(toastRow).toBeLessThan(footerRow); // the toast sits just above the status footer
+      // The transcript entries are unchanged — the toast is not a transcript line.
+      expect(rows.some((r) => r.includes('AAAA'))).toBe(true);
+    });
+
+    it('auto-dismisses after COPIED_TOAST_MS', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        const copied: string[] = [];
+        const h = mountWithClipboard(seedThree(), copied);
+        await copyOnce(h);
+        expect(h.lastFrame() ?? '').toContain('Copied');
+        await vi.advanceTimersByTimeAsync(COPIED_TOAST_MS + 50);
+        await settleFrames();
+        expect(h.lastFrame() ?? '').not.toContain('Copied');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('a TOO-LARGE selection shows the transcript note, NOT the toast', async () => {
+      const h = render(
+        <ChatApp
+          store={seedThree()}
+          alternateScreen
+          onSubmit={async () => {}}
+          shouldStop={() => false}
+          onExit={() => {}}
+          onError={() => {}}
+          onModeChange={() => {}}
+          clipboard={() => ({ kind: 'too-large', base64Length: 120_000, limit: 74_994 })}
+        />,
+      );
+      await copyOnce(h);
+      const frame = h.lastFrame() ?? '';
+      expect(frame).toContain('too large'); // the note
+      expect(frame).not.toContain('✓ Copied'); // …not the success toast
+    });
+
+    it('WITHOUT a clipboard port (copy-on-select off) there is no toast', async () => {
+      const h = render(
+        <ChatApp
+          store={seedThree()}
+          alternateScreen
+          onSubmit={async () => {}}
+          shouldStop={() => false}
+          onExit={() => {}}
+          onError={() => {}}
+          onModeChange={() => {}}
+        />,
+      );
+      await copyOnce(h);
+      expect(h.lastFrame() ?? '').not.toContain('Copied');
+    });
   });
 });

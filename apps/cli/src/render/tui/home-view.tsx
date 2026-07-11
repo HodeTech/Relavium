@@ -2,6 +2,7 @@ import { Box, Text } from 'ink';
 import { type ReactElement } from 'react';
 
 import type { HomeSnapshot } from '../../home/home-store.js';
+import { bannerLines, shouldShowBanner } from './banner.js';
 import type { EditorState } from './chat-input.js';
 import { sanitizeInline } from './chat-projection.js';
 import type { StatusColor } from './format.js';
@@ -48,6 +49,8 @@ interface HomeViewProps {
   readonly color: boolean;
   /** When the `/` palette is open it owns the bottom of the view, so the prompt + footer hint are suppressed (2.5.C S3c). */
   readonly paletteOpen?: boolean;
+  /** `[preferences].show_banner` (2.6.F Step 5g). `undefined` ⇒ `shouldShowBanner`'s empty-Home rule. */
+  readonly showBanner?: boolean | undefined;
 }
 
 /** A glanceable strip row — a stable `key` (the row's durable id, not its array index) + the rendered line. */
@@ -127,9 +130,30 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
 
   return (
     <Box flexDirection="column">
-      <Text {...colorProps(color, 'cyan')} bold wrap="truncate-end">
-        relavium
-      </Text>
+      {shouldShowBanner({
+        configShowBanner: props.showBanner,
+        isEmpty: snapshot.isEmpty,
+        rows,
+      }) ? (
+        // The banner REPLACES the plain heading rather than sitting above it, so nothing shifts when it is off.
+        // `color === false` covers both `NO_COLOR` and `--no-color`, and takes the ASCII glyphs with it (ADR-0068).
+        <Box flexDirection="column">
+          {bannerLines(cols, !color).map((line) => (
+            <Text
+              key={line.id}
+              {...(line.kind === 'tagline' ? dimProps(color) : colorProps(color, 'cyan'))}
+              {...(line.kind === 'wordmark' ? { bold: true } : {})}
+              wrap="truncate-end"
+            >
+              {line.text}
+            </Text>
+          ))}
+        </Box>
+      ) : (
+        <Text {...colorProps(color, 'cyan')} bold wrap="truncate-end">
+          relavium
+        </Text>
+      )}
 
       {snapshot.isEmpty ? (
         <Box flexDirection="column" marginLeft={2} marginTop={1}>

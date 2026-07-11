@@ -69,6 +69,22 @@ export interface ReplCommandContext {
    *  ctx handler runs ONLY on a non-interactive chat driver (plain/`--json`), where it surfaces an actionable hint;
    *  the bare Home wires the real picker. */
   readonly openModels: () => void | Promise<void>;
+  /**
+   * `/scrollback` (2.6.F Step 5d, [ADR-0068](../../../../docs/decisions/0068-full-screen-tui-renderer-ink7-harness.md) §e)
+   * — dump the transcript into the terminal's NATIVE scrollback, so the user can scroll, search, select and copy it
+   * with the emulator's own tools. The alternate screen removes all of those (no scrollback; mouse reporting captures
+   * click-drag), which is why this exists. Unlike `/models` it opens no overlay — it suspends the renderer via ink's
+   * `suspendTerminal`, so BOTH interactive surfaces reach it through this ONE capability, with no render-layer
+   * interception. A plain / `--json` driver (no ink tree) surfaces an actionable hint instead. Chat-only: the bare
+   * Home has no transcript.
+   */
+  readonly dumpScrollback: () => void | Promise<void>;
+  /** `/edit` (2.6.F Step 5d, ADR-0068 §e) — open the transcript READ-ONLY in `$EDITOR` for search + copy, via ink's
+   *  `suspendTerminal`. Edits are never read back. Same surface story as {@link dumpScrollback}. */
+  readonly editTranscript: () => void | Promise<void>;
+  /** `/copy` (2.6.F Step 6e) — put the WHOLE transcript on the system clipboard over OSC 52. The UNWRAPPED document,
+   *  unlike a mouse selection's visual rows. Suspends nothing; a single control write. */
+  readonly copyTranscript: () => void | Promise<void>;
 }
 
 /** A flag a {@link ReplCommand} accepts after its name (e.g. `/doctor --deep`). Flags only — the curated set has
@@ -257,6 +273,38 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
     // overlay; a plain/`--json` chat (no overlay) falls through to `openModels`, which surfaces an actionable hint.
     run: (ctx) => ctx.openModels(),
     availableIn: ['home', 'chat'],
+  },
+  {
+    name: 'scrollback',
+    label: 'Scrollback',
+    description: 'Dump the transcript into the terminal’s native scrollback (to copy or search).',
+    // `read` in the forward taxonomy: it prints, and changes nothing.
+    effect: 'read',
+    // Chat-only — the BARE Home has no transcript to dump. It reaches the live chat on both surfaces (standalone and
+    // in-Home) through the ONE `ReplCommandContext` capability: unlike `/models` it opens no React overlay, so no
+    // render-layer interception is needed and the two surfaces cannot drift (ADR-0068 §e).
+    run: (ctx) => ctx.dumpScrollback(),
+    availableIn: ['chat'],
+  },
+  {
+    name: 'edit',
+    label: 'Edit',
+    description: 'Open the transcript in $EDITOR (read-only — to search or copy).',
+    // `read`: the editor gets a throwaway copy; edits are never read back into the session.
+    effect: 'read',
+    run: (ctx) => ctx.editTranscript(),
+    availableIn: ['chat'],
+  },
+  {
+    name: 'copy',
+    label: 'Copy',
+    description: 'Copy the whole transcript to the system clipboard (OSC 52).',
+    // `read`: it sends bytes to the terminal, and changes nothing in the session.
+    effect: 'read',
+    // Chat-only — the BARE Home has no transcript. Like `/scrollback` and `/edit` it opens no overlay, so the ONE
+    // capability reaches both surfaces and they cannot drift (ADR-0068 §e).
+    run: (ctx) => ctx.copyTranscript(),
+    availableIn: ['chat'],
   },
 ];
 

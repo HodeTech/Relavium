@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { finalizeInkExit } from './chat-ink.js';
+import { finalizeInkExit, emitIntro } from './chat-ink.js';
 
 /**
  * `finalizeInkExit` unit tests (2.6.F Step 4a, refined at Step 4b-3, ADR-0068 §c) — the teardown-then-outcome
@@ -46,5 +46,53 @@ describe('finalizeInkExit — teardown-before-outcome order (ADR-0068 §c)', () 
       outcome: () => ({ kind: 'clear' }), // a /clear swap carries no summaryText
     });
     expect(outcome).toEqual({ kind: 'clear' });
+  });
+});
+
+/**
+ * WHERE the intro goes (2.6.F Step 6g, whole-phase Opus review). The alt buffer has no scrollback and ink's first
+ * frame is `height: rows`, so a pre-mount `writeOut` is painted over and gone. `/clear`'s notice carries
+ * `relavium chat-resume <id>` — the ONLY pointer back to the conversation it just ended — and the default renderer
+ * was throwing it away.
+ */
+describe('emitIntro — the renderer decides where the intro survives', () => {
+  const ports = (): {
+    notices: string[];
+    outs: string[];
+    notice: (t: string) => void;
+    writeOut: (t: string) => void;
+  } => {
+    const notices: string[] = [];
+    const outs: string[] = [];
+    return { notices, outs, notice: (t) => notices.push(t), writeOut: (t) => outs.push(t) };
+  };
+
+  it('FULL-SCREEN: into the transcript, where the viewport keeps it', () => {
+    const p = ports();
+    emitIntro(
+      'Started a fresh conversation. Resume the old one with `relavium chat-resume id-0`.',
+      true,
+      p,
+    );
+    expect(p.notices).toEqual([
+      'Started a fresh conversation. Resume the old one with `relavium chat-resume id-0`.',
+    ]);
+    expect(p.outs).toEqual([]); // never a pre-mount write: the alt buffer erases it
+  });
+
+  it('INLINE: printed above the live region, with its newline — byte-identical to before', () => {
+    const p = ports();
+    emitIntro('Resumed session id-0 (3 turns).', false, p);
+    expect(p.outs).toEqual(['Resumed session id-0 (3 turns).\n']);
+    expect(p.notices).toEqual([]);
+  });
+
+  it('a FRESH session has no intro, and neither sink is touched', () => {
+    for (const alt of [true, false]) {
+      const p = ports();
+      emitIntro(undefined, alt, p);
+      expect(p.notices).toEqual([]);
+      expect(p.outs).toEqual([]);
+    }
   });
 });

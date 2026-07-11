@@ -16,9 +16,15 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
-import { DISABLE_MOUSE } from '../render/alt-screen.js';
+import { DISABLE_MOUSE, ENABLE_MOUSE } from '../render/alt-screen.js';
+import type { SuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
-import { driveHome, type HomeDeps } from './drive-home.js';
+import {
+  defaultSubscribeProcessExit,
+  defaultSubscribeSignals,
+  driveHome,
+  type HomeDeps,
+} from './drive-home.js';
 
 // Regression for the `provider_auth` bug: the Home built an ENV-ONLY key resolver, so a key stored in the OS
 // keychain (the normal `relavium provider add` path) was invisible while `relavium chat` (keychain-wired) worked.
@@ -107,7 +113,15 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
   function makeDeps(
     capture: (props: RootAppProps) => void,
     overrides: Partial<HomeDeps> = {},
-  ): { deps: HomeDeps; unmount: ReturnType<typeof vi.fn>; writeControl: ReturnType<typeof vi.fn> } {
+  ): {
+    deps: HomeDeps;
+    unmount: ReturnType<typeof vi.fn>;
+    writeControl: ReturnType<typeof vi.fn>;
+    signalHandlers: ((signo: number) => void)[];
+    exitHandlers: (() => void)[];
+  } {
+    const signalHandlers: ((signo: number) => void)[] = [];
+    const exitHandlers: (() => void)[] = [];
     const opened: OpenedSessionStore = {
       store: createSessionStore(client.db),
       db: client.db,
@@ -129,7 +143,14 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       },
       getSize: () => ({ cols: 120, rows: 40 }),
       subscribeResize: () => () => undefined,
-      subscribeSignals: () => () => undefined, // no real process listeners in the default tests
+      subscribeSignals: (onSignal) => {
+        signalHandlers.push(onSignal);
+        return () => undefined;
+      }, // no real process listeners in the default tests
+      subscribeProcessExit: (onExit) => {
+        exitHandlers.push(onExit);
+        return () => undefined;
+      },
       writeControl,
       exit: () => undefined,
       // A cancel-immediately onboarding prompter by DEFAULT, so a key-less resolver (e.g. the real keychain-backed
@@ -138,7 +159,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       onboardingPrompter: CANCEL_ONBOARDING,
       ...overrides,
     };
-    return { deps, unmount, writeControl };
+    return { deps, unmount, writeControl, signalHandlers, exitHandlers };
   }
 
   it('an init fault after the db is open (a throwing render/mount) still closes the db once', async () => {
@@ -192,6 +213,48 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const controls = writeControl.mock.calls.map((c) => c[0] as string);
     expect(controls).toContain(DISABLE_BRACKETED_PASTE);
     expect(controls).toContain(DISABLE_MOUSE);
+  });
+
+  it('MOUSE: the capture PORT exists by default, and `--no-mouse` withholds it (Step 5e/6g, ADR-0068 §e)', async () => {
+    // The opt-out IS the safety mechanism this feature exists for. The unit tests pin `resolveMouseMode` in isolation;
+    // this pins the ASSEMBLY — `deps.global.noMouse` → `resolveMouseMode` → whether `RootApp` gets a capture port at
+    // all. A mis-threaded field would still be `boolean | undefined`, compile, and leave every test green
+    // (Step-5e Opus review).
+    //
+    // Since Step 6g the port is what arms the mouse, not a mount-time write: capture belongs to the in-Home CHAT, and
+    // the Home landing keeps the emulator's own click-drag selection.
+    const exitCleanly = async (
+      captured: () => RootAppProps | undefined,
+      drivePromise: Promise<number>,
+    ): Promise<void> => {
+      const props = captured();
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      props.controller.handleKey('c', CTRL_C);
+      await drivePromise;
+    };
+
+    // (a) the phase default hands `RootApp` a port, and NOTHING is captured until it is called.
+    let onProps: RootAppProps | undefined;
+    const on = makeDeps((p) => (onProps = p));
+    const onDrive = driveHome(on.deps);
+    expect(onProps?.setMouseCapture).toBeTypeOf('function');
+    expect(on.writeControl.mock.calls.map((c) => c[0] as string)).not.toContain(ENABLE_MOUSE);
+
+    onProps?.setMouseCapture?.(true); // the chat takes the screen
+    expect(on.writeControl.mock.calls.map((c) => c[0] as string)).toContain(ENABLE_MOUSE);
+    onProps?.setMouseCapture?.(false); // …and gives it back
+    expect(on.writeControl.mock.calls.map((c) => c[0] as string)).toContain(DISABLE_MOUSE);
+    await exitCleanly(() => onProps, onDrive);
+
+    // (b) `--no-mouse` withholds the port entirely — there is nothing to arm, however the Home is driven.
+    let offProps: RootAppProps | undefined;
+    const off = makeDeps((p) => (offProps = p), { global: { ...global, noMouse: true } });
+    const offDrive = driveHome(off.deps);
+    expect(offProps?.setMouseCapture).toBeUndefined();
+    await exitCleanly(() => offProps, offDrive);
+    const controls = off.writeControl.mock.calls.map((c) => c[0] as string);
+    expect(controls).not.toContain(ENABLE_MOUSE);
+    expect(controls).toContain(DISABLE_MOUSE); // …and the teardown still disables, unconditionally
   });
 
   it('resolves the render mode into ink’s alternateScreen: default ON (4b-3), config opts out, --no-alt-screen wins (ADR-0068 §e)', async () => {
@@ -534,5 +597,326 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     void driveHome(deps); // the provider wiring runs synchronously before the ink mount
     await flush();
     expect(resolverKeychainArg.value).toBe(keychainSentinel); // the resolver received the keychain, not env-only
+  });
+
+  /**
+   * The terminal-restore NETS (2.6.F Step 6f, Opus review). Mouse reporting is a mode we set on the USER'S terminal,
+   * and every path out of the process must clear it — otherwise the shell they return to echoes an SGR report on every
+   * click and drag. `relavium chat` has covered SIGTERM/SIGHUP/SIGQUIT plus a `process.on('exit')` net since Step
+   * 4b-3; the bare Home listened only for SIGINT and SIGTERM, so closing the terminal window (SIGHUP) stranded
+   * DECSET 1002+1006.
+   *
+   * These tests never await `driveHome`: on a signal it hands off to `process.exit`, which the injected `exit` mock
+   * does not perform, so the drive promise stays pending by design. The restore is SYNCHRONOUS — that is the point —
+   * so every assertion below reads `writeControl` the moment the handler returns.
+   */
+  /**
+   * `[preferences].copy_on_select` (2.6.F Step 6e). The switch reaches the ink tree as the PRESENCE of the `clipboard`
+   * prop: absent ⇒ a released drag still highlights and never touches the system clipboard. `/copy` binds its own
+   * clipboard through the hatch ports, so it keeps working either way.
+   */
+  /**
+   * THE CAPS-LIFT, END TO END (2.6.F Step 6g). `session-view-model.test.ts` pins the reducer; a break that makes
+   * `transcriptBoundFor` always return the inline bound stays GREEN there, because the unit tests inject the bound
+   * themselves. This drives the REAL `startChat` and asserts what the user's viewport would actually hold.
+   */
+  describe('a long assistant answer survives into the full-screen transcript', () => {
+    const LONG = 'X'.repeat(10_000);
+
+    const assistantText = async (over: Partial<HomeDeps>): Promise<string> => {
+      let captured: RootAppProps | undefined;
+      const { deps } = makeDeps((p) => (captured = p), {
+        providers: scriptedResolver([textTurn(LONG)]),
+        ...over,
+      });
+      const drivePromise = driveHome(deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+
+      type(props, 'hello');
+      props.controller.handleKey('', ENTER); // submit ⇒ build + first turn
+      await flush();
+      await flush();
+      const transcript =
+        props.controller.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
+      const assistant = transcript.find((e) => e.role === 'assistant');
+
+      props.controller.handleKey('c', CTRL_C); // chat Ctrl-C ⇒ /cancel ⇒ back to Home
+      await flush();
+      props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
+      await drivePromise;
+      return assistant?.text ?? '';
+    };
+
+    it('the alt-screen Home keeps all 10 000 characters', async () => {
+      expect(await assistantText({})).toHaveLength(10_000);
+    });
+
+    it('`--no-alt-screen` keeps the historical trailing tail — the inline renderer has no viewport', async () => {
+      const text = await assistantText({ global: { ...global, noAltScreen: true } });
+      expect(text).toHaveLength(4001);
+      expect(text.startsWith('…')).toBe(true);
+    });
+  });
+
+  /**
+   * BUDGET WARNINGS GO INTO THE TRANSCRIPT, NEVER RAW STDERR (2.6.F Step 6g, whole-phase Opus review).
+   * `relavium chat` learned this in the Step-4b-3 Sonnet fold: on the alt screen a raw `writeErr` is painted over by
+   * ink's next frame, so the user is told they are near their spending cap on a line that lives for one frame.
+   * `driveHome` was still writing raw.
+   */
+  describe('a budget warning reaches the in-Home chat’s transcript', () => {
+    it('routes through the view store, and never to stderr', async () => {
+      let captured: RootAppProps | undefined;
+      let warn: ((w: { thresholdPct: number; limitMicrocents: number }) => void) | undefined;
+      const errs: string[] = [];
+      const made = makeDeps((p) => (captured = p), {
+        io: { ...io, writeErr: (t: string) => errs.push(t) },
+        buildSession: (async (opts: { onBudgetWarning?: typeof warn }) => {
+          warn = opts.onBudgetWarning;
+          return (await buildChatSession(opts as never)) as never;
+        }) as never,
+      });
+      const drivePromise = driveHome(made.deps);
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+
+      type(props, 'hello');
+      props.controller.handleKey('', ENTER);
+      await flush();
+      await flush();
+      expect(warn).toBeTypeOf('function'); // driveHome really passed one
+
+      warn?.({ thresholdPct: 90, limitMicrocents: 1000 });
+      const transcript =
+        props.controller.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
+      expect(transcript.some((e) => (e.text ?? '').includes('budget warning'))).toBe(true);
+      expect(errs.join('')).not.toContain('budget warning');
+
+      props.controller.handleKey('c', CTRL_C);
+      await flush();
+      props.controller.handleKey('c', CTRL_C);
+      await drivePromise;
+    });
+  });
+
+  describe('copy-on-select', () => {
+    const captureProps = async (over: Partial<HomeDeps>): Promise<RootAppProps> => {
+      let captured: RootAppProps | undefined;
+      const made = makeDeps((p) => (captured = p), over);
+      const drivePromise = driveHome({ ...made.deps, ...over });
+      const props = captured;
+      if (props === undefined) throw new Error('the injected render was never invoked');
+      props.controller.handleKey('c', CTRL_C);
+      await drivePromise;
+      return props;
+    };
+
+    it('is ON by default: the ink tree gets a clipboard', async () => {
+      const props = await captureProps({});
+      expect(props.clipboard).toBeTypeOf('function');
+    });
+
+    it('`copy_on_select = false` withholds the clipboard from the ink tree', async () => {
+      const cfg = join(cwd, 'copy-off.toml');
+      writeFileSync(cfg, '[preferences]\ncopy_on_select = false\n');
+      const props = await captureProps({ global: { ...global, configPath: cfg } });
+      expect(props.clipboard).toBeUndefined();
+    });
+
+    it('`--no-mouse` withholds it too — there is no selection to copy', async () => {
+      // Structural, not a second check: `resolveCopyOnSelect` takes the ALREADY-RESOLVED mouse decision.
+      const props = await captureProps({ global: { ...global, noMouse: true } });
+      expect(props.clipboard).toBeUndefined();
+    });
+
+    it('`copy_on_select = true` with `--no-mouse` STILL withholds it', async () => {
+      const cfg = join(cwd, 'copy-on-nomouse.toml');
+      writeFileSync(cfg, '[preferences]\ncopy_on_select = true\n');
+      const props = await captureProps({ global: { ...global, configPath: cfg, noMouse: true } });
+      expect(props.clipboard).toBeUndefined();
+    });
+  });
+
+  /**
+   * A KEYBOARD Ctrl-C DURING A HATCH (2.6.F Step 6g, whole-phase Opus review — rated critical by three lenses).
+   *
+   * A `/scrollback` or `/edit` suspension turns raw mode OFF, so the kernel resumes translating Ctrl-C into a real
+   * SIGINT. On `relavium chat` that signal is DROPPED (`onSigintGated`, since Step 5d) and the hatch's own listener
+   * resumes the renderer. The Home never had that gate: the signal tore the whole session down behind the
+   * suspension's back, whose `reclaim` then re-emitted ENABLE_MOUSE on the way out — leaving DECSET 1002+1006 live
+   * on the user's shell, where every subsequent click types escape bytes.
+   */
+  describe('a keyboard Ctrl-C during a hatch does not tear the Home down', () => {
+    const drive = (): ReturnType<typeof makeDeps> & {
+      exitProcess: ReturnType<typeof vi.fn>;
+      port: SuspendPort;
+    } => {
+      const exitProcess = vi.fn();
+      let captured: RootAppProps | undefined;
+      const made = makeDeps((p) => (captured = p));
+      void driveHome({ ...made.deps, exit: exitProcess as (code: number) => void }).catch(
+        () => undefined,
+      );
+      const props = captured;
+      if (props?.suspendPort === undefined) throw new Error('driveHome passed no suspend port');
+      // `RootApp` attaches ink's `suspendTerminal` on mount; the INJECTED render does not, so stand in for it.
+      props.suspendPort.attach((callback) => callback());
+      return { ...made, exitProcess, port: props.suspendPort };
+    };
+
+    it('SIGINT while SUSPENDED is dropped — no exit, no terminal restore behind the hatch’s back', async () => {
+      const d = drive();
+      let sawSuspended = false;
+      await d.port.current()?.(() => {
+        sawSuspended = d.port.isSuspended();
+        d.signalHandlers[0]?.(2); // the keyboard Ctrl-C
+        return Promise.resolve();
+      });
+      expect(sawSuspended).toBe(true); // the port really was suspended when the signal arrived
+      expect(d.exitProcess).not.toHaveBeenCalled();
+      expect(d.writeControl.mock.calls.map((c) => c[0] as string)).not.toContain(DISABLE_MOUSE);
+    });
+
+    it('SIGINT when NOT suspended still exits 130 — the cooperative teardown is unchanged', () => {
+      const d = drive();
+      d.signalHandlers[0]?.(2);
+      expect(d.writeControl.mock.calls.map((c) => c[0] as string)).toContain(DISABLE_MOUSE);
+    });
+
+    it.each([
+      ['SIGTERM', 15],
+      ['SIGHUP', 1],
+      ['SIGQUIT', 3],
+    ])(
+      'an EXTERNAL %s tears down even while suspended — only SIGINT is the hatch’s',
+      async (_n, signo) => {
+        const d = drive();
+        await d.port.current()?.(() => {
+          d.signalHandlers[0]?.(signo);
+          return Promise.resolve();
+        });
+        expect(d.writeControl.mock.calls.map((c) => c[0] as string)).toContain(DISABLE_MOUSE);
+      },
+    );
+  });
+
+  describe('the terminal is restored on EVERY termination path', () => {
+    const drive = (): ReturnType<typeof makeDeps> & { exitProcess: ReturnType<typeof vi.fn> } => {
+      const exitProcess = vi.fn();
+      let captured: RootAppProps | undefined;
+      const made = makeDeps((p) => (captured = p));
+      const deps: HomeDeps = { ...made.deps, exit: exitProcess as (code: number) => void };
+      void driveHome(deps).catch(() => undefined); // never resolves once a signal fires — see the docstring
+      if (captured === undefined) throw new Error('the injected render was never invoked');
+      return { ...made, exitProcess };
+    };
+
+    const controlsOf = (d: { writeControl: ReturnType<typeof vi.fn> }): string[] =>
+      d.writeControl.mock.calls.map((c) => c[0] as string);
+
+    it.each([
+      ['SIGINT', 2],
+      ['SIGTERM', 15],
+      ['SIGHUP', 1],
+      ['SIGQUIT', 3],
+    ])('%s disables mouse reporting before anything else can run', (_name, signo) => {
+      const d = drive();
+      expect(d.signalHandlers).toHaveLength(1);
+      d.signalHandlers[0]?.(signo);
+      expect(controlsOf(d)).toContain(DISABLE_MOUSE);
+      expect(controlsOf(d)).toContain(DISABLE_BRACKETED_PASTE);
+    });
+
+    it('the PRODUCTION subscriber registers all four signals, and unsubscribing removes them', () => {
+      // The `it.each` above drives an INJECTED subscriber, so it would stay green if `defaultSubscribeSignals` forgot
+      // SIGHUP — which is exactly the bug this step fixes. Pin the real thing against `process` itself.
+      const before = (['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const).map((s_) =>
+        process.listenerCount(s_),
+      );
+      const seen: number[] = [];
+      const off = defaultSubscribeSignals((signo) => seen.push(signo));
+      try {
+        const after = (['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const).map((s_) =>
+          process.listenerCount(s_),
+        );
+        expect(after).toEqual(before.map((n) => n + 1));
+        process.emit('SIGHUP');
+        process.emit('SIGQUIT');
+        expect(seen).toEqual([1, 3]); // the conventional signo, so the exit code is 128+signo
+      } finally {
+        off();
+      }
+      const restored = (['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGQUIT'] as const).map((s_) =>
+        process.listenerCount(s_),
+      );
+      expect(restored).toEqual(before); // no listener outlives the drive
+    });
+
+    it('the PRODUCTION exit net registers on `process` and is removable', () => {
+      const before = process.listenerCount('exit');
+      let fired = 0;
+      const off = defaultSubscribeProcessExit(() => (fired += 1));
+      try {
+        expect(process.listenerCount('exit')).toBe(before + 1);
+        process.emit('exit', 0);
+        expect(fired).toBe(1);
+      } finally {
+        off();
+      }
+      expect(process.listenerCount('exit')).toBe(before);
+    });
+
+    it('a `process.exit()` that never unwinds the finally is still caught by the exit net', () => {
+      const d = drive();
+      expect(d.exitHandlers).toHaveLength(1);
+      d.exitHandlers[0]?.(); // Node's synchronous 'exit' event
+      expect(controlsOf(d)).toContain(DISABLE_MOUSE);
+    });
+
+    it('the restore is IDEMPOTENT — overlapping nets must not write DISABLE_MOUSE twice', () => {
+      const d = drive();
+      d.exitHandlers[0]?.();
+      d.exitHandlers[0]?.();
+      d.signalHandlers[0]?.(1);
+      expect(controlsOf(d).filter((c) => c === DISABLE_MOUSE)).toHaveLength(1);
+      expect(d.unmount).toHaveBeenCalledTimes(1);
+    });
+
+    it('a step that THROWS on one net is RETRIED by the next — the latch is per-op, set only on success', () => {
+      // A transient EIO on a `writeControl` used to trip a single latch and make every later net decline to retry,
+      // stranding mouse reporting on the shell (Step-6h review). `DISABLE_MOUSE` fails on the first exit-net call and
+      // succeeds on the second (the signal handler).
+      const writes: string[] = [];
+      let failMouseOnce = true;
+      let captured: RootAppProps | undefined;
+      const exitHandlers: (() => void)[] = [];
+      const signalHandlers: ((signo: number) => void)[] = [];
+      const made = makeDeps((p) => (captured = p), {
+        writeControl: (seq: string) => {
+          if (seq === DISABLE_MOUSE && failMouseOnce) {
+            failMouseOnce = false;
+            throw new Error('EIO');
+          }
+          writes.push(seq);
+        },
+        subscribeProcessExit: (onExit) => {
+          exitHandlers.push(onExit);
+          return () => undefined;
+        },
+        subscribeSignals: (onSignal) => {
+          signalHandlers.push(onSignal);
+          return () => undefined;
+        },
+        exit: vi.fn() as unknown as (code: number) => void,
+      });
+      void driveHome(made.deps).catch(() => undefined);
+      if (captured === undefined) throw new Error('the injected render was never invoked');
+
+      exitHandlers[0]?.(); // DISABLE_MOUSE throws here — the latch must stay down
+      expect(writes).not.toContain(DISABLE_MOUSE);
+      signalHandlers[0]?.(1); // the retry succeeds
+      expect(writes).toContain(DISABLE_MOUSE);
+    });
   });
 });

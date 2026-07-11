@@ -31,7 +31,12 @@ import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { captureIo, parseNdjson } from '../test-support.js';
-import { ENTER_ALT_SCREEN, EXIT_ALT_SCREEN } from '../render/alt-screen.js';
+import {
+  DISABLE_MOUSE,
+  ENABLE_MOUSE,
+  ENTER_ALT_SCREEN,
+  EXIT_ALT_SCREEN,
+} from '../render/alt-screen.js';
 import {
   chatCommand,
   chatIsInteractive,
@@ -141,6 +146,7 @@ const INERT_HOIST = {
   lifecycle: {
     onProcessExit: (): (() => void) => () => undefined,
     onTerminationSignal: (): (() => void) => () => undefined,
+    onInterrupt: (): (() => void) => () => undefined,
     setRawMode: (): void => undefined,
     exit: (): void => undefined,
   },
@@ -692,6 +698,74 @@ describe('chatCommand', () => {
     expect(recC.writes).toEqual([]);
   });
 
+  it('MOUSE: on by default, and `--no-mouse` reaches the real controller (2.6.F Step 5e, ADR-0068 §e)', async () => {
+    const exitDrive: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    // The opt-out IS the safety mechanism this feature exists for: mouse reporting disables the emulator's native
+    // click-drag selection. The unit tests pin `resolveMouseMode` and the controller in isolation; this pins the
+    // ASSEMBLY — `deps.global.noMouse` → `resolveMouseMode` → `withHoistedAltScreen` → `enter()`. A mis-threaded field
+    // stays `boolean | undefined`-typed and would compile (Step-5e Opus review).
+    const a = deps([], [textTurn('hi')]);
+    const recA = recordingHoist();
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...a.d,
+        ...recA.hoist,
+        io: { ...a.d.io, stdoutIsTty: true },
+        openSessionStore: () => ({ store: a.store, db: client.db, close: () => undefined }),
+        drive: exitDrive,
+      },
+    );
+    expect(recA.writes.join('')).toContain(ENABLE_MOUSE); // the phase default arms the wheel
+
+    const b = deps([], [textTurn('hi')]);
+    const recB = recordingHoist();
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...b.d,
+        ...recB.hoist,
+        io: { ...b.d.io, stdoutIsTty: true },
+        global: { ...globalOptions(cwd), noMouse: true },
+        openSessionStore: () => ({ store: b.store, db: client.db, close: () => undefined }),
+        drive: exitDrive,
+      },
+    );
+    const written = recB.writes.join('');
+    expect(written).not.toContain(ENABLE_MOUSE); // the wheel is never armed…
+    expect(written).toContain(ENTER_ALT_SCREEN); // …while the full-screen renderer is untouched
+    expect(written).toContain(DISABLE_MOUSE); // …and the teardown still disables, unconditionally
+  });
+
+  it('MOUSE: `[preferences].mouse = false` reaches the real controller (the durable opt-out)', async () => {
+    const exitDrive: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    const c = deps([], [textTurn('hi')]);
+    const cfg = join(cwd, 'mouse-off.toml');
+    writeFileSync(cfg, '[preferences]\nmouse = false\n');
+    const rec = recordingHoist();
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...c.d,
+        ...rec.hoist,
+        io: { ...c.d.io, stdoutIsTty: true },
+        global: { ...globalOptions(cwd), configPath: cfg },
+        openSessionStore: () => ({ store: c.store, db: client.db, close: () => undefined }),
+        drive: exitDrive,
+      },
+    );
+    expect(rec.writes.join('')).not.toContain(ENABLE_MOUSE);
+    expect(rec.writes.join('')).toContain(ENTER_ALT_SCREEN);
+  });
+
   it('the [preferences].alt_screen preference SURVIVES a /clear re-drive (Step-4a threading regression, ADR-0068 §e)', async () => {
     // The fabricated-outcome driver bypasses driveInk, so `ctx.altScreen` here is the raw threaded config pref (not
     // the resolved mode) — exactly what pins the wiring: config.altScreen must reach BOTH the initial AND the
@@ -1046,6 +1120,88 @@ describe('chatCommand', () => {
       ),
     ).rejects.toThrow('db open boom');
     expect(closed()).toBe(1); // the pre-loop catch tore the live connection down before rethrowing
+  });
+
+  /**
+   * THE CAPS-LIFT, ON `relavium chat` (2.6.F Step 6h, Sonnet review).
+   *
+   * `drive-home.test.ts` proves it for the Home. It proved NOTHING for this surface: reverting `transcriptBoundFor`
+   * to always return the inline bound — restoring the exact 4 000-character clipping defect ADR-0068 exists to fix —
+   * left 2 062 of 2 063 tests green, the single failure being the Home's. `chat.ts` threads the bound through FOUR
+   * call sites (a fresh session, a resume, a `/clear` rebuild, a `/models` reseat) and none was covered.
+   *
+   * The headless `linesDriver` never subscribes the view store to the session stream (only `driveInk`/`drivePlain`
+   * do), so this drives the REAL store `chatCommand` built — with the REAL bound it was given — through the reducer.
+   */
+  describe('the transcript bound `relavium chat` gives its view store', () => {
+    const LONG = 'X'.repeat(10_000);
+
+    /** Run one turn's worth of events through the store the command created, and return the baked entry. */
+    const bakeLongAnswer = (store: ChatStoreController): string => {
+      store.apply({
+        type: 'session:turn_started',
+        sessionId: 's',
+        sequenceNumber: 1,
+        timestamp: '2026-01-01T00:00:00.000Z',
+      });
+      store.apply({
+        type: 'agent:token',
+        sessionId: 's',
+        sequenceNumber: 2,
+        timestamp: '2026-01-01T00:00:01.000Z',
+        token: LONG,
+        model: 'm',
+        nodeId: 'n',
+      });
+      store.apply({
+        type: 'session:turn_completed',
+        sessionId: 's',
+        sequenceNumber: 3,
+        timestamp: '2026-01-01T00:00:02.000Z',
+        stopReason: 'stop',
+        tokensUsed: { input: 1, output: 1 },
+      });
+      const transcript = store.getSnapshot().state.transcript;
+      return transcript.find((e) => e.role === 'assistant')?.text ?? '';
+    };
+
+    const capturedStore = async (
+      over: Partial<ChatCommandDeps> = {},
+    ): Promise<ChatStoreController> => {
+      let live: ChatStoreController | undefined;
+      const capture: ChatDriver = async (ctx) => {
+        live = ctx.store;
+        ctx.startSession();
+        await ctx.processLine('/exit');
+        return { kind: 'exit' };
+      };
+      const { d } = deps([], []);
+      await chatCommand(
+        { agent: undefined },
+        { ...d, ...INERT_HOIST, io: { ...d.io, stdoutIsTty: true }, drive: capture, ...over },
+      );
+      if (live === undefined) throw new Error('the driver never ran');
+      return live;
+    };
+
+    it('the alt-screen chat keeps all 10 000 characters', async () => {
+      expect(bakeLongAnswer(await capturedStore())).toHaveLength(10_000);
+    });
+
+    it('`--no-alt-screen` keeps the historical trailing tail — the inline renderer has no viewport', async () => {
+      const store = await capturedStore({
+        global: { ...globalOptions(cwd), noAltScreen: true },
+      });
+      const text = bakeLongAnswer(store);
+      expect(text).toHaveLength(4001);
+      expect(text.startsWith('…')).toBe(true);
+    });
+
+    it('a NON-TTY (a pipe / `--json`) also keeps the tail — it never projects a viewport', async () => {
+      const { d } = deps([], []);
+      const store = await capturedStore({ io: { ...d.io, stdoutIsTty: false } });
+      expect(bakeLongAnswer(store)).toHaveLength(4001);
+    });
   });
 });
 

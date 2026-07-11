@@ -157,7 +157,7 @@ perf thresholds for the full-screen frame loop.
 > render-heavy — a per-frame wall-clock budget is notoriously CI-flaky on shared runners, so asserting it now would
 > buy flakiness, not signal. Frame assertions poll (`waitFor`) rather than assume a single macrotask yield, because
 > React 19's commit can be deferred past one yield under parallel-file CPU contention.
-
+>
 > **Amended 2026-07-09 (Step 4a landed).** The alt-screen renderer's **lifecycle substrate** shipped:
 > `resolveRenderMode` (`apps/cli/src/render/render-mode.ts`) resolving `alt | inline` with precedence
 > machine/non-TTY → `--no-alt-screen` flag → `[preferences].alt_screen` → phase default (`DEFAULT_ALT_SCREEN`, the
@@ -171,7 +171,7 @@ perf thresholds for the full-screen frame loop.
 > output**, the **branded banner**, and **mouse-wheel** scroll — after which `DEFAULT_ALT_SCREEN` flips to `true`
 > (alt-on with the `--no-alt-screen` opt-out). Until then, enabling `alt_screen` is a preview (no scrollback, no
 > hatches — see config-spec.md's caveat).
-
+>
 > **Amended 2026-07-09 (Step 4b-1 landed).** The transcript **viewport** shipped for BOTH surfaces (the bare Home +
 > `relavium chat`): ink's `<Static>` is replaced on the alt screen by a `TranscriptViewport` that width-wraps the
 > transcript to display lines (`viewport.ts` `displayWidth`/`wrapText` — the row-measurement §c requires), renders
@@ -184,7 +184,7 @@ perf thresholds for the full-screen frame loop.
 > renderer-injected unbounded transcript + true virtualization) + `DEFAULT_ALT_SCREEN`→`true`. **Deferred to Step 5**:
 > DEC-2026 synchronized output, the branded banner, the `[`/`v` escape hatches, and mouse-wheel. A known 4b-1 limit:
 > a live region taller than the terminal has no scrollback (deferred-tasks.md).
-
+>
 > **Amended 2026-07-09 (Step 4b-2 landed).** The **scroll / auto-follow** state machine shipped for both surfaces:
 > a single `following` boolean (default true) pinned to the tail; **PgUp/PgDn** page + **Ctrl+Home/Ctrl+End** jump
 > to top/bottom (`scroll.ts` `reduceScroll`/`scrollMotionForKey`, shared by both surfaces); any upward scroll pauses
@@ -197,7 +197,7 @@ perf thresholds for the full-screen frame loop.
 > layout, and a force-follow would only yank the user off history they are reading. **Deferred to Step 4b-3**: the
 > caps-lift + true virtualization + `DEFAULT_ALT_SCREEN`→`true`; **Step 5**: mouse-wheel scroll (reuses this same
 > viewport scroll + follow actions). Resolves the §e force-scroll deferred item by design.
-
+>
 > **Amended 2026-07-09 (Step 4b-2 Sonnet-review fold).** Three verified fixes on top of the 4b-2 landing: **(a)** the
 > Home's scroll-reset effect now keys on the **session OBJECT identity** (`state.session`), not the durable `sessionId`
 > string — a `/models` reseat deliberately PRESERVES the id across the swap, so an id-keyed effect missed it and left a
@@ -213,7 +213,7 @@ perf thresholds for the full-screen frame loop.
 > overlay, never the transcript), and the **paused-mid-page boundary** at the mount (a partial page-down does not
 > resume follow). The canonical render-mode docs (home.md / chat-session.md / config-spec.md `alt_screen` caveat) were
 > reconciled to reflect that scroll-back + auto-follow shipped at 4b-2.
-
+>
 > **Amended 2026-07-09 (Step 4b-3 landed — caps-lift, flicker hoist, DEFAULT flip).** The full-screen renderer became
 > first-class and is now the **default on a TTY** (`DEFAULT_ALT_SCREEN = true`): a bare `relavium` / `relavium chat`
 > opens full-screen; `--no-alt-screen` (per invocation) or `[preferences].alt_screen = false` (durable) opts back into
@@ -236,7 +236,7 @@ perf thresholds for the full-screen frame loop.
 > exit paths are unit-tested (`withHoistedAltScreen`, 6 cases) around injected write/lifecycle seams; the real-TTY
 > signal paths (double-Ctrl-C, `kill -TERM`/`-HUP`) are a manual PR-time check. **Still pending (Step 5):** the `[`-dump
 > / `v`-open-in-`$EDITOR` copy-and-search hatches, mouse-wheel scroll, the branded banner, and the a11y note.
-
+>
 > **Amended 2026-07-09 (Step 4b-3 Opus + Sonnet review folds).** SUPERSEDES the caps-lift mechanism in the note above:
 > the bounded per-logical-line LRU (keyed on `(cols, line)`) thrashed to a 0% hit rate once a session exceeded the
 > cache size (a sequential re-scan from the head evicts the very lines it is about to re-read), so it was replaced by a
@@ -252,8 +252,211 @@ perf thresholds for the full-screen frame loop.
 > needs threading the instance unmount before the alt-exit), and session-side raw-`io` notices that fire mid-session —
 > the budget-cap **warning** and the `/clear`/reseat **MCP-skipped** diagnostic — still land on the alt buffer and are
 > lost in alt mode (they must route through the CURRENT session's view-store `notice`, an architectural follow-up).
+>
+> **Amended 2026-07-10 (Step 5 landed — a11y note, mouse-wheel, the copy-and-search hatches, the mouse opt-out).**
+> Step 5 is complete. Four clarifications; §e's *mechanisms* are unchanged, one of its *defaults* is not.
+>
+> **(a) The `[` / `v` escape hatches ship as PALETTE COMMANDS, not bare keys** — **`/scrollback`** (dump the transcript
+> into the terminal's native scrollback; press Enter to return) and **`/edit`** (open it read-only in `$EDITOR`;
+> edits are never read back). A bare `[` or `v` collides with the text prompt, where they are far commoner than `/`.
+> Both are `availableIn: ['chat']` — the bare Home has no transcript. They are ONE implementation shared by the
+> standalone chat and the in-Home chat, dispatched through the existing slash path with no render-layer interception:
+> unlike `/models` they open no React overlay, so a `SuspendPort` (the repo's first React→core capability bridge)
+> carries ink's `suspendTerminal` out of the tree to the command context.
+>
+> **(b) ink 7's `suspendTerminal` contract, read from its source, drives the design and is documented in
+> `apps/cli/src/render/suspend.ts`.** `beginSuspend()` erases ink's frame and turns raw mode AND bracketed paste off
+> (so we must touch neither); it toggles DECSET-1049 only when ink's `alternateScreen` **render option** is on — which
+> is `true` for the bare Home but hard-`false` for `relavium chat`, whose hoisted controller owns 1049 (§c). The
+> suspension is therefore surface-divergent. ink writes no mouse escapes anywhere, so 1000/1006 is entirely ours. And
+> because raw mode is off for the whole window, a keyboard **Ctrl-C arrives as a real SIGINT** — the chat's signal
+> handler must yield while a hatch owns the terminal, or it tears the session down behind the suspension's back and
+> the pending reclaim re-enters the alt buffer on the user's shell.
+>
+> **(c) §e's "the first release defaults OFF (opt-in)" for mouse reporting is SUPERSEDED: it ships ON, with the
+> mandatory opt-out.** Maintainer decision (2026-07-09). The wheel is what users expect of a full-screen TUI, and
+> PgUp/PgDn-only surprised them. §e's *reason* for defaulting off stands unchanged and is exactly why the opt-out is
+> no longer a follow-up but a shipped, tested part of this step: mouse capture disables the emulator's native
+> copy-on-select (worst over SSH/tmux) and Relavium still has no in-app copy-on-select. The mitigations are now all
+> live — **`--no-mouse`** / **`[preferences].mouse = false`**, the emulator's bypass modifier (Shift; Option on
+> iTerm2), and the `/scrollback` + `/edit` hatches above. Read §e's "(default off first release)" in Consequences,
+> and its "then flips to on-with-opt-out after real-terminal validation (a tracked follow-up)", as satisfied here:
+> the flip happened together with the opt-out rather than after it. `resolveMouseMode` (render-mode.ts) makes one
+> §e guarantee structural rather than conventional — it takes the ALREADY-RESOLVED render mode, so the inline
+> renderer can never enable the mouse whatever the flag or the key say.
+>
+> **(d) §e's "suspend mouse around any TTY-inheriting subprocess" was, until Step 5d, vacuous.** Every other spawn in
+> the repo (`run_command`, `git_*`, the `!`-shell) runs behind the tool sandbox with piped stdio and never touches the
+> terminal. `$EDITOR` is the first TTY-inheriting child, and `suspendFullScreen` discharges the obligation for it.
+>
+> **Still pending from §e:** **DEC-2026 synchronized output** framing and the **branded Home banner** (+
+> `[preferences].show_banner`). The banner's "evaluated against the three themes" acceptance criterion in
+> [phase-2.6](../roadmap/phases/phase-2.6-conversational-authoring.md) cannot be met here — the renderer has no theme
+> system at all (`[preferences].theme` exists in the config schema and nothing reads it); theming is 2.6.L, so the
+> banner ships with colour / `NO_COLOR` variants and its theme variants move there.
+>
+> **Amended 2026-07-10 (Step 6 — in-app text selection + copy-on-select; §e's mouse deferrals are WITHDRAWN).**
+> Maintainer decision, taken after using the shipped renderer. §e twice constrains this area and both constraints are
+> superseded here; the §e text is left verbatim (append-only).
+>
+> **(a) "never 1002/1003" → we enable DECSET 1002.** §e admits only button reporting (1000) so the wheel scrolls. But
+> a terminal either reports mouse events to the application or performs its own click-drag selection — never both, and
+> there is no mode in between. (DECSET 1007 "alternate scroll" converts the wheel into cursor keys, which collide
+> irrecoverably with the prompt's Up/Down history keys.) §e therefore forced a choice between a scrolling wheel and
+> native selection, and Step 5e's `--no-mouse` only lets the user pick which one to lose. Enabling **1002**
+> (button-event tracking: press, release, wheel, and motion *only while a button is held*) gives the app the drag it
+> needs to implement selection itself. **1003** (any-motion) stays forbidden — it reports every pointer move.
+>
+> **(b) "Mouse click / drag / text-selection / copy-on-select … deferred to Phase 3" → shipped now.** The alt screen's
+> copy regression is the renderer's single worst ergonomic cost, and §e's own mitigations (the bypass modifier, the
+> `/scrollback` + `/edit` hatches, `--no-mouse`) are workarounds, not the affordance users expect. Competing agent
+> CLIs (e.g. OpenCode) implement exactly this — the TUI captures the mouse, renders its own highlight, and writes the
+> selection to the system clipboard with **OSC 52** on release. Their published issues also map the hazards we must
+> design for up front rather than patch later: inside `tmux`/Zellij both the multiplexer and the app handle OSC 52
+> (the escape needs DCS passthrough); OSC 52 is silently dropped over VS Code Remote SSH; and users want the behaviour
+> switchable. So: `$TMUX`/`$ZELLIJ` detection, a `[preferences].copy_on_select` key, and `--no-mouse` continuing to
+> disable the whole subsystem and hand native selection back.
+>
+> **Coordinate mapping — measured, not assumed.** A mouse report carries an absolute 1-based terminal row; the
+> viewport needs a wrapped-transcript line index. Summing `yogaNode.getComputedTop()` up the `DOMElement.parentNode`
+> chain yields the box's frame row, which was verified against the rendered frame's own line index across three
+> layouts (with and without a header strip, with the live region grown). Both surfaces bind their ink root to
+> `height: terminal rows` and ink's `log-update` writes a frame without a trailing newline, so the frame is anchored
+> at terminal row 1. Hence `displayLine = scrollOffset + (mouseRow - 1 - viewportTop)`. The real-TTY confirmation of
+> that anchor is a PR-time check.
+>
+> **Selection copies the VISUAL rows** the user highlighted — a wrapped paragraph comes back with those wraps as
+> newlines, exactly as the terminal's own selection would have given, and exactly what the highlight showed. `/edit`
+> and (Step 6) `/copy` hand over the UNWRAPPED document when fidelity matters more than the visual.
+>
+> ### Amendment — 2026-07-10 (2.6.F Steps 6e/6f, after the Step-6 adversarial review)
+>
+> Four claims made above, or in the Step-6 code, were **wrong**, and are corrected here rather than quietly patched.
+> Append-only: the text above is left verbatim.
+>
+> **(a) The tmux plan was backwards.** The Step-6 amendment says "inside `tmux`/Zellij both the multiplexer and the app
+> handle OSC 52 (the escape needs DCS passthrough)", and Step 6c shipped the DCS passthrough alone. Read from tmux's
+> source: `input_osc_52_parse()` returns early unless `set-clipboard` is `on`, whose **default is `external`**; and
+> `input_dcs_dispatch()` returns early unless `allow-passthrough` is on, whose **default is `off`**. Stock tmux honours
+> **neither** form. Relavium therefore emits **both** (Step 6f-2), so setting either option suffices. The ESC-doubling
+> inside the passthrough is confirmed correct by tmux's DCS state table.
+>
+> **(b) `$TMUX`/`$ZELLIJ` detection does NOT gate `copy_on_select`.** The plan was to auto-disable it inside a
+> multiplexer. That rested on (a), and (a) was false. A copy inside tmux may silently do nothing — but that is
+> indistinguishable from VS Code Remote SSH dropping the escape, which the design already accepts and reports honestly
+> (`'written'`, never `'copied'`). Guessing at a multiplexer's configuration and silently disabling a feature is worse
+> than attempting it. `copy_on_select` defaults ON whenever the mouse is on, and is a plain preference.
+>
+> **(c) "SGR does not encode which button was released"** — a comment in Step 6a's `mouse.ts`, on which the reducer was
+> built. xterm's `ctlseqs` says the opposite of the `m` final byte: *"A different final character is used for button
+> release to resolve the X10 ambiguity regarding which button was released."* Resolving that ambiguity is the reason
+> the byte exists. Until Step 6f-3, any button coming up while a selection was live re-emitted the whole selection over
+> OSC 52 — so every right-click re-copied.
+>
+> **(d) The coordinate mapping needed one more rule.** `cellAt` clamps a mouse row into the viewport, which is right for
+> a DRAG (the pointer leaves it constantly) and wrong for a PRESS: a press on the prompt or the status strip anchored
+> the selection to the viewport's last visible line. And because the focus is clamped, a drag could never select more
+> than one screenful. Step 6f-5 adds `containsRow` (a press outside the viewport starts nothing) and `dragScrollMotion`
+> (a drag on the viewport's first or last row scrolls a line **before** the focus is mapped). The boundary rows are
+> inside the edge zone deliberately: `relavium chat` binds its viewport to frame row 0, so the pointer can never go
+> above it and there would otherwise be no signal to scroll up at all — which is why vim and tmux copy-mode scroll on
+> the boundary row too.
+>
+> **Also settled here.** A press freezes auto-follow for the gesture (a completing turn would otherwise slide the
+> transcript out from under the pointer) and a plain click restores it. `Esc` dismisses a live selection while the chat
+> is idle, never mid-turn, where `Esc` is the abort. `/copy` (Step 6e) copies the UNWRAPPED transcript document and
+> suspends nothing — OSC 52 is one control write.
+>
+> ### Amendment — 2026-07-10 (2.6.F Step 5f: there was nothing to build)
+>
+> The Decision above says flicker "is avoided with terminal **synchronized output** (DEC 2026, `\x1b[?2026h/l`)
+> framing, **since `ink` does not emit it**", and Step 5f was scheduled to build it — a `Proxy` over `process.stdout`
+> wrapping every write. **That claim is false for `ink` 7.** It ships `build/write-synchronized.js`
+> (`bsu` = `\x1b[?2026h`, `esu` = `\x1b[?2026l`) and frames every write in it, gated on
+> `shouldSynchronize(stream, interactive)` = `stream.isTTY && (interactive ?? !isInCi)`.
+>
+> Measured against a real mount with Relavium's own render options: a TTY stdout receives one balanced BSU/ESU pair per
+> frame; a piped stdout, an `interactive: false` mount, and a `debug: true` mount receive none. The `--json` / CI /
+> non-TTY byte-identical guarantee is therefore already honoured by ink itself.
+>
+> Worse, the planned Proxy would have been actively wrong: ink writes `bsu` as its **own separate `write()` call**, so
+> wrapping every write would have nested the escapes. Step 5f therefore implements nothing and instead PINS the
+> behaviour (`synchronized-output.test.tsx`), so an ink bump that drops the framing fails loudly rather than silently
+> restoring the flicker this ADR set out to remove.
+>
+> ### Amendment — 2026-07-10 (2.6.F Step 5g: the banner ships, its trigger does not)
+>
+> The Decision says the banner is "shown on the first few Home opens, then auto-dismissed — re-enabled via
+> `[preferences].show_banner`", and the phase plan pins that at **five** opens. A five-open counter needs durable
+> storage, and both places to keep one are the wrong trade for an element this ADR itself calls **cosmetic**:
+>
+> - a `history.db` migration in `@relavium/db` — schema, migration, store and tests, for a decoration; or
+> - auto-writing `[preferences]` on startup — mutating a `config.toml` the user may hand-author and commit, on every
+>   Home open, through a seam (ADR-0063) built for *user-initiated* writes.
+>
+> **An empty Home is the first-opens signal.** `show_banner` is therefore tri-state: `true` ⇒ always, `false` ⇒ never,
+> **absent ⇒ shown while `snapshot.isEmpty`**. It greets a fresh install and auto-dismisses the moment the user's first
+> chat gives them something to continue — the behaviour the counter was a proxy for, at zero storage cost, and legible
+> from the code rather than from a number in a file.
+>
+> Two guards keep it from crowding a small terminal: never below `HOME_MIN_ROWS`, and a FORCED banner (`true`) also
+> needs `BANNER_EXTRA_ROWS` of headroom, so it stands down rather than push the management strip off an 80x24 screen.
+> `NO_COLOR` / `--no-color` takes the box-drawing glyphs with it, not just the colour: a terminal told to be plain is a
+> terminal we should assume renders conservatively, and a mis-rendered `╭` is worse than a `+`.
+>
+> Themes remain deferred to 2.6.L, per the maintainer's Step-5 decision; this ships colour + `NO_COLOR` only.
+>
+> ### Amendment — 2026-07-10 (2.6.F Step 6g: the whole-phase review, and the caps-lift that was never built)
+>
+> A second adversarial review, over the WHOLE phase rather than one step, found what the per-step reviews could not.
+> The headline:
+>
+> **THE CAPS-LIFT WAS NEVER IMPLEMENTED.** The Context above names the defect this ADR exists to fix — "live output is
+> capped at 4000 chars *and* `reduceTurnCompleted` bakes the finalized transcript entry from that capped buffer, so a
+> long response is clipped and its full text survives only in SQLite — unreachable by scrolling" — and Decision (c)
+> promises the fix: "made a **renderer-injected bound** (not a constant)". `MAX_LIVE_TOKEN_CHARS = 4000` remained an
+> unconditional constant. The Step-4b-3 amendment's "caps-lift" was a NAME COLLISION: it delivered the per-entry wrap
+> cache, an unrelated performance fix. Measured against the real store, a 10 000-character answer landed in the
+> transcript as 4 001 characters, and `/scrollback`, `/edit`, `/copy` and copy-on-select all read that transcript.
+> Step 6g implements the ADR's own design: `liveTokens` stays bounded (the live region's render budget), `turnText`
+> carries the renderer's bound, and `reduceTurnCompleted` bakes from `turnText`.
+>
+> **Also folded:**
+> - A keyboard Ctrl-C during a Home `/scrollback`/`/edit` tore the Home down behind the suspension and stranded
+>   DECSET 1002+1006 on the shell. `relavium chat` had gated this since Step 5d; the Home never did. And `chat` had a
+>   SIGINT-uncovered window during a `/clear` / `/models` rebuild, between ink's unmount and the next mount.
+> - `displayWidth` **under-counted 8 539 code points** vs ink's `string-width` — Tangut, Kana Supplement, Yijing,
+>   Hangul Jamo Extended-A — breaking the 1-`DisplayLine`-==-1-row invariant. The hand-rolled table is deleted; see
+>   [ADR-0069](0069-string-width-for-the-cli-renderer.md).
+> - The `/clear` intro carrying `relavium chat-resume <id>` — the only pointer back to the conversation it ended — was
+>   written into the alt buffer before ink mounted, and painted over. So were the Home's budget warnings.
+> - `/edit`'s temp file, holding the whole conversation, survived the process when its cleanup `rm` failed: `dispose`
+>   removed the `process.on('exit')` net in a `finally`, disarming it exactly when it was needed.
+> - Mouse capture was armed for the whole Home, stripping the LANDING of the emulator's native selection while giving
+>   it no in-app selection. Capture now follows the chat.
+>
+> **Open, and deliberately not fixed here:** the Home LANDING can overflow a short terminal, and the alt buffer has no
+> scrollback to recover the top. That predates this phase (the strip is 2.5.B) and 2.6.G's management browsers replace
+> it wholesale.
 
 ## Consequences
+
+> **Read the dated amendments above first.** This section was written before Steps 5f, 5g, 6 and 6g and is left
+> verbatim (append-only). Four of its statements are SUPERSEDED:
+>
+> - *"sync-output framing"* as something this phase builds → **ink 7 already emits DEC-2026**; Step 5f pins it
+>   (amendment of 2026-07-10).
+> - *"Mouse capture disables native copy-on-select … the opt-out (default off first release) … deferred in-app
+>   copy-on-select"* → **mouse defaults ON, and in-app selection + copy-on-select shipped in Step 6**; capture is armed
+>   only while a chat owns the screen (Step 6g).
+> - *"the `[` / `v` hatches"* → they are the palette commands **`/scrollback`** and **`/edit`**, joined by **`/copy`**
+>   (Step-5 and Step-6e amendments).
+> - *"New `[preferences]` keys (`alt_screen`, `mouse`, `show_banner`)"* → also **`copy_on_select`** (Step 6e).
+>
+> And one statement it makes was NOT TRUE when written, and is now: *"The long-response clipping defect is
+> structurally fixed for chat — the viewport shows the full response and scrolls."* The caps-lift the Decision promised
+> was never implemented; a 10 000-character answer reached the transcript as 4 001 characters until **Step 6g**. See
+> the caps-lift amendment.
 
 ### Positive
 

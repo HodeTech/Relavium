@@ -262,23 +262,51 @@ export function errorRecoveryHint(code: string | undefined, message?: string): s
   }
 }
 
+/**
+ * Project ONE transcript entry to its LOGICAL display lines — prefixes, styles, and display-boundary sanitization,
+ * but NO width-wrapping (a returned `text` may still contain `\n`). The single source of the transcript's rendered
+ * CONTENT: {@link wrapEntry} wraps these to terminal rows for the viewport, and {@link transcriptDocument} joins them
+ * unwrapped for the `/edit` hatch (2.6.F Step 5d) — so the on-screen transcript and the one handed to `$EDITOR` can
+ * never disagree about what the conversation said.
+ *
+ * Sanitization happens HERE, once, for every consumer: a `user` entry becomes `> {text}`; a `notice` its text; an
+ * `assistant` entry its text, then the one-line summary (a leading space, as `TranscriptLine`), then the optional
+ * recovery-hint line.
+ */
+export function entryLines(entry: TranscriptEntry): DisplayLine[] {
+  if (entry.role === 'user') {
+    return [{ text: `> ${stripTerminalControls(entry.text)}`, style: 'user' }];
+  }
+  if (entry.role === 'notice') {
+    return [{ text: stripTerminalControls(entry.text), style: 'notice' }];
+  }
+  const lines: DisplayLine[] = [
+    { text: stripTerminalControls(entry.text), style: 'assistant' },
+    { text: ` ${formatTurnSummary(entry.summary)}`, style: 'summary' },
+  ];
+  const hint = errorRecoveryHint(entry.summary.errorCode, entry.summary.errorMessage);
+  if (hint !== undefined) lines.push({ text: ` → ${hint}`, style: 'hint' });
+  return lines;
+}
+
 /** Wrap ONE transcript entry to its width-wrapped display lines — the per-entry unit {@link wrapTranscript} caches. */
 function wrapEntry(entry: TranscriptEntry, cols: number): DisplayLine[] {
-  const lines: DisplayLine[] = [];
-  const push = (text: string, style: DisplayLine['style']): void => {
-    for (const row of wrapText(text, cols)) lines.push({ text: row, style });
-  };
-  if (entry.role === 'user') {
-    push(`> ${stripTerminalControls(entry.text)}`, 'user');
-  } else if (entry.role === 'notice') {
-    push(stripTerminalControls(entry.text), 'notice');
-  } else {
-    push(stripTerminalControls(entry.text), 'assistant');
-    push(` ${formatTurnSummary(entry.summary)}`, 'summary');
-    const hint = errorRecoveryHint(entry.summary.errorCode, entry.summary.errorMessage);
-    if (hint !== undefined) push(` → ${hint}`, 'hint');
+  const wrapped: DisplayLine[] = [];
+  for (const line of entryLines(entry)) {
+    for (const row of wrapText(line.text, cols)) wrapped.push({ text: row, style: line.style });
   }
-  return lines;
+  return wrapped;
+}
+
+/**
+ * The whole transcript as ONE plain-text document for the `/edit` hatch (2.6.F Step 5d, ADR-0068 §e) — the same
+ * sanitized content the viewport shows ({@link entryLines}), joined UNWRAPPED so the user's editor re-flows it at its
+ * own width instead of inheriting the terminal's column count. Sanitized like every other display boundary: an editor
+ * renders bidi/RTL overrides, so a Trojan-Source reordering (CVE-2021-42574) in model output would spoof the reading
+ * order of the very transcript the user opened it to inspect.
+ */
+export function transcriptDocument(transcript: readonly TranscriptEntry[]): string {
+  return transcript.flatMap((entry) => entryLines(entry).map((line) => line.text)).join('\n');
 }
 
 /**
@@ -379,6 +407,11 @@ export function formatBusyLine(input: {
    *  streamed this turn AND no tool call is currently executing), NOT the raw "any reasoning streamed" flag, so a
    *  tool round shows "Working…". Absent/false ⇒ a plain (or tool-running) turn shows "Working…". */
   readonly reasoningActive?: boolean | undefined;
+  /** The terminal's width, for the row estimate. Absent ⇒ the projection's fallback. */
+  readonly columns?: number | undefined;
+  /** How many rendered rows the streaming content may occupy ({@link liveAnswerRowBudget}). Absent ⇒ unbounded, the
+   *  INLINE renderer's behaviour: it has no fixed-height frame to overflow. */
+  readonly maxRows?: number | undefined;
 }): BusyLine {
   const { spinner } = input;
   if (input.compacting) {
@@ -390,13 +423,21 @@ export function formatBusyLine(input: {
       dim: true,
     };
   }
-  const content = stripTerminalControls(input.liveTokens);
-  if (content.length === 0) {
+  const sanitized = stripTerminalControls(input.liveTokens);
+  if (sanitized.length === 0) {
     const label = input.reasoningActive === true ? 'Thinking…' : 'Working…';
     const elapsed = input.elapsedMs === undefined ? '' : ` ${formatElapsed(input.elapsedMs)}`;
     return { text: `${spinner} ${label}${elapsed} · Esc to stop`, dim: true };
   }
-  return { text: `${spinner} ${input.liveTokensTruncated ? '…' : ''}${content}`, dim: false };
+  // The alt screen's live region is a FIXED-HEIGHT box: an unbounded busy line does not scroll, it collides with its
+  // siblings and overwrites them. Bound it to the caller's row budget, the same discipline the reasoning panel uses.
+  // The inline renderer passes none — it has no frame to overflow.
+  const { body, tailed } =
+    input.maxRows === undefined
+      ? { body: sanitized, tailed: false }
+      : tailToRenderedRows(sanitized, input.columns, input.maxRows);
+  const elided = input.liveTokensTruncated || tailed;
+  return { text: `${spinner} ${elided ? '…' : ''}${body}`, dim: false };
 }
 
 /**
@@ -445,6 +486,29 @@ export interface ReasoningPanel {
  */
 export const MAX_REASONING_PANEL_LINES = 12;
 
+/** The fallback terminal height when the caller has none (a detached / zero-sized TTY). */
+const LIVE_ANSWER_FALLBACK_ROWS = 24;
+
+/**
+ * How many rendered rows the STREAMING answer may occupy in the alt screen's fixed-height live region.
+ *
+ * The frame is `height: rows` and ink clips it there, so an unbounded busy line does not scroll — it COLLIDES with
+ * its siblings. Reproduced at 80×24 with a 900-character answer (well under {@link MAX_LIVE_TOKEN_CHARS}): the
+ * "Esc to stop" hint and the streamed text landed on the SAME row, overwriting each other, and the transcript
+ * viewport was squeezed from 22 rows to 13 (2.6.F Step 6h, Sonnet review).
+ *
+ * A third of the terminal keeps the viewport, the prompt and the footer intact at every supported size. Nothing is
+ * lost: the live region shows a TAIL with the same `…` marker the character cap uses, and the completed turn lands
+ * in the transcript whole — since Step 6g's caps-lift, all of it.
+ */
+export function liveAnswerRowBudget(terminalRows: number | undefined): number {
+  const rows =
+    terminalRows !== undefined && Math.floor(terminalRows) >= 1
+      ? Math.floor(terminalRows)
+      : LIVE_ANSWER_FALLBACK_ROWS;
+  return Math.max(1, Math.floor(rows / 3));
+}
+
 /** The assumed width when the caller passes no live column count (a headless/test render, or a non-TTY stdout with
  *  no `.columns`). 80 is the conventional terminal width + the 80×24 degrade floor the harness pins. */
 const REASONING_PANEL_FALLBACK_COLUMNS = 80;
@@ -458,12 +522,13 @@ const REASONING_PANEL_FALLBACK_COLUMNS = 80;
  * The row count is APPROXIMATE, not exact: `.length` (UTF-16 units) stands in for ink's display-width wrap, so a
  * wide-glyph (CJK/emoji) line under-counts and a combining-mark line over-counts — the panel can render up to ~2×
  * on wide text; the prepended `…` marker in {@link formatReasoningPanel} can add one more row. This matches the
- * store's existing `.length`-based 4000-char cap and avoids a `string-width` runtime dependency; the bound is a
+ * store's existing `.length`-based cap; the bound is a
  * cosmetic anti-flicker guard, so an off-by-a-row on unusual scripts is acceptable.
  */
 function tailToRenderedRows(
   text: string,
   columns: number | undefined,
+  maxRows: number = MAX_REASONING_PANEL_LINES,
 ): { body: string; tailed: boolean } {
   // `>= 1` (not `> 0`): a fractional 0<columns<1 would floor to 0 and make `rowsOf` divide by zero. In practice
   // the caller always passes an integer ≥ 1 (`process.stdout.columns` / the Home's `size.cols`), so this is a floor.
@@ -482,12 +547,12 @@ function tailToRenderedRows(
   let rows = 0;
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const line = lines[i] ?? '';
-    if (rows + rowsOf(line) > MAX_REASONING_PANEL_LINES) {
+    if (rows + rowsOf(line) > maxRows) {
       // The tail is full. If we have kept nothing yet, this single (oldest-included) line is itself taller than the
       // whole budget — keep only its last budget×width chars so the most recent reasoning still shows. Otherwise
       // stop: the already-kept newer lines fill the budget and older ones are dropped.
       if (kept.length === 0) {
-        kept.unshift(line.slice(line.length - MAX_REASONING_PANEL_LINES * width));
+        kept.unshift(line.slice(line.length - maxRows * width));
       }
       return { body: kept.join('\n'), tailed: true };
     }

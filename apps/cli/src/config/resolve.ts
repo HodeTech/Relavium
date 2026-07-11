@@ -69,6 +69,17 @@ export interface ResolvedConfig {
    *  preference (no project/workspace layer — it is a per-user UX choice, not a per-repo default), so it reads
    *  straight from the global config. `undefined` ⇒ the phase default in `resolveRenderMode`. */
   readonly altScreen: boolean | undefined;
+  /** `[preferences].mouse` (2.6.F Step 5e, ADR-0068 §e) — terminal mouse reporting inside the full-screen renderer.
+   *  A GLOBAL-only preference for the same reason as {@link altScreen}. `undefined` ⇒ the phase default in
+   *  `resolveMouseMode`. */
+  readonly mouse: boolean | undefined;
+  /** `[preferences].copy_on_select` (2.6.F Step 6e, ADR-0068 §e) — whether a released drag writes the selection to the
+   *  system clipboard. A GLOBAL-only preference for the same reason as {@link mouse}. `undefined` ⇒ the phase default
+   *  in `resolveCopyOnSelect`; meaningless (and ignored) when {@link mouse} is off. */
+  readonly copyOnSelect: boolean | undefined;
+  /** `[preferences].show_banner` (2.6.F Step 5g, ADR-0068) — the branded Home banner. A GLOBAL-only preference.
+   *  `undefined` ⇒ `shouldShowBanner`'s empty-Home rule. */
+  readonly showBanner: boolean | undefined;
   readonly variables: Readonly<Record<string, string>>;
   readonly mcpServers: readonly McpServerRegistration[];
 }
@@ -96,6 +107,9 @@ export function resolveConfig(layers: ConfigLayers): ResolvedConfig {
     mediaGcGraceMs: resolveGraceMs(project, workspace),
     chat: resolveChat(project, workspace, global),
     altScreen: global?.preferences?.alt_screen,
+    mouse: global?.preferences?.mouse,
+    copyOnSelect: global?.preferences?.copy_on_select,
+    showBanner: global?.preferences?.show_banner,
     variables: { ...workspace?.variables, ...project?.variables },
     mcpServers: mergeMcpServers(global?.mcp_servers, workspace?.mcp_servers, project?.mcp_servers),
   };

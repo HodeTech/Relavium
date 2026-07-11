@@ -69,8 +69,23 @@ export interface SessionViewState {
    *  ink `<Static>` tracks already-printed items by the array's length delta, so trimming the head would freeze
    *  its cursor at the cap and silently stop rendering entries past it (see {@link appendTranscript}). */
   readonly transcript: readonly TranscriptEntry[];
-  /** The in-flight assistant text — reset per turn AND on each tool call, so it holds the active segment. */
+  /** The in-flight assistant text — reset per turn AND on each tool call, so it holds the active segment.
+   *  Bounded to {@link MAX_LIVE_TOKEN_CHARS} because it is what the LIVE REGION paints on every frame. */
   readonly liveTokens: string;
+  /** The SAME active segment, bounded instead by {@link transcriptBound} — the text `reduceTurnCompleted` bakes into
+   *  the transcript entry. Separate from {@link liveTokens} because the two answer different questions: how much text
+   *  can we afford to re-wrap at 30fps (a few thousand chars), versus how much of the model's answer the user is
+   *  allowed to keep (all of it, in the full-screen renderer). 2.6.F Step 6g, ADR-0068 Decision (c). */
+  readonly turnText: string;
+  /** Whether {@link turnText}'s head was elided to stay within {@link transcriptBound}. */
+  readonly turnTextTruncated: boolean;
+  /**
+   * The RENDERER-INJECTED bound on the transcript bake, per ADR-0068's Decision (c): "the full-screen renderer
+   * supplies an effectively-unbounded transcript that its viewport manages, while the inline fallback keeps a
+   * trailing-tail bound (it has no viewport)". It lives on the state so `reduceSessionEvent` stays a pure
+   * `(state, event)` function — the store sets it once, at construction.
+   */
+  readonly transcriptBound: number;
   /** Whether the head of `liveTokens` has been elided to stay within {@link MAX_LIVE_TOKEN_CHARS}. The render shows
    *  a leading elision marker so the scroll-out is VISIBLE, not a silent loss (2.5.H). Reset with `liveTokens`. */
   readonly liveTokensTruncated: boolean;
@@ -114,8 +129,24 @@ export interface SessionViewState {
   readonly warnings: readonly string[];
 }
 
-/** Trailing assistant token chars kept in the live region (older text scrolls out). */
+/** Trailing assistant token chars kept in the live region (older text scrolls out). A RENDER budget, not a content
+ *  one: this buffer is re-wrapped every frame. */
 export const MAX_LIVE_TOKEN_CHARS = 4000;
+
+/** The transcript bake bound for the INLINE renderer — the historical behaviour, kept byte-identical. It has no
+ *  viewport, so a completed entry goes straight to ink `<Static>` and the terminal's own scrollback. */
+export const INLINE_TRANSCRIPT_BOUND = MAX_LIVE_TOKEN_CHARS;
+
+/**
+ * The transcript bake bound for the FULL-SCREEN renderer: effectively none. Its viewport windows the transcript, so a
+ * long answer costs a wrap (cached per entry) rather than a frame.
+ *
+ * This is the defect ADR-0068 was chartered to fix. Until 2.6.F Step 6g the bound was a CONSTANT (4000) and a 10 000-
+ * character answer landed in the transcript as 4 001 characters — its first 6 000 unscrollable, unselectable, and
+ * uncopyable, surviving only in SQLite. The Step-4b-3 amendment's "caps-lift" was a name collision: it delivered the
+ * per-entry wrap CACHE, not this.
+ */
+export const FULLSCREEN_TRANSCRIPT_BOUND = Number.MAX_SAFE_INTEGER;
 /** Tool-call annotations kept in the in-flight turn. */
 export const MAX_LIVE_TOOL_CALLS = 16;
 /** Recent warnings kept for display. */
@@ -135,7 +166,10 @@ export interface SessionViewSeed {
   readonly turnCount?: number;
 }
 
-export function initialSessionViewState(seed?: SessionViewSeed): SessionViewState {
+export function initialSessionViewState(
+  seed?: SessionViewSeed,
+  transcriptBound: number = INLINE_TRANSCRIPT_BOUND,
+): SessionViewState {
   // A resumed session (2.N) seeds the model but never re-emits session:started, so derive the context window here
   // too (ADR-0062 §7) — else a resumed session would show no fullness indicator until the (unrelated) next start.
   const seedWindow = seed?.model === undefined ? undefined : contextWindowForModel(seed.model);
@@ -147,8 +181,11 @@ export function initialSessionViewState(seed?: SessionViewSeed): SessionViewStat
     status: 'idle',
     compacting: false,
     transcript: [],
+    transcriptBound,
     liveTokens: '',
     liveTokensTruncated: false,
+    turnText: '',
+    turnTextTruncated: false,
     liveReasoning: '',
     liveReasoningTruncated: false,
     liveToolCalls: [],
@@ -300,6 +337,8 @@ export function reduceSessionEvent(
         compacting: false,
         liveTokens: '',
         liveTokensTruncated: false,
+        turnText: '',
+        turnTextTruncated: false,
         liveReasoning: '',
         liveReasoningTruncated: false,
         liveToolCalls: [],
@@ -319,12 +358,19 @@ export function reduceSessionEvent(
     }
 
     case 'agent:token': {
+      // TWO accumulators over the same tokens, with different budgets. `liveTokens` is what the live region repaints
+      // every frame (cheap, bounded). `turnText` is what the transcript keeps (bounded only by what the RENDERER can
+      // hold — unbounded in the full-screen viewport). Before 2.6.F Step 6g there was only the first, and the
+      // transcript was baked from it: a long answer lost its head permanently.
       const appended = appendBounded(base.liveTokens, event.token, MAX_LIVE_TOKEN_CHARS);
+      const kept = appendBounded(base.turnText, event.token, base.transcriptBound);
       return {
         ...base,
         liveTokens: appended.text,
         // Sticky within the segment: once the head scrolled out, the elision marker stays until the buffer resets.
         liveTokensTruncated: base.liveTokensTruncated || appended.truncated,
+        turnText: kept.text,
+        turnTextTruncated: base.turnTextTruncated || kept.truncated,
       };
     }
 
@@ -335,6 +381,8 @@ export function reduceSessionEvent(
         ...base,
         liveTokens: '',
         liveTokensTruncated: false,
+        turnText: '',
+        turnTextTruncated: false,
         liveToolCalls: pushBounded(
           base.liveToolCalls,
           { id: `tc-${event.sequenceNumber}`, toolId: event.toolId, resolved: false },
@@ -370,6 +418,8 @@ export function reduceSessionEvent(
         compacting: false,
         liveTokens: '',
         liveTokensTruncated: false,
+        turnText: '',
+        turnTextTruncated: false,
         liveReasoning: '',
         liveReasoningTruncated: false,
         liveToolCalls: [],
@@ -470,14 +520,15 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
       ? {}
       : { errorCode: event.error.code, errorMessage: event.error.message }),
   };
-  const rawText = base.liveTokens;
-  // Preserve the elision marker into the FINALIZED entry (2.5.H). The live busy line prepends `…` at render, but a
-  // completed turn lands in ink `<Static>` (the terminal's permanent scrollback) rendered VERBATIM — so bake the
-  // marker into the display text here, else a truncated answer would silently lose its head the instant the turn
-  // completes (the very loss this makes visible). The view-model transcript is DISPLAY-ONLY and bounded to
-  // {@link MAX_LIVE_TOKEN_CHARS}; the durable session record (via the persister, from the raw events) keeps the FULL
-  // text — only this live terminal echo is short, so the marker signals "the live echo scrolled; see the full record".
-  const text = base.liveTokensTruncated ? `…${rawText}` : rawText;
+  // Bake from `turnText`, NOT `liveTokens`: the latter is the live region's 4000-char render budget, and baking from
+  // it is what clipped every long answer before 2.6.F Step 6g. `turnText` carries the renderer's own bound — none, in
+  // the full-screen viewport.
+  const rawText = base.turnText;
+  // Preserve the elision marker into the FINALIZED entry (2.5.H). A completed turn is rendered VERBATIM (ink
+  // `<Static>` inline, the viewport in full-screen), so bake the marker in here — else a truncated answer would
+  // silently lose its head the instant the turn completes. The durable session record (via the persister, from the
+  // raw events) always keeps the FULL text; the marker says "this echo was shortened; see the record".
+  const text = base.turnTextTruncated ? `…${rawText}` : rawText;
   // Append an entry for a turn that produced text, that ERRORED, OR that was ABORTED (EA7) — so an Esc during
   // an approval prompt (before any assistant text streamed) still leaves a visible trace ("aborted · …" via the
   // summary), confirming the abort took effect rather than silently clearing the live region. Guard on the RAW
@@ -500,6 +551,8 @@ function reduceTurnCompleted(base: SessionViewState, event: TurnCompletedEvent):
     ...(event.tokensUsed.input > 0 ? { lastInputTokens: event.tokensUsed.input } : {}),
     liveTokens: '',
     liveTokensTruncated: false,
+    turnText: '',
+    turnTextTruncated: false,
     liveReasoning: '',
     liveReasoningTruncated: false,
     liveToolCalls: [],
