@@ -501,7 +501,9 @@ durable record complete enough for a first-class drill-down — additively.
 **Tasks:**
 
 - **Step attribution**: populate `step_executions.agentId/agentSnapshot/modelId/inputJson` and
-  `run_costs.modelId` from the events the engine already has; give `node:skipped` a step row (thread
+  `run_costs.modelId` from the events the engine already has — `run_costs.modelId` is a **shipped dead column**
+  (never written), the workflow-side twin of the session-side gap [ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md)
+  closes; that ADR deliberately leaves it here rather than widening its own scope; give `node:skipped` a step row (thread
   `nodeType` additively); widen the `StepRecord` projection (output/error/tokens) + a step-detail read.
 - **Exact per-node cost**: an optional `nodeCostMicrocents` on `node:completed` — an additive run-event
   schema field amending [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)

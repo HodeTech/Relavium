@@ -1,8 +1,20 @@
 # ADR-0070: Durable per-model session cost attribution — the `session_costs` aggregate, single-owner cost writes, and the reconciliation invariant
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-07-12
-- **Related**: [ADR-0059](0059-cli-mid-session-model-reseat.md) (the per-message `modelId` attribution this completes — and corrects), [ADR-0024](0024-agent-first-entry-point-agentsession.md) (one model per `AgentSession` lifetime — *per instance*, not per billed egress), [ADR-0062](0062-context-compaction-and-cli-history-commands.md) (compaction spend — the summariser turn whose cost this must attribute), [ADR-0028](0028-workflow-resource-governance.md) (the budget governor that seeds from the session total), [ADR-0064](0064-live-model-catalog.md) + [ADR-0065](0065-provider-economics-and-extensibility.md) (the `model_catalog` FK target and the pricing tiers; ADR-0064's 2.5.I amendment note is the `BEGIN IMMEDIATE` + `SQLITE_BUSY` convention this write obeys), [ADR-0005](0005-sqlite-drizzle-local-postgres-cloud.md) (one schema, two dialects), [ADR-0050](0050-cli-history-db-at-rest-posture.md) (`history.db` posture), [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md) (`/cost`), [phase-2.6-conversational-authoring.md](../roadmap/phases/phase-2.6-conversational-authoring.md) (2.6.C). Canonical homes: the DDL → [database-schema.md](../reference/desktop/database-schema.md); the event → [run-event.ts](../../packages/shared/src/run-event.ts); the command → [commands.md](../reference/cli/commands.md). **Forward note:** 2.6.Q's pricing-enrichment decision (the models.dev tier + the strict cost cap, F5) will be **ADR-0071**; §6 below is written so it needs no schema re-open.
+- **Related (primary)**: [ADR-0059](0059-cli-mid-session-model-reseat.md) — the per-message `modelId` attribution this
+  completes, and whose "show a per-model cost breakdown" it delivers · [ADR-0062](0062-context-compaction-and-cli-history-commands.md) —
+  the compaction summariser whose spend this must attribute · [ADR-0064](0064-live-model-catalog.md) — the `model_catalog`
+  FK target and the `BEGIN IMMEDIATE`/`SQLITE_BUSY` write convention this obeys · [ADR-0028](0028-workflow-resource-governance.md) —
+  the budget governor that *reads* the session total this ADR gives a single writer.
+- **Related (secondary)**: [ADR-0005](0005-sqlite-drizzle-local-postgres-cloud.md) (one schema, two dialects) ·
+  [ADR-0024](0024-agent-first-entry-point-agentsession.md) (one model per `AgentSession` *instance*, not per billed
+  egress) · [ADR-0065](0065-provider-economics-and-extensibility.md) · [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md) ·
+  [ADR-0050](0050-cli-history-db-at-rest-posture.md) · [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md)
+- **Canonical homes** (this ADR cites, never restates): the DDL → [database-schema.md](../reference/desktop/database-schema.md) ·
+  the event → [run-event.ts](../../packages/shared/src/run-event.ts) · the command → [chat-session.md](../reference/cli/chat-session.md)
+- **Forward**: 2.6.Q's pricing-enrichment decision (the models.dev tier + the strict cost cap, F5) will be **ADR-0071**;
+  §6 is written so it needs no schema re-open, and §3 files exceptions 1–2 against it.
 
 ## Context
 
@@ -18,7 +30,7 @@ The stakes: `/cost` is a **money** surface. A breakdown whose rows do not sum to
 
 **We add a durable per-`(session, model)` aggregate table `session_costs`, fed from every `cost:updated` by a single-owner, single-transaction store method that also increments `agent_sessions.total_cost_microcents` — making `SUM(session_costs.cost_microcents) == agent_sessions.total_cost_microcents` true by construction, for every row in the table, past and future.** The engine is unchanged except for one additive optional field on the cost event; the write lives in the host ([persister.ts](../../apps/cli/src/chat/persister.ts)) over a `@relavium/db` store method, so `packages/core` and `packages/llm` stay platform-free.
 
-Considered and rejected, before the shape:
+Considered and rejected:
 
 - **Row-level attribution on `session_messages`** (populate the existing `model_id` + `cost_microcents`) — *rejected: lossy by construction.* One `model_id` per row cannot hold a two-model tool-loop turn (the case above), and a turn that **errors or aborts** writes no message row at all while its spend is real and kept (persister.ts L199–206) — so the breakdown would silently omit money the total contains.
 - **A `cost_by_model_json` column on `agent_sessions`** — *rejected:* an atomic in-SQL fold needs `json_set`/`jsonb` (dialect-divergent, breaking [ADR-0005](0005-sqlite-drizzle-local-postgres-cloud.md)'s "the Postgres port is a driver change"), and a host-side read-modify-write needs the same transaction the table needs anyway — while buying no index and no cross-session rollup.
@@ -48,18 +60,30 @@ CREATE UNIQUE INDEX idx_session_costs_session_model ON session_costs (session_id
 CREATE INDEX        idx_session_costs_session       ON session_costs (session_id, cost_microcents DESC);
 ```
 
-The **key is the raw model string, NOT the catalog FK** — a deliberate, load-bearing divergence from `run_costs` ([schema.ts](../../packages/db/src/schema.ts) L396, a nullable `model_catalog.id` FK). `cost:updated.model` is a provider string; the FK target is a catalog **UUID**, resolved via `resolveModelCatalogId` ([persister.ts](../../apps/cli/src/chat/persister.ts) L22–28) which returns `undefined` for an **uncataloged** (custom, self-hosted, brand-new) model. NULLs are **DISTINCT under UNIQUE in both SQLite and Postgres**, so keying on the FK would make `ON CONFLICT` never match: every uncataloged attempt would insert a *new* row, and two different uncataloged models would collapse into one indistinguishable "unknown" bucket. `model_catalog_id` is kept as a nullable, **written** (never dead) join column for catalog enrichment. A reviewer must not "fix" this back toward `run_costs`.
+Row `id`s come from the host's existing `deps.uuid()` (the pattern every other store write uses); the PK is never the conflict target — `ON CONFLICT` resolves on the `(session_id, model)` unique index.
 
-`call_count` / `unpriced_calls` are counters — the only shape foldable under an additive upsert (§6). No column is free text or JSON: a `session_costs` row is **secret-free by construction** (a stronger posture than `run_costs`, which relies on upstream masking — [database-schema.md](../reference/desktop/database-schema.md) §"Secrets at the write boundary", which gains one sentence saying so).
+The **key is the raw model string, NOT the catalog FK** — a deliberate, load-bearing divergence from `run_costs` ([schema.ts](../../packages/db/src/schema.ts) L396, a nullable `model_catalog.id` FK). `cost:updated.model` is a provider string; the FK target is a catalog **UUID**, resolved by the `ModelCatalogIdResolver` that `makeCatalogIdResolver` builds ([persister.ts](../../apps/cli/src/chat/persister.ts) L18–28), which returns `undefined` for an **uncataloged** (custom, self-hosted, brand-new) model. NULLs are **DISTINCT under UNIQUE in both SQLite and Postgres**, so keying on the FK would make `ON CONFLICT` never match: every uncataloged attempt would insert a *new* row, and two different uncataloged models would collapse into one indistinguishable "unknown" bucket. `model_catalog_id` is kept as a nullable, **written** (never dead) join column for catalog enrichment. A reviewer must not "fix" this back toward `run_costs`.
+
+`model` is `NOT NULL` **and non-empty**: the schema carries a `CHECK (model <> '')`. The event type already forbids it (`cost:updated.model` is Zod `nonEmptyString`), but the DB is the last line — an empty-string row would be a silent, un-attributable money bucket, and the table is the system of record. `call_count` / `unpriced_calls` are counters — the only shape foldable under an additive upsert (§6). No column is free text or JSON: a `session_costs` row is **secret-free by construction** (a stronger posture than `run_costs`, which relies on upstream masking — [database-schema.md](../reference/desktop/database-schema.md) §"Secrets at the write boundary", which gains one sentence saying so).
 
 ### 2. The write path — one owner, one transaction, on every `cost:updated`
 
 `SessionStore` gains **`recordSessionCost({ sessionId, model, modelCatalogId?, inputTokens, outputTokens, costMicrocents, priced, ts })`**, which in **one** `withBusyRetry(() => db.transaction(fn, { behavior: 'immediate' }))` — the convention established by [ADR-0064](0064-live-model-catalog.md)'s 2.5.I amendment and [retry.ts](../../packages/db/src/retry.ts), and precedented by [run-history-store.ts](../../packages/db/src/run-history-store.ts) L445 — does exactly two statements:
 
-1. `INSERT … ON CONFLICT (session_id, model) DO UPDATE SET cost_microcents = cost_microcents + excluded.cost_microcents, input_tokens = …, output_tokens = …, call_count = call_count + 1, unpriced_calls = unpriced_calls + excluded.unpriced_calls, updated_at = ?` — **additive**, never absolute.
-2. `UPDATE agent_sessions SET total_cost_microcents = total_cost_microcents + ?, updated_at = ?` — **also additive**, mirroring `runs.totalCostMicrocents = prev + nodeCost` and its stated reason ("always equals `sum(run_costs)` even if a snapshot regressed", [run-history-store.ts](../../packages/db/src/run-history-store.ts) L289–299).
+1. an **upsert** on `(session_id, model)` that **adds** the increment to `cost_microcents`, `input_tokens`,
+   `output_tokens`, and bumps `call_count` (and `unpriced_calls` when the egress was unpriced) — **additive, never
+   absolute**;
+2. an **additive** bump of `agent_sessions.total_cost_microcents` — mirroring `runs.totalCostMicrocents = prev + nodeCost`
+   and its stated reason ("always equals `sum(run_costs)` even if a snapshot regressed",
+   [run-history-store.ts](../../packages/db/src/run-history-store.ts) L289–299).
 
-Both halves must be additive **and** they must be the same transaction. Additive rows are **mandatory**: a resume or a [ADR-0059](0059-cli-mid-session-model-reseat.md) reseat builds a **fresh** persister with an empty in-memory map ([persister.ts](../../apps/cli/src/chat/persister.ts) L104–106), so an absolute write would zero every model row from the prior process. And an additive row beside an **assigned** total is the whole bug class: `updateSession` blindly SETs every mutable column, including `total_cost_microcents`, on every flush ([session-store.ts](../../packages/db/src/session-store.ts) L249–253) from four persister call sites and from `chat-export` — so any writer whose in-memory cumulative disagreed with the row (two `chat-resume` processes on one `sessionId`; a stale `record('active')` landing after a cost write) would permanently break the sum.
+(The exact statements are the implementation's, not this ADR's — their canonical home is the generated migration + the
+drizzle schema. Stating them verbatim here would create two sources that must stay byte-identical forever, which is the
+drift CLAUDE.md rule 8 exists to prevent.)
+
+Both halves must be additive **and** they must be the same transaction. Additive rows are **mandatory**: a resume or a [ADR-0059](0059-cli-mid-session-model-reseat.md) reseat builds a **fresh** persister whose in-process accumulators start at zero ([persister.ts](../../apps/cli/src/chat/persister.ts) L104–106 — today plain scalars; the per-model accumulation this ADR adds starts empty the same way), so an absolute write would zero every model row the prior process had already committed. And an additive row beside an **assigned** total is the whole bug class: `updateSession` blindly SETs every mutable column, including `total_cost_microcents`, on every flush ([session-store.ts](../../packages/db/src/session-store.ts) L249–253) from four persister call sites and from `chat-export` — so any writer whose in-memory cumulative disagreed with the row (two `chat-resume` processes on one `sessionId`; a stale `record('active')` landing after a cost write) would permanently break the sum.
+
+One consequence to state, not hide: two processes on one `sessionId` are serialized **in the DB** by `BEGIN IMMEDIATE`, so the *durable* sum stays true — but their **in-memory** cumulative counters still drift apart, each blind to the other's spend. Every surface that must be exact therefore reads the DB (§7); the in-memory cumulative remains a best-effort live indicator for the *current* process only, which is what it already is today.
 
 Therefore we give the cost column **exactly one owner**: `total_cost_microcents` is **removed from `updateSession`'s SET payload** (alongside the existing `delete mutable.id` / `delete mutable.createdAt`) and is written **only** by `recordSessionCost`. `createSession` still seeds it to `0`; [session-resume.ts](../../packages/core/src/engine/session-resume.ts) L138 and the budget governor keep **reading** it unchanged.
 
@@ -69,34 +93,54 @@ The persister calls `recordSessionCost` **on the `cost:updated` case** ([persist
 
 > **For every `agent_sessions` row: `SUM(session_costs.cost_microcents WHERE session_id = s.id) == s.total_cost_microcents`.**
 
-It holds because both sides are fed by the **same event**, with the **same arithmetic**, in the **same transaction**, from the **single emitter** established in the Context — including errored turns, aborted turns, and compaction spend, all of which reach `cost:updated` before the turn settles. Integer micro-cents throughout ([run-event.ts](../../packages/shared/src/run-event.ts) L271–272, `nonNegativeInt`), so there is no float drift. It is enforced by a test over a scripted stream covering: a two-model tool-loop turn, an errored turn, an aborted turn, a compaction, a resume + a `/models` reseat, and an unpriced model.
+It holds because both sides are fed by the **same event**, with the **same arithmetic**, in the **same transaction**, from the **single emitter** established in the Context — including errored turns, aborted turns, and compaction spend, all of which reach `cost:updated` before the turn settles. Integer micro-cents throughout ([run-event.ts](../../packages/shared/src/run-event.ts) L271–272, `nonNegativeInt`), so there is no float drift. It is enforced by a test over a scripted stream covering: a two-model tool-loop turn, an errored turn, an aborted
+turn, a compaction, a resume + a `/models` reseat, and an unpriced model.
+
+That end-state test is **necessary but not sufficient**: it would still pass if a future refactor split the two writes
+into two transactions, because both would normally succeed and the sums would agree anyway. So the test suite **also**
+pins the *mechanism* — that `recordSessionCost` performs both writes inside **one** transaction (asserted on the store's
+transaction seam, not inferred from the result) — and a **crash-between-writes** case proves the rows and the total
+cannot diverge. (A DB trigger would be a stronger guarantee still, but there is no trigger precedent in the codebase and
+it would put money logic in two languages; the transaction assertion is the proportionate guard, and it matches the
+posture `runs.totalCostMicrocents` already relies on.)
 
 This is **internal consistency, not the provider's invoice.** Stated plainly here and in `database-schema.md` so the first person to diff a bill files it as a known limit, not a bug:
 
 1. **A succeeded attempt with no usage records nothing.** A stream that delivered content but ended without a usage-bearing `stop` chunk emits a success record with no `usage` ([fallback-chain.ts](../../packages/llm/src/fallback-chain.ts) L746–752) and [agent-turn.ts](../../packages/core/src/engine/agent-turn.ts) L749 short-circuits before emitting. The provider billed; Relavium recorded 0 — on **both** sides.
-2. **A failed attempt records nothing.** Failure records carry no `usage` at all ([fallback-chain.ts](../../packages/llm/src/fallback-chain.ts) L476/L504/L523); cost is folded only in `#emitSuccess` (L748–770). A mid-stream drop after 500 real tokens contributes 0 to both sides.
+2. **A failed attempt records nothing.** Failure records carry no `usage` at all ([fallback-chain.ts](../../packages/llm/src/fallback-chain.ts) L476/L504/L523); cost is folded only in `#emitSuccess` (L749–770). A mid-stream drop after 500 real tokens contributes 0 to both sides.
 3. **An unpriced model contributes 0 cost with real tokens** (§6). Invariant-safe; visible as tokens, not money.
 4. **Tokens do NOT reconcile — we do not promise them.** `agent_sessions.total_input_tokens`/`total_output_tokens` accumulate only for **completed** turns (persister.ts L221–222, inside the gate) plus compaction, by design ("a rolled-back exchange's tokens … must not inflate the session-wide token totals"). `session_costs` tokens come from `cost:updated`, which fires on errored/aborted turns too. So `SUM(session_costs.input_tokens) >= agent_sessions.total_input_tokens`, strictly greater after any errored or aborted turn. This **asymmetry is deliberate and pinned by a test**; `/cost` labels its token column accordingly (§7).
 5. **A mid-turn crash loses spend symmetrically.** An attempt that has not settled has emitted nothing, so nothing is lost from either side. The invariant survives; absolute accuracy does not.
 
-Exceptions 1–2 are **not closed in 2.6.C** and must not be: closing them means synthesising usage, which would break the single-emitter property the invariant rests on.
+Exceptions 1–2 are **not closed in 2.6.C**, and the honest framing matters: they are **not** "accepted limits" of this
+design — they are a **pre-existing usage-capture gap in the LLM seam**, which this ADR *surfaces* rather than causes.
+They cannot be closed *here*: doing so means synthesising usage the provider never sent, which would break the
+single-emitter property the invariant rests on. The consequence must be stated without euphemism: **Relavium's reported
+spend is systematically ≤ the provider's invoice**, and always will be until the seam captures usage on a
+content-bearing stream that ends without a usage chunk (exception 1) and on a mid-stream failure (exception 2).
+
+**Tracked, not shelved.** The fix belongs to the adapter/seam layer, so it is filed against **2.6.Q** — the workstream
+that already re-opens `fallback-chain.ts`'s cost folding for the F5 cost-cap work
+([phase-2.6-conversational-authoring.md](../roadmap/phases/phase-2.6-conversational-authoring.md) §2.6.Q) — and its ADR
+(ADR-0071) must either close them or record why it cannot. This ADR's invariant holds **either way**: both sides of the
+sum are fed by the same event, so a future seam that captures *more* usage simply makes both sides larger together.
 
 ### 4. Legacy sessions — the migration backfills, so the promise carries no asterisk
 
 Every pre-migration `agent_sessions` row carries a non-zero total with **zero** rows behind it, and no backfill source exists (the per-attempt increments were discarded; `session_messages.cost_microcents` was never written). We therefore append one **DML** statement to the generated `0009` migration — a documented deviation, since drizzle-kit emits DDL only:
 
-```sql
-INSERT INTO session_costs (id, session_id, model, model_catalog_id, input_tokens, output_tokens,
-                           cost_microcents, call_count, unpriced_calls, created_at, updated_at)
-SELECT id, id, '(pre-2.6.C)', NULL, 0, 0, total_cost_microcents, 0, 0, created_at, updated_at
-  FROM agent_sessions WHERE total_cost_microcents > 0;
-```
+One `INSERT … SELECT` over `agent_sessions WHERE total_cost_microcents > 0`, writing **one** row per legacy session:
+`session_id = id` (safe — exactly one row per session, so the PK can reuse it), the whole legacy total as
+`cost_microcents`, zero tokens, and the model string **`(pre-2.6.C)`** — a parenthesised sentinel that can never
+collide with a real provider model id (no provider id contains parentheses). The statement itself lives in the
+migration, not here.
+
 
 `id = session_id` is safe (exactly one row per legacy session), and a parenthesised sentinel can never collide with a real provider model id. The invariant is then true for **every row in the table**, and `/cost` renders that row honestly as "*pre-2.6.C — per-model breakdown unavailable*" rather than an implied zero. (Considered scoping the promise to post-0009 sessions instead — rejected: an invariant with a silent exception class is the kind of half-truth this ADR exists to eliminate.)
 
 ### 5. The dead columns — dropped, not left as debt
 
-The same `0009` migration **DROPs `session_messages.input_tokens`, `output_tokens`, and `cost_microcents`**, and removes `inputTokens`/`outputTokens`/`costMicrocents` from `SessionMessageMeta` ([session-store.ts](../../packages/db/src/session-store.ts) L53–56). They have never been written, are never read back, sit in no index, and — decisively — a per-message cost column is **structurally incapable** of holding the truth for a two-model turn, which is the entire reason `session_costs` exists. Keeping them would ship a second, wrong, zero-valued cost source next to the new canonical one. `ALTER TABLE … DROP COLUMN` is available on the pinned SQLite ([ADR-0021](0021-node-sqlite-driver-better-sqlite3.md) / [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md)). **`session_messages.model_id` stays** — it *is* written ([ADR-0059](0059-cli-mid-session-model-reseat.md)) and remains the per-message "which model wrote this reply" attribution; `session_costs` is the per-session **money** attribution. ADR-0059's "show a per-model cost breakdown" is hereby delivered by this table, not by that column.
+The same `0009` migration **DROPs `session_messages.input_tokens`, `output_tokens`, and `cost_microcents`**, and removes `inputTokens`/`outputTokens`/`costMicrocents` from `SessionMessageMeta` ([session-store.ts](../../packages/db/src/session-store.ts) L53–56). They have never been written, are never read back, sit in no index, and — decisively — a per-message cost column is **structurally incapable** of holding the truth for a two-model turn, which is the entire reason `session_costs` exists. Keeping them would ship a second, wrong, zero-valued cost source next to the new canonical one. `ALTER TABLE … DROP COLUMN` needs SQLite ≥ 3.35 and Postgres supports it outright; the `better-sqlite3` driver pinned by [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md) (superseding [ADR-0021](0021-node-sqlite-driver-better-sqlite3.md)) bundles an engine far above that floor. (The ADRs pin the **driver** and the Node floor, not an engine version — hence the explicit floor here.) **`session_messages.model_id` stays** — it *is* written ([ADR-0059](0059-cli-mid-session-model-reseat.md)) and remains the per-message "which model wrote this reply" attribution; `session_costs` is the per-session **money** attribution. ADR-0059's "show a per-model cost breakdown" is hereby delivered by this table, not by that column.
 
 > **Adjacent dead column, NOT ours to fix.** `run_costs.model_id` is likewise never written
 > ([run-history-store.ts](../../packages/db/src/run-history-store.ts) — zero writes), so the *workflow* run
@@ -112,13 +156,20 @@ We close it in two halves. **(a)** `CostUpdatedEventSchema` gains an **additive 
 
 Three **binding forward clauses**, so ADR-0071 (2.6.Q / F5 — the models.dev tier and the strict cost cap, [phase-2.6-conversational-authoring.md](../roadmap/phases/phase-2.6-conversational-authoring.md) §2.6.Q) need not re-open this schema:
 
-1. **Historical price is immutable.** A `session_costs` row records the money attributed **at the time of spend**. A later pricing-table or models.dev update **must not retro-reprice** existing rows — a retro reprice is the one operation that provably breaks the invariant, because `agent_sessions.total_cost_microcents` is immutable history that cannot be re-derived.
+1. **Historical price is immutable.** A `session_costs` row records the money attributed **at the time of spend**. A
+   later pricing-table or models.dev update **must not silently retro-reprice** existing rows — a retro reprice is the
+   one operation that provably breaks the invariant, because `agent_sessions.total_cost_microcents` is immutable history
+   that cannot be re-derived. *This is a **policy** stance, not a mechanism this ADR enforces* — it is proposed here and
+   is **ADR-0071's to ratify or overturn**, since 2.6.Q is what makes retro-repricing possible at all. If a genuinely
+   wrong price must be corrected (a bad models.dev row), the correction is an **explicit, audited re-statement that
+   rewrites BOTH sides of the sum together** — never a one-sided `UPDATE` of the rows. Silent drift is what is banned;
+   deliberate, symmetric correction is not.
 2. **Attribution keys on the raw provider model string**, never on the catalog FK — so a model that enters the catalog later does not re-key, fragment, or merge its existing rows.
 3. **Every session egress emits a `cost:updated` carrying a model id** (and, once F5 lands, `priced`). This binds **future** spend sites, not just today's two: the LLM-summarised session title reserved for Phase 3 ([session-title.ts](../../apps/cli/src/chat/session-title.ts) L4 — today it is pure string manipulation and spends nothing) and the media emitters, the day a session gains a media tool. A **strict-cap refusal** is pre-egress: it spends nothing, emits nothing, and is invariant-safe by construction.
 
 ### 7. What `/cost` renders
 
-`/cost` **reads the DB** — a new `SessionStore.loadSessionCosts(sessionId)` — never the in-memory `ChatStore`. Reading memory would show a *resumed* session only the models used in the **current process** while the total (seeded from the row, session-resume.ts L138) covers the whole session — the panel would visibly violate the invariant this ADR promises. It renders:
+`/cost` **reads the DB** — a new `SessionStore.loadSessionCosts(sessionId): readonly SessionCostRow[]` (ordered by cost desc; an **empty array**, never `null`, for a session that has not spent; it throws only what the store's other reads throw) — never the in-memory `ChatStore`. Reading memory would show a *resumed* session only the models used in the **current process** while the total (seeded from the row, session-resume.ts L138) covers the whole session — the panel would visibly violate the invariant this ADR promises. It renders:
 
 - one row **per model**: the model string, `call_count`, tokens **billed** (labelled *incl. failed/aborted turns* — §3 exception 4), cost, and share of total, ordered by cost desc (the covering index);
 - an explicit **"price unknown for N of M calls"** marker on any row with `unpriced_calls > 0`, so a free-*looking* row is never mistaken for a free model;
@@ -133,7 +184,7 @@ We **reject** the proposed `(unattributed)` residual-row trick (attributing `cum
 
 ### Positive
 
-- **A money surface that cannot lie.** The rows sum to the total by construction — same event, same arithmetic, same transaction — for every session, past (§4) and future, across resume, reseat, failover, tool loops, compaction, errors, and aborts.
+- **A money surface that cannot lie *about its own event stream*.** The rows sum to the total by construction — same event, same arithmetic, same transaction — for every session, past (§4) and future, across resume, reseat, failover, tool loops, compaction, errors, and aborts. This is **internal** consistency; against the provider's invoice Relavium is a systematic **under**-estimate (§3 exceptions 1–2), and §3 says so plainly rather than burying it.
 - **The two-model turn is finally representable**, which no per-message column can do; ADR-0059's promised breakdown is delivered, and its known "one `model_id` per row" limitation is retired for cost.
 - **Single-owner cost writes** close a real, live divergence class (concurrent `chat-resume` processes, `chat-export`'s read-modify-write, a stale flush) that would have corrupted the session total whether or not this table existed.
 - **No dead debt left behind**: the three never-written `session_messages` columns are dropped, the never-written `model_catalog_id` pattern is not inherited, and the cost path's `BEGIN IMMEDIATE` follow-up is discharged.
