@@ -250,6 +250,23 @@ export function assertRenderStoreAgree(
   );
 }
 
+/**
+ * Build the opening {@link SessionViewState} for a chat store — from a `seed` (a resume, or the reseat of
+ * [ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md)) or, with no seed, from nothing.
+ *
+ * `transcriptBound` is the load-bearing argument, and it is why this takes a closed {@link TranscriptBound} rather
+ * than a `number`. It decides **both** how far the transcript may grow *and* — via {@link carriesSeedTranscript} —
+ * whether `seed.transcript` is adopted at all:
+ *
+ *   • **Inline** renderer: ink's `<Static>` owns the scrollback, having already printed the conversation to the real
+ *     terminal. Adopting the seed here would print it a SECOND time, so the transcript starts empty by design.
+ *   • **Full-screen** renderer: the alt buffer has no scrollback behind it, so this store *is* the scrollback. Drop
+ *     the seed and the reseat opens on a blank screen with nothing but the switch marker — the F1 bug.
+ *
+ * The two are exact opposites, which is why neither this function nor {@link createChatStore} may default the bound:
+ * a wrong default is silent in one direction and destroys the conversation in the other. Composition roots assert
+ * the pairing with {@link assertRenderStoreAgree}.
+ */
 export function initialSessionViewState(
   seed: SessionViewSeed | undefined,
   transcriptBound: TranscriptBound,

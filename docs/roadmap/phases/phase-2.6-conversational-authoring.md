@@ -218,7 +218,7 @@ surface + the secret-taint gate + the import gate passes. **Required ADR:** shar
 > **Shipped early in 2.5.G** (ADR-0059, PR #66, 2026-07-07): the `/models` mid-chat reseat, per-message
 > `modelId` attribution, and the context-loss notice. Retained for the residual below and as the
 > cross-reference home.
-
+>
 > **Status:** ✅ **Done (2026-07-12)** — both tasks shipped, plus the residual that turned out to need its own ADR.
 > The reseat now carries the rendered conversation (F1), with the switch marker landing beneath it; and `/cost` shows
 > a per-model breakdown backed by a new durable `session_costs` table

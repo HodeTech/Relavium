@@ -176,7 +176,7 @@ is third-party community data — trustworthy but not repo-reviewed. The safe pr
 keeps the verified registry on top and adds models.dev as a *fill-the-unknowns* tier below the
 explicit user tier:
 
-```
+```text
 registry (verified)  >  user (explicit override)  >  models.dev (community)  >  none
 ```
 

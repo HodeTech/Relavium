@@ -1094,12 +1094,21 @@ describe('the reseat carry is O(n) — the perf claim ADR-0059 makes', () => {
       { role: 'notice' as const, text: `answer ${i}: ${'y'.repeat(400)}` },
     ]).flat();
 
-  /** Median of a few samples — a single wall-clock reading is GC noise, not a measurement. */
-  const medianWrapMs = (entries: readonly TranscriptEntry[], samples = 5): number => {
+  /**
+   * Median of a few samples — a single wall-clock reading is GC noise, not a measurement.
+   *
+   * Each sample wraps **fresh entry objects**, built outside the timed region. `wrapTranscript` memoizes per entry in
+   * a `WeakMap` keyed by the entry itself, so re-timing the SAME array would measure one cache lookup per entry from
+   * the second sample on — the median would report steady-state cache-hit latency, and a regression *inside* the
+   * per-entry wrap would be invisible to it. A reseat always wraps entries the new viewport has never seen, so COLD
+   * is the case that has to hold the budget, and COLD is what this times.
+   */
+  const medianWrapMs = (make: () => TranscriptEntry[], samples = 5): number => {
     const runs: number[] = [];
     for (let i = 0; i < samples; i += 1) {
+      const fresh = make(); // fresh objects ⇒ a cold entry cache, every sample
       const started = performance.now();
-      wrapTranscript(entries, 80);
+      wrapTranscript(fresh, 80);
       runs.push(performance.now() - started);
     }
     return runs.sort((a, b) => a - b)[Math.floor(samples / 2)] ?? 0;
@@ -1108,9 +1117,9 @@ describe('the reseat carry is O(n) — the perf claim ADR-0059 makes', () => {
   it('re-wraps a 200-message carried conversation well under the interactive budget', () => {
     const carried = conversation(100); // 100 turns => 200 messages: ADR-0059's stated case
     expect(carried).toHaveLength(200);
-    wrapTranscript(carried, 80); // warm up, so the first sample does not pay for JIT
+    wrapTranscript(carried, 80); // warm the JIT — NOT the entry cache; the samples each get their own entries
 
-    const elapsed = medianWrapMs(carried);
+    const elapsed = medianWrapMs(() => conversation(100));
     const lines = wrapTranscript(carried, 80);
     expect(lines.length).toBeGreaterThan(200); // it really did wrap every entry — not a no-op being timed
     expect(elapsed).toBeLessThan(100); // a user-initiated switch must feel instant
@@ -1119,9 +1128,12 @@ describe('the reseat carry is O(n) — the perf claim ADR-0059 makes', () => {
   it('scales LINEARLY, not quadratically — 4x the conversation is not 16x the wrap', () => {
     // The guard is the SHAPE. An accidental O(n^2) (a per-entry re-scan of everything before it) would blow this ratio
     // long before it blew the budget above, and it is the only regression that makes a long chat unusable.
-    wrapTranscript(conversation(50), 80); // warm up
-    const small = Math.max(medianWrapMs(conversation(50)), 0.05);
-    const large = medianWrapMs(conversation(200)); // 4x the conversation
+    wrapTranscript(conversation(50), 80); // warm the JIT
+    const small = Math.max(
+      medianWrapMs(() => conversation(50)),
+      0.05,
+    );
+    const large = medianWrapMs(() => conversation(200)); // 4x the conversation
     expect(large / small).toBeLessThan(10); // linear ≈ 4x; quadratic ≈ 16x
   });
 });

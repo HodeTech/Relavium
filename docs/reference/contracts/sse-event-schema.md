@@ -137,6 +137,7 @@ export interface CostUpdatedEvent extends BaseEvent {
   // relocated to `@relavium/shared` first (run-event.ts cannot import the `@relavium/llm` seam type). Deferred —
   // see deferred-tasks.md.
   attemptNumber?: number;         // 1-based WITHIN-CHAIN attempt; resets per node-retry re-dispatch — distinct from node:*.attemptNumber (see "Two attemptNumber families")
+  priced?: boolean;               // ADR-0070 — additive + optional, so an older reader ignores it and an older producer may omit it (absent ⇒ treat as priced). `false` = the egress could NOT be priced: the tokens are real, `costMicrocents` is 0, and that 0 must not be read as "this model is free". The durable `session_costs` row keeps it as an `unpriced_calls` COUNTER, not a boolean — a model can become priced mid-session.
 }
 
 export interface NodeCompletedEvent extends BaseEvent {

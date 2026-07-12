@@ -266,11 +266,25 @@ export interface SessionStore {
 }
 
 /** Wire a {@link SessionStore} over a `@relavium/db` connection. */
+/**
+ * The handle drizzle passes to a `db.transaction` callback, derived from {@link Db} so no drizzle-internal type is
+ * imported. A statement issued against the outer `db` from inside a transaction callback only *happens* to be
+ * transactional today: better-sqlite3 is a single connection, so it lands on the same one. The Postgres driver
+ * ([ADR-0005](../../../docs/decisions/0005-sqlite-drizzle-local-postgres-cloud.md)) is a **pool** — there, `db` is a
+ * DIFFERENT connection and the statement would silently commit OUTSIDE the transaction. On a money surface
+ * ([ADR-0070](../../../docs/decisions/0070-durable-per-model-session-cost-attribution.md)) that is not a bet worth
+ * taking, so everything inside a transaction runs against the handle, never the closure's `db`.
+ */
+type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0];
+
+/** What a query runs against: the connection, or an open transaction on it. */
+type Executor = Db | DbTx;
+
 export function createSessionStore(db: Db): SessionStore {
-  const loadSession = (sessionId: string): AgentSessionRecord | undefined => {
+  const loadSession = (sessionId: string, on: Executor = db): AgentSessionRecord | undefined => {
     // Exclude soft-deleted rows (matching `listSessions`): a tombstoned session must not reload or resume —
     // `chat-resume`'s `loadFull` would otherwise resurrect it and the persister would re-write the row.
-    const row = db
+    const row = on
       .select()
       .from(agentSessions)
       .where(and(eq(agentSessions.id, sessionId), isNull(agentSessions.deletedAt)))
@@ -308,8 +322,8 @@ export function createSessionStore(db: Db): SessionStore {
       .all()
       .map(fromSessionMessageRow);
 
-  const readCostRows = (sessionId: string): SessionCostRow[] =>
-    db
+  const readCostRows = (sessionId: string, on: Executor = db): SessionCostRow[] =>
+    on
       .select()
       .from(sessionCosts)
       .where(eq(sessionCosts.sessionId, sessionId))
@@ -352,8 +366,8 @@ export function createSessionStore(db: Db): SessionStore {
       // read→write upgrade race) and `withBusyRetry` waits out residual contention — the ADR-0064 §2.5.I convention.
       withBusyRetry(() =>
         db.transaction(
-          () => {
-            db.insert(sessionCosts)
+          (tx) => {
+            tx.insert(sessionCosts)
               .values({
                 id: entry.id, // discarded on conflict — the target is the (session_id, model) unique index
                 sessionId: entry.sessionId,
@@ -379,7 +393,7 @@ export function createSessionStore(db: Db): SessionStore {
                 },
               })
               .run();
-            db.update(agentSessions)
+            tx.update(agentSessions)
               .set({
                 totalCostMicrocents: sql`${agentSessions.totalCostMicrocents} + ${entry.costMicrocents}`,
                 updatedAt: entry.ts,
@@ -397,11 +411,12 @@ export function createSessionStore(db: Db): SessionStore {
     loadSessionCostBreakdown: (sessionId) =>
       // ONE transaction, so the rows and the total the panel prints them under come from the SAME snapshot. Two
       // independent reads on a WAL connection can straddle another process's `recordSessionCost` commit, and the
-      // panel would print rows summing to more than its own total.
+      // panel would print rows summing to more than its own total. BOTH reads run against `tx` — a read issued on the
+      // outer `db` would leave the snapshot the moment the driver is a connection pool ({@link DbTx}).
       withBusyRetry(() =>
-        db.transaction(() => ({
-          totalCostMicrocents: loadSession(sessionId)?.totalCostMicrocents ?? 0,
-          rows: readCostRows(sessionId),
+        db.transaction((tx) => ({
+          totalCostMicrocents: loadSession(sessionId, tx)?.totalCostMicrocents ?? 0,
+          rows: readCostRows(sessionId, tx),
         })),
       ),
     loadSession,

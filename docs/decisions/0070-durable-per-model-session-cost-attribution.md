@@ -68,7 +68,7 @@ The **key is the raw model string, NOT the catalog FK** — a deliberate, load-b
 
 ### 2. The write path — one owner, one transaction, on every `cost:updated`
 
-`SessionStore` gains **`recordSessionCost({ sessionId, model, modelCatalogId?, inputTokens, outputTokens, costMicrocents, priced, ts })`**, which in **one** `withBusyRetry(() => db.transaction(fn, { behavior: 'immediate' }))` — the convention established by [ADR-0064](0064-live-model-catalog.md)'s 2.5.I amendment and [retry.ts](../../packages/db/src/retry.ts), and precedented by [run-history-store.ts](../../packages/db/src/run-history-store.ts) L445 — does exactly two statements:
+`SessionStore` gains **`recordSessionCost({ id, sessionId, model, modelCatalogId?, inputTokens, outputTokens, costMicrocents, priced, ts })`** — `id` is the caller's `deps.uuid()` (§6: it is the row's identity on INSERT and is discarded on conflict, since the upsert targets the `(session_id, model)` unique index) — which in **one** `withBusyRetry(() => db.transaction(fn, { behavior: 'immediate' }))` — the convention established by [ADR-0064](0064-live-model-catalog.md)'s 2.5.I amendment and [retry.ts](../../packages/db/src/retry.ts), and precedented by [run-history-store.ts](../../packages/db/src/run-history-store.ts) L445 — does exactly two statements:
 
 1. an **upsert** on `(session_id, model)` that **adds** the increment to `cost_microcents`, `input_tokens`,
    `output_tokens`, and bumps `call_count` (and `unpriced_calls` when the egress was unpriced) — **additive, never

@@ -49,7 +49,7 @@ You do **not** need a `.relavium.yaml` workflow to start a chat — that is the 
    ```
 
 2. **Pick an agent.** A session binds **one agent for its whole lifetime** (there is no
-   mid-session *agent* switching). The **model** you can change mid-chat with `/models` — a
+   mid-session *agent* switching). The **model** can be changed mid-chat with `/models` — a
    host-side **reseat** (see
    [chat-session.md](../../reference/cli/chat-session.md#model-reseat-models)). Name the agent
    at launch — a path or a `.relavium/` id:

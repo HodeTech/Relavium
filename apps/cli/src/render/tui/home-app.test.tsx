@@ -984,6 +984,10 @@ describe('RootApp — a /models reseat keeps the conversation on screen (F1)', (
     const frame = m.harness.lastFrame() ?? '';
     expect(frame).toContain('what is 2+2');
     expect(frame).toContain('and 3+3');
+    // The MODEL'S output, not just the user's. Asserting only the two `user` entries would leave a carry that kept
+    // `role === 'user'` and dropped everything else fully green — the marker is appended after the swap, so it would
+    // still be on screen — while the half of the conversation the user actually paid for silently vanished.
+    expect(frame).toContain('assistant: four');
     // The marker names BOTH ends, IN ORDER. `toContain('claude-opus-4-8')` alone would pass a REVERSED marker.
     expect(frame).toContain('claude-sonnet-4-6 → claude-opus-4-8');
 

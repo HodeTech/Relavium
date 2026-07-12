@@ -450,11 +450,13 @@ CREATE INDEX        idx_session_costs_session       ON session_costs (session_id
 > (agent-session-spec.md §"Session messages") carries the transcript body as a single
 > `content: DurableContentPart[]` array. That array is the **canonical** body and is stored as JSON in
 > **`content_parts`** — the source of truth the `@relavium/db` mapper round-trips. The remaining scalar
-> columns (`content`, `tool_calls`, `tool_call_id`, `name`, `finish_reason`, `input_tokens`,
-> `output_tokens`, `cost_microcents`) are **optional denormalized metadata** (a plain-text projection for
-> display/search and the per-message counters) the persistence layer MAY populate; they are NULL/0 when the
-> durable parts array is the sole source of a row. They keep `session_messages` in the run [`messages`](#messages)
-> shape family without forcing a session to decompose its parts. The reasoning `signature` and inline media
+> columns (`content`, `tool_calls`, `tool_call_id`, `name`, `finish_reason`, `model_id`) are **optional denormalized
+> metadata** (a plain-text projection for display/search, plus the "which model wrote this reply" label) the
+> persistence layer MAY populate; they are NULL when the durable parts array is the sole source of a row. They keep
+> `session_messages` in the run [`messages`](#messages) shape family without forcing a session to decompose its parts.
+> The per-message **cost/token counters are gone** — `input_tokens`, `output_tokens` and `cost_microcents` were
+> dropped in migration 0009 (see the note above); durable money attribution lives in [`session_costs`](#session_costs),
+> which is the only table that can express a turn whose tool loop billed two models. The reasoning `signature` and inline media
 > bytes are **structurally impossible** in `content_parts` — `DurableContentPart` has no `signature` field
 > and only handle-only media ([ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)/[ADR-0031](../../decisions/0031-llm-seam-shape-amendment-multimodal-io.md)),
 > enforced at the mapper's parse boundary on both write and read.
