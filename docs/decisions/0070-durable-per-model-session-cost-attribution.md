@@ -40,35 +40,22 @@ Considered and rejected:
 
 A new drizzle table in [schema.ts](../../packages/db/src/schema.ts), placed after `sessionMessages`; the generated migration is the next drizzle-kit file (`0009_<generated>.sql` — the name is drizzle's, never hand-picked). Its **one canonical home** is [database-schema.md](../reference/desktop/database-schema.md), under "Agent-session tables", after `session_messages` (this ADR does not restate the column table).
 
-```sql
-CREATE TABLE session_costs (
-  id                text    PRIMARY KEY NOT NULL,
-  session_id        text    NOT NULL,
-  model             text    NOT NULL,      -- the RAW provider model string from cost:updated.model
-  model_catalog_id  text,                  -- nullable FK -> model_catalog.id (a UUID); NEVER the key
-  input_tokens      integer DEFAULT 0 NOT NULL,
-  output_tokens     integer DEFAULT 0 NOT NULL,
-  cost_microcents   integer DEFAULT 0 NOT NULL,
-  call_count        integer DEFAULT 0 NOT NULL,   -- billed egresses folded into this row
-  unpriced_calls    integer DEFAULT 0 NOT NULL,   -- of which we could not price (§6)
-  created_at        integer NOT NULL,
-  updated_at        integer NOT NULL,
-  FOREIGN KEY (session_id)       REFERENCES agent_sessions(id)  ON DELETE cascade,
-  FOREIGN KEY (model_catalog_id) REFERENCES model_catalog(id)
-);
-CREATE UNIQUE INDEX idx_session_costs_session_model ON session_costs (session_id, model);
-CREATE INDEX        idx_session_costs_session       ON session_costs (session_id, cost_microcents DESC);
-```
+The columns, types and indexes are **not restated here** — they live in [database-schema.md](../reference/desktop/database-schema.md#session_costs). What this ADR fixes are the four constraints that are *decisions*, not schema trivia:
 
-Row `id`s come from the host's existing `deps.uuid()` (the pattern every other store write uses); the PK is never the conflict target — `ON CONFLICT` resolves on the `(session_id, model)` unique index.
+- **`UNIQUE (session_id, model, is_legacy)`** — the upsert target. One row per model per session, with the legacy aggregate held apart (§4).
+- **`CHECK (model <> '')`** — the DB is the last line. `cost:updated.model` is already a Zod `nonEmptyString`, but an empty-string row would be a silent, un-attributable money bucket and this table is the system of record.
+- **`call_count` / `unpriced_calls` are COUNTERS**, not booleans — the only shape foldable under an additive upsert (§6). `call_count` is **every** `cost:updated` folded into the row, priced or not; `unpriced_calls` is the **subset** of those that could not be priced. That containment is what lets `/cost` say *"price unknown for N of M calls"*, and it is why 2.6.Q pricing a model mid-session cannot corrupt the row.
+- **No free-text or JSON column.** A `session_costs` row is **secret-free by construction** — a stronger posture than `run_costs`, which relies on upstream masking.
+
+Row `id`s come from the host's existing `deps.uuid()` (the pattern every other store write uses); the PK is never the conflict target — `ON CONFLICT` resolves on the unique index above, so a repeat egress of the same model folds into the existing row and the fresh id is discarded.
 
 The **key is the raw model string, NOT the catalog FK** — a deliberate, load-bearing divergence from `run_costs` ([schema.ts](../../packages/db/src/schema.ts) L396, a nullable `model_catalog.id` FK). `cost:updated.model` is a provider string; the FK target is a catalog **UUID**, resolved by the `ModelCatalogIdResolver` that `makeCatalogIdResolver` builds ([persister.ts](../../apps/cli/src/chat/persister.ts) L18–28), which returns `undefined` for an **uncataloged** (custom, self-hosted, brand-new) model. NULLs are **DISTINCT under UNIQUE in both SQLite and Postgres**, so keying on the FK would make `ON CONFLICT` never match: every uncataloged attempt would insert a *new* row, and two different uncataloged models would collapse into one indistinguishable "unknown" bucket. `model_catalog_id` is kept as a nullable, **written** (never dead) join column for catalog enrichment. A reviewer must not "fix" this back toward `run_costs`.
 
-`model` is `NOT NULL` **and non-empty**: the schema carries a `CHECK (model <> '')`. The event type already forbids it (`cost:updated.model` is Zod `nonEmptyString`), but the DB is the last line — an empty-string row would be a silent, un-attributable money bucket, and the table is the system of record. `call_count` / `unpriced_calls` are counters — the only shape foldable under an additive upsert (§6). No column is free text or JSON: a `session_costs` row is **secret-free by construction** (a stronger posture than `run_costs`, which relies on upstream masking — [database-schema.md](../reference/desktop/database-schema.md) §"Secrets at the write boundary", which gains one sentence saying so).
+That choice has a consequence the rest of this ADR is bound by: **a model id is an arbitrary non-empty string.** A custom or self-hosted model can be named anything at all, so **no string can be reserved** — not as a marker, not as a sentinel, not as an "impossible" value. §4 is where that bites.
 
 ### 2. The write path — one owner, one transaction, on every `cost:updated`
 
-`SessionStore` gains **`recordSessionCost({ id, sessionId, model, modelCatalogId?, inputTokens, outputTokens, costMicrocents, priced, ts })`** — `id` is the caller's `deps.uuid()` (§6: it is the row's identity on INSERT and is discarded on conflict, since the upsert targets the `(session_id, model)` unique index) — which in **one** `withBusyRetry(() => db.transaction(fn, { behavior: 'immediate' }))` — the convention established by [ADR-0064](0064-live-model-catalog.md)'s 2.5.I amendment and [retry.ts](../../packages/db/src/retry.ts), and precedented by [run-history-store.ts](../../packages/db/src/run-history-store.ts) L445 — does exactly two statements:
+`SessionStore` gains **`recordSessionCost({ id, sessionId, model, modelCatalogId?, inputTokens, outputTokens, costMicrocents, priced, ts })`** — `id` is the caller's `deps.uuid()` (§6: it is the row's identity on INSERT and is discarded on conflict, since the upsert targets the `(session_id, model, is_legacy)` unique index, never the PK) — which in **one** `withBusyRetry(() => db.transaction(fn, { behavior: 'immediate' }))` — the convention established by [ADR-0064](0064-live-model-catalog.md)'s 2.5.I amendment and [retry.ts](../../packages/db/src/retry.ts), and precedented by [run-history-store.ts](../../packages/db/src/run-history-store.ts) L445 — does exactly two statements:
 
 1. an **upsert** on `(session_id, model)` that **adds** the increment to `cost_microcents`, `input_tokens`,
    `output_tokens`, and bumps `call_count` (and `unpriced_calls` when the egress was unpriced) — **additive, never
@@ -129,14 +116,22 @@ sum are fed by the same event, so a future seam that captures *more* usage simpl
 
 Every pre-migration `agent_sessions` row carries a non-zero total with **zero** rows behind it, and no backfill source exists (the per-attempt increments were discarded; `session_messages.cost_microcents` was never written). We therefore append one **DML** statement to the generated `0009` migration — a documented deviation, since drizzle-kit emits DDL only:
 
-One `INSERT … SELECT` over `agent_sessions WHERE total_cost_microcents > 0`, writing **one** row per legacy session:
-`session_id = id` (safe — exactly one row per session, so the PK can reuse it), the whole legacy total as
-`cost_microcents`, zero tokens, and the model string **`(pre-2.6.C)`** — a parenthesised sentinel that can never
-collide with a real provider model id (no provider id contains parentheses). The statement itself lives in the
-migration, not here.
+One `INSERT … SELECT` over `agent_sessions WHERE total_cost_microcents > 0`, writing **one** row per legacy session: `session_id = id` (safe — exactly one row per session, so the PK can reuse it), the whole legacy total as `cost_microcents`, zero tokens and zero counts, the label `(pre-2.6.C)` in `model`, and — decisively — **`is_legacy = 1`**. The statements live in the migrations, not here.
 
+**The flag is the identity; the string is only a label.** This ADR originally made the string the *marker*, arguing it "can never collide with a real provider model id, since no provider id contains parentheses". **That was wrong**, and it contradicted §1: `model` holds the raw provider string **precisely because** a custom or self-hosted model may be named anything. A user whose custom model is literally named `(pre-2.6.C)` would have had their real spend upserted **onto the legacy aggregate** — money merged into the un-attributable bucket, the "unavailable" row silently growing, and `/cost` reporting their actual usage as a breakdown that does not exist. Reserving a string is exactly the assumption this table is built to refuse. The discriminator therefore rides in the **unique index**: a real egress always writes `is_legacy = 0` and can never conflict with the legacy row, so the collision is impossible by construction rather than by naming convention. Such a user simply gets their own, correctly attributed row beside it.
 
-`id = session_id` is safe (exactly one row per legacy session), and a parenthesised sentinel can never collide with a real provider model id. The invariant is then true for **every row in the table**, and `/cost` renders that row honestly as "*pre-2.6.C — per-model breakdown unavailable*" rather than an implied zero. (Considered scoping the promise to post-0009 sessions instead — rejected: an invariant with a silent exception class is the kind of half-truth this ADR exists to eliminate.)
+> **Why two migrations.** `0009` (the table + the backfill) had already been applied to real databases carrying real
+> sessions by the time review caught the collision, and drizzle applies a migration by its journal timestamp — a
+> *new* one is replayed, so re-cutting `0009` would have re-run `CREATE TABLE session_costs` against the table it had
+> itself created and taken a live chat history down with it. `0009` therefore stands as shipped; **`0010`** adds the
+> column, rebuilds the unique index over it, and flags the rows `0009` had already written (their `call_count = 0` is
+> a value no real egress can produce, so the predicate is exact). A database at `0008` and a database at `0009`
+> converge on the same schema, and nobody deletes anything. One residue is unrepairable: a user who had *already*
+> resumed a legacy session and spent on a model named `(pre-2.6.C)` has that spend merged into the legacy row under
+> the old index, and the two are no longer separable — the row's total is right, its label is wrong. From `0010` on
+> it cannot happen.
+
+The invariant is then true for **every row in the table**, and `/cost` — branching on the flag — renders the legacy row honestly as "*per-model breakdown unavailable — this spend predates it*" rather than as an implied zero. (Considered scoping the promise to post-0009 sessions instead — rejected: an invariant with a silent exception class is the kind of half-truth this ADR exists to eliminate.)
 
 ### 5. The dead columns — dropped, not left as debt
 

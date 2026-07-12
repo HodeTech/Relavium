@@ -419,13 +419,14 @@ The durable **per-`(session, model)` money attribution** ([ADR-0070](../../decis
 | `input_tokens` | INTEGER | NOT NULL DEFAULT 0 |
 | `output_tokens` | INTEGER | NOT NULL DEFAULT 0 |
 | `cost_microcents` | INTEGER | NOT NULL DEFAULT 0 |
-| `call_count` | INTEGER | NOT NULL DEFAULT 0 — billed egresses folded into this row |
-| `unpriced_calls` | INTEGER | NOT NULL DEFAULT 0 — of which we could not price (a `$0` row with real tokens is **unpriced**, not free) |
+| `call_count` | INTEGER | NOT NULL DEFAULT 0 — **every** `cost:updated` folded into this row, priced or not |
+| `unpriced_calls` | INTEGER | NOT NULL DEFAULT 0 — the **subset** of `call_count` we could not price (a `$0` row with real tokens is **unpriced**, not free). `unpriced_calls <= call_count` always; `/cost` renders it as "price unknown for N of M calls" |
+| `is_legacy` | INTEGER (bool) | NOT NULL DEFAULT 0 — `1` **only** on the aggregate row a pre-2.6.C session was backfilled with (0009 writes the row, **0010** adds this column and flags it; [ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md) §4). It is in the unique index, so a real egress (always `0`) can never upsert onto that row. **Branch on this column, never on the `model` string** — the `(pre-2.6.C)` label is not reserved, and a custom model may legally be named it |
 | `created_at` | INTEGER | NOT NULL |
 | `updated_at` | INTEGER | NOT NULL |
 
 ```sql
-CREATE UNIQUE INDEX idx_session_costs_session_model ON session_costs (session_id, model);
+CREATE UNIQUE INDEX idx_session_costs_session_model ON session_costs (session_id, model, is_legacy);
 CREATE INDEX        idx_session_costs_session       ON session_costs (session_id, cost_microcents);
 ```
 

@@ -529,12 +529,22 @@ export const sessionCosts = sqliteTable(
     // and unpriced egresses. A boolean would become meaningless the moment that happens (ADR-0070 §6).
     callCount: tokenCount('call_count'),
     unpricedCalls: tokenCount('unpriced_calls'),
+    // The legacy discriminator (ADR-0070 §4; column added by migration 0010). 0009's backfill wrote ONE aggregate
+    // row per pre-2.6.C session — a
+    // real total with no per-model breakdown behind it — and it must be distinguishable from a real model row by the
+    // SCHEMA, never by its `model` string. The sentinel string alone cannot do it: `model` is the RAW provider id
+    // precisely BECAUSE a custom/self-hosted id can be any non-empty string (see `model` above), so "no real id looks
+    // like the sentinel" is the one assumption this table is built to refuse. It rides in the unique index, so a real
+    // egress (always `false`) can never upsert ONTO the legacy row — not even one whose model is literally the
+    // sentinel. `/cost` branches on this column, not on a string compare.
+    isLegacy: integer('is_legacy', { mode: 'boolean' }).notNull().default(false),
     createdAt: epochMs('created_at').notNull(),
     updatedAt: epochMs('updated_at').notNull(),
   },
   (t) => [
-    // The upsert target. One row per (session, model) — the shape the additive fold needs.
-    uniqueIndex('idx_session_costs_session_model').on(t.sessionId, t.model),
+    // The upsert target. One row per (session, model, isLegacy) — the shape the additive fold needs, with the legacy
+    // aggregate held apart from the real rows by construction rather than by convention.
+    uniqueIndex('idx_session_costs_session_model').on(t.sessionId, t.model, t.isLegacy),
     // Covering the `/cost` read: per-session, ordered by spend.
     index('idx_session_costs_session').on(t.sessionId, t.costMicrocents),
     // The DB is the system of record: an empty-string model would be a silent, un-attributable money bucket. The

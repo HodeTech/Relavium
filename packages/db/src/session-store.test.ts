@@ -1,14 +1,26 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
 import { eq } from 'drizzle-orm';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
-import { agentSessions, llmProviders, modelCatalog, sessionMessages } from './schema.js';
-import { createSessionStore, fromAgentSessionRow, type SessionStore } from './session-store.js';
+import {
+  agentSessions,
+  llmProviders,
+  modelCatalog,
+  sessionCosts,
+  sessionMessages,
+} from './schema.js';
+import {
+  createSessionStore,
+  fromAgentSessionRow,
+  LEGACY_COST_SENTINEL,
+  type SessionStore,
+} from './session-store.js';
 
 /** Seed a provider + model_catalog row so a session/message `model_id` FK resolves (catalog UUID). */
 function seedModelCatalog(client: DbClient): void {
@@ -608,6 +620,53 @@ describe('session_costs — the ADR-0070 reconciliation invariant', () => {
       ts: 1,
     });
 
+  it('a real egress can NEVER fold into the legacy row — not even one whose model IS the sentinel string', () => {
+    // The collision the `is_legacy` discriminator exists to make impossible. `model` is the RAW provider id, and a
+    // custom/self-hosted model may be named anything, so a reserved "sentinel" string is not a defence — a user can
+    // name a model `(pre-2.6.C)`. Had the unique index stayed `(session_id, model)`, this egress would have upserted
+    // ONTO the backfilled aggregate: real money merged into the un-attributable bucket, the legacy row silently
+    // growing, and `/cost` rendering the user's actual spend as "breakdown unavailable".
+    store.createSession(makeSession());
+
+    // The 0009 backfill's row, written exactly as the migration writes it: the whole legacy total, no breakdown.
+    client.db
+      .insert(sessionCosts)
+      .values({
+        id: 'legacy-row',
+        sessionId: 'sess-1',
+        model: LEGACY_COST_SENTINEL,
+        inputTokens: 0,
+        outputTokens: 0,
+        costMicrocents: 4000,
+        callCount: 0,
+        unpricedCalls: 0,
+        isLegacy: true,
+        createdAt: 1,
+        updatedAt: 1,
+      })
+      .run();
+    client.db
+      .update(agentSessions)
+      .set({ totalCostMicrocents: 4000 })
+      .where(eq(agentSessions.id, 'sess-1'))
+      .run();
+
+    spend(LEGACY_COST_SENTINEL, 600); // a REAL egress from a custom model with the unluckiest possible name
+
+    const rows = store.loadSessionCosts('sess-1');
+    expect(rows).toHaveLength(2); // TWO rows — they did not merge
+
+    const legacy = rows.find((r) => r.isLegacy);
+    const real = rows.find((r) => !r.isLegacy);
+    expect(legacy?.costMicrocents).toBe(4000); // the aggregate is untouched: it can never grow
+    expect(legacy?.callCount).toBe(0); // …and never claims calls it structurally cannot have
+    expect(real?.costMicrocents).toBe(600); // the user's real spend is attributed to the user's real model
+    expect(real?.callCount).toBe(1);
+
+    expect(sumRows('sess-1')).toBe(4600);
+    expect(total('sess-1')).toBe(4600); // THE INVARIANT still holds across the split
+  });
+
   it('a TWO-MODEL turn (the tool loop failing over mid-turn) reconciles — the case no per-message column can hold', () => {
     store.createSession(makeSession());
     spend('claude-sonnet-4-6', 300); // tool-loop iteration 1
@@ -766,5 +825,125 @@ describe('session_costs — the ADR-0070 reconciliation invariant', () => {
     expect(store.loadSession('sess-2')?.totalCostMicrocents).toBe(200); // no PK collision across sessions
     expect(store.loadSessionCosts('sess-1')).toHaveLength(1);
     expect(store.loadSessionCosts('sess-2')).toHaveLength(1);
+  });
+});
+
+/**
+ * MIGRATION 0009's BACKFILL — the statement that makes the ADR-0070 invariant true for sessions that predate the
+ * table (§4). It had ZERO coverage, and that is not a theoretical gap: while regenerating 0009 the
+ * `--> statement-breakpoint` between the last DDL and this DML was lost, gluing the INSERT onto a `DROP COLUMN` so it
+ * would never have run — and every test in the repo stayed green. A legacy user would have shipped with a session
+ * whose total says $0.42 and whose breakdown is empty: the exact "invariant with a silent exception class" the ADR
+ * exists to eliminate.
+ *
+ * Simulating the backfilled row (as the collision test above does) cannot catch that. This runs the REAL migration:
+ * stage the schema at 0008, write a session that spent money back when no per-model attribution existed, then apply
+ * 0009 and demand the row be there.
+ */
+describe('migrations 0009 + 0010 — the legacy backfill and its discriminator (ADR-0070 §4)', () => {
+  const SHIPPED = join(process.cwd(), 'drizzle');
+
+  /** A migrations folder containing only `0000..maxIdx` — lets a test stand a DB up at an OLDER schema and then
+   *  upgrade it, which is the only way to exercise a migration's DML against rows that already exist. */
+  const stageUpTo = (maxIdx: number, dir: string): void => {
+    const journal = JSON.parse(readFileSync(join(SHIPPED, 'meta', '_journal.json'), 'utf8')) as {
+      entries: { idx: number; tag: string }[];
+    };
+    const kept = journal.entries.filter((e) => e.idx <= maxIdx);
+    expect(kept.length).toBe(maxIdx + 1); // the staging is real — fail loudly if a migration went missing
+    mkdirSync(join(dir, 'meta'), { recursive: true });
+    for (const e of kept) copyFileSync(join(SHIPPED, `${e.tag}.sql`), join(dir, `${e.tag}.sql`));
+    writeFileSync(
+      join(dir, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries: kept }),
+    );
+  };
+
+  /** A DB at `atIdx`, holding one session that spent `spend` back when nothing could attribute it. */
+  const legacyDbAt = (atIdx: number, spend: number, dir: string): DbClient => {
+    stageUpTo(8, dir); // BEFORE session_costs existed
+    const c = createClient(':memory:');
+    migrate(c.db, { migrationsFolder: dir });
+    createSessionStore(c.db).createSession(
+      makeSession({ id: 'legacy-1', totalCostMicrocents: spend }),
+    );
+    if (atIdx > 8) {
+      const upgrade = mkdtempSync(join(tmpdir(), 'relavium-mig-up-'));
+      try {
+        stageUpTo(atIdx, upgrade);
+        migrate(c.db, { migrationsFolder: upgrade });
+      } finally {
+        rmSync(upgrade, { recursive: true, force: true });
+      }
+    }
+    return c;
+  };
+
+  it('a FRESH install (0008 → 0010 in one step) lands one is_legacy row with the whole pre-2.6.C total', () => {
+    const staged = mkdtempSync(join(tmpdir(), 'relavium-mig-'));
+    const legacy = legacyDbAt(8, 4200, staged);
+    try {
+      migrate(legacy.db, { migrationsFolder: SHIPPED }); // 0009 (CREATE + BACKFILL) then 0010 (the flag)
+
+      const rows = createSessionStore(legacy.db).loadSessionCosts('legacy-1');
+      expect(rows).toHaveLength(1); // the DML ran at all — a lost statement-breakpoint fails exactly here
+      expect(rows[0]?.isLegacy).toBe(true); // flagged, so /cost discloses rather than implying a zero
+      expect(rows[0]?.model).toBe(LEGACY_COST_SENTINEL); // …and labelled
+      expect(rows[0]?.costMicrocents).toBe(4200); // the WHOLE legacy total, not a fraction
+      expect(rows[0]?.callCount).toBe(0); // counts it structurally cannot have are not invented
+      // THE INVARIANT — now true for a session that predates the table entirely, which is the point of §4.
+      expect(rows.reduce((n, r) => n + r.costMicrocents, 0)).toBe(4200);
+    } finally {
+      legacy.sqlite.close();
+      rmSync(staged, { recursive: true, force: true });
+    }
+  });
+
+  it('an EXISTING 0009 database upgrades to 0010 — the already-backfilled rows get flagged, nothing is lost', () => {
+    // THE REAL UPGRADE PATH, and the reason the discriminator is a second migration rather than an edit to 0009: by
+    // the time review found the collision, 0009 had already been applied to real databases carrying real sessions.
+    // Rewriting it would have changed its hash, so drizzle would replay it and `CREATE TABLE session_costs` would
+    // fail against the table it had itself created — destroying a real chat history to fix a cosmetic bug.
+    const staged = mkdtempSync(join(tmpdir(), 'relavium-mig-'));
+    const legacy = legacyDbAt(9, 4200, staged); // stopped AT 0009: the row exists, unflagged, no is_legacy column
+    try {
+      migrate(legacy.db, { migrationsFolder: SHIPPED }); // 0010 alone: ADD COLUMN + reindex + flag
+
+      const store9 = createSessionStore(legacy.db);
+      const rows = store9.loadSessionCosts('legacy-1');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.isLegacy).toBe(true); // 0010's UPDATE found the 0009-backfilled row
+      expect(rows[0]?.costMicrocents).toBe(4200); // …and did not disturb the money
+      expect(store9.loadSession('legacy-1')?.totalCostMicrocents).toBe(4200); // THE INVARIANT survives the upgrade
+
+      // …and the collision is closed from here on: a real egress on the sentinel-named model gets its OWN row.
+      store9.recordSessionCost({
+        id: 'sc-1',
+        sessionId: 'legacy-1',
+        model: LEGACY_COST_SENTINEL,
+        inputTokens: 5,
+        outputTokens: 5,
+        costMicrocents: 800,
+        priced: true,
+        ts: 2,
+      });
+      const after = store9.loadSessionCosts('legacy-1');
+      expect(after).toHaveLength(2); // it did NOT fold into the legacy aggregate
+      expect(after.find((r) => r.isLegacy)?.costMicrocents).toBe(4200); // the bucket never grew
+      expect(after.find((r) => !r.isLegacy)?.costMicrocents).toBe(800);
+      expect(store9.loadSession('legacy-1')?.totalCostMicrocents).toBe(5000);
+    } finally {
+      legacy.sqlite.close();
+      rmSync(staged, { recursive: true, force: true });
+    }
+  });
+
+  it('backfills NOTHING for a session that never spent — no empty legacy rows', () => {
+    // The WHERE total_cost_microcents > 0 guard. Without it every zero-spend session would carry a $0 "breakdown
+    // unavailable" row it does not need, and /cost would disclose a limitation that does not apply to it.
+    const rows = store.loadSessionCosts('sess-never');
+    store.createSession(makeSession({ id: 'sess-never' }));
+    expect(rows).toEqual([]);
+    expect(store.loadSessionCosts('sess-never')).toEqual([]);
   });
 });

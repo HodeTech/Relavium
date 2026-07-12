@@ -157,6 +157,7 @@ describe('costNotice — the per-model breakdown', () => {
     costMicrocents: 0,
     callCount: 1,
     unpricedCalls: 0,
+    isLegacy: false,
     ...over,
   });
 
@@ -194,10 +195,11 @@ describe('costNotice — the per-model breakdown', () => {
     expect(out).toContain('price unknown for 2 of 5 calls');
   });
 
-  it('a LEGACY session renders its sentinel honestly — not as a single-model session', () => {
+  it('a LEGACY session renders its aggregate honestly — not as a single-model session', () => {
     const out = costNotice(4200, [
       row({
         model: LEGACY_COST_SENTINEL,
+        isLegacy: true,
         costMicrocents: 4200,
         callCount: 0,
         inputTokens: 0,
@@ -208,6 +210,17 @@ describe('costNotice — the per-model breakdown', () => {
     expect(out).not.toContain('calls'); // its counts are structurally 0 — it must never claim them
   });
 
+  it('a CUSTOM model named exactly like the sentinel is a REAL row — the flag identifies legacy, not the string', () => {
+    // `model` is the raw provider id, and a custom/self-hosted model may be named anything — so no string can be
+    // reserved. If the panel branched on the string, this user's real spend would render as "breakdown unavailable"
+    // and their calls and tokens would vanish from a money surface. The row carries `isLegacy: false`; that decides.
+    const out = costNotice(3000, [
+      row({ model: LEGACY_COST_SENTINEL, isLegacy: false, costMicrocents: 3000, callCount: 4 }),
+    ]);
+    expect(out).not.toContain('breakdown unavailable');
+    expect(out).toContain('(4 calls, 300 tok)'); // its real work, attributed to it
+  });
+
   it('a RESUMED legacy session that spends AGAIN keeps the sentinel honest beside its real model rows', () => {
     // The likeliest way a user meets this table — and the case a panel-level (rows.length === 1) special case misses.
     // Rendered through the normal path the sentinel would print `$0.0420  40%  …  (0 calls, 0 tok)`: real money, zero
@@ -216,6 +229,7 @@ describe('costNotice — the per-model breakdown', () => {
       row({ model: 'claude-opus-4-8', costMicrocents: 6000, callCount: 3 }),
       row({
         model: LEGACY_COST_SENTINEL,
+        isLegacy: true,
         costMicrocents: 4000,
         callCount: 0,
         inputTokens: 0,

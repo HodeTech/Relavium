@@ -28,9 +28,14 @@ ALTER TABLE `session_messages` DROP COLUMN `cost_microcents`;--> statement-break
 -- half-truth ADR-0070 exists to eliminate.
 --
 -- One row per legacy session. `id = session_id` is safe (exactly one row per session, so the PK can reuse it). The
--- model is the sentinel `(pre-2.6.C)`: parenthesised, so it can never collide with a real provider model id (no
--- provider id contains parentheses), and it satisfies the non-empty CHECK. `/cost` renders it honestly as
+-- model is the label `(pre-2.6.C)`, which satisfies the non-empty CHECK. `/cost` renders the row honestly as
 -- "per-model breakdown unavailable — session predates per-model attribution" rather than as an implied zero.
+--
+-- CORRECTION, see 0010: this migration originally argued the label "can never collide with a real provider model id,
+-- since no provider id contains parentheses". That is FALSE, and it contradicts the very reason `model` holds the raw
+-- provider string — a custom or self-hosted model may be named anything, so no string can be reserved. Migration 0010
+-- adds an `is_legacy` discriminator, puts it in the unique index, and makes the collision impossible by construction.
+-- Nothing may branch on this label; branch on `is_legacy`.
 INSERT INTO `session_costs` (
   `id`, `session_id`, `model`, `model_catalog_id`,
   `input_tokens`, `output_tokens`, `cost_microcents`, `call_count`, `unpriced_calls`,

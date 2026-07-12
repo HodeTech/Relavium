@@ -167,12 +167,15 @@ export function fromSessionMessageRow(row: SessionMessageRow): SessionMessage {
  * the clock, mirroring how the engine takes them from its host.
  */
 /**
- * The model string the ADR-0070 migration backfills for a session that predates per-model attribution — one row
- * carrying the whole legacy total, because the per-attempt increments that would have split it were never kept.
+ * The DISPLAY LABEL migration 0009 writes into the `model` column of a legacy session's aggregate row (ADR-0070 §4) —
+ * one row carrying the whole pre-2.6.C total, because the per-attempt increments that would have split it were never
+ * kept. The CANONICAL home of the string (CLAUDE.md rule 8).
  *
- * The CANONICAL home of this value (CLAUDE.md rule 8). It is written by migration 0009 and read by every surface
- * that renders a breakdown; a copy on the other side of the package boundary could drift, and a drift would silently
- * turn the honest "breakdown unavailable" line into a model row literally named `(pre-2.6.C)`.
+ * It is a label, NOT an identity: `SessionCostRow.isLegacy` is what identifies the row, and that is the flag every
+ * consumer must branch on. Reserving a model string was considered and REJECTED — `model` holds the raw provider id
+ * exactly because a custom or self-hosted model may be named anything, so "no real id looks like this one" is the
+ * assumption the table exists to refuse. A user whose custom model is literally named `(pre-2.6.C)` gets their own,
+ * correctly-attributed row; the flag keeps the two apart in the unique index.
  */
 export const LEGACY_COST_SENTINEL = '(pre-2.6.C)';
 
@@ -204,9 +207,19 @@ export interface SessionCostRow {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly costMicrocents: number;
+  /** Every `cost:updated` folded into this row — priced or not. {@link unpricedCalls} is a SUBSET of it. */
   readonly callCount: number;
   /** Of `callCount`, how many could not be priced. `> 0` ⇒ a free-LOOKING row is not a free model. */
   readonly unpricedCalls: number;
+  /**
+   * The 0009 backfill's aggregate for a pre-2.6.C session (ADR-0070 §4): a real total with no breakdown behind it.
+   *
+   * Consumers branch on THIS, never on {@link LEGACY_COST_SENTINEL} — the sentinel is the row's display label, not
+   * its identity. `model` holds the raw provider id precisely because a custom model may be named anything, so no
+   * string can be reserved against collision; the flag is in the unique index instead, which is what makes a real
+   * egress structurally unable to fold into this row.
+   */
+  readonly isLegacy: boolean;
 }
 
 export interface SessionStore {
@@ -337,6 +350,7 @@ export function createSessionStore(db: Db): SessionStore {
         costMicrocents: r.costMicrocents,
         callCount: r.callCount,
         unpricedCalls: r.unpricedCalls,
+        isLegacy: r.isLegacy,
       }));
 
   return {
@@ -369,20 +383,27 @@ export function createSessionStore(db: Db): SessionStore {
           (tx) => {
             tx.insert(sessionCosts)
               .values({
-                id: entry.id, // discarded on conflict — the target is the (session_id, model) unique index
+                id: entry.id, // discarded on conflict — the target is the unique index, never the PK
                 sessionId: entry.sessionId,
                 model: entry.model,
                 modelCatalogId: entry.modelCatalogId ?? null,
                 inputTokens: entry.inputTokens,
                 outputTokens: entry.outputTokens,
                 costMicrocents: entry.costMicrocents,
+                // Every egress counts once, priced or not; `unpricedCalls` is the SUBSET that could not be priced,
+                // which is what lets `/cost` say "price unknown for N of M calls".
                 callCount: 1,
                 unpricedCalls: entry.priced ? 0 : 1,
+                // A real egress is NEVER legacy. This is not decoration: it rides in the conflict target below, so a
+                // live cost event cannot fold into the 0009 backfill's aggregate row — not even one whose model
+                // string is literally LEGACY_COST_SENTINEL. Real money can never merge into the un-attributable
+                // bucket, and the bucket can never grow.
+                isLegacy: false,
                 createdAt: entry.ts,
                 updatedAt: entry.ts,
               })
               .onConflictDoUpdate({
-                target: [sessionCosts.sessionId, sessionCosts.model],
+                target: [sessionCosts.sessionId, sessionCosts.model, sessionCosts.isLegacy],
                 set: {
                   inputTokens: sql`${sessionCosts.inputTokens} + ${entry.inputTokens}`,
                   outputTokens: sql`${sessionCosts.outputTokens} + ${entry.outputTokens}`,

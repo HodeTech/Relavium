@@ -2,7 +2,7 @@ import type { CompactionResult, TrimResult } from '@relavium/core';
 
 import type { CatalogEntry } from '../workflows/catalog.js';
 import { sanitizeInline, stripTerminalControls } from '../render/tui/chat-projection.js';
-import { LEGACY_COST_SENTINEL, type SessionCostRow } from '@relavium/db';
+import type { SessionCostRow } from '@relavium/db';
 
 import { formatCostUsd } from '../render/tui/format.js';
 
@@ -42,12 +42,15 @@ export function costNotice(totalCostMicrocents: number, rows: readonly SessionCo
       totalCostMicrocents > 0 ? Math.round((r.costMicrocents / totalCostMicrocents) * 100) : 0;
     const money = `  ${formatCostUsd(r.costMicrocents)}  ${String(share).padStart(3)}%`;
 
-    // The legacy sentinel is handled PER ROW, not per panel. A resumed pre-2.6.C session that spends AGAIN carries
-    // BOTH the sentinel and real model rows — the likeliest way a user meets this table — and rendering the sentinel
+    // The legacy row is handled PER ROW, not per panel. A resumed pre-2.6.C session that spends AGAIN carries BOTH the
+    // legacy aggregate and real model rows — the likeliest way a user meets this table — and rendering the aggregate
     // through the normal path would print `$0.0420  40%  before per-model attribution  (0 calls, 0 tok)`: real money,
     // zero calls, zero tokens, with the "unavailable" disclosure gone from the panel entirely. Its counts are
     // structurally 0 (the per-attempt increments it would have needed were never kept), so it must never claim them.
-    if (r.model === LEGACY_COST_SENTINEL) {
+    //
+    // The branch is on the row's `isLegacy` FLAG, never on its model string. A string compare would misrender a user's
+    // custom model that happens to be named LEGACY_COST_SENTINEL as "breakdown unavailable" and hide its real spend.
+    if (r.isLegacy) {
       return `${money}  before per-model attribution — breakdown unavailable (this spend predates it)`;
     }
 

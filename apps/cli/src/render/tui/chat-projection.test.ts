@@ -1103,7 +1103,7 @@ describe('the reseat carry is O(n) — the perf claim ADR-0059 makes', () => {
    * per-entry wrap would be invisible to it. A reseat always wraps entries the new viewport has never seen, so COLD
    * is the case that has to hold the budget, and COLD is what this times.
    */
-  const medianWrapMs = (make: () => TranscriptEntry[], samples = 5): number => {
+  const sampleWrapMs = (make: () => TranscriptEntry[], samples: number): number[] => {
     const runs: number[] = [];
     for (let i = 0; i < samples; i += 1) {
       const fresh = make(); // fresh objects ⇒ a cold entry cache, every sample
@@ -1111,8 +1111,26 @@ describe('the reseat carry is O(n) — the perf claim ADR-0059 makes', () => {
       wrapTranscript(fresh, 80);
       runs.push(performance.now() - started);
     }
-    return runs.sort((a, b) => a - b)[Math.floor(samples / 2)] ?? 0;
+    return runs;
   };
+
+  /** The p50 — the honest statistic for a LATENCY claim ("a switch feels instant"), which is about the typical run. */
+  const medianWrapMs = (make: () => TranscriptEntry[], samples = 5): number => {
+    const runs = sampleWrapMs(make, samples).sort((a, b) => a - b);
+    return runs[Math.floor(samples / 2)] ?? 0;
+  };
+
+  /**
+   * The MINIMUM — the honest statistic for a SHAPE claim, which is about the cost of the work itself.
+   *
+   * GC pauses and scheduler preemption only ever ADD time, so the fastest sample is the least-contaminated estimate of
+   * what the wrap actually costs; a median carries whatever GC landed in most samples. That is not hypothetical: the
+   * median form of the ratio below passed locally and then reported **23.9x** on CI for a wrap that is provably linear
+   * — the larger workload allocates 4x as much and so eats the GC the smaller one dodges. A ratio of medians measures
+   * the runner's memory pressure. A ratio of minimums measures the algorithm.
+   */
+  const minWrapMs = (make: () => TranscriptEntry[], samples = 7): number =>
+    Math.min(...sampleWrapMs(make, samples));
 
   it('re-wraps a 200-message carried conversation well under the interactive budget', () => {
     const carried = conversation(100); // 100 turns => 200 messages: ADR-0059's stated case
@@ -1125,15 +1143,30 @@ describe('the reseat carry is O(n) — the perf claim ADR-0059 makes', () => {
     expect(elapsed).toBeLessThan(100); // a user-initiated switch must feel instant
   });
 
-  it('scales LINEARLY, not quadratically — 4x the conversation is not 16x the wrap', () => {
-    // The guard is the SHAPE. An accidental O(n^2) (a per-entry re-scan of everything before it) would blow this ratio
-    // long before it blew the budget above, and it is the only regression that makes a long chat unusable.
-    wrapTranscript(conversation(50), 80); // warm the JIT
-    const small = Math.max(
-      medianWrapMs(() => conversation(50)),
-      0.05,
-    );
-    const large = medianWrapMs(() => conversation(200)); // 4x the conversation
-    expect(large / small).toBeLessThan(10); // linear ≈ 4x; quadratic ≈ 16x
+  it('scales LINEARLY, not quadratically — 8x the conversation is not 64x the wrap', () => {
+    // The guard is the SHAPE. An accidental O(n^2) — a per-entry re-scan of everything before it — is the regression
+    // that makes a long chat unusable, and the budget above cannot catch it: quadratic at the budget's 200-message
+    // case is still only a few ms. This ratio is the only thing standing between that bug and a release.
+    //
+    // BOTH the scale factor and the threshold are MEASURED, not reasoned about. The realistic form of this bug does
+    // something CHEAP per pair (reads a length, compares an id), so the test's whole job is separating a cheap
+    // quadratic from linear — and at a 4x scale factor it cannot: injecting a real O(n^2) re-scan moved the ratio
+    // from 4.0 to only ~5, which any threshold loose enough to be stable waves straight through. At 8x they separate:
+    //
+    //     real code ...... 4.60  4.60  4.68  4.76  4.80  4.81      (six runs — sub-8x, since the per-entry cost
+    //     injected O(n^2) ................................ 16.62     amortizes as n grows; the SHAPE is what matters)
+    //
+    // 11 sits between them with 2.3x headroom over the worst clean reading and a decisive margin below the quadratic.
+    // A ratio of MINIMUMS (see `minWrapMs`) is also largely independent of how fast the runner is — numerator and
+    // denominator scale together — so this asserts something about the algorithm, not about the machine.
+    //
+    // NOTE for anyone re-verifying this by breaking it: an injected re-scan with NO side effect gets eliminated by V8
+    // and the test will pass, proving nothing. Make the loop observable (accumulate into a value the function reads).
+    wrapTranscript(conversation(200), 80); // warm the JIT, not the entry cache
+
+    const small = minWrapMs(() => conversation(200), 9); //     400 entries
+    const large = minWrapMs(() => conversation(1600), 9); // 8x: 3200 entries
+
+    expect(large / small).toBeLessThan(11);
   });
 });
