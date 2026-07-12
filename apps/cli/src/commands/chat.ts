@@ -1495,8 +1495,9 @@ function seedResumedWiring(
   color: boolean,
   now: () => number,
   uuid: () => string,
-  /** The renderer's transcript bake bound (ADR-0068 Decision (c)). Defaults to the inline tail so a caller that
-   *  forgets keeps today's behaviour; both real callers pass the resolved one. */
+  /** The renderer's transcript bake bound (ADR-0068 Decision (c)). REQUIRED and CLOSED-typed since 2.6.C — a
+   *  forgotten bound used to degrade silently to inline, dropping the carried transcript and blanking the
+   *  full-screen viewport (F1). Both callers pass the resolved one. */
   transcriptBound: TranscriptBound,
   carriedTranscript: readonly TranscriptEntry[],
 ): { store: ChatStoreController; persister: SessionPersister } {

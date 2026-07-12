@@ -929,10 +929,14 @@ describe('RootApp — mouse capture follows the in-Home chat', () => {
  * reseat tests in the first place.
  */
 describe('RootApp — a /models reseat keeps the conversation on screen (F1)', () => {
-  it('the reseated (NEW, seeded) store still renders the prior turns, with the switch marker last', async () => {
+  it('the alt-screen viewport re-renders the prior turns FROM THE SWAPPED STORE, with the switch marker last', async () => {
     const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     store.appendUser('what is 2+2');
     store.notice('assistant: four');
+    // A NON-notice tail, deliberately: the switch marker is a `notice`, so a conversation ending in one would let
+    // `at(-1).role === 'notice'` pass even if the marker were never appended. The last entry must only be able to be
+    // the marker.
+    store.appendUser('and 3+3');
 
     const m = mountHome(store, {
       alternateScreen: true,
@@ -965,11 +969,20 @@ describe('RootApp — a /models reseat keeps the conversation on screen (F1)', (
     );
     await settleFrames();
 
-    // The conversation is STILL on screen — this is the whole bug. Before the fix the reseated store opened empty and
-    // the alt-screen viewport (no native scrollback behind it) showed nothing but the notice.
+    // THE FRAME — the assertion only a mounted test can make, and the one this test exists for. `ChatRegion`
+    // subscribes to the session's store (`useSyncExternalStore`), so after the swap the viewport must re-render from
+    // the NEW store. Before the fix that store opened empty and the alt buffer (which has no native scrollback
+    // behind it) showed nothing but the switch notice. Asserting the STORE alone would only repeat what
+    // `home-controller.test.ts` and the gate unit tests already pin, and would stay green if the viewport failed to
+    // repaint from the swapped store at all.
+    const frame = m.harness.lastFrame() ?? '';
+    expect(frame).toContain('what is 2+2');
+    expect(frame).toContain('and 3+3');
+    expect(frame).toContain('claude-opus-4-8'); // the switch marker names the new model
+
+    // …and the marker lands BENEATH the conversation, not in place of it.
     const carried = m.c.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
-    expect(carried.some((e) => e.text.includes('what is 2+2'))).toBe(true);
-    expect(carried.some((e) => e.text.includes('four'))).toBe(true);
-    expect(carried.at(-1)?.role).toBe('notice'); // the switch marker lands beneath the conversation
+    expect(carried.at(-1)?.role).toBe('notice');
+    expect(carried.at(-1)?.text).toContain('claude-opus-4-8'); // the marker itself, not the fixture's own notice
   });
 });

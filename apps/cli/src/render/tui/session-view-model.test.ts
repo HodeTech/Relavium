@@ -973,11 +973,11 @@ describe('the seed transcript carry (2.6.C) and its full-screen-only gate', () =
 });
 
 /**
- * THE RENDER/STORE AGREEMENT INVARIANT (2.6.C). `ChatView` calls {@link assertRenderStoreAgree} under VITEST so a
- * future refactor that lets the render discriminator and the seed-transcript gate drift apart fails in CI instead of
- * corrupting a user's screen. Pinning the predicate HERE (rather than only through a mounted render) is what makes
- * that guard real: a render-time throw does not escape React synchronously, so an `expect(render).toThrow()` proves
- * nothing — but this does, and the mounted suites prove the wiring by simply staying green.
+ * THE RENDER/STORE AGREEMENT INVARIANT (2.6.C). {@link assertRenderStoreAgree} is called from the COMPOSITION ROOTS —
+ * `driveInk` (before `render()`), `drive-home`'s two store constructions, and the mounted-test harnesses — never from
+ * inside a component. A render-time throw would be worthless: ink builds its React root with no-op error callbacks, so
+ * a throw from a component is SWALLOWED, the tree dies, the frame empties, and the suite stays GREEN on a dead tree
+ * (probed). Pinning the predicate here is what makes the guard real.
  *
  * BOTH directions corrupt, so the assertion is an EQUALITY, not a one-sided check.
  */
