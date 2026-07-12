@@ -168,6 +168,10 @@ export function fromSessionMessageRow(row: SessionMessageRow): SessionMessage {
  */
 /** One `cost:updated` egress, as the store folds it (ADR-0070 §2). */
 export interface SessionCostEntry {
+  /** A fresh id from the host's `uuid()` — the pattern every other store write uses. It is DISCARDED on the common
+   *  path: the conflict target is the `(session_id, model)` unique index, never the PK, so a repeat egress of the
+   *  same model folds into the existing row and this id is never stored. */
+  readonly id: string;
   readonly sessionId: string;
   /** The RAW provider model string from the event — the attribution KEY (never the catalog UUID; see the schema). */
   readonly model: string;
@@ -311,7 +315,7 @@ export function createSessionStore(db: Db): SessionStore {
           () => {
             db.insert(sessionCosts)
               .values({
-                id: entry.sessionId + '\u0000' + entry.model, // deterministic; the conflict target is the UNIQUE index
+                id: entry.id, // discarded on conflict — the target is the (session_id, model) unique index
                 sessionId: entry.sessionId,
                 model: entry.model,
                 modelCatalogId: entry.modelCatalogId ?? null,

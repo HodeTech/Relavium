@@ -598,6 +598,7 @@ describe('session_costs — the ADR-0070 reconciliation invariant', () => {
 
   const spend = (model: string, cost: number, opts: { priced?: boolean } = {}): void =>
     store.recordSessionCost({
+      id: `sc-${model}-${cost}-${Math.random()}`,
       sessionId: 'sess-1',
       model,
       inputTokens: 10,
@@ -686,6 +687,7 @@ describe('session_costs — the ADR-0070 reconciliation invariant', () => {
     // A second write that violates the CHECK constraint must abort atomically.
     expect(() =>
       store.recordSessionCost({
+        id: 'sc-bad',
         sessionId: 'sess-1',
         model: '', // violates `session_costs_model_nonempty`
         inputTokens: 1,
@@ -705,5 +707,64 @@ describe('session_costs — the ADR-0070 reconciliation invariant', () => {
     spend('claude-opus-4-8', 100);
     client.db.delete(agentSessions).where(eq(agentSessions.id, 'sess-1')).run();
     expect(store.loadSessionCosts('sess-1')).toEqual([]);
+  });
+
+  it('a RESEAT (same sessionId, FRESH persister) folds ADDITIVELY — it must not zero the prior process', () => {
+    store.createSession(makeSession());
+    // process 1 (before the reseat)
+    store.recordSessionCost({
+      id: 'sc-1',
+      sessionId: 'sess-1',
+      model: 'sonnet',
+      inputTokens: 1,
+      outputTokens: 1,
+      costMicrocents: 400,
+      priced: true,
+      ts: 1,
+    });
+    // process 2 (after the reseat: SAME sessionId, a brand-new persister whose accumulators start at zero)
+    store.recordSessionCost({
+      id: 'sc-2',
+      sessionId: 'sess-1',
+      model: 'opus',
+      inputTokens: 1,
+      outputTokens: 1,
+      costMicrocents: 600,
+      priced: true,
+      ts: 2,
+    });
+    const rows = store.loadSessionCosts('sess-1');
+    expect(rows).toHaveLength(2);
+    expect(rows.reduce((n, r) => n + r.costMicrocents, 0)).toBe(1000);
+    expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(1000); // NOT 600 (an absolute write would zero sonnet)
+  });
+
+  it('two sessions on the SAME model do not collide — the key is (session, model), not the model', () => {
+    store.createSession(makeSession());
+    store.createSession(makeSession({ id: 'sess-2' }));
+    store.recordSessionCost({
+      id: 'sc-3',
+      sessionId: 'sess-1',
+      model: 'opus',
+      inputTokens: 1,
+      outputTokens: 1,
+      costMicrocents: 100,
+      priced: true,
+      ts: 1,
+    });
+    store.recordSessionCost({
+      id: 'sc-4',
+      sessionId: 'sess-2',
+      model: 'opus',
+      inputTokens: 1,
+      outputTokens: 1,
+      costMicrocents: 200,
+      priced: true,
+      ts: 1,
+    });
+    expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(100);
+    expect(store.loadSession('sess-2')?.totalCostMicrocents).toBe(200); // no PK collision across sessions
+    expect(store.loadSessionCosts('sess-1')).toHaveLength(1);
+    expect(store.loadSessionCosts('sess-2')).toHaveLength(1);
   });
 });

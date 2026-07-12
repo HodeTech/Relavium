@@ -201,6 +201,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // manual `/compact` whose summariser BILLED and then FAILED emits no compaction/turn terminal at all, so its
         // real spend would otherwise sit unflushed forever.
         deps.store.recordSessionCost({
+          id: deps.uuid(),
           sessionId: deps.sessionId,
           model: event.model, // the RAW provider string — the attribution key (never the catalog UUID)
           ...(catalogId === undefined ? {} : { modelCatalogId: catalogId }),
