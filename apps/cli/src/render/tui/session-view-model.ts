@@ -133,9 +133,18 @@ export interface SessionViewState {
  *  one: this buffer is re-wrapped every frame. */
 export const MAX_LIVE_TOKEN_CHARS = 4000;
 
-/** The transcript bake bound for the INLINE renderer — the historical behaviour, kept byte-identical. It has no
- *  viewport, so a completed entry goes straight to ink `<Static>` and the terminal's own scrollback. */
-export const INLINE_TRANSCRIPT_BOUND = MAX_LIVE_TOKEN_CHARS;
+/**
+ * The transcript bake bound for the INLINE renderer — the historical behaviour, kept byte-identical. It has no
+ * viewport, so a completed entry goes straight to ink `<Static>` and the terminal's own scrollback.
+ *
+ * Spelled as its OWN literal, not as `MAX_LIVE_TOKEN_CHARS`. The two are numerically equal today and that is a
+ * coincidence, not a relationship: `MAX_LIVE_TOKEN_CHARS` is a per-frame RENDER budget for the live token region,
+ * while this is a durable BAKE bound on a completed transcript entry. Aliasing them welded a render budget to a
+ * renderer identity — so a future tweak to the live-region budget would have silently changed what an INLINE
+ * transcript bound *is*, and `MAX_LIVE_TOKEN_CHARS` itself would type-check as a {@link TranscriptBound}. A test
+ * pins their current equality, so the byte-identical inline behaviour cannot drift unnoticed either.
+ */
+export const INLINE_TRANSCRIPT_BOUND = 4000;
 
 /**
  * The transcript bake bound for the FULL-SCREEN renderer: effectively none. Its viewport windows the transcript, so a
@@ -222,9 +231,11 @@ export function carriesSeedTranscript(transcriptBound: TranscriptBound): boolean
  *     itself, re-armed), and every completed turn bakes at the 4000-char inline bound inside a viewport that could
  *     hold the whole answer (ADR-0068 (c)).
  *
- * Throws on divergence. `ChatView` calls this under VITEST only: its job is to fail a future refactor in CI, and a
- * render-time throw has no business in a user's terminal (`apps/cli` has no React error boundary, so it would take
- * the session down over a state the shipped wiring cannot reach).
+ * Throws on divergence — and it is called from the COMPOSITION ROOTS, never from inside a component. A render-time
+ * throw is worthless here: ink builds its React root with no-op error callbacks, so a throw from a component is
+ * SWALLOWED — React tears the tree down, the frame goes empty, and the suite stays green on a dead tree. (Probed.)
+ * The real call sites are `driveInk` (before `render()`), `driveHome`'s store construction, and the mounted-test
+ * harnesses — all ordinary code, where a divergence propagates and fails loudly.
  */
 export function assertRenderStoreAgree(
   fullScreenRender: boolean,

@@ -9,7 +9,11 @@ import { ChatApp } from './chat-ink.js';
 import { liveAnswerRowBudget } from './chat-projection.js';
 import { COPIED_TOAST_MS } from './tui-constants.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
-import { FULLSCREEN_TRANSCRIPT_BOUND, INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
+import {
+  FULLSCREEN_TRANSCRIPT_BOUND,
+  INLINE_TRANSCRIPT_BOUND,
+  assertRenderStoreAgree,
+} from './session-view-model.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
 
 /**
@@ -40,6 +44,10 @@ afterEach(cleanup);
 /** Mount `ChatApp` with the minimal REQUIRED props (no optional ports) — the surface under test is the ink
  *  lifecycle + the raw-mode input/paste handlers, so the driver callbacks are inert stubs. */
 function mountChat(store: ChatStoreController): ReturnType<typeof render> {
+  // Self-policing fixture (2.6.C): this helper mounts INLINE, so its store must carry the INLINE bound — the pairing
+  // production builds. A divergent fixture would otherwise pass on a DEAD TREE: the tripwire throws inside the
+  // component and ink swallows it (no-op error callbacks), leaving an empty frame and a green test.
+  assertRenderStoreAgree(false, store.getSnapshot().state.transcriptBound);
   return render(
     <ChatApp
       store={store}
@@ -198,17 +206,20 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
     return store;
   };
 
-  const chatApp = (store: ChatStoreController): ReactElement => (
-    <ChatApp
-      store={store}
-      alternateScreen
-      onSubmit={async () => {}}
-      shouldStop={() => false}
-      onExit={() => {}}
-      onError={() => {}}
-      onModeChange={() => {}}
-    />
-  );
+  const chatApp = (store: ChatStoreController): ReactElement => {
+    assertRenderStoreAgree(true, store.getSnapshot().state.transcriptBound); // alt mount ⇒ full-screen store
+    return (
+      <ChatApp
+        store={store}
+        alternateScreen
+        onSubmit={async () => {}}
+        shouldStop={() => false}
+        onExit={() => {}}
+        onError={() => {}}
+        onModeChange={() => {}}
+      />
+    );
+  };
 
   /** Force the harness's (otherwise environment-derived) window size to a DETERMINISTIC value + fire ink 7's resize
    *  path, so `useWindowSize()` re-reads it — the harness `Stdout` has a hardcoded `columns` getter and NO `rows`

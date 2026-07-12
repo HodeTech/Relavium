@@ -9,7 +9,11 @@ import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createSuspendPort } from '../suspend.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
-import { FULLSCREEN_TRANSCRIPT_BOUND, INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
+import {
+  FULLSCREEN_TRANSCRIPT_BOUND,
+  INLINE_TRANSCRIPT_BOUND,
+  assertRenderStoreAgree,
+} from './session-view-model.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
 import { RootApp } from './home-app.js';
 import {
@@ -156,6 +160,11 @@ function mountHome(
     onExit: vi.fn(),
     onError: vi.fn(),
   });
+  // The fixture must be one production could build: an alt-screen Home gets a FULL-SCREEN store, an inline Home an
+  // INLINE one (drive-home derives both from the same `altScreenActive`). Asserted HERE — ordinary code, not a React
+  // render — so a divergent fixture fails loudly. Inside a component it would be swallowed by ink's no-op error
+  // callbacks and the test would pass on a DEAD TREE, which is exactly how two of these fixtures used to "pass".
+  assertRenderStoreAgree(opts.alternateScreen === true, store.getSnapshot().state.transcriptBound);
   const harness = render(
     <RootApp
       controller={c}
@@ -884,7 +893,7 @@ describe('RootApp — mouse capture follows the in-Home chat', () => {
   it('the INLINE Home does not CONSUME mouse-report bytes either — nothing enables the mouse there', async () => {
     // The `alternateScreen` guard in `consumeMouseReport` is what keeps the reader (and its partial-report buffer)
     // out of a renderer that never receives a report. Without it, a user typing `[<0;1;1M` would have it swallowed.
-    const m = mountHome(createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND), {}); // no `alternateScreen`
+    const m = mountHome(createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), {}); // no `alternateScreen` ⇒ INLINE store
     await settleFrames();
     m.harness.stdin.write('[<0;1;1M');
     await settleFrames();
@@ -893,7 +902,7 @@ describe('RootApp — mouse capture follows the in-Home chat', () => {
 
   it('the INLINE Home never captures, whatever the mode', async () => {
     const toggles: boolean[] = [];
-    const m = mountHome(createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND), {
+    const m = mountHome(createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), {
       setMouseCapture: (enabled) => toggles.push(enabled),
     });
     await settleFrames();

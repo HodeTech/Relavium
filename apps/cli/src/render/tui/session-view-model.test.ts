@@ -1029,3 +1029,12 @@ describe('TranscriptBound is genuinely CLOSED', () => {
     expect(FULLSCREEN_TRANSCRIPT_BOUND).not.toBe(INLINE_TRANSCRIPT_BOUND);
   });
 });
+
+describe('the two bounds are independent CONCEPTS that happen to share a value', () => {
+  it('INLINE_TRANSCRIPT_BOUND still equals MAX_LIVE_TOKEN_CHARS today — inline behaviour stays byte-identical', () => {
+    // They are spelled separately on purpose (one is a durable bake bound, the other a per-frame live-region render
+    // budget). This pins the historical equality so the inline path cannot drift silently — while keeping a tweak to
+    // the live budget from redefining what an INLINE transcript bound *is*.
+    expect(INLINE_TRANSCRIPT_BOUND).toBe(MAX_LIVE_TOKEN_CHARS);
+  });
+});

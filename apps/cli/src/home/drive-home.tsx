@@ -46,6 +46,7 @@ import { resolveCopyOnSelect, resolveMouseMode, resolveRenderMode } from '../ren
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
+import { assertRenderStoreAgree } from '../render/tui/session-view-model.js';
 import { createMentionReader } from '../render/tui/mention.js';
 import {
   createHomeController,
@@ -480,6 +481,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         undefined,
         transcriptBoundFor(altScreenActive),
       );
+      // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
+      // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
+      assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
       // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read FRESH per chat from the SAME `history.db` (empty map
       // on a read fault). Static `MODEL_PRICING` still wins.
       const resolvePrice = readUserPricingOverlay(opened.db);
@@ -569,6 +573,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         },
         transcriptBoundFor(altScreenActive),
       );
+      // TRIPWIRE (2.6.C): the store's transcript bound and the renderer both derive from `altScreenActive`, so they
+      // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
+      assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
       storeRef.current = store; // from here a budget warning renders in the transcript, not on the alt buffer
       return wireHomeChatSession(built, store, {
         open: false,
