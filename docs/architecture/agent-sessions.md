@@ -69,8 +69,10 @@ and (Phase 2) a cloud worker.
 ## How `AgentSession` wraps `AgentRunner`
 
 A session is a state machine around a single agent turn. `start(agentRef, context)`
-binds **one** agent and its `fallback_chain` for the whole conversation (no mid-session
-agent switching in Phase 1) and allocates a `sessionId`. Each `sendMessage(text)` runs
+binds **one** agent for the whole conversation (no mid-session *agent* switching) and
+allocates a `sessionId`. The **model** and its memoized `fallback_chain` belong to the
+*instance*, not the session id: the CLI's mid-chat **reseat** (`/models`) resumes a new
+instance on a new model and rebuilds the chain for it ([ADR-0059](../decisions/0059-cli-mid-session-model-reseat.md)). Each `sendMessage(text)` runs
 **one assistant turn** through the *same* `AgentRunner` a workflow `agent` node uses:
 
 1. The persisted `session_messages` are projected into the seam's `LlmMessage` shape

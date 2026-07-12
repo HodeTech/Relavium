@@ -21,9 +21,13 @@ the seam rather than restating them.
 
 ## What a session is (and is not)
 
-- A session **binds one agent** (an `.agent.yaml`, [agent-yaml-spec.md](agent-yaml-spec.md)) and its
-  `fallback_chain` for the whole conversation. There is **no mid-session agent switching** in Phase 1;
-  multi-agent orchestration remains a *workflow* concern.
+- A session **binds one agent** (an `.agent.yaml`, [agent-yaml-spec.md](agent-yaml-spec.md)) for the whole
+  conversation. There is **no mid-session agent switching**; multi-agent orchestration remains a *workflow*
+  concern. The **model** and its memoized `fallback_chain`, by contrast, belong to the `AgentSession`
+  **instance**: the CLI's mid-chat **reseat** (`/models`) resumes a *new* instance on the chosen model and
+  rebuilds the chain for it — the session id is unchanged, the instance is not
+  ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md); behaviour in
+  [chat-session.md](../cli/chat-session.md#model-reseat-models)). Each instance still has exactly one model.
 - A session is **multi-turn and stateful**: each user message produces an assistant turn that may
   include tool-call round-trips, exactly like a workflow `agent` node — the difference is the *entry
   point and lifetime*, not the execution.
