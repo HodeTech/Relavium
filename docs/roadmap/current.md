@@ -15,7 +15,8 @@ breakdown, now historical, is in
 2026-07-08); its plan is in
 [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md).
 Workstream **2.6.F (platform floor + the full-screen TUI renderer)** is **merged to `main`**
-(PR #74, 2026-07-11) — see [Active now](#what-is-active-now).
+(PR #74, 2026-07-11). **2.6.C** (the reseat transcript-carry + the `/cost` per-model breakdown) is **complete on
+`development`** (2026-07-12, PR pending) — see [Active now](#what-is-active-now).
 
 ## Where we are
 
@@ -70,6 +71,39 @@ with the Step-4b-3 wrap cache — so a >4000-character answer was still clipped 
 it; that `displayWidth` under-counted 8 539 code points against `ink`'s own width function; and that a keyboard
 Ctrl-C during a Home hatch stranded mouse reporting on the user's shell. All folded, each with a break-verified
 regression test.
+
+### Phase 2.6.C — reseat transcript-carry + the `/cost` per-model breakdown (complete on `development`, 2026-07-12)
+
+Driven by two maintainer manual-test findings. **F1:** a mid-session `/models` reseat **blanked the alt-screen
+viewport** — the reseat builds a fresh view store, and on the full-screen renderer (the TTY default since 2.6.F, with
+no native scrollback behind it) that store *is* the scrollback, so the whole conversation vanished the moment a user
+switched models. The durable transcript and the new model's context were never at risk; the loss was the view. The
+reseat now carries the rendered conversation, gated to full-screen (a seeded **inline** store would re-print the
+conversation over the copy ink's `<Static>` already put in the terminal's scrollback), and the switch notice lands
+**beneath** it as an inline `⇄ model changed <old> → <new>` marker, keeping ADR-0059's bound disclosure clause.
+
+**`/cost`** now shows where the money went, behind a new
+[ADR-0070](../decisions/0070-durable-per-model-session-cost-attribution.md): a durable `session_costs` table with the
+invariant **`SUM(rows) == agent_sessions.total_cost_microcents`**, true by construction. ADR-0059 had planned to
+derive the breakdown from the per-message `model_id`, which **cannot work** — one row holds one model, but a turn
+whose tool loop fails over bills two. Along the way it closed a **live bug**: `total_cost_microcents` was being SET
+blindly by five writers, so two `chat-resume` processes could permanently corrupt a session's total. It now has a
+single owner. `session_messages`' never-written token/cost columns were dropped rather than left as a second, wrong,
+zero-valued source.
+
+Four adversarial review rounds ran over the work and each found something real — including that a tripwire I shipped
+was **armed in production** and **swallowed by ink** (so it could never fail), that a perf harness measured a
+**pointer assignment** while its ADR note claimed it verified an O(n) bound, and that the `/cost` DB read — the
+step's central change — had **zero test coverage** at any layer. All folded, each with a break-verified regression.
+
+**Open obligations carried out of 2.6.C:**
+
+- **`chat-resume` opens on an empty viewport** — it has never repainted prior turns, in any mode or version (nothing
+  projects `session_messages` into rendered entries). Not a 2.6.F regression; tracked in
+  [deferred-tasks.md](deferred-tasks.md).
+- **Reported spend is a systematic under-estimate of the provider's invoice** — an egress that streamed content but
+  ended without a usage chunk, and a mid-stream failure, are recorded as 0 on *both* sides of the invariant. That is
+  a usage-capture gap in the seam, filed against **2.6.Q** (ADR-0070 §3).
 
 **Open obligations carried out of 2.6.F:**
 

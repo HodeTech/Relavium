@@ -213,11 +213,20 @@ approval; `/create` works from the Home; a malformed agent YAML surfaces its fie
 diagnostic on every surface; the untrusted-import consent gate holds; a security review of the write
 surface + the secret-taint gate + the import gate passes. **Required ADR:** shared with 2.6.A (ADR-0058).
 
-### 2.6.C — Mid-session model reseat (shipped early) — residual + transcript-carry fix
+### 2.6.C — Mid-session model reseat — residual + transcript-carry fix — ✅ **Done (PR pending, 2026-07-12)**
 
 > **Shipped early in 2.5.G** (ADR-0059, PR #66, 2026-07-07): the `/models` mid-chat reseat, per-message
 > `modelId` attribution, and the context-loss notice. Retained for the residual below and as the
 > cross-reference home.
+
+> **Status:** ✅ **Done (2026-07-12)** — both tasks shipped, plus the residual that turned out to need its own ADR.
+> The reseat now carries the rendered conversation (F1), with the switch marker landing beneath it; and `/cost` shows
+> a per-model breakdown backed by a new durable `session_costs` table
+> ([ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md) — the per-message `model_id` this
+> ADR originally planned to derive it from **cannot** represent a turn whose tool loop billed two models). Two
+> append-only notes were added to [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) (the
+> limitation its own alt-screen default created) and [ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md)
+> (the notice's new shape; and the perf harness it claimed existed, which did not — now delivered).
 
 **Tasks:**
 
