@@ -510,7 +510,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           .catch(() => undefined);
         cancelFired = false; // the reseated session starts with a clean cancel latch (parity with clearChat)
         next.store.notice(
-          modelSwitchNotice(target.modelId, next.store.getSnapshot().state.turnCount),
+          modelSwitchNotice(old.store.getSnapshot().state.model ?? '(unknown)', target.modelId),
         );
         set({
           session: next,

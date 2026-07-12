@@ -1016,8 +1016,13 @@ describe('chatCommand', () => {
     expect(seen).toHaveLength(2);
     expect(seen[0]).toBe(seen[1]); // a reseat CONTINUES the same session (unlike /clear's new id)
     expect(intros[0]).toBeUndefined(); // the original session has no intro
-    expect(intros[1]).toContain('Switched to claude-opus-4-8'); // the reseat disclosure intro
-    expect(intros[1]).toContain('text transcript only'); // the tool-context-not-carried disclosure
+    // The marker names BOTH ends of the switch (2.6.C) — it now lands beneath a conversation the user can still see,
+    // so "what changed" is the useful thing to say, not "here is your new model" to an empty screen.
+    expect(intros[1]).toContain('claude-sonnet-4-6 → claude-opus-4-8');
+    // ADR-0059 BINDS this disclosure clause (a host-side reseat carries the transcript text-only). Dropping it would
+    // need a superseding ADR, not a wording change — so it is asserted, not just present.
+    expect(intros[1]).toContain('text transcript only');
+    expect(intros[1]).toContain('not prior tool calls or file contents');
 
     const full = store.loadFull('id-0');
     expect(full?.session.agentSnapshot?.model).toBe('claude-opus-4-8'); // rebound to the target model

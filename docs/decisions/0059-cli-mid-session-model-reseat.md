@@ -88,3 +88,25 @@ session that drops history (rejected: poor UX — the user expects to continue).
   `AgentSession` instance still binds exactly one model for its lifetime; mid-session model switching is a
   host-side reseat (a new instance), not an in-place rebind. On acceptance (2026-07-06), ADR-0024 received a
   dated `> Amended` note + a Related forward-link to this ADR (documentation-style §7).
+
+> **Note (2026-07-12, 2.6.C).**
+>
+> 1. *"The reseat carries the **text-only** transcript"* had become true only of the **model's context**, never of the
+>    **rendered view**, once [ADR-0068](0068-full-screen-tui-renderer-ink7-harness.md)'s full-screen renderer became
+>    the TTY default: the reseat seeded a fresh view store header-only, and the alt buffer has no native scrollback, so
+>    the conversation disappeared from the screen. 2.6.C makes the sentence true of the rendered view as well — on the
+>    full-screen renderer only; the inline renderer's lines are already in the terminal's own scrollback, and re-seeding
+>    them would double-print.
+> 2. The context-loss notice now ships as an **inline transcript marker rendered after the carried conversation**
+>    (`⇄ model changed <old> → <new> — …`) rather than as the reseated session's intro line. It was an intro because the
+>    view opened empty; now it interrupts a conversation the user can still see, so it says what changed. **The
+>    disclosure this ADR binds — that the new model sees the text transcript only, not prior tool calls or file
+>    contents — is retained verbatim in substance and pinned by a test.** Position and phrasing were never bound by
+>    this ADR; the disclosure clause is.
+> 3. The Consequences below claim the reseat's O(n) cost is *"verified by the 2.6.C harness (a 200-message session
+>    reseats in well under the interactive budget)"*. **No such harness existed when that was written.** 2.6.C
+>    delivers it (`chat-store.test.ts`), and the carry makes it more load-bearing rather than less: a standalone
+>    reseat re-mounts ink and re-wraps the whole carried transcript. The harness pins both the budget and the *shape*
+>    (linear, not quadratic) — because if the carry ever gets slow, the answer is a wrap cache, not a trim: ADR-0068
+>    Decision (c) makes the full-screen bound unbounded on purpose, and trimming would re-introduce the clipping that
+>    ADR exists to fix.

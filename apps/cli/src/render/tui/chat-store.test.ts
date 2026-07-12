@@ -1,8 +1,8 @@
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
-import { createChatStore } from './chat-store.js';
-import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
+import { createChatStore, type ChatStoreController } from './chat-store.js';
+import { INLINE_TRANSCRIPT_BOUND, FULLSCREEN_TRANSCRIPT_BOUND } from './session-view-model.js';
 
 const started: SessionStreamHandleEvent = {
   type: 'session:started',
@@ -354,5 +354,64 @@ describe('createChatStore — chat mode + per-tool approval coordination (ADR-00
     expect(err).toBeInstanceOf(Error);
     if (err instanceof Error) expect(err.name).toBe('AbortError');
     expect(store.getSnapshot().approval).toBeUndefined(); // no prompt was ever shown
+  });
+});
+
+/**
+ * THE RESEAT PERF HARNESS ADR-0059 ALREADY CLAIMS EXISTS (2.6.C Step 6).
+ *
+ * ADR-0059's Consequences say the reseat's `O(n)` transcript reconstruction is *"verified by the 2.6.C harness (a
+ * 200-message session reseats in well under the interactive budget)"*. No such harness was ever written. This is it.
+ *
+ * 2.6.C makes it MORE load-bearing, not less: the reseated store is now seeded with the whole carried transcript, and
+ * on the standalone path `driveInk` unmounts and re-mounts ink around the swap — so the full conversation is
+ * re-wrapped from scratch at mount (the wrap memo is keyed on the transcript reference, which the new store changes).
+ *
+ * If this ever gets slow the answer is a WRAP CACHE, not a trim: ADR-0068 Decision (c) makes the full-screen bound
+ * effectively unbounded on purpose, and trimming the carry would re-introduce the clipping that ADR in turn exists to
+ * fix. The budget here is deliberately generous — this guards against an accidental O(n^2), not against a few ms.
+ */
+describe('the reseat carry is O(n) — the perf claim ADR-0059 makes about a harness that did not exist', () => {
+  const INTERACTIVE_BUDGET_MS = 250; // a user-initiated switch must feel instant; this guards the shape, not the ms
+
+  const seedConversation = (turns: number): ChatStoreController => {
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
+    for (let i = 0; i < turns; i += 1) {
+      store.appendUser(`question ${i}: ${'x'.repeat(200)}`);
+      store.notice(`answer ${i}: ${'y'.repeat(400)}`);
+    }
+    return store;
+  };
+
+  it('seeds a 200-message reseated store well under the interactive budget', () => {
+    const outgoing = seedConversation(100); // 100 turns => 200 messages, ADR-0059's stated case
+    const carried = outgoing.getSnapshot().state.transcript;
+    expect(carried).toHaveLength(200);
+
+    const started = performance.now();
+    const reseated = createChatStore(
+      false,
+      { model: 'claude-opus-4-8', transcript: carried },
+      FULLSCREEN_TRANSCRIPT_BOUND,
+    );
+    const elapsed = performance.now() - started;
+
+    expect(reseated.getSnapshot().state.transcript).toHaveLength(200); // the whole conversation carried
+    expect(elapsed).toBeLessThan(INTERACTIVE_BUDGET_MS);
+  });
+
+  it('scales LINEARLY, not quadratically — 4x the conversation is not 16x the cost', () => {
+    // The real risk is not the absolute time; it is someone re-introducing a per-entry copy or re-wrap inside the
+    // seed path. A quadratic seed would blow past this ratio long before it blew past the budget above.
+    const time = (turns: number): number => {
+      const carried = seedConversation(turns).getSnapshot().state.transcript;
+      const started = performance.now();
+      createChatStore(false, { transcript: carried }, FULLSCREEN_TRANSCRIPT_BOUND);
+      return performance.now() - started;
+    };
+    time(50); // warm up (JIT), so the first measurement does not pay for compilation
+    const small = Math.max(time(50), 0.01);
+    const large = time(200); // 4x the conversation
+    expect(large / small).toBeLessThan(16); // linear would be ~4x; quadratic would be ~16x. Guard the SHAPE.
   });
 });

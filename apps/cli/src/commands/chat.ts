@@ -1644,7 +1644,7 @@ async function buildReseatWiring(
     // A resumed session already landed at idle inside AgentSession.resume; start() would throw + re-emitting
     // session:started would double a terminal-less lifecycle event — so startSession is a no-op (like chat-resume).
     startSession: () => {},
-    intro: modelSwitchNotice(target.modelId, resumed.resumeState.turnCount),
+    intro: modelSwitchNotice(loaded.session.agentSnapshot.model, target.modelId),
     // The picker's `boundModel` is now the SWITCHED model — a further reseat marks it as the ✓ "you are here".
     modelPicker: buildChatModelsPort(
       deps.opened,

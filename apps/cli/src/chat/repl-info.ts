@@ -97,17 +97,26 @@ export function clearedNotice(oldSessionId: string): string {
 }
 
 /**
- * The mid-session `/models` model-SWITCH notice ([ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md))
- * — the intro line of the reseated session. It confirms the NEW model, states how many turns carried, and
- * DISCLOSES what a host-side reseat does not carry: the transcript continues **text-only**, so the new model does
- * not see prior tool calls or file contents (the same honesty the `chat-resume` family surfaces). The model id is
- * a `model_catalog` id (curated), but `sanitizeInline`-guarded defensively — a live-catalog id is provider-sourced
- * and `history.db` is shared across surfaces, so a crafted value must not smuggle a terminal escape into the notice.
+ * The mid-session `/models` model-SWITCH marker ([ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md)).
+ *
+ * It was the INTRO LINE of the reseated session, because until 2.6.C the reseated view opened EMPTY — it announced
+ * the new model to a blank screen and told the user what to do next. Now that the conversation carries across the
+ * swap (2.6.C / F1), this lands as an **inline marker BENEATH the conversation it interrupts**, so it says what
+ * actually changed: `old → new`. The turn count is gone — the turns are visibly there — and so is the "type a
+ * message" tail, which was an intro's job on an empty screen.
+ *
+ * What it must NOT lose: the DISCLOSURE that a host-side reseat carries the transcript **text-only**, so the new
+ * model does not see prior tool calls or file contents. ADR-0059 binds that clause (its Decision and Consequences
+ * both rest on it); dropping it would need a superseding ADR, not a wording change. Position and phrasing were never
+ * bound — only the disclosure.
+ *
+ * Both ids are `model_catalog` ids (curated), but `sanitizeInline`-guarded defensively: a live-catalog id is
+ * provider-sourced and `history.db` is shared across surfaces, so a crafted value must not smuggle a terminal escape
+ * into the transcript.
  */
-export function modelSwitchNotice(newModel: string, carriedTurns: number): string {
-  const turns = `${carriedTurns} prior ${carriedTurns === 1 ? 'turn' : 'turns'}`;
+export function modelSwitchNotice(oldModel: string, newModel: string): string {
   return (
-    `⇄ Switched to ${sanitizeInline(newModel)} — ${turns} carried. The new model sees the text transcript only ` +
-    `(not prior tool calls or file contents). Type a message, or /exit to quit.`
+    `⇄ model changed ${sanitizeInline(oldModel)} → ${sanitizeInline(newModel)} — the new model sees the text ` +
+    `transcript only (not prior tool calls or file contents).`
   );
 }

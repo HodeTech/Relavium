@@ -253,6 +253,22 @@ perf thresholds for the full-screen frame loop.
 > the budget-cap **warning** and the `/clear`/reseat **MCP-skipped** diagnostic — still land on the alt buffer and are
 > lost in alt mode (they must route through the CURRENT session's view-store `notice`, an architectural follow-up).
 >
+> **Amended 2026-07-12 (2.6.C — the reseat transcript loss this ADR's own defaults created).** Step-4b-3's
+> `DEFAULT_ALT_SCREEN = true` flip, combined with Decision (c)'s move of the chat transcript out of ink `<Static>` and
+> into the in-memory viewport, silently turned the ADR-0059 `/models` reseat into a **visible loss of the rendered
+> conversation**: a reseat builds a fresh view store seeded header-only, and on the alt buffer there is no native
+> scrollback to fall back on, so the whole chat vanished from the screen the moment the user switched models. (The
+> durable `history.db` transcript and the new model's context were always intact — the loss was the *view*.) It belongs
+> on the known-limitations list above, which recorded only the lesser raw-`io` notice losses.
+>
+> 2.6.C carries the outgoing store's rendered transcript into the reseated store's seed, gated on Decision (c)'s
+> renderer-injected bound: the **full-screen** renderer seeds the carry; the **inline** renderer does **not**, because
+> `driveInk` re-mounts ink per session — which resets `<Static>`'s index — so a seeded inline store would RE-PRINT the
+> whole conversation over the copy the terminal's scrollback already holds. That preserves Decision (e)'s
+> byte-identical inline path. The carry is **not trimmed**: per Decision (c) the full-screen bound is effectively
+> unbounded and the viewport windows it. The bound's type was also closed (`TranscriptBound`) and its defaults dropped,
+> so a full-screen caller can no longer silently fall back to the inline bound and blank its own viewport.
+
 > **Amended 2026-07-10 (Step 5 landed — a11y note, mouse-wheel, the copy-and-search hatches, the mouse opt-out).**
 > Step 5 is complete. Four clarifications; §e's *mechanisms* are unchanged, one of its *defaults* is not.
 >

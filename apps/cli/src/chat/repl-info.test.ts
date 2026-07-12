@@ -8,6 +8,7 @@ import {
   compactionNotice,
   costNotice,
   trimNotice,
+  modelSwitchNotice,
 } from './repl-info.js';
 
 const entry = (slug: string, valid = true): CatalogEntry => ({
@@ -99,5 +100,42 @@ describe('clearedNotice (ADR-0062 §7)', () => {
     expect(notice).not.toContain(String.fromCharCode(7)); // no BEL survives
     expect(notice).not.toContain('\n'); // the smuggled newline is collapsed — the notice stays one line
     expect(notice).toContain('relavium chat-resume'); // the static recovery text is intact
+  });
+});
+
+/**
+ * The `/models` switch MARKER (2.6.C — reshaped from ADR-0059's intro line).
+ *
+ * It used to introduce a reseated session that opened on a BLANK screen, so it announced the new model and told the
+ * user what to do next. Now the conversation carries across the swap (F1) and the marker lands beneath it — so it
+ * says what actually changed.
+ *
+ * The disclosure clause is the part ADR-0059 BINDS: a host-side reseat carries the transcript **text-only**, so the
+ * new model does not see prior tool calls or file contents. Its Decision and Consequences both rest on that, so
+ * dropping it is a superseding-ADR change, not a wording change. Pinned here so a future tidy-up cannot quietly
+ * delete it.
+ */
+describe('modelSwitchNotice — the mid-session /models marker', () => {
+  it('names BOTH ends of the switch', () => {
+    expect(modelSwitchNotice('claude-sonnet-4-6', 'claude-opus-4-8')).toContain(
+      'claude-sonnet-4-6 \u2192 claude-opus-4-8',
+    );
+  });
+
+  it("RETAINS ADR-0059's bound disclosure (text-only transcript; no prior tool calls or file contents)", () => {
+    const marker = modelSwitchNotice('a', 'b');
+    expect(marker).toContain('text transcript only');
+    expect(marker).toContain('not prior tool calls or file contents');
+  });
+
+  it('drops what the carried conversation makes redundant — the turn count and the intro tail', () => {
+    const marker = modelSwitchNotice('a', 'b');
+    expect(marker).not.toMatch(/prior turns? carried/);
+    expect(marker).not.toContain('Type a message');
+  });
+
+  it('sanitizes BOTH ids — a live-catalog id is provider-sourced and history.db is shared across surfaces', () => {
+    const marker = modelSwitchNotice(`old\u001b[31m`, `new\u001b]0;pwned`);
+    expect(marker).not.toContain('\u001b');
   });
 });
