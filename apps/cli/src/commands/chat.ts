@@ -1100,9 +1100,16 @@ export function createChatLineHandler(
         emitOutput(`could not list workflows: ${reason}`);
       }
     },
-    // `/cost` (2.5.C S4): the session's cumulative spend (the per-model breakdown is 2.6.C).
+    // `/cost` (2.5.C S4 + the 2.6.C per-model breakdown, ADR-0070): the session's spend, per model.
+    //
+    // Read from the DB, never from the in-memory store. A RESUMED session's total is seeded from the durable row and
+    // covers the whole session, while memory knows only the models used in THIS process — so an in-memory breakdown
+    // would visibly fail to sum to the total on the first `/cost` after a resume, breaking the one guarantee the
+    // panel makes. The total comes from the same row the rows reconcile against.
     showCost: () => {
-      emitOutput(costNotice(store.getSnapshot().state.cumulativeCostMicrocents));
+      const session = opened.store.loadSession(built.sessionId);
+      const rows = opened.store.loadSessionCosts(built.sessionId);
+      emitOutput(costNotice(session?.totalCostMicrocents ?? 0, rows));
     },
     // `/doctor` (2.5.C S5): a staged setup health check; `--deep` adds the network/process tier (key + MCP
     // validation). Each probe is secret-free + bounded; a thrown probe never crashes the REPL (reported as output).

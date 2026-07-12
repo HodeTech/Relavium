@@ -1,3 +1,4 @@
+import type { SessionCostRow } from '@relavium/db';
 import type { CompactionResult, TrimResult } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
@@ -137,5 +138,70 @@ describe('modelSwitchNotice — the mid-session /models marker', () => {
   it('sanitizes BOTH ids — a live-catalog id is provider-sourced and history.db is shared across surfaces', () => {
     const marker = modelSwitchNotice(`old\u001b[31m`, `new\u001b]0;pwned`);
     expect(marker).not.toContain('\u001b');
+  });
+});
+
+/**
+ * THE `/cost` PER-MODEL BREAKDOWN (ADR-0070 §7).
+ *
+ * `/cost` is a money surface, and the one guarantee it makes is that the rows sum to the total. The table's invariant
+ * (`SUM(session_costs) == agent_sessions.total_cost_microcents`) is what makes that guarantee real; these tests pin
+ * the panel's half of it — and the two honesties it must carry: an unpriced model is not a free one, and a legacy
+ * session predates attribution rather than having used a single model.
+ */
+describe('costNotice — the per-model breakdown', () => {
+  const row = (over: Partial<SessionCostRow> & { model: string }): SessionCostRow => ({
+    modelCatalogId: undefined,
+    inputTokens: 100,
+    outputTokens: 200,
+    costMicrocents: 0,
+    callCount: 1,
+    unpricedCalls: 0,
+    ...over,
+  });
+
+  it('with no rows it is the total alone — a session that has not spent says so in one line', () => {
+    expect(costNotice(0)).toBe('Session cost: $0.0000');
+  });
+
+  it('renders one line per model, and the ROWS SUM TO THE TOTAL the panel shows', () => {
+    const rows = [
+      row({ model: 'claude-opus-4-8', costMicrocents: 7500, callCount: 3 }),
+      row({ model: 'claude-sonnet-4-6', costMicrocents: 2500, callCount: 1 }),
+    ];
+    const out = costNotice(10_000, rows);
+    expect(out).toContain('claude-opus-4-8');
+    expect(out).toContain('claude-sonnet-4-6');
+    expect(out).toContain('75%'); // the share is of the authoritative total
+    expect(out).toContain('25%');
+    // The invariant, restated at the surface: what the rows add up to is what the total says.
+    const summed = rows.reduce((n, r) => n + r.costMicrocents, 0);
+    expect(summed).toBe(10_000);
+  });
+
+  it('an UNPRICED row says so — a $0.0000 row with real tokens must never read as a free model', () => {
+    const out = costNotice(0, [
+      row({ model: 'gpt-5.4-pro', costMicrocents: 0, callCount: 2, unpricedCalls: 2 }),
+    ]);
+    expect(out).toContain('price unknown for 2 of 2 calls');
+    expect(out).toContain('300 tok'); // the tokens were real, even though the money is unknown
+  });
+
+  it('a PARTIALLY unpriced row still flags the unpriced calls (2.6.Q can price a model mid-session)', () => {
+    const out = costNotice(500, [
+      row({ model: 'gpt-5.4-pro', costMicrocents: 500, callCount: 5, unpricedCalls: 2 }),
+    ]);
+    expect(out).toContain('price unknown for 2 of 5 calls');
+  });
+
+  it('a LEGACY session renders its sentinel honestly — not as a single-model session', () => {
+    const out = costNotice(4200, [row({ model: '(pre-2.6.C)', costMicrocents: 4200 })]);
+    expect(out).toContain('per-model breakdown unavailable');
+    expect(out).toContain('predates per-model attribution');
+  });
+
+  it('sanitizes the model id — it is provider-sourced and history.db is shared across surfaces', () => {
+    const out = costNotice(100, [row({ model: `evil[31m`, costMicrocents: 100 })]);
+    expect(out).not.toContain('');
   });
 });

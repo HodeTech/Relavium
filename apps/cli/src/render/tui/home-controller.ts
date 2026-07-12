@@ -944,6 +944,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     exportSession: () => undefined,
     help: () => undefined,
     showWorkflows: () => undefined,
+    // `/cost` is chat-only in the BARE Home: there is no live session to cost. (The in-Home CHAT reaches the real
+    // implementation through `createChatLineHandler`, so it gets the ADR-0070 per-model breakdown like the standalone
+    // chat does.) Now that the breakdown reads the DB rather than an in-memory counter, costing a PAST session needs
+    // only a sessionId — which is what 2.6.G's session browser will supply.
     showCost: () => undefined,
     setMode: () => undefined, // `/mode` is chat-only (not in HOME_PALETTE_COMMANDS); inert in the Home surface
     setReasoningEffort: () => undefined, // `/effort` is chat-only (ADR-0066); inert in the bare-Home surface

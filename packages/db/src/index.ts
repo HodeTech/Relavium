@@ -165,3 +165,5 @@ export {
   type ModelCatalogLiveModel,
   type ReplaceProviderModelsResult,
 } from './model-catalog-store.js';
+
+export type { SessionCostEntry, SessionCostRow } from './session-store.js';

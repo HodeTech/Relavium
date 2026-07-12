@@ -2,6 +2,8 @@ import type { CompactionResult, TrimResult } from '@relavium/core';
 
 import type { CatalogEntry } from '../workflows/catalog.js';
 import { sanitizeInline, stripTerminalControls } from '../render/tui/chat-projection.js';
+import type { SessionCostRow } from '@relavium/db';
+
 import { formatCostUsd } from '../render/tui/format.js';
 
 /**
@@ -11,9 +13,54 @@ import { formatCostUsd } from '../render/tui/format.js';
  * boundary so a crafted catalog entry can never forge a notice row or inject an escape.
  */
 
-/** The `/cost` notice — the session's cumulative spend (the per-model breakdown is Phase 2.6.C). */
-export function costNotice(cumulativeCostMicrocents: number): string {
-  return `Session cost: ${formatCostUsd(cumulativeCostMicrocents)}`;
+/** The `(pre-2.6.C)` sentinel row the ADR-0070 migration backfills for a legacy session — one row carrying the whole
+ *  legacy total, because the per-attempt increments that would have split it were never kept. */
+const LEGACY_SENTINEL = '(pre-2.6.C)';
+
+/**
+ * The `/cost` notice — the session's spend, broken down PER MODEL (ADR-0070).
+ *
+ * The rows are read from `session_costs`, NOT from an in-memory counter: a resumed session's total is seeded from the
+ * durable row and covers the whole session, while memory knows only the models used in THIS process — so an in-memory
+ * breakdown would visibly fail to sum to the total on the very first `/cost` after a resume. The table's invariant
+ * (`SUM(rows) == agent_sessions.total_cost_microcents`) is what makes the total line trustworthy: the rows are
+ * GUARANTEED to sum to it, for every session, past and future.
+ *
+ * Two honesties the panel must carry:
+ *   • an `unpriced_calls > 0` row is a model we could not PRICE, not a free one — a $0.0000 row with real tokens
+ *     would otherwise read as "this model costs nothing".
+ *   • a legacy session predates per-model attribution entirely; its one sentinel row says so rather than implying a
+ *     single-model session.
+ *
+ * The total is `agent_sessions.total_cost_microcents` — the authoritative number, and the one the budget cap enforces
+ * against (ADR-0028). It is against Relavium's own event stream, not the provider's invoice: an egress that streamed
+ * content but ended without a usage chunk, and a mid-stream failure, are both recorded as 0 on BOTH sides (ADR-0070
+ * §3), so the reported spend is a systematic under-estimate of the bill. That is stated here, not buried.
+ */
+export function costNotice(
+  totalCostMicrocents: number,
+  rows: readonly SessionCostRow[] = [],
+): string {
+  const total = `Session cost: ${formatCostUsd(totalCostMicrocents)}`;
+  if (rows.length === 0) return total;
+
+  const legacy = rows.find((r) => r.model === LEGACY_SENTINEL);
+  if (legacy !== undefined && rows.length === 1) {
+    return `${total}\n  ${formatCostUsd(legacy.costMicrocents)}  (per-model breakdown unavailable — this session predates per-model attribution)`;
+  }
+
+  const lines = rows.map((r) => {
+    const share =
+      totalCostMicrocents > 0 ? Math.round((r.costMicrocents / totalCostMicrocents) * 100) : 0;
+    const calls = `${r.callCount} ${r.callCount === 1 ? 'call' : 'calls'}`;
+    const tokens = `${r.inputTokens + r.outputTokens} tok`;
+    const unpriced =
+      r.unpricedCalls > 0 ? `  — price unknown for ${r.unpricedCalls} of ${calls}` : '';
+    const name =
+      r.model === LEGACY_SENTINEL ? 'before per-model attribution' : sanitizeInline(r.model);
+    return `  ${formatCostUsd(r.costMicrocents)}  ${String(share).padStart(3)}%  ${name}  (${calls}, ${tokens})${unpriced}`;
+  });
+  return [total, ...lines].join('\n');
 }
 
 /** The `/workflows` notice — the discovered workflow + agent catalogs (each slug sanitized), grouped by kind. A

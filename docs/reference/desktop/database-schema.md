@@ -382,15 +382,69 @@ pattern). Cascades from `agent_sessions`.
 | `finish_reason` | TEXT | NULL |
 | `model_id` | TEXT | NULL REFERENCES `model_catalog(id)` — the model that produced an assistant turn (**fallback-aware**, so the transcript shows which model answered; NULL for non-assistant rows) |
 | `compaction_dropped_through_sequence` | INTEGER | NULL — ADR-0062: set ONLY on a `role='system'` compaction/trim boundary marker; the durable `sequence_number` through which older messages are superseded (resume drops rows at/below it). Additive nullable column (migration 0006); NULL on every normal transcript row |
-| `input_tokens` | INTEGER | NOT NULL DEFAULT 0 |
-| `output_tokens` | INTEGER | NOT NULL DEFAULT 0 |
-| `cost_microcents` | INTEGER | NOT NULL DEFAULT 0 |
 | `created_at` | INTEGER | NOT NULL |
 
 ```sql
 CREATE UNIQUE INDEX idx_session_messages_seq ON session_messages (session_id, sequence_number);
 CREATE INDEX idx_session_messages_session    ON session_messages (session_id, created_at ASC);
 ```
+
+> **The per-message `input_tokens` / `output_tokens` / `cost_microcents` columns were DROPPED** (migration 0009,
+> [ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md) §5). They were never written — the
+> persister never passed a metadata payload, so every shipped row held `0` — and, decisively, a per-message cost
+> column is **structurally incapable** of holding the truth for a turn whose tool loop billed **two models**. Money
+> attribution lives in [`session_costs`](#session_costs). `model_id` **stays**: it *is* written ([ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md))
+> and remains the per-message "which model wrote this reply" label.
+
+#### `session_costs`
+
+The durable **per-`(session, model)` money attribution** ([ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md)) — what `/cost` renders.
+
+> **The invariant, true by construction for every session:**
+> `SUM(session_costs.cost_microcents) == agent_sessions.total_cost_microcents`.
+>
+> Both sides are fed by the **same** `cost:updated` egress, with the same arithmetic, in the **same transaction**,
+> from a **single owner** (`SessionStore.recordSessionCost` — `total_cost_microcents` is written by nothing else).
+> It holds across resume, reseat, failover, tool loops, compaction, errored turns and aborted turns. It is
+> **internal** consistency, not the provider's invoice: an egress that streamed content but ended without a usage
+> chunk, and a mid-stream failure, are recorded as 0 on **both** sides (ADR-0070 §3), so the reported spend is a
+> systematic **under**-estimate of the bill.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | TEXT | PRIMARY KEY |
+| `session_id` | TEXT | NOT NULL REFERENCES `agent_sessions(id)` ON DELETE CASCADE |
+| `model` | TEXT | NOT NULL, CHECK (`model` <> '') — the **RAW provider model string**, and the attribution **key** |
+| `model_catalog_id` | TEXT | NULL REFERENCES `model_catalog(id)` — a **written** join column for enrichment; **never** the key |
+| `input_tokens` | INTEGER | NOT NULL DEFAULT 0 |
+| `output_tokens` | INTEGER | NOT NULL DEFAULT 0 |
+| `cost_microcents` | INTEGER | NOT NULL DEFAULT 0 |
+| `call_count` | INTEGER | NOT NULL DEFAULT 0 — billed egresses folded into this row |
+| `unpriced_calls` | INTEGER | NOT NULL DEFAULT 0 — of which we could not price (a `$0` row with real tokens is **unpriced**, not free) |
+| `created_at` | INTEGER | NOT NULL |
+| `updated_at` | INTEGER | NOT NULL |
+
+```sql
+CREATE UNIQUE INDEX idx_session_costs_session_model ON session_costs (session_id, model);
+CREATE INDEX        idx_session_costs_session       ON session_costs (session_id, cost_microcents);
+```
+
+> **Why the key is the raw model string and NOT the catalog FK** — a deliberate, load-bearing divergence from
+> [`run_costs`](#run_costs) that a reviewer must not "fix" back. The FK target is a catalog UUID that resolves to
+> **NULL** for an uncataloged model (custom, self-hosted, brand-new), and **NULLs are DISTINCT under UNIQUE in both
+> SQLite and Postgres** — so keying on it would make `ON CONFLICT` never match: every uncataloged egress would insert
+> a *new* row, and two different uncataloged models would collapse into one indistinguishable bucket.
+>
+> **Counters, not booleans.** `unpriced_calls` is a count because 2.6.Q can price a model **mid-session**, so one
+> `(session, model)` row folds both priced and unpriced egresses; a boolean would become meaningless the moment that
+> happens.
+>
+> **Legacy sessions.** Migration 0009 backfills one row per pre-existing session with the sentinel model
+> `(pre-2.6.C)` carrying its whole legacy total — the per-attempt increments that would have split it were never
+> kept. The invariant is therefore true for **every row in the table**, not only post-migration ones; `/cost` renders
+> the sentinel as *"per-model breakdown unavailable"* rather than as an implied single-model session.
+>
+> **Secret-free by construction** — no free-text or JSON column.
 
 > **Mapping the durable `SessionMessage` to a row (1.X).** `@relavium/shared`'s `SessionMessage`
 > (agent-session-spec.md §"Session messages") carries the transcript body as a single
