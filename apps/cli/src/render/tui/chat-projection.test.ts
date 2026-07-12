@@ -1068,3 +1068,60 @@ describe('formatBusyLine — the streaming content is bounded on the alt screen 
     expect(busy('x', { compacting: true, columns: 80, maxRows: 1 }).dim).toBe(true);
   });
 });
+
+/**
+ * THE RESEAT PERF HARNESS ADR-0059 ALREADY CLAIMED EXISTED (2.6.C Step 6).
+ *
+ * ADR-0059's Consequences say the reseat's `O(n)` cost is *"verified by the 2.6.C harness (a 200-message session
+ * reseats in well under the interactive budget)"*. No such harness was ever written.
+ *
+ * It lives HERE, not beside the store, because the store is the WRONG place to measure: seeding a reseated store is a
+ * single reference assignment (`initialSessionViewState` aliases the carried array; it never copies or iterates it),
+ * so timing `createChatStore` would be O(1) at any conversation length — a tautology dressed as a budget. A first
+ * draft of this harness did exactly that, and would have "verified" the ADR by measuring a pointer.
+ *
+ * The real O(n) cost the carry adds is HERE: `driveInk` unmounts and re-mounts ink around a standalone reseat, and
+ * the fresh mount re-wraps the whole carried transcript from scratch (the wrap memo is keyed on the transcript
+ * reference, which a brand-new store always busts). That is the work a 200-message reseat actually pays.
+ *
+ * If it ever gets slow the answer is a WRAP CACHE, not a trim: ADR-0068 Decision (c) makes the full-screen bound
+ * effectively unbounded on purpose, and trimming the carry would re-introduce the clipping that ADR exists to fix.
+ */
+describe('the reseat carry is O(n) — the perf claim ADR-0059 makes', () => {
+  const conversation = (turns: number): TranscriptEntry[] =>
+    Array.from({ length: turns }, (_, i) => [
+      { role: 'user' as const, text: `question ${i}: ${'x'.repeat(200)}` },
+      { role: 'notice' as const, text: `answer ${i}: ${'y'.repeat(400)}` },
+    ]).flat();
+
+  /** Median of a few samples — a single wall-clock reading is GC noise, not a measurement. */
+  const medianWrapMs = (entries: readonly TranscriptEntry[], samples = 5): number => {
+    const runs: number[] = [];
+    for (let i = 0; i < samples; i += 1) {
+      const started = performance.now();
+      wrapTranscript(entries, 80);
+      runs.push(performance.now() - started);
+    }
+    return runs.sort((a, b) => a - b)[Math.floor(samples / 2)] ?? 0;
+  };
+
+  it('re-wraps a 200-message carried conversation well under the interactive budget', () => {
+    const carried = conversation(100); // 100 turns => 200 messages: ADR-0059's stated case
+    expect(carried).toHaveLength(200);
+    wrapTranscript(carried, 80); // warm up, so the first sample does not pay for JIT
+
+    const elapsed = medianWrapMs(carried);
+    const lines = wrapTranscript(carried, 80);
+    expect(lines.length).toBeGreaterThan(200); // it really did wrap every entry — not a no-op being timed
+    expect(elapsed).toBeLessThan(100); // a user-initiated switch must feel instant
+  });
+
+  it('scales LINEARLY, not quadratically — 4x the conversation is not 16x the wrap', () => {
+    // The guard is the SHAPE. An accidental O(n^2) (a per-entry re-scan of everything before it) would blow this ratio
+    // long before it blew the budget above, and it is the only regression that makes a long chat unusable.
+    wrapTranscript(conversation(50), 80); // warm up
+    const small = Math.max(medianWrapMs(conversation(50)), 0.05);
+    const large = medianWrapMs(conversation(200)); // 4x the conversation
+    expect(large / small).toBeLessThan(10); // linear ≈ 4x; quadratic ≈ 16x
+  });
+});

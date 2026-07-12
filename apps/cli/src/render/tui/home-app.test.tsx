@@ -930,7 +930,13 @@ describe('RootApp — mouse capture follows the in-Home chat', () => {
  */
 describe('RootApp — a /models reseat keeps the conversation on screen (F1)', () => {
   it('the alt-screen viewport re-renders the prior turns FROM THE SWAPPED STORE, with the switch marker last', async () => {
-    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
+    // The outgoing store must carry its MODEL, or the marker degrades to `(unknown) → …` and the assertions below
+    // cannot tell a correct marker from a broken one. Production seeds it; so must the fixture.
+    const store = createChatStore(
+      false,
+      { model: 'claude-sonnet-4-6', transcript: [] },
+      FULLSCREEN_TRANSCRIPT_BOUND,
+    );
     store.appendUser('what is 2+2');
     store.notice('assistant: four');
     // A NON-notice tail, deliberately: the switch marker is a `notice`, so a conversation ending in one would let
@@ -978,11 +984,13 @@ describe('RootApp — a /models reseat keeps the conversation on screen (F1)', (
     const frame = m.harness.lastFrame() ?? '';
     expect(frame).toContain('what is 2+2');
     expect(frame).toContain('and 3+3');
-    expect(frame).toContain('claude-opus-4-8'); // the switch marker names the new model
+    // The marker names BOTH ends, IN ORDER. `toContain('claude-opus-4-8')` alone would pass a REVERSED marker.
+    expect(frame).toContain('claude-sonnet-4-6 → claude-opus-4-8');
 
     // …and the marker lands BENEATH the conversation, not in place of it.
     const carried = m.c.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
     expect(carried.at(-1)?.role).toBe('notice');
-    expect(carried.at(-1)?.text).toContain('claude-opus-4-8'); // the marker itself, not the fixture's own notice
+    expect(carried.at(-1)?.text).toContain('claude-sonnet-4-6 → claude-opus-4-8'); // the marker, in order
+    expect(carried.at(-1)?.text).toContain('not prior tool calls or file contents'); // ADR-0059's bound disclosure
   });
 });

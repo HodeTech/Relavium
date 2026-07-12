@@ -441,6 +441,12 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     const carried = reseated?.store.getSnapshot().state.transcript ?? [];
     expect(carried.map((e) => e.role)).toEqual(['user', 'assistant', 'notice']);
     expect(carried.some((e) => e.text.includes('sonnet reply'))).toBe(true); // the OLD model's answer survived
+
+    // The MARKER, through the real Home builder — the only place the Home's argument order is pinned. `toContain` on
+    // the new model alone would pass a REVERSED marker just as happily.
+    const marker = carried.at(-1)?.text ?? '';
+    expect(marker).toContain('claude-sonnet-4-6 → claude-opus-4-8');
+    expect(marker).toContain('not prior tool calls or file contents'); // ADR-0059's bound disclosure clause
     // The effort sub-step's tier bound onto the reseated agent (ADR-0066) — surfaced in the footer via the store.
     expect(reseated?.store.getSnapshot().reasoningEffort).toBe('medium');
     expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
