@@ -2058,7 +2058,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   it('in-Home chat: a SAME-model effort change calls the setter — NO reseat (ADR-0066 §5)', async () => {
     // Bound to a reasoning-capable model at effort 'low'. Re-picking the SAME model then choosing 'high' in the
     // effort sub-step must push the SESSION override (onSetEffort) — NOT a reseat (which would tear the session down).
-    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8', transcript: [] });
     boundStore.setReasoningEffort('low'); // the session's current tier (drives the sub-list's ✓/highlight)
     const onSetEffort = vi.fn();
     const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
@@ -2098,7 +2098,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   });
 
   it('in-Home chat: re-picking the SAME model AND same effort is a no-op (no setter, no reseat) (ADR-0066)', async () => {
-    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8', transcript: [] });
     boundStore.setReasoningEffort('high');
     const onSetEffort = vi.fn();
     const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
@@ -2136,7 +2136,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   it('in-Home chat: accepting the ALREADY-bound model does NOT reseat — a no-op hint (ADR-0059)', async () => {
     // The session is bound to claude-opus-4-8; the only picker entry IS that model. Accepting it must NOT tear the
     // session down + rebuild for zero change (which would wipe the approval cache) — it keeps the picker open + hints.
-    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8', transcript: [] });
     const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore });
     const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
     const { port } = makeModelsPort({
@@ -2170,7 +2170,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     // The standalone `/effort` overlay (distinct from the `/models` effort sub-step): a reasoning-capable live chat
     // opens a fixed tier list on the bound effort; picking a new tier pushes the per-turn session override, never a
     // reseat. Reached via the `/` palette (typing `/` opens it), matching how a user runs it.
-    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8', transcript: [] });
     boundStore.setReasoningEffort('low'); // the session's current tier — drives the overlay's ✓/opening highlight
     const onSetEffort = vi.fn();
     const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
@@ -2205,7 +2205,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   it('in-Home chat: /effort on a NON-reasoning model does NOT open the overlay — it dispatches to the notice (ADR-0066 §6)', async () => {
     // A non-reasoning bound model has no controllable tier, so `/effort` must fall through to the slash dispatch
     // (the ctx handler prints "no controllable tier"), never opening a dead overlay.
-    const boundStore = createChatStore(false, { model: 'gpt-4o' }); // gpt-4o is not a reasoning model
+    const boundStore = createChatStore(false, { model: 'gpt-4o', transcript: [] }); // gpt-4o is not a reasoning model
     const onSetEffort = vi.fn();
     const made = makeSession({ store: boundStore, onSetEffort });
     const c = createHomeController({
@@ -2231,7 +2231,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   it('in-Home chat: a typed (pasted) /effort line opens the overlay via applySubmitAction (ADR-0066 §6)', async () => {
     // Typing `/` at an empty prompt opens the palette, so a LITERAL `/effort` line reaches applySubmitAction only via
     // paste (bracketed paste appends verbatim). This covers the typed-intercept branch, distinct from the palette one.
-    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8', transcript: [] });
     boundStore.setReasoningEffort('medium');
     const onSetEffort = vi.fn();
     const sessionA = makeSession({ store: boundStore, onSetEffort });
@@ -2255,7 +2255,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   });
 
   it('in-Home chat: Esc closes the /effort overlay without applying; same-tier re-pick is a no-op (ADR-0066 §6)', async () => {
-    const boundStore = createChatStore(false, { model: 'claude-opus-4-8' });
+    const boundStore = createChatStore(false, { model: 'claude-opus-4-8', transcript: [] });
     boundStore.setReasoningEffort('high'); // the overlay opens highlighted on 'high'
     const onSetEffort = vi.fn();
     const sessionA = makeSession({ store: boundStore, onSetEffort });

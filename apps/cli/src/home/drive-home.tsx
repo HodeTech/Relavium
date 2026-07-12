@@ -563,6 +563,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           model: built.agent.model,
           cumulativeCostMicrocents: built.resumeState.cumulativeCostMicrocents,
           turnCount: built.resumeState.turnCount,
+          // 2.6.C: Step 3 threads the OUTGOING store's rendered transcript through here so a reseat keeps the
+          // conversation on screen. Empty for now — the seed field lands first (and the gate ignores it on inline).
+          transcript: [],
         },
         transcriptBoundFor(altScreenActive),
       );

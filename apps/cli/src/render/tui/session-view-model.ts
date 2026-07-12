@@ -158,12 +158,42 @@ export const MAX_WARNINGS = 6;
  * (prior cost + completed-turn count) would otherwise show empty/zero until the first new turn. The command
  * seeds them from the reconstructed state so the footer reflects the continuing session from the first frame.
  * A fresh session passes no seed and is identical to before.
+ *
+ * `transcript` (2.6.C) carries the RENDERED conversation across a `/models` reseat ([ADR-0059]). It is **required**
+ * — deliberately, so a construction site that forgets it is a COMPILE error rather than a silently blank screen
+ * (the F1 bug this fixes was exactly a silently blank screen). A caller with nothing to carry passes `[]`.
+ *
+ * The entries are VIEW-ONLY, and must stay that way: they are the already-sanitized render projection
+ * ({@link TranscriptEntry} — a closed union of `{role, text}` plus a `TurnSummary` of stopReason/tokens/duration/
+ * model/vetted error code). They carry no API key and no ADR-0030 reasoning signature, and **nothing serializes
+ * them** — not the ADR-0026 export, not `--json`, not a crash dump. Do not persist, export, or log this array.
  */
 export interface SessionViewSeed {
   readonly agentRef?: string;
   readonly model?: string;
   readonly cumulativeCostMicrocents?: number;
   readonly turnCount?: number;
+  readonly transcript: readonly TranscriptEntry[];
+}
+
+/**
+ * Does a store built with this bound honour {@link SessionViewSeed.transcript}? (2.6.C — the ONE gate.)
+ *
+ * Only the FULL-SCREEN renderer may seed a carried transcript. The inline renderer must NOT: it re-mounts ink per
+ * session (`driveInk` unmounts/mounts around a standalone reseat), which resets `<Static>`'s internal `index` to 0 —
+ * so a seeded store would RE-PRINT the entire conversation on top of the copy the terminal's scrollback already
+ * holds. The user would see the conversation twice. Inline needs no carry anyway: its lines were already printed
+ * and physically survive the store swap. The alt screen is the opposite — its viewport windows the store's
+ * in-memory transcript and the alt buffer has no native scrollback, so dropping the array blanks the screen.
+ *
+ * The gate lives HERE, at the single point where the seed is consumed, rather than being threaded through the five
+ * `createChatStore` call sites — one missed site would silently double-print. `transcriptBound` is the
+ * renderer-injected discriminator we already have (ADR-0068 Decision (c)); a bound that is neither the inline nor
+ * the full-screen constant is treated as inline (the conservative default, matching `createChatStore`'s own
+ * fail-safe default parameter).
+ */
+export function carriesSeedTranscript(transcriptBound: number): boolean {
+  return transcriptBound === FULLSCREEN_TRANSCRIPT_BOUND;
 }
 
 export function initialSessionViewState(
@@ -180,7 +210,7 @@ export function initialSessionViewState(
     ...(seedWindow === undefined ? {} : { contextWindowTokens: seedWindow }),
     status: 'idle',
     compacting: false,
-    transcript: [],
+    transcript: carriesSeedTranscript(transcriptBound) ? (seed?.transcript ?? []) : [],
     transcriptBound,
     liveTokens: '',
     liveTokensTruncated: false,

@@ -13,6 +13,8 @@ import {
   type SessionViewState,
   FULLSCREEN_TRANSCRIPT_BOUND,
   INLINE_TRANSCRIPT_BOUND,
+  carriesSeedTranscript,
+  type TranscriptEntry,
 } from './session-view-model.js';
 
 // --- A typed session-event factory: monotonic sequenceNumber + a 1ms-per-event clock (for durations). ----
@@ -143,6 +145,7 @@ describe('session-view-model', () => {
       model: 'claude-opus-4-8',
       cumulativeCostMicrocents: 4200,
       turnCount: 3,
+      transcript: [],
     });
     expect(state.agentRef).toBe('coder');
     expect(state.model).toBe('claude-opus-4-8');
@@ -613,7 +616,11 @@ describe('session-view-model', () => {
   });
 
   it('seeds the context window from a resume seed model (a resumed session never re-emits session:started)', () => {
-    const seeded = initialSessionViewState({ model: 'claude-sonnet-4-6', turnCount: 3 });
+    const seeded = initialSessionViewState({
+      model: 'claude-sonnet-4-6',
+      turnCount: 3,
+      transcript: [],
+    });
     expect(seeded.contextWindowTokens).toBe(contextWindowForModel('claude-sonnet-4-6'));
     expect(seeded.lastInputTokens).toBeUndefined(); // no per-turn seed until the first resumed turn completes
   });
@@ -875,5 +882,66 @@ describe('the transcript bake is bounded by the RENDERER, not by a constant', ()
 
   it('the default bound is the INLINE one — a caller that forgets keeps today’s behaviour', () => {
     expect(initialSessionViewState().transcriptBound).toBe(INLINE_TRANSCRIPT_BOUND);
+  });
+});
+
+/**
+ * The SEED TRANSCRIPT CARRY and its one gate (2.6.C — the F1 fix).
+ *
+ * A `/models` reseat swaps in a brand-new view store. Before this, that store's transcript was hardcoded `[]`, so on
+ * the FULL-SCREEN renderer — whose viewport windows the store's in-memory transcript, and whose alt buffer has no
+ * native scrollback — the whole conversation vanished from the screen. (Inline was unaffected: its lines were already
+ * printed by ink `<Static>` and physically survive the swap.)
+ *
+ * The fix carries the outgoing store's rendered transcript into the new store's seed — but ONLY on the full-screen
+ * renderer. Seeding it inline would make `<Static>` RE-PRINT the whole conversation over the copy the terminal already
+ * holds. So the gate is load-bearing in BOTH directions, and both directions are pinned here.
+ */
+describe('the seed transcript carry (2.6.C) and its full-screen-only gate', () => {
+  // A realistic carry: the three entry variants a live conversation actually holds.
+  const prior: readonly TranscriptEntry[] = [
+    { role: 'user', text: 'first question' },
+    {
+      role: 'assistant',
+      text: 'first answer',
+      summary: { stopReason: 'stop', tokensUsed: { input: 10, output: 20 } },
+    },
+    { role: 'notice', text: '⚙ a command notice' },
+  ];
+
+  it('FULL-SCREEN: a seeded transcript IS carried into the initial state', () => {
+    const state = initialSessionViewState(
+      { model: 'claude-opus-4-8', transcript: prior },
+      FULLSCREEN_TRANSCRIPT_BOUND,
+    );
+    expect(state.transcript).toEqual(prior);
+  });
+
+  it('INLINE: the SAME seed is IGNORED — <Static> already printed those lines, re-seeding would double-print', () => {
+    const state = initialSessionViewState(
+      { model: 'claude-opus-4-8', transcript: prior },
+      INLINE_TRANSCRIPT_BOUND,
+    );
+    expect(state.transcript).toEqual([]);
+  });
+
+  it('an UNKNOWN bound is treated as inline — the conservative default, matching createChatStore', () => {
+    // A future caller inventing a third bound must not accidentally opt INTO the carry: the failure mode of a wrong
+    // `true` here is a doubled screen, the failure mode of a wrong `false` is today's (already-shipped) behaviour.
+    const state = initialSessionViewState({ transcript: prior }, 1234);
+    expect(state.transcript).toEqual([]);
+    expect(carriesSeedTranscript(1234)).toBe(false);
+  });
+
+  it('carriesSeedTranscript pins the gate directly', () => {
+    expect(carriesSeedTranscript(FULLSCREEN_TRANSCRIPT_BOUND)).toBe(true);
+    expect(carriesSeedTranscript(INLINE_TRANSCRIPT_BOUND)).toBe(false);
+  });
+
+  it('an EMPTY carry is identical to no carry (a fresh session / chat-resume / clear)', () => {
+    expect(
+      initialSessionViewState({ transcript: [] }, FULLSCREEN_TRANSCRIPT_BOUND).transcript,
+    ).toEqual([]);
+    expect(initialSessionViewState(undefined, FULLSCREEN_TRANSCRIPT_BOUND).transcript).toEqual([]);
   });
 });

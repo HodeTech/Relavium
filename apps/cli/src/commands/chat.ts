@@ -84,6 +84,7 @@ import { resolveCopyOnSelect, resolveMouseMode, resolveRenderMode } from '../ren
 import {
   FULLSCREEN_TRANSCRIPT_BOUND,
   INLINE_TRANSCRIPT_BOUND,
+  type TranscriptEntry,
 } from '../render/tui/session-view-model.js';
 import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
 import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
@@ -1486,6 +1487,7 @@ function seedResumedWiring(
   /** The renderer's transcript bake bound (ADR-0068 Decision (c)). Defaults to the inline tail so a caller that
    *  forgets keeps today's behaviour; both real callers pass the resolved one. */
   transcriptBound: number = INLINE_TRANSCRIPT_BOUND,
+  carriedTranscript: readonly TranscriptEntry[] = [],
 ): { store: ChatStoreController; persister: SessionPersister } {
   const store = createChatStore(
     color,
@@ -1494,6 +1496,12 @@ function seedResumedWiring(
       model: resumed.agent.model,
       cumulativeCostMicrocents: resumed.resumeState.cumulativeCostMicrocents,
       turnCount: resumed.resumeState.turnCount,
+      // The RENDERED transcript to carry into the new store (2.6.C). THREE callers reach this helper and they want
+      // different things: `chat-resume` and `/clear` carry NOTHING (a resume opens a fresh viewport; `/clear`'s whole
+      // purpose is a fresh start), while a `/models` RESEAT carries the live conversation so the alt screen does not
+      // go blank. Whoever generalizes this later: do not "helpfully" project `session_messages` here — that is a
+      // separate, tracked follow-up, and doing it silently would defeat `/clear`.
+      transcript: carriedTranscript,
     },
     transcriptBound,
   );
