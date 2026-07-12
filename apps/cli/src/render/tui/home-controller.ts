@@ -108,9 +108,10 @@ export interface HomeChatSession {
   readonly onSetEffort?: (effort: ReasoningEffort) => void;
   /** WHY `shouldStop()` became true (ADR-0062 §7 · ADR-0059) — `'clear'` (swap in a fresh session, staying in chat)
    *  vs `'exit'` (`/exit`/`/cancel`, return to the bare Home). Shares the widened `ChatLineHandler.stopReason` type,
-   *  so it also carries `'reseat'`; but the in-Home chat does NOT yet wire `onReseat` (its `/models` is the Home's
-   *  next-session-default picker, not a live reseat — ADR-0059's in-Home live reseat is a follow-up), so `'reseat'`
-   *  is currently unreachable here and the consumer's non-`'clear'` branch treats it as an end (a safe default). */
+   *  so it also carries `'reseat'` — but `'reseat'` is unreachable HERE, and not because the in-Home reseat is
+   *  missing: it IS live (ADR-0059), driven by the directly-wired `deps.reseatChat` (see `drive-home.tsx`), never
+   *  by a `stopReason` signal. Only the STANDALONE chat routes a reseat through `stopReason`, so this Home-side
+   *  union member stays unreachable and the consumer's non-`'clear'` branch treats it as an end (a safe default). */
   readonly stopReason: () => 'exit' | 'clear' | 'reseat';
   /** Mid-turn abort (EA7) — abort the in-flight turn, keeping the session alive (Esc). Present once wired. */
   readonly onAbort?: () => void;

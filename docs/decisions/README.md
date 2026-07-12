@@ -112,7 +112,8 @@ flowchart TD
 | 0066 | [Normalized reasoning-effort control — a provider-agnostic tier, per-adapter native mapping, and a per-model capability](0066-normalized-reasoning-effort-control.md) | Accepted | 2026-07-06 |
 | 0067 | [Node supported-floor `>=22` and re-affirmed `better-sqlite3` (supersedes ADR-0021)](0067-node-supported-floor-22-reaffirm-better-sqlite3.md) | Accepted | 2026-07-09 |
 | 0068 | [Full-screen TUI renderer, `ink` 7, and the CLI component test harness (refines ADR-0047)](0068-full-screen-tui-renderer-ink7-harness.md) | Accepted | 2026-07-09 |
-| 0069 | [`string-width` for the CLI renderer's display-width measurement](0069-string-width-for-the-cli-renderer.md) | Proposed | 2026-07-10 |
+| 0069 | [`string-width` for the CLI renderer's display-width measurement](0069-string-width-for-the-cli-renderer.md) | Accepted | 2026-07-10 |
+| 0070 | [Durable per-model session cost attribution — the `session_costs` aggregate, single-owner cost writes, and the reconciliation invariant](0070-durable-per-model-session-cost-attribution.md) | Proposed | 2026-07-12 |
 
 ## Creating a new ADR
 
