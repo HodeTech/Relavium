@@ -995,6 +995,6 @@ describe('RootApp — a /models reseat keeps the conversation on screen (F1)', (
     const carried = m.c.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
     expect(carried.at(-1)?.role).toBe('notice');
     expect(carried.at(-1)?.text).toContain('claude-sonnet-4-6 → claude-opus-4-8'); // the marker, in order
-    expect(carried.at(-1)?.text).toContain('not prior tool calls or file contents'); // ADR-0059's bound disclosure
+    expect(carried.at(-1)?.text).toContain('@-attached file contents included'); // ADR-0059's bound disclosure
   });
 });

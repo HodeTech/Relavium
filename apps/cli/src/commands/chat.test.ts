@@ -1022,7 +1022,7 @@ describe('chatCommand', () => {
     // ADR-0059 BINDS this disclosure clause (a host-side reseat carries the transcript text-only). Dropping it would
     // need a superseding ADR, not a wording change — so it is asserted, not just present.
     expect(intros[1]).toContain('text transcript only');
-    expect(intros[1]).toContain('not prior tool calls or file contents');
+    expect(intros[1]).toContain('@-attached file contents included');
 
     const full = store.loadFull('id-0');
     expect(full?.session.agentSnapshot?.model).toBe('claude-opus-4-8'); // rebound to the target model

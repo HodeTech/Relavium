@@ -152,10 +152,17 @@ export function clearedNotice(oldSessionId: string): string {
  * actually changed: `old → new`. The turn count is gone — the turns are visibly there — and so is the "type a
  * message" tail, which was an intro's job on an empty screen.
  *
- * What it must NOT lose: the DISCLOSURE that a host-side reseat carries the transcript **text-only**, so the new
- * model does not see prior tool calls or file contents. ADR-0059 binds that clause (its Decision and Consequences
- * both rest on it); dropping it would need a superseding ADR, not a wording change. Position and phrasing were never
- * bound — only the disclosure.
+ * What it must NOT lose: the DISCLOSURE that a host-side reseat carries the transcript **text-only**. ADR-0059 binds
+ * that clause (its Decision and Consequences both rest on it); dropping it would need a superseding ADR, not a
+ * wording change. Position and phrasing were never bound — only the disclosure.
+ *
+ * The phrasing IS load-bearing in one direction, though, and the original got it wrong (2026-07-12 amendment to
+ * ADR-0059). "…not prior tool calls **or file contents**" understated what the new model can see: a file attached
+ * with `@` is framed into the USER MESSAGE TEXT (chat.ts — `persister.beginUserTurn(line)` gets the full framed line,
+ * not the compact display form), so it is part of the durable transcript and DOES cross the reseat. Only a file a
+ * TOOL read is lost, because that arrives as a `tool_result` and the engine never carries tool pairs across a turn
+ * boundary at all. A user reading the old wording would have believed an `@`-attached secret was invisible to the new
+ * model when it is not — an understatement about data exposure, which is the dangerous direction to be wrong in.
  *
  * Both ids are `model_catalog` ids (curated), but `sanitizeInline`-guarded defensively: a live-catalog id is
  * provider-sourced and `history.db` is shared across surfaces, so a crafted value must not smuggle a terminal escape
@@ -164,6 +171,7 @@ export function clearedNotice(oldSessionId: string): string {
 export function modelSwitchNotice(oldModel: string, newModel: string): string {
   return (
     `⇄ model changed ${sanitizeInline(oldModel)} → ${sanitizeInline(newModel)} — the new model sees the text ` +
-    `transcript only (not prior tool calls or file contents).`
+    `transcript only. Prior tool calls and their results (including files a tool read) are not carried; text you ` +
+    `sent — @-attached file contents included — is.`
   );
 }

@@ -111,10 +111,16 @@ describe('clearedNotice (ADR-0062 §7)', () => {
  * user what to do next. Now the conversation carries across the swap (F1) and the marker lands beneath it — so it
  * says what actually changed.
  *
- * The disclosure clause is the part ADR-0059 BINDS: a host-side reseat carries the transcript **text-only**, so the
- * new model does not see prior tool calls or file contents. Its Decision and Consequences both rest on that, so
- * dropping it is a superseding-ADR change, not a wording change. Pinned here so a future tidy-up cannot quietly
- * delete it.
+ * The disclosure clause is the part ADR-0059 BINDS: a host-side reseat carries the transcript **text-only**. Its
+ * Decision and Consequences both rest on that, so dropping it is a superseding-ADR change, not a wording change.
+ * Pinned here so a future tidy-up cannot quietly delete it.
+ *
+ * The WORDING was corrected on 2026-07-12 (ADR-0059 amendment). "…not prior tool calls or file contents" UNDERSTATED
+ * what the new model can see: an `@`-attached file is framed into the user message TEXT, so it is part of the durable
+ * transcript and DOES cross the reseat. Only a file a TOOL read is lost (it arrives as a `tool_result`, and the engine
+ * never carries tool pairs across ANY turn boundary — see the report in the 2.6.C PR). Telling a user their attached
+ * secret is invisible to the new model when it is not is the dangerous direction to be wrong in, so BOTH halves of the
+ * corrected disclosure are pinned below.
  */
 describe('modelSwitchNotice — the mid-session /models marker', () => {
   it('names BOTH ends of the switch', () => {
@@ -123,10 +129,18 @@ describe('modelSwitchNotice — the mid-session /models marker', () => {
     );
   });
 
-  it("RETAINS ADR-0059's bound disclosure (text-only transcript; no prior tool calls or file contents)", () => {
+  it("RETAINS ADR-0059's bound disclosure — text-only, and TOOL results are what is lost", () => {
     const marker = modelSwitchNotice('a', 'b');
     expect(marker).toContain('text transcript only');
-    expect(marker).toContain('not prior tool calls or file contents');
+    expect(marker).toContain('Prior tool calls and their results');
+  });
+
+  it('does NOT understate what the new model sees — an @-attached file DOES carry', () => {
+    // The old wording ("not prior tool calls or file contents") reads as "my @-attached file is invisible to the new
+    // model". It is not: chat.ts frames the file into the user message text, and the reseat replays that text.
+    const marker = modelSwitchNotice('a', 'b');
+    expect(marker).toContain('@-attached file contents included');
+    expect(marker).not.toMatch(/not prior tool calls or file contents/);
   });
 
   it('drops what the carried conversation makes redundant — the turn count and the intro tail', () => {
