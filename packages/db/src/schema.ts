@@ -479,9 +479,11 @@ export const sessionMessages = sqliteTable(
     finishReason: text('finish_reason'),
     // The model that produced an assistant turn (fallback-aware); NULL for non-assistant rows.
     modelId: text('model_id').references(() => modelCatalog.id),
-    inputTokens: tokenCount('input_tokens'),
-    outputTokens: tokenCount('output_tokens'),
-    costMicrocents: microcents('cost_microcents'),
+    // NOTE (ADR-0070 §5): the per-message `input_tokens` / `output_tokens` / `cost_microcents` columns were DROPPED.
+    // They were never written (the persister never passed a meta payload, so every row shipped 0), never read back,
+    // and — decisively — a per-message cost column is STRUCTURALLY incapable of holding the truth for a turn whose
+    // tool loop billed two models. Money attribution lives in `session_costs`. `model_id` STAYS: it is written
+    // (ADR-0059) and remains the per-message "which model wrote this reply" label.
     // Present ONLY on a compaction/trim boundary marker row (role='system', ADR-0062): the durable
     // sequence_number THROUGH which older messages are superseded. NULL on every normal transcript row.
     // Additive nullable column — an older reader that lacks it reads the marker as an inert system row.
@@ -493,6 +495,51 @@ export const sessionMessages = sqliteTable(
     // must be unique — enforcing the gap-free transcript invariant at the DB level (no double-write).
     uniqueIndex('idx_session_messages_seq').on(t.sessionId, t.sequenceNumber),
     index('idx_session_messages_session').on(t.sessionId, t.createdAt),
+  ],
+);
+
+// --- 11b. session_costs (per-(session, model) money attribution, ADR-0070) ---
+// The durable per-model spend of a chat session. It exists because a `session_messages` row holds exactly ONE
+// `model_id`, and a single turn can bill TWO models: the tool loop makes a fresh fallback-chain call per iteration,
+// so iteration 1 can succeed on model A and iteration 2 fail over to B. A per-message cost column cannot represent
+// that turn without lying — which is why `session_messages`' own token/cost columns were dropped (ADR-0070 §5).
+//
+// THE INVARIANT (ADR-0070 §3): SUM(session_costs.cost_microcents) == agent_sessions.total_cost_microcents, for every
+// session. It holds because both sides are fed by the SAME `cost:updated` event, with the same arithmetic, in the
+// SAME transaction, from the single emitter — including errored turns, aborted turns, and compaction spend.
+export const sessionCosts = sqliteTable(
+  'session_costs',
+  {
+    id: uuidPk(),
+    sessionId: text('session_id')
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: 'cascade' }),
+    // The RAW provider model string from `cost:updated.model` — the KEY, deliberately NOT the catalog FK (a divergence
+    // from `run_costs`, and a reviewer must not "fix" it back). The FK target is a catalog UUID that resolves to NULL
+    // for an UNCATALOGED model (custom, self-hosted, brand-new), and NULLs are DISTINCT under UNIQUE in both SQLite
+    // and Postgres — so keying on it would make `ON CONFLICT` never match: every uncataloged egress would insert a
+    // NEW row, and two different uncataloged models would collapse into one indistinguishable bucket.
+    model: text('model').notNull(),
+    // Nullable, WRITTEN (never a dead column, unlike `run_costs.model_id`) join column for catalog enrichment only.
+    modelCatalogId: text('model_catalog_id').references(() => modelCatalog.id),
+    inputTokens: tokenCount('input_tokens'),
+    outputTokens: tokenCount('output_tokens'),
+    costMicrocents: microcents('cost_microcents'),
+    // COUNTERS, not booleans: 2.6.Q can price a model MID-SESSION, so a single (session, model) row folds both priced
+    // and unpriced egresses. A boolean would become meaningless the moment that happens (ADR-0070 §6).
+    callCount: tokenCount('call_count'),
+    unpricedCalls: tokenCount('unpriced_calls'),
+    createdAt: epochMs('created_at').notNull(),
+    updatedAt: epochMs('updated_at').notNull(),
+  },
+  (t) => [
+    // The upsert target. One row per (session, model) — the shape the additive fold needs.
+    uniqueIndex('idx_session_costs_session_model').on(t.sessionId, t.model),
+    // Covering the `/cost` read: per-session, ordered by spend.
+    index('idx_session_costs_session').on(t.sessionId, t.costMicrocents),
+    // The DB is the system of record: an empty-string model would be a silent, un-attributable money bucket. The
+    // event type already forbids it (`cost:updated.model` is a Zod nonEmptyString) — this is the last line.
+    check('session_costs_model_nonempty', sql`${t.model} <> ''`),
   ],
 );
 

@@ -71,7 +71,7 @@ describe('createSessionPersister', () => {
       uuid: () => `msg-${msgId++}`,
       ...(initialSequenceNumber === undefined ? {} : { initialSequenceNumber }),
     });
-    return { built, persister };
+    return { built, persister, store };
   }
 
   it('persists the session row eagerly on start (auto-persisted from the moment it starts)', async () => {
@@ -569,5 +569,62 @@ describe('createSessionPersister', () => {
     const marker = store.loadMessages('sess-1').find((m) => m.role === 'system');
     expect(marker?.compaction).toEqual({ droppedThroughSequence: 1 });
     expect(marker?.content).toEqual([]); // a trim marker carries NO summary
+  });
+
+  /**
+   * THE PERSISTER'S HALF OF ADR-0070 — the durable per-model money attribution.
+   *
+   * `recordSessionCost` runs on the `cost:updated` EVENT, deliberately not inside the completed-turn gate. That gate
+   * wraps the message and token writes, but the session COST is real even for a failed or aborted turn (the engine
+   * never decrements it), so a cost write behind it would silently break the invariant on every errored turn.
+   */
+  describe('session_costs — the persister writes the durable per-model attribution (ADR-0070)', () => {
+    it('a completed turn writes a per-model row that RECONCILES with the session total', async () => {
+      const { built, persister, store } = await setup(scriptedResolver([textTurn('hi')]));
+      persister.start();
+      built.session.start();
+      persister.beginUserTurn('first');
+      await built.session.sendMessage('first');
+      persister.close();
+
+      const rows = store.loadSessionCosts(built.sessionId);
+      expect(rows.length).toBeGreaterThan(0);
+      const summed = rows.reduce((n, r) => n + r.costMicrocents, 0);
+      const total = store.loadSession(built.sessionId)?.totalCostMicrocents ?? -1;
+      expect(summed).toBe(total); // THE INVARIANT
+      expect(total).toBeGreaterThan(0); // …and it is real money, not a reconciled pair of zeroes
+      expect(rows[0]?.callCount).toBeGreaterThan(0);
+    });
+
+    it('an ERRORED turn does not ROLL BACK the earlier spend, and the breakdown still reconciles', async () => {
+      // Turn 1 succeeds and bills; turn 2 is unscripted, so the provider throws and the turn settles as an error.
+      //
+      // Precisely what this proves (and what it does NOT): a FAILED ATTEMPT bills nothing — the chain folds cost only
+      // on success, so no `cost:updated` fires and there is nothing to record (ADR-0070 §3, exception 2). So this is
+      // not a test that an errored turn ADDS money. It is a test that an errored turn does not TAKE money away: the
+      // engine never decrements the cost, a resumed budget governor must still see turn 1's true spend (ADR-0028),
+      // and the per-model rows must still sum to the total the user is shown. The case where an errored turn really
+      // does bill — a tool loop whose first iteration succeeded — is why `recordSessionCost` sits on the EVENT rather
+      // than inside the completed-turn gate; the sibling `flushes the running cost on a failed turn` test guards that
+      // placement, and moving the call into the gate turns this file red.
+      const { built, persister, store } = await setup(scriptedResolver([textTurn('hi')]));
+      persister.start();
+      built.session.start();
+      persister.beginUserTurn('first');
+      await built.session.sendMessage('first');
+      const afterFirst = store.loadSession(built.sessionId)?.totalCostMicrocents ?? 0;
+
+      persister.beginUserTurn('second');
+      await built.session.sendMessage('second').catch(() => undefined); // errors: nothing scripted
+      persister.close();
+
+      const rows = store.loadSessionCosts(built.sessionId);
+      const summed = rows.reduce((n, r) => n + r.costMicrocents, 0);
+      const total = store.loadSession(built.sessionId)?.totalCostMicrocents ?? -1;
+      expect(summed).toBe(total); // THE INVARIANT survives an errored turn
+      expect(total).toBe(afterFirst); // the earlier spend is intact — neither rolled back nor double-counted
+      expect(total).toBeGreaterThan(0); // …and it is real money
+      expect(rows.every((r) => r.callCount > 0)).toBe(true);
+    });
   });
 });

@@ -64,6 +64,13 @@
       "when": 1783298924478,
       "tag": "0008_plain_scourge",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1783840335646,
+      "tag": "0009_lonely_marauders",
+      "breakpoints": true
     }
   ]
 }

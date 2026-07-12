@@ -241,7 +241,11 @@ describe('SessionStore (1.X) — persist + resume', () => {
     const session = store.loadSession('sess-1');
     expect(session?.status).toBe('ended');
     expect(session?.totalInputTokens).toBe(10);
-    expect(session?.totalCostMicrocents).toBe(500);
+    // …but NOT the cost total. `total_cost_microcents` has exactly ONE writer — `recordSessionCost` — which bumps it
+    // additively in the same transaction as the `session_costs` row (ADR-0070 §2). It used to be SET blindly from
+    // whatever cumulative the caller held, from five call sites, so a stale writer could permanently break the
+    // invariant `SUM(session_costs) == total_cost_microcents`. `updateSession` must now leave it alone.
+    expect(session?.totalCostMicrocents).toBe(0);
   });
 
   it('cascades the transcript when the parent agent_sessions row is deleted', () => {
@@ -281,12 +285,12 @@ describe('SessionStore (1.X) — persist + resume', () => {
   });
 
   it('persists optional denormalized metadata without changing the SessionMessage round-trip', () => {
+    // The per-message token/cost columns are GONE (ADR-0070 §5). They were writable through this API but the persister
+    // never passed them, so every shipped row held 0 — and a per-message cost column is structurally incapable of
+    // holding the truth for a turn whose tool loop billed two models. Money attribution is `session_costs`.
     store.createSession(makeSession());
     store.appendMessage(makeMessage(0, { role: 'assistant' }), {
       content: 'hi',
-      inputTokens: 12,
-      outputTokens: 7,
-      costMicrocents: 99,
       finishReason: 'stop',
     });
     const row = client.db
@@ -294,9 +298,6 @@ describe('SessionStore (1.X) — persist + resume', () => {
       .from(sessionMessages)
       .where(eq(sessionMessages.sessionId, 'sess-1'))
       .get();
-    expect(row?.inputTokens).toBe(12);
-    expect(row?.outputTokens).toBe(7);
-    expect(row?.costMicrocents).toBe(99);
     expect(row?.finishReason).toBe('stop');
     // The canonical SessionMessage carries only its durable fields — the metadata is not part of it.
     const [message] = store.loadMessages('sess-1');
@@ -573,5 +574,136 @@ describe('SessionStore — loadFull snapshot isolation (2.5.I)', () => {
     // the mismatch loadFull's transaction prevents.
     expect(session?.totalOutputTokens).toBe(2);
     expect(messages.map((m) => m.sequenceNumber)).toEqual([0, 1, 2]);
+  });
+});
+
+/**
+ * THE RECONCILIATION INVARIANT (ADR-0070 §3):
+ *
+ *   for every session:  SUM(session_costs.cost_microcents) == agent_sessions.total_cost_microcents
+ *
+ * It holds because both sides are fed by the SAME `cost:updated` egress, with the same arithmetic, in the SAME
+ * transaction, from a SINGLE owner. This is a money surface: a breakdown whose rows do not sum to the number shown as
+ * the total is worse than no breakdown at all.
+ *
+ * The end-state assertion alone would be necessary but NOT sufficient — it would still pass if a future refactor split
+ * the two writes into two transactions, since both would normally succeed and the sums would agree anyway. So the
+ * mechanism is pinned too.
+ */
+describe('session_costs — the ADR-0070 reconciliation invariant', () => {
+  const sumRows = (sessionId: string): number =>
+    store.loadSessionCosts(sessionId).reduce((n, r) => n + r.costMicrocents, 0);
+  const total = (sessionId: string): number =>
+    store.loadSession(sessionId)?.totalCostMicrocents ?? -1;
+
+  const spend = (model: string, cost: number, opts: { priced?: boolean } = {}): void =>
+    store.recordSessionCost({
+      sessionId: 'sess-1',
+      model,
+      inputTokens: 10,
+      outputTokens: 20,
+      costMicrocents: cost,
+      priced: opts.priced ?? true,
+      ts: 1,
+    });
+
+  it('a TWO-MODEL turn (the tool loop failing over mid-turn) reconciles — the case no per-message column can hold', () => {
+    store.createSession(makeSession());
+    spend('claude-sonnet-4-6', 300); // tool-loop iteration 1
+    spend('claude-opus-4-8', 700); // iteration 2 failed over to another model — SAME turn
+
+    const rows = store.loadSessionCosts('sess-1');
+    expect(rows).toHaveLength(2); // both models are represented; a single `model_id` column could not do this
+    expect(sumRows('sess-1')).toBe(1000);
+    expect(total('sess-1')).toBe(1000); // THE INVARIANT
+  });
+
+  it('folds repeat egresses of the SAME model ADDITIVELY — never absolutely', () => {
+    // Additive is MANDATORY: a resume or an ADR-0059 reseat builds a fresh persister whose accumulators start at zero,
+    // so an absolute write would zero every model row the prior process had already committed.
+    store.createSession(makeSession());
+    spend('claude-opus-4-8', 100);
+    spend('claude-opus-4-8', 250);
+
+    const [row] = store.loadSessionCosts('sess-1');
+    expect(row?.costMicrocents).toBe(350);
+    expect(row?.callCount).toBe(2);
+    expect(row?.inputTokens).toBe(20); // tokens fold too
+    expect(total('sess-1')).toBe(350); // THE INVARIANT
+  });
+
+  it('an UNPRICED egress reconciles at zero cost while still counting its call and its real tokens', () => {
+    // 2.6.Q's F5: an unpriced model spends real tokens but we cannot price it. Both sides see 0, so the invariant
+    // holds — and `unpricedCalls` makes the free-LOOKING row distinguishable from a genuinely free one.
+    store.createSession(makeSession());
+    spend('gpt-5.4-pro', 0, { priced: false });
+    spend('gpt-5.4-pro', 0, { priced: false });
+
+    const [row] = store.loadSessionCosts('sess-1');
+    expect(row?.costMicrocents).toBe(0);
+    expect(row?.callCount).toBe(2);
+    expect(row?.unpricedCalls).toBe(2); // "price unknown for 2 of 2 calls"
+    expect(row?.outputTokens).toBe(40); // the tokens were real
+    expect(sumRows('sess-1')).toBe(total('sess-1')); // THE INVARIANT
+  });
+
+  it('a MIXED session — priced and unpriced, several models — still reconciles exactly', () => {
+    store.createSession(makeSession());
+    spend('claude-opus-4-8', 500);
+    spend('gpt-5.4-pro', 0, { priced: false });
+    spend('claude-opus-4-8', 250);
+    spend('claude-sonnet-4-6', 125);
+
+    expect(store.loadSessionCosts('sess-1')).toHaveLength(3);
+    expect(sumRows('sess-1')).toBe(875);
+    expect(total('sess-1')).toBe(875); // THE INVARIANT
+  });
+
+  it('orders by spend, descending — the /cost breakdown reads it straight off the covering index', () => {
+    store.createSession(makeSession());
+    spend('cheap', 10);
+    spend('expensive', 900);
+    spend('middling', 100);
+    expect(store.loadSessionCosts('sess-1').map((r) => r.model)).toEqual([
+      'expensive',
+      'middling',
+      'cheap',
+    ]);
+  });
+
+  it('returns an EMPTY array — never null — for a session that has not spent', () => {
+    store.createSession(makeSession());
+    expect(store.loadSessionCosts('sess-1')).toEqual([]);
+  });
+
+  it('MECHANISM: both writes land in ONE transaction — an end-state check alone would not notice a split', () => {
+    // If a future refactor moved the total-bump out of the transaction, the sums would still agree in the happy path
+    // and every assertion above would stay green. Pin the mechanism: a failure INSIDE the transaction must roll BOTH
+    // halves back, leaving the invariant intact rather than a row without its total (or a total without its row).
+    store.createSession(makeSession());
+    spend('claude-opus-4-8', 400);
+
+    // A second write that violates the CHECK constraint must abort atomically.
+    expect(() =>
+      store.recordSessionCost({
+        sessionId: 'sess-1',
+        model: '', // violates `session_costs_model_nonempty`
+        inputTokens: 1,
+        outputTokens: 1,
+        costMicrocents: 999,
+        priced: true,
+        ts: 2,
+      }),
+    ).toThrow();
+
+    expect(sumRows('sess-1')).toBe(400); // the failed egress folded NOTHING
+    expect(total('sess-1')).toBe(400); // …and did NOT bump the total either. THE INVARIANT SURVIVES.
+  });
+
+  it('cascades with the session — a deleted session leaves no orphan cost rows', () => {
+    store.createSession(makeSession());
+    spend('claude-opus-4-8', 100);
+    client.db.delete(agentSessions).where(eq(agentSessions.id, 'sess-1')).run();
+    expect(store.loadSessionCosts('sess-1')).toEqual([]);
   });
 });
