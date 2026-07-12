@@ -30,6 +30,7 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
+import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import {
   DISABLE_MOUSE,
@@ -1573,7 +1574,7 @@ describe('drivePlain', () => {
       shouldStop: () => stop,
       stopReason: () => 'exit' as const,
       handle: built.handle,
-      store: createChatStore(false),
+      store: createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
       io: { ...base, stdin },
       global: globalOptions(tmpdir()),
     };
@@ -1765,7 +1766,7 @@ describe('selectChatDriver', () => {
       shouldStop: () => true,
       stopReason: () => 'exit' as const,
       handle: built.handle,
-      store: createChatStore(false),
+      store: createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
       io: { ...base, stdoutIsTty, stdin },
       global: { ...globalOptions(tmpdir()), json },
     };
@@ -1815,7 +1816,7 @@ describe('driveJson (2.Q)', () => {
       shouldStop: () => stop,
       stopReason: () => 'exit' as const,
       handle: built.handle,
-      store: createChatStore(false),
+      store: createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
       io: { ...base, stdin },
       global: { ...globalOptions(tmpdir()), json: true },
       // Flush the terminal (session:cancelled) before unsubscribing, as runReplLoop wires in production.

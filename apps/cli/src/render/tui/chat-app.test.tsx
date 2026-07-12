@@ -9,6 +9,7 @@ import { ChatApp } from './chat-ink.js';
 import { liveAnswerRowBudget } from './chat-projection.js';
 import { COPIED_TOAST_MS } from './tui-constants.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
+import { FULLSCREEN_TRANSCRIPT_BOUND, INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
 
 /**
@@ -66,7 +67,7 @@ const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({
 
 describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => {
   it('inserts an idle paste into the compose buffer', async () => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const { lastFrame, stdin } = mountChat(store);
     const frame = (): string => lastFrame() ?? '';
     await waitFor(() => frame().length > 0);
@@ -76,7 +77,7 @@ describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => 
   });
 
   it('collapses CRLF/CR in a pasted block to LF (three lines survive, no stray carriage returns)', async () => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const { lastFrame, stdin } = mountChat(store);
     const frame = (): string => lastFrame() ?? '';
     await waitFor(() => frame().length > 0);
@@ -94,7 +95,7 @@ describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => 
   });
 
   it('SECURITY: a pasted approval token cannot answer the fail-closed floor nor leak into the buffer (ADR-0057)', async () => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const { lastFrame, stdin } = mountChat(store);
     const frame = (): string => lastFrame() ?? '';
     await waitFor(() => frame().length > 0);
@@ -120,7 +121,7 @@ describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => 
   });
 
   it('a REAL "y" keystroke DOES answer the pending approval (the floor is answerable — just not by paste)', async () => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const { lastFrame, stdin } = mountChat(store);
     const frame = (): string => lastFrame() ?? '';
     await waitFor(() => frame().length > 0);
@@ -144,7 +145,7 @@ describe('ChatApp live-turn timer — 2.5.H frozen-clock regression', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
       vi.setSystemTime(new Date('2026-07-09T10:00:00.000Z'));
-      const store = createChatStore(false);
+      const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
       const { lastFrame } = mountChat(store);
       const frame = (): string => lastFrame() ?? '';
       await waitFor(() => frame().length > 0);
@@ -167,7 +168,7 @@ describe('ChatApp live-turn timer — 2.5.H frozen-clock regression', () => {
 
 describe('ChatApp render economy — perf guard', () => {
   it('idle ticks do not repaint — each tick is flushed separately so a per-tick over-flush would show', async () => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const { frames } = mountChat(store);
     await waitFor(() => frames.length > 0);
     const baseline = frames.length;
@@ -187,8 +188,12 @@ describe('ChatApp render economy — perf guard', () => {
 });
 
 describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)', () => {
+  // FULL-SCREEN bound, matching what production builds for an alt-screen store (`transcriptBoundFor(true)`). A store
+  // built with the INLINE bound and then mounted with `alternateScreen` is a fixture that does not exist in
+  // production — and it silently mis-tests the viewport (which is bound-sensitive, ADR-0068 (c)). The ChatView
+  // tripwire now rejects that combination outright.
   const seed = (n: number): ChatStoreController => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     for (let i = 0; i < n; i += 1) store.appendUser(`MSG${i}`);
     return store;
   };
@@ -410,7 +415,11 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
   });
 
   it('the INLINE renderer (no alternateScreen) keeps EVERY entry via <Static> — the mode discriminator', async () => {
-    const { lastFrame } = mountChat(seed(40)); // inline: no alternateScreen prop
+    // This one mounts INLINE on purpose (it is the mode discriminator), so it needs an INLINE-bound store — the
+    // describe's `seed()` builds FULL-SCREEN ones for the alt-screen mounts around it.
+    const inlineSeed = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
+    for (let i = 0; i < 40; i += 1) inlineSeed.appendUser(`MSG${i}`);
+    const { lastFrame } = mountChat(inlineSeed); // inline: no alternateScreen prop
     const frame = (): string => lastFrame() ?? '';
     await waitFor(() => frame().includes('MSG39'));
     expect(frame()).toContain('MSG0'); // `<Static>` prints ALL entries (native scrollback) — the oldest survives
@@ -418,7 +427,7 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
   });
 
   it('renders without crashing on an EMPTY transcript (the viewport has no rows, only the live region)', async () => {
-    const h = render(chatApp(createChatStore(false)));
+    const h = render(chatApp(createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND)));
     const frame = (): string => h.lastFrame() ?? '';
     setWindowSize(h.stdout, 80, 24);
     await waitFor(() => frame().includes('/ for commands')); // the idle hint (live region) renders
@@ -426,7 +435,7 @@ describe('ChatApp alt-screen transcript viewport (2.6.F Step 4b, ADR-0068 §c)',
   });
 
   it('a SINGLE entry taller than the window shows its BOTTOM rows (tail), bounded to the terminal', async () => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     const big = ['FIRSTLINE', ...Array.from({ length: 58 }, (_, i) => `mid${i}`), 'LASTLINE'].join(
       '\n',
     );
@@ -523,7 +532,7 @@ describe('ChatApp — the suspend port (ADR-0068 §e)', () => {
 
     const h = render(
       <ChatApp
-        store={createChatStore(false)}
+        store={createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND)}
         onSubmit={async () => {}}
         shouldStop={() => false}
         onExit={() => {}}
@@ -553,7 +562,7 @@ describe('ChatApp — the suspend port (ADR-0068 §e)', () => {
   it('mounts fine with NO port (a driver/test that wires none) — the hatches degrade, nothing throws', async () => {
     const h = render(
       <ChatApp
-        store={createChatStore(false)}
+        store={createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND)}
         onSubmit={async () => {}}
         shouldStop={() => false}
         onExit={() => {}}
@@ -575,7 +584,7 @@ describe('ChatApp — the suspend port (ADR-0068 §e)', () => {
 describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
   /** Three one-row transcript lines: notices render as their bare text, so the wrapped rows are exactly these. */
   const seedThree = (): ChatStoreController => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     store.notice('AAAA');
     store.notice('BBBB');
     store.notice('CCCC');
@@ -648,7 +657,7 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
 
   it('the WHEEL still scrolls while drag reporting is on, and never starts a selection', async () => {
     const copied: string[] = [];
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     for (let i = 0; i < 60; i += 1) store.notice(`row-${i}`);
     const h = mountWithClipboard(store, copied);
     await waitFor(() => (h.lastFrame() ?? '').includes('row-59'));
@@ -666,7 +675,7 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     // never scrolls first, and then silently copies the wrong lines for any user who did. The drag stays on an INNER
     // row: row 1 is the edge-scroll zone (see the auto-scroll tests below), and this test is about `offset`, not that.
     const copied: string[] = [];
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     for (let i = 0; i < 60; i += 1) store.notice(`row-${String(i).padStart(2, '0')}`);
     const h = mountWithClipboard(store, copied);
     await waitFor(() => (h.lastFrame() ?? '').includes('row-59'));
@@ -711,7 +720,7 @@ describe('ChatApp — mouse selection (ADR-0068 §e Step 6)', () => {
     // entries instead passes every test whose lines are short enough never to wrap — and then mis-selects for anyone
     // whose model wrote a paragraph.
     const copied: string[] = [];
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     const long = 'x'.repeat(100) + 'TAIL'; // cols = 100 in the harness ⇒ wraps to two rows
     store.notice(long);
     const h = mountWithClipboard(store, copied);

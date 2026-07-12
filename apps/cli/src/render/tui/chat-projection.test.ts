@@ -26,7 +26,11 @@ import {
   liveAnswerRowBudget,
 } from './chat-projection.js';
 import { formatDuration, formatTokens } from './format.js';
-import { initialSessionViewState, type TranscriptEntry } from './session-view-model.js';
+import {
+  initialSessionViewState,
+  type TranscriptEntry,
+  INLINE_TRANSCRIPT_BOUND,
+} from './session-view-model.js';
 
 describe('chat-projection', () => {
   describe('formatTurnSummary', () => {
@@ -547,7 +551,7 @@ describe('chat-projection', () => {
 
   describe('formatSessionFooter', () => {
     it('shows the model, running cost, and pluralized turn count', () => {
-      const base = initialSessionViewState();
+      const base = initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND);
       const one = formatSessionFooter({
         ...base,
         model: 'claude-sonnet-4-6',
@@ -564,14 +568,16 @@ describe('chat-projection', () => {
     });
 
     it('omits the model segment before session:started resolves it (cost + turns only)', () => {
-      const footer = formatSessionFooter(initialSessionViewState());
+      const footer = formatSessionFooter(
+        initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+      );
       expect(footer).toContain('0 turns');
       expect(footer).toMatch(/^\$/); // starts with the cost (no leading model segment / separator)
     });
 
     it('sanitizes the model name so it cannot inject control sequences into the footer', () => {
       const footer = formatSessionFooter({
-        ...initialSessionViewState(),
+        ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
         model: '\x1b[31mevil\x07\nmodel',
       });
       // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
@@ -581,7 +587,7 @@ describe('chat-projection', () => {
 
     it('appends the context-fullness segment (last input ÷ window) after a turn completes (ADR-0062 §7)', () => {
       const footer = formatSessionFooter({
-        ...initialSessionViewState(),
+        ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
         model: 'claude-sonnet-4-6',
         lastInputTokens: 500_000,
         contextWindowTokens: 1_000_000,
@@ -593,17 +599,23 @@ describe('chat-projection', () => {
     it('omits the fullness segment with no completed turn OR an unknown (custom-model) window', () => {
       // A known window but no lastInputTokens (no turn yet) ⇒ no segment.
       expect(
-        formatSessionFooter({ ...initialSessionViewState(), contextWindowTokens: 1_000_000 }),
+        formatSessionFooter({
+          ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+          contextWindowTokens: 1_000_000,
+        }),
       ).not.toContain('% ctx');
       // A last-turn count but an unknown window (a custom base-URL model) ⇒ no segment.
       expect(
-        formatSessionFooter({ ...initialSessionViewState(), lastInputTokens: 100 }),
+        formatSessionFooter({
+          ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+          lastInputTokens: 100,
+        }),
       ).not.toContain('% ctx');
     });
 
     it('clamps the fullness to 100% for a preamble-heavy over-window turn', () => {
       const footer = formatSessionFooter({
-        ...initialSessionViewState(),
+        ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
         lastInputTokens: 1_500_000,
         contextWindowTokens: 1_000_000,
       });
@@ -613,7 +625,10 @@ describe('chat-projection', () => {
 
   describe('formatSessionFooterWithMode', () => {
     it('appends the active mode label to the footer (always shown — auto is never hidden)', () => {
-      const state = { ...initialSessionViewState(), turnCount: 2 };
+      const state = {
+        ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+        turnCount: 2,
+      };
       expect(formatSessionFooterWithMode(state, 'ask')).toMatch(/· ask mode$/);
       expect(formatSessionFooterWithMode(state, 'accept-edits')).toMatch(/· accept-edits mode$/);
       expect(formatSessionFooterWithMode(state, 'auto')).toMatch(/· auto mode$/);

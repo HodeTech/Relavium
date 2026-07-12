@@ -4,6 +4,7 @@ import { type ChatMode } from '../../chat/chat-mode.js';
 import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
+import { INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import {
   createHomeController,
   type HomeChatSession,
@@ -29,7 +30,7 @@ const STUB_DOCTOR_PROBES: DoctorProbes = {
 /** A real chat store whose snapshot reports `running` — the controller reads `getSnapshot().state.status`. Built
  *  by overriding the live snapshot's status, so it satisfies {@link ChatStoreController} with no unsafe cast. */
 const runningStore = (): ChatStoreController => {
-  const store = createChatStore(false);
+  const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
   const snapshot = store.getSnapshot();
   return {
     ...store,
@@ -70,7 +71,11 @@ function makeSession(
   const lines: string[] = [];
   const teardown = vi.fn(() => Promise.resolve());
   // A custom store wins; else running ⇒ a status-running store, idle ⇒ a fresh one (the running-gate is false).
-  const store = opts.store ?? (opts.running === true ? runningStore() : createChatStore(false));
+  const store =
+    opts.store ??
+    (opts.running === true
+      ? runningStore()
+      : createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND));
   const session: HomeChatSession = {
     store,
     sessionId: opts.sessionId ?? 'sess-fake',
@@ -1001,7 +1006,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     let releaseTeardown: () => void = () => undefined;
     const teardown = vi.fn(() => new Promise<void>((r) => (releaseTeardown = r))); // a slow (graceful MCP) close
     const session: HomeChatSession = {
-      store: createChatStore(false),
+      store: createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
       sessionId: 'sess-x',
       processLine: () => Promise.resolve(),
       shouldStop: () => true, // the first turn ends the session ⇒ endChat fires
@@ -1034,7 +1039,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     let releaseTeardown: () => void = () => undefined;
     const lines: string[] = [];
     const session: HomeChatSession = {
-      store: createChatStore(false),
+      store: createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
       sessionId: 'sess-x',
       processLine: (line) => {
         lines.push(line);
@@ -1604,7 +1609,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     it('Esc REJECTS a pending approval when onAbort is ABSENT — never a dead key / stuck prompt', async () => {
       // A session wired WITHOUT onAbort must still let Esc resolve a pending approval (reject) rather than leave
       // it hung — the home-controller abort fallback (a pending approval + no onAbort ⇒ answerApproval reject).
-      const store = createChatStore(false);
+      const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
       const c = await inChat(makeSession({ store })); // no onAbort
       const pending = store.requestApproval(approvalReq, true);
       c.handleKey('', { escape: true });
@@ -1615,7 +1620,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
       // The `if onAbort` branch wins: the turn is aborted (its signal resolves the approval); the fallback
       // answerApproval must NOT also fire (a refactor to two independent `if`s would double-settle).
       const onAbort = vi.fn();
-      const store = createChatStore(false);
+      const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
       const c = await inChat(makeSession({ onAbort, store }));
       const pending = store.requestApproval(approvalReq, true);
       void pending.catch(() => undefined); // onAbort is a mock (doesn't fire the signal) — avoid an unhandled reject
@@ -1625,7 +1630,7 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     });
 
     it('a pending approval intercepts keys: `/` stays closed and `[y]` approves-once', async () => {
-      const store = createChatStore(false);
+      const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
       const c = await inChat(makeSession({ store }));
       const pending = store.requestApproval(approvalReq, true);
       c.handleKey('/', {}); // the approval owns the keyboard — the palette must NOT open
@@ -1635,13 +1640,13 @@ describe('createHomeController (2.5.B lifecycle / ADR-0054)', () => {
     });
 
     it('a pending approval: `[a]` approves-always, `[n]` rejects', async () => {
-      const alwaysStore = createChatStore(false);
+      const alwaysStore = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
       const ca = await inChat(makeSession({ store: alwaysStore }));
       const alwaysPending = alwaysStore.requestApproval(approvalReq, true);
       ca.handleKey('a', {});
       await expect(alwaysPending).resolves.toEqual({ outcome: 'approve', scope: 'always' });
 
-      const rejectStore = createChatStore(false);
+      const rejectStore = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
       const cr = await inChat(makeSession({ store: rejectStore }));
       const rejectPending = rejectStore.requestApproval(approvalReq, true);
       cr.handleKey('n', {});
@@ -2058,7 +2063,11 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   it('in-Home chat: a SAME-model effort change calls the setter — NO reseat (ADR-0066 §5)', async () => {
     // Bound to a reasoning-capable model at effort 'low'. Re-picking the SAME model then choosing 'high' in the
     // effort sub-step must push the SESSION override (onSetEffort) — NOT a reseat (which would tear the session down).
-    const boundStore = createChatStore(false, { model: 'claude-opus-4-8', transcript: [] });
+    const boundStore = createChatStore(
+      false,
+      { model: 'claude-opus-4-8', transcript: [] },
+      INLINE_TRANSCRIPT_BOUND,
+    );
     boundStore.setReasoningEffort('low'); // the session's current tier (drives the sub-list's ✓/highlight)
     const onSetEffort = vi.fn();
     const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
@@ -2098,7 +2107,11 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   });
 
   it('in-Home chat: re-picking the SAME model AND same effort is a no-op (no setter, no reseat) (ADR-0066)', async () => {
-    const boundStore = createChatStore(false, { model: 'claude-opus-4-8', transcript: [] });
+    const boundStore = createChatStore(
+      false,
+      { model: 'claude-opus-4-8', transcript: [] },
+      INLINE_TRANSCRIPT_BOUND,
+    );
     boundStore.setReasoningEffort('high');
     const onSetEffort = vi.fn();
     const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
@@ -2136,7 +2149,11 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   it('in-Home chat: accepting the ALREADY-bound model does NOT reseat — a no-op hint (ADR-0059)', async () => {
     // The session is bound to claude-opus-4-8; the only picker entry IS that model. Accepting it must NOT tear the
     // session down + rebuild for zero change (which would wipe the approval cache) — it keeps the picker open + hints.
-    const boundStore = createChatStore(false, { model: 'claude-opus-4-8', transcript: [] });
+    const boundStore = createChatStore(
+      false,
+      { model: 'claude-opus-4-8', transcript: [] },
+      INLINE_TRANSCRIPT_BOUND,
+    );
     const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore });
     const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
     const { port } = makeModelsPort({
@@ -2170,7 +2187,11 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     // The standalone `/effort` overlay (distinct from the `/models` effort sub-step): a reasoning-capable live chat
     // opens a fixed tier list on the bound effort; picking a new tier pushes the per-turn session override, never a
     // reseat. Reached via the `/` palette (typing `/` opens it), matching how a user runs it.
-    const boundStore = createChatStore(false, { model: 'claude-opus-4-8', transcript: [] });
+    const boundStore = createChatStore(
+      false,
+      { model: 'claude-opus-4-8', transcript: [] },
+      INLINE_TRANSCRIPT_BOUND,
+    );
     boundStore.setReasoningEffort('low'); // the session's current tier — drives the overlay's ✓/opening highlight
     const onSetEffort = vi.fn();
     const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
@@ -2205,7 +2226,11 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   it('in-Home chat: /effort on a NON-reasoning model does NOT open the overlay — it dispatches to the notice (ADR-0066 §6)', async () => {
     // A non-reasoning bound model has no controllable tier, so `/effort` must fall through to the slash dispatch
     // (the ctx handler prints "no controllable tier"), never opening a dead overlay.
-    const boundStore = createChatStore(false, { model: 'gpt-4o', transcript: [] }); // gpt-4o is not a reasoning model
+    const boundStore = createChatStore(
+      false,
+      { model: 'gpt-4o', transcript: [] },
+      INLINE_TRANSCRIPT_BOUND,
+    ); // gpt-4o is not a reasoning model
     const onSetEffort = vi.fn();
     const made = makeSession({ store: boundStore, onSetEffort });
     const c = createHomeController({
@@ -2231,7 +2256,11 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   it('in-Home chat: a typed (pasted) /effort line opens the overlay via applySubmitAction (ADR-0066 §6)', async () => {
     // Typing `/` at an empty prompt opens the palette, so a LITERAL `/effort` line reaches applySubmitAction only via
     // paste (bracketed paste appends verbatim). This covers the typed-intercept branch, distinct from the palette one.
-    const boundStore = createChatStore(false, { model: 'claude-opus-4-8', transcript: [] });
+    const boundStore = createChatStore(
+      false,
+      { model: 'claude-opus-4-8', transcript: [] },
+      INLINE_TRANSCRIPT_BOUND,
+    );
     boundStore.setReasoningEffort('medium');
     const onSetEffort = vi.fn();
     const sessionA = makeSession({ store: boundStore, onSetEffort });
@@ -2255,7 +2284,11 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
   });
 
   it('in-Home chat: Esc closes the /effort overlay without applying; same-tier re-pick is a no-op (ADR-0066 §6)', async () => {
-    const boundStore = createChatStore(false, { model: 'claude-opus-4-8', transcript: [] });
+    const boundStore = createChatStore(
+      false,
+      { model: 'claude-opus-4-8', transcript: [] },
+      INLINE_TRANSCRIPT_BOUND,
+    );
     boundStore.setReasoningEffort('high'); // the overlay opens highlighted on 'high'
     const onSetEffort = vi.fn();
     const sessionA = makeSession({ store: boundStore, onSetEffort });

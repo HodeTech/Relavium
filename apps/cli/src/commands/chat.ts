@@ -85,6 +85,7 @@ import {
   FULLSCREEN_TRANSCRIPT_BOUND,
   INLINE_TRANSCRIPT_BOUND,
   type TranscriptEntry,
+  type TranscriptBound,
 } from '../render/tui/session-view-model.js';
 import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
 import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
@@ -695,6 +696,10 @@ export async function chatResumeCommand(
       now,
       uuid,
       transcriptBoundFor(chatAltActive(deps, config.altScreen)),
+      // `chat-resume` carries NOTHING: it has never repainted prior turns, in any mode or version — there is no
+      // session_messages -> TranscriptEntry projection anywhere. That is a separate, tracked gap (deferred-tasks.md),
+      // NOT this reseat's business, and projecting it here would silently change resume's behaviour.
+      [],
     ));
     const turns = resumed.resumeState.turnCount;
     // `sessionId` is only schema-constrained to a non-empty string (the CLI mints a UUID, but `history.db` is
@@ -1370,6 +1375,12 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
   // The SAME signals `runReplLoop` used for the hoist (`deps.altScreen` is `[preferences].alt_screen`, carried here
   // precisely so a `/clear` re-drive keeps the mode) — so a rebuilt session cannot silently re-acquire the 4000-char
   // transcript bound mid-conversation.
+  //
+  // The `undefined` seed is what keeps `/clear` FRESH (2.6.C). `/clear`'s entire purpose is to start a new
+  // conversation, so it must never carry the outgoing transcript the way a `/models` reseat does — and it does not
+  // pass through `seedResumedWiring`, so its protection lives right here, on this argument. A future edit that
+  // "helpfully" seeds a transcript on this line defeats the one command whose contract is a clean slate. A
+  // regression test pins it.
   const store = createChatStore(
     deps.global.color,
     undefined,
@@ -1486,8 +1497,8 @@ function seedResumedWiring(
   uuid: () => string,
   /** The renderer's transcript bake bound (ADR-0068 Decision (c)). Defaults to the inline tail so a caller that
    *  forgets keeps today's behaviour; both real callers pass the resolved one. */
-  transcriptBound: number = INLINE_TRANSCRIPT_BOUND,
-  carriedTranscript: readonly TranscriptEntry[] = [],
+  transcriptBound: TranscriptBound,
+  carriedTranscript: readonly TranscriptEntry[],
 ): { store: ChatStoreController; persister: SessionPersister } {
   const store = createChatStore(
     color,
@@ -1496,11 +1507,12 @@ function seedResumedWiring(
       model: resumed.agent.model,
       cumulativeCostMicrocents: resumed.resumeState.cumulativeCostMicrocents,
       turnCount: resumed.resumeState.turnCount,
-      // The RENDERED transcript to carry into the new store (2.6.C). THREE callers reach this helper and they want
-      // different things: `chat-resume` and `/clear` carry NOTHING (a resume opens a fresh viewport; `/clear`'s whole
-      // purpose is a fresh start), while a `/models` RESEAT carries the live conversation so the alt screen does not
-      // go blank. Whoever generalizes this later: do not "helpfully" project `session_messages` here — that is a
-      // separate, tracked follow-up, and doing it silently would defeat `/clear`.
+      // The RENDERED transcript to carry into the new store (2.6.C). TWO callers reach this helper and they want
+      // different things: `chat-resume` carries NOTHING (it has never repainted prior turns — a separate, tracked
+      // gap), while a `/models` RESEAT carries the live conversation so the alt screen does not go blank. Whoever
+      // generalizes this later: do not "helpfully" project `session_messages` here — that would silently change
+      // resume's behaviour. (`/clear` never reaches this helper at all; it is assembled by `buildFreshChatWiring`,
+      // and its freshness is protected there.)
       transcript: carriedTranscript,
     },
     transcriptBound,
@@ -1601,6 +1613,9 @@ async function buildReseatWiring(
       deps.now,
       deps.uuid,
       transcriptBoundFor(chatAltActive(deps, deps.altScreen)),
+      // 2.6.C Step 4 threads the OUTGOING store's rendered transcript here so the alt screen keeps the
+      // conversation across the swap. Empty until then.
+      [],
     );
   } catch (err) {
     // Acquire-then-guard: the resumed session's MCP children are already spawned — reclaim them before the failure
@@ -1986,7 +2001,7 @@ export function chatAltActive(
 
 /** The transcript bake bound the renderer can afford (ADR-0068 Decision (c)): none in the full-screen viewport, the
  *  historical trailing tail inline. */
-export function transcriptBoundFor(altActive: boolean): number {
+export function transcriptBoundFor(altActive: boolean): TranscriptBound {
   return altActive ? FULLSCREEN_TRANSCRIPT_BOUND : INLINE_TRANSCRIPT_BOUND;
 }
 

@@ -17,7 +17,7 @@ import {
   reduceSessionEvent,
   type SessionViewSeed,
   type SessionViewState,
-  INLINE_TRANSCRIPT_BOUND,
+  type TranscriptBound,
 } from './session-view-model.js';
 
 /**
@@ -134,8 +134,8 @@ const HIGH_FREQUENCY_EVENTS: ReadonlySet<SessionStreamHandleEvent['type']> = new
  */
 export function createChatStore(
   color: boolean,
-  seed?: SessionViewSeed,
-  transcriptBound: number = INLINE_TRANSCRIPT_BOUND,
+  seed: SessionViewSeed | undefined,
+  transcriptBound: TranscriptBound,
 ): ChatStoreController {
   const listeners = new Set<() => void>();
   let state = initialSessionViewState(seed, transcriptBound);

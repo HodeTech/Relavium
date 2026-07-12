@@ -22,6 +22,7 @@ import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 import { createChatModeControl } from '../commands/chat.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import { createChatStore } from '../render/tui/chat-store.js';
+import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { applyChatMode, makeChatModeEnv } from './chat-mode-host.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import {
@@ -531,7 +532,7 @@ describe('buildResumedChatSession (2.N)', () => {
         callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'p' }),
       ]),
     });
-    createChatModeControl(built, createChatStore(false)); // ask regime, applied to the resumed session
+    createChatModeControl(built, createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND)); // ask regime, applied to the resumed session
     // A resumed session lands at idle and continues without start(); the next sendMessage runs a turn.
     await built.session.sendMessage('write a file');
     built.session.cancel();
@@ -560,7 +561,11 @@ describe('buildResumedChatSession (2.N)', () => {
         callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'p' }),
       ]),
     });
-    const control = createChatModeControl(built, createChatStore(false), { interactive: false });
+    const control = createChatModeControl(
+      built,
+      createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
+      { interactive: false },
+    );
     control.onModeChange('accept-edits'); // a prompting mode — but nothing can answer on this driver
     await built.session.sendMessage('write a file'); // MUST resolve (deny), never hang
     built.session.cancel();
@@ -968,7 +973,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         callWithArgs('c1', 'write_file', { path: 'x.txt', content: 'pwned' }),
       ]),
     });
-    createChatModeControl(built, createChatStore(false)); // applies ask → the fail-closed regime is now active
+    createChatModeControl(built, createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND)); // applies ask → the fail-closed regime is now active
     built.session.start();
     await built.session.sendMessage('write a file');
     built.session.cancel();
@@ -984,7 +989,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     const built = await build({
       chat: { ...EMPTY_CHAT, defaultModel: 'claude-opus-4-8', reasoningEffort: 'medium' },
     });
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const control = createChatModeControl(built, store);
     // Seeded from the agent's effective tier — opus is reasoning-capable, so the footer shows it.
     expect(store.getSnapshot().reasoningEffort).toBe('medium');
@@ -999,7 +1004,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
     const built = await build({
       chat: { ...EMPTY_CHAT, defaultModel: 'gpt-4o', reasoningEffort: 'high' },
     });
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     createChatModeControl(built, store);
     // The config default is baked onto the agent, but gpt-4o has no reasoning tier — the footer shows nothing
     // (the tier is gated off at send anyway), so a user is never shown an inert effort.
@@ -1018,7 +1023,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         callWithArgs('c1', 'http_request', { url: 'https://example.test/x' }),
       ]),
     });
-    createChatModeControl(built, createChatStore(false)); // ask regime active
+    createChatModeControl(built, createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND)); // ask regime active
     built.session.start();
     await built.session.sendMessage('fetch a url');
     built.session.cancel();
@@ -1038,7 +1043,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
       agentRef: writeAgent(['read_clipboard']),
       providers: scriptedResolver([callWithArgs('c1', 'read_clipboard', {})]),
     });
-    createChatModeControl(built, createChatStore(false)); // ask regime active
+    createChatModeControl(built, createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND)); // ask regime active
     built.session.start();
     await built.session.sendMessage('read my clipboard');
     built.session.cancel();
@@ -1059,7 +1064,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         textTurn('done'),
       ]),
     });
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const control = createChatModeControl(built, store);
     control.onModeChange('accept-edits'); // switch to accept-edits (prompts each governed write)
     built.session.start();
@@ -1098,7 +1103,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         callWithArgs('c1', 'write_file', { path: '.git/config', content: '[evil]' }),
       ]),
     });
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     createChatModeControl(built, store).onModeChange('auto');
     built.session.start();
     const turn = built.session.sendMessage('write a protected file');
@@ -1127,7 +1132,7 @@ describe('buildChatSession + 2.5.A tool-host wiring (ADR-0055)', () => {
         callWithArgs('c1', 'write_file', { path: '.git/config', content: '[evil]' }),
       ]),
     });
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     createChatModeControl(built, store).onModeChange('auto');
     built.session.start();
     const turn = built.session.sendMessage('write a protected file');

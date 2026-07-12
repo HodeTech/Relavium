@@ -9,6 +9,7 @@ import type { DoctorProbes } from '../../chat/doctor.js';
 import type { HomeSnapshot, HomeStore } from '../../home/home-store.js';
 import { createSuspendPort } from '../suspend.js';
 import { createChatStore, type ChatStoreController } from './chat-store.js';
+import { FULLSCREEN_TRANSCRIPT_BOUND, INLINE_TRANSCRIPT_BOUND } from './session-view-model.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
 import { RootApp } from './home-app.js';
 import {
@@ -192,7 +193,7 @@ async function enterChat(c: HomeController): Promise<void> {
 
 describe('RootApp (Home) bracketed paste — usePaste → controller.handlePaste wiring (ADR-0068)', () => {
   it('inserts an idle paste into the in-Home chat buffer', async () => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const { c, harness } = mountHome(store);
     await enterChat(c);
     expect(c.getSnapshot().mode).toBe('chat');
@@ -203,7 +204,7 @@ describe('RootApp (Home) bracketed paste — usePaste → controller.handlePaste
   });
 
   it('normalizes CRLF/CR in a pasted block to LF exactly (a\\r\\nb\\rc → a\\nb\\nc)', async () => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const { c, harness } = mountHome(store);
     await enterChat(c);
 
@@ -215,7 +216,7 @@ describe('RootApp (Home) bracketed paste — usePaste → controller.handlePaste
   });
 
   it('SECURITY: a pasted approval token cannot answer the fail-closed floor nor leak into the buffer (ADR-0057)', async () => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const { c, harness } = mountHome(store);
     await enterChat(c);
     let answered: ApprovalAnswer | undefined;
@@ -249,7 +250,7 @@ describe('RootApp (Home) live-turn timer — 2.5.H frozen-clock regression (func
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
       vi.setSystemTime(new Date('2026-07-09T10:00:00.000Z'));
-      const store = createChatStore(false);
+      const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
       const { c, harness } = mountHome(store);
       const frame = (): string => harness.lastFrame() ?? '';
       await enterChat(c);
@@ -272,7 +273,7 @@ describe('RootApp (Home) live-turn timer — 2.5.H frozen-clock regression (func
 
 describe('RootApp (Home) terminal resize — subscribeResize → setSize re-measure wiring', () => {
   it('re-renders on a resize signal without throwing (the useEffect re-measure path)', async () => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND);
     const { harness, fireResize, setSize } = mountHome(store);
     const frame = (): string => harness.lastFrame() ?? '';
     await waitFor(() => frame().length > 0);
@@ -293,7 +294,7 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     // The Home threads the viewport DIFFERENTLY from ChatApp ({rows,cols} from the resize-tracked size; the height
     // bound on ChatRegion's container), so it gets its own mounted pin — a regression that dropped it back to
     // `<Static>` (unscrollable in the alt buffer) or passed the wrong rows would be caught by nothing otherwise.
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     for (let i = 0; i < 40; i += 1) store.appendUser(`HMSG${i}`);
     const { c, harness } = mountHome(store, { alternateScreen: true });
     await enterChat(c);
@@ -305,7 +306,7 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
   });
 
   it('SCROLLS the in-Home transcript: PgUp leaves the tail, PgDn resumes it (RootApp keymap path, Step 4b-2)', async () => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     for (let i = 0; i < 60; i += 1) store.appendUser(`HMSG${i}`);
     const { c, harness } = mountHome(store, { alternateScreen: true });
     await enterChat(c);
@@ -335,7 +336,7 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     // keyboard reaches the OVERLAY, never the transcript scroll reducer — else opening the palette and paging would
     // silently pause tail-follow behind the overlay. Following the tail, open the palette, then PgUp: the tail must
     // STAY put (the key went to the palette, not the viewport) and the palette must still be open.
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     for (let i = 0; i < 60; i += 1) store.appendUser(`HMSG${i}`);
     const { c, harness } = mountHome(store, { alternateScreen: true });
     await enterChat(c);
@@ -357,7 +358,7 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
   it('CONSUMES a mouse report on the BARE Home (no chat viewport) — its raw bytes never type into the prompt (Step 5)', async () => {
     // `driveHome` enables mouse reporting for the whole alt-screen Home, so a wheel/click arrives in `home` mode too.
     // Nothing to scroll there, but the report must still be swallowed rather than routed to `controller.handleKey`.
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     const { c, harness } = mountHome(store, { alternateScreen: true });
     await waitFor(() => (harness.lastFrame() ?? '').length > 0);
     expect(c.getSnapshot().mode).toBe('home');
@@ -371,7 +372,7 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
   });
 
   it('CONSUMES a mouse report while an overlay owns the keyboard — never types into the palette filter (Step 5)', async () => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     for (let i = 0; i < 60; i += 1) store.appendUser(`HMSG${i}`);
     const { c, harness } = mountHome(store, { alternateScreen: true });
     await enterChat(c);
@@ -393,7 +394,7 @@ describe('RootApp (Home) alt-screen transcript viewport (2.6.F Step 4b, ADR-0068
     // hands back a NEW session OBJECT. The scroll-reset effect must key on that object identity, NOT the durable id —
     // else a scrolled-away transcript stays frozen after a live model switch. Scroll up off the tail, reseat, and the
     // view must re-follow. (A sessionId-keyed effect would MISS this — same id in, same id out — so this discriminates.)
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     for (let i = 0; i < 60; i += 1) store.appendUser(`HMSG${i}`);
     const sessionA = makeSession(store, 'sess-A');
     const sessionB = makeSession(store, 'sess-A'); // reseat: DIFFERENT object, SAME sessionId, SAME transcript store
@@ -441,7 +442,10 @@ describe('RootApp — the suspend port (ADR-0068 §e)', () => {
     const port = createSuspendPort();
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,
-      startChat: () => Promise.resolve(makeSession(createChatStore(false))),
+      startChat: () =>
+        Promise.resolve(
+          makeSession(createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND)),
+        ),
       homeStore,
       onExit: vi.fn(),
       onError: vi.fn(),
@@ -478,7 +482,7 @@ describe('RootApp — the suspend port (ADR-0068 §e)', () => {
  */
 describe('RootApp — mouse selection in the in-Home chat', () => {
   const seedThree = (): ChatStoreController => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     store.notice('AAAA');
     store.notice('BBBB');
     store.notice('CCCC');
@@ -530,7 +534,7 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
 
   it('a plain CLICK copies nothing; the WHEEL still scrolls and never copies', async () => {
     const copied: string[] = [];
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     for (let i = 0; i < 60; i += 1) store.notice(`row-${String(i).padStart(2, '0')}`);
     const m = mountHome(store, {
       alternateScreen: true,
@@ -558,7 +562,7 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     // The Home builds its own viewport facts, so `chat-app.test.tsx`'s equivalent proves nothing here: an `offset: 0`
     // break in `home-app.tsx` alone would ship green (Step-6 Opus review).
     const copied: string[] = [];
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     for (let i = 0; i < 60; i += 1) store.notice(`row-${String(i).padStart(2, '0')}`);
     const m = mountHome(store, {
       alternateScreen: true,
@@ -593,7 +597,7 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     // and while following the tail that shifts `effectiveOffset` by exactly the number of new lines. Substituting the
     // measured count for the live one is invisible to every test that settles a frame in between (break-verified).
     const copied: string[] = [];
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     for (let i = 0; i < 60; i += 1) store.notice(`row-${String(i).padStart(2, '0')}`);
     const m = mountHome(store, {
       alternateScreen: true,
@@ -620,7 +624,7 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
     // The transcript the selection indexes is the WRAPPED one. Copying raw entries instead of wrapped rows stays green
     // for as long as no line is wider than the terminal — so make one that is.
     const copied: string[] = [];
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     store.notice('A'.repeat(140)); // at 100 columns this wraps into two display rows
     const m = mountHome(store, {
       alternateScreen: true,
@@ -687,7 +691,7 @@ describe('RootApp — mouse selection in the in-Home chat', () => {
  */
 describe('RootApp — the copy-on-select "Copied" toast', () => {
   const seedThree = (): ChatStoreController => {
-    const store = createChatStore(false);
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
     store.notice('AAAA');
     store.notice('BBBB');
     store.notice('CCCC');
@@ -777,7 +781,7 @@ describe('RootApp — the branded Home banner', () => {
   };
 
   const frameOf = async (opts: Parameters<typeof mountHome>[1]): Promise<string> => {
-    const m = mountHome(createChatStore(false), opts);
+    const m = mountHome(createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), opts);
     await settleFrames();
     return m.harness.lastFrame() ?? '';
   };
@@ -822,7 +826,9 @@ describe('RootApp — the branded Home banner', () => {
     // the alt buffer, over the frame. Keying the plaque's rows by their TEXT did exactly that (whole-phase review).
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     try {
-      const m = mountHome(createChatStore(false), { color: false });
+      const m = mountHome(createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), {
+        color: false,
+      });
       await settleFrames();
       expect(m.harness.lastFrame() ?? '').toContain('R E L A V I U M');
       expect(spy).not.toHaveBeenCalled();
@@ -848,7 +854,7 @@ describe('RootApp — mouse capture follows the in-Home chat', () => {
     // The release side (`setMouseCapture(false)` ⇒ DISABLE_MOUSE) is pinned at the port, in `drive-home.test.ts`.
     // Here the claim is that the effect tracks `state.mode`: hardcoding `alternateScreen` would capture the landing.
     const toggles: boolean[] = [];
-    const m = mountHome(createChatStore(false), {
+    const m = mountHome(createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND), {
       alternateScreen: true,
       setMouseCapture: (enabled) => toggles.push(enabled),
     });
@@ -862,7 +868,7 @@ describe('RootApp — mouse capture follows the in-Home chat', () => {
 
   it('an OVERLAY over the chat does not release the mouse — that would be DECSET churn', async () => {
     const toggles: boolean[] = [];
-    const m = mountHome(createChatStore(false), {
+    const m = mountHome(createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND), {
       alternateScreen: true,
       setMouseCapture: (enabled) => toggles.push(enabled),
     });
@@ -878,7 +884,7 @@ describe('RootApp — mouse capture follows the in-Home chat', () => {
   it('the INLINE Home does not CONSUME mouse-report bytes either — nothing enables the mouse there', async () => {
     // The `alternateScreen` guard in `consumeMouseReport` is what keeps the reader (and its partial-report buffer)
     // out of a renderer that never receives a report. Without it, a user typing `[<0;1;1M` would have it swallowed.
-    const m = mountHome(createChatStore(false), {}); // no `alternateScreen`
+    const m = mountHome(createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND), {}); // no `alternateScreen`
     await settleFrames();
     m.harness.stdin.write('[<0;1;1M');
     await settleFrames();
@@ -887,7 +893,7 @@ describe('RootApp — mouse capture follows the in-Home chat', () => {
 
   it('the INLINE Home never captures, whatever the mode', async () => {
     const toggles: boolean[] = [];
-    const m = mountHome(createChatStore(false), {
+    const m = mountHome(createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND), {
       setMouseCapture: (enabled) => toggles.push(enabled),
     });
     await settleFrames();

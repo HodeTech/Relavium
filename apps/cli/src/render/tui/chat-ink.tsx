@@ -139,7 +139,7 @@ import type { ReasoningEffort } from '@relavium/shared';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import type { ClipboardOutcome } from '../clipboard.js';
 import type { ChatStoreController, PendingApproval } from './chat-store.js';
-import { carriesSeedTranscript } from './session-view-model.js';
+import { assertRenderStoreAgree } from './session-view-model.js';
 import type { SessionViewState, TranscriptEntry } from './session-view-model.js';
 
 /**
@@ -410,24 +410,24 @@ export function ChatView(props: Readonly<ChatViewProps>): ReactElement {
   // ChatRegion) leaves below any keyboard-owning overlay, inside their terminal-`rows`-bounded container — so the
   // TranscriptViewport inside has a bound to flex-grow into, and the overlays are never pushed off-screen.
   const viewport = props.viewport;
-  // TRIPWIRE (2.6.C). "Am I the alt screen?" is derived TWICE, independently: the RENDER layer reads `viewport`
-  // (undefined ⇒ inline ⇒ ink `<Static>`), while the STORE layer reads `transcriptBound` to decide whether to honour
-  // a carried seed transcript (`carriesSeedTranscript`). Correctness now depends on those two never disagreeing: an
-  // inline store that DID honour a seed would re-print the whole conversation through `<Static>` on top of the copy
-  // the terminal's scrollback already holds — a silently doubled screen. Assert they agree, so a future divergence
-  // surfaces as a failing test rather than corrupted output. Dev/test only: a render-time throw must never take down
-  // a user's live session over an invariant that is already impossible in the shipped wiring.
-  if (
-    process.env['NODE_ENV'] !== 'production' &&
-    viewport === undefined &&
-    carriesSeedTranscript(state.transcriptBound)
-  ) {
-    throw new Error(
-      'ChatView: the inline renderer (no viewport) is bound to a FULL-SCREEN transcript store. The seed-transcript ' +
-        'gate (carriesSeedTranscript) and the render discriminator have diverged; a seeded store would double-print ' +
-        'through <Static>. See session-view-model.ts.',
-    );
-  }
+  // TRIPWIRE (2.6.C) — a CI guard, not a runtime one. "Am I the alt screen?" is derived TWICE, independently: the
+  // RENDER layer reads `viewport` (undefined ⇒ inline ⇒ ink `<Static>`), while the STORE layer reads
+  // `transcriptBound` (⇒ {@link carriesSeedTranscript}) to decide whether to honour a carried seed transcript.
+  // Correctness now depends on those two never disagreeing, and BOTH directions corrupt:
+  //   • inline renderer + full-screen store ⇒ the seeded store re-prints the whole conversation through `<Static>`,
+  //     on top of the copy the terminal's scrollback already holds — a silently DOUBLED screen;
+  //   • full-screen renderer + inline-bound store ⇒ the carry is silently DROPPED and the viewport blanks — F1
+  //     itself, re-armed — and every completed turn also bakes at the 4000-char inline bound inside a viewport that
+  //     could hold the whole answer (ADR-0068 (c)).
+  // So assert the equality, not one side of it.
+  //
+  // Gated on VITEST, never on NODE_ENV: nothing in this CLI sets NODE_ENV, so an `!== 'production'` guard would be
+  // ARMED in a shipped session — and `apps/cli` has no React error boundary, so a render-time throw would take the
+  // user's session down over an invariant that is already unrepresentable in the shipped wiring. It would also be
+  // user-controllable in both directions (a shell exporting NODE_ENV=production would silently disarm it). The job
+  // of this assertion is to fail a future refactor in CI; it has no business running in a user's terminal.
+  if (process.env['VITEST'] !== undefined)
+    assertRenderStoreAgree(viewport !== undefined, state.transcriptBound);
   // Alt-screen only: flatten + width-wrap the transcript to display lines, MEMOIZED on (transcript, cols) so a
   // streaming turn (which re-renders each frame with the SAME completed-transcript reference) reuses the prior wrap
   // instead of re-wrapping all history every frame. `state.transcript` is a stable reference until an entry is

@@ -85,7 +85,7 @@ export interface SessionViewState {
    * trailing-tail bound (it has no viewport)". It lives on the state so `reduceSessionEvent` stays a pure
    * `(state, event)` function — the store sets it once, at construction.
    */
-  readonly transcriptBound: number;
+  readonly transcriptBound: TranscriptBound;
   /** Whether the head of `liveTokens` has been elided to stay within {@link MAX_LIVE_TOKEN_CHARS}. The render shows
    *  a leading elision marker so the scroll-out is VISIBLE, not a silent loss (2.5.H). Reset with `liveTokens`. */
   readonly liveTokensTruncated: boolean;
@@ -146,7 +146,22 @@ export const INLINE_TRANSCRIPT_BOUND = MAX_LIVE_TOKEN_CHARS;
  * uncopyable, surviving only in SQLite. The Step-4b-3 amendment's "caps-lift" was a name collision: it delivered the
  * per-entry wrap CACHE, not this.
  */
-export const FULLSCREEN_TRANSCRIPT_BOUND = Number.MAX_SAFE_INTEGER;
+export const FULLSCREEN_TRANSCRIPT_BOUND = 9_007_199_254_740_991; // === Number.MAX_SAFE_INTEGER (pinned by a test)
+
+/**
+ * The renderer-injected transcript bake bound — a CLOSED union, not a bare `number` (2.6.C).
+ *
+ * (The full-screen value is written as a LITERAL rather than `Number.MAX_SAFE_INTEGER`, which `lib.d.ts` types as a
+ * plain `number` — using it would widen the union straight back to `number` and quietly un-close the type. A test
+ * pins the literal to `Number.MAX_SAFE_INTEGER` so it cannot drift.)
+ *
+ * It used to be `number` with a silent `= INLINE_TRANSCRIPT_BOUND` default at three layers, which left the F1 hole
+ * open from the other side: a full-screen caller that forgot the argument got no type error, no runtime error, and a
+ * silently dropped transcript — a blank alt screen with a green build. Closing the type (and dropping the defaults)
+ * turns that into a compile error, and makes an out-of-domain bound unrepresentable rather than something the gate
+ * has to defensively degrade.
+ */
+export type TranscriptBound = typeof INLINE_TRANSCRIPT_BOUND | typeof FULLSCREEN_TRANSCRIPT_BOUND;
 /** Tool-call annotations kept in the in-flight turn. */
 export const MAX_LIVE_TOOL_CALLS = 16;
 /** Recent warnings kept for display. */
@@ -187,18 +202,46 @@ export interface SessionViewSeed {
  * in-memory transcript and the alt buffer has no native scrollback, so dropping the array blanks the screen.
  *
  * The gate lives HERE, at the single point where the seed is consumed, rather than being threaded through the five
- * `createChatStore` call sites — one missed site would silently double-print. `transcriptBound` is the
- * renderer-injected discriminator we already have (ADR-0068 Decision (c)); a bound that is neither the inline nor
- * the full-screen constant is treated as inline (the conservative default, matching `createChatStore`'s own
- * fail-safe default parameter).
+ * `createChatStore` call sites — one missed site would silently double-print. `transcriptBound` is the renderer-injected discriminator we
+ * already have (ADR-0068 Decision (c)), and it is a CLOSED type ({@link TranscriptBound}) with no default — so
+ * "the caller forgot the bound" and "the caller invented a third bound" are both compile errors, not silent
+ * inline degradations.
  */
-export function carriesSeedTranscript(transcriptBound: number): boolean {
+export function carriesSeedTranscript(transcriptBound: TranscriptBound): boolean {
   return transcriptBound === FULLSCREEN_TRANSCRIPT_BOUND;
 }
 
+/**
+ * The render/store agreement invariant (2.6.C). "Am I the alt screen?" is derived TWICE, independently: the RENDER
+ * layer from whether a viewport is mounted, the STORE layer from {@link TranscriptBound}. Correctness depends on them
+ * never disagreeing, and BOTH directions corrupt:
+ *
+ *   • inline render + FULL-SCREEN store — a seeded store re-prints the whole conversation through ink `<Static>`, on
+ *     top of the copy the terminal's scrollback already holds: a silently DOUBLED screen.
+ *   • full-screen render + INLINE store — the carried transcript is silently DROPPED and the viewport blanks (F1
+ *     itself, re-armed), and every completed turn bakes at the 4000-char inline bound inside a viewport that could
+ *     hold the whole answer (ADR-0068 (c)).
+ *
+ * Throws on divergence. `ChatView` calls this under VITEST only: its job is to fail a future refactor in CI, and a
+ * render-time throw has no business in a user's terminal (`apps/cli` has no React error boundary, so it would take
+ * the session down over a state the shipped wiring cannot reach).
+ */
+export function assertRenderStoreAgree(
+  fullScreenRender: boolean,
+  transcriptBound: TranscriptBound,
+): void {
+  if (fullScreenRender === carriesSeedTranscript(transcriptBound)) return;
+  throw new Error(
+    `ChatView: the render discriminator and the seed-transcript gate have diverged — the renderer is ` +
+      `${fullScreenRender ? 'FULL-SCREEN' : 'inline'} but the store is bound ` +
+      `${carriesSeedTranscript(transcriptBound) ? 'FULL-SCREEN' : 'INLINE'}. Either the conversation double-prints ` +
+      `through <Static>, or the carried transcript is silently dropped and the alt screen blanks (the F1 bug).`,
+  );
+}
+
 export function initialSessionViewState(
-  seed?: SessionViewSeed,
-  transcriptBound: number = INLINE_TRANSCRIPT_BOUND,
+  seed: SessionViewSeed | undefined,
+  transcriptBound: TranscriptBound,
 ): SessionViewState {
   // A resumed session (2.N) seeds the model but never re-emits session:started, so derive the context window here
   // too (ADR-0062 §7) — else a resumed session would show no fullness indicator until the (unrelated) next start.

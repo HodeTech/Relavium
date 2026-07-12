@@ -464,6 +464,31 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   gate before either persists — is closed by a store-level uniqueness constraint on `human_gate:resumed` per
   `(runId, gateId)`, a Phase-2 SQLite/cloud-store guarantee, not the in-memory reference. **Scheduled → 2.6.H.** *(low · checkpoint.ts/engine.ts; Phase-2 store)*
 
+## `chat-resume` opens on an empty viewport (2.6.C spin-off, 2026-07-12)
+
+> **Found while fixing 2.6.C's F1** (the `/models` reseat blanking the alt-screen viewport). Deliberately scoped
+> OUT of that fix, and recorded here so it is tracked work rather than a discovery that gets lost.
+
+`relavium chat-resume <sessionId>` restores the model's context from `history.db`, but opens on an **empty
+viewport** — the prior conversation is never repainted. This is **not** the 2.6.F regression F1 is: it has been
+true in *every* mode and *every* version, because **nothing anywhere projects `session_messages` into rendered
+`TranscriptEntry`s** — that projection has simply never been written. Inline and alt-screen behave identically.
+
+It shares F1's *root* (`SessionViewSeed.transcript`, now the seam 2.6.C adds) but not its *cause*, and fixing it
+needs machinery F1 does not:
+
+- a DB → `TranscriptEntry` projection (`session_messages` rows → the `{role, text}` / `{role:'assistant', text,
+  summary}` union), including what to do with rows a `/compact` or `/trim` dropped;
+- a decision on whether the **inline** renderer should repaint history on resume too — which would be a genuine
+  behaviour *change*, not a regression fix (today it prints nothing, and that is consistent).
+
+Why it was not folded into 2.6.C: F1 is a regression on the just-shipped default surface and ships as a hotfix; this
+is a long-standing UX gap that would have added a DB read path and an inline behaviour change to a view-only fix.
+The seam it needs (`SessionViewSeed.transcript` + `carriesSeedTranscript`) is already in place after 2.6.C Step 2,
+so the remaining work is the projection and the inline decision.
+
+**Home:** a 2.6 workstream (2.6.C's natural sibling) or 2.6.G's session browser, whichever reaches it first.
+
 ## AgentSession (1.V) follow-ups
 
 > **2026-06-16 — 1.V `AgentSession` (ADR-0024) + 1.AC budget governor (ADR-0028) merged in PR #26** (after two
