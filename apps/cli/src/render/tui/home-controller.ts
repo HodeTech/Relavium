@@ -44,6 +44,7 @@ import {
   type ReverseSearchState,
 } from './input-history.js';
 import type { ChatStoreController } from './chat-store.js';
+import type { TranscriptEntry } from './session-view-model.js';
 import { sanitizeApprovalReason } from './chat-projection.js';
 import {
   foldMentionKey,
@@ -215,8 +216,17 @@ export interface HomeControllerDeps {
   /** Build + wire + START a fresh chat session (no first message — the controller sends it on transition). May reject. */
   readonly startChat: () => Promise<HomeChatSession>;
   /** Reseat the in-Home chat onto a NEW model (ADR-0059) — reload + resume the current session's transcript under the
-   *  switched model. Absent ⇒ the in-Home `/models` picker degrades to the next-session-default write (no live reseat). */
-  readonly reseatChat?: (sessionId: string, target: ReseatTarget) => Promise<HomeChatSession>;
+   *  switched model. Absent ⇒ the in-Home `/models` picker degrades to the next-session-default write (no live reseat).
+   *
+   *  `carriedTranscript` is the OUTGOING store's RENDERED transcript (2.6.C). The reseat builds a brand-new view
+   *  store, and on the full-screen renderer that store IS the scrollback — so without the carry the whole
+   *  conversation vanishes from the screen (the alt buffer has none of its own). It is captured at the CALL, before
+   *  the old session is torn down. View-only: these are the already-sanitized render projections, never persisted. */
+  readonly reseatChat?: (
+    sessionId: string,
+    target: ReseatTarget,
+    carriedTranscript: readonly TranscriptEntry[],
+  ) => Promise<HomeChatSession>;
   readonly homeStore: HomeStore;
   /** The Home exited cleanly (Ctrl-C / EOF in Home mode) → `driveHome` resolves with exit 0. */
   readonly onExit: () => void;
@@ -468,7 +478,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (tearingDown === old) return; // already ending this session (mirror clearChat)
     const oldId = old.sessionId;
     set({ modelPicker: undefined, submitBusy: true }); // close the picker + re-gate input for the whole swap
-    const build = reseat(oldId, target);
+    // Captured HERE, before the build resolves and the old session is torn down (the teardown below only closes the
+    // persister/MCP — it never clears the view store — but capturing at the call makes the ordering explicit rather
+    // than incidental). This is the conversation the reseated store will open with (2.6.C / F1).
+    const carriedTranscript = old.store.getSnapshot().state.transcript;
+    const build = reseat(oldId, target, carriedTranscript);
     buildInFlight = build;
     void build.then(
       (next) => {

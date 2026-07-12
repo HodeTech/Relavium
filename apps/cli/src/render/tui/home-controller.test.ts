@@ -1,3 +1,5 @@
+import type { TranscriptEntry } from './session-view-model.js';
+import type { ReseatTarget } from '../../commands/chat.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type ChatMode } from '../../chat/chat-mode.js';
@@ -2018,9 +2020,15 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
 
   it('in-Home chat: /models opens the reseat picker; accepting a model RESEATS the live session (ADR-0059)', async () => {
     const sessionA = makeSession({ sessionId: 'sess-A' });
+    // A LIVE chat has turns on screen — that is the conversation the reseat must carry (2.6.C / F1). An empty store
+    // here would make the carry assertion below vacuous.
+    sessionA.session.store.appendUser('what is 2+2');
+    sessionA.session.store.notice('assistant: four');
     const sessionB = makeSession({ sessionId: 'sess-A' }); // a reseat continues the SAME sessionId
     const startChat = vi.fn(() => Promise.resolve(sessionA.session));
-    const reseatChat = vi.fn(() => Promise.resolve(sessionB.session));
+    const reseatChat = vi.fn<
+      (id: string, t: ReseatTarget, carried: readonly TranscriptEntry[]) => Promise<HomeChatSession>
+    >(() => Promise.resolve(sessionB.session));
     const { port } = makeModelsPort({
       entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
     });
@@ -2050,10 +2058,14 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     c.handleKey('', ENTER);
     await flush();
 
-    expect(reseatChat).toHaveBeenCalledWith('sess-A', {
-      modelId: 'claude-opus-4-8',
-      provider: 'anthropic',
-    });
+    // The reseat is handed the OUTGOING store's rendered transcript (2.6.C / F1) — the conversation the reseated
+    // store must open with, so the alt-screen viewport does not go blank. Passing `[]` here IS the bug.
+    expect(reseatChat).toHaveBeenCalledWith(
+      'sess-A',
+      { modelId: 'claude-opus-4-8', provider: 'anthropic' },
+      sessionA.session.store.getSnapshot().state.transcript,
+    );
+    expect(reseatChat.mock.calls[0]?.[2]).not.toHaveLength(0); // a live chat has turns; an empty carry is F1
     expect(sessionA.teardown).toHaveBeenCalledTimes(1); // the old session torn down (bounded)
     expect(c.getSnapshot().session).toBe(sessionB.session); // swapped to the reseated session
     expect(c.getSnapshot().mode).toBe('chat'); // stayed in chat (the model switched underneath)

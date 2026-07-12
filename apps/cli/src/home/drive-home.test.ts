@@ -432,6 +432,15 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(reseated?.sessionId).toBe(sessionId); // a reseat CONTINUES the same session (unlike /clear's new id)
     expect(reseated?.store.getSnapshot().state.model).toBe('claude-opus-4-8'); // rebound to the picked model
     expect(reseated?.store.getSnapshot().state.turnCount).toBe(1); // the prior turn carried
+
+    // F1 (2.6.C) — the RENDERED conversation carries too, which is what this test's name always claimed and never
+    // checked. Before the fix the reseat seeded `transcript: []`, so on the full-screen renderer (whose viewport
+    // windows the store's in-memory transcript, with no native scrollback behind it) the whole conversation vanished
+    // from the screen. The durable row was always intact; this asserts the VIEW. The switch notice lands LAST, so the
+    // user reads the prior conversation with an inline "model changed" marker beneath it.
+    const carried = reseated?.store.getSnapshot().state.transcript ?? [];
+    expect(carried.map((e) => e.role)).toEqual(['user', 'assistant', 'notice']);
+    expect(carried.some((e) => e.text.includes('sonnet reply'))).toBe(true); // the OLD model's answer survived
     // The effort sub-step's tier bound onto the reseated agent (ADR-0066) — surfaced in the footer via the store.
     expect(reseated?.store.getSnapshot().reasoningEffort).toBe('medium');
     expect(props.controller.getSnapshot().modelPicker).toBeUndefined(); // the picker closed

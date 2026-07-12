@@ -13,6 +13,7 @@ import {
   FULLSCREEN_TRANSCRIPT_BOUND,
   INLINE_TRANSCRIPT_BOUND,
   assertRenderStoreAgree,
+  type TranscriptEntry,
 } from './session-view-model.js';
 import { bracketed, settleFrames, waitFor } from './harness-util.js';
 import { RootApp } from './home-app.js';
@@ -132,7 +133,11 @@ function mountHome(
   opts: {
     alternateScreen?: boolean;
     startChat?: () => Promise<HomeChatSession>;
-    reseatChat?: (sessionId: string, target: ReseatTarget) => Promise<HomeChatSession>;
+    reseatChat?: (
+      sessionId: string,
+      target: ReseatTarget,
+      carriedTranscript: readonly TranscriptEntry[],
+    ) => Promise<HomeChatSession>;
     models?: HomeModelsPort;
     /** Capture what copy-on-select would put on the clipboard (2.6.F Step 6). */
     clipboard?: (text: string) => { kind: 'written'; characters: number };
@@ -909,5 +914,62 @@ describe('RootApp — mouse capture follows the in-Home chat', () => {
     await enterChat(m.c);
     await settleFrames();
     expect(toggles.every((t) => t === false)).toBe(true);
+  });
+});
+
+/**
+ * F1 ON SCREEN (2.6.C) — the mounted proof. `drive-home.test.ts` pins the reseated STORE's transcript through the
+ * real builder; this pins what the USER sees: after a `/models` switch on the full-screen renderer, the prior
+ * conversation is still rendered, with the switch marker beneath it.
+ *
+ * The fake must model what production DOES: a reseat builds a BRAND-NEW view store, seeded with the outgoing store's
+ * rendered transcript (`drive-home.tsx` → `createChatStore(color, { …, transcript }, transcriptBoundFor(alt))`). A
+ * fake that hands back a session over the SAME store object would keep the conversation on screen for free and could
+ * never fail against the un-fixed code — the precise shape of false confidence that let F1 ship past the existing
+ * reseat tests in the first place.
+ */
+describe('RootApp — a /models reseat keeps the conversation on screen (F1)', () => {
+  it('the reseated (NEW, seeded) store still renders the prior turns, with the switch marker last', async () => {
+    const store = createChatStore(false, undefined, FULLSCREEN_TRANSCRIPT_BOUND);
+    store.appendUser('what is 2+2');
+    store.notice('assistant: four');
+
+    const m = mountHome(store, {
+      alternateScreen: true,
+      models: makeModelsPort('claude-opus-4-8'),
+      // Production's shape: a NEW store, seeded with the carried transcript, at the full-screen bound.
+      reseatChat: (sessionId, _target, carriedTranscript) =>
+        Promise.resolve(
+          makeSession(
+            createChatStore(
+              false,
+              { model: 'claude-opus-4-8', transcript: carriedTranscript },
+              FULLSCREEN_TRANSCRIPT_BOUND,
+            ),
+            sessionId,
+          ),
+        ),
+    });
+    await enterChat(m.c);
+    await waitFor(() => (m.harness.lastFrame() ?? '').includes('what is 2+2'));
+
+    // Open the reseat picker from the chat palette (`/` → filter `models` → run), then accept the one model.
+    m.c.handleKey('/', {});
+    for (const ch of 'models') m.c.handleKey(ch, {});
+    m.c.handleKey('', { return: true });
+    await settleFrames();
+    expect(m.c.getSnapshot().modelPicker).toBeDefined(); // the picker opened IN the chat
+    m.c.handleKey('', { return: true }); // accept ⇒ a LIVE reseat
+    await waitFor(
+      () => m.c.getSnapshot().session?.store.getSnapshot().state.model === 'claude-opus-4-8',
+    );
+    await settleFrames();
+
+    // The conversation is STILL on screen — this is the whole bug. Before the fix the reseated store opened empty and
+    // the alt-screen viewport (no native scrollback behind it) showed nothing but the notice.
+    const carried = m.c.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
+    expect(carried.some((e) => e.text.includes('what is 2+2'))).toBe(true);
+    expect(carried.some((e) => e.text.includes('four'))).toBe(true);
+    expect(carried.at(-1)?.role).toBe('notice'); // the switch marker lands beneath the conversation
   });
 });

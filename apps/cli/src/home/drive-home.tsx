@@ -46,7 +46,7 @@ import { resolveCopyOnSelect, resolveMouseMode, resolveRenderMode } from '../ren
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { createOsKeychainStore } from '../secrets/os-keychain.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
-import { assertRenderStoreAgree } from '../render/tui/session-view-model.js';
+import { assertRenderStoreAgree, type TranscriptEntry } from '../render/tui/session-view-model.js';
 import { createMentionReader } from '../render/tui/mention.js';
 import {
   createHomeController,
@@ -521,6 +521,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     const reseatChat = async (
       sessionId: string,
       target: ReseatTarget,
+      carriedTranscript: readonly TranscriptEntry[],
     ): Promise<HomeChatSession> => {
       const loaded = opened.store.loadFull(sessionId);
       if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
@@ -567,9 +568,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
           model: built.agent.model,
           cumulativeCostMicrocents: built.resumeState.cumulativeCostMicrocents,
           turnCount: built.resumeState.turnCount,
-          // 2.6.C: Step 3 threads the OUTGOING store's rendered transcript through here so a reseat keeps the
-          // conversation on screen. Empty for now — the seed field lands first (and the gate ignores it on inline).
-          transcript: [],
+          // The OUTGOING store's rendered conversation (2.6.C / F1). On the full-screen renderer the store IS the
+          // scrollback, so a reseat that seeded `[]` blanked the screen. The gate drops this on the inline renderer,
+          // where ink's `<Static>` already printed the lines and re-seeding would double-print them.
+          transcript: carriedTranscript,
         },
         transcriptBoundFor(altScreenActive),
       );
