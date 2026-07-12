@@ -66,6 +66,7 @@ export {
   fromSessionMessageRow,
   type SessionStore,
   type SessionMessageMeta,
+  LEGACY_COST_SENTINEL,
 } from './session-store.js';
 
 // Run history (2.H) — the SQLite-backed RunStore the CLI host injects (durable persist-before-deliver,

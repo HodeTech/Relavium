@@ -2,7 +2,7 @@ import type { CompactionResult, TrimResult } from '@relavium/core';
 
 import type { CatalogEntry } from '../workflows/catalog.js';
 import { sanitizeInline, stripTerminalControls } from '../render/tui/chat-projection.js';
-import type { SessionCostRow } from '@relavium/db';
+import { LEGACY_COST_SENTINEL, type SessionCostRow } from '@relavium/db';
 
 import { formatCostUsd } from '../render/tui/format.js';
 
@@ -12,10 +12,6 @@ import { formatCostUsd } from '../render/tui/format.js';
  * unit-tested with no FS, no session, and no ink, and every dynamic field (a workflow slug) is sanitized at the
  * boundary so a crafted catalog entry can never forge a notice row or inject an escape.
  */
-
-/** The `(pre-2.6.C)` sentinel row the ADR-0070 migration backfills for a legacy session — one row carrying the whole
- *  legacy total, because the per-attempt increments that would have split it were never kept. */
-const LEGACY_SENTINEL = '(pre-2.6.C)';
 
 /**
  * The `/cost` notice — the session's spend, broken down PER MODEL (ADR-0070).
@@ -29,36 +25,37 @@ const LEGACY_SENTINEL = '(pre-2.6.C)';
  * Two honesties the panel must carry:
  *   • an `unpriced_calls > 0` row is a model we could not PRICE, not a free one — a $0.0000 row with real tokens
  *     would otherwise read as "this model costs nothing".
- *   • a legacy session predates per-model attribution entirely; its one sentinel row says so rather than implying a
- *     single-model session.
+ *   • a row that predates per-model attribution says so, per row — a resumed legacy session that spends again has
+ *     BOTH its sentinel and real model rows, and the sentinel must never claim the calls and tokens it does not have.
  *
  * The total is `agent_sessions.total_cost_microcents` — the authoritative number, and the one the budget cap enforces
  * against (ADR-0028). It is against Relavium's own event stream, not the provider's invoice: an egress that streamed
  * content but ended without a usage chunk, and a mid-stream failure, are both recorded as 0 on BOTH sides (ADR-0070
  * §3), so the reported spend is a systematic under-estimate of the bill. That is stated here, not buried.
  */
-export function costNotice(
-  totalCostMicrocents: number,
-  rows: readonly SessionCostRow[] = [],
-): string {
+export function costNotice(totalCostMicrocents: number, rows: readonly SessionCostRow[]): string {
   const total = `Session cost: ${formatCostUsd(totalCostMicrocents)}`;
   if (rows.length === 0) return total;
-
-  const legacy = rows.find((r) => r.model === LEGACY_SENTINEL);
-  if (legacy !== undefined && rows.length === 1) {
-    return `${total}\n  ${formatCostUsd(legacy.costMicrocents)}  (per-model breakdown unavailable — this session predates per-model attribution)`;
-  }
 
   const lines = rows.map((r) => {
     const share =
       totalCostMicrocents > 0 ? Math.round((r.costMicrocents / totalCostMicrocents) * 100) : 0;
+    const money = `  ${formatCostUsd(r.costMicrocents)}  ${String(share).padStart(3)}%`;
+
+    // The legacy sentinel is handled PER ROW, not per panel. A resumed pre-2.6.C session that spends AGAIN carries
+    // BOTH the sentinel and real model rows — the likeliest way a user meets this table — and rendering the sentinel
+    // through the normal path would print `$0.0420  40%  before per-model attribution  (0 calls, 0 tok)`: real money,
+    // zero calls, zero tokens, with the "unavailable" disclosure gone from the panel entirely. Its counts are
+    // structurally 0 (the per-attempt increments it would have needed were never kept), so it must never claim them.
+    if (r.model === LEGACY_COST_SENTINEL) {
+      return `${money}  before per-model attribution — breakdown unavailable (this spend predates it)`;
+    }
+
     const calls = `${r.callCount} ${r.callCount === 1 ? 'call' : 'calls'}`;
     const tokens = `${r.inputTokens + r.outputTokens} tok`;
     const unpriced =
       r.unpricedCalls > 0 ? `  — price unknown for ${r.unpricedCalls} of ${calls}` : '';
-    const name =
-      r.model === LEGACY_SENTINEL ? 'before per-model attribution' : sanitizeInline(r.model);
-    return `  ${formatCostUsd(r.costMicrocents)}  ${String(share).padStart(3)}%  ${name}  (${calls}, ${tokens})${unpriced}`;
+    return `${money}  ${sanitizeInline(r.model)}  (${calls}, ${tokens})${unpriced}`;
   });
   return [total, ...lines].join('\n');
 }

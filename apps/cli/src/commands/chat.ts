@@ -1107,9 +1107,21 @@ export function createChatLineHandler(
     // would visibly fail to sum to the total on the first `/cost` after a resume, breaking the one guarantee the
     // panel makes. The total comes from the same row the rows reconcile against.
     showCost: () => {
-      const session = opened.store.loadSession(built.sessionId);
-      const rows = opened.store.loadSessionCosts(built.sessionId);
-      emitOutput(costNotice(session?.totalCostMicrocents ?? 0, rows));
+      try {
+        // ONE snapshot: the rows and the total they are printed under must come from the same read, or a concurrent
+        // process's cost write can land between them and the panel prints rows summing to MORE than its own total.
+        const { totalCostMicrocents, rows } = opened.store.loadSessionCostBreakdown(
+          built.sessionId,
+        );
+        emitOutput(costNotice(totalCostMicrocents, rows));
+      } catch (err) {
+        // A read-only info command must never end the conversation. `handleSlashCommand` awaits `run` unguarded, and
+        // on the ink driver a rejection routes to `onError` → teardown; every sibling info handler is guarded for
+        // exactly this reason. Report by CODE, never a raw message (a DB error can carry a path).
+        emitOutput(
+          `could not read the session cost: ${err instanceof CliError ? err.code : 'unexpected error'}`,
+        );
+      }
     },
     // `/doctor` (2.5.C S5): a staged setup health check; `--deep` adds the network/process tier (key + MCP
     // validation). Each probe is secret-free + bounded; a thrown probe never crashes the REPL (reported as output).

@@ -166,6 +166,16 @@ export function fromSessionMessageRow(row: SessionMessageRow): SessionMessage {
  * caller supplies fully-formed records (ids + ISO timestamps) — the store owns neither id generation nor
  * the clock, mirroring how the engine takes them from its host.
  */
+/**
+ * The model string the ADR-0070 migration backfills for a session that predates per-model attribution — one row
+ * carrying the whole legacy total, because the per-attempt increments that would have split it were never kept.
+ *
+ * The CANONICAL home of this value (CLAUDE.md rule 8). It is written by migration 0009 and read by every surface
+ * that renders a breakdown; a copy on the other side of the package boundary could drift, and a drift would silently
+ * turn the honest "breakdown unavailable" line into a model row literally named `(pre-2.6.C)`.
+ */
+export const LEGACY_COST_SENTINEL = '(pre-2.6.C)';
+
 /** One `cost:updated` egress, as the store folds it (ADR-0070 §2). */
 export interface SessionCostEntry {
   /** A fresh id from the host's `uuid()` — the pattern every other store write uses. It is DISCARDED on the common
@@ -232,6 +242,19 @@ export interface SessionStore {
    *  session has not spent. The `/cost` breakdown reads THIS, never an in-memory counter: a resumed session's total
    *  is seeded from the row and covers the whole session, while memory knows only this process's models. */
   loadSessionCosts: (sessionId: string) => SessionCostRow[];
+  /**
+   * The total AND its per-model rows, read in ONE transaction (ADR-0070 §7).
+   *
+   * `/cost` promises that the rows sum to the total it prints. The TABLE guarantees that — but two independent reads
+   * do NOT: `history.db` runs in WAL, so a reader is never blocked by a writer, and another Relavium process on the
+   * same session (the very concurrency the single-writer design defends against) can commit a `recordSessionCost`
+   * BETWEEN a `loadSession` and a `loadSessionCosts`. The panel would then print rows that sum to MORE than the total
+   * above them — a share over 100% on a money surface. One snapshot, one truth.
+   */
+  loadSessionCostBreakdown: (sessionId: string) => {
+    readonly totalCostMicrocents: number;
+    readonly rows: SessionCostRow[];
+  };
   /** Append a transcript message (the caller assigns the next monotonic `sequenceNumber`). */
   appendMessage: (message: SessionMessage, meta?: SessionMessageMeta) => void;
   /** Load a session's full transcript in `sequenceNumber` order. */
@@ -284,6 +307,23 @@ export function createSessionStore(db: Db): SessionStore {
       .orderBy(asc(sessionMessages.sequenceNumber))
       .all()
       .map(fromSessionMessageRow);
+
+  const readCostRows = (sessionId: string): SessionCostRow[] =>
+    db
+      .select()
+      .from(sessionCosts)
+      .where(eq(sessionCosts.sessionId, sessionId))
+      .orderBy(desc(sessionCosts.costMicrocents))
+      .all()
+      .map((r) => ({
+        model: r.model,
+        modelCatalogId: r.modelCatalogId ?? undefined,
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+        costMicrocents: r.costMicrocents,
+        callCount: r.callCount,
+        unpricedCalls: r.unpricedCalls,
+      }));
 
   return {
     createSession: (record) => {
@@ -352,22 +392,18 @@ export function createSessionStore(db: Db): SessionStore {
       );
     },
 
-    loadSessionCosts: (sessionId) =>
-      db
-        .select()
-        .from(sessionCosts)
-        .where(eq(sessionCosts.sessionId, sessionId))
-        .orderBy(desc(sessionCosts.costMicrocents))
-        .all()
-        .map((r) => ({
-          model: r.model,
-          modelCatalogId: r.modelCatalogId ?? undefined,
-          inputTokens: r.inputTokens,
-          outputTokens: r.outputTokens,
-          costMicrocents: r.costMicrocents,
-          callCount: r.callCount,
-          unpricedCalls: r.unpricedCalls,
+    loadSessionCosts: (sessionId) => readCostRows(sessionId),
+
+    loadSessionCostBreakdown: (sessionId) =>
+      // ONE transaction, so the rows and the total the panel prints them under come from the SAME snapshot. Two
+      // independent reads on a WAL connection can straddle another process's `recordSessionCost` commit, and the
+      // panel would print rows summing to more than its own total.
+      withBusyRetry(() =>
+        db.transaction(() => ({
+          totalCostMicrocents: loadSession(sessionId)?.totalCostMicrocents ?? 0,
+          rows: readCostRows(sessionId),
         })),
+      ),
     loadSession,
     listSessions,
     appendMessage: (message, meta) => {

@@ -1,4 +1,4 @@
-import type { SessionCostRow } from '@relavium/db';
+import { LEGACY_COST_SENTINEL, type SessionCostRow } from '@relavium/db';
 import type { CompactionResult, TrimResult } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
@@ -22,8 +22,8 @@ const entry = (slug: string, valid = true): CatalogEntry => ({
 
 describe('costNotice', () => {
   it('formats the cumulative spend in USD (micro-cents → $X.XXXX)', () => {
-    expect(costNotice(0)).toBe('Session cost: $0.0000');
-    expect(costNotice(5_000_000)).toBe('Session cost: $0.0500');
+    expect(costNotice(0, [])).toBe('Session cost: $0.0000');
+    expect(costNotice(5_000_000, [])).toBe('Session cost: $0.0500');
   });
 });
 
@@ -161,7 +161,7 @@ describe('costNotice — the per-model breakdown', () => {
   });
 
   it('with no rows it is the total alone — a session that has not spent says so in one line', () => {
-    expect(costNotice(0)).toBe('Session cost: $0.0000');
+    expect(costNotice(0, [])).toBe('Session cost: $0.0000');
   });
 
   it('renders one line per model, and the ROWS SUM TO THE TOTAL the panel shows', () => {
@@ -195,9 +195,37 @@ describe('costNotice — the per-model breakdown', () => {
   });
 
   it('a LEGACY session renders its sentinel honestly — not as a single-model session', () => {
-    const out = costNotice(4200, [row({ model: '(pre-2.6.C)', costMicrocents: 4200 })]);
-    expect(out).toContain('per-model breakdown unavailable');
-    expect(out).toContain('predates per-model attribution');
+    const out = costNotice(4200, [
+      row({
+        model: LEGACY_COST_SENTINEL,
+        costMicrocents: 4200,
+        callCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+      }),
+    ]);
+    expect(out).toContain('breakdown unavailable');
+    expect(out).not.toContain('calls'); // its counts are structurally 0 — it must never claim them
+  });
+
+  it('a RESUMED legacy session that spends AGAIN keeps the sentinel honest beside its real model rows', () => {
+    // The likeliest way a user meets this table — and the case a panel-level (rows.length === 1) special case misses.
+    // Rendered through the normal path the sentinel would print `$0.0420  40%  …  (0 calls, 0 tok)`: real money, zero
+    // calls, zero tokens, with the "unavailable" disclosure gone from the panel entirely.
+    const out = costNotice(10_000, [
+      row({ model: 'claude-opus-4-8', costMicrocents: 6000, callCount: 3 }),
+      row({
+        model: LEGACY_COST_SENTINEL,
+        costMicrocents: 4000,
+        callCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+      }),
+    ]);
+    expect(out).toContain('claude-opus-4-8');
+    expect(out).toContain('(3 calls'); // the REAL row keeps its counts
+    expect(out).toContain('breakdown unavailable'); // …and the sentinel still discloses, even beside real rows
+    expect(out).not.toContain('0 calls, 0 tok'); // it never claims counts it structurally cannot have
   });
 
   it('sanitizes the model id — it is provider-sourced and history.db is shared across surfaces', () => {

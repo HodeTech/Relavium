@@ -1407,6 +1407,40 @@ describe('chatResumeCommand (2.N)', () => {
     };
   }
 
+  /**
+   * `/cost` READS THE DB (ADR-0070 §7) — the central change of the breakdown, and it had NO coverage.
+   *
+   * The suite could not tell the two implementations apart: the only end-to-end `/cost` case ran it as the FIRST
+   * input, with zero spend and zero rows, so both the old in-memory total and the new DB read emit the byte-identical
+   * `Session cost: $0.0000`. Reverting the handler to memory left the whole suite green.
+   *
+   * The RESUME case is the REASON the DB read exists: a resumed process's in-memory counters know only the models IT
+   * used, while the total is seeded from the durable row and covers the whole session — so an in-memory breakdown
+   * would print rows that do not sum to its own total, on a money surface, on the first `/cost` after a resume.
+   */
+  it("/cost after a RESUME shows the WHOLE session — the prior process's spend, which memory does not have", async () => {
+    const store = createSessionStore(client.db);
+    // Process 1: spend, then end.
+    expect(
+      await chatCommand(
+        { agent: undefined },
+        freshDeps(['hello', '/exit'], [textTurn('hi')], store),
+      ),
+    ).toBe(EXIT_CODES.chatEnded);
+    const spentBefore = store.loadSession('id-0')?.totalCostMicrocents ?? 0;
+    expect(spentBefore).toBeGreaterThan(0);
+    expect(store.loadSessionCosts('id-0').length).toBeGreaterThan(0);
+
+    // Process 2: RESUME and ask for /cost BEFORE spending anything. In memory this process has no models and no cost.
+    const { d, err } = resumeDeps(['/cost', '/exit'], [], store);
+    expect(await chatResumeCommand({ sessionId: 'id-0' }, d)).toBe(EXIT_CODES.chatEnded);
+
+    const panel = err();
+    expect(panel).toContain('Session cost: $');
+    expect(panel).not.toContain('$0.0000'); // the prior process's spend is VISIBLE, not zeroed
+    expect(panel).toMatch(/\(\d+ calls?, \d+ tok\)/); // …and its per-model row survived the process boundary
+  });
+
   it('reloads a persisted session and continues it, appending sequenced rows past the prior max', async () => {
     const store = createSessionStore(client.db);
     // Seed one fresh turn (id-0 = session; messages seq 0,1), then resume and add a second turn.
