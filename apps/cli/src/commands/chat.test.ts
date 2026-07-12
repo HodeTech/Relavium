@@ -831,6 +831,125 @@ describe('chatCommand', () => {
     expect(alts).toEqual([true, true]); // the reseat rebuild keeps the preference (buildReseatWiring threads it)
   });
 
+  /**
+   * F1 (2.6.C) on the STANDALONE path — and its inline mirror image.
+   *
+   * A `/models` reseat re-drives the REPL over a brand-new view store. On the full-screen renderer that store IS the
+   * scrollback (the viewport windows its in-memory transcript; the alt buffer has no scrollback of its own), so
+   * seeding it `[]` blanked the whole conversation the moment the user switched models.
+   *
+   * The INLINE renderer is the opposite, and it is why the carry is GATED rather than unconditional: `driveInk`
+   * unmounts and re-mounts ink per session, which resets ink `<Static>`'s internal index to 0. A seeded inline store
+   * would therefore RE-PRINT the entire conversation on top of the copy the terminal's own scrollback already holds —
+   * the user would see it twice. Inline needs no carry: its lines were already printed and survive the swap.
+   *
+   * This is the ONLY surface where the double-print is reachable (the Home never re-mounts `RootApp` across a swap,
+   * so `<Static>`'s index survives there and a stray carry would be silently harmless) — which is precisely why the
+   * inline negative belongs HERE and would prove nothing on the Home.
+   */
+  it('a /models reseat on the ALT screen carries the rendered conversation into the reseated store (F1)', async () => {
+    const { d } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
+    seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
+    const cfg = join(cwd, 'alt-carry.toml');
+    writeFileSync(cfg, '[preferences]\nalt_screen = true\n');
+    const seen: (readonly { role: string; text: string }[])[] = [];
+    let call = 0;
+    const reseatThenExit: ChatDriver = async (ctx) => {
+      seen.push(
+        ctx.store.getSnapshot().state.transcript.map((e) => ({ role: e.role, text: e.text })),
+      );
+      ctx.startSession();
+      if (call++ === 0) {
+        await ctx.processLine('first');
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+        return { kind: ctx.stopReason() };
+      }
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        io: { ...d.io, stdoutIsTty: true },
+        global: { ...globalOptions(cwd), configPath: cfg },
+        drive: reseatThenExit,
+      },
+    );
+    expect(seen[0]).toEqual([]); // the first session starts empty (nothing to carry)
+    // The RESEATED session opens with the prior conversation — not a blank screen. THIS is the bug: before the fix
+    // this was `[]`, so the user switched models and the whole chat vanished from the alt screen.
+    // (The scripted driver drives `processLine` directly, so the view store holds the user turn; a real session's
+    // assistant entry arrives through the event stream, which this fake does not run. The carry is what is asserted.)
+    expect(seen[1]).toEqual([{ role: 'user', text: 'first' }]);
+  });
+
+  it('the same reseat INLINE seeds NOTHING — <Static> already printed those lines; re-seeding would double-print', async () => {
+    const { d } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
+    seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
+    const cfg = join(cwd, 'inline-carry.toml');
+    writeFileSync(cfg, '[preferences]\nalt_screen = false\n'); // INLINE — the opt-out
+    const seen: number[] = [];
+    let call = 0;
+    const reseatThenExit: ChatDriver = async (ctx) => {
+      seen.push(ctx.store.getSnapshot().state.transcript.length);
+      ctx.startSession();
+      if (call++ === 0) {
+        await ctx.processLine('first');
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+        return { kind: ctx.stopReason() };
+      }
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        io: { ...d.io, stdoutIsTty: true },
+        global: { ...globalOptions(cwd), configPath: cfg },
+        drive: reseatThenExit,
+      },
+    );
+    expect(seen).toEqual([0, 0]); // BOTH sessions open empty inline — the carry is dropped by the gate
+  });
+
+  it('a /clear stays FRESH — it never carries the outgoing conversation, on either renderer', async () => {
+    // `/clear`'s entire contract is a clean slate. It re-drives through `rebuild`, which never sees the carry — but
+    // that protection is structural, and structural protections are what a future generalization deletes.
+    const { d } = deps([], [textTurn('hi there'), textTurn('second')]);
+    const cfg = join(cwd, 'clear-fresh.toml');
+    writeFileSync(cfg, '[preferences]\nalt_screen = true\n'); // FULL-SCREEN: the carry WOULD apply if it were passed
+    const seen: number[] = [];
+    let call = 0;
+    const clearThenExit: ChatDriver = async (ctx) => {
+      seen.push(ctx.store.getSnapshot().state.transcript.length);
+      ctx.startSession();
+      if (call++ === 0) {
+        await ctx.processLine('first');
+        await ctx.processLine('/clear');
+        return { kind: ctx.stopReason() };
+      }
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        io: { ...d.io, stdoutIsTty: true },
+        global: { ...globalOptions(cwd), configPath: cfg },
+        drive: clearThenExit,
+      },
+    );
+    expect(seen).toEqual([0, 0]); // the cleared session opens EMPTY even on the full-screen renderer
+  });
+
   it('/clear whose FRESH build fails surfaces the resumable prior session and ends cleanly (ADR-0062 §7)', async () => {
     const { d, err, store } = deps([], [textTurn('hi there')]);
     let builds = 0;

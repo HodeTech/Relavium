@@ -1568,6 +1568,9 @@ async function buildReseatWiring(
   deps: ReseatWiringDeps,
   oldSessionId: string,
   target: ReseatTarget,
+  /** The OUTGOING store's rendered transcript (2.6.C / F1) — what the reseated store opens with, so the full-screen
+   *  viewport does not go blank. The gate drops it on the inline renderer (its lines are already printed). */
+  carriedTranscript: readonly TranscriptEntry[],
 ): Promise<ReplWiring> {
   const loaded = deps.opened.store.loadFull(oldSessionId);
   if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
@@ -1613,9 +1616,7 @@ async function buildReseatWiring(
       deps.now,
       deps.uuid,
       transcriptBoundFor(chatAltActive(deps, deps.altScreen)),
-      // 2.6.C Step 4 threads the OUTGOING store's rendered transcript here so the alt screen keeps the
-      // conversation across the swap. Empty until then.
-      [],
+      carriedTranscript,
     );
   } catch (err) {
     // Acquire-then-guard: the resumed session's MCP children are already spawned — reclaim them before the failure
@@ -1675,7 +1676,11 @@ function createReseatRebuild(params: {
   readonly global: GlobalOptions;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded so a `/models` reseat keeps the render mode. */
   readonly altScreen?: boolean | undefined;
-}): (oldSessionId: string, target: ReseatTarget) => Promise<ReplWiring> {
+}): (
+  oldSessionId: string,
+  target: ReseatTarget,
+  carriedTranscript: readonly TranscriptEntry[],
+) => Promise<ReplWiring> {
   const wiringDeps: ReseatWiringDeps = {
     chat: params.chat,
     now: params.now,
@@ -1691,7 +1696,8 @@ function createReseatRebuild(params: {
     altScreen: params.altScreen,
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
   };
-  return (oldSessionId, target) => buildReseatWiring(wiringDeps, oldSessionId, target);
+  return (oldSessionId, target, carriedTranscript) =>
+    buildReseatWiring(wiringDeps, oldSessionId, target, carriedTranscript);
 }
 
 /** The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`, wired ONLY on
@@ -1862,12 +1868,22 @@ function resolveSwapRebuild(
   outcome: ChatDriveOutcome,
   oldSessionId: string,
   rebuild: ((oldSessionId: string) => Promise<ReplWiring>) | undefined,
-  reseatRebuild: ((oldSessionId: string, target: ReseatTarget) => Promise<ReplWiring>) | undefined,
+  reseatRebuild:
+    | ((
+        oldSessionId: string,
+        target: ReseatTarget,
+        carriedTranscript: readonly TranscriptEntry[],
+      ) => Promise<ReplWiring>)
+    | undefined,
+  /** The OUTGOING store's rendered transcript (2.6.C / F1). Only a RESEAT carries it: it continues the same
+   *  conversation under a new model, so the alt-screen viewport must not go blank. `/clear` deliberately does NOT —
+   *  its entire contract is a fresh start, and its `rebuild` path never sees this argument. */
+  carriedTranscript: readonly TranscriptEntry[],
 ): (() => Promise<ReplWiring>) | undefined {
   if (outcome.kind === 'clear' && rebuild !== undefined) return () => rebuild(oldSessionId);
   if (outcome.kind === 'reseat' && reseatRebuild !== undefined && outcome.target !== undefined) {
     const target = outcome.target;
-    return () => reseatRebuild(oldSessionId, target);
+    return () => reseatRebuild(oldSessionId, target, carriedTranscript);
   }
   return undefined;
 }
@@ -2009,7 +2025,11 @@ export async function runReplLoop(
   wiring: ReplWiring,
   deps: ChatReplDeps,
   rebuild?: (oldSessionId: string) => Promise<ReplWiring>,
-  reseatRebuild?: (oldSessionId: string, target: ReseatTarget) => Promise<ReplWiring>,
+  reseatRebuild?: (
+    oldSessionId: string,
+    target: ReseatTarget,
+    carriedTranscript: readonly TranscriptEntry[],
+  ) => Promise<ReplWiring>,
 ): Promise<ExitCode> {
   // The SHARED db handle — the same across every swap (a fresh / reseated session reuses it), closed ONCE below.
   const opened = wiring.opened;
@@ -2097,7 +2117,15 @@ export async function runReplLoop(
           // The old session is ALREADY torn down (driveOneSession's finally fired its terminal → the row is 'ended' +
           // resumable). Resolve the rebuild for this swap kind, or `undefined` to END the REPL (see resolveSwapRebuild).
           const oldSessionId = current.built.sessionId;
-          const next = resolveSwapRebuild(outcome, oldSessionId, rebuild, reseatRebuild);
+          // The old session is torn down but its view STORE is still live (teardown closes the persister + MCP, never
+          // the store), so this is the rendered conversation the reseated session must open with (2.6.C / F1).
+          const next = resolveSwapRebuild(
+            outcome,
+            oldSessionId,
+            rebuild,
+            reseatRebuild,
+            current.store.getSnapshot().state.transcript,
+          );
           if (next === undefined) return { summaryText };
           // Clear the persistent alt buffer between the just-unmounted session and the next mount, so a `/clear` swap
           // never briefly shows two stacked transcripts (ink's non-fullscreen unmount does not erase). No-op inactive.
