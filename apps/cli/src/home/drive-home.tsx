@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { createProviderStore, createRunHistoryReader } from '@relavium/db';
-import type { AgentSessionRecord, ReasoningEffort } from '@relavium/shared';
+import type { AgentSessionRecord, LlmProviderId, ReasoningEffort } from '@relavium/shared';
 import { render } from 'ink';
 import { createElement } from 'react';
 
@@ -27,7 +27,7 @@ import {
   type SessionPersister,
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
-import { writeGlobalDefaultModel, writeGlobalPreferences } from '../config/write.js';
+import { writeGlobalPreferences } from '../config/write.js';
 import { createModelCatalogPort } from '../engine/model-catalog-port.js';
 import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
@@ -332,6 +332,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     const readEffectiveDefault = (): string | undefined => readEffectiveChat()?.defaultModel;
     const readEffectiveEffort = (): ReasoningEffort | undefined =>
       readEffectiveChat()?.reasoningEffort;
+    // The provider persisted alongside the effective default (ADR-0059) — read FRESH so a same-session `/models`
+    // write's provider lights up the next chat, exactly like `readEffectiveDefault`.
+    const readEffectiveProvider = (): LlmProviderId | undefined =>
+      readEffectiveChat()?.defaultProvider;
     // The `/models` catalog port (ADR-0064 §10) — the SHARED load/refresh + key-aware merge trio (the SAME one the
     // chat reseat picker uses, ADR-0059), over the ONE open db + the store-aware resolver. The Home layers its own
     // accept action on top: `currentDefault`/`currentEffort` (the ✓ markers) + `writeDefault` (the next-session
@@ -343,9 +347,13 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // Write to the SAME file the picker re-reads + the started session resolves (honors `--config`), so a `/models`
       // write is never a silent no-op to a different file (2.5.G S7). The effort rides the SAME atomic write; an
       // absent `reasoningEffort` (a non-reasoning model) leaves any prior effort default unchanged.
-      writeDefault: (modelId, reasoningEffort) =>
+      writeDefault: (modelId, provider, reasoningEffort) =>
         writeGlobalPreferences(
-          { defaultModel: modelId, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) },
+          {
+            defaultModel: modelId,
+            defaultProvider: provider, // ADR-0059: persist the provider so the next chat skips id inference
+            ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+          },
           homeDir,
           deps.global.configPath,
         ),
@@ -496,6 +504,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         chat: {
           ...config.chat,
           defaultModel: readEffectiveDefault() ?? config.chat.defaultModel,
+          defaultProvider: readEffectiveProvider() ?? config.chat.defaultProvider,
           reasoningEffort: readEffectiveEffort() ?? config.chat.reasoningEffort,
         },
         agentRef: undefined, // the built-in default agent (zero-config first run)
@@ -554,7 +563,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         if (storeRef.current !== undefined) storeRef.current.notice(text);
         else deps.io.writeErr(`${text}\n`);
       };
-      const noteBudget = (warning: ChatBudgetWarning): void => noteToStore(budgetWarningText(warning));
+      const noteBudget = (warning: ChatBudgetWarning): void =>
+        noteToStore(budgetWarningText(warning));
       const built = await (deps.buildResumedSession ?? buildResumedChatSession)({
         chat: config.chat,
         record,
@@ -619,8 +629,12 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         io: deps.io,
         // Reuse the SAME config-write target as the `/models` port (honors `--config`) so the wizard's starter
         // model + a later `/models` pick + the started session all agree on one file (2.5.G S7/S8).
-        writeDefaultModel: (modelId) =>
-          writeGlobalDefaultModel(modelId, homeDir, deps.global.configPath),
+        writeDefaultModel: (modelId, provider) =>
+          writeGlobalPreferences(
+            { defaultModel: modelId, defaultProvider: provider },
+            homeDir,
+            deps.global.configPath,
+          ),
         ...(deps.onboardingPrompter === undefined ? {} : { prompter: deps.onboardingPrompter }),
       });
     }

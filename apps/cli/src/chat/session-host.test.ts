@@ -82,6 +82,7 @@ function capturingResolver(scripts: StreamChunk[][]): {
 
 const EMPTY_CHAT: ResolvedChatConfig = {
   defaultModel: undefined,
+  defaultProvider: undefined,
   fsScope: undefined,
   maxTurns: undefined,
   maxMessages: undefined,
@@ -89,7 +90,7 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   compactThreshold: undefined,
   maxCostMicrocents: undefined,
   onExceed: undefined,
-    strictCostCap: false,
+  strictCostCap: false,
   allowedCommands: undefined,
   allowedCommandGlobs: undefined,
   reasoningEffort: undefined,
@@ -849,8 +850,12 @@ describe('buildGovernorWiring', () => {
     );
     // A model neither the catalog nor a user prices — the pre-egress estimate throws, and the governor degrades to
     // allow. It must not reject (an unpriced self-hosted model is not a failure) but it must SAY so, once.
-    await expect(wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 })).resolves.toBeUndefined();
-    await expect(wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 })).resolves.toBeUndefined();
+    await expect(
+      wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 }),
+    ).resolves.toBeUndefined();
+    await expect(
+      wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 }),
+    ).resolves.toBeUndefined();
     expect(notes).toHaveLength(1); // deduped per model
     expect(notes[0]).toContain('my-self-hosted-model');
     expect(notes[0]).toContain('has no price');

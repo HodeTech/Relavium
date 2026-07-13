@@ -15,7 +15,7 @@ import {
 } from './home-controller.js';
 import type { UserCommandOutcome } from '@relavium/core';
 import type { ModelCatalogEntry } from '@relavium/llm';
-import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
+import { REASONING_EFFORTS, type LlmProviderId, type ReasoningEffort } from '@relavium/shared';
 
 import type { RefreshReport } from '../../engine/model-refresh.js';
 
@@ -1702,9 +1702,11 @@ function makeModelsPort(
   refreshIfStale: ReturnType<typeof vi.fn>;
   refresh: ReturnType<typeof vi.fn>;
   writeDefault: ReturnType<typeof vi.fn>;
+  latestProvider: () => LlmProviderId | undefined;
 } {
   const entries = opts.entries ?? [pickerEntry({ modelId: 'a' }), pickerEntry({ modelId: 'b' })];
   let written: string | undefined;
+  let writtenProvider: LlmProviderId | undefined;
   let writtenEffort: ReasoningEffort | undefined;
   const load = vi.fn(() => {
     if (opts.loadThrows === true) throw new Error('catalog read failed');
@@ -1712,11 +1714,14 @@ function makeModelsPort(
   });
   const refreshIfStale = vi.fn(opts.refreshIfStale ?? (() => Promise.resolve(undefined)));
   const refresh = vi.fn(opts.refresh ?? (() => Promise.resolve({ providers: [] })));
-  const writeDefault = vi.fn((modelId: string, reasoningEffort?: ReasoningEffort) => {
-    if (opts.writeThrows === true) throw new Error('config write failed');
-    written = modelId;
-    if (reasoningEffort !== undefined) writtenEffort = reasoningEffort;
-  });
+  const writeDefault = vi.fn(
+    (modelId: string, provider: LlmProviderId, reasoningEffort?: ReasoningEffort) => {
+      if (opts.writeThrows === true) throw new Error('config write failed');
+      written = modelId;
+      writtenProvider = provider;
+      if (reasoningEffort !== undefined) writtenEffort = reasoningEffort;
+    },
+  );
   const port: HomeModelsPort = {
     load,
     refreshIfStale,
@@ -1730,7 +1735,14 @@ function makeModelsPort(
     currentEffort: () => opts.currentEffort ?? writtenEffort,
     writeDefault,
   };
-  return { port, load, refreshIfStale, refresh, writeDefault };
+  return {
+    port,
+    load,
+    refreshIfStale,
+    refresh,
+    writeDefault,
+    latestProvider: () => writtenProvider,
+  };
 }
 
 describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () => {
@@ -1779,10 +1791,26 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     const c = openPicker(port);
     await flush();
     c.handleKey('', ENTER); // accept the selected (available) model
-    expect(writeDefault).toHaveBeenCalledWith('claude-x', undefined); // non-reasoning ⇒ model only, no effort
+    expect(writeDefault).toHaveBeenCalledWith('claude-x', 'anthropic', undefined); // model + provider, no effort
     expect(c.getSnapshot().modelPicker).toBeUndefined(); // the picker closed
     expect(c.getSnapshot().notice).toContain('Claude X'); // the confirmation names the model
     expect(c.getSnapshot().notice).toContain('next chat session'); // it is a NEXT-session action, not a live reseat
+  });
+
+  it("bare Home: the picked model's PROVIDER is persisted with it (ADR-0059 — the Bug-3 fix)", async () => {
+    // The provider is authoritative at pick time (the live `/models` list is per-provider). Persisting it means the
+    // next chat over a live-discovered id whose prefix the inference cannot place (an openai `chat-latest`) still
+    // resolves, instead of crashing "cannot infer a provider". The provider written is the picked ENTRY's provider.
+    const { port, writeDefault, latestProvider } = makeModelsPort({
+      entries: [
+        pickerEntry({ modelId: 'chat-latest', displayName: 'chat-latest', provider: 'openai' }),
+      ],
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER);
+    expect(writeDefault).toHaveBeenCalledWith('chat-latest', 'openai', undefined);
+    expect(latestProvider()).toBe('openai');
   });
 
   it('bare Home: a REASONING model offers the effort sub-step, writing BOTH model + effort defaults (ADR-0066 §6)', async () => {
@@ -1793,6 +1821,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
         pickerEntry({
           modelId: 'deepseek-v4-flash',
           displayName: 'DeepSeek V4 Flash',
+          provider: 'deepseek',
         }),
       ],
       currentEffort: 'low', // the existing effort default — the sub-list opens highlighted on it
@@ -1806,7 +1835,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     c.handleKey('', { downArrow: true }); // medium → high
     c.handleKey('', ENTER); // accept the model + 'high'
 
-    expect(writeDefault).toHaveBeenCalledWith('deepseek-v4-flash', 'high'); // BOTH written (one atomic call)
+    expect(writeDefault).toHaveBeenCalledWith('deepseek-v4-flash', 'deepseek', 'high'); // model+provider+effort, one atomic call
     expect(c.getSnapshot().modelPicker).toBeUndefined(); // closed
     expect(c.getSnapshot().notice).toContain('DeepSeek V4 Flash');
     expect(c.getSnapshot().notice).toContain('effort high'); // the notice names the written effort
@@ -1822,6 +1851,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
         pickerEntry({
           modelId: 'deepseek-v4-flash',
           displayName: 'DeepSeek V4 Flash',
+          provider: 'deepseek',
         }),
       ],
       // no currentEffort → port.currentEffort() is undefined
@@ -1833,7 +1863,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(c.getSnapshot().modelPicker?.currentEffort).toBeUndefined(); // no config effort default
     c.handleKey('', ENTER); // immediate Enter on the opening highlight (the neutral 'medium')
 
-    expect(writeDefault).toHaveBeenCalledWith('deepseek-v4-flash', 'medium'); // the neutral default is written
+    expect(writeDefault).toHaveBeenCalledWith('deepseek-v4-flash', 'deepseek', 'medium'); // the neutral default is written
     expect(c.getSnapshot().notice).toContain('effort medium');
   });
 
@@ -1847,7 +1877,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     const c = openPicker(port);
     await flush();
     c.handleKey('', ENTER);
-    expect(writeDefault).toHaveBeenCalledWith('claude-x', undefined); // non-reasoning ⇒ model only, no effort
+    expect(writeDefault).toHaveBeenCalledWith('claude-x', 'anthropic', undefined); // model + provider, no effort
     expect(c.getSnapshot().notice).toContain('overrides it here');
     expect(c.getSnapshot().notice).not.toContain('next chat session'); // no false claim of effect
   });
@@ -2082,9 +2112,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
     const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
     const { port } = makeModelsPort({
-      entries: [
-        pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' }),
-      ],
+      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
     });
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,
@@ -2126,9 +2154,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     const sessionA = makeSession({ sessionId: 'sess-A', store: boundStore, onSetEffort });
     const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
     const { port } = makeModelsPort({
-      entries: [
-        pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' }),
-      ],
+      entries: [pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' })],
     });
     const c = createHomeController({
       doctorProbes: STUB_DOCTOR_PROBES,

@@ -26,6 +26,7 @@ const EMPTY_CONFIG: ResolvedConfig = {
   mediaGcGraceMs: undefined,
   chat: {
     defaultModel: undefined,
+    defaultProvider: undefined,
     fsScope: undefined,
     maxTurns: undefined,
     maxMessages: undefined,

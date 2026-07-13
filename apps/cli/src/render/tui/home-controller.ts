@@ -206,10 +206,15 @@ export interface HomeModelsPort {
   /** The current resolved default reasoning-effort tier (ADR-0066 §6) — the `✓`/opening highlight of the bare-Home
    *  effort sub-step; `undefined` ⇒ none set (the sub-list opens on a neutral middle tier). */
   currentEffort: () => ReasoningEffort | undefined;
-  /** Persist the chosen model as the next session's default, and (ADR-0066 §6) — when the effort sub-step ran for a
-   *  reasoning model — its effort tier too, in ONE atomic write (writeGlobalPreferences). An absent `reasoningEffort`
-   *  leaves any prior effort default unchanged. Throws `ConfigError` on a bad write. */
-  writeDefault: (modelId: string, reasoningEffort?: ReasoningEffort) => void;
+  /** Persist the chosen model as the next session's default — WITH its `provider` (ADR-0059: authoritative at pick
+   *  time, so the next chat skips id inference) and (ADR-0066 §6) — when the effort sub-step ran for a reasoning
+   *  model — its effort tier too, in ONE atomic write (writeGlobalPreferences). An absent `reasoningEffort` leaves
+   *  any prior effort default unchanged. Throws `ConfigError` on a bad write. */
+  writeDefault: (
+    modelId: string,
+    provider: ReseatTarget['provider'],
+    reasoningEffort?: ReasoningEffort,
+  ) => void;
 }
 
 export interface HomeControllerDeps {
@@ -752,12 +757,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const writeNextSessionDefault = (
     modelId: string,
     displayName: string,
+    provider: ReseatTarget['provider'],
     reasoningEffort?: ReasoningEffort,
   ): void => {
     const port = deps.models;
     if (port === undefined) return;
     try {
-      port.writeDefault(modelId, reasoningEffort);
+      port.writeDefault(modelId, provider, reasoningEffort);
     } catch {
       // A generic save-failure hint — the actual write target may be a `--config` override, not the canonical
       // `~/.relavium/config.toml`, so don't name a path the user may not be using.
@@ -850,7 +856,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       applyLiveSessionPick(active, modelId, displayName, provider, reasoningEffort);
       return;
     }
-    writeNextSessionDefault(modelId, displayName, reasoningEffort);
+    writeNextSessionDefault(modelId, displayName, provider, reasoningEffort);
   };
   // The open `/models` picker owns every key (2.5.G S7) — parity with routeMentionKey. Returns whether the key was
   // consumed. A DIMMED (unavailable-on-your-key) model is non-selectable (ADR §6): accepting one shows a transient

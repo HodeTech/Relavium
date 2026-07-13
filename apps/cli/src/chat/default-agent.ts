@@ -1,4 +1,4 @@
-import type { ProviderId } from '@relavium/llm';
+import { catalogModel, type ProviderId } from '@relavium/llm';
 import type { Agent, ReasoningEffort } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
@@ -35,17 +35,25 @@ const DEFAULT_CHAT_SYSTEM_PROMPT =
 export const DEFAULT_CHAT_TOOLS: readonly string[] = ['read_file', 'list_directory', 'git_status'];
 
 /**
- * Infer the provider that serves a model id from its well-known prefix. Phase-1 has no model→provider
- * catalog lookup wired for the chat path, and a default agent must name a provider ({@link Agent.provider});
- * this covers the four `@relavium/llm` seam providers (ADR-0011) and returns `undefined` for an unrecognized
- * model so the caller fails with a clear "bind an explicit `--agent`" message rather than guess wrong.
+ * Infer the provider that serves a model id — **catalog first** (ADR-0071), then a well-known-prefix fallback.
+ *
+ * A default agent must name a provider ({@link Agent.provider}). The catalog knows the provider of every model it
+ * carries AUTHORITATIVELY, regardless of how the id is spelled — `chatgpt-4o-latest` has no `gpt`/`o<digit>` prefix
+ * yet is unmistakably openai — so a catalog hit is trusted before the heuristic. The prefix map remains the fallback
+ * for an id the catalog does not carry (a brand-new model, or a custom `base_url` endpoint), covering the four
+ * `@relavium/llm` seam providers (ADR-0011). Returns `undefined` for an id neither knows, so the caller fails with a
+ * clear "bind an explicit `--agent`" message rather than guess wrong.
+ *
+ * The truly robust source is a PERSISTED provider from pick time (the picker knows it authoritatively — the live
+ * `/models` list is per-provider); {@link buildDefaultChatAgent} prefers that and only falls back to this inference.
  */
 export function inferProviderFromModel(model: string): ProviderId | undefined {
+  const cataloged = catalogModel(model)?.provider;
+  if (cataloged !== undefined) return cataloged;
   const m = model.toLowerCase();
   if (m.startsWith('claude')) return 'anthropic';
   // OpenAI's GPT family + the o-series reasoning models. `/^o\d/` matches the whole o-series (o1/o3/o4 and
-  // future o5+) in one expression rather than enumerating each prefix. (A model→provider catalog lookup is
-  // the eventual robust source; this prefix map is the deliberate Phase-1 zero-config default.)
+  // future o5+) in one expression rather than enumerating each prefix.
   if (m.startsWith('gpt') || /^o\d/.test(m)) return 'openai';
   if (m.startsWith('gemini')) return 'gemini';
   if (m.startsWith('deepseek')) return 'deepseek';
@@ -54,19 +62,28 @@ export function inferProviderFromModel(model: string): ProviderId | undefined {
 
 /**
  * Build the built-in default chat agent over `model` (the resolved `[chat].default_model`, or
- * {@link DEFAULT_CHAT_MODEL}). Throws a clean exit-2 {@link CliError} when the provider cannot be inferred
- * from the model id — guiding the user to set a known `[chat].default_model` or bind an explicit `--agent`.
- * `reasoningEffort` (the resolved `[chat].reasoning_effort`, ADR-0066) is baked onto the agent so the default
- * chat honors the config default; absent ⇒ no reasoning control (the provider default).
+ * {@link DEFAULT_CHAT_MODEL}).
+ *
+ * `knownProvider` — the provider PERSISTED alongside the model (`[chat]`/`[preferences].default_provider`, written by
+ * the picker/wizard at pick time, ADR-0059's "the provider is authoritative, never re-inferred"). When present it is
+ * used verbatim and inference is SKIPPED, so a model whose id the prefix map cannot place — a live-discovered
+ * `chatgpt-4o-latest`, a custom-endpoint id — still starts. Only when it is absent does this fall back to
+ * {@link inferProviderFromModel}; a clean exit-2 {@link CliError} then guides the user to a known model or `--agent`.
+ * `reasoningEffort` (the resolved `[chat].reasoning_effort`, ADR-0066) is baked onto the agent so the default chat
+ * honors the config default; absent ⇒ no reasoning control (the provider default).
  */
-export function buildDefaultChatAgent(model: string, reasoningEffort?: ReasoningEffort): Agent {
-  const provider = inferProviderFromModel(model);
+export function buildDefaultChatAgent(
+  model: string,
+  reasoningEffort?: ReasoningEffort,
+  knownProvider?: ProviderId,
+): Agent {
+  const provider = knownProvider ?? inferProviderFromModel(model);
   if (provider === undefined) {
     throw new CliError(
       'invalid_invocation',
       `cannot infer a provider for chat model '${model}'. Set [chat].default_model to a known model ` +
-        `(claude-*, gpt-*, gemini-*, deepseek-*), or bind an explicit agent with ` +
-        `'relavium chat --agent <ref>'.`,
+        `(claude-*, gpt-*, gemini-*, deepseek-*) — or set [chat].default_provider, or bind an explicit agent ` +
+        `with 'relavium chat --agent <ref>'.`,
     );
   }
   return {

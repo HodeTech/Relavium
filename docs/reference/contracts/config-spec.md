@@ -81,6 +81,7 @@ auto_refresh = false
 
 [preferences]
 default_model = "claude-sonnet-4-6"
+default_provider = "anthropic"     # ADR-0059: the provider serving default_model — anthropic | openai | gemini | deepseek. Persisted by the /models picker + the onboarding wizard at pick time (authoritative there — the live model list is per-provider), so the next chat resolves the provider WITHOUT id inference. Load-bearing for a live-discovered id whose spelling the prefix map cannot place (e.g. chatgpt-4o-latest). Absent ⇒ inference from the id (catalog first, then prefix).
 reasoning_effort = "medium"        # ADR-0066 §6: the GLOBAL default reasoning-effort tier — off | low | medium | high | max; the fallback BELOW any [chat].reasoning_effort. Written by the /models picker's effort sub-step. Absent ⇒ no reasoning control (the provider default).
 theme = "dark"
 alt_screen = true                  # ADR-0068 §e (2.6.F): the full-screen alternate-screen renderer for the bare Home + `relavium chat`. Since Step 4b-3 the DEFAULT is ON — a TTY opens full-screen — so this key is the durable OPT-OUT: `false` keeps the byte-identical INLINE renderer (native scrollback + the emulator's own a11y — the screen-reader fallback), `true` forces it on. The `--no-alt-screen` flag is the per-invocation opt-out and overrides this key; a non-TTY / `--json` / CI path always renders inline regardless. Absent ⇒ the phase default (alt-ON since 4b-3 — ADR-0068 §b).
@@ -111,9 +112,10 @@ stdio-only fields (`command`/`args`/`env`) are rejected on a network registratio
 
 > **Writing the global config** ([ADR-0063](../../decisions/0063-cli-config-write-contract.md)). Config is
 > almost entirely **read-only** (hand-edited, git-committed). The one write path is the CLI persisting a chosen
-> default: `/models` and the 2.5.G onboarding wizard set **`[preferences].default_model`**, and (ADR-0066 §6) the
-> `/models` picker's **effort sub-step** additionally sets **`[preferences].reasoning_effort`** for a reasoning
-> model — **only** those two `[preferences]` keys, and only through a **typed setter** (never a generic key/value
+> default: `/models` and the 2.5.G onboarding wizard set **`[preferences].default_model`** and (ADR-0059) its
+> **`default_provider`** in one atomic write, and (ADR-0066 §6) the `/models` picker's **effort sub-step**
+> additionally sets **`[preferences].reasoning_effort`** for a reasoning model — **only** those three `[preferences]`
+> keys, and only through a **typed setter** (never a generic key/value
 > writer), so a secret can never be written by construction (there is no `api_key` field in the schema; keys live
 > only in the OS keychain, [ADR-0006](../../decisions/0006-os-keychain-for-api-keys.md)). A partial write leaves
 > the other key unchanged (a model-only pick never clears a prior effort default).
@@ -149,6 +151,7 @@ focus_area = "security and type safety"
 
 [chat]                             # agent-session (chat-mode) defaults — see contracts/agent-session-spec.md
 default_model = "claude-sonnet-4-6"   # model for a chat session that names none; absent at every [chat] layer ⇒ falls back to global [preferences].default_model (ADR-0063)
+default_provider = "anthropic"     # ADR-0059: the provider serving [chat].default_model; falls back to global [preferences].default_provider. Absent at every layer ⇒ inference from the id (catalog first, then prefix).
 reasoning_effort = "medium"        # ADR-0066: reasoning-effort tier baked onto the DEFAULT chat agent — off | low | medium | high | max; absent ⇒ no reasoning control (the provider default). Ignored on a model without a controllable reasoning tier.
 fs_scope = "sandboxed"             # SAME tier enum as [defaults].fs_scope above (not re-listed here)
 max_turns = 50                     # hard session TURN cap → SessionDeps.maxTurns (DoS fail-safe; absent ⇒ engine default 50; positiveInt — 0 is rejected here) — DISTINCT from max_messages

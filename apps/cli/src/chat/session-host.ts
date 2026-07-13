@@ -321,6 +321,11 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       cwd: opts.cwd,
       projectConfigDir: opts.projectConfigDir,
       defaultModel: opts.chat.defaultModel,
+      // ADR-0059: the persisted `[chat].default_provider` is used verbatim for the DEFAULT agent so a live-discovered
+      // id whose prefix the inference cannot place still resolves; absent ⇒ inference from the id.
+      ...(opts.chat.defaultProvider === undefined
+        ? {}
+        : { defaultProvider: opts.chat.defaultProvider }),
       // ADR-0066: the `[chat].reasoning_effort` default is baked onto the DEFAULT agent only (an authored agent
       // owns its own). Threaded here so a config default lights up a default-agent chat without a picker step.
       ...(opts.chat.reasoningEffort === undefined
@@ -607,7 +612,10 @@ export function buildGovernorWiring(
     // what the wire can spend, so the governor under-authorizes and waves through the call it exists to stop.
     ...(endpointKind === undefined
       ? {}
-      : { resolveEndpoint: (model: string) => endpointKind(catalogModel(model)?.provider ?? 'openai') }),
+      : {
+          resolveEndpoint: (model: string) =>
+            endpointKind(catalogModel(model)?.provider ?? 'openai'),
+        }),
     // ADR-0071 §K7: a turn ran on a model we could not price, so the cap did not apply to it. Say so, once — a cost
     // cap that silently does not apply is a false sense of safety. `strict_cost_cap` is the block-instead option.
     ...(onUnpriced === undefined

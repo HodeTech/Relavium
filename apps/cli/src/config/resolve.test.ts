@@ -97,6 +97,21 @@ describe('resolveConfig', () => {
     ).toBeUndefined();
   });
 
+  it('resolves [chat].default_provider (ADR-0059) last-writer-wins project > workspace > global [preferences]', () => {
+    const workspace: ProjectConfig = { chat: { default_provider: 'openai' } };
+    const project: ProjectConfig = { chat: { default_provider: 'gemini' } };
+    expect(resolveConfig({ workspace, project }).chat.defaultProvider).toBe('gemini'); // project wins
+    // A project present but omitting it falls through to workspace (per-field, like `default_model`).
+    expect(
+      resolveConfig({ workspace, project: { chat: { max_turns: 5 } } }).chat.defaultProvider,
+    ).toBe('openai');
+    // Falls back to the GLOBAL `[preferences].default_provider` (the picker/wizard write target) BELOW any override.
+    const global = { preferences: { default_provider: 'anthropic' as const } };
+    expect(resolveConfig({ global }).chat.defaultProvider).toBe('anthropic'); // global fallback applies…
+    expect(resolveConfig({ global, workspace }).chat.defaultProvider).toBe('openai'); // …but a workspace/project wins
+    expect(resolveConfig({}).chat.defaultProvider).toBeUndefined(); // absent everywhere ⇒ inference from the id
+  });
+
   it('resolves [chat].auto_compact + compact_threshold (ADR-0062) last-writer-wins, per field', () => {
     const workspace: ProjectConfig = { chat: { auto_compact: false, compact_threshold: 0.7 } };
     const project: ProjectConfig = { chat: { compact_threshold: 0.9 } };

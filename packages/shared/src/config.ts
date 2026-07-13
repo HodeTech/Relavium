@@ -1,7 +1,12 @@
 import { z } from 'zod';
 
 import { URL_HAS_CREDENTIALS, nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
-import { FS_SCOPE_TIERS, ON_EXCEED_ACTIONS, REASONING_EFFORTS } from './constants.js';
+import {
+  FS_SCOPE_TIERS,
+  LLM_PROVIDERS,
+  ON_EXCEED_ACTIONS,
+  REASONING_EFFORTS,
+} from './constants.js';
 
 /**
  * Configuration schemas (config-spec.md). Validation only — no file IO. The global
@@ -160,6 +165,11 @@ export const GlobalConfigSchema = z
     preferences: z
       .object({
         default_model: z.string().optional(),
+        // The provider that serves `default_model`, PERSISTED at pick time (ADR-0059 — the provider is authoritative,
+        // never re-inferred from the id). Written alongside `default_model` by the `/models` picker + the onboarding
+        // wizard so a next-session chat over a live-discovered id whose spelling the prefix map cannot place (e.g.
+        // `chatgpt-4o-latest`) still resolves its provider. Absent ⇒ fall back to prefix/catalog inference.
+        default_provider: z.enum(LLM_PROVIDERS).optional(),
         theme: z.string().optional(),
         // The GLOBAL default reasoning-effort tier (ADR-0066 §6) — the effort counterpart of `default_model`, the
         // write target of the `/models` picker's effort sub-step. Resolved BELOW project/workspace
@@ -207,6 +217,9 @@ export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;
 export const ChatConfigSchema = z
   .object({
     default_model: z.string().optional(),
+    // The provider serving `[chat].default_model`, persisted at pick time (ADR-0059). See the identical
+    // `[preferences].default_provider` note above; the project layer overrides the global one, like `default_model`.
+    default_provider: z.enum(LLM_PROVIDERS).optional(),
     fs_scope: FsScopeSchema.optional(),
     // `!`-shell allowlist (ADR-0061): exact full-command-string match (`allowed_commands`) + opt-in glob patterns
     // (`allowed_command_globs`, riskier). Both empty/absent ⇒ `!` denied (secure-by-default; the user opts in per

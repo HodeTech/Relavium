@@ -28,6 +28,13 @@ describe('inferProviderFromModel', () => {
     expect(inferProviderFromModel('llama-3')).toBeUndefined();
     expect(inferProviderFromModel('')).toBeUndefined();
   });
+
+  it('resolves a catalog-known id from the catalog (ADR-0071) — consulted ahead of the prefix map', () => {
+    // Every SHIPPED id also has a recognizable prefix, so the catalog and the heuristic agree here. The catalog-first
+    // ORDER matters for a live-discovered id the prefix cannot place (e.g. `chatgpt-4o-latest`); there the persisted
+    // provider (see buildDefaultChatAgent) is the real fix. This pins that the catalog lookup is wired and wins.
+    expect(inferProviderFromModel('gpt-5-chat-latest')).toBe('openai'); // a real catalog id
+  });
 });
 
 describe('buildDefaultChatAgent', () => {
@@ -54,6 +61,21 @@ describe('buildDefaultChatAgent', () => {
   it('respects a non-anthropic model by inferring its provider', () => {
     expect(buildDefaultChatAgent('gpt-4o').provider).toBe('openai');
     expect(buildDefaultChatAgent('gemini-2.5-pro').provider).toBe('gemini');
+  });
+
+  it('uses a persisted knownProvider VERBATIM, skipping inference — the Bug-3 fix (ADR-0059)', () => {
+    // `chat-latest` is a live OpenAI id `keepOpenAiModelId` admits; it has no gpt/o-digit prefix and is not in the
+    // catalog, so inference returns undefined and the chat used to crash "cannot infer a provider". A provider
+    // persisted at pick time is used as-is, so the chat starts on the right provider.
+    const agent = buildDefaultChatAgent('chat-latest', undefined, 'openai');
+    expect(agent.provider).toBe('openai');
+    expect(agent.model).toBe('chat-latest');
+  });
+
+  it('a knownProvider makes the throw path unreachable even for an id inference cannot place', () => {
+    expect(buildDefaultChatAgent('mystery-model-9', undefined, 'anthropic').provider).toBe(
+      'anthropic',
+    );
   });
 
   it('bakes the [chat].reasoning_effort default onto the agent, and OMITS it when absent (ADR-0066)', () => {

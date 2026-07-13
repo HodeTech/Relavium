@@ -21,6 +21,10 @@ type ChatConfig = NonNullable<ProjectConfig['chat']>;
 export interface ResolvedChatConfig {
   /** `[chat].default_model` — the model a chat session binds when its agent names none. */
   readonly defaultModel: ChatConfig['default_model'];
+  /** `[chat].default_provider` — the provider serving `default_model`, persisted at pick time (ADR-0059) so the
+   *  built-in default chat agent skips id inference. Resolves like `default_model` (project → workspace → global
+   *  `[preferences].default_provider`). Absent ⇒ inference from the id. */
+  readonly defaultProvider: ChatConfig['default_provider'];
   /** `[chat].fs_scope` — the filesystem permission tier for chat tool dispatch (same tiers as workflows). */
   readonly fsScope: ChatConfig['fs_scope'];
   /** `[chat].max_turns` — the hard session turn cap → `SessionDeps.maxTurns` (absent ⇒ engine default 50;
@@ -164,6 +168,8 @@ function resolveChat(
     p?.allowed_commands !== undefined || p?.allowed_command_globs !== undefined;
   return {
     defaultModel: p?.default_model ?? w?.default_model ?? global?.preferences?.default_model,
+    defaultProvider:
+      p?.default_provider ?? w?.default_provider ?? global?.preferences?.default_provider,
     fsScope: p?.fs_scope ?? w?.fs_scope,
     maxTurns: p?.max_turns ?? w?.max_turns,
     maxMessages: p?.max_messages ?? w?.max_messages,
