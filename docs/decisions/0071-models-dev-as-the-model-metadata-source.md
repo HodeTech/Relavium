@@ -286,6 +286,20 @@ Its posture, which is **not** the SSRF posture, and the difference matters:
   Without it, a stale catalog entry re-introduces exactly the Gemini bug, silently — and this is the **only**
   mechanism that can catch that. A one-off manual probe cannot: it proves a fact once, not continuously.
 
+> **Amendment (2026-07-13, implementation — §9 wired).** Both guards are live in
+> `.github/workflows/models-catalog.yml`:
+>
+> - **The weekly drift + price-change check** is `pnpm sync:models:check` (Monday 06:00 UTC): it writes nothing and
+>   fails red when the committed snapshot is stale for ANY reason, and `sync.mjs`'s own money guards refuse a
+>   moved-price / vanished-model commit without `--accept-price-changes` / `--accept-removals` — the human
+>   decision, in a reviewable diff. The *automatic* PR for the purely-additive case ("new rows merge
+>   automatically") is deferred: it needs a third-party create-pull-request action pinned to a verified SHA, and a
+>   red weekly check already surfaces the drift. See deferred-tasks.md.
+> - **The live effort conformance test** is `packages/llm/src/conformance/effort.conformance.test.ts` (nightly
+>   07:00 UTC, key-gated per provider): for a representative shipped reasoning model per provider it sends every
+>   tier the catalog claims it accepts and asserts the real API does not reject it. An offline gate pins the probe
+>   ids to real shipped models so a rename cannot silently turn the live lane into a no-op.
+
 ### 10. What the catalog does NOT own — named, so it is not discovered mid-build
 
 | Need | Status | Where it comes from instead |

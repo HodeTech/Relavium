@@ -1,0 +1,88 @@
+# The model-catalog guards (ADR-0071 §9). Two scheduled lanes, neither of which gates a PR:
+#
+#   • weekly-catalog-check — is the committed models.dev snapshot still current, and did any ALREADY-SHIPPED
+#     model's price move? A moved price feeds the ADR-0028 cost cap, so it is a HUMAN decision surfaced as a red
+#     check, never a silent bot commit. `pnpm sync:models:check` writes nothing and exits non-zero on any drift.
+#
+#   • nightly-effort-conformance — the ONLY mechanism that catches a stale catalog re-introducing the reasoning
+#     bug: for each shipped reasoning model it asks the REAL provider whether it accepts every tier the catalog
+#     claims. A one-off manual probe proves a fact once; the catalog drifts continuously, so this runs nightly.
+#
+# Third-party actions are pinned to a full commit SHA (the `# vX.Y.Z` comment tracks the release) — the same
+# convention ci.yml uses, so a moved tag cannot inject unreviewed code.
+name: model-catalog
+
+on:
+  schedule:
+    # Monday 06:00 UTC — the drift check. Ahead of a typical review week, so a red one is seen on Monday.
+    - cron: '0 6 * * 1'
+    # 07:00 UTC nightly — the live effort conformance (key-gated; skips with no key).
+    - cron: '0 7 * * *'
+  # Manual trigger for both, so a maintainer can run either on demand without waiting for the cron.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-catalog-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  weekly-catalog-check:
+    name: catalog drift + price-change guard
+    # Only the weekly cron (and a manual run); the nightly cron skips this job.
+    if: github.event.schedule != '0 7 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      # `--check` fetches models.dev, normalizes it, and compares against the committed snapshot. It writes
+      # nothing and fails RED when the snapshot is stale — a new priced model, OR (the one that matters) a
+      # moved/vanished price on a model we already ship. The failure message says exactly what to run:
+      # `pnpm sync:models` locally, where a moved price is refused without `--accept-price-changes` (the human
+      # decision), and the reviewed diff is committed. Auto-opening a PR for the additive case is a follow-up
+      # (deferred-tasks.md) — it needs a pinned create-pull-request action, and a red check already surfaces it.
+      - name: Snapshot is current + no shipped price moved
+        run: pnpm sync:models:check
+
+  nightly-effort-conformance:
+    name: effort conformance (live)
+    # Only the nightly cron (and a manual run); the weekly cron skips this job.
+    if: github.event.schedule != '0 6 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      # The conformance suite runs under the normal `test`; the live cases are `it.skipIf(<key> === '')`, so with
+      # the provider keys set here they execute (and would fail red on a catalog that claims a tier a model
+      # rejects), and with no key they skip — the same file gates no PR. A missing secret simply skips its lane.
+      - name: Live effort conformance
+        run: pnpm --filter @relavium/llm test
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
