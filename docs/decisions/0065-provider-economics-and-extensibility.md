@@ -4,6 +4,26 @@
 - **Date**: 2026-07-05
 - **Related**: [ADR-0064](0064-live-model-catalog.md) (**this ADR extends its static/live merge with a USER tier**; append-only top-note added there) · [ADR-0011](0011-internal-llm-abstraction.md) (**this ADR amends the provider model — a `kind` protocol abstraction + building the adapter from the stored row; the id enum stays CLOSED**; append-only top-note added there) · [ADR-0028](0028-workflow-resource-governance.md) (the pre-egress budget governor whose "cost cap will not apply" gap this closes) · [ADR-0038](0038-agentrunner-llm-call-boundary.md) (host-injected resolution — the pricing overlay is injected exactly like `keyFor`) · [ADR-0006](0006-os-keychain-for-api-keys.md) + [ADR-0019](0019-cli-node-keychain-library.md) (keys stay in the keychain — user pricing is a **non-secret** storage class) · [ADR-0053](0053-mcp-network-transport-egress-security.md) + [ADR-0029](0029-tool-policy-hardening.md) (the one shared SSRF primitive a custom `base_url` reuses) · [ADR-0050](0050-cli-history-db-at-rest-posture.md) · [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md) (the `models pricing` / `provider list --verify` commands). Canonical homes: the cost path → [cost-tracker.ts](../../packages/llm/src/cost-tracker.ts) + [budget-governor.ts](../../packages/core/src/engine/budget-governor.ts); the static registry → [pricing.ts](../../packages/llm/src/pricing.ts); the DB columns → [database-schema.md](../reference/desktop/database-schema.md); the commands → [commands.md](../reference/cli/commands.md).
 
+> **Amended 2026-07-13 — the user-pricing PRECEDENCE is narrowed by
+> [ADR-0071](0071-models-dev-as-the-model-metadata-source.md); the rest of this ADR stands.**
+>
+> §2 sets the rule as *"static `MODEL_PRICING` wins for known canonical ids; the overlay fills unknown ids only —
+> a user cannot **silently** misprice a shipped model."* ADR-0071 retires that table and replaces it with a
+> generated catalog covering ~97 models instead of 12 — which would have turned the rule into a trap: a user
+> prices an id the table did not know, the catalog later **learns** that id, and their explicit override is
+> silently taken over by a public list price.
+>
+> **The precedence becomes `user` > `catalog`.** The justification comes from *this* ADR: it introduced custom
+> **`base_url`** endpoints (OpenRouter, Azure, LiteLLM, enterprise gateways), on which the public list price is
+> simply **wrong** — the user's negotiated or marked-up rate is the correct one. A rule that lets a public
+> catalog override a rate the user deliberately typed would misprice precisely the users who took the trouble to
+> be accurate.
+>
+> This ADR's *actual* intent — **not `silently`** — is preserved, not reversed: a user override that disagrees
+> with the catalog is surfaced in the model picker, in `/cost`, and at `models pricing` time. The user gets what
+> they asked for; they simply cannot do it in silence. The Related line's *"the static registry →
+> [pricing.ts](../../packages/llm/src/pricing.ts)"* pointer moves to the generated snapshot (rule 8).
+
 ## Context
 
 Two latent defects, surfaced while scoping 2.5.G, frame this decision:

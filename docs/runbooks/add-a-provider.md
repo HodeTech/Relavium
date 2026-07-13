@@ -96,22 +96,37 @@ reported `no key` and never probed. For a machine-readable result use `relavium 
 ## 4–5. Discover and list the models
 
 ```bash
-relavium models refresh    # force a live re-fetch of each connected provider's model list
-relavium models            # list the cached catalog (auto-refreshes once on an empty cache)
+relavium models refresh                # refresh BOTH axes: provider lists + the model catalog
+relavium models refresh --providers    # availability only (which ids your key can reach)
+relavium models refresh --catalog      # metadata only (price, ceilings, reasoning tiers)
+relavium models                        # list the cached catalog (auto-refreshes once on an empty cache)
 ```
 
-`models refresh` is **per-provider isolated** — one provider's failure never fails the whole
-command (it is reported `failed` / `skipped`, the others still refresh). The catalog is a
-local cache of *which model ids each key can reach*; the shipped `MODEL_PRICING` registry is
-the pricing authority for a known model. (The interactive Home's `/models` picker
+**There are two axes, and they come from different places** ([ADR-0071](../decisions/0071-models-dev-as-the-model-metadata-source.md)):
+
+| Axis | Source | Answers |
+|---|---|---|
+| **Availability** | the provider's own API, with **your key** | *Can I call this model?* |
+| **Metadata** | the **shipped catalog snapshot** (generated, reviewed, offline) | *What does it cost, what is its ceiling, which reasoning tiers does it accept?* |
+
+A provider's `/models` endpoint returns availability, **not economics** — no price, no
+reasoning tiers — which is why the second axis exists. The metadata snapshot ships **inside the
+binary**: it is correct offline, on first run, with no network at all. The optional background
+refresh is **OFF by default** (`[catalog] auto_refresh`); `relavium models refresh` above is a
+**user-initiated** fetch and always allowed.
+
+`models refresh` is **per-source isolated** — one provider's failure never fails the whole
+command (it is reported `failed` / `skipped`, the others still refresh), and a failed catalog
+fetch is a **no-op**: it can never leave you *less* priced than the snapshot you installed with.
+(The interactive Home's `/models` picker
 additionally **dims** a model not available on your key and **flags** a deprecated one; the
 plain `relavium models` list is `<modelId> <provider> ctx=<n> [<source>]` —
 [ADR-0064](../decisions/0064-live-model-catalog.md) §7/§10.)
 
-## 6. Price a model the registry does not know
+## 6. Price a model the catalog does not know — or override one it does
 
-A **custom-endpoint model**, or a brand-new vendor model not yet in the shipped registry,
-has **no price** — so the cost cap (`budget.max_cost_microcents` for a workflow,
+A **custom-endpoint model**, or a brand-new vendor model not yet in the shipped catalog, has
+**no price** — so the cost cap (`budget.max_cost_microcents` for a workflow,
 `[chat].max_cost_microcents` for chat) would **degrade to "allow"** for it. Hand-enter its
 price so the cap is enforced ([ADR-0065](../decisions/0065-provider-economics-and-extensibility.md) §1–2):
 
@@ -122,15 +137,23 @@ relavium models pricing my-gateway-llama --provider openai --input 3 --output 9
 ```
 
 Prices are **USD per million tokens** (stored as integer micro-cents). The price is written
-as a user row and a live `models refresh` **never** clobbers it; once set, the model is
-enforced by the cost cap on `run`, a `run` resumed via `relavium gate`, `chat` /
-`chat-resume`, the interactive Home, and one-shot `agent run`. Guards (each exit 2, nothing
-written): a **built-in-priced** model is refused (the shipped price always wins); an
-**unregistered provider** is refused (do step 1 first); the **same model id already priced
-under a different provider** is refused (the cost cap keys by model id, so it could not tell
-them apart); and a **negative / non-finite / implausibly-large** price is refused. Look up the
-real price at the provider's pricing page — the one `--pricing-url` recorded in step 1 (the
-`provider add` confirmation echoes it).
+as a user row and **no refresh — provider or catalog — ever clobbers it**; once set, the model
+is enforced by the cost cap on `run`, a `run` resumed via `relavium gate`, `chat` /
+`chat-resume`, the interactive Home, and one-shot `agent run`.
+
+**Your price wins over the catalog's** ([ADR-0071](../decisions/0071-models-dev-as-the-model-metadata-source.md) §5).
+This is deliberate, and it is why: on a custom `base_url` (OpenRouter, Azure, LiteLLM, an
+enterprise gateway) the **public list price is simply wrong** — your negotiated or marked-up
+rate is the correct one. A catalog that could overrule you would misprice exactly the users who
+took the trouble to be accurate. What you *cannot* do is diverge **silently**: pricing a model
+the catalog also knows is allowed, and the disagreement is then surfaced in the model picker,
+in `/cost`, and at `models pricing` time. Nothing is hidden; you are simply trusted.
+
+Guards (each exit 2, nothing written): an **unregistered provider** is refused (do step 1
+first); the **same model id already priced under a different provider** is refused (the cost cap
+keys by model id, so it could not tell them apart); and a **negative / non-finite /
+implausibly-large** price is refused. Look up the real price at the provider's pricing page —
+the one `--pricing-url` recorded in step 1 (the `provider add` confirmation echoes it).
 
 ## Rotate or remove a key
 

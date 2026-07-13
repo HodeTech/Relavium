@@ -114,6 +114,7 @@ flowchart TD
 | 0068 | [Full-screen TUI renderer, `ink` 7, and the CLI component test harness (refines ADR-0047)](0068-full-screen-tui-renderer-ink7-harness.md) | Accepted | 2026-07-09 |
 | 0069 | [`string-width` for the CLI renderer's display-width measurement](0069-string-width-for-the-cli-renderer.md) | Accepted | 2026-07-10 |
 | 0070 | [Durable per-model session cost attribution — the `session_costs` aggregate, single-owner cost writes, and the reconciliation invariant](0070-durable-per-model-session-cost-attribution.md) | Accepted | 2026-07-12 |
+| 0071 | [models.dev as the model-metadata source; the hand-maintained registry is retired (supersedes two ADR-0064 clauses, corrects an ADR-0066 premise)](0071-models-dev-as-the-model-metadata-source.md) | Accepted | 2026-07-13 |
 
 ## Creating a new ADR
 

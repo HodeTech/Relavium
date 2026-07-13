@@ -34,6 +34,25 @@
 > [database-schema.md](../reference/desktop/database-schema.md); the `0600`/`0700` guard is a documented Windows
 > no-op (ADR-0050), so the 2.5.I test lane gates POSIX-permission assertions off Windows, while the
 > `BEGIN IMMEDIATE` + retry mechanism behaves identically cross-OS.
+>
+> **Amended 2026-07-13 — two clauses are SUPERSEDED by [ADR-0071](0071-models-dev-as-the-model-metadata-source.md).**
+> The architecture below stands; two of its sentences do not.
+>
+> 1. **"Pricing authority stays with the static registry."** The *split* this ADR drew — the live list decides
+>    **availability**, a static tier decides **economics** — is correct and is kept. Its **source** is not: the
+>    hand-maintained `MODEL_PRICING` proved unable to say what is true. It priced 12 of ~97 reachable models (so
+>    [ADR-0028](0028-workflow-resource-governance.md)'s cost cap silently did not apply to the rest), it carried
+>    two silent drifts, and its `reasoning: boolean` **cannot express** a per-model reasoning-control shape —
+>    which is a live bug, not a limitation: `gemini-2.5-*` takes `thinkingBudget`, not the `thinkingLevel` our
+>    adapter unconditionally sends. ADR-0071 replaces the table with a **generated, PR-reviewed catalog
+>    snapshot**. The static tier survives; the hand-typing does not.
+> 2. **"This ADR adds no new egress surface."** ADR-0071's catalog refresh **does** — the first host Relavium
+>    contacts that is neither a model provider nor a user-supplied address. It is **default-OFF**, additive-only,
+>    a no-op offline, and recorded as the fifth path in
+>    [security-review.md](../standards/security-review.md).
+>
+> The Related line above points at [pricing.ts](../../packages/llm/src/pricing.ts) as the static registry's
+> canonical home. After ADR-0071 that home is the generated snapshot under `packages/llm/src/catalog/` (rule 8).
 
 ## Context
 
