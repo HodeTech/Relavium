@@ -203,7 +203,19 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     const onEffortWithheld = onceEffortNotice((note: string): void =>
       deps.io.writeErr(`warning: ${note}\n`),
     );
-    let engineOptions: BuildEngineOptions = { providers, toolEnv, onEffortWithheld, ...mcpOption };
+    // ADR-0071 §K7: a turn ran on a model we could not price, so `budget.max_cost_microcents` did not apply. The
+    // governor already dedups per model. STDERR, never stdout (`--json`). `budget.strict_cost_cap` blocks instead.
+    const onUnpriced = (model: string, capMicrocents: number): void =>
+      deps.io.writeErr(
+        `warning: ${model} has no price, so the ${capMicrocents}-micro-cent budget cap does not apply to it. Price it with \`relavium models pricing ${model}\`, or set \`budget.strict_cost_cap\` to refuse it.\n`,
+      );
+    let engineOptions: BuildEngineOptions = {
+      providers,
+      toolEnv,
+      onEffortWithheld,
+      onUnpriced,
+      ...mcpOption,
+    };
     let mediaCasRoot: string | undefined;
     if (opened !== undefined) {
       const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config, (m) =>
@@ -224,6 +236,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
         providers,
         toolEnv,
         onEffortWithheld,
+        onUnpriced,
         host: createCliHost(opened.store, { media: wiring.media }),
         resolveMediaSurface: wiring.resolveMediaSurface,
         ...(wiring.mediaCostEstimate === undefined

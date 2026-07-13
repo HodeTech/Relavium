@@ -327,11 +327,12 @@ workflow:
   budget:
     max_cost_microcents: 5000000     # ~$0.05 cap (integer micro-cents)
     on_exceed: pause_for_approval    # fail | pause_for_approval | warn
+    strict_cost_cap: false           # ADR-0071 §K7: refuse a turn on a model with no price (default false)
   timeout_ms: 300000                 # whole-run wall-clock cap
   max_parallel: 4                    # max concurrent in-flight LLM calls (bounds a wide fan-out)
 ```
 
-The cost cap is **pre-egress**: before each LLM call the engine checks `cumulative + worstCaseNextEstimate(maxTokens)` against `max_cost_microcents` and applies `on_exceed` — `fail` stops the run, `pause_for_approval` suspends it like a human gate (resumed via `resume_budget`), `warn` proceeds after a `budget:warning` event. This is a **BYOK-local** safety rail, distinct from Phase-2 managed-mode billing ([ADR-0014](../../decisions/0014-managed-metering-quota-and-billing.md)). The `budget:warning` / `budget:paused` / `run:timeout` events are defined in [sse-event-schema.md](sse-event-schema.md).
+The cost cap is **pre-egress**: before each LLM call the engine checks `cumulative + worstCaseNextEstimate(maxTokens)` against `max_cost_microcents` and applies `on_exceed` — `fail` stops the run, `pause_for_approval` suspends it like a human gate (resumed via `resume_budget`), `warn` proceeds after a `budget:warning` event. An **unpriced model** (a custom `base_url`, or one the catalog does not carry) is a hole in the cap: the governor cannot estimate a turn's cost, so it **degrades to `allow` with a one-time notice** (ADR-0071 §K7) rather than hard-failing an otherwise-valid run. `strict_cost_cap: true` inverts that — an unpriced model is refused pre-egress, for a run that must not proceed on a model it cannot bound. This is a **BYOK-local** safety rail, distinct from Phase-2 managed-mode billing ([ADR-0014](../../decisions/0014-managed-metering-quota-and-billing.md)). The `budget:warning` / `budget:paused` / `run:timeout` events are defined in [sse-event-schema.md](sse-event-schema.md).
 
 ## Edges
 

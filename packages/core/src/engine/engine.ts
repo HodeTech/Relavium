@@ -255,6 +255,11 @@ export interface WorkflowEngineDeps {
    * official (the adapter's own default).
    */
   readonly resolveEndpoint?: (model: string) => EndpointKind;
+  /**
+   * Called once per model when a turn runs UNPRICED, so the cost cap could not apply to it (ADR-0071 §K7). The
+   * engine cannot print; the host routes it (`run` → stderr). Absent ⇒ silent (`strict_cost_cap` is the block).
+   */
+  readonly onUnpriced?: (model: string, capMicrocents: number) => void;
 }
 
 function maskInputs(
@@ -351,6 +356,7 @@ class RunExecution {
      *  model is enforced by `budget`. Host-injected; the realized path rides the runner's own `resolvePrice`. */
     resolvePrice?: PricingOverlay;
     resolveEndpoint?: (model: string) => EndpointKind;
+    onUnpriced?: (model: string, capMicrocents: number) => void;
     /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
     checkpoint?: CheckpointState;
   }) {
@@ -383,6 +389,7 @@ class RunExecution {
         ...(params.resolveEndpoint === undefined
           ? {}
           : { resolveEndpoint: params.resolveEndpoint }),
+        ...(params.onUnpriced === undefined ? {} : { onUnpriced: params.onUnpriced }),
       });
     }
 

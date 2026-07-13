@@ -229,6 +229,10 @@ export const ChatConfigSchema = z
     compact_threshold: z.number().gt(0).lte(1).optional(),
     max_cost_microcents: nonNegativeInt.optional(), // 0/absent = unbounded; >0 = per-session cap
     on_exceed: z.enum(ON_EXCEED_ACTIONS).optional(),
+    // Refuse a turn on a model we cannot PRICE (ADR-0071 §K7). Default false. The chat counterpart of a workflow
+    // `budget.strict_cost_cap`: an unpriced model is a hole in the cap, and a user who set `max_cost_microcents`
+    // to bound an untrusted model may prefer "if you can't price it, don't run it" over the silent degrade.
+    strict_cost_cap: z.boolean().optional(),
     // The default reasoning-effort tier for a chat whose bound agent authors none (ADR-0066) — off/low/medium/high/
     // max. Applied to the built-in default chat agent + surfaced as the picker's starting effort; only sent to a
     // reasoning-capable model. Absent ⇒ the provider default (no reasoning control sent).

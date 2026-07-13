@@ -41,6 +41,8 @@ export interface ResolvedChatConfig {
   /** `[chat].on_exceed` — action when the cost cap trips (in an interactive REPL, `pause_for_approval`
    *  degrades to a loud turn-end since the prompt itself is the approval gate). */
   readonly onExceed: ChatConfig['on_exceed'];
+  /** `[chat] strict_cost_cap` (ADR-0071 §K7) — refuse a turn on a model we cannot price. Default false. */
+  readonly strictCostCap: boolean;
   /** `[chat].allowed_commands` — the `!`-shell exact-match allowlist (→ engine `allowedCommands`; ADR-0061).
    *  Absent/empty ⇒ `!`-shell disabled (the `empty ⇒ disabled` symmetry; no chat-specific relaxation). */
   readonly allowedCommands: ChatConfig['allowed_commands'];
@@ -169,6 +171,7 @@ function resolveChat(
     compactThreshold: p?.compact_threshold ?? w?.compact_threshold,
     maxCostMicrocents: p?.max_cost_microcents ?? w?.max_cost_microcents,
     onExceed: p?.on_exceed ?? w?.on_exceed,
+    strictCostCap: (p?.strict_cost_cap ?? w?.strict_cost_cap) === true,
     allowedCommands: projectSetsAllowlist ? p?.allowed_commands : w?.allowed_commands,
     allowedCommandGlobs: projectSetsAllowlist ? p?.allowed_command_globs : w?.allowed_command_globs,
     reasoningEffort:

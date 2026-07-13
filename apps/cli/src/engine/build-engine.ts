@@ -74,6 +74,11 @@ export interface BuildEngineOptions {
    * Absent ⇒ silent (the tier is still withheld).
    */
   readonly onEffortWithheld?: (note: string) => void;
+  /**
+   * Sink for an UNPRICED model turn (ADR-0071 §K7) — the cost cap could not apply. `run.ts` wires it to stderr,
+   * never stdout (`--json`). The governor already dedups per model. Absent ⇒ silent.
+   */
+  readonly onUnpriced?: (model: string, capMicrocents: number) => void;
 }
 
 /**
@@ -181,5 +186,9 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
           resolveEndpoint: (model: string): EndpointKind =>
             endpointKind(catalogModel(model)?.provider ?? 'openai'),
         }),
+    // ADR-0071 §K7: a workflow turn ran on a model we could not price, so `budget.max_cost_microcents` did not
+    // apply to it. `run.ts` routes this to stderr (never stdout — `--json`); `budget.strict_cost_cap` is the
+    // block-instead option for a run that must not proceed unpriced.
+    ...(options.onUnpriced === undefined ? {} : { onUnpriced: options.onUnpriced }),
   });
 }

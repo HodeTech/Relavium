@@ -114,6 +114,11 @@ export interface BuildChatSessionOptions {
    */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
   /**
+   * Sink for a turn on an UNPRICED model (ADR-0071 §K7) — the cost cap could not apply to it. Same channel shape as
+   * {@link BuildChatSessionOptions.onBudgetWarning}; the governor already dedups per-model, so this fires once each.
+   */
+  readonly onUnpriced?: (note: string) => void;
+  /**
    * Sink for a WITHHELD reasoning tier (ADR-0071 §6) — the bound model does not accept the effective tier, so the
    * field is not sent. Same channel shape as {@link BuildChatSessionOptions.onBudgetWarning}: a session has no
    * event for it, so the surface is told directly and puts the sentence in the transcript's notice channel.
@@ -186,6 +191,7 @@ type SessionRuntimeOptions = Pick<
   | 'providers'
   | 'toolHost'
   | 'onBudgetWarning'
+  | 'onUnpriced'
   | 'onEffortWithheld'
   | 'resolvePrice'
 >;
@@ -244,6 +250,7 @@ function buildSessionRuntime(
     opts.onBudgetWarning,
     opts.resolvePrice,
     providers.endpointKind,
+    opts.onUnpriced,
   );
   // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
   // event (the in-REPL `/export`'s `session:exported`, 2.Q) can ride the same monotonic per-session counter.
@@ -457,6 +464,8 @@ export interface BuildResumedChatSessionOptions {
    * with, and the catalog may have moved under it since.
    */
   readonly onEffortWithheld?: (note: string) => void;
+  /** Unpriced-model notice (ADR-0071 §K7) — see {@link BuildChatSessionOptions.onUnpriced}. */
+  readonly onUnpriced?: (note: string) => void;
   /** The loaded session record (its frozen `agentSnapshot` + `context` rebind the session). */
   readonly record: AgentSessionRecord;
   /** The session's persisted transcript, in any order ({@link reconstructSessionState} sorts it). */
@@ -582,12 +591,15 @@ export function buildGovernorWiring(
   onWarning?: (warning: ChatBudgetWarning) => void,
   resolvePrice?: PricingOverlay,
   endpointKind?: (id: ProviderId) => EndpointKind,
+  onUnpriced?: (note: string) => void,
 ): GovernorWiring | undefined {
   const cap = chat.maxCostMicrocents;
   if (cap === undefined || cap <= 0) return undefined;
   const budget: Budget = {
     max_cost_microcents: cap,
     on_exceed: chat.onExceed ?? 'pause_for_approval',
+    // ADR-0071 §K7: refuse a turn on a model we cannot price, instead of the silent degrade-to-allow. Default off.
+    ...(chat.strictCostCap ? { strict_cost_cap: true } : {}),
   };
   const governor = new BudgetGovernor({
     budget,
@@ -600,6 +612,16 @@ export function buildGovernorWiring(
     ...(endpointKind === undefined
       ? {}
       : { resolveEndpoint: (model: string) => endpointKind(catalogModel(model)?.provider ?? 'openai') }),
+    // ADR-0071 §K7: a turn ran on a model we could not price, so the cap did not apply to it. Say so, once — a cost
+    // cap that silently does not apply is a false sense of safety. `strict_cost_cap` is the block-instead option.
+    ...(onUnpriced === undefined
+      ? {}
+      : {
+          onUnpriced: (model: string, capMicrocents: number) =>
+            onUnpriced(
+              `${model} has no price, so the cost cap ($${(capMicrocents / 100_000_000).toString()}/session) does not apply to it. Price it with \`relavium models pricing ${model}\`, or set [chat] strict_cost_cap to refuse an unpriced model.`,
+            ),
+        }),
     emit: (event) => {
       // `warn` is non-blocking BY CONTRACT. A misbehaving warn surface must never reject this emit — a
       // rejection would propagate as an `internal` turn error and break sendMessage — so swallow a sync throw.

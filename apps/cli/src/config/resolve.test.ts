@@ -22,6 +22,7 @@ describe('resolveConfig', () => {
         maxMessages: undefined,
         maxCostMicrocents: undefined,
         onExceed: undefined,
+        strictCostCap: false, // ADR-0071 §K7: default off — the cost cap degrades to allow on an unpriced model
         allowedCommands: undefined,
         allowedCommandGlobs: undefined,
       },

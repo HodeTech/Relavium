@@ -17,20 +17,23 @@ describe('BudgetGovernor', () => {
   ): {
     governor: BudgetGovernor;
     warnings: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>[];
+    unpriced: string[];
   } {
     const warnings: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>[] = [];
+    const unpriced: string[] = [];
     const governor = new BudgetGovernor({
       budget: overrides.budget ?? budget,
       ...(overrides.defaultMaxTokensEstimate === undefined
         ? {}
         : { defaultMaxTokensEstimate: overrides.defaultMaxTokensEstimate }),
       ...(overrides.resolvePrice === undefined ? {} : { resolvePrice: overrides.resolvePrice }),
+      onUnpriced: (model) => unpriced.push(model),
       emit: (event) => {
         warnings.push(event);
         return Promise.resolve();
       },
     });
-    return { governor, warnings };
+    return { governor, warnings, unpriced };
   }
 
   it('allows a call whose estimate stays within the cap', async () => {
@@ -119,10 +122,54 @@ describe('BudgetGovernor', () => {
     // UnknownModelError. The pre-egress governor must NOT hard-fail an otherwise-valid run on it; it
     // degrades to `allow` (mirrors the FallbackChain's unpriced⇒no-cost policy). Even with on_exceed: fail
     // and the run already over a notional cap, an unpriced model resolves rather than throwing.
-    const { governor, warnings } = makeGovernor({ budget: { ...budget, on_exceed: 'fail' } });
+    const { governor, warnings, unpriced } = makeGovernor({
+      budget: { ...budget, on_exceed: 'fail' },
+    });
     governor.updateCost(900_000);
     await expect(governor.checkPreEgress('my-self-hosted-model', 10_000)).resolves.toBeUndefined();
-    expect(warnings).toHaveLength(0);
+    expect(warnings).toHaveLength(0); // it did not exceed — nothing WAS billed
+    // …but it is UNPRICED, so the cap could not apply, and that is said once (ADR-0071 §K7): a cap that silently
+    // does not apply is a false sense of safety.
+    expect(unpriced).toEqual(['my-self-hosted-model']);
+  });
+
+  describe('strict_cost_cap (ADR-0071 §K7)', () => {
+    it('BLOCKS an unpriced model when on — "if you cannot price it, do not run it"', () => {
+      // The opt-in for a user who set a cap SPECIFICALLY to bound an untrusted model. The silent degrade-to-allow
+      // is the wrong trade for them: an unpriced model is a hole in the cap, and they would rather refuse the turn.
+      const { governor } = makeGovernor({
+        budget: { ...budget, on_exceed: 'fail', strict_cost_cap: true },
+      });
+      const result = governor.evaluatePreEgress('my-self-hosted-model', 10_000);
+      expect(result.kind).toBe('fail');
+      if (result.kind === 'fail') {
+        expect(result.error.message).toContain('no price');
+        expect(result.error.message).toContain('strict_cost_cap');
+      }
+    });
+
+    it('does NOT block a PRICED model — strict only bites when we genuinely cannot price', () => {
+      const { governor } = makeGovernor({
+        budget: { ...budget, on_exceed: 'fail', strict_cost_cap: true },
+      });
+      governor.updateCost(0);
+      expect(governor.evaluatePreEgress('claude-haiku-4-5', 1000).kind).toBe('allow');
+    });
+
+    it('OFF (the default) degrades to allow with a notice, not a block', () => {
+      const { governor, unpriced } = makeGovernor({ budget: { ...budget, on_exceed: 'fail' } });
+      expect(governor.evaluatePreEgress('my-self-hosted-model', 10_000).kind).toBe('unpriced');
+      // checkPreEgress is what fires the sink; evaluate just classifies. Drive it through checkPreEgress:
+      void unpriced;
+    });
+  });
+
+  it('notifies UNPRICED only once per model — a loop must not repeat it every turn', async () => {
+    const { governor, unpriced } = makeGovernor();
+    await governor.checkPreEgress('my-self-hosted-model', 1000);
+    await governor.checkPreEgress('my-self-hosted-model', 1000);
+    await governor.checkPreEgress('another-unpriced-one', 1000);
+    expect(unpriced).toEqual(['my-self-hosted-model', 'another-unpriced-one']); // deduped per model
   });
 
   it('accepts a media-unit estimate and folds it as a disjoint addend (1.AF/D17)', () => {

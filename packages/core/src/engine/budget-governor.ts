@@ -28,10 +28,14 @@ export class BudgetExceededError extends Error {
     readonly spentMicrocents: number,
     readonly limitMicrocents: number,
     readonly projectedMicrocents: number,
+    // A caller-supplied message for the case the cap fails NOT because spend exceeded it, but because it could not
+    // be enforced at all — an unpriced model under `strict_cost_cap` (ADR-0071 §K7). Absent ⇒ the projection line.
+    message?: string,
   ) {
     super(
-      `pre-egress budget check failed: projected ${projectedMicrocents} micro-cents exceeds ` +
-        `the cap of ${limitMicrocents} micro-cents (spent ${spentMicrocents})`,
+      message ??
+        `pre-egress budget check failed: projected ${projectedMicrocents} micro-cents exceeds ` +
+          `the cap of ${limitMicrocents} micro-cents (spent ${spentMicrocents})`,
     );
   }
 }
@@ -81,6 +85,12 @@ export type BudgetCheckResult =
       readonly limitMicrocents: number;
       readonly thresholdPct: number;
     }
+  /**
+   * The turn is ALLOWED, but the model has no price, so the cap could not be applied to it (ADR-0071 §K7). Carried
+   * — not swallowed — so the surface can say so once: a cost cap that silently does not apply is a false sense of
+   * safety, and the user who set one deserves to know which model slipped past it.
+   */
+  | { readonly kind: 'unpriced'; readonly model: string }
   | { readonly kind: 'fail'; readonly error: BudgetExceededError }
   | { readonly kind: 'pause'; readonly error: BudgetPauseError };
 
@@ -99,6 +109,8 @@ export class BudgetGovernor {
   readonly #resolveEndpoint: ((model: string) => EndpointKind) | undefined;
   #cumulativeCostMicrocents = 0;
   #warningEmitted = false;
+  readonly #onUnpriced: ((model: string, capMicrocents: number) => void) | undefined;
+  readonly #unpricedNotified = new Set<string>(); // once per model — a standing condition, not a per-turn event
 
   constructor(params: {
     readonly budget: Budget;
@@ -122,11 +134,18 @@ export class BudgetGovernor {
      * Absent ⇒ every model is treated as official, which is the adapter's own default for an un-overridden endpoint.
      */
     readonly resolveEndpoint?: (model: string) => EndpointKind;
+    /**
+     * Called when a turn runs on a model we cannot PRICE, so the cap could not apply to it (ADR-0071 §K7). Fired
+     * once per model. The engine cannot print; the host routes the notice (chat → the transcript, `run` → stderr).
+     * Absent ⇒ silent, and `strict_cost_cap` (which BLOCKS instead) is the loud alternative for anyone who wants it.
+     */
+    readonly onUnpriced?: (model: string, capMicrocents: number) => void;
   }) {
     this.#budget = params.budget;
     this.#defaultMaxTokensEstimate = params.defaultMaxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
     this.#emit = params.emit;
     this.#overlay = params.resolvePrice;
+    this.#onUnpriced = params.onUnpriced;
     this.#resolveEndpoint = params.resolveEndpoint;
   }
 
@@ -173,7 +192,22 @@ export class BudgetGovernor {
       // degrade to `allow`, mirroring the FallbackChain's "unpriced ⇒ no-cost" policy (H4). A self-hosted
       // model has ~no metered cost, so the cap simply does not constrain it. Any other error is a real bug.
       if (err instanceof UnknownModelError) {
-        return { kind: 'allow' };
+        // A model with no price. The cap CANNOT bound it — we do not know what a turn costs. Two ways to treat that:
+        if (this.#budget.strict_cost_cap === true) {
+          // The user asked for a hard cap. If we cannot price it, we do not run it — that is what "strict" means.
+          return {
+            kind: 'fail',
+            error: new BudgetExceededError(
+              this.#cumulativeCostMicrocents,
+              this.#budget.max_cost_microcents,
+              this.#cumulativeCostMicrocents,
+              `model '${model}' has no price, so the ${this.#budget.max_cost_microcents}-micro-cent cap cannot be enforced on it (strict_cost_cap is on). Price it with \`relavium models pricing ${model}\`, or turn strict_cost_cap off.`,
+            ),
+          };
+        }
+        // The ordinary trade (ADR-0028 H4): a self-hosted model has ~no metered cost, and refusing an otherwise
+        // valid run over a missing price is worse than the small risk. Allow — but SAY it is unpriced, once.
+        return { kind: 'unpriced', model };
       }
       throw err;
     }
@@ -227,6 +261,15 @@ export class BudgetGovernor {
   ): Promise<void> {
     const result = this.evaluatePreEgress(model, maxTokens, mediaUnitsEstimate);
     if (result.kind === 'allow') return;
+    if (result.kind === 'unpriced') {
+      // Once per model — a standing condition, not an event (a `loop` over an unpriced model must not repeat it
+      // every iteration). The engine cannot print; the host is told and decides where the sentence goes.
+      if (!this.#unpricedNotified.has(result.model)) {
+        this.#unpricedNotified.add(result.model);
+        this.#onUnpriced?.(result.model, this.#budget.max_cost_microcents);
+      }
+      return;
+    }
     if (result.kind === 'warn') {
       if (!this.#warningEmitted) {
         this.#warningEmitted = true;
