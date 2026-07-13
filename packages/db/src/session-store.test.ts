@@ -1,5 +1,6 @@
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
@@ -841,7 +842,10 @@ describe('session_costs — the ADR-0070 reconciliation invariant', () => {
  * 0009 and demand the row be there.
  */
 describe('migrations 0009 + 0010 — the legacy backfill and its discriminator (ADR-0070 §4)', () => {
-  const SHIPPED = join(process.cwd(), 'drizzle');
+  // Resolved from THIS MODULE, exactly as `client.ts` resolves `MIGRATIONS_DIR` — never from `process.cwd()`. The cwd
+  // is `packages/db` when the package's own vitest runs, but the REPO ROOT under the root `pnpm coverage`, so a
+  // cwd-relative path passes locally and then fails on CI with an ENOENT on a path that does not exist. It did.
+  const SHIPPED = fileURLToPath(new URL('../drizzle', import.meta.url));
 
   /** A migrations folder containing only `0000..maxIdx` — lets a test stand a DB up at an OLDER schema and then
    *  upgrade it, which is the only way to exercise a migration's DML against rows that already exist. */
@@ -850,7 +854,7 @@ describe('migrations 0009 + 0010 — the legacy backfill and its discriminator (
       entries: { idx: number; tag: string }[];
     };
     const kept = journal.entries.filter((e) => e.idx <= maxIdx);
-    expect(kept.length).toBe(maxIdx + 1); // the staging is real — fail loudly if a migration went missing
+    expect(kept).toHaveLength(maxIdx + 1); // the staging is real — fail loudly if a migration went missing
     mkdirSync(join(dir, 'meta'), { recursive: true });
     for (const e of kept) copyFileSync(join(SHIPPED, `${e.tag}.sql`), join(dir, `${e.tag}.sql`));
     writeFileSync(

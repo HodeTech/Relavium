@@ -102,17 +102,6 @@ session that drops history (rejected: poor UX — the user expects to continue).
 >    view opened empty; now it interrupts a conversation the user can still see, so it says what changed. **The
 >    disclosure this ADR binds — that the new model sees the text transcript only — is retained and pinned by a test.**
 >    Position and phrasing were never bound by this ADR; the disclosure clause is.
-> 4. **CORRECTION to the disclosure's wording.** This ADR says (above) that *"prior tool calls **and file contents** are
->    not carried to the new model"*, and the shipped notice repeated it. The "file contents" half is **false**, and
->    false in the dangerous direction — it UNDERSTATES what the new model sees. A file attached with `@` is framed into
->    the **user message text** (`chat.ts` hands the persister the full framed line, not the compact display form), so it
->    is part of the durable transcript and **does** cross the reseat. A user reading the old notice would have believed
->    an `@`-attached secret was invisible to the new model when it is not. What is actually lost is a file a **tool**
->    read, because that arrives as a `tool_result` — and the engine carries **no** tool pairs across **any** turn
->    boundary ([ADR-0062](0062-cli-context-management-compaction.md) §6: *"Cross-turn tool-call/tool-result accumulation:
->    does not exist in this design"*), reseat or not. The notice now says exactly that. **This narrows the disclosure to
->    what is true; it does not weaken the text-only bound, which is unchanged.** Whether the engine SHOULD carry tool
->    pairs is a separate, still-open question — it is a Phase-3 scope cut of the engine, not a property of the reseat.
 > 3. The Consequences below claim the reseat's O(n) cost is *"verified by the 2.6.C harness (a 200-message session
 >    reseats in well under the interactive budget)"*. **No such harness existed when that was written.** 2.6.C
 >    delivers it (`chat-store.test.ts`), and the carry makes it more load-bearing rather than less: a standalone
@@ -120,3 +109,14 @@ session that drops history (rejected: poor UX — the user expects to continue).
 >    (linear, not quadratic) — because if the carry ever gets slow, the answer is a wrap cache, not a trim: ADR-0068
 >    Decision (c) makes the full-screen bound unbounded on purpose, and trimming would re-introduce the clipping that
 >    ADR exists to fix.
+> 4. **CORRECTION to the disclosure's wording.** This ADR says (above) that *"prior tool calls **and file contents** are
+>    not carried to the new model"*, and the shipped notice repeated it. The "file contents" half is **false**, and
+>    false in the dangerous direction — it UNDERSTATES what the new model sees. A file attached with `@` is framed into
+>    the **user message text** (`chat.ts` hands the persister the full framed line, not the compact display form), so it
+>    is part of the durable transcript and **does** cross the reseat. A user reading the old notice would have believed
+>    an `@`-attached secret was invisible to the new model when it is not. What is actually lost is a file a **tool**
+>    read, because that arrives as a `tool_result` — and the engine carries **no** tool pairs across **any** turn
+>    boundary ([ADR-0062](0062-context-compaction-and-cli-history-commands.md) §6: *"Cross-turn tool-call/tool-result accumulation:
+>    does not exist in this design"*), reseat or not. The notice now says exactly that. **This narrows the disclosure to
+>    what is true; it does not weaken the text-only bound, which is unchanged.** Whether the engine SHOULD carry tool
+>    pairs is a separate, still-open question — it is a Phase-3 scope cut of the engine, not a property of the reseat.
