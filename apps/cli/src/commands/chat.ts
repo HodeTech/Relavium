@@ -9,12 +9,7 @@ import {
   type UserCommandOutcome,
 } from '@relavium/core';
 import type { ProviderId } from '@relavium/llm';
-import {
-  EFFORT_TIER_HINT,
-  REASONING_EFFORTS,
-  type AgentSessionRecord,
-  type ReasoningEffort,
-} from '@relavium/shared';
+import { REASONING_EFFORTS, type AgentSessionRecord, type ReasoningEffort } from '@relavium/shared';
 import { exportSession } from '../chat/export.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
@@ -46,9 +41,11 @@ import {
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import {
   effortRejectedNote,
+  effortRowLabel,
   effortTiersFor,
   effortUnavailableNote,
   onceEffortNotice,
+  projectEffortToRow,
 } from '../chat/effort-notice.js';
 import {
   createSessionPersister,
@@ -1217,10 +1214,21 @@ export function createChatLineHandler(
           emitOutput(`reasoning effort: ${effortUnavailableNote(built.agent.model)}`);
           return;
         }
-        const rows = offered.map(
-          (e) => `  ${e.padEnd(8)} ${EFFORT_TIER_HINT[e]}${e === current ? '  (current)' : ''}`,
-        );
-        emitOutput(`reasoning effort: ${current ?? 'default (provider)'}\n${rows.join('\n')}`);
+        // Label + mark through the SAME projection the picker uses, so a budget model reads "on" and a bound tier
+        // that was deduped away still marks its representative row.
+        const currentRow =
+          current === undefined
+            ? undefined
+            : projectEffortToRow(built.agent.model, offered, current);
+        const rows = offered.map((e) => {
+          const { label, hint } = effortRowLabel(built.agent.model, e);
+          return `  ${label.padEnd(8)} ${hint}${e === currentRow ? '  (current)' : ''}`;
+        });
+        const currentLabel =
+          current === undefined
+            ? 'default (provider)'
+            : effortRowLabel(built.agent.model, current).label;
+        emitOutput(`reasoning effort: ${currentLabel}\n${rows.join('\n')}`);
         return;
       }
       const tier = REASONING_EFFORTS.find((e) => e === requested);
@@ -1237,7 +1245,9 @@ export function createChatLineHandler(
         return;
       }
       modeControl.onSetEffort(tier);
-      emitOutput(`reasoning effort: ${tier} — applies to your next message.`);
+      emitOutput(
+        `reasoning effort: ${effortRowLabel(built.agent.model, tier).label} — applies to your next message.`,
+      );
     },
     // `/thinking` (2.5.H): toggle the collapsible reasoning panel — a pure store-view flip (no session/engine
     // effect), mirroring the Ctrl+T keybind. Report the resulting state so the toggle is confirmed (the panel only

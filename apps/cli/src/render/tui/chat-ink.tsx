@@ -980,17 +980,17 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       case 'close':
         applyEffortPicker(undefined);
         return;
-      case 'accept':
+      case 'accept': {
         applyEffortPicker(undefined);
+        const label = effortRowLabel(open.model, step.effort).label; // a budget model's `medium` reads "on"
         if (step.effort === open.current) {
-          props.store.note(`Already at reasoning effort ${step.effort}.`);
+          props.store.note(`Already at reasoning effort ${label}.`);
         } else {
           props.onSetEffort?.(step.effort);
-          props.store.note(
-            `Reasoning effort set to ${step.effort} — applies to your next message.`,
-          );
+          props.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
         }
         return;
+      }
       case 'state':
         applyEffortPicker(step.state);
         return;

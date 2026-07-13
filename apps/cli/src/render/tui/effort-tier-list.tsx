@@ -3,7 +3,7 @@ import type { ReactElement } from 'react';
 
 import { type ReasoningEffort } from '@relavium/shared';
 
-import { effortRowLabel } from '../../chat/effort-notice.js';
+import { effortRowLabel, projectEffortToRow } from '../../chat/effort-notice.js';
 import { sanitizeInline } from './chat-projection.js';
 import { colorProps, dimProps } from './projection.js';
 
@@ -43,6 +43,9 @@ export function EffortTierList(props: Readonly<EffortTierListProps>): ReactEleme
   // Re-clamp for display: a caller could pass an out-of-range index (a shrunk source, a stale render) — never index
   // past the end of a list whose length now varies per model (`gpt-5-pro` has ONE row).
   const highlighted = Math.max(0, Math.min(selected, tiers.length - 1));
+  // The ✓ lands on the row that REPRESENTS the bound tier — projected, so a bound tier that was deduped away
+  // (deepseek `low` → the `high` row) or collapsed (a budget model's bound `high` → the `on` row) still marks a row.
+  const currentRow = current === undefined ? undefined : projectEffortToRow(model, tiers, current);
   const suffix = labelSuffix === undefined || labelSuffix.length === 0 ? '' : ` · ${labelSuffix}`;
   return (
     <Box flexDirection="column" marginTop={1}>
@@ -52,7 +55,7 @@ export function EffortTierList(props: Readonly<EffortTierListProps>): ReactEleme
       </Text>
       {tiers.map((effort, index) => {
         const isSelected = index === highlighted;
-        const isCurrent = effort === current;
+        const isCurrent = effort === currentRow;
         const rowColor = isSelected ? colorProps(color, 'cyan') : {};
         const { label, hint } = effortRowLabel(model, effort);
         return (

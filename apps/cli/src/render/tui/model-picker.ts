@@ -1,7 +1,7 @@
 import type { ModelCatalogEntry, ProviderId } from '@relavium/llm';
 import type { ReasoningEffort } from '@relavium/shared';
 
-import { effortTiersFor } from '../../chat/effort-notice.js';
+import { effortTiersFor, projectEffortToRow } from '../../chat/effort-notice.js';
 
 import { dropLastCodePoint } from './chat-input.js';
 
@@ -215,7 +215,7 @@ function acceptVisibleModel(
           provider: chosen.provider,
         },
         effortTiers,
-        effortSelected: initialEffortIndex(effortTiers, state.currentEffort),
+        effortSelected: initialEffortIndex(effortTiers, chosen.modelId, state.currentEffort),
         hint: undefined,
       },
     };
@@ -323,12 +323,15 @@ function foldEffortPhaseKey(
 /** The effort sub-list's opening highlight: the session's bound effort, else a neutral middle tier (`'medium'`). */
 function initialEffortIndex(
   tiers: readonly ReasoningEffort[],
+  model: string,
   currentEffort: ReasoningEffort | undefined,
 ): number {
-  // The old default was a bare `= 'medium'` — which `gpt-5-pro` (only `high`) does not accept, so the cursor
-  // could open on a row that is not in the list. `indexOf` returning -1 collapses to 0, which is always a tier
-  // the model takes, because the list only contains tiers the model takes.
-  const index = tiers.indexOf(currentEffort ?? 'medium');
+  // Open on the bound tier, or the neutral `medium` when nothing is bound — PROJECTED onto a surviving row first
+  // (ADR-0066 amendment): a graded-collapsed model (deepseek [off,high,max]) has no `medium` row, so a bare
+  // `indexOf('medium')` = -1 → 0 = `off` would silently open on reasoning-DISABLED and a fresh Enter would write
+  // it. The projection folds the tier onto its representative (medium→high / a budget neutral→the `on` row).
+  const target = projectEffortToRow(model, tiers, currentEffort ?? 'medium');
+  const index = target === undefined ? 0 : tiers.indexOf(target);
   return Math.max(0, index);
 }
 

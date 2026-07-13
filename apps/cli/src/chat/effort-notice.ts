@@ -126,6 +126,33 @@ export function effortRowLabel(
 }
 
 /**
+ * Project an arbitrary tier onto the SURVIVING picker row that represents it (ADR-0066 amendment) — so an
+ * opening-highlight or ✓ lands on a real row even when that tier was deduped away or collapsed to on/off. Without
+ * it, `rows.indexOf(a-collapsed-tier)` is `-1` and a fresh `/models` accept on the neutral highlight silently wrote
+ * `off` for a graded-collapsed model (`effortTiersFor('deepseek-v4-pro')` = ['off','high','max'], and the neutral
+ * `medium` is not a row). A budget model folds any non-off tier onto the canonical-on row; a graded model folds a
+ * tier onto the surviving row with the SAME wire value. `undefined` ⇒ nothing represents it (empty list, or `off`
+ * on a can't-disable model) — the caller clamps to the first row.
+ */
+export function projectEffortToRow(
+  model: string,
+  rows: readonly ReasoningEffort[],
+  tier: ReasoningEffort,
+): ReasoningEffort | undefined {
+  if (rows.includes(tier)) return tier; // already a surviving row
+  if (tier === 'off') return undefined; // its own axis — if `off` is not a row, nothing represents it
+  const entry = catalogModel(model);
+  if (reasoningControlShape(entry?.reasoning) === 'budget') {
+    return rows.includes(CANONICAL_ON_TIER) ? CANONICAL_ON_TIER : undefined;
+  }
+  const provider = entry?.provider ?? 'openai';
+  const wire = wireValueFor(provider, tier);
+  return rows.find(
+    (r): r is Exclude<ReasoningEffort, 'off'> => r !== 'off' && wireValueFor(provider, r) === wire,
+  );
+}
+
+/**
  * The single note for a WITHHELD reasoning tier (ADR-0071 §6) — the one place the engine host (`build-engine.ts`)
  * and the session host map an {@link EffortGateResult} to words, so neither carries its own inline ternary and the
  * wording cannot drift between them. The core only ever invokes the `onEffortWithheld` sink for a `rejected` or an

@@ -1867,6 +1867,30 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(c.getSnapshot().notice).toContain('effort medium');
   });
 
+  it('bare Home: a COLLAPSED reasoning model with no prior effort opens on a reasoning-ON row; immediate Enter never writes `off`', async () => {
+    // The Bug-1 regression guard the opus test above cannot catch (opus keeps all five tiers, so `medium` IS a row).
+    // deepseek-v4-pro collapses to rows [off, high, max] — `medium` is not a row. Before the projection fix the
+    // opening highlight fell to index 0 = `off`, so this immediate Enter WROTE `off`, silently disabling reasoning
+    // on a model the user opened to configure. It must open on `high` (the neutral tier's representative) instead.
+    const { port, writeDefault } = makeModelsPort({
+      entries: [
+        pickerEntry({
+          modelId: 'deepseek-v4-pro',
+          displayName: 'DeepSeek V4 Pro',
+          provider: 'deepseek',
+        }),
+      ],
+    });
+    const c = openPicker(port);
+    await flush();
+    c.handleKey('', ENTER); // advance to the effort sub-step
+    expect(c.getSnapshot().modelPicker?.phase).toBe('effort');
+    c.handleKey('', ENTER); // immediate Enter on the opening highlight
+
+    expect(writeDefault).toHaveBeenCalledWith('deepseek-v4-pro', 'deepseek', 'high');
+    expect(writeDefault).not.toHaveBeenCalledWith('deepseek-v4-pro', 'deepseek', 'off');
+  });
+
   it('an honest notice when a project/workspace setting overrides the global write (no false success)', async () => {
     // The write lands on the global file, but the effective default stays the project/workspace override, so the
     // notice must NOT claim "applies to your next chat session" — it says the override still wins here.

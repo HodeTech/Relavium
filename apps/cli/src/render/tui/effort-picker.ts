@@ -1,6 +1,6 @@
 import { type ReasoningEffort } from '@relavium/shared';
 
-import { effortTiersFor } from '../../chat/effort-notice.js';
+import { effortTiersFor, projectEffortToRow } from '../../chat/effort-notice.js';
 import type { ModelPickerKey } from './model-picker.js';
 
 /**
@@ -66,11 +66,13 @@ export function initialEffortPickerState(
   current: ReasoningEffort | undefined,
 ): EffortPickerState {
   const tiers = effortTiersFor(model);
-  // The opening highlight lands on the bound tier when the model accepts it. The old default was a bare
-  // `?? 'medium'` — which `gpt-5-pro` (only `high`) and `gpt-5.4-pro` (no `low`) do not necessarily accept, so
-  // the cursor could open on a row that is not there. `indexOf` returning -1 collapses to 0, which is always a
-  // tier the model takes, because the list only contains tiers the model takes.
-  const index = current === undefined ? tiers.indexOf('medium') : tiers.indexOf(current);
+  // The opening highlight lands on the bound tier, or the neutral `medium` when nothing is bound — but PROJECTED
+  // onto a surviving row first (ADR-0066 amendment): a graded-collapsed model (deepseek [off,high,max]) has no
+  // `medium` row, and a bare `indexOf('medium')` = -1 → 0 = `off` would silently open on reasoning-DISABLED. The
+  // projection folds `medium`→`high` (its wire twin) / a budget model's neutral→the `on` row, so the cursor never
+  // lands on `off` by accident. `undefined` (nothing represents it) still clamps to 0.
+  const target = projectEffortToRow(model, tiers, current ?? 'medium');
+  const index = target === undefined ? 0 : tiers.indexOf(target);
   return { tiers, selected: Math.max(0, index), current, model };
 }
 

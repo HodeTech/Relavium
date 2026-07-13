@@ -6,6 +6,7 @@ import {
   effortRowLabel,
   effortTiersFor,
   effortUnavailableNote,
+  projectEffortToRow,
 } from '../../chat/effort-notice.js';
 
 import {
@@ -134,6 +135,58 @@ describe('initialEffortPickerState', () => {
     const s = initialEffortPickerState('deepseek-v4-pro', 'max');
     expect(s.model).toBe('deepseek-v4-pro');
     expect(s.current).toBe('max');
+  });
+
+  // The Bug-1 opening-highlight regression: after the amendment collapsed graded/budget models to one row per
+  // DISTINCT outcome, `medium` is no longer necessarily a row. The old `tiers.indexOf(neutral)` returned -1 →
+  // clamped to 0 = the FIRST row, which for a disableable model is `off`. So a fresh picker highlighted `off`, and
+  // an immediate Enter WROTE `off` — silently turning reasoning off on a model the user opened to turn it up.
+  it('a collapsed graded model opens on the neutral tier’s REPRESENTATIVE row, never `off`', () => {
+    // deepseek-v4-pro rows = [off, high, max]; `medium` maps to the `high` wire, so it collapses onto that row.
+    const s = initialEffortPickerState('deepseek-v4-pro', undefined);
+    expect(s.tiers).toEqual(['off', 'high', 'max']);
+    expect(s.tiers[s.selected]).toBe('high');
+    expect(s.tiers[s.selected]).not.toBe('off');
+  });
+
+  it('a budget model opens on the `on` row (the canonical medium), never `off`', () => {
+    // claude-haiku-4-5 is a toggle → rows = [off, medium]; `medium` is displayed "on". It must open on `on`.
+    const s = initialEffortPickerState('claude-haiku-4-5', undefined);
+    expect(s.tiers).toEqual(['off', 'medium']);
+    expect(s.tiers[s.selected]).toBe('medium');
+  });
+
+  it('a BOUND tier that was deduped away opens on its representative row', () => {
+    // deepseek bound to `low` (an authored agent / config default) — `low` is not a row; open on `high`, its twin.
+    const graded = initialEffortPickerState('deepseek-v4-pro', 'low');
+    expect(graded.tiers[graded.selected]).toBe('high');
+    // a budget model bound to `high` → the `on` row.
+    const budget = initialEffortPickerState('claude-haiku-4-5', 'high');
+    expect(budget.tiers[budget.selected]).toBe('medium');
+  });
+});
+
+describe('projectEffortToRow — a tier maps to the row that REPRESENTS it (ADR-0066/0071 amendment)', () => {
+  it('returns the tier itself when it is a row', () => {
+    expect(projectEffortToRow('deepseek-v4-pro', ['off', 'high', 'max'], 'high')).toBe('high');
+    expect(projectEffortToRow('deepseek-v4-pro', ['off', 'high', 'max'], 'off')).toBe('off');
+  });
+
+  it('projects a deduped graded tier onto its wire twin', () => {
+    // `medium` and `low` both wire to `high` for deepseek → both project onto the `high` row.
+    expect(projectEffortToRow('deepseek-v4-pro', ['off', 'high', 'max'], 'medium')).toBe('high');
+    expect(projectEffortToRow('deepseek-v4-pro', ['off', 'high', 'max'], 'low')).toBe('high');
+  });
+
+  it('projects any on-tier of a budget model onto the canonical `on` row', () => {
+    expect(projectEffortToRow('claude-haiku-4-5', ['off', 'medium'], 'high')).toBe('medium');
+    expect(projectEffortToRow('claude-haiku-4-5', ['off', 'medium'], 'max')).toBe('medium');
+    expect(projectEffortToRow('claude-haiku-4-5', ['off', 'medium'], 'off')).toBe('off');
+  });
+
+  it('returns undefined when the tier has no representative (nothing to highlight)', () => {
+    // a model whose rows do not include `off` and whose wire twin is absent → no row represents `off`.
+    expect(projectEffortToRow('gpt-5-pro', ['high'], 'off')).toBeUndefined();
   });
 });
 
