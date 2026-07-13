@@ -123,6 +123,40 @@ describe('refreshCatalog — additive only, and the shipped snapshot is the floo
 
     expect(catalogModel('gpt-5.5')?.outputPerMtokMicrocents).toBe(shipped?.outputPerMtokMicrocents);
   });
+
+  it('reports `added` as what the FLOOR admitted, not what the payload offered', async () => {
+    // A models.dev payload can carry a NEW priced model and a NEW unpriced one (a preview row at `output: 0` passes
+    // Zod). Only the priced one is admitted — so `added` must be 1, not 2. Counting the payload's new ids by hand,
+    // host-side, drifted from what actually installed; the count now comes from `installCatalogRefresh` itself.
+    const result = await refreshCatalog({
+      homeDir: home,
+      fetch: respond(
+        payload({ 'gpt-7-priced': {}, 'gpt-7-free': { cost: { input: 0, output: 0 } } }),
+      ),
+    });
+    expect(result.added).toBe(1);
+    expect(catalogModel('gpt-7-priced')).toBeDefined();
+    expect(catalogModel('gpt-7-free')).toBeUndefined();
+  });
+
+  it('ABORTS an over-cap body instead of buffering it whole (ADR-0071 §8)', async () => {
+    // The cap must REFUSE an endless body, not read it all and then measure. A ReadableStream that would yield far
+    // more than 16 MB is cut off the moment the running count crosses the ceiling — the reader is never drained.
+    let chunksRead = 0;
+    const oversized = new ReadableStream<Uint8Array>({
+      pull(ctrl) {
+        chunksRead += 1;
+        ctrl.enqueue(new Uint8Array(8 * 1024 * 1024)); // 8 MB a chunk — the cap is 16 MB
+      },
+    });
+    const result = await refreshCatalog({
+      homeDir: home,
+      fetch: () => Promise.resolve(new Response(oversized, { status: 200 })),
+    });
+    expect(result.status).toBe('failed');
+    expect(result.reason).toContain('too large');
+    expect(chunksRead).toBeLessThan(5); // aborted early — NOT the thousands an unbounded read would pull
+  });
 });
 
 describe('refreshCatalog — one destination, and it stays there', () => {

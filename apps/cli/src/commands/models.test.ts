@@ -299,6 +299,49 @@ describe('modelsCommand — refresh', () => {
     ]);
   });
 
+  it('[catalog] auto_refresh — a bare `models` refreshes the catalog FIRST when opted in', async () => {
+    // The opt-in standing-egress surface (ADR-0071 §4). Default OFF; when a user turns it on, a bare `models` (not a
+    // `refresh`) fetches the catalog before listing, because a stale price is the thing they came to look at.
+    let refreshedBeforeList = false;
+    let listed = false;
+    const catalog: ModelsCatalogReader = {
+      listAll: () => {
+        listed = true;
+        return [];
+      },
+    };
+    const { io } = captureIo();
+    await modelsCommand(
+      { refresh: false },
+      {
+        ...deps(io, catalog, stubRefresh(REFRESHED)),
+        autoRefreshCatalog: true,
+        refreshCatalog: () => {
+          refreshedBeforeList = !listed; // true iff refresh ran BEFORE the list read
+          return Promise.resolve({ status: 'refreshed' as const, models: 80, added: 0 });
+        },
+      },
+    );
+    expect(refreshedBeforeList).toBe(true);
+  });
+
+  it('[catalog] auto_refresh OFF (the default) — a bare `models` touches NO network', async () => {
+    const rowsRef: { value: ModelCatalogListing[] } = { value: [] };
+    let fetched = false;
+    const { io } = captureIo();
+    await modelsCommand(
+      { refresh: false },
+      {
+        ...deps(io, stubCatalog(rowsRef), stubRefresh(REFRESHED)),
+        refreshCatalog: () => {
+          fetched = true;
+          return Promise.resolve({ status: 'refreshed' as const, models: 80, added: 0 });
+        },
+      },
+    );
+    expect(fetched).toBe(false); // default OFF: no standing egress
+  });
+
   it('a FAILED catalog refresh is a NOTE, never an error — the shipped snapshot still answers', async () => {
     // ADR-0071 §4: additive only. A refresh that cannot reach models.dev must leave the product knowing exactly what
     // it knew before — never a blank catalog, never a model that was priced yesterday and is not today. The cost cap

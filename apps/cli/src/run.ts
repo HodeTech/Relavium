@@ -1,6 +1,6 @@
 import { CommanderError } from 'commander';
 
-import { loadResolvedConfig } from './config/load.js';
+import { resolveHomeDir } from './config/load.js';
 import { loadCachedCatalog } from './engine/catalog-refresh.js';
 import { driveHome, type HomeDeps } from './home/drive-home.js';
 import { shouldOpenHome } from './home/should-open-home.js';
@@ -56,7 +56,7 @@ export async function run(
   //
   // No fetch here, ever. `[catalog] auto_refresh` (default `false`) governs whether a background refresh may run at
   // all, and even when it is on, the fetch belongs on a path the user can see — not in the boot of every `--help`.
-  seedCatalog(global);
+  seedCatalog();
 
   const result: { exitCode?: ExitCode } = {};
   const program = buildProgram(io, {
@@ -147,12 +147,11 @@ function stripErrorPrefix(message: string): string {
  * refresh ever run (the DEFAULT — `[catalog] auto_refresh = false`), Relavium prices every model it ships, offline,
  * and contacts nobody.
  */
-function seedCatalog(global: GlobalOptions): void {
+function seedCatalog(): void {
   try {
-    const { homeDir } = loadResolvedConfig({ cwd: global.cwd, configPath: global.configPath });
-    loadCachedCatalog(homeDir);
+    loadCachedCatalog(resolveHomeDir({}));
   } catch {
-    // A malformed config file is reported by the COMMAND that needs it, with a real message. It is not this seed's
-    // job to say so, and a cached catalog is not a reason to refuse to run `relavium --help`.
+    // An unreadable home, a torn cache. Not this seed's job to report — a cached catalog is not a reason to refuse
+    // to run `relavium --help`, and the shipped snapshot answers regardless.
   }
 }

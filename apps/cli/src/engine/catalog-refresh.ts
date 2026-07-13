@@ -3,7 +3,6 @@ import { dirname, join } from 'node:path';
 
 import {
   CATALOG_PROVIDER_KEYS,
-  CATALOG_SNAPSHOT,
   ModelsDevPayloadSchema,
   catalogModelIds,
   installCatalogRefresh,
@@ -32,7 +31,8 @@ import {
 const SOURCE_URL = 'https://models.dev/api.json';
 const SOURCE_HOST = 'models.dev';
 
-/** models.dev's payload is ~1 MB. A generous ceiling that still refuses an endless body. */
+/** models.dev's payload is ~1 MB. A generous ceiling — and a REAL one: `readCapped` aborts the transfer the
+ *  moment a body exceeds it, rather than buffering an endless one and checking its length too late. */
 const MAX_BYTES = 16 * 1024 * 1024;
 const TIMEOUT_MS = 20_000;
 
@@ -91,8 +91,8 @@ export async function refreshCatalog(deps: CatalogRefreshDeps): Promise<CatalogR
     if (response.url !== '' && new URL(response.url).hostname !== SOURCE_HOST) {
       return { status: 'failed', models: 0, added: 0, reason: 'models.dev redirected off-host' };
     }
-    const text = await response.text();
-    if (text.length > MAX_BYTES) {
+    const text = await readCapped(response, controller);
+    if (text === undefined) {
       return { status: 'failed', models: 0, added: 0, reason: 'models.dev payload is too large' };
     }
     return install(text, deps.homeDir);
@@ -112,6 +112,45 @@ export async function refreshCatalog(deps: CatalogRefreshDeps): Promise<CatalogR
   }
 }
 
+/**
+ * Read the body, ABORTING the moment it exceeds the cap — not after buffering the whole thing (ADR-0071 §8).
+ *
+ * `response.text()` reads everything into memory first and only then checks the length, so on a fast link a
+ * misbehaving host could deliver many times the cap inside the timeout before the check ever fired. `MAX_BYTES` is
+ * meant to REFUSE an endless body, and a check after the buffer does not refuse anything. Streaming the reader and
+ * aborting on overflow makes the ceiling real. `undefined` ⇒ over the cap (the caller degrades to the snapshot).
+ *
+ * A body with no reader (a test `Response`, an empty body) falls back to `text()` — bounded there by the cap check
+ * on the fully-read string, which is fine because such a body was never the streaming threat.
+ */
+async function readCapped(
+  response: Response,
+  controller: AbortController,
+): Promise<string | undefined> {
+  const body = response.body;
+  if (body === null) {
+    const text = await response.text();
+    return text.length > MAX_BYTES ? undefined : text;
+  }
+  const decoder = new TextDecoder();
+  let out = '';
+  let bytes = 0;
+  // `ReadableStream` is untyped in the DOM lib (`ReadableStream<any>`), so type the reader explicitly — otherwise
+  // `value` is `any` and the byte-count arithmetic reads as unsafe.
+  const reader = (body as ReadableStream<Uint8Array>).getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done || value === undefined) break;
+    bytes += value.byteLength;
+    if (bytes > MAX_BYTES) {
+      controller.abort(); // stop the transfer NOW — do not read another chunk
+      return undefined;
+    }
+    out += decoder.decode(value, { stream: true });
+  }
+  return out + decoder.decode();
+}
+
 /** Load a previously-cached refresh, if there is one. Silent on absence or corruption — the snapshot answers. */
 export function loadCachedCatalog(homeDir: string): CatalogRefreshResult | undefined {
   try {
@@ -119,8 +158,8 @@ export function loadCachedCatalog(homeDir: string): CatalogRefreshResult | undef
     // that could drift. A tampered or truncated cache fails Zod here and lands on the snapshot, exactly like a bad
     // fetch does.
     const models = parse(readFileSync(catalogCachePath(homeDir), 'utf8'));
-    installCatalogRefresh(models);
-    return { status: 'refreshed', models: Object.keys(models).length, added: countAdded(models) };
+    const added = installCatalogRefresh(models);
+    return { status: 'refreshed', models: catalogModelIds().length, added };
   } catch {
     // No cache, or a cache we cannot read. Not an error: the shipped snapshot is the floor, not a fallback.
     return undefined;
@@ -150,14 +189,14 @@ function parse(text: string): Record<string, CatalogModel> {
  */
 function install(text: string, homeDir: string): CatalogRefreshResult {
   const models = parse(text); // throws on a payload we cannot use — the caller turns that into a no-op
-  installCatalogRefresh(models);
+  const added = installCatalogRefresh(models); // the count the FLOOR admitted, not the count the payload offered
   writeCache(text, homeDir);
   return {
-    status: 'refreshed',
     // TOTAL describable after the install — the shipped snapshot plus whatever the refresh added — and how many of
     // those were new. `models: 200, added: 120` reads as "200 models, 120 the snapshot didn't carry".
+    status: 'refreshed',
     models: catalogModelIds().length,
-    added: countAdded(models),
+    added,
   };
 }
 
@@ -193,18 +232,4 @@ function writeCache(text: string, homeDir: string): void {
   } catch {
     // A read-only home, a full disk, an unparseable body we somehow got past `parse` — the refresh HELD regardless.
   }
-}
-
-/**
- * How many of these the shipped snapshot did not carry — the number that answers "why run this at all?".
- *
- * Counted against `CATALOG_SNAPSHOT` directly, NOT against `catalogModelIds()`: by the time this runs the refresh is
- * already installed, so asking the live lookup would compare the new catalog against itself and always answer zero.
- */
-function countAdded(models: Record<string, CatalogModel>): number {
-  let added = 0;
-  for (const id of Object.keys(models)) {
-    if (CATALOG_SNAPSHOT[id] === undefined) added += 1;
-  }
-  return added;
 }

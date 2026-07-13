@@ -29,7 +29,7 @@ let refreshed: Readonly<Record<string, CatalogModel>> = {};
  * third-party aggregator had a bad deploy. The cost cap is a safety control; it does not get to lapse because
  * someone else's JSON changed.
  */
-export function installCatalogRefresh(models: Readonly<Record<string, CatalogModel>>): void {
+export function installCatalogRefresh(models: Readonly<Record<string, CatalogModel>>): number {
   const kept: Record<string, CatalogModel> = {};
   for (const [id, model] of Object.entries(models)) {
     // A model the SHIPPED snapshot pins is NEVER touched — the snapshot's price is human-verified, and a runtime
@@ -51,6 +51,11 @@ export function installCatalogRefresh(models: Readonly<Record<string, CatalogMod
     kept[id] = model;
   }
   refreshed = kept;
+  // The count of models ACTUALLY admitted — new, priced, and not shadowing a shipped id. The host reports this as
+  // `added`, and returning it here is what keeps that number honest: computing it host-side by re-applying the
+  // floor's predicates by hand is exactly how a report drifts from what got installed (a payload with one priced
+  // and one unpriced new model reported `added: 2` while only one landed).
+  return Object.keys(kept).length;
 }
 
 /** Drop the refreshed catalog — the shipped snapshot answers alone again. For tests, and for `--catalog` failures. */
