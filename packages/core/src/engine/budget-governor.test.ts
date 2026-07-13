@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { PricingOverlay } from '@relavium/llm';
+import {
+  estimateMaxNextCost,
+  type EndpointKind,
+  type PricingOverlay,
+  type ProviderId,
+} from '@relavium/llm';
 import type { Budget } from '@relavium/shared';
 
 import { BudgetExceededError, BudgetGovernor, BudgetPauseError } from './budget-governor.js';
@@ -13,6 +18,7 @@ describe('BudgetGovernor', () => {
       budget?: Budget;
       defaultMaxTokensEstimate?: number;
       resolvePrice?: PricingOverlay;
+      resolveEndpoint?: (provider: ProviderId) => EndpointKind;
     } = {},
   ): {
     governor: BudgetGovernor;
@@ -27,6 +33,9 @@ describe('BudgetGovernor', () => {
         ? {}
         : { defaultMaxTokensEstimate: overrides.defaultMaxTokensEstimate }),
       ...(overrides.resolvePrice === undefined ? {} : { resolvePrice: overrides.resolvePrice }),
+      ...(overrides.resolveEndpoint === undefined
+        ? {}
+        : { resolveEndpoint: overrides.resolveEndpoint }),
       onUnpriced: (model) => unpriced.push(model),
       emit: (event) => {
         warnings.push(event);
@@ -245,6 +254,50 @@ describe('BudgetGovernor', () => {
       governor.updateCost(0);
       await expect(governor.checkPreEgress('acme-custom-1', 1_000)).resolves.toBeUndefined();
       expect(warnings).toHaveLength(0);
+    });
+  });
+
+  describe('endpoint keys on the ROUTING provider, not the model catalog (review M2)', () => {
+    // A custom `openai` gateway (OpenRouter/LiteLLM) serving `deepseek-v4-flash`: the wire is UNCLAMPED (a gateway
+    // may serve anything under a familiar id), so the estimate must reflect the FULL request — keyed on the routing
+    // provider ('openai' = custom here), never the model's catalog provider ('deepseek' = official) which clamps to
+    // the ceiling and under-authorizes. Before M2, resolveEndpoint(model)→catalog provider→official→clamp→allow.
+    const HUGE = 10_000_000;
+    const resolveEndpoint = (provider: ProviderId): EndpointKind =>
+      provider === 'openai' ? 'custom' : 'official';
+
+    it('routes the endpoint by the provider argument — same model, opposite clamp', () => {
+      const official = estimateMaxNextCost('deepseek-v4-flash', HUGE, undefined, 'official');
+      const custom = estimateMaxNextCost('deepseek-v4-flash', HUGE, undefined, 'custom');
+      expect(custom).toBeGreaterThan(official); // the catalog ceiling clamp is real for this model
+
+      // A cap between the clamped and unclamped cost: official passes, custom must not.
+      const cap = official + Math.round((custom - official) / 2);
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: cap, on_exceed: 'fail' },
+        resolveEndpoint,
+      });
+      governor.updateCost(0);
+
+      // On its own API (official) → clamped to the ceiling → under the cap → allow.
+      expect(
+        governor.evaluatePreEgress('deepseek-v4-flash', HUGE, undefined, 'deepseek').kind,
+      ).toBe('allow');
+      // Through the custom 'openai' gateway → unclamped → over the cap → fail. Keying on the catalog provider
+      // ('deepseek') would have wrongly clamped THIS path and waved the overspend through (the M2 defect).
+      expect(governor.evaluatePreEgress('deepseek-v4-flash', HUGE, undefined, 'openai').kind).toBe(
+        'fail',
+      );
+    });
+
+    it('omitting the provider (a media-only gate) defaults to official — a harmless no-op at maxTokens 0', () => {
+      const { governor } = makeGovernor({
+        budget: { ...budget, on_exceed: 'fail' },
+        resolveEndpoint,
+      });
+      governor.updateCost(0);
+      // maxTokens 0 → token estimate 0 regardless of endpoint, so the absent provider cannot mis-authorize.
+      expect(governor.evaluatePreEgress('deepseek-v4-flash', 0).kind).toBe('allow');
     });
   });
 });

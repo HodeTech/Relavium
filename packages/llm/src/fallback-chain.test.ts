@@ -411,6 +411,30 @@ describe('FallbackChain.generate — per-attempt cost across a failover', () => 
     expect(trace[1]?.cost?.cumulativeCostMicrocents).toBe(2_050_000); // 1_750_000 + 300_000
     expect(tracker.cumulativeCostMicrocents).toBe(2_050_000);
   });
+
+  it('preAttempt carries THIS attempt’s routing provider — the primary, then the failover (review M2)', async () => {
+    // The pre-egress endpoint estimate keys on the routing provider, which MOVES on a failover. Each preAttempt
+    // must therefore report the provider of the entry actually being dialed, not a fixed primary.
+    const primary = makeProvider({ id: 'anthropic', generate: rejects('anthropic', 'overloaded') });
+    const fallback = makeProvider({ id: 'openai', generate: resolves('recovered') });
+    const seen: { model: string; provider: ProviderId }[] = [];
+    const { options } = makeOptions({
+      preAttempt: (info) => {
+        seen.push({ model: info.model, provider: info.provider });
+      },
+    });
+    const chain = new FallbackChain(
+      [entry(primary, 'claude-opus-4-8'), entry(fallback, 'gpt-5.4-mini')],
+      options,
+    );
+
+    await chain.generate(userReq);
+
+    expect(seen).toEqual([
+      { model: 'claude-opus-4-8', provider: 'anthropic' },
+      { model: 'gpt-5.4-mini', provider: 'openai' },
+    ]);
+  });
 });
 
 // --- ADR-0030 reasoning strip on cross-provider failover -------------------------------------

@@ -50,7 +50,7 @@ import {
   type RunStatus,
   type TokensUsed,
 } from '@relavium/shared';
-import type { EndpointKind, MediaJobStatus, PricingOverlay } from '@relavium/llm';
+import type { EndpointKind, MediaJobStatus, PricingOverlay, ProviderId } from '@relavium/llm';
 
 import { buildRunPlan, type BuildRunPlanOptions } from '../dag.js';
 import { InterpolationError } from '../errors.js';
@@ -254,7 +254,7 @@ export interface WorkflowEngineDeps {
    * endpoint, and an estimate that assumes otherwise stops describing the request the wire will carry. Absent ⇒
    * official (the adapter's own default).
    */
-  readonly resolveEndpoint?: (model: string) => EndpointKind;
+  readonly resolveEndpoint?: (provider: ProviderId) => EndpointKind;
   /**
    * Called once per model when a turn runs UNPRICED, so the cost cap could not apply to it (ADR-0071 §K7). The
    * engine cannot print; the host routes it (`run` → stderr). Absent ⇒ silent (`strict_cost_cap` is the block).
@@ -355,7 +355,7 @@ class RunExecution {
     /** The user-pricing overlay (2.5.G S10, ADR-0065 §2) — into the workflow PRE-EGRESS governor so a user-priced
      *  model is enforced by `budget`. Host-injected; the realized path rides the runner's own `resolvePrice`. */
     resolvePrice?: PricingOverlay;
-    resolveEndpoint?: (model: string) => EndpointKind;
+    resolveEndpoint?: (provider: ProviderId) => EndpointKind;
     onUnpriced?: (model: string, capMicrocents: number) => void;
     /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
     checkpoint?: CheckpointState;
@@ -1092,7 +1092,8 @@ class RunExecution {
     // Pass the media-unit estimate (1.AF/D17) so the governor folds a per-modality media addend into the
     // projection; `outputModalities` rides the hook info for request-lowering/observability but the cost
     // calc needs only the units.
-    return (info) => governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate);
+    return (info) =>
+      governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate, info.provider);
   }
 
   /** Run one attempt of a vertex; returns its outcome (an uncaught handler throw → a single `internal`). */
@@ -2214,7 +2215,7 @@ export class WorkflowEngine {
   // WorkflowEngineDeps and then died here — the constructor never read them, so `start()`/`resumeFromCheckpoint()`
   // built a governor without an endpoint resolver (ADR-0071 §7 — the estimate assumed `official` and under-
   // authorized a custom-base_url turn) and without an unpriced sink (§K7 — the notice was dead on `run`/`gate`).
-  readonly #resolveEndpoint: ((model: string) => EndpointKind) | undefined;
+  readonly #resolveEndpoint: ((provider: ProviderId) => EndpointKind) | undefined;
   readonly #onUnpriced: ((model: string, capMicrocents: number) => void) | undefined;
   readonly #runs = new Map<string, RunExecution>();
 

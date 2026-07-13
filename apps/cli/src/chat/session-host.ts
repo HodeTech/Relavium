@@ -18,7 +18,6 @@ import {
   type ToolHost,
 } from '@relavium/core';
 import {
-  catalogModel,
   effortTiersFor,
   type EndpointKind,
   type PricingOverlay,
@@ -610,12 +609,9 @@ export function buildGovernorWiring(
     // ADR-0071 §7: the adapter clamps an authored `max_tokens` to the model's ceiling on an OFFICIAL endpoint and
     // not on a custom one. The estimate must make the same call — assume official on a gateway and it lands BELOW
     // what the wire can spend, so the governor under-authorizes and waves through the call it exists to stop.
-    ...(endpointKind === undefined
-      ? {}
-      : {
-          resolveEndpoint: (model: string) =>
-            endpointKind(catalogModel(model)?.provider ?? 'openai'),
-        }),
+    // Keyed on the ROUTING provider the governor threads per attempt, not the model's catalog provider — a custom
+    // gateway serving another provider's model id would otherwise be mis-read as official and under-clamped (M2).
+    ...(endpointKind === undefined ? {} : { resolveEndpoint: endpointKind }),
     // ADR-0071 §K7: a turn ran on a model we could not price, so the cap did not apply to it. Say so, once — a cost
     // cap that silently does not apply is a false sense of safety. `strict_cost_cap` is the block-instead option.
     ...(onUnpriced === undefined
@@ -641,7 +637,7 @@ export function buildGovernorWiring(
   });
   return {
     preEgress: (info) =>
-      governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate),
+      governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate, info.provider),
     updateCost: (cumulative) => governor.updateCost(cumulative),
   };
 }

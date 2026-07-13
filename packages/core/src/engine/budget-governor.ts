@@ -5,6 +5,7 @@ import {
   type EndpointKind,
   type MediaUnitsEstimate,
   type PricingOverlay,
+  type ProviderId,
 } from '@relavium/llm';
 import type { Budget } from '@relavium/shared';
 
@@ -106,7 +107,7 @@ export class BudgetGovernor {
     event: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>,
   ) => Promise<void>;
   readonly #overlay: PricingOverlay | undefined;
-  readonly #resolveEndpoint: ((model: string) => EndpointKind) | undefined;
+  readonly #resolveEndpoint: ((provider: ProviderId) => EndpointKind) | undefined;
   #cumulativeCostMicrocents = 0;
   #warningEmitted = false;
   readonly #onUnpriced: ((model: string, capMicrocents: number) => void) | undefined;
@@ -132,8 +133,12 @@ export class BudgetGovernor {
      * stopped. The engine cannot know a base URL — the host injects the answer, exactly as it injects the price.
      *
      * Absent ⇒ every model is treated as official, which is the adapter's own default for an un-overridden endpoint.
+     *
+     * Keyed on the ROUTING PROVIDER, not the model: a custom gateway serving another provider's model id is
+     * `custom` at the wire yet `official` by the model's catalog provider, and estimating from the catalog
+     * provider under-authorizes the turn (review M2). The provider rides the pre-egress info per attempt.
      */
-    readonly resolveEndpoint?: (model: string) => EndpointKind;
+    readonly resolveEndpoint?: (provider: ProviderId) => EndpointKind;
     /**
      * Called when a turn runs on a model we cannot PRICE, so the cap could not apply to it (ADR-0071 §K7). Fired
      * once per model. The engine cannot print; the host routes the notice (chat → the transcript, `run` → stderr).
@@ -163,6 +168,7 @@ export class BudgetGovernor {
     model: string,
     maxTokens: number | undefined,
     mediaUnitsEstimate?: readonly MediaUnitsEstimate[],
+    provider?: ProviderId,
   ): BudgetCheckResult {
     // A cap of 0 means UNBOUNDED (`[chat].max_cost_microcents`: "0 = unbounded"): never block, and never
     // reach the `thresholdPct` division below (which would be `/0` → NaN). A workflow `BudgetSchema` forbids
@@ -181,7 +187,9 @@ export class BudgetGovernor {
           model,
           maxTokens ?? this.#defaultMaxTokensEstimate,
           this.#overlay,
-          this.#resolveEndpoint?.(model) ?? 'official',
+          // Key the endpoint on the routing provider (review M2). A media-only gate omits it (`maxTokens: 0`
+          // makes the token estimate 0 regardless), so `official` is a harmless default there.
+          (provider === undefined ? undefined : this.#resolveEndpoint?.(provider)) ?? 'official',
         ) +
         (mediaUnitsEstimate === undefined
           ? 0
@@ -258,8 +266,9 @@ export class BudgetGovernor {
     model: string,
     maxTokens: number | undefined,
     mediaUnitsEstimate?: readonly MediaUnitsEstimate[],
+    provider?: ProviderId,
   ): Promise<void> {
-    const result = this.evaluatePreEgress(model, maxTokens, mediaUnitsEstimate);
+    const result = this.evaluatePreEgress(model, maxTokens, mediaUnitsEstimate, provider);
     if (result.kind === 'allow') return;
     if (result.kind === 'unpriced') {
       // Once per model — a standing condition, not an event (a `loop` over an unpriced model must not repeat it

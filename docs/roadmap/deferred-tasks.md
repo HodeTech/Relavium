@@ -551,6 +551,48 @@ ships.
 **Home:** Phase 3 (or a later Phase-2.6 workstream) — natural sibling to the AgentSession (1.V) "Faithful
 cross-turn transcript" item just below; whichever lands first should absorb the other.
 
+## Home's chat has no way to view or pick the bound agent (found 2026-07-14)
+
+> Raised while answering a question about editing the agent used by a Home-opened chat. The headline gap is
+> **already tracked** at [phase-2.6-conversational-authoring.md §2.6.G](phases/phase-2.6-conversational-authoring.md)
+> — recorded here anyway because the investigation surfaced a narrower residual that 2.6.G's current task
+> description does not clearly cover, so it doesn't get lost when that workstream starts.
+
+**Confirmed today:** `apps/cli/src/home/drive-home.tsx:510` launches every Home chat with
+`agentRef: undefined` — i.e. always the built-in `buildDefaultChatAgent` (`apps/cli/src/chat/default-agent.ts`:
+fixed system prompt, a 3-tool read-only grant, no `temperature`). There is no picker, no `--agent`-equivalent
+affordance, and none of the registered chat slash commands
+(`apps/cli/src/commands/repl-commands.ts` — help/exit/cancel/export/workflows/cost/doctor/mode/effort/
+thinking/compact/trim/clear/models/scrollback/edit/copy) shows or edits the bound agent's full config. The
+only way to bind a custom `.agent.yaml` today is `relavium chat --agent <ref>` from a shell — a path Home
+never takes.
+
+**The "pick a different agent" half is already scheduled — do not re-file it.** 2.6.G's task list says, almost
+verbatim: *"`/agents` browser (Home + chat): tabs Defined | Sessions. Defined: the agent catalog with
+'start a chat with this agent' (closing the Home's built-in-agent-only gap)."* That is this exact gap, already
+named and owned.
+
+**The narrower residual 2.6.G's current description does not clearly cover:** a **read-only** view of the
+*full* config of the agent already bound to the *current* session — system prompt, tool grant, `temperature`,
+`reasoning_effort`, provider — not just picking a different agent for a *new* chat. 2.6.G's *Sessions* tab is
+described only as *"recent + in-progress sessions... a detail view (transcript summary, cost, model
+attribution)"* — model attribution (which model/provider) is there, but system prompt / tools / temperature /
+reasoning_effort are not mentioned. Today there is nowhere at all — Home or the terminal `chat` command — to
+inspect that for a session already in flight.
+
+**This should stay read-only, not become an edit surface.** `resolveChatAgent`'s doc comment is explicit that
+one agent binds a session for its whole lifetime by design — *"ADR-0024 — one agent per session, no
+mid-session switching."* So the fix here is a **view**, not a live-mutate command: "show me what I'm actually
+talking to" (worth having even by itself, e.g. after a `/clear` reseat or a `--agent` invocation where the
+resolved config isn't obvious), not "let me tweak the running agent." Changing agents mid-session is already
+correctly out of scope by design, and 2.6.G's "start a chat with this agent" (a *new* session) is the
+sanctioned way to switch.
+
+**Home:** 2.6.G — when that workstream is scoped, confirm the Sessions-tab detail view (or a lightweight
+`/agent` / `/whoami`-style command available in both Home and the terminal `chat` command) explicitly
+includes system prompt, tool grant, `temperature`, and `reasoning_effort` for the *current* session, not only
+model/provider/cost. If it's deliberately left out, that should be a stated decision, not a silent gap.
+
 ## AgentSession (1.V) follow-ups
 
 > **2026-06-16 — 1.V `AgentSession` (ADR-0024) + 1.AC budget governor (ADR-0028) merged in PR #26** (after two

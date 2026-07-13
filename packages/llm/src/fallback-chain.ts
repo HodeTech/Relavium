@@ -113,6 +113,11 @@ export interface AttemptRecord {
 export type PreAttemptHook = (info: {
   readonly model: string;
   readonly maxTokens?: number;
+  /** The provider THIS attempt targets — the routing provider, which on a failover differs from the primary.
+   *  The pre-egress endpoint estimate must key on it (not the model's catalog provider): a custom gateway
+   *  serving another provider's model id is `custom` at the wire yet `official` by catalog, and the mismatch
+   *  under-authorizes real spend (review M2). */
+  readonly provider: ProviderId;
 }) => void | Promise<void>;
 
 /** Dependencies injected into a {@link FallbackChain} — all timing is injectable so tests are deterministic. */
@@ -476,6 +481,7 @@ export class FallbackChain {
       const maxTokens = entryReq.maxTokens;
       await this.#options.preAttempt?.({
         model: entry.model,
+        provider: entry.provider.id,
         ...(maxTokens === undefined ? {} : { maxTokens }),
       });
       const key = await this.#resolveKey(entry.provider.id);
@@ -510,6 +516,7 @@ export class FallbackChain {
       const maxTokens = entryReq.maxTokens;
       await this.#options.preAttempt?.({
         model: entry.model,
+        provider: entry.provider.id,
         ...(maxTokens === undefined ? {} : { maxTokens }),
       });
       const key = await this.#resolveKey(entry.provider.id);

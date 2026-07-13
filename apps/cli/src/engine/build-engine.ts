@@ -12,12 +12,7 @@ import {
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
-import {
-  catalogModel,
-  effortTiersFor,
-  type EndpointKind,
-  type PricingOverlay,
-} from '@relavium/llm';
+import { effortTiersFor, type PricingOverlay } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
 import { effortWithheldNote } from '../chat/effort-notice.js';
@@ -176,12 +171,9 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     // ADR-0071 §7: the adapter clamps an authored `max_tokens` to the model's ceiling on an OFFICIAL endpoint and
     // not on a custom one. The pre-egress estimate must make the same call, or it prices a request we never send —
     // assume official on a gateway and it under-authorizes, waving through the call the governor exists to stop.
-    ...(endpointKind === undefined
-      ? {}
-      : {
-          resolveEndpoint: (model: string): EndpointKind =>
-            endpointKind(catalogModel(model)?.provider ?? 'openai'),
-        }),
+    // Keyed on the ROUTING provider the governor threads per attempt, not the model's catalog provider — a custom
+    // gateway serving another provider's model id would otherwise be mis-read as official and under-clamped (M2).
+    ...(endpointKind === undefined ? {} : { resolveEndpoint: endpointKind }),
     // ADR-0071 §K7: a workflow turn ran on a model we could not price, so `budget.max_cost_microcents` did not
     // apply to it. `run.ts` routes this to stderr (never stdout — `--json`); `budget.strict_cost_cap` is the
     // block-instead option for a run that must not proceed unpriced.
