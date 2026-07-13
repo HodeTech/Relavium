@@ -505,17 +505,17 @@ function registerModels(program: Command, ctx?: CommandContext): void {
   models.action(async () => {
     ctx.result.exitCode = await executeCommand('models', { positionals: [], options: {} }, ctx);
   });
-  refresh.action(async () => {
+  refresh.action(async (opts: { providers?: boolean; catalog?: boolean }) => {
     ctx.result.exitCode = await executeCommand(
       'models.refresh',
-      { positionals: [], options: {} },
+      { positionals: [], options: { providers: opts.providers, catalog: opts.catalog } },
       ctx,
     );
   });
   pricing.action(
     async (
       model: string,
-      opts: { provider?: string; input?: string; output?: string; cached?: string },
+      opts: { provider?: string; input?: string; output?: string; cached?: string; clear?: boolean },
     ) => {
       ctx.result.exitCode = await executeCommand(
         'models.pricing',
@@ -526,6 +526,7 @@ function registerModels(program: Command, ctx?: CommandContext): void {
             input: opts.input,
             output: opts.output,
             cached: opts.cached,
+            clear: opts.clear,
           },
         },
         ctx,

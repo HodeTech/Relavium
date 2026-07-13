@@ -193,6 +193,87 @@ export function normalizeCatalogModel(
   };
 }
 
+/** Best-effort read of a FAILED row's `id`, for the drop report. `unknown` in, `string | undefined` out. */
+function idOfUnvalidated(raw: unknown): string | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const id: unknown = (raw as { id?: unknown }).id;
+  return typeof id === 'string' && id.length > 0 ? id : undefined;
+}
+
+/**
+ * Normalize ONE upstream model row into `catalog`, or record why it was DROPPED — a malformed, non-chat, or
+ * unpriceable row is a dropped model, never a dead sync. A model id that clashes ACROSS providers is a real
+ * ambiguity and THROWS; a clash WITHIN one provider (two record keys that normalize to the same `id`) keeps the
+ * first and drops the duplicate VISIBLY, rather than letting one arbitrarily overwrite a row already admitted.
+ */
+function processModel(
+  providerId: ProviderId,
+  recordKey: string,
+  rawModel: unknown,
+  catalog: Record<string, CatalogModel>,
+  dropped: DroppedModel[],
+): void {
+  // NOT A CHAT MODEL — dropped before anything else, and this is load-bearing, not tidiness.
+  //
+  // `keepOpenAiModelId` short-circuits on `pricedIds.has(id)`: a PRICED id bypasses the live list's deny-list
+  // entirely, so a cost-eligible model can never be filtered out. Once the catalog becomes the priced set, any
+  // non-chat model in it would be *rescued* by that short-circuit and land in the user's model picker as something
+  // to chat with. `text-embedding-3-large` is priced upstream and arrived in the very first snapshot exactly that
+  // way. Sharing ONE filter with the live list (`isNonChatModelId`) is what makes the cascade impossible; two
+  // filters that can disagree is what makes it inevitable.
+  if (isNonChatModelId(recordKey)) return;
+
+  const parsed = ModelSchema.safeParse(rawModel);
+  if (!parsed.success) {
+    // The reported id must be the MODEL'S OWN `id`, not the record key. The sync's shipped-model guard compares a
+    // dropped id against the committed snapshot, which is keyed by model id — so a key that differs from the id
+    // would let a model we already ship fall out of the catalog SILENTLY, taking its price (and therefore the cost
+    // cap) with it. Upstream happens to key by id today; the guard must not depend on that. Best-effort here,
+    // because the row failed validation and its `id` may be junk too.
+    const issues = parsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; ');
+    dropped.push({
+      provider: providerId,
+      modelId: idOfUnvalidated(rawModel) ?? recordKey,
+      reason: `schema: ${issues}`,
+    });
+    return;
+  }
+
+  const model = normalizeCatalogModel(providerId, parsed.data);
+  if (model === undefined) {
+    // Almost always an image model: upstream carries `cost: null` because it bills per IMAGE, an axis we do not
+    // model. Importing it would write a $0 row — worse than absence, because a $0 row *passes* the cost cap instead
+    // of flagging the model as unpriced.
+    dropped.push({
+      provider: providerId,
+      modelId: parsed.data.id,
+      reason: 'no cost or no limit (unpriceable)',
+    });
+    return;
+  }
+
+  const clash = catalog[model.modelId];
+  if (clash !== undefined) {
+    if (clash.provider !== providerId) {
+      throw new Error(
+        `catalog: model id '${model.modelId}' appears under BOTH '${clash.provider}' and '${providerId}'. ` +
+          `The catalog is keyed by model id, so this is a real ambiguity — resolve it in CATALOG_PROVIDER_KEYS ` +
+          `(is one of them a mirror, like google-vertex?) rather than letting one price silently win.`,
+      );
+    }
+    // SAME provider, same id from a second record key (two aliases can normalize onto one `id`). Keep the first and
+    // drop this duplicate visibly — an unconditional overwrite would let a later row silently replace an admitted
+    // one's price, and a price change is exactly what this transform refuses to make in silence.
+    dropped.push({
+      provider: providerId,
+      modelId: model.modelId,
+      reason: `duplicate model id within '${providerId}' (record key '${recordKey}') — kept the first`,
+    });
+    return;
+  }
+  catalog[model.modelId] = model;
+}
+
 /**
  * Normalize a validated payload into the catalog snapshot — the whole build-time transform.
  *
@@ -201,13 +282,6 @@ export function normalizeCatalogModel(
  * our four providers would be a real ambiguity, so it **throws** rather than silently picking a winner — a
  * generator that quietly halves the catalog is exactly the failure this whole workstream exists to end.
  */
-/** Best-effort read of a FAILED row's `id`, for the drop report. `unknown` in, `string | undefined` out. */
-function idOfUnvalidated(raw: unknown): string | undefined {
-  if (typeof raw !== 'object' || raw === null) return undefined;
-  const id: unknown = (raw as { id?: unknown }).id;
-  return typeof id === 'string' && id.length > 0 ? id : undefined;
-}
-
 export function normalizeCatalog(payload: ModelsDevPayload): {
   readonly catalog: Record<string, CatalogModel>;
   readonly dropped: readonly DroppedModel[];
@@ -230,52 +304,7 @@ export function normalizeCatalog(payload: ModelsDevPayload): {
 
     for (const [recordKey, rawModel] of Object.entries(provider.data.models)) {
       // ONE MODEL AT A TIME. A malformed row is a dropped model, not a dead sync (see `ProviderSchema`).
-      // NOT A CHAT MODEL — dropped before anything else, and this is load-bearing, not tidiness.
-      //
-      // `keepOpenAiModelId` short-circuits on `pricedIds.has(id)`: a PRICED id bypasses the live list's deny-list
-      // entirely, so a cost-eligible model can never be filtered out. Once the catalog becomes the priced set,
-      // any non-chat model in it would be *rescued* by that short-circuit and land in the user's model picker as
-      // something to chat with. `text-embedding-3-large` is priced upstream and arrived in the very first
-      // snapshot exactly that way. Sharing ONE filter with the live list (`isNonChatModelId`) is what makes the
-      // cascade impossible; two filters that can disagree is what makes it inevitable.
-      if (isNonChatModelId(recordKey)) continue;
-
-      const parsed = ModelSchema.safeParse(rawModel);
-      if (!parsed.success) {
-        // The reported id must be the MODEL'S OWN `id`, not the record key. The sync's shipped-model guard
-        // compares a dropped id against the committed snapshot, which is keyed by model id — so a key that
-        // differs from the id would let a model we already ship fall out of the catalog SILENTLY, taking its
-        // price (and therefore the cost cap) with it. Upstream happens to key by id today; the guard must not
-        // depend on that. Best-effort here, because the row failed validation and its `id` may be junk too.
-        dropped.push({
-          provider: providerId,
-          modelId: idOfUnvalidated(rawModel) ?? recordKey,
-          reason: `schema: ${parsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; ')}`,
-        });
-        continue;
-      }
-      const model = normalizeCatalogModel(providerId, parsed.data);
-      if (model === undefined) {
-        // Almost always an image model: upstream carries `cost: null` because it bills per IMAGE, an axis we do
-        // not model. Importing it would write a $0 row — worse than absence, because a $0 row *passes* the cost
-        // cap instead of flagging the model as unpriced.
-        dropped.push({
-          provider: providerId,
-          modelId: parsed.data.id,
-          reason: 'no cost or no limit (unpriceable)',
-        });
-        continue;
-      }
-
-      const clash = catalog[model.modelId];
-      if (clash !== undefined && clash.provider !== providerId) {
-        throw new Error(
-          `catalog: model id '${model.modelId}' appears under BOTH '${clash.provider}' and '${providerId}'. ` +
-            `The catalog is keyed by model id, so this is a real ambiguity — resolve it in CATALOG_PROVIDER_KEYS ` +
-            `(is one of them a mirror, like google-vertex?) rather than letting one price silently win.`,
-        );
-      }
-      catalog[model.modelId] = model;
+      processModel(providerId, recordKey, rawModel, catalog, dropped);
     }
   }
   return { catalog, dropped };

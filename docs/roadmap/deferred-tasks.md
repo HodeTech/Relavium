@@ -962,6 +962,12 @@ cross-turn transcript" item just below; whichever lands first should absorb the 
 
 ## The CLI e2e suite opens and MIGRATES the developer's real `~/.relavium/history.db` (2.6.C spin-off, 2026-07-13)
 
+> **DONE 2026-07-13 (PR #76 review fold).** `regression.e2e.test.ts` now redirects `HOME`/`USERPROFILE` to a
+> fresh `mkdtempSync` dir in a suite-wide `beforeEach` (restored + removed in `afterEach`), so the full-shell
+> `run(argv)` case migrates a throwaway db, never the developer's real history. A guard in the same hook refuses
+> to proceed if the redirect fails to take (`resolveHomeDir({}) === realHome`), so a future test cannot silently
+> re-acquire the default path. The evidence and rationale below are kept for the record.
+
 > Found while diagnosing a red CI run during 2.6.C (PR #75). Verified, not inferred — see the evidence below.
 
 `apps/cli/src/harness/regression.e2e.test.ts` drives the real CLI shell (`run(argv('run', …, '--json'), io)`)

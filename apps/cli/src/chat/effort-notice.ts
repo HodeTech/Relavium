@@ -1,7 +1,8 @@
-import { catalogModel } from '@relavium/llm';
+import type { EffortGateResult } from '@relavium/core';
+import { catalogModel, effortTiersFor as seamEffortTiersFor } from '@relavium/llm';
 import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
 
-import { sanitizeInline } from '../render/tui/chat-projection.js';
+import { sanitizeInline } from '../render/sanitize.js';
 
 /**
  * What we TELL the user when a reasoning tier is withheld
@@ -53,6 +54,45 @@ export function effortRejectedNote(
   return list.length === 0
     ? effortUnavailableNote(model)
     : `${safeModel(model)} does not accept reasoning effort '${requested}' — it takes ${list.join(', ')}. No tier is sent.`;
+}
+
+/**
+ * The tiers a model accepts, **in canonical order** — an ordering projection of `@relavium/llm`'s
+ * {@link acceptedTiers}, and nothing more.
+ *
+ * The seam owns the ANSWER; this owns only how it is listed (a `Set` has no order a UI can rely on, and the rows
+ * must read `off → low → medium → high → max` every time). It deliberately does not re-derive the set from the
+ * catalog: the CLI was carrying three hand-written copies of `catalogModel(m)` + `acceptedTiers(...)`, plus a
+ * fourth, older boolean that disagreed with all of them, and an adversarial review found sixteen shipped models
+ * where the picker and the footer contradicted each other as a result.
+ *
+ * Empty when the model does not reason, publishes no controllable tier (`deepseek-reasoner`), or is not in the
+ * catalog at all (a custom endpoint, or one newer than our snapshot). All three mean the same thing to the
+ * overlay — there is nothing to offer — but NOT the same thing to the user, so the surfaces distinguish them in
+ * what they say ({@link effortUnavailableNote}). It lives here, next to those sentences, so the neutral module the
+ * engine hosts and the picker both import owns the one canonical answer.
+ */
+export function effortTiersFor(model: string): readonly ReasoningEffort[] {
+  const accepted = seamEffortTiersFor(model);
+  return REASONING_EFFORTS.filter((tier) => accepted.has(tier)); // canonical order, never the Set's
+}
+
+/**
+ * The single note for a WITHHELD reasoning tier (ADR-0071 §6) — the one place the engine host (`build-engine.ts`)
+ * and the session host map an {@link EffortGateResult} to words, so neither carries its own inline ternary and the
+ * wording cannot drift between them. The core only ever invokes the `onEffortWithheld` sink for a `rejected` or an
+ * `uncontrollable` gate (agent-runner / agent-session), so those are the only outcomes with a sentence; the
+ * exhaustive default guards a future gate kind against silently taking the `unavailable` wording.
+ */
+export function effortWithheldNote(result: EffortGateResult, model: string): string {
+  switch (result.kind) {
+    case 'rejected':
+      return effortRejectedNote(model, result.requested, result.accepted);
+    case 'uncontrollable':
+      return effortUnavailableNote(model);
+    default:
+      throw new Error(`effortWithheldNote: '${result.kind}' is not a withheld outcome`);
+  }
 }
 
 /**

@@ -18,11 +18,10 @@ import {
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
-import { catalogModel } from '../catalog/lookup.js';
+import { catalogModel, catalogModelIds } from '../catalog/lookup.js';
 import { isNonChatModelId } from '../model-kind.js';
 import { cappedMaxTokens, type EndpointKind } from '../output-cap.js';
 import { DEEPSEEK_WIRE, OPENAI_WIRE, acceptedTiers } from '../reasoning-wire.js';
-import { catalogModelIds } from '../catalog/lookup.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
   CapabilityFlags,
@@ -446,9 +445,10 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId, key?: 
  * ALWAYS survives the id-family heuristic (ADR-0064 §3), even if a priced id does not match a
  * `gpt`/`o`/`chat`/`deepseek` family.
  *
- * It read the hand-typed `MODEL_PRICING` until ADR-0071. The set is eighty models wider now, which is the point —
- * but it is NOT a licence to smuggle a non-chat model past the deny-list, so `isNonChatModelId` still filters it
- * (an embedding is priced, and is still not something you can chat with; see `keepOpenAiModelId`).
+ * Its source is now the generated catalog snapshot (ADR-0071), not the hand-typed pricing table it replaced —
+ * eighty-odd models wider, which is the point. That breadth is NOT a licence to smuggle a non-chat model past the
+ * deny-list, so `isNonChatModelId` still filters it (an embedding is priced, and is still not something you can
+ * chat with; see `keepOpenAiModelId`).
  */
 export function pricedModelIdsFor(provider: ProviderId): ReadonlySet<string> {
   const ids = new Set<string>();
@@ -724,54 +724,8 @@ function buildCommonBody(
   if (req.temperature !== undefined) {
     body.temperature = req.temperature;
   }
-  // THE OUTPUT CAP — the field NAME is a dialect, and the VALUE is clamped (ADR-0071 §7/§10a).
-  //
-  // Name: OpenAI's official Chat Completions deprecated `max_tokens` in favour of `max_completion_tokens`, and its
-  // reasoning models REJECT the old field outright — the second half of the maintainer's "max tokens errors". But
-  // this same adapter serves every custom OpenAI-compatible `base_url` (LM Studio, Ollama, vLLM, LiteLLM, an
-  // enterprise gateway) and DeepSeek, most of which implement only the legacy field. Switching globally would
-  // trade one broken population for another, so the rule is by ENDPOINT, not by provider: OpenAI's own API gets
-  // the modern field, everything else keeps `max_tokens`.
-  //
-  // Value: capped at the model's published output ceiling, DOWN and never up — an authored `max_tokens: 200000` on
-  // a model whose limit is 64 000 is a 400 on every single turn, not an ambitious request.
-  const capField = outputCapField(provider, endpoint);
-  const maxTokens = cappedMaxTokens(req.maxTokens, req.model, endpoint);
-  if (maxTokens !== undefined) {
-    body[capField] = maxTokens;
-  }
-  // ADR-0066: map the normalized reasoning-effort tier to each provider's NATIVE control. OpenAI takes a
-  // `reasoning_effort` tier; DeepSeek (the other id this shared adapter serves) takes a `thinking` object
-  // (off→disabled, else enabled + high/max). The host gates this to reasoning-capable models (a non-reasoning model
-  // would reject it), and `body` is spread LAST below so the mapped field wins over any providerOptions echo.
-  const reasoningControls = catalogModel(req.model)?.reasoning;
-  if (req.reasoningEffort !== undefined && reasoningControls !== undefined) {
-    // ADR-0071 §6: a model the CATALOG cannot describe gets no reasoning field at all — a custom `base_url`
-    // endpoint, or one so new we have no metadata for it. The host's gate already withholds in that case, but the
-    // adapter is a public seam and must not depend on a caller having run it: sending a reasoning parameter to a
-    // model that may not take one is the exact class of bug this work exists to close, and a guess is what put a
-    // rejected value on the wire in the first place. (`off` is inside this gate too — `thinking: {disabled}` is
-    // still a field, and still a 400 on a model with no reasoning surface.)
-    //
-    // BOTH branches ask `acceptedTiers` — the same function the picker and the engine's gate ask. Neither
-    // re-derives the answer from the descriptor's fields, because two copies of that logic are two chances to
-    // disagree, and this file already shipped that bug twice: the OpenAI arm tested that an effort axis EXISTED
-    // rather than that the tier was IN it, and the DeepSeek arm tested nothing at all.
-    if (acceptedTiers(provider, reasoningControls).has(req.reasoningEffort)) {
-      if (provider === 'openai') {
-        // `off` IS an effort value on OpenAI (`'none'`), so it needs no branch of its own: `gpt-5.4-pro` publishes
-        // ['medium','high','xhigh'] and rejects BOTH `low` and `off`, and one membership test covers them.
-        body.reasoning_effort = OPENAI_WIRE[req.reasoningEffort];
-      } else if (provider === 'deepseek') {
-        // `deepseek-reasoner`'s descriptor is EMPTY (`{}`): it reasons, but publishes no controllable tier. This
-        // arm used to send `thinking` the moment the model had *any* descriptor, so a `{}` model was handed a
-        // `reasoning_effort` — or a `disabled` — that upstream never said it takes. `acceptedTiers` returns the
-        // empty set for `{}`, so nothing goes on the wire and the picker offers nothing: they agree by
-        // construction rather than by two people remembering the same rule.
-        body.thinking = DEEPSEEK_THINKING[req.reasoningEffort];
-      }
-    }
-  }
+  const maxTokens = applyOutputCap(body, req, provider, endpoint);
+  applyReasoningControl(body, req, provider);
   if (req.stopSequences !== undefined) {
     body.stop = req.stopSequences;
   }
@@ -800,6 +754,70 @@ function buildCommonBody(
     delete escape['max_completion_tokens'];
   }
   return { ...escape, ...body };
+}
+
+/**
+ * THE OUTPUT CAP — the field NAME is a dialect, and the VALUE is clamped (ADR-0071 §7/§10a). Sets it on `body`
+ * and RETURNS the capped value, because the escape-hatch reconciliation in {@link buildCommonBody} must know
+ * whether a cap was mapped in order to drop a caller's competing cap key.
+ *
+ * Name: OpenAI's official Chat Completions deprecated `max_tokens` in favour of `max_completion_tokens`, and its
+ * reasoning models REJECT the old field outright — the second half of the maintainer's "max tokens errors". But
+ * this same adapter serves every custom OpenAI-compatible `base_url` (LM Studio, Ollama, vLLM, LiteLLM, an
+ * enterprise gateway) and DeepSeek, most of which implement only the legacy field. Switching globally would
+ * trade one broken population for another, so the rule is by ENDPOINT, not by provider: OpenAI's own API gets
+ * the modern field, everything else keeps `max_tokens`.
+ *
+ * Value: capped at the model's published output ceiling, DOWN and never up — an authored `max_tokens: 200000` on
+ * a model whose limit is 64 000 is a 400 on every single turn, not an ambitious request.
+ */
+function applyOutputCap(
+  body: OpenAiCompatibleBody,
+  req: LlmRequest,
+  provider: ProviderId,
+  endpoint: EndpointKind,
+): number | undefined {
+  const capField = outputCapField(provider, endpoint);
+  const maxTokens = cappedMaxTokens(req.maxTokens, req.model, endpoint);
+  if (maxTokens !== undefined) {
+    body[capField] = maxTokens;
+  }
+  return maxTokens;
+}
+
+/**
+ * ADR-0066: map the normalized reasoning-effort tier to each provider's NATIVE control. OpenAI takes a
+ * `reasoning_effort` tier; DeepSeek (the other id this shared adapter serves) takes a `thinking` object
+ * (off→disabled, else enabled + high/max). The host gates this to reasoning-capable models (a non-reasoning model
+ * would reject it), and `body` is spread LAST in {@link buildCommonBody} so the mapped field wins over any
+ * providerOptions echo.
+ *
+ * ADR-0071 §6: a model the CATALOG cannot describe gets no reasoning field at all — a custom `base_url` endpoint,
+ * or one so new we have no metadata for it. The host's gate already withholds in that case, but the adapter is a
+ * public seam and must not depend on a caller having run it: sending a reasoning parameter to a model that may not
+ * take one is the exact class of bug this work exists to close, and a guess is what put a rejected value on the
+ * wire in the first place. (`off` is inside this gate too — `thinking: {disabled}` is still a field, and still a
+ * 400 on a model with no reasoning surface.)
+ *
+ * The gate asks `acceptedTiers` — the same function the picker and the engine's gate ask — rather than
+ * re-deriving the answer from the descriptor's fields, because two copies of that logic are two chances to
+ * disagree, and this file already shipped that bug twice: the OpenAI arm tested that an effort axis EXISTED
+ * rather than that the tier was IN it, and the DeepSeek arm tested nothing at all.
+ */
+function applyReasoningControl(body: OpenAiCompatibleBody, req: LlmRequest, provider: ProviderId): void {
+  const reasoningControls = catalogModel(req.model)?.reasoning;
+  if (req.reasoningEffort === undefined || reasoningControls === undefined) return;
+  if (!acceptedTiers(provider, reasoningControls).has(req.reasoningEffort)) return;
+  if (provider === 'openai') {
+    // `off` IS an effort value on OpenAI (`'none'`), so it needs no branch of its own: `gpt-5.4-pro` publishes
+    // ['medium','high','xhigh'] and rejects BOTH `low` and `off`, and one membership test covers them.
+    body.reasoning_effort = OPENAI_WIRE[req.reasoningEffort];
+  } else if (provider === 'deepseek') {
+    // `deepseek-reasoner`'s descriptor is EMPTY (`{}`): it reasons, but publishes no controllable tier.
+    // `acceptedTiers` returns the empty set for `{}`, so nothing goes on the wire and the picker offers nothing:
+    // they agree by construction rather than by two people remembering the same rule.
+    body.thinking = DEEPSEEK_THINKING[req.reasoningEffort];
+  }
 }
 
 /** The output-cap field this endpoint takes (ADR-0071 §10a). ONE place decides it, so no caller can send both. */
@@ -1173,8 +1191,8 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
     /**
      * Live model discovery (ADR-0064 §1) over the SDK's `models.list()`. The OpenAI/DeepSeek list is
      * ID-ONLY (no context/price metadata), so each row maps to a bare `{ id }` `ModelListing` and is
-     * filtered to chat-capable text families via `keepOpenAiModelId` (unioned with `MODEL_PRICING` for
-     * cost-eligibility). The provider id (`openai` | `deepseek`) selects the priced-id union set. Bounded +
+     * filtered to chat-capable text families via `keepOpenAiModelId` (unioned with the generated catalog's
+     * priced ids for cost-eligibility). The provider id (`openai` | `deepseek`) selects the priced-id union set. Bounded +
      * abortable + secret-free via `boundedListModels`; a per-row parse failure drops only that row.
      */
     async listModels(key: string, signal?: AbortSignalLike): Promise<ModelListing[]> {

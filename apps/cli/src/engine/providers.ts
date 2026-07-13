@@ -380,16 +380,6 @@ export function createProviderResolver(
 }
 
 /**
- * Rebind a provider's adapter to a validated CUSTOM-endpoint adapter when its stored row carries a `base_url` that
- * differs from the known default (2.5.G S9, ADR-0065 §3–4). Only **OpenAI-compatible** (`openai`/`deepseek`) is
- * supported this round; `provider add` refuses a custom `base_url` on `anthropic`/`gemini`, so a stored one on them
- * shouldn't exist — skipped defensively. The custom endpoint's egress rides the host's **SSRF-validated fetch**
- * (`connectValidated`), and the adapter's construction-time `assertHttpsBaseUrl` (HTTPS + private-range + no-creds)
- * gate re-validates the URL. A `base_url` that fails that gate is **skipped** (the default endpoint stands) rather
- * than crashing resolver creation for EVERY command — the fail-fast refusal is at `provider add`; this is the
- * defensive net for a pre-S9 / tampered row.
- */
-/**
  * Is this stored `base_url` a host OTHER than the provider's own API?
  *
  * By HOST, never by string: the CLI stores a `--base-url` VERBATIM, so `https://api.openai.com/v1/` (one trailing
@@ -406,6 +396,19 @@ function isCustomHost(id: ProviderId, baseUrl: string): boolean {
   }
 }
 
+/** One `providerStore.list()` row. Derived so no new import is needed. */
+type StoredProviderRow = ReturnType<ProviderStore['list']>[number];
+
+/**
+ * Rebind a provider's adapter to a validated CUSTOM-endpoint adapter when its stored row carries a `base_url` that
+ * differs from the known default (2.5.G S9, ADR-0065 §3–4). Only **OpenAI-compatible** (`openai`/`deepseek`) is
+ * supported this round; `provider add` refuses a custom `base_url` on `anthropic`/`gemini`, so a stored one on them
+ * shouldn't exist — skipped defensively. The custom endpoint's egress rides the host's **SSRF-validated fetch**
+ * (`connectValidated`), and the adapter's construction-time `assertHttpsBaseUrl` (HTTPS + private-range + no-creds)
+ * gate re-validates the URL. A `base_url` that fails that gate is **skipped** (the default endpoint stands) rather
+ * than crashing resolver creation for EVERY command — the fail-fast refusal is at `provider add`; this is the
+ * defensive net for a pre-S9 / tampered row.
+ */
 function applyCustomEndpoints(
   adapters: Record<ProviderId, LlmProvider>,
   options: ProviderResolverOptions,
@@ -413,26 +416,39 @@ function applyCustomEndpoints(
 ): void {
   const store = options.providerStore;
   if (store === undefined) return; // no registry ⇒ default endpoints only (the pre-S9 behavior)
+  // Built lazily, ONCE, and only if a row actually needs it — memoized in this closure so a row-level helper can
+  // reuse the same validated fetch without each row rebuilding it.
   let validatedFetch: FetchLike | undefined;
+  const getValidatedFetch = (): FetchLike =>
+    (validatedFetch ??= options.validatedFetch ?? createValidatedFetch());
   for (const row of store.list()) {
-    const id = KNOWN_PROVIDER_IDS.find((known) => known === row.name);
-    if (id === undefined) continue; // a non-enum name (provider add enforces the closed enum) — ignore
-    if (row.baseUrl === KNOWN_PROVIDERS[id].baseUrl) continue; // the default endpoint — keep the default adapter
-    if (id !== 'openai' && id !== 'deepseek') continue; // custom base_url is openai-compatible only this round (§3)
-    validatedFetch ??= options.validatedFetch ?? createValidatedFetch(); // built lazily, once, only when needed
-    try {
-      adapters[id] = createCustomOpenAiProvider({
-        providerId: id,
-        baseURL: row.baseUrl,
-        fetch: validatedFetch,
-      });
-      // Record it for the pre-egress estimate (ADR-0071 §7) — by HOST, so a row that merely SPELLS the official
-      // endpoint differently (a trailing slash, a missing `/v1`) is not mistaken for a gateway. The adapter makes
-      // the same call for the wire; this keeps the estimate describing the request the adapter will send.
-      if (isCustomHost(id, row.baseUrl)) custom.add(id);
-    } catch (err) {
-      // A bad stored base_url (non-HTTPS / private / creds) — refuse the custom endpoint, keep the default adapter.
-      if (!(err instanceof InvalidBaseUrlError)) throw err;
-    }
+    applyCustomEndpointForRow(row, adapters, custom, getValidatedFetch);
+  }
+}
+
+/** Rebind ONE stored row to a custom OpenAI-compatible adapter, or leave the default adapter standing. */
+function applyCustomEndpointForRow(
+  row: StoredProviderRow,
+  adapters: Record<ProviderId, LlmProvider>,
+  custom: Set<ProviderId>,
+  getValidatedFetch: () => FetchLike,
+): void {
+  const id = KNOWN_PROVIDER_IDS.find((known) => known === row.name);
+  if (id === undefined) return; // a non-enum name (provider add enforces the closed enum) — ignore
+  if (row.baseUrl === KNOWN_PROVIDERS[id].baseUrl) return; // the default endpoint — keep the default adapter
+  if (id !== 'openai' && id !== 'deepseek') return; // custom base_url is openai-compatible only this round (§3)
+  try {
+    adapters[id] = createCustomOpenAiProvider({
+      providerId: id,
+      baseURL: row.baseUrl,
+      fetch: getValidatedFetch(),
+    });
+    // Record it for the pre-egress estimate (ADR-0071 §7) — by HOST, so a row that merely SPELLS the official
+    // endpoint differently (a trailing slash, a missing `/v1`) is not mistaken for a gateway. The adapter makes
+    // the same call for the wire; this keeps the estimate describing the request the adapter will send.
+    if (isCustomHost(id, row.baseUrl)) custom.add(id);
+  } catch (err) {
+    // A bad stored base_url (non-HTTPS / private / creds) — refuse the custom endpoint, keep the default adapter.
+    if (!(err instanceof InvalidBaseUrlError)) throw err;
   }
 }

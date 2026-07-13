@@ -36,7 +36,7 @@ describe('contextWindowForModel (ADR-0062 §7)', () => {
 /** The catalog, read as a price (ADR-0071 §1) — what `MODEL_PRICING` used to be, generated instead of typed. */
 describe('catalogPricing — the projection that replaced the hand-typed table', () => {
   it('prices every model the catalog carries, and only those', () => {
-    expect(pricedModelIds().length).toBe(Object.keys(CATALOG_SNAPSHOT).length);
+    expect(pricedModelIds()).toHaveLength(Object.keys(CATALOG_SNAPSHOT).length);
     expect(pricedModelIds().length).toBeGreaterThan(50); // the retired table had twelve rows
     for (const id of pricedModelIds()) {
       const priced = catalogPricing(id);

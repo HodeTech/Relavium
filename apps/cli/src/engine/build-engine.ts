@@ -20,7 +20,7 @@ import {
 } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
-import { effortRejectedNote, effortUnavailableNote } from '../chat/effort-notice.js';
+import { effortWithheldNote } from '../chat/effort-notice.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv } from './tool-host/assemble.js';
@@ -138,11 +138,7 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
       ? {}
       : {
           onEffortWithheld: (result: EffortGateResult, model: string) => {
-            options.onEffortWithheld?.(
-              result.kind === 'rejected'
-                ? effortRejectedNote(model, result.requested, result.accepted)
-                : effortUnavailableNote(model),
-            );
+            options.onEffortWithheld?.(effortWithheldNote(result, model));
           },
         }),
     registry,

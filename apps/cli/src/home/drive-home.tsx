@@ -544,10 +544,6 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       );
       const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
       const resolvePrice = readUserPricingOverlay(opened.db);
-      // The store's SEED comes from the build, so it cannot be created first — yet `onBudgetWarning` closes over it and
-      // a pre-egress cap check can fire DURING the build. Hold it in a `let` and fall back to stderr until it exists,
-      // exactly as `emitLiveNotice` does on the standalone chat. Either way the warning is never written raw onto the
-      // alt buffer, where ink's next frame would erase it (Step-4b-3 Sonnet fix, carried here by the phase review).
       // The store's SEED comes from the build (it needs `built.resumeState`), so it cannot exist before the build —
       // yet a governor/effort callback could fire DURING it. Every notice sink here goes through this one indirection:
       // render into the transcript once the store exists, fall back to stderr until then (never a raw write onto the

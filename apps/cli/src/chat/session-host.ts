@@ -41,7 +41,7 @@ import { createProviderResolver, type ProviderResolver } from '../engine/provide
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
 import { CliError } from '../process/errors.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
-import { effortRejectedNote, effortUnavailableNote, unpricedModelNote } from './effort-notice.js';
+import { effortWithheldNote, unpricedModelNote } from './effort-notice.js';
 import { resolveChatAgent } from './agent-source.js';
 
 /**
@@ -270,11 +270,7 @@ function buildSessionRuntime(
       ? {}
       : {
           onEffortWithheld: (result: EffortGateResult, model: string) => {
-            opts.onEffortWithheld?.(
-              result.kind === 'rejected'
-                ? effortRejectedNote(model, result.requested, result.accepted)
-                : effortUnavailableNote(model),
-            );
+            opts.onEffortWithheld?.(effortWithheldNote(result, model));
           },
         }),
     registry,

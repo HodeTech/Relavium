@@ -81,11 +81,6 @@ export interface LoadedConfig {
 }
 
 /**
- * Discover and merge every config layer for the given cwd: the global `~/.relavium/config.toml`
- * (or `--config`), then the project `workspace.toml` + `project.toml` if a `.relavium/` is found
- * by walking up from cwd. Returns the resolved config and the discovered project dir.
- */
-/**
  * The `~/.relavium` root — WITHOUT parsing any config (ADR-0071 §4, folded from the step-7 Sonnet review).
  *
  * `loadResolvedConfig` returns this same value, but only after a project-dir walk and up to three TOML reads. The
@@ -97,8 +92,13 @@ export function resolveHomeDir(options: Pick<LoadConfigOptions, 'home'>): string
   return options.home ?? homedir();
 }
 
+/**
+ * Discover and merge every config layer for the given cwd: the global `~/.relavium/config.toml`
+ * (or `--config`), then the project `workspace.toml` + `project.toml` if a `.relavium/` is found
+ * by walking up from cwd. Returns the resolved config and the discovered project dir.
+ */
 export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
-  const home = options.home ?? homedir();
+  const home = resolveHomeDir(options);
   const globalFile = options.configPath ?? join(globalConfigDir(home), 'config.toml');
   const global = loadConfigFile<GlobalConfig>(globalFile, GlobalConfigSchema);
 

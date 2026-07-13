@@ -1,7 +1,7 @@
 import type { ModelCatalogEntry, ProviderId } from '@relavium/llm';
 import type { ReasoningEffort } from '@relavium/shared';
 
-import { effortTiersFor } from './effort-picker.js';
+import { effortTiersFor } from '../../chat/effort-notice.js';
 
 import { dropLastCodePoint } from './chat-input.js';
 

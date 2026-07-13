@@ -66,6 +66,26 @@ export interface CatalogRefreshDeps {
  * to fail a command the user ran to *look at their models*.
  */
 export async function refreshCatalog(deps: CatalogRefreshDeps): Promise<CatalogRefreshResult> {
+  const fetched = await fetchModelsDevPayload(deps);
+  if (typeof fetched !== 'string') return fetched; // a classified network/HTTP failure — the snapshot answers
+
+  // INSTALL is a SEPARATE failure domain from the network. A Zod / parse / normalization throw here means models.dev
+  // was REACHABLE but sent something we cannot use — reporting that as "unreachable" or "timed out" would point the
+  // user at the wrong problem. Its own generic reason, and NEVER the raw error text (a Zod message can echo the very
+  // payload fields we refuse to surface).
+  try {
+    return install(fetched, deps.homeDir);
+  } catch {
+    return { status: 'failed', models: 0, added: 0, reason: 'models.dev sent a catalog we could not read' };
+  }
+}
+
+/**
+ * Fetch and read the models.dev body, CLASSIFIED. Returns the raw text on success, or a `failed` result naming the
+ * network / HTTP fault (timeout, unreachable, non-2xx, off-host redirect, over-cap). Never surfaces a raw upstream
+ * error string. Kept separate from {@link install} so a malformed-payload fault is not mistaken for a network one.
+ */
+async function fetchModelsDevPayload(deps: CatalogRefreshDeps): Promise<string | CatalogRefreshResult> {
   const doFetch = deps.fetch ?? globalThis.fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -79,12 +99,7 @@ export async function refreshCatalog(deps: CatalogRefreshDeps): Promise<CatalogR
       redirect: 'manual',
     });
     if (!response.ok) {
-      return {
-        status: 'failed',
-        models: 0,
-        added: 0,
-        reason: `models.dev returned ${response.status}`,
-      };
+      return { status: 'failed', models: 0, added: 0, reason: `models.dev returned ${response.status}` };
     }
     // The response URL must still be models.dev — belt to the `redirect: 'manual'` braces, in case a fetch
     // implementation resolves one anyway.
@@ -95,7 +110,7 @@ export async function refreshCatalog(deps: CatalogRefreshDeps): Promise<CatalogR
     if (text === undefined) {
       return { status: 'failed', models: 0, added: 0, reason: 'models.dev payload is too large' };
     }
-    return install(text, deps.homeDir);
+    return text;
   } catch (err) {
     // A timeout, a DNS failure, an offline laptop. The snapshot answers; the user is told, and nothing breaks.
     return {

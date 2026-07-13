@@ -103,41 +103,61 @@ async function runRefresh(
   const wantProviders = axis !== 'catalog';
   const wantCatalog = axis !== 'providers';
 
-  const catalogResult = wantCatalog ? await deps.refreshCatalog() : undefined;
-  const report = wantProviders ? await deps.refreshService.refresh() : undefined;
+  // The two axes are independent I/O (models.dev vs the provider list APIs) and neither rejects — each captures its
+  // faults into its own result type — so start both and await together rather than serializing the round-trips.
+  const [catalogResult, report] = await Promise.all([
+    wantCatalog ? deps.refreshCatalog() : Promise.resolve(undefined),
+    wantProviders ? deps.refreshService.refresh() : Promise.resolve(undefined),
+  ]);
 
-  if (report !== undefined) {
-    const connected = report.providers.filter((p) => p.status !== 'skipped-no-key');
-    // No key at ALL is an invocation fault for a provider refresh — there is nothing it could fetch. But NOT when the
-    // catalog was also asked for and delivered: a user with no key yet, running `models refresh` to see what things
-    // cost, has been served, and telling them their command failed would be a lie.
-    if (connected.length === 0 && catalogResult?.status !== 'refreshed') {
-      throw new CliError(
-        'invalid_invocation',
-        'no provider key configured — store one with `relavium provider set-key <name>`, or set RELAVIUM_<PROVIDER>_API_KEY.',
-      );
-    }
-  }
+  assertProviderRefreshInvocable(report, catalogResult);
 
   if (deps.global.json) {
-    // One record per SOURCE — the providers, then the catalog. A script can tell which half worked.
-    const records: unknown[] = report === undefined ? [] : report.providers.map(toRefreshJson);
-    if (catalogResult !== undefined) {
-      records.push({
-        source: 'catalog',
-        status: catalogResult.status,
-        models: catalogResult.models,
-        added: catalogResult.added,
-        ...(catalogResult.reason === undefined ? {} : { reason: catalogResult.reason }),
-      });
-    }
-    writeRecordLines(deps.io, records);
+    writeRecordLines(deps.io, toRefreshRecords(report, catalogResult));
     return EXIT_CODES.success;
   }
 
   if (report !== undefined) renderRefreshReport(deps.io, report);
   if (catalogResult !== undefined) renderCatalogRefresh(deps.io, catalogResult);
   return EXIT_CODES.success;
+}
+
+/**
+ * A `models refresh` that reaches ZERO providers (no key at all) is an invocation fault — there was nothing it
+ * could fetch — UNLESS the catalog was also asked for and delivered: a keyless user running `models refresh` to
+ * see what things cost has been served, and calling that a failure would be a lie. No-op when providers were not
+ * refreshed at all (`--catalog`).
+ */
+function assertProviderRefreshInvocable(
+  report: RefreshReport | undefined,
+  catalogResult: CatalogRefreshResult | undefined,
+): void {
+  if (report === undefined) return;
+  const connected = report.providers.filter((p) => p.status !== 'skipped-no-key');
+  if (connected.length === 0 && catalogResult?.status !== 'refreshed') {
+    throw new CliError(
+      'invalid_invocation',
+      'no provider key configured — store one with `relavium provider set-key <name>`, or set RELAVIUM_<PROVIDER>_API_KEY.',
+    );
+  }
+}
+
+/** One `--json` record per SOURCE — the providers, then the catalog — so a script can tell which half worked. */
+function toRefreshRecords(
+  report: RefreshReport | undefined,
+  catalogResult: CatalogRefreshResult | undefined,
+): unknown[] {
+  const records: unknown[] = report === undefined ? [] : report.providers.map(toRefreshJson);
+  if (catalogResult !== undefined) {
+    records.push({
+      source: 'catalog',
+      status: catalogResult.status,
+      models: catalogResult.models,
+      added: catalogResult.added,
+      ...(catalogResult.reason === undefined ? {} : { reason: catalogResult.reason }),
+    });
+  }
+  return records;
 }
 
 /** The catalog half of the refresh report — a failure is a NOTE, never an error: the shipped snapshot still answers. */

@@ -601,25 +601,28 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
         .all()
         .map(toListing),
 
-    clearUserPricing: (modelId, providerId) => {
-      // SOFT-deactivate, never DELETE — `model_catalog.id` is an FK target from five tables, so removing the row
-      // would orphan the history that references it. Deactivating is enough: every reader is active-only, so the
-      // overlay stops carrying the price and the model falls back to the catalog's, which is what "clear" means.
-      const result = db
-        .update(modelCatalog)
-        .set({ isActive: false, updatedAt: deps.now() })
-        .where(
-          and(
-            eq(modelCatalog.modelId, modelId),
-            eq(modelCatalog.providerId, providerId),
-            eq(modelCatalog.source, 'user'), // never touch a live/static row — those are not the user's to clear
-            eq(modelCatalog.isActive, true),
-            isNull(modelCatalog.deletedAt),
-          ),
-        )
-        .run();
-      return result.changes > 0;
-    },
+    clearUserPricing: (modelId, providerId) =>
+      // `withBusyRetry` for residual cross-process contention, matching `upsert` / `replaceProviderModels`: a
+      // `--clear` can race a concurrent `models refresh` on the same row and hit SQLITE_BUSY.
+      withBusyRetry(() => {
+        // SOFT-deactivate, never DELETE — `model_catalog.id` is an FK target from five tables, so removing the row
+        // would orphan the history that references it. Deactivating is enough: every reader is active-only, so the
+        // overlay stops carrying the price and the model falls back to the catalog's, which is what "clear" means.
+        const result = db
+          .update(modelCatalog)
+          .set({ isActive: false, updatedAt: deps.now() })
+          .where(
+            and(
+              eq(modelCatalog.modelId, modelId),
+              eq(modelCatalog.providerId, providerId),
+              eq(modelCatalog.source, 'user'), // never touch a live/static row — those are not the user's to clear
+              eq(modelCatalog.isActive, true),
+              isNull(modelCatalog.deletedAt),
+            ),
+          )
+          .run();
+        return result.changes > 0;
+      }),
 
     replaceProviderModels: (providerId, rows, now) =>
       // `BEGIN IMMEDIATE` — this reads existing rows then writes, so a DEFERRED begin would hit the read→write

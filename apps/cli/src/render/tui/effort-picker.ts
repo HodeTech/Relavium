@@ -1,6 +1,6 @@
-import { effortTiersFor as seamEffortTiersFor } from '@relavium/llm';
-import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
+import { type ReasoningEffort } from '@relavium/shared';
 
+import { effortTiersFor } from '../../chat/effort-notice.js';
 import type { ModelPickerKey } from './model-picker.js';
 
 /**
@@ -52,26 +52,6 @@ export type EffortPickerStep =
  */
 export function canControlEffort(model: string | undefined, setterWired: boolean): boolean {
   return setterWired && model !== undefined && effortTiersFor(model).length > 0;
-}
-
-/**
- * The tiers a model accepts, **in canonical order** — an ordering projection of `@relavium/llm`'s
- * {@link acceptedTiers}, and nothing more.
- *
- * The seam owns the ANSWER; this owns only how it is listed (a `Set` has no order a UI can rely on, and the rows
- * must read `off → low → medium → high → max` every time). It deliberately does not re-derive the set from the
- * catalog: the CLI was carrying three hand-written copies of `catalogModel(m)` + `acceptedTiers(...)`, plus a
- * fourth, older boolean that disagreed with all of them, and an adversarial review found sixteen shipped models
- * where the picker and the footer contradicted each other as a result.
- *
- * Empty when the model does not reason, publishes no controllable tier (`deepseek-reasoner`), or is not in the
- * catalog at all (a custom endpoint, or one newer than our snapshot). All three mean the same thing to the
- * overlay — there is nothing to offer — but NOT the same thing to the user, so the surfaces distinguish them in
- * what they say (see `chat/effort-notice.ts`).
- */
-export function effortTiersFor(model: string): readonly ReasoningEffort[] {
-  const accepted = seamEffortTiersFor(model);
-  return REASONING_EFFORTS.filter((tier) => accepted.has(tier)); // canonical order, never the Set's
 }
 
 /** Clamp an index to `0..count-1`, or 0 for an empty list (a model with no tiers never opens the overlay). */

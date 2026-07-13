@@ -113,23 +113,7 @@ export function modelsPricingCommand(
   // user regrets — before it existed, an override could be corrected but never removed, so a model priced by mistake
   // stayed priced by the user for good.
   if (args.clear === true) {
-    const cleared = deps.catalog.clearUserPricing(args.model, providerRow.id);
-    const safeModel = stripTerminalControls(args.model);
-    if (deps.global.json) {
-      writeRecordLines(deps.io, [
-        { model: args.model, provider: args.provider, cleared, source: cleared ? 'catalog' : null },
-      ]);
-      return EXIT_CODES.success;
-    }
-    const shipped = catalogPricing(args.model);
-    deps.io.writeOut(
-      cleared
-        ? shipped === undefined
-          ? `Cleared the user price for ${safeModel} (${args.provider}). The catalog does not price this model, so its cost cap will not apply until you price it again.\n`
-          : `Cleared the user price for ${safeModel} (${args.provider}). It falls back to the catalog: input $${microcentsToUsd(shipped.inputPerMtokMicrocents)}/Mtok, output $${microcentsToUsd(shipped.outputPerMtokMicrocents)}/Mtok.\n`
-        : `${safeModel} (${args.provider}) has no user price to clear — nothing changed.\n`,
-    );
-    return EXIT_CODES.success;
+    return runClearPricing(args, deps, providerRow.id);
   }
 
   // Cross-provider ambiguity guard (ADR-0065 §2): the cost overlay keys by MODEL ID (the runtime references a model
@@ -240,4 +224,34 @@ export function modelsPricingCommand(
     `Set user pricing for ${stripTerminalControls(args.model)} (${args.provider}): input $${args.inputUsdPerMtok}/Mtok, output $${args.outputUsdPerMtok}/Mtok${cachedNote}. It applies to your next run/chat and survives \`models refresh\`.${divergence}\n`,
   );
   return EXIT_CODES.success;
+}
+
+/** `--clear` (ADR-0071 §5): retire the user override for one model+provider and report the fallback. */
+function runClearPricing(
+  args: ClearPricingArgs,
+  deps: ModelsPricingCommandDeps,
+  providerId: string,
+): ExitCode {
+  const cleared = deps.catalog.clearUserPricing(args.model, providerId);
+  if (deps.global.json) {
+    writeRecordLines(deps.io, [
+      { model: args.model, provider: args.provider, cleared, source: cleared ? 'catalog' : null },
+    ]);
+    return EXIT_CODES.success;
+  }
+  deps.io.writeOut(clearedPricingMessage(args, cleared));
+  return EXIT_CODES.success;
+}
+
+/** The human line for a `--clear`, as a flat if/else so no nested ternary decides the message. */
+function clearedPricingMessage(args: ClearPricingArgs, cleared: boolean): string {
+  const safeModel = stripTerminalControls(args.model);
+  if (!cleared) {
+    return `${safeModel} (${args.provider}) has no user price to clear — nothing changed.\n`;
+  }
+  const shipped = catalogPricing(args.model);
+  if (shipped === undefined) {
+    return `Cleared the user price for ${safeModel} (${args.provider}). The catalog does not price this model, so its cost cap will not apply until you price it again.\n`;
+  }
+  return `Cleared the user price for ${safeModel} (${args.provider}). It falls back to the catalog: input $${microcentsToUsd(shipped.inputPerMtokMicrocents)}/Mtok, output $${microcentsToUsd(shipped.outputPerMtokMicrocents)}/Mtok.\n`;
 }

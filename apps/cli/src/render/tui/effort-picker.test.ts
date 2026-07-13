@@ -1,11 +1,14 @@
 import { REASONING_EFFORTS } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
-import { effortRejectedNote, effortUnavailableNote } from '../../chat/effort-notice.js';
+import {
+  effortRejectedNote,
+  effortTiersFor,
+  effortUnavailableNote,
+} from '../../chat/effort-notice.js';
 
 import {
   canControlEffort,
-  effortTiersFor,
   foldEffortPickerKey,
   initialEffortPickerState,
   type EffortPickerState,

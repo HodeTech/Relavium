@@ -43,6 +43,16 @@ function escapeRegExp(text: string): string {
 }
 
 /**
+ * ONE combined matcher, compiled ONCE at module load — every segment as an alternation, still anchored on a
+ * `-`/`_` boundary. The previous form built a fresh `RegExp` per segment on EVERY call: fourteen compiles per
+ * model id, and a bulk `sync:models` runs this over thousands of ids. No `g` flag — `.test` on a stateful regex
+ * would carry `lastIndex` between calls.
+ */
+const NON_CHAT_SEGMENT_RE = new RegExp(
+  `(^|[-_])(?:${NON_CHAT_SEGMENTS.map(escapeRegExp).join('|')})([-_]|$)`,
+);
+
+/**
  * True when `id` names something other than a chat text model.
  *
  * Every token is matched on a `-`/`_` **SEGMENT boundary**, never as a bare substring — which is load-bearing:
@@ -51,8 +61,5 @@ function escapeRegExp(text: string): string {
  * picker alike.
  */
 export function isNonChatModelId(id: string): boolean {
-  const lower = id.toLowerCase();
-  return NON_CHAT_SEGMENTS.some((token) =>
-    new RegExp(`(^|[-_])${escapeRegExp(token)}([-_]|$)`).test(lower),
-  );
+  return NON_CHAT_SEGMENT_RE.test(id.toLowerCase());
 }

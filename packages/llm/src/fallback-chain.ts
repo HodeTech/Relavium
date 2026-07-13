@@ -218,7 +218,7 @@ export function stripReasoningParts(req: LlmRequest): LlmRequest {
  * a focused unit test (like {@link stripReasoningParts}).
  */
 export function withEntryModel(req: LlmRequest, model: string): LlmRequest {
-  const next = { ...req, model };
+  const next: LlmRequest = { ...req, model };
   if (next.reasoningEffort === undefined) return next;
 
   // ADR-0071 §6: re-gate on the tiers the ENTRY MODEL ACCEPTS — not on whether it reasons.
@@ -230,10 +230,13 @@ export function withEntryModel(req: LlmRequest, model: string): LlmRequest {
   // fatal and non-retryable, so the chain aborts instead: the failover kills the turn it exists to save.
   const entry = catalogModel(model);
   const accepted = acceptedTiers(entry?.provider ?? 'openai', entry?.reasoning);
-  if (!accepted.has(next.reasoningEffort)) {
-    delete next.reasoningEffort;
-  }
-  return next;
+  if (accepted.has(next.reasoningEffort)) return next;
+
+  // The entry model rejects this tier — return it stripped. A fresh object (not a mutate-then-return of `next`)
+  // so the two exit paths are demonstrably distinct values.
+  const stripped: LlmRequest = { ...next };
+  delete stripped.reasoningEffort;
+  return stripped;
 }
 
 /** The backoff delay before the `retryIndex`-th retry of an entry (0 = before the 2nd attempt). */

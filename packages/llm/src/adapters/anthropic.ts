@@ -465,6 +465,72 @@ function toAnthropicTool(toolDef: ToolDef): Anthropic.Tool {
   return tool;
 }
 
+/**
+ * ADR-0066/0071: map the normalized reasoning-effort tier onto Anthropic's PER-MODEL control — it has BOTH shapes
+ * in play, and the shipped adapter sent `output_config.effort` to both.
+ *
+ *   • effort-shaped (`claude-opus-4-8`, …) → `output_config.effort` + ADAPTIVE thinking.
+ *   • budget-shaped (`claude-haiku-4-5` — NO effort axis at all) → the legacy `thinking.budget_tokens`. Legacy for
+ *     the industry, not for haiku: one of the four Claude models we ship, and it publishes a budget and no ladder.
+ *
+ * `off` is neither shape: `thinking: {type:'disabled'}`, an independent switch that works on both. A model the
+ * catalog cannot describe (a custom endpoint) gets NO reasoning field, `off` included — `thinking:{disabled}` is
+ * still a field, and still a 400 on a model with no reasoning surface. A guess is what put a rejected value on the
+ * wire in the first place. `maxTokens` is the CLAMPED cap already on `body.max_tokens`, so a derived budget stays
+ * under it (Anthropic rejects `budget_tokens >= max_tokens`).
+ */
+function applyAnthropicReasoning(
+  body: Omit<Anthropic.MessageCreateParamsNonStreaming, 'stream'>,
+  req: LlmRequest,
+  maxTokens: number,
+): void {
+  if (req.reasoningEffort === undefined) return;
+  const controls = catalogModel(req.model)?.reasoning;
+  if (controls === undefined) return; // unknown/custom model — withhold every reasoning field, `off` included
+
+  if (req.reasoningEffort === 'off') {
+    // `canDisableReasoning`, not a bare `true`. An EMPTY descriptor (`{}`) means the model reasons but publishes no
+    // knob at all — `thinking:{disabled}` is still a field, and still a 400 on a model with no reasoning surface to
+    // switch. Asking the same predicate the picker asks is what keeps the two in step.
+    if (canDisableReasoning('anthropic', controls)) {
+      body.thinking = { type: 'disabled' };
+    }
+    return;
+  }
+
+  if (acceptedWireValue('anthropic', req.reasoningEffort, controls) !== undefined) {
+    // MEMBERSHIP, not presence. `claude-opus-4-5` publishes ['low','medium','high'] — no `max` — and the old branch
+    // tested only that an effort axis EXISTED, then sent `effort: 'max'` anyway. It reaches the wire on a FAILOVER,
+    // where the chain re-points a request at a weaker model.
+    body.thinking = { type: 'adaptive' };
+    body.output_config = {
+      ...body.output_config,
+      // The effort level MERGES alongside any structured-output `format` already on output_config.
+      effort: ANTHROPIC_WIRE[req.reasoningEffort],
+    };
+    return;
+  }
+
+  if (controls.budgetTokens !== undefined) {
+    // The BUDGET shape — and also the fallback when a model's effort axis does not contain THIS tier.
+    // `claude-opus-4-5` publishes both, so a tier it cannot express as an effort level is still expressible as a
+    // budget. Anthropic requires `budget_tokens < max_tokens`, and a budget that eats the whole cap leaves no
+    // answer — so the ceiling reserves room for the reply (see THINKING_BUDGET_SHARE).
+    const budget = reasoningBudgetFor(
+      req.reasoningEffort,
+      controls.budgetTokens,
+      thinkingCeiling(maxTokens), // the CLAMPED cap — the one actually on the wire
+    );
+    // `undefined` ⇒ the model's MINIMUM budget does not fit under this request's `max_tokens` (haiku's floor is
+    // 1024; a request capped at 256 has none). Withhold rather than send a value the API rejects — and rather than
+    // quietly raising `max_tokens` to make room, which would change both what the user asked for and what they pay.
+    if (budget !== undefined) {
+      body.thinking = { type: 'enabled', budget_tokens: budget };
+    }
+  }
+  // A model that publishes NO usable control gets the reasoning field WITHHELD.
+}
+
 /** The shared request body (everything except the `stream` discriminant each method sets). */
 function buildCommonBody(
   req: LlmRequest,
@@ -497,63 +563,7 @@ function buildCommonBody(
       format: { type: 'json_schema', schema: req.responseFormat.schema as Record<string, unknown> },
     };
   }
-  if (req.reasoningEffort !== undefined) {
-    // ADR-0066/0071: the reasoning control is PER MODEL, and Anthropic has BOTH shapes in play.
-    //
-    //   • effort-shaped (`claude-opus-4-8`, …) → `output_config.effort` + ADAPTIVE thinking.
-    //   • budget-shaped (`claude-haiku-4-5` — NO effort axis at all) → the legacy `thinking.budget_tokens`.
-    //
-    // The shipped adapter sent `output_config.effort` to BOTH. ADR-0066 filed the token-budget shape as "legacy" —
-    // and it is, for the industry. It is not legacy for `claude-haiku-4-5`, which is one of the four Claude models
-    // we ship and which publishes a budget and no effort ladder.
-    //
-    // `off` is neither shape: it is `thinking: {type:'disabled'}`, an independent switch that works on both.
-    const controls = catalogModel(req.model)?.reasoning;
-    // A model the catalog cannot describe gets NO reasoning field — and that includes `off`. `thinking:{disabled}`
-    // is still a field, and still a 400 on a model with no reasoning surface at all. The `off` branch used to sit
-    // in front of this check, so an unknown model was sent a disable it may not understand.
-    if (controls === undefined) {
-      // withhold
-    } else if (req.reasoningEffort === 'off') {
-      // `canDisableReasoning`, not a bare `true`. An EMPTY descriptor (`{}`) means the model reasons but publishes
-      // no knob at all — `thinking: {type:'disabled'}` is still a field, and still a 400 on a model with no
-      // reasoning surface to switch. Asking the same predicate the picker asks is what keeps the two in step.
-      if (canDisableReasoning('anthropic', controls)) {
-        body.thinking = { type: 'disabled' };
-      }
-    } else if (acceptedWireValue('anthropic', req.reasoningEffort, controls) !== undefined) {
-      // MEMBERSHIP, not presence. `claude-opus-4-5` publishes ['low','medium','high'] — no `max` — and the old
-      // branch tested only that an effort axis EXISTED, then sent `effort: 'max'` anyway. It reaches the wire on a
-      // FAILOVER, where the chain re-points a request at a weaker model.
-      body.thinking = { type: 'adaptive' };
-      body.output_config = {
-        ...body.output_config,
-        // The effort level MERGES alongside any structured-output `format` already on output_config.
-        effort: ANTHROPIC_WIRE[req.reasoningEffort],
-      };
-    } else if (controls.budgetTokens !== undefined) {
-      // The BUDGET shape — and also the fallback when the model has an effort axis that does not contain THIS tier.
-      // `claude-opus-4-5` publishes both, so a tier it cannot express as an effort level is still expressible as a
-      // budget. The old code never reached here for such a model; it sent the rejected effort instead.
-      //
-      // Anthropic requires `budget_tokens < max_tokens`, and a budget that eats the whole cap leaves no answer —
-      // so the ceiling reserves room for the reply (see THINKING_BUDGET_SHARE).
-      const budget = reasoningBudgetFor(
-        req.reasoningEffort,
-        controls.budgetTokens,
-        thinkingCeiling(maxTokens), // the CLAMPED cap — the one actually on the wire
-      );
-      // `undefined` ⇒ the model's MINIMUM budget does not fit under this request's `max_tokens` (haiku's floor is
-      // 1024; a request capped at 256 has no valid budget at all). Withhold rather than send a value the API
-      // rejects — and rather than quietly raising `max_tokens` to make room, which would change both what the
-      // user asked for and what they pay, silently.
-      if (budget !== undefined) {
-        body.thinking = { type: 'enabled', budget_tokens: budget };
-      }
-    }
-    // …and a model that publishes NO control (or is not in the catalog — a custom endpoint) gets the field
-    // WITHHELD. A guess is what put a rejected value on the wire in the first place.
-  }
+  applyAnthropicReasoning(body, req, maxTokens);
   if (req.temperature !== undefined) {
     // The shared contract is the provider-agnostic [0, 2] envelope (common.ts); Anthropic's API
     // accepts temperature in [0, 1]. Fail fast (the adapter's "never silently drop" posture) rather

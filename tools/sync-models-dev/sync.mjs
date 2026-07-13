@@ -61,6 +61,19 @@ async function committedSnapshot() {
 }
 
 /**
+ * A DELIBERATELY locale-independent id comparator. The generated snapshot is byte-compared by CI (`--check`) and
+ * feeds a SHA, so its row order must be identical on every machine. `String.prototype.localeCompare` is the
+ * opposite of what that needs — it is locale-sensitive (under `tr_TR`, `I`/`i` collate differently than under
+ * `en_US`), so a dev and CI would sort the same ids differently and the guard would go red with nothing changed.
+ * Bare `<`/`>` compare by UTF-16 code unit: deterministic, locale-free, and exact for ASCII model ids.
+ */
+function byCodeUnit(a, b) {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+/**
  * The SHA of OUR NORMALIZED CATALOG — deliberately not of the upstream body.
  *
  * The first version pinned the 3.17 MB upstream payload's hash. But we discard ~97% of it, so ANY byte moving in
@@ -70,14 +83,14 @@ async function committedSnapshot() {
  */
 function catalogSha256(catalog) {
   const canonical = Object.keys(catalog)
-    .sort()
+    .sort(byCodeUnit)
     .map((id) => `${id}=${JSON.stringify(catalog[id])}`)
     .join('\n');
   return createHash('sha256').update(canonical).digest('hex');
 }
 
 function renderSnapshot(catalog, sha256) {
-  const ids = Object.keys(catalog).sort();
+  const ids = Object.keys(catalog).sort(byCodeUnit);
   const rows = ids
     .map((id) => `  ${JSON.stringify(id)}: ${JSON.stringify(catalog[id])},`)
     .join('\n');
@@ -106,43 +119,13 @@ export const CATALOG_SHA256 = ${JSON.stringify(sha256)};
 `;
 }
 
-async function main() {
-  process.stdout.write(`sync-models-dev: fetching ${SOURCE_URL}\n`);
-  let response;
-  try {
-    // `redirect: 'error'` — a redirect off models.dev is an ERROR, not a hop (ADR-0071 §8): the destination is a
-    // compile-time constant, and a 30x that quietly moved it elsewhere would be the one way this fixed-host path
-    // could turn into an attacker-chosen one. A timeout, because a hung sync in CI is a silent one.
-    response = await fetch(SOURCE_URL, {
-      redirect: 'error',
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
-  } catch (error) {
-    // Node's fetch reports every transport failure as the bare string "fetch failed" and hides the real reason in
-    // `cause`. Surfacing it is the difference between a usable error and a shrug.
-    const cause =
-      error instanceof Error && error.cause instanceof Error ? `: ${error.cause.message}` : '';
-    const what = error instanceof Error ? error.message : String(error);
-    throw new Error(`sync-models-dev: could not fetch ${SOURCE_URL} — ${what}${cause}`);
-  }
-  if (!response.ok) {
-    throw new Error(
-      `sync-models-dev: ${SOURCE_URL} returned ${response.status} ${response.statusText}`,
-    );
-  }
-  const body = await response.text();
-
-  // The Zod boundary: a third-party payload becomes Relavium types HERE, and its raw shape goes no further.
-  const payload = ModelsDevPayloadSchema.parse(JSON.parse(body));
-  const { catalog, dropped } = normalizeCatalog(payload);
-  const count = Object.keys(catalog).length;
-  if (count === 0) {
-    throw new Error(
-      'sync-models-dev: the upstream payload yielded ZERO models. Refusing to write an empty catalog — that ' +
-        'would leave every model unpriced and silently disable the cost cap. Check CATALOG_PROVIDER_KEYS.',
-    );
-  }
-
+/**
+ * The dropped-model report and the two money guards, factored out of {@link main} so its control flow stays
+ * readable. Writes the additive/removal notes to stdout and THROWS on the one thing that must be a human decision:
+ * a shipped model whose price MOVED or that VANISHED (each moves how much the ADR-0028 cost cap protects). Reads
+ * the module-level `--accept-*` flags.
+ */
+function enforceMoneyGuards({ dropped, moved, vanished, added }) {
   if (dropped.length > 0) {
     // Never silent: a dropped model is a model whose spend we cannot cap. Say which, and why.
     process.stdout.write(
@@ -151,9 +134,6 @@ async function main() {
         '\n',
     );
   }
-
-  // THE TWO MONEY GUARDS — a structural diff of the DATA (see `committedSnapshot`), not a scan of the text.
-  const { moved, vanished, added } = diffCatalog(await committedSnapshot(), catalog);
 
   // VANISHED: a model we already ship is GONE from the new catalog, for ANY reason — upstream deleted it,
   // stopped pricing it, a provider-key edit erased a whole provider, the deny-list started matching it. The
@@ -196,6 +176,48 @@ async function main() {
     // Additive and safe: pricing a model can only ever INCREASE what the cap covers.
     process.stdout.write(`sync-models-dev: ${added.length} new model(s): ${added.join(', ')}\n`);
   }
+}
+
+async function main() {
+  process.stdout.write(`sync-models-dev: fetching ${SOURCE_URL}\n`);
+  let response;
+  try {
+    // `redirect: 'error'` — a redirect off models.dev is an ERROR, not a hop (ADR-0071 §8): the destination is a
+    // compile-time constant, and a 30x that quietly moved it elsewhere would be the one way this fixed-host path
+    // could turn into an attacker-chosen one. A timeout, because a hung sync in CI is a silent one.
+    response = await fetch(SOURCE_URL, {
+      redirect: 'error',
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch (error) {
+    // Node's fetch reports every transport failure as the bare string "fetch failed" and hides the real reason in
+    // `cause`. Surfacing it is the difference between a usable error and a shrug.
+    const cause =
+      error instanceof Error && error.cause instanceof Error ? `: ${error.cause.message}` : '';
+    const what = error instanceof Error ? error.message : String(error);
+    throw new Error(`sync-models-dev: could not fetch ${SOURCE_URL} — ${what}${cause}`);
+  }
+  if (!response.ok) {
+    throw new Error(
+      `sync-models-dev: ${SOURCE_URL} returned ${response.status} ${response.statusText}`,
+    );
+  }
+  const body = await response.text();
+
+  // The Zod boundary: a third-party payload becomes Relavium types HERE, and its raw shape goes no further.
+  const payload = ModelsDevPayloadSchema.parse(JSON.parse(body));
+  const { catalog, dropped } = normalizeCatalog(payload);
+  const count = Object.keys(catalog).length;
+  if (count === 0) {
+    throw new Error(
+      'sync-models-dev: the upstream payload yielded ZERO models. Refusing to write an empty catalog — that ' +
+        'would leave every model unpriced and silently disable the cost cap. Check CATALOG_PROVIDER_KEYS.',
+    );
+  }
+
+  // THE TWO MONEY GUARDS — a structural diff of the DATA (see `committedSnapshot`), not a scan of the text.
+  const { moved, vanished, added } = diffCatalog(await committedSnapshot(), catalog);
+  enforceMoneyGuards({ dropped, moved, vanished, added });
 
   // FORMAT WITH PRETTIER before comparing or writing. The generated file lives in the repo and is subject to
   // `format:check` like any other source, so the tool must emit byte-for-byte what prettier would. The first
@@ -203,8 +225,10 @@ async function main() {
   // `--check` then reported the snapshot STALE **even when it was current**. A weekly CI guard that is red no
   // matter what is not a guard: everyone learns to ignore it, and the price-change protection it exists to give
   // quietly evaporates. Formatting here makes the comparison apples-to-apples.
+  // `resolveConfig` returns `null` when there is no prettier config; spreading `null` is a legal no-op, so no
+  // `?? {}` fallback is needed (and an empty-object literal would be dead weight).
   const rendered = await format(renderSnapshot(catalog, catalogSha256(catalog)), {
-    ...((await resolveConfig(SNAPSHOT)) ?? {}),
+    ...(await resolveConfig(SNAPSHOT)),
     filepath: SNAPSHOT,
   });
   const current = (() => {
@@ -235,7 +259,9 @@ async function main() {
   );
 }
 
-main().catch((error) => {
+try {
+  await main();
+} catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
-});
+}

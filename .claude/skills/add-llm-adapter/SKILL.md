@@ -1,7 +1,7 @@
 ---
 name: add-llm-adapter
 description: >
-  Add a new LLM provider adapter behind the LLMProvider seam in packages/llm without leaking a single vendor SDK type across it: implement the seam interface, normalize system-prompt placement / tool schema / tool-call round-trip / streaming events / stop reasons / usage to the canonical Relavium types, register a pricing entry for cost, wire it into the fallback runner config, and add the per-provider conformance test (recorded fixtures on PR, live nightly). USE FOR: integrating a new model provider into @relavium/llm. DO NOT USE FOR: adding a new top-level workspace package (use ../add-package/SKILL.md), changing the seam *interface* itself (that supersedes ADR-0011 — use ../write-adr/SKILL.md), or restating the seam contract (it has one canonical home in docs/reference/shared-core/llm-provider-seam.md).
+  Add a new LLM provider adapter behind the LLMProvider seam in packages/llm without leaking a single vendor SDK type across it: implement the seam interface, normalize system-prompt placement / tool schema / tool-call round-trip / streaming events / stop reasons / usage to the canonical Relavium types, map the provider into the generated model catalog for cost, wire it into the fallback runner config, and add the per-provider conformance test (recorded fixtures on PR, live nightly). USE FOR: integrating a new model provider into @relavium/llm. DO NOT USE FOR: adding a new top-level workspace package (use ../add-package/SKILL.md), changing the seam *interface* itself (that supersedes ADR-0011 — use ../write-adr/SKILL.md), or restating the seam contract (it has one canonical home in docs/reference/shared-core/llm-provider-seam.md).
 ---
 # Add an LLM provider adapter
 
@@ -11,7 +11,7 @@ Integrate a new model provider into `packages/llm` (`@relavium/llm`) as a thin a
 ## When to use
 - A new API-based provider must be callable from an agent node (a model id routes to it).
 - A provider you already support ships a new wire dialect that needs its own normalization path.
-- Note the existing inventory is **three** adapters: a dedicated `AnthropicAdapter` (`@anthropic-ai/sdk`), a dedicated `GeminiAdapter` (`@google/genai`), and **one shared OpenAI-compatible adapter** (the `openai` SDK) serving both OpenAI and DeepSeek (DeepSeek via a custom `baseURL`). If the new provider speaks the OpenAI-compatible wire format, **extend that shared adapter with a new `baseURL` + pricing + capability entry — do not write a fourth adapter.**
+- Note the existing inventory is **three** adapters: a dedicated `AnthropicAdapter` (`@anthropic-ai/sdk`), a dedicated `GeminiAdapter` (`@google/genai`), and **one shared OpenAI-compatible adapter** (the `openai` SDK) serving both OpenAI and DeepSeek (DeepSeek via a custom `baseURL`). If the new provider speaks the OpenAI-compatible wire format, **extend that shared adapter with a new `baseURL` + capability entry (pricing comes from the generated catalog, not a hand-typed table) — do not write a fourth adapter.**
 
 ## When not to use
 - You need to change the seam *interface* — add a method, a chunk variant, or let a vendor type through. That supersedes [ADR-0011](../../../docs/decisions/0011-internal-llm-abstraction.md); stop and run ../write-adr/SKILL.md. The seam is immovable; this skill works strictly behind it.
@@ -25,12 +25,12 @@ Integrate a new model provider into `packages/llm` (`@relavium/llm`) as a thin a
 | Provider id | The literal added to the closed `ProviderId` enum — its **canonical home is `LLM_PROVIDERS`** in `packages/shared/src/constants.ts` (`ProviderId` aliases `LlmProviderId = (typeof LLM_PROVIDERS)[number]`, and `ProviderIdSchema = z.enum(LLM_PROVIDERS)`), never a vendor enum. The CLI mirrors it in `KNOWN_PROVIDER_IDS`/`KNOWN_PROVIDERS` (step 7). A genuinely-new arbitrary id **opens** the closed enum — a deliberate supersede per [ADR-0065](../../../docs/decisions/0065-provider-economics-and-extensibility.md) §6, not a silent edit. |
 | SDK / transport | The official TS SDK to wrap, or `openai` + a custom `baseURL` if OpenAI-compatible. An SDK dependency stays strictly inside `packages/llm/src/adapters/*`. |
 | Capabilities | `{ tools, streaming, parallelToolCalls, vision, promptCache, reasoning }` — what this provider genuinely supports, for the `supports` capability flags. |
-| Model ids + pricing | Canonical model ids this adapter serves and their per-token input/output (and cache) prices, for the pricing table. |
+| Model ids + catalog key | Canonical model ids this adapter serves, and the provider's key in the upstream models.dev catalog (`CATALOG_PROVIDER_KEYS`) — pricing / context / limits are GENERATED from it, never hand-typed. |
 | Wire facts | The provider's native system-prompt placement, tool schema shape, tool-call/result round-trip, streaming events, stop reasons, and usage fields — the six things to normalize. |
 
 ## Workflow
 1. **Confirm the seam doesn't have to move.** Read [llm-provider-seam.md](../../../docs/reference/shared-core/llm-provider-seam.md) end to end. Map every one of this provider's behaviors onto the *existing* canonical types (`LlmRequest`, `ContentPart`, `LlmResult`, `StopReason`, `Usage`, `StreamChunk`, `CapabilityFlags`). If something genuinely does not fit, that is an ADR (../write-adr/SKILL.md) superseding ADR-0011 — not an edit here. Reach provider-specific features only through the typed `providerOptions` escape hatch and the `supports` flags, never by widening the seam.
-2. **Decide adapter vs. shared-OpenAI extension.** If the provider is OpenAI-wire-compatible, extend the shared OpenAI-compatible adapter with a new `baseURL` + capability + pricing entry (the DeepSeek pattern). Otherwise add a new file under `adapters/`:
+2. **Decide adapter vs. shared-OpenAI extension.** If the provider is OpenAI-wire-compatible, extend the shared OpenAI-compatible adapter with a new `baseURL` + capability entry (the DeepSeek pattern; pricing comes from the generated catalog). Otherwise add a new file under `adapters/`:
    ```text
    packages/llm/src/
    ├── types.ts                       # the seam — DO NOT edit to fit a provider
@@ -39,7 +39,7 @@ Integrate a new model provider into `packages/llm` (`@relavium/llm`) as a thin a
    │   ├── openai-compatible-adapter.ts   # OpenAI + DeepSeek (+ new wire-compatible providers)
    │   ├── gemini-adapter.ts
    │   └── <provider>-adapter.ts          # NEW — only if not OpenAI-compatible
-   ├── pricing.ts                     # canonical-model-id → per-token price (add an entry)
+   ├── pricing.ts                     # catalog → price PROJECTION (generated; do NOT hand-edit — see Step 5)
    ├── fallback.ts                    # withFallback runner config (register the provider)
    ├── provider-factory.ts            # id → adapter (register the id)
    └── conformance/
@@ -92,8 +92,8 @@ Integrate a new model provider into `packages/llm` (`@relavium/llm`) as a thin a
 10. **Commit** with ../commit-and-pr/SKILL.md scoped to the package: `feat(llm): add <provider> adapter behind the LLMProvider seam` with a `Refs: ADR-0011` trailer.
 
 ## Outputs
-- A new `adapters/<provider>-adapter.ts` (or a new `baseURL`/capability/pricing entry on the shared OpenAI-compatible adapter) implementing `LlmProvider` with full six-axis normalization.
-- A pricing-table entry per canonical model id; the provider registered in the factory and selectable in the fallback runner.
+- A new `adapters/<provider>-adapter.ts` (or a new `baseURL`/capability entry on the shared OpenAI-compatible adapter) implementing `LlmProvider` with full six-axis normalization.
+- One line in `CATALOG_PROVIDER_KEYS` + a re-run `pnpm sync:models` whose generated diff was reviewed; the provider registered in the factory and selectable in the fallback runner.
 - The provider added to the conformance matrix with committed fixtures (PR) wired into the nightly live run.
 - No vendor SDK type anywhere above the adapter; the boundary lint green.
 
@@ -101,7 +101,7 @@ Integrate a new model provider into `packages/llm` (`@relavium/llm`) as a thin a
 - [ ] The seam interface was **not** changed; everything fits the existing canonical types, with provider-specific features only via `providerOptions`/`supports`.
 - [ ] SDK import is confined to `adapters/*`; no vendor type is re-exported or crosses into `packages/core`; `raw` is `unknown`.
 - [ ] All six normalizations implemented: system-prompt placement, tool schema (with unsupported-keyword stripping if restricted), tool-call/result round-trip (with id synthesis if the provider has no ids), streaming → `StreamChunk`, stop reasons → the 5-value enum, usage → `Usage`.
-- [ ] Pricing entry added; cost computed from our table on the canonical model id and stored as integer micro-cents (`costMicrocents`), never read from the provider or stored as a float.
+- [ ] Provider mapped into the catalog (`CATALOG_PROVIDER_KEYS` + `pnpm sync:models`) and the generated metadata reviewed; cost computed from the catalog on the canonical model id and stored as integer micro-cents (`costMicrocents`), never read from the provider or stored as a float.
 - [ ] Provider registered in the factory and usable in a `fallback_chain`; errors classified as `LlmError` (retryable/fatal).
 - [ ] Id registered in **both** `LLM_PROVIDERS` (`@relavium/shared`) and `KNOWN_PROVIDER_IDS`/`KNOWN_PROVIDERS` (the CLI, with a `testModel`) so the wizard / `provider` / `/doctor` / `/models` surface it data-driven; the `LLM_PROVIDERS`↔`KNOWN_PROVIDER_IDS` lock-step guard test (`providers.test.ts`) is green. A genuinely-new arbitrary id opening the closed enum is an ADR-0065 §6 supersede, not a silent edit.
 - [ ] Key handling host-aware (ADR-0018): a resolved key attached in-adapter on the Node-style hosts; a key *reference* passed to the Rust `llm_stream` egress on desktop (raw key never in the WebView); never logged/checkpointed/sent to the frontend; `AbortSignal` threaded through.
@@ -114,7 +114,7 @@ Integrate a new model provider into `packages/llm` (`@relavium/llm`) as a thin a
 - **Leaking a vendor type across the seam** — typing `raw` as a vendor shape, re-exporting an SDK enum, or pattern-matching a vendor chunk in `packages/core`. This is the one failure ADR-0011 exists to prevent.
 - Widening the seam interface to fit a provider instead of using `providerOptions` — that is an ADR, not an edit.
 - Writing a fourth adapter for an OpenAI-compatible provider instead of extending the shared one with a `baseURL`.
-- Trusting a provider's own cost field instead of computing the cost from our pricing table on the canonical model id; or storing cost as a float instead of integer micro-cents.
+- Trusting a provider's own cost field instead of computing the cost from the generated catalog on the canonical model id; or storing cost as a float instead of integer micro-cents.
 - Forgetting the provider-specific stream quirk (e.g. OpenAI's `include_usage` opt-in) so the final `stop` chunk has no usage.
 - Passing a restricted-provider tool schema through without stripping unsupported keywords, or losing tool-call ids on a no-id provider.
 - Hand-editing a recorded fixture instead of regenerating it; committing a live API key or logging the key.
