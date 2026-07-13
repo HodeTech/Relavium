@@ -78,6 +78,13 @@
       "when": 1783849225312,
       "tag": "0010_clumsy_jocasta",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1783935625312,
+      "tag": "0011_odd_thunderbolt",
+      "breakpoints": true
     }
   ]
 }

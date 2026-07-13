@@ -1141,3 +1141,13 @@ future test cannot silently re-acquire it.
   `bad_request` naming `stream()` rather than surfacing an SDK string.
   *(medium · packages/llm/src/adapters/anthropic.ts; found by the 2.6.Q Step-5 Opus review)*
 
+- **Cache WRITES are billed at the flat rate, never a context tier's.** `ratesFor` (`packages/llm/src/cost-tracker.ts`)
+  moves input, output and cache-read onto the tier a prompt lands in (ADR-0071 §11), but cache-write stays on the flat
+  `cacheWritePerMtokMicrocents` — because models.dev's tier schema publishes `input`, `output` and `cache_read` and
+  **no `cache_write`**, so a per-tier write rate is not a number we have. Scaling one from the input tier's multiple
+  would be a guess on a money path, which is the thing this ADR exists to stop. The exposure is a cache-write-heavy
+  prompt above the 272k threshold on the four `gpt-5.6` variants (the only shipped models with both a cache-write rate
+  and a tier). Resolve by extending `CatalogPriceTier` + the upstream schema **if models.dev starts publishing it**, or
+  by asking upstream to.
+  *(medium · packages/llm/src/cost-tracker.ts + catalog/models-dev-schema.ts; found by the 2.6.Q Step-6 Sonnet review)*
+

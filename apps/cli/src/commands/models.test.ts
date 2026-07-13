@@ -31,6 +31,7 @@ function modelRow(
     inputCostPerMtokMicrocents: 0,
     outputCostPerMtokMicrocents: 0,
     cachedInputCostPerMtokMicrocents: 0,
+    cachedInputStated: false,
     source,
     lastRefreshedAt: 1_700_000_000_000,
     isActive: true,

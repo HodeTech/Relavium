@@ -114,6 +114,19 @@ export const modelCatalog = sqliteTable(
     inputCostPerMtokMicrocents: microcents('input_cost_per_mtok_microcents'),
     outputCostPerMtokMicrocents: microcents('output_cost_per_mtok_microcents'),
     cachedInputCostPerMtokMicrocents: microcents('cached_input_cost_per_mtok_microcents'),
+    /**
+     * Did the USER actually state a cache-read rate (ADR-0071 §10)?
+     *
+     * The money column is `NOT NULL DEFAULT 0`, so it cannot tell "the user typed `--cached 0`" — a genuinely free
+     * cache on a self-hosted endpoint — apart from "the user never mentioned cache reads". Reading a stored `0` as
+     * "free" bills a whole class of tokens at nothing; reading it as "unset" discards an explicit instruction. One
+     * money column cannot hold both meanings, so the FACT of the statement gets its own flag.
+     *
+     * `0` ⇒ not stated: the cache rate is derived at read time from the catalog's cache DISCOUNT applied to the
+     * user's own input rate (never the catalog's absolute rate — a user who negotiated $0.10/MTok on a model whose
+     * catalog cache rate is $0.50 would otherwise pay 5× MORE for a cache hit than for a miss).
+     */
+    cachedInputStated: boolFlag('cached_input_stated', false),
     // Per-modality media-OUTPUT rates (1.AF/D17, ADR-0044 §3) — integer µ¢ per billed unit (per image,
     // per audio-second, per video-second). NULLABLE: a model with no metered media rate degrades to 0
     // (H4). The projection of `ModelPricing.mediaOutputRates`; no shipped model carries one yet.

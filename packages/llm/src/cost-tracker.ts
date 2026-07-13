@@ -64,8 +64,14 @@ export interface Rates {
  * a tiered one, the HIGHEST threshold at or below the prompt's size wins: `gemini-2.5-pro` is $1.25/$10 up to 200k
  * and $2.50/$15 above it, so a 500k-token prompt billed at the cheap rate under-states its own cost by 2×.
  *
- * `contextTokens` is the whole input side — the prompt, cached or not. A cache READ is still context the model has
- * to hold, and it is what pushes a long conversation over the threshold.
+ * `contextTokens` is the whole input side — the prompt, cached or not, plus what is being written INTO the cache.
+ * All of it is context the model has to hold this turn, and it is a long conversation's cached history that pushes
+ * it over the threshold in the first place.
+ *
+ * One gap, deliberately not papered over: **cache WRITES are billed at the flat rate**, never a tier's. models.dev's
+ * tier schema publishes `input`, `output` and `cache_read` — and no `cache_write` — so a per-tier write rate is not a
+ * number we have. Inventing one by scaling would be a guess on a money path. Filed in deferred-tasks; the exposure is
+ * a cache-write-heavy prompt above 272k on the four `gpt-5.6` variants.
  */
 function ratesFor(p: ModelPricing, contextTokens: number): Rates {
   const flat: Rates = {
@@ -82,8 +88,10 @@ function ratesFor(p: ModelPricing, contextTokens: number): Rates {
       best = {
         input: tier.inputPerMtokMicrocents,
         output: tier.outputPerMtokMicrocents,
-        // A tier that restates input but not its cache rate keeps the discount PROPORTION it had, rather than
-        // silently reverting to the base tier's absolute rate — but absent everywhere, a cache read is never free.
+        // A tier that states no cache rate of its own falls back to THAT TIER's input rate — the same rule the base
+        // level follows (ADR-0071 §10), and for the same reason: a cache read is never free just because nobody said
+        // what it costs. It does NOT carry the base tier's discount forward, and it does not need to: every shipped
+        // model with a real base cache discount states one at the tier level too.
         cachedInput: tier.cachedInputPerMtokMicrocents ?? tier.inputPerMtokMicrocents,
       };
     }

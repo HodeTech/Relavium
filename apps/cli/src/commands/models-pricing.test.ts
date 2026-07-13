@@ -256,4 +256,25 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
     }
     throw new Error('expected modelsPricingCommand to throw a CliError');
   }
+
+  it('--clear RETIRES an override — the only way back from a price the user regrets', () => {
+    // Before `--clear`, a mispriced model could be corrected but never UN-priced: a user who overrode a catalog model
+    // by mistake was stuck with their own number for good. The fix commit's own message told them to run this command
+    // — and it did not exist.
+    expect(run({ ...baseArgs, model: 'gpt-5.5' }).code).toBe(EXIT_CODES.success);
+    expect(catalog.listAll().find((m) => m.modelId === 'gpt-5.5')).toBeDefined();
+
+    const { code, out } = run({ model: 'gpt-5.5', provider: 'openai', clear: true });
+    expect(code).toBe(EXIT_CODES.success);
+    expect(out).toContain('falls back to the catalog');
+    // SOFT-deactivated, never deleted (`model_catalog.id` is an FK target from five tables), so the active-only
+    // reader stops seeing it and the model falls back to the catalog's price.
+    expect(catalog.listAll().find((m) => m.modelId === 'gpt-5.5')).toBeUndefined();
+  });
+
+  it('--clear on a model with no user price is an honest no-op, never a lie', () => {
+    const { code, out } = run({ model: 'gpt-5.5', provider: 'openai', clear: true });
+    expect(code).toBe(EXIT_CODES.success);
+    expect(out).toContain('no user price to clear');
+  });
 });

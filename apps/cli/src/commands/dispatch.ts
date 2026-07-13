@@ -220,6 +220,21 @@ export function buildModelsPricingArgs(input: CommandInput): ModelsPricingComman
   if (provider === undefined) {
     throw new CliError('invalid_invocation', 'missing required option --provider <slug>.');
   }
+  // `--clear` RETIRES an override (ADR-0071 §5) — the only way back from a price the user regrets. Before it existed
+  // there was none: a mispriced model could be corrected but never un-priced, so a user who overrode a catalog model
+  // by mistake was stuck with their own number for good. It takes no price flags, and rejects them rather than
+  // quietly ignoring half an invocation.
+  if (input.options['clear'] === true) {
+    for (const flag of ['input', 'output', 'cached'] as const) {
+      if (optString(input.options[flag]) !== undefined) {
+        throw new CliError(
+          'invalid_invocation',
+          `--clear removes the price; it takes no --${flag}. Nothing written.`,
+        );
+      }
+    }
+    return { model: reqPositional(input, 0, 'model'), provider, clear: true };
+  }
   const rawInput = optString(input.options['input']);
   const rawOutput = optString(input.options['output']);
   if (rawInput === undefined) {

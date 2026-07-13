@@ -298,7 +298,7 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     id: 'models.pricing',
     label: 'Set model pricing',
     description:
-      'Set a user price for a model the registry does not know (custom / new provider models).',
+      'Set your own price for a model — it overrides the catalog (you hold the invoice). --clear removes it.',
     args: [
       { name: 'model', type: 'string', required: true, description: 'the model id to price' },
       {
@@ -308,21 +308,27 @@ const ENTRIES: readonly CommandManifestEntry[] = [
         description: 'the provider that serves the model (must be registered)',
       },
       {
+        // Not `required` at the manifest level, because `--clear` takes none of the three price flags. The command's
+        // arg builder enforces the real rule: exactly one of "set a price" or "--clear".
         name: 'input',
         type: 'string',
-        required: true,
-        description: 'input (prompt) price, USD per million tokens',
+        description: 'input (prompt) price, USD per million tokens (required unless --clear)',
       },
       {
         name: 'output',
         type: 'string',
-        required: true,
-        description: 'output (completion) price, USD per million tokens',
+        description: 'output (completion) price, USD per million tokens (required unless --clear)',
       },
       {
         name: 'cached',
         type: 'string',
-        description: 'cache-read price, USD per million tokens (default 0)',
+        description:
+          "cache-read price, USD per million tokens; omitted ⇒ the catalog's cache discount, applied to your input rate",
+      },
+      {
+        name: 'clear',
+        type: 'boolean',
+        description: "remove your price for this model — it falls back to the catalog's",
       },
     ],
     effect: 'write',
