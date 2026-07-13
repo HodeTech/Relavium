@@ -393,9 +393,11 @@ describe('OpenAI-compatible adapter', () => {
     // clamp — the original bug, restored on the official endpoint by a typo. We classify by HOST.
     let sent: Record<string, unknown> = {};
     for (const url of [
-      'https://api.openai.com/v1/',
+      'https://api.openai.com/v1/', // a trailing slash
       'https://api.openai.com/v1',
-      'https://api.openai.com',
+      'https://api.openai.com', // no /v1 at all
+      'https://API.OpenAI.com/v1', // host case is not significant
+      'https://api.openai.com./v1', // a trailing-dot FQDN — DNS says this is the same host, and so do we
     ]) {
       const oai = createOpenAiAdapter({
         baseURL: url,
@@ -414,6 +416,35 @@ describe('OpenAI-compatible adapter', () => {
       );
       expect(sent['max_completion_tokens'], url).toBe(128_000); // the modern field AND the clamp
       expect('max_tokens' in sent, url).toBe(false);
+    }
+  });
+
+  it('a LOOKALIKE host is NOT official — the classification must never slide the other way', async () => {
+    // The dangerous direction. Misreading a gateway as official would send it the modern field AND clamp its cap
+    // against a catalog that does not describe what it serves.
+    let sent: Record<string, unknown> = {};
+    for (const url of [
+      'https://evil.api.openai.com.attacker.net/v1', // the official host as a SUBDOMAIN of someone else's
+      'https://api.openai.com.evil.com/v1', // …and as a prefix
+      'https://api-openai.com/v1', // a hyphen away
+    ]) {
+      const impostor = createOpenAiAdapter({
+        baseURL: url,
+        fetch: (_i, init) => {
+          sent = parseJsonBody(init);
+          return Promise.resolve(okResponse());
+        },
+      });
+      await impostor.generate(
+        {
+          model: 'gpt-5.4-pro',
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
+          maxTokens: 200_000,
+        },
+        'k',
+      );
+      expect(sent['max_tokens'], url).toBe(200_000); // legacy field, NOT clamped — it is not OpenAI
+      expect('max_completion_tokens' in sent, url).toBe(false);
     }
   });
 

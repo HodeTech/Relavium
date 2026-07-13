@@ -85,13 +85,22 @@ const OFFICIAL_HOSTS: Readonly<Record<OpenAiProviderId, string>> = {
   deepseek: 'api.deepseek.com',
 };
 
-/** Is this base URL the provider's OWN API? An unparseable URL is treated as custom — the conservative side. */
+/**
+ * Is this base URL the provider's OWN API?
+ *
+ * The trailing dot is not pedantry: `api.openai.com.` is a legitimate fully-qualified spelling that DNS resolves
+ * identically, the CLI stores a `--base-url` VERBATIM, and the adjacent SSRF check already normalizes it away. Left
+ * unnormalized here it would classify the REAL official endpoint as custom — deprecated field, no clamp — which is
+ * the bug this work removes, reinstated by a dot.
+ *
+ * An unparseable URL is treated as custom: the conservative side, and unreachable in practice (`assertHttpsBaseUrl`
+ * has already parsed it by the time we get here). Belt only.
+ */
 function endpointKindFor(providerId: OpenAiProviderId, baseURL: string | undefined): EndpointKind {
   if (baseURL === undefined) return 'official'; // no override at all — our own default
   try {
-    return new URL(baseURL).hostname.toLowerCase() === OFFICIAL_HOSTS[providerId]
-      ? 'official'
-      : 'custom';
+    const host = new URL(baseURL).hostname.toLowerCase().replace(/\.$/, '');
+    return host === OFFICIAL_HOSTS[providerId] ? 'official' : 'custom';
   } catch {
     return 'custom';
   }

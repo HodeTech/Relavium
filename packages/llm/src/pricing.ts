@@ -108,7 +108,11 @@ export const MODEL_PRICING = {
     displayName: 'Claude Sonnet 4.6',
     reasoning: true,
     contextWindowTokens: 1_000_000,
-    maxOutputTokens: 64_000,
+    // 128_000, not the 64_000 this row carried until 2026-07-13. The two tables disagreed on exactly this one
+    // number, and the disagreement is the whole argument for ADR-0071: a hand-typed table drifts, silently, and
+    // nobody notices until something reads it. The CLI showed the user "max output 64,000" while the wire clamped
+    // at the catalog's 128,000. The generated catalog is the source of truth (§1); this row is retired in Step 6.
+    maxOutputTokens: 128_000,
     inputPerMtokMicrocents: usd(3),
     outputPerMtokMicrocents: usd(15),
     cachedInputPerMtokMicrocents: usd(0.3),
@@ -133,7 +137,10 @@ export const MODEL_PRICING = {
     nativeId: 'gpt-5.5',
     displayName: 'GPT-5.5',
     reasoning: true,
-    contextWindowTokens: 1_000_000,
+    // 1_050_000, not the 1_000_000 this row carried until 2026-07-13 — the SECOND number the two tables
+    // disagreed on, and the one the review missed. The context-fullness footer reads it, so the user was shown a
+    // fullness percentage computed against a window the model does not have. The catalog is the source (ADR-0071 §1).
+    contextWindowTokens: 1_050_000,
     maxOutputTokens: 128_000,
     inputPerMtokMicrocents: usd(5),
     outputPerMtokMicrocents: usd(30),

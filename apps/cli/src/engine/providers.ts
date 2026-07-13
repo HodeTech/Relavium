@@ -5,6 +5,7 @@ import {
   defaultProviders,
   InvalidBaseUrlError,
   isRetryable,
+  type EndpointKind,
   LlmProviderError,
   type LlmProvider,
   type ProviderId,
@@ -45,6 +46,20 @@ export interface ProviderResolver {
    * probe when this is absent; the real {@link createProviderResolver} always provides it, so production never falls back.
    */
   readonly hasKey?: (id: ProviderId) => boolean;
+  /**
+   * Is this provider talking to its OWN API, or to a custom `base_url`
+   * ([ADR-0071](../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §7)?
+   *
+   * The adapter clamps an authored `max_tokens` to the model's published ceiling on an official endpoint and
+   * deliberately does NOT on a custom one — a gateway may serve anything under a familiar model id. The pre-egress
+   * ESTIMATE has to make the same call, or it stops describing the request that is about to be sent: treat a
+   * gateway as official and the estimate lands below what the wire can spend, so the budget governor
+   * under-authorizes and waves through a call it should have stopped.
+   *
+   * Decided by HOST, not by "is there a stored row": a user who registers OpenAI with its own endpoint spelled out
+   * is still on the official API, however they spell it. OPTIONAL so a test stub can omit it; absent ⇒ official.
+   */
+  readonly endpointKind?: (id: ProviderId) => EndpointKind;
 }
 
 /**
@@ -312,7 +327,10 @@ export function createProviderResolver(
   // mapping lives in the seam package (`@relavium/llm`); a stored CUSTOM `base_url` (ADR-0065 §3) rebinds its
   // provider's adapter to a validated per-provider endpoint here.
   const adapters: Record<ProviderId, LlmProvider> = { ...defaultProviders() };
-  applyCustomEndpoints(adapters, options);
+  // The provider ids that ended up pointed at a GENUINELY different host — not merely at a differently-spelled
+  // official one. Feeds `endpointKind`, which the pre-egress estimate reads (ADR-0071 §7).
+  const customEndpoints = new Set<ProviderId>();
+  applyCustomEndpoints(adapters, options, customEndpoints);
   // The ONE key-resolution path (keychain → env), returning `undefined` for genuine absence — shared by `keyFor`
   // (which throws on absence) and `hasKey` (which returns a boolean), so the two never drift (2.5.G key-awareness).
   const resolveKey = (id: ProviderId): string | undefined => {
@@ -341,6 +359,7 @@ export function createProviderResolver(
   };
   return {
     resolveProvider: (id) => adapters[id],
+    endpointKind: (id) => (customEndpoints.has(id) ? 'custom' : 'official'),
     keyFor: (id) => {
       const key = resolveKey(id);
       if (key === undefined) {
@@ -370,9 +389,27 @@ export function createProviderResolver(
  * than crashing resolver creation for EVERY command — the fail-fast refusal is at `provider add`; this is the
  * defensive net for a pre-S9 / tampered row.
  */
+/**
+ * Is this stored `base_url` a host OTHER than the provider's own API?
+ *
+ * By HOST, never by string: the CLI stores a `--base-url` VERBATIM, so `https://api.openai.com/v1/` (one trailing
+ * slash) and `https://api.openai.com/v1` are different strings for the same API. Mirrors `endpointKindFor` inside
+ * the adapter, which decides the same question for the wire — the two must agree, or the estimate stops describing
+ * the request. A trailing-dot FQDN (`api.openai.com.`) is the same host too, and DNS says so.
+ */
+function isCustomHost(id: ProviderId, baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/, '');
+    return host !== new URL(KNOWN_PROVIDERS[id].baseUrl).hostname.toLowerCase();
+  } catch {
+    return true; // unparseable ⇒ treat as custom (the conservative side: no clamp, no dialect switch)
+  }
+}
+
 function applyCustomEndpoints(
   adapters: Record<ProviderId, LlmProvider>,
   options: ProviderResolverOptions,
+  custom: Set<ProviderId>,
 ): void {
   const store = options.providerStore;
   if (store === undefined) return; // no registry ⇒ default endpoints only (the pre-S9 behavior)
@@ -389,6 +426,10 @@ function applyCustomEndpoints(
         baseURL: row.baseUrl,
         fetch: validatedFetch,
       });
+      // Record it for the pre-egress estimate (ADR-0071 §7) — by HOST, so a row that merely SPELLS the official
+      // endpoint differently (a trailing slash, a missing `/v1`) is not mistaken for a gateway. The adapter makes
+      // the same call for the wire; this keeps the estimate describing the request the adapter will send.
+      if (isCustomHost(id, row.baseUrl)) custom.add(id);
     } catch (err) {
       // A bad stored base_url (non-HTTPS / private / creds) — refuse the custom endpoint, keep the default adapter.
       if (!(err instanceof InvalidBaseUrlError)) throw err;

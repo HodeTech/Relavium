@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
+
 import {
   contextWindowForModel,
   KNOWN_MODEL_IDS,
@@ -32,5 +34,29 @@ describe('contextWindowForModel (ADR-0062 §7)', () => {
   it('returns undefined for an unknown (custom base-URL) model', () => {
     expect(contextWindowForModel('some-custom-base-url-model-xyz')).toBeUndefined();
     expect(contextWindowForModel('')).toBeUndefined();
+  });
+});
+
+/**
+ * THE TWO TABLES MUST AGREE — until there is only one (ADR-0071 §1).
+ *
+ * A Sonnet review found `claude-sonnet-4-6` carrying `maxOutputTokens: 64_000` here and `128_000` in the generated
+ * catalog. The clamp reads the catalog; the CLI's model list reads this. So the user was shown one ceiling while
+ * the wire enforced another — and nobody noticed, because nothing compared them. That is not a typo, it is the
+ * failure mode of a hand-typed table, and it is the entire argument for making the catalog the source.
+ *
+ * This guard is deliberately temporary: Step 6 deletes `MODEL_PRICING`, and this test goes with it. Until then, the
+ * two cannot drift again in silence.
+ */
+describe('MODEL_PRICING vs the generated catalog — no silent drift while both exist', () => {
+  it('agrees with the catalog on every number they both carry', () => {
+    for (const [id, row] of Object.entries(MODEL_PRICING)) {
+      const entry = CATALOG_SNAPSHOT[id];
+      if (entry === undefined) continue; // a registry id the catalog does not carry — Step 6's problem, not drift
+      expect(row.maxOutputTokens, `${id}: maxOutputTokens`).toBe(entry.maxOutputTokens);
+      expect(row.contextWindowTokens, `${id}: contextWindowTokens`).toBe(
+        entry.contextWindowTokens,
+      );
+    }
   });
 });

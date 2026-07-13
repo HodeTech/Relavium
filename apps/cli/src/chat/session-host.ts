@@ -17,7 +17,13 @@ import {
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
-import { effortTiersFor, type PricingOverlay, type ProviderId } from '@relavium/llm';
+import {
+  catalogModel,
+  effortTiersFor,
+  type EndpointKind,
+  type PricingOverlay,
+  type ProviderId,
+} from '@relavium/llm';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
 import type {
   AgentSessionRecord,
@@ -233,7 +239,12 @@ function buildSessionRuntime(
       ? {}
       : { allowedCommandGlobs: opts.chat.allowedCommandGlobs }),
   };
-  const governor = buildGovernorWiring(opts.chat, opts.onBudgetWarning, opts.resolvePrice);
+  const governor = buildGovernorWiring(
+    opts.chat,
+    opts.onBudgetWarning,
+    opts.resolvePrice,
+    providers.endpointKind,
+  );
   // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
   // event (the in-REPL `/export`'s `session:exported`, 2.Q) can ride the same monotonic per-session counter.
   const emit = createSessionEventSink(bus, sessionId);
@@ -570,6 +581,7 @@ export function buildGovernorWiring(
   chat: ResolvedChatConfig,
   onWarning?: (warning: ChatBudgetWarning) => void,
   resolvePrice?: PricingOverlay,
+  endpointKind?: (id: ProviderId) => EndpointKind,
 ): GovernorWiring | undefined {
   const cap = chat.maxCostMicrocents;
   if (cap === undefined || cap <= 0) return undefined;
@@ -582,6 +594,12 @@ export function buildGovernorWiring(
     // The ADR-0065 §2 user-pricing overlay — so the PRE-EGRESS estimate can price a user-priced (otherwise
     // unknown) model and enforce the cost cap on it. Omit ⇒ an unknown model degrades to `allow` loudly.
     ...(resolvePrice === undefined ? {} : { resolvePrice }),
+    // ADR-0071 §7: the adapter clamps an authored `max_tokens` to the model's ceiling on an OFFICIAL endpoint and
+    // not on a custom one. The estimate must make the same call — assume official on a gateway and it lands BELOW
+    // what the wire can spend, so the governor under-authorizes and waves through the call it exists to stop.
+    ...(endpointKind === undefined
+      ? {}
+      : { resolveEndpoint: (model: string) => endpointKind(catalogModel(model)?.provider ?? 'openai') }),
     emit: (event) => {
       // `warn` is non-blocking BY CONTRACT. A misbehaving warn surface must never reject this emit — a
       // rejection would propagate as an `internal` turn error and break sendMessage — so swallow a sync throw.

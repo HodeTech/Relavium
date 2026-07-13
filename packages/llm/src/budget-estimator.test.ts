@@ -47,6 +47,20 @@ describe('estimateMaxNextCost — the estimate must price the request we ACTUALL
     expect(small).toBeGreaterThan(0);
     expect(small).toBeLessThan(estimateMaxNextCost('gemini-2.5-pro', 65_536));
   });
+
+  it('does NOT clamp a CUSTOM endpoint — the same bug pointing the other way, and the dangerous direction', () => {
+    // The adapter deliberately does not clamp a custom `base_url` (it may serve anything under a familiar id). An
+    // estimate that clamps ANYWAY lands BELOW what the wire can spend — so the governor under-authorizes and waves
+    // through the very call it exists to stop. `on_exceed: fail` then fails to fail.
+    //
+    // Over-estimating kills a valid run; UNDER-estimating spends the user's money. The estimate has to make the
+    // same call the adapter makes, and the host is the only one who knows which endpoint this is.
+    const asOfficial = estimateMaxNextCost('gpt-5.5', 500_000, undefined, 'official');
+    const asCustom = estimateMaxNextCost('gpt-5.5', 500_000, undefined, 'custom');
+    expect(asOfficial).toBe(estimateMaxNextCost('gpt-5.5', 128_000)); // clamped to the ceiling
+    expect(asCustom).toBeGreaterThan(asOfficial); // …and the gateway is priced for what it can actually emit
+    expect(asCustom).toBe(estimateMaxNextCost('gpt-5.5', 500_000, undefined, 'custom'));
+  });
 });
 
 describe('estimateMediaCost (1.AF/D17 — pre-egress per-modality media estimate)', () => {

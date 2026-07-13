@@ -2,6 +2,7 @@ import {
   estimateMaxNextCost,
   estimateMediaCost,
   UnknownModelError,
+  type EndpointKind,
   type MediaUnitsEstimate,
   type PricingOverlay,
 } from '@relavium/llm';
@@ -95,6 +96,7 @@ export class BudgetGovernor {
     event: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>,
   ) => Promise<void>;
   readonly #overlay: PricingOverlay | undefined;
+  readonly #resolveEndpoint: ((model: string) => EndpointKind) | undefined;
   #cumulativeCostMicrocents = 0;
   #warningEmitted = false;
 
@@ -107,11 +109,25 @@ export class BudgetGovernor {
     /** The user-pricing overlay (2.5.G S10) — makes the PRE-EGRESS estimate price a user-priced model that the
      *  static registry lacks, so `max_cost_microcents` enforces it (the cap-gap fix). Absent ⇒ static-only. */
     readonly resolvePrice?: PricingOverlay;
+    /**
+     * Is this model's provider on its OWN API, or behind a custom `base_url`
+     * ([ADR-0071](../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §7)?
+     *
+     * The adapter clamps an authored `max_tokens` to the model's published ceiling on an official endpoint, and
+     * deliberately does NOT on a custom one (a gateway may serve anything under a familiar id). The estimate has to
+     * make the SAME call, or it stops describing the request: assume `official` on a gateway and the estimate lands
+     * BELOW what the wire can spend, so the governor under-authorizes and waves through a call it should have
+     * stopped. The engine cannot know a base URL — the host injects the answer, exactly as it injects the price.
+     *
+     * Absent ⇒ every model is treated as official, which is the adapter's own default for an un-overridden endpoint.
+     */
+    readonly resolveEndpoint?: (model: string) => EndpointKind;
   }) {
     this.#budget = params.budget;
     this.#defaultMaxTokensEstimate = params.defaultMaxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
     this.#emit = params.emit;
     this.#overlay = params.resolvePrice;
+    this.#resolveEndpoint = params.resolveEndpoint;
   }
 
   /** Update the governor with the engine's authoritative running cumulative cost. */
@@ -142,7 +158,12 @@ export class BudgetGovernor {
       // modalities the model rates (a missing rate degrades to 0); both share the UnknownModelError
       // degrade-to-allow below, so an unpriced model never hard-fails the run.
       estimate =
-        estimateMaxNextCost(model, maxTokens ?? this.#defaultMaxTokensEstimate, this.#overlay) +
+        estimateMaxNextCost(
+          model,
+          maxTokens ?? this.#defaultMaxTokensEstimate,
+          this.#overlay,
+          this.#resolveEndpoint?.(model) ?? 'official',
+        ) +
         (mediaUnitsEstimate === undefined
           ? 0
           : estimateMediaCost(model, mediaUnitsEstimate, this.#overlay));

@@ -12,7 +12,12 @@ import {
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
-import { effortTiersFor, type PricingOverlay } from '@relavium/llm';
+import {
+  catalogModel,
+  effortTiersFor,
+  type EndpointKind,
+  type PricingOverlay,
+} from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
 import { effortRejectedNote, effortUnavailableNote } from '../chat/effort-notice.js';
@@ -160,11 +165,21 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     ...(options.resolvePrice === undefined ? {} : { resolvePrice: options.resolvePrice }),
   };
 
+  const endpointKind = providers.endpointKind;
   return new WorkflowEngine({
     host,
     executor: createStandardNodeExecutor({ sandbox, agent, humanGate: {} }),
     // The same overlay for the workflow PRE-EGRESS budget governor (2.5.G S10) — so `budget.max_cost_microcents`
     // is enforced on a user-priced model, closing the ADR-0064 §6 cost-cap gap for the run path.
     ...(options.resolvePrice === undefined ? {} : { resolvePrice: options.resolvePrice }),
+    // ADR-0071 §7: the adapter clamps an authored `max_tokens` to the model's ceiling on an OFFICIAL endpoint and
+    // not on a custom one. The pre-egress estimate must make the same call, or it prices a request we never send —
+    // assume official on a gateway and it under-authorizes, waving through the call the governor exists to stop.
+    ...(endpointKind === undefined
+      ? {}
+      : {
+          resolveEndpoint: (model: string): EndpointKind =>
+            endpointKind(catalogModel(model)?.provider ?? 'openai'),
+        }),
   });
 }

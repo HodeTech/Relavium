@@ -50,7 +50,7 @@ import {
   type RunStatus,
   type TokensUsed,
 } from '@relavium/shared';
-import type { MediaJobStatus, PricingOverlay } from '@relavium/llm';
+import type { EndpointKind, MediaJobStatus, PricingOverlay } from '@relavium/llm';
 
 import { buildRunPlan, type BuildRunPlanOptions } from '../dag.js';
 import { InterpolationError } from '../errors.js';
@@ -248,6 +248,13 @@ export interface WorkflowEngineDeps {
    * an unknown model degrades cost governance to `allow` loudly, unchanged.
    */
   readonly resolvePrice?: PricingOverlay;
+  /**
+   * Is a model's provider on its own API, or behind a custom `base_url` (ADR-0071 §7)? Forwarded to the pre-egress
+   * {@link BudgetGovernor}: the adapter clamps an authored `max_tokens` to the model's ceiling only on an official
+   * endpoint, and an estimate that assumes otherwise stops describing the request the wire will carry. Absent ⇒
+   * official (the adapter's own default).
+   */
+  readonly resolveEndpoint?: (model: string) => EndpointKind;
 }
 
 function maskInputs(
@@ -343,6 +350,7 @@ class RunExecution {
     /** The user-pricing overlay (2.5.G S10, ADR-0065 §2) — into the workflow PRE-EGRESS governor so a user-priced
      *  model is enforced by `budget`. Host-injected; the realized path rides the runner's own `resolvePrice`. */
     resolvePrice?: PricingOverlay;
+    resolveEndpoint?: (model: string) => EndpointKind;
     /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
     checkpoint?: CheckpointState;
   }) {
@@ -372,6 +380,9 @@ class RunExecution {
         defaultMaxTokensEstimate: this.#maxTokensEstimate,
         emit: (draft) => this.#emitDurable({ ...draft, runId: this.runId }),
         ...(params.resolvePrice === undefined ? {} : { resolvePrice: params.resolvePrice }),
+        ...(params.resolveEndpoint === undefined
+          ? {}
+          : { resolveEndpoint: params.resolveEndpoint }),
       });
     }
 

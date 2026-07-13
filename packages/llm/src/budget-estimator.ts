@@ -1,7 +1,7 @@
 import type { MediaBilledModality } from '@relavium/shared';
 
 import { priceModel, type PricingOverlay } from './cost-tracker.js';
-import { cappedMaxTokens } from './output-cap.js';
+import { cappedMaxTokens, type EndpointKind } from './output-cap.js';
 
 const TOKENS_PER_MTOK = 1_000_000;
 
@@ -12,13 +12,18 @@ const TOKENS_PER_MTOK = 1_000_000;
  * (or a configured default), because the engine does not tokenize the prompt locally.
  * This is intentionally conservative: it may block slightly early rather than overshoot.
  *
- * **Conservative, not fictional.** The cap is first held to the model's own output ceiling
- * ([ADR-0071](../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §7), because that is what
- * the adapter will actually send. An agent authored with `max_tokens: 200000` on `gpt-5.4-pro` (ceiling 128 000)
- * used to be priced at $36 of output the model is physically incapable of producing — the wire caps at $23.04. On
- * `on_exceed: fail` that killed the run over $12.96 that could never be spent; on `pause_for_approval` it was a
- * human gate for the same phantom. Before the clamp landed the request simply 400'd, so the gap was invisible;
- * now the request is valid and an estimate of an unsendable request is just wrong.
+ * **The estimate must price the request the WIRE will carry**
+ * ([ADR-0071](../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §7). The adapter holds an
+ * authored cap to the model's own output ceiling, so the cap the estimate reasons about is the clamped one —
+ * otherwise `gemini-2.5-pro` with `max_tokens: 200000` (ceiling 65 536) is pre-authorized for three times the
+ * spend the model can physically produce, and `on_exceed: fail` kills the run over money that could never leave
+ * the account.
+ *
+ * `endpoint` is not decoration, and getting it wrong is the same bug pointing the other way. The adapter does NOT
+ * clamp a custom `base_url` (it may serve anything under a familiar id), so estimating a custom endpoint AS IF it
+ * clamped produces an estimate BELOW what the wire can spend — and a governor that under-authorizes waves through
+ * a call it should have stopped. Absent ⇒ `'official'`, matching the adapter's own default for an un-overridden
+ * endpoint; a host that registers a custom `base_url` must say so.
  *
  * All figures are integer micro-cents.
  */
@@ -26,11 +31,12 @@ export function estimateMaxNextCost(
   modelId: string,
   maxOutputTokens: number,
   overlay?: PricingOverlay,
+  endpoint: EndpointKind = 'official',
 ): number {
   const p = priceModel(modelId, overlay);
   // A model the catalog cannot describe passes through unclamped — the same rule the adapter follows, so the
   // estimate stays a faithful prediction of the request rather than a second, disagreeing opinion about it.
-  const capped = cappedMaxTokens(maxOutputTokens, modelId) ?? maxOutputTokens;
+  const capped = cappedMaxTokens(maxOutputTokens, modelId, endpoint) ?? maxOutputTokens;
   if (capped <= 0) {
     return 0;
   }
