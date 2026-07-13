@@ -164,21 +164,23 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(sonnet?.maxOutputTokens).toBe(CATALOG_SNAPSHOT['claude-sonnet-4-6']?.maxOutputTokens);
   });
 
-  it('DEPRECATION COMES FROM THE PROVIDER NOW — a live date flags the model once now >= it', () => {
-    // The hand-typed table carried a `deprecatedAt` on two DeepSeek aliases. It is gone with the table (ADR-0071):
-    // models.dev does not publish a retirement date, and NO data source we have does — the provider is the only one
-    // who knows when the provider is retiring something. So it comes from the live list, or from the user, or not
-    // at all. A date typed into a file is a date that goes stale in a file.
-    const undeclared = mergeModelCatalog({ now: AFTER_DEEPSEEK_DEPRECATION });
-    expect(byId(undeclared, 'deepseek-chat')?.deprecated).toBe(false);
-    expect(byId(undeclared, 'deepseek-chat')?.deprecatedAt).toBeUndefined();
+  it("DEPRECATION survives the swap — it is Relavium's editorial call, not a price (ADR-0071 §10)", () => {
+    // The first cut of the big swap DELETED these two dates, on the argument that "the provider is the only one who
+    // knows when the provider is retiring something, so it should come from the live list". The argument is right and
+    // the conclusion was wrong: NO adapter populates `ModelListing.deprecatedAt` — the OpenAI-compatible list is
+    // id-only, and the Anthropic/Gemini mappers carry limits and names and nothing else. So `deprecated` went
+    // permanently `false` for every model in the product, and `deepseek-chat` was set to stop working on 2026-07-24
+    // with nothing anywhere to say so. Information we already had, thrown away.
+    //
+    // models.dev publishes a `status` FLAG, and a flag cannot say "this stops working in eleven days". The date lives
+    // in a Relavium-owned overlay — one date per model, from a published announcement, and not a second price table.
+    const before = mergeModelCatalog({ now: BEFORE_DEEPSEEK_DEPRECATION });
+    expect(byId(before, 'deepseek-chat')?.deprecated).toBe(false);
+    expect(byId(before, 'deepseek-chat')?.deprecatedAt).toBe('2026-07-24T15:59:00Z'); // announced, not yet past
 
-    const declared = mergeModelCatalog({
-      live: liveMap([['deepseek', [{ id: 'deepseek-chat', deprecatedAt: '2026-07-24T15:59:00Z' }]]]),
-      now: AFTER_DEEPSEEK_DEPRECATION,
-    });
-    expect(byId(declared, 'deepseek-chat')?.deprecated).toBe(true);
-    expect(byId(declared, 'deepseek-chat')?.deprecatedAt).toBe('2026-07-24T15:59:00Z');
+    const after = mergeModelCatalog({ now: AFTER_DEEPSEEK_DEPRECATION });
+    expect(byId(after, 'deepseek-chat')?.deprecated).toBe(true);
+    expect(byId(after, 'deepseek-v4-flash')?.deprecated).toBe(false); // its replacement stays clear
   });
 
   it('deprecation is still a UNION of live and user — the EARLIER date is effective', () => {

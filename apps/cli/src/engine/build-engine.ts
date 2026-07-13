@@ -62,8 +62,8 @@ export interface BuildEngineOptions {
    * projects from the `model_catalog` `source='user'` rows. Threaded into BOTH the workflow PRE-EGRESS governor
    * (so a user-priced model is enforced by `budget.max_cost_microcents`) AND the agent node's realized
    * `AgentRunnerDeps.resolvePrice` (so the same model's realized cost is tracked, not thrown as `UnknownModel`).
-   * Static `MODEL_PRICING` still wins for a known id. Absent ⇒ an unknown model degrades cost governance to
-   * `allow` loudly, unchanged.
+   * The USER outranks the catalog (ADR-0071 §1). Absent ⇒ an unknown model degrades cost governance
+   * to `allow` loudly, unchanged.
    */
   readonly resolvePrice?: PricingOverlay;
   /**

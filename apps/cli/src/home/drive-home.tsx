@@ -486,7 +486,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
       assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
       // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read FRESH per chat from the SAME `history.db` (empty map
-      // on a read fault). Static `MODEL_PRICING` still wins.
+      // on a read fault). The USER outranks the catalog (ADR-0071 §1).
       const resolvePrice = readUserPricingOverlay(opened.db);
       const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
         // Re-read the EFFECTIVE default model AND reasoning-effort FRESH per chat (not the load-once `config`

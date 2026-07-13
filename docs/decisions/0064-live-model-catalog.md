@@ -65,9 +65,13 @@
 > 2. **The pricing precedence FLIPPED.** §6 said the static registry always wins and the user tier fills an unknown
 >    id only. It now resolves **user → catalog**: the catalog is a snapshot of a third-party aggregator, and the
 >    user is the one holding the invoice. `pricingSource` reports `'catalog'` where it used to report `'registry'`.
-> 3. **Deprecation is no longer static.** §7's static `deprecatedAt` is gone: models.dev does not publish a
->    retirement date, and no source we have does. It comes from the **live list** (and the user) alone — the
->    provider is the only one who knows when the provider is retiring something.
+>
+> §7's deprecation is **unchanged in substance**: the date still comes from a Relavium-owned overlay
+> (`packages/llm/src/catalog/deprecations.ts` — ADR-0071 §10), unioned with the live list and the user, earliest
+> wins. It moved out of the price table, but it did not move into models.dev, which publishes a `status` flag and
+> not a date. *(A first cut of the swap deleted it outright on the theory that the live list would carry it — no
+> adapter populates `ModelListing.deprecatedAt`, so that would have made `deprecated` permanently `false` for every
+> model. Caught in review.)*
 
 
 ## Context

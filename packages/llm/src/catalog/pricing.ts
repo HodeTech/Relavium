@@ -19,10 +19,11 @@ import { CATALOG_SNAPSHOT } from './snapshot.js';
  * - **`mediaOutputRates`** — per-modality media rates. The retired table declared the field and **no row ever set
  *   it**: media folds at 0 until a verified rate lands, and a fabricated rate is worse than none (ADR-0044 §3).
  *   A USER row can still carry one, which is the only way one has ever been carried.
- * - **`deprecatedAt`** — a provider's retirement announcement. models.dev does not publish it, and it is not a
- *   fact about the model that any data source we have exposes. It now comes from the **live provider list** alone
- *   (ADR-0064 §7 already unions a live deprecation date), which is the honest answer: the provider is the only one
- *   who knows when the provider is retiring something. See the ADR-0071 amendment.
+ * - **`deprecatedAt`** — a provider's retirement announcement. models.dev publishes a `status` FLAG, not a date, and
+ *   a flag cannot tell a user *"this stops working in eleven days"*. It lives in Relavium's own small overlay
+ *   ({@link MODEL_DEPRECATIONS}), which ADR-0071 §10 always specified and the first cut of this swap wrongly deleted:
+ *   the theory was that the live provider list would carry it, but **no adapter populates `ModelListing.deprecatedAt`**
+ *   (the OpenAI list is id-only), so `deprecated` went permanently `false` for every model in the product.
  */
 export function catalogPricing(modelId: string): ModelPricing | undefined {
   const entry = catalogModel(modelId);
@@ -39,12 +40,26 @@ export function toPricing(entry: CatalogModel): ModelPricing {
     maxOutputTokens: entry.maxOutputTokens,
     inputPerMtokMicrocents: entry.inputPerMtokMicrocents,
     outputPerMtokMicrocents: entry.outputPerMtokMicrocents,
-    // A provider that does not discount cache reads publishes no rate; the contract says 0, which bills a cached
-    // read at the full input price — the same thing the retired table did for those providers.
-    cachedInputPerMtokMicrocents: entry.cachedInputPerMtokMicrocents ?? 0,
+    // ABSENT ⇒ THE FULL INPUT RATE. Never 0 (ADR-0071 §10, which exists because of exactly this line).
+    //
+    // The first version wrote `?? 0` with a comment claiming that 0 "bills a cached read at the full input price".
+    // It does not. `cost()` computes `cacheReadTokens × rate / 1e6`, so 0 bills the cached fraction of every prompt
+    // at NOTHING — and eleven catalog models publish no cache rate, including `gpt-5.4-pro` and `o1-pro`. OpenAI
+    // auto-caches, so on a 1M-token prompt that is 90% cached, `o1-pro` billed $0.00 for 900 000 tokens that cost
+    // $135. Worse than a wrong invoice: `max_cost_microcents` is a SAFETY control, and it cannot trip on money it
+    // never counts.
+    //
+    // "No published cache rate" means the provider does not DISCOUNT cache reads, not that it gives them away. The
+    // full input rate is the honest reading, and it is the one the ADR wrote down before the code got it wrong.
+    cachedInputPerMtokMicrocents:
+      entry.cachedInputPerMtokMicrocents ?? entry.inputPerMtokMicrocents,
     ...(entry.cacheWritePerMtokMicrocents === undefined
       ? {}
       : { cacheWritePerMtokMicrocents: entry.cacheWritePerMtokMicrocents }),
+    // The context tiers ride onto the contract (ADR-0071 §11). They were parsed, guarded and exported — and read by
+    // nothing, so a >200k `gemini-2.5-pro` turn billed at the CHEAP rate. Tolerable while those models threw
+    // `UnknownModelError` (a loud gap); a silent 2× under-bill the moment the catalog started pricing them.
+    ...(entry.contextTiers === undefined ? {} : { contextTiers: entry.contextTiers }),
     // `reasoning` was a BOOLEAN on the retired contract, and answering it was the bug (ADR-0071 §6): "does this
     // model reason" is not the question the wire asks. The catalog carries the CONTROL — which tiers, in which
     // shape — and `effortTiersFor` is what every surface asks now. The boolean is not projected, because nothing

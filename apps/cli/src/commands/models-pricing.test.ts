@@ -116,7 +116,36 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
       inputCostPerMtokMicrocents: 300_000_000,
       outputCostPerMtokMicrocents: 900_000_000,
       cachedInputCostPerMtokMicrocents: 0,
+      // The catalog has never heard of `acme-custom-1` — the case the user tier was invented for. Nothing is
+      // overridden, so there is nothing to declare.
+      overriddenCatalogPrice: null,
     });
+  });
+
+  it('--json DECLARES the catalog price an override replaces (ADR-0071 §5)', () => {
+    // The flip removed the guarantee that a user cannot misprice a shipped model. The condition on which it was
+    // removed is that the divergence is LOUD — for a machine consumer as much as for a human. Without this, a
+    // `--json` caller cannot tell a price that fills a gap from one that overrules a number we shipped.
+    const { code, out } = run({ ...baseArgs, model: 'gpt-5.5' }, true);
+    expect(code).toBe(EXIT_CODES.success);
+    const [rec] = parseNdjson(out);
+    const overridden = (rec as { overriddenCatalogPrice: { inputCostPerMtokMicrocents: number } })
+      .overriddenCatalogPrice;
+    expect(overridden).not.toBeNull();
+    expect(overridden.inputCostPerMtokMicrocents).toBeGreaterThan(0);
+  });
+
+  it('REFUSES a price under a provider the CATALOG anchors elsewhere — never stored-then-ignored', () => {
+    // The catalog anchors a model id to ONE provider. Both the merge and the cost overlay drop a user row that
+    // contradicts it, so writing one would store a price that silently never applies — the user believes they set
+    // it, and nothing reads it. Worse: before this guard the two DISAGREED — the merge dropped the row while
+    // `priceModel` billed it, so the picker kept showing the catalog price while the CostTracker charged the user's.
+    // `claude-opus-4-8` is Anthropic's; `openai` is the provider registered in this db. The FK guard passes (openai
+    // exists) and the CATALOG guard is the one that must catch it.
+    const err = runThrows({ ...baseArgs, model: 'claude-opus-4-8', provider: 'openai' });
+    expect(err.code).toBe('invalid_invocation');
+    expect(err.message).toContain("anthropic's model");
+    expect(catalog.listAll().find((m) => m.modelId === 'claude-opus-4-8')).toBeUndefined();
   });
 
   it('ACCEPTS a price for a model the CATALOG already knows — the override is the feature now', () => {

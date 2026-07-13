@@ -1,3 +1,4 @@
+import { deprecationFor } from './catalog/deprecations.js';
 import { toPricing } from './catalog/pricing.js';
 import { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
 import type { ModelPricing } from './pricing.js';
@@ -105,7 +106,7 @@ function earlierIsoDate(a: string | undefined, b: string | undefined): string | 
   return pa <= pb ? a : b;
 }
 
-/** The pricing provenance for a merged entry: the registry wins, then the user tier, else none (ADR-0064 §6). */
+/** The pricing provenance for a merged entry: the USER wins, then the catalog, else none (ADR-0064 §6). */
 function pricingSourceOf(t: Tiers): PricingSource {
   // USER first — the same precedence `priceModel` applies (ADR-0071 §1). The badge must name the price we would
   // actually BILL at, or it is a lie the user reads while being charged something else.
@@ -184,11 +185,18 @@ function buildEntry(
   const maxOutputTokens =
     t.live?.maxOutputTokens ?? t.user?.maxOutputTokens ?? t.catalog?.maxOutputTokens;
   const { available, unavailableReason } = resolveAvailability(t, live, input.keyedProviders);
-  // Deprecation now comes from the LIVE list and the USER only. models.dev does not publish a retirement date, and
-  // no data source we have does — the provider is the only one who knows when the provider is retiring something
-  // (ADR-0071 amendment). The catalog tier contributes none, so a model's retirement is announced by its provider
-  // or not at all, which is the honest answer rather than a hand-typed date that goes stale in a file.
-  const deprecatedAt = earlierIsoDate(t.live?.deprecatedAt, t.user?.deprecatedAt);
+  // Deprecation is a UNION of three sources, and the EARLIEST wins — a warning is only useful before the date.
+  //
+  // models.dev publishes a `status` flag, not a date, so the retirement date lives in Relavium's own small overlay
+  // (ADR-0071 §10 — an editorial call about our users, not a data fact). It is NOT a second pricing home: one date
+  // per model, from a published announcement. The first version of the swap dropped it on the theory that the live
+  // list would carry it — but no adapter populates `ModelListing.deprecatedAt` (the OpenAI list is id-only), so
+  // `deprecated` was permanently `false` for every model in the product and `deepseek-chat` was set to stop working
+  // in eleven days with nothing to say so.
+  const deprecatedAt = earlierIsoDate(
+    earlierIsoDate(deprecationFor(modelId), t.live?.deprecatedAt),
+    t.user?.deprecatedAt,
+  );
   const parsedDeprecation = deprecatedAt === undefined ? Number.NaN : Date.parse(deprecatedAt);
   const deprecated = !Number.isNaN(parsedDeprecation) && parsedDeprecation <= input.now;
   return {
@@ -206,10 +214,6 @@ function buildEntry(
     ...(unavailableReason !== undefined ? { unavailableReason } : {}),
     deprecated,
     ...(deprecatedAt !== undefined ? { deprecatedAt } : {}),
-    // Reasoning capability via the SAME authority as the engine gate (ADR-0066 §4): the registry flag for a known
-    // id (authoritative — true or false), else the conservative id heuristic for a live-discovered id. So the
-    // picker's effort sub-step lights up exactly for the models the engine will actually honor — including a newly
-    // released reasoning family member absent from the registry.
   };
 }
 

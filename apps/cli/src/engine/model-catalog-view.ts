@@ -1,5 +1,7 @@
 import type { ModelCatalogListing } from '@relavium/db';
 import {
+  catalogModel,
+  catalogPricing,
   mergeModelCatalog,
   type ModelCatalogEntry,
   type ModelListing,
@@ -15,15 +17,17 @@ import { LLM_PROVIDERS } from '@relavium/shared';
  * It is the thin, PURE glue between the `@relavium/db` store (which speaks internal provider UUIDs + `source`
  * rows) and the pure `@relavium/llm` {@link mergeModelCatalog} (which speaks the `ProviderId` enum + plain tiers):
  * it builds the LIVE map from the `source='live'` rows (translating provider UUID → slug) and hands it to the
- * merge, whose static tier is the in-code `MODEL_PRICING`. Keeping this in the host — not the store, not the merge
+ * merge, whose non-user tier is the generated catalog (ADR-0071). Keeping this in the host — not the store, not the merge
  * — is what lets `@relavium/llm`/`@relavium/core` stay platform-free while every surface reuses the one merge.
  *
  * The ADR-0065 USER-pricing tier is built by {@link buildUserPricing} (workstream **2.5.G S10**): it projects the
  * `source='user'` rows into the ONE `ReadonlyMap<string, ModelPricing>` that serves BOTH consumers — the merge's
  * `userPricing` slot (so the `/models` picker shows a user-priced model's cost) AND the cost path's
  * {@link PricingOverlay} (host-injected exactly like `keyFor`, so the budget governor enforces `max_cost_microcents`
- * on an otherwise-unknown model). Static `MODEL_PRICING` still wins for a known id in both — the user tier only ever
- * fills an UNKNOWN id (ADR-0065 §2), so a user can never silently misprice a shipped model.
+ * on an otherwise-unknown model). The USER tier OUTRANKS the catalog in both (ADR-0071 §1) — they hold the invoice,
+ * we hold a snapshot of a third-party aggregator. It cannot be done in SILENCE, though: `models pricing` echoes the
+ * catalog price the override replaces (§5), a partial override inherits every dimension it does not state, and a row
+ * whose provider contradicts the catalog's is refused rather than stored and quietly ignored.
  */
 
 /** The merged catalog for the picker + the newest live-refresh stamp (the "last updated" freshness badge). */
@@ -54,7 +58,7 @@ function isProviderId(slug: string): slug is ProviderId {
 
 /** Map a stored catalog row → a seam {@link ModelListing} (the live-discovery half): id + the optional limits +
  *  the live deprecation date as ISO (the store carries epoch-ms; the merge unions ISO dates). Pricing is NOT
- *  carried — the merge's pricing authority is the static registry / user tier, never a live row (ADR-0064 §6). */
+ *  carried — the merge's pricing authority is the user tier / the catalog, never a live row (ADR-0064 §6). */
 function rowToListing(row: ModelCatalogListing): ModelListing {
   return {
     id: row.modelId,
@@ -69,24 +73,47 @@ function rowToListing(row: ModelCatalogListing): ModelListing {
   };
 }
 
+/** A DB integer column's "not set" sentinel is `0` (the columns are NOT NULL DEFAULT 0) — read it as absent. */
+function stated(value: number | undefined): number | undefined {
+  return value === undefined || value <= 0 ? undefined : value;
+}
+
 /**
- * Map a `source='user'` catalog row → a seam {@link ModelPricing} (the ADR-0065 user tier). The DB stores integer
- * micro-cents in the three `*_per_mtok_microcents` columns (NOT NULL, default `0`) — a captured price is a real
- * value; a `0` means "not set for this dimension" and costs that dimension as free, which is the user's declared
- * intent. Media output rates + cache-write are NOT user-capturable (no column), so they stay undefined — the cost
- * fold degrades those to 0 (H4: never hard-fail on a missing rate). The context/output limits carry through so the
- * merged picker and the footer context indicator can show them for an otherwise-unknown model.
+ * Map a `source='user'` catalog row → a seam {@link ModelPricing} (the ADR-0065 user tier, which OUTRANKS the
+ * catalog since ADR-0071 §1).
+ *
+ * **A PARTIAL OVERRIDE MUST BE PARTIAL.** The user types `models pricing gpt-5.5 --input 3 --output 12` to record
+ * their negotiated token rates. They have not said anything about the model's context window, its output ceiling,
+ * or its cache-read discount — and the DB's columns are `NOT NULL DEFAULT 0`, so "unsaid" arrives here as `0`.
+ * Reading those zeroes as VALUES was harmless while a user row could only describe a model the registry had never
+ * heard of: there was nothing to overwrite. Under user-first precedence it destroys verified data — the picker
+ * showed a 0-token context window for GPT-5.5, and every cached token on it billed at nothing.
+ *
+ * So each dimension the user did not state falls back to the CATALOG's, and only then to a safe floor. A cache read
+ * is never free: absent everywhere, it bills at the user's own input rate (ADR-0071 §10 — "no published cache rate"
+ * means the provider does not DISCOUNT cache reads, not that it gives them away).
+ *
+ * `--cached 0` cannot be told apart from an omitted `--cached`: one column, one sentinel. Treating an explicit zero
+ * as "not stated" is the safe reading of the ambiguity — the alternative bills a whole class of tokens at nothing.
  */
 function rowToUserPricing(row: ModelCatalogListing, provider: ProviderId): ModelPricing {
+  const base = catalogPricing(row.modelId); // undefined for a model the catalog has never heard of
+  const input = row.inputCostPerMtokMicrocents;
   return {
     provider,
     nativeId: row.modelId,
     displayName: row.displayName,
-    contextWindowTokens: row.contextWindowTokens ?? 0,
-    maxOutputTokens: row.maxOutputTokens ?? 0,
-    inputPerMtokMicrocents: row.inputCostPerMtokMicrocents,
+    contextWindowTokens: stated(row.contextWindowTokens) ?? base?.contextWindowTokens ?? 0,
+    maxOutputTokens: stated(row.maxOutputTokens) ?? base?.maxOutputTokens ?? 0,
+    inputPerMtokMicrocents: input,
     outputPerMtokMicrocents: row.outputCostPerMtokMicrocents,
-    cachedInputPerMtokMicrocents: row.cachedInputCostPerMtokMicrocents,
+    cachedInputPerMtokMicrocents:
+      stated(row.cachedInputCostPerMtokMicrocents) ?? base?.cachedInputPerMtokMicrocents ?? input,
+    // Cache-WRITE has no user column at all, so it can only come from the catalog. Dropping it would bill Anthropic
+    // cache writes — the expensive half of prompt caching — at zero for any model the user has priced.
+    ...(base?.cacheWritePerMtokMicrocents === undefined
+      ? {}
+      : { cacheWritePerMtokMicrocents: base.cacheWritePerMtokMicrocents }),
     ...(row.deprecationDate !== undefined
       ? { deprecatedAt: new Date(row.deprecationDate).toISOString() }
       : {}),
@@ -115,6 +142,16 @@ export function buildUserPricing(input: {
     // write win by UUID luck. `models pricing` REJECTS creating such a duplicate, so this is a defense-in-depth
     // floor for a legacy / directly-edited db, never the primary guard.
     if (map.has(row.modelId)) continue;
+    // …and the guard the merge ALREADY had, which the overlay did not: a user row whose provider contradicts the
+    // CATALOG's is dropped here too, so the two cannot disagree about which rows apply.
+    //
+    // They did, and it was the sharpest hole the flip opened. `mergeModelCatalog` drops a cross-provider row (the
+    // picker keeps showing the catalog's price and says `pricingSource: 'catalog'`), while `priceModel` read the
+    // overlay unconditionally and BILLED it. So `models pricing gpt-5.5 --provider anthropic --input 0.00000001`
+    // zeroed the cost of a shipped OpenAI model — realized fold and pre-egress estimate alike, making
+    // `max_cost_microcents` unenforceable on it — while the UI displayed $5/MTok. Not merely silent: actively wrong.
+    const anchored = catalogModel(row.modelId)?.provider;
+    if (anchored !== undefined && anchored !== slug) continue;
     map.set(row.modelId, rowToUserPricing(row, slug));
   }
   return map;

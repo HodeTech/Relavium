@@ -283,6 +283,29 @@ Its posture, which is **not** the SSRF posture, and the difference matters:
 | **`cache_read` when absent** | Absent on 19 of 97 models. | It is **`undefined`, never `0`**. `0` means *"no discount"* in `ModelPricing` and would **price cached input at zero** — a silent undercharge in the mechanism this ADR is hardening. Absent ⇒ fall back to the full input rate. |
 | **Reachability with *your* key** | Absent by design. | `listModels` (§1). A catalog cannot know your account. |
 
+> **Amendment (2026-07-13, implementation — §10 and §11).** Three corrections, recorded rather than rewritten.
+>
+> 1. **`cache_read` absent ⇒ the full input rate** — §10's rule, which the first implementation of the swap
+>    violated. `catalogPricing` wrote `?? 0`, and `cost()` bills `cacheReadTokens × rate`, so **0 charges nothing**:
+>    eleven catalog models publish no cache rate, OpenAI auto-caches, and the cached fraction of every prompt on
+>    `o1-pro` ($150/MTok in) billed at $0.00. The clause existed precisely to prevent this; the code was written
+>    against the clause and the test that "checked" it restated the buggy expression. Corrected, and now asserted as
+>    behaviour (a 100k-token cached read must cost the input rate, not zero).
+>
+> 2. **The deprecation overlay is REAL, and was briefly deleted.** §10 says the retirement date "stays in a small
+>    Relavium-owned overlay". The first cut of the swap removed the two DeepSeek dates on the theory that the live
+>    provider list would supply them. It does not: **no adapter populates `ModelListing.deprecatedAt`** (the
+>    OpenAI-compatible list is id-only), so `deprecated` became permanently `false` for every model in the product
+>    and `deepseek-chat` was set to stop working in eleven days with nothing to say so. The overlay
+>    (`packages/llm/src/catalog/deprecations.ts`) is what §10 always specified: one date per model, from a published
+>    announcement — not a second price table.
+>
+> 3. **§11's context tiers are now CONSUMED.** They were parsed, guarded and exported, and read by no pricing code —
+>    so a >200k `gemini-2.5-pro` turn billed at the cheap tier. That was a tolerable gap while those models threw
+>    `UnknownModelError`; it became a silent 2× under-bill the moment the catalog started pricing them. The realized
+>    fold prices the tier the prompt landed in; the pre-egress estimate takes the HIGHEST, because a cap that
+>    over-estimates refuses a turn the user could have afforded while one that under-estimates lets money escape.
+
 #### 10a. `max_tokens` vs `max_completion_tokens` — a rule, not a probe
 
 Our OpenAI adapter calls **Chat Completions** and sends `max_tokens`. OpenAI's reasoning models (o-series,

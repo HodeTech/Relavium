@@ -12,8 +12,8 @@ import { buildUserPricing } from './model-catalog-view.js';
  * with no static price, once user-priced, is enforced by `max_cost_microcents` (the cost-cap gap ADR-0064 §6 left
  * open). It is the DB-facing counterpart of the pure {@link buildUserPricing}: it projects the `model_catalog`
  * `source='user'` rows (translating each internal provider UUID → its slug) into the one overlay that serves both
- * the pre-egress estimate and the realized fold. Static `MODEL_PRICING` still wins for a known id — the user tier
- * only fills an UNKNOWN id — so a user can never silently misprice a shipped model.
+ * the pre-egress estimate and the realized fold. The USER tier OUTRANKS the catalog (ADR-0071 §1); what it may not
+ * do is override it SILENTLY, which is why `models pricing` names the catalog price it replaces.
  *
  * Living in the host (not `@relavium/core`/`@relavium/llm`) is what keeps the engine platform-free: the engine
  * receives a plain injected map, exactly like `keyFor`, and never imports `@relavium/db`.

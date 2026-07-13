@@ -1,5 +1,6 @@
 import type { MediaBilledModality } from '@relavium/shared';
 
+import type { CatalogPriceTier } from './catalog/catalog-model.js';
 import { catalogModel } from './catalog/lookup.js';
 import type { ProviderId } from './types.js';
 
@@ -31,10 +32,29 @@ export interface ModelPricing {
   readonly maxOutputTokens: number;
   readonly inputPerMtokMicrocents: number;
   readonly outputPerMtokMicrocents: number;
-  /** Cache-read (cached-input) price; 0 when the provider does not discount cache reads. */
+  /**
+   * Cache-read (cached-input) price — **never 0 for "no discount"** (ADR-0071 §10).
+   *
+   * `cost()` bills `cacheReadTokens × this / 1e6`, so 0 does not mean "charge the normal rate", it means **charge
+   * nothing**. A provider that publishes no cache-read rate does not discount cache reads; it does not hand them
+   * out free. The projection from the catalog therefore falls back to {@link ModelPricing.inputPerMtokMicrocents},
+   * and a user row that omits the dimension inherits the catalog's rather than zeroing it.
+   */
   readonly cachedInputPerMtokMicrocents: number;
   /** Cache-write price, where the provider charges one (Anthropic does); undefined otherwise. */
   readonly cacheWritePerMtokMicrocents?: number;
+  /**
+   * Context-size pricing tiers — "above N context tokens, the rate changes" (ADR-0071 §11).
+   *
+   * `gemini-2.5-pro` is $1.25/$10 below 200k and **$2.50/$15 above**; `gpt-5.5` and eleven other models the catalog
+   * newly prices are tiered at 272k. A flat rate understates long-context spend by up to 2×, and the cost cap is a
+   * SAFETY control, not an estimate. The realized fold prices the tier the prompt actually landed in; the
+   * pre-egress estimate takes the HIGHEST applicable one, because a cap that over-estimates refuses a turn the user
+   * could have afforded while one that under-estimates lets real money escape. Only one of those is recoverable.
+   *
+   * A USER row carries none: their stated price is a flat price, which is what they told us.
+   */
+  readonly contextTiers?: readonly CatalogPriceTier[];
   /**
    * ISO-8601 date this model is scheduled to retire, if any (ADR-0064 §7). The pure {@link mergeModelCatalog}
    * flags an entry `deprecated` once `now >= deprecatedAt` (unioned with a live-list deprecation date, taking

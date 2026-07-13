@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { catalogPricing, PRICED_MODEL_IDS, toPricing } from './catalog/pricing.js';
 import { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
+import { cost } from './cost-tracker.js';
+import { estimateMaxNextCost } from './budget-estimator.js';
 import { contextWindowForModel } from './pricing.js';
 
 /**
@@ -53,17 +55,77 @@ describe('catalogPricing — the projection that replaced the hand-typed table',
     }
   });
 
-  it('never bills a cached read at less than the catalog says', () => {
-    // `cachedInputPerMtokMicrocents` is REQUIRED on the contract and OPTIONAL in the catalog, so the projection has
-    // to choose a value for a provider that publishes none. 0 is the contract's own "no cache discount" — the same
-    // thing the retired table wrote for those providers — and it must never silently under-bill a rate that exists.
-    for (const [id, entry] of Object.entries(CATALOG_SNAPSHOT)) {
-      const priced = toPricing(entry);
-      expect(priced.cachedInputPerMtokMicrocents, id).toBe(entry.cachedInputPerMtokMicrocents ?? 0);
-      expect(priced.cachedInputPerMtokMicrocents, id).toBeLessThanOrEqual(
-        priced.inputPerMtokMicrocents,
-      );
+  it('NEVER bills a cached read at zero — a model with no published cache rate pays the full input rate', () => {
+    // The first projection wrote `?? 0`. `cost()` computes `cacheReadTokens × rate / 1e6`, so 0 does not mean
+    // "charge the normal rate" — it means CHARGE NOTHING, and eleven catalog models publish no cache rate. OpenAI
+    // auto-caches, so the cached fraction of every prompt on `o1-pro` ($150/MTok in) billed at $0.00.
+    //
+    // Asserted as BEHAVIOUR, not as a restatement of the projection: the previous test compared `toPricing`'s output
+    // to `x ?? 0` — the very expression it was testing — so it passed for any projection of the same bug.
+    const uncached = Object.entries(CATALOG_SNAPSHOT).filter(
+      ([, e]) => e.cachedInputPerMtokMicrocents === undefined,
+    );
+    expect(uncached.length).toBeGreaterThan(0); // the premise: such models exist
+
+    // 100k cached tokens — deliberately under every context-tier threshold (the lowest is 200k), so this measures
+    // the cache-rate fallback and nothing else. A 1M-token read would ALSO cross the tier boundary on the models
+    // that have one, and would be measuring two things at once.
+    const CACHED = 100_000;
+    for (const [id, entry] of uncached) {
+      const billed = cost(id, { inputTokens: 0, outputTokens: 0, cacheReadTokens: CACHED });
+      expect(billed, id).toBe(Math.round((CACHED * entry.inputPerMtokMicrocents) / 1_000_000));
+      expect(billed, id).toBeGreaterThan(0); // the point: NOT zero
     }
+
+    // …and a model that DOES publish a discount still gets it — the fallback is a floor, not a flattening.
+    const discounted = Object.entries(CATALOG_SNAPSHOT).find(
+      ([, e]) =>
+        e.cachedInputPerMtokMicrocents !== undefined &&
+        e.cachedInputPerMtokMicrocents < e.inputPerMtokMicrocents &&
+        e.contextTiers === undefined,
+    );
+    expect(discounted).toBeDefined();
+    if (discounted === undefined) return;
+    const [id, entry] = discounted;
+    expect(cost(id, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 1_000_000 })).toBe(
+      entry.cachedInputPerMtokMicrocents,
+    );
+  });
+
+  it('prices a LONG prompt at the tier it actually landed in — not the cheap one (ADR-0071 §11)', () => {
+    // `gemini-2.5-pro`: $1.25/$10 up to 200k, $2.50/$15 above. The tiers were parsed, guarded and exported — and
+    // read by nothing, so every long-context turn billed at half price. That was a tolerable gap while these models
+    // threw `UnknownModelError`; it became a silent 2× under-bill the moment the catalog started pricing them.
+    const entry = CATALOG_SNAPSHOT['gemini-2.5-pro'];
+    expect(entry?.contextTiers?.[0]?.aboveContextTokens).toBe(200_000); // the premise
+
+    const base = entry?.inputPerMtokMicrocents ?? 0;
+    const dear = entry?.contextTiers?.[0]?.inputPerMtokMicrocents ?? 0;
+    const short = cost('gemini-2.5-pro', { inputTokens: 100_000, outputTokens: 0 });
+    const long = cost('gemini-2.5-pro', { inputTokens: 300_000, outputTokens: 0 });
+    expect(short).toBe(Math.round((100_000 * base) / 1_000_000)); // under the threshold: the base rate
+    expect(long).toBe(Math.round((300_000 * dear) / 1_000_000)); // over it: the ABOVE rate
+    expect(long / 3).toBeGreaterThan(short); // …strictly dearer PER TOKEN, which is the under-bill that was live
+  });
+
+  it('the pre-egress estimate takes the HIGHEST tier — a cap that under-estimates lets money escape', () => {
+    // The estimate cannot know how long the prompt will be (the engine does not tokenize locally). On a SAFETY
+    // control, guessing the cheap side is the guess that lets real money out.
+    const entry = CATALOG_SNAPSHOT['gemini-2.5-pro'];
+    const dearOutput = entry?.contextTiers?.[0]?.outputPerMtokMicrocents ?? 0;
+    const baseOutput = entry?.outputPerMtokMicrocents ?? 0;
+    expect(dearOutput).toBeGreaterThan(baseOutput); // the premise
+
+    // The ask is also CLAMPED to the model's 65 536-token ceiling (ADR-0071 §7) — the two rules compose, and this
+    // pins BOTH: the cap the wire will carry, priced at the tier the estimate must assume.
+    const cap = entry?.maxOutputTokens ?? 0;
+    expect(estimateMaxNextCost('gemini-2.5-pro', 1_000_000)).toBe(
+      Math.round((cap * dearOutput) / 1_000_000),
+    );
+    // …and it is strictly dearer than the cheap tier would have been — which is the money that used to escape.
+    expect(estimateMaxNextCost('gemini-2.5-pro', 1_000_000)).toBeGreaterThan(
+      Math.round((cap * baseOutput) / 1_000_000),
+    );
   });
 
   it('does NOT project a reasoning boolean — nothing should ever ask that question again', () => {

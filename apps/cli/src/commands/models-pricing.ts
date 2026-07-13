@@ -1,10 +1,16 @@
 import type { ModelCatalogStore, ProviderStore } from '@relavium/db';
+import { catalogModel, catalogPricing } from '@relavium/llm';
 
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
+
+/** Integer micro-cents/MTok → a USD string, for echoing the catalog price an override replaces (ADR-0071 §5). */
+function microcentsToUsd(microcents: number): string {
+  return (microcents / 100_000_000).toString();
+}
 import { stripTerminalControls } from '../render/tui/chat-projection.js';
 
 /**
@@ -108,6 +114,16 @@ export function modelsPricingCommand(
       `'${args.model}' is already user-priced under '${otherProvider}'. The cost cap keys by model id, so a second provider's price can't be distinguished — remove that price (re-price under '${otherProvider}') or use a distinct model id.`,
     );
   }
+  // Provider-vs-CATALOG guard (ADR-0071 §1). The catalog anchors a model id to ONE provider, and both the merge
+  // and the cost overlay drop a row that contradicts it — so writing one would store a price that silently never
+  // applies, which is the worst of both worlds: the user believes they set it, and nothing reads it.
+  const anchored = catalogModel(args.model)?.provider;
+  if (anchored !== undefined && anchored !== args.provider) {
+    throw new CliError(
+      'invalid_invocation',
+      `'${args.model}' is ${anchored}'s model, not ${args.provider}'s — the catalog anchors a model id to one provider, and a price under the wrong one would never be applied. Re-run with \`--provider ${anchored}\`. Nothing written.`,
+    );
+  }
   // Convert + bounds-validate BEFORE the write (a bad `--cached` must not leave a partially-applied row).
   const inputCostPerMtokMicrocents = usdToMicrocents(args.inputUsdPerMtok, '--input');
   const outputCostPerMtokMicrocents = usdToMicrocents(args.outputUsdPerMtok, '--output');
@@ -144,6 +160,19 @@ export function modelsPricingCommand(
         // The `--json` field stays present as `0` when `--cached` was omitted (unchanged contract) even though the
         // store now PRESERVES the existing cached rate rather than writing this `0` (see the upsert above).
         cachedInputCostPerMtokMicrocents: cachedInputCostPerMtokMicrocents ?? 0,
+        // The catalog price this override REPLACES (ADR-0071 §5) — `null` when the catalog does not price the model
+        // at all, which is the case the user tier was originally invented for. A machine consumer must be able to
+        // see the divergence for the same reason a human must: the flip removed the guard that made it impossible.
+        overriddenCatalogPrice: (() => {
+          const shipped = catalogPricing(args.model);
+          return shipped === undefined
+            ? null
+            : {
+                inputCostPerMtokMicrocents: shipped.inputPerMtokMicrocents,
+                outputCostPerMtokMicrocents: shipped.outputPerMtokMicrocents,
+                cachedInputCostPerMtokMicrocents: shipped.cachedInputPerMtokMicrocents,
+              };
+        })(),
       },
     ]);
     return EXIT_CODES.success;
@@ -151,12 +180,20 @@ export function modelsPricingCommand(
 
   const cachedNote =
     args.cachedInputUsdPerMtok === undefined ? '' : `, cached $${args.cachedInputUsdPerMtok}/Mtok`;
+  // THE DIVERGENCE IS LOUD (ADR-0071 §5) — and it is the condition on which the "a user can never misprice a
+  // shipped model" guard was removed. The user outranks the catalog now; they get what they asked for. What they do
+  // NOT get is to do it in silence, so when their number disagrees with the one we shipped, we say both.
+  const shipped = catalogPricing(args.model);
+  const divergence =
+    shipped === undefined
+      ? ''
+      : `\n  Overrides the catalog price for this model: input $${microcentsToUsd(shipped.inputPerMtokMicrocents)}/Mtok, output $${microcentsToUsd(shipped.outputPerMtokMicrocents)}/Mtok. Yours wins. Run \`relavium models pricing ${stripTerminalControls(args.model)} --clear\` to go back to the catalog's.`;
   // Strip any terminal-control byte from the (user-typed) model id before echo — parity with `renderModelList`'s
   // FIX 2. `ModelListingSchema` only requires min(1), so an id can carry a control byte; the JSON path is safe on
   // its own (JSON.stringify escapes them). The provider is a validated (kebab) ProviderId, and the prices are
   // numbers — both already safe.
   deps.io.writeOut(
-    `Set user pricing for ${stripTerminalControls(args.model)} (${args.provider}): input $${args.inputUsdPerMtok}/Mtok, output $${args.outputUsdPerMtok}/Mtok${cachedNote}. It applies to your next run/chat and survives \`models refresh\`.\n`,
+    `Set user pricing for ${stripTerminalControls(args.model)} (${args.provider}): input $${args.inputUsdPerMtok}/Mtok, output $${args.outputUsdPerMtok}/Mtok${cachedNote}. It applies to your next run/chat and survives \`models refresh\`.${divergence}\n`,
   );
   return EXIT_CODES.success;
 }

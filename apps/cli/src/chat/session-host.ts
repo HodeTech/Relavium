@@ -124,7 +124,7 @@ export interface BuildChatSessionOptions {
    * The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a `ReadonlyMap<modelId, ModelPricing>` the command projects
    * from the `model_catalog` `source='user'` rows (via `buildUserPricing`). It flows into BOTH the pre-egress
    * governor (so a user-priced model is enforced by `[chat].max_cost_microcents`) AND `SessionDeps.resolvePrice`
-   * (so the realized cost of the same model is tracked). Static `MODEL_PRICING` still wins for a known id. Absent ⇒
+   * (so the realized cost of the same model is tracked). The USER outranks the catalog (ADR-0071 §1). Absent ⇒
    * unknown models degrade cost governance to `allow` loudly, unchanged.
    */
   readonly resolvePrice?: PricingOverlay;

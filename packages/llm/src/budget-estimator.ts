@@ -1,6 +1,6 @@
 import type { MediaBilledModality } from '@relavium/shared';
 
-import { priceModel, type PricingOverlay } from './cost-tracker.js';
+import { priceModel, worstCaseRates, type PricingOverlay } from './cost-tracker.js';
 import { cappedMaxTokens, type EndpointKind } from './output-cap.js';
 
 const TOKENS_PER_MTOK = 1_000_000;
@@ -40,7 +40,10 @@ export function estimateMaxNextCost(
   if (capped <= 0) {
     return 0;
   }
-  return Math.round((capped * p.outputPerMtokMicrocents) / TOKENS_PER_MTOK);
+  // The HIGHEST tier the model has (ADR-0071 §11). The engine does not tokenize the prompt locally, so it cannot
+  // know which side of a 200k/272k threshold this turn will land on — and on a SAFETY control, guessing the cheap
+  // side is the guess that lets money escape.
+  return Math.round((capped * worstCaseRates(p).output) / TOKENS_PER_MTOK);
 }
 
 /** One element of the pre-egress media estimate: a billed modality + its assumed unit count (a count for
