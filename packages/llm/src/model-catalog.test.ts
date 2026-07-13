@@ -1,10 +1,27 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { mergeModelCatalog, type ModelCatalogEntry } from './model-catalog.js';
+import type { CatalogModel } from './catalog/catalog-model.js';
+import { clearCatalogRefresh, installCatalogRefresh } from './catalog/lookup.js';
 import { catalogPricing } from './catalog/pricing.js';
 import { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
 import type { ModelPricing } from './pricing.js';
 import type { ModelListing, ProviderId } from './types.js';
+
+// The alias↔pin negative tests below install SYNTHETIC catalog rows (additive overlay) — clear it after each so a
+// leaked refresh never poisons a later test in the process.
+afterEach(clearCatalogRefresh);
+
+/** A minimal well-formed refreshed catalog row for the synthetic alias/pin pairs the scoping tests need. */
+const catModel = (modelId: string, provider: ProviderId): CatalogModel => ({
+  modelId,
+  provider,
+  displayName: modelId,
+  contextWindowTokens: 100_000,
+  maxOutputTokens: 10_000,
+  inputPerMtokMicrocents: 1_000_000,
+  outputPerMtokMicrocents: 2_000_000,
+});
 
 // A fixed clock so the deprecation check is deterministic. deepseek-chat/-reasoner deprecate 2026-07-24 15:59Z.
 const BEFORE_DEEPSEEK_DEPRECATION = Date.parse('2026-07-05T00:00:00Z');
@@ -93,6 +110,36 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
       now: BEFORE_DEEPSEEK_DEPRECATION,
     });
     expect(byId(entries, 'claude-haiku-4-5')?.available).toBe(false); // NOT rescued — the sibling isn't a catalog row
+  });
+
+  it('the alias rescue is ANTHROPIC-ONLY — a non-Anthropic dated pair is NOT rescued (the scoping decision)', () => {
+    // A synthetic OpenAI alias+dated-pin pair, both shipped catalog rows, with only the dated pin live. The rescue
+    // is scoped to Anthropic this round, so the openai alias must STILL dim — pinning the deliberate `provider !==
+    // 'anthropic'` gate so a future broadening (or a new non-Anthropic dated family) cannot sail through silently.
+    installCatalogRefresh({
+      'zzz-probe': catModel('zzz-probe', 'openai'),
+      'zzz-probe-20250101': catModel('zzz-probe-20250101', 'openai'),
+    });
+    const entries = mergeModelCatalog({
+      live: liveMap([['openai', [{ id: 'zzz-probe-20250101' }]]]),
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    expect(byId(entries, 'zzz-probe-20250101')?.available).toBe(true); // in the live list
+    expect(byId(entries, 'zzz-probe')?.available).toBe(false); // NOT rescued — equivalence is anthropic-only
+  });
+
+  it('the DATED-PIN rescue also requires the live base to be a CATALOG row (the IF-branch fabrication guard)', () => {
+    // A synthetic anthropic dated pin whose BASE alias is live but is NOT a shipped catalog row. The dated pin must
+    // still dim — exercising the line-146 `catalogModel(base)?.provider === provider` conjunct in isolation (the
+    // symmetric guard to the alias-branch `99999999` case above).
+    installCatalogRefresh({
+      'claude-probe-4-0-20250101': catModel('claude-probe-4-0-20250101', 'anthropic'),
+    });
+    const entries = mergeModelCatalog({
+      live: liveMap([['anthropic', [{ id: 'claude-probe-4-0' }]]]), // the base — but NOT a catalog row
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    expect(byId(entries, 'claude-probe-4-0-20250101')?.available).toBe(false); // NOT rescued — base isn't a catalog row
   });
 
   it('an EMPTY live list for a provider dims all that provider’s static models', () => {
