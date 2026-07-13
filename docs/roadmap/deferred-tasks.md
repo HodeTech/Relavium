@@ -1153,7 +1153,7 @@ future test cannot silently re-acquire it.
 
 - **Auto-open a PR for additive catalog drift.** ADR-0071 §9 wants new models to "merge automatically" while a
   moved shipped-model price stays a red human-reviewed check. The red check ships (`.github/workflows/models-catalog.yml`
-  `weekly-catalog-check` runs `pnpm sync:models:check`, red on ANY drift including a moved price). The *automatic*
+  `weekly-catalog-check` runs `pnpm sync:models`, red ONLY on a moved/vanished shipped-model price; additive drift is green). The *automatic*
   half — a bot PR that runs `pnpm sync:models` and commits the additive diff — is deferred because it needs a
   third-party `create-pull-request` action pinned to a verified commit SHA (the repo pins every action by SHA;
   inventing one unseen is the supply-chain risk rule 3 forbids). Add it as a second job once the SHA is verified.

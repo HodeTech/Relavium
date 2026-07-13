@@ -1,8 +1,9 @@
 # The model-catalog guards (ADR-0071 §9). Two scheduled lanes, neither of which gates a PR:
 #
-#   • weekly-catalog-check — is the committed models.dev snapshot still current, and did any ALREADY-SHIPPED
-#     model's price move? A moved price feeds the ADR-0028 cost cap, so it is a HUMAN decision surfaced as a red
-#     check, never a silent bot commit. `pnpm sync:models:check` writes nothing and exits non-zero on any drift.
+#   • weekly-catalog-check — did any ALREADY-SHIPPED model's price MOVE or VANISH? A moved price feeds the
+#     ADR-0028 cost cap, so it is a HUMAN decision surfaced as a red check, never a silent bot commit. `pnpm
+#     sync:models` exits non-zero on a moved/vanished shipped price; benign additive drift stays green (a weekly
+#     red-no-matter-what trains the maintainer to ignore it — the erosion sync.mjs's own comments warn against).
 #
 #   • nightly-effort-conformance — the ONLY mechanism that catches a stale catalog re-introducing the reasoning
 #     bug: for each shipped reasoning model it asks the REAL provider whether it accepts every tier the catalog
@@ -30,7 +31,7 @@ concurrency:
 
 jobs:
   weekly-catalog-check:
-    name: catalog drift + price-change guard
+    name: shipped-price-change guard
     # Only the weekly cron (and a manual run); the nightly cron skips this job.
     if: github.event.schedule != '0 7 * * *'
     runs-on: ubuntu-latest
@@ -48,14 +49,16 @@ jobs:
           cache: pnpm
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      # `--check` fetches models.dev, normalizes it, and compares against the committed snapshot. It writes
-      # nothing and fails RED when the snapshot is stale — a new priced model, OR (the one that matters) a
-      # moved/vanished price on a model we already ship. The failure message says exactly what to run:
-      # `pnpm sync:models` locally, where a moved price is refused without `--accept-price-changes` (the human
-      # decision), and the reviewed diff is committed. Auto-opening a PR for the additive case is a follow-up
-      # (deferred-tasks.md) — it needs a pinned create-pull-request action, and a red check already surfaces it.
-      - name: Snapshot is current + no shipped price moved
-        run: pnpm sync:models:check
+      # `pnpm sync:models` fetches models.dev, normalizes it, and applies the money guards. It fails RED on the ONE
+      # thing that must be a human decision: a MOVED or VANISHED price on a model we already ship (a rate that
+      # silently moves also silently moves how much the ADR-0028 cost cap protects). It does NOT red on benign
+      # additive drift — models.dev adds models in our four providers constantly, and a check that is red every
+      # week trains the maintainer to ignore it, which is exactly how the price-change protection would erode
+      # (sync.mjs says so in its own comments). New models "merge automatically" via the deferred auto-PR
+      # (deferred-tasks.md); until it lands they are simply picked up by the next local `pnpm sync:models`. The
+      # snapshot this job writes into the ephemeral CI checkout is discarded — only the exit code is the guard.
+      - name: No ALREADY-SHIPPED model's price moved or vanished
+        run: pnpm sync:models
 
   nightly-effort-conformance:
     name: effort conformance (live)
@@ -76,11 +79,12 @@ jobs:
           cache: pnpm
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
-      # The conformance suite runs under the normal `test`; the live cases are `it.skipIf(<key> === '')`, so with
-      # the provider keys set here they execute (and would fail red on a catalog that claims a tier a model
-      # rejects), and with no key they skip — the same file gates no PR. A missing secret simply skips its lane.
+      # The conformance suite (fixtures + the `it.skipIf(<key> === '')` live cases). With the provider keys set here
+      # the live cases execute — and a catalog that claims a tier a model rejects fails red — while a missing key
+      # simply skips that provider's lane. Scoped to `src/conformance` so a flaky live case cannot widen the red
+      # surface to the whole package's unit suite.
       - name: Live effort conformance
-        run: pnpm --filter @relavium/llm test
+        run: pnpm --filter @relavium/llm exec vitest run src/conformance
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

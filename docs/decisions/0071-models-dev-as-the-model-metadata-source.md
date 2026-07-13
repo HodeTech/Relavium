@@ -289,16 +289,19 @@ Its posture, which is **not** the SSRF posture, and the difference matters:
 > **Amendment (2026-07-13, implementation — §9 wired).** Both guards are live in
 > `.github/workflows/models-catalog.yml`:
 >
-> - **The weekly drift + price-change check** is `pnpm sync:models:check` (Monday 06:00 UTC): it writes nothing and
->   fails red when the committed snapshot is stale for ANY reason, and `sync.mjs`'s own money guards refuse a
->   moved-price / vanished-model commit without `--accept-price-changes` / `--accept-removals` — the human
->   decision, in a reviewable diff. The *automatic* PR for the purely-additive case ("new rows merge
->   automatically") is deferred: it needs a third-party create-pull-request action pinned to a verified SHA, and a
->   red weekly check already surfaces the drift. See deferred-tasks.md.
+> - **The weekly price-change check** is `pnpm sync:models` (Monday 06:00 UTC): its money guards fail red ONLY on a
+>   MOVED or VANISHED price on a model we already ship — the human decision — and pass on benign additive drift.
+>   Reding on every additive change (models.dev adds our-provider models constantly) would train the maintainer to
+>   ignore the check, eroding the very protection it exists to give (sync.mjs says so in its own comments). The
+>   *automatic* PR for the additive case ("new rows merge automatically") is deferred: it needs a create-pull-request
+>   action pinned to a verified SHA. See deferred-tasks.md.
 > - **The live effort conformance test** is `packages/llm/src/conformance/effort.conformance.test.ts` (nightly
->   07:00 UTC, key-gated per provider): for a representative shipped reasoning model per provider it sends every
->   tier the catalog claims it accepts and asserts the real API does not reject it. An offline gate pins the probe
->   ids to real shipped models so a rename cannot silently turn the live lane into a no-op.
+>   07:00 UTC, key-gated per provider): for a representative EFFORT-shaped reasoning model per provider it sends
+>   every tier the catalog claims it accepts and asserts the real API does not reject it. The Gemini probe must be
+>   effort-shaped (`gemini-3-flash-preview`, not the budget-shaped `gemini-2.5-flash`) — a budget-shaped model
+>   sends `thinkingBudget`, always accepted, and never the `thinkingLevel` that can 400 on tier drift, so it would
+>   be a tautology on the very provider whose acceptance was the original bug. An offline gate pins the probe ids
+>   to real shipped models so a rename cannot silently turn the live lane into a no-op.
 
 ### 10. What the catalog does NOT own — named, so it is not discovered mid-build
 

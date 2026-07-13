@@ -33,7 +33,10 @@ import type { LlmProvider } from '../types.js';
 const PROBE: Record<'anthropic' | 'openai' | 'gemini' | 'deepseek', string> = {
   anthropic: 'claude-opus-4-8',
   openai: 'gpt-5.5',
-  gemini: 'gemini-2.5-flash',
+  // EFFORT-shaped, deliberately. `gemini-2.5-flash` is budget-shaped, so the adapter sends `thinkingBudget`
+  // (always accepted) and NEVER `thinkingLevel` — the one wire value that can 400 on tier drift. A budget probe
+  // is a tautology, and Gemini is the provider whose `thinkingLevel` acceptance was the ORIGINAL bug (§Context/3).
+  gemini: 'gemini-3-flash-preview',
   deepseek: 'deepseek-v4-pro',
 };
 
