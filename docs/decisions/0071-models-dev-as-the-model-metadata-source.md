@@ -273,7 +273,39 @@ Its posture, which is **not** the SSRF posture, and the difference matters:
   Without it, a stale catalog entry re-introduces exactly the Gemini bug, silently — and this is the **only**
   mechanism that can catch that. A one-off manual probe cannot: it proves a fact once, not continuously.
 
-### 10. The seam holds, so the source is replaceable
+### 10. What the catalog does NOT own — named, so it is not discovered mid-build
+
+| Need | Status | Where it comes from instead |
+|---|---|---|
+| **Request shape** — the field *names* a provider wants | **Absent.** models.dev describes *models*, not *wire protocols*. | Provider docs, in the adapter. §10a. |
+| **Media output rates** ([ADR-0044](0044-media-access-governance-read-media-save-to-cost.md)) | **Absent** — `cost: null` on every image model. | No shipped model carries one today, so nothing is lost. The field stays, filled from a Relavium overlay if ever needed. |
+| **Deprecation dates** | A `status` flag, not an ISO date. | *When to warn a user* is a Relavium **editorial** call, not a data fact — it stays in a small Relavium-owned overlay. Adopting the flag would **lose** information we already have. |
+| **`cache_read` when absent** | Absent on 19 of 97 models. | It is **`undefined`, never `0`**. `0` means *"no discount"* in `ModelPricing` and would **price cached input at zero** — a silent undercharge in the mechanism this ADR is hardening. Absent ⇒ fall back to the full input rate. |
+| **Reachability with *your* key** | Absent by design. | `listModels` (§1). A catalog cannot know your account. |
+
+#### 10a. `max_tokens` vs `max_completion_tokens` — a rule, not a probe
+
+Our OpenAI adapter calls **Chat Completions** and sends `max_tokens`. OpenAI's reasoning models (o-series,
+GPT-5) **reject** it and require `max_completion_tokens` — which is the second half of the maintainer's
+"max tokens errors" report (the first half being the absence of any clamp against `limit.output`, §7). The
+same adapter also serves **every custom OpenAI-compatible `base_url`**
+([ADR-0065](0065-provider-economics-and-extensibility.md)) — LM Studio, Ollama, vLLM, LiteLLM, enterprise
+gateways — most of which implement only the legacy `max_tokens`. Switching the field globally would trade one
+broken population for another.
+
+**The rule:** the **official OpenAI endpoint** gets `max_completion_tokens` (the current field; `max_tokens`
+is the deprecated one). **Everything else** — DeepSeek, and any custom `base_url` — keeps `max_tokens`, the
+field every OpenAI-compatible server implements. A per-provider config key overrides it for an exotic endpoint
+that wants the modern field.
+
+*Considered discovering the dialect at runtime (send the modern field; on a 400 that names the parameter, retry
+once with the legacy field and cache the result per endpoint) — **rejected**.* It burns a real turn to learn
+what a constant already tells us; it depends on **string-matching a provider's error message**, which is not a
+contract; and it introduces mutable per-endpoint state that has to be persisted, invalidated, and made
+deterministic for tests. A rule with a documented escape hatch is knowable, testable, and costs the user
+nothing.
+
+### 11. The seam holds, so the source is replaceable
 
 models.dev's raw shape (`reasoning_options`, `cost.tiers`, `limit.input`) is Zod-parsed and normalized at the
 boundary and **never appears in `@relavium/llm`'s public types** — the pattern
