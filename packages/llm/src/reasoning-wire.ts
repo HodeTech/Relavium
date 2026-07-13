@@ -30,7 +30,7 @@ import type { ProviderId } from './types.js';
  */
 
 /** OpenAI's `reasoning_effort`. `off` maps to `'none'` — here it IS an effort value, unlike the other three. */
-export const OPENAI_WIRE: Record<ReasoningEffort, string> = {
+export const OPENAI_WIRE: Record<ReasoningEffort, 'none' | 'low' | 'medium' | 'high' | 'xhigh'> = {
   off: 'none',
   low: 'low',
   medium: 'medium',
@@ -39,7 +39,10 @@ export const OPENAI_WIRE: Record<ReasoningEffort, string> = {
 };
 
 /** Anthropic's `output_config.effort`. `off` is absent on purpose — it is `thinking: {type:'disabled'}` instead. */
-export const ANTHROPIC_WIRE: Record<Exclude<ReasoningEffort, 'off'>, string> = {
+export const ANTHROPIC_WIRE: Record<
+  Exclude<ReasoningEffort, 'off'>,
+  'low' | 'medium' | 'high' | 'max'
+> = {
   low: 'low',
   medium: 'medium',
   high: 'high',
@@ -52,7 +55,7 @@ export const ANTHROPIC_WIRE: Record<Exclude<ReasoningEffort, 'off'>, string> = {
  * mapping `off → MINIMAL` (as the shipped adapter does today) both fails to disable thinking and bills the user
  * for reasoning they asked not to have.
  */
-export const GEMINI_WIRE: Record<Exclude<ReasoningEffort, 'off'>, string> = {
+export const GEMINI_WIRE: Record<Exclude<ReasoningEffort, 'off'>, 'low' | 'medium' | 'high'> = {
   low: 'low',
   medium: 'medium',
   high: 'high',
@@ -65,13 +68,14 @@ export const GEMINI_WIRE: Record<Exclude<ReasoningEffort, 'off'>, string> = {
  * is the **uppercase** form of the same tokens (`HIGH`, not `high`), so its adapter upper-cases at the wire and
  * nowhere else. One map, two spellings of the same token — never two maps that can drift.
  */
-export const toGeminiThinkingLevel = (wire: string): string => wire.toUpperCase();
+export const toGeminiThinkingLevel = (wire: 'low' | 'medium' | 'high'): 'LOW' | 'MEDIUM' | 'HIGH' =>
+  wire.toUpperCase() as 'LOW' | 'MEDIUM' | 'HIGH';
 
 /**
  * DeepSeek's `thinking.reasoning_effort`. v4 exposes only two graded levels, so `low`/`medium`/`high` all
  * coarsen to `high` and `max` → `max`. `off` is `thinking: {type:'disabled'}`, an independent switch.
  */
-export const DEEPSEEK_WIRE: Record<Exclude<ReasoningEffort, 'off'>, string> = {
+export const DEEPSEEK_WIRE: Record<Exclude<ReasoningEffort, 'off'>, 'high' | 'max'> = {
   low: 'high',
   medium: 'high',
   high: 'high',
@@ -171,4 +175,35 @@ export function acceptedTiers(
 
   if (canDisableReasoning(provider, controls)) accepted.add('off');
   return accepted;
+}
+
+/** How much of a model's thinking-budget range each tier spends. `max` means "all of it". */
+const BUDGET_FRACTION: Record<Exclude<ReasoningEffort, 'off'>, number> = {
+  low: 0.25,
+  medium: 0.5,
+  high: 0.75,
+  max: 1,
+};
+
+/**
+ * Map a normalized tier onto a **token budget** for a budget-shaped model — `claude-haiku-4-5`,
+ * `gemini-2.5-pro`, and the rest of the seven that publish no effort axis at all.
+ *
+ * `ceiling` is the caller's hard upper bound, and it is not optional theatre: Anthropic requires
+ * `budget_tokens < max_tokens`, so a budget derived from the catalog alone can exceed the request's own output
+ * cap and be rejected. `claude-haiku-4-5` publishes `{ min: 1024 }` with **no max**, which is precisely the case
+ * where the range has to come from the request. The adapter passes what it can honour; this stays pure.
+ *
+ * A degenerate range (`ceiling <= min`) yields the floor — the smallest budget the model will accept. Sending
+ * *less* than `min` is a 400; sending the floor is merely the least thinking the model can do, which is the
+ * honest reading of "the caller asked for a low tier on a model that cannot go that low".
+ */
+export function reasoningBudgetFor(
+  tier: Exclude<ReasoningEffort, 'off'>,
+  range: { readonly min: number; readonly max?: number },
+  ceiling: number,
+): number {
+  const hi = Math.min(range.max ?? ceiling, ceiling);
+  if (hi <= range.min) return range.min;
+  return Math.round(range.min + (hi - range.min) * BUDGET_FRACTION[tier]);
 }

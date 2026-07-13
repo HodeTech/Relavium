@@ -19,6 +19,7 @@ import { assertStreamable, assertSupported } from '../capabilities.js';
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import { isNonChatModelId } from '../model-kind.js';
+import { DEEPSEEK_WIRE, OPENAI_WIRE } from '../reasoning-wire.js';
 import { MODEL_PRICING } from '../pricing.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
@@ -613,16 +614,6 @@ function toOpenAiTool(toolDef: ToolDef, provider: ProviderId): OpenAI.ChatComple
 /** ADR-0066: the normalized reasoning-effort tier → OpenAI's native `reasoning_effort` values. `off`→'none',
  *  `max`→'xhigh' (its highest); low/medium/high are 1:1. A SUBSET of the SDK's `ReasoningEffort` union, so the
  *  assignment to `body.reasoning_effort` needs no cast. */
-const OPENAI_REASONING_EFFORT: Record<
-  ReasoningEffort,
-  'none' | 'low' | 'medium' | 'high' | 'xhigh'
-> = {
-  off: 'none',
-  low: 'low',
-  medium: 'medium',
-  high: 'high',
-  max: 'xhigh',
-};
 
 /** DeepSeek's native reasoning control (a Relavium-local shape — NOT a vendor SDK type — so nothing crosses the
  *  seam): the create-chat-completion `thinking` object (verified 2026-07-07, api-docs.deepseek.com). */
@@ -636,10 +627,10 @@ interface DeepSeekThinking {
  *  documented coarsening onto v4's actual capability). */
 const DEEPSEEK_THINKING: Record<ReasoningEffort, DeepSeekThinking> = {
   off: { type: 'disabled' },
-  low: { type: 'enabled', reasoning_effort: 'high' },
-  medium: { type: 'enabled', reasoning_effort: 'high' },
-  high: { type: 'enabled', reasoning_effort: 'high' },
-  max: { type: 'enabled', reasoning_effort: 'max' },
+  low: { type: 'enabled', reasoning_effort: DEEPSEEK_WIRE.low },
+  medium: { type: 'enabled', reasoning_effort: DEEPSEEK_WIRE.medium },
+  high: { type: 'enabled', reasoning_effort: DEEPSEEK_WIRE.high },
+  max: { type: 'enabled', reasoning_effort: DEEPSEEK_WIRE.max },
 };
 
 function toOpenAiToolChoice(choice: ToolChoice): OpenAI.ChatCompletionToolChoiceOption {
@@ -704,7 +695,7 @@ function buildCommonBody(req: LlmRequest, provider: ProviderId): OpenAiCompatibl
   // would reject it), and `body` is spread LAST below so the mapped field wins over any providerOptions echo.
   if (req.reasoningEffort !== undefined) {
     if (provider === 'openai') {
-      body.reasoning_effort = OPENAI_REASONING_EFFORT[req.reasoningEffort];
+      body.reasoning_effort = OPENAI_WIRE[req.reasoningEffort];
     } else if (provider === 'deepseek') {
       body.thinking = DEEPSEEK_THINKING[req.reasoningEffort];
     }

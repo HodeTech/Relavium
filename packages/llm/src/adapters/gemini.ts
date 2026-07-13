@@ -10,7 +10,9 @@ import type {
 } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
+import { catalogModel } from '../catalog/lookup.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
+import { GEMINI_WIRE, reasoningBudgetFor, toGeminiThinkingLevel } from '../reasoning-wire.js';
 import { GeminiToolCallIds, normalizeToolCall, toWire } from '../tool-normalizer.js';
 import { UnsupportedCapabilityError } from '../errors.js';
 import type {
@@ -57,16 +59,6 @@ import {
  */
 
 const PROVIDER = 'gemini';
-/** ADR-0066: the normalized reasoning-effort tier → Gemini's native `thinkingConfig.thinkingLevel` enum values.
- *  Gemini tops out at HIGH, so `max`→HIGH (a coarsening); it has no universal disable (a Pro model rejects budget
- *  0), so `off` degrades to the lowest tier MINIMAL. The loose config Record takes the enum's string value directly. */
-const GEMINI_THINKING_LEVEL: Record<ReasoningEffort, 'MINIMAL' | 'LOW' | 'MEDIUM' | 'HIGH'> = {
-  off: 'MINIMAL',
-  low: 'LOW',
-  medium: 'MEDIUM',
-  high: 'HIGH',
-  max: 'HIGH',
-};
 
 /**
  * Gemini's common-path capability surface (restricted tool schema; ids synthesized). 1.AE wires
@@ -569,18 +561,51 @@ const GEMINI_RESPONSE_MODALITY: Record<OutputModality, string> = {
  */
 function buildThinkingConfig(
   reasoningEffort: ReasoningEffort,
+  model: string,
+  maxTokens: number | undefined,
   providerOptions: LlmRequest['providerOptions'],
-): Record<string, unknown> {
+): Record<string, unknown> | undefined {
   const poThinking: Record<string, unknown> =
     providerOptions !== undefined && isRecord(providerOptions['thinkingConfig'])
       ? providerOptions['thinkingConfig']
       : {};
   const surfaceThoughts = reasoningEffort !== 'off' && poThinking['includeThoughts'] === undefined;
-  return {
+  const withThoughts = (config: Record<string, unknown>): Record<string, unknown> => ({
     ...poThinking,
-    thinkingLevel: GEMINI_THINKING_LEVEL[reasoningEffort],
+    ...config,
     ...(surfaceThoughts ? { includeThoughts: true } : {}),
-  };
+  });
+
+  const controls = catalogModel(model)?.reasoning;
+
+  // THE MODEL DECIDES THE FIELD. `gemini-2.5-*` take `thinkingBudget`; `gemini-3.x` take `thinkingLevel`. The
+  // shipped adapter sent `thinkingLevel` to every reasoning model, and our only two shipped Gemini rows are 2.5 —
+  // so `/effort` on Gemini has been sending a parameter Google's docs say those models do not support.
+  if (controls?.effortValues !== undefined) {
+    const wire = reasoningEffort === 'off' ? undefined : GEMINI_WIRE[reasoningEffort];
+    // `off` is not a thinkingLevel: MINIMAL is the *lowest* level, not an off switch, and a model set to it still
+    // thinks (and still bills for it). An effort-shaped Gemini model has no budget field to zero, so `off` is not
+    // expressible at all — `acceptedTiers` never offers it, and if one reached here anyway we withhold rather
+    // than silently substitute MINIMAL for "off", which is the bug we are removing.
+    return wire === undefined
+      ? undefined
+      : withThoughts({ thinkingLevel: toGeminiThinkingLevel(wire) });
+  }
+
+  if (controls?.budgetTokens !== undefined) {
+    const range = controls.budgetTokens;
+    if (reasoningEffort === 'off') {
+      // Disabling IS `thinkingBudget: 0` — and only a model whose floor is zero can express it. `gemini-2.5-pro`
+      // has `min: 128` ("N/A: Cannot disable thinking"), so `acceptedTiers` never offers `off` for it.
+      return range.min === 0 ? withThoughts({ thinkingBudget: 0 }) : undefined;
+    }
+    const ceiling = maxTokens ?? catalogModel(model)?.maxOutputTokens ?? range.max ?? range.min;
+    return withThoughts({ thinkingBudget: reasoningBudgetFor(reasoningEffort, range, ceiling) });
+  }
+
+  // The model reasons but publishes no control (or is not in the catalog at all — a custom endpoint). Withhold
+  // the field: a guess here is exactly what put a rejected value on the wire in the first place.
+  return undefined;
 }
 
 /** Lower a canonical request into the Gemini request shape (system → `systemInstruction`, etc.). */
@@ -607,8 +632,18 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
     config['maxOutputTokens'] = req.maxTokens;
   }
   if (req.reasoningEffort !== undefined) {
-    // ADR-0066: Gemini's tier-native thinking control — see {@link buildThinkingConfig} for the deep-merge rationale.
-    config['thinkingConfig'] = buildThinkingConfig(req.reasoningEffort, req.providerOptions);
+    // ADR-0066/0071: the reasoning control is PER MODEL — `thinkingLevel` for Gemini 3, `thinkingBudget` for
+    // Gemini 2.5. See {@link buildThinkingConfig}. `undefined` means the model exposes no control we can prove,
+    // so the field is WITHHELD entirely rather than guessed at (and any caller `thinkingConfig` still stands).
+    const thinkingConfig = buildThinkingConfig(
+      req.reasoningEffort,
+      req.model,
+      req.maxTokens,
+      req.providerOptions,
+    );
+    if (thinkingConfig !== undefined) {
+      config['thinkingConfig'] = thinkingConfig;
+    }
   }
   if (req.outputModalities !== undefined && req.outputModalities.some((m) => m !== 'text')) {
     // Lower the node's non-text output_modalities to Gemini `responseModalities` (inline media-out,

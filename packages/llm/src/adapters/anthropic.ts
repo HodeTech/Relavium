@@ -1,10 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk';
 
 import { mediaModalityOf } from '@relavium/shared';
-import type { AbortSignalLike, ContentPart, ReasoningEffort, StopReason } from '@relavium/shared';
+import type { AbortSignalLike, ContentPart, StopReason } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
+import { catalogModel } from '../catalog/lookup.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
+import { ANTHROPIC_WIRE, reasoningBudgetFor } from '../reasoning-wire.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
   CapabilityFlags,
@@ -46,12 +48,8 @@ const PROVIDER = 'anthropic';
 const DEFAULT_MAX_TOKENS = 4096;
 /** Anthropic's API caps `temperature` at 1 (the shared contract's envelope is the wider [0, 2]). */
 const MAX_TEMPERATURE = 1;
-/** ADR-0066: the normalized reasoning-effort tier → Anthropic's native `output_config.effort` levels. Anthropic has
- *  a native `max`, so all four non-`off` tiers map 1:1; `off` is handled separately (thinking disabled). */
-const ANTHROPIC_REASONING_EFFORT: Record<
-  Exclude<ReasoningEffort, 'off'>,
-  'low' | 'medium' | 'high' | 'max'
-> = { low: 'low', medium: 'medium', high: 'high', max: 'max' };
+// The tier → wire map moved to `reasoning-wire.ts` (ADR-0071 §6): `acceptedTiers` must compose it with the
+// catalog's per-model values, and two copies of "what we send a provider" are two chances to disagree.
 
 /**
  * Anthropic supports the full common-path surface; provider-specific features go via
@@ -485,19 +483,40 @@ function buildCommonBody(
     };
   }
   if (req.reasoningEffort !== undefined) {
-    // ADR-0066: Anthropic's tier-native reasoning control — `output_config.effort` (the level) + ADAPTIVE thinking
-    // to enable it (no token budget: the tier-native path avoids the legacy budget_tokens constraint). `off` DISABLES
-    // thinking. The effort level MERGES alongside any structured-output `format` already on output_config. Anthropic
-    // has a native `max` tier, so all five normalized tiers map 1:1 (no coarsening here).
+    // ADR-0066/0071: the reasoning control is PER MODEL, and Anthropic has BOTH shapes in play.
+    //
+    //   • effort-shaped (`claude-opus-4-8`, …) → `output_config.effort` + ADAPTIVE thinking.
+    //   • budget-shaped (`claude-haiku-4-5` — NO effort axis at all) → the legacy `thinking.budget_tokens`.
+    //
+    // The shipped adapter sent `output_config.effort` to BOTH. ADR-0066 filed the token-budget shape as "legacy" —
+    // and it is, for the industry. It is not legacy for `claude-haiku-4-5`, which is one of the four Claude models
+    // we ship and which publishes a budget and no effort ladder.
+    //
+    // `off` is neither shape: it is `thinking: {type:'disabled'}`, an independent switch that works on both.
+    const controls = catalogModel(req.model)?.reasoning;
     if (req.reasoningEffort === 'off') {
       body.thinking = { type: 'disabled' };
-    } else {
+    } else if (controls?.effortValues !== undefined) {
       body.thinking = { type: 'adaptive' };
       body.output_config = {
         ...body.output_config,
-        effort: ANTHROPIC_REASONING_EFFORT[req.reasoningEffort],
+        // The effort level MERGES alongside any structured-output `format` already on output_config.
+        effort: ANTHROPIC_WIRE[req.reasoningEffort],
+      };
+    } else if (controls?.budgetTokens !== undefined) {
+      // Anthropic requires `budget_tokens < max_tokens`, so the ceiling is the REQUEST's own output cap — which is
+      // exactly why the catalog's `{ min: 1024 }` (haiku publishes no max) is not enough on its own.
+      body.thinking = {
+        type: 'enabled',
+        budget_tokens: reasoningBudgetFor(
+          req.reasoningEffort,
+          controls.budgetTokens,
+          Math.max(controls.budgetTokens.min, (req.maxTokens ?? DEFAULT_MAX_TOKENS) - 1),
+        ),
       };
     }
+    // …and a model that publishes NO control (or is not in the catalog — a custom endpoint) gets the field
+    // WITHHELD. A guess is what put a rejected value on the wire in the first place.
   }
   if (req.temperature !== undefined) {
     // The shared contract is the provider-agnostic [0, 2] envelope (common.ts); Anthropic's API

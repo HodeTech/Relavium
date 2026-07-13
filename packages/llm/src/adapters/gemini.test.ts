@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { AbortSignalLike } from '@relavium/shared';
+import type { AbortSignalLike, ReasoningEffort } from '@relavium/shared';
 
 import { UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
@@ -477,56 +477,79 @@ describe('Gemini adapter — request building (buildGeminiRequest)', () => {
     });
   });
 
-  it('maps the reasoning-effort tier to thinkingConfig.thinkingLevel + includeThoughts on a thinking tier (ADR-0066)', () => {
-    // A non-off tier also sets includeThoughts:true so raising effort SURFACES the reasoning it bills for (the only
-    // switch that returns Gemini thought parts). All five tiers assert thinkingLevel; medium is the picker default.
+  /**
+   * THE LIVE BUG, and its fix (ADR-0071 §6). The reasoning field is chosen PER MODEL, not per adapter.
+   *
+   * The test these replace asserted `thinkingLevel` for every tier on `gemini-2.5-flash` — and its own comment
+   * said "a Pro model rejects budget 0", so the author already suspected the shape was not universal. It is not:
+   * Google's docs for the `generateContent` API this adapter calls state that **Gemini 2.5 does not support
+   * `thinkingLevel` at all** and takes `thinkingBudget` instead. `gemini-2.5-flash` and `gemini-2.5-pro` are the
+   * only two Gemini rows we ship, so `/effort` on Gemini has been sending a parameter the models do not take.
+   */
+  it('a BUDGET-shaped model (gemini-2.5-*) gets thinkingBudget — NOT thinkingLevel', () => {
+    // Catalog: gemini-2.5-flash → { toggle, budgetTokens: { min: 0, max: 24576 } }. No effort axis.
+    const built = (effort: ReasoningEffort): unknown =>
+      buildGeminiRequest({ ...REQ, reasoningEffort: effort, maxTokens: 8192 }).config[
+        'thinkingConfig'
+      ];
+
+    expect(built('high')).toEqual({ thinkingBudget: 6144, includeThoughts: true }); // 75% of [0, 8192]
+    expect(built('low')).toEqual({ thinkingBudget: 2048, includeThoughts: true }); // 25%
+    expect(built('max')).toEqual({ thinkingBudget: 8192, includeThoughts: true }); // all of it
+    // `off` on Gemini is `thinkingBudget: 0` — the real disable — never MINIMAL, which still thinks and still bills.
+    expect(built('off')).toEqual({ thinkingBudget: 0 });
+    expect('thinkingConfig' in buildGeminiRequest(REQ).config).toBe(false); // unset ⇒ omitted
+  });
+
+  it('an EFFORT-shaped model (gemini-3.x) gets thinkingLevel — the shape follows the model', () => {
+    const req: LlmRequest = { ...REQ, model: 'gemini-3.5-flash' }; // catalog: effortValues
     expect(
-      buildGeminiRequest({ ...REQ, reasoningEffort: 'high' }).config['thinkingConfig'],
-    ).toEqual({
-      thinkingLevel: 'HIGH',
-      includeThoughts: true,
-    });
-    // Gemini tops out at HIGH — `max` coarsens to it (no separate xhigh/max tier).
-    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'max' }).config['thinkingConfig']).toEqual(
+      buildGeminiRequest({ ...req, reasoningEffort: 'high' }).config['thinkingConfig'],
+    ).toEqual({ thinkingLevel: 'HIGH', includeThoughts: true });
+    // Gemini's ladder stops at HIGH — `max` coarsens onto it, honestly.
+    expect(buildGeminiRequest({ ...req, reasoningEffort: 'max' }).config['thinkingConfig']).toEqual(
       {
         thinkingLevel: 'HIGH',
         includeThoughts: true,
       },
     );
-    expect(
-      buildGeminiRequest({ ...REQ, reasoningEffort: 'medium' }).config['thinkingConfig'],
-    ).toEqual({
-      thinkingLevel: 'MEDIUM',
-      includeThoughts: true,
-    });
-    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'low' }).config['thinkingConfig']).toEqual(
-      {
-        thinkingLevel: 'LOW',
-        includeThoughts: true,
-      },
-    );
-    // Gemini has no universal disable (a Pro model rejects budget 0) — `off` degrades to the lowest tier and does
-    // NOT force thought output on (minimal thinking).
-    expect(buildGeminiRequest({ ...REQ, reasoningEffort: 'off' }).config['thinkingConfig']).toEqual(
-      {
-        thinkingLevel: 'MINIMAL',
-      },
-    );
-    expect('thinkingConfig' in buildGeminiRequest(REQ).config).toBe(false); // unset ⇒ omitted (provider default)
   });
 
-  it('deep-merges the tier onto a caller providerOptions.thinkingConfig — sibling keys survive (ADR-0066)', () => {
-    // A caller who enabled thought output + a budget must not lose them when effort is also set: the canonical
-    // thinkingLevel wins on its one key, includeThoughts:false is respected, and thinkingBudget survives.
+  it('gemini-2.5-pro CANNOT be turned off — the field is WITHHELD, never downgraded to MINIMAL', () => {
+    // Google: "N/A: Cannot disable thinking". Catalog: budgetTokens.min = 128. `acceptedTiers` never offers `off`
+    // for it, and if one arrives anyway the adapter withholds rather than substituting a value that neither
+    // disables thinking nor is one the model takes. Silently billing a user for reasoning they switched OFF is
+    // the worst reading of this bug, and it is the one the old code shipped.
     const built = buildGeminiRequest({
       ...REQ,
+      model: 'gemini-2.5-pro',
+      reasoningEffort: 'off',
+    }).config;
+    expect('thinkingConfig' in built).toBe(false);
+  });
+
+  it('a model the catalog does not know gets NO reasoning field — a guess is what broke this', () => {
+    const built = buildGeminiRequest({
+      ...REQ,
+      model: 'some-custom-endpoint-model',
       reasoningEffort: 'high',
-      providerOptions: { thinkingConfig: { includeThoughts: false, thinkingBudget: 2048 } },
+    }).config;
+    expect('thinkingConfig' in built).toBe(false);
+  });
+
+  it('deep-merges onto a caller providerOptions.thinkingConfig — sibling keys survive (ADR-0066)', () => {
+    // A caller who set thought output must not lose it when effort is also set: the canonical key wins on ITS
+    // key, and a non-colliding sibling survives.
+    const built = buildGeminiRequest({
+      ...REQ,
+      model: 'gemini-3.5-flash', // effort-shaped, so `thinkingLevel` is the canonical key here
+      reasoningEffort: 'high',
+      providerOptions: { thinkingConfig: { includeThoughts: false, topK: 5 } },
     });
     expect(built.config['thinkingConfig']).toEqual({
       thinkingLevel: 'HIGH', // canonical wins on this key
       includeThoughts: false, // the caller's explicit choice is NOT overridden
-      thinkingBudget: 2048, // a non-colliding sibling survives
+      topK: 5, // a non-colliding sibling survives
     });
   });
 
