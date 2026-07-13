@@ -87,6 +87,7 @@ export async function agentRunCommand(
     // completely — the turn runs, the authored knob does nothing, and the bill arrives at the provider's default.
     // STDERR, never stdout: `--json` owns stdout, and a warning line mid-stream is a parse error downstream.
     onEffortWithheld: onceEffortNotice((note) => deps.io.writeErr(`warning: ${note}\n`)),
+    onUnpriced: (note) => deps.io.writeErr(`warning: ${note}\n`),
     agentRef: args.agent,
     cwd: deps.global.cwd,
     projectConfigDir,

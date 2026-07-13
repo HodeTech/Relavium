@@ -75,3 +75,24 @@ export function onceEffortNotice(sink: (note: string) => void): (note: string) =
     sink(note);
   };
 }
+
+/**
+ * Integer micro-cents → a plain USD string (1 USD = 1e8 micro-cents), fixed-decimal so a tiny cap reads `$0.00`
+ * rather than `$1e-8`. Two decimals is the granularity a cost cap is ever set at; a sub-cent cap rounds to `$0.00`,
+ * which is honest — it is effectively "block everything".
+ */
+export function capUsd(microcents: number): string {
+  return `$${(microcents / 100_000_000).toFixed(2)}`;
+}
+
+/**
+ * What we tell a user when a turn ran on a model we could not PRICE (ADR-0071 §K7).
+ *
+ * A cost cap on an unpriced model is a hole: the governor cannot estimate a turn's cost, so it degrades to `allow`
+ * — the right trade for a self-hosted model with ~no metered cost, but a false sense of safety if said in silence.
+ * One sentence, everywhere, so the chat transcript, `relavium run`, `agent run`, and the resumed `gate` all say it
+ * the same way. `strict_cost_cap` is named as the block-instead escape hatch, and `models pricing` as the fix.
+ */
+export function unpricedModelNote(model: string, capMicrocents: number): string {
+  return `${model} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${model}\`, or turn on strict_cost_cap to refuse an unpriced model.`;
+}

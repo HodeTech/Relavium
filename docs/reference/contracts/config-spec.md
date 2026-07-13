@@ -160,6 +160,8 @@ on_exceed = "pause_for_approval"   # fail | pause_for_approval | warn — when a
 strict_cost_cap = false            # ADR-0071 §K7: refuse a turn on a model we cannot PRICE. Default false — the cap
                                    # degrades to allow with a one-time notice (an unpriced model is a hole in it);
                                    # true blocks the turn. `models pricing <model>` closes the hole either way.
+                                   # INERT without a positive max_cost_microcents: with no cap there is nothing to
+                                   # enforce, so strict_cost_cap does nothing until a cap is also set.
 allowed_commands = []              # !-shell allowlist (ADR-0061): EXACT full-command-string match; EMPTY/absent ⇒ !-shell disabled
 allowed_command_globs = []         # opt-in glob form of the !-shell allowlist (riskier); empty/absent ⇒ none
 ```

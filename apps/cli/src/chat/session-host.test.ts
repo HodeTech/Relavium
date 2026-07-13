@@ -838,6 +838,36 @@ describe('buildGovernorWiring', () => {
     expect(typeof wiring?.updateCost).toBe('function');
   });
 
+  it('an UNPRICED model degrades to allow AND forwards the note to onUnpriced (ADR-0071 §K7)', async () => {
+    const notes: string[] = [];
+    const wiring = buildGovernorWiring(
+      { ...EMPTY_CHAT, maxCostMicrocents: 1_000_000, onExceed: 'fail' },
+      undefined,
+      undefined,
+      undefined,
+      (note) => notes.push(note),
+    );
+    // A model neither the catalog nor a user prices — the pre-egress estimate throws, and the governor degrades to
+    // allow. It must not reject (an unpriced self-hosted model is not a failure) but it must SAY so, once.
+    await expect(wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 })).resolves.toBeUndefined();
+    await expect(wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 })).resolves.toBeUndefined();
+    expect(notes).toHaveLength(1); // deduped per model
+    expect(notes[0]).toContain('my-self-hosted-model');
+    expect(notes[0]).toContain('has no price');
+  });
+
+  it('strict_cost_cap BLOCKS an unpriced model instead of degrading (ADR-0071 §K7)', async () => {
+    const wiring = buildGovernorWiring({
+      ...EMPTY_CHAT,
+      maxCostMicrocents: 1_000_000,
+      onExceed: 'warn', // strict overrides on_exceed — a hard fail regardless
+      strictCostCap: true,
+    });
+    await expect(
+      wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 }),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
+  });
+
   it('on_exceed:fail — preEgress rejects with BudgetExceededError once the cap is exceeded', async () => {
     const wiring = buildGovernorWiring({ ...EMPTY_CHAT, maxCostMicrocents: 1, onExceed: 'fail' });
     wiring?.updateCost(999_999); // cumulative now far past the 1-microcent cap

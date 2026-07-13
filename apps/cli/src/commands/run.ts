@@ -13,7 +13,7 @@ import {
   buildEngine as defaultBuildEngine,
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
-import { onceEffortNotice } from '../chat/effort-notice.js';
+import { onceEffortNotice, unpricedModelNote } from '../chat/effort-notice.js';
 import { createCliHost } from '../engine/host.js';
 import {
   connectWorkflowMcp,
@@ -207,7 +207,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // governor already dedups per model. STDERR, never stdout (`--json`). `budget.strict_cost_cap` blocks instead.
     const onUnpriced = (model: string, capMicrocents: number): void =>
       deps.io.writeErr(
-        `warning: ${model} has no price, so the ${capMicrocents}-micro-cent budget cap does not apply to it. Price it with \`relavium models pricing ${model}\`, or set \`budget.strict_cost_cap\` to refuse it.\n`,
+        `warning: ${unpricedModelNote(model, capMicrocents)}\n`,
       );
     let engineOptions: BuildEngineOptions = {
       providers,

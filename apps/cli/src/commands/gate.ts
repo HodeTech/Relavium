@@ -18,7 +18,7 @@ import {
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
 import { createHistoryCheckpointer } from '../engine/checkpointer.js';
-import { onceEffortNotice } from '../chat/effort-notice.js';
+import { onceEffortNotice, unpricedModelNote } from '../chat/effort-notice.js';
 import { createCliHost } from '../engine/host.js';
 import {
   sweepHostMediaBestEffort as defaultSweepMedia,
@@ -227,6 +227,12 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       // withheld here too — and this surface has no other safety net (no picker, no footer, no client-side check).
       // stderr, never stdout (`--json`).
       onEffortWithheld: onceEffortNotice((note) => deps.io.writeErr(`warning: ${note}\n`)),
+      // ADR-0071 §K7: a resumed agent node on an unpriced model degrades to `allow`, so `budget.max_cost_microcents`
+      // did not apply to it — say so on stderr (never stdout, `--json`). `budget.strict_cost_cap` blocks instead.
+      onUnpriced: (model, capMicrocents) =>
+        deps.io.writeErr(
+          `warning: ${unpricedModelNote(model, capMicrocents)}\n`,
+        ),
       // 2.5.A (ADR-0055): wire the SAME read+write fs + process ToolHost the `relavium run` path wires, jailed
       // to the ORIGINAL run's project root (`saveToRoot` — the original `runs.project_root` when it still exists
       // on this machine, else the resumer's cwd, exactly like the `save_to` root) at the resolved `fs_scope`. So a

@@ -41,7 +41,7 @@ import { createProviderResolver, type ProviderResolver } from '../engine/provide
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
 import { CliError } from '../process/errors.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
-import { effortRejectedNote, effortUnavailableNote } from './effort-notice.js';
+import { effortRejectedNote, effortUnavailableNote, unpricedModelNote } from './effort-notice.js';
 import { resolveChatAgent } from './agent-source.js';
 
 /**
@@ -618,9 +618,7 @@ export function buildGovernorWiring(
       ? {}
       : {
           onUnpriced: (model: string, capMicrocents: number) =>
-            onUnpriced(
-              `${model} has no price, so the cost cap ($${(capMicrocents / 100_000_000).toString()}/session) does not apply to it. Price it with \`relavium models pricing ${model}\`, or set [chat] strict_cost_cap to refuse an unpriced model.`,
-            ),
+            onUnpriced(unpricedModelNote(model, capMicrocents)),
         }),
     emit: (event) => {
       // `warn` is non-blocking BY CONTRACT. A misbehaving warn surface must never reject this emit — a
