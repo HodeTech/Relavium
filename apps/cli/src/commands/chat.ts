@@ -44,8 +44,12 @@ import {
   type ChatMode,
 } from '../chat/chat-mode.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
-import { effortRejectedNote, effortUnavailableNote, onceEffortNotice } from '../chat/effort-notice.js';
-import { effortTiersFor } from '../chat/effort-notice.js';
+import {
+  effortRejectedNote,
+  effortTiersFor,
+  effortUnavailableNote,
+  onceEffortNotice,
+} from '../chat/effort-notice.js';
 import {
   createSessionPersister,
   makeCatalogIdResolver,
