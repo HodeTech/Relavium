@@ -1,4 +1,4 @@
-import { catalogModel, effortTiersFor as seamEffortTiersFor } from '@relavium/llm';
+import { effortTiersFor as seamEffortTiersFor } from '@relavium/llm';
 import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
 
 import type { ModelPickerKey } from './model-picker.js';
@@ -16,7 +16,7 @@ import type { ModelPickerKey } from './model-picker.js';
  * Two surfaces route the SAME fold (standalone `relavium chat` + the in-Home live chat); the accept is UNIFORM (call
  * `onSetEffort` + note), so — unlike the model picker's surface-divergent reseat-vs-default-write accept — no
  * per-surface branching lives here. Offered only when the model has a tier to offer; a model with none never opens
- * this overlay (the surface shows {@link effortUnavailableNote} instead). The pure fold + state live here; the ink
+ * this overlay (the surface shows `effortUnavailableNote` instead). The pure fold + state live here; the ink
  * view is the shared {@link effort-tier-list.tsx} `EffortTierList`.
  */
 export interface EffortPickerState {
@@ -67,45 +67,11 @@ export function canControlEffort(model: string | undefined, setterWired: boolean
  * Empty when the model does not reason, publishes no controllable tier (`deepseek-reasoner`), or is not in the
  * catalog at all (a custom endpoint, or one newer than our snapshot). All three mean the same thing to the
  * overlay — there is nothing to offer — but NOT the same thing to the user, so the surfaces distinguish them in
- * what they say (see {@link effortUnavailableNote}).
+ * what they say (see `chat/effort-notice.ts`).
  */
 export function effortTiersFor(model: string): readonly ReasoningEffort[] {
   const accepted = seamEffortTiersFor(model);
   return REASONING_EFFORTS.filter((tier) => accepted.has(tier)); // canonical order, never the Set's
-}
-
-/**
- * Why this model has no effort control — the sentence a surface shows instead of a dead overlay.
- *
- * The two causes need different words because they need different ACTIONS. A model we have no catalog row for
- * might simply be newer than our snapshot, and a refresh could give it back its control; a model that publishes
- * no knob will never have one, however often we refresh. Saying "no reasoning control" for both, as the old
- * heuristic effectively did, tells the user nothing they can act on.
- */
-export function effortUnavailableNote(model: string): string {
-  return catalogModel(model) === undefined
-    ? `${model} is not in Relavium's model catalog, so its reasoning control is unknown — no tier is sent. Run \`relavium models refresh\` if the model is newer than the catalog.`
-    : `${model} publishes no controllable reasoning tier — a tier would be ignored.`;
-}
-
-/**
- * Why THIS tier is not available on this model, and what is — the sentence for a tier the model rejects.
- *
- * The engine's gate computes exactly this (`{kind:'rejected', requested, accepted}`) and every surface that can
- * reject a tier says it the same way, because a rejection the user cannot see is worse than the 400 it replaced:
- * the turn runs, the field is silently dropped, and the bill arrives at the provider's default tier.
- */
-export function effortRejectedNote(
-  model: string,
-  requested: ReasoningEffort,
-  accepted: ReadonlySet<ReasoningEffort> | readonly ReasoningEffort[],
-): string {
-  const list = REASONING_EFFORTS.filter((tier) =>
-    Array.isArray(accepted) ? accepted.includes(tier) : (accepted as ReadonlySet<ReasoningEffort>).has(tier),
-  );
-  return list.length === 0
-    ? effortUnavailableNote(model)
-    : `${model} does not accept reasoning effort '${requested}' — it takes ${list.join(', ')}. No tier is sent.`;
 }
 
 /** Clamp an index to `0..count-1`, or 0 for an empty list (a model with no tiers never opens the overlay). */

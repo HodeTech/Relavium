@@ -19,6 +19,7 @@ import {
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
+import { onceEffortNotice } from '../chat/effort-notice.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
   createSessionPersister,
@@ -510,6 +511,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // exactly this reason (Step-4b-3 Sonnet fix): a raw write lands on the alt buffer, where ink's next frame
         // overwrites it — the user is warned about their spend on a line that survives a single frame.
         onBudgetWarning: (warning) => store.notice(budgetWarningText(warning)),
+        // Same channel, same reason (ADR-0071 §6): a tier the bound model will not take is withheld at send, and
+        // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
+        // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
+        onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
       });
       return wireHomeChatSession(built, store, { open: true });
     };
@@ -558,6 +563,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         mcpRegistrations: config.mcpServers,
         ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
         onBudgetWarning: noteBudget,
+        // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
+        onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
       });
       // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
       // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).

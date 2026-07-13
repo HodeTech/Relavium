@@ -13,6 +13,7 @@ import {
   buildEngine as defaultBuildEngine,
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
+import { onceEffortNotice } from '../chat/effort-notice.js';
 import { createCliHost } from '../engine/host.js';
 import {
   connectWorkflowMcp,
@@ -197,7 +198,11 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // STDERR, never stdout: `--json` owns stdout, and a warning line in the middle of the machine-readable stream
     // would be a parse error for whatever is consuming the run. Silence was the alternative, and it is worse: the
     // run succeeds, the knob does nothing, and the bill arrives at the provider's default tier.
-    const onEffortWithheld = (note: string): void => deps.io.writeErr(`warning: ${note}\n`);
+    // `onceEffortNotice`: the gate is consulted on EVERY agent-node execution, so an agent inside a `loop` would
+    // otherwise print the same warning on every iteration. A withheld tier is a standing condition, not an event.
+    const onEffortWithheld = onceEffortNotice((note: string): void =>
+      deps.io.writeErr(`warning: ${note}\n`),
+    );
     let engineOptions: BuildEngineOptions = { providers, toolEnv, onEffortWithheld, ...mcpOption };
     let mediaCasRoot: string | undefined;
     if (opened !== undefined) {

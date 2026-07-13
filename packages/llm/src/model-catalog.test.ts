@@ -44,31 +44,10 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(opus?.contextWindowTokens).toBe(1_000_000);
   });
 
-  it('surfaces supportsReasoning from the STATIC registry tier (ADR-0066) — true for a reasoning model, false otherwise', () => {
-    const entries = mergeModelCatalog({ now: BEFORE_DEEPSEEK_DEPRECATION });
-    // A registry model tagged `reasoning: true` exposes the effort-controllable capability (incl. DeepSeek v4)…
-    expect(byId(entries, 'claude-opus-4-8')?.supportsReasoning).toBe(true);
-    expect(byId(entries, 'deepseek-v4-flash')?.supportsReasoning).toBe(true);
-    // …a registry model NOT so tagged (the legacy non-thinking `deepseek-chat`) is false — no effort sub-step.
-    expect(byId(entries, 'deepseek-chat')?.supportsReasoning).toBe(false);
-  });
-
-  it('a LIVE-only model gates via the §4 id heuristic — a known reasoning family ON, an ambiguous id OFF (ADR-0066)', () => {
-    const entries = mergeModelCatalog({
-      live: liveMap([
-        [
-          'openai',
-          [
-            { id: 'o5-mini', displayName: 'o5 mini' }, // a future o-series id (whole family reasons) ⇒ ON
-            { id: 'gpt-4o-2026', displayName: 'GPT-4o' }, // not a reasoning family ⇒ OFF (over-match would 400)
-          ],
-        ],
-      ]),
-      now: BEFORE_DEEPSEEK_DEPRECATION,
-    });
-    expect(byId(entries, 'o5-mini')?.supportsReasoning).toBe(true); // heuristic covers a new reasoning-family member
-    expect(byId(entries, 'gpt-4o-2026')?.supportsReasoning).toBe(false); // conservative — no false positive
-  });
+  // The two tests that lived here asserted `ModelCatalogEntry.supportsReasoning`, a field that is GONE (ADR-0071
+  // §6) along with the id heuristic behind it. They were asserting the wrong question — "does this model reason" —
+  // and the answer to the right one ("which tiers does it accept") is now catalog data, tested in
+  // `reasoning-wire.test.ts` and `catalog/lookup`'s `effortTiersFor` against every one of the 80 shipped models.
 
   it('availability: a static model NOT in a CONNECTED provider live list is dimmed, one present is available', () => {
     const entries = mergeModelCatalog({

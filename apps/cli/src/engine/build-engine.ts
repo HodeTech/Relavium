@@ -15,7 +15,7 @@ import {
 import { effortTiersFor, type PricingOverlay } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
-import { effortRejectedNote, effortUnavailableNote } from '../render/tui/effort-picker.js';
+import { effortRejectedNote, effortUnavailableNote } from '../chat/effort-notice.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv } from './tool-host/assemble.js';

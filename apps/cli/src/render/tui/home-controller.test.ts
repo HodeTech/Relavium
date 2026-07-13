@@ -1674,7 +1674,6 @@ function pickerEntry(
     priceKnown: true,
     available: true,
     deprecated: false,
-    supportsReasoning: false,
     ...partial,
   };
 }
@@ -1794,7 +1793,6 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
         pickerEntry({
           modelId: 'deepseek-v4-flash',
           displayName: 'DeepSeek V4 Flash',
-          supportsReasoning: true,
         }),
       ],
       currentEffort: 'low', // the existing effort default — the sub-list opens highlighted on it
@@ -1824,7 +1822,6 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
         pickerEntry({
           modelId: 'deepseek-v4-flash',
           displayName: 'DeepSeek V4 Flash',
-          supportsReasoning: true,
         }),
       ],
       // no currentEffort → port.currentEffort() is undefined
@@ -2086,7 +2083,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
     const { port } = makeModelsPort({
       entries: [
-        pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic', supportsReasoning: true }),
+        pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' }),
       ],
     });
     const c = createHomeController({
@@ -2130,7 +2127,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     const reseatChat = vi.fn(() => Promise.resolve(makeSession().session));
     const { port } = makeModelsPort({
       entries: [
-        pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic', supportsReasoning: true }),
+        pickerEntry({ modelId: 'claude-opus-4-8', provider: 'anthropic' }),
       ],
     });
     const c = createHomeController({

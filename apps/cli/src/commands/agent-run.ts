@@ -6,6 +6,7 @@ import type { SessionStreamHandleEvent } from '@relavium/core';
 import { nonInteractiveApprovalPrompt } from '../chat/chat-mode.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
 import { cassetteResolver, loadCassette } from '../chat/fixture.js';
+import { onceEffortNotice } from '../chat/effort-notice.js';
 import { buildChatSession, type BuiltChatSession } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
 import { surfaceMcpSkipped } from '../engine/mcp-servers.js';
@@ -82,6 +83,10 @@ export async function agentRunCommand(
   // FULLY offline: no `[[mcp_servers]]` registrations and an env-only secret resolver (never the keychain).
   const built = await (deps.buildSession ?? buildChatSession)({
     chat: config.chat,
+    // ADR-0071 §6: a one-shot invoke has no transcript and no picker, so a withheld tier would otherwise vanish
+    // completely — the turn runs, the authored knob does nothing, and the bill arrives at the provider's default.
+    // STDERR, never stdout: `--json` owns stdout, and a warning line mid-stream is a parse error downstream.
+    onEffortWithheld: onceEffortNotice((note) => deps.io.writeErr(`warning: ${note}\n`)),
     agentRef: args.agent,
     cwd: deps.global.cwd,
     projectConfigDir,

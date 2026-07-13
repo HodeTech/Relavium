@@ -250,47 +250,15 @@ export function isCanonicalModelId(value: string): value is CanonicalModelId {
 export const KNOWN_MODEL_IDS: readonly CanonicalModelId[] =
   Object.keys(MODEL_PRICING).filter(isCanonicalModelId);
 
-/**
- * A CONSERVATIVE model-id reasoning heuristic ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §4)
- * — the second arm of {@link modelSupportsReasoning}, applied ONLY to an id absent from the static registry (a
- * live-discovered model whose list endpoint omits a reasoning flag). Each arm is a family/pattern where the WHOLE
- * matched set reasons, so a new member of a known reasoning family (e.g. a next o-series id) gates correctly before
- * the registry is updated. Deliberately **narrow**: it does NOT prefix-match ambiguous families whose lineup mixes
- * reasoning and non-reasoning members by *version* (base Claude Sonnet, Gemini by version), because OVER-matching
- * would send the tier to a non-reasoning model and earn a provider rejection — strictly worse than the safe
- * under-match (no effort UX until the registry adds the model, the same maintenance shape as pricing). DeepSeek IS
- * matched, but only the `deepseek-v[4-9]` prefix (whose whole set serves the `thinking` param); its legacy
- * `deepseek-chat`/`-reasoner` aliases are not `v`-prefixed, so they never match. The `-chat` exclusion keeps
- * OpenAI's non-reasoning `gpt-5-chat` conversational variant — and any future `deepseek-v_-chat` non-thinking
- * variant — out.
- */
-export function reasoningModelIdHeuristic(model: string): boolean {
-  const m = model.toLowerCase();
-  if (/^o\d/.test(m)) return true; // OpenAI o-series (o1 / o3 / o4 / o5+) — the entire family reasons
-  if (m.startsWith('gpt-5') && !m.includes('chat')) return true; // the reasoning gpt-5 line (gpt-5-chat is non-reasoning)
-  if (m.startsWith('claude-opus')) return true; // Claude Opus reasons (extended thinking)
-  if (/^deepseek-v[4-9]/.test(m) && !m.includes('chat')) return true; // DeepSeek v4+ serves the `thinking` param; a future `-chat` non-thinking variant stays out (ADR-0066 §4)
-  if (m.includes('thinking')) return true; // an explicit "thinking" model id (e.g. a Gemini thinking variant)
-  return false;
-}
-
-/**
- * Whether a model supports a reasoning-effort control ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md)
- * §4) — the per-model capability the host projects to the engine's `resolveReasoning` gate (and the `/models`
- * picker's effort selector). The STATIC registry is authoritative for a canonical id (its `reasoning` flag, `true`
- * OR `false` — so an explicit non-reasoning member always wins); a NON-registry id (a live-discovered model) falls
- * back to the conservative {@link reasoningModelIdHeuristic}. A pure host-side helper, like {@link contextWindowForModel}.
- */
-export function modelSupportsReasoning(model: string): boolean {
-  if (isCanonicalModelId(model)) {
-    // Widen the literal-union entry to `ModelPricing` so `.reasoning` (absent on the non-reasoning members) reads as
-    // `boolean | undefined` — each entry `satisfies ModelPricing`, so this is assignment, not a cast. The registry
-    // is authoritative for a known id, so a false/absent flag is NOT overridden by the id heuristic.
-    const entry: ModelPricing = MODEL_PRICING[model];
-    return entry.reasoning === true;
-  }
-  return reasoningModelIdHeuristic(model);
-}
+// `reasoningModelIdHeuristic` / `modelSupportsReasoning` lived here, and are GONE (ADR-0071 §6).
+//
+// They answered "does this model reason" by pattern-matching its id — `/^o\d/`, `startsWith('gpt-5')`, and so on —
+// and that is not the question the wire asks. `gpt-5.4-pro` reasons AND rejects `low`; `claude-haiku-4-5` reasons
+// and has no effort ladder at all; `gemini-2.5-pro` reasons and cannot be turned off. A boolean answers `true` to
+// every one of them, and the tier the user picked went straight to the provider.
+//
+// The reasoning CONTROL is per-model data now — `catalog/snapshot.ts` carries what each model actually publishes,
+// and `effortTiersFor(id)` is the one predicate every surface asks. A heuristic over an id cannot know any of it.
 
 /**
  * The context window (max tokens) for a canonical model id, or `undefined` for an unknown id (e.g. a custom

@@ -44,11 +44,8 @@ import {
   type ChatMode,
 } from '../chat/chat-mode.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
-import {
-  effortRejectedNote,
-  effortTiersFor,
-  effortUnavailableNote,
-} from '../render/tui/effort-picker.js';
+import { effortRejectedNote, effortUnavailableNote, onceEffortNotice } from '../chat/effort-notice.js';
+import { effortTiersFor } from '../render/tui/effort-picker.js';
 import {
   createSessionPersister,
   makeCatalogIdResolver,
@@ -531,7 +528,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
     // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
     // why the knob they set did nothing.
-    onEffortWithheld: (note) => emitLiveNotice(deps.io, note),
+    onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
   });
   // The session now OWNS the live MCP connections (built.closeMcp). `runReplLoop`'s finally is the steady-state
   // teardown, but the build→loop window (opening history.db can throw) runs first — guard it so a pre-loop fault
@@ -694,7 +691,7 @@ export async function chatResumeCommand(
     // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
     // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
     // why the knob they set did nothing.
-    onEffortWithheld: (note) => emitLiveNotice(deps.io, note),
+    onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
     });
     closeMcp = resumed.closeMcp;
     surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
@@ -1407,6 +1404,9 @@ interface FreshChatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildSession: typeof buildChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+  /** Withheld-tier sink (ADR-0071 §6) — threaded exactly like {@link FreshChatWiringDeps.onBudgetWarning}, because a
+   *  `/clear` rebuild binds a NEW session and a session with no sink withholds a tier in silence. */
+  readonly onEffortWithheld: NonNullable<BuildChatSessionOptions['onEffortWithheld']>;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — carried into the rebuilt `ReplWiring` so a `/clear` re-drive
    *  keeps the full-screen render mode (else the mode reverts to the phase default mid-conversation). */
   readonly altScreen?: boolean | undefined;
@@ -1431,6 +1431,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
+    onEffortWithheld: deps.onEffortWithheld,
   });
   // The SAME signals `runReplLoop` used for the hoist (`deps.altScreen` is `[preferences].alt_screen`, carried here
   // precisely so a `/clear` re-drive keeps the mode) — so a rebuilt session cannot silently re-acquire the 4000-char
@@ -1538,6 +1539,7 @@ function createClearRebuild(params: {
     buildSession: params.buildSession,
     altScreen: params.altScreen,
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
+    onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(params.io, note)),
   };
   return (oldSessionId) => buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId));
 }
@@ -1610,6 +1612,9 @@ interface ReseatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildResumedSession: typeof buildResumedChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+  /** Withheld-tier sink (ADR-0071 §6) — a `/models` reseat binds a DIFFERENT model, which is precisely when a tier
+   *  that was fine a moment ago stops being accepted. Threaded like {@link ReseatWiringDeps.onBudgetWarning}. */
+  readonly onEffortWithheld: NonNullable<BuildChatSessionOptions['onEffortWithheld']>;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — carried into the rebuilt `ReplWiring` so a `/models` reseat
    *  keeps the full-screen render mode (else it reverts to the phase default after a mid-session model switch). */
   readonly altScreen?: boolean | undefined;
@@ -1667,6 +1672,7 @@ async function buildReseatWiring(
     ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
+    onEffortWithheld: deps.onEffortWithheld,
   });
   let seeded: { store: ChatStoreController; persister: SessionPersister };
   try {
@@ -1756,6 +1762,7 @@ function createReseatRebuild(params: {
     buildResumedSession: params.buildResumedSession,
     altScreen: params.altScreen,
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
+    onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(params.io, note)),
   };
   return (oldSessionId, target, carriedTranscript) =>
     buildReseatWiring(wiringDeps, oldSessionId, target, carriedTranscript);

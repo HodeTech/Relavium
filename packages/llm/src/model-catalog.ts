@@ -1,4 +1,4 @@
-import { MODEL_PRICING, modelSupportsReasoning, type ModelPricing } from './pricing.js';
+import { MODEL_PRICING, type ModelPricing } from './pricing.js';
 import type { ModelListing, ProviderId } from './types.js';
 
 /**
@@ -52,14 +52,6 @@ export interface ModelCatalogEntry {
   readonly deprecated: boolean;
   /** The effective ISO deprecation date — the earlier of the static and live dates (their union). */
   readonly deprecatedAt?: string;
-  /**
-   * Whether the model exposes a controllable reasoning-effort tier ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md)).
-   * Sourced from the STATIC registry only (`MODEL_PRICING[id].reasoning === true`) — the same authority as
-   * `modelSupportsReasoning`, so the picker's effort sub-step and the engine's `resolveReasoning` gate agree. A
-   * live-only / user-only id (no registry tier) is `false` (reasoning capability is a shipped-registry fact, never
-   * inferred from a discovery listing or a user price row).
-   */
-  readonly supportsReasoning: boolean;
 }
 
 /** Input to {@link mergeModelCatalog} — all plain data the host resolves and passes in (keeps the merge pure). */
@@ -199,7 +191,6 @@ function buildEntry(
     // id (authoritative — true or false), else the conservative id heuristic for a live-discovered id. So the
     // picker's effort sub-step lights up exactly for the models the engine will actually honor — including a newly
     // released reasoning family member absent from the registry.
-    supportsReasoning: modelSupportsReasoning(modelId),
   };
 }
 

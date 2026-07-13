@@ -101,7 +101,6 @@ function makeModelsPort(
     priceKnown: true,
     available: true,
     deprecated: false,
-    supportsReasoning: false,
   };
   let written: string | undefined;
   return {

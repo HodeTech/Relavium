@@ -129,12 +129,15 @@ export {
 } from './llm-error.js';
 
 // CostTracker + the canonical model-pricing table (1.B).
+// `modelSupportsReasoning` is GONE from this surface (ADR-0071 §6). It answered "does this model reason" — an id
+// heuristic over the hand-typed table — and that is not the question the wire asks: `gpt-5.4-pro` reasons AND
+// rejects `low`. It disagreed with the catalog on sixteen shipped models, and every disagreement was a tier shown
+// or accepted that the wire then dropped. `effortTiersFor` (below) is the one answer.
 export {
   MODEL_PRICING,
   KNOWN_MODEL_IDS,
   isCanonicalModelId,
   contextWindowForModel,
-  modelSupportsReasoning,
 } from './pricing.js';
 export type { ModelPricing, CanonicalModelId } from './pricing.js';
 // The pure live/static/user merge helper (ADR-0064 §6) — reused by every surface's model catalog / picker.

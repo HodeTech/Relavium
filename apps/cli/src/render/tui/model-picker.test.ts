@@ -23,7 +23,6 @@ function entry(
     priceKnown: true,
     available: true,
     deprecated: false,
-    supportsReasoning: false,
     ...partial,
   };
 }
@@ -174,8 +173,8 @@ describe('foldModelPickerKey — the ADR-0066 effort sub-step', () => {
   const reasoningState = (partial: Partial<ModelPickerState> = {}): ModelPickerState =>
     state({
       entries: [
-        entry({ modelId: 'claude-opus-4-8', displayName: 'Opus', supportsReasoning: true }),
-        entry({ modelId: 'deepseek-chat', displayName: 'DeepSeek', supportsReasoning: false }),
+        entry({ modelId: 'claude-opus-4-8', displayName: 'Opus' }),
+        entry({ modelId: 'deepseek-chat', displayName: 'DeepSeek' }),
       ],
       effortStep: true,
       ...partial,
@@ -260,7 +259,6 @@ describe('foldModelPickerKey — the ADR-0066 effort sub-step', () => {
             modelId: 'deepseek-reasoner',
             displayName: 'R',
             provider: 'deepseek',
-            supportsReasoning: true,
           }),
         ],
       }),
