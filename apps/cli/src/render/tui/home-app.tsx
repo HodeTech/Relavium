@@ -173,6 +173,7 @@ function ChatRegion(
       {/* The standalone `/effort` overlay in a live in-Home chat (ADR-0066 §6) — the shared tier list. */}
       {props.effortPicker !== undefined && (
         <EffortTierList
+          tiers={props.effortPicker.tiers}
           selected={props.effortPicker.selected}
           current={props.effortPicker.current}
           labelSuffix={props.effortPicker.model}

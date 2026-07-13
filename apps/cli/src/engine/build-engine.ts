@@ -11,7 +11,7 @@ import {
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
-import { modelSupportsReasoning, type PricingOverlay } from '@relavium/llm';
+import { acceptedTiers, catalogModel, type PricingOverlay } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
 import { createCliHost } from './host.js';
@@ -110,7 +110,12 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     keyFor: providers.keyFor,
     // ADR-0066: the per-model reasoning capability (static registry projection) — gates whether an authored agent's
     // reasoning_effort tier is sent to a workflow turn (withheld for a non-reasoning / custom model).
-    resolveReasoning: modelSupportsReasoning,
+    // ADR-0071 §6: the host projects WHICH TIERS the model accepts, not merely whether it reasons. `gpt-5.4-pro`
+    // reasons and rejects `low`; a boolean said `true` and let that straight through to a 400.
+    resolveEffortTiers: (model) => {
+      const entry = catalogModel(model);
+      return entry === undefined ? undefined : acceptedTiers(entry.provider, entry.reasoning);
+    },
     registry,
     tools,
     sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),

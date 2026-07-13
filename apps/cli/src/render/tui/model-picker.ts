@@ -1,5 +1,7 @@
 import type { ModelCatalogEntry, ProviderId } from '@relavium/llm';
-import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
+import type { ReasoningEffort } from '@relavium/shared';
+
+import { effortTiersFor } from './effort-picker.js';
 
 import { dropLastCodePoint } from './chat-input.js';
 
@@ -63,7 +65,12 @@ export interface ModelPickerState {
         readonly provider: ProviderId;
       }
     | undefined;
-  /** The highlighted index into {@link REASONING_EFFORTS} while in `'effort'` phase. */
+  /**
+   * The tiers the PENDING model accepts (ADR-0071 §6) — never the fixed five. Empty while no model is pending.
+   * `gpt-5.4-pro` rejects `low`; offering it a row the provider would 400 on is the bug this closes.
+   */
+  readonly effortTiers: readonly ReasoningEffort[];
+  /** The highlighted index into {@link ModelPickerState.effortTiers} while in `'effort'` phase. */
   readonly effortSelected: number;
   /** The session's currently-bound effort (the `✓` in the effort sub-list + the initial highlight); `undefined` ⇒
    *  no effort bound (the provider default), so the sub-list opens on a neutral middle tier. */
@@ -192,7 +199,11 @@ function acceptVisibleModel(
       ...(chosen.unavailableReason !== undefined ? { reason: chosen.unavailableReason } : {}),
     };
   }
-  if (state.effortStep && chosen.supportsReasoning) {
+  // The sub-step opens only if the model has a tier to OFFER. `supportsReasoning` was the old gate, and it is the
+  // wrong question: `deepseek-reasoner` reasons and exposes no controllable tier, so the old gate opened an overlay
+  // with five rows the model does not take.
+  const effortTiers = effortTiersFor(chosen.modelId);
+  if (state.effortStep && effortTiers.length > 0) {
     return {
       kind: 'state',
       state: {
@@ -203,7 +214,8 @@ function acceptVisibleModel(
           displayName: chosen.displayName,
           provider: chosen.provider,
         },
-        effortSelected: initialEffortIndex(state.currentEffort),
+        effortTiers,
+        effortSelected: initialEffortIndex(effortTiers, state.currentEffort),
         hint: undefined,
       },
     };
@@ -275,17 +287,17 @@ function foldEffortPhaseKey(
     return { kind: 'state', state: { ...state, phase: 'model', pending: undefined } };
   }
   if (key.upArrow === true) {
-    const next = clampSelection(state.effortSelected - 1, REASONING_EFFORTS.length);
+    const next = clampSelection(state.effortSelected - 1, state.effortTiers.length);
     return { kind: 'state', state: { ...state, effortSelected: next } };
   }
   if (key.downArrow === true) {
-    const next = clampSelection(state.effortSelected + 1, REASONING_EFFORTS.length);
+    const next = clampSelection(state.effortSelected + 1, state.effortTiers.length);
     return { kind: 'state', state: { ...state, effortSelected: next } };
   }
   if (key.return === true) {
     const pending = state.pending;
     const effort =
-      REASONING_EFFORTS[clampSelection(state.effortSelected, REASONING_EFFORTS.length)];
+      state.effortTiers[clampSelection(state.effortSelected, state.effortTiers.length)];
     // Defensive: a missing pending model (never expected — set on the transition) or an out-of-range tier backs out
     // to the model list rather than emitting a malformed accept.
     if (pending === undefined || effort === undefined) {
@@ -303,8 +315,15 @@ function foldEffortPhaseKey(
 }
 
 /** The effort sub-list's opening highlight: the session's bound effort, else a neutral middle tier (`'medium'`). */
-function initialEffortIndex(currentEffort: ReasoningEffort = 'medium'): number {
-  return Math.max(0, REASONING_EFFORTS.indexOf(currentEffort));
+function initialEffortIndex(
+  tiers: readonly ReasoningEffort[],
+  currentEffort: ReasoningEffort | undefined,
+): number {
+  // The old default was a bare `= 'medium'` — which `gpt-5-pro` (only `high`) does not accept, so the cursor
+  // could open on a row that is not in the list. `indexOf` returning -1 collapses to 0, which is always a tier
+  // the model takes, because the list only contains tiers the model takes.
+  const index = tiers.indexOf(currentEffort ?? 'medium');
+  return Math.max(0, index);
 }
 
 /* -------------------------------------------------------------------------------------------------- *

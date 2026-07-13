@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
-import { EFFORT_TIER_HINT, REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
+import { EFFORT_TIER_HINT, type ReasoningEffort } from '@relavium/shared';
 
 import { sanitizeInline } from './chat-projection.js';
 import { colorProps, dimProps } from './projection.js';
@@ -17,6 +17,11 @@ import { colorProps, dimProps } from './projection.js';
  * PURE: it owns no `useInput`; the surface routes keys to the fold and re-renders this from the resulting state.
  */
 export interface EffortTierListProps {
+  /**
+   * The tiers to show — the ones THIS MODEL accepts (ADR-0071 §6), never the fixed five. `gpt-5.4-pro` rejects
+   * `low` and `gemini-2.5-pro` cannot be turned off; offering a row the provider would 400 on is the bug.
+   */
+  readonly tiers: readonly ReasoningEffort[];
   /** The highlighted tier index (already clamped by the caller's fold, but re-clamped here for display safety). */
   readonly selected: number;
   /** The session's currently-bound effort — the `✓` marker; `undefined` ⇒ no tier bound (the provider default). */
@@ -30,10 +35,10 @@ export interface EffortTierListProps {
 }
 
 export function EffortTierList(props: Readonly<EffortTierListProps>): ReactElement {
-  const { selected, current, labelSuffix, footer, color } = props;
+  const { tiers, selected, current, labelSuffix, footer, color } = props;
   // Re-clamp for display: a caller could pass an out-of-range index (a shrunk source, a stale render) — never index
   // past the fixed five-row list.
-  const highlighted = Math.max(0, Math.min(selected, REASONING_EFFORTS.length - 1));
+  const highlighted = Math.max(0, Math.min(selected, tiers.length - 1));
   const suffix = labelSuffix === undefined || labelSuffix.length === 0 ? '' : ` · ${labelSuffix}`;
   return (
     <Box flexDirection="column" marginTop={1}>
@@ -41,7 +46,7 @@ export function EffortTierList(props: Readonly<EffortTierListProps>): ReactEleme
         Reasoning effort
         <Text {...dimProps(color)}>{sanitizeInline(suffix)}</Text>
       </Text>
-      {REASONING_EFFORTS.map((effort, index) => {
+      {tiers.map((effort, index) => {
         const isSelected = index === highlighted;
         const isCurrent = effort === current;
         const rowColor = isSelected ? colorProps(color, 'cyan') : {};

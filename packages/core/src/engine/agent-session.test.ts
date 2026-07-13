@@ -7,6 +7,7 @@ import type {
   ProviderId,
   StreamChunk,
 } from '@relavium/llm';
+import type { ReasoningEffort } from '@relavium/shared';
 import {
   AgentSchema,
   RunEventSchema,
@@ -796,7 +797,7 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
     const onSession = session(
       harness([textTurn('ok')], {
         resolveProvider: () => on.provider,
-        resolveReasoning: () => true,
+        resolveEffortTiers: () => new Set<ReasoningEffort>(['off', 'low', 'medium', 'high', 'max']),
       }).deps,
       reader,
     );
@@ -808,7 +809,7 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
     const offSession = session(
       harness([textTurn('ok')], {
         resolveProvider: () => off.provider,
-        resolveReasoning: () => false,
+        resolveEffortTiers: () => new Set<ReasoningEffort>(),
       }).deps,
       reader,
     );
@@ -838,8 +839,10 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
       },
     };
     const s = session(
-      harness([textTurn('ok')], { resolveProvider: () => provider, resolveReasoning: () => true })
-        .deps,
+      harness([textTurn('ok')], {
+        resolveProvider: () => provider,
+        resolveEffortTiers: () => new Set<ReasoningEffort>(['off', 'low', 'medium', 'high', 'max']),
+      }).deps,
       reader,
     );
     s.start();
@@ -877,8 +880,10 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
       },
     };
     const s = session(
-      harness([textTurn('ok')], { resolveProvider: () => provider, resolveReasoning: () => false })
-        .deps,
+      harness([textTurn('ok')], {
+        resolveProvider: () => provider,
+        resolveEffortTiers: () => new Set<ReasoningEffort>(),
+      }).deps,
       reader,
     );
     s.start();

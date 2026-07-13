@@ -65,7 +65,8 @@ import {
   type PreEgressHook,
 } from './agent-turn.js';
 import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
-import { gateReasoningEffort } from './reasoning-effort.js';
+import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
+import type { ResolveEffortTiers } from './reasoning-effort.js';
 import type {
   MediaJobSubmission,
   NodeExecContext,
@@ -99,7 +100,7 @@ export interface AgentRunnerDeps {
    * `reasoningEffort` send: a non-reasoning model would reject the field, so the tier is sent only when this
    * returns `true`. Absent or `undefined` ⇒ treated as NOT reasoning (safe — the field is not sent).
    */
-  readonly resolveReasoning?: (model: string) => boolean | undefined;
+  readonly resolveEffortTiers?: ResolveEffortTiers;
   /** The shared tool registry (1.T) the agent dispatches through (ADR-0037). */
   readonly registry: ToolRegistry;
   /** The registry's tool defs — the source of the LLM-visible schema + descriptions for granted tools. */
@@ -802,14 +803,13 @@ function resolveGenKnobs(
 ): { temperature?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort } {
   const temperature = node.temperature ?? agent.temperature;
   const maxTokens = node.max_tokens ?? agent.max_tokens;
-  // ADR-0066: send the reasoning-effort tier ONLY when the agent authored one AND the primary model is
-  // reasoning-capable (the shared {@link gateReasoningEffort} rule — a non-reasoning model would reject the field).
-  // The per-fallback-entry re-gate lives in the chain (a non-reasoning fallback entry strips the tier), so a failover
-  // to a different-capability model never carries an unsupported field.
-  const reasoningEffort = gateReasoningEffort(
-    agent.reasoning_effort,
-    agent.model,
-    deps.resolveReasoning,
+  // ADR-0066/0071: send the tier ONLY when the model is on record as ACCEPTING it — not merely as reasoning.
+  // `gpt-5.4-pro` reasons and rejects `low`; a boolean capability said `true` and let that straight through.
+  // A rejected tier is WITHHELD, never promoted to a neighbour (that would change behaviour and raise spend
+  // silently). The per-fallback-entry re-gate lives in the chain, so a failover to a different-capability model
+  // never carries a field it does not take.
+  const reasoningEffort = effortToSend(
+    gateReasoningEffort(agent.reasoning_effort, agent.model, deps.resolveEffortTiers),
   );
   return {
     ...(temperature === undefined ? {} : { temperature }),

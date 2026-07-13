@@ -1,4 +1,4 @@
-import { modelSupportsReasoning } from '@relavium/llm';
+import { acceptedTiers, catalogModel } from '@relavium/llm';
 import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
 
 import type { ModelPickerKey } from './model-picker.js';
@@ -17,7 +17,16 @@ import type { ModelPickerKey } from './model-picker.js';
  * here; the ink view is the shared {@link effort-tier-list.tsx} `EffortTierList`.
  */
 export interface EffortPickerState {
-  /** The highlighted index into {@link REASONING_EFFORTS}. */
+  /**
+   * The tiers THIS MODEL accepts, in canonical order ([ADR-0071](../../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §6).
+   *
+   * It used to be the fixed five. That is the F3 bug: `gpt-5.4-pro` rejects `low`, `gpt-5-pro` accepts only
+   * `high`, and `gemini-2.5-pro` cannot be turned off — yet every one of them was offered all five, and picking
+   * the wrong one produced an opaque provider 400. **The interactive path can no longer produce an illegal tier,
+   * because an illegal tier is not on the list.**
+   */
+  readonly tiers: readonly ReasoningEffort[];
+  /** The highlighted index into {@link EffortPickerState.tiers}. */
   readonly selected: number;
   /** The session's currently-bound effort (the `✓` + the opening highlight); `undefined` ⇒ the provider default, so
    *  the list opens on a neutral middle tier. */
@@ -39,7 +48,21 @@ export type EffortPickerStep =
  * standalone chat + the in-Home chat so the gate can never diverge between them.
  */
 export function canControlEffort(model: string | undefined, setterWired: boolean): boolean {
-  return setterWired && model !== undefined && modelSupportsReasoning(model);
+  return setterWired && model !== undefined && effortTiersFor(model).length > 0;
+}
+
+/**
+ * The tiers a model accepts, in canonical order — the picker's whole source of truth.
+ *
+ * Empty when the model does not reason, exposes no controllable tier (`deepseek-reasoner`), or is not in the
+ * catalog at all (a custom endpoint). All three mean the same thing to a surface: there is nothing to offer, so
+ * the overlay never opens and the informational notice shows instead.
+ */
+export function effortTiersFor(model: string): readonly ReasoningEffort[] {
+  const entry = catalogModel(model);
+  if (entry === undefined) return [];
+  const accepted = acceptedTiers(entry.provider, entry.reasoning);
+  return REASONING_EFFORTS.filter((tier) => accepted.has(tier)); // canonical order, never the Set's
 }
 
 /** Clamp an index to `0..count-1` (or 0 when the list is empty — never for the fixed non-empty tier list). */
@@ -53,7 +76,13 @@ export function initialEffortPickerState(
   model: string,
   current: ReasoningEffort | undefined,
 ): EffortPickerState {
-  return { selected: Math.max(0, REASONING_EFFORTS.indexOf(current ?? 'medium')), current, model };
+  const tiers = effortTiersFor(model);
+  // The opening highlight lands on the bound tier when the model accepts it. The old default was a bare
+  // `?? 'medium'` — which `gpt-5-pro` (only `high`) and `gpt-5.4-pro` (no `low`) do not necessarily accept, so
+  // the cursor could open on a row that is not there. `indexOf` returning -1 collapses to 0, which is always a
+  // tier the model takes, because the list only contains tiers the model takes.
+  const index = current === undefined ? tiers.indexOf('medium') : tiers.indexOf(current);
+  return { tiers, selected: Math.max(0, index), current, model };
 }
 
 /**
@@ -70,17 +99,17 @@ export function foldEffortPickerKey(
   if (key.upArrow === true) {
     return {
       kind: 'state',
-      state: { ...state, selected: clampSelection(state.selected - 1, REASONING_EFFORTS.length) },
+      state: { ...state, selected: clampSelection(state.selected - 1, state.tiers.length) },
     };
   }
   if (key.downArrow === true) {
     return {
       kind: 'state',
-      state: { ...state, selected: clampSelection(state.selected + 1, REASONING_EFFORTS.length) },
+      state: { ...state, selected: clampSelection(state.selected + 1, state.tiers.length) },
     };
   }
   if (key.return === true) {
-    const effort = REASONING_EFFORTS[clampSelection(state.selected, REASONING_EFFORTS.length)];
+    const effort = state.tiers[clampSelection(state.selected, state.tiers.length)];
     // Defensive: an out-of-range highlight (never expected — the fold clamps every move) closes rather than emitting
     // a malformed accept.
     return effort === undefined ? { kind: 'close' } : { kind: 'accept', effort };

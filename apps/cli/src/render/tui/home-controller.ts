@@ -717,6 +717,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         phase: 'model',
         effortStep,
         pending: undefined,
+        effortTiers: [], // no model pending yet — populated on the model→effort transition
         effortSelected: 0,
         currentEffort,
       },

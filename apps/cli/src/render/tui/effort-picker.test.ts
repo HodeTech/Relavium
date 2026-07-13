@@ -3,13 +3,23 @@ import { describe, expect, it } from 'vitest';
 
 import {
   canControlEffort,
+  effortTiersFor,
   foldEffortPickerKey,
   initialEffortPickerState,
   type EffortPickerState,
 } from './effort-picker.js';
 
 function state(partial: Partial<EffortPickerState> = {}): EffortPickerState {
-  return { selected: 0, current: undefined, model: 'deepseek-v4-flash', ...partial };
+  // `deepseek-v4-flash` accepts all five (its low/medium/high all coarsen onto one wire value, and `off` is the
+  // independent disable switch) — so the DEFAULT fixture is still a five-row list, and a test that wants a
+  // narrower model says so explicitly.
+  return {
+    tiers: [...REASONING_EFFORTS],
+    selected: 0,
+    current: undefined,
+    model: 'deepseek-v4-flash',
+    ...partial,
+  };
 }
 
 describe('canControlEffort', () => {
@@ -21,21 +31,63 @@ describe('canControlEffort', () => {
   it('is false for a non-reasoning model, an unbound model, or an unwired setter', () => {
     expect(canControlEffort('gpt-4o', true)).toBe(false); // gpt-4o is not a reasoning model
     expect(canControlEffort('deepseek-chat', true)).toBe(false); // the legacy non-thinking alias
+    // …and a model that REASONS but publishes no controllable tier is also false: opening a five-row overlay for
+    // it (as the old `supportsReasoning` gate did) offers five rows the model does not take.
+    expect(canControlEffort('deepseek-reasoner', true)).toBe(false);
     expect(canControlEffort(undefined, true)).toBe(false); // no bound model yet (pre session:started)
     expect(canControlEffort('claude-opus-4-8', false)).toBe(false); // setter not wired (a non-interactive driver)
   });
 });
 
-describe('initialEffortPickerState', () => {
-  it('opens on the bound effort when set', () => {
-    // 'high' is index 3 in [off, low, medium, high, max].
-    expect(initialEffortPickerState('m', 'high').selected).toBe(REASONING_EFFORTS.indexOf('high'));
-    expect(initialEffortPickerState('m', 'off').selected).toBe(REASONING_EFFORTS.indexOf('off'));
+describe('effortTiersFor + initialEffortPickerState — the picker can no longer OFFER an illegal tier', () => {
+  it('THE BUG: gpt-5.4-pro is offered {medium, high, max} — NOT `low`, NOT `off`', () => {
+    // The picker used to show all five to every reasoning model. Picking `low` on this one produced an opaque
+    // provider 400 — the maintainer's report. The interactive path cannot produce it now, because it is not a row.
+    expect(effortTiersFor('gpt-5.4-pro')).toEqual(['medium', 'high', 'max']);
   });
 
-  it('opens on a neutral middle tier (medium) when no effort is bound', () => {
-    const s = initialEffortPickerState('m', undefined);
-    expect(REASONING_EFFORTS[s.selected]).toBe('medium');
+  it('gpt-5-pro is offered ONE tier — a single-row list, which a boolean could never have produced', () => {
+    expect(effortTiersFor('gpt-5-pro')).toEqual(['high']);
+  });
+
+  it('gemini-2.5-pro is NOT offered `off` — Google: "N/A: Cannot disable thinking"', () => {
+    expect(effortTiersFor('gemini-2.5-pro')).not.toContain('off');
+  });
+
+  it('a model with no controllable tier, and an unknown model, offer NOTHING', () => {
+    expect(effortTiersFor('deepseek-reasoner')).toEqual([]); // reasons; publishes no control
+    expect(effortTiersFor('some-custom-endpoint-model')).toEqual([]); // not in the catalog at all
+  });
+
+  it('the tiers are in CANONICAL order (off → max), never the accepted-set insertion order', () => {
+    expect(effortTiersFor('claude-opus-4-8')).toEqual(['off', 'low', 'medium', 'high', 'max']);
+  });
+});
+
+describe('initialEffortPickerState', () => {
+  it('opens on the bound effort when the model accepts it', () => {
+    const s = initialEffortPickerState('claude-opus-4-8', 'high');
+    expect(s.tiers[s.selected]).toBe('high');
+  });
+
+  it('opens on `medium` when nothing is bound and the model accepts medium', () => {
+    const s = initialEffortPickerState('claude-opus-4-8', undefined);
+    expect(s.tiers[s.selected]).toBe('medium');
+  });
+
+  it('NEVER opens on a row the model does not have — the old `?? medium` default could', () => {
+    // gpt-5-pro accepts only `high`. The old code took `REASONING_EFFORTS.indexOf('medium')` = 2 and highlighted
+    // a row that, in a one-row list, does not exist. The highlight now always lands on a tier the model takes,
+    // because the list only contains tiers the model takes.
+    const s = initialEffortPickerState('gpt-5-pro', undefined);
+    expect(s.tiers).toEqual(['high']);
+    expect(s.selected).toBe(0);
+    expect(s.tiers[s.selected]).toBe('high');
+
+    // …and the same when the BOUND tier is one the model rejects (a model swap can leave a stale tier bound).
+    const stale = initialEffortPickerState('gpt-5.4-pro', 'low'); // gpt-5.4-pro rejects `low`
+    expect(stale.tiers).not.toContain('low');
+    expect(stale.tiers[stale.selected]).toBe('medium'); // the first row, never an index into thin air
   });
 
   it('carries the model + current through', () => {

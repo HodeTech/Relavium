@@ -887,6 +887,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       phase: 'model',
       effortStep: props.onSetEffort !== undefined,
       pending: undefined,
+      effortTiers: [], // no model pending yet — populated on the model→effort transition
       effortSelected: 0,
       currentEffort: props.store.getSnapshot().reasoningEffort,
     });
@@ -1548,6 +1549,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       {/* The standalone `/effort` overlay (ADR-0066 §6) — the shared tier list; `Esc` cancels (not a back-out). */}
       {effortPicker !== undefined && (
         <EffortTierList
+          tiers={effortPicker.tiers}
           selected={effortPicker.selected}
           current={effortPicker.current}
           labelSuffix={effortPicker.model}

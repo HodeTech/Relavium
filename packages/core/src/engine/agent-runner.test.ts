@@ -1,4 +1,4 @@
-import type { Agent, ContentPart, OutputModality } from '@relavium/shared';
+import type { Agent, ContentPart, OutputModality, ReasoningEffort } from '@relavium/shared';
 import { LlmProviderError, UnsupportedCapabilityError, makeLlmError } from '@relavium/llm';
 import type {
   CapabilityFlags,
@@ -1001,12 +1001,20 @@ describe('createAgentNodeExecutor — reasoning-effort gate (ADR-0066, the workf
   }
 
   it('SENDS the authored tier when the model is reasoning-capable', async () => {
-    const req = await capturedReq({ resolveReasoning: () => true }, reasoningAgent);
+    const req = await capturedReq(
+      {
+        resolveEffortTiers: () => new Set<ReasoningEffort>(['off', 'low', 'medium', 'high', 'max']),
+      },
+      reasoningAgent,
+    );
     expect(req?.reasoningEffort).toBe('high');
   });
 
   it('WITHHOLDS the tier when the model is NOT reasoning-capable (a non-reasoning model would reject it)', async () => {
-    const req = await capturedReq({ resolveReasoning: () => false }, reasoningAgent);
+    const req = await capturedReq(
+      { resolveEffortTiers: () => new Set<ReasoningEffort>() },
+      reasoningAgent,
+    );
     expect(req?.reasoningEffort).toBeUndefined();
   });
 
@@ -1016,7 +1024,12 @@ describe('createAgentNodeExecutor — reasoning-effort gate (ADR-0066, the workf
   });
 
   it('sends nothing when the agent authored NO tier — even on a capable model', async () => {
-    const req = await capturedReq({ resolveReasoning: () => true }, AGENT);
+    const req = await capturedReq(
+      {
+        resolveEffortTiers: () => new Set<ReasoningEffort>(['off', 'low', 'medium', 'high', 'max']),
+      },
+      AGENT,
+    );
     expect(req?.reasoningEffort).toBeUndefined();
   });
 });

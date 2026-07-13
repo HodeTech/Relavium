@@ -16,7 +16,7 @@ import {
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
-import { modelSupportsReasoning, type PricingOverlay, type ProviderId } from '@relavium/llm';
+import { acceptedTiers, catalogModel, type PricingOverlay, type ProviderId } from '@relavium/llm';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
 import type {
   AgentSessionRecord,
@@ -228,7 +228,12 @@ function buildSessionRuntime(
     keyFor: providers.keyFor,
     // ADR-0066: the per-model reasoning capability (static registry projection) — gates whether the authored
     // reasoning_effort tier is sent (a non-reasoning / custom model returns false, so the field is withheld).
-    resolveReasoning: modelSupportsReasoning,
+    // ADR-0071 §6: the host projects WHICH TIERS the model accepts, not merely whether it reasons. `gpt-5.4-pro`
+    // reasons and rejects `low`; a boolean said `true` and let that straight through to a 400.
+    resolveEffortTiers: (model) => {
+      const entry = catalogModel(model);
+      return entry === undefined ? undefined : acceptedTiers(entry.provider, entry.reasoning);
+    },
     registry,
     tools,
     sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),

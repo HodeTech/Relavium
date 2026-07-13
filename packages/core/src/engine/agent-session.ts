@@ -70,7 +70,8 @@ import {
 } from './agent-turn.js';
 import { BudgetPauseError } from './budget-governor.js';
 import type { AbortControllerLike } from './execution-host.js';
-import { gateReasoningEffort } from './reasoning-effort.js';
+import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
+import type { ResolveEffortTiers } from './reasoning-effort.js';
 import type { NodeStreamEvent } from './node-executor.js';
 import type { SessionResumeState } from './session-resume.js';
 
@@ -248,7 +249,7 @@ export interface SessionDeps {
    * only when this returns `true` (a non-reasoning model rejects the field). Absent/`undefined` ⇒ not reasoning
    * ⇒ withheld. `@relavium/core` never imports `@relavium/db`, so the host injects the catalog lookup.
    */
-  readonly resolveReasoning?: (model: string) => boolean | undefined;
+  readonly resolveEffortTiers?: ResolveEffortTiers;
   /**
    * Feed the running session cost to a budget governor so a host that wires {@link preEgress} to
    * `BudgetGovernor.checkPreEgress` also keeps the governor's cumulative total current (ADR-0028, 1.AC).
@@ -1087,10 +1088,12 @@ export class AgentSession {
     // ADR-0066: resolve the effective reasoning-effort tier (session override → agent's authored tier) and gate it
     // on the bound model's per-model capability (a non-reasoning model would reject it). Read at turn start so a
     // mid-session setReasoningEffort applies to the NEXT turn — the no-reseat per-turn semantics (§5).
-    const reasoningEffort = gateReasoningEffort(
-      this.#reasoningEffort ?? this.#agent.reasoning_effort,
-      this.#agent.model,
-      this.#deps.resolveReasoning,
+    const reasoningEffort = effortToSend(
+      gateReasoningEffort(
+        this.#reasoningEffort ?? this.#agent.reasoning_effort,
+        this.#agent.model,
+        this.#deps.resolveEffortTiers,
+      ),
     );
     return runAgentTurn({
       system: this.#systemPrompt(),
