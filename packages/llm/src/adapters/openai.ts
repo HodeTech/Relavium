@@ -18,6 +18,7 @@ import {
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
+import { catalogModel } from '../catalog/lookup.js';
 import { isNonChatModelId } from '../model-kind.js';
 import { DEEPSEEK_WIRE, OPENAI_WIRE } from '../reasoning-wire.js';
 import { MODEL_PRICING } from '../pricing.js';
@@ -611,10 +612,6 @@ function toOpenAiTool(toolDef: ToolDef, provider: ProviderId): OpenAI.ChatComple
   return { type: 'function', function: fn };
 }
 
-/** ADR-0066: the normalized reasoning-effort tier → OpenAI's native `reasoning_effort` values. `off`→'none',
- *  `max`→'xhigh' (its highest); low/medium/high are 1:1. A SUBSET of the SDK's `ReasoningEffort` union, so the
- *  assignment to `body.reasoning_effort` needs no cast. */
-
 /** DeepSeek's native reasoning control (a Relavium-local shape — NOT a vendor SDK type — so nothing crosses the
  *  seam): the create-chat-completion `thinking` object (verified 2026-07-07, api-docs.deepseek.com). */
 interface DeepSeekThinking {
@@ -693,9 +690,23 @@ function buildCommonBody(req: LlmRequest, provider: ProviderId): OpenAiCompatibl
   // `reasoning_effort` tier; DeepSeek (the other id this shared adapter serves) takes a `thinking` object
   // (off→disabled, else enabled + high/max). The host gates this to reasoning-capable models (a non-reasoning model
   // would reject it), and `body` is spread LAST below so the mapped field wins over any providerOptions echo.
-  if (req.reasoningEffort !== undefined) {
+  const reasoningControls = catalogModel(req.model)?.reasoning;
+  if (req.reasoningEffort !== undefined && reasoningControls !== undefined) {
+    // ADR-0071 §6: a model the CATALOG cannot describe gets no reasoning field at all — a custom `base_url`
+    // endpoint, or one so new we have no metadata for it. The host's gate already withholds in that case, but the
+    // adapter is a public seam and must not depend on a caller having run it: sending a reasoning parameter to a
+    // model that may not take one is the exact class of bug this work exists to close, and a guess is what put a
+    // rejected value on the wire in the first place. (`off` is inside this gate too — `thinking: {disabled}` is
+    // still a field, and still a 400 on a model with no reasoning surface.)
     if (provider === 'openai') {
-      body.reasoning_effort = OPENAI_WIRE[req.reasoningEffort];
+      // MEMBERSHIP, not presence — `off` included. `gpt-5.4-pro` publishes ['medium','high','xhigh'] and rejects
+      // BOTH `low` ('low') and `off` ('none'): on OpenAI, `off` IS an effort value, so it is checked like any
+      // other. This is the maintainer's original bug report, and it reaches the wire on a FAILOVER even now that
+      // the picker and the gate both refuse it.
+      const wire = OPENAI_WIRE[req.reasoningEffort];
+      if (reasoningControls.effortValues?.includes(wire) === true) {
+        body.reasoning_effort = wire;
+      }
     } else if (provider === 'deepseek') {
       body.thinking = DEEPSEEK_THINKING[req.reasoningEffort];
     }

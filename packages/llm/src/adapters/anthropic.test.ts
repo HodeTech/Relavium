@@ -197,17 +197,85 @@ describe('AnthropicAdapter', () => {
     };
 
     await adapter.generate({ ...base, reasoningEffort: 'high' }, 'k');
-    // Anthropic requires budget_tokens < max_tokens, so the ceiling is the REQUEST's own cap (8191), not the
-    // catalog's — which is precisely why haiku publishing no `max` is not a problem the catalog can solve alone.
-    expect(sent['thinking']).toEqual({ type: 'enabled', budget_tokens: 6399 }); // 1024 + 75% of [1024, 8191]
+    // The ceiling is 80% of the request's own cap — NOT the whole cap. Thinking that eats every token leaves no
+    // ANSWER: `budget_tokens: max_tokens - 1` is accepted by Anthropic and returns one token of reply, which is
+    // a turn the user pays for in full and gets nothing from. floor(8192 * 0.8) = 6553.
+    expect(sent['thinking']).toEqual({ type: 'enabled', budget_tokens: 5171 }); // 1024 + 75% of [1024, 6553]
     expect('output_config' in sent).toBe(false); // the field this model does not take is NEVER sent
 
     await adapter.generate({ ...base, reasoningEffort: 'low' }, 'k');
-    expect(sent['thinking']).toEqual({ type: 'enabled', budget_tokens: 2816 }); // 25%
+    expect(sent['thinking']).toEqual({ type: 'enabled', budget_tokens: 2406 }); // 25% of [1024, 6553]
 
     // `off` is the independent disable switch on BOTH shapes.
     await adapter.generate({ ...base, reasoningEffort: 'off' }, 'k');
     expect(sent['thinking']).toEqual({ type: 'disabled' });
+  });
+
+  it('NEVER sends budget_tokens >= max_tokens — Anthropic rejects it, and we were doing it', async () => {
+    // Found by an adversarial review, and it was real: `reasoningBudgetFor` used to return the model's FLOOR when
+    // the range was degenerate ("the least thinking it can do"). With `max_tokens: 256` on a model whose minimum
+    // budget is 1024, that put `budget_tokens: 1024` on the wire — a guaranteed 400.
+    //
+    // The honest answer is that reasoning cannot be enabled under that cap at all, so the field is WITHHELD. The
+    // tempting alternative — quietly raising `max_tokens` to make room — would change what the user asked for AND
+    // what they pay, without telling them.
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'claude-haiku-4-5',
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+
+    // The full matrix the review swept — extended, because the answer-headroom raises the floor: a cap of 1024 can
+    // no longer afford 1024 tokens of thinking AND a reply. The first viable cap is 1280 (floor(1280*0.8) = 1024).
+    for (const maxTokens of [1, 256, 512, 1000, 1024, 1279]) {
+      for (const tier of ['low', 'medium', 'high', 'max'] as const) {
+        await adapter.generate(
+          {
+            model: 'claude-haiku-4-5',
+            maxTokens,
+            messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }],
+            reasoningEffort: tier,
+          },
+          'k',
+        );
+        expect('thinking' in sent, `maxTokens=${maxTokens} ${tier}: no valid budget exists`).toBe(
+          false,
+        );
+      }
+    }
+
+    // …and the first cap that CAN hold the floor AND leave room for an answer enables it.
+    await adapter.generate(
+      {
+        model: 'claude-haiku-4-5',
+        maxTokens: 1280,
+        messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }],
+        reasoningEffort: 'max',
+      },
+      'k',
+    );
+    const thinking = sent['thinking'] as { type: string; budget_tokens: number };
+    expect(thinking.type).toBe('enabled');
+    expect(thinking.budget_tokens).toBe(1024); // the model's floor — all the headroom allows
+    expect(thinking.budget_tokens).toBeLessThan(1280); // the invariant Anthropic enforces
+    expect(1280 - thinking.budget_tokens).toBeGreaterThanOrEqual(256); // …and the ANSWER still has room
   });
 
   it('a model the catalog does not know gets NO reasoning field — a guess is what broke this', async () => {

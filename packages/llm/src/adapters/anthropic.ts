@@ -6,7 +6,12 @@ import type { AbortSignalLike, ContentPart, StopReason } from '@relavium/shared'
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { catalogModel } from '../catalog/lookup.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
-import { ANTHROPIC_WIRE, reasoningBudgetFor } from '../reasoning-wire.js';
+import {
+  ANTHROPIC_WIRE,
+  acceptedWireValue,
+  reasoningBudgetFor,
+  thinkingCeiling,
+} from '../reasoning-wire.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
   CapabilityFlags,
@@ -494,26 +499,42 @@ function buildCommonBody(
     //
     // `off` is neither shape: it is `thinking: {type:'disabled'}`, an independent switch that works on both.
     const controls = catalogModel(req.model)?.reasoning;
-    if (req.reasoningEffort === 'off') {
+    // A model the catalog cannot describe gets NO reasoning field — and that includes `off`. `thinking:{disabled}`
+    // is still a field, and still a 400 on a model with no reasoning surface at all. The `off` branch used to sit
+    // in front of this check, so an unknown model was sent a disable it may not understand.
+    if (controls === undefined) {
+      // withhold
+    } else if (req.reasoningEffort === 'off') {
       body.thinking = { type: 'disabled' };
-    } else if (controls?.effortValues !== undefined) {
+    } else if (acceptedWireValue('anthropic', req.reasoningEffort, controls) !== undefined) {
+      // MEMBERSHIP, not presence. `claude-opus-4-5` publishes ['low','medium','high'] — no `max` — and the old
+      // branch tested only that an effort axis EXISTED, then sent `effort: 'max'` anyway. It reaches the wire on a
+      // FAILOVER, where the chain re-points a request at a weaker model.
       body.thinking = { type: 'adaptive' };
       body.output_config = {
         ...body.output_config,
         // The effort level MERGES alongside any structured-output `format` already on output_config.
         effort: ANTHROPIC_WIRE[req.reasoningEffort],
       };
-    } else if (controls?.budgetTokens !== undefined) {
-      // Anthropic requires `budget_tokens < max_tokens`, so the ceiling is the REQUEST's own output cap — which is
-      // exactly why the catalog's `{ min: 1024 }` (haiku publishes no max) is not enough on its own.
-      body.thinking = {
-        type: 'enabled',
-        budget_tokens: reasoningBudgetFor(
-          req.reasoningEffort,
-          controls.budgetTokens,
-          Math.max(controls.budgetTokens.min, (req.maxTokens ?? DEFAULT_MAX_TOKENS) - 1),
-        ),
-      };
+    } else if (controls.budgetTokens !== undefined) {
+      // The BUDGET shape — and also the fallback when the model has an effort axis that does not contain THIS tier.
+      // `claude-opus-4-5` publishes both, so a tier it cannot express as an effort level is still expressible as a
+      // budget. The old code never reached here for such a model; it sent the rejected effort instead.
+      //
+      // Anthropic requires `budget_tokens < max_tokens`, and a budget that eats the whole cap leaves no answer —
+      // so the ceiling reserves room for the reply (see THINKING_BUDGET_SHARE).
+      const budget = reasoningBudgetFor(
+        req.reasoningEffort,
+        controls.budgetTokens,
+        thinkingCeiling(req.maxTokens ?? DEFAULT_MAX_TOKENS),
+      );
+      // `undefined` ⇒ the model's MINIMUM budget does not fit under this request's `max_tokens` (haiku's floor is
+      // 1024; a request capped at 256 has no valid budget at all). Withhold rather than send a value the API
+      // rejects — and rather than quietly raising `max_tokens` to make room, which would change both what the
+      // user asked for and what they pay, silently.
+      if (budget !== undefined) {
+        body.thinking = { type: 'enabled', budget_tokens: budget };
+      }
     }
     // …and a model that publishes NO control (or is not in the catalog — a custom endpoint) gets the field
     // WITHHELD. A guess is what put a rejected value on the wire in the first place.

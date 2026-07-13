@@ -581,6 +581,58 @@ describe('withEntryModel (ADR-0066 §4 — per-fallback-entry reasoning gate)', 
     expect(out.reasoningEffort).toBe('max');
   });
 
+  /**
+   * THE FAILOVER HOLE (ADR-0071 §6) — found by an adversarial review, and the sharpest finding in it.
+   *
+   * The re-gate used to ask `modelSupportsReasoning(model)`: a BOOLEAN. `claude-opus-4-8` accepts `max`;
+   * `claude-opus-4-5` does NOT (it publishes ['low','medium','high']). Both "support reasoning", so the boolean
+   * kept the tier — and the fallback, whose entire job is to RESCUE a failing turn, put `effort: 'max'` on the
+   * wire for a model that rejects it.
+   *
+   * A 400 on an unsupported parameter is fatal and non-retryable. So the rescue does not merely fail: it ABORTS
+   * the rest of the chain, killing the turn it exists to save. The gate now re-checks the tiers the entry model
+   * actually accepts.
+   */
+  it('STRIPS a tier the fallback model REJECTS — even though that model reasons', () => {
+    const req: LlmRequest = {
+      model: 'claude-opus-4-8', // accepts max
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      reasoningEffort: 'max',
+    };
+    // claude-opus-4-5 has an effort axis but NO `max` on it. The old boolean gate kept the tier.
+    const out = withEntryModel(req, 'claude-opus-4-5');
+    expect(out.model).toBe('claude-opus-4-5');
+    expect('reasoningEffort' in out).toBe(false);
+  });
+
+  it("STRIPS `low` on a failover to gpt-5.4-pro — the maintainer's bug, reached through the rescue path", () => {
+    const req: LlmRequest = {
+      model: 'gpt-5.5', // accepts all five
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      reasoningEffort: 'low',
+    };
+    const out = withEntryModel(req, 'gpt-5.4-pro'); // publishes ['medium','high','xhigh'] — no `low`
+    expect('reasoningEffort' in out).toBe(false);
+  });
+
+  it('STRIPS the tier for a model the catalog does not know (a custom endpoint)', () => {
+    const req: LlmRequest = {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      reasoningEffort: 'high',
+    };
+    expect('reasoningEffort' in withEntryModel(req, 'some-custom-endpoint-model')).toBe(false);
+  });
+
+  it('KEEPS a tier the fallback model DOES accept', () => {
+    const req: LlmRequest = {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      reasoningEffort: 'high',
+    };
+    expect(withEntryModel(req, 'gpt-5.4-pro').reasoningEffort).toBe('high'); // `high` IS in its ladder
+  });
+
   it('is a plain model swap when no tier is set', () => {
     const req: LlmRequest = {
       model: 'gpt-4o',

@@ -177,6 +177,28 @@ export function acceptedTiers(
   return accepted;
 }
 
+/**
+ * The wire value to send for a tier — **only if the model actually publishes it**. `undefined` otherwise.
+ *
+ * The adapters used to branch on `controls.effortValues !== undefined` — the PRESENCE of the effort axis — and
+ * then send the mapped value unchecked. Presence is not membership, and the difference is a 400:
+ *
+ *   `claude-opus-4-5` publishes ['low','medium','high'] — **no 'max'**. Tier `max` → `output_config.effort: 'max'`.
+ *   `gemini-3-pro-preview` publishes ['low','high'] — **no 'medium'**. Tier `medium` → `thinkingLevel: 'MEDIUM'`.
+ *
+ * Both reach the wire through a FAILOVER, where the chain re-points a request at a weaker model. `acceptedTiers`
+ * already encodes the correct rule; this is the same rule, exposed so an adapter can never re-derive a weaker one.
+ */
+export function acceptedWireValue(
+  provider: ProviderId,
+  tier: Exclude<ReasoningEffort, 'off'>,
+  controls: ReasoningControls,
+): string | undefined {
+  const wire = wireValueFor(provider, tier);
+  if (wire === undefined || controls.effortValues === undefined) return undefined;
+  return controls.effortValues.includes(wire) ? wire : undefined;
+}
+
 /** How much of a model's thinking-budget range each tier spends. `max` means "all of it". */
 const BUDGET_FRACTION: Record<Exclude<ReasoningEffort, 'off'>, number> = {
   low: 0.25,
@@ -184,6 +206,21 @@ const BUDGET_FRACTION: Record<Exclude<ReasoningEffort, 'off'>, number> = {
   high: 0.75,
   max: 1,
 };
+
+/**
+ * The share of a request's output cap that thinking may consume. The rest is the ANSWER's.
+ *
+ * Without it, `max` spends **100% of the cap on thoughts** — `budget_tokens: max_tokens - 1` on Anthropic leaves
+ * exactly one token for the reply, and on Gemini `thinkingBudget == maxOutputTokens` leaves none at all. Both are
+ * accepted by the provider and both are useless: the user pays for a full turn of reasoning and gets no answer.
+ * A ceiling that reserves nothing for the output is not a ceiling.
+ */
+export const THINKING_BUDGET_SHARE = 0.8;
+
+/** The thinking ceiling for a request whose output cap is `maxTokens` — reserving room for the answer itself. */
+export function thinkingCeiling(maxTokens: number): number {
+  return Math.floor(maxTokens * THINKING_BUDGET_SHARE);
+}
 
 /**
  * Map a normalized tier onto a **token budget** for a budget-shaped model — `claude-haiku-4-5`,
@@ -202,8 +239,17 @@ export function reasoningBudgetFor(
   tier: Exclude<ReasoningEffort, 'off'>,
   range: { readonly min: number; readonly max?: number },
   ceiling: number,
-): number {
+): number | undefined {
   const hi = Math.min(range.max ?? ceiling, ceiling);
-  if (hi <= range.min) return range.min;
+  // THE RANGE DOES NOT EXIST. Anthropic requires `budget_tokens < max_tokens`, so a request whose own output cap
+  // is at or below the model's MINIMUM thinking budget (haiku's floor is 1024) has no valid budget to send at all.
+  //
+  // The first version returned `range.min` here — "the least thinking the model can do" — and that is a 400: with
+  // `max_tokens: 256` it put `budget_tokens: 1024` on the wire. The honest answer is that reasoning cannot be
+  // enabled under this cap, so the caller WITHHOLDS the field. The tempting alternative — quietly raising
+  // `max_tokens` to make room — would change what the user asked for and what they pay, without telling them.
+  // `hi === range.min` is NOT degenerate: the floor itself is a valid budget, and it still sits strictly below the
+  // caller's cap (the caller passes `maxTokens - 1` as the ceiling). Only `hi < min` means no budget exists at all.
+  if (hi < range.min) return undefined;
   return Math.round(range.min + (hi - range.min) * BUDGET_FRACTION[tier]);
 }

@@ -493,12 +493,43 @@ describe('Gemini adapter — request building (buildGeminiRequest)', () => {
         'thinkingConfig'
       ];
 
-    expect(built('high')).toEqual({ thinkingBudget: 6144, includeThoughts: true }); // 75% of [0, 8192]
-    expect(built('low')).toEqual({ thinkingBudget: 2048, includeThoughts: true }); // 25%
-    expect(built('max')).toEqual({ thinkingBudget: 8192, includeThoughts: true }); // all of it
+    // The tiers scale across the range under a ceiling that RESERVES ROOM FOR THE ANSWER: floor(8192 * 0.8) = 6553,
+    // not the whole 8192. `max` used to hand the entire output cap to the thoughts, so the model thought to the
+    // limit and then had nothing left to reply with — a request the API happily accepts and that returns no answer.
+    expect(built('low')).toEqual({ thinkingBudget: 1638, includeThoughts: true }); // 25% of [0, 6553]
+    expect(built('high')).toEqual({ thinkingBudget: 4915, includeThoughts: true }); // 75%
+    expect(built('max')).toEqual({ thinkingBudget: 6553, includeThoughts: true }); // the ceiling, not maxTokens
     // `off` on Gemini is `thinkingBudget: 0` — the real disable — never MINIMAL, which still thinks and still bills.
     expect(built('off')).toEqual({ thinkingBudget: 0 });
     expect('thinkingConfig' in buildGeminiRequest(REQ).config).toBe(false); // unset ⇒ omitted
+  });
+
+  it('a TOGGLE model with a non-zero floor can still be turned OFF — picker and wire agree', () => {
+    // gemini-2.5-flash-lite publishes BOTH a toggle and `budgetTokens: { min: 512, … }`. The picker offers `off`
+    // (a toggle IS a disable switch); the adapter used to test only `min === 0` and silently withhold the field —
+    // so the user turned reasoning off, was billed for it anyway, and nothing told them. Both sides now ask the
+    // one predicate, {@link canDisableReasoning}, so they cannot drift apart again.
+    expect(
+      buildGeminiRequest({
+        ...REQ,
+        model: 'gemini-2.5-flash-lite',
+        reasoningEffort: 'off',
+        maxTokens: 8192,
+      }).config['thinkingConfig'],
+    ).toEqual({ thinkingBudget: 0 });
+  });
+
+  it('withholds the budget when even the model floor will not fit under the cap', () => {
+    // gemini-2.5-pro's floor is 128 thought tokens. A 64-token answer cap leaves a ceiling of floor(64 * 0.8) = 51,
+    // under the floor — no budget in the range is sendable, so the field is omitted and the model uses its default,
+    // rather than us putting a value on the wire that the API will reject outright.
+    const request = buildGeminiRequest({
+      ...REQ,
+      model: 'gemini-2.5-pro',
+      reasoningEffort: 'low',
+      maxTokens: 64,
+    });
+    expect('thinkingConfig' in request.config).toBe(false);
   });
 
   it('an EFFORT-shaped model (gemini-3.x) gets thinkingLevel — the shape follows the model', () => {

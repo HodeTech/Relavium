@@ -13,7 +13,8 @@ import type {
   Usage,
 } from './types.js';
 import { requestSupportReason } from './capabilities.js';
-import { modelSupportsReasoning } from './pricing.js';
+import { catalogModel } from './catalog/lookup.js';
+import { acceptedTiers } from './reasoning-wire.js';
 
 export type { BackoffStrategy };
 
@@ -212,13 +213,24 @@ export function stripReasoningParts(req: LlmRequest): LlmRequest {
  * ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §4). A failover to a
  * non-reasoning model must not carry the primary's tier: the provider would reject the unsupported parameter, and a
  * `400` on an unsupported param is fatal + non-retryable — so the whole remaining chain would abort rather than the
- * failover rescuing the turn. The per-model capability is the SAME {@link modelSupportsReasoning} the host projects
+ * failover rescuing the turn. The per-model capability is the SAME {@link acceptedTiers} the host projects
  * to the engine gate, so the primary is gated at the engine and each fallback entry is re-gated here. Exported for
  * a focused unit test (like {@link stripReasoningParts}).
  */
 export function withEntryModel(req: LlmRequest, model: string): LlmRequest {
   const next = { ...req, model };
-  if (next.reasoningEffort !== undefined && !modelSupportsReasoning(model)) {
+  if (next.reasoningEffort === undefined) return next;
+
+  // ADR-0071 §6: re-gate on the tiers the ENTRY MODEL ACCEPTS — not on whether it reasons.
+  //
+  // This used to ask `modelSupportsReasoning(model)`, a boolean, and that is how the primary bug reached the wire
+  // through a failover: `claude-opus-4-8` accepts `max`, `claude-opus-4-5` does NOT (it publishes
+  // ['low','medium','high']). Both "support reasoning", so the boolean kept the tier — and the fallback, whose
+  // whole job is to RESCUE a failing turn, sent a value the rescue model rejects. A 400 on an unsupported param is
+  // fatal and non-retryable, so the chain aborts instead: the failover kills the turn it exists to save.
+  const entry = catalogModel(model);
+  const accepted = acceptedTiers(entry?.provider ?? 'openai', entry?.reasoning);
+  if (!accepted.has(next.reasoningEffort)) {
     delete next.reasoningEffort;
   }
   return next;

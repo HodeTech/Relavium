@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
-import { acceptedTiers, canDisableReasoning } from './reasoning-wire.js';
+import {
+  acceptedTiers,
+  acceptedWireValue,
+  canDisableReasoning,
+  reasoningBudgetFor,
+  thinkingCeiling,
+} from './reasoning-wire.js';
 
 /**
  * THE EFFORT BRIDGE (ADR-0071 §6) — the fix for the maintainer's bug report, and the one place a literal read of
@@ -99,6 +105,102 @@ describe('the empty descriptor — reasons, but has NO controllable tier', () =>
 
   it('a NON-reasoning model offers nothing either', () => {
     expect([...acceptedTiers('openai', undefined)]).toEqual([]);
+  });
+});
+
+describe('MEMBERSHIP, not presence — the bug an adversarial review found in the fix itself', () => {
+  /**
+   * The adapters branched on `controls.effortValues !== undefined` — the PRESENCE of an effort axis — and then
+   * sent the mapped wire value UNCHECKED. Presence is not membership, and the gap is a 400:
+   *
+   *   claude-opus-4-5     publishes ['low','medium','high'] — no `max`    → tier `max`    sent `effort: 'max'`
+   *   gemini-3-pro-preview publishes ['low','high']          — no `medium` → tier `medium` sent `thinkingLevel: MEDIUM`
+   *
+   * Both reach the wire through a FAILOVER, and that is the sting: the fallback chain exists to RESCUE a failing
+   * turn, and a 400 on an unsupported parameter is fatal and non-retryable — so the rescue kills the turn instead.
+   */
+  it('claude-opus-4-5 does NOT accept `max`, even though it has an effort axis', () => {
+    const model = CATALOG_SNAPSHOT['claude-opus-4-5'];
+    expect(model?.reasoning?.effortValues).toEqual(['low', 'medium', 'high']); // the premise
+    expect(acceptedWireValue('anthropic', 'max', model?.reasoning ?? {})).toBeUndefined();
+    expect(tiers('claude-opus-4-5')).not.toContain('max');
+  });
+
+  it('gemini-3-pro-preview does NOT accept `medium` — its ladder skips it', () => {
+    expect(CATALOG_SNAPSHOT['gemini-3-pro-preview']?.reasoning?.effortValues).toEqual([
+      'low',
+      'high',
+    ]);
+    expect(tiers('gemini-3-pro-preview')).not.toContain('medium');
+  });
+
+  it('gpt-5.4-pro does NOT accept `low` — the original bug report, at the wire layer', () => {
+    const model = CATALOG_SNAPSHOT['gpt-5.4-pro'];
+    expect(acceptedWireValue('openai', 'low', model?.reasoning ?? {})).toBeUndefined();
+    expect(acceptedWireValue('openai', 'high', model?.reasoning ?? {})).toBe('high');
+  });
+});
+
+describe('the Gemini toggle divergence — the picker offered `off` and the adapter dropped it', () => {
+  it('a toggle-shaped model CAN be turned off, even with a non-zero budget floor', () => {
+    // `gemini-2.5-flash-lite` has `{ toggle: true, budgetTokens: { min: 512 } }`. `canDisableReasoning` said yes
+    // (the toggle), so the picker OFFERED `off` — but the adapter's off-branch only looked at `min === 0` and
+    // silently withheld the field. The user turned reasoning off, was billed for it anyway, and nothing said so.
+    const model = CATALOG_SNAPSHOT['gemini-2.5-flash-lite'];
+    expect(model?.reasoning?.toggle).toBe(true);
+    expect(model?.reasoning?.budgetTokens?.min).toBe(512); // NOT zero — which is why the two disagreed
+    expect(canDisableReasoning('gemini', model?.reasoning ?? {})).toBe(true);
+    expect(tiers('gemini-2.5-flash-lite')).toContain('off');
+  });
+
+  it('…and gemini-2.5-pro still cannot — no toggle, and a floor of 128', () => {
+    expect(canDisableReasoning('gemini', CATALOG_SNAPSHOT['gemini-2.5-pro']?.reasoning ?? {})).toBe(
+      false,
+    );
+  });
+});
+
+describe('the answer must survive the thinking — a budget that eats the cap is not a budget', () => {
+  it('the `max` tier leaves room to REPLY', () => {
+    // `max` used to spend 100% of the output cap on thoughts: `budget_tokens: max_tokens - 1` on Anthropic (one
+    // token of answer), `thinkingBudget == maxOutputTokens` on Gemini (none at all). Both are ACCEPTED by the
+    // provider — which is what makes it insidious. The user pays for a full turn of reasoning and gets nothing.
+    const cap = 8192;
+    const budget = reasoningBudgetFor('max', { min: 1024 }, thinkingCeiling(cap));
+    expect(budget).toBeDefined();
+    expect(budget).toBeLessThan(cap);
+    expect(cap - (budget ?? 0)).toBeGreaterThanOrEqual(cap * 0.19); // ~20% reserved for the answer
+  });
+
+  it('a cap too small to hold the model floor AND an answer yields NO budget at all', () => {
+    // Withhold, never squeeze. haiku's floor is 1024; a 1024-token cap cannot carry both.
+    expect(reasoningBudgetFor('low', { min: 1024 }, thinkingCeiling(1024))).toBeUndefined();
+    expect(reasoningBudgetFor('low', { min: 1024 }, thinkingCeiling(1280))).toBe(1024); // the first that can
+  });
+});
+
+describe('an UNKNOWN model gets NO reasoning field — on ALL FOUR arms, not just two', () => {
+  /**
+   * Found by an adversarial review, and it was real. Fixing Gemini and Anthropic's *effort* paths left OpenAI and
+   * DeepSeek sending the field unconditionally — and Anthropic's `off` branch sat in FRONT of the catalog check,
+   * so an unknown model was sent `thinking: {type:'disabled'}`, which is still a field and still a 400 on a model
+   * with no reasoning surface.
+   *
+   * The host's gate already withholds for an unknown model. The adapter must not depend on a caller having run it:
+   * `@relavium/llm` is a public seam, and the whole point of this change is that we never guess at a model we
+   * cannot describe.
+   */
+  const unknown = 'some-custom-endpoint-model';
+
+  it('the catalog genuinely does not know it — the premise of every case below', () => {
+    expect(CATALOG_SNAPSHOT[unknown]).toBeUndefined();
+    expect(acceptedTiers('openai', undefined).size).toBe(0);
+  });
+
+  it('acceptedTiers returns EMPTY for it on every provider, so the gate withholds', () => {
+    for (const provider of ['openai', 'anthropic', 'gemini', 'deepseek'] as const) {
+      expect(acceptedTiers(provider, undefined).size, provider).toBe(0);
+    }
   });
 });
 

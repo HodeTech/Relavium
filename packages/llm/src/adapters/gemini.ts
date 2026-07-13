@@ -12,7 +12,14 @@ import type {
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { catalogModel } from '../catalog/lookup.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
-import { GEMINI_WIRE, reasoningBudgetFor, toGeminiThinkingLevel } from '../reasoning-wire.js';
+import {
+  GEMINI_WIRE,
+  acceptedWireValue,
+  canDisableReasoning,
+  reasoningBudgetFor,
+  thinkingCeiling,
+  toGeminiThinkingLevel,
+} from '../reasoning-wire.js';
 import { GeminiToolCallIds, normalizeToolCall, toWire } from '../tool-normalizer.js';
 import { UnsupportedCapabilityError } from '../errors.js';
 import type {
@@ -581,26 +588,43 @@ function buildThinkingConfig(
   // THE MODEL DECIDES THE FIELD. `gemini-2.5-*` take `thinkingBudget`; `gemini-3.x` take `thinkingLevel`. The
   // shipped adapter sent `thinkingLevel` to every reasoning model, and our only two shipped Gemini rows are 2.5 —
   // so `/effort` on Gemini has been sending a parameter Google's docs say those models do not support.
-  if (controls?.effortValues !== undefined) {
-    const wire = reasoningEffort === 'off' ? undefined : GEMINI_WIRE[reasoningEffort];
-    // `off` is not a thinkingLevel: MINIMAL is the *lowest* level, not an off switch, and a model set to it still
-    // thinks (and still bills for it). An effort-shaped Gemini model has no budget field to zero, so `off` is not
-    // expressible at all — `acceptedTiers` never offers it, and if one reached here anyway we withhold rather
-    // than silently substitute MINIMAL for "off", which is the bug we are removing.
-    return wire === undefined
-      ? undefined
-      : withThoughts({ thinkingLevel: toGeminiThinkingLevel(wire) });
+  if (
+    controls !== undefined &&
+    reasoningEffort !== 'off' &&
+    acceptedWireValue('gemini', reasoningEffort, controls) !== undefined
+  ) {
+    // MEMBERSHIP, not presence. `gemini-3-pro-preview` publishes ['low','high'] — no `medium` — and the old branch
+    // tested only that an effort axis EXISTED, then sent `thinkingLevel: 'MEDIUM'` anyway.
+    return withThoughts({ thinkingLevel: toGeminiThinkingLevel(GEMINI_WIRE[reasoningEffort]) });
+  }
+
+  if (reasoningEffort === 'off') {
+    // `off` is NOT a thinkingLevel — MINIMAL is the *lowest* level, not an off switch, and a model set to it still
+    // thinks, and still bills for it. Disabling on Gemini is `thinkingBudget: 0`, available exactly when
+    // {@link canDisableReasoning} says it is: a published `toggle`, or a budget range whose floor IS zero.
+    //
+    // Asking the one predicate is what keeps the picker and the wire in agreement. They used to disagree, and the
+    // divergence cost real money: `gemini-2.5-flash-lite` publishes a toggle AND `min: 512`, so `acceptedTiers`
+    // OFFERED `off` while this branch — which looked only at `min === 0` — silently withheld it. The user switched
+    // reasoning off, was billed for it anyway, and nothing said so. `gemini-2.5-pro` (floor 128, no toggle) truly
+    // cannot be disabled: neither the picker nor this branch will claim otherwise.
+    return controls !== undefined && canDisableReasoning('gemini', controls)
+      ? withThoughts({ thinkingBudget: 0 })
+      : undefined;
   }
 
   if (controls?.budgetTokens !== undefined) {
+    // The BUDGET shape — also where an effort-shaped model lands when its ladder does not contain THIS tier.
+    //
+    // The ceiling reserves room for the ANSWER. Spending the whole output cap on thoughts is accepted by the API
+    // and useless: the model thinks to the limit, then has nothing left to reply with.
+    const cap = maxTokens ?? catalogModel(model)?.maxOutputTokens;
     const range = controls.budgetTokens;
-    if (reasoningEffort === 'off') {
-      // Disabling IS `thinkingBudget: 0` — and only a model whose floor is zero can express it. `gemini-2.5-pro`
-      // has `min: 128` ("N/A: Cannot disable thinking"), so `acceptedTiers` never offers `off` for it.
-      return range.min === 0 ? withThoughts({ thinkingBudget: 0 }) : undefined;
-    }
-    const ceiling = maxTokens ?? catalogModel(model)?.maxOutputTokens ?? range.max ?? range.min;
-    return withThoughts({ thinkingBudget: reasoningBudgetFor(reasoningEffort, range, ceiling) });
+    const ceiling = cap === undefined ? (range.max ?? range.min) : thinkingCeiling(cap);
+    const budget = reasoningBudgetFor(reasoningEffort, range, ceiling);
+    // `undefined` ⇒ even the model's minimum budget does not fit under this cap. Withhold rather than send a value
+    // the API will reject.
+    return budget === undefined ? undefined : withThoughts({ thinkingBudget: budget });
   }
 
   // The model reasons but publishes no control (or is not in the catalog at all — a custom endpoint). Withhold

@@ -175,3 +175,10 @@ export type {
 // `providerKind` derives the ADR-0064 protocol `kind` from a provider id (used by the later merge/refresh steps).
 // `createCustomOpenAiProvider` builds a per-provider OpenAI-compatible adapter for a custom base_url (ADR-0065 §3, S9).
 export { createCustomOpenAiProvider, defaultProviders, providerKind } from './providers.js';
+
+// --- The generated model catalog (ADR-0071) ------------------------------------------------
+// The reasoning CONTROL is per-model data now, not a per-adapter assumption. The host projects a model's
+// ACCEPTED TIERS from it (`resolveEffortTiers`), so a tier the model would reject never reaches the wire.
+export { catalogModel } from './catalog/lookup.js';
+export type { CatalogModel, CatalogPriceTier, ReasoningControls } from './catalog/catalog-model.js';
+export { acceptedTiers, canDisableReasoning } from './reasoning-wire.js';

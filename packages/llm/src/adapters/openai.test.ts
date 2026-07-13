@@ -231,6 +231,49 @@ describe('OpenAI-compatible adapter', () => {
     });
   });
 
+  it('an UNKNOWN model gets NO reasoning field — on the OpenAI arm AND the DeepSeek arm', async () => {
+    // Found by an adversarial review. Fixing Gemini and Anthropic left these two sending the field unconditionally:
+    // an unknown model (a custom `base_url`, or one so new we have no metadata) was handed `reasoning_effort` /
+    // `thinking` regardless. The host's gate already withholds — but `@relavium/llm` is a public SEAM, and it must
+    // not depend on a caller having run the gate. Guessing at a model we cannot describe is the whole bug class.
+    let sent: Record<string, unknown> = {};
+    const capture = (): Response => {
+      return okResponse();
+    };
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(capture());
+      },
+    });
+    const deepseek = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(capture());
+      },
+    });
+    const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+
+    for (const tier of ['off', 'low', 'high', 'max'] as const) {
+      await oai.generate(
+        { model: 'some-custom-endpoint-model', messages, reasoningEffort: tier },
+        'k',
+      );
+      expect('reasoning_effort' in sent, `openai ${tier}`).toBe(false);
+
+      await deepseek.generate(
+        { model: 'some-custom-endpoint-model', messages, reasoningEffort: tier },
+        'k',
+      );
+      expect('thinking' in sent, `deepseek ${tier}`).toBe(false);
+    }
+
+    // …and a model the catalog DOES know still gets it, so the guard is a filter and not a mute button.
+    await oai.generate({ model: 'gpt-5.5', messages, reasoningEffort: 'high' }, 'k');
+    expect(sent['reasoning_effort']).toBe('high');
+  });
+
   it('maps the reasoning-effort tier per provider: OpenAI reasoning_effort (max→xhigh, off→none) + DeepSeek thinking (ADR-0066)', async () => {
     let sent: Record<string, unknown> = {};
     const oai = createOpenAiAdapter({
