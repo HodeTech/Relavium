@@ -5,6 +5,7 @@ import type { AbortSignalLike, ContentPart, StopReason } from '@relavium/shared'
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { catalogModel } from '../catalog/lookup.js';
+import { cappedMaxTokens } from '../output-cap.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import {
   ANTHROPIC_WIRE,
@@ -468,9 +469,17 @@ function toAnthropicTool(toolDef: ToolDef): Anthropic.Tool {
 function buildCommonBody(
   req: LlmRequest,
 ): Omit<Anthropic.MessageCreateParamsNonStreaming, 'stream'> {
+  // The output cap, held at or below the model's own ceiling (ADR-0071 §7). Anthropic REQUIRES `max_tokens`, so an
+  // absent one defaults — and the default is clamped too, in case a model's ceiling is ever below it.
+  //
+  // This value is also the ceiling the thinking budget is derived from, a few lines down. Clamping here and not
+  // there would put `budget_tokens` above the `max_tokens` we actually send, which Anthropic rejects outright —
+  // so it is computed ONCE and both uses read it.
+  const maxTokens =
+    cappedMaxTokens(req.maxTokens ?? DEFAULT_MAX_TOKENS, req.model) ?? DEFAULT_MAX_TOKENS;
   const body: Omit<Anthropic.MessageCreateParamsNonStreaming, 'stream'> = {
     model: req.model,
-    max_tokens: req.maxTokens ?? DEFAULT_MAX_TOKENS,
+    max_tokens: maxTokens,
     messages: mergeAdjacentSameRole(req.messages.map(toAnthropicMessage)),
   };
   if (req.system !== undefined) {
@@ -532,7 +541,7 @@ function buildCommonBody(
       const budget = reasoningBudgetFor(
         req.reasoningEffort,
         controls.budgetTokens,
-        thinkingCeiling(req.maxTokens ?? DEFAULT_MAX_TOKENS),
+        thinkingCeiling(maxTokens), // the CLAMPED cap — the one actually on the wire
       );
       // `undefined` ⇒ the model's MINIMUM budget does not fit under this request's `max_tokens` (haiku's floor is
       // 1024; a request capped at 256 has no valid budget at all). Withhold rather than send a value the API

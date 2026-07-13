@@ -274,6 +274,71 @@ describe('OpenAI-compatible adapter', () => {
     expect(sent['reasoning_effort']).toBe('high');
   });
 
+  it('THE DIALECT: official OpenAI gets `max_completion_tokens`; DeepSeek and a custom base_url keep `max_tokens`', async () => {
+    // ADR-0071 §10a. OpenAI's official Chat Completions deprecated `max_tokens`, and its REASONING models reject it
+    // outright — the second half of the maintainer's "max tokens errors". But this same adapter serves every custom
+    // OpenAI-compatible endpoint (LM Studio, Ollama, vLLM, LiteLLM, a gateway), most of which implement only the
+    // legacy field. Switching globally would trade one broken population for another, so the rule is by ENDPOINT.
+    let sent: Record<string, unknown> = {};
+    const capture = (init: RequestInit | undefined): Response => {
+      sent = parseJsonBody(init);
+      return okResponse();
+    };
+    const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+
+    const official = createOpenAiAdapter({
+      fetch: (_i, init) => Promise.resolve(capture(init)),
+    });
+    await official.generate({ model: 'gpt-5.5', messages, maxTokens: 100 }, 'k');
+    expect(sent['max_completion_tokens']).toBe(100);
+    expect('max_tokens' in sent).toBe(false); // the deprecated field must NOT ride alongside it
+
+    // DeepSeek's own API is OFFICIAL — it is our default base URL, not a caller's override — and it takes the
+    // legacy field. `official` is not a synonym for `openai`.
+    const deepseek = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: (_i, init) => Promise.resolve(capture(init)),
+    });
+    await deepseek.generate({ model: 'deepseek-chat', messages, maxTokens: 100 }, 'k');
+    expect(sent['max_tokens']).toBe(100);
+    expect('max_completion_tokens' in sent).toBe(false);
+
+    // A custom `base_url` under the `openai` provider id keeps the legacy field too — this is the D3 population
+    // that a global switch would have broken.
+    const custom = createOpenAiAdapter({
+      baseURL: 'https://gateway.example.com/v1',
+      fetch: (_i, init) => Promise.resolve(capture(init)),
+    });
+    await custom.generate({ model: 'gpt-5.5', messages, maxTokens: 100 }, 'k');
+    expect(sent['max_tokens']).toBe(100);
+    expect('max_completion_tokens' in sent).toBe(false);
+  });
+
+  it('CLAMPS an over-ceiling cap on an official endpoint — and leaves a custom endpoint alone', async () => {
+    let sent: Record<string, unknown> = {};
+    const capture = (init: RequestInit | undefined): Response => {
+      sent = parseJsonBody(init);
+      return okResponse();
+    };
+    const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+
+    // gpt-5.4-pro's ceiling is 128_000. An authored 200_000 is a 400 on every turn, not an ambitious request.
+    const official = createOpenAiAdapter({
+      fetch: (_i, init) => Promise.resolve(capture(init)),
+    });
+    await official.generate({ model: 'gpt-5.4-pro', messages, maxTokens: 200_000 }, 'k');
+    expect(sent['max_completion_tokens']).toBe(128_000);
+
+    // …but a custom endpoint may serve a different model under that id, with its own limits. We do not silently
+    // lower a number the user typed on a model we cannot describe.
+    const custom = createOpenAiAdapter({
+      baseURL: 'https://gateway.example.com/v1',
+      fetch: (_i, init) => Promise.resolve(capture(init)),
+    });
+    await custom.generate({ model: 'gpt-5.4-pro', messages, maxTokens: 200_000 }, 'k');
+    expect(sent['max_tokens']).toBe(200_000);
+  });
+
   it('an EMPTY descriptor gets NO reasoning field either — `deepseek-reasoner` reasons, but publishes no knob', async () => {
     // The second adversarial review found this: the DeepSeek arm gated on `catalogModel(m)?.reasoning !== undefined`
     // and then sent `thinking` UNCONDITIONALLY. `deepseek-reasoner`'s descriptor is `{}` — not `undefined` — so the

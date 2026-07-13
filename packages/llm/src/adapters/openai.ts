@@ -20,6 +20,7 @@ import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import { catalogModel } from '../catalog/lookup.js';
 import { isNonChatModelId } from '../model-kind.js';
+import { cappedMaxTokens, type EndpointKind } from '../output-cap.js';
 import { DEEPSEEK_WIRE, OPENAI_WIRE, acceptedTiers } from '../reasoning-wire.js';
 import { MODEL_PRICING } from '../pricing.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
@@ -659,7 +660,11 @@ type OpenAiCompatibleBody = Omit<OpenAI.ChatCompletionCreateParamsNonStreaming, 
 };
 
 /** The shared request body (everything except the `stream` discriminant each method sets). */
-function buildCommonBody(req: LlmRequest, provider: ProviderId): OpenAiCompatibleBody {
+function buildCommonBody(
+  req: LlmRequest,
+  provider: ProviderId,
+  endpoint: EndpointKind,
+): OpenAiCompatibleBody {
   const messages: OpenAI.ChatCompletionMessageParam[] = [];
   if (req.system !== undefined) {
     messages.push({ role: 'system', content: req.system });
@@ -683,8 +688,24 @@ function buildCommonBody(req: LlmRequest, provider: ProviderId): OpenAiCompatibl
   if (req.temperature !== undefined) {
     body.temperature = req.temperature;
   }
-  if (req.maxTokens !== undefined) {
-    body.max_tokens = req.maxTokens;
+  // THE OUTPUT CAP — the field NAME is a dialect, and the VALUE is clamped (ADR-0071 §7/§10a).
+  //
+  // Name: OpenAI's official Chat Completions deprecated `max_tokens` in favour of `max_completion_tokens`, and its
+  // reasoning models REJECT the old field outright — the second half of the maintainer's "max tokens errors". But
+  // this same adapter serves every custom OpenAI-compatible `base_url` (LM Studio, Ollama, vLLM, LiteLLM, an
+  // enterprise gateway) and DeepSeek, most of which implement only the legacy field. Switching globally would
+  // trade one broken population for another, so the rule is by ENDPOINT, not by provider: OpenAI's own API gets
+  // the modern field, everything else keeps `max_tokens`.
+  //
+  // Value: capped at the model's published output ceiling, DOWN and never up — an authored `max_tokens: 200000` on
+  // a model whose limit is 64 000 is a 400 on every single turn, not an ambitious request.
+  const maxTokens = cappedMaxTokens(req.maxTokens, req.model, endpoint);
+  if (maxTokens !== undefined) {
+    if (provider === 'openai' && endpoint === 'official') {
+      body.max_completion_tokens = maxTokens;
+    } else {
+      body.max_tokens = maxTokens;
+    }
   }
   // ADR-0066: map the normalized reasoning-effort tier to each provider's NATIVE control. OpenAI takes a
   // `reasoning_effort` tier; DeepSeek (the other id this shared adapter serves) takes a `thinking` object
@@ -953,6 +974,7 @@ async function* streamChunks(
   client: OpenAI,
   req: LlmRequest,
   provider: ProviderId,
+  endpoint: EndpointKind,
   key: string,
 ): AsyncIterable<StreamChunk> {
   const state: OpenAiStreamState = {
@@ -966,7 +988,11 @@ async function* streamChunks(
   let sdkStream: AsyncIterable<OpenAI.ChatCompletionChunk>;
   try {
     sdkStream = await client.chat.completions.create(
-      { ...buildCommonBody(req, provider), stream: true, stream_options: { include_usage: true } },
+      {
+        ...buildCommonBody(req, provider, endpoint),
+        stream: true,
+        stream_options: { include_usage: true },
+      },
       buildRequestOptions(req),
     );
   } catch (err) {
@@ -1028,6 +1054,17 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
   if (deps.baseURL !== undefined) {
     assertHttpsBaseUrl(deps.baseURL);
   }
+  // OFFICIAL vs CUSTOM — decided ONCE, here, where the base URL is actually known (ADR-0071 §7/§10a).
+  //
+  // A CALLER-supplied `baseURL` means we are not talking to the provider's own API: LM Studio, Ollama, vLLM, an
+  // enterprise gateway. It governs two things downstream — the output-cap FIELD NAME (only OpenAI's own endpoint
+  // takes `max_completion_tokens`) and whether we CLAMP that cap against the catalog at all (a proxy may serve
+  // something quite different under a familiar model id, and silently lowering a number the user typed is a
+  // behaviour change we have no right to make on a model we cannot describe).
+  //
+  // DeepSeek's own `api.deepseek.com` is OFFICIAL — it is our default, not a caller's override. Only an explicit
+  // `deps.baseURL` makes an endpoint custom.
+  const endpoint: EndpointKind = deps.baseURL === undefined ? 'official' : 'custom';
   const createClient = (key: string): OpenAI =>
     new OpenAI({
       apiKey: key,
@@ -1045,7 +1082,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       const client = createClient(key);
       try {
         const completion = await client.chat.completions.create(
-          { ...buildCommonBody(req, providerId), stream: false },
+          { ...buildCommonBody(req, providerId, endpoint), stream: false },
           buildRequestOptions(req),
         );
         const choice = completion.choices[0];
@@ -1073,7 +1110,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       assertStreamable(providerId, supports);
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(providerId, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
-      return streamChunks(createClient(key), req, providerId, key);
+      return streamChunks(createClient(key), req, providerId, endpoint, key);
     },
     /**
      * Live model discovery (ADR-0064 §1) over the SDK's `models.list()`. The OpenAI/DeepSeek list is

@@ -11,6 +11,7 @@ import type {
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { catalogModel } from '../catalog/lookup.js';
+import { cappedMaxTokens } from '../output-cap.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import {
   GEMINI_WIRE,
@@ -652,8 +653,11 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   if (req.temperature !== undefined) {
     config['temperature'] = req.temperature;
   }
-  if (req.maxTokens !== undefined) {
-    config['maxOutputTokens'] = req.maxTokens;
+  // The output cap, held at or below the model's own ceiling (ADR-0071 §7) — down, never up: a cap BELOW the
+  // ceiling is the author's deliberate budget, and raising it would spend their money for them.
+  const maxOutputTokens = cappedMaxTokens(req.maxTokens, req.model);
+  if (maxOutputTokens !== undefined) {
+    config['maxOutputTokens'] = maxOutputTokens;
   }
   if (req.reasoningEffort !== undefined) {
     // ADR-0066/0071: the reasoning control is PER MODEL — `thinkingLevel` for Gemini 3, `thinkingBudget` for
@@ -662,7 +666,7 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
     const thinkingConfig = buildThinkingConfig(
       req.reasoningEffort,
       req.model,
-      req.maxTokens,
+      maxOutputTokens, // the CLAMPED cap — the thinking budget must be carved out of what we actually send
       req.providerOptions,
     );
     if (thinkingConfig !== undefined) {

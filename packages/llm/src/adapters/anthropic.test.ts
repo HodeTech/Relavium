@@ -373,6 +373,48 @@ describe('AnthropicAdapter', () => {
     expect(sent['thinking']).toEqual({ type: 'enabled', budget_tokens: 6553 }); // 80% of 8192
   });
 
+  it('CLAMPS max_tokens to the model ceiling — and the thinking budget is carved out of the CLAMPED cap', async () => {
+    // ADR-0071 §7. Two facts have to hold TOGETHER, and holding only one of them is a 400:
+    //   1. `max_tokens: 200000` on claude-opus-4-5 (ceiling 64_000) is rejected outright.
+    //   2. Anthropic ALSO requires `budget_tokens < max_tokens`. The thinking ceiling is derived from the cap, so
+    //      clamping the cap and NOT the derivation would put the budget ABOVE the max_tokens we actually send —
+    //      trading one 400 for another. The cap is computed once, and both uses read that one value.
+    //
+    // Driven through STREAM because the Anthropic SDK refuses a non-streaming request whose `max_tokens` implies a
+    // >10-minute generation — which a 64 000-token cap does. Same `buildCommonBody`, same body on the wire.
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response('event: message_stop\ndata: {"type":"message_stop"}\n\n', {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+          }),
+        );
+      },
+      maxRetries: 0,
+    });
+
+    await collect(
+      adapter.stream(
+        {
+          model: 'claude-opus-4-5',
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
+          maxTokens: 200_000,
+          reasoningEffort: 'max', // NOT on opus-4-5's ladder ⇒ served from its budget axis
+        },
+        'k',
+      ),
+    );
+
+    expect(sent['max_tokens']).toBe(64_000); // clamped to the model's real ceiling
+    const thinking = sent['thinking'] as { type: string; budget_tokens: number };
+    expect(thinking.type).toBe('enabled');
+    expect(thinking.budget_tokens).toBe(51_200); // 80% of the CLAMPED cap — not of the 200 000 that was asked for
+    expect(thinking.budget_tokens).toBeLessThan(sent['max_tokens'] as number); // Anthropic's own invariant
+  });
+
   it('an EMPTY descriptor is NOT disable-able — `thinking: {disabled}` is still a field, and still a 400', async () => {
     // The `off` branch answered a question about the PROVIDER ("Anthropic can always disable") instead of about the
     // MODEL. A model whose descriptor is `{}` reasons but publishes no knob at all; sending it a disable is the same
