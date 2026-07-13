@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Relavium \u2014 multi-surface, local-first AI agent workflow platform (HodeTech). Monorepo root (tooling only); the published CLI package is `relavium` (apps/cli).",
+  "description": "Relavium — multi-surface, local-first AI agent workflow platform (HodeTech). Monorepo root (tooling only); the published CLI package is `relavium` (apps/cli).",
   "license": "SEE LICENSE IN LICENSE",
   "packageManager": "pnpm@9.12.3",
   "engines": {
