@@ -16,6 +16,7 @@ import {
 } from './effort-picker.js';
 import { foldModelPickerKey, partialFailureBanner, type ModelPickerState } from './model-picker.js';
 import type { ReseatTarget } from '../../commands/chat.js';
+import { effortRowLabel } from '../../chat/effort-notice.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
@@ -742,7 +743,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   ): string => {
     // The effort (ADR-0066 §6) is written to the SAME layer atomically, so it shares the model's effectiveness — the
     // suffix just names what was set (a reasoning model went through the effort sub-step; a non-reasoning one did not).
-    const effort = reasoningEffort === undefined ? '' : ` at effort ${reasoningEffort}`;
+    // The label reads "on" for a budget model's canonical-on tier, matching the picker (ADR-0066 amendment).
+    const effort =
+      reasoningEffort === undefined
+        ? ''
+        : ` at effort ${effortRowLabel(modelId, reasoningEffort).label}`;
     if (effective === modelId)
       return `Default model set to ${displayName}${effort} — applies to your next chat session.`;
     if (effective === undefined) {
@@ -792,13 +797,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     displayName: string,
     reasoningEffort: ReasoningEffort,
   ): void => {
+    const label = effortRowLabel(
+      active.store.getSnapshot().state.model ?? '',
+      reasoningEffort,
+    ).label;
     if (reasoningEffort !== active.store.getSnapshot().reasoningEffort) {
       active.onSetEffort?.(reasoningEffort);
-      active.store.note(
-        `Reasoning effort set to ${reasoningEffort} — applies to your next message.`,
-      );
+      active.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
     } else {
-      active.store.note(`Already on ${displayName} at effort ${reasoningEffort}.`);
+      active.store.note(`Already on ${displayName} at effort ${label}.`);
     }
     set({ modelPicker: undefined });
   };
@@ -918,17 +925,20 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'close':
         set({ effortPicker: undefined });
         break;
-      case 'accept':
+      case 'accept': {
         set({ effortPicker: undefined });
+        const label = effortRowLabel(
+          active.store.getSnapshot().state.model ?? '',
+          step.effort,
+        ).label;
         if (step.effort === open.current) {
-          active.store.note(`Already at reasoning effort ${step.effort}.`);
+          active.store.note(`Already at reasoning effort ${label}.`);
         } else {
           active.onSetEffort?.(step.effort);
-          active.store.note(
-            `Reasoning effort set to ${step.effort} — applies to your next message.`,
-          );
+          active.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
         }
         break;
+      }
       case 'state':
         set({ effortPicker: step.state });
         break;

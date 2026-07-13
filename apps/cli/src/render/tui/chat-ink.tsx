@@ -28,6 +28,7 @@ import {
   initialEffortPickerState,
   type EffortPickerState,
 } from './effort-picker.js';
+import { effortRowLabel } from '../../chat/effort-notice.js';
 import { EffortTierList } from './effort-tier-list.js';
 import {
   foldModelPickerKey,
@@ -910,13 +911,15 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   ): void => {
     if (step.modelId === open.currentDefault) {
       if (step.reasoningEffort === undefined || step.reasoningEffort === open.currentEffort) {
-        const at = step.reasoningEffort === undefined ? '' : ` at effort ${step.reasoningEffort}`;
+        const at =
+          step.reasoningEffort === undefined
+            ? ''
+            : ` at effort ${effortRowLabel(step.modelId, step.reasoningEffort).label}`;
         props.store.note(`Already on ${step.displayName}${at}.`);
       } else {
+        const label = effortRowLabel(step.modelId, step.reasoningEffort).label;
         props.onSetEffort?.(step.reasoningEffort);
-        props.store.note(
-          `Reasoning effort set to ${step.reasoningEffort} — applies to your next message.`,
-        );
+        props.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
       }
       return;
     }
@@ -1550,6 +1553,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       {effortPicker !== undefined && (
         <EffortTierList
           tiers={effortPicker.tiers}
+          model={effortPicker.model}
           selected={effortPicker.selected}
           current={effortPicker.current}
           labelSuffix={effortPicker.model}

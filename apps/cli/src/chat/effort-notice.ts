@@ -1,6 +1,12 @@
 import type { EffortGateResult } from '@relavium/core';
-import { catalogModel, effortTiersFor as seamEffortTiersFor } from '@relavium/llm';
-import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
+import {
+  catalogModel,
+  effortTiersFor as seamEffortTiersFor,
+  reasoningControlShape,
+  wireValueFor,
+  CANONICAL_ON_TIER,
+} from '@relavium/llm';
+import { EFFORT_TIER_HINT, REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
 
 import { sanitizeInline } from '../render/sanitize.js';
 
@@ -57,24 +63,66 @@ export function effortRejectedNote(
 }
 
 /**
- * The tiers a model accepts, **in canonical order** — an ordering projection of `@relavium/llm`'s
- * {@link acceptedTiers}, and nothing more.
+ * The reasoning-effort ROWS a picker should offer for a model, in canonical order — the PRESENTATION projection of
+ * `@relavium/llm`'s wire-accurate {@link acceptedTiers}, deduped so no two rows produce the SAME provider behavior
+ * (ADR-0066 amendment). By the model's control SHAPE ({@link reasoningControlShape}), never per-model:
  *
- * The seam owns the ANSWER; this owns only how it is listed (a `Set` has no order a UI can rely on, and the rows
- * must read `off → low → medium → high → max` every time). It deliberately does not re-derive the set from the
- * catalog: the CLI was carrying three hand-written copies of `catalogModel(m)` + `acceptedTiers(...)`, plus a
- * fourth, older boolean that disagreed with all of them, and an adversarial review found sixteen shipped models
- * where the picker and the footer contradicted each other as a result.
+ *   - **graded** (a real effort ladder): the accepted tiers, DEDUPED by distinct wire value. DeepSeek's
+ *     low/medium/high all send `high`, so they collapse to ONE row (`off/high/max`); Gemini's `max` coarsens onto
+ *     `high` (`low/medium/high`). A model whose rungs are all distinct (`claude-opus-4-8`, `gpt-5.4-pro`) is
+ *     unchanged. The representative kept per wire is the tier whose own NAME matches the wire (so DeepSeek's
+ *     `high`-wire row reads "high", not "low" or "max"), else the highest tier for that wire.
+ *   - **budget** (a continuous token budget, no ladder — `claude-haiku-4-5`): a two-row **off/on**, "on" =
+ *     {@link CANONICAL_ON_TIER}. A budget has no meaningful discrete rungs (Claude-Code parity). Only a GENUINE
+ *     two-state choice opens the overlay: a model that cannot be turned off (`gemini-2.5-pro`) has nothing to
+ *     toggle, so the list is empty.
+ *   - **none** (`deepseek-reasoner`'s `{}`, a custom/uncatalogued model, or a model with no usable knob): empty.
  *
- * Empty when the model does not reason, publishes no controllable tier (`deepseek-reasoner`), or is not in the
- * catalog at all (a custom endpoint, or one newer than our snapshot). All three mean the same thing to the
- * overlay — there is nothing to offer — but NOT the same thing to the user, so the surfaces distinguish them in
- * what they say ({@link effortUnavailableNote}). It lives here, next to those sentences, so the neutral module the
- * engine hosts and the picker both import owns the one canonical answer.
+ * Every emitted tier is a member of the seam's accepted set, so the accept sends a value the engine gate accepts
+ * verbatim. Empty for all three "nothing to offer" cases; the surfaces distinguish WHY in what they SAY (see
+ * {@link effortUnavailableNote}). The seam ({@link acceptedTiers}) is unchanged — this is presentation only.
  */
 export function effortTiersFor(model: string): readonly ReasoningEffort[] {
+  const entry = catalogModel(model);
   const accepted = seamEffortTiersFor(model);
-  return REASONING_EFFORTS.filter((tier) => accepted.has(tier)); // canonical order, never the Set's
+  const shape = reasoningControlShape(entry?.reasoning);
+  if (shape === 'none') return [];
+  if (shape === 'budget') {
+    // A continuous budget → off/on. BOTH states must be reachable for a real choice; else nothing to pick.
+    return accepted.has('off') && accepted.has(CANONICAL_ON_TIER) ? ['off', CANONICAL_ON_TIER] : [];
+  }
+  // graded: keep one representative tier per distinct WIRE value (see the doc for how the representative is chosen).
+  const provider = entry?.provider ?? 'openai';
+  const repByWire = new Map<string, ReasoningEffort>();
+  for (const tier of REASONING_EFFORTS) {
+    if (tier === 'off' || !accepted.has(tier)) continue;
+    const wire = wireValueFor(provider, tier);
+    if (wire === undefined) continue;
+    const cur = repByWire.get(wire);
+    // Ascending order, so a later tier is HIGHER. Overwrite unless the current rep is already the name-match for
+    // this wire (then keep it — the name-match reads truest, e.g. Gemini's `high` over its coarsened `max`).
+    if (cur === undefined || (cur as string) !== wire) repByWire.set(wire, tier);
+  }
+  const reps = new Set(repByWire.values());
+  return REASONING_EFFORTS.filter((t) => (t === 'off' ? accepted.has('off') : reps.has(t)));
+}
+
+/**
+ * The display label + hint for one effort ROW (or the bound tier in the footer/notice) — so a budget model's
+ * canonical-on tier reads "on" everywhere, while every graded tier reads its own name. Keeps the picker, the footer
+ * and the notices from disagreeing about what a tier is called.
+ */
+export function effortRowLabel(
+  model: string,
+  tier: ReasoningEffort,
+): { label: string; hint: string } {
+  if (
+    tier === CANONICAL_ON_TIER &&
+    reasoningControlShape(catalogModel(model)?.reasoning) === 'budget'
+  ) {
+    return { label: 'on', hint: 'reasoning on' };
+  }
+  return { label: tier, hint: EFFORT_TIER_HINT[tier] };
 }
 
 /**

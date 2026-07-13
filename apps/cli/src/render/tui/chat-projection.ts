@@ -2,6 +2,7 @@ import type { ToolApprovalRequest } from '@relavium/core';
 import type { ReasoningEffort } from '@relavium/shared';
 
 import { MODE_LABEL, type ChatMode } from '../../chat/chat-mode.js';
+import { effortRowLabel } from '../../chat/effort-notice.js';
 import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
 import { formatCostUsd, formatDuration, formatElapsed, formatTokens } from './format.js';
 import type {
@@ -598,7 +599,11 @@ export function formatSessionFooterWithMode(
   const base = formatSessionFooter(state);
   const modePart = `${MODE_LABEL[mode]} mode`;
   const withMode = base.length > 0 ? `${base} · ${modePart}` : modePart;
-  return reasoningEffort === undefined ? withMode : `${withMode} · effort: ${reasoningEffort}`;
+  if (reasoningEffort === undefined) return withMode;
+  // A budget model's bound `medium` reads "on" here, matching the picker (ADR-0066 amendment); a graded tier reads
+  // its own name. `state.model` absent (pre-session) ⇒ the label falls back to the tier name.
+  const effortLabel = effortRowLabel(state.model ?? '', reasoningEffort).label;
+  return `${withMode} · effort: ${effortLabel}`;
 }
 
 /**

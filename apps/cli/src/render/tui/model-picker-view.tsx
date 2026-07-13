@@ -74,6 +74,7 @@ function EffortSubList(props: Readonly<{ state: ModelPickerState; color: boolean
   return (
     <EffortTierList
       tiers={state.effortTiers}
+      model={state.pending?.modelId ?? ''}
       selected={state.effortSelected}
       current={state.currentEffort}
       labelSuffix={state.pending?.displayName}

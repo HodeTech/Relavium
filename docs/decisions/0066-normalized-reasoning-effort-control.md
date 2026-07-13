@@ -38,6 +38,21 @@
 > changes is only that a model now *declares* which tiers it accepts and which native shape carries them,
 > instead of the adapter assuming both.
 
+> **Note (2026-07-14): the PICKER now presents "one row per distinct outcome", separate from the wire-accurate
+> accepted set (§6 presentation refinement — append-only, the seam is unchanged).** `acceptedTiers` correctly
+> answers what the WIRE takes, but it made a poor MENU: it offered five rows for models that expose fewer real
+> choices, because several normalized tiers can collapse onto one provider value (DeepSeek's low/medium/high all
+> send `high`; Gemini's `max` coarsens onto `high`) and because a continuous token BUDGET has no discrete rungs at
+> all (`claude-haiku-4-5` — the maintainer's report: a five-tier ladder where the model is really on/off, à la
+> Claude Code). A new PRESENTATION helper `reasoningControlShape(controls)` → `graded | budget | none` and a
+> `CANONICAL_ON_TIER` (= `medium`) drive a CLI projection (`effortTiersFor`, `effortRowLabel` in
+> `chat/effort-notice.ts`): a **graded** ladder is deduped by distinct wire value (the representative reads the
+> name that matches the wire); a **budget** model is a two-row **off/on** ("on" = `medium`, a real member of the
+> accepted set, so the accept sends a value the gate accepts verbatim — a model that cannot be turned off, like
+> `gemini-2.5-pro`, has nothing to toggle, so no overlay opens); **none** shows nothing. This is presentation only:
+> `acceptedTiers` (the wire truth the engine gate, failover chain, and four adapters read) is untouched, so every
+> emitted row is still a valid accepted tier. The rule is GENERAL (by shape), never per-model.
+
 ## Context
 
 Reasoning models expose a **control** over how much the model "thinks" before answering. Relavium's seam already has the reasoning **output** side (ADR-0030: the streaming `reasoning_*` channel + `reasoningTokens` observability + the `reasoning` content arm, mapped per adapter). It has **no normalized INPUT control**: a caller who wants "think harder" must reach the raw `providerOptions` escape hatch with provider-specific keys — which defeats the provider-agnostic promise, cannot be authored portably in agent YAML, and cannot be surfaced in the `/models` picker.

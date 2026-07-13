@@ -174,6 +174,7 @@ function ChatRegion(
       {props.effortPicker !== undefined && (
         <EffortTierList
           tiers={props.effortPicker.tiers}
+          model={props.effortPicker.model}
           selected={props.effortPicker.selected}
           current={props.effortPicker.current}
           labelSuffix={props.effortPicker.model}

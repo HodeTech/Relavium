@@ -1,8 +1,9 @@
 import { Box, Text } from 'ink';
 import type { ReactElement } from 'react';
 
-import { EFFORT_TIER_HINT, type ReasoningEffort } from '@relavium/shared';
+import { type ReasoningEffort } from '@relavium/shared';
 
+import { effortRowLabel } from '../../chat/effort-notice.js';
 import { sanitizeInline } from './chat-projection.js';
 import { colorProps, dimProps } from './projection.js';
 
@@ -22,6 +23,9 @@ export interface EffortTierListProps {
    * `low` and `gemini-2.5-pro` cannot be turned off; offering a row the provider would 400 on is the bug.
    */
   readonly tiers: readonly ReasoningEffort[];
+  /** The bound model id — decides a tier's DISPLAY label (a budget model's `medium` reads "on"; ADR-0066 amendment).
+   *  Not shown itself; the header suffix names the model. */
+  readonly model: string;
   /** The highlighted tier index (already clamped by the caller's fold, but re-clamped here for display safety). */
   readonly selected: number;
   /** The session's currently-bound effort — the `✓` marker; `undefined` ⇒ no tier bound (the provider default). */
@@ -35,7 +39,7 @@ export interface EffortTierListProps {
 }
 
 export function EffortTierList(props: Readonly<EffortTierListProps>): ReactElement {
-  const { tiers, selected, current, labelSuffix, footer, color } = props;
+  const { tiers, model, selected, current, labelSuffix, footer, color } = props;
   // Re-clamp for display: a caller could pass an out-of-range index (a shrunk source, a stale render) — never index
   // past the end of a list whose length now varies per model (`gpt-5-pro` has ONE row).
   const highlighted = Math.max(0, Math.min(selected, tiers.length - 1));
@@ -50,10 +54,11 @@ export function EffortTierList(props: Readonly<EffortTierListProps>): ReactEleme
         const isSelected = index === highlighted;
         const isCurrent = effort === current;
         const rowColor = isSelected ? colorProps(color, 'cyan') : {};
+        const { label, hint } = effortRowLabel(model, effort);
         return (
           <Text key={effort} {...rowColor} wrap="truncate-end">
-            {`${isSelected ? '›' : ' '} ${isCurrent ? '✓' : ' '} ${effort} · `}
-            <Text {...dimProps(color)}>{EFFORT_TIER_HINT[effort]}</Text>
+            {`${isSelected ? '›' : ' '} ${isCurrent ? '✓' : ' '} ${label} · `}
+            <Text {...dimProps(color)}>{hint}</Text>
           </Text>
         );
       })}

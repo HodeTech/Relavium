@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   effortRejectedNote,
+  effortRowLabel,
   effortTiersFor,
   effortUnavailableNote,
 } from '../../chat/effort-notice.js';
@@ -15,9 +16,9 @@ import {
 } from './effort-picker.js';
 
 function state(partial: Partial<EffortPickerState> = {}): EffortPickerState {
-  // `deepseek-v4-flash` accepts all five (its low/medium/high all coarsen onto one wire value, and `off` is the
-  // independent disable switch) — so the DEFAULT fixture is still a five-row list, and a test that wants a
-  // narrower model says so explicitly.
+  // A SYNTHETIC full tier list, so the fold/navigation tests below exercise every arrow move regardless of what a
+  // real model's projection collapses to (that projection — dedupe, budget off/on — is covered by the
+  // `effortTiersFor` tests above). The `model` is only carried through the fold, not re-projected here.
   return {
     tiers: [...REASONING_EFFORTS],
     selected: 0,
@@ -55,10 +56,6 @@ describe('effortTiersFor + initialEffortPickerState — the picker can no longer
     expect(effortTiersFor('gpt-5-pro')).toEqual(['high']);
   });
 
-  it('gemini-2.5-pro is NOT offered `off` — Google: "N/A: Cannot disable thinking"', () => {
-    expect(effortTiersFor('gemini-2.5-pro')).not.toContain('off');
-  });
-
   it('a model with no controllable tier, and an unknown model, offer NOTHING', () => {
     expect(effortTiersFor('deepseek-reasoner')).toEqual([]); // reasons; publishes no control
     expect(effortTiersFor('some-custom-endpoint-model')).toEqual([]); // not in the catalog at all
@@ -66,6 +63,44 @@ describe('effortTiersFor + initialEffortPickerState — the picker can no longer
 
   it('the tiers are in CANONICAL order (off → max), never the accepted-set insertion order', () => {
     expect(effortTiersFor('claude-opus-4-8')).toEqual(['off', 'low', 'medium', 'high', 'max']);
+  });
+});
+
+describe('effortTiersFor — the GENERAL presentation rule: one row per distinct outcome (ADR-0066 amendment)', () => {
+  it('BUDGET model → off/on, never a fake 5-tier ladder (claude-haiku-4-5)', () => {
+    // A continuous token budget has no meaningful discrete rungs. Its picker is a two-row off/on; "on" is the
+    // canonical `medium` tier (a real member of the accepted set, so the accept sends a value the gate accepts).
+    expect(effortTiersFor('claude-haiku-4-5')).toEqual(['off', 'medium']);
+    // …and 'medium' READS "on" (the label the whole surface shows).
+    expect(effortRowLabel('claude-haiku-4-5', 'medium')).toEqual({
+      label: 'on',
+      hint: 'reasoning on',
+    });
+    expect(effortRowLabel('claude-haiku-4-5', 'off').label).toBe('off');
+  });
+
+  it('BUDGET model that cannot be turned off → NO overlay (gemini-2.5-pro)', () => {
+    // Google: "N/A: Cannot disable thinking". With no `off` and no discrete ladder there is nothing to toggle, so
+    // the list is empty and the overlay never opens (was: five rows, one of them the rejected `off`).
+    expect(effortTiersFor('gemini-2.5-pro')).toEqual([]);
+    expect(canControlEffort('gemini-2.5-pro', true)).toBe(false);
+  });
+
+  it('GRADED model → deduped by distinct WIRE value: deepseek-v4-pro low/medium/high all send `high`', () => {
+    // DeepSeek publishes only two effort levels; Relavium's low/medium/high all map to `high`, so they collapse to
+    // ONE row — the representative reads "high" (the name that matches the wire), not "low".
+    expect(effortTiersFor('deepseek-v4-pro')).toEqual(['off', 'high', 'max']);
+    expect(effortRowLabel('deepseek-v4-pro', 'high').label).toBe('high'); // a graded tier keeps its own name
+  });
+
+  it('GRADED model → Gemini `max` coarsens onto `high`, so it collapses (gemini-3.5-flash)', () => {
+    // GEMINI_WIRE maps `max` onto `high`, so `high` and `max` are the same call — keep the name-match `high`.
+    expect(effortTiersFor('gemini-3.5-flash')).toEqual(['low', 'medium', 'high']);
+  });
+
+  it('GRADED model with all-distinct wires is UNCHANGED (claude-opus-4-8 full ladder, gpt-5.4-pro)', () => {
+    expect(effortTiersFor('claude-opus-4-8')).toEqual(['off', 'low', 'medium', 'high', 'max']);
+    expect(effortTiersFor('gpt-5.4-pro')).toEqual(['medium', 'high', 'max']);
   });
 });
 

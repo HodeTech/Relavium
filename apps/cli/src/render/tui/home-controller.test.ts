@@ -1819,9 +1819,9 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     const { port, writeDefault } = makeModelsPort({
       entries: [
         pickerEntry({
-          modelId: 'deepseek-v4-flash',
-          displayName: 'DeepSeek V4 Flash',
-          provider: 'deepseek',
+          modelId: 'claude-opus-4-8',
+          displayName: 'Claude Opus 4.8',
+          provider: 'anthropic',
         }),
       ],
       currentEffort: 'low', // the existing effort default — the sub-list opens highlighted on it
@@ -1835,9 +1835,9 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     c.handleKey('', { downArrow: true }); // medium → high
     c.handleKey('', ENTER); // accept the model + 'high'
 
-    expect(writeDefault).toHaveBeenCalledWith('deepseek-v4-flash', 'deepseek', 'high'); // model+provider+effort, one atomic call
+    expect(writeDefault).toHaveBeenCalledWith('claude-opus-4-8', 'anthropic', 'high'); // model+provider+effort, one atomic call
     expect(c.getSnapshot().modelPicker).toBeUndefined(); // closed
-    expect(c.getSnapshot().notice).toContain('DeepSeek V4 Flash');
+    expect(c.getSnapshot().notice).toContain('Claude Opus 4.8');
     expect(c.getSnapshot().notice).toContain('effort high'); // the notice names the written effort
     expect(c.getSnapshot().notice).toContain('next chat session');
   });
@@ -1849,9 +1849,9 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     const { port, writeDefault } = makeModelsPort({
       entries: [
         pickerEntry({
-          modelId: 'deepseek-v4-flash',
-          displayName: 'DeepSeek V4 Flash',
-          provider: 'deepseek',
+          modelId: 'claude-opus-4-8',
+          displayName: 'Claude Opus 4.8',
+          provider: 'anthropic',
         }),
       ],
       // no currentEffort → port.currentEffort() is undefined
@@ -1863,7 +1863,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     expect(c.getSnapshot().modelPicker?.currentEffort).toBeUndefined(); // no config effort default
     c.handleKey('', ENTER); // immediate Enter on the opening highlight (the neutral 'medium')
 
-    expect(writeDefault).toHaveBeenCalledWith('deepseek-v4-flash', 'deepseek', 'medium'); // the neutral default is written
+    expect(writeDefault).toHaveBeenCalledWith('claude-opus-4-8', 'anthropic', 'medium'); // the neutral default is written
     expect(c.getSnapshot().notice).toContain('effort medium');
   });
 

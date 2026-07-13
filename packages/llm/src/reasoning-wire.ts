@@ -215,6 +215,35 @@ export function acceptedTiers(
   return accepted;
 }
 
+/** The single normalized tier that represents "reasoning ON" for a budget-shaped model (ADR-0066 amendment). It is
+ *  `medium` — a mid budget, always a member of a budget model's accepted set (the budget axis fills every tier) —
+ *  so mapping "on" to it needs ZERO adapter change and the engine gate accepts it verbatim. */
+export const CANONICAL_ON_TIER: ReasoningEffort = 'medium';
+
+/**
+ * The PRESENTATION shape of a model's reasoning control (ADR-0066 amendment) — how a picker should OFFER it, as
+ * distinct from the wire-accurate {@link acceptedTiers}:
+ *   - **`'graded'`** — a discrete effort ladder (`effortValues`). A picker shows its rungs, deduped by distinct wire
+ *     value (several normalized tiers can collapse onto one provider value — DeepSeek's low/medium/high all map to
+ *     `high`; Gemini's `max` onto `high`).
+ *   - **`'budget'`** — a continuous token budget and no ladder (`budgetTokens`, e.g. `claude-haiku-4-5`). A budget
+ *     has no meaningful discrete rungs, so a picker offers a simple off/on (Claude-Code parity), "on" =
+ *     {@link CANONICAL_ON_TIER}.
+ *   - **`'none'`** — nothing controllable (`{}` like `deepseek-reasoner`, or a lone toggle with no tier to map "on"
+ *     to). No overlay.
+ *
+ * `effortValues` WINS over a co-published budget (`claude-opus-4-5` publishes both): a real ladder is shown as one.
+ * This is PRESENTATION metadata; {@link acceptedTiers} (the wire truth the gate/failover/adapters read) is unchanged.
+ */
+export function reasoningControlShape(
+  controls: ReasoningControls | undefined,
+): 'graded' | 'budget' | 'none' {
+  if (controls === undefined) return 'none';
+  if (controls.effortValues !== undefined && controls.effortValues.length > 0) return 'graded';
+  if (controls.budgetTokens !== undefined) return 'budget';
+  return 'none';
+}
+
 /**
  * The wire value to send for a tier — **only if the model actually publishes it**. `undefined` otherwise.
  *

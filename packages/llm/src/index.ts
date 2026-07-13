@@ -192,7 +192,13 @@ export { installCatalogRefresh, clearCatalogRefresh, catalogModelIds } from './c
 export { CATALOG_PROVIDER_KEYS } from './catalog/catalog-providers.js';
 export { normalizeCatalog, ModelsDevPayloadSchema } from './catalog/models-dev-schema.js';
 export type { CatalogModel, CatalogPriceTier, ReasoningControls } from './catalog/catalog-model.js';
-export { acceptedTiers, canDisableReasoning } from './reasoning-wire.js';
+export {
+  acceptedTiers,
+  canDisableReasoning,
+  reasoningControlShape,
+  wireValueFor,
+  CANONICAL_ON_TIER,
+} from './reasoning-wire.js';
 // The output cap (ADR-0071 §7) — an authored `max_tokens` held at or below the model's real ceiling. Exported
 // because the PRE-EGRESS ESTIMATE must be computed from the same number the wire will carry: a governor that
 // pre-authorizes spend on tokens the model is physically incapable of producing kills runs over phantom money.

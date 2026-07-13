@@ -6,6 +6,7 @@ import {
   acceptedWireValue,
   canDisableReasoning,
   reasoningBudgetFor,
+  reasoningControlShape,
   thinkingCeiling,
 } from './reasoning-wire.js';
 
@@ -25,6 +26,33 @@ const tiers = (modelId: string): string[] => {
   if (model === undefined) throw new Error(`${modelId} is not in the shipped catalog`);
   return [...acceptedTiers(model.provider, model.reasoning)].sort();
 };
+
+describe('reasoningControlShape — the PRESENTATION shape a picker projects (ADR-0066 amendment)', () => {
+  it("effortValues ⇒ 'graded', even alongside a co-published budget (claude-opus-4-5 has both)", () => {
+    expect(reasoningControlShape({ effortValues: ['medium', 'high', 'xhigh'] })).toBe('graded');
+    expect(
+      reasoningControlShape({
+        effortValues: ['low', 'medium', 'high'],
+        budgetTokens: { min: 1024 },
+      }),
+    ).toBe('graded');
+    expect(reasoningControlShape({ toggle: true, effortValues: ['high', 'max'] })).toBe('graded');
+  });
+
+  it("a budget with no ladder ⇒ 'budget' (the off/on case)", () => {
+    expect(reasoningControlShape({ budgetTokens: { min: 1024 } })).toBe('budget');
+    expect(reasoningControlShape({ toggle: true, budgetTokens: { min: 0, max: 24576 } })).toBe(
+      'budget',
+    );
+  });
+
+  it("no usable knob ⇒ 'none' (empty descriptor, a lone toggle, or absent)", () => {
+    expect(reasoningControlShape({})).toBe('none'); // deepseek-reasoner: reasons, no control
+    expect(reasoningControlShape({ effortValues: [] })).toBe('none'); // an empty ladder is no ladder
+    expect(reasoningControlShape({ toggle: true })).toBe('none'); // no tier to map "on" to
+    expect(reasoningControlShape(undefined)).toBe('none'); // does not reason
+  });
+});
 
 describe('the bug report — gpt-5.4-pro REJECTS the tier we offer it today', () => {
   it('accepts {medium, high, max} and NOT low, NOT off', () => {
