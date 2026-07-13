@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import type { ProviderId } from '../types.js';
+import { isNonChatModelId } from '../model-kind.js';
 import { providerIdForCatalogKey } from './catalog-providers.js';
 import type { CatalogModel, CatalogPriceTier, ReasoningControls } from './catalog-model.js';
 
@@ -104,10 +105,16 @@ export type ModelsDevModel = z.infer<typeof ModelSchema>;
  * are validated ONE AT A TIME below (`parseModels`), so a single bad row is a dropped model, not a dead sync.
  */
 const ProviderSchema = z.object({
-  id: z.string().min(1),
   models: z.record(z.string(), z.unknown()),
 });
-export const ModelsDevPayloadSchema = z.record(z.string(), ProviderSchema);
+
+/**
+ * The payload is a bag of providers, and it is parsed as `unknown` per provider for the same reason the models
+ * are: **one malformed entry among 166 must not kill a sync that reads four of them.** `id` is not even required
+ * here — we key providers by the record key (which `CATALOG_PROVIDER_KEYS` maps), so a provider stub that omits
+ * its own `id` field is no reason to fail.
+ */
+export const ModelsDevPayloadSchema = z.record(z.string(), z.unknown());
 export type ModelsDevPayload = z.infer<typeof ModelsDevPayloadSchema>;
 
 /** A model the upstream payload carried but we could not use, and why. Surfaced by the sync, never swallowed. */
@@ -208,12 +215,31 @@ export function normalizeCatalog(payload: ModelsDevPayload): {
   const catalog: Record<string, CatalogModel> = {};
   const dropped: DroppedModel[] = [];
 
-  for (const [upstreamKey, provider] of Object.entries(payload)) {
+  for (const [upstreamKey, rawProvider] of Object.entries(payload)) {
     const providerId = providerIdForCatalogKey(upstreamKey);
     if (providerId === undefined) continue; // 162 upstream providers we have no adapter for — not callable.
 
-    for (const [recordKey, rawModel] of Object.entries(provider.models)) {
+    const provider = ProviderSchema.safeParse(rawProvider);
+    if (!provider.success) {
+      throw new Error(
+        `catalog: provider '${upstreamKey}' — which we DO import — has no usable \`models\` map. Refusing to ` +
+          `continue: silently importing zero models for a provider we can call would leave every one of its ` +
+          `models unpriced, and an unpriced model skips the cost cap.`,
+      );
+    }
+
+    for (const [recordKey, rawModel] of Object.entries(provider.data.models)) {
       // ONE MODEL AT A TIME. A malformed row is a dropped model, not a dead sync (see `ProviderSchema`).
+      // NOT A CHAT MODEL — dropped before anything else, and this is load-bearing, not tidiness.
+      //
+      // `keepOpenAiModelId` short-circuits on `pricedIds.has(id)`: a PRICED id bypasses the live list's deny-list
+      // entirely, so a cost-eligible model can never be filtered out. Once the catalog becomes the priced set,
+      // any non-chat model in it would be *rescued* by that short-circuit and land in the user's model picker as
+      // something to chat with. `text-embedding-3-large` is priced upstream and arrived in the very first
+      // snapshot exactly that way. Sharing ONE filter with the live list (`isNonChatModelId`) is what makes the
+      // cascade impossible; two filters that can disagree is what makes it inevitable.
+      if (isNonChatModelId(recordKey)) continue;
+
       const parsed = ModelSchema.safeParse(rawModel);
       if (!parsed.success) {
         // The reported id must be the MODEL'S OWN `id`, not the record key. The sync's shipped-model guard

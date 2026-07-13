@@ -18,6 +18,7 @@ import {
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
+import { isNonChatModelId } from '../model-kind.js';
 import { MODEL_PRICING } from '../pricing.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
@@ -403,47 +404,6 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId, key?: 
 // --- Live model discovery: the id-only list filter (ADR-0064 §3) ------------------------------
 
 /**
- * Id SEGMENTS that are NOT chat-completions text models — DENIED from the OpenAI/DeepSeek live list
- * (ADR-0064 §3). The OpenAI `/v1/models` list is id-only (no capability metadata), so the filter is an
- * id-family heuristic: deny wins over allow, so `gpt-image-1` / `gpt-4o-audio-preview` / `omni-moderation`
- * are dropped even though they match a `gpt`/`o` allow-family. Each token is matched on a `-`/`_` SEGMENT
- * boundary (not a bare substring), so `search` denies `gpt-4o-search-preview` but NOT `o3-deep-research`
- * (re**search**), and `dall-e`'s internal `-` is a literal segment. The tail entries
- * (`instruct`/`ocr`/`davinci`/`babbage`) drop non-chat completion families that otherwise pass the
- * gpt/deepseek allow-family; all are priced-rescue-safe (the `pricedIds.has(id)` short-circuit wins first).
- */
-const OPENAI_DENY_SUBSTRINGS = [
-  'embedding',
-  'tts',
-  'whisper',
-  'image',
-  'moderation',
-  'realtime',
-  'audio',
-  'dall-e',
-  'transcribe',
-  'search',
-  'instruct',
-  'ocr',
-  'davinci',
-  'babbage',
-] as const;
-
-/** Escape a literal string for embedding inside a `RegExp`. The deny tokens carry no metacharacters today
- *  (`dall-e`'s `-` is literal outside a character class), but this keeps the boundary match safe if one is
- *  ever added. */
-function escapeRegExp(text: string): string {
-  // `String.raw` avoids the doubled backslash of `'\\$&'` — the replacement is a literal `\` + the `$&` match ref.
-  return text.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
-}
-
-/** True when a deny `token` occurs on a `-`/`_` segment boundary in `lower` — a word-boundary match, so
- *  `search` fires on `gpt-4o-search-preview` (`-search-`) but not `o3-deep-research` (`re`+`search`). */
-function denyTokenMatches(lower: string, token: string): boolean {
-  return new RegExp(`(^|[-_])${escapeRegExp(token)}([-_]|$)`).test(lower);
-}
-
-/**
  * The MODEL_PRICING native ids + canonical keys for one OpenAI-compatible provider — unioned into the live
  * list so a **cost-eligible** id ALWAYS survives the id-family heuristic (ADR-0064 §3), even if a future
  * priced id doesn't match a `gpt`/`o`/`chat`/`deepseek` family.
@@ -461,7 +421,7 @@ export function pricedModelIdsFor(provider: ProviderId): ReadonlySet<string> {
 
 /**
  * Keep an OpenAI/DeepSeek model id iff it is a chat-capable text model (ADR-0064 §3). A priced id is kept
- * unconditionally (cost-eligibility wins); otherwise `ft:` fine-tunes and every {@link OPENAI_DENY_SUBSTRINGS}
+ * unconditionally (cost-eligibility wins); otherwise `ft:` fine-tunes and every non-chat family ({@link isNonChatModelId})
  * family are denied, and only the `gpt` / `o<digit>` / `deepseek` / `*chat*` families are kept. Pure +
  * unit-tested.
  */
@@ -473,7 +433,7 @@ export function keepOpenAiModelId(id: string, pricedIds: ReadonlySet<string>): b
   if (lower.startsWith('ft:')) {
     return false;
   }
-  if (OPENAI_DENY_SUBSTRINGS.some((deny) => denyTokenMatches(lower, deny))) {
+  if (isNonChatModelId(id)) {
     return false;
   }
   return (

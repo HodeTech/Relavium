@@ -22,12 +22,14 @@ import { fileURLToPath } from 'node:url';
 
 import { format, resolveConfig } from 'prettier';
 
+import { diffCatalog } from '../../packages/llm/dist/catalog/snapshot-guard.js';
 import {
   ModelsDevPayloadSchema,
   normalizeCatalog,
 } from '../../packages/llm/dist/catalog/models-dev-schema.js';
 
 const SOURCE_URL = 'https://models.dev/api.json';
+const FETCH_TIMEOUT_MS = 30_000;
 const SNAPSHOT = fileURLToPath(
   new URL('../../packages/llm/src/catalog/snapshot.ts', import.meta.url),
 );
@@ -35,23 +37,43 @@ const SNAPSHOT = fileURLToPath(
 const argv = new Set(process.argv.slice(2));
 const CHECK_ONLY = argv.has('--check');
 const ACCEPT_PRICE_CHANGES = argv.has('--accept-price-changes');
+const ACCEPT_REMOVALS = argv.has('--accept-removals');
 
-/** The prices in the snapshot that is currently committed — the baseline the guard compares against. */
-function committedPrices() {
-  let source;
+/**
+ * The committed snapshot, as DATA — imported from the built module, never regex-parsed from the source text.
+ *
+ * The first version read the generated file with a regex that required a single-quoted key. Prettier's default
+ * `quoteProps: 'as-needed'` unquotes any key that is a valid JS identifier, so `o1` and `o3` were emitted bare —
+ * the regex matched 88 of 90 models, those two had NO baseline, and a halved `o1` price passed both money guards
+ * in silence. The generated file's exact bytes are prettier's decision, not this tool's; any guard that reads
+ * them as TEXT is one formatting default away from going quietly blind. So we diff the data.
+ */
+async function committedSnapshot() {
   try {
-    source = readFileSync(SNAPSHOT, 'utf8');
+    // A LITERAL specifier, deliberately. The repo's seam fence (ADR-0011) forbids a computed `import()` outside
+    // the adapters — a dynamic specifier is exactly how a provider SDK could be smuggled past `@relavium/llm`.
+    // The rule is right, and the literal costs nothing. `try` because the very first run has no snapshot yet.
+    const { CATALOG_SNAPSHOT } = await import('../../packages/llm/dist/catalog/snapshot.js');
+    return CATALOG_SNAPSHOT ?? {};
   } catch {
-    return new Map(); // first run: there is no baseline, so nothing can have "changed".
+    return {}; // First run: no baseline exists, so nothing can have "changed".
   }
-  const prices = new Map();
-  // Read the committed values out of the generated literal rather than importing it: the tool must run even
-  // when the snapshot is mid-edit or the package has not been rebuilt.
-  const rows = source.matchAll(
-    /'([^']+)': \{[^}]*?inputPerMtokMicrocents: (\d+),\s*outputPerMtokMicrocents: (\d+)/gs,
-  );
-  for (const [, id, input, output] of rows) prices.set(id, `${input}/${output}`);
-  return prices;
+}
+
+/**
+ * The SHA of OUR NORMALIZED CATALOG — deliberately not of the upstream body.
+ *
+ * The first version pinned the 3.17 MB upstream payload's hash. But we discard ~97% of it, so ANY byte moving in
+ * any of the 162 providers we never import changed the hash, changed this file, and made `--check` report the
+ * snapshot STALE when nothing we ship had moved at all. A weekly guard that is red no matter what is not a
+ * guard. This hash covers exactly what we ship, so it changes when — and only when — our catalog does.
+ */
+function catalogSha256(catalog) {
+  const canonical = Object.keys(catalog)
+    .sort()
+    .map((id) => `${id}=${JSON.stringify(catalog[id])}`)
+    .join('\n');
+  return createHash('sha256').update(canonical).digest('hex');
 }
 
 function renderSnapshot(catalog, sha256) {
@@ -62,7 +84,7 @@ function renderSnapshot(catalog, sha256) {
   return `// GENERATED FILE — DO NOT EDIT BY HAND. Run \`pnpm sync:models\`.
 //
 // The model-catalog snapshot (ADR-0071). Source: ${SOURCE_URL}
-// Upstream body SHA-256: ${sha256}
+// Catalog SHA-256: ${sha256}
 // Models: ${ids.length}
 //
 // This SHIPS IN THE BINARY on purpose. The cost cap (ADR-0028) is a safety control, and a safety control that
@@ -79,21 +101,36 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
 ${rows}
 };
 
-/** The upstream payload this snapshot was generated from — pinned so a regeneration is verifiable. */
-export const CATALOG_SOURCE_SHA256 = ${JSON.stringify(sha256)};
+/** The SHA-256 of this catalog's own data — changes when, and only when, what we ship changes. */
+export const CATALOG_SHA256 = ${JSON.stringify(sha256)};
 `;
 }
 
 async function main() {
   process.stdout.write(`sync-models-dev: fetching ${SOURCE_URL}\n`);
-  const response = await fetch(SOURCE_URL, { redirect: 'error' });
+  let response;
+  try {
+    // `redirect: 'error'` — a redirect off models.dev is an ERROR, not a hop (ADR-0071 §8): the destination is a
+    // compile-time constant, and a 30x that quietly moved it elsewhere would be the one way this fixed-host path
+    // could turn into an attacker-chosen one. A timeout, because a hung sync in CI is a silent one.
+    response = await fetch(SOURCE_URL, {
+      redirect: 'error',
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+  } catch (error) {
+    // Node's fetch reports every transport failure as the bare string "fetch failed" and hides the real reason in
+    // `cause`. Surfacing it is the difference between a usable error and a shrug.
+    const cause =
+      error instanceof Error && error.cause instanceof Error ? `: ${error.cause.message}` : '';
+    const what = error instanceof Error ? error.message : String(error);
+    throw new Error(`sync-models-dev: could not fetch ${SOURCE_URL} — ${what}${cause}`);
+  }
   if (!response.ok) {
     throw new Error(
       `sync-models-dev: ${SOURCE_URL} returned ${response.status} ${response.statusText}`,
     );
   }
   const body = await response.text();
-  const sha256 = createHash('sha256').update(body).digest('hex');
 
   // The Zod boundary: a third-party payload becomes Relavium types HERE, and its raw shape goes no further.
   const payload = ModelsDevPayloadSchema.parse(JSON.parse(body));
@@ -106,21 +143,6 @@ async function main() {
     );
   }
 
-  const before = committedPrices();
-
-  // A model we ALREADY SHIP must never be dropped silently. Losing its row means losing its price, which means
-  // the ADR-0028 cost cap stops applying to a model users are running TODAY — the exact failure this workstream
-  // exists to end. A NEW model that upstream cannot describe is merely absent; a shipped one going absent is a
-  // regression, and it is fatal.
-  const lost = dropped.filter((d) => before.has(d.modelId));
-  if (lost.length > 0) {
-    throw new Error(
-      `sync-models-dev: ${lost.length} model(s) we already SHIP would be dropped:\n` +
-        lost.map((d) => `  ${d.provider}/${d.modelId} — ${d.reason}`).join('\n') +
-        '\n\nThat would remove their price, and an unpriced model silently skips the cost cap. Fix the schema ' +
-        'or the mapping; do not let a shipped model fall out of the catalog.',
-    );
-  }
   if (dropped.length > 0) {
     // Never silent: a dropped model is a model whose spend we cannot cap. Say which, and why.
     process.stdout.write(
@@ -129,19 +151,50 @@ async function main() {
         '\n',
     );
   }
-  const moved = [];
-  for (const [id, model] of Object.entries(catalog)) {
-    const was = before.get(id);
-    const now = `${model.inputPerMtokMicrocents}/${model.outputPerMtokMicrocents}`;
-    if (was !== undefined && was !== now) moved.push(`  ${id}: ${was} → ${now} (µ¢/Mtok in/out)`);
+
+  // THE TWO MONEY GUARDS — a structural diff of the DATA (see `committedSnapshot`), not a scan of the text.
+  const { moved, vanished, added } = diffCatalog(await committedSnapshot(), catalog);
+
+  // VANISHED: a model we already ship is GONE from the new catalog, for ANY reason — upstream deleted it,
+  // stopped pricing it, a provider-key edit erased a whole provider, the deny-list started matching it. The
+  // previous version could only see models the normalizer explicitly DROPPED; one that simply disappeared from
+  // the payload appeared in no list at all and was removed in silence. An absent model is an UNPRICED model, and
+  // an unpriced model skips the cost cap entirely. A DELIBERATE removal is real (a provider retires a model), so
+  // it is expressible — `--accept-removals` — but never the default: the three ways a model can vanish look
+  // identical from here, and only one of them is intended.
+  if (vanished.length > 0 && !ACCEPT_REMOVALS) {
+    throw new Error(
+      `sync-models-dev: ${vanished.length} model(s) we already SHIP are GONE from the new catalog:\n` +
+        vanished.map((id) => `  ${id}`).join('\n') +
+        '\n\nRemoving a model removes its price, and an unpriced model silently skips the ADR-0028 cost cap for ' +
+        'users running it TODAY. Find out WHY first — an upstream retirement, a CATALOG_PROVIDER_KEYS edit, and ' +
+        'the non-chat filter all look identical from here, and only one of them is intended. Then re-run with ' +
+        '--accept-removals to take it in a reviewable diff.',
+    );
   }
+  if (vanished.length > 0) {
+    process.stdout.write(
+      `sync-models-dev: took ${vanished.length} accepted removal(s): ${vanished.join(', ')}\n`,
+    );
+  }
+
+  // MOVED: every money field, not just the flat pair — cache-read, cache-write, and every context tier. The
+  // pre-egress estimate takes the HIGHEST applicable tier, so on a long-context turn the TIER rate is the number
+  // that sizes the cap. Halving only gemini-2.5-pro's >200k tier moves no flat rate and would have tripped
+  // nothing, while capping every long-context turn against half its true cost.
   if (moved.length > 0 && !ACCEPT_PRICE_CHANGES) {
     throw new Error(
-      `sync-models-dev: ${moved.length} ALREADY-SHIPPED model(s) changed price:\n${moved.join('\n')}\n\n` +
+      `sync-models-dev: ${moved.length} ALREADY-SHIPPED model(s) changed price:\n` +
+        moved.map((m) => `  ${m.modelId}:\n    was ${m.before}\n    now ${m.after}`).join('\n') +
+        '\n  (fields: input|output|cacheRead|cacheWrite|tiers, in µ¢/Mtok; `-` = no rate)\n\n' +
         'This is a human decision, not a bot commit — a price feeds the ADR-0028 cost cap, so a rate that ' +
         'silently moves also silently moves how much protection the cap gives. Verify against the provider, ' +
         'then re-run with --accept-price-changes to take them in a reviewable diff.',
     );
+  }
+  if (added.length > 0) {
+    // Additive and safe: pricing a model can only ever INCREASE what the cap covers.
+    process.stdout.write(`sync-models-dev: ${added.length} new model(s): ${added.join(', ')}\n`);
   }
 
   // FORMAT WITH PRETTIER before comparing or writing. The generated file lives in the repo and is subject to
@@ -150,7 +203,7 @@ async function main() {
   // `--check` then reported the snapshot STALE **even when it was current**. A weekly CI guard that is red no
   // matter what is not a guard: everyone learns to ignore it, and the price-change protection it exists to give
   // quietly evaporates. Formatting here makes the comparison apples-to-apples.
-  const rendered = await format(renderSnapshot(catalog, sha256), {
+  const rendered = await format(renderSnapshot(catalog, catalogSha256(catalog)), {
     ...((await resolveConfig(SNAPSHOT)) ?? {}),
     filepath: SNAPSHOT,
   });
@@ -169,7 +222,7 @@ async function main() {
       );
     }
     process.stdout.write(
-      `sync-models-dev: snapshot is current (${count} models, sha ${sha256.slice(0, 12)})\n`,
+      `sync-models-dev: snapshot is current (${count} models, sha ${catalogSha256(catalog).slice(0, 12)})\n`,
     );
     return;
   }

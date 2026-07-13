@@ -1,8 +1,8 @@
 // GENERATED FILE — DO NOT EDIT BY HAND. Run `pnpm sync:models`.
 //
 // The model-catalog snapshot (ADR-0071). Source: https://models.dev/api.json
-// Upstream body SHA-256: bc75bbf216a1519d8b36fada7c1fe21fbc7b01f949998e9208f67f31a762e68b
-// Models: 90
+// Catalog SHA-256: ac4e3ed1b24b568853164e2beddae8deb2b6a142ffc7753567bb6fcf905fb888
+// Models: 80
 //
 // This SHIPS IN THE BINARY on purpose. The cost cap (ADR-0028) is a safety control, and a safety control that
 // only works when a third-party host is reachable is not one — so every model here is priced offline, on first
@@ -256,17 +256,6 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     cachedInputPerMtokMicrocents: 3000000,
     reasoning: { toggle: true, budgetTokens: { min: 0, max: 24576 } },
   },
-  'gemini-2.5-flash-image': {
-    provider: 'gemini',
-    modelId: 'gemini-2.5-flash-image',
-    displayName: 'Nano Banana',
-    contextWindowTokens: 32768,
-    maxOutputTokens: 32768,
-    inputPerMtokMicrocents: 30000000,
-    outputPerMtokMicrocents: 3000000000,
-    cachedInputPerMtokMicrocents: 7500000,
-    reasoning: {},
-  },
   'gemini-2.5-flash-lite': {
     provider: 'gemini',
     modelId: 'gemini-2.5-flash-lite',
@@ -277,15 +266,6 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 40000000,
     cachedInputPerMtokMicrocents: 1000000,
     reasoning: { toggle: true, budgetTokens: { min: 512, max: 24576 } },
-  },
-  'gemini-2.5-flash-preview-tts': {
-    provider: 'gemini',
-    modelId: 'gemini-2.5-flash-preview-tts',
-    displayName: 'Gemini 2.5 Flash Preview TTS',
-    contextWindowTokens: 8192,
-    maxOutputTokens: 16384,
-    inputPerMtokMicrocents: 50000000,
-    outputPerMtokMicrocents: 1000000000,
   },
   'gemini-2.5-pro': {
     provider: 'gemini',
@@ -306,15 +286,6 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     ],
     reasoning: { budgetTokens: { min: 128, max: 32768 } },
   },
-  'gemini-2.5-pro-preview-tts': {
-    provider: 'gemini',
-    modelId: 'gemini-2.5-pro-preview-tts',
-    displayName: 'Gemini 2.5 Pro Preview TTS',
-    contextWindowTokens: 8192,
-    maxOutputTokens: 16384,
-    inputPerMtokMicrocents: 100000000,
-    outputPerMtokMicrocents: 2000000000,
-  },
   'gemini-3-flash-preview': {
     provider: 'gemini',
     modelId: 'gemini-3-flash-preview',
@@ -325,16 +296,6 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 300000000,
     cachedInputPerMtokMicrocents: 5000000,
     reasoning: { effortValues: ['minimal', 'low', 'medium', 'high'] },
-  },
-  'gemini-3-pro-image-preview': {
-    provider: 'gemini',
-    modelId: 'gemini-3-pro-image-preview',
-    displayName: 'Nano Banana Pro',
-    contextWindowTokens: 131072,
-    maxOutputTokens: 32768,
-    inputPerMtokMicrocents: 200000000,
-    outputPerMtokMicrocents: 12000000000,
-    reasoning: {},
   },
   'gemini-3-pro-preview': {
     provider: 'gemini',
@@ -354,16 +315,6 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
       },
     ],
     reasoning: { effortValues: ['low', 'high'] },
-  },
-  'gemini-3.1-flash-image-preview': {
-    provider: 'gemini',
-    modelId: 'gemini-3.1-flash-image-preview',
-    displayName: 'Nano Banana 2',
-    contextWindowTokens: 65536,
-    maxOutputTokens: 65536,
-    inputPerMtokMicrocents: 50000000,
-    outputPerMtokMicrocents: 6000000000,
-    reasoning: { effortValues: ['minimal', 'high'] },
   },
   'gemini-3.1-flash-lite': {
     provider: 'gemini',
@@ -435,15 +386,6 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 900000000,
     cachedInputPerMtokMicrocents: 15000000,
     reasoning: { effortValues: ['minimal', 'low', 'medium', 'high'] },
-  },
-  'gemini-embedding-001': {
-    provider: 'gemini',
-    modelId: 'gemini-embedding-001',
-    displayName: 'Gemini Embedding 001',
-    contextWindowTokens: 2048,
-    maxOutputTokens: 1,
-    inputPerMtokMicrocents: 15000000,
-    outputPerMtokMicrocents: 0,
   },
   'gemini-flash-latest': {
     provider: 'gemini',
@@ -953,17 +895,6 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     ],
     reasoning: { effortValues: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
   },
-  'gpt-realtime-2.1': {
-    provider: 'openai',
-    modelId: 'gpt-realtime-2.1',
-    displayName: 'GPT-Realtime-2.1',
-    contextWindowTokens: 128000,
-    maxOutputTokens: 32000,
-    inputPerMtokMicrocents: 400000000,
-    outputPerMtokMicrocents: 2400000000,
-    cachedInputPerMtokMicrocents: 40000000,
-    reasoning: { effortValues: ['minimal', 'low', 'medium', 'high', 'xhigh'] },
-  },
   o1: {
     provider: 'openai',
     modelId: 'o1',
@@ -1050,35 +981,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     cachedInputPerMtokMicrocents: 50000000,
     reasoning: { effortValues: ['medium'] },
   },
-  'text-embedding-3-large': {
-    provider: 'openai',
-    modelId: 'text-embedding-3-large',
-    displayName: 'text-embedding-3-large',
-    contextWindowTokens: 8191,
-    maxOutputTokens: 3072,
-    inputPerMtokMicrocents: 13000000,
-    outputPerMtokMicrocents: 0,
-  },
-  'text-embedding-3-small': {
-    provider: 'openai',
-    modelId: 'text-embedding-3-small',
-    displayName: 'text-embedding-3-small',
-    contextWindowTokens: 8191,
-    maxOutputTokens: 1536,
-    inputPerMtokMicrocents: 2000000,
-    outputPerMtokMicrocents: 0,
-  },
-  'text-embedding-ada-002': {
-    provider: 'openai',
-    modelId: 'text-embedding-ada-002',
-    displayName: 'text-embedding-ada-002',
-    contextWindowTokens: 8192,
-    maxOutputTokens: 1536,
-    inputPerMtokMicrocents: 10000000,
-    outputPerMtokMicrocents: 0,
-  },
 };
 
-/** The upstream payload this snapshot was generated from — pinned so a regeneration is verifiable. */
-export const CATALOG_SOURCE_SHA256 =
-  'bc75bbf216a1519d8b36fada7c1fe21fbc7b01f949998e9208f67f31a762e68b';
+/** The SHA-256 of this catalog's own data — changes when, and only when, what we ship changes. */
+export const CATALOG_SHA256 = 'ac4e3ed1b24b568853164e2beddae8deb2b6a142ffc7753567bb6fcf905fb888';
