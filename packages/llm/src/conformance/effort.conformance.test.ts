@@ -5,7 +5,7 @@ import { createGeminiAdapter } from '../adapters/gemini.js';
 import { createOpenAiAdapter } from '../adapters/openai.js';
 import { catalogModel } from '../catalog/lookup.js';
 import { CATALOG_SNAPSHOT } from '../catalog/snapshot.js';
-import { acceptedTiers } from '../reasoning-wire.js';
+import { acceptedTiers, wireValueFor } from '../reasoning-wire.js';
 import type { ReasoningEffort } from '@relavium/shared';
 
 import type { LlmProvider } from '../types.js';
@@ -36,15 +36,38 @@ const PROBE: Record<'anthropic' | 'openai' | 'gemini' | 'deepseek', string> = {
   // EFFORT-shaped, deliberately. `gemini-2.5-flash` is budget-shaped, so the adapter sends `thinkingBudget`
   // (always accepted) and NEVER `thinkingLevel` — the one wire value that can 400 on tier drift. A budget probe
   // is a tautology, and Gemini is the provider whose `thinkingLevel` acceptance was the ORIGINAL bug (§Context/3).
-  gemini: 'gemini-3-flash-preview',
+  gemini: 'gemini-3.5-flash',
   deepseek: 'deepseek-v4-pro',
 };
 
 /** The graded tiers the catalog claims a model accepts (never `off` — see the file header). */
-function gradedTiersFor(modelId: string): ReasoningEffort[] {
+function gradedTiersFor(modelId: string): Exclude<ReasoningEffort, 'off'>[] {
   const entry = catalogModel(modelId);
   if (entry === undefined) return [];
-  return [...acceptedTiers(entry.provider, entry.reasoning)].filter((t) => t !== 'off');
+  return [...acceptedTiers(entry.provider, entry.reasoning)].filter(
+    (t): t is Exclude<ReasoningEffort, 'off'> => t !== 'off',
+  );
+}
+
+/**
+ * The graded tiers to actually SEND — one per distinct WIRE value. Several normalized tiers collapse onto one
+ * provider value (DeepSeek's `low`/`medium`/`high` all map to `reasoning_effort: 'high'`, Gemini's `max` onto
+ * `HIGH`), so probing every tier would fire real, billed calls proving the identical fact. Probing each distinct
+ * wire value once tests everything the ladder can express, and nothing twice.
+ */
+function distinctWireTiers(modelId: string): Exclude<ReasoningEffort, 'off'>[] {
+  const entry = catalogModel(modelId);
+  if (entry === undefined) return [];
+  const seen = new Set<string>();
+  const tiers: Exclude<ReasoningEffort, 'off'>[] = [];
+  for (const tier of gradedTiersFor(modelId)) {
+    const wire = wireValueFor(entry.provider, tier);
+    if (wire !== undefined && !seen.has(wire)) {
+      seen.add(wire);
+      tiers.push(tier);
+    }
+  }
+  return tiers;
 }
 
 /** Send one tier at the real API and assert it is not rejected — a returned result, non-empty output. */
@@ -71,12 +94,13 @@ async function assertTierAccepted(
 const anthropicKey = process.env['ANTHROPIC_API_KEY'] ?? '';
 describe('anthropic — effort conformance (live, nightly): the catalog does not lie about accepted tiers', () => {
   const model = PROBE.anthropic;
-  const tiers = gradedTiersFor(model);
+  const tiers = gradedTiersFor(model); // the full claimed ladder — named in the test title
+  const probeTiers = distinctWireTiers(model); // deduped by wire value — what we actually send
   it.skipIf(anthropicKey === '' || tiers.length === 0)(
     `${model} accepts every tier the catalog claims (${tiers.join(', ')})`,
     async () => {
       const adapter = createAnthropicAdapter({ maxRetries: 0 });
-      for (const tier of tiers) {
+      for (const tier of probeTiers) {
         await assertTierAccepted(adapter, model, tier, anthropicKey);
       }
     },
@@ -86,12 +110,13 @@ describe('anthropic — effort conformance (live, nightly): the catalog does not
 const openaiKey = process.env['OPENAI_API_KEY'] ?? '';
 describe('openai — effort conformance (live, nightly): the catalog does not lie about accepted tiers', () => {
   const model = PROBE.openai;
-  const tiers = gradedTiersFor(model);
+  const tiers = gradedTiersFor(model); // the full claimed ladder — named in the test title
+  const probeTiers = distinctWireTiers(model); // deduped by wire value — what we actually send
   it.skipIf(openaiKey === '' || tiers.length === 0)(
     `${model} accepts every tier the catalog claims (${tiers.join(', ')})`,
     async () => {
       const adapter = createOpenAiAdapter({ providerId: 'openai', maxRetries: 0 });
-      for (const tier of tiers) {
+      for (const tier of probeTiers) {
         await assertTierAccepted(adapter, model, tier, openaiKey);
       }
     },
@@ -101,12 +126,13 @@ describe('openai — effort conformance (live, nightly): the catalog does not li
 const geminiKey = process.env['GEMINI_API_KEY'] ?? '';
 describe('gemini — effort conformance (live, nightly): the catalog does not lie about accepted tiers', () => {
   const model = PROBE.gemini;
-  const tiers = gradedTiersFor(model);
+  const tiers = gradedTiersFor(model); // the full claimed ladder — named in the test title
+  const probeTiers = distinctWireTiers(model); // deduped by wire value — what we actually send
   it.skipIf(geminiKey === '' || tiers.length === 0)(
     `${model} accepts every tier the catalog claims (${tiers.join(', ')})`,
     async () => {
       const adapter = createGeminiAdapter();
-      for (const tier of tiers) {
+      for (const tier of probeTiers) {
         await assertTierAccepted(adapter, model, tier, geminiKey);
       }
     },
@@ -116,12 +142,13 @@ describe('gemini — effort conformance (live, nightly): the catalog does not li
 const deepseekKey = process.env['DEEPSEEK_API_KEY'] ?? '';
 describe('deepseek — effort conformance (live, nightly): the catalog does not lie about accepted tiers', () => {
   const model = PROBE.deepseek;
-  const tiers = gradedTiersFor(model);
+  const tiers = gradedTiersFor(model); // the full claimed ladder — named in the test title
+  const probeTiers = distinctWireTiers(model); // deduped by wire value — what we actually send
   it.skipIf(deepseekKey === '' || tiers.length === 0)(
     `${model} accepts every tier the catalog claims (${tiers.join(', ')})`,
     async () => {
       const adapter = createOpenAiAdapter({ providerId: 'deepseek', maxRetries: 0 });
-      for (const tier of tiers) {
+      for (const tier of probeTiers) {
         await assertTierAccepted(adapter, model, tier, deepseekKey);
       }
     },
@@ -140,7 +167,16 @@ describe('effort conformance — the probe models are real, so the live lane can
       const entry = CATALOG_SNAPSHOT[modelId];
       expect(entry, `${provider} probe '${modelId}' is not in the catalog`).toBeDefined();
       expect(entry?.provider).toBe(provider);
-      expect(gradedTiersFor(modelId).length, `${modelId} has no graded tiers to probe`).toBeGreaterThan(0);
+      // EFFORT-shaped, not merely "has a ladder". A budget-shaped model ALSO reports a full graded ladder (the
+      // budget axis fills every tier), so `length > 0` would have passed the tautological `gemini-2.5-flash` probe
+      // the fold just removed. The live guard only bites when the adapter sends an effort WIRE VALUE the provider
+      // can reject — which requires `effortValues`. Pinning it here is what stops a future edit from silently
+      // reverting to a budget probe on `gemini`/`anthropic` (the two providers a budget axis covers).
+      expect(
+        entry?.reasoning?.effortValues,
+        `${modelId} is budget-shaped — a budget probe can never 400 on tier drift, so it is a tautology`,
+      ).toBeDefined();
+      expect(distinctWireTiers(modelId).length, `${modelId} has no tiers to probe`).toBeGreaterThan(0);
     }
   });
 });

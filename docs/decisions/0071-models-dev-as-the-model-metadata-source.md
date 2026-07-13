@@ -291,7 +291,7 @@ Its posture, which is **not** the SSRF posture, and the difference matters:
 >
 > - **The weekly price-change check** is `pnpm sync:models` (Monday 06:00 UTC): its money guards fail red ONLY on a
 >   MOVED or VANISHED price on a model we already ship — the human decision — and pass on benign additive drift.
->   Reding on every additive change (models.dev adds our-provider models constantly) would train the maintainer to
+>   Going red on every additive change (models.dev adds our-provider models constantly) would train the maintainer to
 >   ignore the check, eroding the very protection it exists to give (sync.mjs says so in its own comments). The
 >   *automatic* PR for the additive case ("new rows merge automatically") is deferred: it needs a create-pull-request
 >   action pinned to a verified SHA. See deferred-tasks.md.
