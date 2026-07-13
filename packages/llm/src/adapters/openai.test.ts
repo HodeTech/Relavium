@@ -274,6 +274,48 @@ describe('OpenAI-compatible adapter', () => {
     expect(sent['reasoning_effort']).toBe('high');
   });
 
+  it('an EMPTY descriptor gets NO reasoning field either — `deepseek-reasoner` reasons, but publishes no knob', async () => {
+    // The second adversarial review found this: the DeepSeek arm gated on `catalogModel(m)?.reasoning !== undefined`
+    // and then sent `thinking` UNCONDITIONALLY. `deepseek-reasoner`'s descriptor is `{}` — not `undefined` — so the
+    // gate opened, and every tier (including `off` → `thinking: {type:'disabled'}`) went on the wire for a model
+    // whose controllable tiers upstream declined to describe. `acceptedTiers` returns the empty set for `{}`, which
+    // is exactly what the picker already showed the user; the wire now agrees with it.
+    let sent: Record<string, unknown> = {};
+    const deepseek = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+
+    for (const tier of ['off', 'low', 'medium', 'high', 'max'] as const) {
+      await deepseek.generate({ model: 'deepseek-reasoner', messages, reasoningEffort: tier }, 'k');
+      expect('thinking' in sent, `deepseek-reasoner ${tier}`).toBe(false);
+    }
+  });
+
+  it('a tier OUTSIDE the published ladder is withheld — `gpt-5.4-pro` rejects both `low` and `off`', async () => {
+    // MEMBERSHIP, not presence. The arm used to test that an effort axis existed and then send its own tier name.
+    let sent: Record<string, unknown> = {};
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+
+    for (const tier of ['low', 'off'] as const) {
+      await oai.generate({ model: 'gpt-5.4-pro', messages, reasoningEffort: tier }, 'k');
+      expect('reasoning_effort' in sent, `gpt-5.4-pro ${tier}`).toBe(false);
+    }
+    // …but a tier it DOES publish rides.
+    await oai.generate({ model: 'gpt-5.4-pro', messages, reasoningEffort: 'high' }, 'k');
+    expect(sent['reasoning_effort']).toBe('high');
+  });
+
   it('maps the reasoning-effort tier per provider: OpenAI reasoning_effort (max→xhigh, off→none) + DeepSeek thinking (ADR-0066)', async () => {
     let sent: Record<string, unknown> = {};
     const oai = createOpenAiAdapter({

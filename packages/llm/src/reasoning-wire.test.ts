@@ -119,11 +119,16 @@ describe('MEMBERSHIP, not presence — the bug an adversarial review found in th
    * Both reach the wire through a FAILOVER, and that is the sting: the fallback chain exists to RESCUE a failing
    * turn, and a 400 on an unsupported parameter is fatal and non-retryable — so the rescue kills the turn instead.
    */
-  it('claude-opus-4-5 does NOT accept `max`, even though it has an effort axis', () => {
+  it('claude-opus-4-5 does not accept `max` AS AN EFFORT LEVEL — but its budget axis still serves it', () => {
     const model = CATALOG_SNAPSHOT['claude-opus-4-5'];
     expect(model?.reasoning?.effortValues).toEqual(['low', 'medium', 'high']); // the premise
+    // No `effort: 'max'` on the wire — that is the 400 this work removes…
     expect(acceptedWireValue('anthropic', 'max', model?.reasoning ?? {})).toBeUndefined();
-    expect(tiers('claude-opus-4-5')).not.toContain('max');
+    // …but the model ALSO publishes `budgetTokens`, and the Anthropic adapter falls back to it, so the tier is
+    // genuinely reachable and the picker must keep offering it. Reading "not on the ladder" as "not accepted"
+    // would have hidden a tier the model serves perfectly well — the second review caught it.
+    expect(model?.reasoning?.budgetTokens?.min).toBe(1024);
+    expect(tiers('claude-opus-4-5')).toContain('max');
   });
 
   it('gemini-3-pro-preview does NOT accept `medium` — its ladder skips it', () => {
@@ -205,28 +210,48 @@ describe('an UNKNOWN model gets NO reasoning field — on ALL FOUR arms, not jus
 });
 
 describe('the whole shipped catalog — no model is offered a tier it would reject', () => {
-  it('every EFFORT-shaped model accepts only tiers whose wire value it actually publishes', () => {
-    // The invariant the picker will rest on. If this holds for all 80 models, no interactive path can produce a
-    // 400 — which is what F3 is.
+  /** The wire value each provider would send for a tier — the same table `wireValueFor` implements. */
+  const WIRE = {
+    openai: { low: 'low', medium: 'medium', high: 'high', max: 'xhigh' },
+    anthropic: { low: 'low', medium: 'medium', high: 'high', max: 'max' },
+    gemini: { low: 'low', medium: 'medium', high: 'high', max: 'high' },
+    deepseek: { low: 'high', medium: 'high', high: 'high', max: 'max' },
+  } as const;
+
+  it('every offered tier is one the ADAPTER can actually put on the wire — by ladder or by budget', () => {
+    // The invariant the picker rests on. If it holds for all 80 models, no interactive path can produce a 400.
+    //
+    // "Publishes the wire value" is NOT the whole invariant, and reading it that way is what an adversarial review
+    // caught: `claude-opus-4-5`'s ladder omits `max`, but it ALSO publishes a token budget, and its adapter serves
+    // `max` from that. A tier is legitimate if EITHER route exists — and only if the provider's adapter actually
+    // has a budget field (OpenAI's `reasoning_effort` and DeepSeek's `thinking` do not, so a budget in the catalog
+    // buys those models nothing).
+    const BUDGET_CAPABLE = new Set(['anthropic', 'gemini']);
     for (const [id, model] of Object.entries(CATALOG_SNAPSHOT)) {
-      const values = model.reasoning?.effortValues;
-      if (values === undefined) continue;
-      const published = new Set(values);
+      if (model.reasoning === undefined) continue;
+      const published = new Set(model.reasoning.effortValues ?? []);
+      const viaBudget =
+        model.reasoning.budgetTokens !== undefined && BUDGET_CAPABLE.has(model.provider);
       for (const tier of acceptedTiers(model.provider, model.reasoning)) {
-        if (tier === 'off') continue; // `off` rides the provider's disable axis, checked above.
-        const wire =
-          model.provider === 'openai'
-            ? { low: 'low', medium: 'medium', high: 'high', max: 'xhigh' }[tier]
-            : model.provider === 'deepseek'
-              ? { low: 'high', medium: 'high', high: 'high', max: 'max' }[tier]
-              : model.provider === 'gemini'
-                ? { low: 'low', medium: 'medium', high: 'high', max: 'high' }[tier]
-                : { low: 'low', medium: 'medium', high: 'high', max: 'max' }[tier];
-        expect(published.has(wire), `${id}: tier '${tier}' → wire '${wire}' is not published`).toBe(
+        if (tier === 'off') continue; // `off` rides the provider's disable axis, checked below.
+        const servable = published.has(WIRE[model.provider][tier]) || viaBudget;
+        expect(servable, `${id}: tier '${tier}' is offered but no adapter route can send it`).toBe(
           true,
         );
       }
     }
+  });
+
+  it('a BUDGET on a provider whose adapter has no budget field buys the model nothing', () => {
+    // The mirror of the case above, and the reason `acceptedTiers` cannot blindly union the two axes. If OpenAI
+    // ever ships a model with `budgetTokens`, the picker must NOT start offering every tier for it: `reasoning_effort`
+    // is the only reasoning knob that adapter has, and a tier outside the published ladder would be a 400.
+    const openaiWithBudget = { effortValues: ['high'], budgetTokens: { min: 1024 } } as const;
+    expect([...acceptedTiers('openai', openaiWithBudget)]).toEqual(['high']);
+
+    const deepseekWithBudget = { budgetTokens: { min: 1024 } } as const;
+    // A budget alone gives DeepSeek no gradation — but `thinking: {disabled}` still exists, so `off` survives.
+    expect([...acceptedTiers('deepseek', deepseekWithBudget)]).toEqual(['off']);
   });
 
   it('no model that cannot be disabled is ever offered `off`', () => {
@@ -236,5 +261,15 @@ describe('the whole shipped catalog — no model is offered a tier it would reje
       if (!offered) continue;
       expect(canDisableReasoning(model.provider, model.reasoning), `${id} offers off`).toBe(true);
     }
+  });
+
+  it('an EMPTY descriptor cannot be disabled either — not even on a provider with a disable switch', () => {
+    // `deepseek-reasoner` ships `reasoning: {}`: it reasons, and upstream describes no knob. `canDisableReasoning`
+    // used to answer `true` for anthropic/deepseek on the provider's general ability, regardless of the model — and
+    // that answer is what let the adapters send `thinking: {type:'disabled'}` to a model that never said it takes
+    // one. An empty descriptor means there is nothing to turn.
+    expect(canDisableReasoning('deepseek', {})).toBe(false);
+    expect(canDisableReasoning('anthropic', {})).toBe(false);
+    expect(acceptedTiers('deepseek', CATALOG_SNAPSHOT['deepseek-reasoner']?.reasoning).size).toBe(0);
   });
 });

@@ -9,6 +9,7 @@ import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error
 import {
   ANTHROPIC_WIRE,
   acceptedWireValue,
+  canDisableReasoning,
   reasoningBudgetFor,
   thinkingCeiling,
 } from '../reasoning-wire.js';
@@ -505,7 +506,12 @@ function buildCommonBody(
     if (controls === undefined) {
       // withhold
     } else if (req.reasoningEffort === 'off') {
-      body.thinking = { type: 'disabled' };
+      // `canDisableReasoning`, not a bare `true`. An EMPTY descriptor (`{}`) means the model reasons but publishes
+      // no knob at all — `thinking: {type:'disabled'}` is still a field, and still a 400 on a model with no
+      // reasoning surface to switch. Asking the same predicate the picker asks is what keeps the two in step.
+      if (canDisableReasoning('anthropic', controls)) {
+        body.thinking = { type: 'disabled' };
+      }
     } else if (acceptedWireValue('anthropic', req.reasoningEffort, controls) !== undefined) {
       // MEMBERSHIP, not presence. `claude-opus-4-5` publishes ['low','medium','high'] — no `max` — and the old
       // branch tested only that an effort axis EXISTED, then sent `effort: 'max'` anyway. It reaches the wire on a

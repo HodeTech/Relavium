@@ -1,3 +1,7 @@
+import type { ReasoningEffort } from '@relavium/shared';
+
+import { acceptedTiers } from '../reasoning-wire.js';
+
 import type { CatalogModel } from './catalog-model.js';
 import { CATALOG_SNAPSHOT } from './snapshot.js';
 
@@ -15,4 +19,24 @@ import { CATALOG_SNAPSHOT } from './snapshot.js';
  */
 export function catalogModel(modelId: string): CatalogModel | undefined {
   return CATALOG_SNAPSHOT[modelId];
+}
+
+/**
+ * The reasoning-effort tiers **this model id** accepts — the ONE predicate every surface must ask.
+ *
+ * There is exactly one right answer to "can the user set effort on this model, and to what", and it has to be the
+ * same answer for the picker, the `/effort` command, the engine's gate, the footer, and the wire. It has not been:
+ * the CLI was carrying three separately-written copies of `catalogModel(m)` + `acceptedTiers(...)` plus a fourth,
+ * older boolean (`modelSupportsReasoning`, an id heuristic over the hand-typed pricing table) that disagreed with
+ * them on sixteen shipped models. Agreement by convention is not agreement; this is the construction that makes
+ * divergence impossible.
+ *
+ * The empty set means "no controllable tier", and it has two distinct causes the caller may want to tell apart:
+ * the model is not in the catalog at all (a custom `base_url`, or one newer than our snapshot), or it is and
+ * publishes no knob (`deepseek-reasoner`). Both withhold the field; only the first is fixed by a catalog refresh.
+ * Use {@link catalogModel} directly to distinguish them.
+ */
+export function effortTiersFor(modelId: string): ReadonlySet<ReasoningEffort> {
+  const entry = catalogModel(modelId);
+  return entry === undefined ? new Set() : acceptedTiers(entry.provider, entry.reasoning);
 }

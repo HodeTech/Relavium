@@ -179,6 +179,6 @@ export { createCustomOpenAiProvider, defaultProviders, providerKind } from './pr
 // --- The generated model catalog (ADR-0071) ------------------------------------------------
 // The reasoning CONTROL is per-model data now, not a per-adapter assumption. The host projects a model's
 // ACCEPTED TIERS from it (`resolveEffortTiers`), so a tier the model would reject never reaches the wire.
-export { catalogModel } from './catalog/lookup.js';
+export { catalogModel, effortTiersFor } from './catalog/lookup.js';
 export type { CatalogModel, CatalogPriceTier, ReasoningControls } from './catalog/catalog-model.js';
 export { acceptedTiers, canDisableReasoning } from './reasoning-wire.js';

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
+import { canDisableReasoning } from '../reasoning-wire.js';
 import type { LlmMessage, StreamChunk } from '../types.js';
 import {
   anthropicErrorToLlmError,
@@ -358,6 +359,59 @@ describe('AnthropicAdapter', () => {
     expect('output_config' in sent).toBe(false); // off never sets output_config
     await adapter.generate({ ...base }, 'k'); // unset ⇒ no thinking, no output_config (provider default)
     expect('thinking' in sent).toBe(false);
+
+    // A tier the LADDER omits is served from the model's OTHER axis, not dropped. `claude-opus-4-5` publishes
+    // ['low','medium','high'] AND `budgetTokens: {min: 1024}`; `max` is not an effort level it takes, so it goes
+    // out as a budget. Reading the two axes as mutually exclusive would have withheld reasoning entirely from a
+    // model that serves the tier perfectly well — including on the failover path, where the rescue turn would
+    // then run with no reasoning at all.
+    await adapter.generate(
+      { ...base, model: 'claude-opus-4-5', maxTokens: 8192, reasoningEffort: 'max' },
+      'k',
+    );
+    expect('output_config' in sent).toBe(false);
+    expect(sent['thinking']).toEqual({ type: 'enabled', budget_tokens: 6553 }); // 80% of 8192
+  });
+
+  it('an EMPTY descriptor is NOT disable-able — `thinking: {disabled}` is still a field, and still a 400', async () => {
+    // The `off` branch answered a question about the PROVIDER ("Anthropic can always disable") instead of about the
+    // MODEL. A model whose descriptor is `{}` reasons but publishes no knob at all; sending it a disable is the same
+    // guess, in the opposite direction, as sending it an effort level. The picker offers `off` for no such model,
+    // and now neither does the wire.
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'x',
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+    expect(canDisableReasoning('anthropic', {})).toBe(false); // the predicate the branch now asks
+    await adapter.generate(
+      {
+        model: 'claude-opus-4-8',
+        maxTokens: 1024,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
+        reasoningEffort: 'off',
+      },
+      'k',
+    );
+    // …and the real catalog model, which DOES publish a knob, still disables — the guard is a filter, not a mute.
+    expect(sent['thinking']).toEqual({ type: 'disabled' });
   });
 
   it('rejects handle and url media sources with an explicit bad_request error (1.AF)', async () => {

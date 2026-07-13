@@ -100,6 +100,37 @@ export function wireValueFor(
 }
 
 /**
+ * Does this model publish **any** control at all?
+ *
+ * An EMPTY descriptor (`{}` — `deepseek-reasoner`) is not the same as no descriptor. The model reasons; upstream
+ * simply declined to describe a knob for it. The honest reading is that there is nothing to turn, so every
+ * predicate below answers `false` for it and the field is withheld entirely.
+ */
+function hasAnyControl(controls: ReasoningControls): boolean {
+  return (
+    controls.effortValues !== undefined ||
+    controls.budgetTokens !== undefined ||
+    controls.toggle === true
+  );
+}
+
+/**
+ * Can this adapter express a tier the model's effort ladder does NOT contain, as a **token budget** instead?
+ *
+ * Only two of the four can. Anthropic takes `thinking.budget_tokens` and Gemini takes `thinkingBudget`, so for
+ * those a budget axis genuinely widens what the model accepts. OpenAI's `reasoning_effort` and DeepSeek's
+ * `thinking.reasoning_effort` are effort-shaped and nothing else: a budget in the catalog is a fact about the
+ * MODEL that our request for it cannot use.
+ *
+ * This is why {@link acceptedTiers} cannot simply union the two axes. A blind union would have the picker offer
+ * every tier for an OpenAI model that publishes a budget, and the adapter — which has no field to put it in —
+ * would withhold. That is the picker/wire divergence in a new costume.
+ */
+function honorsBudget(provider: ProviderId): boolean {
+  return provider === 'anthropic' || provider === 'gemini';
+}
+
+/**
  * Can this model turn reasoning **off** at all?
  *
  * Not a preference — a capability, and the four providers answer it in three different places (see the table
@@ -108,10 +139,14 @@ export function wireValueFor(
  * value the API rejects — which is the entire class of bug this work exists to close.
  */
 export function canDisableReasoning(provider: ProviderId, controls: ReasoningControls): boolean {
+  // A model that publishes NO knob cannot be proven to have an off switch either. Asking here — rather than
+  // relying on every caller to pre-gate — is what stops the next adapter from sending `thinking: {disabled}` to
+  // `deepseek-reasoner` on the strength of "well, the PROVIDER can usually disable it".
+  if (!hasAnyControl(controls)) return false;
   switch (provider) {
     case 'anthropic':
     case 'deepseek':
-      // An independent `thinking: {type:'disabled'}` switch — always available on a reasoning model.
+      // An independent `thinking: {type:'disabled'}` switch — available on any model that has a knob at all.
       return true;
     case 'openai':
       // `off` IS an effort value here, so the model must actually accept `'none'`.
@@ -132,13 +167,14 @@ export function canDisableReasoning(provider: ProviderId, controls: ReasoningCon
  * too — and that is what tells the picker to offer *nothing* rather than to offer *everything*, which is exactly
  * today's bug.
  *
- * The three cases, in order:
- *   1. **The model publishes effort values** → a tier is accepted iff its wire value is one of them. This is
- *      where `gpt-5.4-pro` rejects `low` and `gpt-5-pro` accepts only `high`.
- *   2. **No effort values, but a token budget** → every non-`off` tier is accepted; the adapter maps the tier
- *      onto a budget inside `[min, max]`. This is `claude-haiku-4-5` and `gemini-2.5-pro` — the two models our
- *      shipped adapters are sending an effort value they do not take.
- *   3. **Neither** → no gradation exists; only `off` (if the model can be disabled at all) survives.
+ * The axes UNION — a model may publish both, and several do:
+ *   - **Effort values** → a tier is accepted iff its wire value is one of them. This is where `gpt-5.4-pro`
+ *     rejects `low` and `gpt-5-pro` accepts only `high`.
+ *   - **A token budget**, on a provider whose adapter has a budget field ({@link honorsBudget}) → every non-`off`
+ *     tier is reachable, because the adapter maps the tier onto a point inside `[min, max]`. This is how
+ *     `claude-haiku-4-5` (a budget and no ladder) is controllable at all, and how `claude-opus-4-5` serves `max`
+ *     — a tier its ladder omits — without a 400.
+ *   - **Neither** → no gradation exists; only `off` survives, and only if the model can be disabled at all.
  */
 export function acceptedTiers(
   provider: ProviderId,
@@ -152,24 +188,26 @@ export function acceptedTiers(
   // offers nothing. Adding `off` here on the provider's general ability to disable would be a guess about a
   // model whose capability upstream declined to describe, and a guess is what put a rejected value on the wire
   // in the first place.
-  const hasAnyControl =
-    controls.effortValues !== undefined ||
-    controls.budgetTokens !== undefined ||
-    controls.toggle === true;
-  if (!hasAnyControl) return accepted;
+  if (!hasAnyControl(controls)) return accepted;
 
   const gradable = REASONING_EFFORTS.filter(
     (tier): tier is Exclude<ReasoningEffort, 'off'> => tier !== 'off',
   );
 
+  // The two axes are a UNION, not an either/or. `claude-opus-4-5` publishes BOTH — `effortValues: [low, medium,
+  // high]` and `budgetTokens: {min: 1024}` — and its adapter already falls back to the budget for a tier the
+  // ladder does not carry. An exclusive `else if` here would have hidden `max` from the picker for a model that
+  // serves it perfectly well: the acceptance set must describe what the ADAPTER can send, not one axis of it.
   if (controls.effortValues !== undefined) {
     const values = new Set(controls.effortValues);
     for (const tier of gradable) {
       const wire = wireValueFor(provider, tier);
       if (wire !== undefined && values.has(wire)) accepted.add(tier);
     }
-  } else if (controls.budgetTokens !== undefined) {
+  }
+  if (controls.budgetTokens !== undefined && honorsBudget(provider)) {
     // A budget is continuous — every tier maps onto a point inside [min, max], so all of them are reachable.
+    // Only for a provider whose adapter HAS a budget field, though; see {@link honorsBudget}.
     for (const tier of gradable) accepted.add(tier);
   }
 
@@ -223,17 +261,16 @@ export function thinkingCeiling(maxTokens: number): number {
 }
 
 /**
- * Map a normalized tier onto a **token budget** for a budget-shaped model — `claude-haiku-4-5`,
- * `gemini-2.5-pro`, and the rest of the seven that publish no effort axis at all.
+ * Map a normalized tier onto a **token budget** for a budget-shaped model — `claude-haiku-4-5`, `gemini-2.5-pro`,
+ * and every other model whose tier the effort ladder cannot express.
  *
  * `ceiling` is the caller's hard upper bound, and it is not optional theatre: Anthropic requires
  * `budget_tokens < max_tokens`, so a budget derived from the catalog alone can exceed the request's own output
  * cap and be rejected. `claude-haiku-4-5` publishes `{ min: 1024 }` with **no max**, which is precisely the case
  * where the range has to come from the request. The adapter passes what it can honour; this stays pure.
  *
- * A degenerate range (`ceiling <= min`) yields the floor — the smallest budget the model will accept. Sending
- * *less* than `min` is a 400; sending the floor is merely the least thinking the model can do, which is the
- * honest reading of "the caller asked for a low tier on a model that cannot go that low".
+ * **Returns `undefined` when no budget in the range fits under the ceiling** — see the comment on the guard
+ * below. The caller must then WITHHOLD the field: there is no legal value to send.
  */
 export function reasoningBudgetFor(
   tier: Exclude<ReasoningEffort, 'off'>,

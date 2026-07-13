@@ -583,7 +583,8 @@ function buildThinkingConfig(
     ...(surfaceThoughts ? { includeThoughts: true } : {}),
   });
 
-  const controls = catalogModel(model)?.reasoning;
+  const entry = catalogModel(model);
+  const controls = entry?.reasoning;
 
   // THE MODEL DECIDES THE FIELD. `gemini-2.5-*` take `thinkingBudget`; `gemini-3.x` take `thinkingLevel`. The
   // shipped adapter sent `thinkingLevel` to every reasoning model, and our only two shipped Gemini rows are 2.5 —
@@ -613,15 +614,14 @@ function buildThinkingConfig(
       : undefined;
   }
 
-  if (controls?.budgetTokens !== undefined) {
+  if (entry !== undefined && controls?.budgetTokens !== undefined) {
     // The BUDGET shape — also where an effort-shaped model lands when its ladder does not contain THIS tier.
     //
     // The ceiling reserves room for the ANSWER. Spending the whole output cap on thoughts is accepted by the API
-    // and useless: the model thinks to the limit, then has nothing left to reply with.
-    const cap = maxTokens ?? catalogModel(model)?.maxOutputTokens;
-    const range = controls.budgetTokens;
-    const ceiling = cap === undefined ? (range.max ?? range.min) : thinkingCeiling(cap);
-    const budget = reasoningBudgetFor(reasoningEffort, range, ceiling);
+    // and useless: the model thinks to the limit, then has nothing left to reply with. The request's own cap wins
+    // when it has one; otherwise the model's published output ceiling stands in for it.
+    const cap = maxTokens ?? entry.maxOutputTokens;
+    const budget = reasoningBudgetFor(reasoningEffort, controls.budgetTokens, thinkingCeiling(cap));
     // `undefined` ⇒ even the model's minimum budget does not fit under this cap. Withhold rather than send a value
     // the API will reject.
     return budget === undefined ? undefined : withThoughts({ thinkingBudget: budget });

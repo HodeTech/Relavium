@@ -584,10 +584,9 @@ describe('withEntryModel (ADR-0066 §4 — per-fallback-entry reasoning gate)', 
   /**
    * THE FAILOVER HOLE (ADR-0071 §6) — found by an adversarial review, and the sharpest finding in it.
    *
-   * The re-gate used to ask `modelSupportsReasoning(model)`: a BOOLEAN. `claude-opus-4-8` accepts `max`;
-   * `claude-opus-4-5` does NOT (it publishes ['low','medium','high']). Both "support reasoning", so the boolean
-   * kept the tier — and the fallback, whose entire job is to RESCUE a failing turn, put `effort: 'max'` on the
-   * wire for a model that rejects it.
+   * The re-gate used to ask `modelSupportsReasoning(model)`: a BOOLEAN. `gpt-5.5` accepts every tier; `gpt-5.4-pro`
+   * rejects `low` outright (it publishes ['medium','high','xhigh']). Both "support reasoning", so the boolean kept
+   * the tier — and the fallback, whose entire job is to RESCUE a failing turn, put a rejected value on the wire.
    *
    * A 400 on an unsupported parameter is fatal and non-retryable. So the rescue does not merely fail: it ABORTS
    * the rest of the chain, killing the turn it exists to save. The gate now re-checks the tiers the entry model
@@ -595,14 +594,34 @@ describe('withEntryModel (ADR-0066 §4 — per-fallback-entry reasoning gate)', 
    */
   it('STRIPS a tier the fallback model REJECTS — even though that model reasons', () => {
     const req: LlmRequest = {
-      model: 'claude-opus-4-8', // accepts max
+      model: 'gpt-5.5', // accepts low
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      reasoningEffort: 'low',
+    };
+    // gpt-5.4-pro's ladder starts at `medium`, and OpenAI has no budget field to express `low` some other way.
+    const out = withEntryModel(req, 'gpt-5.4-pro');
+    expect(out.model).toBe('gpt-5.4-pro');
+    expect('reasoningEffort' in out).toBe(false);
+  });
+
+  /**
+   * …but STRIPPING IS NOT FREE, so it must not happen when the model can serve the tier by another route.
+   *
+   * `claude-opus-4-5` publishes an effort ladder WITHOUT `max` — and, alongside it, a token budget. Its adapter
+   * already falls back to `thinking.budget_tokens` for exactly this case, so `max` is perfectly serviceable. An
+   * earlier version of `acceptedTiers` treated the two axes as an either/or and reported the ladder only: the
+   * rescue turn then ran with NO reasoning at all, discarding what the user asked for more aggressively than the
+   * model required. The axes are a union.
+   */
+  it('KEEPS a tier the fallback model serves through its BUDGET axis, not its ladder', () => {
+    const req: LlmRequest = {
+      model: 'claude-opus-4-8',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
       reasoningEffort: 'max',
     };
-    // claude-opus-4-5 has an effort axis but NO `max` on it. The old boolean gate kept the tier.
     const out = withEntryModel(req, 'claude-opus-4-5');
     expect(out.model).toBe('claude-opus-4-5');
-    expect('reasoningEffort' in out).toBe(false);
+    expect(out.reasoningEffort).toBe('max');
   });
 
   it("STRIPS `low` on a failover to gpt-5.4-pro — the maintainer's bug, reached through the rescue path", () => {

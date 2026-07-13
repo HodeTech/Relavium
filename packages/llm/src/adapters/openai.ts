@@ -20,7 +20,7 @@ import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import { catalogModel } from '../catalog/lookup.js';
 import { isNonChatModelId } from '../model-kind.js';
-import { DEEPSEEK_WIRE, OPENAI_WIRE } from '../reasoning-wire.js';
+import { DEEPSEEK_WIRE, OPENAI_WIRE, acceptedTiers } from '../reasoning-wire.js';
 import { MODEL_PRICING } from '../pricing.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
@@ -698,17 +698,24 @@ function buildCommonBody(req: LlmRequest, provider: ProviderId): OpenAiCompatibl
     // model that may not take one is the exact class of bug this work exists to close, and a guess is what put a
     // rejected value on the wire in the first place. (`off` is inside this gate too — `thinking: {disabled}` is
     // still a field, and still a 400 on a model with no reasoning surface.)
-    if (provider === 'openai') {
-      // MEMBERSHIP, not presence — `off` included. `gpt-5.4-pro` publishes ['medium','high','xhigh'] and rejects
-      // BOTH `low` ('low') and `off` ('none'): on OpenAI, `off` IS an effort value, so it is checked like any
-      // other. This is the maintainer's original bug report, and it reaches the wire on a FAILOVER even now that
-      // the picker and the gate both refuse it.
-      const wire = OPENAI_WIRE[req.reasoningEffort];
-      if (reasoningControls.effortValues?.includes(wire) === true) {
-        body.reasoning_effort = wire;
+    //
+    // BOTH branches ask `acceptedTiers` — the same function the picker and the engine's gate ask. Neither
+    // re-derives the answer from the descriptor's fields, because two copies of that logic are two chances to
+    // disagree, and this file already shipped that bug twice: the OpenAI arm tested that an effort axis EXISTED
+    // rather than that the tier was IN it, and the DeepSeek arm tested nothing at all.
+    if (acceptedTiers(provider, reasoningControls).has(req.reasoningEffort)) {
+      if (provider === 'openai') {
+        // `off` IS an effort value on OpenAI (`'none'`), so it needs no branch of its own: `gpt-5.4-pro` publishes
+        // ['medium','high','xhigh'] and rejects BOTH `low` and `off`, and one membership test covers them.
+        body.reasoning_effort = OPENAI_WIRE[req.reasoningEffort];
+      } else if (provider === 'deepseek') {
+        // `deepseek-reasoner`'s descriptor is EMPTY (`{}`): it reasons, but publishes no controllable tier. This
+        // arm used to send `thinking` the moment the model had *any* descriptor, so a `{}` model was handed a
+        // `reasoning_effort` — or a `disabled` — that upstream never said it takes. `acceptedTiers` returns the
+        // empty set for `{}`, so nothing goes on the wire and the picker offers nothing: they agree by
+        // construction rather than by two people remembering the same rule.
+        body.thinking = DEEPSEEK_THINKING[req.reasoningEffort];
       }
-    } else if (provider === 'deepseek') {
-      body.thinking = DEEPSEEK_THINKING[req.reasoningEffort];
     }
   }
   if (req.stopSequences !== undefined) {
