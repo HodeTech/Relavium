@@ -1,0 +1,87 @@
+import type { ProviderId } from '../types.js';
+
+/**
+ * A context-size pricing tier — "above N context tokens, the rate changes"
+ * ([ADR-0071](../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §11).
+ *
+ * `gemini-2.5-pro` is 1.25/10 below 200k and **2.5/15 above**. A flat rate understates long-context spend by up
+ * to 2× — tolerable when the cost cap was advisory, not when it is a safety control. The **pre-egress estimate
+ * takes the HIGHEST applicable tier**: a cap that over-estimates refuses a turn the user could have afforded; a
+ * cap that under-estimates lets real money escape. Only one of those is recoverable.
+ */
+export interface CatalogPriceTier {
+  /** The context-token threshold above which these rates apply. */
+  readonly aboveContextTokens: number;
+  readonly inputPerMtokMicrocents: number;
+  readonly outputPerMtokMicrocents: number;
+  readonly cachedInputPerMtokMicrocents?: number;
+}
+
+/**
+ * How a model exposes its reasoning control — **per MODEL, not per provider**, which is the whole point.
+ *
+ * [ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md) made the native shape a
+ * property of the **adapter** and the capability a per-model `boolean`. A boolean cannot say *"this model takes
+ * a token budget in [128, 32768] and has no off switch"* — and that inexpressibility shipped as a live bug: our
+ * Gemini adapter sends `thinkingLevel` to `gemini-2.5-*`, which Google's docs say **do not support it**. This
+ * type is the correction.
+ *
+ * The three axes are **not** mutually exclusive — `gemini-2.5-flash` has both `toggle` and `budgetTokens`;
+ * `claude-sonnet-4-6` has both `effortValues` and `budgetTokens`. An adapter picks the shape it can lower.
+ *
+ * An **empty** descriptor (`reasoning: {}`) is a real and distinct state: the model *reasons* but exposes **no
+ * control** (`deepseek-reasoner`). That is not the same as no reasoning at all — it tells the picker to offer
+ * nothing, rather than to offer everything.
+ */
+export interface ReasoningControls {
+  /**
+   * The **PROVIDER-WIRE** effort values this model accepts (`none|minimal|low|medium|high|xhigh|max`) — NOT
+   * Relavium's normalized {@link ReasoningEffort}. The two vocabularies overlap enough to be dangerous: reading
+   * these as our tiers drops `off` from **every** Claude model (where `off` is `thinking:{disabled}`, not an
+   * effort value) and drops `off`+`max` from `gpt-5.5`. They are only ever *composed* with an adapter's wire map
+   * by `acceptedTiers` — never copied.
+   */
+  readonly effortValues?: readonly string[];
+  /**
+   * The token-budget axis, when the model takes one. **`min` is load-bearing**: `gemini-2.5-flash` has `min: 0`
+   * (so thinking CAN be disabled) while `gemini-2.5-pro` has `min: 128` (so it **cannot** — Google's docs say
+   * "N/A: Cannot disable thinking"). One field, and the `off` tier's availability falls straight out of it. A
+   * hand-maintained boolean could never have carried that.
+   */
+  readonly budgetTokens?: { readonly min: number; readonly max?: number };
+  /** The model exposes a plain on/off switch for thinking. */
+  readonly toggle?: true;
+}
+
+/**
+ * One model's metadata, normalized from the upstream catalog — the **generated** replacement for the
+ * hand-maintained `MODEL_PRICING` row ([ADR-0071](../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md)).
+ *
+ * Money is **integer micro-cents per million tokens** (1 micro-cent = 1e-8 USD) — no float, ever, on any path
+ * that reaches the cost cap.
+ */
+export interface CatalogModel {
+  readonly provider: ProviderId;
+  readonly modelId: string;
+  readonly displayName: string;
+  readonly contextWindowTokens: number;
+  /** The model's own output ceiling. Nothing clamps against it today — half of "max tokens errors". */
+  readonly maxOutputTokens: number;
+  readonly inputPerMtokMicrocents: number;
+  readonly outputPerMtokMicrocents: number;
+  /**
+   * **Absent ≠ 0.** 19 of the ~97 imported models carry no cache-read rate (`gpt-5.4-pro` among them). `0` means
+   * *"no discount"* — writing it for an absent rate would bill cached input at **zero**, a silent undercharge in
+   * the mechanism this work exists to harden. Absent ⇒ the cost path falls back to the full input rate.
+   */
+  readonly cachedInputPerMtokMicrocents?: number;
+  /** Cache-WRITE, where a provider charges one (Anthropic does). */
+  readonly cacheWritePerMtokMicrocents?: number;
+  /** Context-size pricing tiers, when the model has them. Absent ⇒ the flat rate applies at every length. */
+  readonly contextTiers?: readonly CatalogPriceTier[];
+  /** Absent ⇒ the model does not reason. Present-but-empty ⇒ it reasons with **no controllable tier**. */
+  readonly reasoning?: ReasoningControls;
+}
+
+/** The generated snapshot: canonical model id → its metadata. Keyed by id alone, matching the merge's key. */
+export type CatalogSnapshot = Readonly<Record<string, CatalogModel>>;
