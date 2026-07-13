@@ -2210,6 +2210,12 @@ export class WorkflowEngine {
   readonly #resolverCapabilities: ResolverCapabilities;
   readonly #maxTokensEstimate: number;
   readonly #resolvePrice: PricingOverlay | undefined;
+  // Stored + forwarded to every RunExecution, exactly like #resolvePrice. They reached this class through
+  // WorkflowEngineDeps and then died here — the constructor never read them, so `start()`/`resumeFromCheckpoint()`
+  // built a governor without an endpoint resolver (ADR-0071 §7 — the estimate assumed `official` and under-
+  // authorized a custom-base_url turn) and without an unpriced sink (§K7 — the notice was dead on `run`/`gate`).
+  readonly #resolveEndpoint: ((model: string) => EndpointKind) | undefined;
+  readonly #onUnpriced: ((model: string, capMicrocents: number) => void) | undefined;
   readonly #runs = new Map<string, RunExecution>();
 
   constructor(deps: WorkflowEngineDeps) {
@@ -2220,6 +2226,8 @@ export class WorkflowEngine {
     this.#resolverCapabilities = deps.resolverCapabilities ?? {};
     this.#maxTokensEstimate = deps.maxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
     this.#resolvePrice = deps.resolvePrice;
+    this.#resolveEndpoint = deps.resolveEndpoint;
+    this.#onUnpriced = deps.onUnpriced;
   }
 
   /**
@@ -2249,6 +2257,8 @@ export class WorkflowEngine {
       resolverCapabilities: this.#resolverCapabilities,
       maxTokensEstimate: this.#maxTokensEstimate,
       ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
+      ...(this.#resolveEndpoint === undefined ? {} : { resolveEndpoint: this.#resolveEndpoint }),
+      ...(this.#onUnpriced === undefined ? {} : { onUnpriced: this.#onUnpriced }),
     });
     this.#runs.set(runId, execution);
     void execution.begin();
@@ -2345,6 +2355,8 @@ export class WorkflowEngine {
       resolverCapabilities: this.#resolverCapabilities,
       maxTokensEstimate: this.#maxTokensEstimate,
       ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
+      ...(this.#resolveEndpoint === undefined ? {} : { resolveEndpoint: this.#resolveEndpoint }),
+      ...(this.#onUnpriced === undefined ? {} : { onUnpriced: this.#onUnpriced }),
       checkpoint,
     });
     this.#runs.set(input.runId, execution);

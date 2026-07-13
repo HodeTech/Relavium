@@ -93,6 +93,13 @@ export function capUsd(microcents: number): string {
  * One sentence, everywhere, so the chat transcript, `relavium run`, `agent run`, and the resumed `gate` all say it
  * the same way. `strict_cost_cap` is named as the block-instead escape hatch, and `models pricing` as the fix.
  */
-export function unpricedModelNote(model: string, capMicrocents: number): string {
-  return `${model} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${model}\`, or turn on strict_cost_cap to refuse an unpriced model.`;
+export function unpricedModelNote(
+  model: string,
+  capMicrocents: number,
+  // The exact key a user edits to turn strict on, which DIFFERS by surface: a chat user sets `[chat] strict_cost_cap`
+  // in config.toml, a workflow user sets `budget.strict_cost_cap` in the YAML. A generic "strict_cost_cap" makes each
+  // guess which file. Default to the bare name for a caller that has no better spelling.
+  strictSetting = 'strict_cost_cap',
+): string {
+  return `${model} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${model}\`, or set ${strictSetting} to refuse an unpriced model.`;
 }

@@ -207,7 +207,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // governor already dedups per model. STDERR, never stdout (`--json`). `budget.strict_cost_cap` blocks instead.
     const onUnpriced = (model: string, capMicrocents: number): void =>
       deps.io.writeErr(
-        `warning: ${unpricedModelNote(model, capMicrocents)}\n`,
+        `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap')}\n`,
       );
     let engineOptions: BuildEngineOptions = {
       providers,

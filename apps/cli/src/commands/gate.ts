@@ -231,7 +231,7 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       // did not apply to it — say so on stderr (never stdout, `--json`). `budget.strict_cost_cap` blocks instead.
       onUnpriced: (model, capMicrocents) =>
         deps.io.writeErr(
-          `warning: ${unpricedModelNote(model, capMicrocents)}\n`,
+          `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap')}\n`,
         ),
       // 2.5.A (ADR-0055): wire the SAME read+write fs + process ToolHost the `relavium run` path wires, jailed
       // to the ORIGINAL run's project root (`saveToRoot` — the original `runs.project_root` when it still exists

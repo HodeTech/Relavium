@@ -548,12 +548,17 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // a pre-egress cap check can fire DURING the build. Hold it in a `let` and fall back to stderr until it exists,
       // exactly as `emitLiveNotice` does on the standalone chat. Either way the warning is never written raw onto the
       // alt buffer, where ink's next frame would erase it (Step-4b-3 Sonnet fix, carried here by the phase review).
+      // The store's SEED comes from the build (it needs `built.resumeState`), so it cannot exist before the build —
+      // yet a governor/effort callback could fire DURING it. Every notice sink here goes through this one indirection:
+      // render into the transcript once the store exists, fall back to stderr until then (never a raw write onto the
+      // alt buffer, where ink's next frame erases it). `onBudgetWarning` alone used to be guarded; the other two
+      // closed over the later `const store` and would TDZ-crash under the same condition it was protected against.
       const storeRef: { current?: ChatStoreController } = {};
-      const noteBudget = (warning: ChatBudgetWarning): void => {
-        const text = budgetWarningText(warning);
+      const noteToStore = (text: string): void => {
         if (storeRef.current !== undefined) storeRef.current.notice(text);
         else deps.io.writeErr(`${text}\n`);
       };
+      const noteBudget = (warning: ChatBudgetWarning): void => noteToStore(budgetWarningText(warning));
       const built = await (deps.buildResumedSession ?? buildResumedChatSession)({
         chat: config.chat,
         record,
@@ -565,8 +570,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
         onBudgetWarning: noteBudget,
         // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
-        onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
-        onUnpriced: (note) => store.notice(note),
+        // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
+        onEffortWithheld: onceEffortNotice(noteToStore),
+        onUnpriced: noteToStore,
       });
       // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
       // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).

@@ -618,7 +618,7 @@ export function buildGovernorWiring(
       ? {}
       : {
           onUnpriced: (model: string, capMicrocents: number) =>
-            onUnpriced(unpricedModelNote(model, capMicrocents)),
+            onUnpriced(unpricedModelNote(model, capMicrocents, '[chat] strict_cost_cap')),
         }),
     emit: (event) => {
       // `warn` is non-blocking BY CONTRACT. A misbehaving warn surface must never reject this emit — a

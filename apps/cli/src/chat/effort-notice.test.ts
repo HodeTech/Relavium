@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { effortRejectedNote, effortUnavailableNote, onceEffortNotice } from './effort-notice.js';
+import {
+  capUsd,
+  effortRejectedNote,
+  effortUnavailableNote,
+  onceEffortNotice,
+  unpricedModelNote,
+} from './effort-notice.js';
 
 /**
  * The withheld-tier notice channel (ADR-0071 §6) — the sentence, and the promise that it is said EXACTLY once.
@@ -85,5 +91,24 @@ describe('onceEffortNotice — a standing condition is not an event', () => {
     sink(effortRejectedNote('gpt-5-pro', 'low', ['high'])); // different model → spoken
     sink(effortRejectedNote('gpt-5.4-pro', 'off', ['medium', 'high'])); // different tier → spoken
     expect(said).toHaveLength(3);
+  });
+});
+
+describe('capUsd + unpricedModelNote — the cost-cap notice (ADR-0071 §K7)', () => {
+  it('formats a cap as fixed-decimal USD, never scientific notation', () => {
+    expect(capUsd(5_000_000)).toBe('$0.05'); // the workflow-yaml-spec's own example cap
+    expect(capUsd(1_000_000_000)).toBe('$10.00');
+    expect(capUsd(1)).toBe('$0.00'); // a sub-cent cap rounds to $0.00 — NOT `$1e-8`, the bug this fixed
+  });
+
+  it('names the model, the cap, the fix, AND the surface-specific strict setting', () => {
+    const chat = unpricedModelNote('my-local-model', 5_000_000, '[chat] strict_cost_cap');
+    expect(chat).toContain('my-local-model');
+    expect(chat).toContain('$0.05');
+    expect(chat).toContain('models pricing my-local-model');
+    expect(chat).toContain('[chat] strict_cost_cap'); // a chat user edits config.toml…
+
+    const workflow = unpricedModelNote('my-local-model', 5_000_000, 'budget.strict_cost_cap');
+    expect(workflow).toContain('budget.strict_cost_cap'); // …a workflow user edits the YAML
   });
 });

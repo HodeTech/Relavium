@@ -395,6 +395,30 @@ function agentExecutor(
   });
 }
 
+/** A budget workflow whose model is UNPRICED — a custom id neither the catalog nor a user prices. */
+function unpricedBudgetWorkflow(strict: boolean): ReturnType<typeof parseWorkflow> {
+  return parseWorkflow(
+    `schema_version: '1.0'
+workflow:
+  id: e2e-budget-unpriced
+  budget:
+    max_cost_microcents: 1000000
+    on_exceed: warn${strict ? '\n    strict_cost_cap: true' : ''}
+  agents:
+    - id: a
+      model: my-self-hosted-model
+      provider: openai
+      system_prompt: hi
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: a
+      prompt_template: 'go'
+  edges: []
+`,
+  );
+}
+
 function budgetWorkflow(onExceed: string): ReturnType<typeof parseWorkflow> {
   return parseWorkflow(
     `schema_version: '1.0'
@@ -439,6 +463,54 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
     expect(warning).toBeDefined();
     // The warning fires before any spend, so the observed spent/limit fraction is 0%.
     expect(warning?.type === 'budget:warning' && warning.thresholdPct).toBe(0);
+  });
+
+  it('an UNPRICED model reaches the onUnpriced sink THROUGH WorkflowEngine (ADR-0071 §K7)', async () => {
+    // THE bug two commits missed: WorkflowEngine took `onUnpriced` in its deps and then never stored or forwarded
+    // it, so the notice was DEAD on `relavium run` / `relavium gate` — the batch surfaces, where an unattended run
+    // is the highest-risk place for a cap to silently not apply. The sink is injected here exactly as the CLI
+    // injects it, and the model is unpriced, so a working forward is the only way this array is non-empty.
+    const unpriced: string[] = [];
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: agentExecutor(() =>
+        provider(
+          [
+            { type: 'text_delta', text: 'ok' },
+            { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          'openai',
+        ),
+      ),
+      onUnpriced: (model) => unpriced.push(model),
+    });
+    const events = await drain(
+      engine.start({ workflow: unpricedBudgetWorkflow(false), inputs: { text: 'x' } }),
+    );
+    expect(events.at(-1)?.type).toBe('run:completed'); // unpriced degrades to allow — the run still finishes
+    expect(unpriced).toEqual(['my-self-hosted-model']); // …but the notice fired, through the engine boundary
+  });
+
+  it('strict_cost_cap BLOCKS an unpriced model through WorkflowEngine, regardless of on_exceed', async () => {
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: agentExecutor(() =>
+        provider(
+          [
+            { type: 'text_delta', text: 'ok' },
+            { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1 } },
+          ],
+          'openai',
+        ),
+      ),
+    });
+    const events = await drain(
+      engine.start({ workflow: unpricedBudgetWorkflow(true), inputs: { text: 'x' } }),
+    );
+    // on_exceed is `warn`, but strict overrides it: an unpriceable model is a HARD pre-egress fail.
+    expect(events.at(-1)?.type).toBe('run:failed');
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
   });
 
   it('fails the run when on_exceed is fail', async () => {
