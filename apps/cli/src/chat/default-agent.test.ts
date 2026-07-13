@@ -29,10 +29,11 @@ describe('inferProviderFromModel', () => {
     expect(inferProviderFromModel('')).toBeUndefined();
   });
 
-  it('resolves a catalog-known id from the catalog (ADR-0071) — consulted ahead of the prefix map', () => {
-    // Every SHIPPED id also has a recognizable prefix, so the catalog and the heuristic agree here. The catalog-first
-    // ORDER matters for a live-discovered id the prefix cannot place (e.g. `chatgpt-4o-latest`); there the persisted
-    // provider (see buildDefaultChatAgent) is the real fix. This pins that the catalog lookup is wired and wins.
+  it('resolves a catalog-known id via the catalog branch (ADR-0071 hardening)', () => {
+    // Every SHIPPED id ALSO matches a prefix, so the catalog and the heuristic agree — this cannot prove the catalog
+    // is consulted FIRST, only that the catalog branch is wired and returns the right provider. The catalog-first
+    // ORDER only bites for a live-only id the prefix cannot place (e.g. `chatgpt-4o-latest`), which no shipped
+    // catalog id exercises; there the PERSISTED provider (see buildDefaultChatAgent) is the decisive fix.
     expect(inferProviderFromModel('gpt-5-chat-latest')).toBe('openai'); // a real catalog id
   });
 });

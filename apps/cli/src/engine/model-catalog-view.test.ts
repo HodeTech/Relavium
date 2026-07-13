@@ -243,10 +243,12 @@ describe('buildUserPricing (2.5.G S10, ADR-0065 §2)', () => {
 describe('a user override of a CATALOG model — a partial override must stay partial', () => {
   const OPENAI = 'uuid-openai';
   const slugs = slugResolver({ [OPENAI]: 'openai' });
+  // `undefined` when the model / field is UNKNOWN — kept distinct from a real `0` (an explicitly-free rate), so a
+  // caller cannot silently divide by a coerced zero and read "unknown" as "free".
   const catalogRate = (
     id: string,
     field: 'inputPerMtokMicrocents' | 'cachedInputPerMtokMicrocents',
-  ): number => catalogPricing(id)?.[field] ?? 0;
+  ): number | undefined => catalogPricing(id)?.[field];
 
   it('INHERITS the window, the ceiling and the cache DISCOUNT that the user never stated', () => {
     // `models pricing gpt-5.5 --input 0.10 --output 1` — two flags, and nothing else said. The DB's columns are NOT
@@ -273,9 +275,13 @@ describe('a user override of a CATALOG model — a partial override must stay pa
 
     // The cache rate is the catalog's DISCOUNT, not its absolute number. Inheriting the absolute $0.50 against a
     // $0.10 input would have made a cache HIT cost five times a cache MISS — a price nobody has ever been charged.
-    const ratio =
-      catalogRate('gpt-5.5', 'cachedInputPerMtokMicrocents') /
-      catalogRate('gpt-5.5', 'inputPerMtokMicrocents');
+    const cachedRate = catalogRate('gpt-5.5', 'cachedInputPerMtokMicrocents');
+    const inputRate = catalogRate('gpt-5.5', 'inputPerMtokMicrocents');
+    // A known priced model — assert both rates are REAL so a lost/unknown price fails loudly here, rather than
+    // silently producing a 0 ratio (the unknown-vs-zero distinction the helper now preserves).
+    expect(cachedRate).toBeGreaterThan(0);
+    expect(inputRate).toBeGreaterThan(0);
+    const ratio = (cachedRate ?? 0) / (inputRate ?? 1);
     expect(mine.cachedInputPerMtokMicrocents).toBe(Math.round(10_000_000 * ratio));
     expect(mine.cachedInputPerMtokMicrocents).toBeLessThanOrEqual(mine.inputPerMtokMicrocents);
   });

@@ -126,6 +126,18 @@ describe('buildChatSession', () => {
     expect(built.context.fsScopeTier).toBe('sandboxed'); // default when [chat].fs_scope is unset
   });
 
+  it('carries [chat].default_provider onto the default agent — an unplaceable id BUILDS (ADR-0059, Bug-3 hop)', async () => {
+    // The session-host wiring hop: buildChatSession threads chat.defaultProvider into resolveChatAgent, so a default
+    // agent over a live-discovered id the prefix cannot place (`chat-latest`) builds instead of throwing "cannot
+    // infer a provider". Drop the spread at session-host.ts:326-328 and this fails; the agent-source test alone
+    // (which calls resolveChatAgent directly) would not catch that.
+    const built = await build({
+      chat: { ...EMPTY_CHAT, defaultModel: 'chat-latest', defaultProvider: 'openai' },
+    });
+    expect(built.agent.model).toBe('chat-latest');
+    expect(built.agent.provider).toBe('openai');
+  });
+
   it('honors [chat].fs_scope on the SessionContext', async () => {
     const built = await build({ chat: { ...EMPTY_CHAT, fsScope: 'project' } });
     expect(built.context.fsScopeTier).toBe('project');

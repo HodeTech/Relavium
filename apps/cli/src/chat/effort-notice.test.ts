@@ -42,11 +42,13 @@ describe('effortRejectedNote — what the model refused, and what it would take'
     // note RAW to a terminal (`relavium run` / `agent run` → stderr; a non-interactive `chat` → stderr), so an
     // escape sequence in a crafted workflow's model id would reach the terminal uninterpreted. `models.ts` already
     // guards the same class of input for the same reason (CWE-150).
-    const note = effortRejectedNote('evil\u001b[31mmodel\nsecond-line', 'low', ['high']);
+    const note = effortRejectedNote('evil\u001b[31m\u0007model\nsecond-line', 'low', ['high']);
     expect(note).not.toContain('\u001b'); // no ESC — the CSI that would recolour the user's terminal
     expect(note).not.toContain('\u0007'); // no BEL
     expect(note).not.toContain('\n'); // and no newline, which would forge a second warning line of its own
-    expect(note).toContain('model'); // …while the legible part survives, so the message still names the model
+    // ...and the LEGIBLE content survives (only control bytes are stripped), so it still names the model.
+    expect(note).toContain('evil');
+    expect(note).toContain('second-line');
   });
 });
 

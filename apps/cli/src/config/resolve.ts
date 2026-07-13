@@ -166,10 +166,28 @@ function resolveChat(
   // (ADR-0061). Only when the project sets NEITHER do both fall through to the workspace, per field.
   const projectSetsAllowlist =
     p?.allowed_commands !== undefined || p?.allowed_command_globs !== undefined;
+  // `default_model` + `default_provider` are a COUPLED pair — the provider must SERVE the model (ADR-0059). Resolve
+  // BOTH from the FIRST layer that sets a model, so a lower layer's stale provider never pairs with a higher layer's
+  // model: independent `??` fallbacks would let a project's claude `default_model` (no provider — a claude id was
+  // always inferable, so no pre-existing config sets one) inherit a global openai `default_provider` written by the
+  // wizard, and `buildDefaultChatAgent` would then bind an OpenAI agent over a Claude id (a 404 the pre-change id
+  // inference avoided). The layer that sets the model owns its provider (absent ⇒ inference); else global
+  // `[preferences]`. This is the same coupling `allowed_commands`/`allowed_command_globs` get just above.
+  let defaultModel: ChatConfig['default_model'];
+  let defaultProvider: ChatConfig['default_provider'];
+  if (p?.default_model !== undefined) {
+    defaultModel = p.default_model;
+    defaultProvider = p.default_provider;
+  } else if (w?.default_model !== undefined) {
+    defaultModel = w.default_model;
+    defaultProvider = w.default_provider;
+  } else {
+    defaultModel = global?.preferences?.default_model;
+    defaultProvider = global?.preferences?.default_provider;
+  }
   return {
-    defaultModel: p?.default_model ?? w?.default_model ?? global?.preferences?.default_model,
-    defaultProvider:
-      p?.default_provider ?? w?.default_provider ?? global?.preferences?.default_provider,
+    defaultModel,
+    defaultProvider,
     fsScope: p?.fs_scope ?? w?.fs_scope,
     maxTurns: p?.max_turns ?? w?.max_turns,
     maxMessages: p?.max_messages ?? w?.max_messages,

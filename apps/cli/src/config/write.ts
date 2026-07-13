@@ -34,7 +34,8 @@ import { ensureGlobalConfigDir, globalConfigDir } from './paths.js';
  * Four load-bearing guarantees (the ADR-0063 contract; a security-reviewed surface):
  * 1. **Secret-free by construction.** The surface is a **typed setter** ({@link writeGlobalPreferences}, of which
  *    {@link writeGlobalDefaultModel} is a thin single-key wrapper) — never a generic `writeKey(k, v)` — so it can
- *    only ever set the two non-secret `[preferences]` keys `default_model` / `reasoning_effort`. There is no API-key
+ *    only ever set the three non-secret `[preferences]` keys `default_model` / `default_provider` /
+ *    `reasoning_effort`. There is no API-key
  *    field in the schema to write to (keys live only in the OS keychain, ADR-0006). And a schema-validation
  *    failure on the write path is reported through the **same value-free formatter** the loader uses
  *    ({@link formatZodError}) — never a raw `ZodError`, whose `.message` embeds the received value for several
@@ -70,7 +71,8 @@ import { ensureGlobalConfigDir, globalConfigDir } from './paths.js';
 export interface GlobalPreferenceWrite {
   readonly defaultModel?: string;
   /** The provider serving {@link GlobalPreferenceWrite.defaultModel}, persisted so the next chat skips id inference
-   *  (ADR-0059). Written with `defaultModel`; on its own it is a no-op alongside an unchanged model. */
+   *  (ADR-0059). The picker + wizard always write it TOGETHER with `defaultModel`; on its own it is still a real
+   *  partial write (it updates just the provider, leaving the model unchanged), not a no-op. */
   readonly defaultProvider?: LlmProviderId;
   readonly reasoningEffort?: ReasoningEffort;
 }
