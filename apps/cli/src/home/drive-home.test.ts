@@ -7,7 +7,7 @@ import { createClient, createSessionStore, runMigrations, type DbClient } from '
 import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { buildChatSession } from '../chat/session-host.js';
+import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
 import { scriptedResolver, textTurn } from '../chat/test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
 import type { OpenedSessionStore } from '../history/session-open.js';
@@ -391,6 +391,49 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 
+  it('startChat couples the fresh default_model to the provider read WITH it — never a stale startup provider (review M5)', async () => {
+    // The 404 trap: startup config binds default_model=gpt-4o + default_provider=openai. Mid-session the user
+    // hand-edits the config to a DIFFERENT-family model (claude-sonnet-4-6) and does NOT add a provider line. The
+    // next chat must NOT pair the fresh Claude model with the stale `openai` startup provider (which would dial the
+    // OpenAI adapter with a Claude id → 404). With no provider on the fresh read, it is left undefined ⇒ inferred.
+    const configFile = join(cwd, 'coupling-config.toml');
+    writeFileSync(
+      configFile,
+      '[preferences]\ndefault_model = "gpt-4o"\ndefault_provider = "openai"\n',
+    );
+    let captured: RootAppProps | undefined;
+    const builtModels: Array<string | undefined> = [];
+    const builtProviders: Array<string | undefined> = [];
+    const { deps } = makeDeps((p) => (captured = p), {
+      global: { ...global, configPath: configFile },
+      buildSession: (args) => {
+        builtModels.push(args.chat.defaultModel);
+        builtProviders.push(args.chat.defaultProvider);
+        return buildChatSession(args);
+      },
+    });
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    // The user edits the global config mid-session: a new model of another family, no provider line.
+    writeFileSync(configFile, '[preferences]\ndefault_model = "claude-sonnet-4-6"\n');
+
+    type(props, 'hello');
+    props.controller.handleKey('', ENTER); // submit ⇒ startChat ⇒ buildSession
+    await flush();
+
+    expect(builtModels.at(-1)).toBe('claude-sonnet-4-6'); // the fresh model took effect
+    // THE FIX: the provider is NOT the stale startup 'openai' — it is undefined (⇒ inferred to anthropic), coupled
+    // to the same read that supplied the model. Before M5 this was 'openai' and the turn 404'd.
+    expect(builtProviders.at(-1)).toBeUndefined();
+
+    props.controller.handleKey('c', CTRL_C);
+    await flush();
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
   it('in-Home /models reseat: the REAL reseatChat resumes the session under the switched model, carrying the transcript (ADR-0059)', async () => {
     // Exercises the REAL drive-home reseatChat builder (loadFull → swapAgentModel → buildResumedChatSession → seeded
     // store) end-to-end — not the mocked controller-level test — pinning the build-first swap over the same sessionId.
@@ -464,6 +507,55 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant']); // the single carried exchange
 
     props.controller.handleKey('c', CTRL_C); // Home Ctrl-C ⇒ clean exit
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('a reseat notice fired DURING the build is buffered and flushed into the transcript, not lost to stderr (review M5/bot)', async () => {
+    // The store is seeded from the build (it needs `built.resumeState`), so it cannot exist yet when a governor/
+    // effort callback fires mid-build. The old sink wrote such a notice to stderr, which the alt-screen renderer's
+    // next frame erases — and `onceEffortNotice` had already marked it delivered, so it never repeated: silently
+    // lost. Buffer + flush is the fix. Drive the REAL reseatChat, firing an `onUnpriced` note DURING the build.
+    const errs: string[] = [];
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((p) => (captured = p), {
+      io: { ...io, writeErr: (t: string) => errs.push(t) },
+      providers: scriptedResolver([textTurn('sonnet reply'), textTurn('opus reply')]),
+      // Fire a notice WHILE the resumed session builds (before the store exists), then delegate to the real builder.
+      buildResumedSession: (args) => {
+        args.onUnpriced?.('UNPRICED-MID-BUILD');
+        return buildResumedChatSession(args);
+      },
+    });
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the injected render was never invoked');
+
+    type(props, 'first');
+    props.controller.handleKey('', ENTER);
+    await flush();
+    const sessionId = props.controller.getSnapshot().session?.sessionId ?? '';
+    expect(sessionId).not.toBe('');
+
+    props.controller.handleKey('/', {});
+    type(props, 'models');
+    props.controller.handleKey('', ENTER);
+    await flush();
+    type(props, 'claude-opus-4-8');
+    props.controller.handleKey('', ENTER); // reasoning-capable ⇒ effort sub-step
+    props.controller.handleKey('', ENTER); // apply the default tier ⇒ the REAL reseatChat (fires the mid-build note)
+    await flush();
+
+    const transcript =
+      props.controller.getSnapshot().session?.store.getSnapshot().state.transcript ?? [];
+    // THE FIX: the mid-build note reached the TRANSCRIPT (a `notice` entry), not erased stderr.
+    expect(
+      transcript.some((e) => e.role === 'notice' && e.text.includes('UNPRICED-MID-BUILD')),
+    ).toBe(true);
+    expect(errs.join('')).not.toContain('UNPRICED-MID-BUILD'); // …and it was NOT written to stderr
+
+    props.controller.handleKey('c', CTRL_C);
+    await flush();
+    props.controller.handleKey('c', CTRL_C);
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 

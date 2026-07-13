@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { createProviderStore, createRunHistoryReader } from '@relavium/db';
-import type { AgentSessionRecord, LlmProviderId, ReasoningEffort } from '@relavium/shared';
+import type { AgentSessionRecord, ReasoningEffort } from '@relavium/shared';
 import { render } from 'ink';
 import { createElement } from 'react';
 
@@ -332,10 +332,6 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     const readEffectiveDefault = (): string | undefined => readEffectiveChat()?.defaultModel;
     const readEffectiveEffort = (): ReasoningEffort | undefined =>
       readEffectiveChat()?.reasoningEffort;
-    // The provider persisted alongside the effective default (ADR-0059) — read FRESH so a same-session `/models`
-    // write's provider lights up the next chat, exactly like `readEffectiveDefault`.
-    const readEffectiveProvider = (): LlmProviderId | undefined =>
-      readEffectiveChat()?.defaultProvider;
     // The `/models` catalog port (ADR-0064 §10) — the SHARED load/refresh + key-aware merge trio (the SAME one the
     // chat reseat picker uses, ADR-0059), over the ONE open db + the store-aware resolver. The Home layers its own
     // accept action on top: `currentDefault`/`currentEffort` (the ✓ markers) + `writeDefault` (the next-session
@@ -496,16 +492,25 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read FRESH per chat from the SAME `history.db` (empty map
       // on a read fault). The USER outranks the catalog (ADR-0071 §1).
       const resolvePrice = readUserPricingOverlay(opened.db);
+      // Re-read the EFFECTIVE `[chat]` FRESH per chat (not the load-once `config` snapshot) so a same-session
+      // `/models` write — the model (2.5.G S7) + its effort (ADR-0066 §6) — lights up the next chat. Read it ONCE:
+      // the model and the provider persisted WITH it (ADR-0059) must come from the SAME snapshot, or a fresh model
+      // paired with a stale startup provider dials the wrong adapter → 404 (review M5). So couple them — when the
+      // fresh read supplies a model, take ITS provider (undefined ⇒ infer from the model id, NEVER back-filled from
+      // startup); only with no fresh model (a genuinely unset default, or a malformed-config read fault) fall back
+      // to the startup PAIR. The other `[chat]` settings keep the startup snapshot.
+      const effectiveChat = readEffectiveChat();
+      const freshModel = effectiveChat?.defaultModel;
+      const [defaultModel, defaultProvider] =
+        freshModel !== undefined
+          ? [freshModel, effectiveChat?.defaultProvider]
+          : [config.chat.defaultModel, config.chat.defaultProvider];
       const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
-        // Re-read the EFFECTIVE default model AND reasoning-effort FRESH per chat (not the load-once `config`
-        // snapshot) so a same-session `/models` write — the model (2.5.G S7) AND its effort sub-step (ADR-0066 §6) —
-        // takes effect on the very next chat started in this long-lived Home. A read fault degrades to the startup
-        // value. The other `[chat]` settings keep the startup snapshot.
         chat: {
           ...config.chat,
-          defaultModel: readEffectiveDefault() ?? config.chat.defaultModel,
-          defaultProvider: readEffectiveProvider() ?? config.chat.defaultProvider,
-          reasoningEffort: readEffectiveEffort() ?? config.chat.reasoningEffort,
+          defaultModel,
+          defaultProvider,
+          reasoningEffort: effectiveChat?.reasoningEffort ?? config.chat.reasoningEffort,
         },
         agentRef: undefined, // the built-in default agent (zero-config first run)
         cwd: deps.global.cwd,
@@ -555,13 +560,16 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       const resolvePrice = readUserPricingOverlay(opened.db);
       // The store's SEED comes from the build (it needs `built.resumeState`), so it cannot exist before the build —
       // yet a governor/effort callback could fire DURING it. Every notice sink here goes through this one indirection:
-      // render into the transcript once the store exists, fall back to stderr until then (never a raw write onto the
-      // alt buffer, where ink's next frame erases it). `onBudgetWarning` alone used to be guarded; the other two
-      // closed over the later `const store` and would TDZ-crash under the same condition it was protected against.
+      // render into the transcript once the store exists, otherwise BUFFER (review M5/bot) and flush after the store
+      // is wired. The old fallback wrote to stderr, which on the alt-screen renderer ink's next frame erases — so a
+      // withheld-effort notice that fired mid-build was lost, and `onceEffortNotice` had already marked it delivered
+      // (never to repeat). `onBudgetWarning` alone used to be guarded; the other two closed over the later `const
+      // store` and would TDZ-crash under the same condition it was protected against.
       const storeRef: { current?: ChatStoreController } = {};
+      const pendingNotes: string[] = [];
       const noteToStore = (text: string): void => {
         if (storeRef.current !== undefined) storeRef.current.notice(text);
-        else deps.io.writeErr(`${text}\n`);
+        else pendingNotes.push(text);
       };
       const noteBudget = (warning: ChatBudgetWarning): void =>
         noteToStore(budgetWarningText(warning));
@@ -600,6 +608,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
       assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
       storeRef.current = store; // from here a budget warning renders in the transcript, not on the alt buffer
+      // Flush any notice that fired DURING the build (an effort-withheld or unpriced note on the reseated model)
+      // into the transcript now that the store exists — it would otherwise have been written to erased stderr.
+      for (const note of pendingNotes) store.notice(note);
+      pendingNotes.length = 0;
       return wireHomeChatSession(built, store, {
         open: false,
         initialSequenceNumber: built.nextSequenceNumber,
