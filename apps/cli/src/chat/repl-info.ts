@@ -2,6 +2,8 @@ import type { CompactionResult, TrimResult } from '@relavium/core';
 
 import type { CatalogEntry } from '../workflows/catalog.js';
 import { sanitizeInline, stripTerminalControls } from '../render/tui/chat-projection.js';
+import type { SessionCostRow } from '@relavium/db';
+
 import { formatCostUsd } from '../render/tui/format.js';
 
 /**
@@ -11,9 +13,54 @@ import { formatCostUsd } from '../render/tui/format.js';
  * boundary so a crafted catalog entry can never forge a notice row or inject an escape.
  */
 
-/** The `/cost` notice — the session's cumulative spend (the per-model breakdown is Phase 2.6.C). */
-export function costNotice(cumulativeCostMicrocents: number): string {
-  return `Session cost: ${formatCostUsd(cumulativeCostMicrocents)}`;
+/**
+ * The `/cost` notice — the session's spend, broken down PER MODEL (ADR-0070).
+ *
+ * The rows are read from `session_costs`, NOT from an in-memory counter: a resumed session's total is seeded from the
+ * durable row and covers the whole session, while memory knows only the models used in THIS process — so an in-memory
+ * breakdown would visibly fail to sum to the total on the very first `/cost` after a resume. The table's invariant
+ * (`SUM(rows) == agent_sessions.total_cost_microcents`) is what makes the total line trustworthy: the rows are
+ * GUARANTEED to sum to it, for every session, past and future.
+ *
+ * Two honesties the panel must carry:
+ *   • an `unpriced_calls > 0` row is a model we could not PRICE, not a free one — a $0.0000 row with real tokens
+ *     would otherwise read as "this model costs nothing".
+ *   • a row that predates per-model attribution says so, per row — a resumed legacy session that spends again has
+ *     BOTH its sentinel and real model rows, and the sentinel must never claim the calls and tokens it does not have.
+ *
+ * The total is `agent_sessions.total_cost_microcents` — the authoritative number, and the one the budget cap enforces
+ * against (ADR-0028). It is against Relavium's own event stream, not the provider's invoice: an egress that streamed
+ * content but ended without a usage chunk, and a mid-stream failure, are both recorded as 0 on BOTH sides (ADR-0070
+ * §3), so the reported spend is a systematic under-estimate of the bill. That is stated here, not buried.
+ */
+export function costNotice(totalCostMicrocents: number, rows: readonly SessionCostRow[]): string {
+  const total = `Session cost: ${formatCostUsd(totalCostMicrocents)}`;
+  if (rows.length === 0) return total;
+
+  const lines = rows.map((r) => {
+    const share =
+      totalCostMicrocents > 0 ? Math.round((r.costMicrocents / totalCostMicrocents) * 100) : 0;
+    const money = `  ${formatCostUsd(r.costMicrocents)}  ${String(share).padStart(3)}%`;
+
+    // The legacy row is handled PER ROW, not per panel. A resumed pre-2.6.C session that spends AGAIN carries BOTH the
+    // legacy aggregate and real model rows — the likeliest way a user meets this table — and rendering the aggregate
+    // through the normal path would print `$0.0420  40%  before per-model attribution  (0 calls, 0 tok)`: real money,
+    // zero calls, zero tokens, with the "unavailable" disclosure gone from the panel entirely. Its counts are
+    // structurally 0 (the per-attempt increments it would have needed were never kept), so it must never claim them.
+    //
+    // The branch is on the row's `isLegacy` FLAG, never on its model string. A string compare would misrender a user's
+    // custom model that happens to be named LEGACY_COST_SENTINEL as "breakdown unavailable" and hide its real spend.
+    if (r.isLegacy) {
+      return `${money}  before per-model attribution — breakdown unavailable (this spend predates it)`;
+    }
+
+    const calls = `${r.callCount} ${r.callCount === 1 ? 'call' : 'calls'}`;
+    const tokens = `${r.inputTokens + r.outputTokens} tok`;
+    const unpriced =
+      r.unpricedCalls > 0 ? `  — price unknown for ${r.unpricedCalls} of ${calls}` : '';
+    return `${money}  ${sanitizeInline(r.model)}  (${calls}, ${tokens})${unpriced}`;
+  });
+  return [total, ...lines].join('\n');
 }
 
 /** The `/workflows` notice — the discovered workflow + agent catalogs (each slug sanitized), grouped by kind. A
@@ -97,17 +144,34 @@ export function clearedNotice(oldSessionId: string): string {
 }
 
 /**
- * The mid-session `/models` model-SWITCH notice ([ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md))
- * — the intro line of the reseated session. It confirms the NEW model, states how many turns carried, and
- * DISCLOSES what a host-side reseat does not carry: the transcript continues **text-only**, so the new model does
- * not see prior tool calls or file contents (the same honesty the `chat-resume` family surfaces). The model id is
- * a `model_catalog` id (curated), but `sanitizeInline`-guarded defensively — a live-catalog id is provider-sourced
- * and `history.db` is shared across surfaces, so a crafted value must not smuggle a terminal escape into the notice.
+ * The mid-session `/models` model-SWITCH marker ([ADR-0059](../../../../docs/decisions/0059-cli-mid-session-model-reseat.md)).
+ *
+ * It was the INTRO LINE of the reseated session, because until 2.6.C the reseated view opened EMPTY — it announced
+ * the new model to a blank screen and told the user what to do next. Now that the conversation carries across the
+ * swap (2.6.C / F1), this lands as an **inline marker BENEATH the conversation it interrupts**, so it says what
+ * actually changed: `old → new`. The turn count is gone — the turns are visibly there — and so is the "type a
+ * message" tail, which was an intro's job on an empty screen.
+ *
+ * What it must NOT lose: the DISCLOSURE that a host-side reseat carries the transcript **text-only**. ADR-0059 binds
+ * that clause (its Decision and Consequences both rest on it); dropping it would need a superseding ADR, not a
+ * wording change. Position and phrasing were never bound — only the disclosure.
+ *
+ * The phrasing IS load-bearing in one direction, though, and the original got it wrong (2026-07-12 amendment to
+ * ADR-0059). "…not prior tool calls **or file contents**" understated what the new model can see: a file attached
+ * with `@` is framed into the USER MESSAGE TEXT (chat.ts — `persister.beginUserTurn(line)` gets the full framed line,
+ * not the compact display form), so it is part of the durable transcript and DOES cross the reseat. Only a file a
+ * TOOL read is lost, because that arrives as a `tool_result` and the engine never carries tool pairs across a turn
+ * boundary at all. A user reading the old wording would have believed an `@`-attached secret was invisible to the new
+ * model when it is not — an understatement about data exposure, which is the dangerous direction to be wrong in.
+ *
+ * Both ids are `model_catalog` ids (curated), but `sanitizeInline`-guarded defensively: a live-catalog id is
+ * provider-sourced and `history.db` is shared across surfaces, so a crafted value must not smuggle a terminal escape
+ * into the transcript.
  */
-export function modelSwitchNotice(newModel: string, carriedTurns: number): string {
-  const turns = `${carriedTurns} prior ${carriedTurns === 1 ? 'turn' : 'turns'}`;
+export function modelSwitchNotice(oldModel: string, newModel: string): string {
   return (
-    `⇄ Switched to ${sanitizeInline(newModel)} — ${turns} carried. The new model sees the text transcript only ` +
-    `(not prior tool calls or file contents). Type a message, or /exit to quit.`
+    `⇄ model changed ${sanitizeInline(oldModel)} → ${sanitizeInline(newModel)} — the new model sees the text ` +
+    `transcript only. Prior tool calls and their results (including files a tool read) are not carried; text you ` +
+    `sent — @-attached file contents included — is.`
   );
 }

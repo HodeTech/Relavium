@@ -1,12 +1,13 @@
 # ADR-0069: `string-width` for the CLI renderer's display-width measurement
 
-- **Status**: Proposed
-- **Date**: 2026-07-10
+- **Status**: Accepted
+- **Date**: 2026-07-10 (accepted 2026-07-11)
 - **Related**: [ADR-0068](0068-full-screen-tui-renderer-ink7-harness.md) · [ADR-0047](0047-cli-render-seam-and-framework-free-cores.md) · [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md)
 
-> **Awaiting maintainer approval.** [CLAUDE.md](../../CLAUDE.md) rule 2 gates every new runtime dependency behind an
-> ADR. The code in 2.6.F Step 6g already depends on this decision; if it is rejected, the revert is `viewport.ts`'s
-> width functions plus the one manifest line.
+> **Accepted on 2026-07-11** when the maintainer merged PR #74 (2.6.F) into `main` — the merge carries the
+> `string-width` dependency, which is the [CLAUDE.md](../../CLAUDE.md) rule 2 approval this ADR gated. The code in
+> 2.6.F Step 6g depends on this decision; had it been rejected, the revert would have been `viewport.ts`'s width
+> functions plus the one manifest line.
 
 ## Context
 

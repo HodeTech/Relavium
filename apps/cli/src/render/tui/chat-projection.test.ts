@@ -26,7 +26,11 @@ import {
   liveAnswerRowBudget,
 } from './chat-projection.js';
 import { formatDuration, formatTokens } from './format.js';
-import { initialSessionViewState, type TranscriptEntry } from './session-view-model.js';
+import {
+  initialSessionViewState,
+  type TranscriptEntry,
+  INLINE_TRANSCRIPT_BOUND,
+} from './session-view-model.js';
 
 describe('chat-projection', () => {
   describe('formatTurnSummary', () => {
@@ -547,7 +551,7 @@ describe('chat-projection', () => {
 
   describe('formatSessionFooter', () => {
     it('shows the model, running cost, and pluralized turn count', () => {
-      const base = initialSessionViewState();
+      const base = initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND);
       const one = formatSessionFooter({
         ...base,
         model: 'claude-sonnet-4-6',
@@ -564,14 +568,16 @@ describe('chat-projection', () => {
     });
 
     it('omits the model segment before session:started resolves it (cost + turns only)', () => {
-      const footer = formatSessionFooter(initialSessionViewState());
+      const footer = formatSessionFooter(
+        initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+      );
       expect(footer).toContain('0 turns');
       expect(footer).toMatch(/^\$/); // starts with the cost (no leading model segment / separator)
     });
 
     it('sanitizes the model name so it cannot inject control sequences into the footer', () => {
       const footer = formatSessionFooter({
-        ...initialSessionViewState(),
+        ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
         model: '\x1b[31mevil\x07\nmodel',
       });
       // eslint-disable-next-line no-control-regex -- asserting the ABSENCE of control bytes
@@ -581,7 +587,7 @@ describe('chat-projection', () => {
 
     it('appends the context-fullness segment (last input ÷ window) after a turn completes (ADR-0062 §7)', () => {
       const footer = formatSessionFooter({
-        ...initialSessionViewState(),
+        ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
         model: 'claude-sonnet-4-6',
         lastInputTokens: 500_000,
         contextWindowTokens: 1_000_000,
@@ -593,17 +599,23 @@ describe('chat-projection', () => {
     it('omits the fullness segment with no completed turn OR an unknown (custom-model) window', () => {
       // A known window but no lastInputTokens (no turn yet) ⇒ no segment.
       expect(
-        formatSessionFooter({ ...initialSessionViewState(), contextWindowTokens: 1_000_000 }),
+        formatSessionFooter({
+          ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+          contextWindowTokens: 1_000_000,
+        }),
       ).not.toContain('% ctx');
       // A last-turn count but an unknown window (a custom base-URL model) ⇒ no segment.
       expect(
-        formatSessionFooter({ ...initialSessionViewState(), lastInputTokens: 100 }),
+        formatSessionFooter({
+          ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+          lastInputTokens: 100,
+        }),
       ).not.toContain('% ctx');
     });
 
     it('clamps the fullness to 100% for a preamble-heavy over-window turn', () => {
       const footer = formatSessionFooter({
-        ...initialSessionViewState(),
+        ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
         lastInputTokens: 1_500_000,
         contextWindowTokens: 1_000_000,
       });
@@ -613,7 +625,10 @@ describe('chat-projection', () => {
 
   describe('formatSessionFooterWithMode', () => {
     it('appends the active mode label to the footer (always shown — auto is never hidden)', () => {
-      const state = { ...initialSessionViewState(), turnCount: 2 };
+      const state = {
+        ...initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+        turnCount: 2,
+      };
       expect(formatSessionFooterWithMode(state, 'ask')).toMatch(/· ask mode$/);
       expect(formatSessionFooterWithMode(state, 'accept-edits')).toMatch(/· accept-edits mode$/);
       expect(formatSessionFooterWithMode(state, 'auto')).toMatch(/· auto mode$/);
@@ -1051,5 +1066,107 @@ describe('formatBusyLine — the streaming content is bounded on the alt screen 
   it('a STATUS line (pre-token, compacting, shell) is never tailed — it has no content', () => {
     expect(busy('', { columns: 80, maxRows: 8 }).dim).toBe(true);
     expect(busy('x', { compacting: true, columns: 80, maxRows: 1 }).dim).toBe(true);
+  });
+});
+
+/**
+ * THE RESEAT PERF HARNESS ADR-0059 ALREADY CLAIMED EXISTED (2.6.C Step 6).
+ *
+ * ADR-0059's Consequences say the reseat's `O(n)` cost is *"verified by the 2.6.C harness (a 200-message session
+ * reseats in well under the interactive budget)"*. No such harness was ever written.
+ *
+ * It lives HERE, not beside the store, because the store is the WRONG place to measure: seeding a reseated store is a
+ * single reference assignment (`initialSessionViewState` aliases the carried array; it never copies or iterates it),
+ * so timing `createChatStore` would be O(1) at any conversation length — a tautology dressed as a budget. A first
+ * draft of this harness did exactly that, and would have "verified" the ADR by measuring a pointer.
+ *
+ * The real O(n) cost the carry adds is HERE: `driveInk` unmounts and re-mounts ink around a standalone reseat, and
+ * the fresh mount re-wraps the whole carried transcript from scratch (the wrap memo is keyed on the transcript
+ * reference, which a brand-new store always busts). That is the work a 200-message reseat actually pays.
+ *
+ * If it ever gets slow the answer is a WRAP CACHE, not a trim: ADR-0068 Decision (c) makes the full-screen bound
+ * effectively unbounded on purpose, and trimming the carry would re-introduce the clipping that ADR exists to fix.
+ */
+describe('the reseat carry is O(n) — the perf claim ADR-0059 makes', () => {
+  const conversation = (turns: number): TranscriptEntry[] =>
+    Array.from({ length: turns }, (_, i) => [
+      { role: 'user' as const, text: `question ${i}: ${'x'.repeat(200)}` },
+      { role: 'notice' as const, text: `answer ${i}: ${'y'.repeat(400)}` },
+    ]).flat();
+
+  /**
+   * Median of a few samples — a single wall-clock reading is GC noise, not a measurement.
+   *
+   * Each sample wraps **fresh entry objects**, built outside the timed region. `wrapTranscript` memoizes per entry in
+   * a `WeakMap` keyed by the entry itself, so re-timing the SAME array would measure one cache lookup per entry from
+   * the second sample on — the median would report steady-state cache-hit latency, and a regression *inside* the
+   * per-entry wrap would be invisible to it. A reseat always wraps entries the new viewport has never seen, so COLD
+   * is the case that has to hold the budget, and COLD is what this times.
+   */
+  const sampleWrapMs = (make: () => TranscriptEntry[], samples: number): number[] => {
+    const runs: number[] = [];
+    for (let i = 0; i < samples; i += 1) {
+      const fresh = make(); // fresh objects ⇒ a cold entry cache, every sample
+      const started = performance.now();
+      wrapTranscript(fresh, 80);
+      runs.push(performance.now() - started);
+    }
+    return runs;
+  };
+
+  /** The p50 — the honest statistic for a LATENCY claim ("a switch feels instant"), which is about the typical run. */
+  const medianWrapMs = (make: () => TranscriptEntry[], samples = 5): number => {
+    const runs = sampleWrapMs(make, samples).sort((a, b) => a - b);
+    return runs[Math.floor(samples / 2)] ?? 0;
+  };
+
+  /**
+   * The MINIMUM — the honest statistic for a SHAPE claim, which is about the cost of the work itself.
+   *
+   * GC pauses and scheduler preemption only ever ADD time, so the fastest sample is the least-contaminated estimate of
+   * what the wrap actually costs; a median carries whatever GC landed in most samples. That is not hypothetical: the
+   * median form of the ratio below passed locally and then reported **23.9x** on CI for a wrap that is provably linear
+   * — the larger workload allocates 4x as much and so eats the GC the smaller one dodges. A ratio of medians measures
+   * the runner's memory pressure. A ratio of minimums measures the algorithm.
+   */
+  const minWrapMs = (make: () => TranscriptEntry[], samples = 7): number =>
+    Math.min(...sampleWrapMs(make, samples));
+
+  it('re-wraps a 200-message carried conversation well under the interactive budget', () => {
+    const carried = conversation(100); // 100 turns => 200 messages: ADR-0059's stated case
+    expect(carried).toHaveLength(200);
+    wrapTranscript(carried, 80); // warm the JIT — NOT the entry cache; the samples each get their own entries
+
+    const elapsed = medianWrapMs(() => conversation(100));
+    const lines = wrapTranscript(carried, 80);
+    expect(lines.length).toBeGreaterThan(200); // it really did wrap every entry — not a no-op being timed
+    expect(elapsed).toBeLessThan(100); // a user-initiated switch must feel instant
+  });
+
+  it('scales LINEARLY, not quadratically — 8x the conversation is not 64x the wrap', () => {
+    // The guard is the SHAPE. An accidental O(n^2) — a per-entry re-scan of everything before it — is the regression
+    // that makes a long chat unusable, and the budget above cannot catch it: quadratic at the budget's 200-message
+    // case is still only a few ms. This ratio is the only thing standing between that bug and a release.
+    //
+    // BOTH the scale factor and the threshold are MEASURED, not reasoned about. The realistic form of this bug does
+    // something CHEAP per pair (reads a length, compares an id), so the test's whole job is separating a cheap
+    // quadratic from linear — and at a 4x scale factor it cannot: injecting a real O(n^2) re-scan moved the ratio
+    // from 4.0 to only ~5, which any threshold loose enough to be stable waves straight through. At 8x they separate:
+    //
+    //     real code ...... 4.60  4.60  4.68  4.76  4.80  4.81      (six runs — sub-8x, since the per-entry cost
+    //     injected O(n^2) ................................ 16.62     amortizes as n grows; the SHAPE is what matters)
+    //
+    // 11 sits between them with 2.3x headroom over the worst clean reading and a decisive margin below the quadratic.
+    // A ratio of MINIMUMS (see `minWrapMs`) is also largely independent of how fast the runner is — numerator and
+    // denominator scale together — so this asserts something about the algorithm, not about the machine.
+    //
+    // NOTE for anyone re-verifying this by breaking it: an injected re-scan with NO side effect gets eliminated by V8
+    // and the test will pass, proving nothing. Make the loop observable (accumulate into a value the function reads).
+    wrapTranscript(conversation(200), 80); // warm the JIT, not the entry cache
+
+    const small = minWrapMs(() => conversation(200), 9); //     400 entries
+    const large = minWrapMs(() => conversation(1600), 9); // 8x: 3200 entries
+
+    expect(large / small).toBeLessThan(11);
   });
 });

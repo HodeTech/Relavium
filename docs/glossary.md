@@ -113,6 +113,12 @@ How a workflow run is initiated. Full spec in
 - **Engine** — `@relavium/core`, the pure-TypeScript workflow engine shared by
   every surface. Parses YAML, builds the DAG run plan, executes nodes, and emits
   events. See [architecture/shared-core-engine.md](architecture/shared-core-engine.md).
+- **Reseat** — a host-side **model switch inside a live agent session** (`/models` in a chat):
+  the conversation is reconstructed and a *new* `AgentSession` instance is resumed on the chosen
+  model, so the **session id is unchanged but the instance is not**. It rebuilds the fallback chain
+  for the new model and carries the text-only transcript — not prior tool calls or file contents.
+  Behaviour: [reference/cli/chat-session.md](reference/cli/chat-session.md#model-reseat-models);
+  decision: [ADR-0059](decisions/0059-cli-mid-session-model-reseat.md).
 - **Human gate** — a node that pauses a run and requires a real human decision
   (approve / reject / provide input) before continuing. Supports a timeout with
   an auto-approve or auto-reject fallback (an `escalate` action is **reserved** for a

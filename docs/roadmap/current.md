@@ -2,7 +2,7 @@
 
 > Status: Living
 >
-> Last updated: 2026-07-08
+> Last updated: 2026-07-11
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -14,8 +14,9 @@ breakdown, now historical, is in
 **Phase 2.6 — Conversational Authoring and the First-Class CLI** is **in progress** (re-scoped
 2026-07-08); its plan is in
 [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md).
-Workstream **2.6.F (platform floor + the full-screen TUI renderer)** is **complete on `development`**
-(2026-07-10, pending PR to `main`) — see [Active now](#what-is-active-now).
+Workstream **2.6.F (platform floor + the full-screen TUI renderer)** is **merged to `main`**
+(PR #74, 2026-07-11). **2.6.C** (the reseat transcript-carry + the `/cost` per-model breakdown) is **complete on
+`development`** (2026-07-12, PR pending) — see [Active now](#what-is-active-now).
 
 ## Where we are
 
@@ -42,20 +43,21 @@ and the [reference specs](../reference/).
 
 ## What is active now
 
-### Phase 2.6.F — platform floor + the full-screen TUI renderer (complete on `development`, 2026-07-10)
+### Phase 2.6.F — platform floor + the full-screen TUI renderer (merged to `main`, PR #74, 2026-07-11)
 
 The first 2.6 workstream. Behind [ADR-0067](../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md)
 (Node `>=22` published floor, `>=22.13.0` dev-install floor; `better-sqlite3` re-affirmed),
 [ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md) (`ink` 7 + a hand-built alternate-screen
-renderer + the `ink-testing-library` harness), and the **Proposed**
-[ADR-0069](../decisions/0069-string-width-for-the-cli-renderer.md) (`string-width` for display width —
-**awaiting maintainer approval**, since CLAUDE.md gates a new runtime dependency behind one).
+renderer + the `ink-testing-library` harness), and
+[ADR-0069](../decisions/0069-string-width-for-the-cli-renderer.md) (`string-width` for display width — **Accepted**
+on the PR #74 merge, the CLAUDE.md rule-2 approval it gated).
 
 Shipped: `ink` 6→7 and the component-render harness; the alt-screen lifecycle with restore nets on every
 termination path; a hand-built transcript **viewport** (grapheme-aware wrapping, windowing, scroll + auto-follow, a
 per-entry wrap cache) and the inter-session alt-buffer **hoist**; the **`/scrollback`**, **`/edit`** and **`/copy`**
 copy-and-search hatches over a `suspendFullScreen` primitive; **in-app mouse text selection with copy-on-select over
-OSC 52** on both surfaces, with edge auto-scroll and a frozen auto-follow; `--no-mouse` /
+OSC 52** on both surfaces, with edge auto-scroll, a frozen auto-follow and a transient **`✓ Copied` toast** so the
+otherwise-silent copy is confirmed; `--no-mouse` /
 `[preferences].{alt_screen,mouse,copy_on_select,show_banner}`; a branded Home banner; and DEC-2026 synchronized
 output — which `ink` 7 turned out to already emit, so the step **pins** it rather than building the planned
 `stdout` Proxy.
@@ -70,10 +72,41 @@ it; that `displayWidth` under-counted 8 539 code points against `ink`'s own widt
 Ctrl-C during a Home hatch stranded mouse reporting on the user's shell. All folded, each with a break-verified
 regression test.
 
+### Phase 2.6.C — reseat transcript-carry + the `/cost` per-model breakdown (complete on `development`, 2026-07-12)
+
+Driven by two maintainer manual-test findings. **F1:** a mid-session `/models` reseat **blanked the alt-screen
+viewport** — the reseat builds a fresh view store, and on the full-screen renderer (the TTY default since 2.6.F, with
+no native scrollback behind it) that store *is* the scrollback, so the whole conversation vanished the moment a user
+switched models. The durable transcript and the new model's context were never at risk; the loss was the view. The
+reseat now carries the rendered conversation, gated to full-screen (a seeded **inline** store would re-print the
+conversation over the copy ink's `<Static>` already put in the terminal's scrollback), and the switch notice lands
+**beneath** it as an inline `⇄ model changed <old> → <new>` marker, keeping ADR-0059's bound disclosure clause.
+
+**`/cost`** now shows where the money went, behind a new
+[ADR-0070](../decisions/0070-durable-per-model-session-cost-attribution.md): a durable `session_costs` table with the
+invariant **`SUM(rows) == agent_sessions.total_cost_microcents`**, true by construction. ADR-0059 had planned to
+derive the breakdown from the per-message `model_id`, which **cannot work** — one row holds one model, but a turn
+whose tool loop fails over bills two. Along the way it closed a **live bug**: `total_cost_microcents` was being SET
+blindly by five writers, so two `chat-resume` processes could permanently corrupt a session's total. It now has a
+single owner. `session_messages`' never-written token/cost columns were dropped rather than left as a second, wrong,
+zero-valued source.
+
+Four adversarial review rounds ran over the work and each found something real — including that a tripwire I shipped
+was **armed in production** and **swallowed by ink** (so it could never fail), that a perf harness measured a
+**pointer assignment** while its ADR note claimed it verified an O(n) bound, and that the `/cost` DB read — the
+step's central change — had **zero test coverage** at any layer. All folded, each with a break-verified regression.
+
+**Open obligations carried out of 2.6.C:**
+
+- **`chat-resume` opens on an empty viewport** — it has never repainted prior turns, in any mode or version (nothing
+  projects `session_messages` into rendered entries). Not a 2.6.F regression; tracked in
+  [deferred-tasks.md](deferred-tasks.md).
+- **Reported spend is a systematic under-estimate of the provider's invoice** — an egress that streamed content but
+  ended without a usage chunk, and a mid-stream failure, are recorded as 0 on *both* sides of the invariant. That is
+  a usage-capture gap in the seam, filed against **2.6.Q** (ADR-0070 §3).
+
 **Open obligations carried out of 2.6.F:**
 
-- **ADR-0069 is Proposed.** The `string-width` runtime dependency needs the maintainer's accept (or a revert of two
-  functions and one manifest line).
 - **The Home landing can overflow a short terminal** — a populated "Attention required" section pushes the top off,
   and the alt buffer has no scrollback to recover it. Predates 2.6.F (the strip is 2.5.B); **2.6.G**'s management
   browsers replace the strip wholesale, which is the right place to fix it.

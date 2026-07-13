@@ -84,6 +84,8 @@ import { resolveCopyOnSelect, resolveMouseMode, resolveRenderMode } from '../ren
 import {
   FULLSCREEN_TRANSCRIPT_BOUND,
   INLINE_TRANSCRIPT_BOUND,
+  type TranscriptEntry,
+  type TranscriptBound,
 } from '../render/tui/session-view-model.js';
 import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
 import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
@@ -694,6 +696,10 @@ export async function chatResumeCommand(
       now,
       uuid,
       transcriptBoundFor(chatAltActive(deps, config.altScreen)),
+      // `chat-resume` carries NOTHING: it has never repainted prior turns, in any mode or version — there is no
+      // session_messages -> TranscriptEntry projection anywhere. That is a separate, tracked gap (deferred-tasks.md),
+      // NOT this reseat's business, and projecting it here would silently change resume's behaviour.
+      [],
     ));
     const turns = resumed.resumeState.turnCount;
     // `sessionId` is only schema-constrained to a non-empty string (the CLI mints a UUID, but `history.db` is
@@ -1094,9 +1100,28 @@ export function createChatLineHandler(
         emitOutput(`could not list workflows: ${reason}`);
       }
     },
-    // `/cost` (2.5.C S4): the session's cumulative spend (the per-model breakdown is 2.6.C).
+    // `/cost` (2.5.C S4 + the 2.6.C per-model breakdown, ADR-0070): the session's spend, per model.
+    //
+    // Read from the DB, never from the in-memory store. A RESUMED session's total is seeded from the durable row and
+    // covers the whole session, while memory knows only the models used in THIS process — so an in-memory breakdown
+    // would visibly fail to sum to the total on the first `/cost` after a resume, breaking the one guarantee the
+    // panel makes. The total comes from the same row the rows reconcile against.
     showCost: () => {
-      emitOutput(costNotice(store.getSnapshot().state.cumulativeCostMicrocents));
+      try {
+        // ONE snapshot: the rows and the total they are printed under must come from the same read, or a concurrent
+        // process's cost write can land between them and the panel prints rows summing to MORE than its own total.
+        const { totalCostMicrocents, rows } = opened.store.loadSessionCostBreakdown(
+          built.sessionId,
+        );
+        emitOutput(costNotice(totalCostMicrocents, rows));
+      } catch (err) {
+        // A read-only info command must never end the conversation. `handleSlashCommand` awaits `run` unguarded, and
+        // on the ink driver a rejection routes to `onError` → teardown; every sibling info handler is guarded for
+        // exactly this reason. Report by CODE, never a raw message (a DB error can carry a path).
+        emitOutput(
+          `could not read the session cost: ${err instanceof CliError ? err.code : 'unexpected error'}`,
+        );
+      }
     },
     // `/doctor` (2.5.C S5): a staged setup health check; `--deep` adds the network/process tier (key + MCP
     // validation). Each probe is secret-free + bounded; a thrown probe never crashes the REPL (reported as output).
@@ -1369,6 +1394,12 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
   // The SAME signals `runReplLoop` used for the hoist (`deps.altScreen` is `[preferences].alt_screen`, carried here
   // precisely so a `/clear` re-drive keeps the mode) — so a rebuilt session cannot silently re-acquire the 4000-char
   // transcript bound mid-conversation.
+  //
+  // The `undefined` seed is what keeps `/clear` FRESH (2.6.C). `/clear`'s entire purpose is to start a new
+  // conversation, so it must never carry the outgoing transcript the way a `/models` reseat does — and it does not
+  // pass through `seedResumedWiring`, so its protection lives right here, on this argument. A future edit that
+  // "helpfully" seeds a transcript on this line defeats the one command whose contract is a clean slate. A
+  // regression test pins it.
   const store = createChatStore(
     deps.global.color,
     undefined,
@@ -1483,9 +1514,11 @@ function seedResumedWiring(
   color: boolean,
   now: () => number,
   uuid: () => string,
-  /** The renderer's transcript bake bound (ADR-0068 Decision (c)). Defaults to the inline tail so a caller that
-   *  forgets keeps today's behaviour; both real callers pass the resolved one. */
-  transcriptBound: number = INLINE_TRANSCRIPT_BOUND,
+  /** The renderer's transcript bake bound (ADR-0068 Decision (c)). REQUIRED and CLOSED-typed since 2.6.C — a
+   *  forgotten bound used to degrade silently to inline, dropping the carried transcript and blanking the
+   *  full-screen viewport (F1). Both callers pass the resolved one. */
+  transcriptBound: TranscriptBound,
+  carriedTranscript: readonly TranscriptEntry[],
 ): { store: ChatStoreController; persister: SessionPersister } {
   const store = createChatStore(
     color,
@@ -1494,6 +1527,13 @@ function seedResumedWiring(
       model: resumed.agent.model,
       cumulativeCostMicrocents: resumed.resumeState.cumulativeCostMicrocents,
       turnCount: resumed.resumeState.turnCount,
+      // The RENDERED transcript to carry into the new store (2.6.C). TWO callers reach this helper and they want
+      // different things: `chat-resume` carries NOTHING (it has never repainted prior turns — a separate, tracked
+      // gap), while a `/models` RESEAT carries the live conversation so the alt screen does not go blank. Whoever
+      // generalizes this later: do not "helpfully" project `session_messages` here — that would silently change
+      // resume's behaviour. (`/clear` never reaches this helper at all; it is assembled by `buildFreshChatWiring`,
+      // and its freshness is protected there.)
+      transcript: carriedTranscript,
     },
     transcriptBound,
   );
@@ -1548,6 +1588,9 @@ async function buildReseatWiring(
   deps: ReseatWiringDeps,
   oldSessionId: string,
   target: ReseatTarget,
+  /** The OUTGOING store's rendered transcript (2.6.C / F1) — what the reseated store opens with, so the full-screen
+   *  viewport does not go blank. The gate drops it on the inline renderer (its lines are already printed). */
+  carriedTranscript: readonly TranscriptEntry[],
 ): Promise<ReplWiring> {
   const loaded = deps.opened.store.loadFull(oldSessionId);
   if (loaded === undefined || loaded.session.agentSnapshot === undefined) {
@@ -1593,6 +1636,7 @@ async function buildReseatWiring(
       deps.now,
       deps.uuid,
       transcriptBoundFor(chatAltActive(deps, deps.altScreen)),
+      carriedTranscript,
     );
   } catch (err) {
     // Acquire-then-guard: the resumed session's MCP children are already spawned — reclaim them before the failure
@@ -1619,7 +1663,7 @@ async function buildReseatWiring(
     // A resumed session already landed at idle inside AgentSession.resume; start() would throw + re-emitting
     // session:started would double a terminal-less lifecycle event — so startSession is a no-op (like chat-resume).
     startSession: () => {},
-    intro: modelSwitchNotice(target.modelId, resumed.resumeState.turnCount),
+    intro: modelSwitchNotice(loaded.session.agentSnapshot.model, target.modelId),
     // The picker's `boundModel` is now the SWITCHED model — a further reseat marks it as the ✓ "you are here".
     modelPicker: buildChatModelsPort(
       deps.opened,
@@ -1652,7 +1696,11 @@ function createReseatRebuild(params: {
   readonly global: GlobalOptions;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — forwarded so a `/models` reseat keeps the render mode. */
   readonly altScreen?: boolean | undefined;
-}): (oldSessionId: string, target: ReseatTarget) => Promise<ReplWiring> {
+}): (
+  oldSessionId: string,
+  target: ReseatTarget,
+  carriedTranscript: readonly TranscriptEntry[],
+) => Promise<ReplWiring> {
   const wiringDeps: ReseatWiringDeps = {
     chat: params.chat,
     now: params.now,
@@ -1668,7 +1716,8 @@ function createReseatRebuild(params: {
     altScreen: params.altScreen,
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
   };
-  return (oldSessionId, target) => buildReseatWiring(wiringDeps, oldSessionId, target);
+  return (oldSessionId, target, carriedTranscript) =>
+    buildReseatWiring(wiringDeps, oldSessionId, target, carriedTranscript);
 }
 
 /** The `!`-shell runner (2.5.D step 5, ADR-0061) — a thin wrapper over the session's `runUserCommand`, wired ONLY on
@@ -1839,12 +1888,22 @@ function resolveSwapRebuild(
   outcome: ChatDriveOutcome,
   oldSessionId: string,
   rebuild: ((oldSessionId: string) => Promise<ReplWiring>) | undefined,
-  reseatRebuild: ((oldSessionId: string, target: ReseatTarget) => Promise<ReplWiring>) | undefined,
+  reseatRebuild:
+    | ((
+        oldSessionId: string,
+        target: ReseatTarget,
+        carriedTranscript: readonly TranscriptEntry[],
+      ) => Promise<ReplWiring>)
+    | undefined,
+  /** The OUTGOING store's rendered transcript (2.6.C / F1). Only a RESEAT carries it: it continues the same
+   *  conversation under a new model, so the alt-screen viewport must not go blank. `/clear` deliberately does NOT —
+   *  its entire contract is a fresh start, and its `rebuild` path never sees this argument. */
+  carriedTranscript: readonly TranscriptEntry[],
 ): (() => Promise<ReplWiring>) | undefined {
   if (outcome.kind === 'clear' && rebuild !== undefined) return () => rebuild(oldSessionId);
   if (outcome.kind === 'reseat' && reseatRebuild !== undefined && outcome.target !== undefined) {
     const target = outcome.target;
-    return () => reseatRebuild(oldSessionId, target);
+    return () => reseatRebuild(oldSessionId, target, carriedTranscript);
   }
   return undefined;
 }
@@ -1978,7 +2037,7 @@ export function chatAltActive(
 
 /** The transcript bake bound the renderer can afford (ADR-0068 Decision (c)): none in the full-screen viewport, the
  *  historical trailing tail inline. */
-export function transcriptBoundFor(altActive: boolean): number {
+export function transcriptBoundFor(altActive: boolean): TranscriptBound {
   return altActive ? FULLSCREEN_TRANSCRIPT_BOUND : INLINE_TRANSCRIPT_BOUND;
 }
 
@@ -1986,7 +2045,11 @@ export async function runReplLoop(
   wiring: ReplWiring,
   deps: ChatReplDeps,
   rebuild?: (oldSessionId: string) => Promise<ReplWiring>,
-  reseatRebuild?: (oldSessionId: string, target: ReseatTarget) => Promise<ReplWiring>,
+  reseatRebuild?: (
+    oldSessionId: string,
+    target: ReseatTarget,
+    carriedTranscript: readonly TranscriptEntry[],
+  ) => Promise<ReplWiring>,
 ): Promise<ExitCode> {
   // The SHARED db handle — the same across every swap (a fresh / reseated session reuses it), closed ONCE below.
   const opened = wiring.opened;
@@ -2074,7 +2137,15 @@ export async function runReplLoop(
           // The old session is ALREADY torn down (driveOneSession's finally fired its terminal → the row is 'ended' +
           // resumable). Resolve the rebuild for this swap kind, or `undefined` to END the REPL (see resolveSwapRebuild).
           const oldSessionId = current.built.sessionId;
-          const next = resolveSwapRebuild(outcome, oldSessionId, rebuild, reseatRebuild);
+          // The old session is torn down but its view STORE is still live (teardown closes the persister + MCP, never
+          // the store), so this is the rendered conversation the reseated session must open with (2.6.C / F1).
+          const next = resolveSwapRebuild(
+            outcome,
+            oldSessionId,
+            rebuild,
+            reseatRebuild,
+            current.store.getSnapshot().state.transcript,
+          );
           if (next === undefined) return { summaryText };
           // Clear the persistent alt buffer between the just-unmounted session and the next mount, so a `/clear` swap
           // never briefly shows two stacked transcripts (ink's non-fullscreen unmount does not erase). No-op inactive.

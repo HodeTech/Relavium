@@ -761,6 +761,10 @@ async function driveAgentTurn(
       // Placeholder — the engine owns the run-wide running total and overwrites this authoritatively.
       cumulativeCostMicrocents: 0,
       attemptNumber: nonSkippedAttempts,
+      // ADR-0070 §6: `record.cost` is absent EXACTLY when the model could not be priced (the chain swallows the
+      // CostTracker's UnknownModelError). Without this flag, `costMicrocents: 0` with real tokens is ambiguous
+      // between "unpriced" and "genuinely free" — and a free-LOOKING row in the /cost breakdown would be a lie.
+      priced: record.cost !== undefined,
     });
   };
 

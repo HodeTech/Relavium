@@ -183,14 +183,36 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // stores as result.text), so a pre-tool preamble is discarded on each tool call.
         assistantText = '';
         return;
-      case 'cost:updated':
+      case 'cost:updated': {
         // The sink stamps the session-wide running total here; the latest value is the session's cost.
         totalCostMicrocents = event.cumulativeCostMicrocents;
         // ADR-0059: the invoking model of this billed egress — attributable across a failover. Resolve it to its
         // catalog id NOW (the FK target); the LAST such event of the turn is the model that produced the committed
         // text, so it becomes the assistant row's `modelId` in `session:turn_completed`. Undefined ⇒ NULL (uncataloged).
-        turnModelCatalogId = deps.resolveModelCatalogId?.(event.model);
+        const catalogId = deps.resolveModelCatalogId?.(event.model);
+        turnModelCatalogId = catalogId;
+        // ADR-0070: fold THIS egress into the durable per-model attribution — the single writer of
+        // `agent_sessions.total_cost_microcents`, additively, in one transaction with the `session_costs` row.
+        //
+        // It runs HERE, on the EVENT — deliberately NOT inside the completed-turn gate below. That gate looks like
+        // the natural home and is the wrong one: it wraps the MESSAGE and TOKEN writes, while the session COST is
+        // real even for a failed or aborted turn (the engine never decrements it). A cost write behind that gate
+        // would silently break the invariant on every errored turn. Writing per event also closes a live hole: a
+        // manual `/compact` whose summariser BILLED and then FAILED emits no compaction/turn terminal at all, so its
+        // real spend would otherwise sit unflushed forever.
+        deps.store.recordSessionCost({
+          id: deps.uuid(),
+          sessionId: deps.sessionId,
+          model: event.model, // the RAW provider string — the attribution key (never the catalog UUID)
+          ...(catalogId === undefined ? {} : { modelCatalogId: catalogId }),
+          inputTokens: event.inputTokens,
+          outputTokens: event.outputTokens,
+          costMicrocents: event.costMicrocents, // the PER-ATTEMPT increment, never the cumulative
+          priced: event.priced ?? true, // absent on an older event ⇒ assume priced (the pre-ADR-0070 behaviour)
+          ts: deps.now(),
+        });
         return;
+      }
       case 'session:turn_completed':
         // Only a COMPLETED exchange writes MESSAGES — both an ERROR turn AND an ABORTED turn (EA7,
         // `stopReason:'aborted'`, ADR-0057) are rolled back by the engine (`#messages.pop()`), so persisting

@@ -44,6 +44,7 @@ import {
   type ReverseSearchState,
 } from './input-history.js';
 import type { ChatStoreController } from './chat-store.js';
+import type { TranscriptEntry } from './session-view-model.js';
 import { sanitizeApprovalReason } from './chat-projection.js';
 import {
   foldMentionKey,
@@ -108,9 +109,10 @@ export interface HomeChatSession {
   readonly onSetEffort?: (effort: ReasoningEffort) => void;
   /** WHY `shouldStop()` became true (ADR-0062 §7 · ADR-0059) — `'clear'` (swap in a fresh session, staying in chat)
    *  vs `'exit'` (`/exit`/`/cancel`, return to the bare Home). Shares the widened `ChatLineHandler.stopReason` type,
-   *  so it also carries `'reseat'`; but the in-Home chat does NOT yet wire `onReseat` (its `/models` is the Home's
-   *  next-session-default picker, not a live reseat — ADR-0059's in-Home live reseat is a follow-up), so `'reseat'`
-   *  is currently unreachable here and the consumer's non-`'clear'` branch treats it as an end (a safe default). */
+   *  so it also carries `'reseat'` — but `'reseat'` is unreachable HERE, and not because the in-Home reseat is
+   *  missing: it IS live (ADR-0059), driven by the directly-wired `deps.reseatChat` (see `drive-home.tsx`), never
+   *  by a `stopReason` signal. Only the STANDALONE chat routes a reseat through `stopReason`, so this Home-side
+   *  union member stays unreachable and the consumer's non-`'clear'` branch treats it as an end (a safe default). */
   readonly stopReason: () => 'exit' | 'clear' | 'reseat';
   /** Mid-turn abort (EA7) — abort the in-flight turn, keeping the session alive (Esc). Present once wired. */
   readonly onAbort?: () => void;
@@ -214,8 +216,17 @@ export interface HomeControllerDeps {
   /** Build + wire + START a fresh chat session (no first message — the controller sends it on transition). May reject. */
   readonly startChat: () => Promise<HomeChatSession>;
   /** Reseat the in-Home chat onto a NEW model (ADR-0059) — reload + resume the current session's transcript under the
-   *  switched model. Absent ⇒ the in-Home `/models` picker degrades to the next-session-default write (no live reseat). */
-  readonly reseatChat?: (sessionId: string, target: ReseatTarget) => Promise<HomeChatSession>;
+   *  switched model. Absent ⇒ the in-Home `/models` picker degrades to the next-session-default write (no live reseat).
+   *
+   *  `carriedTranscript` is the OUTGOING store's RENDERED transcript (2.6.C). The reseat builds a brand-new view
+   *  store, and on the full-screen renderer that store IS the scrollback — so without the carry the whole
+   *  conversation vanishes from the screen (the alt buffer has none of its own). It is captured at the CALL, before
+   *  the old session is torn down. View-only: these are the already-sanitized render projections, never persisted. */
+  readonly reseatChat?: (
+    sessionId: string,
+    target: ReseatTarget,
+    carriedTranscript: readonly TranscriptEntry[],
+  ) => Promise<HomeChatSession>;
   readonly homeStore: HomeStore;
   /** The Home exited cleanly (Ctrl-C / EOF in Home mode) → `driveHome` resolves with exit 0. */
   readonly onExit: () => void;
@@ -467,7 +478,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     if (tearingDown === old) return; // already ending this session (mirror clearChat)
     const oldId = old.sessionId;
     set({ modelPicker: undefined, submitBusy: true }); // close the picker + re-gate input for the whole swap
-    const build = reseat(oldId, target);
+    // Captured HERE, before the build resolves and the old session is torn down (the teardown below only closes the
+    // persister/MCP — it never clears the view store — but capturing at the call makes the ordering explicit rather
+    // than incidental). This is the conversation the reseated store will open with (2.6.C / F1).
+    const carriedTranscript = old.store.getSnapshot().state.transcript;
+    const build = reseat(oldId, target, carriedTranscript);
     buildInFlight = build;
     void build.then(
       (next) => {
@@ -495,7 +510,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
           .catch(() => undefined);
         cancelFired = false; // the reseated session starts with a clean cancel latch (parity with clearChat)
         next.store.notice(
-          modelSwitchNotice(target.modelId, next.store.getSnapshot().state.turnCount),
+          modelSwitchNotice(old.store.getSnapshot().state.model ?? '(unknown)', target.modelId),
         );
         set({
           session: next,
@@ -929,6 +944,10 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     exportSession: () => undefined,
     help: () => undefined,
     showWorkflows: () => undefined,
+    // `/cost` is chat-only in the BARE Home: there is no live session to cost. (The in-Home CHAT reaches the real
+    // implementation through `createChatLineHandler`, so it gets the ADR-0070 per-model breakdown like the standalone
+    // chat does.) Now that the breakdown reads the DB rather than an in-memory counter, costing a PAST session needs
+    // only a sessionId — which is what 2.6.G's session browser will supply.
     showCost: () => undefined,
     setMode: () => undefined, // `/mode` is chat-only (not in HOME_PALETTE_COMMANDS); inert in the Home surface
     setReasoningEffort: () => undefined, // `/effort` is chat-only (ADR-0066); inert in the bare-Home surface

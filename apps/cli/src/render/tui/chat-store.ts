@@ -17,7 +17,7 @@ import {
   reduceSessionEvent,
   type SessionViewSeed,
   type SessionViewState,
-  INLINE_TRANSCRIPT_BOUND,
+  type TranscriptBound,
 } from './session-view-model.js';
 
 /**
@@ -129,13 +129,15 @@ const HIGH_FREQUENCY_EVENTS: ReadonlySet<SessionStreamHandleEvent['type']> = new
 /**
  * @param transcriptBound the RENDERER-injected bound on the text a completed turn bakes into the transcript
  *   (ADR-0068 Decision (c)). `FULLSCREEN_TRANSCRIPT_BOUND` in the alt-screen viewport, `INLINE_TRANSCRIPT_BOUND`
- *   otherwise. Defaults to the inline bound so a caller that forgets keeps today's behaviour rather than an
- *   unbounded live buffer.
+ *   otherwise. REQUIRED, and its type is CLOSED ({@link TranscriptBound}) — deliberately, since 2.6.C: it used to
+ *   default to the inline bound, which meant a full-screen caller who forgot the argument silently lost the carried
+ *   transcript and rendered a blank viewport, with no type error (F1, from the caller's side). Forgetting it — or
+ *   inventing a third bound — is now a compile error. Do not restore a default.
  */
 export function createChatStore(
   color: boolean,
-  seed?: SessionViewSeed,
-  transcriptBound: number = INLINE_TRANSCRIPT_BOUND,
+  seed: SessionViewSeed | undefined,
+  transcriptBound: TranscriptBound,
 ): ChatStoreController {
   const listeners = new Set<() => void>();
   let state = initialSessionViewState(seed, transcriptBound);

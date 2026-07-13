@@ -464,6 +464,93 @@ Severity is the review's verified rating. Check an item off in the PR that resol
   gate before either persists — is closed by a store-level uniqueness constraint on `human_gate:resumed` per
   `(runId, gateId)`, a Phase-2 SQLite/cloud-store guarantee, not the in-memory reference. **Scheduled → 2.6.H.** *(low · checkpoint.ts/engine.ts; Phase-2 store)*
 
+## `chat-resume` opens on an empty viewport (2.6.C spin-off, 2026-07-12)
+
+> **Found while fixing 2.6.C's F1** (the `/models` reseat blanking the alt-screen viewport). Deliberately scoped
+> OUT of that fix, and recorded here so it is tracked work rather than a discovery that gets lost.
+
+`relavium chat-resume <sessionId>` restores the model's context from `history.db`, but opens on an **empty
+viewport** — the prior conversation is never repainted. This is **not** the 2.6.F regression F1 is: it has been
+true in *every* mode and *every* version, because **nothing anywhere projects `session_messages` into rendered
+`TranscriptEntry`s** — that projection has simply never been written. Inline and alt-screen behave identically.
+
+It shares F1's *root* (`SessionViewSeed.transcript`, now the seam 2.6.C adds) but not its *cause*, and fixing it
+needs machinery F1 does not:
+
+- a DB → `TranscriptEntry` projection (`session_messages` rows → the `{role, text}` / `{role:'assistant', text,
+  summary}` union), including what to do with rows a `/compact` or `/trim` dropped;
+- a decision on whether the **inline** renderer should repaint history on resume too — which would be a genuine
+  behaviour *change*, not a regression fix (today it prints nothing, and that is consistent).
+
+Why it was not folded into 2.6.C: F1 is a regression on the just-shipped default surface and ships as a hotfix; this
+is a long-standing UX gap that would have added a DB read path and an inline behaviour change to a view-only fix.
+The seam it needs (`SessionViewSeed.transcript` + `carriesSeedTranscript`) is already in place after 2.6.C Step 2,
+so the remaining work is the projection and the inline decision.
+
+**Home:** a 2.6 workstream (2.6.C's natural sibling) or 2.6.G's session browser, whichever reaches it first.
+
+## Cross-turn tool-call memory as a default-off toggle (2.6.C spin-off, 2026-07-12)
+
+> Raised while investigating a "`/models` reseat forgets tool calls" report (2.6.C / PR #75). The investigation's
+> findings are restated in full below — every claim carries its own `file:line`, so this entry stands alone.
+> Recorded here — deliberately **not actioned** — pending a maintainer call on sequencing and risk.
+
+The premise behind the original report is wrong: the engine drops `tool_use`/`tool_result` pairs at **every**
+turn boundary, model switch or not — a deliberate design cut (ADR-0062 §6, deferred to Phase 3 by ADR-0059).
+This is the same gap already tracked below as **"Faithful cross-turn transcript (tool + reasoning history)"**
+in the AgentSession (1.V) follow-ups section. This entry adds one new idea surfaced during the analysis —
+gating the eventual fix behind a default-off config toggle — plus the risks that come with it.
+
+**The idea:** ship cross-turn tool-call carry behind a **default-off** `[chat]` config toggle (e.g.
+`carry_tool_history`), the same opt-in-then-flip pattern ADR-0068 already established for the mouse-wheel
+default. Note the toggle really only has **one** meaningful axis, not several: reasoning/`signature` can never
+be carried regardless of any toggle (ADR-0030 — a structural, cryptographic replay boundary, not a
+preference), and `@`-mention file content already carries correctly today (fixed in `8ba7737`). So "which
+data types carry across a model switch" reduces to a single boolean, not a multi-way settings panel.
+
+**What the toggle would gate (confirmed touchpoints — no schema migration needed):**
+- `DurableContentPart` (`packages/shared/src/content.ts:626-660`) already has `tool_call`/`tool_result` arms;
+  `session_messages.content_parts` (`packages/db/src/schema.ts:475`) already round-trips them. The
+  `tool_calls`/`tool_call_id` columns are write-only denormalized metadata never read back
+  (`packages/db/src/session-store.ts` `fromSessionMessageRow`) — not a blocker.
+- The persister (`apps/cli/src/chat/persister.ts` `appendText`, lines 118-131) writes **text only**; it never
+  touches `agent:tool_call`/`agent:tool_result` events.
+- `reconstructSessionState` (`packages/core/src/engine/session-resume.ts:110-141`, `textOf` 43-48) flattens
+  every non-text part to text on replay — would need to splice paired assistant/tool `LlmMessage`s back in
+  instead.
+- `agent-session.ts` builds `#messages` text-only today (declaration :363, pushes at :548/:575-576) with an
+  explicit deferral comment at :567-574 — this is the actual splice point.
+
+**Why the toggle doesn't remove the prerequisite risk.** The three 🔴 gaps the analysis found are independent,
+**already-live** bugs today, not side effects of tool-carry:
+1. No pre-egress context-window check — `#maybeAutoCompact` (`agent-session.ts:619`) runs after the request
+   already went out; nothing checks the outbound request against the window before sending.
+2. Overflow kills the turn outright — a 400 (`bad_request`, `packages/llm/src/llm-error.ts:43`) isn't in
+   `RETRYABLE_KINDS` (`:15-20`), so FallbackChain never engages; there's no `context_overflow` kind to catch it.
+3. The budget gate only prices output tokens — `estimateMaxNextCost` (`packages/llm/src/budget-estimator.ts:16-26`)
+   ignores a growing input history entirely.
+
+A default-off toggle narrows **who** hits these (opt-in users only), not **whether** they're real. And the
+opt-in population — power users, and especially the future VS Code coding-assistant surface where remembering
+a file a tool read 3 turns back is the actual point — is exactly the segment most likely to run long sessions,
+and therefore most likely to hit an overflow. Shipping the toggle before the three fixes trades a vague "model
+forgot" complaint for a harder "turn died mid-conversation with no recovery" complaint, for the very users who
+opted in.
+
+**Sequencing implication:** fix the three prerequisite bugs first (independent value regardless of tool-carry);
+design tool-carry from the start behind the default-off toggle so it can follow immediately after, rather than
+waiting for a strictly separate later window. A new ADR is required either way — one that **supersedes**
+ADR-0062 §6 (ADR-0059 needs no change; it already says "deferred to Phase 3").
+
+**Also open:** the toggle's discoverability depends on a `/settings` surface, which doesn't exist yet (no
+workstream scaffolds it today). Don't advertise "change this in `/settings`" in the model-switch notice
+(`apps/cli/src/chat/repl-info.ts` `modelSwitchNotice`, lines 171-177) until that surface is real — pending a
+maintainer call on whether to point at a `config.toml` key in the interim, or say nothing until `/settings`
+ships.
+
+**Home:** Phase 3 (or a later Phase-2.6 workstream) — natural sibling to the AgentSession (1.V) "Faithful
+cross-turn transcript" item just below; whichever lands first should absorb the other.
+
 ## AgentSession (1.V) follow-ups
 
 > **2026-06-16 — 1.V `AgentSession` (ADR-0024) + 1.AC budget governor (ADR-0028) merged in PR #26** (after two

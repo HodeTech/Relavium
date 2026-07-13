@@ -13,6 +13,10 @@ import {
   type SessionViewState,
   FULLSCREEN_TRANSCRIPT_BOUND,
   INLINE_TRANSCRIPT_BOUND,
+  carriesSeedTranscript,
+  type TranscriptEntry,
+  assertRenderStoreAgree,
+  type TranscriptBound,
 } from './session-view-model.js';
 
 // --- A typed session-event factory: monotonic sequenceNumber + a 1ms-per-event clock (for durations). ----
@@ -113,7 +117,7 @@ function events() {
 }
 
 const reduceAll = (evs: readonly SessionStreamHandleEvent[]): SessionViewState =>
-  evs.reduce(reduceSessionEvent, initialSessionViewState());
+  evs.reduce(reduceSessionEvent, initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND));
 
 describe('session-view-model', () => {
   it('records agent + model from session:started', () => {
@@ -125,12 +129,15 @@ describe('session-view-model', () => {
   });
 
   it('appendUserMessage adds a user transcript entry', () => {
-    const state = appendUserMessage(initialSessionViewState(), 'hello');
+    const state = appendUserMessage(
+      initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+      'hello',
+    );
     expect(state.transcript).toEqual([{ role: 'user', text: 'hello' }]);
   });
 
   it('a fresh (unseeded) initial state has an empty header + zero totals', () => {
-    const state = initialSessionViewState();
+    const state = initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND);
     expect(state.agentRef).toBeUndefined();
     expect(state.model).toBeUndefined();
     expect(state.cumulativeCostMicrocents).toBe(0);
@@ -138,12 +145,16 @@ describe('session-view-model', () => {
   });
 
   it('a resume seed (2.N) pre-sets the header model/agent + carried cost/turn count', () => {
-    const state = initialSessionViewState({
-      agentRef: 'coder',
-      model: 'claude-opus-4-8',
-      cumulativeCostMicrocents: 4200,
-      turnCount: 3,
-    });
+    const state = initialSessionViewState(
+      {
+        agentRef: 'coder',
+        model: 'claude-opus-4-8',
+        cumulativeCostMicrocents: 4200,
+        turnCount: 3,
+        transcript: [],
+      },
+      INLINE_TRANSCRIPT_BOUND,
+    );
     expect(state.agentRef).toBe('coder');
     expect(state.model).toBe('claude-opus-4-8');
     expect(state.cumulativeCostMicrocents).toBe(4200);
@@ -276,7 +287,7 @@ describe('session-view-model', () => {
   });
 
   it('detects a forward sequenceNumber gap (applies the event, flags + warns)', () => {
-    const start = reduceSessionEvent(initialSessionViewState(), {
+    const start = reduceSessionEvent(initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND), {
       type: 'session:turn_started',
       sessionId: 'sess-1',
       sequenceNumber: 0,
@@ -314,7 +325,7 @@ describe('session-view-model', () => {
   });
 
   it('keeps gapDetected set across a following contiguous event AND a turn boundary (monotonic flag)', () => {
-    const start = reduceSessionEvent(initialSessionViewState(), {
+    const start = reduceSessionEvent(initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND), {
       type: 'session:turn_started',
       sessionId: 'sess-1',
       sequenceNumber: 0,
@@ -457,7 +468,7 @@ describe('session-view-model', () => {
   });
 
   it('keeps the transcript append-only and unbounded (ink <Static> tracks already-printed items by length)', () => {
-    let state = initialSessionViewState();
+    let state = initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND);
     const n = 600; // well past the old 500 cap — every entry must survive, in order
     for (let i = 0; i < n; i++) {
       state = appendUserMessage(state, `m${i}`);
@@ -470,7 +481,7 @@ describe('session-view-model', () => {
   });
 
   it('bounds the warnings buffer to the trailing MAX_WARNINGS', () => {
-    let state = reduceSessionEvent(initialSessionViewState(), {
+    let state = reduceSessionEvent(initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND), {
       type: 'session:turn_started',
       sessionId: 'sess-1',
       sequenceNumber: 100,
@@ -524,7 +535,7 @@ describe('session-view-model', () => {
   });
 
   it('preserves a detected gap through a mid-turn cancel', () => {
-    const start = reduceSessionEvent(initialSessionViewState(), {
+    const start = reduceSessionEvent(initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND), {
       type: 'session:turn_started',
       sessionId: 'sess-1',
       sequenceNumber: 0,
@@ -554,7 +565,10 @@ describe('session-view-model', () => {
     const e = events();
     // Auto-compaction (reason 'auto-threshold') → a concise ⟳ notice appended to the transcript, so it is
     // never a silent context swap. Numbers only (no summary text) — the manual /compact shows the summary.
-    const auto = reduceSessionEvent(initialSessionViewState(), e.compacted('auto-threshold'));
+    const auto = reduceSessionEvent(
+      initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+      e.compacted('auto-threshold'),
+    );
     const notice = auto.transcript.at(-1);
     expect(notice?.role).toBe('notice');
     expect(notice?.role === 'notice' && notice.text).toContain('auto-compacted');
@@ -562,20 +576,29 @@ describe('session-view-model', () => {
     expect(notice?.role === 'notice' && notice.text).not.toContain('we set up'); // summary NOT dumped inline
 
     // A MANUAL /compact is noticed by the command itself, so the view makes NO transcript change here.
-    const manual = reduceSessionEvent(initialSessionViewState(), e.compacted('manual'));
+    const manual = reduceSessionEvent(
+      initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+      e.compacted('manual'),
+    );
     expect(manual.transcript).toHaveLength(0);
   });
 
   it('surfaces the AUTO-FALLBACK trim as a notice, but not a manual /trim (ADR-0062)', () => {
     const e = events();
     // The deterministic trim the engine degrades to when auto-compaction's summariser fails must NOT be silent.
-    const fallback = reduceSessionEvent(initialSessionViewState(), e.trimmed('auto-fallback'));
+    const fallback = reduceSessionEvent(
+      initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+      e.trimmed('auto-fallback'),
+    );
     const notice = fallback.transcript.at(-1);
     expect(notice?.role).toBe('notice');
     expect(notice?.role === 'notice' && notice.text).toContain('Auto-compaction summary failed');
     // A MANUAL /trim is noticed by the command, so the view makes NO transcript change.
     expect(
-      reduceSessionEvent(initialSessionViewState(), e.trimmed('manual')).transcript,
+      reduceSessionEvent(
+        initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND),
+        e.trimmed('manual'),
+      ).transcript,
     ).toHaveLength(0);
   });
 
@@ -613,7 +636,14 @@ describe('session-view-model', () => {
   });
 
   it('seeds the context window from a resume seed model (a resumed session never re-emits session:started)', () => {
-    const seeded = initialSessionViewState({ model: 'claude-sonnet-4-6', turnCount: 3 });
+    const seeded = initialSessionViewState(
+      {
+        model: 'claude-sonnet-4-6',
+        turnCount: 3,
+        transcript: [],
+      },
+      INLINE_TRANSCRIPT_BOUND,
+    );
     expect(seeded.contextWindowTokens).toBe(contextWindowForModel('claude-sonnet-4-6'));
     expect(seeded.lastInputTokens).toBeUndefined(); // no per-turn seed until the first resumed turn completes
   });
@@ -815,11 +845,11 @@ describe('session-view-model — reasoning fold (EA6, 2.5.H)', () => {
 describe('the transcript bake is bounded by the RENDERER, not by a constant', () => {
   /** Reduce `evs` from a state seeded with an explicit renderer bound. */
   const reduceWithBound = (
-    bound: number,
+    bound: TranscriptBound,
     evs: readonly SessionStreamHandleEvent[],
   ): SessionViewState => evs.reduce(reduceSessionEvent, initialSessionViewState(undefined, bound));
 
-  const oneTurn = (bound: number, chars: number): SessionViewState => {
+  const oneTurn = (bound: TranscriptBound, chars: number): SessionViewState => {
     const e = events();
     return reduceWithBound(bound, [e.turnStarted(), e.token('X'.repeat(chars)), e.turnCompleted()]);
   };
@@ -840,7 +870,11 @@ describe('the transcript bake is bounded by the RENDERER, not by a constant', ()
 
   it('the LIVE REGION stays bounded on BOTH renderers — it re-wraps every frame', () => {
     // The two accumulators answer different questions. Unbounding `liveTokens` would re-segment 10 000 chars at 30fps.
-    for (const bound of [FULLSCREEN_TRANSCRIPT_BOUND, INLINE_TRANSCRIPT_BOUND]) {
+    const bounds: readonly TranscriptBound[] = [
+      FULLSCREEN_TRANSCRIPT_BOUND,
+      INLINE_TRANSCRIPT_BOUND,
+    ];
+    for (const bound of bounds) {
       const e = events();
       const state = reduceWithBound(bound, [e.turnStarted(), e.token('X'.repeat(10_000))]);
       expect(state.liveTokens).toHaveLength(MAX_LIVE_TOKEN_CHARS);
@@ -874,6 +908,133 @@ describe('the transcript bake is bounded by the RENDERER, not by a constant', ()
   });
 
   it('the default bound is the INLINE one — a caller that forgets keeps today’s behaviour', () => {
-    expect(initialSessionViewState().transcriptBound).toBe(INLINE_TRANSCRIPT_BOUND);
+    expect(initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND).transcriptBound).toBe(
+      INLINE_TRANSCRIPT_BOUND,
+    );
+  });
+});
+
+/**
+ * The SEED TRANSCRIPT CARRY and its one gate (2.6.C — the F1 fix).
+ *
+ * A `/models` reseat swaps in a brand-new view store. Before this, that store's transcript was hardcoded `[]`, so on
+ * the FULL-SCREEN renderer — whose viewport windows the store's in-memory transcript, and whose alt buffer has no
+ * native scrollback — the whole conversation vanished from the screen. (Inline was unaffected: its lines were already
+ * printed by ink `<Static>` and physically survive the swap.)
+ *
+ * The fix carries the outgoing store's rendered transcript into the new store's seed — but ONLY on the full-screen
+ * renderer. Seeding it inline would make `<Static>` RE-PRINT the whole conversation over the copy the terminal already
+ * holds. So the gate is load-bearing in BOTH directions, and both directions are pinned here.
+ */
+describe('the seed transcript carry (2.6.C) and its full-screen-only gate', () => {
+  // A realistic carry: the three entry variants a live conversation actually holds.
+  const prior: readonly TranscriptEntry[] = [
+    { role: 'user', text: 'first question' },
+    {
+      role: 'assistant',
+      text: 'first answer',
+      summary: { stopReason: 'stop', tokensUsed: { input: 10, output: 20 } },
+    },
+    { role: 'notice', text: '⚙ a command notice' },
+  ];
+
+  it('FULL-SCREEN: a seeded transcript IS carried into the initial state', () => {
+    const state = initialSessionViewState(
+      { model: 'claude-opus-4-8', transcript: prior },
+      FULLSCREEN_TRANSCRIPT_BOUND,
+    );
+    expect(state.transcript).toEqual(prior);
+  });
+
+  it('INLINE: the SAME seed is IGNORED — <Static> already printed those lines, re-seeding would double-print', () => {
+    const state = initialSessionViewState(
+      { model: 'claude-opus-4-8', transcript: prior },
+      INLINE_TRANSCRIPT_BOUND,
+    );
+    expect(state.transcript).toEqual([]);
+  });
+
+  // NOTE: there is deliberately no "an unknown bound degrades to inline" test. `TranscriptBound` is a CLOSED union,
+  // so a third bound is a COMPILE error — the invariant is carried by the type, not by a defensive runtime branch and
+  // a test asserting it. (It used to be a bare `number` with a silent inline default, which is precisely how the F1
+  // hole stayed open from the other side: a full-screen caller that forgot the bound got no error and a blank screen.)
+
+  it('carriesSeedTranscript pins the gate directly', () => {
+    expect(carriesSeedTranscript(FULLSCREEN_TRANSCRIPT_BOUND)).toBe(true);
+    expect(carriesSeedTranscript(INLINE_TRANSCRIPT_BOUND)).toBe(false);
+  });
+
+  it('an EMPTY carry is identical to no carry (a fresh session / chat-resume / clear)', () => {
+    expect(
+      initialSessionViewState({ transcript: [] }, FULLSCREEN_TRANSCRIPT_BOUND).transcript,
+    ).toEqual([]);
+    expect(initialSessionViewState(undefined, FULLSCREEN_TRANSCRIPT_BOUND).transcript).toEqual([]);
+  });
+});
+
+/**
+ * THE RENDER/STORE AGREEMENT INVARIANT (2.6.C). {@link assertRenderStoreAgree} is called from the COMPOSITION ROOTS —
+ * `driveInk` (before `render()`), `drive-home`'s two store constructions, and the mounted-test harnesses — never from
+ * inside a component. A render-time throw would be worthless: ink builds its React root with no-op error callbacks, so
+ * a throw from a component is SWALLOWED, the tree dies, the frame empties, and the suite stays GREEN on a dead tree
+ * (probed). Pinning the predicate here is what makes the guard real.
+ *
+ * BOTH directions corrupt, so the assertion is an EQUALITY, not a one-sided check.
+ */
+describe('assertRenderStoreAgree — the render/store tripwire', () => {
+  it('throws on inline render + FULL-SCREEN store (the double-print direction)', () => {
+    expect(() => assertRenderStoreAgree(false, FULLSCREEN_TRANSCRIPT_BOUND)).toThrow(/diverged/);
+  });
+
+  it('throws on FULL-SCREEN render + inline store (the F1 direction — a silently dropped carry)', () => {
+    expect(() => assertRenderStoreAgree(true, INLINE_TRANSCRIPT_BOUND)).toThrow(/diverged/);
+  });
+
+  it('is silent on both matched pairings', () => {
+    expect(() => assertRenderStoreAgree(true, FULLSCREEN_TRANSCRIPT_BOUND)).not.toThrow();
+    expect(() => assertRenderStoreAgree(false, INLINE_TRANSCRIPT_BOUND)).not.toThrow();
+  });
+
+  it('names WHICH side is wrong, so the failure is actionable', () => {
+    expect(() => assertRenderStoreAgree(true, INLINE_TRANSCRIPT_BOUND)).toThrow(
+      /renderer is FULL-SCREEN but the store is bound INLINE/,
+    );
+  });
+});
+
+/**
+ * `/clear` FRESHNESS (2.6.C guard). `/clear`'s whole contract is a clean slate, so it must never carry the outgoing
+ * conversation the way a `/models` reseat does. Its protection is structural — `buildFreshChatWiring` passes an
+ * `undefined` seed — but "structural" is exactly the kind of protection a future refactor deletes while generalizing
+ * the carry. Pin the store-level guarantee: no seed ⇒ no transcript, on EITHER renderer.
+ */
+describe('/clear stays fresh — an absent seed carries nothing, on either renderer', () => {
+  it('FULL-SCREEN: no seed ⇒ empty transcript (a reseat carries; /clear must not)', () => {
+    expect(initialSessionViewState(undefined, FULLSCREEN_TRANSCRIPT_BOUND).transcript).toEqual([]);
+  });
+
+  it('INLINE: no seed ⇒ empty transcript', () => {
+    expect(initialSessionViewState(undefined, INLINE_TRANSCRIPT_BOUND).transcript).toEqual([]);
+  });
+});
+
+describe('TranscriptBound is genuinely CLOSED', () => {
+  it('FULLSCREEN_TRANSCRIPT_BOUND is exactly Number.MAX_SAFE_INTEGER (the literal must not drift)', () => {
+    // It is spelled as a literal so the union stays closed: `Number.MAX_SAFE_INTEGER` is typed `number` in lib.d.ts,
+    // so using it would widen `TranscriptBound` back to `number` — silently restoring the hole this type closes.
+    expect(FULLSCREEN_TRANSCRIPT_BOUND).toBe(Number.MAX_SAFE_INTEGER);
+  });
+
+  it('the two bounds are distinct, so carriesSeedTranscript can discriminate', () => {
+    expect(FULLSCREEN_TRANSCRIPT_BOUND).not.toBe(INLINE_TRANSCRIPT_BOUND);
+  });
+});
+
+describe('the two bounds are independent CONCEPTS that happen to share a value', () => {
+  it('INLINE_TRANSCRIPT_BOUND still equals MAX_LIVE_TOKEN_CHARS today — inline behaviour stays byte-identical', () => {
+    // They are spelled separately on purpose (one is a durable bake bound, the other a per-frame live-region render
+    // budget). This pins the historical equality so the inline path cannot drift silently — while keeping a tweak to
+    // the live budget from redefining what an INLINE transcript bound *is*.
+    expect(INLINE_TRANSCRIPT_BOUND).toBe(MAX_LIVE_TOKEN_CHARS);
   });
 });

@@ -4,9 +4,10 @@ import {
   type AgentSessionRecord,
   type SessionMessage,
 } from '@relavium/shared';
-import { and, asc, desc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, sql } from 'drizzle-orm';
 
 import type { Db } from './client.js';
+import { withBusyRetry } from './retry.js';
 import {
   agentSessions,
   sessionMessages,
@@ -14,6 +15,7 @@ import {
   type NewAgentSessionRow,
   type NewSessionMessageRow,
   type SessionMessageRow,
+  sessionCosts,
 } from './schema.js';
 import { epochMsToIso, isoToEpochMs } from './time.js';
 
@@ -51,9 +53,6 @@ export interface SessionMessageMeta {
   readonly toolCallId?: string;
   readonly name?: string;
   readonly finishReason?: string;
-  readonly inputTokens?: number;
-  readonly outputTokens?: number;
-  readonly costMicrocents?: number;
 }
 
 /** Map a validated {@link AgentSessionRecord} to an `agent_sessions` insert row (validates on the way in). */
@@ -134,9 +133,6 @@ export function toSessionMessageRow(
     name: meta.name ?? null,
     finishReason: meta.finishReason ?? null,
     modelId: m.modelId ?? null,
-    inputTokens: meta.inputTokens ?? 0,
-    outputTokens: meta.outputTokens ?? 0,
-    costMicrocents: meta.costMicrocents ?? 0,
     // ADR-0062 boundary marker: NULL for every normal row; the durable boundary for a compaction/trim marker.
     compactionDroppedThroughSequence: m.compaction?.droppedThroughSequence ?? null,
     createdAt: isoToEpochMs(m.timestamp),
@@ -170,6 +166,62 @@ export function fromSessionMessageRow(row: SessionMessageRow): SessionMessage {
  * caller supplies fully-formed records (ids + ISO timestamps) — the store owns neither id generation nor
  * the clock, mirroring how the engine takes them from its host.
  */
+/**
+ * The DISPLAY LABEL migration 0009 writes into the `model` column of a legacy session's aggregate row (ADR-0070 §4) —
+ * one row carrying the whole pre-2.6.C total, because the per-attempt increments that would have split it were never
+ * kept. The CANONICAL home of the string (CLAUDE.md rule 8).
+ *
+ * It is a label, NOT an identity: `SessionCostRow.isLegacy` is what identifies the row, and that is the flag every
+ * consumer must branch on. Reserving a model string was considered and REJECTED — `model` holds the raw provider id
+ * exactly because a custom or self-hosted model may be named anything, so "no real id looks like this one" is the
+ * assumption the table exists to refuse. A user whose custom model is literally named `(pre-2.6.C)` gets their own,
+ * correctly-attributed row; the flag keeps the two apart in the unique index.
+ */
+export const LEGACY_COST_SENTINEL = '(pre-2.6.C)';
+
+/** One `cost:updated` egress, as the store folds it (ADR-0070 §2). */
+export interface SessionCostEntry {
+  /** A fresh id from the host's `uuid()` — the pattern every other store write uses. It is DISCARDED on the common
+   *  path: the conflict target is the `(session_id, model)` unique index, never the PK, so a repeat egress of the
+   *  same model folds into the existing row and this id is never stored. */
+  readonly id: string;
+  readonly sessionId: string;
+  /** The RAW provider model string from the event — the attribution KEY (never the catalog UUID; see the schema). */
+  readonly model: string;
+  /** The catalog id, when the model is catalogued. A join column for enrichment; NEVER the key. */
+  readonly modelCatalogId?: string | undefined;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  /** The PER-ATTEMPT increment — never a running cumulative. The store adds it to both sides of the invariant. */
+  readonly costMicrocents: number;
+  /** `false` when the model could not be priced: the egress still spent real tokens, but `costMicrocents` is 0. A
+   *  COUNTER on the row, not a boolean, because 2.6.Q can price a model mid-session (ADR-0070 §6). */
+  readonly priced: boolean;
+  readonly ts: number;
+}
+
+/** A per-`(session, model)` row of the durable money attribution. */
+export interface SessionCostRow {
+  readonly model: string;
+  readonly modelCatalogId: string | undefined;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly costMicrocents: number;
+  /** Every `cost:updated` folded into this row — priced or not. {@link unpricedCalls} is a SUBSET of it. */
+  readonly callCount: number;
+  /** Of `callCount`, how many could not be priced. `> 0` ⇒ a free-LOOKING row is not a free model. */
+  readonly unpricedCalls: number;
+  /**
+   * The 0009 backfill's aggregate for a pre-2.6.C session (ADR-0070 §4): a real total with no breakdown behind it.
+   *
+   * Consumers branch on THIS, never on {@link LEGACY_COST_SENTINEL} — the sentinel is the row's display label, not
+   * its identity. `model` holds the raw provider id precisely because a custom model may be named anything, so no
+   * string can be reserved against collision; the flag is in the unique index instead, which is what makes a real
+   * egress structurally unable to fold into this row.
+   */
+  readonly isLegacy: boolean;
+}
+
 export interface SessionStore {
   /** Insert a new `agent_sessions` row. */
   createSession: (record: AgentSessionRecord) => void;
@@ -187,6 +239,35 @@ export interface SessionStore {
    * omit it for the full list (the `chat-list` contract).
    */
   listSessions: (opts?: { readonly limit?: number }) => AgentSessionRecord[];
+  /**
+   * Fold ONE `cost:updated` egress into the session's durable money attribution (ADR-0070).
+   *
+   * The SINGLE OWNER of `agent_sessions.total_cost_microcents`. In ONE `BEGIN IMMEDIATE` transaction it does two
+   * ADDITIVE writes — upsert the `(session_id, model)` row, and bump the session total by the same increment — so
+   * `SUM(session_costs.cost_microcents) == agent_sessions.total_cost_microcents` holds BY CONSTRUCTION, for every
+   * session, across resume, reseat, failover, tool loops, compaction, errored turns and aborted turns.
+   *
+   * Both halves MUST be additive. A resume or an ADR-0059 reseat builds a FRESH persister whose in-process
+   * accumulators start at zero, so an absolute write would zero every model row the prior process had committed.
+   */
+  recordSessionCost: (entry: SessionCostEntry) => void;
+  /** The per-model money attribution of a session, ordered by spend (descending). Empty — never `null` — when the
+   *  session has not spent. The `/cost` breakdown reads THIS, never an in-memory counter: a resumed session's total
+   *  is seeded from the row and covers the whole session, while memory knows only this process's models. */
+  loadSessionCosts: (sessionId: string) => SessionCostRow[];
+  /**
+   * The total AND its per-model rows, read in ONE transaction (ADR-0070 §7).
+   *
+   * `/cost` promises that the rows sum to the total it prints. The TABLE guarantees that — but two independent reads
+   * do NOT: `history.db` runs in WAL, so a reader is never blocked by a writer, and another Relavium process on the
+   * same session (the very concurrency the single-writer design defends against) can commit a `recordSessionCost`
+   * BETWEEN a `loadSession` and a `loadSessionCosts`. The panel would then print rows that sum to MORE than the total
+   * above them — a share over 100% on a money surface. One snapshot, one truth.
+   */
+  loadSessionCostBreakdown: (sessionId: string) => {
+    readonly totalCostMicrocents: number;
+    readonly rows: SessionCostRow[];
+  };
   /** Append a transcript message (the caller assigns the next monotonic `sequenceNumber`). */
   appendMessage: (message: SessionMessage, meta?: SessionMessageMeta) => void;
   /** Load a session's full transcript in `sequenceNumber` order. */
@@ -198,11 +279,25 @@ export interface SessionStore {
 }
 
 /** Wire a {@link SessionStore} over a `@relavium/db` connection. */
+/**
+ * The handle drizzle passes to a `db.transaction` callback, derived from {@link Db} so no drizzle-internal type is
+ * imported. A statement issued against the outer `db` from inside a transaction callback only *happens* to be
+ * transactional today: better-sqlite3 is a single connection, so it lands on the same one. The Postgres driver
+ * ([ADR-0005](../../../docs/decisions/0005-sqlite-drizzle-local-postgres-cloud.md)) is a **pool** — there, `db` is a
+ * DIFFERENT connection and the statement would silently commit OUTSIDE the transaction. On a money surface
+ * ([ADR-0070](../../../docs/decisions/0070-durable-per-model-session-cost-attribution.md)) that is not a bet worth
+ * taking, so everything inside a transaction runs against the handle, never the closure's `db`.
+ */
+type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0];
+
+/** What a query runs against: the connection, or an open transaction on it. */
+type Executor = Db | DbTx;
+
 export function createSessionStore(db: Db): SessionStore {
-  const loadSession = (sessionId: string): AgentSessionRecord | undefined => {
+  const loadSession = (sessionId: string, on: Executor = db): AgentSessionRecord | undefined => {
     // Exclude soft-deleted rows (matching `listSessions`): a tombstoned session must not reload or resume —
     // `chat-resume`'s `loadFull` would otherwise resurrect it and the persister would re-write the row.
-    const row = db
+    const row = on
       .select()
       .from(agentSessions)
       .where(and(eq(agentSessions.id, sessionId), isNull(agentSessions.deletedAt)))
@@ -240,19 +335,111 @@ export function createSessionStore(db: Db): SessionStore {
       .all()
       .map(fromSessionMessageRow);
 
+  const readCostRows = (sessionId: string, on: Executor = db): SessionCostRow[] =>
+    on
+      .select()
+      .from(sessionCosts)
+      .where(eq(sessionCosts.sessionId, sessionId))
+      .orderBy(desc(sessionCosts.costMicrocents))
+      .all()
+      .map((r) => ({
+        model: r.model,
+        modelCatalogId: r.modelCatalogId ?? undefined,
+        inputTokens: r.inputTokens,
+        outputTokens: r.outputTokens,
+        costMicrocents: r.costMicrocents,
+        callCount: r.callCount,
+        unpricedCalls: r.unpricedCalls,
+        isLegacy: r.isLegacy,
+      }));
+
   return {
     createSession: (record) => {
       db.insert(agentSessions).values(toAgentSessionRow(record)).run();
     },
     updateSession: (record) => {
       // `created_at` is frozen at creation, so it (and the `id` WHERE-key) are dropped from the SET payload —
-      // an update overwrites only the mutable columns (status, totals, title, context, exportedWorkflowPath,
-      // deletedAt, updatedAt, …), never the creation timestamp, regardless of what the caller passes.
+      // an update overwrites only the mutable columns (status, title, context, exportedWorkflowPath, deletedAt,
+      // updatedAt, …), never the creation timestamp, regardless of what the caller passes.
+      //
+      // `total_cost_microcents` is ALSO dropped (ADR-0070 §2): it has exactly ONE writer, `recordSessionCost`, which
+      // bumps it ADDITIVELY in the same transaction as the `session_costs` row. It used to be SET blindly here from
+      // whatever cumulative the caller happened to hold — from four persister call sites and from `chat-export` — so
+      // any writer with a stale in-memory total (two `chat-resume` processes on one sessionId; a late flush landing
+      // after a cost write) would permanently break `SUM(session_costs) == total_cost_microcents`. A single owner is
+      // what makes the invariant a property of the code rather than a hope about call ordering.
       const mutable: Partial<NewAgentSessionRow> = { ...toAgentSessionRow(record) };
       delete mutable.id;
       delete mutable.createdAt;
+      delete mutable.totalCostMicrocents;
       db.update(agentSessions).set(mutable).where(eq(agentSessions.id, record.id)).run();
     },
+
+    recordSessionCost: (entry) => {
+      // ONE transaction, TWO additive writes. `BEGIN IMMEDIATE` takes the write lock up front (never a DEFERRED
+      // read→write upgrade race) and `withBusyRetry` waits out residual contention — the ADR-0064 §2.5.I convention.
+      withBusyRetry(() =>
+        db.transaction(
+          (tx) => {
+            tx.insert(sessionCosts)
+              .values({
+                id: entry.id, // discarded on conflict — the target is the unique index, never the PK
+                sessionId: entry.sessionId,
+                model: entry.model,
+                modelCatalogId: entry.modelCatalogId ?? null,
+                inputTokens: entry.inputTokens,
+                outputTokens: entry.outputTokens,
+                costMicrocents: entry.costMicrocents,
+                // Every egress counts once, priced or not; `unpricedCalls` is the SUBSET that could not be priced,
+                // which is what lets `/cost` say "price unknown for N of M calls".
+                callCount: 1,
+                unpricedCalls: entry.priced ? 0 : 1,
+                // A real egress is NEVER legacy. This is not decoration: it rides in the conflict target below, so a
+                // live cost event cannot fold into the 0009 backfill's aggregate row — not even one whose model
+                // string is literally LEGACY_COST_SENTINEL. Real money can never merge into the un-attributable
+                // bucket, and the bucket can never grow.
+                isLegacy: false,
+                createdAt: entry.ts,
+                updatedAt: entry.ts,
+              })
+              .onConflictDoUpdate({
+                target: [sessionCosts.sessionId, sessionCosts.model, sessionCosts.isLegacy],
+                set: {
+                  inputTokens: sql`${sessionCosts.inputTokens} + ${entry.inputTokens}`,
+                  outputTokens: sql`${sessionCosts.outputTokens} + ${entry.outputTokens}`,
+                  costMicrocents: sql`${sessionCosts.costMicrocents} + ${entry.costMicrocents}`,
+                  callCount: sql`${sessionCosts.callCount} + 1`,
+                  unpricedCalls: sql`${sessionCosts.unpricedCalls} + ${entry.priced ? 0 : 1}`,
+                  updatedAt: entry.ts,
+                },
+              })
+              .run();
+            tx.update(agentSessions)
+              .set({
+                totalCostMicrocents: sql`${agentSessions.totalCostMicrocents} + ${entry.costMicrocents}`,
+                updatedAt: entry.ts,
+              })
+              .where(eq(agentSessions.id, entry.sessionId))
+              .run();
+          },
+          { behavior: 'immediate' },
+        ),
+      );
+    },
+
+    loadSessionCosts: (sessionId) => readCostRows(sessionId),
+
+    loadSessionCostBreakdown: (sessionId) =>
+      // ONE transaction, so the rows and the total the panel prints them under come from the SAME snapshot. Two
+      // independent reads on a WAL connection can straddle another process's `recordSessionCost` commit, and the
+      // panel would print rows summing to more than its own total. BOTH reads run against `tx` — a read issued on the
+      // outer `db` would leave the snapshot the moment the driver is a connection pool ({@link DbTx}).
+      withBusyRetry(() =>
+        db.transaction((tx) => ({
+          totalCostMicrocents: loadSession(sessionId, tx)?.totalCostMicrocents ?? 0,
+          rows: readCostRows(sessionId, tx),
+        })),
+      ),
     loadSession,
     listSessions,
     appendMessage: (message, meta) => {

@@ -139,6 +139,7 @@ import type { ReasoningEffort } from '@relavium/shared';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import type { ClipboardOutcome } from '../clipboard.js';
 import type { ChatStoreController, PendingApproval } from './chat-store.js';
+import { assertRenderStoreAgree } from './session-view-model.js';
 import type { SessionViewState, TranscriptEntry } from './session-view-model.js';
 
 /**
@@ -1615,6 +1616,17 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
       noAltScreenFlag: ctx.global.noAltScreen === true,
       configAltScreen: ctx.altScreen,
     }) === 'alt';
+  // TRIPWIRE (2.6.C) — asserted HERE, at the composition root, and NOT inside `ChatView`. A render-time throw is
+  // useless: ink builds its React root with no-op error callbacks (`reconciler.createContainer(…, () => {}, …)`), so
+  // a throw from a component is SWALLOWED — React tears the tree down, the frame goes empty, and the suite stays
+  // green. (Probed: an inline mount over a full-screen store threw, rendered nothing, and passed.) Here we are in
+  // ordinary async code, before `render()`, so a divergence propagates and fails loudly — in a test AND in a dev run.
+  //
+  // What it guards: "am I the alt screen?" is derived twice — this function resolves the RENDER mode, while the store
+  // was built with a `transcriptBound` that decides whether a carried seed transcript is honoured. Both directions
+  // corrupt: inline render + full-screen store double-prints through `<Static>`; full-screen render + inline store
+  // silently drops the carry and blanks the viewport (F1 itself).
+  assertRenderStoreAgree(alternateScreen, ctx.store.getSnapshot().state.transcriptBound);
   emitIntro(ctx.intro, alternateScreen, {
     notice: (text) => ctx.store.notice(text),
     writeOut: (text) => ctx.io.writeOut(text),

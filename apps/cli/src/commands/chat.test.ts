@@ -30,6 +30,7 @@ import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { selectChatDriver } from '../render/tui/chat-ink.js';
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
+import { INLINE_TRANSCRIPT_BOUND } from '../render/tui/session-view-model.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import {
   DISABLE_MOUSE,
@@ -830,6 +831,125 @@ describe('chatCommand', () => {
     expect(alts).toEqual([true, true]); // the reseat rebuild keeps the preference (buildReseatWiring threads it)
   });
 
+  /**
+   * F1 (2.6.C) on the STANDALONE path — and its inline mirror image.
+   *
+   * A `/models` reseat re-drives the REPL over a brand-new view store. On the full-screen renderer that store IS the
+   * scrollback (the viewport windows its in-memory transcript; the alt buffer has no scrollback of its own), so
+   * seeding it `[]` blanked the whole conversation the moment the user switched models.
+   *
+   * The INLINE renderer is the opposite, and it is why the carry is GATED rather than unconditional: `driveInk`
+   * unmounts and re-mounts ink per session, which resets ink `<Static>`'s internal index to 0. A seeded inline store
+   * would therefore RE-PRINT the entire conversation on top of the copy the terminal's own scrollback already holds —
+   * the user would see it twice. Inline needs no carry: its lines were already printed and survive the swap.
+   *
+   * This is the ONLY surface where the double-print is reachable (the Home never re-mounts `RootApp` across a swap,
+   * so `<Static>`'s index survives there and a stray carry would be silently harmless) — which is precisely why the
+   * inline negative belongs HERE and would prove nothing on the Home.
+   */
+  it('a /models reseat on the ALT screen carries the rendered conversation into the reseated store (F1)', async () => {
+    const { d } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
+    seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
+    const cfg = join(cwd, 'alt-carry.toml');
+    writeFileSync(cfg, '[preferences]\nalt_screen = true\n');
+    const seen: (readonly { role: string; text: string }[])[] = [];
+    let call = 0;
+    const reseatThenExit: ChatDriver = async (ctx) => {
+      seen.push(
+        ctx.store.getSnapshot().state.transcript.map((e) => ({ role: e.role, text: e.text })),
+      );
+      ctx.startSession();
+      if (call++ === 0) {
+        await ctx.processLine('first');
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+        return { kind: ctx.stopReason() };
+      }
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        io: { ...d.io, stdoutIsTty: true },
+        global: { ...globalOptions(cwd), configPath: cfg },
+        drive: reseatThenExit,
+      },
+    );
+    expect(seen[0]).toEqual([]); // the first session starts empty (nothing to carry)
+    // The RESEATED session opens with the prior conversation — not a blank screen. THIS is the bug: before the fix
+    // this was `[]`, so the user switched models and the whole chat vanished from the alt screen.
+    // (The scripted driver drives `processLine` directly, so the view store holds the user turn; a real session's
+    // assistant entry arrives through the event stream, which this fake does not run. The carry is what is asserted.)
+    expect(seen[1]).toEqual([{ role: 'user', text: 'first' }]);
+  });
+
+  it('the same reseat INLINE seeds NOTHING — <Static> already printed those lines; re-seeding would double-print', async () => {
+    const { d } = deps([], [textTurn('sonnet reply'), textTurn('opus reply')]);
+    seedCatalogModel(client.db, 'anthropic', 'claude-sonnet-4-6');
+    seedCatalogModel(client.db, 'anthropic', 'claude-opus-4-8');
+    const cfg = join(cwd, 'inline-carry.toml');
+    writeFileSync(cfg, '[preferences]\nalt_screen = false\n'); // INLINE — the opt-out
+    const seen: number[] = [];
+    let call = 0;
+    const reseatThenExit: ChatDriver = async (ctx) => {
+      seen.push(ctx.store.getSnapshot().state.transcript.length);
+      ctx.startSession();
+      if (call++ === 0) {
+        await ctx.processLine('first');
+        ctx.onReseat?.({ modelId: 'claude-opus-4-8', provider: 'anthropic' });
+        return { kind: ctx.stopReason() };
+      }
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        io: { ...d.io, stdoutIsTty: true },
+        global: { ...globalOptions(cwd), configPath: cfg },
+        drive: reseatThenExit,
+      },
+    );
+    expect(seen).toEqual([0, 0]); // BOTH sessions open empty inline — the carry is dropped by the gate
+  });
+
+  it('a /clear stays FRESH — it never carries the outgoing conversation, on either renderer', async () => {
+    // `/clear`'s entire contract is a clean slate. It re-drives through `rebuild`, which never sees the carry — but
+    // that protection is structural, and structural protections are what a future generalization deletes.
+    const { d } = deps([], [textTurn('hi there'), textTurn('second')]);
+    const cfg = join(cwd, 'clear-fresh.toml');
+    writeFileSync(cfg, '[preferences]\nalt_screen = true\n'); // FULL-SCREEN: the carry WOULD apply if it were passed
+    const seen: number[] = [];
+    let call = 0;
+    const clearThenExit: ChatDriver = async (ctx) => {
+      seen.push(ctx.store.getSnapshot().state.transcript.length);
+      ctx.startSession();
+      if (call++ === 0) {
+        await ctx.processLine('first');
+        await ctx.processLine('/clear');
+        return { kind: ctx.stopReason() };
+      }
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        ...INERT_HOIST,
+        io: { ...d.io, stdoutIsTty: true },
+        global: { ...globalOptions(cwd), configPath: cfg },
+        drive: clearThenExit,
+      },
+    );
+    expect(seen).toEqual([0, 0]); // the cleared session opens EMPTY even on the full-screen renderer
+  });
+
   it('/clear whose FRESH build fails surfaces the resumable prior session and ends cleanly (ADR-0062 §7)', async () => {
     const { d, err, store } = deps([], [textTurn('hi there')]);
     let builds = 0;
@@ -896,8 +1016,13 @@ describe('chatCommand', () => {
     expect(seen).toHaveLength(2);
     expect(seen[0]).toBe(seen[1]); // a reseat CONTINUES the same session (unlike /clear's new id)
     expect(intros[0]).toBeUndefined(); // the original session has no intro
-    expect(intros[1]).toContain('Switched to claude-opus-4-8'); // the reseat disclosure intro
-    expect(intros[1]).toContain('text transcript only'); // the tool-context-not-carried disclosure
+    // The marker names BOTH ends of the switch (2.6.C) — it now lands beneath a conversation the user can still see,
+    // so "what changed" is the useful thing to say, not "here is your new model" to an empty screen.
+    expect(intros[1]).toContain('claude-sonnet-4-6 → claude-opus-4-8');
+    // ADR-0059 BINDS this disclosure clause (a host-side reseat carries the transcript text-only). Dropping it would
+    // need a superseding ADR, not a wording change — so it is asserted, not just present.
+    expect(intros[1]).toContain('text transcript only');
+    expect(intros[1]).toContain('@-attached file contents included');
 
     const full = store.loadFull('id-0');
     expect(full?.session.agentSnapshot?.model).toBe('claude-opus-4-8'); // rebound to the target model
@@ -1282,6 +1407,40 @@ describe('chatResumeCommand (2.N)', () => {
     };
   }
 
+  /**
+   * `/cost` READS THE DB (ADR-0070 §7) — the central change of the breakdown, and it had NO coverage.
+   *
+   * The suite could not tell the two implementations apart: the only end-to-end `/cost` case ran it as the FIRST
+   * input, with zero spend and zero rows, so both the old in-memory total and the new DB read emit the byte-identical
+   * `Session cost: $0.0000`. Reverting the handler to memory left the whole suite green.
+   *
+   * The RESUME case is the REASON the DB read exists: a resumed process's in-memory counters know only the models IT
+   * used, while the total is seeded from the durable row and covers the whole session — so an in-memory breakdown
+   * would print rows that do not sum to its own total, on a money surface, on the first `/cost` after a resume.
+   */
+  it("/cost after a RESUME shows the WHOLE session — the prior process's spend, which memory does not have", async () => {
+    const store = createSessionStore(client.db);
+    // Process 1: spend, then end.
+    expect(
+      await chatCommand(
+        { agent: undefined },
+        freshDeps(['hello', '/exit'], [textTurn('hi')], store),
+      ),
+    ).toBe(EXIT_CODES.chatEnded);
+    const spentBefore = store.loadSession('id-0')?.totalCostMicrocents ?? 0;
+    expect(spentBefore).toBeGreaterThan(0);
+    expect(store.loadSessionCosts('id-0').length).toBeGreaterThan(0);
+
+    // Process 2: RESUME and ask for /cost BEFORE spending anything. In memory this process has no models and no cost.
+    const { d, err } = resumeDeps(['/cost', '/exit'], [], store);
+    expect(await chatResumeCommand({ sessionId: 'id-0' }, d)).toBe(EXIT_CODES.chatEnded);
+
+    const panel = err();
+    expect(panel).toContain('Session cost: $');
+    expect(panel).not.toContain('$0.0000'); // the prior process's spend is VISIBLE, not zeroed
+    expect(panel).toMatch(/\(\d+ calls?, \d+ tok\)/); // …and its per-model row survived the process boundary
+  });
+
   it('reloads a persisted session and continues it, appending sequenced rows past the prior max', async () => {
     const store = createSessionStore(client.db);
     // Seed one fresh turn (id-0 = session; messages seq 0,1), then resume and add a second turn.
@@ -1573,7 +1732,7 @@ describe('drivePlain', () => {
       shouldStop: () => stop,
       stopReason: () => 'exit' as const,
       handle: built.handle,
-      store: createChatStore(false),
+      store: createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
       io: { ...base, stdin },
       global: globalOptions(tmpdir()),
     };
@@ -1765,7 +1924,7 @@ describe('selectChatDriver', () => {
       shouldStop: () => true,
       stopReason: () => 'exit' as const,
       handle: built.handle,
-      store: createChatStore(false),
+      store: createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
       io: { ...base, stdoutIsTty, stdin },
       global: { ...globalOptions(tmpdir()), json },
     };
@@ -1815,7 +1974,7 @@ describe('driveJson (2.Q)', () => {
       shouldStop: () => stop,
       stopReason: () => 'exit' as const,
       handle: built.handle,
-      store: createChatStore(false),
+      store: createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND),
       io: { ...base, stdin },
       global: { ...globalOptions(tmpdir()), json: true },
       // Flush the terminal (session:cancelled) before unsubscribing, as runReplLoop wires in production.

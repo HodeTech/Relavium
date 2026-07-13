@@ -1,8 +1,9 @@
 # Phase 2.6 — Conversational Authoring and the First-Class CLI
 
-> Status: Planned — **next up**. Depends on the Phase 2.5 spine (the wired tool-environment and the
-> per-tool approval / mode system), which is **complete** (M2.5-4, PR #69, 2026-07-08), so this phase is
-> now unblocked.
+> Status: **In progress** — the substrate workstream **2.6.F** (platform floor + full-screen TUI) is
+> ✅ **Done** (merged to `main`, PR #74, 2026-07-11); the rest of the phase follows. Depends on the Phase 2.5
+> spine (the wired tool-environment and the per-tool approval / mode system), which is **complete** (M2.5-4,
+> PR #69, 2026-07-08), so this phase is unblocked.
 >
 > **Rewritten 2026-07-08**, last revised **2026-07-09** (child-session orchestration split into
 > **2.6.N / 2.6.O / 2.6.P** along a safety gradient; the artifact-directory two-root model + the
@@ -53,7 +54,7 @@ Phase 2.6 makes bare `relavium` a **full-screen, Home-centric** product. Key out
 - **Settings, theming, localization** — `/settings` over the config-write contract; three built-in
   themes (default / high-contrast / colorblind-safe); `en`, `es`, `tr`, `fr`, `de` i18n with CI key-parity.
 - **Onboarding v2** — two auth paths: BYOK (live) + Relavium-account stub (disabled, Phase 5).
-- **16 workstreams** (2.6.A–P), substrate-first: 2.6.F (full-screen TUI + Node 22 floor) runs first;
+- **17 workstreams** (2.6.A–Q), substrate-first: 2.6.F (full-screen TUI + Node 22 floor) runs first;
   agent orchestration is split by safety gradient into 2.6.N (safe mechanism) → 2.6.O (model-generated
   execution, own security review) + 2.6.P (`subworkflow` node + schema v1.1).
 
@@ -157,6 +158,13 @@ the same core.
   `validateWorkflowWithCatalog`, and **back-port** it into `create`/`import`/`export` (today those are
   parse-only; only the run path catalog-validates), so `create` can never accept a model/modality the run
   path rejects.
+- **Catalog-aware `max_tokens` pre-flight** *(manual-test finding 2026-07-11):* extend
+  `validateWorkflowWithCatalog` so `create`/`import`/`export` reject-or-clamp a `max_tokens` that exceeds the
+  target model's known **output ceiling** (`MODEL_PRICING[model].maxOutputTokens` today; the live-catalog
+  `limit.output` once **2.6.Q** lands) — the authoring-surface complement to 2.6.Q's run-path clamp, since
+  today `max_tokens` is validated
+  only as a bare positive int and an over-ceiling value 400s opaquely at the wire. Leave an unknown-ceiling
+  model (custom `base_url`) as pass-through. No new ADR (rides ADR-0058).
 - Add direct unit tests for `detectAndParse` / `buildAuthored` / `validateAuthoredWorkflow` (today only the
   command wrappers are tested).
 
@@ -205,17 +213,47 @@ approval; `/create` works from the Home; a malformed agent YAML surfaces its fie
 diagnostic on every surface; the untrusted-import consent gate holds; a security review of the write
 surface + the secret-taint gate + the import gate passes. **Required ADR:** shared with 2.6.A (ADR-0058).
 
-### 2.6.C — Mid-session model reseat (shipped early) — residual
+### 2.6.C — Mid-session model reseat — residual + transcript-carry fix — ✅ **Done (PR pending, 2026-07-12)**
 
 > **Shipped early in 2.5.G** (ADR-0059, PR #66, 2026-07-07): the `/models` mid-chat reseat, per-message
 > `modelId` attribution, and the context-loss notice. Retained for the residual below and as the
 > cross-reference home.
+>
+> **Status:** ✅ **Done (2026-07-12)** — both tasks shipped, plus the residual that turned out to need its own ADR.
+> The reseat now carries the rendered conversation (F1), with the switch marker landing beneath it; and `/cost` shows
+> a per-model breakdown backed by a new durable `session_costs` table
+> ([ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md) — the per-message `model_id` this
+> ADR originally planned to derive it from **cannot** represent a turn whose tool loop billed two models). Two
+> append-only notes were added to [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md) (the
+> limitation its own alt-screen default created) and [ADR-0059](../../decisions/0059-cli-mid-session-model-reseat.md)
+> (the notice's new shape; and the perf harness it claimed existed, which did not — now delivered).
 
-**Tasks:** the per-model **cost breakdown** read (`/cost` gains a per-model section over the shipped
-attribution columns); verify the context-loss notice covers the whole `chat-resume` family.
+**Tasks:**
 
-**Acceptance:** `/cost` shows per-model spend for a reseated session; the notice is asserted on resume
-surfaces. **Required ADR:** none (ADR-0059 is Accepted).
+- **Preserve the on-screen transcript across a reseat** *(manual-test finding 2026-07-11, HIGH —
+  near-hotfix, do not wait for M2.6-5).* A `/models` mid-session switch builds a **fresh view store seeded
+  header-only**, so the prior conversation **vanishes** from the full-screen alt-screen viewport — which
+  2.6.F made the default (`render-mode.ts` `DEFAULT_ALT_SCREEN = true`) and whose alt buffer has **no native
+  scrollback** to fall back on, unlike the inline `<Static>` path (which is unaffected). The durable DB
+  transcript and the switched model's context are **intact** — only the *rendered* scrollback is dropped, so
+  it reads as catastrophic data loss on a headline feature. Fix: extend `SessionViewSeed`
+  (`session-view-model.ts`) with an optional `transcript`, seed `initialSessionViewState` from it instead of
+  the hardcoded `[]`, and thread the OLD store's rendered transcript
+  (`old.store.getSnapshot().state.transcript`) through `deps.reseatChat` into the reseat store construction
+  on **both** the Home (`drive-home.tsx`) and standalone (`chat.ts` `seedResumedWiring`) paths; append the
+  switch notice **after** the carried transcript as an inline "model changed X → Y" marker (the maintainer's
+  requested shape). Keep the inline `<Static>` path byte-identical. Regression test: the reseated store's
+  initial transcript equals the prior turns followed by the notice (today the reseat tests assert only
+  turn-count / cost / notice). Carried entries are already-sanitized rendered projections — no key/secret and
+  no [ADR-0030](../../decisions/0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md)
+  reasoning signature enters the store. **No new ADR** (store-construction fix under the Accepted ADR-0059).
+- The per-model **cost breakdown** read (`/cost` gains a per-model section over the shipped attribution
+  columns); verify the context-loss notice covers the whole `chat-resume` family.
+
+**Acceptance:** a mid-session reseat keeps the full prior conversation **visible** in the alt-screen
+viewport with an inline switch marker (regression-tested on both the Home and standalone paths); `/cost`
+shows per-model spend for a reseated session; the notice is asserted on resume surfaces. **Required ADR:**
+none (ADR-0059 is Accepted).
 
 ### 2.6.D — Session `{{ctx.*}}` prompt interpolation
 
@@ -286,7 +324,16 @@ The competitor-parity chat ergonomics (the theme system moved to 2.6.L; tool-cal
 ignore them exactly as the ADR-0049 contract requires; the message queue and rewind have reducer-level
 tests. **Required ADR:** `ink-syntax-highlight` dependency + markdown rendering architecture.
 
-### 2.6.F — Platform floor + the full-screen TUI foundation
+### 2.6.F — Platform floor + the full-screen TUI foundation — ✅ **Done (PR #74, 2026-07-11)**
+
+> **Status:** ✅ **Done (PR #74, 2026-07-11)** — merged to `main` behind
+> [ADR-0067](../../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md) (Node `>=22` floor,
+> `better-sqlite3` re-affirmed), [ADR-0068](../../decisions/0068-full-screen-tui-renderer-ink7-harness.md)
+> (ink 7 + the hand-built alt-screen renderer + the `ink-testing-library` harness) and
+> [ADR-0069](../../decisions/0069-string-width-for-the-cli-renderer.md) (`string-width`, Accepted on the merge).
+> The shipped inventory (incl. the `✓ Copied` copy-on-select toast), the two adversarial review rounds, and the
+> open obligations carried out (short-terminal Home overflow → 2.6.G; `relavium run` stays inline; themes → 2.6.L)
+> live in the canonical status home [current.md](../current.md); this entry is not restated there.
 
 The substrate workstream — it runs **first** because the browsers (2.6.G), settings screens (2.6.L), and
 render-v2 (2.6.M) all build on it.
@@ -463,7 +510,9 @@ durable record complete enough for a first-class drill-down — additively.
 **Tasks:**
 
 - **Step attribution**: populate `step_executions.agentId/agentSnapshot/modelId/inputJson` and
-  `run_costs.modelId` from the events the engine already has; give `node:skipped` a step row (thread
+  `run_costs.modelId` from the events the engine already has — `run_costs.modelId` is a **shipped dead column**
+  (never written), the workflow-side twin of the session-side gap [ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md)
+  closes; that ADR deliberately leaves it here rather than widening its own scope; give `node:skipped` a step row (thread
   `nodeType` additively); widen the `StepRecord` projection (output/error/tokens) + a step-detail read.
 - **Exact per-node cost**: an optional `nodeCostMicrocents` on `node:completed` — an additive run-event
   schema field amending [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)
@@ -501,6 +550,13 @@ config (there is no `relavium mcp` command at all; the only runtime visibility i
   provider (SSRF-validated base URL rules unchanged); set key (masked, keychain-only — the wizard's tested
   `set-key` path); remove key (confirmed destructive); test. All over the existing `runProviderCommand`
   cores — no new key-handling code paths.
+- **New-provider model-visibility default** *(manual-test finding 2026-07-11):* settle what a freshly-added
+  provider contributes to the curated **`models_in_use`** set (2.6.L). Recommended policy: while the set is
+  **empty/unset**, `/models` shows all (nothing to do); once the user **has** curated, a newly-added
+  provider's models are **not** auto-added to the curated view — instead `/providers add` surfaces a hint
+  ("N new models from `<provider>` — curate via `/settings`"), so the picker never silently re-floods after
+  the user has deliberately narrowed it. Decide here, since `/providers add` is where a provider's live
+  model list first lands.
 - **`/mcp`** (Home + chat palette): list registered servers with a **read-only** status report (the
   `/doctor --deep` machinery — never connects/spawns on open); add / edit / remove server registrations
   (stdio + `http`/`sse`/`websocket` behind the existing SSRF floor); named secrets set via a masked prompt
@@ -601,10 +657,19 @@ and the first localized agentic CLI (a genuine differentiator — competitor i18
   `[preferences].theme` (schema-present, read by nothing today) finally read; **`/theme`** switcher with
   live preview. Semantic markers (`✓`/`✗`/`⏸`) survive `--no-color`/`NO_COLOR` and degrade to ASCII
   (`[v]`/`[x]`/`[||]`) without Unicode.
-- **`/settings`** (Home + chat): a sectioned screen (appearance / language / chat defaults / update
-  channel) over the **extended** [ADR-0063](../../decisions/0063-cli-config-write-contract.md) typed-setter
-  (new keys: `theme`, `language`; still global-preferences-only, atomic, secret-incapable by construction —
-  project files stay hand-authored).
+- **`/settings`** (Home + chat): a sectioned screen (appearance / language / chat defaults / models in use
+  / update channel) over the **extended** [ADR-0063](../../decisions/0063-cli-config-write-contract.md)
+  typed-setter (new keys: `theme`, `language`, `models_in_use`; still global-preferences-only, atomic,
+  secret-incapable by construction — project files stay hand-authored).
+- **Curated "models in use" list** *(manual-test finding 2026-07-11):* a `/settings` section where the user
+  picks which catalog models are "in use", so **`/models` shows only the curated set** instead of the whole
+  merged catalog — today `/models` lists **every** reachable model from **every** provider and only a live
+  text filter narrows it, so adding a provider **floods** the picker (choice overload). Persist the set as
+  the new `[preferences].models_in_use` key; the picker reads it purely as a **display filter**, never a
+  capability gate — an uncurated model stays reachable by exact id / `--model`, and an **empty/unset set
+  shows everything** (back-compatible, so nothing hard-blocks). The **default for a newly-connected
+  provider** (seed all / none / a starter subset) is owned by **2.6.I** (see there). No new ADR beyond the
+  ADR-0063 key addition.
 - **i18n foundation**: an in-house string catalog (data ≠ code — zero conditional logic in translation
   data; no runtime dependency expected, else ADR); `[preferences].language`; locales **`en`, `es`, `tr`,
   `fr`, `de`** in-phase; a CI **key-parity test** (fails on missing/extra keys across all locales)
@@ -619,7 +684,8 @@ and the first localized agentic CLI (a genuine differentiator — competitor i18
 - Diagnostics/`--json` output stays English-stable (machine contract); localization applies to the
   interactive surfaces.
 
-**Acceptance:** `/settings` edits persist atomically and round-trip; themes switch live incl. the
+**Acceptance:** `/settings` edits persist atomically and round-trip; the curated `models_in_use` set
+filters `/models` to the chosen models (unset ⇒ all, back-compatible); themes switch live incl. the
 accessibility pair; the color-free path stays legible; interactive surfaces run fully in all five
 locales with CI-enforced key parity; diagnostics and `--json` remain English-stable per
 [ADR-0049](../../decisions/0049-cli-machine-output-contract.md); the machine-output contract is
@@ -906,6 +972,92 @@ events attribute to the parent; the parser/spec/migration-note establish the reu
 path. **Required ADR:** `subworkflow` node + `schema_version` 1.1 additive migration (new — the
 first versioned-schema bump; the nested-run event namespace; the dynamic-`invoke_workflow` decision).
 
+### 2.6.Q — Dynamic model-catalog enrichment (models.dev): per-model capability matrix + pricing long-tail
+
+Added **2026-07-11** from three maintainer manual-test findings that share one root cause — **Relavium has no
+per-model economics or capability data beyond a ~12-entry hand-maintained registry**, and no provider API
+returns either. The full design analysis (five alternatives, the recommended hybrid, the security surface, and
+six open ADR questions) is in
+[models-dev-dynamic-catalog-enrichment-2026-07-11.md](../../analysis/models-dev-dynamic-catalog-enrichment-2026-07-11.md);
+this workstream is its execution. Scope is **enrichment, not extensibility** — it attaches richer data to the
+models the four shipped adapters can **already** call and to ADR-0065 custom endpoints; it adds **no**
+`ProviderId` (the enum stays closed). The three findings resolve into **two separable payloads**:
+
+- **Capability matrix** (fixes findings **F3 + F4**, near-zero risk — *ship first*): today reasoning-effort
+  capability is a provider-global **binary** (does the model reason at all?), never a per-model set of
+  *accepted* tiers, so the `/effort` picker offers all five tiers to every reasoning model and the adapter
+  attaches the chosen tier with **no clamp** — a model that rejects it returns an HTTP 400 that collapses to an
+  opaque `error: validation` on the chat surface. The same blind spot leaves `max_tokens` unclamped against any
+  per-model output ceiling. models.dev supplies `reasoning_options.values` (accepted tiers), `limit.output`,
+  `temperature`, `structured_output`, `modalities` — the data to **clamp-or-reject before the wire**.
+- **Pricing long-tail** (fixes finding **F5**, HIGH safety — *guardrailed, second*): any live-listed id absent
+  from the static `MODEL_PRICING` gets `priceKnown: false`, and the pre-egress budget governor then **catches
+  `UnknownModelError` and returns `{ kind: 'allow' }`** — so `max_cost_microcents`, a *safety* control, is
+  **silently skipped on every check** for a reachable-but-unpriced model, and realized cost is swallowed too.
+  models.dev's `cost.*` fills the long tail so the cap can enforce.
+
+**Tasks:**
+
+- **Cost-cap safety hardening** *(F5, data-source-INDEPENDENT — ship FIRST, before any fetch).* At the
+  pre-egress governor (`packages/core/src/engine/budget-governor.ts`), distinguish a genuinely-unpriced
+  self-hosted model (custom `base_url` — keep the deliberate allow-degrade, H4: never hard-fail a valid run)
+  from a **reachable first-party** model the registry simply hasn't caught up to, and gate the latter behind a
+  **strict-cap mode** so the blanket `UnknownModelError → allow` is not the only guard; re-enable realized-cost
+  visibility (`fallback-chain.ts` no longer swallows the record once the id is priced). This closes the safety
+  hole even before the models.dev tier lands.
+- **Per-model capability payload** *(F3 + F4 — ONE work item).* Widen `ModelCatalogEntry` / `ModelPricing` and
+  `modelSupportsReasoning` from a boolean to an **accepted-effort-tier set** plus `limit.output` and the
+  temperature/structured-output/modality flags. Clamp-or-reject **before the wire**: the OpenAI adapter
+  (`OPENAI_REASONING_EFFORT` / `buildCommonBody`) and the engine gate (`packages/core/src/engine/reasoning-effort.ts`)
+  coerce/drop a tier the target model does not accept; `resolveGenKnobs` (`agent-runner.ts`) and the session
+  path (`agent-session.ts`) clamp `max_tokens` to the model's output ceiling (mirroring the adjacent
+  `gateReasoningEffort`), leaving an unknown ceiling as provider-default. Fix the OpenAI adapter to emit
+  `max_completion_tokens` (not legacy `max_tokens`) for reasoning-capable ids. The `/effort` picker
+  (`effort-picker.ts`) offers only the model's accepted tiers.
+- **Non-opaque param errors** *(F3, near-term).* Before the full matrix lands, add a static accepted-tier
+  bridge table for the known OpenAI reasoning ids to clamp, **and** stop rendering a bare `error: validation`
+  for a param-400 (`chat-projection.ts`) — a static actionable hint mirroring `looksLikeContextOverflow`
+  ("this model rejected the reasoning-effort tier — pick another via `/effort`"), weighing the deliberate
+  privacy exclusion of provider `validation` text.
+- **The models.dev pricing tier** *(F5).* Add a `'models-dev'` `PricingSource` and tier to the **pure**
+  `mergeModelCatalog` (`packages/llm/src/model-catalog.ts`) with precedence **`registry > user > models-dev >
+  none`** — the tier may fill unknowns but must **never** lower `priceKnown` or override a verified/user price.
+  Surface a "community price — verify" provenance annotation in the picker.
+- **Host-side fetch + bundled floor** *(F5).* Fetch `https://models.dev/api.json` **host-side**, extending
+  `ModelRefreshService` (`apps/cli/src/engine/model-refresh.ts`) — **never** in `packages/core` or the pure
+  parts of `packages/llm` ([CLAUDE.md](../../../CLAUDE.md) #5); TLS-only, unauthenticated GET carrying **no**
+  keychain secret / prompt / model selection; the JSON normalized to Relavium types **before** the pure merge
+  (no vendor type crosses the [ADR-0011](../../decisions/0011-internal-llm-abstraction.md) seam). Bundle a
+  pinned snapshot floor (+ a committed CI regeneration script) as the offline/first-run default and the
+  integrity fallback; integrity-validate the payload (reject non-object / empty / below-floor-count /
+  shrank-past-ratio → last-known-good); ship a **disable-able** egress switch (local-first honesty).
+- **The ADR** *(extends [ADR-0064](../../decisions/0064-live-model-catalog.md)).* Record the hybrid
+  (bundled-floor + host-side runtime fetch), capability-first / pricing-second, the precedence + integrity
+  rules, the disable-able egress, the SSRF floor if the URL is ever made configurable (rides
+  [ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md)), the new capability fields' canonical
+  home, and resolve the six open questions — chiefly the **default egress posture** (on-by-default *fresh* vs
+  opt-in *local-first*) and **clamp vs reject**. It closes the `error: validation` gap in
+  [ADR-0066](../../decisions/0066-normalized-reasoning-effort-control.md). A **mandatory security review** of
+  untrusted-community-pricing-into-a-safety-control is a co-gate.
+- **Tests:** an over-ceiling `max_tokens` is clamped per model; an OpenAI reasoning id uses
+  `max_completion_tokens`; an out-of-range effort never reaches the wire and the picker offers only accepted
+  tiers; a reachable-but-unpriced id gets a models-dev price so the cap applies (or is refused under
+  strict-cap); a param-400 renders a non-opaque chat line; integrity validation rejects a shrunk/empty payload
+  and falls back to last-known-good; a lint-fence + purity test prove the fetch never enters the pure packages.
+
+**Acceptance:** a live-listed but registry-absent first-party model gets a models-dev price so
+`max_cost_microcents` enforces (or is refused under strict-cap) — **F5 closed**; selecting **any** listed model
+with **any** offered effort tier never produces an opaque `error: validation` (the picker offers only accepted
+tiers; the adapter/engine clamps-or-rejects before the wire with a legible message) — **F3 closed**; an
+over-ceiling `max_tokens` is clamped per model and OpenAI reasoning ids use `max_completion_tokens` — **F4
+closed**; the fetch runs host-side in `apps/cli` only (proven by lint-fence + purity test), is disable-able,
+integrity-validated, with a bundled snapshot floor; `ProviderId` stays the four adapters; no vendor type
+crosses the `@relavium/llm` seam; precedence never lowers `priceKnown` or overrides a verified/user price; the
+mandatory security review passes. **Required ADR:** Dynamic model-catalog enrichment (models.dev) — **new**,
+extends ADR-0064; rides ADR-0065 (SSRF / user-pricing precedent) and ADR-0066 (the effort-capability payload);
+[ADR-0011](../../decisions/0011-internal-llm-abstraction.md)-respecting (host-side data source, not a
+`listModels` call). Mandatory security review is a co-gate.
+
 ## Deferred-tasks pulled into this phase
 
 The [deferred-tasks.md](../deferred-tasks.md) triage (2026-07-08) mapped these confirmed-open items into
@@ -948,9 +1100,13 @@ scale-gated) remain in [deferred-tasks.md](../deferred-tasks.md) with their reas
 | M2.6-2 Authoring core shared | 2.6.A | `@relavium/authoring` + catalog-aware pre-flight |
 | M2.6-3 Conversational authoring | 2.6.B + 2.6.D | "define a workflow…" → valid YAML in the Home; `{{ctx.*}}` lands |
 | M2.6-4 The Home-managed CLI | 2.6.G + 2.6.H + 2.6.I + 2.6.J + 2.6.K | Every management task doable from Home; drillable, attributed run history; onboarding v2 |
-| M2.6-5 First-class experience | 2.6.C + 2.6.E + 2.6.L + 2.6.M | Toolbelt parity + settings/theme/i18n + chat polish |
+| M2.6-5 First-class experience | 2.6.C + 2.6.E + 2.6.L + 2.6.M + 2.6.Q | Toolbelt parity + settings/theme/i18n + chat polish + per-model capability matrix (effort/output-limit clamp) & models.dev pricing long-tail closing the cost-cap safety hole and the opaque `error: validation` |
 | M2.6-6 Orchestration foundation | 2.6.N | Catalog child-session spawn + standardized I/O + lineage + the artifact-store substrate |
 | M2.6-7 Nested execution & generation | 2.6.O + 2.6.P | On-the-fly generation (security-reviewed) + parallel fan-out + the authored `subworkflow` node (schema v1.1) — **phase close** |
+
+> The **F5 cost-cap safety subset** of **2.6.Q** (the data-source-independent budget-governor hardening) is a
+> candidate to pull earlier into **M2.6-4** given its severity — a safety control silently off, and it needs
+> no models.dev fetch. The full capability-matrix + pricing enrichment stays in M2.6-5.
 
 ## Sequencing & parallelization
 
@@ -976,6 +1132,12 @@ scale-gated) remain in [deferred-tasks.md](../deferred-tasks.md) with their reas
 | **2.6.N** | 2.6.H (lineage), 2.6.F (chat UX) | 2.6.O, 2.6.P, 2.6.M (invoke_agent acceptance) |
 | **2.6.O** | 2.6.N (spawn mechanism), 2.6.B (generation) | — (phase close) |
 | **2.6.P** | 2.6.N (lineage) | — (phase close) |
+| **2.6.Q** | — | — |
+
+2.6.Q (model-catalog enrichment) is **Day-1 independent** — the pure `mergeModelCatalog` and the host
+`ModelRefreshService` it extends already exist, and it does **not** need 2.6.F. It **soft-enhances** 2.6.C
+(the reseat `/effort` sub-step), 2.6.I (`/providers` per-model annotations), 2.6.L (`/settings` "models in
+use"), and 2.6.E's effort UX, but **hard-gates none** of them; the F5 cost-cap safety subset is standalone.
 
 ### Critical path
 
@@ -994,7 +1156,7 @@ scale-gated) remain in [deferred-tasks.md](../deferred-tasks.md) with their reas
 
 ### Parallelization tracks
 
-Seven independent streams after 2.6.F lands:
+Eight independent streams (2.6.Q joins as Day-1 independent — it does not need 2.6.F):
 
 | Track | Workstreams | Starts when | Produces |
 |-------|------------|-------------|----------|
@@ -1004,6 +1166,7 @@ Seven independent streams after 2.6.F lands:
 | **Run-ops** | 2.6.K | Day 1 | Shared resume core, budget resume, secret re-provide |
 | **Ctx** | 2.6.D | Day 1 | `{{ctx.*}}` interpolation, `agent run --input` |
 | **Toolbelt engine** | 2.6.M (tools only) | Day 1 | `edit_file`, `search_files`, `find_files`, `todo`, `ask_user`, `web_search` |
+| **Catalog enrichment** | 2.6.Q | Day 1 | models.dev capability matrix + pricing long-tail; cost-cap safety; effort/`max_tokens` clamp |
 | **Management** | 2.6.I, 2.6.J | Any time | Provider/MCP mgmt, onboarding v2 |
 
 Once their deps land:
@@ -1037,7 +1200,8 @@ flowchart LR
         M_t["2.6.M<br/>tools (<i>engine-pure</i>)"]
         I["2.6.I<br/>provider + MCP mgmt"]
         J["2.6.J<br/>onboarding v2"]
-        C["2.6.C<br/>/cost residual"]
+        C["2.6.C<br/>reseat transcript-carry + /cost"]
+        Q["2.6.Q<br/>catalog enrichment<br/>(capability + pricing)"]
     end
 
     subgraph AfterF["After 2.6.F (+ deps)"]
@@ -1144,6 +1308,7 @@ flowchart LR
 | 12 | *(new)* | Child-session **foundation** (extends ADR-0024/ADR-0036; parent-child lineage schema, standardized I/O contract, the **host artifact-store port** + central ephemeral root + fs-floor home-anchoring, catalog spawn, cost roll-up, abort propagation, depth/concurrency guardrails) | Drafted when 2.6.N starts | 2.6.N |
 | 13 | *(new)* | On-the-fly **generation + parallel orchestration security** (the generation-as-codegen threat model, schema-valid≠safe, tool-grant clamping, the parallel error-policy contract; sits on ADR-0060's taint precedent) — **mandatory security review is the ship-gate** | Drafted when 2.6.O starts | 2.6.O |
 | 14 | *(new)* | `subworkflow` node + **`schema_version` 1.1** additive migration (the first versioned-schema bump — additive/opt-in, subworkflow-only not `loop`; the nested-run event namespace; the dynamic-`invoke_workflow` decision) | Drafted when 2.6.P starts | 2.6.P |
+| 15 | *(new)* | Dynamic model-catalog enrichment (models.dev): per-model **capability matrix** (accepted reasoning-effort tiers, output ceiling, temperature/structured_output/modalities → adapter clamp-or-reject before the wire) + **pricing long-tail** with a new `models-dev` `PricingSource` and precedence `registry > user > models-dev > none` feeding the cost cap; bundled snapshot floor + disable-able host-side fetch + integrity validation; SSRF floor if the URL is configurable (extends ADR-0064; rides ADR-0065/ADR-0066; ADR-0011 seam-respecting) — **mandatory security review co-gate** | Drafted when 2.6.Q starts | 2.6.Q |
 
 [ADR-0058]: ../../decisions/0058-relavium-authoring-package-and-conversational-authoring.md
 [ADR-0059]: ../../decisions/0059-cli-mid-session-model-reseat.md
@@ -1157,7 +1322,7 @@ flowchart LR
 
 | Risk | Mitigation |
 |------|------------|
-| **Scope breadth** — sixteen workstreams invite drift | Milestone gating (M2.6-1..7); the additive arms (E/L parts, M render-v2) can defer individual items without breaking the spine; the pull-in table keeps deferred-tasks as the single overflow home |
+| **Scope breadth** — seventeen workstreams invite drift | Milestone gating (M2.6-1..7); the additive arms (E/L parts, M render-v2, 2.6.Q enrichment) can defer individual items without breaking the spine; the pull-in table keeps deferred-tasks as the single overflow home |
 | **Generation-as-codegen** — the model authors and runs agents (2.6.O) | Split out of the safe foundation (2.6.N) with its **own dedicated security review** as a ship-gate; schema-valid ≠ safe (the generated system-prompt is an injection surface); tool grants clamped to the parent's set, never escalated; secrets structurally excluded; sits on ADR-0060's taint precedent |
 | Full-screen renderer performance/fragility on ink | The floor bump unlocks ink 7; the component harness carries performance regression thresholds; the inline renderer is retained as a first-class fallback, and non-TTY paths never change |
 | Child-session cascade failure — a sub-agent failure kills the parent turn | Child failure surfaces as a structured error in the parent's tool result, never a crash; the parent agent can recover (retry with a different agent, rephrase the task, report to user); the `tool_failed` recovery path (2.5.H) handles the child-error class explicitly |

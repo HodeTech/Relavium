@@ -275,6 +275,15 @@ export const CostUpdatedEventSchema = z.object({
   // To attribute cost to a node-retry attempt, partition the sequenceNumber-ordered stream at the
   // node:started / node:retrying boundaries; do not key by (nodeId, attemptNumber) across the two families.
   attemptNumber: positiveInt.optional(),
+  // Whether this egress could be PRICED (ADR-0070 §6). ADDITIVE and OPTIONAL — an older reader ignores it.
+  //
+  // An unpriced model still emits this event with its REAL tokens and `costMicrocents: 0` (the CostTracker's
+  // UnknownModelError is swallowed on the cost path), which makes `cost 0 + tokens > 0` ambiguous between "we could
+  // not price it" and "the model is genuinely free" — an ambiguity that cannot be resolved from the event without
+  // this flag. The durable `session_costs` row records it as an `unpriced_calls` COUNTER rather than a boolean,
+  // because 2.6.Q can price a model MID-session, and a boolean on a per-(session, model) aggregate would become
+  // meaningless the moment a row folds both priced and unpriced egresses.
+  priced: z.boolean().optional(),
 });
 export type CostUpdatedEvent = z.infer<typeof CostUpdatedEventSchema>;
 
