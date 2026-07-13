@@ -7,7 +7,7 @@ import {
   type ModelCatalogStore,
   type ProviderStore,
 } from '@relavium/db';
-import { KNOWN_MODEL_IDS } from '@relavium/llm';
+import { priceModel } from '@relavium/llm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
@@ -119,13 +119,16 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
     });
   });
 
-  it('REJECTS a canonical model id (the built-in price always wins) — nothing is written', () => {
-    const canonical = KNOWN_MODEL_IDS[0];
-    if (canonical === undefined) throw new Error('test precondition: KNOWN_MODEL_IDS is non-empty');
-    const err = runThrows({ ...baseArgs, model: canonical });
-    expect(err.code).toBe('invalid_invocation');
-    expect(err.message).toContain('built-in price');
-    expect(catalog.listAll().find((m) => m.modelId === canonical)).toBeUndefined();
+  it('ACCEPTS a price for a model the CATALOG already knows — the override is the feature now', () => {
+    // This test asserted a REJECTION until ADR-0071 §1: the shipped table always won, so a user override would have
+    // been a silent no-op, and refusing it was the honest thing. Pricing resolves USER → CATALOG now, so a
+    // negotiated rate — or an enterprise discount, or a price our snapshot has not caught up with — takes effect.
+    // The user is the one holding the invoice.
+    expect(priceModel('gpt-5.5').inputPerMtokMicrocents).toBeGreaterThan(0); // the catalog does know it
+    expect(run({ ...baseArgs, model: 'gpt-5.5' }).code).toBe(0);
+    const written = catalog.listAll().find((m) => m.modelId === 'gpt-5.5');
+    expect(written).toBeDefined();
+    expect(written?.source).toBe('user');
   });
 
   it('REJECTS an unregistered provider (the catalog FK targets llm_providers) — nothing is written', () => {

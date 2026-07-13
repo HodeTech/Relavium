@@ -1,28 +1,24 @@
 import type { MediaBilledModality } from '@relavium/shared';
 
+import { catalogModel } from './catalog/lookup.js';
 import type { ProviderId } from './types.js';
 
 /**
- * The canonical model-pricing table — the in-code **source of truth** the adapters (1.C/1.G/1.H)
- * and the `CostTracker` (1.B) share, keyed on canonical model id. `model_catalog`
- * ([database-schema.md](../../../docs/reference/desktop/database-schema.md)) ships empty and is a
- * display projection *seeded from here*. Prices are **integer micro-cents per million tokens**
- * (1 micro-cent = 1e-8 USD) — no float, ever. The `input` / `output` / `cachedInput` prices map to
- * the DB's `*_per_mtok_microcents` columns; `cacheWrite` (Anthropic-only) is **in-code only** —
- * there is no `model_catalog` cache-write column, so it is never seeded or persisted.
+ * The **pricing contract** — what a price IS, not what any model costs
+ * ([ADR-0071](../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §1).
  *
- * USD/MTok → micro-cents/MTok is `usd × 1e8` (e.g. $5.00 → 500_000_000).
+ * The twelve-row hand-typed `MODEL_PRICING` table that used to live here is GONE. It was our own verified data
+ * once; by the time it was retired it had drifted from reality on two numbers (`claude-sonnet-4-6`'s output
+ * ceiling, `gpt-5.5`'s context window) and nobody had noticed, because nothing compared it to anything. That is
+ * not a maintenance failure — it is what a hand-typed table of someone else's prices always becomes.
  *
- * **Verification (2026-06-11).** Every row verified against the provider's live pricing page:
- * Anthropic via the claude-api pricing page (Opus 4.8 / Sonnet 4.6 / Haiku 4.5 unchanged; the
- * flagship **Claude Fable 5** added); OpenAI (developers.openai.com), Gemini (ai.google.dev), and
- * DeepSeek (api-docs.deepseek.com) re-fetched the same day. The prior
- * `gpt-4o` / `gpt-4o-mini` / `gemini-2.0-flash` / `gemini-1.5-pro` rows were retired — shut down or
- * removed from the provider catalogs — and replaced with the current flagship/mini and Pro/Flash
- * models. Gemini Pro/Flash are context-tiered: the ≤200K (Pro) and text/image/video (Flash) tier is
- * used here. **DeepSeek re-verified 2026-07-03** (api-docs.deepseek.com/quick_start/pricing): the current ids
- * are `deepseek-v4-flash` (default) and `deepseek-v4-pro` (premium), each serving non-thinking + thinking on one
- * id; the legacy `deepseek-chat`/`-reasoner` aliases deprecate 2026-07-24 15:59 UTC (re-verify / remove then).
+ * The numbers now come from the generated catalog (`catalog/snapshot.ts`, synced from models.dev) via
+ * {@link catalogPricing}, and from the USER, who outranks it: they hold the invoice, we hold a snapshot of a
+ * third-party aggregator. `priceModel` resolves **user → catalog → throw**.
+ *
+ * The shape survives because it is a contract: the `CostTracker` bills against it, the pre-egress governor
+ * estimates against it, and a `models pricing` row IS one. Prices are **integer micro-cents per million tokens**
+ * (1 micro-cent = 1e-8 USD) — no float, ever. USD/MTok → micro-cents/MTok is `usd × 1e8`.
  */
 
 export interface ModelPricing {
@@ -60,220 +56,41 @@ export interface ModelPricing {
   // Keyed by the canonical `MediaBilledModality` set (image/audio/video) via a mapped type, so the keys
   // stay in sync with `MEDIA_BILLED_MODALITIES` at compile time — never a hand-maintained literal.
   readonly mediaOutputRates?: { readonly [K in MediaBilledModality]?: number };
-  /**
-   * Whether this model supports a reasoning-effort control ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md)) —
-   * the static per-model capability the host projects to `resolveReasoning` (gating whether `reasoningEffort` is
-   * sent + whether the picker offers the effort selector). **Opt-in**: absent ⇒ `false` (the SAFE default — a
-   * non-reasoning model must never receive the field). Set `true` only for a model whose adapter maps the tier
-   * (so DeepSeek stays absent until its adapter mapping lands, even though v4 reasons — the effort is not
-   * controllable there yet).
-   */
-  readonly reasoning?: boolean;
+  // `reasoning?: boolean` lived here, and is GONE (ADR-0071 §6). "Does this model reason" is not the question the
+  // wire asks — `gpt-5.4-pro` reasons AND rejects `low`, `claude-haiku-4-5` reasons with no effort ladder at all,
+  // `gemini-2.5-pro` reasons and cannot be turned off. The catalog carries the CONTROL, and `effortTiersFor` reads
+  // it. A price is a price; it was never the right place to answer a capability question.
 }
 
-const USD_PER_MTOK_TO_MICROCENTS = 100_000_000; // 1 USD = 1e8 micro-cents
-/** USD-per-million-tokens → integer micro-cents-per-million-tokens. */
-const usd = (perMtok: number): number => Math.round(perMtok * USD_PER_MTOK_TO_MICROCENTS);
+// `MODEL_PRICING`, `CanonicalModelId`, `isCanonicalModelId`, `KNOWN_MODEL_IDS` lived here — all GONE (ADR-0071 §1).
+//
+// Twelve models, hand-typed from four pricing pages, re-verified by hand whenever someone remembered. The catalog
+// carries eighty, generated, with an output ceiling and a per-model reasoning control the table never had — and it
+// is regenerated by `pnpm sync:models` with money-guards that refuse a silent price change.
+//
+// `isCanonicalModelId` is not replaced by an equivalent. It asked "is this one of OUR models", and the honest
+// question is "can we price this one" — `catalogPricing(id) !== undefined`, or `priceModel`'s own throw. The
+// difference matters: a user-priced model is perfectly billable and was never "canonical".
 
-/** Canonical model id → pricing. The canonical id is what an authored agent/workflow names. */
-export const MODEL_PRICING = {
-  // --- Anthropic (verified 2026-06-11: platform.claude.com pricing page) ----------------------
-  'claude-fable-5': {
-    provider: 'anthropic',
-    nativeId: 'claude-fable-5',
-    displayName: 'Claude Fable 5',
-    reasoning: true,
-    contextWindowTokens: 1_000_000,
-    maxOutputTokens: 128_000,
-    inputPerMtokMicrocents: usd(10),
-    outputPerMtokMicrocents: usd(50),
-    cachedInputPerMtokMicrocents: usd(1), // cache read = 0.1× input
-    cacheWritePerMtokMicrocents: usd(12.5), // cache write (5-min TTL) = 1.25× input
-  },
-  'claude-opus-4-8': {
-    provider: 'anthropic',
-    nativeId: 'claude-opus-4-8',
-    displayName: 'Claude Opus 4.8',
-    reasoning: true,
-    contextWindowTokens: 1_000_000,
-    maxOutputTokens: 128_000,
-    inputPerMtokMicrocents: usd(5),
-    outputPerMtokMicrocents: usd(25),
-    cachedInputPerMtokMicrocents: usd(0.5), // cache read = 0.1× input
-    cacheWritePerMtokMicrocents: usd(6.25), // cache write (5-min TTL) = 1.25× input
-  },
-  'claude-sonnet-4-6': {
-    provider: 'anthropic',
-    nativeId: 'claude-sonnet-4-6',
-    displayName: 'Claude Sonnet 4.6',
-    reasoning: true,
-    contextWindowTokens: 1_000_000,
-    // 128_000, not the 64_000 this row carried until 2026-07-13. The two tables disagreed on exactly this one
-    // number, and the disagreement is the whole argument for ADR-0071: a hand-typed table drifts, silently, and
-    // nobody notices until something reads it. The CLI showed the user "max output 64,000" while the wire clamped
-    // at the catalog's 128,000. The generated catalog is the source of truth (§1); this row is retired in Step 6.
-    maxOutputTokens: 128_000,
-    inputPerMtokMicrocents: usd(3),
-    outputPerMtokMicrocents: usd(15),
-    cachedInputPerMtokMicrocents: usd(0.3),
-    cacheWritePerMtokMicrocents: usd(3.75),
-  },
-  'claude-haiku-4-5': {
-    provider: 'anthropic',
-    nativeId: 'claude-haiku-4-5',
-    displayName: 'Claude Haiku 4.5',
-    reasoning: true,
-    contextWindowTokens: 200_000,
-    maxOutputTokens: 64_000,
-    inputPerMtokMicrocents: usd(1),
-    outputPerMtokMicrocents: usd(5),
-    cachedInputPerMtokMicrocents: usd(0.1),
-    cacheWritePerMtokMicrocents: usd(1.25),
-  },
-
-  // --- OpenAI (verified 2026-06-11: developers.openai.com/api/docs/pricing) -------------------
-  'gpt-5.5': {
-    provider: 'openai',
-    nativeId: 'gpt-5.5',
-    displayName: 'GPT-5.5',
-    reasoning: true,
-    // 1_050_000, not the 1_000_000 this row carried until 2026-07-13 — the SECOND number the two tables
-    // disagreed on, and the one the review missed. The context-fullness footer reads it, so the user was shown a
-    // fullness percentage computed against a window the model does not have. The catalog is the source (ADR-0071 §1).
-    contextWindowTokens: 1_050_000,
-    maxOutputTokens: 128_000,
-    inputPerMtokMicrocents: usd(5),
-    outputPerMtokMicrocents: usd(30),
-    cachedInputPerMtokMicrocents: usd(0.5), // OpenAI auto-caches; no separate write charge
-  },
-  'gpt-5.4-mini': {
-    provider: 'openai',
-    nativeId: 'gpt-5.4-mini',
-    displayName: 'GPT-5.4 mini',
-    reasoning: true,
-    contextWindowTokens: 400_000,
-    maxOutputTokens: 128_000,
-    inputPerMtokMicrocents: usd(0.75),
-    outputPerMtokMicrocents: usd(4.5),
-    cachedInputPerMtokMicrocents: usd(0.075),
-  },
-
-  // --- Gemini (verified 2026-06-11: ai.google.dev/gemini-api/docs/pricing; context-tiered) ----
-  'gemini-2.5-flash': {
-    provider: 'gemini',
-    nativeId: 'gemini-2.5-flash',
-    displayName: 'Gemini 2.5 Flash',
-    reasoning: true,
-    contextWindowTokens: 1_048_576,
-    maxOutputTokens: 65_536,
-    inputPerMtokMicrocents: usd(0.3), // text/image/video tier (audio: $1.00/MTok)
-    outputPerMtokMicrocents: usd(2.5),
-    cachedInputPerMtokMicrocents: usd(0.03),
-  },
-  'gemini-2.5-pro': {
-    provider: 'gemini',
-    nativeId: 'gemini-2.5-pro',
-    displayName: 'Gemini 2.5 Pro',
-    reasoning: true,
-    contextWindowTokens: 1_048_576,
-    maxOutputTokens: 65_536,
-    inputPerMtokMicrocents: usd(1.25), // prompts ≤200K tier (>200K: $2.50 in / $15 out)
-    outputPerMtokMicrocents: usd(10),
-    cachedInputPerMtokMicrocents: usd(0.125),
-  },
-
-  // --- DeepSeek (verified 2026-07-03: api-docs.deepseek.com/quick_start/pricing; via the OpenAI-compatible
-  // adapter) — the current ids are `deepseek-v4-flash` (default tier) and `deepseek-v4-pro` (premium tier). Each
-  // serves BOTH non-thinking and thinking (default) modes on ONE id — the mode is a request param, not a
-  // separate model — so there is no per-mode row. Reasoning-effort IS controllable (ADR-0066): the create-chat-
-  // completion API takes a `thinking` object (`type: enabled|disabled` + `reasoning_effort: high|max`), mapped in
-  // openai.ts (`reasoning: true` below). The legacy `deepseek-chat` (non-thinking) / `deepseek-reasoner` (thinking)
-  // aliases are kept below until they deprecate on 2026-07-24 15:59 UTC and stay reasoning-uncontrollable.
-  'deepseek-v4-flash': {
-    provider: 'deepseek',
-    nativeId: 'deepseek-v4-flash',
-    displayName: 'DeepSeek-V4-Flash',
-    contextWindowTokens: 1_000_000,
-    maxOutputTokens: 384_000,
-    inputPerMtokMicrocents: usd(0.14),
-    outputPerMtokMicrocents: usd(0.28),
-    cachedInputPerMtokMicrocents: usd(0.0028), // cache-hit input
-    reasoning: true, // ADR-0066: v4 exposes a controllable `thinking` param (off / high / max)
-  },
-  'deepseek-v4-pro': {
-    provider: 'deepseek',
-    nativeId: 'deepseek-v4-pro',
-    displayName: 'DeepSeek-V4-Pro',
-    contextWindowTokens: 1_000_000,
-    maxOutputTokens: 384_000,
-    inputPerMtokMicrocents: usd(0.435),
-    outputPerMtokMicrocents: usd(0.87),
-    cachedInputPerMtokMicrocents: usd(0.003625), // cache-hit input
-    reasoning: true, // ADR-0066: v4 exposes a controllable `thinking` param (off / high / max)
-  },
-  // Legacy aliases — deprecating 2026-07-24 15:59 UTC. Kept so an existing agent/config that still names them
-  // keeps costing correctly until then; the pricing page no longer lists them, so these hold the last verified
-  // (2026-06-11) values — re-verify or remove at deprecation.
-  'deepseek-chat': {
-    provider: 'deepseek',
-    nativeId: 'deepseek-chat',
-    displayName: 'DeepSeek-V4-Flash (chat, legacy)',
-    contextWindowTokens: 1_000_000,
-    maxOutputTokens: 384_000,
-    inputPerMtokMicrocents: usd(0.14),
-    outputPerMtokMicrocents: usd(0.28),
-    cachedInputPerMtokMicrocents: usd(0.0028), // cache-hit input
-    deprecatedAt: '2026-07-24T15:59:00Z', // legacy alias retires 2026-07-24 15:59 UTC (see header)
-  },
-  'deepseek-reasoner': {
-    provider: 'deepseek',
-    nativeId: 'deepseek-reasoner',
-    displayName: 'DeepSeek-V4-Flash (reasoner, legacy)',
-    contextWindowTokens: 1_000_000,
-    maxOutputTokens: 384_000,
-    // The thinking-mode alias of v4-flash — thinking is a request PARAM, not a separate model, so it bills at the
-    // SAME v4-flash rate as `deepseek-chat` (the prior 0.435/0.87 was a stale R1-era carryover from before v4).
-    inputPerMtokMicrocents: usd(0.14),
-    outputPerMtokMicrocents: usd(0.28),
-    cachedInputPerMtokMicrocents: usd(0.0028),
-    deprecatedAt: '2026-07-24T15:59:00Z', // legacy alias retires 2026-07-24 15:59 UTC (see header)
-  },
-} as const satisfies Readonly<Record<string, ModelPricing>>;
-
-/** The canonical model ids the pricing table covers. */
-export type CanonicalModelId = keyof typeof MODEL_PRICING;
-
-const CANONICAL_MODEL_IDS = new Set<string>(Object.keys(MODEL_PRICING));
-
-/**
- * Type guard: is `value` a canonical model id the pricing table covers? Backed by a `Set` of own
- * keys, so it is immune to prototype-chain keys (`'toString'`, `'constructor'`, …) — unlike `in`.
- */
-export function isCanonicalModelId(value: string): value is CanonicalModelId {
-  return CANONICAL_MODEL_IDS.has(value);
-}
-
-/** Every canonical model id, for diagnostics (e.g. the unknown-model error). */
-export const KNOWN_MODEL_IDS: readonly CanonicalModelId[] =
-  Object.keys(MODEL_PRICING).filter(isCanonicalModelId);
-
-// `reasoningModelIdHeuristic` / `modelSupportsReasoning` lived here, and are GONE (ADR-0071 §6).
+// `reasoningModelIdHeuristic` / `modelSupportsReasoning` lived here too, and are GONE (ADR-0071 §6).
 //
 // They answered "does this model reason" by pattern-matching its id — `/^o\d/`, `startsWith('gpt-5')`, and so on —
 // and that is not the question the wire asks. `gpt-5.4-pro` reasons AND rejects `low`; `claude-haiku-4-5` reasons
 // and has no effort ladder at all; `gemini-2.5-pro` reasons and cannot be turned off. A boolean answers `true` to
-// every one of them, and the tier the user picked went straight to the provider.
-//
-// The reasoning CONTROL is per-model data now — `catalog/snapshot.ts` carries what each model actually publishes,
-// and `effortTiersFor(id)` is the one predicate every surface asks. A heuristic over an id cannot know any of it.
+// every one of them, and the tier the user picked went straight to the provider. `effortTiersFor(id)` is the one
+// predicate every surface asks now.
 
 /**
- * The context window (max tokens) for a canonical model id, or `undefined` for an unknown id (e.g. a custom
- * base-URL model absent from the catalog). A light, pure host-side helper — the SAME catalog value the adapters'
- * `LlmProvider.contextLimit` returns — for UI that needs the window WITHOUT going through the provider seam: the
- * ADR-0062 §7 footer context-fullness indicator (last input tokens ÷ window). A custom-model `undefined` degrades
- * the indicator to "not shown", exactly as it degrades auto-compaction (ADR-0062 §5).
+ * The context window for a model id, or `undefined` for one the catalog does not carry (a custom base-URL model).
+ * A light, pure host-side helper — the SAME value the adapters' `LlmProvider.contextLimit` returns — for UI that
+ * needs the window WITHOUT going through the provider seam: the ADR-0062 §7 footer context-fullness indicator
+ * (last input tokens ÷ window). A custom-model `undefined` degrades the indicator to "not shown", exactly as it
+ * degrades auto-compaction (ADR-0062 §5).
+ *
+ * It read the hand-typed table until 2026-07-13, and the table said `gpt-5.5`'s window was 1 000 000 while the
+ * generated catalog said 1 050 000 — so the fullness percentage every user saw was computed against a window the
+ * model does not have.
  */
 export function contextWindowForModel(model: string): number | undefined {
-  return isCanonicalModelId(model) ? MODEL_PRICING[model].contextWindowTokens : undefined;
+  return catalogModel(model)?.contextWindowTokens;
 }

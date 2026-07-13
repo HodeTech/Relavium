@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import { mergeModelCatalog, type ModelCatalogEntry } from './model-catalog.js';
-import { MODEL_PRICING, type ModelPricing } from './pricing.js';
+import { catalogPricing } from './catalog/pricing.js';
+import { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
+import type { ModelPricing } from './pricing.js';
 import type { ModelListing, ProviderId } from './types.js';
 
 // A fixed clock so the deprecation check is deterministic. deepseek-chat/-reasoner deprecate 2026-07-24 15:59Z.
@@ -15,7 +17,7 @@ const liveMap = (
   rows: ReadonlyArray<readonly [ProviderId, readonly ModelListing[]]>,
 ): ReadonlyMap<ProviderId, readonly ModelListing[]> => new Map(rows);
 
-/** A minimal user-supplied ModelPricing for an id absent from MODEL_PRICING (ADR-0065 USER tier). */
+/** A minimal user-supplied ModelPricing (ADR-0065 USER tier — which now OUTRANKS the catalog, ADR-0071 §1). */
 const userPricing = (provider: ProviderId): ModelPricing => ({
   provider,
   nativeId: 'x',
@@ -28,19 +30,19 @@ const userPricing = (provider: ProviderId): ModelPricing => ({
 });
 
 describe('mergeModelCatalog (ADR-0064 §6)', () => {
-  it('with no live/user data, surfaces every static model as registry-priced and available (static presence)', () => {
+  it('with no live/user data, surfaces every CATALOG model as catalog-priced and available', () => {
     const entries = mergeModelCatalog({ now: BEFORE_DEEPSEEK_DEPRECATION });
-    expect(entries).toHaveLength(Object.keys(MODEL_PRICING).length);
+    expect(entries).toHaveLength(Object.keys(CATALOG_SNAPSHOT).length);
     const opus = byId(entries, 'claude-opus-4-8');
     expect(opus).toMatchObject({
       provider: 'anthropic',
       displayName: 'Claude Opus 4.8',
-      pricingSource: 'registry',
+      pricingSource: 'catalog',
       priceKnown: true,
-      available: true, // no live data for anthropic -> static presence
+      available: true, // no live data for anthropic -> catalog presence
       deprecated: false,
     });
-    expect(opus?.pricing).toBe(MODEL_PRICING['claude-opus-4-8']);
+    expect(opus?.pricing).toEqual(catalogPricing('claude-opus-4-8'));
     expect(opus?.contextWindowTokens).toBe(1_000_000);
   });
 
@@ -96,14 +98,17 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(byId(entries, 'gpt-6-preview')?.displayName).toBe('gpt-6-preview');
   });
 
-  it('price precedence: the static registry WINS for a known id even when user pricing is supplied', () => {
+  it('price precedence: the USER WINS over the catalog, even for a model the catalog knows (THE FLIP)', () => {
+    // Asserted the opposite until ADR-0071 §1. Registry-first protected the user from mispricing a model WE had
+    // verified; the catalog is a generated snapshot of a third party, and the user is holding the invoice.
+    const mine = userPricing('anthropic');
     const entries = mergeModelCatalog({
-      userPricing: new Map([['claude-opus-4-8', userPricing('anthropic')]]),
+      userPricing: new Map([['claude-opus-4-8', mine]]),
       now: BEFORE_DEEPSEEK_DEPRECATION,
     });
     const opus = byId(entries, 'claude-opus-4-8');
-    expect(opus?.pricingSource).toBe('registry');
-    expect(opus?.pricing).toBe(MODEL_PRICING['claude-opus-4-8']); // NOT the user object
+    expect(opus?.pricingSource).toBe('user'); // …and the badge names the price we would actually bill at
+    expect(opus?.pricing).toBe(mine);
   });
 
   it('price precedence: the USER tier fills an UNKNOWN id', () => {
@@ -120,22 +125,25 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(entry?.maxOutputTokens).toBe(custom.maxOutputTokens);
   });
 
-  it('three tiers on one known id: registry wins price, live wins context, available by live membership', () => {
-    // claude-opus-4-8 present in ALL THREE tiers at once — the full ADR-0064 §6 per-field split must hold.
+  it('three tiers on one id: USER wins price, LIVE wins context, availability by live membership', () => {
+    // claude-opus-4-8 present in ALL THREE tiers at once — the full per-field split (ADR-0064 §6, ADR-0071 §1).
+    // The two authorities are deliberately different: the PROVIDER is freshest about its own model's limits, and
+    // the USER is authoritative about what they are being charged.
+    const mine = userPricing('anthropic');
     const entries = mergeModelCatalog({
       live: liveMap([['anthropic', [{ id: 'claude-opus-4-8', contextWindowTokens: 500_000 }]]]),
-      userPricing: new Map([['claude-opus-4-8', userPricing('anthropic')]]),
+      userPricing: new Map([['claude-opus-4-8', mine]]),
       now: BEFORE_DEEPSEEK_DEPRECATION,
     });
     const opus = byId(entries, 'claude-opus-4-8');
-    expect(opus?.pricingSource).toBe('registry'); // registry wins even with a live AND user tier present
-    expect(opus?.pricing).toBe(MODEL_PRICING['claude-opus-4-8']); // NOT the user object
+    expect(opus?.pricingSource).toBe('user');
+    expect(opus?.pricing).toBe(mine);
     expect(opus?.contextWindowTokens).toBe(500_000); // live wins for context
     expect(opus?.priceKnown).toBe(true);
     expect(opus?.available).toBe(true); // in the live list
   });
 
-  it('context/output: the LIVE value wins over the static one for BOTH fields when present, else static', () => {
+  it('context/output: the LIVE value wins over the catalog for BOTH fields when present, else the catalog', () => {
     const entries = mergeModelCatalog({
       live: liveMap([
         [
@@ -151,25 +159,30 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     // a model with no live entry of its own falls back to the static values
     const sonnet = byId(entries, 'claude-sonnet-4-6');
     expect(sonnet?.contextWindowTokens).toBe(
-      MODEL_PRICING['claude-sonnet-4-6'].contextWindowTokens,
+      CATALOG_SNAPSHOT['claude-sonnet-4-6']?.contextWindowTokens,
     );
-    expect(sonnet?.maxOutputTokens).toBe(MODEL_PRICING['claude-sonnet-4-6'].maxOutputTokens);
+    expect(sonnet?.maxOutputTokens).toBe(CATALOG_SNAPSHOT['claude-sonnet-4-6']?.maxOutputTokens);
   });
 
-  it('deprecation: a static deprecatedAt flags the model only once now >= the date', () => {
-    const before = mergeModelCatalog({ now: BEFORE_DEEPSEEK_DEPRECATION });
-    expect(byId(before, 'deepseek-chat')?.deprecated).toBe(false);
-    expect(byId(before, 'deepseek-chat')?.deprecatedAt).toBe('2026-07-24T15:59:00Z');
+  it('DEPRECATION COMES FROM THE PROVIDER NOW — a live date flags the model once now >= it', () => {
+    // The hand-typed table carried a `deprecatedAt` on two DeepSeek aliases. It is gone with the table (ADR-0071):
+    // models.dev does not publish a retirement date, and NO data source we have does — the provider is the only one
+    // who knows when the provider is retiring something. So it comes from the live list, or from the user, or not
+    // at all. A date typed into a file is a date that goes stale in a file.
+    const undeclared = mergeModelCatalog({ now: AFTER_DEEPSEEK_DEPRECATION });
+    expect(byId(undeclared, 'deepseek-chat')?.deprecated).toBe(false);
+    expect(byId(undeclared, 'deepseek-chat')?.deprecatedAt).toBeUndefined();
 
-    const after = mergeModelCatalog({ now: AFTER_DEEPSEEK_DEPRECATION });
-    expect(byId(after, 'deepseek-chat')?.deprecated).toBe(true);
-    // a non-deprecated model stays clear
-    expect(byId(after, 'deepseek-v4-flash')?.deprecated).toBe(false);
+    const declared = mergeModelCatalog({
+      live: liveMap([['deepseek', [{ id: 'deepseek-chat', deprecatedAt: '2026-07-24T15:59:00Z' }]]]),
+      now: AFTER_DEEPSEEK_DEPRECATION,
+    });
+    expect(byId(declared, 'deepseek-chat')?.deprecated).toBe(true);
+    expect(byId(declared, 'deepseek-chat')?.deprecatedAt).toBe('2026-07-24T15:59:00Z');
   });
 
-  it('deprecation is a UNION: the EARLIER of the static and live dates is effective', () => {
+  it('deprecation is still a UNION of live and user — the EARLIER date is effective', () => {
     const entries = mergeModelCatalog({
-      // deepseek-v4-flash has no static deprecation; a live list marks it deprecated earlier
       live: liveMap([
         ['deepseek', [{ id: 'deepseek-v4-flash', deprecatedAt: '2026-07-01T00:00:00Z' }]],
       ]),
@@ -179,14 +192,20 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(flash?.deprecatedAt).toBe('2026-07-01T00:00:00Z');
     expect(flash?.deprecated).toBe(true); // now (07-05) >= live date (07-01)
 
-    // when both are present, the earlier wins
+    // A user who knows a retirement date the provider's list has not published yet still gets the earlier one.
     const both = mergeModelCatalog({
       live: liveMap([
         ['deepseek', [{ id: 'deepseek-chat', deprecatedAt: '2027-01-01T00:00:00Z' }]],
       ]),
+      userPricing: new Map([
+        [
+          'deepseek-chat',
+          { ...userPricing('deepseek'), deprecatedAt: '2026-07-24T15:59:00Z' },
+        ],
+      ]),
       now: BEFORE_DEEPSEEK_DEPRECATION,
     });
-    expect(byId(both, 'deepseek-chat')?.deprecatedAt).toBe('2026-07-24T15:59:00Z'); // static earlier than live
+    expect(byId(both, 'deepseek-chat')?.deprecatedAt).toBe('2026-07-24T15:59:00Z');
   });
 
   it('an unparseable deprecatedAt is treated as not-deprecated (never throws)', () => {
@@ -199,8 +218,8 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(weird?.deprecatedAt).toBeUndefined();
   });
 
-  it('ignores a live listing whose id collides with a DIFFERENT provider’s static model (no field corruption)', () => {
-    // a rogue / mis-keyed 'deepseek' live list claims 'gpt-5.5' (a real OpenAI static id) with junk fields
+  it('ignores a live listing whose id collides with a DIFFERENT provider’s catalog model (no field corruption)', () => {
+    // a rogue / mis-keyed 'deepseek' live list claims 'gpt-5.5' (a real OpenAI catalog id) with junk fields
     const entries = mergeModelCatalog({
       live: liveMap([
         [
@@ -220,9 +239,9 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     });
     const gpt = byId(entries, 'gpt-5.5');
     expect(gpt?.provider).toBe('openai'); // stays openai
-    expect(gpt?.displayName).toBe(MODEL_PRICING['gpt-5.5'].displayName); // registry, NOT 'HIJACKED'
-    expect(gpt?.contextWindowTokens).toBe(MODEL_PRICING['gpt-5.5'].contextWindowTokens); // registry, not 1
-    expect(gpt?.maxOutputTokens).toBe(MODEL_PRICING['gpt-5.5'].maxOutputTokens);
+    expect(gpt?.displayName).toBe(CATALOG_SNAPSHOT['gpt-5.5']?.displayName); // the catalog, NOT 'HIJACKED'
+    expect(gpt?.contextWindowTokens).toBe(CATALOG_SNAPSHOT['gpt-5.5']?.contextWindowTokens); // the catalog, not 1
+    expect(gpt?.maxOutputTokens).toBe(CATALOG_SNAPSHOT['gpt-5.5']?.maxOutputTokens);
     expect(gpt?.deprecated).toBe(false); // the rogue deprecatedAt is dropped
     expect(gpt?.deprecatedAt).toBeUndefined();
     // openai has NO live list (only the mis-keyed deepseek one) -> gpt-5.5 falls back to static presence
@@ -293,14 +312,14 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(reversed.map((e) => e.modelId)).toEqual(forward.map((e) => e.modelId)); // insertion-order independent
   });
 
-  it('does not mutate MODEL_PRICING', () => {
-    const snapshot = JSON.stringify(MODEL_PRICING);
+  it('does not mutate the CATALOG SNAPSHOT', () => {
+    const snapshot = JSON.stringify(CATALOG_SNAPSHOT);
     mergeModelCatalog({
       live: liveMap([['anthropic', [{ id: 'claude-opus-4-8', contextWindowTokens: 1 }]]]),
       userPricing: new Map([['x', userPricing('openai')]]),
       now: AFTER_DEEPSEEK_DEPRECATION,
     });
-    expect(JSON.stringify(MODEL_PRICING)).toBe(snapshot);
+    expect(JSON.stringify(CATALOG_SNAPSHOT)).toBe(snapshot);
   });
 });
 

@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { estimateMaxNextCost, estimateMediaCost } from './budget-estimator.js';
-import { MODEL_PRICING, type ModelPricing } from './pricing.js';
+import { catalogPricing } from './catalog/pricing.js';
+import type { ModelPricing } from './pricing.js';
 
 describe('estimateMaxNextCost', () => {
   it('estimates output-only worst case at maxTokens', () => {
-    const model = MODEL_PRICING['claude-sonnet-4-6'];
+    const model = catalogPricing('claude-sonnet-4-6');
+    if (model === undefined) throw new Error('claude-sonnet-4-6 is not priced');
     // 10_000 output tokens @ $15/MTok = 150_000 micro-cents
     expect(estimateMaxNextCost('claude-sonnet-4-6', 10_000)).toBe(
       Math.round((10_000 * model.outputPerMtokMicrocents) / 1_000_000),
@@ -22,7 +24,8 @@ describe('estimateMaxNextCost', () => {
   });
 
   it('uses the cheaper mini rate for a mini model', () => {
-    const model = MODEL_PRICING['gpt-5.4-mini'];
+    const model = catalogPricing('gpt-5.4-mini');
+    if (model === undefined) throw new Error('gpt-5.4-mini is not priced');
     expect(estimateMaxNextCost('gpt-5.4-mini', 100_000)).toBe(
       Math.round((100_000 * model.outputPerMtokMicrocents) / 1_000_000),
     );

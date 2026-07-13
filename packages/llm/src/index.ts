@@ -129,17 +129,17 @@ export {
 } from './llm-error.js';
 
 // CostTracker + the canonical model-pricing table (1.B).
-// `modelSupportsReasoning` is GONE from this surface (ADR-0071 §6). It answered "does this model reason" — an id
-// heuristic over the hand-typed table — and that is not the question the wire asks: `gpt-5.4-pro` reasons AND
-// rejects `low`. It disagreed with the catalog on sixteen shipped models, and every disagreement was a tier shown
-// or accepted that the wire then dropped. `effortTiersFor` (below) is the one answer.
-export {
-  MODEL_PRICING,
-  KNOWN_MODEL_IDS,
-  isCanonicalModelId,
-  contextWindowForModel,
-} from './pricing.js';
-export type { ModelPricing, CanonicalModelId } from './pricing.js';
+// The hand-typed price table is GONE from this surface (ADR-0071 §1), and so are the id guards it fed:
+// `MODEL_PRICING`, `KNOWN_MODEL_IDS`, `isCanonicalModelId`, `CanonicalModelId`, and `modelSupportsReasoning`.
+//
+// `isCanonicalModelId` asked "is this one of OUR models". The honest question is "can we price this one", and a
+// user-priced model is perfectly billable while never having been canonical — `priceModel`'s own throw answers it.
+// `modelSupportsReasoning` asked "does this model reason", which is not the question the wire asks at all
+// (`gpt-5.4-pro` reasons AND rejects `low`); `effortTiersFor` is the answer.
+//
+// `ModelPricing` survives as the CONTRACT — the CostTracker bills against it and a `models pricing` row IS one.
+export { contextWindowForModel } from './pricing.js';
+export type { ModelPricing } from './pricing.js';
 // The pure live/static/user merge helper (ADR-0064 §6) — reused by every surface's model catalog / picker.
 export { mergeModelCatalog } from './model-catalog.js';
 export type { ModelCatalogEntry, MergeModelCatalogInput, PricingSource } from './model-catalog.js';
@@ -183,6 +183,9 @@ export { createCustomOpenAiProvider, defaultProviders, providerKind } from './pr
 // The reasoning CONTROL is per-model data now, not a per-adapter assumption. The host projects a model's
 // ACCEPTED TIERS from it (`resolveEffortTiers`), so a tier the model would reject never reaches the wire.
 export { catalogModel, effortTiersFor } from './catalog/lookup.js';
+// The generated snapshot itself + its pricing projection (ADR-0071 §1) — what `MODEL_PRICING` used to be.
+export { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
+export { catalogPricing, toPricing, PRICED_MODEL_IDS } from './catalog/pricing.js';
 export type { CatalogModel, CatalogPriceTier, ReasoningControls } from './catalog/catalog-model.js';
 export { acceptedTiers, canDisableReasoning } from './reasoning-wire.js';
 // The output cap (ADR-0071 §7) — an authored `max_tokens` held at or below the model's real ceiling. Exported

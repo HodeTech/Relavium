@@ -22,7 +22,7 @@ import { catalogModel } from '../catalog/lookup.js';
 import { isNonChatModelId } from '../model-kind.js';
 import { cappedMaxTokens, type EndpointKind } from '../output-cap.js';
 import { DEEPSEEK_WIRE, OPENAI_WIRE, acceptedTiers } from '../reasoning-wire.js';
-import { MODEL_PRICING } from '../pricing.js';
+import { CATALOG_SNAPSHOT } from '../catalog/snapshot.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
   CapabilityFlags,
@@ -442,17 +442,18 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId, key?: 
 // --- Live model discovery: the id-only list filter (ADR-0064 §3) ------------------------------
 
 /**
- * The MODEL_PRICING native ids + canonical keys for one OpenAI-compatible provider — unioned into the live
- * list so a **cost-eligible** id ALWAYS survives the id-family heuristic (ADR-0064 §3), even if a future
- * priced id doesn't match a `gpt`/`o`/`chat`/`deepseek` family.
+ * The CATALOG's ids for one OpenAI-compatible provider — unioned into the live list so a **cost-eligible** id
+ * ALWAYS survives the id-family heuristic (ADR-0064 §3), even if a priced id does not match a
+ * `gpt`/`o`/`chat`/`deepseek` family.
+ *
+ * It read the hand-typed `MODEL_PRICING` until ADR-0071. The set is eighty models wider now, which is the point —
+ * but it is NOT a licence to smuggle a non-chat model past the deny-list, so `isNonChatModelId` still filters it
+ * (an embedding is priced, and is still not something you can chat with; see `keepOpenAiModelId`).
  */
 export function pricedModelIdsFor(provider: ProviderId): ReadonlySet<string> {
   const ids = new Set<string>();
-  for (const [canonicalId, pricing] of Object.entries(MODEL_PRICING)) {
-    if (pricing.provider === provider) {
-      ids.add(canonicalId);
-      ids.add(pricing.nativeId);
-    }
+  for (const entry of Object.values(CATALOG_SNAPSHOT)) {
+    if (entry.provider === provider) ids.add(entry.modelId);
   }
   return ids;
 }

@@ -24,6 +24,19 @@
 > they asked for; they simply cannot do it in silence. The Related line's *"the static registry →
 > [pricing.ts](../../packages/llm/src/pricing.ts)"* pointer moves to the generated snapshot (rule 8).
 
+
+> **Amendment (2026-07-13, [ADR-0071](0071-models-dev-as-the-model-metadata-source.md) §1).** §2's precedence is
+> **REVERSED**: it is now **user → catalog → throw**, not static-first.
+>
+> The old rule — "the static registry always wins; the overlay fills an unknown id only" — protected the user from
+> mispricing a model *we* had verified by hand. That protection made sense while the table was ours. It is not ours
+> any more: the catalog is generated from models.dev, a third-party aggregator, and by the time the hand-typed
+> table was retired it had silently drifted from that catalog on two numbers. The user has a negotiated rate, an
+> enterprise discount, or simply a price our snapshot has not caught up with — and they are the one holding the
+> invoice. `models pricing` therefore no longer REFUSES a model the catalog already knows; overriding one is the
+> point of the command.
+
+
 ## Context
 
 Two latent defects, surfaced while scoping 2.5.G, frame this decision:

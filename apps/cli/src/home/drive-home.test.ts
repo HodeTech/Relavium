@@ -417,7 +417,10 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     props.controller.handleKey('', ENTER);
     await flush();
     expect(props.controller.getSnapshot().modelPicker).toBeDefined();
-    type(props, 'opus'); // filter to claude-opus-4-8 (registry-priced anthropic ⇒ available on the scripted key)
+    // Filter to EXACTLY one model. `'opus'` matched a single row while the shipped table had twelve; the generated
+    // catalog carries eighty, and several are Opus — so a substring filter now selects whichever sorts first, and
+    // the test would silently be asserting about a different model than it names (ADR-0071 §1).
+    type(props, 'claude-opus-4-8');
     props.controller.handleKey('', ENTER); // opus is reasoning-capable ⇒ the ADR-0066 effort sub-step (not an
     // immediate reseat). The picker advanced to the effort phase over the pending model.
     const effortPicker = props.controller.getSnapshot().modelPicker;

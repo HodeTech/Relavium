@@ -1,12 +1,8 @@
 import type { MediaBilledModality } from '@relavium/shared';
 
+import { catalogPricing, PRICED_MODEL_IDS } from './catalog/pricing.js';
 import { UnknownModelError } from './errors.js';
-import {
-  isCanonicalModelId,
-  KNOWN_MODEL_IDS,
-  MODEL_PRICING,
-  type ModelPricing,
-} from './pricing.js';
+import type { ModelPricing } from './pricing.js';
 import type { MediaUnitsEntry, Usage } from './types.js';
 
 /**
@@ -25,20 +21,29 @@ import type { MediaUnitsEntry, Usage } from './types.js';
 export type PricingOverlay = ReadonlyMap<string, ModelPricing>;
 
 /**
- * Look up pricing for a model id with precedence **static → overlay → throw** (ADR-0065 §2): the static
- * {@link MODEL_PRICING} wins for a known canonical id; the optional user `overlay` fills an UNKNOWN id; a truly
- * unknown id throws `UnknownModelError` (never a silent zero — the caller degrades cost governance to `allow`
- * with a loud, visible notice).
+ * Look up pricing for a model id: **user → catalog → throw**
+ * ([ADR-0071](../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §1).
+ *
+ * **The precedence flipped, deliberately.** It used to be static-first: the hand-typed registry won for a known
+ * id, and a user's `models pricing` row could only fill an id the registry LACKED. That made sense while the
+ * registry was our own verified table — and it is exactly wrong now. The catalog is a snapshot of a third-party
+ * aggregator; the user is the one holding the invoice. When they tell us their negotiated rate, their enterprise
+ * discount, or a price the snapshot has not caught up with, that is not a hint to be overruled by a file we
+ * generated last Tuesday. The user's number wins.
+ *
+ * A truly unknown id throws `UnknownModelError` — never a silent zero, which would bill a run at nothing and
+ * enforce a cost cap that can never trip. The caller degrades cost governance to `allow`, loudly.
  */
 export function priceModel(modelId: string, overlay?: PricingOverlay): ModelPricing {
-  if (isCanonicalModelId(modelId)) {
-    return MODEL_PRICING[modelId]; // the static registry is the pricing authority for a known id
+  const fromUser = overlay?.get(modelId);
+  if (fromUser !== undefined) {
+    return fromUser; // the user holds the invoice; we hold a snapshot of someone else's table
   }
-  const fromOverlay = overlay?.get(modelId);
-  if (fromOverlay !== undefined) {
-    return fromOverlay; // the user tier fills an id the static registry does not carry
+  const fromCatalog = catalogPricing(modelId);
+  if (fromCatalog !== undefined) {
+    return fromCatalog;
   }
-  throw new UnknownModelError(modelId, KNOWN_MODEL_IDS);
+  throw new UnknownModelError(modelId, PRICED_MODEL_IDS);
 }
 
 const TOKENS_PER_MTOK = 1_000_000;

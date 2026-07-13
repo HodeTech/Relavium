@@ -1,17 +1,17 @@
 import type { ModelCatalogListing } from '@relavium/db';
-import { MODEL_PRICING } from '@relavium/llm';
+import { CATALOG_SNAPSHOT } from '@relavium/llm';
 import { describe, expect, it } from 'vitest';
 
 import { buildMergedCatalog, buildUserPricing } from './model-catalog-view.js';
 
 /** Two known static anthropic model ids (derived from the registry so the test survives a pricing.ts edit). */
 function twoAnthropicIds(): readonly [string, string] {
-  const ids = Object.entries(MODEL_PRICING)
+  const ids = Object.entries(CATALOG_SNAPSHOT)
     .filter(([, pricing]) => pricing.provider === 'anthropic')
     .map(([id]) => id);
   const [present, absent] = ids;
   if (present === undefined || absent === undefined) {
-    throw new Error('test precondition: MODEL_PRICING must carry ≥2 anthropic models');
+    throw new Error('test precondition: the catalog must carry ≥2 anthropic models');
   }
   return [present, absent];
 }
@@ -40,7 +40,7 @@ function slugResolver(map: Record<string, string>): (uuid: string) => string {
 describe('buildMergedCatalog', () => {
   it('seeds the full static registry even with no live rows (never an empty picker)', () => {
     const view = buildMergedCatalog({ rows: [], providerSlug: slugResolver({}), now: 0 });
-    expect(view.entries).toHaveLength(Object.keys(MODEL_PRICING).length);
+    expect(view.entries).toHaveLength(Object.keys(CATALOG_SNAPSHOT).length);
     expect(view.refreshedAt).toBeUndefined();
     // With NO live data for any provider, every static model falls back to static presence (ADR-0064 §6).
     expect(view.entries.every((e) => e.available)).toBe(true);

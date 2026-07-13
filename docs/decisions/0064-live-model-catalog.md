@@ -54,6 +54,22 @@
 > The Related line above points at [pricing.ts](../../packages/llm/src/pricing.ts) as the static registry's
 > canonical home. After ADR-0071 that home is the generated snapshot under `packages/llm/src/catalog/` (rule 8).
 
+
+> **Amendment (2026-07-13, [ADR-0071](0071-models-dev-as-the-model-metadata-source.md) §1).** §3's static tier is
+> no longer the hand-typed `MODEL_PRICING`; it is the **generated catalog** (`packages/llm/src/catalog/snapshot.ts`,
+> synced from models.dev). Read every "static registry" in this ADR as "the catalog". Three consequences:
+>
+> 1. **The cost-eligibility union widened.** §3's "union-in any id present in `MODEL_PRICING`" now unions the
+>    catalog's ids — eighty models, not twelve — still filtered by the non-chat deny-list (an embedding is priced
+>    and is still not something you can chat with).
+> 2. **The pricing precedence FLIPPED.** §6 said the static registry always wins and the user tier fills an unknown
+>    id only. It now resolves **user → catalog**: the catalog is a snapshot of a third-party aggregator, and the
+>    user is the one holding the invoice. `pricingSource` reports `'catalog'` where it used to report `'registry'`.
+> 3. **Deprecation is no longer static.** §7's static `deprecatedAt` is gone: models.dev does not publish a
+>    retirement date, and no source we have does. It comes from the **live list** (and the user) alone — the
+>    provider is the only one who knows when the provider is retiring something.
+
+
 ## Context
 
 The model catalog is **static in-code**: `MODEL_PRICING` ([pricing.ts](../../packages/llm/src/pricing.ts))

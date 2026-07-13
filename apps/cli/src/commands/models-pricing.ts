@@ -1,5 +1,4 @@
 import type { ModelCatalogStore, ProviderStore } from '@relavium/db';
-import { isCanonicalModelId } from '@relavium/llm';
 
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
@@ -80,14 +79,11 @@ export function modelsPricingCommand(
   args: ModelsPricingCommandArgs,
   deps: ModelsPricingCommandDeps,
 ): ExitCode {
-  // Precedence guard (ADR-0065 §2): a canonical id always resolves to `MODEL_PRICING`, so a user override would be
-  // a silent no-op. Reject BEFORE any write — nothing is stored on a rejected invocation.
-  if (isCanonicalModelId(args.model)) {
-    throw new CliError(
-      'invalid_invocation',
-      `'${args.model}' already has a built-in price — a user override would never take effect (the static registry always wins). Nothing written.`,
-    );
-  }
+  // The guard that lived here REFUSED a price for a model the shipped table already knew, because the table always
+  // won and the override would have been a silent no-op. It is gone with the table (ADR-0071 §1): pricing now
+  // resolves USER → CATALOG, so overriding a catalog model is not a mistake to be prevented — it is the feature.
+  // The user has a negotiated rate, or an enterprise discount, or simply a price our snapshot has not caught up
+  // with, and they are the one holding the invoice.
   // Provider guard: the catalog row's FK targets `llm_providers`, so the provider must already be registered.
   const providerRow = deps.providers.list().find((p) => p.name === args.provider);
   if (providerRow === undefined) {

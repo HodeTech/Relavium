@@ -97,7 +97,7 @@ function makeModelsPort(
     modelId,
     provider,
     displayName: modelId,
-    pricingSource: 'registry',
+    pricingSource: 'catalog',
     priceKnown: true,
     available: true,
     deprecated: false,

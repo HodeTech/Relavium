@@ -1670,7 +1670,7 @@ function pickerEntry(
   return {
     provider: 'anthropic',
     displayName: partial.modelId,
-    pricingSource: 'registry',
+    pricingSource: 'catalog',
     priceKnown: true,
     available: true,
     deprecated: false,
