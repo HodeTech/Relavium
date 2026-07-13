@@ -491,9 +491,9 @@ so the remaining work is the projection and the inline decision.
 
 ## Cross-turn tool-call memory as a default-off toggle (2.6.C spin-off, 2026-07-12)
 
-> Raised while investigating a "`/models` reseat forgets tool calls" report (2.6.C / PR #75). Full analysis:
-> [docs/analysis/private/model-switch-tool-context-carry-2026-07-12.md](../analysis/private/model-switch-tool-context-carry-2026-07-12.md)
-> (Turkish). Recorded here — deliberately **not actioned** — pending a maintainer call on sequencing and risk.
+> Raised while investigating a "`/models` reseat forgets tool calls" report (2.6.C / PR #75). The investigation's
+> findings are restated in full below — every claim carries its own `file:line`, so this entry stands alone.
+> Recorded here — deliberately **not actioned** — pending a maintainer call on sequencing and risk.
 
 The premise behind the original report is wrong: the engine drops `tool_use`/`tool_result` pairs at **every**
 turn boundary, model switch or not — a deliberate design cut (ADR-0062 §6, deferred to Phase 3 by ADR-0059).
