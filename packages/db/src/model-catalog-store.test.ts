@@ -5,6 +5,7 @@ import { createClient, runMigrations, type DbClient } from './client.js';
 import {
   createModelCatalogStore,
   ModelCatalogCapabilitiesError,
+  type ModelCatalogListing,
   type ModelCatalogStore,
 } from './model-catalog-store.js';
 import { createProviderStore, type ProviderStore } from './provider-store.js';
@@ -864,6 +865,50 @@ describe('createModelCatalogStore (2.5.G / ADR-0064 — live-discovery cache)', 
     expect(listing?.inputCostPerMtokMicrocents).toBe(1234);
     expect(listing?.outputCostPerMtokMicrocents).toBe(5678);
     expect(listing?.cachedInputCostPerMtokMicrocents).toBe(42);
+  });
+
+  it('clearUserPricing resets the pricing columns, so a later partial re-price does not resurrect the cleared cache rate (review M3)', () => {
+    const read = (): ModelCatalogListing | undefined =>
+      store.listByProvider(providerId).find((m) => m.modelId === 'cache-clear-model');
+
+    // 1) Price it WITH a stated cache rate.
+    store.upsert({
+      providerId,
+      modelId: 'cache-clear-model',
+      displayName: 'Cache Clear',
+      source: 'user',
+      inputCostPerMtokMicrocents: 1_000_000,
+      outputCostPerMtokMicrocents: 2_000_000,
+      cachedInputCostPerMtokMicrocents: 5_000_000,
+      cachedInputStated: true,
+    });
+    expect(read()).toMatchObject({
+      cachedInputCostPerMtokMicrocents: 5_000_000,
+      cachedInputStated: true,
+    });
+
+    // 2) Clear it.
+    expect(store.clearUserPricing('cache-clear-model', providerId)).toBe(true);
+    expect(read()).toBeUndefined(); // deactivated ⇒ off every active-only reader
+
+    // 3) Re-price PARTIALLY — input/output only, NO cache rate. The upsert reuses the FK-stable (now inactive)
+    //    row. Before M3 the cleared row still carried cached=5_000_000/stated=true, and the omitted cache column
+    //    was preserved — silently billing cache tokens at the cleared rate as if the user had just stated it.
+    store.upsert({
+      providerId,
+      modelId: 'cache-clear-model',
+      source: 'user',
+      inputCostPerMtokMicrocents: 3_000_000,
+      outputCostPerMtokMicrocents: 4_000_000,
+    });
+
+    const repriced = read();
+    expect(repriced?.inputCostPerMtokMicrocents).toBe(3_000_000);
+    expect(repriced?.outputCostPerMtokMicrocents).toBe(4_000_000);
+    // THE FIX: the cleared cache rate does not come back, and it is no longer marked user-stated — so a reader
+    // derives the cache rate from the catalog discount instead of billing the stale $5.
+    expect(repriced?.cachedInputCostPerMtokMicrocents).toBe(0);
+    expect(repriced?.cachedInputStated).toBe(false);
   });
 
   it('providerRefreshedAt isolates by provider and ignores non-live rows', () => {

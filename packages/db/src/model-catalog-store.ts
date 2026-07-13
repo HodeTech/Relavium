@@ -608,9 +608,23 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
         // SOFT-deactivate, never DELETE — `model_catalog.id` is an FK target from five tables, so removing the row
         // would orphan the history that references it. Deactivating is enough: every reader is active-only, so the
         // overlay stops carrying the price and the model falls back to the catalog's, which is what "clear" means.
+        //
+        // RESET the user pricing columns while deactivating (review M3): `upsert` looks the row up by
+        // `(provider, model)` with `deletedAt IS NULL` — it ignores `isActive` — so a later partial re-price
+        // (`--input`/`--output`, no `--cached`) REUSES this FK-stable row and PRESERVES any column it omits. Left
+        // intact, a cleared `cachedInputCostPerMtokMicrocents`/`cachedInputStated` would resurrect as if the user
+        // had just stated it, silently billing cache-read tokens at the cleared rate. Zeroing them here means a
+        // reused row starts from a clean baseline, so an omitted cache rate derives from the catalog discount.
         const result = db
           .update(modelCatalog)
-          .set({ isActive: false, updatedAt: deps.now() })
+          .set({
+            isActive: false,
+            inputCostPerMtokMicrocents: 0,
+            outputCostPerMtokMicrocents: 0,
+            cachedInputCostPerMtokMicrocents: 0,
+            cachedInputStated: false,
+            updatedAt: deps.now(),
+          })
           .where(
             and(
               eq(modelCatalog.modelId, modelId),
