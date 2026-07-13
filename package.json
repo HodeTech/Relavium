@@ -23,8 +23,8 @@
     "lint:bundle-closure": "node tools/bundle-closure/check.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "sync:models": "pnpm --filter @relavium/llm build && node tools/sync-models-dev/sync.mjs",
-    "sync:models:check": "pnpm --filter @relavium/llm build && node tools/sync-models-dev/sync.mjs --check",
+    "sync:models": "pnpm turbo run build --filter=@relavium/llm && node tools/sync-models-dev/sync.mjs",
+    "sync:models:check": "pnpm turbo run build --filter=@relavium/llm && node tools/sync-models-dev/sync.mjs --check",
     "lint:tools": "eslint tools --ignore-pattern 'tools/lint-fixtures/**'"
   },
   "devDependencies": {

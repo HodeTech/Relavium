@@ -49,6 +49,9 @@ jobs:
           cache: pnpm
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
+      # `pnpm sync:models` builds `@relavium/llm` AND its `@relavium/shared` dependency first (via turbo `^build`) —
+      # the `@relavium/*` `exports` resolve only to `dist/`, which is gitignored, so a fresh runner has no built
+      # `@relavium/shared` and the sync's own `tsc`/dist import would otherwise die on TS2307 before any guard runs.
       # `pnpm sync:models` fetches models.dev, normalizes it, and applies the money guards. It fails RED on the ONE
       # thing that must be a human decision: a MOVED or VANISHED price on a model we already ship (a rate that
       # silently moves also silently moves how much the ADR-0028 cost cap protects). It does NOT red on benign
@@ -79,6 +82,12 @@ jobs:
           cache: pnpm
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
+      # Build the dependency closure first: the conformance suite imports `@relavium/shared`, whose `exports` resolve
+      # only to a gitignored `dist/`. Without this a fresh runner cannot resolve the cross-package entry and EVERY
+      # conformance file errors out before a single live probe — a red that looks identical to a real catalog drift.
+      # Turbo `^build` builds `@relavium/shared` ahead of `@relavium/llm` (mirrors ci.yml's pre-test build).
+      - name: Build workspace dependencies
+        run: pnpm turbo run build --filter=@relavium/llm
       # The conformance suite (fixtures + the `it.skipIf(<key> === '')` live cases). With the provider keys set here
       # the live cases execute — and a catalog that claims a tier a model rejects fails red — while a missing key
       # simply skips that provider's lane. Scoped to `src/conformance` so a flaky live case cannot widen the red
