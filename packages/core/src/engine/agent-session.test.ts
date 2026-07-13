@@ -816,6 +816,25 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
     offSession.start();
     await offSession.sendMessage('go');
     expect(off.effort()).toBeUndefined();
+
+    // …and the case BOTH of the above miss: a model that reasons, publishes a ladder, and simply does not carry
+    // THIS rung. "Everything" and "nothing" are both satisfied by a gate that only asks whether the set is empty;
+    // only a non-empty set that omits the requested tier tests the gate that is actually shipping.
+    const partial = capturing();
+    const withheld: string[] = [];
+    const partialSession = session(
+      harness([textTurn('ok')], {
+        resolveProvider: () => partial.provider,
+        resolveEffortTiers: () => new Set<ReasoningEffort>(['medium', 'high', 'max']),
+        onEffortWithheld: (result) => withheld.push(result.kind),
+      }).deps,
+      reader,
+    );
+    partialSession.setReasoningEffort('low'); // a REAL tier — just not one this model takes
+    partialSession.start();
+    await partialSession.sendMessage('go');
+    expect(partial.effort()).toBeUndefined(); // withheld, never promoted to the nearest acceptable tier
+    expect(withheld).toEqual(['rejected']); // …and the surface is TOLD, so the user is not billed in the dark
   });
 
   it('setReasoningEffort override wins over the authored tier on the NEXT turn — no reseat (ADR-0066 §5)', async () => {

@@ -161,6 +161,10 @@ export type { RunLoopInvariantCode } from './engine/invariant-error.js';
 // to the package — AgentSession (1.V) imports it intra-package, not from this curated surface.
 export { createAgentNodeExecutor } from './engine/agent-runner.js';
 export type { AgentRunnerDeps } from './engine/agent-runner.js';
+// The per-model reasoning-effort gate (ADR-0071 §6). The engine decides WHETHER a tier is sent; the host injects
+// which tiers a model takes and receives the verdict when one is withheld, so it can say so in its own voice.
+export { effortToSend, gateReasoningEffort } from './engine/reasoning-effort.js';
+export type { EffortGateResult, ResolveEffortTiers } from './engine/reasoning-effort.js';
 export { DEFAULT_AGENT_TURN_LIMITS } from './engine/agent-turn.js';
 export type { AgentTurnLimits, PreEgressHook } from './engine/agent-turn.js';
 

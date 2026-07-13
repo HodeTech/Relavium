@@ -7,7 +7,7 @@ import { sanitizeInline } from './chat-projection.js';
 import { colorProps, dimProps } from './projection.js';
 
 /**
- * The shared reasoning-effort tier list (ADR-0066) — the fixed five-row picker body used by BOTH the `/models`
+ * The shared reasoning-effort tier list (ADR-0066/0071) — the per-model picker body used by BOTH the `/models`
  * effort sub-step ({@link model-picker-view.tsx}'s `EffortSubList`, reached after choosing a reasoning model on a
  * reseat surface) and the standalone `/effort` overlay ({@link effort-picker.ts}). One canonical presentation so the
  * two entry points can never drift: each tier + its one-line hint, the highlighted row in cyan, and a `✓` on the
@@ -37,7 +37,7 @@ export interface EffortTierListProps {
 export function EffortTierList(props: Readonly<EffortTierListProps>): ReactElement {
   const { tiers, selected, current, labelSuffix, footer, color } = props;
   // Re-clamp for display: a caller could pass an out-of-range index (a shrunk source, a stale render) — never index
-  // past the fixed five-row list.
+  // past the end of a list whose length now varies per model (`gpt-5-pro` has ONE row).
   const highlighted = Math.max(0, Math.min(selected, tiers.length - 1));
   const suffix = labelSuffix === undefined || labelSuffix.length === 0 ? '' : ` · ${labelSuffix}`;
   return (

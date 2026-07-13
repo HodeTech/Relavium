@@ -8,7 +8,7 @@ import {
   type SessionStreamHandleEvent,
   type UserCommandOutcome,
 } from '@relavium/core';
-import { modelSupportsReasoning, type ProviderId } from '@relavium/llm';
+import type { ProviderId } from '@relavium/llm';
 import {
   EFFORT_TIER_HINT,
   REASONING_EFFORTS,
@@ -44,6 +44,11 @@ import {
   type ChatMode,
 } from '../chat/chat-mode.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
+import {
+  effortRejectedNote,
+  effortTiersFor,
+  effortUnavailableNote,
+} from '../render/tui/effort-picker.js';
 import {
   createSessionPersister,
   makeCatalogIdResolver,
@@ -523,6 +528,10 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     mcpRegistrations: config.mcpServers,
     ...(resolvePrice === undefined ? {} : { resolvePrice }),
     onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
+    // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
+    // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
+    // why the knob they set did nothing.
+    onEffortWithheld: (note) => emitLiveNotice(deps.io, note),
   });
   // The session now OWNS the live MCP connections (built.closeMcp). `runReplLoop`'s finally is the steady-state
   // teardown, but the build→loop window (opening history.db can throw) runs first — guard it so a pre-loop fault
@@ -682,6 +691,10 @@ export async function chatResumeCommand(
       mcpRegistrations: config.mcpServers,
       resolvePrice,
       onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
+    // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
+    // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
+    // why the knob they set did nothing.
+    onEffortWithheld: (note) => emitLiveNotice(deps.io, note),
     });
     closeMcp = resumed.closeMcp;
     surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
@@ -894,11 +907,27 @@ export function createChatModeControl(
     prompt,
   });
   applyChatMode(modeEnv, store.getSnapshot().mode);
-  // ADR-0066: seed the footer's effort indicator from the session's initial effective tier (override ?? agent),
-  // shown only when the bound model is reasoning-capable (a non-reasoning model has no controllable tier, so its
-  // baked config default is not surfaced). Mirrors applyChatMode's initial-mode seed above.
-  const capable = modelSupportsReasoning(built.agent.model);
-  store.setReasoningEffort(capable ? built.session.reasoningEffort : undefined);
+  // ADR-0066/0071: seed the footer's effort indicator from the session's initial effective tier (override ??
+  // agent), shown only when the bound model actually has a tier to control. Mirrors applyChatMode's seed above.
+  //
+  // The predicate is `effortTiersFor` — the SAME one the picker, the `/effort` command and the engine's gate ask.
+  // It used to be `modelSupportsReasoning`, an id heuristic over the hand-typed pricing table, and the two
+  // disagreed on sixteen shipped models: on `claude-sonnet-4-5` the picker offered five tiers and the engine sent
+  // the chosen one, while this line decided the model was not capable and suppressed the footer — so the user was
+  // billed for extended thinking with no indicator that it was on, and `/effort` could never show a ✓ on the tier
+  // it had itself just bound.
+  const tiers = effortTiersFor(built.agent.model);
+  const seeded = built.session.reasoningEffort;
+  const seedAccepted = seeded !== undefined && tiers.includes(seeded);
+  store.setReasoningEffort(seedAccepted ? seeded : undefined);
+  if (seeded !== undefined && !seedAccepted) {
+    // A tier the CURRENT model will not take — and the config keeps a `reasoning_effort` across a model-only
+    // default write, so this is the ordinary way to arrive here: set `off` on a model that could disable, switch
+    // the default model, and the tier stays behind. It is inert now, and being inert SILENTLY is the expensive
+    // half: a user who deliberately turned reasoning off on `gemini-2.5-pro` — which cannot disable thinking at
+    // all — would otherwise see `effort: off` in the footer while Google thought, and billed, on every turn.
+    store.notice(effortRejectedNote(built.agent.model, seeded, tiers));
+  }
   return {
     onAbort: () => {
       built.session.abort(); // void-returning: block body so it never forwards abort()'s return value
@@ -913,7 +942,11 @@ export function createChatModeControl(
     // ReseatTarget); so on a non-reasoning model the tier is stored but inert until the very next same-model turn.
     onSetEffort: (effort) => {
       built.session.setReasoningEffort(effort);
-      store.setReasoningEffort(capable ? effort : undefined);
+      // The footer shows the tier ONLY if the model will actually take it. Every caller of this setter already
+      // filters — the overlay lists only accepted tiers, `/effort <tier>` refuses the rest — so this is the
+      // belt to their braces, and it is the line that used to lie: it asked a boolean that said `true` for
+      // `claude-sonnet-4-5` and `false` for models the picker was happily binding tiers on.
+      store.setReasoningEffort(effort !== undefined && tiers.includes(effort) ? effort : undefined);
     },
   };
 }
@@ -1167,18 +1200,24 @@ export function createChatLineHandler(
     // non-reasoning model the tier is stored but gated off at send, so the note says it will be ignored.
     setReasoningEffort: (effortArg) => {
       const requested = effortArg.trim();
-      const capable = modelSupportsReasoning(built.agent.model);
+      // The tiers THIS model takes — the same list the overlay renders, so the typed form and the interactive form
+      // cannot disagree. They did: the overlay was migrated to the catalog while `/effort <tier>` kept validating
+      // against the fixed five, and on twenty-four shipped models it would happily accept a tier the engine then
+      // silently dropped. `/effort low` on `gpt-5.4-pro` (ladder: medium, high, xhigh) said "applies to your next
+      // message", showed `low` in the footer, and sent nothing — the user paid for the provider's default.
+      const offered = effortTiersFor(built.agent.model);
       if (requested.length === 0) {
-        // Bare `/effort`: show the current tier + EXPLAIN each one (a discovery affordance — the palette submits
-        // this bare form), marking the active one. On a non-reasoning model, say so plainly instead of a tier.
+        // Bare `/effort`: show the current tier + EXPLAIN each one it can actually take (a discovery affordance —
+        // the palette submits this bare form), marking the active one.
         const current = store.getSnapshot().reasoningEffort;
-        const rows = REASONING_EFFORTS.map(
+        if (offered.length === 0) {
+          emitOutput(`reasoning effort: ${effortUnavailableNote(built.agent.model)}`);
+          return;
+        }
+        const rows = offered.map(
           (e) => `  ${e.padEnd(8)} ${EFFORT_TIER_HINT[e]}${e === current ? '  (current)' : ''}`,
         );
-        const header = capable
-          ? `reasoning effort: ${current ?? 'default (provider)'}`
-          : `reasoning effort: ${built.agent.model} has no controllable reasoning tier — a tier would be ignored`;
-        emitOutput(`${header}\n${rows.join('\n')}`);
+        emitOutput(`reasoning effort: ${current ?? 'default (provider)'}\n${rows.join('\n')}`);
         return;
       }
       const tier = REASONING_EFFORTS.find((e) => e === requested);
@@ -1188,12 +1227,14 @@ export function createChatLineHandler(
         );
         return;
       }
+      if (!offered.includes(tier)) {
+        // A REAL tier that THIS model rejects. Refuse it here rather than binding it and letting the gate drop it
+        // at send: a tier that is set, displayed, and never sent is the silent-billing bug this work removes.
+        emitOutput(effortRejectedNote(built.agent.model, tier, offered));
+        return;
+      }
       modeControl.onSetEffort(tier);
-      emitOutput(
-        capable
-          ? `reasoning effort: ${tier} — applies to your next message.`
-          : `reasoning effort: ${tier} set, but ${built.agent.model} has no reasoning control — it will be ignored.`,
-      );
+      emitOutput(`reasoning effort: ${tier} — applies to your next message.`);
     },
     // `/thinking` (2.5.H): toggle the collapsible reasoning panel — a pure store-view flip (no session/engine
     // effect), mirroring the Ctrl+T keybind. Report the resulting state so the toggle is confirmed (the panel only

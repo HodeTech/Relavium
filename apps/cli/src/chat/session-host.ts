@@ -12,11 +12,12 @@ import {
   type SessionDeps,
   type SessionEventSink,
   type SessionHandle,
+  type EffortGateResult,
   type SessionResumeState,
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
-import { acceptedTiers, catalogModel, type PricingOverlay, type ProviderId } from '@relavium/llm';
+import { effortTiersFor, type PricingOverlay, type ProviderId } from '@relavium/llm';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
 import type {
   AgentSessionRecord,
@@ -34,6 +35,7 @@ import { createProviderResolver, type ProviderResolver } from '../engine/provide
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
 import { CliError } from '../process/errors.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
+import { effortRejectedNote, effortUnavailableNote } from '../render/tui/effort-picker.js';
 import { resolveChatAgent } from './agent-source.js';
 
 /**
@@ -106,6 +108,13 @@ export interface BuildChatSessionOptions {
    */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
   /**
+   * Sink for a WITHHELD reasoning tier (ADR-0071 §6) — the bound model does not accept the effective tier, so the
+   * field is not sent. Same channel shape as {@link BuildChatSessionOptions.onBudgetWarning}: a session has no
+   * event for it, so the surface is told directly and puts the sentence in the transcript's notice channel.
+   * Absent ⇒ a no-op, and the tier is still withheld (never guessed at).
+   */
+  readonly onEffortWithheld?: (note: string) => void;
+  /**
    * The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a `ReadonlyMap<modelId, ModelPricing>` the command projects
    * from the `model_catalog` `source='user'` rows (via `buildUserPricing`). It flows into BOTH the pre-egress
    * governor (so a user-priced model is enforced by `[chat].max_cost_microcents`) AND `SessionDeps.resolvePrice`
@@ -166,7 +175,13 @@ const DEFAULT_FS_SCOPE = 'sandboxed' as const;
 /** The fields {@link buildSessionRuntime} reads — the platform-capability inputs shared by a fresh + resumed session. */
 type SessionRuntimeOptions = Pick<
   BuildChatSessionOptions,
-  'chat' | 'now' | 'providers' | 'toolHost' | 'onBudgetWarning' | 'resolvePrice'
+  | 'chat'
+  | 'now'
+  | 'providers'
+  | 'toolHost'
+  | 'onBudgetWarning'
+  | 'onEffortWithheld'
+  | 'resolvePrice'
 >;
 
 /**
@@ -226,14 +241,24 @@ function buildSessionRuntime(
   const deps: SessionDeps = {
     resolveProvider: providers.resolveProvider,
     keyFor: providers.keyFor,
-    // ADR-0066: the per-model reasoning capability (static registry projection) — gates whether the authored
-    // reasoning_effort tier is sent (a non-reasoning / custom model returns false, so the field is withheld).
     // ADR-0071 §6: the host projects WHICH TIERS the model accepts, not merely whether it reasons. `gpt-5.4-pro`
-    // reasons and rejects `low`; a boolean said `true` and let that straight through to a 400.
-    resolveEffortTiers: (model) => {
-      const entry = catalogModel(model);
-      return entry === undefined ? undefined : acceptedTiers(entry.provider, entry.reasoning);
-    },
+    // reasons and rejects `low`; the boolean this replaced said `true` and let that straight through to a 400.
+    // The seam's `effortTiersFor` IS the projection — passed by reference, not re-derived, so this host cannot
+    // drift from the picker that renders the same answer.
+    resolveEffortTiers: effortTiersFor,
+    // …and when the gate withholds, SAY SO. The engine cannot print; it hands back the verdict (which carries the
+    // tiers the model would take) and the surface turns it into the one sentence every path uses.
+    ...(opts.onEffortWithheld === undefined
+      ? {}
+      : {
+          onEffortWithheld: (result: EffortGateResult, model: string) => {
+            opts.onEffortWithheld?.(
+              result.kind === 'rejected'
+                ? effortRejectedNote(model, result.requested, result.accepted)
+                : effortUnavailableNote(model),
+            );
+          },
+        }),
     registry,
     tools,
     sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
@@ -415,6 +440,12 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
 export interface BuildResumedChatSessionOptions {
   /** The resolved `[chat]` block (turn cap, cost cap) — applied to the resumed session's deps. */
   readonly chat: ResolvedChatConfig;
+  /**
+   * Sink for a WITHHELD reasoning tier (ADR-0071 §6) — see {@link BuildChatSessionOptions.onEffortWithheld}. A
+   * RESUMED session is where a stale tier is likeliest: the snapshot carries the tier the agent was authored
+   * with, and the catalog may have moved under it since.
+   */
+  readonly onEffortWithheld?: (note: string) => void;
   /** The loaded session record (its frozen `agentSnapshot` + `context` rebind the session). */
   readonly record: AgentSessionRecord;
   /** The session's persisted transcript, in any order ({@link reconstructSessionState} sorts it). */

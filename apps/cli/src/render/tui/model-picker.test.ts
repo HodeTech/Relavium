@@ -325,7 +325,11 @@ describe('foldModelPickerKey — the ADR-0066 effort sub-step', () => {
     const step = foldModelPickerKey('', { escape: true }, effortPhase());
     expect(step).toEqual({
       kind: 'state',
-      state: effortPhase({ phase: 'model', pending: undefined }),
+      // `effortTiers` clears WITH `pending`. They are one fact — "the tiers of the model being confirmed" — and
+      // leaving the list behind makes `pending === undefined && effortTiers.length > 0` a representable state that
+      // the field's own invariant denies. Inert today (the view renders the sub-list only in the effort phase),
+      // and precisely the kind of half-cleared state that a later change reads as still-valid.
+      state: effortPhase({ phase: 'model', pending: undefined, effortTiers: [] }),
     });
   });
 

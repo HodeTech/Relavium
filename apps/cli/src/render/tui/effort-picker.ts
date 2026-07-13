@@ -1,4 +1,4 @@
-import { acceptedTiers, catalogModel } from '@relavium/llm';
+import { catalogModel, effortTiersFor as seamEffortTiersFor } from '@relavium/llm';
 import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
 
 import type { ModelPickerKey } from './model-picker.js';
@@ -7,14 +7,17 @@ import type { ModelPickerKey } from './model-picker.js';
  * The standalone `/effort` overlay ([ADR-0066](../../../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §6)
  * — a keyboard-owning submode (like the `/models` picker + the `/` palette) that lists the reasoning-effort tiers and,
  * on Enter, pushes the chosen tier as the session's per-turn override via the surface's effort setter (NO reseat —
- * effort changes neither provider, pricing, nor the plan). It is a FIXED five-row list: no catalog, filter, or
- * refresh — so it needs no port and no async load, unlike the `/models` picker.
+ * effort changes neither provider, pricing, nor the plan).
+ *
+ * The rows come from the CATALOG, per model ([ADR-0071](../../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §6)
+ * — it used to be a fixed five-row list, and that was the bug: `gpt-5-pro` accepts exactly one of them.
+ * It still needs no port and no async load; the catalog is a synchronous embedded snapshot.
  *
  * Two surfaces route the SAME fold (standalone `relavium chat` + the in-Home live chat); the accept is UNIFORM (call
  * `onSetEffort` + note), so — unlike the model picker's surface-divergent reseat-vs-default-write accept — no
- * per-surface branching lives here. Offered ONLY when the bound model is reasoning-capable; a non-reasoning model
- * never opens this overlay (the surface falls through to the `/effort` notice instead). The pure fold + state live
- * here; the ink view is the shared {@link effort-tier-list.tsx} `EffortTierList`.
+ * per-surface branching lives here. Offered only when the model has a tier to offer; a model with none never opens
+ * this overlay (the surface shows {@link effortUnavailableNote} instead). The pure fold + state live here; the ink
+ * view is the shared {@link effort-tier-list.tsx} `EffortTierList`.
  */
 export interface EffortPickerState {
   /**
@@ -43,29 +46,69 @@ export type EffortPickerStep =
 
 /**
  * Whether a surface should open the interactive `/effort` overlay: the per-turn effort setter must be wired AND the
- * bound model reasoning-capable. A non-reasoning model (or no bound model yet / no setter) returns false, so the
- * surface falls through to the informational `/effort` notice rather than opening a dead overlay. Shared by the
- * standalone chat + the in-Home chat so the gate can never diverge between them.
+ * bound model must have at least one tier to OFFER. A model with none — no reasoning, no published knob, or no
+ * catalog row at all — returns false, so the surface shows {@link effortUnavailableNote} rather than a dead overlay.
+ * Shared by the standalone chat + the in-Home chat so the gate can never diverge between them.
  */
 export function canControlEffort(model: string | undefined, setterWired: boolean): boolean {
   return setterWired && model !== undefined && effortTiersFor(model).length > 0;
 }
 
 /**
- * The tiers a model accepts, in canonical order — the picker's whole source of truth.
+ * The tiers a model accepts, **in canonical order** — an ordering projection of `@relavium/llm`'s
+ * {@link acceptedTiers}, and nothing more.
  *
- * Empty when the model does not reason, exposes no controllable tier (`deepseek-reasoner`), or is not in the
- * catalog at all (a custom endpoint). All three mean the same thing to a surface: there is nothing to offer, so
- * the overlay never opens and the informational notice shows instead.
+ * The seam owns the ANSWER; this owns only how it is listed (a `Set` has no order a UI can rely on, and the rows
+ * must read `off → low → medium → high → max` every time). It deliberately does not re-derive the set from the
+ * catalog: the CLI was carrying three hand-written copies of `catalogModel(m)` + `acceptedTiers(...)`, plus a
+ * fourth, older boolean that disagreed with all of them, and an adversarial review found sixteen shipped models
+ * where the picker and the footer contradicted each other as a result.
+ *
+ * Empty when the model does not reason, publishes no controllable tier (`deepseek-reasoner`), or is not in the
+ * catalog at all (a custom endpoint, or one newer than our snapshot). All three mean the same thing to the
+ * overlay — there is nothing to offer — but NOT the same thing to the user, so the surfaces distinguish them in
+ * what they say (see {@link effortUnavailableNote}).
  */
 export function effortTiersFor(model: string): readonly ReasoningEffort[] {
-  const entry = catalogModel(model);
-  if (entry === undefined) return [];
-  const accepted = acceptedTiers(entry.provider, entry.reasoning);
+  const accepted = seamEffortTiersFor(model);
   return REASONING_EFFORTS.filter((tier) => accepted.has(tier)); // canonical order, never the Set's
 }
 
-/** Clamp an index to `0..count-1` (or 0 when the list is empty — never for the fixed non-empty tier list). */
+/**
+ * Why this model has no effort control — the sentence a surface shows instead of a dead overlay.
+ *
+ * The two causes need different words because they need different ACTIONS. A model we have no catalog row for
+ * might simply be newer than our snapshot, and a refresh could give it back its control; a model that publishes
+ * no knob will never have one, however often we refresh. Saying "no reasoning control" for both, as the old
+ * heuristic effectively did, tells the user nothing they can act on.
+ */
+export function effortUnavailableNote(model: string): string {
+  return catalogModel(model) === undefined
+    ? `${model} is not in Relavium's model catalog, so its reasoning control is unknown — no tier is sent. Run \`relavium models refresh\` if the model is newer than the catalog.`
+    : `${model} publishes no controllable reasoning tier — a tier would be ignored.`;
+}
+
+/**
+ * Why THIS tier is not available on this model, and what is — the sentence for a tier the model rejects.
+ *
+ * The engine's gate computes exactly this (`{kind:'rejected', requested, accepted}`) and every surface that can
+ * reject a tier says it the same way, because a rejection the user cannot see is worse than the 400 it replaced:
+ * the turn runs, the field is silently dropped, and the bill arrives at the provider's default tier.
+ */
+export function effortRejectedNote(
+  model: string,
+  requested: ReasoningEffort,
+  accepted: ReadonlySet<ReasoningEffort> | readonly ReasoningEffort[],
+): string {
+  const list = REASONING_EFFORTS.filter((tier) =>
+    Array.isArray(accepted) ? accepted.includes(tier) : (accepted as ReadonlySet<ReasoningEffort>).has(tier),
+  );
+  return list.length === 0
+    ? effortUnavailableNote(model)
+    : `${model} does not accept reasoning effort '${requested}' — it takes ${list.join(', ')}. No tier is sent.`;
+}
+
+/** Clamp an index to `0..count-1`, or 0 for an empty list (a model with no tiers never opens the overlay). */
 function clampSelection(index: number, count: number): number {
   if (count <= 0) return 0;
   return Math.max(0, Math.min(index, count - 1));
@@ -87,7 +130,8 @@ export function initialEffortPickerState(
 
 /**
  * Fold one keystroke into the open effort overlay (the keyboard-owning contract, mirroring the model-picker fold).
- * `Ctrl-C`/`Esc` cancel (nothing applied); `↑`/`↓` move over {@link REASONING_EFFORTS}; `Enter` accepts the
+ * `Ctrl-C`/`Esc` cancel (nothing applied); `↑`/`↓` move over {@link EffortPickerState.tiers} — the tiers THIS
+ * model accepts, not the fixed five; `Enter` accepts the
  * highlighted tier. It is a fixed list with no filter/refresh, so every other key is inert (returns the same state).
  */
 export function foldEffortPickerKey(

@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   canControlEffort,
+  effortRejectedNote,
   effortTiersFor,
+  effortUnavailableNote,
   foldEffortPickerKey,
   initialEffortPickerState,
   type EffortPickerState,
@@ -146,5 +148,74 @@ describe('foldEffortPickerKey', () => {
     const step = foldEffortPickerKey('x', {}, s);
     expect(step).toEqual({ kind: 'state', state: s });
     if (step.kind === 'state') expect(step.state).toBe(s); // same ref — no needless re-render/hint-wipe
+  });
+});
+
+/**
+ * ONE PREDICATE, ASKED BY EVERY SURFACE (ADR-0071 §6).
+ *
+ * These lock the facts the two blockers turned on. The CLI used to carry four answers to "can the user set effort
+ * on this model": this list, the `/models` sub-step, the engine's gate, and — the odd one out — `modelSupportsReasoning`,
+ * an id heuristic over the hand-typed pricing table that the footer and the `/effort` command still read. An
+ * adversarial review computed the disagreement: **sixteen shipped models**, and on each one the user was either
+ * billed for reasoning with no indicator, or told a tier applied that the engine then silently dropped.
+ */
+describe('effortTiersFor — the one answer every surface reads', () => {
+  it('lists ONLY the tiers the model publishes — `gpt-5.4-pro` takes neither `low` nor `off`', () => {
+    // The maintainer's original bug report. The typed `/effort low` used to validate against the fixed five, say
+    // "applies to your next message", show `low` in the footer — and send nothing, because the gate dropped it.
+    const tiers = effortTiersFor('gpt-5.4-pro'); // catalog: effortValues ['medium','high','xhigh']
+    expect(tiers).toEqual(['medium', 'high', 'max']);
+    expect(tiers).not.toContain('low');
+    expect(tiers).not.toContain('off'); // on OpenAI, `off` IS an effort value ('none') — and this model omits it
+  });
+
+  it('is CANONICALLY ordered, never the accepted Set\'s insertion order', () => {
+    // `acceptedTiers` adds `off` LAST (it rides a different axis), so a raw spread of the Set would render
+    // `low, medium, high, max, off` — the rows must read in tier order, every time, on every model.
+    const tiers = effortTiersFor('claude-opus-4-8');
+    expect(tiers).toEqual(REASONING_EFFORTS.filter((t) => tiers.includes(t)));
+    expect(tiers[0]).toBe('off');
+  });
+
+  it('a model the OLD boolean called non-reasoning still has tiers — the sixteen-model disagreement', () => {
+    // `claude-sonnet-4-5` is not in the hand-typed `MODEL_PRICING` at all, so the heuristic answered `false` — while
+    // the picker offered five tiers and the engine sent the chosen one. The footer stayed blank and the user paid
+    // for extended thinking with nothing on screen to say it was on.
+    expect(effortTiersFor('claude-sonnet-4-5').length).toBeGreaterThan(0);
+    expect(canControlEffort('claude-sonnet-4-5', true)).toBe(true);
+  });
+
+  it('EMPTY for a model with no knob, and for one the catalog does not carry — but they are not the same sentence', () => {
+    expect(effortTiersFor('deepseek-reasoner')).toEqual([]); // reasoning: {} — reasons, publishes nothing
+    expect(effortTiersFor('some-custom-endpoint-model')).toEqual([]); // not in the catalog at all
+    expect(canControlEffort('deepseek-reasoner', true)).toBe(false);
+
+    // Same empty list, different ACTION: one is fixable by a catalog refresh, the other never will be. The old
+    // heuristic said "no reasoning control" for both, which tells the user nothing they can do.
+    expect(effortUnavailableNote('deepseek-reasoner')).toContain('publishes no controllable reasoning tier');
+    expect(effortUnavailableNote('some-custom-endpoint-model')).toContain('models refresh');
+  });
+});
+
+describe('effortRejectedNote — a rejection the user cannot see is worse than the 400 it replaced', () => {
+  it('names the tier refused AND the tiers that would work, in canonical order', () => {
+    const note = effortRejectedNote('gpt-5.4-pro', 'low', effortTiersFor('gpt-5.4-pro'));
+    expect(note).toContain("does not accept reasoning effort 'low'");
+    expect(note).toContain('it takes medium, high, max');
+    expect(note).toContain('No tier is sent.'); // the consequence, stated — not left for the bill to reveal
+  });
+
+  it('takes the engine gate\'s Set as readily as the picker\'s array — one sentence, both callers', () => {
+    // `EffortGateResult.rejected` carries `accepted` as an array; the CLI's own list is an array too; the seam's
+    // `effortTiersFor` hands back a Set. All three reach this function, and all three must read the same.
+    const fromSet = effortRejectedNote('gpt-5.4-pro', 'off', new Set(['high', 'medium'] as const));
+    expect(fromSet).toContain('it takes medium, high'); // canonical order, NOT the Set's ['high','medium']
+  });
+
+  it('degrades to the unavailable note when NOTHING is accepted — never "it takes " with an empty list', () => {
+    expect(effortRejectedNote('deepseek-reasoner', 'high', [])).toBe(
+      effortUnavailableNote('deepseek-reasoner'),
+    );
   });
 });

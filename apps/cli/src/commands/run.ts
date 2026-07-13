@@ -193,7 +193,12 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       workspaceDir: deps.global.cwd,
       fsScopeTier: config.fsScope ?? 'sandboxed',
     };
-    let engineOptions: BuildEngineOptions = { providers, toolEnv, ...mcpOption };
+    // ADR-0071 §6: an authored `reasoning_effort` the bound model does not accept is WITHHELD — and reported. To
+    // STDERR, never stdout: `--json` owns stdout, and a warning line in the middle of the machine-readable stream
+    // would be a parse error for whatever is consuming the run. Silence was the alternative, and it is worse: the
+    // run succeeds, the knob does nothing, and the bill arrives at the provider's default tier.
+    const onEffortWithheld = (note: string): void => deps.io.writeErr(`warning: ${note}\n`);
+    let engineOptions: BuildEngineOptions = { providers, toolEnv, onEffortWithheld, ...mcpOption };
     let mediaCasRoot: string | undefined;
     if (opened !== undefined) {
       const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config, (m) =>
@@ -213,6 +218,7 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       engineOptions = {
         providers,
         toolEnv,
+        onEffortWithheld,
         host: createCliHost(opened.store, { media: wiring.media }),
         resolveMediaSurface: wiring.resolveMediaSurface,
         ...(wiring.mediaCostEstimate === undefined

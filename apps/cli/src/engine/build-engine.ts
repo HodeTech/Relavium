@@ -5,15 +5,17 @@ import {
   createStandardNodeExecutor,
   createToolRegistry,
   type AgentRunnerDeps,
+  type EffortGateResult,
   type ExecutionHost,
   type FsScopeTier,
   type McpCapability,
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
-import { acceptedTiers, catalogModel, type PricingOverlay } from '@relavium/llm';
+import { effortTiersFor, type PricingOverlay } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
+import { effortRejectedNote, effortUnavailableNote } from '../render/tui/effort-picker.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv } from './tool-host/assemble.js';
@@ -59,6 +61,14 @@ export interface BuildEngineOptions {
    * `allow` loudly, unchanged.
    */
   readonly resolvePrice?: PricingOverlay;
+  /**
+   * Sink for a WITHHELD reasoning tier (ADR-0071 §6) — an agent authored `reasoning_effort: <tier>` that the bound
+   * model does not accept, so the field is not sent. The gate replaced a loud provider 400 with a quiet no-op, and
+   * on an authored workflow that no-op is the dangerous one: the run succeeds, the knob does nothing, and the bill
+   * lands at the provider's default tier. `run.ts` wires this to stderr — never stdout, which `--json` owns.
+   * Absent ⇒ silent (the tier is still withheld).
+   */
+  readonly onEffortWithheld?: (note: string) => void;
 }
 
 /**
@@ -108,14 +118,23 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
   const agent: AgentRunnerDeps = {
     resolveProvider: providers.resolveProvider,
     keyFor: providers.keyFor,
-    // ADR-0066: the per-model reasoning capability (static registry projection) — gates whether an authored agent's
-    // reasoning_effort tier is sent to a workflow turn (withheld for a non-reasoning / custom model).
     // ADR-0071 §6: the host projects WHICH TIERS the model accepts, not merely whether it reasons. `gpt-5.4-pro`
-    // reasons and rejects `low`; a boolean said `true` and let that straight through to a 400.
-    resolveEffortTiers: (model) => {
-      const entry = catalogModel(model);
-      return entry === undefined ? undefined : acceptedTiers(entry.provider, entry.reasoning);
-    },
+    // reasons and rejects `low`; the boolean this replaced said `true` and let that straight through to a 400.
+    // The seam's `effortTiersFor` IS the projection — passed by reference, so the workflow path and the chat path
+    // gate on one function rather than on two copies of it that happen to agree today.
+    resolveEffortTiers: effortTiersFor,
+    // …and when it withholds, the author hears about it. See {@link BuildEngineOptions.onEffortWithheld}.
+    ...(options.onEffortWithheld === undefined
+      ? {}
+      : {
+          onEffortWithheld: (result: EffortGateResult, model: string) => {
+            options.onEffortWithheld?.(
+              result.kind === 'rejected'
+                ? effortRejectedNote(model, result.requested, result.accepted)
+                : effortUnavailableNote(model),
+            );
+          },
+        }),
     registry,
     tools,
     sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
