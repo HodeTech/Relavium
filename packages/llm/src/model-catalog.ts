@@ -115,6 +115,42 @@ function pricingSourceOf(t: Tiers): PricingSource {
   return 'none';
 }
 
+/** A model id shaped `base-YYYYMMDD` → its rolling-alias base; else `undefined`. Anthropic pins a snapshot with an
+ *  8-digit date suffix (`claude-haiku-4-5-20251001`), and the base (`claude-haiku-4-5`) is the rolling alias. */
+const DATED_PIN = /^(.+)-\d{8}$/;
+function datedPinBase(id: string): string | undefined {
+  return DATED_PIN.exec(id)?.[1];
+}
+
+/**
+ * Does a keyed provider's live list carry this model's alias↔dated-pin SIBLING? (ADR-0064 §6 amendment, ADR-0071.)
+ *
+ * Anthropic's `models.list()` returns only ONE of a rolling alias (`claude-haiku-4-5`) and its dated pin
+ * (`claude-haiku-4-5-20251001`), yet the catalog SHIPS BOTH as priced rows — so the id the list omits dimmed as
+ * `not-on-key` even though the SAME key calls it (server-side both resolve to the same model). The current id is
+ * available when its sibling IS in the live list AND is itself a shipped catalog row of the same provider. The
+ * catalog-row gate is what stops this fabricating availability for an arbitrary unpriced id. ANTHROPIC-ONLY, by the
+ * maintainer's scoping decision — the OpenAI `gpt-4o` dated family is deliberately out of scope for this round.
+ */
+function hasLiveSibling(
+  modelId: string,
+  provider: ProviderId,
+  live: ReadonlyMap<ProviderId, readonly ModelListing[]>,
+): boolean {
+  if (provider !== 'anthropic') return false;
+  const listings = live.get(provider);
+  if (listings === undefined) return false;
+  const base = datedPinBase(modelId);
+  if (base !== undefined) {
+    // `modelId` is the dated PIN → the live rolling alias `base` is its sibling.
+    return listings.some((l) => l.id === base) && catalogModel(base)?.provider === provider;
+  }
+  // `modelId` is the rolling ALIAS → a live dated pin whose base equals it is its sibling.
+  return listings.some(
+    (l) => datedPinBase(l.id) === modelId && catalogModel(l.id)?.provider === provider,
+  );
+}
+
 /**
  * Availability + its reason (2.5.G key-awareness). Key gate FIRST: a provider absent from `keyedProviders` has no
  * resolvable key, so its model is genuinely uncallable → unavailable with an actionable `'no-key'` reason,
@@ -123,8 +159,12 @@ function pricingSourceOf(t: Tiers): PricingSource {
  * §6 "never everything unavailable" safe default — PRESERVED, but now only for a KEYED provider). `keyedProviders`
  * ABSENT ⇒ not key-gated (every provider treated as keyed): the `available` BOOLEAN is unchanged from pre-change;
  * the only new output is the additive `'not-on-key'` reason on a live-omitted static model — informational.
+ *
+ * ADR-0064 §6 amendment (ADR-0071): before dimming a live-omitted model, {@link hasLiveSibling} rescues an
+ * alias↔dated-pin pair — the id the provider's list left out is still callable on the same key.
  */
 function resolveAvailability(
+  modelId: string,
   t: Tiers,
   live: ReadonlyMap<ProviderId, readonly ModelListing[]>,
   keyedProviders: ReadonlySet<ProviderId> | undefined,
@@ -132,9 +172,9 @@ function resolveAvailability(
   const providerKeyed = keyedProviders === undefined || keyedProviders.has(t.provider);
   if (!providerKeyed) return { available: false, unavailableReason: 'no-key' };
   if (live.has(t.provider)) {
-    return t.live !== undefined
-      ? { available: true }
-      : { available: false, unavailableReason: 'not-on-key' };
+    if (t.live !== undefined) return { available: true };
+    if (hasLiveSibling(modelId, t.provider, live)) return { available: true };
+    return { available: false, unavailableReason: 'not-on-key' };
   }
   return { available: true };
 }
@@ -188,7 +228,12 @@ function buildEntry(
     t.live?.contextWindowTokens ?? t.user?.contextWindowTokens ?? t.catalog?.contextWindowTokens;
   const maxOutputTokens =
     t.live?.maxOutputTokens ?? t.user?.maxOutputTokens ?? t.catalog?.maxOutputTokens;
-  const { available, unavailableReason } = resolveAvailability(t, live, input.keyedProviders);
+  const { available, unavailableReason } = resolveAvailability(
+    modelId,
+    t,
+    live,
+    input.keyedProviders,
+  );
   // Deprecation is a UNION of three sources, and the EARLIEST wins — a warning is only useful before the date.
   //
   // models.dev publishes a `status` flag, not a date, so the retirement date lives in Relavium's own small overlay

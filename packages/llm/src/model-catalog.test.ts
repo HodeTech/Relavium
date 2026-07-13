@@ -63,6 +63,38 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
     expect(byId(entries, 'gpt-5.5')?.available).toBe(true);
   });
 
+  it('ALIAS↔DATED-PIN equivalence: an alias is available when its dated pin is live, and vice versa (Anthropic, ADR-0064 §6 amendment)', () => {
+    // Anthropic's models.list() returns ONE of the pair; the catalog ships BOTH (`claude-haiku-4-5` +
+    // `claude-haiku-4-5-20251001`). The id the list omits is still callable on the same key, so it must not dim.
+    // Real Anthropic returns the DATED PIN, so the alias is the one that used to wrongly dim:
+    const pinLive = mergeModelCatalog({
+      live: liveMap([['anthropic', [{ id: 'claude-haiku-4-5-20251001' }]]]),
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    expect(byId(pinLive, 'claude-haiku-4-5-20251001')?.available).toBe(true); // in the live list
+    expect(byId(pinLive, 'claude-haiku-4-5')?.available).toBe(true); // rescued by its live dated-pin sibling
+    // A non-sibling model absent from the live list still dims — the rescue is scoped to the pair.
+    expect(byId(pinLive, 'claude-opus-4-8')?.available).toBe(false);
+
+    // Symmetric — if the live list returns only the ALIAS, the dated pin is rescued instead.
+    const aliasLive = mergeModelCatalog({
+      live: liveMap([['anthropic', [{ id: 'claude-haiku-4-5' }]]]),
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    expect(byId(aliasLive, 'claude-haiku-4-5')?.available).toBe(true);
+    expect(byId(aliasLive, 'claude-haiku-4-5-20251001')?.available).toBe(true);
+  });
+
+  it('the alias rescue CANNOT fabricate availability for a non-catalog sibling id', () => {
+    // A live dated-pin id that is NOT a shipped catalog row cannot rescue the alias — the catalog-row gate is what
+    // stops an arbitrary id conjuring availability for a priced model the key cannot actually reach.
+    const entries = mergeModelCatalog({
+      live: liveMap([['anthropic', [{ id: 'claude-haiku-4-5-99999999' }]]]), // a dated id NOT in the catalog
+      now: BEFORE_DEEPSEEK_DEPRECATION,
+    });
+    expect(byId(entries, 'claude-haiku-4-5')?.available).toBe(false); // NOT rescued — the sibling isn't a catalog row
+  });
+
   it('an EMPTY live list for a provider dims all that provider’s static models', () => {
     const entries = mergeModelCatalog({
       live: liveMap([['anthropic', []]]),

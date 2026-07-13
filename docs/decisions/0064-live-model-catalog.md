@@ -74,6 +74,20 @@
 > model. Caught in review.)*
 
 
+> **Clarified 2026-07-14 (alias↔dated-pin availability equivalence — append-only, body unchanged):** §6's live-list
+> availability is by EXACT model id. A provider that pins a rolling alias to a dated snapshot returns only ONE of the
+> pair from `models.list()` (real Anthropic returns the dated `claude-haiku-4-5-20251001`, not the rolling
+> `claude-haiku-4-5`), while the catalog (ADR-0071) ships BOTH as priced rows — so the id the list omits was dimming
+> as `not-on-key` even though the SAME key calls it (both ids resolve server-side to the same model). The merge now
+> RESCUES such a pair: a live-omitted model is `available` when its alias↔dated-pin sibling (`base` ↔
+> `base-YYYYMMDD`) IS in the live list AND is itself a shipped catalog row of the same provider — the catalog-row
+> gate is what stops this fabricating availability for an arbitrary unpriced id. This **refines, not reverses**, §6:
+> a model whose provider genuinely does not serve it (no live sibling, or a sibling that is not a catalog row) still
+> dims `not-on-key`. Scoped to **Anthropic** this round (the maintainer's call — the OpenAI `gpt-4o` dated family is
+> deliberately out of scope); the anthropic conformance fixture is corrected to return the dated pin so the suite
+> exercises the rescued-alias case.
+
+
 ## Context
 
 The model catalog is **static in-code**: `MODEL_PRICING` ([pricing.ts](../../packages/llm/src/pricing.ts))
