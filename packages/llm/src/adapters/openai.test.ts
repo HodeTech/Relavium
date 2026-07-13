@@ -339,6 +339,84 @@ describe('OpenAI-compatible adapter', () => {
     expect(sent['max_tokens']).toBe(200_000);
   });
 
+  it('NEVER sends BOTH cap fields — a providerOptions `max_tokens` cannot ride alongside the mapped one', async () => {
+    // A REGRESSION the dialect rule introduced, caught by review. The escape-hatch merge is `{...providerOptions,
+    // ...body}`, and `body` winning was automatic only while the mapped key and the escape-hatch key were the SAME
+    // STRING. Renaming the mapped key on the official endpoint meant the old one no longer shadowed anything — so
+    // both went out, and OpenAI rejects a request carrying both. A 400 on exactly the population §10a rescues.
+    let sent: Record<string, unknown> = {};
+    const oai = createOpenAiAdapter({
+      fetch: (_i, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    await oai.generate(
+      {
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
+        maxTokens: 100,
+        providerOptions: { max_tokens: 999 }, // the stale key the caller might still be carrying
+      },
+      'k',
+    );
+    expect(sent['max_completion_tokens']).toBe(100); // the mapped cap wins outright…
+    expect('max_tokens' in sent).toBe(false); // …and the colliding key is GONE, not merely outranked
+  });
+
+  it('an escape-hatch cap with NO mapped cap still stands — the §10a override for an exotic gateway', async () => {
+    // The gateway that speaks OpenAI's protocol but wants the modern field has no config key to ask with. It asks
+    // through `providerOptions`, and that only works if we leave an un-mapped cap alone.
+    let sent: Record<string, unknown> = {};
+    const custom = createOpenAiAdapter({
+      baseURL: 'https://gateway.example.com/v1',
+      fetch: (_i, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    await custom.generate(
+      {
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
+        providerOptions: { max_completion_tokens: 256 }, // no req.maxTokens — theirs is the only cap
+      },
+      'k',
+    );
+    expect(sent['max_completion_tokens']).toBe(256);
+    expect('max_tokens' in sent).toBe(false);
+  });
+
+  it('OpenAI\'s OWN url spelled out by hand is OFFICIAL — a trailing slash must not restore the bug', async () => {
+    // The CLI stores a `--base-url` VERBATIM, so `https://api.openai.com/v1/` and `https://api.openai.com/v1` are
+    // different strings. Classifying by "was a string passed" made the first one CUSTOM: deprecated field, no
+    // clamp — the original bug, restored on the official endpoint by a typo. We classify by HOST.
+    let sent: Record<string, unknown> = {};
+    for (const url of [
+      'https://api.openai.com/v1/',
+      'https://api.openai.com/v1',
+      'https://api.openai.com',
+    ]) {
+      const oai = createOpenAiAdapter({
+        baseURL: url,
+        fetch: (_i, init) => {
+          sent = parseJsonBody(init);
+          return Promise.resolve(okResponse());
+        },
+      });
+      await oai.generate(
+        {
+          model: 'gpt-5.4-pro',
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
+          maxTokens: 200_000,
+        },
+        'k',
+      );
+      expect(sent['max_completion_tokens'], url).toBe(128_000); // the modern field AND the clamp
+      expect('max_tokens' in sent, url).toBe(false);
+    }
+  });
+
   it('an EMPTY descriptor gets NO reasoning field either — `deepseek-reasoner` reasons, but publishes no knob', async () => {
     // The second adversarial review found this: the DeepSeek arm gated on `catalogModel(m)?.reasoning !== undefined`
     // and then sent `thinking` UNCONDITIONALLY. `deepseek-reasoner`'s descriptor is `{}` — not `undefined` — so the

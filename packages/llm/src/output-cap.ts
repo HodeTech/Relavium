@@ -44,19 +44,3 @@ export function cappedMaxTokens(
   if (ceiling === undefined) return requested; // not in the catalog — nothing to clamp against
   return Math.min(requested, ceiling);
 }
-
-/**
- * Did the cap get clamped? — for the one caller that wants to SAY so.
- *
- * A clamp is not a withhold: the request still asks for every token the model can physically produce, so nothing
- * the user wanted is lost. But an author who wrote `max_tokens: 200000` believes they asked for 200 000, and the
- * gap between belief and reality is exactly the sort of thing that gets debugged for an hour.
- */
-export function wasCapClamped(
-  requested: number | undefined,
-  model: string,
-  endpoint: EndpointKind = 'official',
-): boolean {
-  const capped = cappedMaxTokens(requested, model, endpoint);
-  return capped !== undefined && requested !== undefined && capped < requested;
-}

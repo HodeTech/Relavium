@@ -504,6 +504,29 @@ describe('Gemini adapter — request building (buildGeminiRequest)', () => {
     expect('thinkingConfig' in buildGeminiRequest(REQ).config).toBe(false); // unset ⇒ omitted
   });
 
+  it('CLAMPS maxOutputTokens to the model ceiling — and the thinking budget follows the CLAMPED cap', () => {
+    // ADR-0071 §7. `gemini-2.5-pro`'s ceiling is 65_536; an authored 200_000 is a 400 on every turn.
+    //
+    // The coupling is the sharp edge: the thinking budget is carved OUT of the output cap, so clamping the cap and
+    // deriving the budget from the RAW one would hand the model a budget larger than the cap we actually send.
+    const request = buildGeminiRequest({
+      ...REQ,
+      model: 'gemini-2.5-pro',
+      maxTokens: 200_000,
+      reasoningEffort: 'max',
+    });
+    expect(request.config['maxOutputTokens']).toBe(65_536); // clamped to the model's real ceiling
+    const thinking = request.config['thinkingConfig'] as { thinkingBudget: number };
+    // 80% of the CLAMPED cap (52_428), not of the 200 000 asked for — and capped by the model's own budget max.
+    expect(thinking.thinkingBudget).toBeLessThanOrEqual(52_429);
+    expect(thinking.thinkingBudget).toBeLessThan(65_536); // the answer keeps room, which is the whole point
+  });
+
+  it('leaves a cap BELOW the ceiling alone — the author\'s budget is not a mistake to correct', () => {
+    const request = buildGeminiRequest({ ...REQ, model: 'gemini-2.5-pro', maxTokens: 4_096 });
+    expect(request.config['maxOutputTokens']).toBe(4_096);
+  });
+
   it('a TOGGLE model with a non-zero floor can still be turned OFF — picker and wire agree', () => {
     // gemini-2.5-flash-lite publishes BOTH a toggle and `budgetTokens: { min: 512, … }`. The picker offers `off`
     // (a toggle IS a disable switch); the adapter used to test only `min === 0` and silently withhold the field —

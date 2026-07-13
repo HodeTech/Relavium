@@ -298,6 +298,24 @@ is the deprecated one). **Everything else** — DeepSeek, and any custom `base_u
 field every OpenAI-compatible server implements. A per-provider config key overrides it for an exotic endpoint
 that wants the modern field.
 
+> **Amendment (2026-07-13, implementation).** Two corrections, recorded rather than rewritten (ADRs are
+> append-only).
+>
+> 1. **"Official" is decided by HOST, not by "did a caller pass a base URL".** The first implementation read
+>    `deps.baseURL !== undefined` as *custom*, and the CLI stores a `--base-url` **verbatim** — so a user who
+>    registers OpenAI with its own endpoint spelled out (`https://api.openai.com/v1/`, trailing slash) was
+>    classified custom, and got the deprecated field **and no clamp** on the official API. That is this very bug,
+>    restored by a typo. The adapter now compares the resolved `hostname` against the provider's own host.
+>
+> 2. **The "per-provider config key" does not exist, and is not needed.** The override an exotic gateway actually
+>    has is the **`providerOptions` escape hatch** ([ADR-0011](0011-internal-llm-abstraction.md) §1.D): a request
+>    that carries no `maxTokens` but sets `providerOptions.max_completion_tokens` sends exactly that. What the
+>    first implementation got *wrong* was the collision — the mapped cap and an escape-hatch cap under a
+>    **different key** both reached the wire, and OpenAI rejects a request carrying both. The adapter now
+>    guarantees **exactly one** cap field: whichever we map wins outright and the other key is dropped; an
+>    un-mapped escape-hatch cap stands untouched. A config key can be added if a real endpoint ever needs one —
+>    none has.
+
 *Considered discovering the dialect at runtime (send the modern field; on a 400 that names the parameter, retry
 once with the legacy field and cache the result per endpoint) — **rejected**.* It burns a real turn to learn
 what a constant already tells us; it depends on **string-matching a provider's error message**, which is not a

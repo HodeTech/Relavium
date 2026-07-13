@@ -1129,3 +1129,15 @@ future test cannot silently re-acquire it.
   `home-input` `DISABLE_BRACKETED_PASTE` export + the drive-home test assertion) so both surfaces rely on ink's
   unmount cleanup uniformly. Low; deferred to ride Step 4's `writeControl` rework rather than churn it twice.
   *(low · apps/cli/src/home/drive-home.tsx + render/tui/home-input.ts; Step 2.6.F-4)*
+
+- **The Anthropic adapter's non-streaming `generate()` cannot carry a large `max_tokens`.** The SDK refuses a
+  non-streaming request whose cap implies a >10-minute generation (empirically: `claude-opus-4-5` is accepted at
+  ~21 000 and refused at ~24 000), and **every** Anthropic row in the catalog has a `maxOutputTokens` of 32 000 or
+  more. So the ADR-0071 §7 clamp — which holds the cap AT the ceiling — cannot bring a large authored cap back
+  under that threshold: `generate()` still fails, just with the SDK's message instead of a provider 400. Reachable
+  only through the public seam (`LlmProvider.generate`, the conformance harness, `validateProviderKey`), because
+  the engine's own agent turn takes `stream()`; the seam's other callers all pass a tiny cap. Resolve by either
+  capping the non-streaming Anthropic request under the SDK threshold, or failing with a typed, actionable
+  `bad_request` naming `stream()` rather than surfacing an SDK string.
+  *(medium · packages/llm/src/adapters/anthropic.ts; found by the 2.6.Q Step-5 Opus review)*
+

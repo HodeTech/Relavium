@@ -72,6 +72,32 @@ import {
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 
 /**
+ * The HOSTS whose APIs are the providers' own — the ones this adapter's dialect rules are written against.
+ *
+ * Classified by host, not by "did a caller pass a base URL string". A user who registers OpenAI with its own
+ * endpoint spelled out (`relavium provider add openai --base-url https://api.openai.com/v1/`) IS on the official
+ * API, and the CLI stores the URL VERBATIM — so a trailing slash, or `/v1` versus no `/v1`, is enough to miss a
+ * string comparison. Missing it would send the deprecated `max_tokens` to a reasoning model that rejects it, and
+ * skip the output clamp: the exact bug this work removes, restored on the official endpoint by a typo.
+ */
+const OFFICIAL_HOSTS: Readonly<Record<OpenAiProviderId, string>> = {
+  openai: 'api.openai.com',
+  deepseek: 'api.deepseek.com',
+};
+
+/** Is this base URL the provider's OWN API? An unparseable URL is treated as custom — the conservative side. */
+function endpointKindFor(providerId: OpenAiProviderId, baseURL: string | undefined): EndpointKind {
+  if (baseURL === undefined) return 'official'; // no override at all — our own default
+  try {
+    return new URL(baseURL).hostname.toLowerCase() === OFFICIAL_HOSTS[providerId]
+      ? 'official'
+      : 'custom';
+  } catch {
+    return 'custom';
+  }
+}
+
+/**
  * OpenAI's common-path capability surface. 1.AE wires the real media input matrix (image, audio,
  * document in) and sets `vision` to the derived alias of `media.input.image`. DeepSeek remains
  * text-only (no multimodal support).
@@ -699,13 +725,10 @@ function buildCommonBody(
   //
   // Value: capped at the model's published output ceiling, DOWN and never up — an authored `max_tokens: 200000` on
   // a model whose limit is 64 000 is a 400 on every single turn, not an ambitious request.
+  const capField = outputCapField(provider, endpoint);
   const maxTokens = cappedMaxTokens(req.maxTokens, req.model, endpoint);
   if (maxTokens !== undefined) {
-    if (provider === 'openai' && endpoint === 'official') {
-      body.max_completion_tokens = maxTokens;
-    } else {
-      body.max_tokens = maxTokens;
-    }
+    body[capField] = maxTokens;
   }
   // ADR-0066: map the normalized reasoning-effort tier to each provider's NATIVE control. OpenAI takes a
   // `reasoning_effort` tier; DeepSeek (the other id this shared adapter serves) takes a `thinking` object
@@ -752,7 +775,32 @@ function buildCommonBody(
     return body;
   }
   // The typed escape hatch (1.D): `body` is spread LAST so mapped common-path fields always win.
-  return { ...req.providerOptions, ...body };
+  //
+  // "Win" used to be automatic, because the mapped key and the escape-hatch key were the SAME STRING — a
+  // `providerOptions.max_tokens` was simply overwritten. Renaming the mapped key to `max_completion_tokens` on the
+  // official endpoint quietly broke that: the old key no longer shadows anything, so BOTH fields went out, and
+  // OpenAI rejects a request carrying both. It was a 400 on exactly the population §10a exists to rescue.
+  //
+  // So the two cap keys are reconciled explicitly. Whichever field we mapped wins outright; the other is dropped.
+  // If the caller mapped NO cap and reached for a cap through `providerOptions`, theirs stands untouched — that is
+  // the §10a escape hatch, and the way an exotic gateway asks for the field its server actually implements.
+  const escape = { ...req.providerOptions };
+  if (maxTokens !== undefined) {
+    delete escape['max_tokens'];
+    delete escape['max_completion_tokens'];
+  }
+  return { ...escape, ...body };
+}
+
+/** The output-cap field this endpoint takes (ADR-0071 §10a). ONE place decides it, so no caller can send both. */
+function outputCapField(
+  provider: ProviderId,
+  endpoint: EndpointKind,
+): 'max_tokens' | 'max_completion_tokens' {
+  // OpenAI's own Chat Completions deprecated `max_tokens`, and its reasoning models reject it outright. Every other
+  // OpenAI-compatible server — DeepSeek's API, LM Studio, Ollama, vLLM, LiteLLM, an enterprise gateway — implements
+  // the legacy field, and most implement only that.
+  return provider === 'openai' && endpoint === 'official' ? 'max_completion_tokens' : 'max_tokens';
 }
 
 /** Lower a canonical `responseFormat: json` to OpenAI's `response_format`: DeepSeek supports only
@@ -1056,15 +1104,15 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
   }
   // OFFICIAL vs CUSTOM — decided ONCE, here, where the base URL is actually known (ADR-0071 §7/§10a).
   //
-  // A CALLER-supplied `baseURL` means we are not talking to the provider's own API: LM Studio, Ollama, vLLM, an
-  // enterprise gateway. It governs two things downstream — the output-cap FIELD NAME (only OpenAI's own endpoint
-  // takes `max_completion_tokens`) and whether we CLAMP that cap against the catalog at all (a proxy may serve
-  // something quite different under a familiar model id, and silently lowering a number the user typed is a
-  // behaviour change we have no right to make on a model we cannot describe).
+  // A CUSTOM endpoint is another server speaking OpenAI's protocol: LM Studio, Ollama, vLLM, an enterprise
+  // gateway. It governs two things downstream — the output-cap FIELD NAME (only OpenAI's own API takes
+  // `max_completion_tokens`) and whether we CLAMP that cap against the catalog at all (a proxy may serve something
+  // quite different under a familiar model id, and silently lowering a number the user typed is a behaviour change
+  // we have no right to make on a model we cannot describe).
   //
-  // DeepSeek's own `api.deepseek.com` is OFFICIAL — it is our default, not a caller's override. Only an explicit
-  // `deps.baseURL` makes an endpoint custom.
-  const endpoint: EndpointKind = deps.baseURL === undefined ? 'official' : 'custom';
+  // By HOST, not by "was a string passed": DeepSeek's own `api.deepseek.com` is official (it is our default), and
+  // so is `https://api.openai.com/v1/` typed out by hand. See {@link endpointKindFor}.
+  const endpoint: EndpointKind = endpointKindFor(providerId, deps.baseURL);
   const createClient = (key: string): OpenAI =>
     new OpenAI({
       apiKey: key,

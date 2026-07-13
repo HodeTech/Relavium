@@ -37,7 +37,11 @@ interface LlmRequest {
   tools?: ToolDef[];             // JSON-Schema params, normalized
   toolChoice?: 'auto' | 'none' | 'required' | { name: string };
   temperature?: number;
-  maxTokens?: number;            // REQUIRED downstream for Anthropic; we default it
+  maxTokens?: number;            // REQUIRED downstream for Anthropic; we default it. CLAMPED to the model's published
+                                 // `maxOutputTokens` (ADR-0071 §7) — down, never up; a cap below the ceiling is the author's
+                                 // budget. NOT clamped on a custom `base_url` (we cannot describe what it serves). The
+                                 // OpenAI-compatible adapter's WIRE FIELD is endpoint-dependent (§10a): OpenAI's own API
+                                 // takes `max_completion_tokens`; DeepSeek's API and every custom base URL take `max_tokens`.
   reasoningEffort?: ReasoningEffort; // normalized tier off|low|medium|high|max (ADR-0066); each adapter maps to its provider's native tier — CANONICAL, wins over a colliding providerOptions key; absent ⇒ provider default
   stopSequences?: string[];
   responseFormat?: ResponseFormat; // structured-output request (ADR-0030)

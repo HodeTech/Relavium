@@ -29,6 +29,26 @@ describe('estimateMaxNextCost', () => {
   });
 });
 
+describe('estimateMaxNextCost — the estimate must price the request we ACTUALLY send (ADR-0071 §7)', () => {
+  it('prices the CLAMPED cap, not the authored one — the governor was killing runs over phantom money', () => {
+    // `gemini-2.5-pro`'s output ceiling is 65_536. An agent authored with `max_tokens: 200000` used to be
+    // pre-authorized for THREE TIMES the spend the model is physically capable of producing. With `on_exceed: fail`
+    // that killed the run over money that could never be spent; with `pause_for_approval` it was a human gate for
+    // the same phantom. Before the clamp landed the request simply 400'd, so the gap was invisible — now the
+    // request is valid, and an estimate of an unsendable request is just wrong.
+    const authored = estimateMaxNextCost('gemini-2.5-pro', 200_000);
+    const ceiling = estimateMaxNextCost('gemini-2.5-pro', 65_536);
+    expect(authored).toBe(ceiling); // the over-ceiling ask is priced at the ceiling — the only spend that can occur
+    expect(authored).toBeLessThan(estimateMaxNextCost('gemini-2.5-pro', 65_536) * 3);
+  });
+
+  it('still prices a cap BELOW the ceiling at what was asked for — the clamp is one-directional', () => {
+    const small = estimateMaxNextCost('gemini-2.5-pro', 1_000);
+    expect(small).toBeGreaterThan(0);
+    expect(small).toBeLessThan(estimateMaxNextCost('gemini-2.5-pro', 65_536));
+  });
+});
+
 describe('estimateMediaCost (1.AF/D17 — pre-egress per-modality media estimate)', () => {
   it('degrades to 0 for a real model (no row carries a media rate in 1.AF)', () => {
     // Every shipped row leaves mediaOutputRates undefined, so a media-output turn adds no estimate — the

@@ -1,6 +1,7 @@
 import type { MediaBilledModality } from '@relavium/shared';
 
 import { priceModel, type PricingOverlay } from './cost-tracker.js';
+import { cappedMaxTokens } from './output-cap.js';
 
 const TOKENS_PER_MTOK = 1_000_000;
 
@@ -11,6 +12,14 @@ const TOKENS_PER_MTOK = 1_000_000;
  * (or a configured default), because the engine does not tokenize the prompt locally.
  * This is intentionally conservative: it may block slightly early rather than overshoot.
  *
+ * **Conservative, not fictional.** The cap is first held to the model's own output ceiling
+ * ([ADR-0071](../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §7), because that is what
+ * the adapter will actually send. An agent authored with `max_tokens: 200000` on `gpt-5.4-pro` (ceiling 128 000)
+ * used to be priced at $36 of output the model is physically incapable of producing — the wire caps at $23.04. On
+ * `on_exceed: fail` that killed the run over $12.96 that could never be spent; on `pause_for_approval` it was a
+ * human gate for the same phantom. Before the clamp landed the request simply 400'd, so the gap was invisible;
+ * now the request is valid and an estimate of an unsendable request is just wrong.
+ *
  * All figures are integer micro-cents.
  */
 export function estimateMaxNextCost(
@@ -19,10 +28,13 @@ export function estimateMaxNextCost(
   overlay?: PricingOverlay,
 ): number {
   const p = priceModel(modelId, overlay);
-  if (maxOutputTokens <= 0) {
+  // A model the catalog cannot describe passes through unclamped — the same rule the adapter follows, so the
+  // estimate stays a faithful prediction of the request rather than a second, disagreeing opinion about it.
+  const capped = cappedMaxTokens(maxOutputTokens, modelId) ?? maxOutputTokens;
+  if (capped <= 0) {
     return 0;
   }
-  return Math.round((maxOutputTokens * p.outputPerMtokMicrocents) / TOKENS_PER_MTOK);
+  return Math.round((capped * p.outputPerMtokMicrocents) / TOKENS_PER_MTOK);
 }
 
 /** One element of the pre-egress media estimate: a billed modality + its assumed unit count (a count for

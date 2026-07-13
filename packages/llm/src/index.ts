@@ -185,7 +185,8 @@ export { createCustomOpenAiProvider, defaultProviders, providerKind } from './pr
 export { catalogModel, effortTiersFor } from './catalog/lookup.js';
 export type { CatalogModel, CatalogPriceTier, ReasoningControls } from './catalog/catalog-model.js';
 export { acceptedTiers, canDisableReasoning } from './reasoning-wire.js';
-// The output cap (ADR-0071 §7) — an authored `max_tokens` held at or below the model's real ceiling. The surfaces
-// need it too: a cost estimate computed from a cap the wire will clamp is an estimate of a request we never send.
-export { cappedMaxTokens, wasCapClamped } from './output-cap.js';
+// The output cap (ADR-0071 §7) — an authored `max_tokens` held at or below the model's real ceiling. Exported
+// because the PRE-EGRESS ESTIMATE must be computed from the same number the wire will carry: a governor that
+// pre-authorizes spend on tokens the model is physically incapable of producing kills runs over phantom money.
+export { cappedMaxTokens } from './output-cap.js';
 export type { EndpointKind } from './output-cap.js';
