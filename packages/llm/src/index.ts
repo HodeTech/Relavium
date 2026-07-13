@@ -189,6 +189,7 @@ export { catalogPricing, toPricing, pricedModelIds } from './catalog/pricing.js'
 // The refresh seam (ADR-0071 §4): the HOST fetches models.dev and installs the result; `@relavium/llm` does no I/O.
 // Additive only — the shipped snapshot is the floor, so a bad payload degrades to it rather than to a blank catalog.
 export { installCatalogRefresh, clearCatalogRefresh, catalogModelIds } from './catalog/lookup.js';
+export { CATALOG_PROVIDER_KEYS } from './catalog/catalog-providers.js';
 export { normalizeCatalog, ModelsDevPayloadSchema } from './catalog/models-dev-schema.js';
 export type { CatalogModel, CatalogPriceTier, ReasoningControls } from './catalog/catalog-model.js';
 export { acceptedTiers, canDisableReasoning } from './reasoning-wire.js';

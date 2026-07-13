@@ -156,6 +156,19 @@ order of importance:
 **This is a new egress surface, and ADR-0064's *"adds no new egress surface"* sentence is hereby superseded.**
 It is recorded rather than quietly outgrown. Its posture, and its place in the outbound-path inventory, is §8.
 
+> **Amendment (2026-07-13, implementation — §4.2 + §9 reconciled).** The runtime refresh is **purely additive for
+> shipped models**: it adds the long tail the snapshot does not carry, and it **never writes a model the snapshot
+> already pins**. That is the exact reading §4.2's "the shipped snapshot is the floor" and §9's "a price change on
+> an already-shipped model is a human decision" require together — a runtime path cannot silently move a
+> human-verified price, so it does not touch one at all.
+>
+> The first implementation got this wrong in a way worth recording: its "floor" guard was
+> `if (shipped === undefined || model.output > 0)`, and the line above had already dropped every `output <= 0`, so
+> the second clause was *always true* and the guard was `if (true)`. A refreshed row replaced its shipped row
+> wholesale — so a hostile or merely typo'd upstream `output: 0.00000001` on `gpt-5.5` recorded $14.50 of real
+> spend as $0.00, and the cost cap stopped tripping. The safety control this ADR exists to build, defeated by the
+> code that builds it. The floor is now: a shipped id is skipped; only a NEW, priced id is admitted.
+
 #### 4a. Both axes get a MANUAL trigger — one command, not two
 
 `relavium models refresh` already exists and refreshes provider availability

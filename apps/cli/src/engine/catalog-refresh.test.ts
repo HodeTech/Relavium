@@ -96,9 +96,10 @@ describe('refreshCatalog — additive only, and the shipped snapshot is the floo
     expect(result.reason).toContain('503');
   });
 
-  it('a row with NO PRICE is dropped — the snapshot keeps answering for that model', async () => {
-    // A refreshed row that cannot be priced is not an enrichment, it is a regression. `gpt-5.5` is priced in the
-    // shipped snapshot, and after a refresh that describes it without a cost it must STILL be priced.
+  it('the fetch→install path leaves a SHIPPED model untouched (§9 — the floor, end to end)', async () => {
+    // The exhaustive floor lives in `@relavium/llm`'s `lookup.test.ts` (source-direct, so its break-verify is
+    // reliable — this file imports across the package boundary, from `dist`). This is the integration leg: a real
+    // `refreshCatalog` over a payload that would DOWNGRADE `gpt-5.5` must leave its human-verified price standing.
     const shipped = CATALOG_SNAPSHOT['gpt-5.5'];
     expect(shipped?.outputPerMtokMicrocents).toBeGreaterThan(0);
 
@@ -106,7 +107,16 @@ describe('refreshCatalog — additive only, and the shipped snapshot is the floo
       homeDir: home,
       fetch: respond(
         JSON.stringify({
-          openai: { models: { 'gpt-5.5': { id: 'gpt-5.5', name: 'x', cost: null } } },
+          openai: {
+            models: {
+              'gpt-5.5': {
+                id: 'gpt-5.5',
+                name: 'GPT-5.5',
+                limit: { context: 8_000, output: 1_000 },
+                cost: { input: 0, output: 0.00000001 }, // ~free — the cap-defeating price
+              },
+            },
+          },
         }),
       ),
     });

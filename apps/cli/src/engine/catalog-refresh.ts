@@ -1,9 +1,11 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import {
+  CATALOG_PROVIDER_KEYS,
   CATALOG_SNAPSHOT,
   ModelsDevPayloadSchema,
+  catalogModelIds,
   installCatalogRefresh,
   normalizeCatalog,
   type CatalogModel,
@@ -149,18 +151,48 @@ function parse(text: string): Record<string, CatalogModel> {
 function install(text: string, homeDir: string): CatalogRefreshResult {
   const models = parse(text); // throws on a payload we cannot use — the caller turns that into a no-op
   installCatalogRefresh(models);
-  const path = catalogCachePath(homeDir);
-  try {
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, text, 'utf8');
-  } catch {
-    // A read-only home, a full disk.
-  }
+  writeCache(text, homeDir);
   return {
     status: 'refreshed',
-    models: Object.keys(models).length,
+    // TOTAL describable after the install — the shipped snapshot plus whatever the refresh added — and how many of
+    // those were new. `models: 200, added: 120` reads as "200 models, 120 the snapshot didn't carry".
+    models: catalogModelIds().length,
     added: countAdded(models),
   };
+}
+
+/**
+ * Cache the payload, filtered to the FOUR providers we have an adapter for.
+ *
+ * models.dev ships 166 providers and ~5,600 models — the 2–3 MB blob ADR-0071 §3 explicitly declined to vendor. We
+ * consume four of them, and `seedCatalog` re-reads + re-parses this file on EVERY invocation, including `--help`.
+ * Caching the whole thing taxes the cheapest, hottest commands with a parse we throw almost all of away. Filtering
+ * to the mapped providers keeps the file small AND keeps it RAW-per-provider, so a future release that fixes a
+ * normalization bug still repairs the cache on the next load.
+ *
+ * A cache-WRITE failure is not a refresh failure: the models are already live in this process; the cache just will
+ * not outlive it. Written temp-then-rename so a concurrent reader never sees a torn file.
+ */
+function writeCache(text: string, homeDir: string): void {
+  const path = catalogCachePath(homeDir);
+  try {
+    const parsed: unknown = JSON.parse(text);
+    const filtered: Record<string, unknown> = {};
+    if (parsed !== null && typeof parsed === 'object') {
+      for (const key of Object.values(CATALOG_PROVIDER_KEYS)) {
+        const provider = (parsed as Record<string, unknown>)[key];
+        if (provider !== undefined) filtered[key] = provider;
+      }
+    }
+    mkdirSync(dirname(path), { recursive: true });
+    // temp-then-rename: rename is atomic on the same filesystem, so a reader either sees the OLD cache or the NEW
+    // one, never a half-written body. `${pid}` keeps two concurrent refreshes from racing on the same temp name.
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(filtered), 'utf8');
+    renameSync(tmp, path);
+  } catch {
+    // A read-only home, a full disk, an unparseable body we somehow got past `parse` — the refresh HELD regardless.
+  }
 }
 
 /**

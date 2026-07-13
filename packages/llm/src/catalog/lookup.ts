@@ -32,12 +32,23 @@ let refreshed: Readonly<Record<string, CatalogModel>> = {};
 export function installCatalogRefresh(models: Readonly<Record<string, CatalogModel>>): void {
   const kept: Record<string, CatalogModel> = {};
   for (const [id, model] of Object.entries(models)) {
-    const shipped = CATALOG_SNAPSHOT[id];
-    // A refreshed row without an output price is not an enrichment, it is a regression — drop it and keep whatever
-    // the snapshot said. A model the snapshot never had is admitted on the same test: we price it, or we do not
-    // pretend to.
+    // A model the SHIPPED snapshot pins is NEVER touched — the snapshot's price is human-verified, and a runtime
+    // refresh does not get to move it (ADR-0071 §9: a price change on an already-shipped model is a human decision,
+    // surfaced as a red CI check, never a silent bot commit). THIS is the floor §4.2 promises, and it is airtight
+    // for the reason that matters: the refresh cannot make a known model cheaper, because it does not write one.
+    //
+    // The first version of this was a bug wearing a floor's comment. It read `if (shipped === undefined ||
+    // model.output > 0)` — but the line above had already dropped every `output <= 0`, so the second clause was
+    // ALWAYS true and the whole guard was `if (true)`. A refreshed row replaced its shipped row wholesale: a moved
+    // (lower) price, a dropped context tier, fewer reasoning tiers all sailed through. A hostile — or simply
+    // typo'd — upstream `output: 0.00000001` on `gpt-5.5` recorded $14.50 of real spend as $0.00, and a cost cap of
+    // any value never tripped. The safety control the ADR exists to build, defeated by the code that builds it.
+    if (CATALOG_SNAPSHOT[id] !== undefined) continue;
+    // A NEW model — the long tail the 80-row snapshot does not carry, which is the whole reason to refresh. Admit it
+    // only if it carries a real output price: an unpriceable row is not an enrichment, and a priced-maybe-wrong new
+    // model is still strictly better than an unknown one (which degrades the cap to `allow` entirely).
     if (model.outputPerMtokMicrocents <= 0) continue;
-    if (shipped === undefined || model.outputPerMtokMicrocents > 0) kept[id] = model;
+    kept[id] = model;
   }
   refreshed = kept;
 }

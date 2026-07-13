@@ -56,7 +56,7 @@ export async function run(
   //
   // No fetch here, ever. `[catalog] auto_refresh` (default `false`) governs whether a background refresh may run at
   // all, and even when it is on, the fetch belongs on a path the user can see — not in the boot of every `--help`.
-  seedCatalog(io, global);
+  seedCatalog(global);
 
   const result: { exitCode?: ExitCode } = {};
   const program = buildProgram(io, {
@@ -147,13 +147,12 @@ function stripErrorPrefix(message: string): string {
  * refresh ever run (the DEFAULT — `[catalog] auto_refresh = false`), Relavium prices every model it ships, offline,
  * and contacts nobody.
  */
-function seedCatalog(io: CliIo, global: GlobalOptions): void {
+function seedCatalog(global: GlobalOptions): void {
   try {
     const { homeDir } = loadResolvedConfig({ cwd: global.cwd, configPath: global.configPath });
     loadCachedCatalog(homeDir);
   } catch {
-    // A malformed config file is reported by the command that needs it, with a real message. It is not this step's
-    // job to be the one that says so, and a catalog seed is not a reason to refuse to run `relavium --help`.
-    void io;
+    // A malformed config file is reported by the COMMAND that needs it, with a real message. It is not this seed's
+    // job to say so, and a cached catalog is not a reason to refuse to run `relavium --help`.
   }
 }
