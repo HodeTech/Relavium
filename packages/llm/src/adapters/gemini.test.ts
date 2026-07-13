@@ -522,7 +522,7 @@ describe('Gemini adapter — request building (buildGeminiRequest)', () => {
     expect(thinking.thinkingBudget).toBeLessThan(65_536); // the answer keeps room, which is the whole point
   });
 
-  it('leaves a cap BELOW the ceiling alone — the author\'s budget is not a mistake to correct', () => {
+  it("leaves a cap BELOW the ceiling alone — the author's budget is not a mistake to correct", () => {
     const request = buildGeminiRequest({ ...REQ, model: 'gemini-2.5-pro', maxTokens: 4_096 });
     expect(request.config['maxOutputTokens']).toBe(4_096);
   });

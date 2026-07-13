@@ -97,8 +97,7 @@ describe('withModelsDeps (2.5.G S5 — real-db wiring + lazy slug + close-on-fau
       makeResolver: () => resolver,
       // NETWORK-FREE (ADR-0071 §4a). A `models refresh` now has a models.dev leg, and a unit test must never take it:
       // this port is what keeps the whole wiring — including the close-on-fault lifecycle — testable offline.
-      refreshCatalog: () =>
-        Promise.resolve({ status: 'refreshed' as const, models: 80, added: 0 }),
+      refreshCatalog: () => Promise.resolve({ status: 'refreshed' as const, models: 80, added: 0 }),
     };
   }
 

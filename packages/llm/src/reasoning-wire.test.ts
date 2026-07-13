@@ -270,6 +270,8 @@ describe('the whole shipped catalog — no model is offered a tier it would reje
     // one. An empty descriptor means there is nothing to turn.
     expect(canDisableReasoning('deepseek', {})).toBe(false);
     expect(canDisableReasoning('anthropic', {})).toBe(false);
-    expect(acceptedTiers('deepseek', CATALOG_SNAPSHOT['deepseek-reasoner']?.reasoning).size).toBe(0);
+    expect(acceptedTiers('deepseek', CATALOG_SNAPSHOT['deepseek-reasoner']?.reasoning).size).toBe(
+      0,
+    );
   });
 });

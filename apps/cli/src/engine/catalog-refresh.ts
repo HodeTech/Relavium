@@ -76,7 +76,12 @@ export async function refreshCatalog(deps: CatalogRefreshDeps): Promise<CatalogR
   try {
     return install(fetched, deps.homeDir);
   } catch {
-    return { status: 'failed', models: 0, added: 0, reason: 'models.dev sent a catalog we could not read' };
+    return {
+      status: 'failed',
+      models: 0,
+      added: 0,
+      reason: 'models.dev sent a catalog we could not read',
+    };
   }
 }
 
@@ -85,7 +90,9 @@ export async function refreshCatalog(deps: CatalogRefreshDeps): Promise<CatalogR
  * network / HTTP fault (timeout, unreachable, non-2xx, off-host redirect, over-cap). Never surfaces a raw upstream
  * error string. Kept separate from {@link install} so a malformed-payload fault is not mistaken for a network one.
  */
-async function fetchModelsDevPayload(deps: CatalogRefreshDeps): Promise<string | CatalogRefreshResult> {
+async function fetchModelsDevPayload(
+  deps: CatalogRefreshDeps,
+): Promise<string | CatalogRefreshResult> {
   const doFetch = deps.fetch ?? globalThis.fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -99,7 +106,12 @@ async function fetchModelsDevPayload(deps: CatalogRefreshDeps): Promise<string |
       redirect: 'manual',
     });
     if (!response.ok) {
-      return { status: 'failed', models: 0, added: 0, reason: `models.dev returned ${response.status}` };
+      return {
+        status: 'failed',
+        models: 0,
+        added: 0,
+        reason: `models.dev returned ${response.status}`,
+      };
     }
     // The response URL must still be models.dev — belt to the `redirect: 'manual'` braces, in case a fetch
     // implementation resolves one anyway.

@@ -92,7 +92,14 @@ describe('commander action → executeCommand forwarding (S10)', () => {
   });
 
   it('models pricing forwards --clear (the ADR-0071 §5 retire path)', () => {
-    const { id, input } = drive(['models', 'pricing', 'my-model', '--provider', 'openai', '--clear']);
+    const { id, input } = drive([
+      'models',
+      'pricing',
+      'my-model',
+      '--provider',
+      'openai',
+      '--clear',
+    ]);
     expect(id).toBe('models.pricing');
     expect(input).toMatchObject({
       positionals: ['my-model'],

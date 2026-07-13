@@ -1090,8 +1090,11 @@ describe('formatBusyLine — the streaming content is bounded on the alt screen 
 describe('the reseat carry is O(n) — the perf claim ADR-0059 makes', () => {
   // GitHub Actions (and most CI) sets `CI`. The wall-clock SHAPE ratio below is GC-dominated on a shared runner and
   // gives false positives there (see its comment); it runs on a warm local box, where the ratio measures the
-  // algorithm. The latency-budget test stays on both.
-  const IN_CI = Boolean(process.env['CI']);
+  // algorithm. The latency-budget test stays on both. A dedicated perf lane can still FORCE the shape guard under
+  // CI with `RUN_WRAP_SCALE_GUARD=1` (on a runner it controls), so the guard is available to automation, just not
+  // to the shared per-PR gate.
+  const SKIP_SHAPE_GUARD =
+    Boolean(process.env['CI']) && process.env['RUN_WRAP_SCALE_GUARD'] !== '1';
 
   const conversation = (turns: number): TranscriptEntry[] =>
     Array.from({ length: turns }, (_, i) => [
@@ -1161,14 +1164,17 @@ describe('the reseat carry is O(n) — the perf claim ADR-0059 makes', () => {
   //
   // NOTE for anyone re-verifying this by breaking it: an injected re-scan with NO side effect gets eliminated by V8
   // and the test will pass, proving nothing. Make the loop observable (accumulate into a value the function reads).
-  it.skipIf(IN_CI)('scales LINEARLY, not quadratically — 8x the conversation is not 64x the wrap', () => {
-    wrapTranscript(conversation(200), 80); // warm the JIT, not the entry cache
+  it.skipIf(SKIP_SHAPE_GUARD)(
+    'scales LINEARLY, not quadratically — 8x the conversation is not 64x the wrap',
+    () => {
+      wrapTranscript(conversation(200), 80); // warm the JIT, not the entry cache
 
-    const small = minWrapMs(() => conversation(200), 15); //     400 entries
-    const large = minWrapMs(() => conversation(1600), 15); // 8x: 3200 entries
+      const small = minWrapMs(() => conversation(200), 15); //     400 entries
+      const large = minWrapMs(() => conversation(1600), 15); // 8x: 3200 entries
 
-    // 13 sits between a warm-local clean reading (~5) and the ~16.6 quadratic signal — decisive on the box where the
-    // ratio is a measure of the algorithm rather than of the runner's memory pressure.
-    expect(large / small).toBeLessThan(13);
-  });
+      // 13 sits between a warm-local clean reading (~5) and the ~16.6 quadratic signal — decisive on the box where the
+      // ratio is a measure of the algorithm rather than of the runner's memory pressure.
+      expect(large / small).toBeLessThan(13);
+    },
+  );
 });

@@ -284,7 +284,10 @@ function foldEffortPhaseKey(
   state: ModelPickerState,
 ): ModelPickerStep {
   if (key.escape === true) {
-    return { kind: 'state', state: { ...state, phase: 'model', pending: undefined, effortTiers: [] } };
+    return {
+      kind: 'state',
+      state: { ...state, phase: 'model', pending: undefined, effortTiers: [] },
+    };
   }
   if (key.upArrow === true) {
     const next = clampSelection(state.effortSelected - 1, state.effortTiers.length);
@@ -301,7 +304,10 @@ function foldEffortPhaseKey(
     // Defensive: a missing pending model (never expected — set on the transition) or an out-of-range tier backs out
     // to the model list rather than emitting a malformed accept.
     if (pending === undefined || effort === undefined) {
-      return { kind: 'state', state: { ...state, phase: 'model', pending: undefined, effortTiers: [] } };
+      return {
+        kind: 'state',
+        state: { ...state, phase: 'model', pending: undefined, effortTiers: [] },
+      };
     }
     return {
       kind: 'accept',

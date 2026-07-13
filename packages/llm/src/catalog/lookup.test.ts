@@ -72,7 +72,9 @@ describe('installCatalogRefresh — additive only, and the shipped snapshot is t
   });
 
   it('does NOT admit a NEW model with no output price — we price a model or we do not carry it', () => {
-    installCatalogRefresh({ 'gpt-7-free': model({ modelId: 'gpt-7-free', outputPerMtokMicrocents: 0 }) });
+    installCatalogRefresh({
+      'gpt-7-free': model({ modelId: 'gpt-7-free', outputPerMtokMicrocents: 0 }),
+    });
     expect(catalogModel('gpt-7-free')).toBeUndefined();
   });
 

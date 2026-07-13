@@ -266,7 +266,7 @@ describe('user-pricing overlay (2.5.G S10, ADR-0065 §2)', () => {
   });
 });
 
-describe('the priced catalog\'s invariants (the values seeded into model_catalog)', () => {
+describe("the priced catalog's invariants (the values seeded into model_catalog)", () => {
   it('every priced model is complete, and every price is an integer micro-cent', () => {
     // The same invariant the hand-typed table was held to, now applied to eighty generated rows instead of twelve.
     // It matters MORE, not less: a generated file is only as good as its generator's guards, and a float price or a

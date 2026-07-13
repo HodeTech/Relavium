@@ -804,7 +804,11 @@ function applyOutputCap(
  * disagree, and this file already shipped that bug twice: the OpenAI arm tested that an effort axis EXISTED
  * rather than that the tier was IN it, and the DeepSeek arm tested nothing at all.
  */
-function applyReasoningControl(body: OpenAiCompatibleBody, req: LlmRequest, provider: ProviderId): void {
+function applyReasoningControl(
+  body: OpenAiCompatibleBody,
+  req: LlmRequest,
+  provider: ProviderId,
+): void {
   const reasoningControls = catalogModel(req.model)?.reasoning;
   if (req.reasoningEffort === undefined || reasoningControls === undefined) return;
   if (!acceptedTiers(provider, reasoningControls).has(req.reasoningEffort)) return;

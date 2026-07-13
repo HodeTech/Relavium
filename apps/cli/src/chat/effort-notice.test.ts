@@ -23,7 +23,7 @@ describe('effortRejectedNote — what the model refused, and what it would take'
     expect(note).toContain('No tier is sent.'); // the consequence, stated — not left for the bill to reveal
   });
 
-  it('re-sorts the gate\'s own list — its Set puts `off` LAST, the rows must not', () => {
+  it("re-sorts the gate's own list — its Set puts `off` LAST, the rows must not", () => {
     // `EffortGateResult.rejected.accepted` is `[...acceptedTiers(...)]`, and that Set adds `off` after the graded
     // tiers (it rides a different axis on three of the four providers). Printed raw it would read "high, off".
     expect(effortRejectedNote('claude-opus-4-8', 'max', ['high', 'off', 'low'])).toContain(

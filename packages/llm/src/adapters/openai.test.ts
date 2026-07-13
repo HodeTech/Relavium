@@ -387,7 +387,7 @@ describe('OpenAI-compatible adapter', () => {
     expect('max_tokens' in sent).toBe(false);
   });
 
-  it('OpenAI\'s OWN url spelled out by hand is OFFICIAL — a trailing slash must not restore the bug', async () => {
+  it("OpenAI's OWN url spelled out by hand is OFFICIAL — a trailing slash must not restore the bug", async () => {
     // The CLI stores a `--base-url` VERBATIM, so `https://api.openai.com/v1/` and `https://api.openai.com/v1` are
     // different strings. Classifying by "was a string passed" made the first one CUSTOM: deprecated field, no
     // clamp — the original bug, restored on the official endpoint by a typo. We classify by HOST.

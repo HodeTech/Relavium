@@ -243,8 +243,10 @@ describe('buildUserPricing (2.5.G S10, ADR-0065 §2)', () => {
 describe('a user override of a CATALOG model — a partial override must stay partial', () => {
   const OPENAI = 'uuid-openai';
   const slugs = slugResolver({ [OPENAI]: 'openai' });
-  const catalogRate = (id: string, field: 'inputPerMtokMicrocents' | 'cachedInputPerMtokMicrocents'): number =>
-    catalogPricing(id)?.[field] ?? 0;
+  const catalogRate = (
+    id: string,
+    field: 'inputPerMtokMicrocents' | 'cachedInputPerMtokMicrocents',
+  ): number => catalogPricing(id)?.[field] ?? 0;
 
   it('INHERITS the window, the ceiling and the cache DISCOUNT that the user never stated', () => {
     // `models pricing gpt-5.5 --input 0.10 --output 1` — two flags, and nothing else said. The DB's columns are NOT

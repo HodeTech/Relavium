@@ -200,10 +200,7 @@ describe('mergeModelCatalog (ADR-0064 §6)', () => {
         ['deepseek', [{ id: 'deepseek-chat', deprecatedAt: '2027-01-01T00:00:00Z' }]],
       ]),
       userPricing: new Map([
-        [
-          'deepseek-chat',
-          { ...userPricing('deepseek'), deprecatedAt: '2026-07-24T15:59:00Z' },
-        ],
+        ['deepseek-chat', { ...userPricing('deepseek'), deprecatedAt: '2026-07-24T15:59:00Z' }],
       ]),
       now: BEFORE_DEEPSEEK_DEPRECATION,
     });

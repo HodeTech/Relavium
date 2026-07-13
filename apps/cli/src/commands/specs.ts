@@ -515,7 +515,13 @@ function registerModels(program: Command, ctx?: CommandContext): void {
   pricing.action(
     async (
       model: string,
-      opts: { provider?: string; input?: string; output?: string; cached?: string; clear?: boolean },
+      opts: {
+        provider?: string;
+        input?: string;
+        output?: string;
+        cached?: string;
+        clear?: boolean;
+      },
     ) => {
       ctx.result.exitCode = await executeCommand(
         'models.pricing',

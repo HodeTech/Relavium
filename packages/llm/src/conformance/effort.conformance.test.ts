@@ -176,7 +176,9 @@ describe('effort conformance — the probe models are real, so the live lane can
         entry?.reasoning?.effortValues,
         `${modelId} is budget-shaped — a budget probe can never 400 on tier drift, so it is a tautology`,
       ).toBeDefined();
-      expect(distinctWireTiers(modelId).length, `${modelId} has no tiers to probe`).toBeGreaterThan(0);
+      expect(distinctWireTiers(modelId).length, `${modelId} has no tiers to probe`).toBeGreaterThan(
+        0,
+      );
     }
   });
 });

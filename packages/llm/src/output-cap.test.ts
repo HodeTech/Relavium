@@ -18,7 +18,7 @@ describe('cappedMaxTokens — down to the model ceiling, never up', () => {
     expect(cappedMaxTokens(200_000, 'gpt-5.4-pro')).toBe(128_000);
   });
 
-  it('LEAVES a cap below the ceiling ALONE — it is the author\'s budget, not a mistake to correct', () => {
+  it("LEAVES a cap below the ceiling ALONE — it is the author's budget, not a mistake to correct", () => {
     // The tempting "helpful" move is to raise a small cap to the model's maximum. That spends the user's money on
     // their behalf: a low cap is a cost control, a latency budget, a hard bound on a summary's length.
     expect(cappedMaxTokens(500, 'gpt-5.4-pro')).toBe(500);

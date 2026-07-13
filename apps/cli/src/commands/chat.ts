@@ -693,11 +693,11 @@ export async function chatResumeCommand(
       mcpRegistrations: config.mcpServers,
       resolvePrice,
       onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
-    // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
-    // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
-    // why the knob they set did nothing.
-    onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
-    onUnpriced: (note) => emitLiveNotice(deps.io, note),
+      // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
+      // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
+      // why the knob they set did nothing.
+      onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+      onUnpriced: (note) => emitLiveNotice(deps.io, note),
     });
     closeMcp = resumed.closeMcp;
     surfaceMcpSkipped(deps.io, resumed.mcpSkipped);

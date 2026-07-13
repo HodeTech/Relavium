@@ -173,7 +173,7 @@ describe('effortTiersFor — the one answer every surface reads', () => {
     expect(tiers).not.toContain('off'); // on OpenAI, `off` IS an effort value ('none') — and this model omits it
   });
 
-  it('is CANONICALLY ordered, never the accepted Set\'s insertion order', () => {
+  it("is CANONICALLY ordered, never the accepted Set's insertion order", () => {
     // `acceptedTiers` adds `off` LAST (it rides a different axis), so a raw spread of the Set would render
     // `low, medium, high, max, off` — the rows must read in tier order, every time, on every model.
     const tiers = effortTiersFor('claude-opus-4-8');
@@ -196,7 +196,9 @@ describe('effortTiersFor — the one answer every surface reads', () => {
 
     // Same empty list, different ACTION: one is fixable by a catalog refresh, the other never will be. The old
     // heuristic said "no reasoning control" for both, which tells the user nothing they can do.
-    expect(effortUnavailableNote('deepseek-reasoner')).toContain('publishes no controllable reasoning tier');
+    expect(effortUnavailableNote('deepseek-reasoner')).toContain(
+      'publishes no controllable reasoning tier',
+    );
     expect(effortUnavailableNote('some-custom-endpoint-model')).toContain('models refresh');
   });
 });
@@ -209,7 +211,7 @@ describe('effortRejectedNote — a rejection the user cannot see is worse than t
     expect(note).toContain('No tier is sent.'); // the consequence, stated — not left for the bill to reveal
   });
 
-  it('takes the engine gate\'s Set as readily as the picker\'s array — one sentence, both callers', () => {
+  it("takes the engine gate's Set as readily as the picker's array — one sentence, both callers", () => {
     // `EffortGateResult.rejected` carries `accepted` as an array; the CLI's own list is an array too; the seam's
     // `effortTiersFor` hands back a Set. All three reach this function, and all three must read the same.
     const fromSet = effortRejectedNote('gpt-5.4-pro', 'off', new Set(['high', 'medium'] as const));

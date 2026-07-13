@@ -161,7 +161,9 @@ describe('BudgetGovernor', () => {
       // `evaluatePreEgress` classifies; `checkPreEgress` is what APPLIES the result and fires the sink. Drive the
       // applying path, so the "with a notice" in this test's name is actually asserted.
       expect(governor.evaluatePreEgress('my-self-hosted-model', 10_000).kind).toBe('unpriced');
-      await expect(governor.checkPreEgress('my-self-hosted-model', 10_000)).resolves.toBeUndefined();
+      await expect(
+        governor.checkPreEgress('my-self-hosted-model', 10_000),
+      ).resolves.toBeUndefined();
       expect(unpriced).toEqual(['my-self-hosted-model']);
     });
   });
