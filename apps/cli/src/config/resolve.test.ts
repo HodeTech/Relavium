@@ -123,6 +123,12 @@ describe('resolveConfig', () => {
     expect(g.defaultModel).toBe('chat-latest');
     expect(g.defaultProvider).toBe('openai');
 
+    // A STRAY global provider with NO global model must NOT pair with the built-in DEFAULT model — it stays
+    // undefined (inference), closing the global-model-absent boundary of the same coupling.
+    const stray = resolveConfig({ global: { preferences: { default_provider: 'openai' } } }).chat;
+    expect(stray.defaultModel).toBeUndefined();
+    expect(stray.defaultProvider).toBeUndefined();
+
     // Absent everywhere ⇒ undefined (inference from the id).
     expect(resolveConfig({}).chat.defaultProvider).toBeUndefined();
   });

@@ -181,9 +181,14 @@ function resolveChat(
   } else if (w?.default_model !== undefined) {
     defaultModel = w.default_model;
     defaultProvider = w.default_provider;
+  } else if (global?.preferences?.default_model !== undefined) {
+    defaultModel = global.preferences.default_model;
+    defaultProvider = global.preferences.default_provider;
   } else {
-    defaultModel = global?.preferences?.default_model;
-    defaultProvider = global?.preferences?.default_provider;
+    // No layer sets a MODEL — so no layer's provider is coupled to one. A stray global `default_provider` (a
+    // hand-edited config; the picker/wizard always write the pair) must NOT pair with the built-in DEFAULT model.
+    defaultModel = undefined;
+    defaultProvider = undefined;
   }
   return {
     defaultModel,

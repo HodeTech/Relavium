@@ -48,9 +48,11 @@ export const DEFAULT_CHAT_TOOLS: readonly string[] = ['read_file', 'list_directo
  * `/models` list is per-provider); {@link buildDefaultChatAgent} prefers that and only falls back to this inference.
  */
 export function inferProviderFromModel(model: string): ProviderId | undefined {
-  const cataloged = catalogModel(model)?.provider;
-  if (cataloged !== undefined) return cataloged;
+  // Normalize ONCE — catalog ids are lowercase, and the prefix fallback lowercases too, so a mixed-case id
+  // (`Claude-Opus-4-8`) resolves via the CATALOG (authoritative) instead of only via the prefix heuristic.
   const m = model.toLowerCase();
+  const cataloged = catalogModel(m)?.provider;
+  if (cataloged !== undefined) return cataloged;
   if (m.startsWith('claude')) return 'anthropic';
   // OpenAI's GPT family + the o-series reasoning models. `/^o\d/` matches the whole o-series (o1/o3/o4 and
   // future o5+) in one expression rather than enumerating each prefix.
