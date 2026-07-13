@@ -18,6 +18,7 @@ import { buildMediaEngineWiring } from './media-wiring.js';
 
 const EMPTY_CONFIG: ResolvedConfig = {
   updateChannel: undefined,
+  catalogAutoRefresh: false,
   defaultModel: undefined,
   fsScope: undefined,
   maxTokensEstimate: undefined,

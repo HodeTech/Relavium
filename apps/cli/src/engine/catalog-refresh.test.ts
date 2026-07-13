@@ -1,0 +1,173 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { CATALOG_SNAPSHOT, catalogModel, clearCatalogRefresh } from '@relavium/llm';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { catalogCachePath, loadCachedCatalog, refreshCatalog } from './catalog-refresh.js';
+
+/**
+ * The models.dev catalog refresh (ADR-0071 §4/§8).
+ *
+ * Two promises, and they are the whole test surface:
+ *
+ *   1. **Additive only.** A refresh may add models and enrich thin ones. It may NEVER leave a model less described
+ *      than it shipped — a failed, unreachable, or malformed refresh is a NO-OP, not a downgrade and not a blank
+ *      catalog. The cost cap is a safety control, and it does not lapse because a third party had a bad deploy.
+ *   2. **One destination, no credentials.** models.dev, over HTTPS, with no key, no cookie and no user data — and a
+ *      redirect OFF models.dev is an error, not a hop.
+ */
+
+let home: string;
+
+/** A minimal, VALID models.dev payload — the same shape the offline snapshot generator eats. */
+function payload(models: Record<string, unknown>): string {
+  return JSON.stringify({
+    openai: {
+      models: Object.fromEntries(
+        Object.entries(models).map(([id, m]) => [
+          id,
+          {
+            id,
+            name: id,
+            limit: { context: 100_000, output: 10_000 },
+            cost: { input: 1, output: 2 },
+            ...(m as object),
+          },
+        ]),
+      ),
+    },
+  });
+}
+
+function respond(body: string, init: ResponseInit = {}): typeof globalThis.fetch {
+  return () => Promise.resolve(new Response(body, { status: 200, ...init }));
+}
+
+beforeEach(() => {
+  home = mkdtempSync(join(tmpdir(), 'relavium-catalog-'));
+});
+
+afterEach(() => {
+  clearCatalogRefresh(); // module state — a leaked refresh would poison every later test in the process
+  rmSync(home, { recursive: true, force: true });
+});
+
+describe('refreshCatalog — additive only, and the shipped snapshot is the floor', () => {
+  it('ADDS a model the snapshot never carried — the reason to run it at all', async () => {
+    expect(catalogModel('gpt-6-imaginary')).toBeUndefined(); // the premise
+
+    const result = await refreshCatalog({
+      homeDir: home,
+      fetch: respond(payload({ 'gpt-6-imaginary': {} })),
+    });
+
+    expect(result.status).toBe('refreshed');
+    expect(result.added).toBe(1);
+    expect(catalogModel('gpt-6-imaginary')?.inputPerMtokMicrocents).toBe(100_000_000); // $1/MTok
+  });
+
+  it('an UNREACHABLE models.dev is a NO-OP — every shipped model is still priced', async () => {
+    const before = catalogModel('gpt-5.5');
+    const result = await refreshCatalog({
+      homeDir: home,
+      fetch: () => Promise.reject(new Error('ENOTFOUND')),
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.reason).toBe('models.dev unreachable');
+    expect(catalogModel('gpt-5.5')).toEqual(before); // unchanged — not blanked, not downgraded
+    expect(catalogModel('gpt-5.5')?.outputPerMtokMicrocents).toBeGreaterThan(0);
+  });
+
+  it("a MALFORMED payload is a no-op — a third party's bad deploy cannot unprice our models", async () => {
+    const result = await refreshCatalog({ homeDir: home, fetch: respond('{"openai":{"models":') });
+    expect(result.status).toBe('failed');
+    expect(catalogModel('gpt-5.5')?.outputPerMtokMicrocents).toBeGreaterThan(0);
+  });
+
+  it('a 5xx is a no-op, and says which one', async () => {
+    const result = await refreshCatalog({
+      homeDir: home,
+      fetch: () => Promise.resolve(new Response('nope', { status: 503 })),
+    });
+    expect(result.status).toBe('failed');
+    expect(result.reason).toContain('503');
+  });
+
+  it('a row with NO PRICE is dropped — the snapshot keeps answering for that model', async () => {
+    // A refreshed row that cannot be priced is not an enrichment, it is a regression. `gpt-5.5` is priced in the
+    // shipped snapshot, and after a refresh that describes it without a cost it must STILL be priced.
+    const shipped = CATALOG_SNAPSHOT['gpt-5.5'];
+    expect(shipped?.outputPerMtokMicrocents).toBeGreaterThan(0);
+
+    await refreshCatalog({
+      homeDir: home,
+      fetch: respond(
+        JSON.stringify({
+          openai: { models: { 'gpt-5.5': { id: 'gpt-5.5', name: 'x', cost: null } } },
+        }),
+      ),
+    });
+
+    expect(catalogModel('gpt-5.5')?.outputPerMtokMicrocents).toBe(shipped?.outputPerMtokMicrocents);
+  });
+});
+
+describe('refreshCatalog — one destination, and it stays there', () => {
+  it('REFUSES a redirect off models.dev — the destination IS the posture', async () => {
+    const result = await refreshCatalog({
+      homeDir: home,
+      fetch: () =>
+        Promise.resolve(
+          Object.defineProperty(new Response('{}', { status: 200 }), 'url', {
+            value: 'https://evil.example.com/api.json',
+          }),
+        ),
+    });
+    expect(result.status).toBe('failed');
+    expect(result.reason).toContain('off-host');
+  });
+
+  it('sends NO credentials and NO user data — an unauthenticated GET of a public file', async () => {
+    let sent: RequestInit | undefined;
+    let url: unknown;
+    await refreshCatalog({
+      homeDir: home,
+      fetch: (u: unknown, init?: RequestInit) => {
+        url = u;
+        sent = init;
+        return Promise.resolve(new Response(payload({}), { status: 200 }));
+      },
+    });
+
+    expect(url).toBe('https://models.dev/api.json'); // a compile-time constant — not user- and not model-supplied
+    expect(sent?.redirect).toBe('manual');
+    expect(sent?.credentials).toBeUndefined();
+    const headers = sent?.headers as Record<string, string> | undefined;
+    expect(Object.keys(headers ?? {})).toEqual(['accept']); // no authorization, no cookie, no telemetry
+  });
+});
+
+describe('the cache — a refresh survives the process that ran it', () => {
+  it('writes what it installed, and loads it back', async () => {
+    await refreshCatalog({ homeDir: home, fetch: respond(payload({ 'gpt-6-imaginary': {} })) });
+    // The RAW payload, not the normalized rows: caching the normalized ones would freeze today's normalizer into the
+    // file, so a release that FIXED a normalization bug would go on serving the old wrong rows to everyone who had
+    // ever refreshed. Re-normalizing on load means an upgrade repairs the cache for free.
+    const cached: unknown = JSON.parse(readFileSync(catalogCachePath(home), 'utf8'));
+    expect(cached).toHaveProperty(['openai', 'models', 'gpt-6-imaginary']);
+
+    clearCatalogRefresh();
+    expect(catalogModel('gpt-6-imaginary')).toBeUndefined(); // gone from this process…
+
+    loadCachedCatalog(home);
+    expect(catalogModel('gpt-6-imaginary')).toBeDefined(); // …and back, with no fetch
+  });
+
+  it('a MISSING or CORRUPT cache is silent — the shipped snapshot is the floor, not a fallback', () => {
+    expect(loadCachedCatalog(join(home, 'nowhere'))).toBeUndefined();
+    expect(catalogModel('gpt-5.5')?.outputPerMtokMicrocents).toBeGreaterThan(0);
+  });
+});

@@ -64,6 +64,21 @@ MCP server registrations follow the same merge: globally registered servers (`co
 ```toml
 update_channel = "stable"          # stable | beta
 
+[catalog]
+# Refresh the model catalog (price, ceilings, reasoning tiers) from models.dev automatically.
+# DEFAULT false — and the default is the design (ADR-0071 §4).
+#
+# Relavium SHIPS a generated models.dev snapshot: a fresh install with no network prices every model
+# it ships, offline, and contacts nobody. A local-first tool that reaches out to a third party by
+# default violates its own spirit even when the payload is innocuous, so the standing egress is
+# opt-in. `relavium models refresh` fetches regardless — a command the user typed IS consent, and
+# that is what makes default-OFF a livable default rather than a dead end.
+#
+# `true` ⇒ a bare `relavium models` refreshes the catalog first (a failure is silent; the snapshot
+# still answers). The refresh is ADDITIVE ONLY: it may add models and enrich thin ones, and it can
+# never leave a model less priced than the shipped snapshot did.
+auto_refresh = false
+
 [preferences]
 default_model = "claude-sonnet-4-6"
 reasoning_effort = "medium"        # ADR-0066 §6: the GLOBAL default reasoning-effort tier — off | low | medium | high | max; the fallback BELOW any [chat].reasoning_effort. Written by the /models picker's effort sub-step. Absent ⇒ no reasoning control (the provider default).

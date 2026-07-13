@@ -133,6 +133,30 @@ export type McpServerRegistration = z.infer<typeof McpServerRegistrationSchema>;
 export const GlobalConfigSchema = z
   .object({
     update_channel: UpdateChannelSchema.optional(),
+    /**
+     * The model-metadata catalog ([ADR-0071](../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §4).
+     *
+     * Relavium ships a generated snapshot of models.dev — every price, ceiling and reasoning control, embedded in the
+     * binary and answering **offline**. That is the whole design, and it is what makes the default here `false`.
+     */
+    catalog: z
+      .object({
+        /**
+         * Refresh the catalog from models.dev automatically. **DEFAULT `false`, and deliberately.**
+         *
+         * A local-first tool that contacts a third party BY DEFAULT violates its own spirit even when the payload is
+         * innocuous (CLAUDE.md rule 6) — so the standing background egress is opt-in, and the shipped snapshot is a
+         * complete answer without it. [ADR-0068](../../../docs/decisions/0068-full-screen-tui-renderer-ink7-harness.md)
+         * established the convention this follows: ship a new risk-bearing surface default-OFF, validate it, then
+         * decide about flipping.
+         *
+         * `relavium models refresh` fetches regardless — an explicit command IS consent. That is what makes
+         * default-OFF a livable default rather than a dead end: a user who wants current prices types one command.
+         */
+        auto_refresh: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
     preferences: z
       .object({
         default_model: z.string().optional(),

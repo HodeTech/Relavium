@@ -1,6 +1,6 @@
 import { deprecationFor } from './catalog/deprecations.js';
 import { toPricing } from './catalog/pricing.js';
-import { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
+import { catalogModel, catalogModelIds } from './catalog/lookup.js';
 import type { ModelPricing } from './pricing.js';
 import type { ModelListing, ProviderId } from './types.js';
 
@@ -147,7 +147,11 @@ function buildTiers(
   userPricing: ReadonlyMap<string, ModelPricing>,
 ): Map<string, Tiers> {
   const tiers = new Map<string, Tiers>();
-  for (const entry of Object.values(CATALOG_SNAPSHOT)) {
+  // The refreshed catalog when the host installed one, else the shipped snapshot — `catalogModel` decides, so the
+  // picker shows a model a `models refresh --catalog` just added without a second merge path.
+  for (const id of catalogModelIds()) {
+    const entry = catalogModel(id);
+    if (entry === undefined) continue;
     tiers.set(entry.modelId, { provider: entry.provider, catalog: toPricing(entry) });
   }
   for (const [provider, listings] of live) {

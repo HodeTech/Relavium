@@ -291,7 +291,20 @@ const ENTRIES: readonly CommandManifestEntry[] = [
   {
     id: 'models.refresh',
     label: 'Refresh models',
-    description: "Re-fetch each connected provider's live model list into the local cache.",
+    description:
+      "Re-fetch what we know about models: each connected provider's live list, and the models.dev catalog.",
+    args: [
+      {
+        name: 'providers',
+        type: 'boolean',
+        description: "availability only — each connected provider's live model list",
+      },
+      {
+        name: 'catalog',
+        type: 'boolean',
+        description: 'metadata only — prices, ceilings and reasoning tiers from models.dev',
+      },
+    ],
     effect: 'write',
   },
   {

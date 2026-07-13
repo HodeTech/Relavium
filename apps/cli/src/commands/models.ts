@@ -5,6 +5,7 @@ import type {
   RefreshProviderResult,
   RefreshReport,
 } from '../engine/model-refresh.js';
+import type { CatalogRefreshResult } from '../engine/catalog-refresh.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -34,6 +35,15 @@ import { stripTerminalControls } from '../render/tui/chat-projection.js';
 export interface ModelsCommandArgs {
   /** `true` for `models refresh` (force a live re-fetch); `false` for a bare `models` (list the cache). */
   readonly refresh: boolean;
+  /**
+   * Which axis to refresh (ADR-0071 §4a). Absent ⇒ **BOTH**, because *"refresh what I know about models"* is one
+   * user intent, not two: the provider lists say what you can CALL, the catalog says what it COSTS, and a user who
+   * types `models refresh` wants both to be current.
+   *
+   * `'providers'` is ADR-0064's original behaviour, kept addressable for a script that only wants availability;
+   * `'catalog'` is metadata only, and is the one form that works with no provider key at all.
+   */
+  readonly axis?: 'providers' | 'catalog';
 }
 
 /** The narrow catalog reader the list path needs. */
@@ -46,6 +56,17 @@ export interface ModelsCommandDeps {
   readonly global: GlobalOptions;
   readonly catalog: ModelsCatalogReader;
   readonly refreshService: ModelRefreshService;
+  /**
+   * Fetch models.dev and install it (ADR-0071 §4a). Injected so the command stays testable without a network — and
+   * so the pure `@relavium/llm` catalog keeps taking data as an argument rather than reaching for a socket.
+   */
+  readonly refreshCatalog: () => Promise<CatalogRefreshResult>;
+  /**
+   * `[catalog] auto_refresh` (ADR-0071 §4) — DEFAULT `false`, and the default is the design. Absent/`false` ⇒ a bare
+   * `models` never touches the network for metadata; the shipped snapshot answers. `true` ⇒ the list refreshes the
+   * catalog first, because a user who opted in wants the prices to be current where they can see them.
+   */
+  readonly autoRefreshCatalog?: boolean;
   /**
    * Translate an internal `llm_providers` UUID (the FK `ModelCatalogListing.providerId` carries) → its provider
    * SLUG (e.g. `anthropic`) for the human table + the `--json` `provider` field, so the list path matches the
@@ -60,33 +81,89 @@ export async function modelsCommand(
   deps: ModelsCommandDeps,
 ): Promise<ExitCode> {
   if (args.refresh) {
-    return runRefresh(deps);
+    return runRefresh(deps, args.axis);
   }
   return runList(deps);
 }
 
-/** `models refresh` — force a live re-fetch and report per-provider outcomes. */
-async function runRefresh(deps: ModelsCommandDeps): Promise<ExitCode> {
-  const report = await deps.refreshService.refresh();
-  const connected = report.providers.filter((p) => p.status !== 'skipped-no-key');
-  if (connected.length === 0) {
-    // Nothing was connected — no key at all, so the refresh could fetch nothing. A clean, actionable exit-2
-    // invocation fault (never echoes a key; names both ways to provide one).
-    throw new CliError(
-      'invalid_invocation',
-      'no provider key configured — store one with `relavium provider set-key <name>`, or set RELAVIUM_<PROVIDER>_API_KEY.',
-    );
+/**
+ * `models refresh` — re-fetch, and report per-SOURCE outcomes (ADR-0071 §4a).
+ *
+ * Two axes, one command. The provider lists say which models a key can REACH; the catalog says what they COST and
+ * which reasoning tiers they take. A bare `models refresh` does both, because that is the intent behind the words.
+ *
+ * The two fail INDEPENDENTLY, and neither failure fails the other: an offline models.dev does not stop a provider
+ * refresh, and a keyless install can still refresh the catalog — which is the whole reason `--catalog` is separately
+ * addressable. Each is reported for what it did.
+ */
+async function runRefresh(
+  deps: ModelsCommandDeps,
+  axis: 'providers' | 'catalog' | undefined,
+): Promise<ExitCode> {
+  const wantProviders = axis !== 'catalog';
+  const wantCatalog = axis !== 'providers';
+
+  const catalogResult = wantCatalog ? await deps.refreshCatalog() : undefined;
+  const report = wantProviders ? await deps.refreshService.refresh() : undefined;
+
+  if (report !== undefined) {
+    const connected = report.providers.filter((p) => p.status !== 'skipped-no-key');
+    // No key at ALL is an invocation fault for a provider refresh — there is nothing it could fetch. But NOT when the
+    // catalog was also asked for and delivered: a user with no key yet, running `models refresh` to see what things
+    // cost, has been served, and telling them their command failed would be a lie.
+    if (connected.length === 0 && catalogResult?.status !== 'refreshed') {
+      throw new CliError(
+        'invalid_invocation',
+        'no provider key configured — store one with `relavium provider set-key <name>`, or set RELAVIUM_<PROVIDER>_API_KEY.',
+      );
+    }
   }
+
   if (deps.global.json) {
-    writeRecordLines(deps.io, report.providers.map(toRefreshJson));
+    // One record per SOURCE — the providers, then the catalog. A script can tell which half worked.
+    const records: unknown[] = report === undefined ? [] : report.providers.map(toRefreshJson);
+    if (catalogResult !== undefined) {
+      records.push({
+        source: 'catalog',
+        status: catalogResult.status,
+        models: catalogResult.models,
+        added: catalogResult.added,
+        ...(catalogResult.reason === undefined ? {} : { reason: catalogResult.reason }),
+      });
+    }
+    writeRecordLines(deps.io, records);
     return EXIT_CODES.success;
   }
-  renderRefreshReport(deps.io, report);
+
+  if (report !== undefined) renderRefreshReport(deps.io, report);
+  if (catalogResult !== undefined) renderCatalogRefresh(deps.io, catalogResult);
   return EXIT_CODES.success;
+}
+
+/** The catalog half of the refresh report — a failure is a NOTE, never an error: the shipped snapshot still answers. */
+function renderCatalogRefresh(io: CliIo, result: CatalogRefreshResult): void {
+  if (result.status === 'failed') {
+    io.writeErr(
+      `catalog: ${result.reason ?? 'refresh failed'} — keeping the shipped catalog (prices and limits are unchanged, not lost).\n`,
+    );
+    return;
+  }
+  const added = result.added === 0 ? '' : `, ${result.added} new`;
+  io.writeOut(`catalog: ${result.models} models from models.dev${added}.\n`);
 }
 
 /** `models` (no sub) — list the cached catalog, refreshing first only when it is empty (first-run, ADR-0064 §5a). */
 async function runList(deps: ModelsCommandDeps): Promise<ExitCode> {
+  // `[catalog] auto_refresh` (ADR-0071 §4), DEFAULT OFF. When a user turns it on, THIS is where it fires: a command
+  // that is about to show prices, where a stale one would be the thing they came to look at. Never at boot, never on
+  // a `--help`, never behind a chat turn — a standing background fetch to a third party is what the default-OFF
+  // exists to refuse, and a user who opts in should still be able to see when it happens.
+  //
+  // A failure is silent here: the shipped snapshot answers, the list renders, and the user did not ask about the
+  // network. `models refresh --catalog` is the form that reports.
+  if (deps.autoRefreshCatalog === true) {
+    await deps.refreshCatalog();
+  }
   let listings = deps.catalog.listAll();
   let firstRunReport: RefreshReport | undefined;
   if (listings.length === 0) {

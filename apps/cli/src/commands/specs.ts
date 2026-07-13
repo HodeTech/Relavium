@@ -455,7 +455,11 @@ function registerModels(program: Command, ctx?: CommandContext): void {
     .description('List the cached model catalog (refreshes on first run if empty).');
   const refresh = models
     .command('refresh')
-    .description("Re-fetch each connected provider's live model list into the local cache.");
+    .description(
+      "Re-fetch what we know about models: each connected provider's live list, and the models.dev catalog.",
+    )
+    .option('--providers', "availability only — each connected provider's live model list")
+    .option('--catalog', 'metadata only — prices, ceilings and reasoning tiers from models.dev');
   const pricing = models
     .command('pricing <model>')
     .description(

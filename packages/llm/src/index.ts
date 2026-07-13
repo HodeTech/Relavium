@@ -185,7 +185,11 @@ export { createCustomOpenAiProvider, defaultProviders, providerKind } from './pr
 export { catalogModel, effortTiersFor } from './catalog/lookup.js';
 // The generated snapshot itself + its pricing projection (ADR-0071 §1) — what `MODEL_PRICING` used to be.
 export { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
-export { catalogPricing, toPricing, PRICED_MODEL_IDS } from './catalog/pricing.js';
+export { catalogPricing, toPricing, pricedModelIds } from './catalog/pricing.js';
+// The refresh seam (ADR-0071 §4): the HOST fetches models.dev and installs the result; `@relavium/llm` does no I/O.
+// Additive only — the shipped snapshot is the floor, so a bad payload degrades to it rather than to a blank catalog.
+export { installCatalogRefresh, clearCatalogRefresh, catalogModelIds } from './catalog/lookup.js';
+export { normalizeCatalog, ModelsDevPayloadSchema } from './catalog/models-dev-schema.js';
 export type { CatalogModel, CatalogPriceTier, ReasoningControls } from './catalog/catalog-model.js';
 export { acceptedTiers, canDisableReasoning } from './reasoning-wire.js';
 // The output cap (ADR-0071 §7) — an authored `max_tokens` held at or below the model's real ceiling. Exported

@@ -7,6 +7,8 @@ describe('resolveConfig', () => {
   it('returns empty defaults with no layers', () => {
     expect(resolveConfig({})).toEqual({
       updateChannel: undefined,
+      // ADR-0071 §4: default OFF. A local-first tool does not contact a third party unless asked.
+      catalogAutoRefresh: false,
       defaultModel: undefined,
       fsScope: undefined,
       maxTokensEstimate: undefined,

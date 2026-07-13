@@ -1,6 +1,6 @@
 import type { MediaBilledModality } from '@relavium/shared';
 
-import { catalogPricing, PRICED_MODEL_IDS } from './catalog/pricing.js';
+import { catalogPricing, pricedModelIds } from './catalog/pricing.js';
 import { UnknownModelError } from './errors.js';
 import type { ModelPricing } from './pricing.js';
 import type { MediaUnitsEntry, Usage } from './types.js';
@@ -45,7 +45,7 @@ export function priceModel(modelId: string, overlay?: PricingOverlay): ModelPric
   if (fromCatalog !== undefined) {
     return fromCatalog;
   }
-  throw new UnknownModelError(modelId, PRICED_MODEL_IDS);
+  throw new UnknownModelError(modelId, pricedModelIds());
 }
 
 const TOKENS_PER_MTOK = 1_000_000;

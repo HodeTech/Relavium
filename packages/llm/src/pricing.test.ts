@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { catalogPricing, PRICED_MODEL_IDS, toPricing } from './catalog/pricing.js';
+import { catalogPricing, pricedModelIds, toPricing } from './catalog/pricing.js';
 import { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
 import { cost } from './cost-tracker.js';
 import { estimateMaxNextCost } from './budget-estimator.js';
@@ -36,9 +36,9 @@ describe('contextWindowForModel (ADR-0062 §7)', () => {
 /** The catalog, read as a price (ADR-0071 §1) — what `MODEL_PRICING` used to be, generated instead of typed. */
 describe('catalogPricing — the projection that replaced the hand-typed table', () => {
   it('prices every model the catalog carries, and only those', () => {
-    expect(PRICED_MODEL_IDS.length).toBe(Object.keys(CATALOG_SNAPSHOT).length);
-    expect(PRICED_MODEL_IDS.length).toBeGreaterThan(50); // the retired table had twelve rows
-    for (const id of PRICED_MODEL_IDS) {
+    expect(pricedModelIds().length).toBe(Object.keys(CATALOG_SNAPSHOT).length);
+    expect(pricedModelIds().length).toBeGreaterThan(50); // the retired table had twelve rows
+    for (const id of pricedModelIds()) {
       const priced = catalogPricing(id);
       expect(priced, id).toBeDefined();
       expect(priced?.inputPerMtokMicrocents, id).toBeGreaterThanOrEqual(0);

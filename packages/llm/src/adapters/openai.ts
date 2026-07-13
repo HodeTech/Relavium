@@ -22,7 +22,7 @@ import { catalogModel } from '../catalog/lookup.js';
 import { isNonChatModelId } from '../model-kind.js';
 import { cappedMaxTokens, type EndpointKind } from '../output-cap.js';
 import { DEEPSEEK_WIRE, OPENAI_WIRE, acceptedTiers } from '../reasoning-wire.js';
-import { CATALOG_SNAPSHOT } from '../catalog/snapshot.js';
+import { catalogModelIds } from '../catalog/lookup.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
   CapabilityFlags,
@@ -452,8 +452,8 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId, key?: 
  */
 export function pricedModelIdsFor(provider: ProviderId): ReadonlySet<string> {
   const ids = new Set<string>();
-  for (const entry of Object.values(CATALOG_SNAPSHOT)) {
-    if (entry.provider === provider) ids.add(entry.modelId);
+  for (const id of catalogModelIds()) {
+    if (catalogModel(id)?.provider === provider) ids.add(id);
   }
   return ids;
 }

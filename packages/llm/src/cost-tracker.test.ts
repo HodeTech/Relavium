@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { CostTracker, cost, mediaCost, priceModel } from './cost-tracker.js';
 import { UnknownModelError } from './errors.js';
-import { catalogPricing, PRICED_MODEL_IDS } from './catalog/pricing.js';
+import { catalogPricing, pricedModelIds } from './catalog/pricing.js';
 import type { ModelPricing } from './pricing.js';
 
 /** A throwaway priced model carrying media-output rates — no 1.AF table row has them, so tests construct one. */
@@ -50,7 +50,7 @@ describe('priceModel', () => {
       if (err instanceof UnknownModelError) {
         expect(err.code).toBe('unknown_model');
         expect(err.modelId).toBe('gpt-9-ultra');
-        expect(err.knownModels).toEqual(PRICED_MODEL_IDS);
+        expect(err.knownModels).toEqual(pricedModelIds());
       }
     }
   });
@@ -271,9 +271,9 @@ describe('the priced catalog\'s invariants (the values seeded into model_catalog
     // The same invariant the hand-typed table was held to, now applied to eighty generated rows instead of twelve.
     // It matters MORE, not less: a generated file is only as good as its generator's guards, and a float price or a
     // negative rate would silently corrupt every cost figure downstream of it.
-    const rows: Array<[string, ModelPricing]> = PRICED_MODEL_IDS.map((id) => {
+    const rows: Array<[string, ModelPricing]> = pricedModelIds().map((id) => {
       const priced = catalogPricing(id);
-      if (priced === undefined) throw new Error(`${id} is in PRICED_MODEL_IDS but has no price`);
+      if (priced === undefined) throw new Error(`${id} is in pricedModelIds but has no price`);
       return [id, priced];
     });
     expect(rows.length).toBeGreaterThan(50);

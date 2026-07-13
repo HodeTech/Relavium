@@ -13,6 +13,7 @@ import {
 } from '../engine/providers.js';
 import { openHistoryStore } from '../history/open.js';
 import { openSessionStore } from '../history/session-open.js';
+import { refreshCatalog, type CatalogRefreshResult } from '../engine/catalog-refresh.js';
 import { CliError } from '../process/errors.js';
 import { type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -424,12 +425,19 @@ export interface ModelsDbPorts {
     io: CliIo,
     providerStore: Pick<ProviderStore, 'list'>,
   ) => Pick<ProviderResolver, 'resolveProvider' | 'keyFor'>;
+  /**
+   * Fetch models.dev and install it (ADR-0071 §4a). A PORT, exactly like `openDb` and `makeResolver`, and for the
+   * same reason: a `models refresh` now has a network leg, and a unit test must be able to drive the whole wiring
+   * without one. The production port is the real fetch.
+   */
+  readonly refreshCatalog: (homeDir: string) => Promise<CatalogRefreshResult>;
 }
 
 const PRODUCTION_MODELS_PORTS: ModelsDbPorts = {
   openDb: openLocalDb,
   makeResolver: (io, providerStore) =>
     createProviderResolver(io.env, createOsKeychainStore(), { providerStore }),
+  refreshCatalog: (homeDir) => refreshCatalog({ homeDir }),
 };
 
 /**
@@ -443,7 +451,7 @@ export async function withModelsDeps(
   args: ModelsCommandArgs,
   ports: ModelsDbPorts = PRODUCTION_MODELS_PORTS,
 ): Promise<ExitCode> {
-  const { homeDir } = loadResolvedConfig({
+  const { homeDir, config } = loadResolvedConfig({
     cwd: ctx.global.cwd,
     configPath: ctx.global.configPath,
   });
@@ -467,6 +475,11 @@ export async function withModelsDeps(
       global: ctx.global,
       catalog: catalogStore,
       refreshService,
+      // ADR-0071 §4a: the catalog half. The command holds a THUNK, not a socket — so a test drives it with a fake
+      // fetch, and the pure `@relavium/llm` catalog keeps taking data as an argument rather than reaching out itself.
+      refreshCatalog: () => ports.refreshCatalog(homeDir),
+      // Default OFF (ADR-0071 §4): absent config ⇒ no standing egress, and the shipped snapshot answers everything.
+      ...(config.catalogAutoRefresh ? { autoRefreshCatalog: true } : {}),
       providerSlug: createProviderSlugResolver(providerStore),
     });
   } finally {
@@ -475,8 +488,20 @@ export async function withModelsDeps(
 }
 
 const executeModels: CommandExecutor = (_input, ctx) => withModelsDeps(ctx, { refresh: false });
-const executeModelsRefresh: CommandExecutor = (_input, ctx) =>
-  withModelsDeps(ctx, { refresh: true });
+const executeModelsRefresh: CommandExecutor = (input, ctx) =>
+  withModelsDeps(ctx, { refresh: true, ...buildRefreshAxis(input) });
+
+/**
+ * `--providers` / `--catalog` (ADR-0071 §4a) — which axis to refresh. Neither ⇒ BOTH, because "refresh what I know
+ * about models" is one intent. Both flags together is the same as neither, and saying so beats a pedantic error.
+ */
+function buildRefreshAxis(input: CommandInput): { axis?: 'providers' | 'catalog' } {
+  const providers = input.options['providers'] === true;
+  const catalog = input.options['catalog'] === true;
+  if (providers && !catalog) return { axis: 'providers' };
+  if (catalog && !providers) return { axis: 'catalog' };
+  return {};
+}
 
 /**
  * `models pricing <model>` (2.5.G S10, ADR-0065) — open the local db, build the catalog + provider stores over it,

@@ -53,6 +53,14 @@ export interface ResolvedChatConfig {
 
 export interface ResolvedConfig {
   readonly updateChannel: GlobalConfig['update_channel'];
+  /**
+   * `[catalog] auto_refresh` (ADR-0071 §4) — refresh the models.dev catalog automatically. **DEFAULT `false`.**
+   *
+   * A local-first tool that contacts a third party by default violates its own spirit even when the payload is
+   * innocuous, so the shipped snapshot answers everything offline and the standing egress is opt-in. An explicit
+   * `relavium models refresh` fetches regardless: a command the user typed IS consent.
+   */
+  readonly catalogAutoRefresh: boolean;
   readonly defaultModel: string | undefined;
   readonly fsScope: FsScope;
   readonly maxTokensEstimate: number | undefined;
@@ -97,6 +105,7 @@ export function resolveConfig(layers: ConfigLayers): ResolvedConfig {
   const { global, workspace, project } = layers;
   return {
     updateChannel: global?.update_channel,
+    catalogAutoRefresh: global?.catalog?.auto_refresh === true,
     defaultModel:
       project?.defaults?.model ?? workspace?.defaults?.model ?? global?.preferences?.default_model,
     fsScope: project?.defaults?.fs_scope ?? workspace?.defaults?.fs_scope,

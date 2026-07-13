@@ -1,8 +1,7 @@
 import type { ModelPricing } from '../pricing.js';
 
 import type { CatalogModel } from './catalog-model.js';
-import { catalogModel } from './lookup.js';
-import { CATALOG_SNAPSHOT } from './snapshot.js';
+import { catalogModel, catalogModelIds } from './lookup.js';
 
 /**
  * The catalog, read as a **price** ([ADR-0071](../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §1).
@@ -67,5 +66,12 @@ export function toPricing(entry: CatalogModel): ModelPricing {
   };
 }
 
-/** Every model id the catalog prices — the diagnostic list an `UnknownModelError` names. */
-export const PRICED_MODEL_IDS: readonly string[] = Object.keys(CATALOG_SNAPSHOT);
+/**
+ * Every model id we can price — the diagnostic list an `UnknownModelError` names.
+ *
+ * A FUNCTION, not a const: a `models refresh --catalog` adds models, and a constant captured at import time would go
+ * on naming yesterday's list in the error that tells a user which models exist.
+ */
+export function pricedModelIds(): readonly string[] {
+  return catalogModelIds();
+}
