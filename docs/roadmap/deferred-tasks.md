@@ -960,6 +960,34 @@ cross-turn transcript" item just below; whichever lands first should absorb the 
   expand the thinking to inform the decision; every other key (mode cycle, edits, the most-permissive approve/reject
   chord) stays swallowed. *(apps/cli/src/render/tui/chat-input.ts)*
 
+## The CLI e2e suite opens and MIGRATES the developer's real `~/.relavium/history.db` (2.6.C spin-off, 2026-07-13)
+
+> Found while diagnosing a red CI run during 2.6.C (PR #75). Verified, not inferred — see the evidence below.
+
+`apps/cli/src/harness/regression.e2e.test.ts` drives the real CLI shell (`run(argv('run', …, '--json'), io)`)
+without pointing it at a database, so the run resolves the **default** path and opens
+`~/.relavium/history.db` — the developer's actual chat history. It does not merely read it: it **runs
+migrations against it**.
+
+**Evidence.** Executing that one test file with `HOME` pointed at an empty directory creates
+`$HOME/.relavium/history.db` with all 11 migrations applied. Under a real `HOME` those migrations land on
+real data. (The sibling test at `:315` does this correctly — `mkdtempSync` + an explicit `dbPath` — so the
+isolation exists; this path just does not use it.)
+
+**Why this is worth fixing rather than tolerating.** It is not a hypothetical: during 2.6.C the coupling
+actively **hid a bug from CI and converted it into damage to real data instead**. A migration was re-cut
+while in development, which changes its journal timestamp; drizzle replays such a migration, so
+`CREATE TABLE session_costs` ran a second time against the table it had itself created. On CI this is
+invisible — a fresh runner has no `~/.relavium/history.db`, so nothing had been applied and nothing could
+conflict. The failure surfaced only on the maintainer's machine, against a 3.3 MB database of real
+sessions. A test suite that writes to real user data both damages it and blinds CI to the damage.
+
+**Fix:** give the failing path the same isolation the sibling already has — a temp dir + an explicit db
+path — and, as a floor, make the e2e harness refuse to run against the default history path at all, so a
+future test cannot silently re-acquire it.
+
+**Home:** a `chore` pass, or whichever workstream next touches the CLI harness.
+
 ## Sonar code-quality backlog
 
 > **2026-06-14 (PR #18 review).** Verified Sonar findings in **already-merged** code (1.L/1.L2/1.T/0.x),

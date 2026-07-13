@@ -15,8 +15,9 @@ breakdown, now historical, is in
 2026-07-08); its plan is in
 [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md).
 Workstream **2.6.F (platform floor + the full-screen TUI renderer)** is **merged to `main`**
-(PR #74, 2026-07-11). **2.6.C** (the reseat transcript-carry + the `/cost` per-model breakdown) is **complete on
-`development`** (2026-07-12, PR pending) — see [Active now](#what-is-active-now).
+(PR #74, 2026-07-11), and so is **2.6.C** (the reseat transcript-carry + the `/cost` per-model breakdown,
+PR #75, 2026-07-13) — see [Active now](#what-is-active-now). **2.6.Q** is next and is **blocked**: it carries
+seven decisions the maintainer must answer before any code is written.
 
 ## Where we are
 
@@ -72,7 +73,7 @@ it; that `displayWidth` under-counted 8 539 code points against `ink`'s own widt
 Ctrl-C during a Home hatch stranded mouse reporting on the user's shell. All folded, each with a break-verified
 regression test.
 
-### Phase 2.6.C — reseat transcript-carry + the `/cost` per-model breakdown (complete on `development`, 2026-07-12)
+### Phase 2.6.C — reseat transcript-carry + the `/cost` per-model breakdown (merged to `main`, PR #75, 2026-07-13)
 
 Driven by two maintainer manual-test findings. **F1:** a mid-session `/models` reseat **blanked the alt-screen
 viewport** — the reseat builds a fresh view store, and on the full-screen renderer (the TTY default since 2.6.F, with
@@ -104,6 +105,12 @@ step's central change — had **zero test coverage** at any layer. All folded, e
 - **Reported spend is a systematic under-estimate of the provider's invoice** — an egress that streamed content but
   ended without a usage chunk, and a mid-stream failure, are recorded as 0 on *both* sides of the invariant. That is
   a usage-capture gap in the seam, filed against **2.6.Q** (ADR-0070 §3).
+- **Cross-turn tool-call memory** — a "the reseat forgets tool calls" report turned out to be an *engine* property,
+  not a reseat one: tool pairs never cross **any** turn boundary (ADR-0062 §6). Deferred behind a default-off toggle,
+  but **three already-live bugs gate it** (no pre-egress context-window check; overflow is a fatal, non-retryable
+  `bad_request`; the budget gate prices only output tokens) — see [deferred-tasks.md](deferred-tasks.md).
+- **The CLI e2e suite migrates the developer's real `~/.relavium/history.db`** — verified, and it is what let a
+  broken migration reach real data while staying invisible to CI. Tracked in [deferred-tasks.md](deferred-tasks.md).
 
 **Open obligations carried out of 2.6.F:**
 

@@ -213,13 +213,14 @@ approval; `/create` works from the Home; a malformed agent YAML surfaces its fie
 diagnostic on every surface; the untrusted-import consent gate holds; a security review of the write
 surface + the secret-taint gate + the import gate passes. **Required ADR:** shared with 2.6.A (ADR-0058).
 
-### 2.6.C — Mid-session model reseat — residual + transcript-carry fix — ✅ **Done (PR pending, 2026-07-12)**
+### 2.6.C — Mid-session model reseat — residual + transcript-carry fix — ✅ **Done (PR #75, merged 2026-07-13)**
 
 > **Shipped early in 2.5.G** (ADR-0059, PR #66, 2026-07-07): the `/models` mid-chat reseat, per-message
 > `modelId` attribution, and the context-loss notice. Retained for the residual below and as the
 > cross-reference home.
 >
-> **Status:** ✅ **Done (2026-07-12)** — both tasks shipped, plus the residual that turned out to need its own ADR.
+> **Status:** ✅ **Done — merged to `main` 2026-07-13 (PR #75)**. Both tasks shipped, plus the residual that turned
+> out to need its own ADR.
 > The reseat now carries the rendered conversation (F1), with the switch marker landing beneath it; and `/cost` shows
 > a per-model breakdown backed by a new durable `session_costs` table
 > ([ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md) — the per-message `model_id` this
