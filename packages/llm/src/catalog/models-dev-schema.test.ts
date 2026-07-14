@@ -229,6 +229,20 @@ describe('ENRICHMENT is decoupled from the money gate — a priced model is neve
     expect(dropped).toHaveLength(0);
     expect(catalog['m']).not.toHaveProperty('requestCapabilities');
   });
+
+  it('a `reasoning_options` CONTAINER shape change (null / non-array) thins the descriptor, never EVICTS the model', () => {
+    // The element-level leniency defended a bad OPTION; the container itself was still strict, so `reasoning_options:
+    // null` (models.dev already emits explicit null for reasoning/cost/limit) or an array→object change failed the
+    // whole ModelSchema.safeParse and dropped a fully-priced model — the §9 vanished-price red M7 exists to prevent.
+    for (const bad of [null, {}, 'nope', 3]) {
+      const { catalog, dropped } = one({ reasoning: true, reasoning_options: bad });
+      expect(dropped, JSON.stringify(bad)).toHaveLength(0);
+      expect(catalog['m']?.inputPerMtokMicrocents).toBe(500_000_000); // still priced
+      // `reasoning: true` with no usable options ⇒ the empty descriptor (reasons, but no controllable tier), NOT a
+      // dropped row and NOT a spurious control.
+      expect(catalog['m']?.reasoning).toEqual({});
+    }
+  });
 });
 
 describe('the money boundary — integer micro-cents, and absent ≠ zero', () => {

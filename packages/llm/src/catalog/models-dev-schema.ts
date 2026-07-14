@@ -98,9 +98,15 @@ const ModelSchema = z.object({
   // firing the §9 money guard red for a non-money reason. So `reasoning` tolerates `null`, and each
   // `reasoning_options` entry is validated ONE AT A TIME in {@link toReasoningControls} (an unrecognized shape is
   // skipped, yielding a thinner reasoning descriptor), never as a whole-array `discriminatedUnion` that one bad
-  // element fails. `cost`/`limit` stay authoritative — they ARE the money surface — but tolerate `null` (absent).
+  // element fails. The CONTAINER tolerates `null` AND a wrong TYPE (`.catch` → undefined): a `reasoning_options:
+  // null` or an array→object change must thin the descriptor, not evict the priced model — element-only leniency
+  // left that container-shape gap. `cost`/`limit` stay authoritative — they ARE the money surface — tolerating only
+  // `null` (absent).
   reasoning: z.boolean().nullish(),
-  reasoning_options: z.array(z.unknown()).optional(),
+  reasoning_options: z
+    .array(z.unknown())
+    .nullish()
+    .catch(() => undefined),
   // Per-model REQUEST capabilities (ADR-0071 amendment). Upstream carries these as top-level per-model booleans;
   // they vary per model within a provider (`gpt-5.6-luna` has `temperature: false`). ENRICHMENT, so `nullish` and
   // never fatal — a missing/odd value degrades to "accepted", the safe default.
