@@ -182,7 +182,7 @@ export { createCustomOpenAiProvider, defaultProviders, providerKind } from './pr
 // --- The generated model catalog (ADR-0071) ------------------------------------------------
 // The reasoning CONTROL is per-model data now, not a per-adapter assumption. The host projects a model's
 // ACCEPTED TIERS from it (`resolveEffortTiers`), so a tier the model would reject never reaches the wire.
-export { catalogModel, effortTiersFor } from './catalog/lookup.js';
+export { catalogModel, effortTiersFor, modelAccepts } from './catalog/lookup.js';
 // The generated snapshot itself + its pricing projection (ADR-0071 §1) — what `MODEL_PRICING` used to be.
 export { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
 export { catalogPricing, toPricing, pricedModelIds } from './catalog/pricing.js';
@@ -191,7 +191,12 @@ export { catalogPricing, toPricing, pricedModelIds } from './catalog/pricing.js'
 export { installCatalogRefresh, clearCatalogRefresh, catalogModelIds } from './catalog/lookup.js';
 export { CATALOG_PROVIDER_KEYS } from './catalog/catalog-providers.js';
 export { normalizeCatalog, ModelsDevPayloadSchema } from './catalog/models-dev-schema.js';
-export type { CatalogModel, CatalogPriceTier, ReasoningControls } from './catalog/catalog-model.js';
+export type {
+  CatalogModel,
+  CatalogPriceTier,
+  ReasoningControls,
+  RequestCapabilities,
+} from './catalog/catalog-model.js';
 export {
   acceptedTiers,
   canDisableReasoning,

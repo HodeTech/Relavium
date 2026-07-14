@@ -4,7 +4,7 @@ import { mediaModalityOf } from '@relavium/shared';
 import type { AbortSignalLike, ContentPart, StopReason } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
-import { catalogModel } from '../catalog/lookup.js';
+import { catalogModel, modelAccepts } from '../catalog/lookup.js';
 import { cappedMaxTokens } from '../output-cap.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import {
@@ -557,14 +557,24 @@ function buildCommonBody(
   if (req.toolChoice !== undefined) {
     body.tool_choice = toAnthropicToolChoice(req.toolChoice);
   }
-  if (req.responseFormat?.type === 'json') {
+  // `structured_output` is gated on the MODEL's per-model capability (ADR-0071 amendment): a model can reject a
+  // response-format request its provider supports, and sending it is a 400. Withhold, never send-and-fail.
+  if (req.responseFormat?.type === 'json' && modelAccepts(req.model, 'structuredOutput')) {
     // Native structured output via output_config (ADR-0030); the canonical JSON-Schema bridges here.
     body.output_config = {
       format: { type: 'json_schema', schema: req.responseFormat.schema as Record<string, unknown> },
     };
   }
   applyAnthropicReasoning(body, req, maxTokens);
-  if (req.temperature !== undefined) {
+  // Extended thinking pins `temperature` to 1 on Anthropic — `thinking:{enabled|adaptive}` alongside any other
+  // temperature is a guaranteed 400 (review M4). `applyAnthropicReasoning` (above) just set `body.thinking`, so read
+  // it here: a non-`disabled` thinking block means reasoning is ON, and the caller's temperature must be WITHHELD.
+  const thinkingEnabled = body.thinking !== undefined && body.thinking.type !== 'disabled';
+  if (
+    req.temperature !== undefined &&
+    modelAccepts(req.model, 'temperature') && // the per-model capability (gpt-class parity; ADR-0071 amendment)
+    !thinkingEnabled
+  ) {
     // The shared contract is the provider-agnostic [0, 2] envelope (common.ts); Anthropic's API
     // accepts temperature in [0, 1]. Fail fast (the adapter's "never silently drop" posture) rather
     // than forward a value the provider will 400 on — the guard stays provider-local, contract

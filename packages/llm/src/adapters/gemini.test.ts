@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+
+import { clearCatalogRefresh, installCatalogRefresh } from '../catalog/lookup.js';
+import type { CatalogModel } from '../catalog/catalog-model.js';
 
 import type { AbortSignalLike, ReasoningEffort } from '@relavium/shared';
 
@@ -414,6 +417,54 @@ describe('geminiErrorToLlmError — classification', () => {
       retryable: false,
     });
     expect(geminiErrorToLlmError('boom')).toMatchObject({ kind: 'unknown', retryable: false });
+  });
+});
+
+describe('Gemini adapter — per-model request-capability gating (ADR-0071 amendment)', () => {
+  afterEach(clearCatalogRefresh);
+  const catModel = (over: Partial<CatalogModel> & Pick<CatalogModel, 'modelId'>): CatalogModel => ({
+    provider: 'gemini',
+    displayName: over.modelId,
+    contextWindowTokens: 1_000_000,
+    maxOutputTokens: 64_000,
+    inputPerMtokMicrocents: 1_250_000,
+    outputPerMtokMicrocents: 10_000_000,
+    ...over,
+  });
+  const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }];
+
+  it('WITHHOLDS temperature for a model that rejects it, SENDS it when accepted', () => {
+    installCatalogRefresh({
+      'cap-gemini': catModel({
+        modelId: 'cap-gemini',
+        requestCapabilities: { temperature: false },
+      }),
+      'cap-gemini-ok': catModel({ modelId: 'cap-gemini-ok' }),
+    });
+    expect(
+      buildGeminiRequest({ model: 'cap-gemini', temperature: 0.4, messages }).config,
+    ).not.toHaveProperty('temperature');
+    expect(
+      buildGeminiRequest({ model: 'cap-gemini-ok', temperature: 0.4, messages }).config[
+        'temperature'
+      ],
+    ).toBe(0.4);
+  });
+
+  it('WITHHOLDS structured output (responseJsonSchema) for a model that rejects it', () => {
+    installCatalogRefresh({
+      'cap-gemini-so': catModel({
+        modelId: 'cap-gemini-so',
+        requestCapabilities: { structuredOutput: false },
+      }),
+    });
+    const config = buildGeminiRequest({
+      model: 'cap-gemini-so',
+      messages,
+      responseFormat: { type: 'json', schema: { type: 'object' } },
+    }).config;
+    expect(config).not.toHaveProperty('responseJsonSchema');
+    expect(config).not.toHaveProperty('responseMimeType');
   });
 });
 

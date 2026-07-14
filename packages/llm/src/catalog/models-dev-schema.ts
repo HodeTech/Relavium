@@ -3,7 +3,12 @@ import { z } from 'zod';
 import type { ProviderId } from '../types.js';
 import { isNonChatModelId } from '../model-kind.js';
 import { providerIdForCatalogKey } from './catalog-providers.js';
-import type { CatalogModel, CatalogPriceTier, ReasoningControls } from './catalog-model.js';
+import type {
+  CatalogModel,
+  CatalogPriceTier,
+  ReasoningControls,
+  RequestCapabilities,
+} from './catalog-model.js';
 
 /**
  * The BOUNDARY between the upstream metadata catalog and Relavium
@@ -96,6 +101,13 @@ const ModelSchema = z.object({
   // element fails. `cost`/`limit` stay authoritative — they ARE the money surface — but tolerate `null` (absent).
   reasoning: z.boolean().nullish(),
   reasoning_options: z.array(z.unknown()).optional(),
+  // Per-model REQUEST capabilities (ADR-0071 amendment). Upstream carries these as top-level per-model booleans;
+  // they vary per model within a provider (`gpt-5.6-luna` has `temperature: false`). ENRICHMENT, so `nullish` and
+  // never fatal — a missing/odd value degrades to "accepted", the safe default.
+  temperature: z.boolean().nullish(),
+  tool_call: z.boolean().nullish(),
+  structured_output: z.boolean().nullish(),
+  attachment: z.boolean().nullish(),
   limit: LimitSchema.nullish(),
   /** `null` on every image model upstream — priced per image, an axis we do not model (§11). */
   cost: CostSchema.nullish(),
@@ -160,6 +172,26 @@ function toReasoningControls(raw: z.infer<typeof ModelSchema>): ReasoningControl
   return controls;
 }
 
+/**
+ * Normalize the upstream per-model request-capability booleans into Relavium's descriptor (ADR-0071 amendment).
+ * Only a `false` (the model does NOT accept the parameter) is carried — absent/true/null all mean "accepted", the
+ * safe default the adapters treat as "send it". Returns `undefined` when the model accepts everything, so the
+ * common case adds NOTHING to the row.
+ */
+function toRequestCapabilities(raw: z.infer<typeof ModelSchema>): RequestCapabilities | undefined {
+  const caps: {
+    temperature?: boolean;
+    toolCall?: boolean;
+    structuredOutput?: boolean;
+    attachment?: boolean;
+  } = {};
+  if (raw.temperature === false) caps.temperature = false;
+  if (raw.tool_call === false) caps.toolCall = false;
+  if (raw.structured_output === false) caps.structuredOutput = false;
+  if (raw.attachment === false) caps.attachment = false;
+  return Object.keys(caps).length === 0 ? undefined : caps;
+}
+
 function toPriceTiers(
   cost: NonNullable<z.infer<typeof CostSchema>>,
 ): readonly CatalogPriceTier[] | undefined {
@@ -197,6 +229,7 @@ export function normalizeCatalogModel(
   }
   const { cost, limit } = raw;
   const reasoning = toReasoningControls(raw);
+  const requestCapabilities = toRequestCapabilities(raw);
   const tiers = toPriceTiers(cost);
   return {
     provider,
@@ -214,6 +247,7 @@ export function normalizeCatalogModel(
       : { cacheWritePerMtokMicrocents: toMicrocents(cost.cache_write) }),
     ...(tiers === undefined ? {} : { contextTiers: tiers }),
     ...(reasoning === undefined ? {} : { reasoning }),
+    ...(requestCapabilities === undefined ? {} : { requestCapabilities }),
   };
 }
 

@@ -1,6 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
+import { clearCatalogRefresh, installCatalogRefresh } from '../catalog/lookup.js';
+import type { CatalogModel } from '../catalog/catalog-model.js';
 import { UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
 import { canDisableReasoning } from '../reasoning-wire.js';
@@ -63,6 +65,97 @@ function captureBody(messages: LlmMessage[]): Promise<string> {
     .generate({ model: 'claude-opus-4-8', maxTokens: 16, messages }, 'k')
     .then(() => body);
 }
+
+describe('AnthropicAdapter — request-capability + thinking/temperature gating (ADR-0071 amendment · review M4)', () => {
+  afterEach(clearCatalogRefresh);
+  const anthropicOk = (): Response =>
+    new Response(
+      JSON.stringify({
+        id: 'm',
+        type: 'message',
+        role: 'assistant',
+        model: 'x',
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  const capture = (): {
+    adapter: ReturnType<typeof createAnthropicAdapter>;
+    sent: () => Record<string, unknown>;
+  } => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(anthropicOk());
+      },
+      maxRetries: 0,
+    });
+    return { adapter, sent: () => sent };
+  };
+  const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+  const catModel = (over: Partial<CatalogModel> & Pick<CatalogModel, 'modelId'>): CatalogModel => ({
+    provider: 'anthropic',
+    displayName: over.modelId,
+    contextWindowTokens: 200_000,
+    maxOutputTokens: 64_000,
+    inputPerMtokMicrocents: 3_000_000,
+    outputPerMtokMicrocents: 15_000_000,
+    ...over,
+  });
+
+  it('WITHHOLDS temperature when thinking is ENABLED — Anthropic requires temperature=1 with extended thinking (M4)', async () => {
+    // haiku-4-5 is budget-shaped: reasoningEffort `medium` ⇒ thinking:{type:'enabled'}. A caller temperature next to
+    // it is a guaranteed 400. Withhold it — the reasoning the user asked for wins; the temperature is dropped.
+    const { adapter, sent } = capture();
+    await adapter.generate(
+      {
+        model: 'claude-haiku-4-5',
+        maxTokens: 8192,
+        messages,
+        reasoningEffort: 'medium',
+        temperature: 0.7,
+      },
+      'k',
+    );
+    expect(sent()['thinking']).toMatchObject({ type: 'enabled' });
+    expect(sent()).not.toHaveProperty('temperature');
+  });
+
+  it('SENDS temperature when thinking is OFF — the reconcile is scoped to enabled thinking only', async () => {
+    const { adapter, sent } = capture();
+    await adapter.generate(
+      {
+        model: 'claude-haiku-4-5',
+        maxTokens: 8192,
+        messages,
+        reasoningEffort: 'off',
+        temperature: 0.7,
+      },
+      'k',
+    );
+    expect(sent()['thinking']).toEqual({ type: 'disabled' });
+    expect(sent()['temperature']).toBe(0.7);
+  });
+
+  it('WITHHOLDS temperature for a model whose catalog rejects it (per-model capability), no thinking involved', async () => {
+    installCatalogRefresh({
+      'cap-claude': catModel({
+        modelId: 'cap-claude',
+        requestCapabilities: { temperature: false },
+      }),
+    });
+    const { adapter, sent } = capture();
+    await adapter.generate(
+      { model: 'cap-claude', maxTokens: 8192, messages, temperature: 0.5 },
+      'k',
+    );
+    expect(sent()).not.toHaveProperty('temperature');
+  });
+});
 
 describe('AnthropicAdapter', () => {
   it('exposes the anthropic id and the full capability surface', () => {

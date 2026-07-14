@@ -81,6 +81,32 @@ export interface CatalogModel {
   readonly contextTiers?: readonly CatalogPriceTier[];
   /** Absent ⇒ the model does not reason. Present-but-empty ⇒ it reasons with **no controllable tier**. */
   readonly reasoning?: ReasoningControls;
+  /** Absent ⇒ the model accepts every request parameter (the safe default). Present ⇒ carries only the parameters
+   *  the model does NOT accept. See {@link RequestCapabilities}. */
+  readonly requestCapabilities?: RequestCapabilities;
+}
+
+/**
+ * Per-model REQUEST capabilities (ADR-0071 amendment) — whether the model accepts a given request PARAMETER,
+ * sourced per-model from models.dev the same way `reasoning` is. `temperature`, `tool_call`, `structured_output`
+ * and `attachment` all vary per model WITHIN a single provider (e.g. `gpt-5.6-luna` rejects `temperature` while
+ * its siblings accept it), so a provider-wide {@link CapabilityFlags} boolean cannot say what is true — the same
+ * shape of problem ADR-0071 fixed for pricing and reasoning. This is DISTINCT from `CapabilityFlags`, and lives
+ * here (not on the seam struct) exactly as `reasoning` does.
+ *
+ * A field is present ONLY when upstream says the model does NOT accept the parameter (`false`); **absent ⇒
+ * accepted** — the safe default, so a model we have no data for is never denied a parameter it takes. The adapters
+ * WITHHOLD the wire parameter when the flag is `false`, turning a provider 400 into a dropped-and-noted field.
+ */
+export interface RequestCapabilities {
+  /** `false` ⇒ the model rejects a `temperature` parameter (models.dev). Absent ⇒ accepted. */
+  readonly temperature?: boolean;
+  /** `false` ⇒ the model rejects tool/function-call definitions. Absent ⇒ accepted. */
+  readonly toolCall?: boolean;
+  /** `false` ⇒ the model rejects a structured-output / response-format request. Absent ⇒ accepted. */
+  readonly structuredOutput?: boolean;
+  /** `false` ⇒ the model rejects non-text (image/file) input attachments. Absent ⇒ accepted. */
+  readonly attachment?: boolean;
 }
 
 /** The generated snapshot: canonical model id → its metadata. Keyed by id alone, matching the merge's key. */

@@ -2,7 +2,7 @@ import type { ReasoningEffort } from '@relavium/shared';
 
 import { acceptedTiers } from '../reasoning-wire.js';
 
-import type { CatalogModel } from './catalog-model.js';
+import type { CatalogModel, RequestCapabilities } from './catalog-model.js';
 import { CATALOG_SNAPSHOT } from './snapshot.js';
 
 /**
@@ -81,6 +81,19 @@ export function catalogModel(modelId: string): CatalogModel | undefined {
 /** Every model id we can describe — the snapshot, plus whatever a refresh added. */
 export function catalogModelIds(): readonly string[] {
   return [...new Set([...Object.keys(CATALOG_SNAPSHOT), ...Object.keys(refreshed)])];
+}
+
+/**
+ * Does **this model** accept a given request PARAMETER (ADR-0071 amendment)? `temperature`, `tool_call`,
+ * `structured_output` and `attachment` vary per model within a provider, so an adapter must ask the catalog before
+ * it puts the parameter on the wire — sending one a model rejects (e.g. `temperature` on `gpt-5.6-luna`) is a 400.
+ *
+ * `true` unless the catalog explicitly says `false`: an un-described model (custom `base_url`, brand-new id) or one
+ * with no capability data is assumed to ACCEPT the parameter — the same degrade-to-supported default the rest of
+ * the catalog uses, so we never withhold a parameter a model actually takes on the strength of missing metadata.
+ */
+export function modelAccepts(modelId: string, param: keyof RequestCapabilities): boolean {
+  return catalogModel(modelId)?.requestCapabilities?.[param] !== false;
 }
 
 /**

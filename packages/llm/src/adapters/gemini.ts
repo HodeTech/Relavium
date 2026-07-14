@@ -10,7 +10,7 @@ import type {
 } from '@relavium/shared';
 
 import { assertStreamable, assertSupported } from '../capabilities.js';
-import { catalogModel } from '../catalog/lookup.js';
+import { catalogModel, modelAccepts } from '../catalog/lookup.js';
 import { cappedMaxTokens } from '../output-cap.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
 import {
@@ -645,12 +645,14 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   if (req.toolChoice !== undefined) {
     config['toolConfig'] = toGeminiToolChoice(req.toolChoice);
   }
-  if (req.responseFormat?.type === 'json') {
+  // Gate `structured_output`/`temperature` on the MODEL's per-model capability (ADR-0071 amendment) — a model can
+  // reject a parameter its provider supports, and sending it is a 400. Withhold, don't send-and-fail; absent ⇒ ok.
+  if (req.responseFormat?.type === 'json' && modelAccepts(req.model, 'structuredOutput')) {
     // Native structured output (ADR-0030): JSON mime type + the canonical schema as responseJsonSchema.
     config['responseMimeType'] = 'application/json';
     config['responseJsonSchema'] = req.responseFormat.schema;
   }
-  if (req.temperature !== undefined) {
+  if (req.temperature !== undefined && modelAccepts(req.model, 'temperature')) {
     config['temperature'] = req.temperature;
   }
   // The output cap, held at or below the model's own ceiling (ADR-0071 §7) — down, never up: a cap BELOW the

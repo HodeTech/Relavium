@@ -8,6 +8,7 @@ import {
   catalogModelIds,
   clearCatalogRefresh,
   installCatalogRefresh,
+  modelAccepts,
 } from './lookup.js';
 import { CATALOG_SNAPSHOT } from './snapshot.js';
 
@@ -35,6 +36,27 @@ function model(partial: Partial<CatalogModel> & Pick<CatalogModel, 'modelId'>): 
     ...partial,
   };
 }
+
+describe('modelAccepts — per-model request-capability, default accepted (ADR-0071 amendment)', () => {
+  it('returns false ONLY for a parameter the catalog explicitly marks unsupported', () => {
+    installCatalogRefresh({
+      'cap-tail': model({
+        modelId: 'cap-tail',
+        requestCapabilities: { temperature: false, structuredOutput: false },
+      }),
+    });
+    expect(modelAccepts('cap-tail', 'temperature')).toBe(false);
+    expect(modelAccepts('cap-tail', 'structuredOutput')).toBe(false);
+    expect(modelAccepts('cap-tail', 'toolCall')).toBe(true); // not marked ⇒ accepted
+    expect(modelAccepts('cap-tail', 'attachment')).toBe(true);
+  });
+
+  it('a model with no capability data, and an UNCATALOGUED id, both accept everything (the safe default)', () => {
+    installCatalogRefresh({ 'plain-tail': model({ modelId: 'plain-tail' }) });
+    expect(modelAccepts('plain-tail', 'temperature')).toBe(true);
+    expect(modelAccepts('some-custom-base-url-model', 'temperature')).toBe(true); // never withhold on missing data
+  });
+});
 
 describe('installCatalogRefresh — additive only, and the shipped snapshot is the FLOOR', () => {
   it('NEVER touches a shipped model — a priced-but-lower refresh is IGNORED (§9)', () => {

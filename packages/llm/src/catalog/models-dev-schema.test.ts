@@ -203,6 +203,32 @@ describe('ENRICHMENT is decoupled from the money gate — a priced model is neve
     expect(catalog['m']).toBeUndefined(); // dropped — but as an unpriceable-shape drop, reported, not a crash
     expect(dropped.some((d) => d.modelId === 'm')).toBe(true);
   });
+
+  it('carries per-model REQUEST capabilities, storing ONLY the rejected ones (ADR-0071 amendment)', () => {
+    // Upstream marks this model as rejecting temperature + structured_output, accepting tool_call + attachment.
+    const { catalog } = one({
+      temperature: false,
+      structured_output: false,
+      tool_call: true,
+      attachment: true,
+    });
+    // Only the `false` (rejected) parameters are stored; the accepted ones add nothing (absent ⇒ accepted).
+    expect(catalog['m']?.requestCapabilities).toEqual({
+      temperature: false,
+      structuredOutput: false,
+    });
+  });
+
+  it('a model that accepts everything carries NO requestCapabilities (the common case adds nothing)', () => {
+    const { catalog } = one({ temperature: true, tool_call: true });
+    expect(catalog['m']).not.toHaveProperty('requestCapabilities');
+  });
+
+  it('a missing/odd capability value degrades to accepted (never a parse failure)', () => {
+    const { catalog, dropped } = one({ temperature: null }); // null ⇒ accepted, model still priced
+    expect(dropped).toHaveLength(0);
+    expect(catalog['m']).not.toHaveProperty('requestCapabilities');
+  });
 });
 
 describe('the money boundary — integer micro-cents, and absent ≠ zero', () => {

@@ -386,6 +386,41 @@ provider SDK). models.dev is therefore an **implementation detail of the snapsho
 architectural commitment: when Relavium builds its own metadata source, it swaps behind the same normalized
 types — one file, not a refactor.
 
+### 12. Per-model REQUEST capabilities — the same "a table cannot say what is true" fix, one more axis
+
+> **Amendment (2026-07-14, implementation).** The same class this ADR already fixed for **pricing** (a hand-typed
+> table → a per-model generated row) and **reasoning shape** (§6, a provider-wide boolean → a per-model control
+> descriptor) has a third instance: **which request PARAMETERS a model accepts.** `temperature`, `tool_call`,
+> `structured_output` and `attachment` all vary **per model within a single provider** — models.dev publishes each
+> as a per-model boolean, and (checked against the live payload) all four range over `[false, true]` for the
+> providers Relavium serves. The pre-existing `CapabilityFlags` (`packages/llm/src/types.ts`) is a **per-PROVIDER**
+> struct, so it cannot express that `gpt-5.6-luna` rejects `temperature` while its siblings accept it; sending the
+> parameter to a model that rejects it is a live 400 (the reported bug).
+>
+> - **The data lives on the model, not the seam.** A per-model `requestCapabilities` descriptor is carried on
+>   `CatalogModel` (parsed from models.dev, normalized like `reasoning`), NOT forced into the provider-level
+>   `CapabilityFlags` — exactly as §6 put the reasoning shape on the model. It is **enrichment**, parsed leniently
+>   (a shape change never evicts a priced model — the §11/M7 rule), and stores **only a `false`**: absent ⇒
+>   **accepted**, the safe default, so a model with no capability data (a custom `base_url`, a brand-new id) is
+>   never denied a parameter it takes on the strength of missing metadata.
+> - **The adapters WITHHOLD, they do not send-and-fail.** `modelAccepts(model, param)` gates the wire parameter in
+>   all three OpenAI-compatible/Anthropic/Gemini adapters. A rejected `temperature`/`structured_output` is dropped,
+>   turning a guaranteed 400 into a served turn at the model's default — the same "withhold, never guess" posture
+>   §6 established for reasoning.
+> - **Anthropic thinking pins `temperature` to 1.** Independently, enabling extended thinking (`thinking:{enabled|
+>   adaptive}`) forbids any other temperature on Anthropic. The adapter now withholds a caller temperature whenever
+>   it enabled thinking for the turn — the reasoning the author selected wins, and the 400 is removed.
+> - **Scope, honestly.** `temperature` and `structured_output` are safe **silent** param-withholds (a preference/
+>   optimization the wire can omit, and the turn still runs). `tool_call` and `attachment` are NOT: dropping tools
+>   silently would leave the agent unable to act, and dropping an image input would change what the model sees.
+>   Their catalog data is carried (the mechanism is complete), but gating them is deferred to a **louder** signal
+>   (config-time validation, or a gate-level notice like §6's effort gate), not a silent drop. A user-facing notice
+>   for the two silent withholds (so a dropped `temperature` is *said out loud*, §6's own standard) is likewise a
+>   follow-up — the correctness fix (no 400) ships first.
+> - **The data populates via the sync, not by hand.** The snapshot is GENERATED (§3); these fields are parsed by
+>   the schema and land on the next `pnpm sync:models`. Until then the mechanism is inert-but-correct (absent ⇒
+>   accepted), and the shipped snapshot is **not hand-edited** — the generated-file discipline holds.
+
 ## Consequences
 
 ### Positive

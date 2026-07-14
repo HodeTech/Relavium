@@ -1,8 +1,10 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIError, APIUserAbortError } from 'openai';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AbortSignalLike, ReasoningEffort } from '@relavium/shared';
 
+import { clearCatalogRefresh, installCatalogRefresh } from '../catalog/lookup.js';
+import type { CatalogModel } from '../catalog/catalog-model.js';
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
 import {
@@ -88,6 +90,63 @@ const okResponse = (): Response =>
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
+
+/** A minimal catalog row (additive refresh) carrying only what a capability test needs. */
+const catModel = (over: Partial<CatalogModel> & Pick<CatalogModel, 'modelId'>): CatalogModel => ({
+  provider: 'openai',
+  displayName: over.modelId,
+  contextWindowTokens: 100_000,
+  maxOutputTokens: 10_000,
+  inputPerMtokMicrocents: 1_000_000,
+  outputPerMtokMicrocents: 2_000_000,
+  ...over,
+});
+
+describe('per-model request-capability gating (ADR-0071 amendment)', () => {
+  afterEach(clearCatalogRefresh);
+  const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+  const capture = (): { oai: LlmProvider; sent: () => Record<string, unknown> } => {
+    let sent: Record<string, unknown> = {};
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    return { oai, sent: () => sent };
+  };
+
+  it('WITHHOLDS temperature for a model that rejects it — the 400 becomes a dropped field', async () => {
+    installCatalogRefresh({
+      'cap-openai': catModel({
+        modelId: 'cap-openai',
+        requestCapabilities: { temperature: false },
+      }),
+    });
+    const { oai, sent } = capture();
+    await oai.generate({ model: 'cap-openai', messages, temperature: 0.7 }, 'k');
+    expect(sent()).not.toHaveProperty('temperature');
+  });
+
+  it('SENDS temperature for a model with no capability data (absent ⇒ accepted, unchanged behaviour)', async () => {
+    installCatalogRefresh({ 'cap-ok': catModel({ modelId: 'cap-ok' }) });
+    const { oai, sent } = capture();
+    await oai.generate({ model: 'cap-ok', messages, temperature: 0.7 }, 'k');
+    expect(sent()['temperature']).toBe(0.7);
+  });
+
+  it('WITHHOLDS response_format for a model that rejects structured_output', async () => {
+    installCatalogRefresh({
+      'cap-so': catModel({ modelId: 'cap-so', requestCapabilities: { structuredOutput: false } }),
+    });
+    const { oai, sent } = capture();
+    await oai.generate(
+      { model: 'cap-so', messages, responseFormat: { type: 'json', schema: { type: 'object' } } },
+      'k',
+    );
+    expect(sent()).not.toHaveProperty('response_format');
+  });
+});
 
 /** Build an SSE Response from a list of chunk objects (shared across the streaming describes). */
 const sse = (chunks: readonly unknown[]): Response =>

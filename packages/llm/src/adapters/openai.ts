@@ -18,7 +18,7 @@ import {
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
-import { catalogModel, catalogModelIds } from '../catalog/lookup.js';
+import { catalogModel, catalogModelIds, modelAccepts } from '../catalog/lookup.js';
 import { isNonChatModelId } from '../model-kind.js';
 import { cappedMaxTokens, type EndpointKind } from '../output-cap.js';
 import { DEEPSEEK_WIRE, acceptedTiers, openAiWireValue } from '../reasoning-wire.js';
@@ -718,10 +718,13 @@ function buildCommonBody(
   if (req.toolChoice !== undefined) {
     body.tool_choice = toOpenAiToolChoice(req.toolChoice);
   }
-  if (req.responseFormat?.type === 'json') {
+  // Gate the request parameters on the MODEL's per-model capability (ADR-0071 amendment): a model can reject
+  // `structured_output` or `temperature` even though its provider supports them (`gpt-5.6-luna` rejects
+  // `temperature`), and sending one it rejects is a 400. Withhold rather than send-and-fail; absent data ⇒ accepted.
+  if (req.responseFormat?.type === 'json' && modelAccepts(req.model, 'structuredOutput')) {
     body.response_format = toOpenAiResponseFormat(req.responseFormat, provider);
   }
-  if (req.temperature !== undefined) {
+  if (req.temperature !== undefined && modelAccepts(req.model, 'temperature')) {
     body.temperature = req.temperature;
   }
   const maxTokens = applyOutputCap(body, req, provider, endpoint);
