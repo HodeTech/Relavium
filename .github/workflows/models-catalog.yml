@@ -88,6 +88,20 @@ jobs:
       # Turbo `^build` builds `@relavium/shared` ahead of `@relavium/llm` (mirrors ci.yml's pre-test build).
       - name: Build workspace dependencies
         run: pnpm turbo run build --filter=@relavium/llm
+      # Guard against a FALSE-GREEN nightly: the live cases are `it.skipIf(<key> === '')`, so with NO provider secret
+      # configured EVERY probe skips and the suite passes — a green that means "nothing was checked", indistinguishable
+      # from "all tiers verified". Fail loudly instead, so a green nightly is proof that probes actually ran.
+      - name: Require at least one provider secret
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}${OPENAI_API_KEY}${GEMINI_API_KEY}${DEEPSEEK_API_KEY}" ]; then
+            echo "::error::No provider secret is configured — every live effort probe would SKIP, and a green run would falsely read as 'all tiers verified'. Configure at least one of ANTHROPIC/OPENAI/GEMINI/DEEPSEEK_API_KEY."
+            exit 1
+          fi
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       # The conformance suite (fixtures + the `it.skipIf(<key> === '')` live cases). With the provider keys set here
       # the live cases execute — and a catalog that claims a tier a model rejects fails red — while a missing key
       # simply skips that provider's lane. Scoped to `src/conformance` so a flaky live case cannot widen the red

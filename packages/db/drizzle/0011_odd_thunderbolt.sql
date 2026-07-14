@@ -1,4 +1,4 @@
-ALTER TABLE `model_catalog` ADD `cached_input_stated` integer DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE `model_catalog` ADD `cached_input_stated` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
 -- WHY A FLAG AND NOT A NULLABLE COLUMN (ADR-0071 §10).
 --
 -- `cached_input_cost_per_mtok_microcents` is `NOT NULL DEFAULT 0`, and SQLite cannot drop a NOT NULL constraint with

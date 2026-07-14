@@ -174,6 +174,21 @@ describe('refreshCatalog — one destination, and it stays there', () => {
     expect(result.reason).toContain('off-host');
   });
 
+  it('a MANUAL-caught redirect (opaque, status 0) is named "off-host", not the misleading "returned 0"', async () => {
+    const result = await refreshCatalog({
+      homeDir: home,
+      fetch: () => {
+        // `redirect: 'manual'` surfaces a caught 3xx as an OPAQUE response: type 'opaqueredirect', status 0.
+        const r = new Response('{}', { status: 200 });
+        Object.defineProperty(r, 'status', { value: 0 });
+        Object.defineProperty(r, 'type', { value: 'opaqueredirect' });
+        return Promise.resolve(r);
+      },
+    });
+    expect(result.status).toBe('failed');
+    expect(result.reason).toBe('models.dev redirected off-host'); // NOT "models.dev returned 0"
+  });
+
   it('sends NO credentials and NO user data — an unauthenticated GET of a public file', async () => {
     let sent: RequestInit | undefined;
     let url: unknown;

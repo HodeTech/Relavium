@@ -105,6 +105,12 @@ async function fetchModelsDevPayload(
       // surfaces the 3xx as a non-ok response rather than quietly following it somewhere else.
       redirect: 'manual',
     });
+    // A `redirect: 'manual'` that CAUGHT a redirect yields an OPAQUE response (`type: 'opaqueredirect'`, `status: 0`)
+    // — that is the off-host redirect the ADR-0071 §8 posture forbids, not a generic non-2xx. Name it as such
+    // rather than the misleading "models.dev returned 0" the bare status check below would print.
+    if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+      return { status: 'failed', models: 0, added: 0, reason: 'models.dev redirected off-host' };
+    }
     if (!response.ok) {
       return {
         status: 'failed',
