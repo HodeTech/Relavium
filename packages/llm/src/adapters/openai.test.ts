@@ -490,7 +490,7 @@ describe('OpenAI-compatible adapter', () => {
     expect(sent['reasoning_effort']).toBe('high');
   });
 
-  it('maps the reasoning-effort tier per provider: OpenAI reasoning_effort (max→xhigh, off→none) + DeepSeek thinking (ADR-0066)', async () => {
+  it('maps the reasoning-effort tier per provider: OpenAI reasoning_effort (max→the model’s top, off→none) + DeepSeek thinking (ADR-0066)', async () => {
     let sent: Record<string, unknown> = {};
     const oai = createOpenAiAdapter({
       fetch: (_input, init) => {
@@ -515,6 +515,14 @@ describe('OpenAI-compatible adapter', () => {
     expect(sent['reasoning_effort']).toBe('none');
     await oai.generate({ ...base }, 'k'); // unset ⇒ omitted (provider default, unchanged behavior)
     expect('reasoning_effort' in sent).toBe(false);
+
+    // A model that publishes a DISTINCT `'max'` above `'xhigh'` (the gpt-5.6 family) reaches it: `max` must send
+    // the model's OWN top, not stop one rung short at `'xhigh'` (review M1). gpt-5.5 above tops at `'xhigh'` and
+    // still coarsens `max → 'xhigh'`, so the two together pin the per-model branch.
+    await oai.generate({ model: 'gpt-5.6', messages: base.messages, reasoningEffort: 'max' }, 'k');
+    expect(sent['reasoning_effort']).toBe('max');
+    await oai.generate({ model: 'gpt-5.6', messages: base.messages, reasoningEffort: 'high' }, 'k');
+    expect(sent['reasoning_effort']).toBe('high'); // the intermediate tiers are unchanged
 
     // DeepSeek (the other id this shared adapter serves) controls thinking via a `thinking` OBJECT, not the OpenAI
     // `reasoning_effort` key (ADR-0066): off→disabled; DeepSeek has only two graded levels, so low/medium/high→high

@@ -21,7 +21,7 @@ import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error
 import { catalogModel, catalogModelIds } from '../catalog/lookup.js';
 import { isNonChatModelId } from '../model-kind.js';
 import { cappedMaxTokens, type EndpointKind } from '../output-cap.js';
-import { DEEPSEEK_WIRE, OPENAI_WIRE, acceptedTiers } from '../reasoning-wire.js';
+import { DEEPSEEK_WIRE, acceptedTiers, openAiWireValue } from '../reasoning-wire.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
   CapabilityFlags,
@@ -815,7 +815,17 @@ function applyReasoningControl(
   if (provider === 'openai') {
     // `off` IS an effort value on OpenAI (`'none'`), so it needs no branch of its own: `gpt-5.4-pro` publishes
     // ['medium','high','xhigh'] and rejects BOTH `low` and `off`, and one membership test covers them.
-    body.reasoning_effort = OPENAI_WIRE[req.reasoningEffort];
+    // `openAiWireValue` reads the MODEL's ladder so `max` reaches a published `'max'` (the gpt-5.6 family) instead
+    // of stopping at the static `'xhigh'` (review M1) — the same per-model truth `acceptedTiers` gated on above.
+    //
+    // The cast bridges a VENDOR-TYPE LAG, not a Relavium type hole: models.dev (the ADR-0071 source of truth) lists
+    // `'max'` in gpt-5.6's effort values, but the pinned OpenAI SDK's `ReasoningEffort` union tops out at `'xhigh'`.
+    // The value is always one `acceptedTiers` (⇒ the catalog) proved the model accepts; the SDK's JSON body carries
+    // the string verbatim. Narrowed to the field's own type, so it can never widen to an arbitrary string.
+    body.reasoning_effort = openAiWireValue(req.reasoningEffort, reasoningControls) as Exclude<
+      OpenAiCompatibleBody['reasoning_effort'],
+      undefined
+    >;
   } else if (provider === 'deepseek') {
     // `deepseek-reasoner`'s descriptor is EMPTY (`{}`): it reasons, but publishes no controllable tier.
     // `acceptedTiers` returns the empty set for `{}`, so nothing goes on the wire and the picker offers nothing:

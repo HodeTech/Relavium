@@ -5,9 +5,11 @@ import {
   acceptedTiers,
   acceptedWireValue,
   canDisableReasoning,
+  openAiWireValue,
   reasoningBudgetFor,
   reasoningControlShape,
   thinkingCeiling,
+  wireValueFor,
 } from './reasoning-wire.js';
 
 /**
@@ -69,6 +71,37 @@ describe('the bug report — gpt-5.4-pro REJECTS the tier we offer it today', ()
     // Its wire values are none/low/medium/high/xhigh. `off`→'none' ✓ and `max`→'xhigh' ✓, both of which a naive
     // "is our tier name in the list?" check would have missed entirely.
     expect(tiers('gpt-5.5')).toEqual(['high', 'low', 'max', 'medium', 'off']);
+  });
+});
+
+describe('OpenAI top tier is PER MODEL — the gpt-5.6 family publishes a `max` above `xhigh` (review M1)', () => {
+  // gpt-5.6 effortValues: [...,'xhigh','max']; gpt-5.5 tops at 'xhigh'; gpt-5.4-pro at 'xhigh' too. `max` must
+  // reach the MODEL's own highest value, not a fixed alias — otherwise the picker's "max" row silently sends the
+  // second-strongest tier and the flagship's true maximum is unreachable from every surface.
+  it('openAiWireValue reads the model ladder: max→max when published, else max→xhigh', () => {
+    const wix6 = CATALOG_SNAPSHOT['gpt-5.6']?.reasoning;
+    const wix5 = CATALOG_SNAPSHOT['gpt-5.5']?.reasoning;
+    if (wix6 === undefined || wix5 === undefined)
+      throw new Error('gpt-5.6/gpt-5.5 not in the catalog');
+    expect(openAiWireValue('max', wix6)).toBe('max'); // gpt-5.6 publishes 'max'
+    expect(openAiWireValue('max', wix5)).toBe('xhigh'); // gpt-5.5 tops at 'xhigh'
+    expect(openAiWireValue('high', wix6)).toBe('high'); // intermediate tiers unchanged
+    expect(openAiWireValue('off', wix6)).toBe('none'); // off still maps to 'none'
+  });
+
+  it('wireValueFor is catalog-aware WITH controls and defaults to xhigh WITHOUT them (dedup path)', () => {
+    const wix6 = CATALOG_SNAPSHOT['gpt-5.6']?.reasoning;
+    if (wix6 === undefined) throw new Error('gpt-5.6 not in the catalog');
+    expect(wireValueFor('openai', 'max', wix6)).toBe('max');
+    expect(wireValueFor('openai', 'max')).toBe('xhigh'); // no controls ⇒ the static top (never collides on dedup)
+  });
+
+  it('acceptedTiers offers max for gpt-5.6 (its wire `max` is a published value)', () => {
+    expect(tiers('gpt-5.6')).toContain('max');
+    // …and acceptedWireValue resolves that tier to the model's own top, not the coarsened xhigh.
+    const wix6 = CATALOG_SNAPSHOT['gpt-5.6']?.reasoning;
+    if (wix6 === undefined) throw new Error('gpt-5.6 not in the catalog');
+    expect(acceptedWireValue('openai', 'max', wix6)).toBe('max');
   });
 });
 

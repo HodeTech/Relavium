@@ -29,14 +29,31 @@ import type { ProviderId } from './types.js';
  * for it. `gemini-2.5-flash` has `min = 0`, so it can.
  */
 
-/** OpenAI's `reasoning_effort`. `off` maps to `'none'` — here it IS an effort value, unlike the other three. */
+/**
+ * OpenAI's `reasoning_effort`. `off` maps to `'none'` — here it IS an effort value, unlike the other three. `max`
+ * is the DEFAULT top (`'xhigh'`), but a model may publish a HIGHER `'max'` above it — see {@link openAiWireValue},
+ * which reads the model's own ladder so the top tier is per-model, never a fixed alias.
+ */
 export const OPENAI_WIRE: Record<ReasoningEffort, 'none' | 'low' | 'medium' | 'high' | 'xhigh'> = {
   off: 'none',
   low: 'low',
   medium: 'medium',
   high: 'high',
-  max: 'xhigh', // OpenAI's highest tier is `xhigh`; our `max` is an honest alias for it.
+  max: 'xhigh', // the DEFAULT top; a model that publishes `'max'` overrides this — see openAiWireValue.
 };
+
+/** OpenAI's per-model wire value for a tier (review M1). The `gpt-5.6` family publishes a distinct `'max'` ABOVE
+ *  `'xhigh'`, so the top normalized tier must reach the model's OWN highest value, not stop one rung short at the
+ *  static `'xhigh'`; a model with no published `'max'` (`gpt-5.4-pro`, top `'xhigh'`) keeps `OPENAI_WIRE.max`.
+ *  ONE home for this — {@link wireValueFor}, {@link acceptedTiers}, {@link acceptedWireValue} and the adapter all
+ *  read it, so they can never disagree about what "max" sends. */
+export function openAiWireValue(
+  tier: ReasoningEffort,
+  controls: ReasoningControls,
+): 'none' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' {
+  if (tier === 'max' && controls.effortValues?.includes('max') === true) return 'max';
+  return OPENAI_WIRE[tier];
+}
 
 /** Anthropic's `output_config.effort`. `off` is absent on purpose — it is `thinking: {type:'disabled'}` instead. */
 export const ANTHROPIC_WIRE: Record<
@@ -68,8 +85,13 @@ export const GEMINI_WIRE: Record<Exclude<ReasoningEffort, 'off'>, 'low' | 'mediu
  * is the **uppercase** form of the same tokens (`HIGH`, not `high`), so its adapter upper-cases at the wire and
  * nowhere else. One map, two spellings of the same token — never two maps that can drift.
  */
+const GEMINI_THINKING_LEVEL: Record<'low' | 'medium' | 'high', 'LOW' | 'MEDIUM' | 'HIGH'> = {
+  low: 'LOW',
+  medium: 'MEDIUM',
+  high: 'HIGH',
+};
 export const toGeminiThinkingLevel = (wire: 'low' | 'medium' | 'high'): 'LOW' | 'MEDIUM' | 'HIGH' =>
-  wire.toUpperCase() as 'LOW' | 'MEDIUM' | 'HIGH';
+  GEMINI_THINKING_LEVEL[wire];
 
 /**
  * DeepSeek's `thinking.reasoning_effort`. v4 exposes only two graded levels, so `low`/`medium`/`high` all
@@ -82,14 +104,21 @@ export const DEEPSEEK_WIRE: Record<Exclude<ReasoningEffort, 'off'>, 'high' | 'ma
   max: 'max',
 };
 
-/** The wire value a provider would send for a NON-`off` tier, or `undefined` if the provider has no such map. */
+/**
+ * The wire value a provider would send for a NON-`off` tier, or `undefined` if the provider has no such map.
+ *
+ * `controls` is consulted only for OpenAI's top tier (the model's own `'max'` vs the static `'xhigh'`, review M1);
+ * omit it (the picker's dedup/projection path) and OpenAI's `max` falls to the default `'xhigh'` — which never
+ * collides with another tier, so a dedup is unaffected. The gate/adapter path passes it for wire-exact truth.
+ */
 export function wireValueFor(
   provider: ProviderId,
   tier: Exclude<ReasoningEffort, 'off'>,
+  controls?: ReasoningControls,
 ): string | undefined {
   switch (provider) {
     case 'openai':
-      return OPENAI_WIRE[tier];
+      return openAiWireValue(tier, controls ?? {});
     case 'anthropic':
       return ANTHROPIC_WIRE[tier];
     case 'gemini':
@@ -201,7 +230,7 @@ export function acceptedTiers(
   if (controls.effortValues !== undefined) {
     const values = new Set(controls.effortValues);
     for (const tier of gradable) {
-      const wire = wireValueFor(provider, tier);
+      const wire = wireValueFor(provider, tier, controls);
       if (wire !== undefined && values.has(wire)) accepted.add(tier);
     }
   }
@@ -261,7 +290,7 @@ export function acceptedWireValue(
   tier: Exclude<ReasoningEffort, 'off'>,
   controls: ReasoningControls,
 ): string | undefined {
-  const wire = wireValueFor(provider, tier);
+  const wire = wireValueFor(provider, tier, controls);
   if (wire === undefined || controls.effortValues === undefined) return undefined;
   return controls.effortValues.includes(wire) ? wire : undefined;
 }
