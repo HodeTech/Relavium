@@ -3,6 +3,7 @@ import {
   catalogModel,
   effortTiersFor as seamEffortTiersFor,
   reasoningControlShape,
+  reasoningWithheldByCap,
   wireValueFor,
   CANONICAL_ON_TIER,
 } from '@relavium/llm';
@@ -155,9 +156,9 @@ export function projectEffortToRow(
 /**
  * The single note for a WITHHELD reasoning tier (ADR-0071 §6) — the one place the engine host (`build-engine.ts`)
  * and the session host map an {@link EffortGateResult} to words, so neither carries its own inline ternary and the
- * wording cannot drift between them. The core only ever invokes the `onEffortWithheld` sink for a `rejected` or an
- * `uncontrollable` gate (agent-runner / agent-session), so those are the only outcomes with a sentence; the
- * exhaustive default guards a future gate kind against silently taking the `unavailable` wording.
+ * wording cannot drift between them. The core invokes the `onEffortWithheld` sink for `rejected`, `uncontrollable`,
+ * and `capped` (agent-runner / agent-session), so those three are the outcomes with a sentence; the exhaustive
+ * default guards a future gate kind against silently taking one of the existing sentences.
  */
 export function effortWithheldNote(result: EffortGateResult, model: string): string {
   switch (result.kind) {
@@ -165,9 +166,39 @@ export function effortWithheldNote(result: EffortGateResult, model: string): str
       return effortRejectedNote(model, result.requested, result.accepted);
     case 'uncontrollable':
       return effortUnavailableNote(model);
+    case 'capped':
+      return effortCappedNote(model, result.requested, result.maxTokens);
     default:
       throw new Error(`effortWithheldNote: '${result.kind}' is not a withheld outcome`);
   }
+}
+
+/**
+ * The note for a tier the model ACCEPTS but the request's `max_tokens` withholds (review M6). A budget-shaped model
+ * (`claude-haiku-4-5`) needs room for its minimum thinking budget under the output cap; a tight `max_tokens` leaves
+ * none, so the adapter drops thinking. The blocker is the CAP — so the sentence names `max_tokens`, not the tier.
+ */
+export function effortCappedNote(
+  model: string,
+  requested: ReasoningEffort,
+  maxTokens: number,
+): string {
+  const { label } = effortRowLabel(model, requested);
+  return `reasoning ${label} needs a larger max_tokens than ${maxTokens} on ${sanitizeInline(model)} — it was withheld this turn.`;
+}
+
+/** The {@link import('@relavium/core').ReasoningCapCheck} for the CLI hosts: reads the catalog for the bound model's
+ *  budget range and asks whether the adapter would drop thinking under this `max_tokens` (review M6). `off` is never
+ *  budgeted, and an uncatalogued model has no budget to exceed — both are `false` (nothing is cap-withheld). */
+export function reasoningWithheldByCapFor(
+  model: string,
+  tier: ReasoningEffort,
+  maxTokens: number,
+): boolean {
+  if (tier === 'off') return false;
+  const entry = catalogModel(model);
+  if (entry?.reasoning === undefined) return false;
+  return reasoningWithheldByCap(entry.provider, entry.reasoning, tier, maxTokens);
 }
 
 /**

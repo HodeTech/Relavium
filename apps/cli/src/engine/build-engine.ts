@@ -15,7 +15,7 @@ import {
 import { effortTiersFor, type PricingOverlay } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
-import { effortWithheldNote } from '../chat/effort-notice.js';
+import { effortWithheldNote, reasoningWithheldByCapFor } from '../chat/effort-notice.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv } from './tool-host/assemble.js';
@@ -128,6 +128,9 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     // The seam's `effortTiersFor` IS the projection — passed by reference, so the workflow path and the chat path
     // gate on one function rather than on two copies of it that happen to agree today.
     resolveEffortTiers: effortTiersFor,
+    // A budget-shaped model can accept a tier yet still have the adapter drop thinking when the node's `max_tokens`
+    // leaves no room for its budget floor (review M6). The catalog-backed check surfaces that as a `capped` verdict.
+    withheldByCap: reasoningWithheldByCapFor,
     // …and when it withholds, the author hears about it. See {@link BuildEngineOptions.onEffortWithheld}.
     ...(options.onEffortWithheld === undefined
       ? {}

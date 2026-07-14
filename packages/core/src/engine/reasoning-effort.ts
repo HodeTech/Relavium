@@ -31,7 +31,21 @@ export type EffortGateResult =
       readonly kind: 'rejected';
       readonly requested: ReasoningEffort;
       readonly accepted: readonly ReasoningEffort[];
-    };
+    }
+  /**
+   * The model ACCEPTS the tier, but a budget-shaped model withholds it because the request's `max_tokens` leaves no
+   * room for its minimum thinking budget (review M6). The blocker is the CAP, not the model — so the message points
+   * the user at `max_tokens`, not at the tier. `maxTokens` is the cap that was too small.
+   */
+  | { readonly kind: 'capped'; readonly requested: ReasoningEffort; readonly maxTokens: number };
+
+/** Does a budget-shaped model withhold this tier under this output cap? Host-injected (it reads the catalog for the
+ *  model's budget range); the pure gate stays platform-free. Called only for a NON-`off` tier the model accepts. */
+export type ReasoningCapCheck = (
+  model: string,
+  tier: ReasoningEffort,
+  maxTokens: number,
+) => boolean;
 
 /**
  * Gate — and now **CLAMP** — the normalized reasoning-effort tier against what the model actually accepts
@@ -52,6 +66,7 @@ export function gateReasoningEffort(
   effort: ReasoningEffort | undefined,
   model: string,
   resolveEffortTiers: ResolveEffortTiers | undefined,
+  cap?: { readonly maxTokens: number; readonly withheldByCap: ReasoningCapCheck },
 ): EffortGateResult {
   if (effort === undefined) return { kind: 'unset' };
 
@@ -60,8 +75,18 @@ export function gateReasoningEffort(
   // safe default on purpose: guessing is what put a rejected value on the wire in the first place.
   if (accepted === undefined || accepted.size === 0) return { kind: 'uncontrollable' };
 
-  if (accepted.has(effort)) return { kind: 'send', effort };
-  return { kind: 'rejected', requested: effort, accepted: [...accepted] };
+  if (!accepted.has(effort))
+    return { kind: 'rejected', requested: effort, accepted: [...accepted] };
+
+  // The tier is accepted — but a budget-shaped model still withholds it at send when the request's cap leaves no
+  // room for the budget floor (review M6). `off` is never budgeted, so it is exempt. Surface it as `capped` so the
+  // adapter's silent drop becomes a message that names `max_tokens` as the fix. A cap is only checked when the host
+  // both wired the check and set a `max_tokens`; an absent cap uses the adapter's (large) default, which never
+  // withholds. The gate and the adapter agree by construction: both read `reasoningBudgetFor`.
+  if (effort !== 'off' && cap !== undefined && cap.withheldByCap(model, effort, cap.maxTokens)) {
+    return { kind: 'capped', requested: effort, maxTokens: cap.maxTokens };
+  }
+  return { kind: 'send', effort };
 }
 
 /** The tier to send, or `undefined` to omit the field — the shorthand a request-builder wants. */

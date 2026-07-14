@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
+import type { EffortGateResult } from '@relavium/core';
+
 import {
   capUsd,
+  effortCappedNote,
   effortRejectedNote,
   effortUnavailableNote,
+  effortWithheldNote,
   onceEffortNotice,
+  reasoningWithheldByCapFor,
   unpricedModelNote,
 } from './effort-notice.js';
 
@@ -66,6 +71,41 @@ describe('effortUnavailableNote — the two empty lists are NOT the same sentenc
     const note = effortUnavailableNote('some-custom-endpoint-model');
     expect(note).toContain('not in Relavium');
     expect(note).toContain('models refresh');
+  });
+});
+
+describe('effortCappedNote — the cap, not the model, was the blocker (review M6)', () => {
+  it('names max_tokens as the fix and reads the on/off label for a budget model', () => {
+    const note = effortCappedNote('claude-haiku-4-5', 'medium', 500);
+    expect(note).toContain('max_tokens');
+    expect(note).toContain('500');
+    expect(note).toContain('claude-haiku-4-5');
+    expect(note).toContain('on'); // a budget model's `medium` reads "on"
+  });
+
+  it('effortWithheldNote routes a `capped` verdict to it', () => {
+    const capped: EffortGateResult = { kind: 'capped', requested: 'medium', maxTokens: 256 };
+    expect(effortWithheldNote(capped, 'claude-haiku-4-5')).toBe(
+      effortCappedNote('claude-haiku-4-5', 'medium', 256),
+    );
+  });
+
+  it('sanitizes a hostile model id (the display boundary, like its sibling notices)', () => {
+    const note = effortCappedNote('evil[31mmodel', 'high', 100);
+    expect(note).not.toContain('');
+    expect(note).not.toContain('');
+  });
+});
+
+describe('reasoningWithheldByCapFor — the CLI cap-check the hosts inject (review M6)', () => {
+  it('true for a budget model under a tight cap, false when roomy', () => {
+    expect(reasoningWithheldByCapFor('claude-haiku-4-5', 'medium', 500)).toBe(true);
+    expect(reasoningWithheldByCapFor('claude-haiku-4-5', 'medium', 8000)).toBe(false);
+  });
+
+  it('false for `off` (never budgeted) and for an uncatalogued model (no budget to exceed)', () => {
+    expect(reasoningWithheldByCapFor('claude-haiku-4-5', 'off', 1)).toBe(false);
+    expect(reasoningWithheldByCapFor('some-custom-endpoint-model', 'medium', 1)).toBe(false);
   });
 });
 

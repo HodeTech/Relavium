@@ -52,6 +52,62 @@ describe('gateReasoningEffort — it CLAMPS now; it used to just pass through', 
   });
 });
 
+describe('the CAP gate — an accepted tier a small max_tokens withholds is `capped`, not silent (review M6)', () => {
+  const accepts = () => tiers('off', 'low', 'medium', 'high', 'max');
+
+  it('an accepted tier the cap withholds returns `capped` with the offending max_tokens', () => {
+    // The model accepts `medium`, but the injected check (a budget-shaped model under a tight cap) says the adapter
+    // would drop it. The gate surfaces `capped` — not `send` (silent drop) and not `rejected` (the model is fine).
+    const result = gateReasoningEffort('medium', 'claude-haiku-4-5', accepts, {
+      maxTokens: 500,
+      withheldByCap: () => true,
+    });
+    expect(result).toEqual({ kind: 'capped', requested: 'medium', maxTokens: 500 });
+    expect(effortToSend(result)).toBeUndefined(); // the field is withheld, exactly as the adapter would
+  });
+
+  it('when the cap check passes, the accepted tier sends unchanged', () => {
+    const result = gateReasoningEffort('medium', 'claude-haiku-4-5', accepts, {
+      maxTokens: 8000,
+      withheldByCap: () => false,
+    });
+    expect(result).toEqual({ kind: 'send', effort: 'medium' });
+  });
+
+  it('`off` is never cap-checked — it carries no budget, so the check is not even consulted', () => {
+    let consulted = false;
+    const result = gateReasoningEffort('off', 'claude-haiku-4-5', accepts, {
+      maxTokens: 1,
+      withheldByCap: () => {
+        consulted = true;
+        return true;
+      },
+    });
+    expect(result).toEqual({ kind: 'send', effort: 'off' });
+    expect(consulted).toBe(false);
+  });
+
+  it('with no cap wired, an accepted tier still sends (unchanged behaviour, the adapter default is large)', () => {
+    expect(gateReasoningEffort('medium', 'claude-haiku-4-5', accepts)).toEqual({
+      kind: 'send',
+      effort: 'medium',
+    });
+  });
+
+  it('a REJECTED tier short-circuits before the cap check — the model, not the cap, is the blocker', () => {
+    let consulted = false;
+    const result = gateReasoningEffort('low', 'gpt-5.4-pro', () => tiers('medium', 'high', 'max'), {
+      maxTokens: 1,
+      withheldByCap: () => {
+        consulted = true;
+        return true;
+      },
+    });
+    expect(result.kind).toBe('rejected');
+    expect(consulted).toBe(false);
+  });
+});
+
 describe('the withhold cases — every one of them omits the field', () => {
   it('no tier requested ⇒ `unset`, and nothing is sent (the common path)', () => {
     expect(gateReasoningEffort(undefined, 'm', () => tiers('high'))).toEqual({ kind: 'unset' });

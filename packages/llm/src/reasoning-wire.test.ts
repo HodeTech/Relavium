@@ -8,6 +8,7 @@ import {
   openAiWireValue,
   reasoningBudgetFor,
   reasoningControlShape,
+  reasoningWithheldByCap,
   thinkingCeiling,
   wireValueFor,
 } from './reasoning-wire.js';
@@ -242,6 +243,30 @@ describe('the answer must survive the thinking — a budget that eats the cap is
     // Withhold, never squeeze. haiku's floor is 1024; a 1024-token cap cannot carry both.
     expect(reasoningBudgetFor('low', { min: 1024 }, thinkingCeiling(1024))).toBeUndefined();
     expect(reasoningBudgetFor('low', { min: 1024 }, thinkingCeiling(1280))).toBe(1024); // the first that can
+  });
+});
+
+describe('reasoningWithheldByCap — the gate can SAY what the adapter used to drop in silence (review M6)', () => {
+  const haiku = CATALOG_SNAPSHOT['claude-haiku-4-5']?.reasoning; // budget-shaped: { min: 1024 }, no ladder
+  const opus45 = CATALOG_SNAPSHOT['claude-opus-4-5']?.reasoning; // effort ladder + a budget
+
+  it('a budget-only model withholds under a tight cap, and does NOT under a roomy one', () => {
+    if (haiku === undefined) throw new Error('claude-haiku-4-5 not in the catalog');
+    expect(reasoningWithheldByCap('anthropic', haiku, 'medium', 500)).toBe(true); // 500 < floor+answer → dropped
+    expect(reasoningWithheldByCap('anthropic', haiku, 'medium', 8000)).toBe(false); // room for the budget
+  });
+
+  it('a tier reachable via the EFFORT LADDER is never cap-withheld — it carries no budget', () => {
+    if (opus45 === undefined) throw new Error('claude-opus-4-5 not in the catalog');
+    // `high` is on opus-4-5's ladder → sent as an effort level, so even a tiny cap does not withhold it.
+    expect(reasoningWithheldByCap('anthropic', opus45, 'high', 100)).toBe(false);
+  });
+
+  it('OpenAI/DeepSeek have no budget field, so nothing is ever cap-withheld there', () => {
+    if (haiku === undefined) throw new Error('claude-haiku-4-5 not in the catalog');
+    // Even fed a budget descriptor, an effort-only provider has no budget to exceed.
+    expect(reasoningWithheldByCap('openai', haiku, 'medium', 1)).toBe(false);
+    expect(reasoningWithheldByCap('deepseek', haiku, 'medium', 1)).toBe(false);
   });
 });
 

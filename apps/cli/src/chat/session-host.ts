@@ -40,7 +40,11 @@ import { createProviderResolver, type ProviderResolver } from '../engine/provide
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
 import { CliError } from '../process/errors.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
-import { effortWithheldNote, unpricedModelNote } from './effort-notice.js';
+import {
+  effortWithheldNote,
+  reasoningWithheldByCapFor,
+  unpricedModelNote,
+} from './effort-notice.js';
 import { resolveChatAgent } from './agent-source.js';
 
 /**
@@ -263,6 +267,10 @@ function buildSessionRuntime(
     // The seam's `effortTiersFor` IS the projection — passed by reference, not re-derived, so this host cannot
     // drift from the picker that renders the same answer.
     resolveEffortTiers: effortTiersFor,
+    // A budget-shaped model can accept a tier yet still have the adapter drop thinking when this turn's `max_tokens`
+    // leaves no room for its budget floor (review M6). Inject the catalog-backed check so the gate SURFACES that as
+    // a `capped` verdict instead of the adapter dropping it in silence.
+    withheldByCap: reasoningWithheldByCapFor,
     // …and when the gate withholds, SAY SO. The engine cannot print; it hands back the verdict (which carries the
     // tiers the model would take) and the surface turns it into the one sentence every path uses.
     ...(opts.onEffortWithheld === undefined

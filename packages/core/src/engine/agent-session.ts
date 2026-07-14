@@ -71,7 +71,11 @@ import {
 import { BudgetPauseError } from './budget-governor.js';
 import type { AbortControllerLike } from './execution-host.js';
 import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
-import type { EffortGateResult, ResolveEffortTiers } from './reasoning-effort.js';
+import type {
+  EffortGateResult,
+  ReasoningCapCheck,
+  ResolveEffortTiers,
+} from './reasoning-effort.js';
 import type { NodeStreamEvent } from './node-executor.js';
 import type { SessionResumeState } from './session-resume.js';
 
@@ -253,6 +257,13 @@ export interface SessionDeps {
    * `@relavium/core` never imports the catalog, so the host injects the lookup.
    */
   readonly resolveEffortTiers?: ResolveEffortTiers;
+  /**
+   * Does a budget-shaped model withhold the accepted tier because THIS turn's `max_tokens` leaves no room for its
+   * minimum thinking budget (review M6)? Host-injected (it reads the catalog's budget range); absent ⇒ the cap is
+   * not checked and a small `max_tokens` withholds thinking silently, as before. Paired with `max_tokens` at the
+   * gate so the withhold becomes a `capped` verdict the host can voice.
+   */
+  readonly withheldByCap?: ReasoningCapCheck;
   /**
    * Called when the effective tier is WITHHELD because the bound model does not take it — the session mirror of
    * {@link AgentRunnerDeps.onEffortWithheld}. The surface decides where the sentence goes (the CLI puts it in the
@@ -1102,10 +1113,18 @@ export class AgentSession {
       this.#reasoningEffort ?? this.#agent.reasoning_effort,
       this.#agent.model,
       this.#deps.resolveEffortTiers,
+      this.#deps.withheldByCap !== undefined && this.#agent.max_tokens !== undefined
+        ? { maxTokens: this.#agent.max_tokens, withheldByCap: this.#deps.withheldByCap }
+        : undefined,
     );
     // Withholding is right; withholding silently is not. The host gets the verdict and says so — otherwise a tier
-    // the user set is dropped, the turn runs at the provider's default, and nothing anywhere admits it.
-    if (effortGate.kind === 'rejected' || effortGate.kind === 'uncontrollable') {
+    // the user set is dropped, the turn runs at the provider's default, and nothing anywhere admits it. `capped`
+    // (a budget model whose tier the request's cap withholds, review M6) is voiced through the same channel.
+    if (
+      effortGate.kind === 'rejected' ||
+      effortGate.kind === 'uncontrollable' ||
+      effortGate.kind === 'capped'
+    ) {
       this.#deps.onEffortWithheld?.(effortGate, this.#agent.model);
     }
     const reasoningEffort = effortToSend(effortGate);

@@ -330,6 +330,26 @@ export function thinkingCeiling(maxTokens: number): number {
  * **Returns `undefined` when no budget in the range fits under the ceiling** — see the comment on the guard
  * below. The caller must then WITHHOLD the field: there is no legal value to send.
  */
+/**
+ * Would the adapter WITHHOLD reasoning for this tier purely because the request's output cap is too small (review
+ * M6)? True only on the budget-shaped path — an effort-ladder tier carries no budget, and `off` is a switch — and
+ * only when the model's minimum thinking budget cannot fit under `thinkingCeiling(maxTokens)`. This is the SAME
+ * predicate the adapters act on (they call {@link reasoningBudgetFor} directly), lifted so the gate can SAY the tier
+ * was dropped rather than the adapter dropping it in silence. `budget-only` models (`claude-haiku-4-5`) route every
+ * tier here; a model with a matching effort rung (`claude-opus-4-5` for `high`) does not.
+ */
+export function reasoningWithheldByCap(
+  provider: ProviderId,
+  controls: ReasoningControls,
+  tier: Exclude<ReasoningEffort, 'off'>,
+  maxTokens: number,
+): boolean {
+  if (!honorsBudget(provider)) return false; // OpenAI/DeepSeek have no budget field — nothing cap-sensitive
+  if (acceptedWireValue(provider, tier, controls) !== undefined) return false; // reachable via the effort ladder
+  if (controls.budgetTokens === undefined) return false; // not budget-shaped → the tier is simply unaccepted, not capped
+  return reasoningBudgetFor(tier, controls.budgetTokens, thinkingCeiling(maxTokens)) === undefined;
+}
+
 export function reasoningBudgetFor(
   tier: Exclude<ReasoningEffort, 'off'>,
   range: { readonly min: number; readonly max?: number },

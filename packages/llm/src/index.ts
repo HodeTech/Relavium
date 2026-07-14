@@ -195,7 +195,9 @@ export type { CatalogModel, CatalogPriceTier, ReasoningControls } from './catalo
 export {
   acceptedTiers,
   canDisableReasoning,
+  openAiWireValue,
   reasoningControlShape,
+  reasoningWithheldByCap,
   wireValueFor,
   CANONICAL_ON_TIER,
 } from './reasoning-wire.js';

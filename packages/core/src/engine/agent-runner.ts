@@ -66,7 +66,11 @@ import {
 } from './agent-turn.js';
 import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
 import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
-import type { EffortGateResult, ResolveEffortTiers } from './reasoning-effort.js';
+import type {
+  EffortGateResult,
+  ReasoningCapCheck,
+  ResolveEffortTiers,
+} from './reasoning-effort.js';
 import type {
   MediaJobSubmission,
   NodeExecContext,
@@ -103,6 +107,12 @@ export interface AgentRunnerDeps {
    * safe, and never a guess.
    */
   readonly resolveEffortTiers?: ResolveEffortTiers;
+  /**
+   * Does a budget-shaped model withhold the accepted tier because this node's `max_tokens` leaves no room for its
+   * minimum thinking budget (review M6)? Host-injected (reads the catalog's budget range); absent ⇒ unchecked, and
+   * a tight `max_tokens` drops thinking silently, as before. Surfaces as a `capped` verdict through onEffortWithheld.
+   */
+  readonly withheldByCap?: ReasoningCapCheck;
   /**
    * Called when an authored `reasoning_effort` is WITHHELD — the tier the agent asked for is not one the bound
    * model takes ([ADR-0071](../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §6).
@@ -821,11 +831,19 @@ function resolveGenKnobs(
   // A rejected tier is WITHHELD, never promoted to a neighbour (that would change behaviour and raise spend
   // silently). The per-fallback-entry re-gate lives in the chain, so a failover to a different-capability model
   // never carries a field it does not take.
-  const gate = gateReasoningEffort(agent.reasoning_effort, agent.model, deps.resolveEffortTiers);
+  const gate = gateReasoningEffort(
+    agent.reasoning_effort,
+    agent.model,
+    deps.resolveEffortTiers,
+    deps.withheldByCap !== undefined && maxTokens !== undefined
+      ? { maxTokens, withheldByCap: deps.withheldByCap }
+      : undefined,
+  );
   // …and TELL the host when it withheld. The gate turned a loud 400 into a quiet no-op, and a quiet no-op on a
   // knob the author deliberately set is the worse of the two: the run succeeds, the field is gone, and the bill
-  // lands at the provider's default tier with nothing in the output to explain why.
-  if (gate.kind === 'rejected' || gate.kind === 'uncontrollable') {
+  // lands at the provider's default tier with nothing in the output to explain why. `capped` — a budget model whose
+  // tier this node's `max_tokens` withholds (review M6) — is the same silent no-op and rides the same channel.
+  if (gate.kind === 'rejected' || gate.kind === 'uncontrollable' || gate.kind === 'capped') {
     deps.onEffortWithheld?.(gate, agent.model);
   }
   const reasoningEffort = effortToSend(gate);
