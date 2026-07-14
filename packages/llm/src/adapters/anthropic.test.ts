@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { clearCatalogRefresh, installCatalogRefresh } from '../catalog/lookup.js';
-import type { CatalogModel } from '../catalog/catalog-model.js';
+import { catalogModelFixture as catModel } from '../conformance/fixtures/catalog.js';
 import { UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
 import { canDisableReasoning } from '../reasoning-wire.js';
@@ -97,15 +97,6 @@ describe('AnthropicAdapter — request-capability + thinking/temperature gating 
     return { adapter, sent: () => sent };
   };
   const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
-  const catModel = (over: Partial<CatalogModel> & Pick<CatalogModel, 'modelId'>): CatalogModel => ({
-    provider: 'anthropic',
-    displayName: over.modelId,
-    contextWindowTokens: 200_000,
-    maxOutputTokens: 64_000,
-    inputPerMtokMicrocents: 3_000_000,
-    outputPerMtokMicrocents: 15_000_000,
-    ...over,
-  });
 
   it('WITHHOLDS temperature when thinking is ENABLED — Anthropic requires temperature=1 with extended thinking (M4)', async () => {
     // haiku-4-5 is budget-shaped: reasoningEffort `medium` ⇒ thinking:{type:'enabled'}. A caller temperature next to
@@ -145,6 +136,7 @@ describe('AnthropicAdapter — request-capability + thinking/temperature gating 
     installCatalogRefresh({
       'cap-claude': catModel({
         modelId: 'cap-claude',
+        provider: 'anthropic',
         requestCapabilities: { temperature: false },
       }),
     });

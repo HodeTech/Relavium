@@ -83,7 +83,7 @@ export function gateReasoningEffort(
   // adapter's silent drop becomes a message that names `max_tokens` as the fix. A cap is only checked when the host
   // both wired the check and set a `max_tokens`; an absent cap uses the adapter's (large) default, which never
   // withholds. The gate and the adapter agree by construction: both read `reasoningBudgetFor`.
-  if (effort !== 'off' && cap !== undefined && cap.withheldByCap(model, effort, cap.maxTokens)) {
+  if (effort !== 'off' && cap?.withheldByCap(model, effort, cap.maxTokens) === true) {
     return { kind: 'capped', requested: effort, maxTokens: cap.maxTokens };
   }
   return { kind: 'send', effort };

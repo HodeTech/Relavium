@@ -633,6 +633,29 @@ function buildThinkingConfig(
   return undefined;
 }
 
+/**
+ * Apply the per-model thinking control onto the config (ADR-0066/0071) — `thinkingLevel` for Gemini 3,
+ * `thinkingBudget` for Gemini 2.5, chosen PER MODEL in {@link buildThinkingConfig}. `undefined` there means the
+ * model exposes no control we can prove, so the field is WITHHELD entirely rather than guessed at (and any caller
+ * `thinkingConfig` still stands). Extracted from {@link buildGeminiRequest} to keep that lowering flat.
+ */
+function applyThinkingConfig(
+  config: Record<string, unknown>,
+  req: LlmRequest,
+  maxOutputTokens: number | undefined,
+): void {
+  if (req.reasoningEffort === undefined) return;
+  const thinkingConfig = buildThinkingConfig(
+    req.reasoningEffort,
+    req.model,
+    maxOutputTokens, // the CLAMPED cap — the thinking budget must be carved out of what we actually send
+    req.providerOptions,
+  );
+  if (thinkingConfig !== undefined) {
+    config['thinkingConfig'] = thinkingConfig;
+  }
+}
+
 /** Lower a canonical request into the Gemini request shape (system → `systemInstruction`, etc.). */
 export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   const config: Record<string, unknown> = {};
@@ -661,20 +684,7 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
   if (maxOutputTokens !== undefined) {
     config['maxOutputTokens'] = maxOutputTokens;
   }
-  if (req.reasoningEffort !== undefined) {
-    // ADR-0066/0071: the reasoning control is PER MODEL — `thinkingLevel` for Gemini 3, `thinkingBudget` for
-    // Gemini 2.5. See {@link buildThinkingConfig}. `undefined` means the model exposes no control we can prove,
-    // so the field is WITHHELD entirely rather than guessed at (and any caller `thinkingConfig` still stands).
-    const thinkingConfig = buildThinkingConfig(
-      req.reasoningEffort,
-      req.model,
-      maxOutputTokens, // the CLAMPED cap — the thinking budget must be carved out of what we actually send
-      req.providerOptions,
-    );
-    if (thinkingConfig !== undefined) {
-      config['thinkingConfig'] = thinkingConfig;
-    }
-  }
+  applyThinkingConfig(config, req, maxOutputTokens);
   if (req.outputModalities !== undefined && req.outputModalities.some((m) => m !== 'text')) {
     // Lower the node's non-text output_modalities to Gemini `responseModalities` (inline media-out,
     // 1.AG/ADR-0046). The per-modality capability gate (assertMediaCapabilities) has already rejected an

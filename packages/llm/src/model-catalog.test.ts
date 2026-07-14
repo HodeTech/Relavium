@@ -7,6 +7,7 @@ import {
 } from './model-catalog.js';
 import type { CatalogModel } from './catalog/catalog-model.js';
 import { clearCatalogRefresh, installCatalogRefresh } from './catalog/lookup.js';
+import { catalogModelFixture } from './conformance/fixtures/catalog.js';
 import { catalogPricing } from './catalog/pricing.js';
 import { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
 import type { ModelPricing } from './pricing.js';
@@ -16,16 +17,10 @@ import type { ModelListing, ProviderId } from './types.js';
 // leaked refresh never poisons a later test in the process.
 afterEach(clearCatalogRefresh);
 
-/** A minimal well-formed refreshed catalog row for the synthetic alias/pin pairs the scoping tests need. */
-const catModel = (modelId: string, provider: ProviderId): CatalogModel => ({
-  modelId,
-  provider,
-  displayName: modelId,
-  contextWindowTokens: 100_000,
-  maxOutputTokens: 10_000,
-  inputPerMtokMicrocents: 1_000_000,
-  outputPerMtokMicrocents: 2_000_000,
-});
+/** A minimal well-formed refreshed catalog row for the synthetic alias/pin pairs the scoping tests need — the ONE
+ *  shared fixture, keeping this suite's positional call shape. */
+const catModel = (modelId: string, provider: ProviderId): CatalogModel =>
+  catalogModelFixture({ modelId, provider });
 
 // A fixed clock so the deprecation check is deterministic. deepseek-chat/-reasoner deprecate 2026-07-24 15:59Z.
 const BEFORE_DEEPSEEK_DEPRECATION = Date.parse('2026-07-05T00:00:00Z');

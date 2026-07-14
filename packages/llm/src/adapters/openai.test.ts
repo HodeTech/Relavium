@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AbortSignalLike, ReasoningEffort } from '@relavium/shared';
 
 import { clearCatalogRefresh, installCatalogRefresh } from '../catalog/lookup.js';
-import type { CatalogModel } from '../catalog/catalog-model.js';
+import { catalogModelFixture as catModel } from '../conformance/fixtures/catalog.js';
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
 import {
@@ -90,17 +90,6 @@ const okResponse = (): Response =>
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
-
-/** A minimal catalog row (additive refresh) carrying only what a capability test needs. */
-const catModel = (over: Partial<CatalogModel> & Pick<CatalogModel, 'modelId'>): CatalogModel => ({
-  provider: 'openai',
-  displayName: over.modelId,
-  contextWindowTokens: 100_000,
-  maxOutputTokens: 10_000,
-  inputPerMtokMicrocents: 1_000_000,
-  outputPerMtokMicrocents: 2_000_000,
-  ...over,
-});
 
 describe('per-model request-capability gating (ADR-0071 amendment)', () => {
   afterEach(clearCatalogRefresh);
@@ -1341,7 +1330,9 @@ describe('OpenAI-compatible adapter — request building + secret safety', () =>
     });
     await adapter.generate(
       {
-        model: 'gpt-5.5',
+        // gpt-4o ACCEPTS temperature (its catalog requestCapabilities does not forbid it) — the per-model
+        // capability gate (ADR-0071 §12) would rightly withhold it on a `temperature: false` model like gpt-5.5.
+        model: 'gpt-4o',
         temperature: 0.5,
         stopSequences: ['STOP'],
         providerOptions: { seed: 42, model: 'attacker-override' },
@@ -1352,7 +1343,7 @@ describe('OpenAI-compatible adapter — request building + secret safety', () =>
     expect(sent['temperature']).toBe(0.5);
     expect(sent['stop']).toEqual(['STOP']);
     expect(sent['seed']).toBe(42); // escape-hatch field reached the wire
-    expect(sent['model']).toBe('gpt-5.5'); // mapped field wins over providerOptions
+    expect(sent['model']).toBe('gpt-4o'); // mapped field wins over providerOptions
   });
 
   it('maps tool_choice {name} to a named function choice', async () => {

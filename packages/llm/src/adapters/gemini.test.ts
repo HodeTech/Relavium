@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { clearCatalogRefresh, installCatalogRefresh } from '../catalog/lookup.js';
-import type { CatalogModel } from '../catalog/catalog-model.js';
+import { catalogModelFixture } from '../conformance/fixtures/catalog.js';
 
 import type { AbortSignalLike, ReasoningEffort } from '@relavium/shared';
 
@@ -422,24 +422,17 @@ describe('geminiErrorToLlmError — classification', () => {
 
 describe('Gemini adapter — per-model request-capability gating (ADR-0071 amendment)', () => {
   afterEach(clearCatalogRefresh);
-  const catModel = (over: Partial<CatalogModel> & Pick<CatalogModel, 'modelId'>): CatalogModel => ({
-    provider: 'gemini',
-    displayName: over.modelId,
-    contextWindowTokens: 1_000_000,
-    maxOutputTokens: 64_000,
-    inputPerMtokMicrocents: 1_250_000,
-    outputPerMtokMicrocents: 10_000_000,
-    ...over,
-  });
+  const catModel = catalogModelFixture; // the shared fixture; each row below pins `provider: 'gemini'`
   const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }];
 
   it('WITHHOLDS temperature for a model that rejects it, SENDS it when accepted', () => {
     installCatalogRefresh({
       'cap-gemini': catModel({
         modelId: 'cap-gemini',
+        provider: 'gemini',
         requestCapabilities: { temperature: false },
       }),
-      'cap-gemini-ok': catModel({ modelId: 'cap-gemini-ok' }),
+      'cap-gemini-ok': catModel({ modelId: 'cap-gemini-ok', provider: 'gemini' }),
     });
     expect(
       buildGeminiRequest({ model: 'cap-gemini', temperature: 0.4, messages }).config,
@@ -455,6 +448,7 @@ describe('Gemini adapter — per-model request-capability gating (ADR-0071 amend
     installCatalogRefresh({
       'cap-gemini-so': catModel({
         modelId: 'cap-gemini-so',
+        provider: 'gemini',
         requestCapabilities: { structuredOutput: false },
       }),
     });

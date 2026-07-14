@@ -178,8 +178,15 @@ function enforceMoneyGuards({ dropped, moved, vanished, added }) {
   }
 }
 
-async function main() {
-  process.stdout.write(`sync-models-dev: fetching ${SOURCE_URL}\n`);
+/** The upstream body cap, mirroring the runtime refresh's (catalog-refresh.ts): a build tool must not OOM — or
+ *  write a nonsense catalog — on a misbehaving or hostile host. */
+const MAX_BODY_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Fetch models.dev and return its raw body, BOUNDED. Every failure mode (transport, status, size) throws a usable
+ * error rather than a shrug. Extracted from {@link main} so the sync's orchestration stays flat.
+ */
+async function fetchUpstreamBody() {
   let response;
   try {
     // `redirect: 'error'` — a redirect off models.dev is an ERROR, not a hop (ADR-0071 §8): the destination is a
@@ -202,21 +209,25 @@ async function main() {
       `sync-models-dev: ${SOURCE_URL} returned ${response.status} ${response.statusText}`,
     );
   }
-  // Bound the upstream body, mirroring the runtime refresh's cap (catalog-refresh.ts): a build tool must not OOM
-  // (or write a nonsense catalog) on a misbehaving/hostile host. Pre-check the declared length, then the actual.
-  const MAX_BYTES = 16 * 1024 * 1024;
+  // Pre-check the DECLARED length, then the actual — a host can lie about the former, so both are checked.
   const declared = Number(response.headers.get('content-length') ?? '0');
-  if (Number.isFinite(declared) && declared > MAX_BYTES) {
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) {
     throw new Error(
-      `sync-models-dev: ${SOURCE_URL} declares ${declared} bytes, over the ${MAX_BYTES}-byte cap — refusing`,
+      `sync-models-dev: ${SOURCE_URL} declares ${declared} bytes, over the ${MAX_BODY_BYTES}-byte cap — refusing`,
     );
   }
   const body = await response.text();
-  if (body.length > MAX_BYTES) {
+  if (body.length > MAX_BODY_BYTES) {
     throw new Error(
-      `sync-models-dev: ${SOURCE_URL} returned ${body.length} bytes, over the ${MAX_BYTES}-byte cap — refusing`,
+      `sync-models-dev: ${SOURCE_URL} returned ${body.length} bytes, over the ${MAX_BODY_BYTES}-byte cap — refusing`,
     );
   }
+  return body;
+}
+
+async function main() {
+  process.stdout.write(`sync-models-dev: fetching ${SOURCE_URL}\n`);
+  const body = await fetchUpstreamBody();
 
   // The Zod boundary: a third-party payload becomes Relavium types HERE, and its raw shape goes no further.
   const payload = ModelsDevPayloadSchema.parse(JSON.parse(body));

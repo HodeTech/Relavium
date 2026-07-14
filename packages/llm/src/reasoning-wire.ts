@@ -72,7 +72,10 @@ export const ANTHROPIC_WIRE: Record<
  * mapping `off → MINIMAL` (as the shipped adapter does today) both fails to disable thinking and bills the user
  * for reasoning they asked not to have.
  */
-export const GEMINI_WIRE: Record<Exclude<ReasoningEffort, 'off'>, 'low' | 'medium' | 'high'> = {
+/** Gemini's thinking ladder, in the CATALOG's (lowercase) vocabulary — the one name for the three levels it takes. */
+export type GeminiWireLevel = 'low' | 'medium' | 'high';
+
+export const GEMINI_WIRE: Record<Exclude<ReasoningEffort, 'off'>, GeminiWireLevel> = {
   low: 'low',
   medium: 'medium',
   high: 'high',
@@ -85,12 +88,12 @@ export const GEMINI_WIRE: Record<Exclude<ReasoningEffort, 'off'>, 'low' | 'mediu
  * is the **uppercase** form of the same tokens (`HIGH`, not `high`), so its adapter upper-cases at the wire and
  * nowhere else. One map, two spellings of the same token — never two maps that can drift.
  */
-const GEMINI_THINKING_LEVEL: Record<'low' | 'medium' | 'high', 'LOW' | 'MEDIUM' | 'HIGH'> = {
+const GEMINI_THINKING_LEVEL: Record<GeminiWireLevel, 'LOW' | 'MEDIUM' | 'HIGH'> = {
   low: 'LOW',
   medium: 'MEDIUM',
   high: 'HIGH',
 };
-export const toGeminiThinkingLevel = (wire: 'low' | 'medium' | 'high'): 'LOW' | 'MEDIUM' | 'HIGH' =>
+export const toGeminiThinkingLevel = (wire: GeminiWireLevel): 'LOW' | 'MEDIUM' | 'HIGH' =>
   GEMINI_THINKING_LEVEL[wire];
 
 /**

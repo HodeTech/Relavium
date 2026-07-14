@@ -1,7 +1,7 @@
 // GENERATED FILE — DO NOT EDIT BY HAND. Run `pnpm sync:models`.
 //
 // The model-catalog snapshot (ADR-0071). Source: https://models.dev/api.json
-// Catalog SHA-256: ac4e3ed1b24b568853164e2beddae8deb2b6a142ffc7753567bb6fcf905fb888
+// Catalog SHA-256: 4db066a3de7bf27d6f54955958a5cb8f60185826dfe9c77aef7aa0e1a370fdc0
 // Models: 80
 //
 // This SHIPS IN THE BINARY on purpose. The cost cap (ADR-0028) is a safety control, and a safety control that
@@ -26,6 +26,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     cachedInputPerMtokMicrocents: 100000000,
     cacheWritePerMtokMicrocents: 1250000000,
     reasoning: { effortValues: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    requestCapabilities: { temperature: false },
   },
   'claude-haiku-4-5': {
     provider: 'anthropic',
@@ -122,6 +123,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     cachedInputPerMtokMicrocents: 50000000,
     cacheWritePerMtokMicrocents: 625000000,
     reasoning: { effortValues: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    requestCapabilities: { temperature: false },
   },
   'claude-opus-4-8': {
     provider: 'anthropic',
@@ -134,6 +136,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     cachedInputPerMtokMicrocents: 50000000,
     cacheWritePerMtokMicrocents: 625000000,
     reasoning: { effortValues: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    requestCapabilities: { temperature: false },
   },
   'claude-sonnet-4-5': {
     provider: 'anthropic',
@@ -182,6 +185,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     cachedInputPerMtokMicrocents: 20000000,
     cacheWritePerMtokMicrocents: 250000000,
     reasoning: { toggle: true, effortValues: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    requestCapabilities: { temperature: false },
   },
   'deepseek-chat': {
     provider: 'deepseek',
@@ -214,6 +218,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 28000000,
     cachedInputPerMtokMicrocents: 280000,
     reasoning: { toggle: true, effortValues: ['high', 'max'] },
+    requestCapabilities: { attachment: false },
   },
   'deepseek-v4-pro': {
     provider: 'deepseek',
@@ -225,6 +230,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 87000000,
     cachedInputPerMtokMicrocents: 362500,
     reasoning: { toggle: true, effortValues: ['high', 'max'] },
+    requestCapabilities: { attachment: false },
   },
   'gemini-2.0-flash': {
     provider: 'gemini',
@@ -418,6 +424,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     inputPerMtokMicrocents: 150000000,
     outputPerMtokMicrocents: 1750000000,
     reasoning: {},
+    requestCapabilities: { toolCall: false },
   },
   'gpt-3.5-turbo': {
     provider: 'openai',
@@ -428,6 +435,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     inputPerMtokMicrocents: 50000000,
     outputPerMtokMicrocents: 150000000,
     cachedInputPerMtokMicrocents: 0,
+    requestCapabilities: { toolCall: false, structuredOutput: false, attachment: false },
   },
   'gpt-4': {
     provider: 'openai',
@@ -437,6 +445,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     maxOutputTokens: 8192,
     inputPerMtokMicrocents: 3000000000,
     outputPerMtokMicrocents: 6000000000,
+    requestCapabilities: { structuredOutput: false },
   },
   'gpt-4-turbo': {
     provider: 'openai',
@@ -446,6 +455,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     maxOutputTokens: 4096,
     inputPerMtokMicrocents: 1000000000,
     outputPerMtokMicrocents: 3000000000,
+    requestCapabilities: { structuredOutput: false },
   },
   'gpt-4.1': {
     provider: 'openai',
@@ -536,6 +546,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 1000000000,
     cachedInputPerMtokMicrocents: 12500000,
     reasoning: { effortValues: ['minimal', 'low', 'medium', 'high'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5-chat-latest': {
     provider: 'openai',
@@ -547,6 +558,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 1000000000,
     cachedInputPerMtokMicrocents: 12500000,
     reasoning: {},
+    requestCapabilities: { toolCall: false },
   },
   'gpt-5-codex': {
     provider: 'openai',
@@ -558,6 +570,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 1000000000,
     cachedInputPerMtokMicrocents: 12500000,
     reasoning: { effortValues: ['low', 'medium', 'high'] },
+    requestCapabilities: { temperature: false, attachment: false },
   },
   'gpt-5-mini': {
     provider: 'openai',
@@ -569,6 +582,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 200000000,
     cachedInputPerMtokMicrocents: 2500000,
     reasoning: { effortValues: ['minimal', 'low', 'medium', 'high'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5-nano': {
     provider: 'openai',
@@ -580,6 +594,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 40000000,
     cachedInputPerMtokMicrocents: 500000,
     reasoning: { effortValues: ['minimal', 'low', 'medium', 'high'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5-pro': {
     provider: 'openai',
@@ -590,6 +605,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     inputPerMtokMicrocents: 1500000000,
     outputPerMtokMicrocents: 12000000000,
     reasoning: { effortValues: ['high'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.1': {
     provider: 'openai',
@@ -601,6 +617,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 1000000000,
     cachedInputPerMtokMicrocents: 12500000,
     reasoning: { effortValues: ['none', 'low', 'medium', 'high'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.1-chat-latest': {
     provider: 'openai',
@@ -612,6 +629,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 1000000000,
     cachedInputPerMtokMicrocents: 12500000,
     reasoning: { effortValues: ['medium'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.1-codex': {
     provider: 'openai',
@@ -623,6 +641,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 1000000000,
     cachedInputPerMtokMicrocents: 12500000,
     reasoning: { effortValues: ['low', 'medium', 'high'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.1-codex-max': {
     provider: 'openai',
@@ -634,6 +653,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 1000000000,
     cachedInputPerMtokMicrocents: 12500000,
     reasoning: { effortValues: ['low', 'medium', 'high', 'xhigh'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.1-codex-mini': {
     provider: 'openai',
@@ -645,6 +665,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 200000000,
     cachedInputPerMtokMicrocents: 2500000,
     reasoning: { effortValues: ['low', 'medium', 'high'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.2': {
     provider: 'openai',
@@ -656,6 +677,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 1400000000,
     cachedInputPerMtokMicrocents: 17500000,
     reasoning: { effortValues: ['none', 'low', 'medium', 'high', 'xhigh'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.2-chat-latest': {
     provider: 'openai',
@@ -667,6 +689,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 1400000000,
     cachedInputPerMtokMicrocents: 17500000,
     reasoning: { effortValues: ['medium'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.2-codex': {
     provider: 'openai',
@@ -678,6 +701,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 1400000000,
     cachedInputPerMtokMicrocents: 17500000,
     reasoning: { effortValues: ['low', 'medium', 'high', 'xhigh'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.2-pro': {
     provider: 'openai',
@@ -688,6 +712,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     inputPerMtokMicrocents: 2100000000,
     outputPerMtokMicrocents: 16800000000,
     reasoning: { effortValues: ['medium', 'high', 'xhigh'] },
+    requestCapabilities: { temperature: false, structuredOutput: false },
   },
   'gpt-5.3-chat-latest': {
     provider: 'openai',
@@ -709,6 +734,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 1400000000,
     cachedInputPerMtokMicrocents: 17500000,
     reasoning: { effortValues: ['none', 'low', 'medium', 'high', 'xhigh'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.3-codex-spark': {
     provider: 'openai',
@@ -720,6 +746,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 1400000000,
     cachedInputPerMtokMicrocents: 17500000,
     reasoning: { effortValues: ['none', 'low', 'medium', 'high', 'xhigh'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.4': {
     provider: 'openai',
@@ -739,6 +766,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
       },
     ],
     reasoning: { effortValues: ['none', 'low', 'medium', 'high', 'xhigh'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.4-mini': {
     provider: 'openai',
@@ -750,6 +778,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 450000000,
     cachedInputPerMtokMicrocents: 7500000,
     reasoning: { effortValues: ['none', 'low', 'medium', 'high', 'xhigh'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.4-nano': {
     provider: 'openai',
@@ -761,6 +790,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 125000000,
     cachedInputPerMtokMicrocents: 2000000,
     reasoning: { effortValues: ['none', 'low', 'medium', 'high', 'xhigh'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.4-pro': {
     provider: 'openai',
@@ -778,6 +808,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
       },
     ],
     reasoning: { effortValues: ['medium', 'high', 'xhigh'] },
+    requestCapabilities: { temperature: false, structuredOutput: false },
   },
   'gpt-5.5': {
     provider: 'openai',
@@ -797,6 +828,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
       },
     ],
     reasoning: { effortValues: ['none', 'low', 'medium', 'high', 'xhigh'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.5-pro': {
     provider: 'openai',
@@ -814,6 +846,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
       },
     ],
     reasoning: { effortValues: ['medium', 'high', 'xhigh'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.6': {
     provider: 'openai',
@@ -834,6 +867,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
       },
     ],
     reasoning: { effortValues: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.6-luna': {
     provider: 'openai',
@@ -854,6 +888,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
       },
     ],
     reasoning: { effortValues: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.6-sol': {
     provider: 'openai',
@@ -874,6 +909,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
       },
     ],
     reasoning: { effortValues: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+    requestCapabilities: { temperature: false },
   },
   'gpt-5.6-terra': {
     provider: 'openai',
@@ -894,6 +930,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
       },
     ],
     reasoning: { effortValues: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+    requestCapabilities: { temperature: false },
   },
   o1: {
     provider: 'openai',
@@ -905,6 +942,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 6000000000,
     cachedInputPerMtokMicrocents: 750000000,
     reasoning: { effortValues: ['low', 'medium', 'high'] },
+    requestCapabilities: { temperature: false },
   },
   'o1-pro': {
     provider: 'openai',
@@ -915,6 +953,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     inputPerMtokMicrocents: 15000000000,
     outputPerMtokMicrocents: 60000000000,
     reasoning: { effortValues: ['low', 'medium', 'high'] },
+    requestCapabilities: { temperature: false },
   },
   o3: {
     provider: 'openai',
@@ -926,6 +965,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 800000000,
     cachedInputPerMtokMicrocents: 50000000,
     reasoning: { effortValues: ['low', 'medium', 'high'] },
+    requestCapabilities: { temperature: false },
   },
   'o3-deep-research': {
     provider: 'openai',
@@ -937,6 +977,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 4000000000,
     cachedInputPerMtokMicrocents: 250000000,
     reasoning: { effortValues: ['medium'] },
+    requestCapabilities: { temperature: false },
   },
   'o3-mini': {
     provider: 'openai',
@@ -948,6 +989,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 440000000,
     cachedInputPerMtokMicrocents: 55000000,
     reasoning: { effortValues: ['low', 'medium', 'high'] },
+    requestCapabilities: { temperature: false, attachment: false },
   },
   'o3-pro': {
     provider: 'openai',
@@ -958,6 +1000,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     inputPerMtokMicrocents: 2000000000,
     outputPerMtokMicrocents: 8000000000,
     reasoning: { effortValues: ['low', 'medium', 'high'] },
+    requestCapabilities: { temperature: false },
   },
   'o4-mini': {
     provider: 'openai',
@@ -969,6 +1012,7 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 440000000,
     cachedInputPerMtokMicrocents: 27500000,
     reasoning: { effortValues: ['low', 'medium', 'high'] },
+    requestCapabilities: { temperature: false },
   },
   'o4-mini-deep-research': {
     provider: 'openai',
@@ -980,8 +1024,9 @@ export const CATALOG_SNAPSHOT: CatalogSnapshot = {
     outputPerMtokMicrocents: 800000000,
     cachedInputPerMtokMicrocents: 50000000,
     reasoning: { effortValues: ['medium'] },
+    requestCapabilities: { temperature: false },
   },
 };
 
 /** The SHA-256 of this catalog's own data — changes when, and only when, what we ship changes. */
-export const CATALOG_SHA256 = 'ac4e3ed1b24b568853164e2beddae8deb2b6a142ffc7753567bb6fcf905fb888';
+export const CATALOG_SHA256 = '4db066a3de7bf27d6f54955958a5cb8f60185826dfe9c77aef7aa0e1a370fdc0';

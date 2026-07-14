@@ -144,9 +144,9 @@ export function collapseAliasDatedPinPairs(
     if (e.provider !== 'anthropic') return true;
     const base = datedPinBase(e.modelId);
     if (base === undefined) return true; // not a dated pin — keep
-    const alias = byId.get(base);
     // Drop the dated pin ONLY when its rolling-alias base is itself a present anthropic row (the pair is real).
-    return !(alias !== undefined && alias.provider === 'anthropic');
+    // An absent alias short-circuits to `undefined !== 'anthropic'` ⇒ keep, exactly as the explicit guard did.
+    return byId.get(base)?.provider !== 'anthropic';
   });
 }
 
