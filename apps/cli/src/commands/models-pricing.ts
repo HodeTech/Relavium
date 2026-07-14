@@ -234,9 +234,12 @@ function runClearPricing(
 ): ExitCode {
   const cleared = deps.catalog.clearUserPricing(args.model, providerId);
   if (deps.global.json) {
-    writeRecordLines(deps.io, [
-      { model: args.model, provider: args.provider, cleared, source: cleared ? 'catalog' : null },
-    ]);
+    // `source` is the EFFECTIVE price source after the clear, decided by the catalog exactly as
+    // `clearedPricingMessage` decides its words — 'catalog' iff the catalog actually prices the model, else null
+    // (unpriced, the cost cap will not apply). `cleared ? 'catalog'` was wrong: a cleared model the catalog does
+    // NOT price reported 'catalog' while the human line said the opposite.
+    const source = catalogPricing(args.model) !== undefined ? 'catalog' : null;
+    writeRecordLines(deps.io, [{ model: args.model, provider: args.provider, cleared, source }]);
     return EXIT_CODES.success;
   }
   deps.io.writeOut(clearedPricingMessage(args, cleared));

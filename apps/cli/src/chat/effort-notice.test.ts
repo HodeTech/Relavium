@@ -153,4 +153,11 @@ describe('capUsd + unpricedModelNote — the cost-cap notice (ADR-0071 §K7)', (
     const workflow = unpricedModelNote('my-local-model', 5_000_000, 'budget.strict_cost_cap');
     expect(workflow).toContain('budget.strict_cost_cap'); // …a workflow user edits the YAML
   });
+
+  it('SANITIZES a hostile model id (the display boundary, like every sibling effort notice)', () => {
+    const note = unpricedModelNote('evil[31mid\nsecond', 5_000_000);
+    expect(note).not.toContain(''); // no raw ESC
+    expect(note).not.toContain(''); // no BEL
+    expect(note).not.toContain('\n'); // collapsed to one line
+  });
 });

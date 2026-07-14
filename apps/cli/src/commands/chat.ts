@@ -1231,7 +1231,13 @@ export function createChatLineHandler(
         emitOutput(`reasoning effort: ${currentLabel}\n${rows.join('\n')}`);
         return;
       }
-      const tier = REASONING_EFFORTS.find((e) => e === requested);
+      // Accept EITHER a canonical tier name OR the DISPLAY label the discovery list above printed — a budget model
+      // advertises an "on" row, so `/effort on` must resolve to that offered tier rather than reading as an unknown
+      // tier (an affordance the list showed but the parser rejected). Label-match is scoped to `offered`, so "on"
+      // on a graded model — which shows no "on" row — still falls through to the raw match and is refused.
+      const tier =
+        offered.find((e) => effortRowLabel(built.agent.model, e).label === requested) ??
+        REASONING_EFFORTS.find((e) => e === requested);
       if (tier === undefined) {
         emitOutput(
           `/effort: unknown tier '${requested.replace(/[^\x20-\x7e]/g, '?').slice(0, 16)}'`,

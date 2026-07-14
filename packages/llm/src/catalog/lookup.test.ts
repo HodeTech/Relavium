@@ -100,6 +100,15 @@ describe('installCatalogRefresh — additive only, and the shipped snapshot is t
     expect(catalogModel('gpt-7-free')).toBeUndefined();
   });
 
+  it('does NOT admit a NEW model with no INPUT price either — input 0 bills input (and cached input) as FREE', () => {
+    // The floor guarded only OUTPUT, so an `input: 0` new model slipped in and billed the input side at zero — a
+    // silent undercharge in the exact mechanism the floor hardens.
+    installCatalogRefresh({
+      'gpt-7-input-free': model({ modelId: 'gpt-7-input-free', inputPerMtokMicrocents: 0 }),
+    });
+    expect(catalogModel('gpt-7-input-free')).toBeUndefined();
+  });
+
   it('a later refresh REPLACES the earlier one — the overlay is the last install, not a union', () => {
     installCatalogRefresh({ 'gpt-7-a': model({ modelId: 'gpt-7-a' }) });
     installCatalogRefresh({ 'gpt-7-b': model({ modelId: 'gpt-7-b' }) });

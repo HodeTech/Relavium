@@ -277,4 +277,24 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
     expect(code).toBe(EXIT_CODES.success);
     expect(out).toContain('no user price to clear');
   });
+
+  it('--clear --json reports `source` from the CATALOG price, matching the human line (bot fix)', () => {
+    // A cleared model the catalog PRICES falls back to it → source 'catalog'.
+    run({ ...baseArgs, model: 'gpt-5.5' }); // set a user price first
+    const catalogClear = run({ model: 'gpt-5.5', provider: 'openai', clear: true }, true);
+    expect(JSON.parse(catalogClear.out.trim())).toMatchObject({
+      model: 'gpt-5.5',
+      cleared: true,
+      source: 'catalog',
+    });
+
+    // A cleared model the catalog does NOT price → source null (unpriced; `cleared ? 'catalog'` used to LIE here).
+    run({ ...baseArgs, model: 'acme-custom-1' }); // a user price on a non-catalog id
+    const nullClear = run({ model: 'acme-custom-1', provider: 'openai', clear: true }, true);
+    expect(JSON.parse(nullClear.out.trim())).toMatchObject({
+      model: 'acme-custom-1',
+      cleared: true,
+      source: null,
+    });
+  });
 });

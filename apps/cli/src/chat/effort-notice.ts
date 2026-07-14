@@ -247,5 +247,8 @@ export function unpricedModelNote(
   // guess which file. Default to the bare name for a caller that has no better spelling.
   strictSetting = 'strict_cost_cap',
 ): string {
-  return `${model} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${model}\`, or set ${strictSetting} to refuse an unpriced model.`;
+  // Sanitize the provider-controlled model id at this display boundary, exactly as the sibling effort notices do —
+  // a crafted id must not smuggle a terminal escape into the transcript line (it appears twice, incl. a command).
+  const safeModel = sanitizeInline(model);
+  return `${safeModel} has no price, so the cost cap (${capUsd(capMicrocents)}) does not apply to it. Price it with \`relavium models pricing ${safeModel}\`, or set ${strictSetting} to refuse an unpriced model.`;
 }

@@ -202,7 +202,21 @@ async function main() {
       `sync-models-dev: ${SOURCE_URL} returned ${response.status} ${response.statusText}`,
     );
   }
+  // Bound the upstream body, mirroring the runtime refresh's cap (catalog-refresh.ts): a build tool must not OOM
+  // (or write a nonsense catalog) on a misbehaving/hostile host. Pre-check the declared length, then the actual.
+  const MAX_BYTES = 16 * 1024 * 1024;
+  const declared = Number(response.headers.get('content-length') ?? '0');
+  if (Number.isFinite(declared) && declared > MAX_BYTES) {
+    throw new Error(
+      `sync-models-dev: ${SOURCE_URL} declares ${declared} bytes, over the ${MAX_BYTES}-byte cap — refusing`,
+    );
+  }
   const body = await response.text();
+  if (body.length > MAX_BYTES) {
+    throw new Error(
+      `sync-models-dev: ${SOURCE_URL} returned ${body.length} bytes, over the ${MAX_BYTES}-byte cap — refusing`,
+    );
+  }
 
   // The Zod boundary: a third-party payload becomes Relavium types HERE, and its raw shape goes no further.
   const payload = ModelsDevPayloadSchema.parse(JSON.parse(body));

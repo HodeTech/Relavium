@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import {
@@ -162,18 +162,20 @@ async function readCapped(
   const decoder = new TextDecoder();
   let out = '';
   let bytes = 0;
-  // `ReadableStream` is untyped in the DOM lib (`ReadableStream<any>`), so type the reader explicitly — otherwise
-  // `value` is `any` and the byte-count arithmetic reads as unsafe.
-  const reader = (body as ReadableStream<Uint8Array>).getReader();
+  const reader = body.getReader();
   for (;;) {
-    const { done, value } = await reader.read();
-    if (done || value === undefined) break;
-    bytes += value.byteLength;
+    // The DOM lib types `ReadableStream` as `ReadableStream<any>` here, so annotate the read result as `unknown`
+    // rather than assert the whole stream's generic (`body as ReadableStream<Uint8Array>`) — then NARROW the chunk
+    // at the use site: a byte stream yields `Uint8Array`, and `instanceof` keeps `.byteLength`/`decode` type-safe.
+    const chunk: { readonly done: boolean; readonly value: unknown } = await reader.read();
+    if (chunk.done) break;
+    if (!(chunk.value instanceof Uint8Array)) continue;
+    bytes += chunk.value.byteLength;
     if (bytes > MAX_BYTES) {
       controller.abort(); // stop the transfer NOW — do not read another chunk
       return undefined;
     }
-    out += decoder.decode(value, { stream: true });
+    out += decoder.decode(chunk.value, { stream: true });
   }
   return out + decoder.decode();
 }
@@ -254,8 +256,20 @@ function writeCache(text: string, homeDir: string): void {
     // temp-then-rename: rename is atomic on the same filesystem, so a reader either sees the OLD cache or the NEW
     // one, never a half-written body. `${pid}` keeps two concurrent refreshes from racing on the same temp name.
     const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(filtered), 'utf8');
-    renameSync(tmp, path);
+    try {
+      writeFileSync(tmp, JSON.stringify(filtered), 'utf8');
+      renameSync(tmp, path);
+    } catch (err) {
+      // A failed write/rename must not leave the pid-suffixed temp behind to accumulate. Best-effort unlink, then
+      // re-throw into the outer catch (the refresh HELD regardless). A hard process kill between write and rename
+      // can still orphan it — unavoidable without a startup sweep — but the common failure path is now clean.
+      try {
+        unlinkSync(tmp);
+      } catch {
+        // the temp may never have been created (a write fault) — nothing to remove
+      }
+      throw err;
+    }
   } catch {
     // A read-only home, a full disk, an unparseable body we somehow got past `parse` — the refresh HELD regardless.
   }

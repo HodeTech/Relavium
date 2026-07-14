@@ -45,9 +45,11 @@ export function installCatalogRefresh(models: Readonly<Record<string, CatalogMod
     // any value never tripped. The safety control the ADR exists to build, defeated by the code that builds it.
     if (CATALOG_SNAPSHOT[id] !== undefined) continue;
     // A NEW model — the long tail the 80-row snapshot does not carry, which is the whole reason to refresh. Admit it
-    // only if it carries a real output price: an unpriceable row is not an enrichment, and a priced-maybe-wrong new
-    // model is still strictly better than an unknown one (which degrades the cap to `allow` entirely).
-    if (model.outputPerMtokMicrocents <= 0) continue;
+    // only if it carries a real price on BOTH sides: an unpriceable row is not an enrichment, and a priced-maybe-
+    // wrong new model is still strictly better than an unknown one (which degrades the cap to `allow` entirely).
+    // Guarding only OUTPUT let a `input: 0` model in with input (and cached input, which derives from it) billed
+    // FREE — a silent undercharge in the very mechanism this floor hardens.
+    if (model.outputPerMtokMicrocents <= 0 || model.inputPerMtokMicrocents <= 0) continue;
     kept[id] = model;
   }
   refreshed = kept;
