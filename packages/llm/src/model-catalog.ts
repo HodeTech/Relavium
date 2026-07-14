@@ -118,8 +118,36 @@ function pricingSourceOf(t: Tiers): PricingSource {
 /** A model id shaped `base-YYYYMMDD` → its rolling-alias base; else `undefined`. Anthropic pins a snapshot with an
  *  8-digit date suffix (`claude-haiku-4-5-20251001`), and the base (`claude-haiku-4-5`) is the rolling alias. */
 const DATED_PIN = /^(.+)-\d{8}$/;
-function datedPinBase(id: string): string | undefined {
+export function datedPinBase(id: string): string | undefined {
   return DATED_PIN.exec(id)?.[1];
+}
+
+/**
+ * Collapse an alias↔dated-pin PAIR to the rolling alias for the display catalog the picker renders (ADR-0064
+ * amendment). Anthropic ships BOTH `claude-opus-4-1` (the rolling alias) and `claude-opus-4-1-20250805` (its dated
+ * pin) as byte-identical priced rows, so the picker offers two selectable rows for one model. Drop the dated pin —
+ * but ONLY when its alias base is ALSO present as an entry (both are real rows): a lone dated pin with no alias
+ * sibling stays visible, or it would disappear from the picker with no substitute, which is worse than a duplicate
+ * (the same "both must be present" gate {@link hasLiveSibling} applies).
+ *
+ * This is IDENTITY dedup, NOT an availability judgement — deliberately distinct from the picker's "never HIDE a
+ * dimmed/deprecated model" rule (model-picker.ts): that rule is about a model you cannot currently USE; this removes
+ * a second copy of one model you can. ANTHROPIC-only by construction — `datedPinBase` matches the `-YYYYMMDD` shape,
+ * and OpenAI's dated variants (`gpt-4o-2024-05-13`, a `YYYY-MM-DD` shape) do not match, so they are naturally out of
+ * scope (the maintainer's existing scoping decision, mirroring `hasLiveSibling`).
+ */
+export function collapseAliasDatedPinPairs(
+  entries: readonly ModelCatalogEntry[],
+): ModelCatalogEntry[] {
+  const byId = new Map(entries.map((e) => [e.modelId, e]));
+  return entries.filter((e) => {
+    if (e.provider !== 'anthropic') return true;
+    const base = datedPinBase(e.modelId);
+    if (base === undefined) return true; // not a dated pin — keep
+    const alias = byId.get(base);
+    // Drop the dated pin ONLY when its rolling-alias base is itself a present anthropic row (the pair is real).
+    return !(alias !== undefined && alias.provider === 'anthropic');
+  });
 }
 
 /**

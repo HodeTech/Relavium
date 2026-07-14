@@ -141,7 +141,7 @@ export {
 export { contextWindowForModel } from './pricing.js';
 export type { ModelPricing } from './pricing.js';
 // The pure live/static/user merge helper (ADR-0064 §6) — reused by every surface's model catalog / picker.
-export { mergeModelCatalog } from './model-catalog.js';
+export { collapseAliasDatedPinPairs, datedPinBase, mergeModelCatalog } from './model-catalog.js';
 export type { ModelCatalogEntry, MergeModelCatalogInput, PricingSource } from './model-catalog.js';
 export { priceModel, cost, mediaCost, CostTracker } from './cost-tracker.js';
 export type { CostUpdate, PricingOverlay } from './cost-tracker.js';

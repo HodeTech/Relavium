@@ -86,6 +86,19 @@
 > dims `not-on-key`. Scoped to **Anthropic** this round (the maintainer's call — the OpenAI `gpt-4o` dated family is
 > deliberately out of scope); the anthropic conformance fixture is corrected to return the dated pin so the suite
 > exercises the rescued-alias case.
+>
+> **Amendment 2026-07-14 (alias↔dated-pin DISPLAY collapse — the second half of the same relationship):** the
+> availability rescue above keeps BOTH ids callable, but the catalog still SHIPS both as priced rows, so the
+> `/models` picker rendered TWO selectable rows for one model (`claude-opus-4-1` and `claude-opus-4-1-20250805`,
+> byte-identical but for id/name). `collapseAliasDatedPinPairs` (`@relavium/llm`) now drops the dated pin at the
+> DISPLAY boundary — in `buildMergedCatalog`'s host projection, NOT in `mergeModelCatalog` (whose full-fidelity
+> output any other consumer keeps) — leaving only the rolling alias. It collapses ONLY when both members are present
+> as catalog rows (a lone dated pin with no alias sibling stays visible, the same gate `hasLiveSibling` applies), and
+> is Anthropic-only by the `-YYYYMMDD` regex shape. This is **identity dedup, not an availability judgement** — it is
+> deliberately distinct from the picker's "never HIDE a dimmed/deprecated model" rule (that concerns a model you
+> cannot USE; this removes a second copy of one you can). A persisted DATED-PIN `default_model` (from before the
+> collapse or a hand-edit) NORMALIZES its `✓` onto the surviving alias row rather than vanishing — the same model
+> resolves either id server-side, so the marker moves, the stored choice does not.
 
 
 ## Context

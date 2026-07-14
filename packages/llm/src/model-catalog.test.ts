@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { mergeModelCatalog, type ModelCatalogEntry } from './model-catalog.js';
+import {
+  collapseAliasDatedPinPairs,
+  mergeModelCatalog,
+  type ModelCatalogEntry,
+} from './model-catalog.js';
 import type { CatalogModel } from './catalog/catalog-model.js';
 import { clearCatalogRefresh, installCatalogRefresh } from './catalog/lookup.js';
 import { catalogPricing } from './catalog/pricing.js';
@@ -44,6 +48,44 @@ const userPricing = (provider: ProviderId): ModelPricing => ({
   inputPerMtokMicrocents: 100,
   outputPerMtokMicrocents: 200,
   cachedInputPerMtokMicrocents: 10,
+});
+
+describe('collapseAliasDatedPinPairs — one row per model in the picker (ADR-0064 amendment)', () => {
+  const e = (modelId: string, provider: ProviderId = 'anthropic'): ModelCatalogEntry => ({
+    modelId,
+    provider,
+    displayName: modelId,
+    pricingSource: 'catalog',
+    priceKnown: true,
+    available: true,
+    deprecated: false,
+  });
+
+  it('drops the dated pin when its rolling alias is ALSO present, keeping the alias', () => {
+    const out = collapseAliasDatedPinPairs([e('claude-opus-4-1'), e('claude-opus-4-1-20250805')]);
+    expect(out.map((x) => x.modelId)).toEqual(['claude-opus-4-1']);
+  });
+
+  it('KEEPS a lone dated pin with no alias sibling — hiding it would leave the model unpickable', () => {
+    const out = collapseAliasDatedPinPairs([e('claude-opus-4-1-20250805')]);
+    expect(out.map((x) => x.modelId)).toEqual(['claude-opus-4-1-20250805']);
+  });
+
+  it('KEEPS a non-anthropic dated variant — OpenAI YYYY-MM-DD is a different shape, out of scope', () => {
+    const out = collapseAliasDatedPinPairs([
+      e('gpt-4o', 'openai'),
+      e('gpt-4o-2024-05-13', 'openai'),
+    ]);
+    expect(out.map((x) => x.modelId).sort()).toEqual(['gpt-4o', 'gpt-4o-2024-05-13']);
+  });
+
+  it('does NOT drop an anthropic dated pin whose base id belongs to a DIFFERENT provider (identity, not string match)', () => {
+    const out = collapseAliasDatedPinPairs([
+      e('shared-base', 'openai'),
+      e('shared-base-20250101', 'anthropic'),
+    ]);
+    expect(out).toHaveLength(2);
+  });
 });
 
 describe('mergeModelCatalog (ADR-0064 §6)', () => {

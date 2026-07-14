@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink';
 import type { ReactElement, ReactNode } from 'react';
 
-import type { ModelCatalogEntry } from '@relavium/llm';
+import { datedPinBase, type ModelCatalogEntry } from '@relavium/llm';
 
 import { sanitizeInline } from './chat-projection.js';
 import { EffortTierList } from './effort-tier-list.js';
@@ -99,6 +99,14 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
   // One status line: the transient user-action `hint` (a dimmed/save note) takes priority over the async refresh
   // `banner` (partial-failure) so a completing refresh can never silently wipe the feedback the user just triggered.
   const status = state.hint ?? state.banner;
+  // The ✓ marks the effective default. A persisted DATED-PIN default whose row was collapsed onto its rolling alias
+  // (the alias↔dated-pin dedup, ADR-0064 amendment) marks the surviving alias instead of vanishing — the SAME model
+  // resolves either id server-side, so this normalizes the DISPLAY, it does not re-point the user's stored choice.
+  const presentIds = new Set(state.entries.map((e) => e.modelId));
+  const markedDefault =
+    state.currentDefault !== undefined && !presentIds.has(state.currentDefault)
+      ? (datedPinBase(state.currentDefault) ?? state.currentDefault)
+      : state.currentDefault;
 
   const renderBody = (): ReactNode => {
     if (state.loading && visible.length === 0) {
@@ -124,7 +132,7 @@ export function ModelPickerView(props: Readonly<ModelPickerViewProps>): ReactEle
     }
     return windowed.map((entry, index) => {
       const isSelected = start + index === selected;
-      const isDefault = entry.modelId === state.currentDefault;
+      const isDefault = entry.modelId === markedDefault;
       const ctx = formatContextWindow(entry.contextWindowTokens);
       const parts = [
         sanitizeInline(entry.displayName),

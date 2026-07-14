@@ -2,6 +2,7 @@ import type { ModelCatalogListing } from '@relavium/db';
 import {
   catalogModel,
   catalogPricing,
+  collapseAliasDatedPinPairs,
   mergeModelCatalog,
   type CatalogPriceTier,
   type ModelCatalogEntry,
@@ -264,5 +265,8 @@ export function buildMergedCatalog(input: BuildMergedCatalogInput): MergedCatalo
     ...(input.keyedProviders === undefined ? {} : { keyedProviders: input.keyedProviders }),
     now: input.now,
   });
-  return { entries, refreshedAt };
+  // Collapse an Anthropic alias↔dated-pin PAIR to the rolling alias here, at the DISPLAY boundary (ADR-0064
+  // amendment) — `mergeModelCatalog` keeps its full-fidelity output for any consumer that needs both rows; only the
+  // picker's projection drops the duplicate. Identity dedup, not an availability change (see the fn's contract).
+  return { entries: collapseAliasDatedPinPairs(entries), refreshedAt };
 }

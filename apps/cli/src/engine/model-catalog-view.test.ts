@@ -1,5 +1,5 @@
 import type { ModelCatalogListing } from '@relavium/db';
-import { CATALOG_SNAPSHOT, catalogPricing } from '@relavium/llm';
+import { CATALOG_SNAPSHOT, catalogPricing, datedPinBase } from '@relavium/llm';
 import { describe, expect, it } from 'vitest';
 
 import { buildMergedCatalog, buildUserPricing } from './model-catalog-view.js';
@@ -39,9 +39,27 @@ function slugResolver(map: Record<string, string>): (uuid: string) => string {
 }
 
 describe('buildMergedCatalog', () => {
-  it('seeds the full static registry even with no live rows (never an empty picker)', () => {
+  it('seeds the full static registry (minus collapsed alias↔dated-pin duplicates) — never an empty picker', () => {
     const view = buildMergedCatalog({ rows: [], providerSlug: slugResolver({}), now: 0 });
-    expect(view.entries).toHaveLength(Object.keys(CATALOG_SNAPSHOT).length);
+    // Every static model is seeded EXCEPT an Anthropic dated pin whose rolling alias is also shipped — the pair
+    // collapses to the alias for the picker (ADR-0064 amendment). Derive the expected drop from the snapshot so the
+    // count stays correct as the catalog grows, and assert it is non-zero so the dedup is actually exercised.
+    const collapsed = Object.values(CATALOG_SNAPSHOT).filter((m) => {
+      if (m.provider !== 'anthropic') return false;
+      const base = datedPinBase(m.modelId);
+      return base !== undefined && CATALOG_SNAPSHOT[base]?.provider === 'anthropic';
+    }).length;
+    expect(collapsed).toBeGreaterThan(0); // the shipped snapshot HAS such pairs — the assertion is meaningful
+    expect(view.entries).toHaveLength(Object.keys(CATALOG_SNAPSHOT).length - collapsed);
+    // …and NO surviving row is a collapsed dated pin.
+    expect(
+      view.entries.some(
+        (e) =>
+          e.provider === 'anthropic' &&
+          datedPinBase(e.modelId) !== undefined &&
+          CATALOG_SNAPSHOT[datedPinBase(e.modelId) ?? '']?.provider === 'anthropic',
+      ),
+    ).toBe(false);
     expect(view.refreshedAt).toBeUndefined();
     // With NO live data for any provider, every static model falls back to static presence (ADR-0064 §6).
     expect(view.entries.every((e) => e.available)).toBe(true);
