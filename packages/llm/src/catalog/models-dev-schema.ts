@@ -17,8 +17,10 @@ import type { CatalogModel, CatalogPriceTier, ReasoningControls } from './catalo
  *
  * The schema is **deliberately lenient about fields we do not consume** (`.passthrough()` is NOT used — unknown
  * keys are simply dropped by Zod's default strip). Upstream adds fields regularly; a sync must not fail because
- * a field we never read appeared. It is **strict about the fields we DO consume**, because those feed a money
- * surface and a wire parameter.
+ * a field we never read appeared. It is **strict about the MONEY fields** (`cost`, `limit`) — those bound the cost
+ * cap and the output ceiling, and a bad value there must fail loudly. The ENRICHMENT fields (`reasoning`,
+ * `reasoning_options`) sit in between: consumed, but parsed leniently (review M7) — a shape change there must never
+ * EVICT a fully-priced model (which would read as a vanished price and fire the §9 guard), only thin its descriptor.
  */
 
 /** USD-per-million-tokens → integer micro-cents-per-million-tokens. 1 USD = 1e8 micro-cents; no float, ever. */
@@ -84,9 +86,17 @@ const ReasoningOptionSchema = z.discriminatedUnion('type', [
 const ModelSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  reasoning: z.boolean().optional(),
-  reasoning_options: z.array(ReasoningOptionSchema).optional(),
-  limit: LimitSchema.optional(),
+  // ENRICHMENT fields (`reasoning`, `reasoning_options`) are parsed LENIENTLY, decoupled from the money gate
+  // (review M7). A fully-priced model must never be EVICTED because a field we merely enrich with changed shape:
+  // upstream adding a new `reasoning_options.type` we don't recognize, or emitting `reasoning: null`, would make a
+  // strict schema drop the model — and a dropped ALREADY-SHIPPED model reads to `diffCatalog` as a VANISHED price,
+  // firing the §9 money guard red for a non-money reason. So `reasoning` tolerates `null`, and each
+  // `reasoning_options` entry is validated ONE AT A TIME in {@link toReasoningControls} (an unrecognized shape is
+  // skipped, yielding a thinner reasoning descriptor), never as a whole-array `discriminatedUnion` that one bad
+  // element fails. `cost`/`limit` stay authoritative — they ARE the money surface — but tolerate `null` (absent).
+  reasoning: z.boolean().nullish(),
+  reasoning_options: z.array(z.unknown()).optional(),
+  limit: LimitSchema.nullish(),
   /** `null` on every image model upstream — priced per image, an axis we do not model (§11). */
   cost: CostSchema.nullish(),
 });
@@ -124,7 +134,9 @@ export interface DroppedModel {
   readonly reason: string;
 }
 
-/** Normalize the upstream reasoning options into Relavium's control descriptor. Absent/empty ⇒ `undefined`. */
+/** Normalize the upstream reasoning options into Relavium's control descriptor. Absent/empty ⇒ `undefined`.
+ *  Each raw option is validated INDEPENDENTLY (review M7): an unrecognized shape is skipped, so a new upstream
+ *  control type thins the descriptor rather than evicting the whole priced model via a failed array parse. */
 function toReasoningControls(raw: z.infer<typeof ModelSchema>): ReasoningControls | undefined {
   if (raw.reasoning !== true) return undefined;
   const controls: {
@@ -132,7 +144,10 @@ function toReasoningControls(raw: z.infer<typeof ModelSchema>): ReasoningControl
     budgetTokens?: { readonly min: number; readonly max?: number };
     toggle?: true;
   } = {};
-  for (const option of raw.reasoning_options ?? []) {
+  for (const rawOption of raw.reasoning_options ?? []) {
+    const parsed = ReasoningOptionSchema.safeParse(rawOption);
+    if (!parsed.success) continue; // an unknown/ malformed control shape — skip it, keep the priced model
+    const option = parsed.data;
     if (option.type === 'effort') controls.effortValues = option.values;
     else if (option.type === 'budget_tokens') {
       controls.budgetTokens =
@@ -170,7 +185,16 @@ export function normalizeCatalogModel(
   provider: ProviderId,
   raw: ModelsDevModel,
 ): CatalogModel | undefined {
-  if (raw.cost === null || raw.cost === undefined || raw.limit === undefined) return undefined;
+  // A null/absent `limit` is treated as absent, not a parse error (review M7): the model is dropped cleanly (no
+  // output ceiling to clamp against) rather than failing the whole row and reading as a VANISHED priced model.
+  if (
+    raw.cost === null ||
+    raw.cost === undefined ||
+    raw.limit === null ||
+    raw.limit === undefined
+  ) {
+    return undefined;
+  }
   const { cost, limit } = raw;
   const reasoning = toReasoningControls(raw);
   const tiers = toPriceTiers(cost);

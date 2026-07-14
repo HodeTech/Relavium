@@ -161,6 +161,50 @@ describe('normalizeCatalog — what we import, and what we refuse to', () => {
   });
 });
 
+describe('ENRICHMENT is decoupled from the money gate — a priced model is never evicted by a field we enrich with (review M7)', () => {
+  const one = (over: Record<string, unknown>): ReturnType<typeof normalizeCatalog> =>
+    normalizeCatalog(
+      ModelsDevPayloadSchema.parse(payload({ openai: { m: upstreamModel({ id: 'm', ...over }) } })),
+    );
+
+  it('an UNKNOWN reasoning_options shape is SKIPPED, not fatal — the priced model survives with a thinner descriptor', () => {
+    // Upstream adds a control type we do not recognize alongside one we do. A whole-array discriminatedUnion would
+    // fail the row and DROP a fully-priced model — which reads to the §9 guard as a vanished price. It must stay.
+    const { catalog, dropped } = one({
+      reasoning: true,
+      reasoning_options: [
+        { type: 'verbosity', values: ['terse', 'verbose'] }, // unknown — skip it
+        { type: 'effort', values: ['low', 'high'] }, // known — keep it
+      ],
+    });
+    expect(dropped).toHaveLength(0);
+    expect(catalog['m']?.inputPerMtokMicrocents).toBe(500_000_000); // still priced
+    expect(catalog['m']?.reasoning).toEqual({ effortValues: ['low', 'high'] }); // only the recognized control
+  });
+
+  it('a MALFORMED known option is skipped too (an `effort` with no values), model kept', () => {
+    const { catalog, dropped } = one({
+      reasoning: true,
+      reasoning_options: [{ type: 'effort' }, { type: 'budget_tokens', min: 1024 }],
+    });
+    expect(dropped).toHaveLength(0);
+    expect(catalog['m']?.reasoning).toEqual({ budgetTokens: { min: 1024 } });
+  });
+
+  it('`reasoning: null` is treated as "no reasoning", not a parse error — the model is admitted, priced, unreasoning', () => {
+    const { catalog, dropped } = one({ reasoning: null });
+    expect(dropped).toHaveLength(0);
+    expect(catalog['m']?.outputPerMtokMicrocents).toBe(2_500_000_000);
+    expect(catalog['m']).not.toHaveProperty('reasoning');
+  });
+
+  it('`limit: null` drops the model CLEANLY (no ceiling to clamp), not via a fatal parse of the whole row', () => {
+    const { catalog, dropped } = one({ limit: null });
+    expect(catalog['m']).toBeUndefined(); // dropped — but as an unpriceable-shape drop, reported, not a crash
+    expect(dropped.some((d) => d.modelId === 'm')).toBe(true);
+  });
+});
+
 describe('the money boundary — integer micro-cents, and absent ≠ zero', () => {
   const one = (over: Record<string, unknown>): ReturnType<typeof normalizeCatalog> =>
     normalizeCatalog(
