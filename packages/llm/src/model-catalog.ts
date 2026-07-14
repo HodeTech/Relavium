@@ -295,11 +295,11 @@ function buildEntry(
 }
 
 /**
- * Reconcile live discovery ⋈ the static registry ⋈ the user tier into one deterministically-ordered catalog
+ * Reconcile live discovery ⋈ the generated catalog ⋈ the user tier into one deterministically-ordered catalog
  * (ADR-0064 §6). Pure: no I/O, no `Date.now()` (the caller passes `now`). Per-field precedence —
- * availability ← live (else static presence); price ← registry ?? user (never live); context/output ← live ??
- * static ?? user; deprecation ← the earliest of the static, live, and user dates; priceKnown ← a static or
- * user price exists.
+ * availability ← live (else static presence); price ← **user ?? catalog** (the USER outranks the catalog,
+ * ADR-0071 §1; never live); context/output ← live ?? catalog ?? user; deprecation ← the earliest of the catalog,
+ * live, and user dates; priceKnown ← a user or catalog price exists.
  */
 export function mergeModelCatalog(input: MergeModelCatalogInput): ModelCatalogEntry[] {
   const live = input.live ?? new Map<ProviderId, readonly ModelListing[]>();

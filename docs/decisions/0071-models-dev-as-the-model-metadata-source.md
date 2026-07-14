@@ -421,6 +421,22 @@ types — one file, not a refactor.
 >   the schema and land on the next `pnpm sync:models`. Until then the mechanism is inert-but-correct (absent ⇒
 >   accepted), and the shipped snapshot is **not hand-edited** — the generated-file discipline holds.
 
+### K7. `strict_cost_cap` — refuse a turn on a model we cannot price
+
+> **Amendment (2026-07-14, recorded — append-only).** The `ADR-0071 §K7` citations across the config spec, the
+> workflow spec, and the engine all refer to THIS decision, which had no home section: `K7` was an implementation
+> milestone label that leaked into the citations before the rule was written up. Recorded now so the citations
+> resolve, and numbered `K7` to match them rather than renumbering forty-five references.
+>
+> A cost cap cannot bound a turn on a model it cannot PRICE — the pre-egress governor has no estimate, so it
+> degrades to `allow` and says so ONCE (`onUnpriced`): a cap that silently does not apply is a false sense of
+> safety, and one notice per model is the honest middle between silence and per-turn noise. For a self-hosted model
+> with ~no metered cost that is the right trade. But a user who set the cap SPECIFICALLY to bound an untrusted model
+> wants the opposite, so **`strict_cost_cap`** (default `false`; `[chat].strict_cost_cap` /
+> `budget.strict_cost_cap`) makes the governor **REFUSE** the turn instead — *"if we cannot price it, we do not run
+> it."* It is INERT without a positive `max_cost_microcents` (no cap ⇒ nothing to enforce), and `models pricing
+> <model>` closes the hole either way (once priced, the cap applies normally, pre-egress and realized).
+
 ## Consequences
 
 ### Positive

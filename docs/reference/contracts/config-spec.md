@@ -151,7 +151,7 @@ focus_area = "security and type safety"
 
 [chat]                             # agent-session (chat-mode) defaults — see contracts/agent-session-spec.md
 default_model = "claude-sonnet-4-6"   # model for a chat session that names none; absent at every [chat] layer ⇒ falls back to global [preferences].default_model (ADR-0063)
-default_provider = "anthropic"     # ADR-0059: the provider serving [chat].default_model; falls back to global [preferences].default_provider. Absent at every layer ⇒ inference from the id (catalog first, then prefix).
+default_provider = "anthropic"     # ADR-0059: the provider serving [chat].default_model, resolved from the SAME config layer as the effective default_model (NEVER independently — a fresh model paired with a stale layer's provider dials the wrong adapter → 404). Absent when the model resolves ⇒ inferred from the id (catalog first, then prefix).
 reasoning_effort = "medium"        # ADR-0066: reasoning-effort tier baked onto the DEFAULT chat agent — off | low | medium | high | max; absent ⇒ no reasoning control (the provider default). Ignored on a model without a controllable reasoning tier.
 fs_scope = "sandboxed"             # SAME tier enum as [defaults].fs_scope above (not re-listed here)
 max_turns = 50                     # hard session TURN cap → SessionDeps.maxTurns (DoS fail-safe; absent ⇒ engine default 50; positiveInt — 0 is rejected here) — DISTINCT from max_messages

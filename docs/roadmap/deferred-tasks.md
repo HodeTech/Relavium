@@ -1209,3 +1209,20 @@ future test cannot silently re-acquire it.
   `--accept-price-changes` human decision on a moved price, exactly as §9 intends.
   *(low · .github/workflows/models-catalog.yml; ADR-0071 §9)*
 
+
+- **Per-model capability gating: `tool_call`/`attachment` + a withheld-parameter notice.** The 2.6.Q capability
+  gating (ADR-0071 §12) carries all four per-model `requestCapabilities` in the catalog and WITHHOLDS the two safe
+  silent param-drops — `temperature` and `structured_output` — at the adapters. `tool_call` and `attachment` change
+  request MEANING (dropping tools leaves the agent unable to act; dropping an image input changes what the model
+  sees), so silently withholding them is wrong: they need a LOUDER signal — a config/authoring-time validation, or a
+  gate-level notice like the effort gate (ADR-0066 §6). The catalog data is already parsed and carried, so this is
+  the wiring only. Likewise, a user-facing notice for the two silent withholds (so a dropped `temperature` is *said
+  out loud*, §6's standard) is a follow-up — the correctness fix (no 400) shipped first.
+  *(low · packages/llm/src/adapters/* + a gate-level check; ADR-0071 §12; found by the 2.6.Q capability review)*
+
+- **Surface a user↔catalog price DIVERGENCE on the ongoing surfaces, not only at set-time.** ADR-0071 §5 promises a
+  user price that diverges from the catalog is surfaced in the `/models` picker and `/cost`, not just echoed by
+  `models pricing` when it is set. Today only the set-time echo is wired: the picker and `/cost` show the effective
+  (user) price without flagging that it OVERRIDES a different catalog price. Add a divergence marker to both so a
+  stale/wrong override is visible on the surfaces a user actually reads, per §5's intent.
+  *(low · apps/cli/src/render/tui/model-picker-view.tsx + the /cost breakdown; ADR-0071 §5; found by the 2.6.Q review)*

@@ -22,12 +22,13 @@ let refreshed: Readonly<Record<string, CatalogModel>> = {};
 /**
  * Install a refreshed catalog (ADR-0071 §4). **Additive only, and the shipped snapshot is the FLOOR.**
  *
- * A refresh may add models the snapshot never carried and enrich ones it left thin — it may **never** leave a model
- * less described than it shipped. So a row is taken only when the snapshot does not have the model at all, or when
- * the refreshed row still carries a price: a malformed, truncated, or half-fetched payload degrades to the snapshot
- * rather than to a blank catalog, and a model that was priced yesterday cannot become unpriced today because a
- * third-party aggregator had a bad deploy. The cost cap is a safety control; it does not get to lapse because
- * someone else's JSON changed.
+ * A refresh only ADDS models the snapshot never carried — it **never** touches a shipped model, not even to enrich
+ * it (ADR-0071 §9: a change to an already-shipped row is a human decision, surfaced as a red CI check, never a
+ * silent runtime write). So a row is taken ONLY when the snapshot does not carry the model at all AND the refreshed
+ * row is priced on both sides: a malformed, truncated, or half-fetched payload degrades to the snapshot rather than
+ * to a blank catalog, and a model that was priced yesterday cannot become unpriced today because a third-party
+ * aggregator had a bad deploy. The cost cap is a safety control; it does not get to lapse because someone else's
+ * JSON changed.
  */
 export function installCatalogRefresh(models: Readonly<Record<string, CatalogModel>>): number {
   const kept: Record<string, CatalogModel> = {};

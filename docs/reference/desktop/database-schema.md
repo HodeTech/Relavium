@@ -99,6 +99,7 @@ Models offered by each provider, including pricing used for local cost tracking.
 | `input_cost_per_mtok_microcents` | INTEGER | NOT NULL DEFAULT 0 |
 | `output_cost_per_mtok_microcents` | INTEGER | NOT NULL DEFAULT 0 |
 | `cached_input_cost_per_mtok_microcents` | INTEGER | NOT NULL DEFAULT 0 |
+| `cached_input_stated` | INTEGER (bool) | NOT NULL DEFAULT 0 — did the USER state the cache rate (migration 0011, ADR-0071 §10)? `0` ⇒ derive it from the catalog discount; `1` ⇒ the number above is the user's own |
 | `media_image_cost_microcents` | INTEGER | NULL — µ¢ per output image (1.AF/D17) |
 | `media_audio_cost_microcents` | INTEGER | NULL — µ¢ per output audio-second |
 | `media_video_cost_microcents` | INTEGER | NULL — µ¢ per output video-second |
