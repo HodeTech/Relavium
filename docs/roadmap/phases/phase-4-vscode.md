@@ -373,7 +373,7 @@ Upgrade the existing trigger-only chat panel into a full conversational AI codin
 
 ### 4.M — Chat export + session persistence
 
-`relavium.exportChatSession` (session → `.relavium.yaml` scaffold, [ADR-0026](../../decisions/0026-session-export-to-workflow.md)) plus session persistence to the **shared encrypted `history.db`** — the same store as CLI/desktop, so a session started anywhere resumes here. There is **no** extension-host session store; the extension host opens the SQLCipher DB via a **wasm SQLite** build (no native module — respects [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). See the cross-host note in [database-schema.md](../../reference/desktop/database-schema.md).
+`relavium.exportChatSession` (session → `.relavium.yaml` scaffold, [ADR-0026](../../decisions/0026-session-export-to-workflow.md)) plus session persistence to the **shared encrypted `history.db`** — the same store as CLI/desktop, so a session started anywhere resumes here. There is **no** extension-host session store; the extension host opens the SQLCipher DB via a **wasm SQLite** build (no native module — respects [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)). See the cross-host note in [database-schema.md](../../reference/shared-core/database-schema.md).
 
 **Acceptance:** a chat session started in the CLI/desktop resumes in the editor (same `history.db`) and exports to a reviewable workflow; the extension host opens the DB with no native module.
 

@@ -615,7 +615,7 @@ Two streaming subtleties the adapters must handle:
 > micro-cents**, where **1 micro-cent = 1e-8 USD = 1e-6 cent**. Costs are always
 > integers (never floats) to avoid precision loss when summing thousands of
 > per-token charges; the SQLite type-mapping detail is in
-> [../desktop/database-schema.md](../desktop/database-schema.md). Every other
+> [../shared-core/database-schema.md](../shared-core/database-schema.md). Every other
 > document links here rather than restating the unit.
 
 #### Stricter usage-capture rules in managed mode (Phase 2)

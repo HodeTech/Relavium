@@ -29,12 +29,12 @@ The engine internals that every surface shares. See [architecture/shared-core-en
 | [shared-core/node-types.md](shared-core/node-types.md) | The canvas + engine node-type catalog — visual node components and the engine node-type enum. |
 | [shared-core/built-in-tools.md](shared-core/built-in-tools.md) | Tools available to local agents out of the box (`read_file`, `run_command`, `git_*`, `mcp_call`, `invoke_agent`, …). |
 | [shared-core/mcp-integration.md](shared-core/mcp-integration.md) | MCP in both directions — agents as MCP servers, and agents consuming MCP tools. |
+| [shared-core/database-schema.md](shared-core/database-schema.md) | The local SQLite run-history + catalog schema (Drizzle) — one schema, shared by the desktop (SQLCipher), CLI (`better-sqlite3`), and VS Code (wasm) drivers. |
 
 ## Per-surface reference
 
 | Area | Doc | Purpose |
 | --- | --- | --- |
-| Desktop | [desktop/database-schema.md](desktop/database-schema.md) | Local SQLite run-history schema (Drizzle). |
 | Desktop | [desktop/keychain-and-secrets.md](desktop/keychain-and-secrets.md) | OS keychain usage and the encrypted-file fallback. |
 | Desktop | [desktop/tauri-plugins.md](desktop/tauri-plugins.md) | Tauri v2 plugins and capability manifest. |
 | Desktop | [desktop/routes-and-screens.md](desktop/routes-and-screens.md) | TanStack Router routes and screens. |

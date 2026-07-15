@@ -196,7 +196,7 @@ In Phase 1 there is **no separate checkpoint table**: the checkpoint is **recons
 alone — each node's output/error rides its `node:completed` / `node:failed` event, so the stream is a
 sufficient source. The persistence layer *also* denormalizes per-node state into `step_executions` and an
 orchestrator's history into `messages` (schema in
-[../reference/desktop/database-schema.md](../reference/desktop/database-schema.md)) for the run-trace UI
+[../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md)) for the run-trace UI
 and fast querying — the same per-node truth, not an extra input the fold requires.
 `CheckpointState` is **derived**, never a stored blob: a pure fold over the ordered event stream
 (`reconstructCheckpointState(events)`) captures run status, the surrogate `workflowId`, per-node
@@ -225,7 +225,7 @@ re-emitted) and returns a `RunHandle` for the rest of the run. An **identity gua
 whose workflow is not the one the run started on: the Phase-1 in-memory reference compares the surrogate
 `workflowId` reconstructed from `run:started` (a different workflow → a typed `workflow_mismatch`). The
 stronger guard that also catches a *same-slug, edited-content* workflow rides on the frozen
-`runs.workflow_definition_snapshot` column ([../reference/desktop/database-schema.md](../reference/desktop/database-schema.md))
+`runs.workflow_definition_snapshot` column ([../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md))
 — a Phase-2 persistence concern wired with the real `RunStore`, not the event-derived in-memory state. **Idempotent re-delivery** never advances a run twice: re-delivering a decision to an
 already-terminal run is a no-op (a closed handle, nothing re-emitted or re-persisted); re-delivering an
 already-resolved gate on a still-running run drives the remaining work without re-applying the decision.

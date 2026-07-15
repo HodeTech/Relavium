@@ -2,7 +2,7 @@
 
 > Status: ✅ **Complete** — all workstreams (0.A–0.I) landed and merged (PR #1–#3, 2026-06-04), achieving global milestone **M0**. [Phase 1 — engine and LLM](phase-1-engine-and-llm.md) is next. Confirmed-but-deferred review findings are tracked in [../deferred-tasks.md](../deferred-tasks.md).
 
-- **Related**: [../README.md](../README.md), [../current.md](../current.md), [phase-1-engine-and-llm.md](phase-1-engine-and-llm.md), [../../project-structure.md](../../project-structure.md), [../../tech-stack.md](../../tech-stack.md), [../../reference/contracts/workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md), [../../reference/contracts/agent-yaml-spec.md](../../reference/contracts/agent-yaml-spec.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../standards/code-style-typescript.md](../../standards/code-style-typescript.md), [../../standards/testing.md](../../standards/testing.md), [../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md](../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
+- **Related**: [../README.md](../README.md), [../current.md](../current.md), [phase-1-engine-and-llm.md](phase-1-engine-and-llm.md), [../../project-structure.md](../../project-structure.md), [../../tech-stack.md](../../tech-stack.md), [../../reference/contracts/workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md), [../../reference/contracts/agent-yaml-spec.md](../../reference/contracts/agent-yaml-spec.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/shared-core/database-schema.md](../../reference/shared-core/database-schema.md), [../../standards/code-style-typescript.md](../../standards/code-style-typescript.md), [../../standards/testing.md](../../standards/testing.md), [../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md](../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md), [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
 
 ## Goal
 
@@ -34,7 +34,7 @@ later. Phase 0 ships **types and tooling, not features**: when it is green, Phas
   and enforced in CI (it has nothing to forbid yet, but the zone fence is wired so
   Phase 1's first adapter import is policed from line one).
 - `@relavium/db` is scaffolded: the Drizzle schema for the
-  [database-schema.md](../../reference/desktop/database-schema.md) table set, a
+  [database-schema.md](../../reference/shared-core/database-schema.md) table set, a
   `drizzle-kit` migration set, and a local SQLite client that opens a fresh DB and runs
   every migration in a smoke test — built but not yet wired into a running engine.
 - GitHub Actions CI runs lint + typecheck + test on every push/PR with Turborepo
@@ -57,7 +57,7 @@ later. Phase 0 ships **types and tooling, not features**: when it is green, Phas
   [../../reference/contracts/](../../reference/contracts/README.md): workflow/agent
   YAML, the run-event union, and config. No runtime deps except zod.
 - **`packages/db` (`@relavium/db`) scaffold** — the Drizzle schema + migrations + the
-  local SQLite client, encoding the [database-schema.md](../../reference/desktop/database-schema.md)
+  local SQLite client, encoding the [database-schema.md](../../reference/shared-core/database-schema.md)
   table set so the **single Drizzle schema, two dialects** invariant has an owner
   before its consumers arrive: Phase 1's engine checkpoint/resume and Phase 2's CLI run
   history both depend on it, and Phase 3 desktop reuses the same package
@@ -366,7 +366,7 @@ on it — so it is scaffolded here. Schema only; no engine wiring (that is Phase
   `drizzle-kit`; expose a curated `src/index.ts` (schema, client factory, migration
   runner — no `export *` of internals).
 - Author the **Drizzle schema** for the Phase-1 local table set from
-  [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md)
+  [../../reference/shared-core/database-schema.md](../../reference/shared-core/database-schema.md)
   (`llm_providers`, `model_catalog`, `agents`, `workflows`, `runs`, `step_executions`,
   `messages`, `run_events`, `run_costs`), honoring the SQLite conventions there
   (`TEXT` UUIDs, JSON `TEXT`, epoch-ms `INTEGER`, **integer micro-cents** for money,
@@ -413,7 +413,7 @@ spine milestone **M0** for this phase.
     [documentation-style.md](../../standards/documentation-style.md).
   - [../../decisions/0011-internal-llm-abstraction.md](../../decisions/0011-internal-llm-abstraction.md)
     — the source of the no-vendor-type-across-the-seam fence scaffolded in 0.F.
-  - [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md)
+  - [../../reference/shared-core/database-schema.md](../../reference/shared-core/database-schema.md)
     and [../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md](../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md)
     — the table set and the single-schema/two-dialects decision the `packages/db`
     scaffold (0.I) encodes.

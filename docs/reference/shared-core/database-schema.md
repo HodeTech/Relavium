@@ -1,11 +1,11 @@
-# Desktop Database Schema (Local SQLite)
+# Database Schema (Local SQLite)
 
-> Last updated: 2026-06-03
+> Last updated: 2026-07-14
 
 - **Status**: Reference
-- **Surface**: Desktop (Tauri v2)
-- **Scope**: Phase 1, local-first. SQLite via `tauri-plugin-sql`, schema managed by Drizzle ORM in `packages/db` (see [project-structure.md](../../project-structure.md)).
-- **Related**: [keychain-and-secrets.md](keychain-and-secrets.md), [tauri-plugins.md](tauri-plugins.md), [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md), [../../architecture/managed-inference.md](../../architecture/managed-inference.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md)
+- **Surface**: Shared — Desktop (Tauri v2, `tauri-plugin-sql`/SQLCipher), CLI (`better-sqlite3`, [ADR-0021](../../decisions/0021-node-sqlite-driver-better-sqlite3.md)/[ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)), and VS Code (a wasm SQLite build). One schema, three drivers — see [Concurrency & transaction behavior](#concurrency--transaction-behavior) and [Encryption at rest](#encryption-at-rest) for the per-surface divergences.
+- **Scope**: Phase 1, local-first. Schema managed by Drizzle ORM in `packages/db` (see [project-structure.md](../../project-structure.md)).
+- **Related**: [desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md), [desktop/tauri-plugins.md](../desktop/tauri-plugins.md), [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md), [../../architecture/managed-inference.md](../../architecture/managed-inference.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md)
 
 This is the canonical reference for the **local** run-history and catalog database that the desktop app (and the Phase-2 CLI) persists on the user's machine. There is no cloud, no account, and no server in Phase 1 — every table below lives in a single local SQLite file. **At-rest encryption is per-surface:** the desktop opens `history.db` with SQLCipher, while the Phase-2 **CLI** opens the same **path** with `better-sqlite3` **unencrypted, guarded by `0600`/`0700` OS permissions** ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)). Because a standard `better-sqlite3` build cannot open a SQLCipher file (nor vice-versa), the two surfaces **cannot share one file** — see [Encryption at rest](#encryption-at-rest) and the cross-host callout under the agent-session tables. The Phase-2 PostgreSQL divergences are described at the end and detailed in [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md).
 
@@ -56,6 +56,125 @@ A full 14-item porting table lives in [../../architecture/cloud-phase-2.md](../.
 ## Tables
 
 The local schema is the Postgres 13-table design reduced to what a single-user, local-first app needs. The two LangGraph checkpoint tables are **dropped** (the engine is pure TypeScript — no LangGraph; see [decision 0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)); checkpoint/resume needs no dedicated table — engine state is **reconstructed from `step_executions` + `run_events`** (+ `messages` for an orchestrator's history), per [execution-model.md](../../architecture/execution-model.md#5-checkpoint-each-node-boundary). `workflow_schedules` is **Phase 2 only** (schedule/webhook triggers require a cloud listener; see [../../ideas/scheduled-and-webhook-triggers.md](../../ideas/scheduled-and-webhook-triggers.md)). The `*_versions` tables are unnecessary locally because version history is provided by git on the YAML files.
+
+### Entity relationships
+
+The 14 tables below, trimmed to the columns that define structure (full column lists follow per table). Every edge is a real foreign key in `schema.ts`; two are deliberately absent — see the note beneath the diagram.
+
+```mermaid
+erDiagram
+    llm_providers {
+        uuid id PK
+        text name
+        text display_name
+        text kind
+    }
+    model_catalog {
+        uuid id PK
+        uuid provider_id FK
+        text model_id
+        text display_name
+        text source
+    }
+    agents {
+        uuid id PK
+        uuid model_id FK
+        text slug UK
+        text name
+    }
+    workflows {
+        uuid id PK
+        text slug UK
+        text name
+    }
+    runs {
+        uuid id PK
+        uuid workflow_id FK
+        text status
+        text execution_mode
+    }
+    step_executions {
+        uuid id PK
+        uuid run_id FK
+        uuid agent_id FK
+        uuid model_id FK
+        text node_id
+        text status
+    }
+    messages {
+        uuid id PK
+        uuid step_execution_id FK
+        text run_id "denormalized, no FK"
+        int sequence_number
+        text role
+    }
+    run_events {
+        uuid id PK
+        uuid run_id FK
+        text step_execution_id "denormalized, no FK"
+        int seq
+        text event_type
+    }
+    run_costs {
+        uuid id PK
+        uuid run_id FK
+        uuid model_id FK
+        text node_id
+    }
+    agent_sessions {
+        uuid id PK
+        uuid agent_id FK
+        uuid model_id FK
+        text status
+        text title
+    }
+    session_messages {
+        uuid id PK
+        uuid session_id FK
+        uuid model_id FK
+        int sequence_number
+        text role
+    }
+    session_costs {
+        uuid id PK
+        uuid session_id FK
+        uuid model_catalog_id FK
+        text model "raw string, deliberately not the FK key"
+        bool is_legacy
+    }
+    media_objects {
+        uuid id PK
+        text handle UK
+        text modality
+        int byte_length
+    }
+    media_references {
+        uuid id PK
+        text handle FK
+        text scope_kind
+        text scope_id
+    }
+
+    llm_providers ||--o{ model_catalog : provider_id
+    model_catalog ||--o{ agents : model_id
+    model_catalog |o--o{ step_executions : "model_id (nullable)"
+    model_catalog |o--o{ run_costs : "model_id (nullable)"
+    model_catalog |o--o{ agent_sessions : "model_id (nullable)"
+    model_catalog |o--o{ session_messages : "model_id (nullable)"
+    model_catalog |o--o{ session_costs : "model_catalog_id (nullable)"
+    workflows ||--o{ runs : workflow_id
+    runs ||--o{ step_executions : "run_id CASCADE"
+    runs ||--o{ run_events : "run_id CASCADE"
+    runs ||--o{ run_costs : "run_id CASCADE"
+    step_executions ||--o{ messages : "step_execution_id CASCADE"
+    agents |o--o{ step_executions : "agent_id (nullable)"
+    agents |o--o{ agent_sessions : "agent_id (nullable)"
+    agent_sessions ||--o{ session_messages : "session_id CASCADE"
+    agent_sessions ||--o{ session_costs : "session_id CASCADE"
+    media_objects ||--o{ media_references : "handle CASCADE"
+```
+
+> **Two edges are deliberately missing above.** `messages.run_id` and `run_events.step_execution_id` are denormalized for read-path efficiency — the schema comments say so explicitly ("the reference DDL declares no FK here"). They carry the value but not the constraint, so they're annotated on the entities above, not drawn as relationships.
 
 ### Catalog tables
 
@@ -214,6 +333,9 @@ One row per workflow execution. `workflow_definition_snapshot` freezes the exact
 CREATE INDEX idx_runs_workflow      ON runs (workflow_id, created_at DESC);
 CREATE INDEX idx_runs_status        ON runs (status, created_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX idx_runs_cost          ON runs (workflow_id, created_at, total_cost_microcents) WHERE deleted_at IS NULL;
+-- Backs the workflow-agnostic recency lists (listRuns/listActiveRuns + the 2.5.B Home strip): ORDER BY
+-- (created_at DESC, id DESC) over the non-deleted set is served off this partial index instead of a filesort.
+CREATE INDEX idx_runs_created       ON runs (created_at DESC, id DESC) WHERE deleted_at IS NULL;
 ```
 
 #### `step_executions`
@@ -361,6 +483,9 @@ session variables); `agent_snapshot` freezes the agent config the session ran ag
 ```sql
 CREATE INDEX idx_agent_sessions_status ON agent_sessions (status, updated_at DESC) WHERE deleted_at IS NULL;
 CREATE INDEX idx_agent_sessions_agent  ON agent_sessions (agent_id, created_at DESC) WHERE agent_id IS NOT NULL;
+-- Backs listSessions + the 2.5.B Home "recent sessions" strip: ORDER BY (updated_at DESC, id DESC) over the
+-- non-deleted set is served off this partial index rather than a filesort (the session counterpart of idx_runs_created).
+CREATE INDEX idx_agent_sessions_updated ON agent_sessions (updated_at DESC, id DESC) WHERE deleted_at IS NULL;
 ```
 
 #### `session_messages`

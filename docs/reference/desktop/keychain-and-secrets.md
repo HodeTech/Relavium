@@ -5,7 +5,7 @@
 - **Status**: Reference
 - **Surface**: Desktop (Tauri v2)
 - **Scope**: Phase 1, local-first. API-key and passphrase storage. No key ever leaves the machine except in outbound LLM API calls.
-- **Related**: [tauri-plugins.md](tauri-plugins.md), [database-schema.md](database-schema.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md), [decision 0006](../../decisions/0006-os-keychain-for-api-keys.md), [../../runbooks/add-a-provider-key.md](../../runbooks/add-a-provider-key.md)
+- **Related**: [tauri-plugins.md](tauri-plugins.md), [database-schema.md](../shared-core/database-schema.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md), [decision 0006](../../decisions/0006-os-keychain-for-api-keys.md), [../../runbooks/add-a-provider-key.md](../../runbooks/add-a-provider-key.md)
 
 This is the canonical reference for how the desktop app stores LLM provider API keys and the database passphrase. The governing principle: **secrets are never written to disk in plaintext, never sent to the WebView/frontend, and never serialized into workflow YAML, run records, logs, or IPC payloads.**
 
@@ -53,7 +53,7 @@ The built-in web-search tool stores its key the same way under `account = search
 
 A `{{secrets.<name>}}` placeholder in an MCP server's `env` resolves **only** within this `mcp-secret:*` namespace (keychain → env var → fail-closed) and is injected **only** into the spawned server's child environment — never a committed YAML, a log, an event, or a `--json` line. The isolation is load-bearing: `{{secrets.*}}` can **never** reach a provider-key account (`{providerId}:{keyId}`) or `search-provider`, so a hostile imported workflow naming a *provider* key resolves an unrelated (normally-empty) `mcp-secret:*` account instead of the real key — closing the exfiltration path under the "a shared/imported workflow is the invite" distribution model.
 
-The `llm_providers` table stores only an `api_key_keychain_ref` (the `account` identifier) — **never the key value** (see [database-schema.md](database-schema.md)).
+The `llm_providers` table stores only an `api_key_keychain_ref` (the `account` identifier) — **never the key value** (see [database-schema.md](../shared-core/database-schema.md)).
 
 ## Encrypted-file fallback — deferred past v1.0
 
@@ -61,7 +61,7 @@ There is **no** encrypted-file key store in v1.0. A headless/CI fallback for env
 
 ## Database passphrase (SQLCipher)
 
-The global run-history database (`~/.relavium/history.db`) is encrypted with SQLCipher **on the desktop** (see [database-schema.md](database-schema.md)). Its passphrase is derived from the same stable machine secret combined with a keychain entry, so the database opens automatically on restart without prompting the user. The passphrase is set in the Rust `setup()` hook **before** the SQL plugin initializes — if it is not present when the database is opened, the open fails.
+The global run-history database (`~/.relavium/history.db`) is encrypted with SQLCipher **on the desktop** (see [database-schema.md](../shared-core/database-schema.md)). Its passphrase is derived from the same stable machine secret combined with a keychain entry, so the database opens automatically on restart without prompting the user. The passphrase is set in the Rust `setup()` hook **before** the SQL plugin initializes — if it is not present when the database is opened, the open fails.
 
 The **Phase-2 CLI does not use SQLCipher**: it opens the same `history.db` with `better-sqlite3` **unencrypted**, guarded by `0600`/`0700` OS file permissions ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)). This is safe because the file holds **no credentials** — provider keys stay here in the OS keychain, and the engine masks `secret`-typed inputs and tool I/O before they are persisted. The two at-rest postures cannot share one file at the same path; reconciling cross-surface coexistence is a named Phase-3 follow-on (ADR-0050).
 

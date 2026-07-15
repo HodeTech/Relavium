@@ -20,7 +20,7 @@ import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-o
 
 /**
  * The Phase-1 local table set, modeling the canonical DDL in
- * [database-schema.md](../../../docs/reference/desktop/database-schema.md) as a Drizzle
+ * [database-schema.md](../../../docs/reference/shared-core/database-schema.md) as a Drizzle
  * SQLite schema. **One schema, two dialects** ([ADR-0005](../../../docs/decisions/0005-sqlite-drizzle-local-postgres-cloud.md)):
  * table and column names are kept dialect-identical so the Phase-2 Postgres port is a
  * driver/dialect change, not a rewrite.

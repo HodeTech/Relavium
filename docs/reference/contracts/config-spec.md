@@ -18,7 +18,7 @@ Created on first launch. Holds user-wide preferences and the registry of MCP ser
 ~/.relavium/
   config.toml        # global preferences, MCP server registrations, update channel
   ipc.json           # desktop loopback server discovery (port, authToken, pid) — see ipc-contract.md
-  history.db         # cross-project run history (SQLite; desktop: SQLCipher, CLI: unencrypted + 0600/0700 OS perms — ADR-0050) — see desktop/database-schema.md
+  history.db         # cross-project run history (SQLite; desktop: SQLCipher, CLI: unencrypted + 0600/0700 OS perms — ADR-0050) — see shared-core/database-schema.md
   secrets.enc        # RESERVED encrypted-file key fallback (deferred past v1.0; Argon2id KDF) — see keychain-and-secrets.md
   tmp/               # scratch space agents may write to under the sandbox tier
 ```

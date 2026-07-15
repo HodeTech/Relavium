@@ -1306,7 +1306,7 @@ flowchart LR
    [chat-session.md](../../reference/cli/chat-session.md),
    [built-in-tools.md](../../reference/shared-core/built-in-tools.md),
    [config-spec.md](../../reference/contracts/config-spec.md),
-   [database-schema.md](../../reference/desktop/database-schema.md)) is updated — no docs-debt carried
+   [database-schema.md](../../reference/shared-core/database-schema.md)) is updated — no docs-debt carried
    out of the phase.
 
 ## Required ADRs

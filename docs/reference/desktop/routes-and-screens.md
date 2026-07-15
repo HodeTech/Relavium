@@ -5,7 +5,7 @@
 - **Status**: Reference
 - **Surface**: Desktop (Tauri v2 + Vite + React 19 + TanStack Router)
 - **Scope**: Phase 1, local-first. The desktop app's route table and what each screen is for.
-- **Related**: [tauri-plugins.md](tauri-plugins.md), [database-schema.md](database-schema.md), [keychain-and-secrets.md](keychain-and-secrets.md), [../shared-core/store-shapes.md](../shared-core/store-shapes.md), [../shared-core/node-types.md](../shared-core/node-types.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../contracts/agent-session-spec.md](../contracts/agent-session-spec.md), [../../architecture/desktop-architecture.md](../../architecture/desktop-architecture.md), [decision 0007](../../decisions/0007-desktop-is-not-an-ide.md), [decision 0025](../../decisions/0025-agent-surface-refines-desktop-scope.md)
+- **Related**: [tauri-plugins.md](tauri-plugins.md), [database-schema.md](../shared-core/database-schema.md), [keychain-and-secrets.md](keychain-and-secrets.md), [../shared-core/store-shapes.md](../shared-core/store-shapes.md), [../shared-core/node-types.md](../shared-core/node-types.md), [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md), [../contracts/agent-session-spec.md](../contracts/agent-session-spec.md), [../../architecture/desktop-architecture.md](../../architecture/desktop-architecture.md), [decision 0007](../../decisions/0007-desktop-is-not-an-ide.md), [decision 0025](../../decisions/0025-agent-surface-refines-desktop-scope.md)
 
 This is the canonical reference for the desktop app's screens. The desktop app is an **agent-management center** — a workflow canvas, a conversational agent surface, agent configuration, run monitoring, and cost tracking. It is **not** an IDE, **not** a code editor, and **not** a terminal (see [decision 0007](../../decisions/0007-desktop-is-not-an-ide.md), refined by [decision 0025](../../decisions/0025-agent-surface-refines-desktop-scope.md)). Code-adjacent work happens in the [VS Code extension](../vscode/extension-api.md), not here.
 
@@ -46,23 +46,23 @@ A persistent app shell wraps every route: top bar (workspace switcher, global Ru
 ## Screen details
 
 ### Dashboard (`/`)
-The neutral operational home and the **default landing screen** — agent-first does not mean force-opening to Chat; Dashboard stays the launch surface and both Chat and Canvas are one click away ([ADR-0025](../../decisions/0025-agent-surface-refines-desktop-scope.md)). Surfaces what ran recently and what is running now, a small cost snapshot, and a curated set of starter templates (3–5 bundled at install). On a fresh install the canvas-adjacent UI is dimmed and a single CTA points the user to add an API key. Data comes from the `runs` / `run_costs` tables (see [database-schema.md](database-schema.md)).
+The neutral operational home and the **default landing screen** — agent-first does not mean force-opening to Chat; Dashboard stays the launch surface and both Chat and Canvas are one click away ([ADR-0025](../../decisions/0025-agent-surface-refines-desktop-scope.md)). Surfaces what ran recently and what is running now, a small cost snapshot, and a curated set of starter templates (3–5 bundled at install). On a fresh install the canvas-adjacent UI is dimmed and a single CTA points the user to add an API key. Data comes from the `runs` / `run_costs` tables (see [database-schema.md](../shared-core/database-schema.md)).
 
 ### Chat (`/chat`)
 The agent-first conversational entry point and a **co-equal top-level tab** with Canvas ([ADR-0024](../../decisions/0024-agent-first-entry-point-agentsession.md), [ADR-0025](../../decisions/0025-agent-surface-refines-desktop-scope.md)). The screen has two jobs:
 
 - **Start a session.** Pick an agent (`.agent.yaml`) and model — one agent/model per session, with the same fallback chain workflows use — give it initial context (the auto-detected workspace root / active file / git branch, each overridable), and begin. Starting a session creates an [agent session](../contracts/agent-session-spec.md) on the engine.
-- **Resume a session.** Lists past sessions read from `agent_sessions` (see [database-schema.md](database-schema.md)); selecting one opens `/chat/:sessionId`. Sessions are auto-persisted and resumable.
+- **Resume a session.** Lists past sessions read from `agent_sessions` (see [database-schema.md](../shared-core/database-schema.md)); selecting one opens `/chat/:sessionId`. Sessions are auto-persisted and resumable.
 
 ### Session (`/chat/:sessionId`)
 One open [agent session](../contracts/agent-session-spec.md). The live transcript renders streamed assistant tokens and **tool-call annotations** (each tool invocation and its result shown inline, the same allowlisted, FS-scope-tiered tools a workflow agent uses), driven by the `session:*` events in [sse-event-schema.md](../contracts/sse-event-schema.md). Key behaviors:
 
 - **Context input + steering.** A message composer drives the conversation; messages are append-only.
 - **Export-to-Canvas.** A one-click affordance serializes the session to a reviewed `.relavium.yaml` **scaffold** — a linear agent-node chain plus the transcript as YAML metadata — then opens it on the Canvas for review before commit ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). It is an explicit action, separate from auto-persistence; parallel/condition/loop structure is not auto-extracted.
-- **Persistence.** The transcript persists to `agent_sessions` / `session_messages` in the encrypted local `history.db` (see [database-schema.md](database-schema.md)); the session is resumable after relaunch and replayable only after export.
+- **Persistence.** The transcript persists to `agent_sessions` / `session_messages` in the encrypted local `history.db` (see [database-schema.md](../shared-core/database-schema.md)); the session is resumable after relaunch and replayable only after export.
 
 ### Workflows list (`/workflows`)
-Lists every workflow file discovered in the open workspace's `.relavium/` directory, grouped by tag, each row showing its last-run status icon. Workflows are the git-committable source of truth ([../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md)); the list is a view over them. Actions: New, Import (open a `.relavium.yaml`), Duplicate, Delete. "Latest run per workflow" is computed with a `ROW_NUMBER()` query (see [database-schema.md](database-schema.md)).
+Lists every workflow file discovered in the open workspace's `.relavium/` directory, grouped by tag, each row showing its last-run status icon. Workflows are the git-committable source of truth ([../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md)); the list is a view over them. Actions: New, Import (open a `.relavium.yaml`), Duplicate, Delete. "Latest run per workflow" is computed with a `ROW_NUMBER()` query (see [database-schema.md](../shared-core/database-schema.md)).
 
 ### Canvas (`/workflows/:id`)
 The ReactFlow editor and the product's signature surface — co-equal with [Chat](#chat-chat) as a top-level tab ([ADR-0025](../../decisions/0025-agent-surface-refines-desktop-scope.md)): token streaming renders **inside individual node faces** as the workflow executes ("live execution theater"). It is also the review target for a session exported via [Export-to-Canvas](#session-chatsessionid). Key behaviors:
@@ -83,7 +83,7 @@ Manage agents independently of any workflow. Each agent (`.agent.yaml`, see [../
 App-level configuration: general preferences, the providers list, MCP server registrations (see [../shared-core/mcp-integration.md](../shared-core/mcp-integration.md)), keychain/secrets options (see [keychain-and-secrets.md](keychain-and-secrets.md)), and the update channel. Global vs per-project config split is defined in [../contracts/config-spec.md](../contracts/config-spec.md).
 
 ### Provider detail (`/settings/providers/:id`)
-Configure a single provider. Add or rotate its API key — stored in the OS keychain, never on disk in plaintext, and surfaced in the UI only as a last-4-char hint (see [keychain-and-secrets.md](keychain-and-secrets.md)). Shows the provider's model catalog with context windows and per-token pricing from `model_catalog` (see [database-schema.md](database-schema.md)). To add a key step-by-step, see [../../runbooks/add-a-provider-key.md](../../runbooks/add-a-provider-key.md).
+Configure a single provider. Add or rotate its API key — stored in the OS keychain, never on disk in plaintext, and surfaced in the UI only as a last-4-char hint (see [keychain-and-secrets.md](keychain-and-secrets.md)). Shows the provider's model catalog with context windows and per-token pricing from `model_catalog` (see [database-schema.md](../shared-core/database-schema.md)). To add a key step-by-step, see [../../runbooks/add-a-provider-key.md](../../runbooks/add-a-provider-key.md).
 
 ## Cross-cutting UI
 

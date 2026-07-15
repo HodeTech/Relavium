@@ -102,7 +102,7 @@ API keys live in the OS keychain); only the **desktop** surface uses a SQLCipher
   session.
 
 The DDL is canonical in
-[../reference/desktop/database-schema.md](../reference/desktop/database-schema.md). These
+[../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md). These
 tables are **bound to a session**, deliberately distinct from the per-step run `messages`
 table (bound to a `step_executions` row inside a workflow run); the two share a shape
 family but must not be merged — that relationship is documented in the spec and the DB

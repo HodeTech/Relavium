@@ -456,7 +456,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **Content-level workflow-identity guard on resume** — `resumeFromCheckpoint` compares the surrogate
   `workflowId` (catches resuming a *different* workflow → `workflow_mismatch`), but not a *same-slug,
   edited-content* workflow. The stronger guard rides on the frozen `runs.workflow_definition_snapshot` column
-  ([database-schema.md](../reference/desktop/database-schema.md)) — a Phase-2 persistence concern wired with
+  ([database-schema.md](../reference/shared-core/database-schema.md)) — a Phase-2 persistence concern wired with
   the real `RunStore`, not the event-derived in-memory state. **Scheduled → 2.6.H.** *(low · packages/core/src/engine/engine.ts; Phase-2)*
 - [ ] **Cross-process concurrent gate-resolve (TOCTOU)** — idempotent re-delivery holds within a process
   (`#resolvedGates`) and across processes once the prior process's `human_gate:resumed` is persisted (the
