@@ -154,16 +154,26 @@ describe('admitRefreshedModels — the shared pure gate (ADR-0072 point 3)', () 
   it('REJECTS a NaN base price — the finite check fires BEFORE `<= 0` (NaN <= 0 is false)', () => {
     // This is the load-bearing money invariant at the DB boundary: a torn/NaN-coerced price must be caught by
     // Number.isFinite, not slip a bare `<= 0` guard and propagate NaN into the governor (ADR-0072 point 3b).
-    expect(admitRefreshedModels({ n1: model({ modelId: 'n1', inputPerMtokMicrocents: Number.NaN }) })).toEqual({});
-    expect(admitRefreshedModels({ n2: model({ modelId: 'n2', outputPerMtokMicrocents: Number.NaN }) })).toEqual({});
     expect(
-      admitRefreshedModels({ inf: model({ modelId: 'inf', inputPerMtokMicrocents: Number.POSITIVE_INFINITY }) }),
+      admitRefreshedModels({ n1: model({ modelId: 'n1', inputPerMtokMicrocents: Number.NaN }) }),
+    ).toEqual({});
+    expect(
+      admitRefreshedModels({ n2: model({ modelId: 'n2', outputPerMtokMicrocents: Number.NaN }) }),
+    ).toEqual({});
+    expect(
+      admitRefreshedModels({
+        inf: model({ modelId: 'inf', inputPerMtokMicrocents: Number.POSITIVE_INFINITY }),
+      }),
     ).toEqual({});
   });
 
   it('REJECTS a negative or zero base price on either side', () => {
-    expect(admitRefreshedModels({ z: model({ modelId: 'z', inputPerMtokMicrocents: 0 }) })).toEqual({});
-    expect(admitRefreshedModels({ neg: model({ modelId: 'neg', outputPerMtokMicrocents: -5 }) })).toEqual({});
+    expect(admitRefreshedModels({ z: model({ modelId: 'z', inputPerMtokMicrocents: 0 }) })).toEqual(
+      {},
+    );
+    expect(
+      admitRefreshedModels({ neg: model({ modelId: 'neg', outputPerMtokMicrocents: -5 }) }),
+    ).toEqual({});
   });
 
   it('installCatalogRefresh has not DRIFTED from the gate — it installs exactly what the gate admits', () => {
@@ -178,7 +188,9 @@ describe('admitRefreshedModels — the shared pure gate (ADR-0072 point 3)', () 
     };
     const gateKeys = Object.keys(admitRefreshedModels(input)).sort();
     const installed = installCatalogRefresh(input);
-    const overlayKeys = catalogModelIds().filter((id) => CATALOG_SNAPSHOT[id] === undefined).sort();
+    const overlayKeys = catalogModelIds()
+      .filter((id) => CATALOG_SNAPSHOT[id] === undefined)
+      .sort();
     expect(gateKeys).toEqual(['ok-tail']);
     expect(installed).toBe(1);
     expect(overlayKeys).toEqual(gateKeys);

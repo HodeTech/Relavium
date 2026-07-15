@@ -224,7 +224,9 @@ describe('catalog-metadata (ADR-0072 P4 — host projection + seed + install + p
       expect(refreshed).toEqual(['priced-tail']);
       // The shipped id: money is BYTE-IDENTICAL to the seed (the hostile price never landed)…
       const shippedAfter = rows.find((r) => r.modelId === SHIPPED_ID)!;
-      expect(shippedAfter.inputCostPerMtokMicrocents).toBe(shippedBefore.inputCostPerMtokMicrocents);
+      expect(shippedAfter.inputCostPerMtokMicrocents).toBe(
+        shippedBefore.inputCostPerMtokMicrocents,
+      );
       expect(shippedAfter.origin).toBe('shipped');
       // …but the enrichment DID land.
       expect(shippedAfter.knowledgeCutoff).toBe('2099-01');
@@ -253,7 +255,11 @@ describe('catalog-metadata (ADR-0072 P4 — host projection + seed + install + p
       const overlayInstalled = (() => {
         clearCatalogRefresh();
         installCatalogFromDb(store);
-        return ['a', 'b', 'c', SHIPPED_ID].filter((id) => catalogModel(id) !== CATALOG_SNAPSHOT[id] && CATALOG_SNAPSHOT[id] === undefined).sort();
+        return ['a', 'b', 'c', SHIPPED_ID]
+          .filter(
+            (id) => catalogModel(id) !== CATALOG_SNAPSHOT[id] && CATALOG_SNAPSHOT[id] === undefined,
+          )
+          .sort();
       })();
       expect(persistedRefreshed).toEqual(gateAdmitted);
       expect(overlayInstalled).toEqual(gateAdmitted);

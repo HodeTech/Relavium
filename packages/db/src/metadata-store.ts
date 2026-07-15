@@ -77,7 +77,10 @@ export function coerceCatalogMetadataOrigin(value: string): CatalogMetadataOrigi
 }
 
 /** The columns a full upsert overwrites on conflict — everything EXCEPT the `model_id` key and `created_at`. */
-function fullUpsertSet(row: NewModelMetadataRow, now: number): Omit<NewModelMetadataRow, 'modelId' | 'createdAt'> {
+function fullUpsertSet(
+  row: NewModelMetadataRow,
+  now: number,
+): Omit<NewModelMetadataRow, 'modelId' | 'createdAt'> {
   return {
     provider: row.provider,
     displayName: row.displayName,

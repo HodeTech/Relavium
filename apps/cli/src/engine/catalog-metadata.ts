@@ -94,7 +94,10 @@ export function rowToCatalogModel(row: ModelMetadataRow): CatalogModel | undefin
   const cacheWrite = row.cacheWriteCostPerMtokMicrocents;
   const tiers = parseJson<readonly CatalogPriceTier[]>(row.contextTiers, PriceTiersSchema);
   const reasoning = parseJson<ReasoningControls>(row.reasoning, ReasoningSchema);
-  const requestCapabilities = parseJson<RequestCapabilities>(row.requestCapabilities, CapabilitiesSchema);
+  const requestCapabilities = parseJson<RequestCapabilities>(
+    row.requestCapabilities,
+    CapabilitiesSchema,
+  );
   const inputModalities = parseJson<readonly string[]>(row.inputModalities, StringArraySchema);
   const outputModalities = parseJson<readonly string[]>(row.outputModalities, StringArraySchema);
   return {
@@ -139,7 +142,8 @@ export function catalogModelToRow(
     reasoning: model.reasoning === undefined ? null : JSON.stringify(model.reasoning),
     requestCapabilities:
       model.requestCapabilities === undefined ? null : JSON.stringify(model.requestCapabilities),
-    inputModalities: model.inputModalities === undefined ? null : JSON.stringify(model.inputModalities),
+    inputModalities:
+      model.inputModalities === undefined ? null : JSON.stringify(model.inputModalities),
     outputModalities:
       model.outputModalities === undefined ? null : JSON.stringify(model.outputModalities),
     knowledgeCutoff: model.knowledgeCutoff ?? null,
@@ -156,7 +160,8 @@ export function catalogModelToRow(
 function enrichmentOf(model: CatalogModel): EnrichmentUpdate {
   return {
     modelId: model.modelId,
-    inputModalities: model.inputModalities === undefined ? null : JSON.stringify(model.inputModalities),
+    inputModalities:
+      model.inputModalities === undefined ? null : JSON.stringify(model.inputModalities),
     outputModalities:
       model.outputModalities === undefined ? null : JSON.stringify(model.outputModalities),
     knowledgeCutoff: model.knowledgeCutoff ?? null,
@@ -171,7 +176,10 @@ function enrichmentOf(model: CatalogModel): EnrichmentUpdate {
  */
 export function seedShippedCatalog(store: ModelMetadataStore, now: number): boolean {
   const meta = store.readMeta();
-  if (meta?.seededSnapshotSha === CATALOG_SHA256 && meta?.catalogSchemaVersion === CATALOG_SCHEMA_VERSION) {
+  if (
+    meta?.seededSnapshotSha === CATALOG_SHA256 &&
+    meta?.catalogSchemaVersion === CATALOG_SCHEMA_VERSION
+  ) {
     return false; // the DB already mirrors this binary — nothing to do
   }
   // CARRY FORWARD enrichment across a reseed. A reseed rewrites the money+wire from the newly-reviewed snapshot, but
@@ -194,7 +202,10 @@ export function seedShippedCatalog(store: ModelMetadataStore, now: number): bool
     };
   });
   store.upsert(rows);
-  store.upsertMeta({ seededSnapshotSha: CATALOG_SHA256, catalogSchemaVersion: CATALOG_SCHEMA_VERSION });
+  store.upsertMeta({
+    seededSnapshotSha: CATALOG_SHA256,
+    catalogSchemaVersion: CATALOG_SCHEMA_VERSION,
+  });
   return true;
 }
 
@@ -272,7 +283,9 @@ export function persistCatalogToDb(
 ): void {
   // The long tail, through the shared gate — the DB write boundary enforces the identical additive-admission rule.
   const admitted = admitRefreshedModels(catalog);
-  const refreshedRows = Object.values(admitted).map((model) => catalogModelToRow(model, 'refreshed', now));
+  const refreshedRows = Object.values(admitted).map((model) =>
+    catalogModelToRow(model, 'refreshed', now),
+  );
   // Shipped ids: enrichment only. In the current wiring the boot/command seed always runs before this persist over
   // the same store, so the row exists; the `updateEnrichment` no-op-on-0-rows behavior is defensive for a future
   // caller that persists before seeding, not a routinely-hit path.

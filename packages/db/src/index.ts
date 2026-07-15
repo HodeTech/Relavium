@@ -180,4 +180,9 @@ export {
   type EnrichmentUpdate,
   type CatalogMetaPatch,
 } from './metadata-store.js';
-export type { ModelMetadataRow, NewModelMetadataRow, CatalogMetaRow, NewCatalogMetaRow } from './schema.js';
+export type {
+  ModelMetadataRow,
+  NewModelMetadataRow,
+  CatalogMetaRow,
+  NewCatalogMetaRow,
+} from './schema.js';

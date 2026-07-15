@@ -114,13 +114,25 @@ describe('createModelMetadataStore (ADR-0072 — the DB catalog mirror)', () => 
 
   it('preserves a NULL cache rate as null on BOTH the insert and the conflict/update path (never 0, ADR-0071 §10)', () => {
     // INSERT path.
-    store.upsert([row({ modelId: 'no-cache', cachedInputCostPerMtokMicrocents: null, cacheWriteCostPerMtokMicrocents: null })]);
+    store.upsert([
+      row({
+        modelId: 'no-cache',
+        cachedInputCostPerMtokMicrocents: null,
+        cacheWriteCostPerMtokMicrocents: null,
+      }),
+    ]);
     let got = store.readAll().find((r) => r.modelId === 'no-cache');
     expect(got?.cachedInputCostPerMtokMicrocents).toBeNull();
     expect(got?.cacheWriteCostPerMtokMicrocents).toBeNull();
     // CONFLICT/UPDATE path — a re-seed of the same id with null caches must ALSO round-trip as null (the `?? null`
     // in fullUpsertSet), not silently coerce to 0.
-    store.upsert([row({ modelId: 'no-cache', cachedInputCostPerMtokMicrocents: null, cacheWriteCostPerMtokMicrocents: null })]);
+    store.upsert([
+      row({
+        modelId: 'no-cache',
+        cachedInputCostPerMtokMicrocents: null,
+        cacheWriteCostPerMtokMicrocents: null,
+      }),
+    ]);
     got = store.readAll().find((r) => r.modelId === 'no-cache');
     expect(got?.cachedInputCostPerMtokMicrocents).toBeNull();
     expect(got?.cacheWriteCostPerMtokMicrocents).toBeNull();
@@ -139,7 +151,13 @@ describe('createModelMetadataStore (ADR-0072 — the DB catalog mirror)', () => 
     store.upsert([row({ modelId: 'real' })]);
     expect(() =>
       store.updateEnrichment([
-        { modelId: 'ghost', inputModalities: null, outputModalities: null, knowledgeCutoff: 'x', description: null },
+        {
+          modelId: 'ghost',
+          inputModalities: null,
+          outputModalities: null,
+          knowledgeCutoff: 'x',
+          description: null,
+        },
       ]),
     ).not.toThrow();
     expect(store.readAll().map((r) => r.modelId)).toEqual(['real']); // the ghost created nothing
