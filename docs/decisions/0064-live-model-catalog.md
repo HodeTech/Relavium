@@ -99,6 +99,21 @@
 > cannot USE; this removes a second copy of one you can). A persisted DATED-PIN `default_model` (from before the
 > collapse or a hand-edit) NORMALIZES its `✓` onto the surviving alias row rather than vanishing — the same model
 > resolves either id server-side, so the marker moves, the stored choice does not.
+>
+> **Corrected 2026-07-14 (FK-referrer count — append-only, body unchanged):** §4 below says `model_catalog.id`
+> is "an FK target from **five** tables". That was true when written; it is now **six** — [ADR-0070](0070-durable-per-model-session-cost-attribution.md)
+> added `session_costs.model_catalog_id` as a sixth referrer (the full set is `agents`, `step_executions`,
+> `run_costs`, `agent_sessions`, `session_messages`, `session_costs`). The soft-deactivation rule is unchanged;
+> only the count is corrected.
+>
+> **Amended 2026-07-14 — §4's "never seed pricing into the DB" clause is SUPERSEDED (in part) by [ADR-0072](0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md).**
+> §4 states "registry pricing is **never** seeded into the DB (that would create a second, drift-prone home)". ADR-0072
+> reverses that prohibition **narrowly**: a models.dev metadata **mirror** (the new `model_metadata` sibling table,
+> keyed by `model_id`) is now permitted, so the DB can hold price/limits/reasoning/enrichment for every model and stay
+> current. The clause's *reason* is preserved intact — the mirror is **not a pricing authority**: it is inert for
+> shipped ids (the generated snapshot floor stays terminal, ADR-0072 point 2), admitted only through the shared
+> additive gate, and `model_catalog`'s own cost columns remain reserved for `source='user'` pricing exactly as §4
+> requires. Only the "not in the DB at all" letter is superseded; the "no second drift-prone *authority*" spirit stands.
 
 
 ## Context
