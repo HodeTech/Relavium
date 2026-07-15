@@ -168,3 +168,16 @@ export {
 } from './model-catalog-store.js';
 
 export type { SessionCostEntry, SessionCostRow } from './session-store.js';
+
+// The DB-backed model-metadata mirror (ADR-0072) — the durable overlay backing that replaces the `~/.relavium`
+// file cache. `db`-pure: returns raw rows; the host projects them to `CatalogModel` and applies the
+// `admitRefreshedModels` gate (both `@relavium/llm`), keeping the engine portable.
+export {
+  createModelMetadataStore,
+  coerceCatalogMetadataOrigin,
+  type ModelMetadataStore,
+  type ModelMetadataStoreDeps,
+  type EnrichmentUpdate,
+  type CatalogMetaPatch,
+} from './metadata-store.js';
+export type { ModelMetadataRow, NewModelMetadataRow, CatalogMetaRow, NewCatalogMetaRow } from './schema.js';
