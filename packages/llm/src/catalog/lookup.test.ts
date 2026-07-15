@@ -4,6 +4,7 @@ import { cost } from '../cost-tracker.js';
 
 import type { CatalogModel } from './catalog-model.js';
 import {
+  admitRefreshedModels,
   catalogModel,
   catalogModelIds,
   clearCatalogRefresh,
@@ -121,5 +122,65 @@ describe('installCatalogRefresh — additive only, and the shipped snapshot is t
     clearCatalogRefresh();
     expect(catalogModel('gpt-7-tail')).toBeUndefined();
     expect(catalogModel('gpt-5.5')).toEqual(CATALOG_SNAPSHOT['gpt-5.5']);
+  });
+});
+
+describe('admitRefreshedModels — the shared pure gate (ADR-0072 point 3)', () => {
+  it('excludes a shipped id by COMPILE-TIME snapshot membership, not any DB flag', () => {
+    // A refreshed row for an id the snapshot pins is dropped from the returned set — the exclusion key is
+    // CATALOG_SNAPSHOT membership, so the host DB writer cannot re-admit it by tagging a row origin='refreshed'.
+    const kept = admitRefreshedModels({
+      'gpt-5.5': model({ modelId: 'gpt-5.5', inputPerMtokMicrocents: 1 }),
+      'gpt-9-tail': model({ modelId: 'gpt-9-tail' }),
+    });
+    expect(Object.keys(kept)).toEqual(['gpt-9-tail']);
+  });
+
+  it('excludes a shipped id on ID ALONE — a spoofed price + enrichment payload riding along cannot re-admit it', () => {
+    // The exclusion fires purely on CATALOG_SNAPSHOT membership; it does not inspect the price or the enrichment
+    // fields, so a hostile row that lowers the price AND carries plausible enrichment is still dropped.
+    const kept = admitRefreshedModels({
+      'gpt-5.5': model({
+        modelId: 'gpt-5.5',
+        inputPerMtokMicrocents: 1,
+        outputPerMtokMicrocents: 1,
+        description: 'looks legit',
+        inputModalities: ['text', 'image'],
+      }),
+    });
+    expect(kept).toEqual({});
+  });
+
+  it('REJECTS a NaN base price — the finite check fires BEFORE `<= 0` (NaN <= 0 is false)', () => {
+    // This is the load-bearing money invariant at the DB boundary: a torn/NaN-coerced price must be caught by
+    // Number.isFinite, not slip a bare `<= 0` guard and propagate NaN into the governor (ADR-0072 point 3b).
+    expect(admitRefreshedModels({ n1: model({ modelId: 'n1', inputPerMtokMicrocents: Number.NaN }) })).toEqual({});
+    expect(admitRefreshedModels({ n2: model({ modelId: 'n2', outputPerMtokMicrocents: Number.NaN }) })).toEqual({});
+    expect(
+      admitRefreshedModels({ inf: model({ modelId: 'inf', inputPerMtokMicrocents: Number.POSITIVE_INFINITY }) }),
+    ).toEqual({});
+  });
+
+  it('REJECTS a negative or zero base price on either side', () => {
+    expect(admitRefreshedModels({ z: model({ modelId: 'z', inputPerMtokMicrocents: 0 }) })).toEqual({});
+    expect(admitRefreshedModels({ neg: model({ modelId: 'neg', outputPerMtokMicrocents: -5 }) })).toEqual({});
+  });
+
+  it('installCatalogRefresh has not DRIFTED from the gate — it installs exactly what the gate admits', () => {
+    // NOTE: this proves the wrapper delegates faithfully (installCatalogRefresh literally calls the gate), NOT the
+    // cross-implementation parity ADR-0072 point 3 / Negative demands — "nothing structurally forces the DB writer
+    // to call admitRefreshedModels". That guard needs the SECOND, independently-written caller (the host DB writer),
+    // so it lands with P4, not here.
+    const input = {
+      'gpt-5.5': model({ modelId: 'gpt-5.5' }), // shipped → excluded
+      'ok-tail': model({ modelId: 'ok-tail' }), // priced long tail → admitted
+      'bad-tail': model({ modelId: 'bad-tail', inputPerMtokMicrocents: 0 }), // unpriced → rejected
+    };
+    const gateKeys = Object.keys(admitRefreshedModels(input)).sort();
+    const installed = installCatalogRefresh(input);
+    const overlayKeys = catalogModelIds().filter((id) => CATALOG_SNAPSHOT[id] === undefined).sort();
+    expect(gateKeys).toEqual(['ok-tail']);
+    expect(installed).toBe(1);
+    expect(overlayKeys).toEqual(gateKeys);
   });
 });

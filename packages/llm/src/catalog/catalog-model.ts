@@ -84,6 +84,19 @@ export interface CatalogModel {
   /** Absent ⇒ the model accepts every request parameter (the safe default). Present ⇒ carries only the parameters
    *  the model does NOT accept. See {@link RequestCapabilities}. */
   readonly requestCapabilities?: RequestCapabilities;
+  // --- Pure enrichment (ADR-0072 point 5) --------------------------------------------------------------------
+  // Descriptive metadata that never reaches the cost cap or the wire. DB-refreshed for every model (a refresh may
+  // update these even on a shipped id, unlike the pinned money/wire fields), and every one is absent-tolerant: a
+  // consumer with no data degrades to a safe assumption (text-only I/O, unknown cutoff), never an error. Absent
+  // throughout the generated snapshot until a models.dev sync populates them.
+  /** The input modalities the model accepts (e.g. `['text','image']`). Absent ⇒ unknown; assume text. */
+  readonly inputModalities?: readonly string[];
+  /** The output modalities the model can produce (e.g. `['text']`). Absent ⇒ unknown; assume text. */
+  readonly outputModalities?: readonly string[];
+  /** The model's training knowledge cutoff, as upstream states it (e.g. `'2024-10'`). Absent ⇒ unpublished. */
+  readonly knowledgeCutoff?: string;
+  /** A human description. models.dev publishes none today; carried per the maintainer's request (ADR-0072). */
+  readonly description?: string;
 }
 
 /**

@@ -230,6 +230,53 @@ describe('ENRICHMENT is decoupled from the money gate — a priced model is neve
     expect(catalog['m']).not.toHaveProperty('requestCapabilities');
   });
 
+  it('carries pure ENRICHMENT — modalities, knowledge cutoff, description (ADR-0072 point 5)', () => {
+    const { catalog, dropped } = one({
+      modalities: { input: ['text', 'image'], output: ['text'] },
+      knowledge: '2024-10',
+      description: 'A capable model.',
+    });
+    expect(dropped).toHaveLength(0);
+    expect(catalog['m']?.inputModalities).toEqual(['text', 'image']);
+    expect(catalog['m']?.outputModalities).toEqual(['text']);
+    expect(catalog['m']?.knowledgeCutoff).toBe('2024-10');
+    expect(catalog['m']?.description).toBe('A capable model.');
+  });
+
+  it('a model with NO enrichment carries none of the enrichment fields (the common case adds nothing)', () => {
+    const { catalog } = one({});
+    expect(catalog['m']).not.toHaveProperty('inputModalities');
+    expect(catalog['m']).not.toHaveProperty('knowledgeCutoff');
+    expect(catalog['m']).not.toHaveProperty('description');
+  });
+
+  it('a MALFORMED `modalities` container THINS the enrichment, never evicts the priced model', () => {
+    // A shape change on a pure-enrichment field (`modalities: <string>` instead of an object) must degrade to
+    // "no modalities", not fail the row — a dropped priced model reads to the §9 guard as a vanished price.
+    const { catalog, dropped } = one({ modalities: 'text', knowledge: '2025-01' });
+    expect(dropped).toHaveLength(0);
+    expect(catalog['m']?.inputPerMtokMicrocents).toBe(500_000_000); // still priced
+    expect(catalog['m']).not.toHaveProperty('inputModalities');
+    expect(catalog['m']?.knowledgeCutoff).toBe('2025-01'); // the sibling enrichment still lands
+  });
+
+  it('an EMPTY modality list is not carried (absent ≠ empty-array noise)', () => {
+    const { catalog } = one({ modalities: { input: [], output: ['text'] } });
+    expect(catalog['m']).not.toHaveProperty('inputModalities');
+    expect(catalog['m']?.outputModalities).toEqual(['text']);
+  });
+
+  it('a BAD element inside a modality array thins BOTH sides (container .catch), model still priced', () => {
+    // The container `.catch` is coarser than `reasoning_options`' per-element leniency: one non-string element
+    // fails the whole `modalities` object, so both sides drop. That still satisfies "thin, never evict" — the
+    // priced model survives — which is the property that matters for money-neutrality.
+    const { catalog, dropped } = one({ modalities: { input: ['text', 123], output: ['text'] } });
+    expect(dropped).toHaveLength(0);
+    expect(catalog['m']?.inputPerMtokMicrocents).toBe(500_000_000); // still priced
+    expect(catalog['m']).not.toHaveProperty('inputModalities');
+    expect(catalog['m']).not.toHaveProperty('outputModalities');
+  });
+
   it('a `reasoning_options` CONTAINER shape change (null / non-array) thins the descriptor, never EVICTS the model', () => {
     // The element-level leniency defended a bad OPTION; the container itself was still strict, so `reasoning_options:
     // null` (models.dev already emits explicit null for reasoning/cost/limit) or an array→object change failed the

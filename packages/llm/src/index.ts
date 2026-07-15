@@ -188,7 +188,15 @@ export { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
 export { catalogPricing, toPricing, pricedModelIds } from './catalog/pricing.js';
 // The refresh seam (ADR-0071 §4): the HOST fetches models.dev and installs the result; `@relavium/llm` does no I/O.
 // Additive only — the shipped snapshot is the floor, so a bad payload degrades to it rather than to a blank catalog.
-export { installCatalogRefresh, clearCatalogRefresh, catalogModelIds } from './catalog/lookup.js';
+// `admitRefreshedModels` is the SHARED pure gate (ADR-0072 point 3): the host DB writer applies the identical
+// additive-admission rule the in-memory install does, so neither path can lower a shipped price or admit an unpriced
+// long-tail row — and the dependency direction stays apps/cli → @relavium/llm.
+export {
+  admitRefreshedModels,
+  installCatalogRefresh,
+  clearCatalogRefresh,
+  catalogModelIds,
+} from './catalog/lookup.js';
 export { CATALOG_PROVIDER_KEYS } from './catalog/catalog-providers.js';
 export { normalizeCatalog, ModelsDevPayloadSchema } from './catalog/models-dev-schema.js';
 export type {

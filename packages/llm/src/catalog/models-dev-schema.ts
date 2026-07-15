@@ -68,6 +68,22 @@ const LimitSchema = z.object({
 });
 
 /**
+ * The input/output modalities upstream lists (`modalities.input`/`modalities.output`). PURE ENRICHMENT
+ * ([ADR-0072](../../../../docs/decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md) point 5):
+ * never on the money/wire path, so it is parsed leniently and each side tolerates absence. A shape change here must
+ * thin the descriptor, never evict a priced model — hence `.catch(() => undefined)` on the container, matching the
+ * `reasoning_options` treatment (review M7). We keep the raw strings (not the closed `OUTPUT_MODALITIES` set): this
+ * is descriptive metadata for display, not a capability gate.
+ */
+const ModalitiesSchema = z
+  .object({
+    input: z.array(z.string().min(1)).nullish(),
+    output: z.array(z.string().min(1)).nullish(),
+  })
+  .nullish()
+  .catch(() => undefined);
+
+/**
  * The reasoning control, as upstream describes it — and the single most valuable field in the payload.
  *
  * Its **`type` is the shape of the control**, and the shape is **per model, not per provider**: `gemini-2.5-*`
@@ -114,6 +130,12 @@ const ModelSchema = z.object({
   tool_call: z.boolean().nullish(),
   structured_output: z.boolean().nullish(),
   attachment: z.boolean().nullish(),
+  // PURE ENRICHMENT (ADR-0072 point 5) — descriptive metadata, never on the money/wire path, so all `nullish` and
+  // never fatal. `knowledge` is upstream's training cutoff string; `modalities` its input/output lists;
+  // `description` is not published by models.dev today (stays absent) but is tolerated for forward-compatibility.
+  knowledge: z.string().min(1).nullish(),
+  modalities: ModalitiesSchema,
+  description: z.string().min(1).nullish(),
   limit: LimitSchema.nullish(),
   /** `null` on every image model upstream — priced per image, an axis we do not model (§11). */
   cost: CostSchema.nullish(),
@@ -237,6 +259,10 @@ export function normalizeCatalogModel(
   const reasoning = toReasoningControls(raw);
   const requestCapabilities = toRequestCapabilities(raw);
   const tiers = toPriceTiers(cost);
+  // PURE ENRICHMENT (ADR-0072 point 5): a non-empty modality list, a knowledge cutoff, a description. Each is spread
+  // ONLY when present, so the common case adds nothing and the row stays byte-identical to the money+wire snapshot.
+  const inputModalities = raw.modalities?.input ?? undefined;
+  const outputModalities = raw.modalities?.output ?? undefined;
   return {
     provider,
     modelId: raw.id,
@@ -254,6 +280,10 @@ export function normalizeCatalogModel(
     ...(tiers === undefined ? {} : { contextTiers: tiers }),
     ...(reasoning === undefined ? {} : { reasoning }),
     ...(requestCapabilities === undefined ? {} : { requestCapabilities }),
+    ...(inputModalities && inputModalities.length > 0 ? { inputModalities } : {}),
+    ...(outputModalities && outputModalities.length > 0 ? { outputModalities } : {}),
+    ...(raw.knowledge == null ? {} : { knowledgeCutoff: raw.knowledge }),
+    ...(raw.description == null ? {} : { description: raw.description }),
   };
 }
 

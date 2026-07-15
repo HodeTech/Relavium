@@ -20,7 +20,8 @@ import { CATALOG_SNAPSHOT } from './snapshot.js';
 let refreshed: Readonly<Record<string, CatalogModel>> = {};
 
 /**
- * Install a refreshed catalog (ADR-0071 §4). **Additive only, and the shipped snapshot is the FLOOR.**
+ * The **additive-admission gate** (ADR-0071 §4, ADR-0072 point 3) — **additive only, and the shipped snapshot is
+ * the FLOOR.** Returns the subset of `models` that may be installed as the refreshed overlay.
  *
  * A refresh only ADDS models the snapshot never carried — it **never** touches a shipped model, not even to enrich
  * it (ADR-0071 §9: a change to an already-shipped row is a human decision, surfaced as a red CI check, never a
@@ -29,14 +30,23 @@ let refreshed: Readonly<Record<string, CatalogModel>> = {};
  * to a blank catalog, and a model that was priced yesterday cannot become unpriced today because a third-party
  * aggregator had a bad deploy. The cost cap is a safety control; it does not get to lapse because someone else's
  * JSON changed.
+ *
+ * This is a **pure** function typed over {@link CatalogModel} (never a DB row type), so BOTH the in-memory overlay
+ * install ({@link installCatalogRefresh}) and the host DB writer call the SAME gate — the dependency direction stays
+ * `apps/cli → @relavium/llm`, never the reverse, and the two paths admit the identical set from the same input
+ * (ADR-0072 point 3 / the parity test).
  */
-export function installCatalogRefresh(models: Readonly<Record<string, CatalogModel>>): number {
+export function admitRefreshedModels(
+  models: Readonly<Record<string, CatalogModel>>,
+): Readonly<Record<string, CatalogModel>> {
   const kept: Record<string, CatalogModel> = {};
   for (const [id, model] of Object.entries(models)) {
-    // A model the SHIPPED snapshot pins is NEVER touched — the snapshot's price is human-verified, and a runtime
-    // refresh does not get to move it (ADR-0071 §9: a price change on an already-shipped model is a human decision,
-    // surfaced as a red CI check, never a silent bot commit). THIS is the floor §4.2 promises, and it is airtight
-    // for the reason that matters: the refresh cannot make a known model cheaper, because it does not write one.
+    // (a) SNAPSHOT-MEMBERSHIP EXCLUSION — a model the SHIPPED snapshot pins is NEVER touched, and the exclusion keys
+    // on COMPILE-TIME `CATALOG_SNAPSHOT` membership, NOT a mutable DB `origin` column (ADR-0072 point 3a). The
+    // snapshot's price is human-verified, and a runtime refresh does not get to move it (ADR-0071 §9). THIS is the
+    // floor §4.2 promises, airtight for the reason that matters: the refresh cannot make a known model cheaper,
+    // because it does not write one. Keying on `origin` instead would be a trap — a long-tail id promoted INTO a
+    // later snapshot could still be shadowed by its stale `origin='refreshed'` DB row before a reseed flips it.
     //
     // The first version of this was a bug wearing a floor's comment. It read `if (shipped === undefined ||
     // model.output > 0)` — but the line above had already dropped every `output <= 0`, so the second clause was
@@ -45,18 +55,29 @@ export function installCatalogRefresh(models: Readonly<Record<string, CatalogMod
     // typo'd — upstream `output: 0.00000001` on `gpt-5.5` recorded $14.50 of real spend as $0.00, and a cost cap of
     // any value never tripped. The safety control the ADR exists to build, defeated by the code that builds it.
     if (CATALOG_SNAPSHOT[id] !== undefined) continue;
-    // A NEW model — the long tail the 80-row snapshot does not carry, which is the whole reason to refresh. Admit it
-    // only if it carries a real price on BOTH sides: an unpriceable row is not an enrichment, and a priced-maybe-
-    // wrong new model is still strictly better than an unknown one (which degrades the cap to `allow` entirely).
-    // Guarding only OUTPUT let a `input: 0` model in with input (and cached input, which derives from it) billed
-    // FREE — a silent undercharge in the very mechanism this floor hardens.
-    if (model.outputPerMtokMicrocents <= 0 || model.inputPerMtokMicrocents <= 0) continue;
+    // (b) FINITE-AND-POSITIVE base price. A NEW model — the long tail the snapshot does not carry — is admitted only
+    // if it carries a real price on BOTH sides: an unpriceable row is not an enrichment, and a priced-maybe-wrong
+    // new model is still strictly better than an unknown one (which degrades the cap to `allow` entirely). The
+    // FINITE check comes FIRST and is load-bearing (ADR-0072 point 3b): `NaN <= 0` is `false`, so a torn or
+    // NaN-coerced money value crossing the DB boundary would slip a bare `<= 0` guard and propagate `NaN` into the
+    // governor. Guarding only OUTPUT (the original bug) let an `input: 0` model in with input billed FREE.
+    const { inputPerMtokMicrocents: input, outputPerMtokMicrocents: output } = model;
+    if (!Number.isFinite(input) || input <= 0 || !Number.isFinite(output) || output <= 0) continue;
     kept[id] = model;
   }
+  return kept;
+}
+
+/**
+ * Install a refreshed catalog into the module-state overlay (ADR-0071 §4), through the shared
+ * {@link admitRefreshedModels} gate. Returns the count ACTUALLY admitted (new, priced, not shadowing a shipped id).
+ */
+export function installCatalogRefresh(models: Readonly<Record<string, CatalogModel>>): number {
+  const kept = admitRefreshedModels(models);
   refreshed = kept;
   // The count of models ACTUALLY admitted — new, priced, and not shadowing a shipped id. The host reports this as
   // `added`, and returning it here is what keeps that number honest: computing it host-side by re-applying the
-  // floor's predicates by hand is exactly how a report drifts from what got installed (a payload with one priced
+  // gate's predicates by hand is exactly how a report drifts from what got installed (a payload with one priced
   // and one unpriced new model reported `added: 2` while only one landed).
   return Object.keys(kept).length;
 }
