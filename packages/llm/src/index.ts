@@ -184,7 +184,11 @@ export { createCustomOpenAiProvider, defaultProviders, providerKind } from './pr
 // ACCEPTED TIERS from it (`resolveEffortTiers`), so a tier the model would reject never reaches the wire.
 export { catalogModel, effortTiersFor, modelAccepts } from './catalog/lookup.js';
 // The generated snapshot itself + its pricing projection (ADR-0071 §1) — what `MODEL_PRICING` used to be.
-export { CATALOG_SNAPSHOT } from './catalog/snapshot.js';
+// `CATALOG_SHA256` is the snapshot's content hash — the host gates its SHA-based DB re-seed on it (ADR-0072 §6).
+export { CATALOG_SNAPSHOT, CATALOG_SHA256 } from './catalog/snapshot.js';
+// The version of the normalized CatalogModel SHAPE stored in the DB mirror; the host admits a stored row only when
+// it matches (ADR-0072 §6). Bumped when the normalizer's money/wire output shape changes.
+export { CATALOG_SCHEMA_VERSION } from './catalog/catalog-model.js';
 export { catalogPricing, toPricing, pricedModelIds } from './catalog/pricing.js';
 // The refresh seam (ADR-0071 §4): the HOST fetches models.dev and installs the result; `@relavium/llm` does no I/O.
 // Additive only — the shipped snapshot is the floor, so a bad payload degrades to it rather than to a blank catalog.

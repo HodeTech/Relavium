@@ -56,6 +56,14 @@ export interface CatalogRefreshDeps {
   readonly homeDir: string;
   /** Injectable for tests — the real one is global `fetch`. */
   readonly fetch?: typeof globalThis.fetch;
+  /**
+   * Optional DB persist hook (ADR-0072 point 7). Called with the NORMALIZED catalog after a successful install, so
+   * the host that holds the `history.db` can mirror the refresh into `model_metadata` (long-tail rows + shipped
+   * enrichment). Kept as an injected callback so THIS module stays `@relavium/db`-free — the pure fetch/normalize/
+   * install path is unchanged, and a caller with no db (or a test) simply omits it. A persist throw is swallowed:
+   * the models are already live in this process, exactly like a cache-write failure.
+   */
+  readonly persist?: (catalog: Readonly<Record<string, CatalogModel>>) => void;
 }
 
 /**
@@ -74,7 +82,7 @@ export async function refreshCatalog(deps: CatalogRefreshDeps): Promise<CatalogR
   // user at the wrong problem. Its own generic reason, and NEVER the raw error text (a Zod message can echo the very
   // payload fields we refuse to surface).
   try {
-    return install(fetched, deps.homeDir);
+    return install(fetched, deps.homeDir, deps.persist);
   } catch {
     return {
       status: 'failed',
@@ -222,10 +230,23 @@ function parse(text: string): Record<string, CatalogModel> {
  * A cache-WRITE failure is not a refresh failure: the models are already live in this process. It just will not
  * survive it.
  */
-function install(text: string, homeDir: string): CatalogRefreshResult {
+function install(
+  text: string,
+  homeDir: string,
+  persist?: (catalog: Readonly<Record<string, CatalogModel>>) => void,
+): CatalogRefreshResult {
   const models = parse(text); // throws on a payload we cannot use — the caller turns that into a no-op
   const added = installCatalogRefresh(models); // the count the FLOOR admitted, not the count the payload offered
   writeCache(text, homeDir);
+  // Mirror the refresh into the DB (ADR-0072). A persist fault is NOT a refresh fault — the models are already live
+  // in this process; the DB just will not reflect them until the next refresh. Same posture as writeCache above.
+  if (persist !== undefined) {
+    try {
+      persist(models);
+    } catch {
+      // A torn/locked DB write — swallowed, exactly like a cache-write failure. The overlay install already held.
+    }
+  }
   return {
     // TOTAL describable after the install — the shipped snapshot plus whatever the refresh added — and how many of
     // those were new. `models: 200, added: 120` reads as "200 models, 120 the snapshot didn't carry".

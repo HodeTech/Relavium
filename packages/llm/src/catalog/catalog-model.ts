@@ -124,3 +124,17 @@ export interface RequestCapabilities {
 
 /** The generated snapshot: canonical model id → its metadata. Keyed by id alone, matching the merge's key. */
 export type CatalogSnapshot = Readonly<Record<string, CatalogModel>>;
+
+/**
+ * The version of the normalized {@link CatalogModel} SHAPE, as stored in the DB catalog mirror
+ * ([ADR-0072](../../../../docs/decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md) point 6).
+ *
+ * A row written by an older normalizer is treated as **absent** (falls to the snapshot floor) until a refresh
+ * rewrites it — so the host admits a stored row only when its `catalog_schema_version` matches this. **Bump this
+ * whenever the normalizer's output shape changes** (a new field consumed on the money/wire path, a changed
+ * `reasoning`/tier encoding), so a stale-shape row is never trusted. A pure-enrichment-only addition does NOT
+ * require a bump — an older row simply lacks the enrichment, which is safe (absent ⇒ safe default).
+ *
+ * `1` = the shape as of ADR-0072 (money + wire + the enrichment fields).
+ */
+export const CATALOG_SCHEMA_VERSION = 1;
