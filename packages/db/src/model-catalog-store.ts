@@ -112,6 +112,9 @@ export interface ModelCatalogListing {
   /** The last live-refresh epoch-ms; `undefined` for a static/user or never-refreshed row. */
   readonly lastRefreshedAt?: number;
   readonly isActive: boolean;
+  /** Per-model PICKER visibility (ADR-0072 point 4) — a HARD filter above §6's "dim, never hide", orthogonal to
+   *  `isActive`. `false` ⇒ the user hid this model from the picker; the host projection removes it entirely. */
+  readonly visible: boolean;
 }
 
 /** One model to seed in a bulk live refresh ({@link ModelCatalogStore.replaceProviderModels}) — the discovery
@@ -256,6 +259,7 @@ function toListing(row: ModelCatalogRow): ModelCatalogListing {
     source: coerceModelCatalogSource(row.source),
     ...(row.lastRefreshedAt === null ? {} : { lastRefreshedAt: row.lastRefreshedAt }),
     isActive: row.isActive,
+    visible: row.visible,
   };
 }
 

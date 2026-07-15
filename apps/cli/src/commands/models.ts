@@ -184,6 +184,10 @@ async function runList(deps: ModelsCommandDeps): Promise<ExitCode> {
   if (deps.autoRefreshCatalog === true) {
     await deps.refreshCatalog();
   }
+  // NB: `relavium models` / `--json` lists the FULL catalog and is DELIBERATELY NOT filtered by `visible` (ADR-0072
+  // point 4). Visibility is a PICKER-display preference — it scopes what the interactive `/models` chooser shows
+  // (applied in `buildMergedCatalog`), not what this scripting/inventory surface reports; a hidden model is still a
+  // real, callable model that a `--json` consumer must see.
   let listings = deps.catalog.listAll();
   let firstRunReport: RefreshReport | undefined;
   if (listings.length === 0) {

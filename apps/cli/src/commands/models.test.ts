@@ -35,6 +35,7 @@ function modelRow(
     source,
     lastRefreshedAt: 1_700_000_000_000,
     isActive: true,
+    visible: true,
   };
 }
 

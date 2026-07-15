@@ -56,6 +56,56 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
     expect(txnSpy).toHaveBeenCalledWith(expect.any(Function), { behavior: 'immediate' });
   });
 
+  it('a live refresh NEVER clobbers a hidden model back to visible (ADR-0072 point 4 never-clobber)', () => {
+    store.replaceProviderModels(providerId, [{ modelId: 'gpt-4o', displayName: 'GPT-4o' }], TS_MS);
+    // The user hid it (a future /settings > /models toggle; here a direct column write, as no setter ships yet).
+    client.db
+      .update(modelCatalog)
+      .set({ visible: false })
+      .where(eq(modelCatalog.modelId, 'gpt-4o'))
+      .run();
+    // A routine live refresh re-lists the SAME model — its UPDATE set omits `visible`, so the hide survives.
+    store.replaceProviderModels(
+      providerId,
+      [{ modelId: 'gpt-4o', displayName: 'GPT-4o' }],
+      TS_MS + 1_000,
+    );
+    expect(store.listAll().find((l) => l.modelId === 'gpt-4o')?.visible).toBe(false);
+  });
+
+  it('an upsert (a models-pricing re-write) ALSO preserves a hidden model — never-clobber (ADR-0072 point 4)', () => {
+    store.upsert({ providerId, modelId: 'gpt-4o', displayName: 'GPT-4o' });
+    client.db
+      .update(modelCatalog)
+      .set({ visible: false })
+      .where(eq(modelCatalog.modelId, 'gpt-4o'))
+      .run();
+    // A partial re-upsert (the `models pricing` path) — its `shared` set omits `visible`, so the hide survives.
+    store.upsert({ providerId, modelId: 'gpt-4o', displayName: 'GPT-4o (renamed)' });
+    expect(store.listAll().find((l) => l.modelId === 'gpt-4o')?.visible).toBe(false);
+  });
+
+  it('a REACTIVATED (vanished-then-reappeared) hidden live row still preserves visible=false (ADR-0072 point 4)', () => {
+    store.replaceProviderModels(providerId, [{ modelId: 'gpt-4o', displayName: 'GPT-4o' }], TS_MS);
+    client.db
+      .update(modelCatalog)
+      .set({ visible: false })
+      .where(eq(modelCatalog.modelId, 'gpt-4o'))
+      .run();
+    // The model VANISHES from the provider's list (soft-deactivated)…
+    store.replaceProviderModels(providerId, [], TS_MS + 1_000);
+    // …then REAPPEARS — the reactivation UPDATE reuses the same row and omits `visible`, so the hide survives (the
+    // exact "a refresh never silently un-hides a model the user hid" case the ADR is most worried about).
+    store.replaceProviderModels(
+      providerId,
+      [{ modelId: 'gpt-4o', displayName: 'GPT-4o' }],
+      TS_MS + 2_000,
+    );
+    const listing = store.listAll().find((l) => l.modelId === 'gpt-4o');
+    expect(listing?.visible).toBe(false);
+    expect(listing?.isActive).toBe(true); // genuinely reactivated
+  });
+
   it('upsert opens an IMMEDIATE write transaction (2.5.I — the models-pricing read-then-write path)', () => {
     const txnSpy = vi.spyOn(client.db, 'transaction');
     store.upsert({ providerId, modelId: 'gpt-4o', displayName: 'GPT-4o' });

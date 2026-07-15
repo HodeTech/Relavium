@@ -268,5 +268,23 @@ export function buildMergedCatalog(input: BuildMergedCatalogInput): MergedCatalo
   // Collapse an Anthropic alias↔dated-pin PAIR to the rolling alias here, at the DISPLAY boundary (ADR-0064
   // amendment) — `mergeModelCatalog` keeps its full-fidelity output for any consumer that needs both rows; only the
   // picker's projection drops the duplicate. Identity dedup, not an availability change (see the fn's contract).
-  return { entries: collapseAliasDatedPinPairs(entries), refreshedAt };
+  //
+  // Per-model VISIBILITY (ADR-0072 point 4): a HARD filter — a model the user hid is removed from the picker
+  // ENTIRELY, distinct from §6's "dim, never hide" availability rule (a dimmed model is one you cannot USE; a hidden
+  // one is one you chose not to SEE). Built from the rows so it hides a model no matter which tier (live/static/user)
+  // would otherwise surface it. Applied AFTER the collapse so hiding a rolling alias removes the model outright.
+  //
+  // ANCHORED on (provider, modelId), NOT modelId alone: `visible` is stored per `(provider_id, model_id)` row, and a
+  // modelId can be REUSED across providers (ADR-0065 §6 custom `base_url`). Keying on modelId alone would let hiding
+  // one provider's model silently drop another provider's same-id model — the same cross-provider guard
+  // `buildUserPricing` above applies. The row's provider UUID resolves to the slug the merged entry carries.
+  const hidden = new Set(
+    input.rows
+      .filter((row) => !row.visible)
+      .map((row) => `${input.providerSlug(row.providerId)}:${row.modelId}`),
+  );
+  const entriesVisible = collapseAliasDatedPinPairs(entries).filter(
+    (entry) => !hidden.has(`${entry.provider}:${entry.modelId}`),
+  );
+  return { entries: entriesVisible, refreshedAt };
 }

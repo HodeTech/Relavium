@@ -1,5 +1,5 @@
 import type { ModelCatalogListing } from '@relavium/db';
-import { CATALOG_SNAPSHOT, catalogPricing, datedPinBase } from '@relavium/llm';
+import { CATALOG_SNAPSHOT, catalogPricing, datedPinBase, type ProviderId } from '@relavium/llm';
 import { describe, expect, it } from 'vitest';
 
 import { buildMergedCatalog, buildUserPricing } from './model-catalog-view.js';
@@ -17,6 +17,16 @@ function twoAnthropicIds(): readonly [string, string] {
 }
 const [MODEL_PRESENT, MODEL_ABSENT] = twoAnthropicIds();
 
+/** The first snapshot model + its provider — guarded (no bare `!`), for the visibility tests. */
+function firstSnapshotModel(): { readonly id: string; readonly provider: ProviderId } {
+  const [id] = Object.keys(CATALOG_SNAPSHOT);
+  const model = id === undefined ? undefined : CATALOG_SNAPSHOT[id];
+  if (id === undefined || model === undefined) {
+    throw new Error('test precondition: CATALOG_SNAPSHOT must be non-empty');
+  }
+  return { id, provider: model.provider };
+}
+
 /** A `model_catalog` row with sensible non-secret defaults; override what a case cares about. */
 function row(
   partial: Pick<ModelCatalogListing, 'modelId' | 'providerId' | 'source'> &
@@ -29,6 +39,7 @@ function row(
     cachedInputCostPerMtokMicrocents: 0,
     cachedInputStated: false,
     isActive: true,
+    visible: true,
     ...partial,
   };
 }
@@ -91,6 +102,48 @@ describe('buildMergedCatalog', () => {
     const absent = view.entries.find((e) => e.modelId === MODEL_ABSENT);
     expect(present?.available).toBe(true); // in the live list
     expect(absent?.available).toBe(false); // anthropic HAS live data, and this static id is not in it ⇒ dimmed
+  });
+
+  it('HIDES a model whose row is visible=false — a HARD filter, distinct from the dim rule (ADR-0072 point 4)', () => {
+    const view = buildMergedCatalog({
+      rows: [
+        row({ modelId: MODEL_PRESENT, providerId: 'p-anthropic', source: 'live', visible: false }),
+        row({ modelId: MODEL_ABSENT, providerId: 'p-anthropic', source: 'live' }),
+      ],
+      providerSlug: slugResolver({ 'p-anthropic': 'anthropic' }),
+      now: 0,
+    });
+    const ids = view.entries.map((e) => e.modelId);
+    // The hidden model is GONE entirely — not merely dimmed (which is what an UNavailable model gets)…
+    expect(ids).not.toContain(MODEL_PRESENT);
+    // …while a still-visible model of the same provider remains in the list.
+    expect(ids).toContain(MODEL_ABSENT);
+  });
+
+  it('the hard filter is TIER-INDEPENDENT — a visible=false row hides even a STATIC (snapshot) model', () => {
+    // A snapshot model is seeded by the static tier regardless of input rows; a `visible=false` row (mapped to the
+    // model's real provider) must still hide it, proving the filter is built from ALL rows, not just live ones.
+    const { id, provider } = firstSnapshotModel();
+    const view = buildMergedCatalog({
+      rows: [row({ modelId: id, providerId: 'p-s', source: 'static', visible: false })],
+      providerSlug: slugResolver({ 'p-s': provider }),
+      now: 0,
+    });
+    expect(view.entries.map((e) => e.modelId)).not.toContain(id);
+  });
+
+  it('is PROVIDER-ANCHORED — hiding a modelId under a DIFFERENT provider does NOT hide the entry (ADR-0065 §6)', () => {
+    // `visible` is per (provider_id, model_id), and an id can be reused across providers. A `visible=false` row for
+    // a DIFFERENT provider than the one the entry carries must leave the entry visible — else hiding one provider's
+    // model would silently drop another's same-id model. (`source: 'static'` so no competing live entry is created.)
+    const { id, provider } = firstSnapshotModel();
+    const wrong = provider === 'openai' ? 'gemini' : 'openai';
+    const view = buildMergedCatalog({
+      rows: [row({ modelId: id, providerId: 'p-wrong', source: 'static', visible: false })],
+      providerSlug: slugResolver({ 'p-wrong': wrong }),
+      now: 0,
+    });
+    expect(view.entries.map((e) => e.modelId)).toContain(id); // survives — the hide named a different provider
   });
 
   it('reports refreshedAt as the newest lastRefreshedAt across the live rows only', () => {
