@@ -59,7 +59,7 @@ The local schema is the Postgres 13-table design reduced to what a single-user, 
 
 ### Entity relationships
 
-The 14 tables below, trimmed to the columns that define structure (full column lists follow per table). Every edge is a real foreign key in `schema.ts`; two are deliberately absent — see the note beneath the diagram.
+The 16 tables below, trimmed to the columns that define structure (full column lists follow per table). Every edge is a real foreign key in `schema.ts`; two are deliberately absent — see the note beneath the diagram. `model_metadata` and `catalog_meta` ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md)) are **FK-less leaves** (no edges): `model_metadata` is keyed by `model_id`, not the `model_catalog` UUID, on purpose.
 
 ```mermaid
 erDiagram
@@ -154,6 +154,17 @@ erDiagram
         text scope_kind
         text scope_id
     }
+    model_metadata {
+        text model_id PK "the CATALOG_SNAPSHOT key, NOT a UUID"
+        text provider "coerced, no FK"
+        text origin "shipped | refreshed"
+        int catalog_schema_version
+    }
+    catalog_meta {
+        int id PK "singleton, id = 1"
+        text seeded_snapshot_sha
+        int catalog_checked_at
+    }
 
     llm_providers ||--o{ model_catalog : provider_id
     model_catalog ||--o{ agents : model_id
@@ -205,7 +216,7 @@ CREATE UNIQUE INDEX idx_llm_providers_name ON llm_providers (name) WHERE deleted
 
 Models offered by each provider, including pricing used for local cost tracking. The `*_per_mtok_microcents` columns are price **per million tokens, in integer micro-cents** (one micro-cent = 1e-8 USD = cents x 1,000,000; see the [money/cost convention](#sqlite-type-conventions)). The three `media_*_cost_microcents` columns are the projection of `ModelPricing.mediaOutputRates` (1.AF/D17, [ADR-0044](../../decisions/0044-media-access-governance-read-media-save-to-cost.md) §3) — integer micro-cents **per billed media-output unit** (per image, per audio-second, per video-second); **NULL** when the model has no metered media rate (the realized fold + the pre-egress estimate degrade to 0 for it — H4). `document`/PDF is excluded (it bills as tokens). No shipped model carries a media rate yet, so these are NULL across the seeded catalog.
 
-**Live-discovery cache role ([ADR-0064](../../decisions/0064-live-model-catalog.md) §4/§5).** As of 2.5.G this table doubles as the **live-discovery cache** — "which model ids a given key can reach" — filled by a bulk refresh over the seam's `listModels`, with the generated model catalog (ADR-0071) enriching **at read time** (it is **never** seeded into the DB — that would create a second, drift-prone pricing home). The `source` discriminant records provenance: **`static`** (a hardcoded capability/media seed — the media-routing `upsert` path's default), **`live`** (discovered via `listModels` — the refresh writes it), **`user`** (user-supplied pricing, [ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md)). `last_refreshed_at` is the freshness stamp backing the 24h TTL. The bulk refresh (`replaceProviderModels`) **soft-deactivates** (`is_active = 0`, `deleted_at` left NULL) every currently-active `source='live'` row of a provider whose model id vanishes from the new list, and **reactivates** a reappearing one by reusing the same row — it **never hard-DELETEs** (`model_catalog.id` is an FK target from five tables) and **never touches a `source='user'` or `source='static'` row** (a refresh must not clobber user pricing or regress the media-routing seed). The existing narrow media-routing projection (`resolveMediaSurface` / the D15 capability load-check) is untouched by the widening. Because SQLite `ALTER TABLE ADD` cannot carry a CHECK, the closed `source` value set is validated at the store read boundary (`coerceModelCatalogSource`, degrading a foreign value to `static`), like `media_surface`.
+**Live-discovery cache role ([ADR-0064](../../decisions/0064-live-model-catalog.md) §4/§5).** As of 2.5.G this table doubles as the **live-discovery cache** — "which model ids a given key can reach" — filled by a bulk refresh over the seam's `listModels`, with the generated model catalog (ADR-0071) enriching **at read time**. This table's own cost columns are still reserved for **`source='user'`** pricing — the generated catalog's money is **never** written into them. As of [ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md) the generated catalog IS mirrored into the sibling [`model_metadata`](#model_metadata) table (a durable backing for the refresh overlay), but that mirror is **not a pricing authority**: the binary snapshot floor stays terminal, and `model_metadata` never joins to this table (it is keyed by `model_id`, not the catalog UUID). The `source` discriminant records provenance: **`static`** (a hardcoded capability/media seed — the media-routing `upsert` path's default), **`live`** (discovered via `listModels` — the refresh writes it), **`user`** (user-supplied pricing, [ADR-0065](../../decisions/0065-provider-economics-and-extensibility.md)). `last_refreshed_at` is the freshness stamp backing the 24h TTL. The bulk refresh (`replaceProviderModels`) **soft-deactivates** (`is_active = 0`, `deleted_at` left NULL) every currently-active `source='live'` row of a provider whose model id vanishes from the new list, and **reactivates** a reappearing one by reusing the same row — it **never hard-DELETEs** (`model_catalog.id` is an FK target from **six** tables: `agents`, `step_executions`, `run_costs`, `agent_sessions`, `session_messages`, and `session_costs` since [ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md)) and **never touches a `source='user'` or `source='static'` row** (a refresh must not clobber user pricing or regress the media-routing seed). The existing narrow media-routing projection (`resolveMediaSurface` / the D15 capability load-check) is untouched by the widening. Because SQLite `ALTER TABLE ADD` cannot carry a CHECK, the closed `source` value set is validated at the store read boundary (`coerceModelCatalogSource`, degrading a foreign value to `static`), like `media_surface`.
 
 | Column | Type | Constraints |
 |--------|------|-------------|
@@ -231,6 +242,7 @@ Models offered by each provider, including pricing used for local cost tracking.
 | `deprecation_date` | INTEGER | NULL |
 | `source` | TEXT | NOT NULL DEFAULT `'static'` — provenance: `'static'` \| `'live'` \| `'user'` (the live-discovery cache discriminant, [ADR-0064](../../decisions/0064-live-model-catalog.md) §4); validated at the store read boundary (no DB CHECK — SQLite `ALTER ADD`) |
 | `last_refreshed_at` | INTEGER | NULL — epoch-ms a live refresh last wrote this row (ADR-0064 §5 TTL freshness); NULL for a static/user or never-refreshed row |
+| `visible` | INTEGER (bool) | NOT NULL DEFAULT 1 — per-model **picker visibility** ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md) point 4); a HARD filter ABOVE §6's "dim, never hide" availability rule, ORTHOGONAL to `is_active` (a reachable-but-hidden model is `is_active=1, visible=0`). Set by `/settings > /models`; every write path that rewrites a row must PRESERVE it (read-modify-write) |
 | `is_active` | INTEGER (bool) | NOT NULL DEFAULT 1 |
 | `deleted_at` | INTEGER | NULL |
 | `created_at` | INTEGER | NOT NULL |
@@ -241,6 +253,56 @@ CREATE UNIQUE INDEX idx_model_catalog_provider_model ON model_catalog (provider_
 CREATE INDEX idx_model_catalog_provider ON model_catalog (provider_id);
 CREATE INDEX idx_model_catalog_active   ON model_catalog (is_active) WHERE deleted_at IS NULL;
 ```
+
+#### `model_metadata`
+
+The **DB mirror of the models.dev catalog** ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md)) — price/limits/reasoning/capabilities + pure enrichment for **every** model, refreshed from models.dev and replacing the `~/.relavium` file cache as the durable backing for the runtime overlay. Keyed by **`model_id` alone** — the same key space as the generated `CATALOG_SNAPSHOT` (`Record<string, CatalogModel>`), **not** the `model_catalog` UUID — so an entry is stored **once**, provider-agnostic (a `CatalogModel` carries its own `provider`). A **leaf** table: no FK referrers, and deliberately **no FK to `model_catalog`** (a long-tail model may name an unregistered provider). **This table is never the terminal money source** — the binary snapshot floor stays authoritative for shipped ids; the DB only *backs* the additive overlay, so a fresh/torn/older-schema DB degrades to the snapshot, offline (ADR-0072 point 2). The DB→`CatalogModel` projection maps a NULL cache rate to **`undefined`, never `0`** (ADR-0071 §10), and the shared `admitRefreshedModels` gate admits a `refreshed` row only if both base rates are finite and `> 0`.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `model_id` | TEXT | PRIMARY KEY — the canonical id (the `CATALOG_SNAPSHOT` key), NOT a UUID |
+| `provider` | TEXT | NOT NULL — a `ProviderId` as coerced text; **no FK** (a long-tail model may name an unregistered provider); validated at the read boundary |
+| `display_name` | TEXT | NOT NULL |
+| `context_window_tokens` | INTEGER | NOT NULL |
+| `max_output_tokens` | INTEGER | NOT NULL |
+| `input_cost_per_mtok_microcents` | INTEGER | NOT NULL — µ¢ per Mtok; a `refreshed` row must have this `> 0` (CHECK) |
+| `output_cost_per_mtok_microcents` | INTEGER | NOT NULL — µ¢ per Mtok; a `refreshed` row must have this `> 0` (CHECK) |
+| `cached_input_cost_per_mtok_microcents` | INTEGER | **NULL** — absent ≠ 0; projected to `undefined`, never `0` (ADR-0071 §10) |
+| `cache_write_cost_per_mtok_microcents` | INTEGER | **NULL** — as above |
+| `context_tiers` | TEXT (JSON) | NULL — `CatalogPriceTier[]`; absent ⇒ flat rate at every length |
+| `reasoning` | TEXT (JSON) | NULL — `ReasoningControls`; NULL ⇒ the SAFE default (no reasoning/no knob) — **not** the `supports_*` reject default |
+| `request_capabilities` | TEXT (JSON) | NULL — `RequestCapabilities`; NULL ⇒ accept-ALL (a field appears only when the model REJECTS that parameter) |
+| `input_modalities` | TEXT (JSON) | NULL — pure enrichment (`string[]`); absent ⇒ assume text |
+| `output_modalities` | TEXT (JSON) | NULL — pure enrichment (`string[]`) |
+| `knowledge_cutoff` | TEXT | NULL — pure enrichment (e.g. `'2024-10'`) |
+| `description` | TEXT | NULL — pure enrichment; models.dev publishes none today (carried per the maintainer's request) |
+| `origin` | TEXT | NOT NULL — `'shipped'` (money+wire pinned to the reviewed snapshot; a refresh rewrites only its enrichment columns) \| `'refreshed'` (a long-tail model admitted through the shared gate); CHECK-enforced (initial CREATE) |
+| `catalog_schema_version` | INTEGER | NOT NULL — the normalizer version that wrote this row; a read admits it only when it matches the running binary, else falls to the snapshot |
+| `refreshed_at` | INTEGER | NULL — epoch-ms of the last refresh that wrote this row |
+| `created_at` | INTEGER | NOT NULL |
+| `updated_at` | INTEGER | NOT NULL |
+
+```sql
+-- Money floor at rest: a REFRESHED long-tail row must be priced on both sides; a SHIPPED row is whatever the
+-- reviewed snapshot says (a free shipped model, input 0, is legitimate and pinned) — so the check is scoped.
+CHECK (origin IN ('shipped', 'refreshed'));
+CHECK (origin = 'shipped' OR (input_cost_per_mtok_microcents > 0 AND output_cost_per_mtok_microcents > 0));
+CREATE INDEX idx_model_metadata_provider ON model_metadata (provider);
+```
+
+#### `catalog_meta`
+
+The **singleton cursor** for the DB-backed catalog ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md) points 6-7) — exactly one row (`id = 1`, CHECK-enforced). Holds the SHA of the snapshot the `shipped` rows were last seeded from (gates re-seeding after a binary upgrade), the normalizer version of the stored rows (a read admits DB rows only when it matches), the two independent per-axis TTL cursors (availability = first-party provider lists, default-ON; catalog = third-party models.dev, default-OFF), and the last upstream ETag for conditional revalidation.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | INTEGER | PRIMARY KEY — CHECK `id = 1` (singleton: PK + CHECK together = exactly one row) |
+| `seeded_snapshot_sha` | TEXT | NULL — the `CATALOG_SNAPSHOT` SHA the shipped rows were last seeded from |
+| `catalog_schema_version` | INTEGER | NULL — the normalizer version of the rows currently in `model_metadata` |
+| `availability_checked_at` | INTEGER | NULL — epoch-ms of the last provider-list (first-party) refresh |
+| `catalog_checked_at` | INTEGER | NULL — epoch-ms of the last models.dev (third-party) refresh |
+| `catalog_source_etag` | TEXT | NULL — the last models.dev ETag, for conditional revalidation |
+| `updated_at` | INTEGER | NOT NULL |
 
 #### `agents`
 

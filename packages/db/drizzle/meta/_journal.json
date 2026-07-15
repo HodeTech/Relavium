@@ -85,6 +85,13 @@
       "when": 1783935625312,
       "tag": "0011_odd_thunderbolt",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1784149573661,
+      "tag": "0012_greedy_glorian",
+      "breakpoints": true
     }
   ]
 }
