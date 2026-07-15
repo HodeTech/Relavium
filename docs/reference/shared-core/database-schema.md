@@ -292,11 +292,11 @@ CREATE INDEX idx_model_metadata_provider ON model_metadata (provider);
 
 #### `catalog_meta`
 
-The **singleton cursor** for the DB-backed catalog ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md) points 6-7) — exactly one row (`id = 1`, CHECK-enforced). Holds the SHA of the snapshot the `shipped` rows were last seeded from (gates re-seeding after a binary upgrade), the normalizer version of the stored rows (a read admits DB rows only when it matches), the two independent per-axis TTL cursors (availability = first-party provider lists, default-ON; catalog = third-party models.dev, default-OFF), and the last upstream ETag for conditional revalidation.
+The **singleton cursor** for the DB-backed catalog ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md) points 6-7) — **at most one** row (`id = 1`; the PK + CHECK forbid a second row and any id ≠ 1, but neither forces a row to exist — it is created lazily by the host's first `upsertMeta`, with no bootstrap seed, so the table is 0-or-1 rows). Holds the SHA of the snapshot the `shipped` rows were last seeded from (gates re-seeding after a binary upgrade), the normalizer version of the stored rows (a read admits DB rows only when it matches), the two independent per-axis TTL cursors (availability = first-party provider lists, default-ON; catalog = third-party models.dev, default-OFF), and the last upstream ETag for conditional revalidation.
 
 | Column | Type | Constraints |
 |--------|------|-------------|
-| `id` | INTEGER | PRIMARY KEY — CHECK `id = 1` (singleton: PK + CHECK together = exactly one row) |
+| `id` | INTEGER | PRIMARY KEY — CHECK `id = 1` (singleton: PK + CHECK forbid a second row / any id ≠ 1 — **at most** one row; created lazily, not seeded) |
 | `seeded_snapshot_sha` | TEXT | NULL — the `CATALOG_SNAPSHOT` SHA the shipped rows were last seeded from |
 | `catalog_schema_version` | INTEGER | NULL — the normalizer version of the rows currently in `model_metadata` |
 | `availability_checked_at` | INTEGER | NULL — epoch-ms of the last provider-list (first-party) refresh |

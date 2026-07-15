@@ -177,7 +177,8 @@ describe('model_metadata / catalog_meta schema constraints (ADR-0072 P1)', () =>
     expect(() => client.db.insert(catalogMeta).values({ id: 2, updatedAt: TS_MS }).run()).toThrow(
       /CHECK|constraint/i,
     );
-    // The PRIMARY KEY half: a SECOND id = 1 is a PK collision — together with the CHECK this pins "exactly one row".
+    // The PRIMARY KEY half: a SECOND id = 1 is a PK collision — together with the CHECK this caps the table at "at
+    // most one row" (the row itself is created lazily by the host's first upsertMeta, so it is 0-or-1, not seeded).
     expect(() => client.db.insert(catalogMeta).values({ id: 1, updatedAt: TS_MS }).run()).toThrow(
       /constraint|UNIQUE|PRIMARY/i,
     );

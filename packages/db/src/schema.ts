@@ -701,7 +701,10 @@ export const modelMetadata = sqliteTable(
 );
 
 // --- 15. catalog_meta (NO FK — the singleton cursor for the DB-backed catalog, ADR-0072 points 6-7) ---
-// Exactly ONE row (id = 1, CHECK-enforced). Holds the durable state the refresh + boot-seed need: the SHA of the
+// AT MOST one row (id = 1): the PK + the `id = 1` CHECK together forbid a second row and any id ≠ 1, but neither
+// FORCES a row to exist — it is created LAZILY by the host's first `upsertMeta` (there is no bootstrap seed or
+// migration insert), so the table is 0-or-1 rows, never guaranteed-present. Holds the durable state the refresh +
+// boot-seed need: the SHA of the
 // snapshot the shipped rows were last seeded from (gates re-seeding after a binary upgrade), the normalizer version
 // of the stored rows (a read admits DB rows only when it matches the running binary), the two independent per-axis
 // TTL cursors (availability = first-party provider lists; catalog = third-party models.dev), and the last upstream

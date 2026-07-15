@@ -41,10 +41,13 @@ import { z } from 'zod';
 const StringArraySchema = z.array(z.string());
 const PriceTiersSchema = z.array(
   z.object({
-    aboveContextTokens: z.number(),
-    inputPerMtokMicrocents: z.number(),
-    outputPerMtokMicrocents: z.number(),
-    cachedInputPerMtokMicrocents: z.number().optional(),
+    // A context threshold + tier rates are integer micro-cents / token counts from our own serializer. `.int()`
+    // implies finite (no NaN/Infinity); the required rates must be POSITIVE (a $0 tier would understate cost — drop
+    // the field and fall to the flat rate), while the cache rate is non-negative (0 = a real "no discount" tier).
+    aboveContextTokens: z.number().int().positive(),
+    inputPerMtokMicrocents: z.number().int().positive(),
+    outputPerMtokMicrocents: z.number().int().positive(),
+    cachedInputPerMtokMicrocents: z.number().int().nonnegative().optional(),
   }),
 );
 const ReasoningSchema = z.object({
@@ -67,7 +70,7 @@ const CapabilitiesSchema = z.object({
  * than failing the row into "unpriced", where the cap degrades to `allow` ("a wrong price engages the cap; a
  * missing price does not"). These rows are written by our own serializer, so a failure here is belt-and-suspenders.
  */
-function parseJson<T>(text: string | null, schema: z.ZodTypeAny): T | undefined {
+function parseJson<Out>(text: string | null, schema: z.ZodType<Out>): Out | undefined {
   if (text === null) return undefined;
   let parsed: unknown;
   try {
@@ -75,12 +78,10 @@ function parseJson<T>(text: string | null, schema: z.ZodTypeAny): T | undefined 
   } catch {
     return undefined;
   }
+  // `Out` is INFERRED from the schema (`z.ZodType<Out>`), so the return type can't be decoupled from what was
+  // validated — no free generic `T`, no `as` cast, and `result.data` is already typed `Out` (not `any`).
   const result = schema.safeParse(parsed);
-  // The value is now Zod-VALIDATED against `schema`. The assertion to `T` only reconciles Zod's `field?: X |
-  // undefined` optional typing with the `CatalogModel` interfaces' `exactOptionalPropertyTypes` (`field?: X`) — a
-  // pure type-representation difference (Zod never materializes an `undefined` KEY), NOT a validation bypass. This
-  // is the deliberate distinction from the original `JSON.parse(text) as T`, which trusted the column unchecked.
-  return result.success ? (result.data as T) : undefined;
+  return result.success ? result.data : undefined;
 }
 
 /** Project a stored row to a {@link CatalogModel}, or `undefined` if it cannot be one (a provider outside the closed
@@ -92,14 +93,11 @@ export function rowToCatalogModel(row: ModelMetadataRow): CatalogModel | undefin
   if (!provider.success) return undefined;
   const cachedInput = row.cachedInputCostPerMtokMicrocents;
   const cacheWrite = row.cacheWriteCostPerMtokMicrocents;
-  const tiers = parseJson<readonly CatalogPriceTier[]>(row.contextTiers, PriceTiersSchema);
-  const reasoning = parseJson<ReasoningControls>(row.reasoning, ReasoningSchema);
-  const requestCapabilities = parseJson<RequestCapabilities>(
-    row.requestCapabilities,
-    CapabilitiesSchema,
-  );
-  const inputModalities = parseJson<readonly string[]>(row.inputModalities, StringArraySchema);
-  const outputModalities = parseJson<readonly string[]>(row.outputModalities, StringArraySchema);
+  const tiers = parseJson(row.contextTiers, PriceTiersSchema);
+  const reasoning = parseJson(row.reasoning, ReasoningSchema);
+  const requestCapabilities = parseJson(row.requestCapabilities, CapabilitiesSchema);
+  const inputModalities = parseJson(row.inputModalities, StringArraySchema);
+  const outputModalities = parseJson(row.outputModalities, StringArraySchema);
   return {
     provider: provider.data,
     modelId: row.modelId,
@@ -111,9 +109,15 @@ export function rowToCatalogModel(row: ModelMetadataRow): CatalogModel | undefin
     // NULL ⇒ undefined, never 0 (0 would price a cached read as FREE — ADR-0071 §10).
     ...(cachedInput === null ? {} : { cachedInputPerMtokMicrocents: cachedInput }),
     ...(cacheWrite === null ? {} : { cacheWritePerMtokMicrocents: cacheWrite }),
-    ...(tiers === undefined ? {} : { contextTiers: tiers }),
-    ...(reasoning === undefined ? {} : { reasoning }),
-    ...(requestCapabilities === undefined ? {} : { requestCapabilities }),
+    // The three fields whose Zod shape has NESTED optionals reconcile Zod's `field?: X | undefined` typing with the
+    // CatalogModel interfaces' `exactOptionalPropertyTypes` (`field?: X`). Unlike the old free-generic `as T`, these
+    // are STRUCTURALLY CHECKED casts to the exact known interface — TS rejects an unrelated target — so the schema
+    // stays the single source of the shape; the runtime value already validated by Zod carries no `undefined` key.
+    ...(tiers === undefined ? {} : { contextTiers: tiers as readonly CatalogPriceTier[] }),
+    ...(reasoning === undefined ? {} : { reasoning: reasoning as ReasoningControls }),
+    ...(requestCapabilities === undefined
+      ? {}
+      : { requestCapabilities: requestCapabilities as RequestCapabilities }),
     ...(inputModalities === undefined ? {} : { inputModalities }),
     ...(outputModalities === undefined ? {} : { outputModalities }),
     ...(row.knowledgeCutoff === null ? {} : { knowledgeCutoff: row.knowledgeCutoff }),
