@@ -438,6 +438,120 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId, key?: 
   });
 }
 
+// --- Param-rejection self-healing (models.dev data vs the live API) ----------------------------
+
+/**
+ * models.dev is the catalog's source of truth, but a model's published capabilities can OUTRUN its real API:
+ * `gpt-5.6-luna` lists `reasoning_effort: ['none','low','medium','high','xhigh','max']`, yet the live endpoint
+ * 400s on `high`/`medium`. The capability gate (`modelAccepts` / `acceptedTiers`) trusts the catalog, so a wrong
+ * "accepted" datum reaches the wire and the turn hard-fails `validation` — the exact class of error the maintainer
+ * asked to never see again, on any model or provider.
+ *
+ * So when a request 400s naming a DROPPABLE TUNING param, the adapter strips it and retries once, and REMEMBERS the
+ * rejection for this process — every later request on that model skips the param up front, so it costs ONE extra
+ * round-trip per (model, param), not one per turn. Only PURE-TUNING params are droppable: dropping one degrades the
+ * answer (no reasoning tier / the provider's default temperature) but never changes the request's MEANING.
+ * `tools`, `messages`, `model`, and `response_format` are NEVER auto-stripped — losing them would silently change
+ * what was asked, so they stay a loud, honest error rather than a wrong-but-quiet success.
+ */
+const DROPPABLE_PARAMS: ReadonlySet<string> = new Set(['reasoning_effort', 'temperature']);
+
+/**
+ * `(provider, endpoint, model, param)` tuples the live API has rejected this process. The key is scoped to the
+ * ENDPOINT (provider + official-vs-custom `base_url`), NOT the bare model id: this store is module-wide across every
+ * adapter instance, and a custom gateway can serve a familiar id (`gpt-4o`) that 400s on a param the real OpenAI
+ * `gpt-4o` accepts — keying on the model alone would let one endpoint silently poison another's same-id model.
+ *
+ * Learning is PARAM-level, not (param, tier)-level: a 400 on `reasoning_effort: high` withholds reasoning_effort
+ * ENTIRELY for that model, even a `low`/`medium` it might accept — a deliberate degrade (the catalog datum that
+ * claimed the tier was already proven unreliable, and the goal is to never hard-fail again).
+ */
+const learnedParamRejections = new Set<string>();
+const rejectionKey = (
+  provider: ProviderId,
+  endpoint: EndpointKind,
+  model: string,
+  param: string,
+): string => `${provider} ${endpoint} ${model} ${param}`;
+
+/** Has the live API already rejected `param` for `model` this process? Consulted by `buildCommonBody`'s gates. */
+function hasLearnedRejection(
+  provider: ProviderId,
+  endpoint: EndpointKind,
+  model: string,
+  param: string,
+): boolean {
+  return learnedParamRejections.has(rejectionKey(provider, endpoint, model, param));
+}
+
+/** Record that the live API rejected `param` for `model`, so `buildCommonBody` withholds it from now on. */
+function learnParamRejection(
+  provider: ProviderId,
+  endpoint: EndpointKind,
+  model: string,
+  param: string,
+): void {
+  learnedParamRejections.add(rejectionKey(provider, endpoint, model, param));
+}
+
+/** Reset the learned rejections — for tests only (module state, like `clearCatalogRefresh`). */
+export function clearLearnedParamRejections(): void {
+  learnedParamRejections.clear();
+}
+
+/**
+ * The DROPPABLE tuning param a 400 blames, or `undefined` when the failure is not a droppable-param rejection (so
+ * it surfaces normally). OpenAI names it in `error.param`; a custom OpenAI-compatible gateway may only echo it in
+ * the message, so that is scanned as a fallback.
+ */
+function rejectedDroppableParam(err: unknown): string | undefined {
+  if (!(err instanceof APIError) || err.status !== 400) return undefined;
+  const named = err.param;
+  if (typeof named === 'string') {
+    // The API named the EXACT param — trust it authoritatively. A droppable one is self-healed; a named
+    // NON-droppable param (`model`, `messages`, `response_format`, …) surfaces normally and is NEVER re-guessed via
+    // the message scan below (else a 400 on `model` whose prose merely mentions "temperature" would wrongly learn a
+    // permanent temperature rejection).
+    return DROPPABLE_PARAMS.has(named) ? named : undefined;
+  }
+  // No structured `param` (a custom OpenAI-compatible gateway that only echoes the name in prose) — scan as a
+  // fallback. Reached only when the API did NOT name a param, so it cannot override an authoritative one.
+  for (const param of DROPPABLE_PARAMS) {
+    if (err.message.includes(`'${param}'`)) return param;
+  }
+  return undefined;
+}
+
+/**
+ * Run `createOnce` (which builds the body via {@link buildCommonBody} and calls the SDK), self-healing a
+ * droppable-param 400: LEARN the rejected param and RETRY — `createOnce` rebuilds, and `buildCommonBody` now skips
+ * the learned param, so the retry carries a body the API accepts. BOUNDED by the droppable-param count: a genuinely
+ * bad request (a 400 blaming a non-droppable param, or one that keeps failing after its param is already learned)
+ * surfaces after at most a couple of tries — never a loop. Serves both `generate` and the streamed create.
+ */
+async function createWithParamFallback<T>(
+  createOnce: () => Promise<T>,
+  provider: ProviderId,
+  endpoint: EndpointKind,
+  model: string,
+): Promise<T> {
+  for (let stripped = 0; ; stripped++) {
+    try {
+      return await createOnce();
+    } catch (err) {
+      const param = rejectedDroppableParam(err);
+      if (
+        param === undefined ||
+        hasLearnedRejection(provider, endpoint, model, param) ||
+        stripped >= DROPPABLE_PARAMS.size
+      ) {
+        throw err;
+      }
+      learnParamRejection(provider, endpoint, model, param);
+    }
+  }
+}
+
 // --- Live model discovery: the id-only list filter (ADR-0064 §3) ------------------------------
 
 /**
@@ -724,11 +838,15 @@ function buildCommonBody(
   if (req.responseFormat?.type === 'json' && modelAccepts(req.model, 'structuredOutput')) {
     body.response_format = toOpenAiResponseFormat(req.responseFormat, provider);
   }
-  if (req.temperature !== undefined && modelAccepts(req.model, 'temperature')) {
+  if (
+    req.temperature !== undefined &&
+    modelAccepts(req.model, 'temperature') &&
+    !hasLearnedRejection(provider, endpoint, req.model, 'temperature')
+  ) {
     body.temperature = req.temperature;
   }
   const maxTokens = applyOutputCap(body, req, provider, endpoint);
-  applyReasoningControl(body, req, provider);
+  applyReasoningControl(body, req, provider, endpoint);
   if (req.stopSequences !== undefined) {
     body.stop = req.stopSequences;
   }
@@ -811,11 +929,15 @@ function applyReasoningControl(
   body: OpenAiCompatibleBody,
   req: LlmRequest,
   provider: ProviderId,
+  endpoint: EndpointKind,
 ): void {
   const reasoningControls = catalogModel(req.model)?.reasoning;
   if (req.reasoningEffort === undefined || reasoningControls === undefined) return;
   if (!acceptedTiers(provider, reasoningControls).has(req.reasoningEffort)) return;
   if (provider === 'openai') {
+    // Self-healing (see `createWithParamFallback`): once the live API has 400'd on `reasoning_effort` for this
+    // model, withhold it from every later request — the catalog claimed a tier the model does not actually take.
+    if (hasLearnedRejection(provider, endpoint, req.model, 'reasoning_effort')) return;
     // `off` IS an effort value on OpenAI (`'none'`), so it needs no branch of its own: `gpt-5.4-pro` publishes
     // ['medium','high','xhigh'] and rejects BOTH `low` and `off`, and one membership test covers them.
     // `openAiWireValue` reads the MODEL's ladder so `max` reaches a published `'max'` (the gpt-5.6 family) instead
@@ -1080,13 +1202,19 @@ async function* streamChunks(
   let usage: Usage = ZERO_USAGE;
   let sdkStream: AsyncIterable<OpenAI.ChatCompletionChunk>;
   try {
-    sdkStream = await client.chat.completions.create(
-      {
-        ...buildCommonBody(req, provider, endpoint),
-        stream: true,
-        stream_options: { include_usage: true },
-      },
-      buildRequestOptions(req),
+    sdkStream = await createWithParamFallback(
+      () =>
+        client.chat.completions.create(
+          {
+            ...buildCommonBody(req, provider, endpoint),
+            stream: true,
+            stream_options: { include_usage: true },
+          },
+          buildRequestOptions(req),
+        ),
+      provider,
+      endpoint,
+      req.model,
     );
   } catch (err) {
     yield { type: 'error', error: openaiErrorToLlmError(err, provider, key) };
@@ -1174,9 +1302,15 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       const client = createClient(key);
       try {
-        const completion = await client.chat.completions.create(
-          { ...buildCommonBody(req, providerId, endpoint), stream: false },
-          buildRequestOptions(req),
+        const completion = await createWithParamFallback(
+          () =>
+            client.chat.completions.create(
+              { ...buildCommonBody(req, providerId, endpoint), stream: false },
+              buildRequestOptions(req),
+            ),
+          providerId,
+          endpoint,
+          req.model,
         );
         const choice = completion.choices[0];
         // A non-null refusal is a safety decline — normalize to content_filter, not a clean stop.

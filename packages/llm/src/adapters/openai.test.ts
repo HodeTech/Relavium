@@ -19,6 +19,7 @@ import {
 } from '../types.js';
 import { encodeMediaJobId } from './shared.js';
 import {
+  clearLearnedParamRejections,
   createOpenAiAdapter,
   deepseekAdapter,
   mapContent,
@@ -28,6 +29,10 @@ import {
   openaiErrorToLlmError,
   outputAudioMime,
 } from './openai.js';
+
+// The learned param-rejections are module state on the OpenAI adapter — reset after EVERY test so a rejection
+// one test teaches (e.g. via `createOpenAiAdapter`) never leaks into another that reuses the same (endpoint, model).
+afterEach(clearLearnedParamRejections);
 
 /** Call the adapter's optional `generateMedia` via `?.()` — a call (binds `this`), never an extraction, so the
  *  unbound-method lint stays happy; the `??` branch asserts the method is implemented. */
@@ -134,6 +139,153 @@ describe('per-model request-capability gating (ADR-0071 amendment)', () => {
       'k',
     );
     expect(sent()).not.toHaveProperty('response_format');
+  });
+});
+
+/** An OpenAI-shaped 400 that blames a specific request parameter (what the SDK parses into `APIError.param`). */
+const badParamResponse = (param: string): Response =>
+  new Response(
+    JSON.stringify({
+      error: {
+        message: `Unsupported value for '${param}'`,
+        type: 'invalid_request_error',
+        param,
+        code: 'unsupported_value',
+      },
+    }),
+    { status: 400, headers: { 'content-type': 'application/json' } },
+  );
+
+describe('param-rejection self-healing — a wrong models.dev tier the live API rejects (never a hard validation error)', () => {
+  afterEach(clearCatalogRefresh);
+  const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'selam' }] }];
+
+  it('STRIPS reasoning_effort and retries on a 400 naming it, then LEARNS it so later turns skip it up front', async () => {
+    // The catalog CLAIMS `luna` accepts `high` (models.dev), but the live API 400s on it — the exact gpt-5.6-luna case.
+    installCatalogRefresh({
+      luna: catModel({ modelId: 'luna', reasoning: { effortValues: ['low', 'high'] } }),
+    });
+    const bodies: Record<string, unknown>[] = [];
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        const body = parseJsonBody(init);
+        bodies.push(body);
+        // A request carrying reasoning_effort 400s; the stripped retry (and every learned later turn) succeeds.
+        return Promise.resolve(
+          body['reasoning_effort'] === undefined
+            ? okResponse()
+            : badParamResponse('reasoning_effort'),
+        );
+      },
+    });
+    // Turn 1: sent with reasoning_effort → 400 → stripped retry → SUCCESS (no thrown validation error).
+    const r1 = await oai.generate({ model: 'luna', messages, reasoningEffort: 'high' }, 'k');
+    expect(r1.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]?.['reasoning_effort']).toBe('high'); // first attempt carried it
+    expect(bodies[1]).not.toHaveProperty('reasoning_effort'); // the retry dropped it
+
+    // Turn 2 on the SAME model: reasoning_effort is withheld UP FRONT (learned) — one call, no 400, no retry.
+    await oai.generate({ model: 'luna', messages, reasoningEffort: 'high' }, 'k');
+    expect(bodies).toHaveLength(3); // exactly one more fetch, not two
+    expect(bodies[2]).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('a 400 blaming a NON-droppable param (e.g. model) is NOT retried — it surfaces as a real error', async () => {
+    installCatalogRefresh({ plain: catModel({ modelId: 'plain' }) });
+    let calls = 0;
+    const oai = createOpenAiAdapter({
+      fetch: () => {
+        calls += 1;
+        return Promise.resolve(badParamResponse('model')); // 'model' is never auto-stripped
+      },
+    });
+    await expect(oai.generate({ model: 'plain', messages }, 'k')).rejects.toBeInstanceOf(
+      LlmProviderError,
+    );
+    expect(calls).toBe(1); // no retry — a non-droppable rejection stays a loud, honest failure
+  });
+
+  it('the STREAMING path self-heals too — a reasoning_effort 400 at create retries stripped and yields content', async () => {
+    installCatalogRefresh({
+      'luna-s': catModel({ modelId: 'luna-s', reasoning: { effortValues: ['high'] } }),
+    });
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) =>
+        Promise.resolve(
+          parseJsonBody(init)['reasoning_effort'] === undefined
+            ? sse([dchunk({ content: 'ok' }, 'stop')])
+            : badParamResponse('reasoning_effort'),
+        ),
+    });
+    const chunks = await collect(
+      oai.stream({ model: 'luna-s', messages, reasoningEffort: 'high' }, 'k'),
+    );
+    // Self-healed: the create 400 was stripped-and-retried, so the stream yields content, NOT an error chunk.
+    expect(chunks.some((c) => c.type === 'error')).toBe(false);
+    expect(chunks.some((c) => c.type === 'stop')).toBe(true);
+  });
+
+  it('STRIPS temperature on a 400 naming it (another droppable tuning param)', async () => {
+    installCatalogRefresh({ 'temp-luna': catModel({ modelId: 'temp-luna' }) }); // no cap data ⇒ temperature is sent
+    const bodies: Record<string, unknown>[] = [];
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        const body = parseJsonBody(init);
+        bodies.push(body);
+        return Promise.resolve(
+          body['temperature'] === undefined ? okResponse() : badParamResponse('temperature'),
+        );
+      },
+    });
+    await oai.generate({ model: 'temp-luna', messages, temperature: 0.7 }, 'k');
+    expect(bodies[0]?.['temperature']).toBe(0.7);
+    expect(bodies[1]).not.toHaveProperty('temperature'); // stripped on the retry
+  });
+
+  it('falls back to the MESSAGE SCAN when a 400 carries no structured `param` (a custom gateway)', async () => {
+    installCatalogRefresh({
+      'luna-msg': catModel({ modelId: 'luna-msg', reasoning: { effortValues: ['high'] } }),
+    });
+    const bodies: Record<string, unknown>[] = [];
+    const noParamBad = (): Response =>
+      new Response(
+        JSON.stringify({
+          error: {
+            message: "this endpoint does not support 'reasoning_effort'",
+            type: 'invalid_request_error',
+          },
+        }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      );
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        const body = parseJsonBody(init);
+        bodies.push(body);
+        return Promise.resolve(
+          body['reasoning_effort'] === undefined ? okResponse() : noParamBad(),
+        );
+      },
+    });
+    await oai.generate({ model: 'luna-msg', messages, reasoningEffort: 'high' }, 'k');
+    expect(bodies[1]).not.toHaveProperty('reasoning_effort'); // healed via the message-name scan
+  });
+
+  it('a persistent 400 on the same param is BOUNDED — the learned-guard throws, never an infinite loop', async () => {
+    installCatalogRefresh({
+      stubborn: catModel({ modelId: 'stubborn', reasoning: { effortValues: ['high'] } }),
+    });
+    let calls = 0;
+    const oai = createOpenAiAdapter({
+      fetch: () => {
+        calls += 1;
+        return Promise.resolve(badParamResponse('reasoning_effort')); // 400s even after the param is stripped/learned
+      },
+    });
+    await expect(
+      oai.generate({ model: 'stubborn', messages, reasoningEffort: 'high' }, 'k'),
+    ).rejects.toBeInstanceOf(LlmProviderError);
+    expect(calls).toBeLessThanOrEqual(3); // hasLearnedRejection + the size cap ⇒ terminates, no loop
   });
 });
 
