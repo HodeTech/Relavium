@@ -285,7 +285,110 @@ describe('param-rejection self-healing — a wrong models.dev tier the live API 
     await expect(
       oai.generate({ model: 'stubborn', messages, reasoningEffort: 'high' }, 'k'),
     ).rejects.toBeInstanceOf(LlmProviderError);
-    expect(calls).toBeLessThanOrEqual(3); // hasLearnedRejection + the size cap ⇒ terminates, no loop
+    expect(calls).toBeLessThanOrEqual(3); // the per-invocation strip set + the size cap ⇒ terminates, no loop
+  });
+
+  it('two CONCURRENT turns both self-heal — the one that loses the learning race still retries, never throws', async () => {
+    // A REGRESSION found by review. The retry guard used to consult the MODULE-WIDE learned set, which is also
+    // written by the in-flight sibling: two turns fired together both send the param, both 400, the first learns
+    // it — and the second then reads "already learned" and THROWS the very validation error the self-heal exists
+    // to prevent. Bounding the loop is per-INVOCATION work; learning stays global.
+    installCatalogRefresh({
+      racer: catModel({ modelId: 'racer', reasoning: { effortValues: ['high'] } }),
+    });
+    const bodies: Record<string, unknown>[] = [];
+    const oai = createOpenAiAdapter({
+      fetch: (_i, init) => {
+        const body = parseJsonBody(init);
+        bodies.push(body);
+        return Promise.resolve(
+          body['reasoning_effort'] === undefined
+            ? okResponse()
+            : badParamResponse('reasoning_effort'),
+        );
+      },
+    });
+    const turn = (): Promise<unknown> =>
+      oai.generate({ model: 'racer', messages, reasoningEffort: 'high' }, 'k');
+
+    const [a, b] = await Promise.all([turn(), turn()]); // BOTH must resolve — neither is collateral damage
+    expect(a).toMatchObject({ content: [{ type: 'text', text: 'ok' }] });
+    expect(b).toMatchObject({ content: [{ type: 'text', text: 'ok' }] });
+
+    // …and the per-invocation bound did NOT cost us the global learning: a later turn skips the param up front.
+    // Without this, gutting `learnParamRejection` entirely would still pass the two assertions above.
+    const before = bodies.length;
+    await turn();
+    expect(bodies.length - before).toBe(1); // one call, no 400, no retry
+    expect(bodies.at(-1)).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('a rejection learned on ONE custom gateway does not mute the param on ANOTHER — the key carries the host', async () => {
+    // `EndpointKind` collapses every custom `base_url` to `'custom'`, so keying on it alone let one gateway's 400
+    // silently strip the param on an unrelated gateway serving the same model id. The scope carries the host.
+    installCatalogRefresh({
+      shared: catModel({ modelId: 'shared', reasoning: { effortValues: ['high'] } }),
+    });
+    let sentB: Record<string, unknown> = {};
+    const gatewayA = createOpenAiAdapter({
+      baseURL: 'https://a.example.com/v1',
+      fetch: (_i, init) =>
+        Promise.resolve(
+          parseJsonBody(init)['reasoning_effort'] === undefined
+            ? okResponse()
+            : badParamResponse('reasoning_effort'),
+        ),
+    });
+    const gatewayB = createOpenAiAdapter({
+      baseURL: 'https://b.example.com/v1',
+      fetch: (_i, init) => {
+        sentB = parseJsonBody(init);
+        return Promise.resolve(okResponse()); // B is perfectly happy with the param
+      },
+    });
+
+    await gatewayA.generate({ model: 'shared', messages, reasoningEffort: 'high' }, 'k');
+    await gatewayB.generate({ model: 'shared', messages, reasoningEffort: 'high' }, 'k');
+    expect(sentB['reasoning_effort']).toBe('high'); // A's 400 is A's business
+  });
+
+  it('a providerOptions override of a LEARNED-rejected param is dropped too — it could only re-trigger the 400', async () => {
+    // The escape hatch is spread BEFORE the mapped body, so withholding the mapped field was not enough: a caller
+    // override of the same key sailed straight through and re-armed the rejection the self-heal had just learned.
+    installCatalogRefresh({
+      picky: catModel({ modelId: 'picky', reasoning: { effortValues: ['high'] } }),
+    });
+    const bodies: Record<string, unknown>[] = [];
+    const oai = createOpenAiAdapter({
+      fetch: (_i, init) => {
+        const body = parseJsonBody(init);
+        bodies.push(body);
+        return Promise.resolve(
+          body['reasoning_effort'] === undefined
+            ? okResponse()
+            : badParamResponse('reasoning_effort'),
+        );
+      },
+    });
+    await oai.generate({ model: 'picky', messages, reasoningEffort: 'high' }, 'k'); // teaches the rejection
+
+    await oai.generate(
+      {
+        model: 'picky',
+        messages,
+        reasoningEffort: 'high',
+        providerOptions: { reasoning_effort: 'high' },
+      },
+      'k',
+    );
+    expect(bodies).toHaveLength(3); // one call, no 400, no retry
+    expect(bodies[2]).not.toHaveProperty('reasoning_effort');
+
+    // …and an override of a DROPPABLE param that was never rejected ON THIS MODEL still wins, so this is a filter
+    // and not a mute button. `temperature` is deliberate: a non-droppable key (`top_p`) would pass this assertion
+    // even if the `hasLearnedRejection` guard were deleted outright, pinning nothing.
+    await oai.generate({ model: 'picky', messages, providerOptions: { temperature: 0.9 } }, 'k');
+    expect(bodies[3]?.['temperature']).toBe(0.9);
   });
 });
 

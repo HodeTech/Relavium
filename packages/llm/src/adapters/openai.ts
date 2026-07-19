@@ -457,41 +457,65 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId, key?: 
 const DROPPABLE_PARAMS: ReadonlySet<string> = new Set(['reasoning_effort', 'temperature']);
 
 /**
- * `(provider, endpoint, model, param)` tuples the live API has rejected this process. The key is scoped to the
- * ENDPOINT (provider + official-vs-custom `base_url`), NOT the bare model id: this store is module-wide across every
- * adapter instance, and a custom gateway can serve a familiar id (`gpt-4o`) that 400s on a param the real OpenAI
- * `gpt-4o` accepts — keying on the model alone would let one endpoint silently poison another's same-id model.
+ * The endpoint identity a learned rejection is scoped to. `EndpointKind` alone collapses EVERY custom `base_url` to
+ * `'custom'`, so two different gateways (LM Studio and a corporate proxy, say) serving the same familiar model id
+ * would share rejection state and poison each other. A custom endpoint is therefore distinguished by its
+ * **normalized host**.
+ *
+ * SECURITY: only the hostname and port are used — never the raw base URL. A base URL may embed credentials
+ * (`https://user:pass@gateway/v1`), and this key lives in memory beside error text; taking the parsed `hostname`
+ * excludes userinfo, path, and query by construction, so no secret can reach the key. (Belt AND braces: a
+ * credentialed URL never gets this far — `assertHttpsBaseUrl` rejects it at construction time.)
+ *
+ * The trailing dot is stripped and the host lowercased, exactly as {@link endpointKindFor} does it, so a verbatim
+ * `--base-url` typed as `https://gw.example./v1` shares one bucket with `https://gw.example/v1`. The PORT is kept —
+ * two gateways on one host at different ports are genuinely different endpoints. An unparseable URL degrades to one
+ * shared bucket rather than throwing — unreachable in practice (`assertHttpsBaseUrl` has already parsed it by the
+ * time we get here), and a wrong-but-safe grouping rather than a failed request. Belt only.
+ */
+function endpointScope(endpoint: EndpointKind, baseURL: string | undefined): string {
+  if (endpoint !== 'custom' || baseURL === undefined) return endpoint;
+  try {
+    const url = new URL(baseURL);
+    const host = url.hostname.toLowerCase().replace(/\.$/, '');
+    return `custom ${host}${url.port === '' ? '' : `:${url.port}`}`;
+  } catch {
+    return 'custom <unparseable>';
+  }
+}
+
+/**
+ * `(provider, endpointScope, model, param)` tuples the live API has rejected this process. The key is scoped to the
+ * ENDPOINT — provider plus the host-qualified {@link endpointScope} — NOT the bare model id: this store is
+ * module-wide across every adapter instance, and a custom gateway can serve a familiar id (`gpt-4o`) that 400s on a
+ * param the real OpenAI `gpt-4o` accepts, so keying loosely would let one endpoint poison another's same-id model.
  *
  * Learning is PARAM-level, not (param, tier)-level: a 400 on `reasoning_effort: high` withholds reasoning_effort
  * ENTIRELY for that model, even a `low`/`medium` it might accept — a deliberate degrade (the catalog datum that
  * claimed the tier was already proven unreliable, and the goal is to never hard-fail again).
  */
 const learnedParamRejections = new Set<string>();
-const rejectionKey = (
-  provider: ProviderId,
-  endpoint: EndpointKind,
-  model: string,
-  param: string,
-): string => `${provider} ${endpoint} ${model} ${param}`;
+const rejectionKey = (provider: ProviderId, scope: string, model: string, param: string): string =>
+  `${provider} ${scope} ${model} ${param}`;
 
 /** Has the live API already rejected `param` for `model` this process? Consulted by `buildCommonBody`'s gates. */
 function hasLearnedRejection(
   provider: ProviderId,
-  endpoint: EndpointKind,
+  scope: string,
   model: string,
   param: string,
 ): boolean {
-  return learnedParamRejections.has(rejectionKey(provider, endpoint, model, param));
+  return learnedParamRejections.has(rejectionKey(provider, scope, model, param));
 }
 
 /** Record that the live API rejected `param` for `model`, so `buildCommonBody` withholds it from now on. */
 function learnParamRejection(
   provider: ProviderId,
-  endpoint: EndpointKind,
+  scope: string,
   model: string,
   param: string,
 ): void {
-  learnedParamRejections.add(rejectionKey(provider, endpoint, model, param));
+  learnedParamRejections.add(rejectionKey(provider, scope, model, param));
 }
 
 /** Reset the learned rejections — for tests only (module state, like `clearCatalogRefresh`). */
@@ -532,22 +556,28 @@ function rejectedDroppableParam(err: unknown): string | undefined {
 async function createWithParamFallback<T>(
   createOnce: () => Promise<T>,
   provider: ProviderId,
-  endpoint: EndpointKind,
+  scope: string,
   model: string,
 ): Promise<T> {
-  for (let stripped = 0; ; stripped++) {
+  // Params THIS invocation has already stripped — deliberately SEPARATE from the module-wide learned set. Gating the
+  // retry on the global set would hard-fail a CONCURRENT request that merely lost the race: another in-flight call
+  // learns the param first, so this one sees it "already learned" and throws instead of rebuilding without it. The
+  // per-invocation set is also the honest loop bound — one retry per droppable param, per request.
+  const strippedHere = new Set<string>();
+  for (;;) {
     try {
       return await createOnce();
     } catch (err) {
       const param = rejectedDroppableParam(err);
       if (
         param === undefined ||
-        hasLearnedRejection(provider, endpoint, model, param) ||
-        stripped >= DROPPABLE_PARAMS.size
+        strippedHere.has(param) ||
+        strippedHere.size >= DROPPABLE_PARAMS.size
       ) {
         throw err;
       }
-      learnParamRejection(provider, endpoint, model, param);
+      strippedHere.add(param);
+      learnParamRejection(provider, scope, model, param);
     }
   }
 }
@@ -814,6 +844,7 @@ function buildCommonBody(
   req: LlmRequest,
   provider: ProviderId,
   endpoint: EndpointKind,
+  scope: string,
 ): OpenAiCompatibleBody {
   const messages: OpenAI.ChatCompletionMessageParam[] = [];
   if (req.system !== undefined) {
@@ -841,12 +872,12 @@ function buildCommonBody(
   if (
     req.temperature !== undefined &&
     modelAccepts(req.model, 'temperature') &&
-    !hasLearnedRejection(provider, endpoint, req.model, 'temperature')
+    !hasLearnedRejection(provider, scope, req.model, 'temperature')
   ) {
     body.temperature = req.temperature;
   }
   const maxTokens = applyOutputCap(body, req, provider, endpoint);
-  applyReasoningControl(body, req, provider, endpoint);
+  applyReasoningControl(body, req, provider, scope);
   if (req.stopSequences !== undefined) {
     body.stop = req.stopSequences;
   }
@@ -873,6 +904,15 @@ function buildCommonBody(
   if (maxTokens !== undefined) {
     delete escape['max_tokens'];
     delete escape['max_completion_tokens'];
+  }
+  // A param the live API has PROVABLY rejected for this (endpoint, model) is dropped from the escape hatch too.
+  // The escape hatch is spread BEFORE the mapped body, so withholding the mapped field is not enough on its own:
+  // with `body` omitting the key there is nothing left to shadow an override of that SAME key, and it sails through
+  // to re-trigger the very 400 the self-heal exists to rescue — an "explicit verbatim override" that is
+  // guaranteed to fail is not one worth honouring. Scoped to the two droppable keys; every other providerOptions
+  // key is left untouched, and a param that was never rejected still overrides exactly as before.
+  for (const param of DROPPABLE_PARAMS) {
+    if (hasLearnedRejection(provider, scope, req.model, param)) delete escape[param];
   }
   return { ...escape, ...body };
 }
@@ -929,7 +969,7 @@ function applyReasoningControl(
   body: OpenAiCompatibleBody,
   req: LlmRequest,
   provider: ProviderId,
-  endpoint: EndpointKind,
+  scope: string,
 ): void {
   const reasoningControls = catalogModel(req.model)?.reasoning;
   if (req.reasoningEffort === undefined || reasoningControls === undefined) return;
@@ -937,7 +977,7 @@ function applyReasoningControl(
   if (provider === 'openai') {
     // Self-healing (see `createWithParamFallback`): once the live API has 400'd on `reasoning_effort` for this
     // model, withhold it from every later request — the catalog claimed a tier the model does not actually take.
-    if (hasLearnedRejection(provider, endpoint, req.model, 'reasoning_effort')) return;
+    if (hasLearnedRejection(provider, scope, req.model, 'reasoning_effort')) return;
     // `off` IS an effort value on OpenAI (`'none'`), so it needs no branch of its own: `gpt-5.4-pro` publishes
     // ['medium','high','xhigh'] and rejects BOTH `low` and `off`, and one membership test covers them.
     // `openAiWireValue` reads the MODEL's ladder so `max` reaches a published `'max'` (the gpt-5.6 family) instead
@@ -947,6 +987,11 @@ function applyReasoningControl(
     // `'max'` in gpt-5.6's effort values, but the pinned OpenAI SDK's `ReasoningEffort` union tops out at `'xhigh'`.
     // The value is always one `acceptedTiers` (⇒ the catalog) proved the model accepts; the SDK's JSON body carries
     // the string verbatim. Narrowed to the field's own type, so it can never widen to an arbitrary string.
+    // NOTE: widening `OpenAiCompatibleBody['reasoning_effort']` to the full wire union (so this needs no cast) was
+    // tried and REVERTED — the body is passed straight to `chat.completions.create`, whose streaming/non-streaming
+    // OVERLOADS require the SDK's own narrower `ReasoningEffort`. A widened field stops matching either overload, so
+    // the call's return type collapses to a `ChatCompletion | Stream<…>` union and every downstream `.choices` /
+    // `.usage` read breaks. Casting the VALUE here is the minimal bridge that keeps the SDK contract intact.
     body.reasoning_effort = openAiWireValue(req.reasoningEffort, reasoningControls) as Exclude<
       OpenAiCompatibleBody['reasoning_effort'],
       undefined
@@ -1190,6 +1235,7 @@ async function* streamChunks(
   req: LlmRequest,
   provider: ProviderId,
   endpoint: EndpointKind,
+  scope: string,
   key: string,
 ): AsyncIterable<StreamChunk> {
   const state: OpenAiStreamState = {
@@ -1206,14 +1252,14 @@ async function* streamChunks(
       () =>
         client.chat.completions.create(
           {
-            ...buildCommonBody(req, provider, endpoint),
+            ...buildCommonBody(req, provider, endpoint, scope),
             stream: true,
             stream_options: { include_usage: true },
           },
           buildRequestOptions(req),
         ),
       provider,
-      endpoint,
+      scope,
       req.model,
     );
   } catch (err) {
@@ -1286,6 +1332,8 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
   // By HOST, not by "was a string passed": DeepSeek's own `api.deepseek.com` is official (it is our default), and
   // so is `https://api.openai.com/v1/` typed out by hand. See {@link endpointKindFor}.
   const endpoint: EndpointKind = endpointKindFor(providerId, deps.baseURL);
+  // Host-qualified so two custom gateways never share learned param rejections (see `endpointScope`).
+  const rejectionScope = endpointScope(endpoint, deps.baseURL);
   const createClient = (key: string): OpenAI =>
     new OpenAI({
       apiKey: key,
@@ -1305,11 +1353,11 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
         const completion = await createWithParamFallback(
           () =>
             client.chat.completions.create(
-              { ...buildCommonBody(req, providerId, endpoint), stream: false },
+              { ...buildCommonBody(req, providerId, endpoint, rejectionScope), stream: false },
               buildRequestOptions(req),
             ),
           providerId,
-          endpoint,
+          rejectionScope,
           req.model,
         );
         const choice = completion.choices[0];
@@ -1337,7 +1385,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       assertStreamable(providerId, supports);
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(providerId, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
-      return streamChunks(createClient(key), req, providerId, endpoint, key);
+      return streamChunks(createClient(key), req, providerId, endpoint, rejectionScope, key);
     },
     /**
      * Live model discovery (ADR-0064 §1) over the SDK's `models.list()`. The OpenAI/DeepSeek list is
