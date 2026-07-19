@@ -411,6 +411,30 @@ describe('FallbackChain.generate — per-attempt cost across a failover', () => 
     expect(trace[1]?.cost?.cumulativeCostMicrocents).toBe(2_050_000); // 1_750_000 + 300_000
     expect(tracker.cumulativeCostMicrocents).toBe(2_050_000);
   });
+
+  it('preAttempt carries THIS attempt’s routing provider — the primary, then the failover (review M2)', async () => {
+    // The pre-egress endpoint estimate keys on the routing provider, which MOVES on a failover. Each preAttempt
+    // must therefore report the provider of the entry actually being dialed, not a fixed primary.
+    const primary = makeProvider({ id: 'anthropic', generate: rejects('anthropic', 'overloaded') });
+    const fallback = makeProvider({ id: 'openai', generate: resolves('recovered') });
+    const seen: { model: string; provider: ProviderId }[] = [];
+    const { options } = makeOptions({
+      preAttempt: (info) => {
+        seen.push({ model: info.model, provider: info.provider });
+      },
+    });
+    const chain = new FallbackChain(
+      [entry(primary, 'claude-opus-4-8'), entry(fallback, 'gpt-5.4-mini')],
+      options,
+    );
+
+    await chain.generate(userReq);
+
+    expect(seen).toEqual([
+      { model: 'claude-opus-4-8', provider: 'anthropic' },
+      { model: 'gpt-5.4-mini', provider: 'openai' },
+    ]);
+  });
 });
 
 // --- ADR-0030 reasoning strip on cross-provider failover -------------------------------------
@@ -579,6 +603,77 @@ describe('withEntryModel (ADR-0066 §4 — per-fallback-entry reasoning gate)', 
     const out = withEntryModel(req, 'gpt-5.5'); // a reasoning model ⇒ the tier rides
     expect(out.model).toBe('gpt-5.5');
     expect(out.reasoningEffort).toBe('max');
+  });
+
+  /**
+   * THE FAILOVER HOLE (ADR-0071 §6) — found by an adversarial review, and the sharpest finding in it.
+   *
+   * The re-gate used to ask `modelSupportsReasoning(model)`: a BOOLEAN. `gpt-5.5` accepts every tier; `gpt-5.4-pro`
+   * rejects `low` outright (it publishes ['medium','high','xhigh']). Both "support reasoning", so the boolean kept
+   * the tier — and the fallback, whose entire job is to RESCUE a failing turn, put a rejected value on the wire.
+   *
+   * A 400 on an unsupported parameter is fatal and non-retryable. So the rescue does not merely fail: it ABORTS
+   * the rest of the chain, killing the turn it exists to save. The gate now re-checks the tiers the entry model
+   * actually accepts.
+   */
+  it('STRIPS a tier the fallback model REJECTS — even though that model reasons', () => {
+    const req: LlmRequest = {
+      model: 'gpt-5.5', // accepts low
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      reasoningEffort: 'low',
+    };
+    // gpt-5.4-pro's ladder starts at `medium`, and OpenAI has no budget field to express `low` some other way.
+    const out = withEntryModel(req, 'gpt-5.4-pro');
+    expect(out.model).toBe('gpt-5.4-pro');
+    expect('reasoningEffort' in out).toBe(false);
+  });
+
+  /**
+   * …but STRIPPING IS NOT FREE, so it must not happen when the model can serve the tier by another route.
+   *
+   * `claude-opus-4-5` publishes an effort ladder WITHOUT `max` — and, alongside it, a token budget. Its adapter
+   * already falls back to `thinking.budget_tokens` for exactly this case, so `max` is perfectly serviceable. An
+   * earlier version of `acceptedTiers` treated the two axes as an either/or and reported the ladder only: the
+   * rescue turn then ran with NO reasoning at all, discarding what the user asked for more aggressively than the
+   * model required. The axes are a union.
+   */
+  it('KEEPS a tier the fallback model serves through its BUDGET axis, not its ladder', () => {
+    const req: LlmRequest = {
+      model: 'claude-opus-4-8',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      reasoningEffort: 'max',
+    };
+    const out = withEntryModel(req, 'claude-opus-4-5');
+    expect(out.model).toBe('claude-opus-4-5');
+    expect(out.reasoningEffort).toBe('max');
+  });
+
+  it("STRIPS `low` on a failover to gpt-5.4-pro — the maintainer's bug, reached through the rescue path", () => {
+    const req: LlmRequest = {
+      model: 'gpt-5.5', // accepts all five
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      reasoningEffort: 'low',
+    };
+    const out = withEntryModel(req, 'gpt-5.4-pro'); // publishes ['medium','high','xhigh'] — no `low`
+    expect('reasoningEffort' in out).toBe(false);
+  });
+
+  it('STRIPS the tier for a model the catalog does not know (a custom endpoint)', () => {
+    const req: LlmRequest = {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      reasoningEffort: 'high',
+    };
+    expect('reasoningEffort' in withEntryModel(req, 'some-custom-endpoint-model')).toBe(false);
+  });
+
+  it('KEEPS a tier the fallback model DOES accept', () => {
+    const req: LlmRequest = {
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      reasoningEffort: 'high',
+    };
+    expect(withEntryModel(req, 'gpt-5.4-pro').reasoningEffort).toBe('high'); // `high` IS in its ladder
   });
 
   it('is a plain model swap when no tier is set', () => {

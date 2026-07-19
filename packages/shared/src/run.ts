@@ -21,7 +21,7 @@ import { TriggerTypeSchema } from './workflow.js';
  * The persisted row carries additional columns that are a **persistence concern owned
  * by `@relavium/db`** (workstream 0.I), modeled there as a distinct `RunRow` mirroring
  * the canonical DDL in
- * [database-schema.md](../../../docs/reference/desktop/database-schema.md): notably
+ * [database-schema.md](../../../docs/reference/shared-core/database-schema.md): notably
  * `workflow_definition_snapshot` (the frozen graph for replay/resume — an engine
  * deliverable), `trigger_metadata`, `workflow_path`/`project_root`, and the
  * `deleted_at` soft-delete cursor. Those do not belong on the logical run view and are

@@ -50,7 +50,7 @@ import {
   type RunStatus,
   type TokensUsed,
 } from '@relavium/shared';
-import type { MediaJobStatus, PricingOverlay } from '@relavium/llm';
+import type { EndpointKind, MediaJobStatus, PricingOverlay, ProviderId } from '@relavium/llm';
 
 import { buildRunPlan, type BuildRunPlanOptions } from '../dag.js';
 import { InterpolationError } from '../errors.js';
@@ -243,11 +243,23 @@ export interface WorkflowEngineDeps {
    * The user-pricing overlay (2.5.G S10, [ADR-0065](../../../docs/decisions/0065-provider-economics-and-extensibility.md)
    * §2) — a `ReadonlyMap<modelId, ModelPricing>` the host projects from the `model_catalog` `source='user'` rows.
    * It feeds the workflow PRE-EGRESS budget governor so a model with no static price, once user-priced, is enforced
-   * by `budget.max_cost_microcents`. Static `MODEL_PRICING` still wins for a known id (fills an UNKNOWN id only).
+   * by `budget.max_cost_microcents`. The USER tier outranks the catalog (ADR-0071 §1).
    * Injected exactly like the realized path's overlay, which the node executor's runner already carries; omit ⇒
    * an unknown model degrades cost governance to `allow` loudly, unchanged.
    */
   readonly resolvePrice?: PricingOverlay;
+  /**
+   * Is a model's provider on its own API, or behind a custom `base_url` (ADR-0071 §7)? Forwarded to the pre-egress
+   * {@link BudgetGovernor}: the adapter clamps an authored `max_tokens` to the model's ceiling only on an official
+   * endpoint, and an estimate that assumes otherwise stops describing the request the wire will carry. Absent ⇒
+   * official (the adapter's own default).
+   */
+  readonly resolveEndpoint?: (provider: ProviderId) => EndpointKind;
+  /**
+   * Called once per model when a turn runs UNPRICED, so the cost cap could not apply to it (ADR-0071 §K7). The
+   * engine cannot print; the host routes it (`run` → stderr). Absent ⇒ silent (`strict_cost_cap` is the block).
+   */
+  readonly onUnpriced?: (model: string, capMicrocents: number) => void;
 }
 
 function maskInputs(
@@ -343,6 +355,8 @@ class RunExecution {
     /** The user-pricing overlay (2.5.G S10, ADR-0065 §2) — into the workflow PRE-EGRESS governor so a user-priced
      *  model is enforced by `budget`. Host-injected; the realized path rides the runner's own `resolvePrice`. */
     resolvePrice?: PricingOverlay;
+    resolveEndpoint?: (provider: ProviderId) => EndpointKind;
+    onUnpriced?: (model: string, capMicrocents: number) => void;
     /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
     checkpoint?: CheckpointState;
   }) {
@@ -372,6 +386,10 @@ class RunExecution {
         defaultMaxTokensEstimate: this.#maxTokensEstimate,
         emit: (draft) => this.#emitDurable({ ...draft, runId: this.runId }),
         ...(params.resolvePrice === undefined ? {} : { resolvePrice: params.resolvePrice }),
+        ...(params.resolveEndpoint === undefined
+          ? {}
+          : { resolveEndpoint: params.resolveEndpoint }),
+        ...(params.onUnpriced === undefined ? {} : { onUnpriced: params.onUnpriced }),
       });
     }
 
@@ -1074,7 +1092,8 @@ class RunExecution {
     // Pass the media-unit estimate (1.AF/D17) so the governor folds a per-modality media addend into the
     // projection; `outputModalities` rides the hook info for request-lowering/observability but the cost
     // calc needs only the units.
-    return (info) => governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate);
+    return (info) =>
+      governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate, info.provider);
   }
 
   /** Run one attempt of a vertex; returns its outcome (an uncaught handler throw → a single `internal`). */
@@ -2192,6 +2211,12 @@ export class WorkflowEngine {
   readonly #resolverCapabilities: ResolverCapabilities;
   readonly #maxTokensEstimate: number;
   readonly #resolvePrice: PricingOverlay | undefined;
+  // Stored + forwarded to every RunExecution, exactly like #resolvePrice. They reached this class through
+  // WorkflowEngineDeps and then died here — the constructor never read them, so `start()`/`resumeFromCheckpoint()`
+  // built a governor without an endpoint resolver (ADR-0071 §7 — the estimate assumed `official` and under-
+  // authorized a custom-base_url turn) and without an unpriced sink (§K7 — the notice was dead on `run`/`gate`).
+  readonly #resolveEndpoint: ((provider: ProviderId) => EndpointKind) | undefined;
+  readonly #onUnpriced: ((model: string, capMicrocents: number) => void) | undefined;
   readonly #runs = new Map<string, RunExecution>();
 
   constructor(deps: WorkflowEngineDeps) {
@@ -2202,6 +2227,8 @@ export class WorkflowEngine {
     this.#resolverCapabilities = deps.resolverCapabilities ?? {};
     this.#maxTokensEstimate = deps.maxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
     this.#resolvePrice = deps.resolvePrice;
+    this.#resolveEndpoint = deps.resolveEndpoint;
+    this.#onUnpriced = deps.onUnpriced;
   }
 
   /**
@@ -2231,6 +2258,8 @@ export class WorkflowEngine {
       resolverCapabilities: this.#resolverCapabilities,
       maxTokensEstimate: this.#maxTokensEstimate,
       ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
+      ...(this.#resolveEndpoint === undefined ? {} : { resolveEndpoint: this.#resolveEndpoint }),
+      ...(this.#onUnpriced === undefined ? {} : { onUnpriced: this.#onUnpriced }),
     });
     this.#runs.set(runId, execution);
     void execution.begin();
@@ -2327,6 +2356,8 @@ export class WorkflowEngine {
       resolverCapabilities: this.#resolverCapabilities,
       maxTokensEstimate: this.#maxTokensEstimate,
       ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
+      ...(this.#resolveEndpoint === undefined ? {} : { resolveEndpoint: this.#resolveEndpoint }),
+      ...(this.#onUnpriced === undefined ? {} : { onUnpriced: this.#onUnpriced }),
       checkpoint,
     });
     this.#runs.set(input.runId, execution);

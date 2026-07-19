@@ -99,10 +99,11 @@ export interface OnboardingDeps {
   readonly keychain: KeychainStore;
   readonly resolver: ProviderResolver;
   readonly io: CliIo;
-  /** Persist the NEXT session's default model (writeGlobalDefaultModel via the Home's config target). The wizard
-   *  sets a starter model of the CHOSEN provider so the first chat binds a model whose key was just stored — the
-   *  built-in default (`claude-sonnet-4-6` → anthropic) would otherwise error for a user who picked another provider. */
-  readonly writeDefaultModel: (modelId: string) => void;
+  /** Persist the NEXT session's default model AND its `provider` (ADR-0059 — authoritative at pick time) via the
+   *  Home's config target. The wizard sets a starter model of the CHOSEN provider so the first chat binds a model
+   *  whose key was just stored — the built-in default (`claude-sonnet-4-6` → anthropic) would otherwise error for a
+   *  user who picked another provider — and persisting the provider means that first chat skips id inference. */
+  readonly writeDefaultModel: (modelId: string, provider: ProviderId) => void;
   /**
    * LIVE-validate a just-entered key (2.5.G S8) — injected for tests (no network). Absent ⇒ the real bounded,
    * key-redacted {@link validateProviderKey} probe against the provider's cheap `testModel`. The wizard uses the
@@ -238,7 +239,7 @@ export async function runOnboardingWizard(deps: OnboardingDeps): Promise<void> {
     ? `Verified and stored your ${provider} key (${keyHint(keyToStore)}) in the OS keychain.`
     : `Saved your ${provider} key (${keyHint(keyToStore)}) — it couldn't be verified now. Run /doctor to re-check.`;
   try {
-    deps.writeDefaultModel(starterModel);
+    deps.writeDefaultModel(starterModel, provider);
     p.note(
       `${storedLine}\nYour default model is ${starterModel} — change it anytime with /models.`,
       'Connected',

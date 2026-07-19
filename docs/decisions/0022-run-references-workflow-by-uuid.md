@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-04
-- **Related**: [ADR-0005](0005-sqlite-drizzle-local-postgres-cloud.md), [ADR-0009](0009-git-native-workflow-yaml.md), [database-schema.md](../reference/desktop/database-schema.md), [sse-event-schema.md](../reference/contracts/sse-event-schema.md)
+- **Related**: [ADR-0005](0005-sqlite-drizzle-local-postgres-cloud.md), [ADR-0009](0009-git-native-workflow-yaml.md), [database-schema.md](../reference/shared-core/database-schema.md), [sse-event-schema.md](../reference/contracts/sse-event-schema.md)
 
 ## Context
 

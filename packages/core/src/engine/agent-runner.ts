@@ -65,7 +65,12 @@ import {
   type PreEgressHook,
 } from './agent-turn.js';
 import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
-import { gateReasoningEffort } from './reasoning-effort.js';
+import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
+import type {
+  EffortGateResult,
+  ReasoningCapCheck,
+  ResolveEffortTiers,
+} from './reasoning-effort.js';
 import type {
   MediaJobSubmission,
   NodeExecContext,
@@ -93,13 +98,32 @@ export interface AgentRunnerDeps {
    */
   readonly resolveMediaSurface?: (model: string) => MediaSurface | undefined;
   /**
-   * Whether a model supports reasoning ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md)) —
-   * the host-injected per-model catalog projection (`model_catalog.capabilities.reasoning`), mirroring
-   * {@link resolveMediaSurface}. The engine is platform-pure (no DB), so the host injects it. Gates the
-   * `reasoningEffort` send: a non-reasoning model would reject the field, so the tier is sent only when this
-   * returns `true`. Absent or `undefined` ⇒ treated as NOT reasoning (safe — the field is not sent).
+   * WHICH reasoning tiers a model accepts ([ADR-0071](../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §6)
+   * — the host-injected per-model catalog projection, mirroring {@link AgentRunnerDeps.resolveMediaSurface}. The
+   * engine is platform-pure (no catalog, no DB), so the host injects it.
+   *
+   * It replaced a boolean, and the upgrade is the point: *"does this model reason"* is not the question the wire
+   * asks. `gpt-5.4-pro` reasons and rejects `low`. Absent / `undefined` / an empty set ⇒ the field is withheld —
+   * safe, and never a guess.
    */
-  readonly resolveReasoning?: (model: string) => boolean | undefined;
+  readonly resolveEffortTiers?: ResolveEffortTiers;
+  /**
+   * Does a budget-shaped model withhold the accepted tier because this node's `max_tokens` leaves no room for its
+   * minimum thinking budget (review M6)? Host-injected (reads the catalog's budget range); absent ⇒ unchecked, and
+   * a tight `max_tokens` drops thinking silently, as before. Surfaces as a `capped` verdict through onEffortWithheld.
+   */
+  readonly withheldByCap?: ReasoningCapCheck;
+  /**
+   * Called when an authored `reasoning_effort` is WITHHELD — the tier the agent asked for is not one the bound
+   * model takes ([ADR-0071](../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §6).
+   *
+   * Withholding is right; withholding **silently** is not, and that is the trade this gate would otherwise make.
+   * It replaced a loud provider 400 with a turn that runs, drops the field, and bills at the provider's default
+   * tier — so an author who wrote `reasoning_effort: max` on a model whose ladder stops at `high` would have no
+   * way to learn that the knob they set does nothing. The engine cannot print, so the host is handed the gate's
+   * own verdict (which carries what the model WOULD accept) and decides where it goes.
+   */
+  readonly onEffortWithheld?: (result: EffortGateResult, model: string) => void;
   /** The shared tool registry (1.T) the agent dispatches through (ADR-0037). */
   readonly registry: ToolRegistry;
   /** The registry's tool defs — the source of the LLM-visible schema + descriptions for granted tools. */
@@ -802,15 +826,27 @@ function resolveGenKnobs(
 ): { temperature?: number; maxTokens?: number; reasoningEffort?: ReasoningEffort } {
   const temperature = node.temperature ?? agent.temperature;
   const maxTokens = node.max_tokens ?? agent.max_tokens;
-  // ADR-0066: send the reasoning-effort tier ONLY when the agent authored one AND the primary model is
-  // reasoning-capable (the shared {@link gateReasoningEffort} rule — a non-reasoning model would reject the field).
-  // The per-fallback-entry re-gate lives in the chain (a non-reasoning fallback entry strips the tier), so a failover
-  // to a different-capability model never carries an unsupported field.
-  const reasoningEffort = gateReasoningEffort(
+  // ADR-0066/0071: send the tier ONLY when the model is on record as ACCEPTING it — not merely as reasoning.
+  // `gpt-5.4-pro` reasons and rejects `low`; a boolean capability said `true` and let that straight through.
+  // A rejected tier is WITHHELD, never promoted to a neighbour (that would change behaviour and raise spend
+  // silently). The per-fallback-entry re-gate lives in the chain, so a failover to a different-capability model
+  // never carries a field it does not take.
+  const gate = gateReasoningEffort(
     agent.reasoning_effort,
     agent.model,
-    deps.resolveReasoning,
+    deps.resolveEffortTiers,
+    deps.withheldByCap !== undefined && maxTokens !== undefined
+      ? { maxTokens, withheldByCap: deps.withheldByCap }
+      : undefined,
   );
+  // …and TELL the host when it withheld. The gate turned a loud 400 into a quiet no-op, and a quiet no-op on a
+  // knob the author deliberately set is the worse of the two: the run succeeds, the field is gone, and the bill
+  // lands at the provider's default tier with nothing in the output to explain why. `capped` — a budget model whose
+  // tier this node's `max_tokens` withholds (review M6) — is the same silent no-op and rides the same channel.
+  if (gate.kind === 'rejected' || gate.kind === 'uncontrollable' || gate.kind === 'capped') {
+    deps.onEffortWithheld?.(gate, agent.model);
+  }
+  const reasoningEffort = effortToSend(gate);
   return {
     ...(temperature === undefined ? {} : { temperature }),
     ...(maxTokens === undefined ? {} : { maxTokens }),

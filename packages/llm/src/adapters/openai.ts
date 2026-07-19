@@ -18,7 +18,10 @@ import {
 import { assertStreamable, assertSupported } from '../capabilities.js';
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, kindFromHttpStatus, makeLlmError } from '../llm-error.js';
-import { MODEL_PRICING } from '../pricing.js';
+import { catalogModel, catalogModelIds, modelAccepts } from '../catalog/lookup.js';
+import { isNonChatModelId } from '../model-kind.js';
+import { cappedMaxTokens, type EndpointKind } from '../output-cap.js';
+import { DEEPSEEK_WIRE, acceptedTiers, openAiWireValue } from '../reasoning-wire.js';
 import { normalizeToolCall, toWire } from '../tool-normalizer.js';
 import type {
   CapabilityFlags,
@@ -66,6 +69,41 @@ import {
  */
 
 const DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+
+/**
+ * The HOSTS whose APIs are the providers' own — the ones this adapter's dialect rules are written against.
+ *
+ * Classified by host, not by "did a caller pass a base URL string". A user who registers OpenAI with its own
+ * endpoint spelled out (`relavium provider add openai --base-url https://api.openai.com/v1/`) IS on the official
+ * API, and the CLI stores the URL VERBATIM — so a trailing slash, or `/v1` versus no `/v1`, is enough to miss a
+ * string comparison. Missing it would send the deprecated `max_tokens` to a reasoning model that rejects it, and
+ * skip the output clamp: the exact bug this work removes, restored on the official endpoint by a typo.
+ */
+const OFFICIAL_HOSTS: Readonly<Record<OpenAiProviderId, string>> = {
+  openai: 'api.openai.com',
+  deepseek: 'api.deepseek.com',
+};
+
+/**
+ * Is this base URL the provider's OWN API?
+ *
+ * The trailing dot is not pedantry: `api.openai.com.` is a legitimate fully-qualified spelling that DNS resolves
+ * identically, the CLI stores a `--base-url` VERBATIM, and the adjacent SSRF check already normalizes it away. Left
+ * unnormalized here it would classify the REAL official endpoint as custom — deprecated field, no clamp — which is
+ * the bug this work removes, reinstated by a dot.
+ *
+ * An unparseable URL is treated as custom: the conservative side, and unreachable in practice (`assertHttpsBaseUrl`
+ * has already parsed it by the time we get here). Belt only.
+ */
+function endpointKindFor(providerId: OpenAiProviderId, baseURL: string | undefined): EndpointKind {
+  if (baseURL === undefined) return 'official'; // no override at all — our own default
+  try {
+    const host = new URL(baseURL).hostname.toLowerCase().replace(/\.$/, '');
+    return host === OFFICIAL_HOSTS[providerId] ? 'official' : 'custom';
+  } catch {
+    return 'custom';
+  }
+}
 
 /**
  * OpenAI's common-path capability surface. 1.AE wires the real media input matrix (image, audio,
@@ -400,68 +438,173 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId, key?: 
   });
 }
 
+// --- Param-rejection self-healing (models.dev data vs the live API) ----------------------------
+
+/**
+ * models.dev is the catalog's source of truth, but a model's published capabilities can OUTRUN its real API:
+ * `gpt-5.6-luna` lists `reasoning_effort: ['none','low','medium','high','xhigh','max']`, yet the live endpoint
+ * 400s on `high`/`medium`. The capability gate (`modelAccepts` / `acceptedTiers`) trusts the catalog, so a wrong
+ * "accepted" datum reaches the wire and the turn hard-fails `validation` — the exact class of error the maintainer
+ * asked to never see again, on any model or provider.
+ *
+ * So when a request 400s naming a DROPPABLE TUNING param, the adapter strips it and retries once, and REMEMBERS the
+ * rejection for this process — every later request on that model skips the param up front, so it costs ONE extra
+ * round-trip per (model, param), not one per turn. Only PURE-TUNING params are droppable: dropping one degrades the
+ * answer (no reasoning tier / the provider's default temperature) but never changes the request's MEANING.
+ * `tools`, `messages`, `model`, and `response_format` are NEVER auto-stripped — losing them would silently change
+ * what was asked, so they stay a loud, honest error rather than a wrong-but-quiet success.
+ */
+const DROPPABLE_PARAMS: ReadonlySet<string> = new Set(['reasoning_effort', 'temperature']);
+
+/**
+ * The endpoint identity a learned rejection is scoped to. `EndpointKind` alone collapses EVERY custom `base_url` to
+ * `'custom'`, so two different gateways (LM Studio and a corporate proxy, say) serving the same familiar model id
+ * would share rejection state and poison each other. A custom endpoint is therefore distinguished by its
+ * **normalized host**.
+ *
+ * SECURITY: only the hostname and port are used — never the raw base URL. A base URL may embed credentials
+ * (`https://user:pass@gateway/v1`), and this key lives in memory beside error text; taking the parsed `hostname`
+ * excludes userinfo, path, and query by construction, so no secret can reach the key. (Belt AND braces: a
+ * credentialed URL never gets this far — `assertHttpsBaseUrl` rejects it at construction time.)
+ *
+ * The trailing dot is stripped and the host lowercased, exactly as {@link endpointKindFor} does it, so a verbatim
+ * `--base-url` typed as `https://gw.example./v1` shares one bucket with `https://gw.example/v1`. The PORT is kept —
+ * two gateways on one host at different ports are genuinely different endpoints. An unparseable URL degrades to one
+ * shared bucket rather than throwing — unreachable in practice (`assertHttpsBaseUrl` has already parsed it by the
+ * time we get here), and a wrong-but-safe grouping rather than a failed request. Belt only.
+ */
+function endpointScope(endpoint: EndpointKind, baseURL: string | undefined): string {
+  if (endpoint !== 'custom' || baseURL === undefined) return endpoint;
+  try {
+    const url = new URL(baseURL);
+    const host = url.hostname.toLowerCase().replace(/\.$/, '');
+    return `custom ${host}${url.port === '' ? '' : `:${url.port}`}`;
+  } catch {
+    return 'custom <unparseable>';
+  }
+}
+
+/**
+ * `(provider, endpointScope, model, param)` tuples the live API has rejected this process. The key is scoped to the
+ * ENDPOINT — provider plus the host-qualified {@link endpointScope} — NOT the bare model id: this store is
+ * module-wide across every adapter instance, and a custom gateway can serve a familiar id (`gpt-4o`) that 400s on a
+ * param the real OpenAI `gpt-4o` accepts, so keying loosely would let one endpoint poison another's same-id model.
+ *
+ * Learning is PARAM-level, not (param, tier)-level: a 400 on `reasoning_effort: high` withholds reasoning_effort
+ * ENTIRELY for that model, even a `low`/`medium` it might accept — a deliberate degrade (the catalog datum that
+ * claimed the tier was already proven unreliable, and the goal is to never hard-fail again).
+ */
+const learnedParamRejections = new Set<string>();
+const rejectionKey = (provider: ProviderId, scope: string, model: string, param: string): string =>
+  `${provider} ${scope} ${model} ${param}`;
+
+/** Has the live API already rejected `param` for `model` this process? Consulted by `buildCommonBody`'s gates. */
+function hasLearnedRejection(
+  provider: ProviderId,
+  scope: string,
+  model: string,
+  param: string,
+): boolean {
+  return learnedParamRejections.has(rejectionKey(provider, scope, model, param));
+}
+
+/** Record that the live API rejected `param` for `model`, so `buildCommonBody` withholds it from now on. */
+function learnParamRejection(
+  provider: ProviderId,
+  scope: string,
+  model: string,
+  param: string,
+): void {
+  learnedParamRejections.add(rejectionKey(provider, scope, model, param));
+}
+
+/** Reset the learned rejections — for tests only (module state, like `clearCatalogRefresh`). */
+export function clearLearnedParamRejections(): void {
+  learnedParamRejections.clear();
+}
+
+/**
+ * The DROPPABLE tuning param a 400 blames, or `undefined` when the failure is not a droppable-param rejection (so
+ * it surfaces normally). OpenAI names it in `error.param`; a custom OpenAI-compatible gateway may only echo it in
+ * the message, so that is scanned as a fallback.
+ */
+function rejectedDroppableParam(err: unknown): string | undefined {
+  if (!(err instanceof APIError) || err.status !== 400) return undefined;
+  const named = err.param;
+  if (typeof named === 'string') {
+    // The API named the EXACT param — trust it authoritatively. A droppable one is self-healed; a named
+    // NON-droppable param (`model`, `messages`, `response_format`, …) surfaces normally and is NEVER re-guessed via
+    // the message scan below (else a 400 on `model` whose prose merely mentions "temperature" would wrongly learn a
+    // permanent temperature rejection).
+    return DROPPABLE_PARAMS.has(named) ? named : undefined;
+  }
+  // No structured `param` (a custom OpenAI-compatible gateway that only echoes the name in prose) — scan as a
+  // fallback. Reached only when the API did NOT name a param, so it cannot override an authoritative one.
+  for (const param of DROPPABLE_PARAMS) {
+    if (err.message.includes(`'${param}'`)) return param;
+  }
+  return undefined;
+}
+
+/**
+ * Run `createOnce` (which builds the body via {@link buildCommonBody} and calls the SDK), self-healing a
+ * droppable-param 400: LEARN the rejected param and RETRY — `createOnce` rebuilds, and `buildCommonBody` now skips
+ * the learned param, so the retry carries a body the API accepts. BOUNDED by the droppable-param count: a genuinely
+ * bad request (a 400 blaming a non-droppable param, or one that keeps failing after its param is already learned)
+ * surfaces after at most a couple of tries — never a loop. Serves both `generate` and the streamed create.
+ */
+async function createWithParamFallback<T>(
+  createOnce: () => Promise<T>,
+  provider: ProviderId,
+  scope: string,
+  model: string,
+): Promise<T> {
+  // Params THIS invocation has already stripped — deliberately SEPARATE from the module-wide learned set. Gating the
+  // retry on the global set would hard-fail a CONCURRENT request that merely lost the race: another in-flight call
+  // learns the param first, so this one sees it "already learned" and throws instead of rebuilding without it. The
+  // per-invocation set is also the honest loop bound — one retry per droppable param, per request.
+  const strippedHere = new Set<string>();
+  for (;;) {
+    try {
+      return await createOnce();
+    } catch (err) {
+      const param = rejectedDroppableParam(err);
+      if (
+        param === undefined ||
+        strippedHere.has(param) ||
+        strippedHere.size >= DROPPABLE_PARAMS.size
+      ) {
+        throw err;
+      }
+      strippedHere.add(param);
+      learnParamRejection(provider, scope, model, param);
+    }
+  }
+}
+
 // --- Live model discovery: the id-only list filter (ADR-0064 §3) ------------------------------
 
 /**
- * Id SEGMENTS that are NOT chat-completions text models — DENIED from the OpenAI/DeepSeek live list
- * (ADR-0064 §3). The OpenAI `/v1/models` list is id-only (no capability metadata), so the filter is an
- * id-family heuristic: deny wins over allow, so `gpt-image-1` / `gpt-4o-audio-preview` / `omni-moderation`
- * are dropped even though they match a `gpt`/`o` allow-family. Each token is matched on a `-`/`_` SEGMENT
- * boundary (not a bare substring), so `search` denies `gpt-4o-search-preview` but NOT `o3-deep-research`
- * (re**search**), and `dall-e`'s internal `-` is a literal segment. The tail entries
- * (`instruct`/`ocr`/`davinci`/`babbage`) drop non-chat completion families that otherwise pass the
- * gpt/deepseek allow-family; all are priced-rescue-safe (the `pricedIds.has(id)` short-circuit wins first).
- */
-const OPENAI_DENY_SUBSTRINGS = [
-  'embedding',
-  'tts',
-  'whisper',
-  'image',
-  'moderation',
-  'realtime',
-  'audio',
-  'dall-e',
-  'transcribe',
-  'search',
-  'instruct',
-  'ocr',
-  'davinci',
-  'babbage',
-] as const;
-
-/** Escape a literal string for embedding inside a `RegExp`. The deny tokens carry no metacharacters today
- *  (`dall-e`'s `-` is literal outside a character class), but this keeps the boundary match safe if one is
- *  ever added. */
-function escapeRegExp(text: string): string {
-  // `String.raw` avoids the doubled backslash of `'\\$&'` — the replacement is a literal `\` + the `$&` match ref.
-  return text.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
-}
-
-/** True when a deny `token` occurs on a `-`/`_` segment boundary in `lower` — a word-boundary match, so
- *  `search` fires on `gpt-4o-search-preview` (`-search-`) but not `o3-deep-research` (`re`+`search`). */
-function denyTokenMatches(lower: string, token: string): boolean {
-  return new RegExp(`(^|[-_])${escapeRegExp(token)}([-_]|$)`).test(lower);
-}
-
-/**
- * The MODEL_PRICING native ids + canonical keys for one OpenAI-compatible provider — unioned into the live
- * list so a **cost-eligible** id ALWAYS survives the id-family heuristic (ADR-0064 §3), even if a future
- * priced id doesn't match a `gpt`/`o`/`chat`/`deepseek` family.
+ * The CATALOG's ids for one OpenAI-compatible provider — unioned into the live list so a **cost-eligible** id
+ * ALWAYS survives the id-family heuristic (ADR-0064 §3), even if a priced id does not match a
+ * `gpt`/`o`/`chat`/`deepseek` family.
+ *
+ * Its source is now the generated catalog snapshot (ADR-0071), not the hand-typed pricing table it replaced —
+ * eighty-odd models wider, which is the point. That breadth is NOT a licence to smuggle a non-chat model past the
+ * deny-list, so `isNonChatModelId` still filters it (an embedding is priced, and is still not something you can
+ * chat with; see `keepOpenAiModelId`).
  */
 export function pricedModelIdsFor(provider: ProviderId): ReadonlySet<string> {
   const ids = new Set<string>();
-  for (const [canonicalId, pricing] of Object.entries(MODEL_PRICING)) {
-    if (pricing.provider === provider) {
-      ids.add(canonicalId);
-      ids.add(pricing.nativeId);
-    }
+  for (const id of catalogModelIds()) {
+    if (catalogModel(id)?.provider === provider) ids.add(id);
   }
   return ids;
 }
 
 /**
  * Keep an OpenAI/DeepSeek model id iff it is a chat-capable text model (ADR-0064 §3). A priced id is kept
- * unconditionally (cost-eligibility wins); otherwise `ft:` fine-tunes and every {@link OPENAI_DENY_SUBSTRINGS}
+ * unconditionally (cost-eligibility wins); otherwise `ft:` fine-tunes and every non-chat family ({@link isNonChatModelId})
  * family are denied, and only the `gpt` / `o<digit>` / `deepseek` / `*chat*` families are kept. Pure +
  * unit-tested.
  */
@@ -473,7 +616,7 @@ export function keepOpenAiModelId(id: string, pricedIds: ReadonlySet<string>): b
   if (lower.startsWith('ft:')) {
     return false;
   }
-  if (OPENAI_DENY_SUBSTRINGS.some((deny) => denyTokenMatches(lower, deny))) {
+  if (isNonChatModelId(id)) {
     return false;
   }
   return (
@@ -650,20 +793,6 @@ function toOpenAiTool(toolDef: ToolDef, provider: ProviderId): OpenAI.ChatComple
   return { type: 'function', function: fn };
 }
 
-/** ADR-0066: the normalized reasoning-effort tier → OpenAI's native `reasoning_effort` values. `off`→'none',
- *  `max`→'xhigh' (its highest); low/medium/high are 1:1. A SUBSET of the SDK's `ReasoningEffort` union, so the
- *  assignment to `body.reasoning_effort` needs no cast. */
-const OPENAI_REASONING_EFFORT: Record<
-  ReasoningEffort,
-  'none' | 'low' | 'medium' | 'high' | 'xhigh'
-> = {
-  off: 'none',
-  low: 'low',
-  medium: 'medium',
-  high: 'high',
-  max: 'xhigh',
-};
-
 /** DeepSeek's native reasoning control (a Relavium-local shape — NOT a vendor SDK type — so nothing crosses the
  *  seam): the create-chat-completion `thinking` object (verified 2026-07-07, api-docs.deepseek.com). */
 interface DeepSeekThinking {
@@ -676,10 +805,10 @@ interface DeepSeekThinking {
  *  documented coarsening onto v4's actual capability). */
 const DEEPSEEK_THINKING: Record<ReasoningEffort, DeepSeekThinking> = {
   off: { type: 'disabled' },
-  low: { type: 'enabled', reasoning_effort: 'high' },
-  medium: { type: 'enabled', reasoning_effort: 'high' },
-  high: { type: 'enabled', reasoning_effort: 'high' },
-  max: { type: 'enabled', reasoning_effort: 'max' },
+  low: { type: 'enabled', reasoning_effort: DEEPSEEK_WIRE.low },
+  medium: { type: 'enabled', reasoning_effort: DEEPSEEK_WIRE.medium },
+  high: { type: 'enabled', reasoning_effort: DEEPSEEK_WIRE.high },
+  max: { type: 'enabled', reasoning_effort: DEEPSEEK_WIRE.max },
 };
 
 function toOpenAiToolChoice(choice: ToolChoice): OpenAI.ChatCompletionToolChoiceOption {
@@ -711,7 +840,12 @@ type OpenAiCompatibleBody = Omit<OpenAI.ChatCompletionCreateParamsNonStreaming, 
 };
 
 /** The shared request body (everything except the `stream` discriminant each method sets). */
-function buildCommonBody(req: LlmRequest, provider: ProviderId): OpenAiCompatibleBody {
+function buildCommonBody(
+  req: LlmRequest,
+  provider: ProviderId,
+  endpoint: EndpointKind,
+  scope: string,
+): OpenAiCompatibleBody {
   const messages: OpenAI.ChatCompletionMessageParam[] = [];
   if (req.system !== undefined) {
     messages.push({ role: 'system', content: req.system });
@@ -729,26 +863,21 @@ function buildCommonBody(req: LlmRequest, provider: ProviderId): OpenAiCompatibl
   if (req.toolChoice !== undefined) {
     body.tool_choice = toOpenAiToolChoice(req.toolChoice);
   }
-  if (req.responseFormat?.type === 'json') {
+  // Gate the request parameters on the MODEL's per-model capability (ADR-0071 amendment): a model can reject
+  // `structured_output` or `temperature` even though its provider supports them (`gpt-5.6-luna` rejects
+  // `temperature`), and sending one it rejects is a 400. Withhold rather than send-and-fail; absent data ⇒ accepted.
+  if (req.responseFormat?.type === 'json' && modelAccepts(req.model, 'structuredOutput')) {
     body.response_format = toOpenAiResponseFormat(req.responseFormat, provider);
   }
-  if (req.temperature !== undefined) {
+  if (
+    req.temperature !== undefined &&
+    modelAccepts(req.model, 'temperature') &&
+    !hasLearnedRejection(provider, scope, req.model, 'temperature')
+  ) {
     body.temperature = req.temperature;
   }
-  if (req.maxTokens !== undefined) {
-    body.max_tokens = req.maxTokens;
-  }
-  // ADR-0066: map the normalized reasoning-effort tier to each provider's NATIVE control. OpenAI takes a
-  // `reasoning_effort` tier; DeepSeek (the other id this shared adapter serves) takes a `thinking` object
-  // (off→disabled, else enabled + high/max). The host gates this to reasoning-capable models (a non-reasoning model
-  // would reject it), and `body` is spread LAST below so the mapped field wins over any providerOptions echo.
-  if (req.reasoningEffort !== undefined) {
-    if (provider === 'openai') {
-      body.reasoning_effort = OPENAI_REASONING_EFFORT[req.reasoningEffort];
-    } else if (provider === 'deepseek') {
-      body.thinking = DEEPSEEK_THINKING[req.reasoningEffort];
-    }
-  }
+  const maxTokens = applyOutputCap(body, req, provider, endpoint);
+  applyReasoningControl(body, req, provider, scope);
   if (req.stopSequences !== undefined) {
     body.stop = req.stopSequences;
   }
@@ -762,7 +891,128 @@ function buildCommonBody(req: LlmRequest, provider: ProviderId): OpenAiCompatibl
     return body;
   }
   // The typed escape hatch (1.D): `body` is spread LAST so mapped common-path fields always win.
-  return { ...req.providerOptions, ...body };
+  //
+  // "Win" used to be automatic, because the mapped key and the escape-hatch key were the SAME STRING — a
+  // `providerOptions.max_tokens` was simply overwritten. Renaming the mapped key to `max_completion_tokens` on the
+  // official endpoint quietly broke that: the old key no longer shadows anything, so BOTH fields went out, and
+  // OpenAI rejects a request carrying both. It was a 400 on exactly the population §10a exists to rescue.
+  //
+  // So the two cap keys are reconciled explicitly. Whichever field we mapped wins outright; the other is dropped.
+  // If the caller mapped NO cap and reached for a cap through `providerOptions`, theirs stands untouched — that is
+  // the §10a escape hatch, and the way an exotic gateway asks for the field its server actually implements.
+  const escape = { ...req.providerOptions };
+  if (maxTokens !== undefined) {
+    delete escape['max_tokens'];
+    delete escape['max_completion_tokens'];
+  }
+  // A param the live API has PROVABLY rejected for this (endpoint, model) is dropped from the escape hatch too.
+  // The escape hatch is spread BEFORE the mapped body, so withholding the mapped field is not enough on its own:
+  // with `body` omitting the key there is nothing left to shadow an override of that SAME key, and it sails through
+  // to re-trigger the very 400 the self-heal exists to rescue — an "explicit verbatim override" that is
+  // guaranteed to fail is not one worth honouring. Scoped to the two droppable keys; every other providerOptions
+  // key is left untouched, and a param that was never rejected still overrides exactly as before.
+  for (const param of DROPPABLE_PARAMS) {
+    if (hasLearnedRejection(provider, scope, req.model, param)) delete escape[param];
+  }
+  return { ...escape, ...body };
+}
+
+/**
+ * THE OUTPUT CAP — the field NAME is a dialect, and the VALUE is clamped (ADR-0071 §7/§10a). Sets it on `body`
+ * and RETURNS the capped value, because the escape-hatch reconciliation in {@link buildCommonBody} must know
+ * whether a cap was mapped in order to drop a caller's competing cap key.
+ *
+ * Name: OpenAI's official Chat Completions deprecated `max_tokens` in favour of `max_completion_tokens`, and its
+ * reasoning models REJECT the old field outright — the second half of the maintainer's "max tokens errors". But
+ * this same adapter serves every custom OpenAI-compatible `base_url` (LM Studio, Ollama, vLLM, LiteLLM, an
+ * enterprise gateway) and DeepSeek, most of which implement only the legacy field. Switching globally would
+ * trade one broken population for another, so the rule is by ENDPOINT, not by provider: OpenAI's own API gets
+ * the modern field, everything else keeps `max_tokens`.
+ *
+ * Value: capped at the model's published output ceiling, DOWN and never up — an authored `max_tokens: 200000` on
+ * a model whose limit is 64 000 is a 400 on every single turn, not an ambitious request.
+ */
+function applyOutputCap(
+  body: OpenAiCompatibleBody,
+  req: LlmRequest,
+  provider: ProviderId,
+  endpoint: EndpointKind,
+): number | undefined {
+  const capField = outputCapField(provider, endpoint);
+  const maxTokens = cappedMaxTokens(req.maxTokens, req.model, endpoint);
+  if (maxTokens !== undefined) {
+    body[capField] = maxTokens;
+  }
+  return maxTokens;
+}
+
+/**
+ * ADR-0066: map the normalized reasoning-effort tier to each provider's NATIVE control. OpenAI takes a
+ * `reasoning_effort` tier; DeepSeek (the other id this shared adapter serves) takes a `thinking` object
+ * (off→disabled, else enabled + high/max). The host gates this to reasoning-capable models (a non-reasoning model
+ * would reject it), and `body` is spread LAST in {@link buildCommonBody} so the mapped field wins over any
+ * providerOptions echo.
+ *
+ * ADR-0071 §6: a model the CATALOG cannot describe gets no reasoning field at all — a custom `base_url` endpoint,
+ * or one so new we have no metadata for it. The host's gate already withholds in that case, but the adapter is a
+ * public seam and must not depend on a caller having run it: sending a reasoning parameter to a model that may not
+ * take one is the exact class of bug this work exists to close, and a guess is what put a rejected value on the
+ * wire in the first place. (`off` is inside this gate too — `thinking: {disabled}` is still a field, and still a
+ * 400 on a model with no reasoning surface.)
+ *
+ * The gate asks `acceptedTiers` — the same function the picker and the engine's gate ask — rather than
+ * re-deriving the answer from the descriptor's fields, because two copies of that logic are two chances to
+ * disagree, and this file already shipped that bug twice: the OpenAI arm tested that an effort axis EXISTED
+ * rather than that the tier was IN it, and the DeepSeek arm tested nothing at all.
+ */
+function applyReasoningControl(
+  body: OpenAiCompatibleBody,
+  req: LlmRequest,
+  provider: ProviderId,
+  scope: string,
+): void {
+  const reasoningControls = catalogModel(req.model)?.reasoning;
+  if (req.reasoningEffort === undefined || reasoningControls === undefined) return;
+  if (!acceptedTiers(provider, reasoningControls).has(req.reasoningEffort)) return;
+  if (provider === 'openai') {
+    // Self-healing (see `createWithParamFallback`): once the live API has 400'd on `reasoning_effort` for this
+    // model, withhold it from every later request — the catalog claimed a tier the model does not actually take.
+    if (hasLearnedRejection(provider, scope, req.model, 'reasoning_effort')) return;
+    // `off` IS an effort value on OpenAI (`'none'`), so it needs no branch of its own: `gpt-5.4-pro` publishes
+    // ['medium','high','xhigh'] and rejects BOTH `low` and `off`, and one membership test covers them.
+    // `openAiWireValue` reads the MODEL's ladder so `max` reaches a published `'max'` (the gpt-5.6 family) instead
+    // of stopping at the static `'xhigh'` (review M1) — the same per-model truth `acceptedTiers` gated on above.
+    //
+    // The cast bridges a VENDOR-TYPE LAG, not a Relavium type hole: models.dev (the ADR-0071 source of truth) lists
+    // `'max'` in gpt-5.6's effort values, but the pinned OpenAI SDK's `ReasoningEffort` union tops out at `'xhigh'`.
+    // The value is always one `acceptedTiers` (⇒ the catalog) proved the model accepts; the SDK's JSON body carries
+    // the string verbatim. Narrowed to the field's own type, so it can never widen to an arbitrary string.
+    // NOTE: widening `OpenAiCompatibleBody['reasoning_effort']` to the full wire union (so this needs no cast) was
+    // tried and REVERTED — the body is passed straight to `chat.completions.create`, whose streaming/non-streaming
+    // OVERLOADS require the SDK's own narrower `ReasoningEffort`. A widened field stops matching either overload, so
+    // the call's return type collapses to a `ChatCompletion | Stream<…>` union and every downstream `.choices` /
+    // `.usage` read breaks. Casting the VALUE here is the minimal bridge that keeps the SDK contract intact.
+    body.reasoning_effort = openAiWireValue(req.reasoningEffort, reasoningControls) as Exclude<
+      OpenAiCompatibleBody['reasoning_effort'],
+      undefined
+    >;
+  } else if (provider === 'deepseek') {
+    // `deepseek-reasoner`'s descriptor is EMPTY (`{}`): it reasons, but publishes no controllable tier.
+    // `acceptedTiers` returns the empty set for `{}`, so nothing goes on the wire and the picker offers nothing:
+    // they agree by construction rather than by two people remembering the same rule.
+    body.thinking = DEEPSEEK_THINKING[req.reasoningEffort];
+  }
+}
+
+/** The output-cap field this endpoint takes (ADR-0071 §10a). ONE place decides it, so no caller can send both. */
+function outputCapField(
+  provider: ProviderId,
+  endpoint: EndpointKind,
+): 'max_tokens' | 'max_completion_tokens' {
+  // OpenAI's own Chat Completions deprecated `max_tokens`, and its reasoning models reject it outright. Every other
+  // OpenAI-compatible server — DeepSeek's API, LM Studio, Ollama, vLLM, LiteLLM, an enterprise gateway — implements
+  // the legacy field, and most implement only that.
+  return provider === 'openai' && endpoint === 'official' ? 'max_completion_tokens' : 'max_tokens';
 }
 
 /** Lower a canonical `responseFormat: json` to OpenAI's `response_format`: DeepSeek supports only
@@ -984,6 +1234,8 @@ async function* streamChunks(
   client: OpenAI,
   req: LlmRequest,
   provider: ProviderId,
+  endpoint: EndpointKind,
+  scope: string,
   key: string,
 ): AsyncIterable<StreamChunk> {
   const state: OpenAiStreamState = {
@@ -996,9 +1248,19 @@ async function* streamChunks(
   let usage: Usage = ZERO_USAGE;
   let sdkStream: AsyncIterable<OpenAI.ChatCompletionChunk>;
   try {
-    sdkStream = await client.chat.completions.create(
-      { ...buildCommonBody(req, provider), stream: true, stream_options: { include_usage: true } },
-      buildRequestOptions(req),
+    sdkStream = await createWithParamFallback(
+      () =>
+        client.chat.completions.create(
+          {
+            ...buildCommonBody(req, provider, endpoint, scope),
+            stream: true,
+            stream_options: { include_usage: true },
+          },
+          buildRequestOptions(req),
+        ),
+      provider,
+      scope,
+      req.model,
     );
   } catch (err) {
     yield { type: 'error', error: openaiErrorToLlmError(err, provider, key) };
@@ -1059,6 +1321,19 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
   if (deps.baseURL !== undefined) {
     assertHttpsBaseUrl(deps.baseURL);
   }
+  // OFFICIAL vs CUSTOM — decided ONCE, here, where the base URL is actually known (ADR-0071 §7/§10a).
+  //
+  // A CUSTOM endpoint is another server speaking OpenAI's protocol: LM Studio, Ollama, vLLM, an enterprise
+  // gateway. It governs two things downstream — the output-cap FIELD NAME (only OpenAI's own API takes
+  // `max_completion_tokens`) and whether we CLAMP that cap against the catalog at all (a proxy may serve something
+  // quite different under a familiar model id, and silently lowering a number the user typed is a behaviour change
+  // we have no right to make on a model we cannot describe).
+  //
+  // By HOST, not by "was a string passed": DeepSeek's own `api.deepseek.com` is official (it is our default), and
+  // so is `https://api.openai.com/v1/` typed out by hand. See {@link endpointKindFor}.
+  const endpoint: EndpointKind = endpointKindFor(providerId, deps.baseURL);
+  // Host-qualified so two custom gateways never share learned param rejections (see `endpointScope`).
+  const rejectionScope = endpointScope(endpoint, deps.baseURL);
   const createClient = (key: string): OpenAI =>
     new OpenAI({
       apiKey: key,
@@ -1075,9 +1350,15 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       const client = createClient(key);
       try {
-        const completion = await client.chat.completions.create(
-          { ...buildCommonBody(req, providerId), stream: false },
-          buildRequestOptions(req),
+        const completion = await createWithParamFallback(
+          () =>
+            client.chat.completions.create(
+              { ...buildCommonBody(req, providerId, endpoint, rejectionScope), stream: false },
+              buildRequestOptions(req),
+            ),
+          providerId,
+          rejectionScope,
+          req.model,
         );
         const choice = completion.choices[0];
         // A non-null refusal is a safety decline — normalize to content_filter, not a clean stop.
@@ -1104,13 +1385,13 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       assertStreamable(providerId, supports);
       assertMediaCapabilities(providerId, supports, req); // per-modality input/output gate (ADR-0031, 1.AE)
       assertNoStreamingMediaOutput(providerId, req); // media-out is generate()-only; streaming triad deferred (ADR-0046 §4)
-      return streamChunks(createClient(key), req, providerId, key);
+      return streamChunks(createClient(key), req, providerId, endpoint, rejectionScope, key);
     },
     /**
      * Live model discovery (ADR-0064 §1) over the SDK's `models.list()`. The OpenAI/DeepSeek list is
      * ID-ONLY (no context/price metadata), so each row maps to a bare `{ id }` `ModelListing` and is
-     * filtered to chat-capable text families via `keepOpenAiModelId` (unioned with `MODEL_PRICING` for
-     * cost-eligibility). The provider id (`openai` | `deepseek`) selects the priced-id union set. Bounded +
+     * filtered to chat-capable text families via `keepOpenAiModelId` (unioned with the generated catalog's
+     * priced ids for cost-eligibility). The provider id (`openai` | `deepseek`) selects the priced-id union set. Bounded +
      * abortable + secret-free via `boundedListModels`; a per-row parse failure drops only that row.
      */
     async listModels(key: string, signal?: AbortSignalLike): Promise<ModelListing[]> {

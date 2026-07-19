@@ -57,7 +57,7 @@ adversarially reviewed by a 10-agent workflow before being locked.
 - **Local-first storage.** SQLite locally (SQLCipher-encrypted on desktop;
   unencrypted with owner-only permissions on the CLI, [ADR-0050](decisions/0050-cli-history-db-at-rest-posture.md));
   the same Drizzle schema ports to PostgreSQL for the Phase 2 cloud layer. See
-  [reference/desktop/database-schema.md](reference/desktop/database-schema.md)
+  [reference/shared-core/database-schema.md](reference/shared-core/database-schema.md)
   and the SQLite-vs-Postgres porting notes there.
 - **Keys never touch the frontend.** API keys live only in the OS keychain,
   resolved at call time, and never in the WebView renderer or any log/checkpoint.

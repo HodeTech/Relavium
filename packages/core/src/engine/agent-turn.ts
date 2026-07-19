@@ -47,6 +47,7 @@ import {
   type LlmRequest,
   type MediaUnitsEstimate,
   type PricingOverlay,
+  type ProviderId,
   type ResponseFormat,
   type StreamChunk,
   type ToolDef as LlmToolDef,
@@ -106,6 +107,10 @@ export const DEFAULT_AGENT_TURN_LIMITS: AgentTurnLimits = {
 export type PreEgressHook = (info: {
   readonly model: string;
   readonly maxTokens?: number;
+  /** The routing provider for this call — forwarded to the budget governor's endpoint estimate so it keys on the
+   *  ACTUAL provider (custom base_url ⇒ `custom`, no clamp), not the model's catalog provider (review M2). Optional:
+   *  a media-only gate (`maxTokens: 0`) omits it harmlessly, since the token estimate is 0 regardless of endpoint. */
+  readonly provider?: ProviderId;
   readonly outputModalities?: readonly OutputModality[];
   readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
 }) => void | Promise<void>;
@@ -612,10 +617,15 @@ async function dispatchToolCalls(
  * a {@link BudgetPauseError} (`pause_for_approval`) and any other error propagate as-is (the run path maps
  * the pause to a `paused` node outcome). Extracted from the turn loop to keep its complexity in budget.
  */
-async function awaitPreEgress(params: AgentTurnParams, activeModel: string): Promise<void> {
+async function awaitPreEgress(
+  params: AgentTurnParams,
+  activeModel: string,
+  activeProvider: ProviderId | undefined,
+): Promise<void> {
   try {
     await params.preEgress?.({
       model: activeModel,
+      ...(activeProvider === undefined ? {} : { provider: activeProvider }),
       ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
       ...(params.outputModalities === undefined
         ? {}
@@ -737,6 +747,10 @@ async function driveAgentTurn(
   // overlay (2.5.G S10) lets the tracker price a user-priced model the static registry lacks.
   const costTracker = new CostTracker(params.resolvePrice);
   let activeModel = primaryModel;
+  // The provider that pairs with `activeModel`, updated together in `onAttempt`. A failover moves BOTH, so the
+  // pre-egress endpoint estimate keys on the routing provider actually in play, not the model's catalog provider
+  // (review M2). Starts on the primary entry's provider.
+  let activeProvider: ProviderId | undefined = params.planEntries[0]?.provider.id;
   let nonSkippedAttempts = 0;
 
   const onAttempt = (record: AttemptRecord): void => {
@@ -744,6 +758,7 @@ async function driveAgentTurn(
     // the next entry's streamed tokens would be mis-attributed to a provider that never ran.
     if (record.outcome === 'skipped') return;
     activeModel = record.model;
+    activeProvider = record.provider;
     nonSkippedAttempts += 1;
     usage.engaged = true; // a non-skipped attempt RAN — mark engaged even if it then errored at zero usage
     if (record.usage === undefined) return;
@@ -774,13 +789,18 @@ async function driveAgentTurn(
     costTracker,
     onAttempt,
     // The pre-egress budget hook runs before EVERY provider attempt, not just the first turn, so a failover
-    // to a more expensive model is also gated (1.AC). The chain's PreAttemptHook only supplies `{ model,
-    // maxTokens }`, so wrap the hook to also carry the turn-static media estimate (1.AF/D17) — otherwise the
-    // failover-attempt budget check would silently drop the media addend (ADR-0044 §3).
+    // to a more expensive model is also gated (1.AC). The chain's PreAttemptHook supplies `{ model, provider,
+    // maxTokens }` — `provider` is THIS attempt's routing provider (review M2) — so wrap the hook to also carry
+    // the turn-static media estimate (1.AF/D17); otherwise the failover-attempt check would silently drop the
+    // media addend (ADR-0044 §3). `...info` forwards `provider` to the governor's endpoint estimate unchanged.
     ...(preEgress === undefined
       ? {}
       : {
-          preAttempt: (info: { readonly model: string; readonly maxTokens?: number }) =>
+          preAttempt: (info: {
+            readonly model: string;
+            readonly provider: ProviderId;
+            readonly maxTokens?: number;
+          }) =>
             preEgress({
               ...info,
               ...(params.outputModalities === undefined
@@ -803,7 +823,7 @@ async function driveAgentTurn(
   // agent's final artifact and `generate()` is one round-trip). The two budget gates below mirror the text
   // path: `awaitPreEgress` (primary-model, zero-egress-on-cancel) then the chain's per-attempt `preAttempt`.
   if (requestsMediaOutput(params)) {
-    await awaitPreEgress(params, activeModel);
+    await awaitPreEgress(params, activeModel, activeProvider);
     throwIfAborted(params.signal);
     const turn = await generateOneTurn(chain, messages, params);
     throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)
@@ -845,7 +865,7 @@ async function driveAgentTurn(
     //  • `FallbackChain.preAttempt` then runs again per chain attempt against the ACTUAL (possibly
     //    failed-over) model, so a failover to a pricier model is still enforced. `streamOneTurn` maps a
     //    chain-path Budget*Error back into this taxonomy via `chunk.error.cause`.
-    await awaitPreEgress(params, activeModel);
+    await awaitPreEgress(params, activeModel, activeProvider);
     // The preEgress hook is awaited (its budget check may be async), so the signal can fire during
     // that await. Re-check before engaging the provider so a cancel there costs no egress — symmetric
     // with the post-stream re-check below.

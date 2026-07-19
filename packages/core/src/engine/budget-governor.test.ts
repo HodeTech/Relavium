@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { PricingOverlay } from '@relavium/llm';
+import {
+  estimateMaxNextCost,
+  type EndpointKind,
+  type PricingOverlay,
+  type ProviderId,
+} from '@relavium/llm';
 import type { Budget } from '@relavium/shared';
 
 import { BudgetExceededError, BudgetGovernor, BudgetPauseError } from './budget-governor.js';
@@ -13,24 +18,31 @@ describe('BudgetGovernor', () => {
       budget?: Budget;
       defaultMaxTokensEstimate?: number;
       resolvePrice?: PricingOverlay;
+      resolveEndpoint?: (provider: ProviderId) => EndpointKind;
     } = {},
   ): {
     governor: BudgetGovernor;
     warnings: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>[];
+    unpriced: string[];
   } {
     const warnings: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>[] = [];
+    const unpriced: string[] = [];
     const governor = new BudgetGovernor({
       budget: overrides.budget ?? budget,
       ...(overrides.defaultMaxTokensEstimate === undefined
         ? {}
         : { defaultMaxTokensEstimate: overrides.defaultMaxTokensEstimate }),
       ...(overrides.resolvePrice === undefined ? {} : { resolvePrice: overrides.resolvePrice }),
+      ...(overrides.resolveEndpoint === undefined
+        ? {}
+        : { resolveEndpoint: overrides.resolveEndpoint }),
+      onUnpriced: (model) => unpriced.push(model),
       emit: (event) => {
         warnings.push(event);
         return Promise.resolve();
       },
     });
-    return { governor, warnings };
+    return { governor, warnings, unpriced };
   }
 
   it('allows a call whose estimate stays within the cap', async () => {
@@ -119,10 +131,58 @@ describe('BudgetGovernor', () => {
     // UnknownModelError. The pre-egress governor must NOT hard-fail an otherwise-valid run on it; it
     // degrades to `allow` (mirrors the FallbackChain's unpriced⇒no-cost policy). Even with on_exceed: fail
     // and the run already over a notional cap, an unpriced model resolves rather than throwing.
-    const { governor, warnings } = makeGovernor({ budget: { ...budget, on_exceed: 'fail' } });
+    const { governor, warnings, unpriced } = makeGovernor({
+      budget: { ...budget, on_exceed: 'fail' },
+    });
     governor.updateCost(900_000);
     await expect(governor.checkPreEgress('my-self-hosted-model', 10_000)).resolves.toBeUndefined();
-    expect(warnings).toHaveLength(0);
+    expect(warnings).toHaveLength(0); // it did not exceed — nothing WAS billed
+    // …but it is UNPRICED, so the cap could not apply, and that is said once (ADR-0071 §K7): a cap that silently
+    // does not apply is a false sense of safety.
+    expect(unpriced).toEqual(['my-self-hosted-model']);
+  });
+
+  describe('strict_cost_cap (ADR-0071 §K7)', () => {
+    it('BLOCKS an unpriced model when on — "if you cannot price it, do not run it"', () => {
+      // The opt-in for a user who set a cap SPECIFICALLY to bound an untrusted model. The silent degrade-to-allow
+      // is the wrong trade for them: an unpriced model is a hole in the cap, and they would rather refuse the turn.
+      const { governor } = makeGovernor({
+        budget: { ...budget, on_exceed: 'fail', strict_cost_cap: true },
+      });
+      const result = governor.evaluatePreEgress('my-self-hosted-model', 10_000);
+      expect(result.kind).toBe('fail');
+      if (result.kind === 'fail') {
+        expect(result.error.message).toContain('no price');
+        expect(result.error.message).toContain('strict_cost_cap');
+      }
+    });
+
+    it('does NOT block a PRICED model — strict only bites when we genuinely cannot price', () => {
+      const { governor } = makeGovernor({
+        budget: { ...budget, on_exceed: 'fail', strict_cost_cap: true },
+      });
+      governor.updateCost(0);
+      expect(governor.evaluatePreEgress('claude-haiku-4-5', 1000).kind).toBe('allow');
+    });
+
+    it('OFF (the default) degrades to allow with a notice, not a block', async () => {
+      const { governor, unpriced } = makeGovernor({ budget: { ...budget, on_exceed: 'fail' } });
+      // `evaluatePreEgress` classifies; `checkPreEgress` is what APPLIES the result and fires the sink. Drive the
+      // applying path, so the "with a notice" in this test's name is actually asserted.
+      expect(governor.evaluatePreEgress('my-self-hosted-model', 10_000).kind).toBe('unpriced');
+      await expect(
+        governor.checkPreEgress('my-self-hosted-model', 10_000),
+      ).resolves.toBeUndefined();
+      expect(unpriced).toEqual(['my-self-hosted-model']);
+    });
+  });
+
+  it('notifies UNPRICED only once per model — a loop must not repeat it every turn', async () => {
+    const { governor, unpriced } = makeGovernor();
+    await governor.checkPreEgress('my-self-hosted-model', 1000);
+    await governor.checkPreEgress('my-self-hosted-model', 1000);
+    await governor.checkPreEgress('another-unpriced-one', 1000);
+    expect(unpriced).toEqual(['my-self-hosted-model', 'another-unpriced-one']); // deduped per model
   });
 
   it('accepts a media-unit estimate and folds it as a disjoint addend (1.AF/D17)', () => {
@@ -194,6 +254,50 @@ describe('BudgetGovernor', () => {
       governor.updateCost(0);
       await expect(governor.checkPreEgress('acme-custom-1', 1_000)).resolves.toBeUndefined();
       expect(warnings).toHaveLength(0);
+    });
+  });
+
+  describe('endpoint keys on the ROUTING provider, not the model catalog (review M2)', () => {
+    // A custom `openai` gateway (OpenRouter/LiteLLM) serving `deepseek-v4-flash`: the wire is UNCLAMPED (a gateway
+    // may serve anything under a familiar id), so the estimate must reflect the FULL request — keyed on the routing
+    // provider ('openai' = custom here), never the model's catalog provider ('deepseek' = official) which clamps to
+    // the ceiling and under-authorizes. Before M2, resolveEndpoint(model)→catalog provider→official→clamp→allow.
+    const HUGE = 10_000_000;
+    const resolveEndpoint = (provider: ProviderId): EndpointKind =>
+      provider === 'openai' ? 'custom' : 'official';
+
+    it('routes the endpoint by the provider argument — same model, opposite clamp', () => {
+      const official = estimateMaxNextCost('deepseek-v4-flash', HUGE, undefined, 'official');
+      const custom = estimateMaxNextCost('deepseek-v4-flash', HUGE, undefined, 'custom');
+      expect(custom).toBeGreaterThan(official); // the catalog ceiling clamp is real for this model
+
+      // A cap between the clamped and unclamped cost: official passes, custom must not.
+      const cap = official + Math.round((custom - official) / 2);
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: cap, on_exceed: 'fail' },
+        resolveEndpoint,
+      });
+      governor.updateCost(0);
+
+      // On its own API (official) → clamped to the ceiling → under the cap → allow.
+      expect(
+        governor.evaluatePreEgress('deepseek-v4-flash', HUGE, undefined, 'deepseek').kind,
+      ).toBe('allow');
+      // Through the custom 'openai' gateway → unclamped → over the cap → fail. Keying on the catalog provider
+      // ('deepseek') would have wrongly clamped THIS path and waved the overspend through (the M2 defect).
+      expect(governor.evaluatePreEgress('deepseek-v4-flash', HUGE, undefined, 'openai').kind).toBe(
+        'fail',
+      );
+    });
+
+    it('omitting the provider (a media-only gate) defaults to official — a harmless no-op at maxTokens 0', () => {
+      const { governor } = makeGovernor({
+        budget: { ...budget, on_exceed: 'fail' },
+        resolveEndpoint,
+      });
+      governor.updateCost(0);
+      // maxTokens 0 → token estimate 0 regardless of endpoint, so the absent provider cannot mis-authorize.
+      expect(governor.evaluatePreEgress('deepseek-v4-flash', 0).kind).toBe('allow');
     });
   });
 });

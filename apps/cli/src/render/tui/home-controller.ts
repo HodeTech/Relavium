@@ -16,6 +16,7 @@ import {
 } from './effort-picker.js';
 import { foldModelPickerKey, partialFailureBanner, type ModelPickerState } from './model-picker.js';
 import type { ReseatTarget } from '../../commands/chat.js';
+import { effortRowLabel } from '../../chat/effort-notice.js';
 import { nextMode, type ChatMode } from '../../chat/chat-mode.js';
 import { clearedNotice, modelSwitchNotice } from '../../chat/repl-info.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../../chat/doctor.js';
@@ -206,10 +207,15 @@ export interface HomeModelsPort {
   /** The current resolved default reasoning-effort tier (ADR-0066 §6) — the `✓`/opening highlight of the bare-Home
    *  effort sub-step; `undefined` ⇒ none set (the sub-list opens on a neutral middle tier). */
   currentEffort: () => ReasoningEffort | undefined;
-  /** Persist the chosen model as the next session's default, and (ADR-0066 §6) — when the effort sub-step ran for a
-   *  reasoning model — its effort tier too, in ONE atomic write (writeGlobalPreferences). An absent `reasoningEffort`
-   *  leaves any prior effort default unchanged. Throws `ConfigError` on a bad write. */
-  writeDefault: (modelId: string, reasoningEffort?: ReasoningEffort) => void;
+  /** Persist the chosen model as the next session's default — WITH its `provider` (ADR-0059: authoritative at pick
+   *  time, so the next chat skips id inference) and (ADR-0066 §6) — when the effort sub-step ran for a reasoning
+   *  model — its effort tier too, in ONE atomic write (writeGlobalPreferences). An absent `reasoningEffort` leaves
+   *  any prior effort default unchanged. Throws `ConfigError` on a bad write. */
+  writeDefault: (
+    modelId: string,
+    provider: ReseatTarget['provider'],
+    reasoningEffort?: ReasoningEffort,
+  ) => void;
 }
 
 export interface HomeControllerDeps {
@@ -717,6 +723,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
         phase: 'model',
         effortStep,
         pending: undefined,
+        effortTiers: [], // no model pending yet — populated on the model→effort transition
         effortSelected: 0,
         currentEffort,
       },
@@ -736,7 +743,11 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   ): string => {
     // The effort (ADR-0066 §6) is written to the SAME layer atomically, so it shares the model's effectiveness — the
     // suffix just names what was set (a reasoning model went through the effort sub-step; a non-reasoning one did not).
-    const effort = reasoningEffort === undefined ? '' : ` at effort ${reasoningEffort}`;
+    // The label reads "on" for a budget model's canonical-on tier, matching the picker (ADR-0066 amendment).
+    const effort =
+      reasoningEffort === undefined
+        ? ''
+        : ` at effort ${effortRowLabel(modelId, reasoningEffort).label}`;
     if (effective === modelId)
       return `Default model set to ${displayName}${effort} — applies to your next chat session.`;
     if (effective === undefined) {
@@ -751,12 +762,13 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
   const writeNextSessionDefault = (
     modelId: string,
     displayName: string,
+    provider: ReseatTarget['provider'],
     reasoningEffort?: ReasoningEffort,
   ): void => {
     const port = deps.models;
     if (port === undefined) return;
     try {
-      port.writeDefault(modelId, reasoningEffort);
+      port.writeDefault(modelId, provider, reasoningEffort);
     } catch {
       // A generic save-failure hint — the actual write target may be a `--config` override, not the canonical
       // `~/.relavium/config.toml`, so don't name a path the user may not be using.
@@ -785,13 +797,15 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
     displayName: string,
     reasoningEffort: ReasoningEffort,
   ): void => {
+    const label = effortRowLabel(
+      active.store.getSnapshot().state.model ?? '',
+      reasoningEffort,
+    ).label;
     if (reasoningEffort !== active.store.getSnapshot().reasoningEffort) {
       active.onSetEffort?.(reasoningEffort);
-      active.store.note(
-        `Reasoning effort set to ${reasoningEffort} — applies to your next message.`,
-      );
+      active.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
     } else {
-      active.store.note(`Already on ${displayName} at effort ${reasoningEffort}.`);
+      active.store.note(`Already on ${displayName} at effort ${label}.`);
     }
     set({ modelPicker: undefined });
   };
@@ -849,7 +863,7 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       applyLiveSessionPick(active, modelId, displayName, provider, reasoningEffort);
       return;
     }
-    writeNextSessionDefault(modelId, displayName, reasoningEffort);
+    writeNextSessionDefault(modelId, displayName, provider, reasoningEffort);
   };
   // The open `/models` picker owns every key (2.5.G S7) — parity with routeMentionKey. Returns whether the key was
   // consumed. A DIMMED (unavailable-on-your-key) model is non-selectable (ADR §6): accepting one shows a transient
@@ -911,17 +925,20 @@ export function createHomeController(deps: HomeControllerDeps): HomeController {
       case 'close':
         set({ effortPicker: undefined });
         break;
-      case 'accept':
+      case 'accept': {
         set({ effortPicker: undefined });
+        const label = effortRowLabel(
+          active.store.getSnapshot().state.model ?? '',
+          step.effort,
+        ).label;
         if (step.effort === open.current) {
-          active.store.note(`Already at reasoning effort ${step.effort}.`);
+          active.store.note(`Already at reasoning effort ${label}.`);
         } else {
           active.onSetEffort?.(step.effort);
-          active.store.note(
-            `Reasoning effort set to ${step.effort} — applies to your next message.`,
-          );
+          active.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
         }
         break;
+      }
       case 'state':
         set({ effortPicker: step.state });
         break;

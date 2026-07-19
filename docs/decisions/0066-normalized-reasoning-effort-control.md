@@ -11,6 +11,47 @@
 > **Note (2026-07-07): interactive `/effort` overlay realized (§6).** §6 anticipated "a future `/effort`" for standalone effort changes; it is now shipped as a first-class **interactive tier-selector overlay** (not just a typed `/effort <tier>` — that still works). Bare `/effort` (typed or selected from the `/` palette) opens a keyboard-owning overlay — a fixed off/low/medium/high/max list, opening on the bound tier, arrow+Enter to apply — in BOTH `relavium chat` and the in-Home live chat, sharing one pure fold ([effort-picker.ts](../../apps/cli/src/render/tui/effort-picker.ts)) and one view ([effort-tier-list.tsx](../../apps/cli/src/render/tui/effort-tier-list.tsx), also used by the `/models` effort sub-step). Applying calls the §5 per-turn `onSetEffort` — **no reseat**. It opens ONLY on a reasoning-capable bound model; a non-reasoning model falls through to the informational notice (`<model> has no controllable reasoning tier`). This realizes §6's "standalone effort changes ride the same session override" — from a promise to a shipped surface. (§6's separate point, that the bare-Home picker writes only the config default and not a live session's effort, is unchanged here — a follow-up gives that picker its own effort sub-step.)
 >
 > **Note (2026-07-07): the bare-Home `/models` picker gained an effort sub-step (§6, superseding "config default only").** §6 said the bare-Home picker "writes the config default, not a live session's effort" and stays single-phase. It is now **two-phase for a reasoning model** on BOTH surfaces: picking a reasoning-capable model advances to the effort sub-step (opened on the current default tier), and accepting writes the model AND its effort tier as the NEXT session's defaults. This required a **new global config key**, `[preferences].reasoning_effort` (the effort counterpart of `default_model`), added to `GlobalConfigSchema`; the CLI config writer generalized to `writeGlobalPreferences({ defaultModel?, reasoningEffort? })` (ADR-0063 §note), writing both in one atomic, schema-round-tripped write (a partial write leaves the other key unchanged); and `resolveChat` now falls back to `[preferences].reasoning_effort` below the `[chat]` layers — the exact precedence `default_model` already has. So a user can set BOTH their default model and default effort from the Home without starting a chat. A live in-Home chat's `/models` effort sub-step still sets the per-turn override (no reseat, §5) rather than writing config — the accept action is surface-specific, off the one picker.
+>
+> **Note (2026-07-13): a PREMISE of this ADR is FALSE, and it shipped as a live bug — corrected by
+> [ADR-0071](0071-models-dev-as-the-model-metadata-source.md).**
+>
+> §1 below states: *"All four currently-targeted providers control reasoning by a discrete **TIER, not a token
+> budget** … Gemini (a thinking-level field) … The older 'token budget' shapes (pre-`output_config` Anthropic,
+> **Gemini 2.5**) are **legacy**."*
+>
+> That sentence is defensible about the industry and **wrong about the models we actually ship**. Google's
+> documentation for the `generateContent` API this project calls is explicit — *"Gemini 2.5 series models don't
+> support `thinkingLevel`; use `thinkingBudget` instead"* — and `gemini-2.5-pro` **cannot disable thinking at
+> all** (`thinkingBudget` 128–32768, no zero). `gemini-2.5-flash` and `gemini-2.5-pro` are the **only two Gemini
+> rows in `MODEL_PRICING`**. So the shape this ADR set aside as "legacy" is the shape of **every Gemini model we
+> ship**, and the adapter has been sending them a `thinkingLevel` they do not take.
+>
+> The error was **structural, not clerical**. This ADR made the native shape a property of the **adapter** and
+> the capability a per-model `boolean`. A boolean cannot say *"this model takes a token budget in [128, 32768]
+> and has no off switch"* — so the bug had nowhere to be caught, and a test could not have found it either.
+> [ADR-0071](0071-models-dev-as-the-model-metadata-source.md) makes the control's **shape** and its **accepted
+> tiers** per-model data from a catalog; the adapter then selects `thinkingLevel` vs `thinkingBudget` from that
+> descriptor rather than assuming one for the whole provider.
+>
+> **What survives, unchanged:** the normalized five-tier vocabulary (`off|low|medium|high|max`), the
+> canonical-wins-over-`providerOptions` precedence, the `/effort` overlay, and the host-gated design. What
+> changes is only that a model now *declares* which tiers it accepts and which native shape carries them,
+> instead of the adapter assuming both.
+
+> **Note (2026-07-14): the PICKER now presents "one row per distinct outcome", separate from the wire-accurate
+> accepted set (§6 presentation refinement — append-only, the seam is unchanged).** `acceptedTiers` correctly
+> answers what the WIRE takes, but it made a poor MENU: it offered five rows for models that expose fewer real
+> choices, because several normalized tiers can collapse onto one provider value (DeepSeek's low/medium/high all
+> send `high`; Gemini's `max` coarsens onto `high`) and because a continuous token BUDGET has no discrete rungs at
+> all (`claude-haiku-4-5` — the maintainer's report: a five-tier ladder where the model is really on/off, à la
+> Claude Code). A new PRESENTATION helper `reasoningControlShape(controls)` → `graded | budget | none` and a
+> `CANONICAL_ON_TIER` (= `medium`) drive a CLI projection (`effortTiersFor`, `effortRowLabel` in
+> `chat/effort-notice.ts`): a **graded** ladder is deduped by distinct wire value (the representative reads the
+> name that matches the wire); a **budget** model is a two-row **off/on** ("on" = `medium`, a real member of the
+> accepted set, so the accept sends a value the gate accepts verbatim — a model that cannot be turned off, like
+> `gemini-2.5-pro`, has nothing to toggle, so no overlay opens); **none** shows nothing. This is presentation only:
+> `acceptedTiers` (the wire truth the engine gate, failover chain, and four adapters read) is untouched, so every
+> emitted row is still a valid accepted tier. The rule is GENERAL (by shape), never per-model.
 
 ## Context
 

@@ -133,7 +133,38 @@ A chat-only relaxation of any rule here is a security violation, not a feature.
   bytes as **UNTRUSTED, nonce-fenced, bounded** context. **Editing the chat `allowed_commands` set, the input-layer
   boundary reuse, or the read-side confidentiality floor is a mandatory-review trigger** (below).
 
-## Network and outbound URLs (SSRF — four egress paths, all on one primitive)
+## Network and outbound URLs (SSRF — four attacker-influenceable egress paths, all on one primitive; plus one fixed-host path)
+
+> **Amended 2026-07-13 ([ADR-0071](../decisions/0071-models-dev-as-the-model-metadata-source.md)) — a FIFTH
+> outbound path exists: the model-catalog refresh.** It is listed apart from the four below **on purpose**, and
+> the distinction is the whole point of this section: the four paths are dangerous because **something other
+> than Relavium chooses the URL** — a user config, an agent's YAML, a *model's* tool call. The SSRF primitive
+> exists to defend that. The catalog refresh's destination is a **compile-time constant** (`models.dev`): no
+> user, no agent, and no model can influence it, so there is no SSRF vector to range-block. It is the same
+> category as the provider fetch of [ADR-0064](../decisions/0064-live-model-catalog.md) §9, not the same as
+> `http_request`.
+>
+> It is nonetheless **egress**, and this inventory is a closed list, so it is recorded here rather than left to
+> be discovered. Its posture:
+>
+> - **HTTPS only**, to a fixed hostname; certificate validation never disabled. A **cross-host redirect is an
+>   error, not a hop** — a 30x off `models.dev` fails the refresh rather than following.
+> - **No user data, no key, no telemetry** — an unauthenticated `GET` of a public file. Nothing about the user's
+>   session, keys, prompts, or machine leaves.
+> - **Default OFF** (`[catalog] auto_refresh = false`), following [ADR-0068](../decisions/0068-full-screen-tui-renderer-ink7-harness.md)'s
+>   opt-in-then-flip convention for a new surface. A **user-initiated** `relavium models refresh` may always
+>   fetch — an explicit command is consent.
+> - **Host-side only** (`apps/cli/src/engine/`). `packages/core` and the pure part of `packages/llm` keep **zero
+>   platform imports** (CLAUDE.md rule 5); the merge stays a pure function taking data as an argument.
+> - The response is **Zod-validated at the boundary** before it becomes a Relavium type — untrusted input, in
+>   the same class as a provider's model list.
+> - **Additive only:** a refresh can never leave a model *less* priced than the shipped snapshot did, and a
+>   failed refresh is a **no-op**. This matters because pricing feeds a **safety control** (the ADR-0028 cost
+>   cap): the guarantee is that a bad or hostile upstream cannot *lower* the floor the binary shipped with.
+>
+> A change that gives the catalog fetch a **non-constant** destination (a configurable mirror, a proxy setting)
+> moves it into the four below and **requires the SSRF primitive** — that is a mandatory-review change, not a
+> config tweak.
 
 There are **four** outbound-URL paths (the fourth — the multimodal media `url` carrier — is now wired
 host-side via [ADR-0043](../decisions/0043-media-egress-failover-rematerialization-ssrf.md)'s `fetchMediaBytes`;

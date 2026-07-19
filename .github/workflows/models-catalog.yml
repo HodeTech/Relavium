@@ -1,0 +1,115 @@
+# The model-catalog guards (ADR-0071 §9). Two scheduled lanes, neither of which gates a PR:
+#
+#   • weekly-catalog-check — did any ALREADY-SHIPPED model's price MOVE or VANISH? A moved price feeds the
+#     ADR-0028 cost cap, so it is a HUMAN decision surfaced as a red check, never a silent bot commit. `pnpm
+#     sync:models` exits non-zero on a moved/vanished shipped price; benign additive drift stays green (a weekly
+#     red-no-matter-what trains the maintainer to ignore it — the erosion sync.mjs's own comments warn against).
+#
+#   • nightly-effort-conformance — the ONLY mechanism that catches a stale catalog re-introducing the reasoning
+#     bug: for each shipped reasoning model it asks the REAL provider whether it accepts every tier the catalog
+#     claims. A one-off manual probe proves a fact once; the catalog drifts continuously, so this runs nightly.
+#
+# Third-party actions are pinned to a full commit SHA (the `# vX.Y.Z` comment tracks the release) — the same
+# convention ci.yml uses, so a moved tag cannot inject unreviewed code.
+name: model-catalog
+
+on:
+  schedule:
+    # Monday 06:00 UTC — the drift check. Ahead of a typical review week, so a red one is seen on Monday.
+    - cron: '0 6 * * 1'
+    # 07:00 UTC nightly — the live effort conformance (key-gated; skips with no key).
+    - cron: '0 7 * * *'
+  # Manual trigger for both, so a maintainer can run either on demand without waiting for the cron.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-catalog-${{ github.event_name }}
+  cancel-in-progress: false
+
+jobs:
+  weekly-catalog-check:
+    name: shipped-price-change guard
+    # Only the weekly cron (and a manual run); the nightly cron skips this job.
+    if: github.event.schedule != '0 7 * * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      # `pnpm sync:models` builds `@relavium/llm` AND its `@relavium/shared` dependency first (via turbo `^build`) —
+      # the `@relavium/*` `exports` resolve only to `dist/`, which is gitignored, so a fresh runner has no built
+      # `@relavium/shared` and the sync's own `tsc`/dist import would otherwise die on TS2307 before any guard runs.
+      # `pnpm sync:models` fetches models.dev, normalizes it, and applies the money guards. It fails RED on the ONE
+      # thing that must be a human decision: a MOVED or VANISHED price on a model we already ship (a rate that
+      # silently moves also silently moves how much the ADR-0028 cost cap protects). It does NOT red on benign
+      # additive drift — models.dev adds models in our four providers constantly, and a check that is red every
+      # week trains the maintainer to ignore it, which is exactly how the price-change protection would erode
+      # (sync.mjs says so in its own comments). New models "merge automatically" via the deferred auto-PR
+      # (deferred-tasks.md); until it lands they are simply picked up by the next local `pnpm sync:models`. The
+      # snapshot this job writes into the ephemeral CI checkout is discarded — only the exit code is the guard.
+      - name: No ALREADY-SHIPPED model's price moved or vanished
+        run: pnpm sync:models
+
+  nightly-effort-conformance:
+    name: effort conformance (live)
+    # Only the nightly cron (and a manual run); the weekly cron skips this job.
+    if: github.event.schedule != '0 6 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Set up pnpm
+        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+      # Build the dependency closure first: the conformance suite imports `@relavium/shared`, whose `exports` resolve
+      # only to a gitignored `dist/`. Without this a fresh runner cannot resolve the cross-package entry and EVERY
+      # conformance file errors out before a single live probe — a red that looks identical to a real catalog drift.
+      # Turbo `^build` builds `@relavium/shared` ahead of `@relavium/llm` (mirrors ci.yml's pre-test build).
+      - name: Build workspace dependencies
+        run: pnpm turbo run build --filter=@relavium/llm
+      # Guard against a FALSE-GREEN nightly: the live cases are `it.skipIf(<key> === '')`, so with NO provider secret
+      # configured EVERY probe skips and the suite passes — a green that means "nothing was checked", indistinguishable
+      # from "all tiers verified". Fail loudly instead, so a green nightly is proof that probes actually ran.
+      - name: Require at least one provider secret
+        run: |
+          if [ -z "${ANTHROPIC_API_KEY}${OPENAI_API_KEY}${GEMINI_API_KEY}${DEEPSEEK_API_KEY}" ]; then
+            echo "::error::No provider secret is configured — every live effort probe would SKIP, and a green run would falsely read as 'all tiers verified'. Configure at least one of ANTHROPIC/OPENAI/GEMINI/DEEPSEEK_API_KEY."
+            exit 1
+          fi
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      # The conformance suite (fixtures + the `it.skipIf(<key> === '')` live cases). With the provider keys set here
+      # the live cases execute — and a catalog that claims a tier a model rejects fails red — while a missing key
+      # simply skips that provider's lane. Scoped to `src/conformance` so a flaky live case cannot widen the red
+      # surface to the whole package's unit suite.
+      - name: Live effort conformance
+        run: pnpm --filter @relavium/llm exec vitest run src/conformance
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}

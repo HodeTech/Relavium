@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { CostTracker, cost, mediaCost, priceModel } from './cost-tracker.js';
 import { UnknownModelError } from './errors.js';
-import { KNOWN_MODEL_IDS, MODEL_PRICING, type ModelPricing } from './pricing.js';
+import { catalogPricing, pricedModelIds } from './catalog/pricing.js';
+import type { ModelPricing } from './pricing.js';
 
 /** A throwaway priced model carrying media-output rates — no 1.AF table row has them, so tests construct one. */
 const PRICED_MEDIA: ModelPricing = {
@@ -49,7 +50,7 @@ describe('priceModel', () => {
       if (err instanceof UnknownModelError) {
         expect(err.code).toBe('unknown_model');
         expect(err.modelId).toBe('gpt-9-ultra');
-        expect(err.knownModels).toEqual(KNOWN_MODEL_IDS);
+        expect(err.knownModels).toEqual(pricedModelIds());
       }
     }
   });
@@ -221,10 +222,18 @@ describe('user-pricing overlay (2.5.G S10, ADR-0065 §2)', () => {
     expect(p.provider).toBe('openai');
   });
 
-  it('priceModel keeps the STATIC registry authoritative for a known id even when the overlay collides', () => {
+  it('THE FLIP: the USER outranks the catalog, even for a model the catalog knows', () => {
+    // This test asserted the OPPOSITE until ADR-0071 §1, and the reversal is deliberate.
+    //
+    // Registry-first made sense while the registry was our own hand-verified table: a user could not misprice a
+    // shipped model. The catalog is a snapshot of a third-party aggregator, regenerated from models.dev — and the
+    // user is the one holding the invoice. Their negotiated rate, their enterprise discount, or simply a price our
+    // snapshot has not caught up with is not a hint for a generated file to overrule.
     const p = priceModel('claude-opus-4-8', OVERLAY);
-    expect(p.displayName).toBe('Claude Opus 4.8'); // the static row, not the tampered overlay
-    expect(p.inputPerMtokMicrocents).toBe(500_000_000); // $5/MTok, not the overlay's 1µ¢
+    expect(p.displayName).toBe('Tampered Opus'); // the user's row, not the catalog's
+    expect(p.inputPerMtokMicrocents).toBe(1); // …and their price is what we bill at
+    // …while the catalog still answers for a model they have NOT priced.
+    expect(priceModel('claude-opus-4-8').inputPerMtokMicrocents).toBeGreaterThan(1);
   });
 
   it('priceModel still throws UnknownModelError for an id absent from BOTH tiers', () => {
@@ -257,11 +266,17 @@ describe('user-pricing overlay (2.5.G S10, ADR-0065 §2)', () => {
   });
 });
 
-describe('MODEL_PRICING table invariants (the values seeded into model_catalog)', () => {
-  it('keys match KNOWN_MODEL_IDS and every catalog-projection field is complete + integer', () => {
-    const byLocale = (a: string, b: string): number => a.localeCompare(b);
-    expect(Object.keys(MODEL_PRICING).sort(byLocale)).toEqual([...KNOWN_MODEL_IDS].sort(byLocale));
-    const rows: Array<[string, ModelPricing]> = Object.entries(MODEL_PRICING);
+describe("the priced catalog's invariants (the values seeded into model_catalog)", () => {
+  it('every priced model is complete, and every price is an integer micro-cent', () => {
+    // The same invariant the hand-typed table was held to, now applied to eighty generated rows instead of twelve.
+    // It matters MORE, not less: a generated file is only as good as its generator's guards, and a float price or a
+    // negative rate would silently corrupt every cost figure downstream of it.
+    const rows: Array<[string, ModelPricing]> = pricedModelIds().map((id) => {
+      const priced = catalogPricing(id);
+      if (priced === undefined) throw new Error(`${id} is in pricedModelIds but has no price`);
+      return [id, priced];
+    });
+    expect(rows.length).toBeGreaterThan(50);
     for (const [id, row] of rows) {
       expect(row.nativeId.length, id).toBeGreaterThan(0);
       expect(row.displayName.length, id).toBeGreaterThan(0);

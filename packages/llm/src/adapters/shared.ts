@@ -3,7 +3,7 @@ import type { AbortSignalLike } from '@relavium/shared';
 import { mediaSupportReason } from '../capabilities.js';
 import { UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError, makeLlmError } from '../llm-error.js';
-import { MODEL_PRICING, isCanonicalModelId } from '../pricing.js';
+import { catalogModel } from '../catalog/lookup.js';
 import { LlmMessageSchema, ModelListingSchema } from '../types.js';
 import type {
   CapabilityFlags,
@@ -52,12 +52,12 @@ export function estimateRequestTokens(input: EstimateTokensInput): number {
 }
 
 /**
- * The model's context window in tokens from the shared pricing catalog (ADR-0062) — the shared default behind
- * each adapter's `contextLimit`. `undefined` for an unrated / custom-base-URL model (the engine then skips
- * auto-compaction rather than guess a window). No cast: the canonical-id guard narrows the index.
+ * The model's context window in tokens, from the generated catalog (ADR-0062/0071) — the shared default behind
+ * each adapter's `contextLimit`. `undefined` for a model the catalog does not carry (a custom base URL, or one
+ * newer than the snapshot); the engine then skips auto-compaction rather than guess a window.
  */
 export function contextLimitFor(model: string): number | undefined {
-  return isCanonicalModelId(model) ? MODEL_PRICING[model].contextWindowTokens : undefined;
+  return catalogModel(model)?.contextWindowTokens;
 }
 
 /**

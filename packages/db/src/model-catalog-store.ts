@@ -74,6 +74,8 @@ export interface ModelCatalogUpsert {
   readonly inputCostPerMtokMicrocents?: number;
   readonly outputCostPerMtokMicrocents?: number;
   readonly cachedInputCostPerMtokMicrocents?: number;
+  /** Did the USER state the cache rate (ADR-0071 §10)? Absent ⇒ preserve whatever the row already says. */
+  readonly cachedInputStated?: boolean;
   /** The provenance discriminant ([ADR-0064] §4). OMITTED ⇒ `'static'` (a hardcoded seed), so every existing
    *  media-routing caller is unchanged; the live refresh writes `'live'`; user pricing writes `'user'`. */
   readonly source?: ModelCatalogSource;
@@ -101,6 +103,8 @@ export interface ModelCatalogListing {
   readonly inputCostPerMtokMicrocents: number;
   readonly outputCostPerMtokMicrocents: number;
   readonly cachedInputCostPerMtokMicrocents: number;
+  /** `true` ⇒ the number above is the user's own; `false` ⇒ they never said, so a reader derives it (ADR-0071 §10). */
+  readonly cachedInputStated: boolean;
   /** Live-discovered deprecation epoch-ms (ADR-0064 §7); `undefined` when none. */
   readonly deprecationDate?: number;
   /** Provenance, validated at the read boundary (a foreign value degrades to `'static'`). */
@@ -108,6 +112,9 @@ export interface ModelCatalogListing {
   /** The last live-refresh epoch-ms; `undefined` for a static/user or never-refreshed row. */
   readonly lastRefreshedAt?: number;
   readonly isActive: boolean;
+  /** Per-model PICKER visibility (ADR-0072 point 4) — a HARD filter above §6's "dim, never hide", orthogonal to
+   *  `isActive`. `false` ⇒ the user hid this model from the picker; the host projection removes it entirely. */
+  readonly visible: boolean;
 }
 
 /** One model to seed in a bulk live refresh ({@link ModelCatalogStore.replaceProviderModels}) — the discovery
@@ -167,6 +174,16 @@ export interface ModelCatalogStore {
   listByProvider: (providerId: string) => ModelCatalogListing[];
   /** Active, non-deleted rows across every provider, ordered by model id — the cross-provider `/models` catalog. */
   listAll: () => ModelCatalogListing[];
+  /**
+   * Retire a `source='user'` pricing row (ADR-0071 §5) — `relavium models pricing <model> --clear`.
+   *
+   * SOFT-deactivates (`is_active = 0`), like the live refresh does: `model_catalog.id` is an FK target from five
+   * tables, so a hard DELETE would orphan history. The active-only readers stop seeing it, so the overlay drops the
+   * price and the model falls back to the catalog's — which is exactly what "clear" means.
+   *
+   * Returns `false` when there was no active user row to clear (an honest no-op, never a lie).
+   */
+  clearUserPricing: (modelId: string, providerId: string) => boolean;
   /**
    * Bulk live-upsert for one provider's discovered models ([ADR-0064] §5), in ONE transaction: each `rows` entry
    * is upserted as `source='live'` with `lastRefreshedAt=now` (reusing the existing (provider, model) row id so
@@ -237,10 +254,12 @@ function toListing(row: ModelCatalogRow): ModelCatalogListing {
     inputCostPerMtokMicrocents: row.inputCostPerMtokMicrocents,
     outputCostPerMtokMicrocents: row.outputCostPerMtokMicrocents,
     cachedInputCostPerMtokMicrocents: row.cachedInputCostPerMtokMicrocents,
+    cachedInputStated: row.cachedInputStated,
     ...(row.deprecationDate === null ? {} : { deprecationDate: row.deprecationDate }),
     source: coerceModelCatalogSource(row.source),
     ...(row.lastRefreshedAt === null ? {} : { lastRefreshedAt: row.lastRefreshedAt }),
     isActive: row.isActive,
+    visible: row.visible,
   };
 }
 
@@ -514,6 +533,9 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
                 input.inputCostPerMtokMicrocents ?? existing?.inputCostPerMtokMicrocents ?? 0,
               outputCostPerMtokMicrocents:
                 input.outputCostPerMtokMicrocents ?? existing?.outputCostPerMtokMicrocents ?? 0,
+              ...(input.cachedInputStated === undefined
+                ? {}
+                : { cachedInputStated: input.cachedInputStated }),
               cachedInputCostPerMtokMicrocents:
                 input.cachedInputCostPerMtokMicrocents ??
                 existing?.cachedInputCostPerMtokMicrocents ??
@@ -582,6 +604,43 @@ export function createModelCatalogStore(db: Db, deps: ModelCatalogStoreDeps): Mo
         .orderBy(asc(modelCatalog.modelId), asc(modelCatalog.id))
         .all()
         .map(toListing),
+
+    clearUserPricing: (modelId, providerId) =>
+      // `withBusyRetry` for residual cross-process contention, matching `upsert` / `replaceProviderModels`: a
+      // `--clear` can race a concurrent `models refresh` on the same row and hit SQLITE_BUSY.
+      withBusyRetry(() => {
+        // SOFT-deactivate, never DELETE — `model_catalog.id` is an FK target from five tables, so removing the row
+        // would orphan the history that references it. Deactivating is enough: every reader is active-only, so the
+        // overlay stops carrying the price and the model falls back to the catalog's, which is what "clear" means.
+        //
+        // RESET the user pricing columns while deactivating (review M3): `upsert` looks the row up by
+        // `(provider, model)` with `deletedAt IS NULL` — it ignores `isActive` — so a later partial re-price
+        // (`--input`/`--output`, no `--cached`) REUSES this FK-stable row and PRESERVES any column it omits. Left
+        // intact, a cleared `cachedInputCostPerMtokMicrocents`/`cachedInputStated` would resurrect as if the user
+        // had just stated it, silently billing cache-read tokens at the cleared rate. Zeroing them here means a
+        // reused row starts from a clean baseline, so an omitted cache rate derives from the catalog discount.
+        const result = db
+          .update(modelCatalog)
+          .set({
+            isActive: false,
+            inputCostPerMtokMicrocents: 0,
+            outputCostPerMtokMicrocents: 0,
+            cachedInputCostPerMtokMicrocents: 0,
+            cachedInputStated: false,
+            updatedAt: deps.now(),
+          })
+          .where(
+            and(
+              eq(modelCatalog.modelId, modelId),
+              eq(modelCatalog.providerId, providerId),
+              eq(modelCatalog.source, 'user'), // never touch a live/static row — those are not the user's to clear
+              eq(modelCatalog.isActive, true),
+              isNull(modelCatalog.deletedAt),
+            ),
+          )
+          .run();
+        return result.changes > 0;
+      }),
 
     replaceProviderModels: (providerId, rows, now) =>
       // `BEGIN IMMEDIATE` — this reads existing rows then writes, so a DEFERRED begin would hit the read→write

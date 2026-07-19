@@ -70,7 +70,12 @@ import {
 } from './agent-turn.js';
 import { BudgetPauseError } from './budget-governor.js';
 import type { AbortControllerLike } from './execution-host.js';
-import { gateReasoningEffort } from './reasoning-effort.js';
+import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
+import type {
+  EffortGateResult,
+  ReasoningCapCheck,
+  ResolveEffortTiers,
+} from './reasoning-effort.js';
 import type { NodeStreamEvent } from './node-executor.js';
 import type { SessionResumeState } from './session-resume.js';
 
@@ -242,13 +247,29 @@ export interface SessionDeps {
    */
   readonly resolvePrice?: PricingOverlay;
   /**
-   * Whether the bound model supports reasoning ([ADR-0066](../../../../docs/decisions/0066-normalized-reasoning-effort-control.md))
-   * — the host-injected per-model `model_catalog.capabilities.reasoning` projection (mirrors the `AgentRunner`'s
-   * `resolveReasoning`). Gates the `reasoningEffort` send: the authored `agent.reasoning_effort` is passed to a turn
-   * only when this returns `true` (a non-reasoning model rejects the field). Absent/`undefined` ⇒ not reasoning
-   * ⇒ withheld. `@relavium/core` never imports `@relavium/db`, so the host injects the catalog lookup.
+   * WHICH reasoning tiers the bound model accepts ([ADR-0071](../../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §6)
+   * — the host-injected per-model catalog projection, the same one {@link AgentRunnerDeps.resolveEffortTiers}
+   * takes. Gates the `reasoningEffort` send: the effective tier (session override → the agent's authored tier) is
+   * passed to a turn only when the model is on record as taking it.
+   *
+   * It replaced a boolean. `gpt-5.4-pro` reasons **and rejects `low`** — a boolean answered `true` for it and the
+   * tier went to the provider unexamined. Absent / `undefined` / an empty set ⇒ withheld, never guessed.
+   * `@relavium/core` never imports the catalog, so the host injects the lookup.
    */
-  readonly resolveReasoning?: (model: string) => boolean | undefined;
+  readonly resolveEffortTiers?: ResolveEffortTiers;
+  /**
+   * Does a budget-shaped model withhold the accepted tier because THIS turn's `max_tokens` leaves no room for its
+   * minimum thinking budget (review M6)? Host-injected (it reads the catalog's budget range); absent ⇒ the cap is
+   * not checked and a small `max_tokens` withholds thinking silently, as before. Paired with `max_tokens` at the
+   * gate so the withhold becomes a `capped` verdict the host can voice.
+   */
+  readonly withheldByCap?: ReasoningCapCheck;
+  /**
+   * Called when the effective tier is WITHHELD because the bound model does not take it — the session mirror of
+   * {@link AgentRunnerDeps.onEffortWithheld}. The surface decides where the sentence goes (the CLI puts it in the
+   * transcript's notice channel); the engine only reports that it happened, and what the model WOULD accept.
+   */
+  readonly onEffortWithheld?: (result: EffortGateResult, model: string) => void;
   /**
    * Feed the running session cost to a budget governor so a host that wires {@link preEgress} to
    * `BudgetGovernor.checkPreEgress` also keeps the governor's cumulative total current (ADR-0028, 1.AC).
@@ -483,8 +504,9 @@ export class AgentSession {
    * pricing, nor the memoized `#plan`) and applies on the **next** turn (each `sendMessage` reads the override at
    * turn start). Pass `undefined` to clear it (fall back to the agent's authored `reasoning_effort`). Callable in
    * **any** state incl. mid-turn (takes effect next turn); **inert once `cancelled`** (no further turn reads it).
-   * The tier is still gated per turn by the host's per-model capability ({@link AgentSessionDeps.resolveReasoning}),
-   * so setting it on a non-reasoning model is a harmless no-op at send time.
+   * The tier is still gated per turn against the tiers the bound model accepts ({@link SessionDeps.resolveEffortTiers}),
+   * so a tier the model does not take is withheld at send — and {@link SessionDeps.onEffortWithheld} says so, rather
+   * than leaving the user to wonder why the knob did nothing.
    */
   setReasoningEffort(effort: ReasoningEffort | undefined): void {
     this.#reasoningEffort = effort;
@@ -1084,14 +1106,28 @@ export class AgentSession {
     // Advertise-filter (ADR-0057): narrow the model-visible tool set per the host's mode (best-effort; the
     // confirm floor stays authoritative). No policy / no filter ⇒ advertise every granted tool.
     const llmTools = buildLlmTools(this.#deps.tools, grantedToolIds, turnPolicy?.advertise);
-    // ADR-0066: resolve the effective reasoning-effort tier (session override → agent's authored tier) and gate it
-    // on the bound model's per-model capability (a non-reasoning model would reject it). Read at turn start so a
-    // mid-session setReasoningEffort applies to the NEXT turn — the no-reseat per-turn semantics (§5).
-    const reasoningEffort = gateReasoningEffort(
+    // ADR-0066/0071: resolve the effective reasoning-effort tier (session override → agent's authored tier) and
+    // gate it on WHICH TIERS the bound model accepts. Read at turn start so a mid-session setReasoningEffort
+    // applies to the NEXT turn — the no-reseat per-turn semantics (§5).
+    const effortGate = gateReasoningEffort(
       this.#reasoningEffort ?? this.#agent.reasoning_effort,
       this.#agent.model,
-      this.#deps.resolveReasoning,
+      this.#deps.resolveEffortTiers,
+      this.#deps.withheldByCap !== undefined && this.#agent.max_tokens !== undefined
+        ? { maxTokens: this.#agent.max_tokens, withheldByCap: this.#deps.withheldByCap }
+        : undefined,
     );
+    // Withholding is right; withholding silently is not. The host gets the verdict and says so — otherwise a tier
+    // the user set is dropped, the turn runs at the provider's default, and nothing anywhere admits it. `capped`
+    // (a budget model whose tier the request's cap withholds, review M6) is voiced through the same channel.
+    if (
+      effortGate.kind === 'rejected' ||
+      effortGate.kind === 'uncontrollable' ||
+      effortGate.kind === 'capped'
+    ) {
+      this.#deps.onEffortWithheld?.(effortGate, this.#agent.model);
+    }
+    const reasoningEffort = effortToSend(effortGate);
     return runAgentTurn({
       system: this.#systemPrompt(),
       messages: this.#messages,

@@ -31,9 +31,11 @@ function modelRow(
     inputCostPerMtokMicrocents: 0,
     outputCostPerMtokMicrocents: 0,
     cachedInputCostPerMtokMicrocents: 0,
+    cachedInputStated: false,
     source,
     lastRefreshedAt: 1_700_000_000_000,
     isActive: true,
+    visible: true,
   };
 }
 
@@ -68,7 +70,14 @@ function deps(
   json = false,
   providerSlug: (uuid: string) => string = (uuid) => uuid,
 ): ModelsCommandDeps {
-  return { io, global: globalOptions(json), catalog, refreshService, providerSlug };
+  return {
+    io,
+    global: globalOptions(json),
+    catalog,
+    refreshService,
+    refreshCatalog: () => Promise.resolve({ status: 'refreshed' as const, models: 80, added: 0 }),
+    providerSlug,
+  };
 }
 
 const REFRESHED: RefreshReport = {
@@ -238,10 +247,130 @@ describe('modelsCommand — refresh', () => {
         deactivated: null,
         error: null,
       },
+      // One record per SOURCE (ADR-0071 §4a) — the provider lists, then the catalog. A script can tell which half
+      // worked, because the two fail independently: an offline models.dev does not stop a provider refresh, and a
+      // keyless install can still refresh the catalog.
+      { source: 'catalog', status: 'refreshed', models: 80, added: 0 },
     ]);
   });
 
-  it('exits 2 on an explicit refresh with zero providers connected (no key at all)', async () => {
+  it('--providers refreshes availability ONLY — no models.dev egress at all', async () => {
+    const { io, out } = captureIo();
+    const rowsRef: { value: ModelCatalogListing[] } = { value: [] };
+    let catalogFetched = false;
+    const d = deps(io, stubCatalog(rowsRef), stubRefresh(REFRESHED), true);
+
+    await modelsCommand(
+      { refresh: true, axis: 'providers' },
+      {
+        ...d,
+        refreshCatalog: () => {
+          catalogFetched = true;
+          return Promise.resolve({ status: 'refreshed' as const, models: 80, added: 0 });
+        },
+      },
+    );
+    expect(catalogFetched).toBe(false); // the flag is a promise about egress, not a display preference
+    expect(parseNdjson(out()).some((r) => (r as { source?: string }).source === 'catalog')).toBe(
+      false,
+    );
+  });
+
+  it('--catalog refreshes metadata ONLY — and works with NO provider key at all', async () => {
+    // The form that makes default-OFF livable: a user with no key yet, who wants to see what things cost, types one
+    // command and gets them. Asking for a provider key here would be asking for the one thing they do not have.
+    const { io, out } = captureIo();
+    const rowsRef: { value: ModelCatalogListing[] } = { value: [] };
+    let providersFetched = false;
+    const d = deps(io, stubCatalog(rowsRef), stubRefresh(REFRESHED), true);
+
+    const code = await modelsCommand(
+      { refresh: true, axis: 'catalog' },
+      {
+        ...d,
+        refreshService: stubRefresh(REFRESHED, () => {
+          providersFetched = true;
+        }),
+      },
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    expect(providersFetched).toBe(false);
+    expect(parseNdjson(out())).toEqual([
+      { source: 'catalog', status: 'refreshed', models: 80, added: 0 },
+    ]);
+  });
+
+  it('[catalog] auto_refresh — a bare `models` refreshes the catalog FIRST when opted in', async () => {
+    // The opt-in standing-egress surface (ADR-0071 §4). Default OFF; when a user turns it on, a bare `models` (not a
+    // `refresh`) fetches the catalog before listing, because a stale price is the thing they came to look at.
+    let refreshedBeforeList = false;
+    let listed = false;
+    const catalog: ModelsCatalogReader = {
+      listAll: () => {
+        listed = true;
+        return [];
+      },
+    };
+    const { io } = captureIo();
+    await modelsCommand(
+      { refresh: false },
+      {
+        ...deps(io, catalog, stubRefresh(REFRESHED)),
+        autoRefreshCatalog: true,
+        refreshCatalog: () => {
+          refreshedBeforeList = !listed; // true iff refresh ran BEFORE the list read
+          return Promise.resolve({ status: 'refreshed' as const, models: 80, added: 0 });
+        },
+      },
+    );
+    expect(refreshedBeforeList).toBe(true);
+  });
+
+  it('[catalog] auto_refresh OFF (the default) — a bare `models` touches NO network', async () => {
+    const rowsRef: { value: ModelCatalogListing[] } = { value: [] };
+    let fetched = false;
+    const { io } = captureIo();
+    await modelsCommand(
+      { refresh: false },
+      {
+        ...deps(io, stubCatalog(rowsRef), stubRefresh(REFRESHED)),
+        refreshCatalog: () => {
+          fetched = true;
+          return Promise.resolve({ status: 'refreshed' as const, models: 80, added: 0 });
+        },
+      },
+    );
+    expect(fetched).toBe(false); // default OFF: no standing egress
+  });
+
+  it('a FAILED catalog refresh is a NOTE, never an error — the shipped snapshot still answers', async () => {
+    // ADR-0071 §4: additive only. A refresh that cannot reach models.dev must leave the product knowing exactly what
+    // it knew before — never a blank catalog, never a model that was priced yesterday and is not today. The cost cap
+    // is a safety control; it does not lapse because a third party had a bad deploy.
+    const { io, out, err } = captureIo();
+    const rowsRef: { value: ModelCatalogListing[] } = { value: [] };
+    const d = deps(io, stubCatalog(rowsRef), stubRefresh(REFRESHED), false);
+
+    const code = await modelsCommand(
+      { refresh: true, axis: 'catalog' },
+      {
+        ...d,
+        refreshCatalog: () =>
+          Promise.resolve({
+            status: 'failed' as const,
+            models: 0,
+            added: 0,
+            reason: 'models.dev unreachable',
+          }),
+      },
+    );
+    expect(code).toBe(EXIT_CODES.success); // exit 0 — the command did what it could, and said so
+    expect(err()).toContain('models.dev unreachable');
+    expect(err()).toContain('keeping the shipped catalog');
+    expect(out()).not.toContain('models from models.dev');
+  });
+
+  it('exits 2 on a PROVIDERS refresh with zero providers connected (no key at all)', async () => {
     const { io, out } = captureIo();
     const rowsRef: { value: ModelCatalogListing[] } = { value: [] };
     const refresh = stubRefresh({
@@ -253,7 +382,10 @@ describe('modelsCommand — refresh', () => {
 
     let thrown: unknown;
     try {
-      await modelsCommand({ refresh: true }, deps(io, stubCatalog(rowsRef), refresh));
+      await modelsCommand(
+        { refresh: true, axis: 'providers' },
+        deps(io, stubCatalog(rowsRef), refresh),
+      );
       expect.unreachable('should have thrown');
     } catch (err) {
       thrown = err;
@@ -263,6 +395,24 @@ describe('modelsCommand — refresh', () => {
       expect(thrown.exitCode).toBe(EXIT_CODES.invalidInvocation);
     }
     expect(out()).toBe(''); // stdout stays empty on a fault
+  });
+
+  it('a BOTH-axis refresh with no key SUCCEEDS when the catalog delivered — half a loaf is not a fault', async () => {
+    // A user with no key yet, running `models refresh` to see what things cost, HAS been served: the catalog is the
+    // half that does not need one. Telling them their command failed would be a lie, and it would hide the half that
+    // worked behind an error about the half that could not.
+    const { io, out } = captureIo();
+    const rowsRef: { value: ModelCatalogListing[] } = { value: [] };
+    const refresh = stubRefresh({
+      providers: [
+        { provider: 'anthropic', status: 'skipped-no-key' },
+        { provider: 'openai', status: 'skipped-no-key' },
+      ],
+    });
+
+    const code = await modelsCommand({ refresh: true }, deps(io, stubCatalog(rowsRef), refresh));
+    expect(code).toBe(EXIT_CODES.success);
+    expect(out()).toContain('models from models.dev');
   });
 
   it('exits 0 when every connected provider FAILED — a per-provider failure is not a command failure (FIX 6)', async () => {

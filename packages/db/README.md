@@ -2,7 +2,7 @@
 
 Drizzle schema + migrations + the local SQLite client — **one schema, two dialects**
 (SQLite local, Postgres cloud) ([ADR-0005](../../docs/decisions/0005-sqlite-drizzle-local-postgres-cloud.md)).
-Canonical DDL: [database-schema.md](../../docs/reference/desktop/database-schema.md).
+Canonical DDL: [database-schema.md](../../docs/reference/shared-core/database-schema.md).
 
 ## Status
 

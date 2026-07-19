@@ -56,7 +56,7 @@ To be expanded. This section will connect the on-screen experience to the underl
 model: the engine ran a DAG over your nodes, streamed events to the canvas via the
 [SSE event schema](../../reference/contracts/sse-event-schema.md), checkpointed each
 node, and recorded the run to local SQLite (schema:
-[database-schema.md](../../reference/desktop/database-schema.md)).
+[database-schema.md](../../reference/shared-core/database-schema.md)).
 
 ## Next steps
 

@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-07-05
-- **Related**: [ADR-0011](0011-internal-llm-abstraction.md) + [ADR-0030](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) + [ADR-0031](0031-llm-seam-shape-amendment-multimodal-io.md) (**this ADR amends the `LLMProvider` seam shape — additively**; append-only top-notes added there) · [ADR-0038](0038-agentrunner-llm-call-boundary.md) (host-injected provider resolution — the refresh service reuses it) · [ADR-0050](0050-cli-history-db-at-rest-posture.md) (the cache shares `history.db`; a model list is non-secret) · [ADR-0044](0044-media-access-governance-read-media-save-to-cost.md) + [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) (the `model_catalog` **media-routing** consumer this must not regress) · [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md) (the `/models` REPL command + `models refresh` shell command) · [ADR-0049](0049-cli-machine-output-contract.md) (`--json`) · [ADR-0059](0059-cli-mid-session-model-reseat.md) (the **other** `/models` — mid-chat reseat, Phase 2.6 — disambiguated below) · [ADR-0063](0063-cli-config-write-contract.md) (the `/models` selection persists the next session's default via its config-write primitive) · [ADR-0065](0065-provider-economics-and-extensibility.md) (**extends** this ADR's merge with a user-pricing tier + custom providers). Canonical homes: the seam signature → [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md); the `model_catalog` DDL → [database-schema.md](../reference/desktop/database-schema.md); the commands → [commands.md](../reference/cli/commands.md); the static registry → [pricing.ts](../../packages/llm/src/pricing.ts).
+- **Related**: [ADR-0011](0011-internal-llm-abstraction.md) + [ADR-0030](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) + [ADR-0031](0031-llm-seam-shape-amendment-multimodal-io.md) (**this ADR amends the `LLMProvider` seam shape — additively**; append-only top-notes added there) · [ADR-0038](0038-agentrunner-llm-call-boundary.md) (host-injected provider resolution — the refresh service reuses it) · [ADR-0050](0050-cli-history-db-at-rest-posture.md) (the cache shares `history.db`; a model list is non-secret) · [ADR-0044](0044-media-access-governance-read-media-save-to-cost.md) + [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) (the `model_catalog` **media-routing** consumer this must not regress) · [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md) (the `/models` REPL command + `models refresh` shell command) · [ADR-0049](0049-cli-machine-output-contract.md) (`--json`) · [ADR-0059](0059-cli-mid-session-model-reseat.md) (the **other** `/models` — mid-chat reseat, Phase 2.6 — disambiguated below) · [ADR-0063](0063-cli-config-write-contract.md) (the `/models` selection persists the next session's default via its config-write primitive) · [ADR-0065](0065-provider-economics-and-extensibility.md) (**extends** this ADR's merge with a user-pricing tier + custom providers). Canonical homes: the seam signature → [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md); the `model_catalog` DDL → [database-schema.md](../reference/shared-core/database-schema.md); the commands → [commands.md](../reference/cli/commands.md); the static registry → [pricing.ts](../../packages/llm/src/pricing.ts).
 
 > **Amended 2026-07-05 by [ADR-0065](0065-provider-economics-and-extensibility.md)** (append-only — this body is unchanged): §6's merge precedence gains its **USER tier** — user-supplied per-model pricing fills **unknown** ids (`price = static ?? user`; static always wins for a known id), populating the merge helper's day-one optional user slot from the `model_catalog` `source='user'` rows. ADR-0065 also **injects** that merged pricing into the cost path (closing the unpriced-model cap gap) and wires custom OpenAI-compatible `base_url` endpoints over the shared SSRF floor. This ADR's static/live contract is unchanged; ADR-0065 extends it additively.
 
@@ -31,9 +31,90 @@
 > [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) untouched — concurrency is a
 > data-integrity/liveness concern, not the credential boundary). The mechanism's one canonical home is the
 > "Concurrency & transaction behavior" section of
-> [database-schema.md](../reference/desktop/database-schema.md); the `0600`/`0700` guard is a documented Windows
+> [database-schema.md](../reference/shared-core/database-schema.md); the `0600`/`0700` guard is a documented Windows
 > no-op (ADR-0050), so the 2.5.I test lane gates POSIX-permission assertions off Windows, while the
 > `BEGIN IMMEDIATE` + retry mechanism behaves identically cross-OS.
+>
+> **Amended 2026-07-13 — two clauses are SUPERSEDED by [ADR-0071](0071-models-dev-as-the-model-metadata-source.md).**
+> The architecture below stands; two of its sentences do not.
+>
+> 1. **"Pricing authority stays with the static registry."** The *split* this ADR drew — the live list decides
+>    **availability**, a static tier decides **economics** — is correct and is kept. Its **source** is not: the
+>    hand-maintained `MODEL_PRICING` proved unable to say what is true. It priced 12 of ~97 reachable models (so
+>    [ADR-0028](0028-workflow-resource-governance.md)'s cost cap silently did not apply to the rest), it carried
+>    two silent drifts, and its `reasoning: boolean` **cannot express** a per-model reasoning-control shape —
+>    which is a live bug, not a limitation: `gemini-2.5-*` takes `thinkingBudget`, not the `thinkingLevel` our
+>    adapter unconditionally sends. ADR-0071 replaces the table with a **generated, PR-reviewed catalog
+>    snapshot**. The static tier survives; the hand-typing does not.
+> 2. **"This ADR adds no new egress surface."** ADR-0071's catalog refresh **does** — the first host Relavium
+>    contacts that is neither a model provider nor a user-supplied address. It is **default-OFF**, additive-only,
+>    a no-op offline, and recorded as the fifth path in
+>    [security-review.md](../standards/security-review.md).
+>
+> The Related line above points at [pricing.ts](../../packages/llm/src/pricing.ts) as the static registry's
+> canonical home. After ADR-0071 that home is the generated snapshot under `packages/llm/src/catalog/` (rule 8).
+
+
+> **Amendment (2026-07-13, [ADR-0071](0071-models-dev-as-the-model-metadata-source.md) §1).** §3's static tier is
+> no longer the hand-typed `MODEL_PRICING`; it is the **generated catalog** (`packages/llm/src/catalog/snapshot.ts`,
+> synced from models.dev). Read every "static registry" in this ADR as "the catalog". Three consequences:
+>
+> 1. **The cost-eligibility union widened.** §3's "union-in any id present in `MODEL_PRICING`" now unions the
+>    catalog's ids — eighty models, not twelve — still filtered by the non-chat deny-list (an embedding is priced
+>    and is still not something you can chat with).
+> 2. **The pricing precedence FLIPPED.** §6 said the static registry always wins and the user tier fills an unknown
+>    id only. It now resolves **user → catalog**: the catalog is a snapshot of a third-party aggregator, and the
+>    user is the one holding the invoice. `pricingSource` reports `'catalog'` where it used to report `'registry'`.
+>
+> §7's deprecation is **unchanged in substance**: the date still comes from a Relavium-owned overlay
+> (`packages/llm/src/catalog/deprecations.ts` — ADR-0071 §10), unioned with the live list and the user, earliest
+> wins. It moved out of the price table, but it did not move into models.dev, which publishes a `status` flag and
+> not a date. *(A first cut of the swap deleted it outright on the theory that the live list would carry it — no
+> adapter populates `ModelListing.deprecatedAt`, so that would have made `deprecated` permanently `false` for every
+> model. Caught in review.)*
+
+
+> **Clarified 2026-07-14 (alias↔dated-pin availability equivalence — append-only, body unchanged):** §6's live-list
+> availability is by EXACT model id. A provider that pins a rolling alias to a dated snapshot returns only ONE of the
+> pair from `models.list()` (real Anthropic returns the dated `claude-haiku-4-5-20251001`, not the rolling
+> `claude-haiku-4-5`), while the catalog (ADR-0071) ships BOTH as priced rows — so the id the list omits was dimming
+> as `not-on-key` even though the SAME key calls it (both ids resolve server-side to the same model). The merge now
+> RESCUES such a pair: a live-omitted model is `available` when its alias↔dated-pin sibling (`base` ↔
+> `base-YYYYMMDD`) IS in the live list AND is itself a shipped catalog row of the same provider — the catalog-row
+> gate is what stops this fabricating availability for an arbitrary unpriced id. This **refines, not reverses**, §6:
+> a model whose provider genuinely does not serve it (no live sibling, or a sibling that is not a catalog row) still
+> dims `not-on-key`. Scoped to **Anthropic** this round (the maintainer's call — the OpenAI `gpt-4o` dated family is
+> deliberately out of scope); the anthropic conformance fixture is corrected to return the dated pin so the suite
+> exercises the rescued-alias case.
+>
+> **Amendment 2026-07-14 (alias↔dated-pin DISPLAY collapse — the second half of the same relationship):** the
+> availability rescue above keeps BOTH ids callable, but the catalog still SHIPS both as priced rows, so the
+> `/models` picker rendered TWO selectable rows for one model (`claude-opus-4-1` and `claude-opus-4-1-20250805`,
+> byte-identical but for id/name). `collapseAliasDatedPinPairs` (`@relavium/llm`) now drops the dated pin at the
+> DISPLAY boundary — in `buildMergedCatalog`'s host projection, NOT in `mergeModelCatalog` (whose full-fidelity
+> output any other consumer keeps) — leaving only the rolling alias. It collapses ONLY when both members are present
+> as catalog rows (a lone dated pin with no alias sibling stays visible, the same gate `hasLiveSibling` applies), and
+> is Anthropic-only by the `-YYYYMMDD` regex shape. This is **identity dedup, not an availability judgement** — it is
+> deliberately distinct from the picker's "never HIDE a dimmed/deprecated model" rule (that concerns a model you
+> cannot USE; this removes a second copy of one you can). A persisted DATED-PIN `default_model` (from before the
+> collapse or a hand-edit) NORMALIZES its `✓` onto the surviving alias row rather than vanishing — the same model
+> resolves either id server-side, so the marker moves, the stored choice does not.
+>
+> **Corrected 2026-07-14 (FK-referrer count — append-only, body unchanged):** §4 below says `model_catalog.id`
+> is "an FK target from **five** tables". That was true when written; it is now **six** — [ADR-0070](0070-durable-per-model-session-cost-attribution.md)
+> added `session_costs.model_catalog_id` as a sixth referrer (the full set is `agents`, `step_executions`,
+> `run_costs`, `agent_sessions`, `session_messages`, `session_costs`). The soft-deactivation rule is unchanged;
+> only the count is corrected.
+>
+> **Amended 2026-07-14 — §4's "never seed pricing into the DB" clause is SUPERSEDED (in part) by [ADR-0072](0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md).**
+> §4 states "registry pricing is **never** seeded into the DB (that would create a second, drift-prone home)". ADR-0072
+> reverses that prohibition **narrowly**: a models.dev metadata **mirror** (the new `model_metadata` sibling table,
+> keyed by `model_id`) is now permitted, so the DB can hold price/limits/reasoning/enrichment for every model and stay
+> current. The clause's *reason* is preserved intact — the mirror is **not a pricing authority**: it is inert for
+> shipped ids (the generated snapshot floor stays terminal, ADR-0072 point 2), admitted only through the shared
+> additive gate, and `model_catalog`'s own cost columns remain reserved for `source='user'` pricing exactly as §4
+> requires. Only the "not in the DB at all" letter is superseded; the "no second drift-prone *authority*" spirit stands.
+
 
 ## Context
 
@@ -139,7 +220,7 @@ set is validated at the **store read boundary** (mirroring `coerceMediaSurface`,
 absent from the new list — **never hard-deletes** (`model_catalog.id` is an FK target from five tables:
 agents, step_executions, run_costs, agent_sessions, session_messages). The existing **media-routing reader
 path stays regression-clean** — the widening is additive and the narrow media projection is untouched. The
-new columns' one canonical home is [database-schema.md](../reference/desktop/database-schema.md).
+new columns' one canonical home is [database-schema.md](../reference/shared-core/database-schema.md).
 
 ### 5. Refresh lifecycle — first-run / explicit / TTL background, per-provider isolation
 

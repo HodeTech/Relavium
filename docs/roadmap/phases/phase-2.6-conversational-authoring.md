@@ -213,13 +213,14 @@ approval; `/create` works from the Home; a malformed agent YAML surfaces its fie
 diagnostic on every surface; the untrusted-import consent gate holds; a security review of the write
 surface + the secret-taint gate + the import gate passes. **Required ADR:** shared with 2.6.A (ADR-0058).
 
-### 2.6.C — Mid-session model reseat — residual + transcript-carry fix — ✅ **Done (PR pending, 2026-07-12)**
+### 2.6.C — Mid-session model reseat — residual + transcript-carry fix — ✅ **Done (PR #75, merged 2026-07-13)**
 
 > **Shipped early in 2.5.G** (ADR-0059, PR #66, 2026-07-07): the `/models` mid-chat reseat, per-message
 > `modelId` attribution, and the context-loss notice. Retained for the residual below and as the
 > cross-reference home.
 >
-> **Status:** ✅ **Done (2026-07-12)** — both tasks shipped, plus the residual that turned out to need its own ADR.
+> **Status:** ✅ **Done — merged to `main` 2026-07-13 (PR #75)**. Both tasks shipped, plus the residual that turned
+> out to need its own ADR.
 > The reseat now carries the rendered conversation (F1), with the switch marker landing beneath it; and `/cost` shows
 > a per-model breakdown backed by a new durable `session_costs` table
 > ([ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md) — the per-message `model_id` this
@@ -659,8 +660,8 @@ and the first localized agentic CLI (a genuine differentiator — competitor i18
   (`[v]`/`[x]`/`[||]`) without Unicode.
 - **`/settings`** (Home + chat): a sectioned screen (appearance / language / chat defaults / models in use
   / update channel) over the **extended** [ADR-0063](../../decisions/0063-cli-config-write-contract.md)
-  typed-setter (new keys: `theme`, `language`, `models_in_use`; still global-preferences-only, atomic,
-  secret-incapable by construction — project files stay hand-authored).
+  typed-setter (new keys: `theme`, `language`, `models_in_use`, `show_pricing`; still
+  global-preferences-only, atomic, secret-incapable by construction — project files stay hand-authored).
 - **Curated "models in use" list** *(manual-test finding 2026-07-11):* a `/settings` section where the user
   picks which catalog models are "in use", so **`/models` shows only the curated set** instead of the whole
   merged catalog — today `/models` lists **every** reachable model from **every** provider and only a live
@@ -670,6 +671,25 @@ and the first localized agentic CLI (a genuine differentiator — competitor i18
   shows everything** (back-compatible, so nothing hard-blocks). The **default for a newly-connected
   provider** (seed all / none / a starter subset) is owned by **2.6.I** (see there). No new ADR beyond the
   ADR-0063 key addition.
+- **Price-visibility toggle** *(picker display preference, same shape as "models in use"):* a `/settings`
+  switch for whether the `/models` picker renders each model's `$/MTok` badge
+  (`formatModelPrice`, `apps/cli/src/render/tui/model-picker.ts:357`). **Default OFF** — a user picking a
+  default model has not spent anything yet, so a wall of per-token prices up front reads as sticker shock
+  rather than useful information; showing it is a deliberate ask, not the first thing a new user sees.
+  Persisted as `[preferences].show_pricing` (boolean, default `false`) via the same extended ADR-0063
+  setter as `models_in_use`/`theme`. Scope precisely, so this stays cosmetic and never safety-relevant:
+  - Gates the **picker's** price column only — never `/cost` (a session's *already-incurred* spend) or
+    `models pricing` (an explicit, user-requested price lookup): those are post-commitment or
+    explicitly-asked-for moments, not the "before I've tried this" moment the toggle protects.
+  - A model with **no known price at all** (`priceKnown: false` — the ADR-0028 cost cap will not apply to
+    it) keeps that warning visible regardless of the toggle: it is a safety disclosure, not a price
+    display, and hiding it would let a user select an unprotected model without knowing.
+  - Interactive-only, mirroring the i18n stance below: `--json`/machine output is unaffected either way
+    ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)) — a script always gets full data.
+  - The onboarding wizard's first model pick (2.6.J) reuses this same picker, so default-OFF applies there
+    too with no extra wiring — the exact moment the sticker-shock concern is about.
+
+  No new ADR beyond the ADR-0063 key addition.
 - **i18n foundation**: an in-house string catalog (data ≠ code — zero conditional logic in translation
   data; no runtime dependency expected, else ADR); `[preferences].language`; locales **`en`, `es`, `tr`,
   `fr`, `de`** in-phase; a CI **key-parity test** (fails on missing/extra keys across all locales)
@@ -685,7 +705,9 @@ and the first localized agentic CLI (a genuine differentiator — competitor i18
   interactive surfaces.
 
 **Acceptance:** `/settings` edits persist atomically and round-trip; the curated `models_in_use` set
-filters `/models` to the chosen models (unset ⇒ all, back-compatible); themes switch live incl. the
+filters `/models` to the chosen models (unset ⇒ all, back-compatible); `show_pricing` defaults off and
+hides only the picker's `$/MTok` badge (never `/cost`, never `models pricing`, never an unpriced-model
+safety warning, never `--json` output); themes switch live incl. the
 accessibility pair; the color-free path stays legible; interactive surfaces run fully in all five
 locales with CI-enforced key parity; diagnostics and `--json` remain English-stable per
 [ADR-0049](../../decisions/0049-cli-machine-output-contract.md); the machine-output contract is
@@ -1284,7 +1306,7 @@ flowchart LR
    [chat-session.md](../../reference/cli/chat-session.md),
    [built-in-tools.md](../../reference/shared-core/built-in-tools.md),
    [config-spec.md](../../reference/contracts/config-spec.md),
-   [database-schema.md](../../reference/desktop/database-schema.md)) is updated — no docs-debt carried
+   [database-schema.md](../../reference/shared-core/database-schema.md)) is updated — no docs-debt carried
    out of the phase.
 
 ## Required ADRs

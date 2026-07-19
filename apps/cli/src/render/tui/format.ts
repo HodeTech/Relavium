@@ -58,7 +58,7 @@ export function statusColor(status: NodeStatus): StatusColor {
 
 /**
  * Format an integer micro-cents amount as a USD string. The canonical unit is integer **micro-cents** —
- * 1e-8 USD (USD × 100,000,000), per [database-schema.md](../../../../../docs/reference/desktop/database-schema.md)
+ * 1e-8 USD (USD × 100,000,000), per [database-schema.md](../../../../../docs/reference/shared-core/database-schema.md)
  * / [llm-provider-seam.md](../../../../../docs/reference/shared-core/llm-provider-seam.md#6-usage). Four
  * fractional digits give sub-cent visibility (e.g. 5,000,000 → `$0.0500`).
  */

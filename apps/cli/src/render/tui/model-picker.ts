@@ -1,5 +1,7 @@
 import type { ModelCatalogEntry, ProviderId } from '@relavium/llm';
-import { REASONING_EFFORTS, type ReasoningEffort } from '@relavium/shared';
+import type { ReasoningEffort } from '@relavium/shared';
+
+import { effortTiersFor, projectEffortToRow } from '../../chat/effort-notice.js';
 
 import { dropLastCodePoint } from './chat-input.js';
 
@@ -43,7 +45,7 @@ export interface ModelPickerState {
   /**
    * The picker's TWO-PHASE step ([ADR-0066](../../../../../docs/decisions/0066-normalized-reasoning-effort-control.md)):
    * `'model'` is the catalog list (the default); accepting a reasoning-capable model on an effort-offering surface
-   * ({@link effortStep}) advances to `'effort'` — a fixed sub-list of the reasoning-effort tiers for the chosen
+   * ({@link effortStep}) advances to `'effort'` — the sub-list of the tiers THE CHOSEN MODEL accepts, for the chosen
    * model. The two surfaces route the SAME fold, so the phase transition lives here, not in either host.
    */
   readonly phase: 'model' | 'effort';
@@ -63,7 +65,12 @@ export interface ModelPickerState {
         readonly provider: ProviderId;
       }
     | undefined;
-  /** The highlighted index into {@link REASONING_EFFORTS} while in `'effort'` phase. */
+  /**
+   * The tiers the PENDING model accepts (ADR-0071 §6) — never the fixed five. Empty while no model is pending.
+   * `gpt-5.4-pro` rejects `low`; offering it a row the provider would 400 on is the bug this closes.
+   */
+  readonly effortTiers: readonly ReasoningEffort[];
+  /** The highlighted index into {@link ModelPickerState.effortTiers} while in `'effort'` phase. */
   readonly effortSelected: number;
   /** The session's currently-bound effort (the `✓` in the effort sub-list + the initial highlight); `undefined` ⇒
    *  no effort bound (the provider default), so the sub-list opens on a neutral middle tier. */
@@ -192,7 +199,11 @@ function acceptVisibleModel(
       ...(chosen.unavailableReason !== undefined ? { reason: chosen.unavailableReason } : {}),
     };
   }
-  if (state.effortStep && chosen.supportsReasoning) {
+  // The sub-step opens only if the model has a tier to OFFER. `supportsReasoning` was the old gate, and it is the
+  // wrong question: `deepseek-reasoner` reasons and exposes no controllable tier, so the old gate opened an overlay
+  // with five rows the model does not take.
+  const effortTiers = effortTiersFor(chosen.modelId);
+  if (state.effortStep && effortTiers.length > 0) {
     return {
       kind: 'state',
       state: {
@@ -203,7 +214,8 @@ function acceptVisibleModel(
           displayName: chosen.displayName,
           provider: chosen.provider,
         },
-        effortSelected: initialEffortIndex(state.currentEffort),
+        effortTiers,
+        effortSelected: initialEffortIndex(effortTiers, chosen.modelId, state.currentEffort),
         hint: undefined,
       },
     };
@@ -261,10 +273,10 @@ function foldModelPhaseKey(
 }
 
 /**
- * The `'effort'` phase fold (ADR-0066): a fixed sub-list of the reasoning-effort tiers for the {@link ModelPickerState.pending}
+ * The `'effort'` phase fold (ADR-0066/0071): the sub-list of the tiers the {@link ModelPickerState.pending} model accepts —
  * model. `Esc` backs OUT to the model list (Ctrl-C, handled by the caller, is the hard cancel); `↑`/`↓` move over
- * {@link REASONING_EFFORTS}; `Enter` accepts the chosen model + the highlighted tier. There is no filter or refresh
- * here (a fixed five-item list), so every other key is inert.
+ * {@link ModelPickerState.effortTiers}; `Enter` accepts the chosen model + the highlighted tier. There is no filter or refresh
+ * here (the list is fixed once the model is chosen), so every other key is inert.
  */
 function foldEffortPhaseKey(
   char: string,
@@ -272,24 +284,30 @@ function foldEffortPhaseKey(
   state: ModelPickerState,
 ): ModelPickerStep {
   if (key.escape === true) {
-    return { kind: 'state', state: { ...state, phase: 'model', pending: undefined } };
+    return {
+      kind: 'state',
+      state: { ...state, phase: 'model', pending: undefined, effortTiers: [] },
+    };
   }
   if (key.upArrow === true) {
-    const next = clampSelection(state.effortSelected - 1, REASONING_EFFORTS.length);
+    const next = clampSelection(state.effortSelected - 1, state.effortTiers.length);
     return { kind: 'state', state: { ...state, effortSelected: next } };
   }
   if (key.downArrow === true) {
-    const next = clampSelection(state.effortSelected + 1, REASONING_EFFORTS.length);
+    const next = clampSelection(state.effortSelected + 1, state.effortTiers.length);
     return { kind: 'state', state: { ...state, effortSelected: next } };
   }
   if (key.return === true) {
     const pending = state.pending;
     const effort =
-      REASONING_EFFORTS[clampSelection(state.effortSelected, REASONING_EFFORTS.length)];
+      state.effortTiers[clampSelection(state.effortSelected, state.effortTiers.length)];
     // Defensive: a missing pending model (never expected — set on the transition) or an out-of-range tier backs out
     // to the model list rather than emitting a malformed accept.
     if (pending === undefined || effort === undefined) {
-      return { kind: 'state', state: { ...state, phase: 'model', pending: undefined } };
+      return {
+        kind: 'state',
+        state: { ...state, phase: 'model', pending: undefined, effortTiers: [] },
+      };
     }
     return {
       kind: 'accept',
@@ -303,8 +321,18 @@ function foldEffortPhaseKey(
 }
 
 /** The effort sub-list's opening highlight: the session's bound effort, else a neutral middle tier (`'medium'`). */
-function initialEffortIndex(currentEffort: ReasoningEffort = 'medium'): number {
-  return Math.max(0, REASONING_EFFORTS.indexOf(currentEffort));
+function initialEffortIndex(
+  tiers: readonly ReasoningEffort[],
+  model: string,
+  currentEffort: ReasoningEffort | undefined,
+): number {
+  // Open on the bound tier, or the neutral `medium` when nothing is bound — PROJECTED onto a surviving row first
+  // (ADR-0066 amendment): a graded-collapsed model (deepseek [off,high,max]) has no `medium` row, so a bare
+  // `indexOf('medium')` = -1 → 0 = `off` would silently open on reasoning-DISABLED and a fresh Enter would write
+  // it. The projection folds the tier onto its representative (medium→high / a budget neutral→the `on` row).
+  const target = projectEffortToRow(model, tiers, currentEffort ?? 'medium');
+  const index = target === undefined ? 0 : tiers.indexOf(target);
+  return Math.max(0, index);
 }
 
 /* -------------------------------------------------------------------------------------------------- *

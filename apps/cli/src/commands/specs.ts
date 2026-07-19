@@ -455,16 +455,33 @@ function registerModels(program: Command, ctx?: CommandContext): void {
     .description('List the cached model catalog (refreshes on first run if empty).');
   const refresh = models
     .command('refresh')
-    .description("Re-fetch each connected provider's live model list into the local cache.");
+    .description(
+      "Re-fetch what we know about models: each connected provider's live list, and the models.dev catalog.",
+    )
+    .option('--providers', "availability only — each connected provider's live model list")
+    .option('--catalog', 'metadata only — prices, ceilings and reasoning tiers from models.dev');
   const pricing = models
     .command('pricing <model>')
     .description(
-      'Set a user price for a model the registry does not know (custom / new provider models).',
+      'Set your own price for a model — it overrides the catalog (you hold the invoice). --clear removes it.',
     )
     .requiredOption('--provider <slug>', 'the provider that serves the model (must be registered)')
-    .requiredOption('--input <usd-per-mtok>', 'input (prompt) price, USD per million tokens')
-    .requiredOption('--output <usd-per-mtok>', 'output (completion) price, USD per million tokens')
-    .option('--cached <usd-per-mtok>', 'cache-read price, USD per million tokens (default 0)');
+    // NOT `requiredOption`: `--clear` takes none of the three price flags, and commander would reject the invocation
+    // before the command ever sees it. The real rule — exactly one of "set a price" or "--clear" — is enforced in
+    // `buildModelsPricingArgs`, which can express it; commander's required-flag check cannot.
+    .option(
+      '--input <usd-per-mtok>',
+      'input (prompt) price, USD per million tokens (required unless --clear)',
+    )
+    .option(
+      '--output <usd-per-mtok>',
+      'output (completion) price, USD per million tokens (required unless --clear)',
+    )
+    .option(
+      '--cached <usd-per-mtok>',
+      "cache-read price, USD per million tokens; omitted ⇒ the catalog's cache discount, applied to your input rate",
+    )
+    .option('--clear', "remove your price for this model — it falls back to the catalog's");
 
   if (ctx === undefined) {
     models.action(() => {
@@ -488,17 +505,23 @@ function registerModels(program: Command, ctx?: CommandContext): void {
   models.action(async () => {
     ctx.result.exitCode = await executeCommand('models', { positionals: [], options: {} }, ctx);
   });
-  refresh.action(async () => {
+  refresh.action(async (opts: { providers?: boolean; catalog?: boolean }) => {
     ctx.result.exitCode = await executeCommand(
       'models.refresh',
-      { positionals: [], options: {} },
+      { positionals: [], options: { providers: opts.providers, catalog: opts.catalog } },
       ctx,
     );
   });
   pricing.action(
     async (
       model: string,
-      opts: { provider?: string; input?: string; output?: string; cached?: string },
+      opts: {
+        provider?: string;
+        input?: string;
+        output?: string;
+        cached?: string;
+        clear?: boolean;
+      },
     ) => {
       ctx.result.exitCode = await executeCommand(
         'models.pricing',
@@ -509,6 +532,7 @@ function registerModels(program: Command, ctx?: CommandContext): void {
             input: opts.input,
             output: opts.output,
             cached: opts.cached,
+            clear: opts.clear,
           },
         },
         ctx,

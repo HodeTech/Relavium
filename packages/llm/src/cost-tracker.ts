@@ -1,12 +1,8 @@
 import type { MediaBilledModality } from '@relavium/shared';
 
+import { catalogPricing, pricedModelIds } from './catalog/pricing.js';
 import { UnknownModelError } from './errors.js';
-import {
-  isCanonicalModelId,
-  KNOWN_MODEL_IDS,
-  MODEL_PRICING,
-  type ModelPricing,
-} from './pricing.js';
+import type { ModelPricing } from './pricing.js';
 import type { MediaUnitsEntry, Usage } from './types.js';
 
 /**
@@ -19,29 +15,100 @@ import type { MediaUnitsEntry, Usage } from './types.js';
  * An optional **user-pricing overlay** (2.5.G S10, [ADR-0065](../../../docs/decisions/0065-provider-economics-and-extensibility.md) §2)
  * — canonical model id → {@link ModelPricing}, host-built from the `model_catalog` `source='user'` rows and
  * injected **exactly like `keyFor`** (a plain Relavium map; `@relavium/core`/`@relavium/llm` never import
- * `@relavium/db`). It fills the price of an id ABSENT from the static registry so `max_cost_microcents` can
- * enforce it; the static registry ALWAYS wins for a known id (a user can never misprice a shipped model).
+ * `@relavium/db`). It OUTRANKS the catalog (ADR-0071 §1): the catalog is a generated snapshot of a third-party
+ * aggregator, and the user is the one holding the invoice. A partial override stays partial — a dimension they did
+ * not state inherits the catalog's, and a cache read is never free. `models pricing` says out loud which catalog
+ * price it replaced, because the user gets what they asked for; they simply cannot do it in silence (§5).
  */
 export type PricingOverlay = ReadonlyMap<string, ModelPricing>;
 
 /**
- * Look up pricing for a model id with precedence **static → overlay → throw** (ADR-0065 §2): the static
- * {@link MODEL_PRICING} wins for a known canonical id; the optional user `overlay` fills an UNKNOWN id; a truly
- * unknown id throws `UnknownModelError` (never a silent zero — the caller degrades cost governance to `allow`
- * with a loud, visible notice).
+ * Look up pricing for a model id: **user → catalog → throw**
+ * ([ADR-0071](../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §1).
+ *
+ * **The precedence flipped, deliberately.** It used to be static-first: the hand-typed registry won for a known
+ * id, and a user's `models pricing` row could only fill an id the registry LACKED. That made sense while the
+ * registry was our own verified table — and it is exactly wrong now. The catalog is a snapshot of a third-party
+ * aggregator; the user is the one holding the invoice. When they tell us their negotiated rate, their enterprise
+ * discount, or a price the snapshot has not caught up with, that is not a hint to be overruled by a file we
+ * generated last Tuesday. The user's number wins.
+ *
+ * A truly unknown id throws `UnknownModelError` — never a silent zero, which would bill a run at nothing and
+ * enforce a cost cap that can never trip. The caller degrades cost governance to `allow`, loudly.
  */
 export function priceModel(modelId: string, overlay?: PricingOverlay): ModelPricing {
-  if (isCanonicalModelId(modelId)) {
-    return MODEL_PRICING[modelId]; // the static registry is the pricing authority for a known id
+  const fromUser = overlay?.get(modelId);
+  if (fromUser !== undefined) {
+    return fromUser; // the user holds the invoice; we hold a snapshot of someone else's table
   }
-  const fromOverlay = overlay?.get(modelId);
-  if (fromOverlay !== undefined) {
-    return fromOverlay; // the user tier fills an id the static registry does not carry
+  const fromCatalog = catalogPricing(modelId);
+  if (fromCatalog !== undefined) {
+    return fromCatalog;
   }
-  throw new UnknownModelError(modelId, KNOWN_MODEL_IDS);
+  throw new UnknownModelError(modelId, pricedModelIds());
 }
 
 const TOKENS_PER_MTOK = 1_000_000;
+
+/** The three input-side rates that a context tier can move. Output moves too; it rides alongside. */
+export interface Rates {
+  readonly input: number;
+  readonly output: number;
+  readonly cachedInput: number;
+}
+
+/**
+ * The rates for a prompt of `contextTokens` — the tier it actually landed in (ADR-0071 §11).
+ *
+ * A model with no tiers is flat, which is every model the retired table carried and every price a user states. For
+ * a tiered one, the HIGHEST threshold at or below the prompt's size wins: `gemini-2.5-pro` is $1.25/$10 up to 200k
+ * and $2.50/$15 above it, so a 500k-token prompt billed at the cheap rate under-states its own cost by 2×.
+ *
+ * `contextTokens` is the whole input side — the prompt, cached or not, plus what is being written INTO the cache.
+ * All of it is context the model has to hold this turn, and it is a long conversation's cached history that pushes
+ * it over the threshold in the first place.
+ *
+ * One gap, deliberately not papered over: **cache WRITES are billed at the flat rate**, never a tier's. models.dev's
+ * tier schema publishes `input`, `output` and `cache_read` — and no `cache_write` — so a per-tier write rate is not a
+ * number we have. Inventing one by scaling would be a guess on a money path. Filed in deferred-tasks; the exposure is
+ * a cache-write-heavy prompt above 272k on the four `gpt-5.6` variants.
+ */
+function ratesFor(p: ModelPricing, contextTokens: number): Rates {
+  const flat: Rates = {
+    input: p.inputPerMtokMicrocents,
+    output: p.outputPerMtokMicrocents,
+    cachedInput: p.cachedInputPerMtokMicrocents,
+  };
+  if (p.contextTiers === undefined || p.contextTiers.length === 0) return flat;
+  let best: Rates = flat;
+  let bestThreshold = -1;
+  for (const tier of p.contextTiers) {
+    if (contextTokens > tier.aboveContextTokens && tier.aboveContextTokens > bestThreshold) {
+      bestThreshold = tier.aboveContextTokens;
+      best = {
+        input: tier.inputPerMtokMicrocents,
+        output: tier.outputPerMtokMicrocents,
+        // A tier that states no cache rate of its own falls back to THAT TIER's input rate — the same rule the base
+        // level follows (ADR-0071 §10), and for the same reason: a cache read is never free just because nobody said
+        // what it costs. It does NOT carry the base tier's discount forward, and it does not need to: every shipped
+        // model with a real base cache discount states one at the tier level too.
+        cachedInput: tier.cachedInputPerMtokMicrocents ?? tier.inputPerMtokMicrocents,
+      };
+    }
+  }
+  return best;
+}
+
+/**
+ * The rates for the WORST case — the highest tier the model has (ADR-0071 §11).
+ *
+ * The pre-egress estimate does not know how long the prompt will be (the engine does not tokenize locally), so it
+ * assumes the expensive end. A cap that over-estimates refuses a turn the user could have afforded; a cap that
+ * under-estimates lets real money escape. Only one of those is recoverable.
+ */
+export function worstCaseRates(p: ModelPricing): Rates {
+  return ratesFor(p, Number.MAX_SAFE_INTEGER);
+}
 
 /**
  * The integer micro-cent cost of one usage record. Each token class is `tokens ×
@@ -57,12 +124,15 @@ export function cost(modelId: string, usage: Usage, overlay?: PricingOverlay): n
   const p = priceModel(modelId, overlay);
   const cacheReadTokens = usage.cacheReadTokens ?? 0;
   const cacheWriteTokens = usage.cacheWriteTokens ?? 0;
+  // The tier the prompt ACTUALLY landed in (ADR-0071 §11) — the whole input side, cached or not, is context the
+  // model had to hold. A flat-priced model (and every user-stated price) resolves to its one set of rates.
+  const rates = ratesFor(p, usage.inputTokens + cacheReadTokens + cacheWriteTokens);
   const perClass = (tokens: number, ratePerMtok: number): number =>
     Math.round((tokens * ratePerMtok) / TOKENS_PER_MTOK);
   return (
-    perClass(usage.inputTokens, p.inputPerMtokMicrocents) +
-    perClass(usage.outputTokens, p.outputPerMtokMicrocents) +
-    perClass(cacheReadTokens, p.cachedInputPerMtokMicrocents) +
+    perClass(usage.inputTokens, rates.input) +
+    perClass(usage.outputTokens, rates.output) +
+    perClass(cacheReadTokens, rates.cachedInput) +
     perClass(cacheWriteTokens, p.cacheWritePerMtokMicrocents ?? 0) +
     // Media is a DISJOINT addend (1.AF/D17, ADR-0044 §3) — priced per image / audio-second / video-second,
     // never mixed into the token cost path, so the cumulative figure folds realized media spend.
@@ -126,8 +196,8 @@ export class CostTracker {
   #cumulativeMicrocents = 0;
   readonly #overlay: PricingOverlay | undefined;
 
-  /** `overlay` (2.5.G S10) is the host-injected user-pricing tier — consulted after the static registry for an
-   *  id it does not carry, so a user-priced model's realized spend is folded into the running total. */
+  /** `overlay` (2.5.G S10) is the host-injected user-pricing tier — consulted FIRST (ADR-0071 §1), so a model the
+   *  user has priced is billed at their number, and everything else at the catalog's. */
   constructor(overlay?: PricingOverlay) {
     this.#overlay = overlay;
   }
