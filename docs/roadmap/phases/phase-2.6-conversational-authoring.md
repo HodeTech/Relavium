@@ -157,7 +157,26 @@ the same core.
 - Expose a single `validateAuthoredWorkflow(yaml, catalog)` = `parseWorkflow` **+**
   `validateWorkflowWithCatalog`, and **back-port** it into `create`/`import`/`export` (today those are
   parse-only; only the run path catalog-validates), so `create` can never accept a model/modality the run
-  path rejects.
+  path rejects. Confirmed as a live gap by the review — `create`/`import`/`export` still parse-only today.
+  *(L · `apps/cli/src/authoring/`; #2)*
+- **`nodeCatalogIssue` never resolves the agent's own model, only a node-level override** *(review
+  finding, pre-existing bug in the function this workstream promotes):* `validate-catalog.ts`'s
+  `nodeCatalogIssue` reads a node-level model *override* but never the resolved agent's own `model:`, so
+  the catalog pre-flight is silently dead for the canonical, documented authoring pattern — declaring the
+  model once on the `agents:` block. Fix early in this workstream, since the acceptance criterion
+  ("`create` runs the same catalog pre-flight as `run`") depends on this function being correct.
+  *(M · `packages/core/src/validate-catalog.ts`; #88)*
+- **Run-path tool pre-flight for the unwired egress/os arms:** `build-engine.ts` always assembles the tool
+  host at `profile: 'workflow-read-write'`, and `assemble.ts`'s `wireEgressOs` only wires
+  `host.egress`/`host.os` when `profile === 'chat-read-write'` — so a workflow agent node granted
+  `web_search`, `http_request`, `read_clipboard`, or `notify` is a permanent, by-design `tool_unavailable`
+  on `relavium run`, with nothing validating the authored `tools:` grants against this before the run
+  starts. Add a sibling check inside `validateAuthoredWorkflow`'s catalog pre-flight, and correct
+  [`built-in-tools.md`](../../reference/shared-core/built-in-tools.md) /
+  [`workflow-yaml-spec.md`](../../reference/contracts/workflow-yaml-spec.md), which currently document
+  these tools as unconditionally available. Does **not** wire the arms themselves — that stays out of
+  scope per the recorded 2.5.E design boundary (Phase 3+).
+  *(M · `apps/cli/src/engine/build-engine.ts`, `apps/cli/src/engine/tool-host/assemble.ts`; #37, G29)*
 - **Catalog-aware `max_tokens` pre-flight** *(manual-test finding 2026-07-11):* extend
   `validateWorkflowWithCatalog` so `create`/`import`/`export` reject-or-clamp a `max_tokens` that exceeds the
   target model's known **output ceiling** (`MODEL_PRICING[model].maxOutputTokens` today; the live-catalog
@@ -166,7 +185,8 @@ the same core.
   only as a bare positive int and an over-ceiling value 400s opaquely at the wire. Leave an unknown-ceiling
   model (custom `base_url`) as pass-through. No new ADR (rides ADR-0058).
 - Add direct unit tests for `detectAndParse` / `buildAuthored` / `validateAuthoredWorkflow` (today only the
-  command wrappers are tested).
+  command wrappers are tested). Confirmed by the review as a real coverage gap in the core this workstream
+  extracts. *(M · `apps/cli/src/authoring/authoring.ts`; #6)*
 
 **Acceptance:** `@relavium/authoring` builds and imports **only** `@relavium/core` + `@relavium/shared`
 (lint-fence enforced); the CLI consumes it with `create`/`import`/`export` round-tripping **unchanged**
@@ -194,6 +214,10 @@ deferred items.
 - **In-Home authoring wizards**: bring `relavium create`'s wizard into the Home/chat palette (`/create` →
   an ink-native agent/workflow wizard over the same injectable prompter seam), so authoring starts from
   the Home, not only from a shell command.
+- **Wizard TTY prompts don't trim input** *(review finding):* `create-prompter.ts`'s TTY prompts pass
+  typed values straight through with no `.trim()`, so accidental leading/trailing whitespace silently
+  corrupts an authored value (slug, name, description). Fix in the same prompter seam this task brings
+  into the Home's `/create` wizard. *(S · `apps/cli/src/authoring/create-prompter.ts`; #5)*
 - **`AgentParseError` reaches the chat surfaces** *(deferred pull-in)*: a malformed `.agent.yaml` on
   `chat --agent` / `agent run` currently collapses to a generic exit-1 internal error; resolve the design
   call (wrap into `CliError('invalid_invocation')` at `resolveChatAgent`, or teach the top-level renderer
@@ -485,7 +509,9 @@ last drill-down position.
   curl/wget research item in 2.6.M) is surfaced here as a built-in grant that can be revoked.
 - **Liveness**: wire `engine.reconcile()` (never invoked today) on Home open and the browser/status reads,
   so crashed runs settle `run:failed{internal}` instead of showing as zombie `running` rows; expired gates
-  settle per their timeout policy via 2.6.K's re-arm.
+  settle per their timeout policy via 2.6.K's re-arm. Confirmed live by the review — `engine.reconcile()`
+  is tested in `packages/core` but called from nowhere in `apps/cli` today, so a killed/crashed run stays
+  `'running'` forever. *(S · `packages/core/src/engine/engine.ts` (`reconcile`), `apps/cli`; #229)*
 - Non-interactive parity: extend the read *commands* minimally (`relavium list --runs`, `status <runId>`
   for finished runs, `logs --follow/--failed`) so scripting keeps pace with the TUI —
   [ADR-0049](../../decisions/0049-cli-machine-output-contract.md)-conformant.
@@ -520,7 +546,27 @@ durable record complete enough for a first-class drill-down — additively.
   append-only (optional for backward-compat with existing `--json` consumers; when present, the per-node
   cost is exact, not a cumulative-delta approximation) — so parallel fan-out attributes exactly instead of
   via cumulative deltas; carry final totals on `run:failed` / `run:cancelled` (closing the documented
-  undercount).
+  undercount). Confirmed independently by two review rounds: today `runs.total_cost_microcents` for a
+  failed/cancelled run falls back to the last `node:completed` cumulative cost because `RunFailedEvent`/
+  `RunCancelledEvent` carry no total-cost field of their own — `sum(run_costs) == total` only holds because
+  both sides undercount together. *(M · `packages/core/src/engine/engine.ts`, run-event schema; #118, #232)*
+- **Exhaustiveness guard on `applyDerived`'s `RunEvent` switch** *(review finding):* `run-history-store.ts`'s
+  `applyDerived` switch over `RunEvent` has no `const exhaustive: never` guard, unlike the identical pattern
+  already added to `engine.ts` after the EA6 `agent:reasoning`-omission bug — a new `RunEvent` variant could
+  silently fail to update `runs.status`/`total_cost_microcents`. Add the same guard `engine.ts` already
+  uses. *(S · `packages/db/src/run-history-store.ts`; #114)*
+- **Resilient parse for a corrupted `history.db` event row** *(review finding, HIGH):* `loadRunStateEvents`
+  (bare-invocation Home) and `loadRunEvents` (`relavium logs`/`status`) both do an unguarded
+  `RunEventSchema.parse(JSON.parse(...))` with no try/catch — a single corrupted row anywhere in
+  `history.db` crashes the entire read with a generic internal error. Fix once at the
+  `run-history-store.ts` choke point with a `safeParse` + skip-and-report posture so both call sites
+  benefit. *(M · `packages/db/src/run-history-store.ts`; #277, #282)*
+- **Batch `loadRunEvents` instead of one query per run** *(review finding):* `relavium gate list` issues
+  one `loadRunEvents(runId)` call per paused run instead of a single batched query, and
+  `commands/status.ts` independently N+1s the full unbounded token-event firehose per active run instead
+  of using the lighter `loadRunStateEvents` API that `home-store.ts` already established for
+  `pendingHumanGates()`. Apply the same batching fix to both call sites.
+  *(S · `apps/cli/src/commands/gate.ts`, `apps/cli/src/commands/status.ts`; G12, #273)*
 - **Bounded durable tool trace** *(ADR decision)*: persist secret-free per-step tool **summaries** —
   toolId, the sanitized approval-preview target, outcome (ok/denied/failed), duration — never args or
   result bytes; the token/reasoning firehose stays unpersisted (the ADR-0036 posture holds). This is what
@@ -535,9 +581,12 @@ durable record complete enough for a first-class drill-down — additively.
   must not start two runs).
 
 **Acceptance:** a finished run's detail (attribution, exact per-node cost, tool summaries, skipped nodes)
-is fully reconstructable from `history.db`; the TOCTOU constraint holds under a concurrent two-process
-test; the schema/event changes are additive and `--json` consumers are unaffected; migration provided.
-**Required ADR:** shared with 2.6.G (browsers + durable run-detail; amends ADR-0036 additively).
+is fully reconstructable from `history.db`; a failed/cancelled run's persisted total cost matches actual
+spend incurred through its last event; the TOCTOU constraint holds under a concurrent two-process
+test; a corrupted `history.db` event row degrades to a skip-and-report notice instead of crashing
+`loadRunStateEvents`/`loadRunEvents`; the schema/event changes are additive and `--json` consumers are
+unaffected; migration provided. **Required ADR:** shared with 2.6.G (browsers + durable run-detail; amends
+ADR-0036 additively).
 
 ### 2.6.I — Provider & MCP management from the Home
 
@@ -622,6 +671,14 @@ security-sensitive `gate.ts` cross-process resume path, so they land together wi
 - **Extract a shared cross-process resume core** from `gate.ts` (snapshot reload → checkpoint reconstruct →
   `resumeFromCheckpoint` → drive) that the gate command, the budget command, and 2.6.G's inline resolve
   card all consume.
+- **Validate the gate decision shape against `gateType` before resume** *(review finding, HIGH):*
+  `decisionFromFlags` (`apps/cli/src/gate/decision.ts`) and `gateCommand` build a `GateDecision` purely
+  from `--approve`/`--reject`/`--input` before the pending gate's `gateType` is even looked up, and
+  `WorkflowEngine#resume` never cross-checks the decision kind against `gate.gateType` either —
+  `relavium gate <runId> --input` against an `approval` gate silently writes the wrong decision shape with
+  no error. Add `assertDecisionMatchesGateType` in `gate/decision.ts`, with `WorkflowEngine#resume` gaining
+  the same check as defense-in-depth, as part of the shared resume core this task extracts.
+  *(M · `apps/cli/src/gate/decision.ts`, `packages/core/src/engine/engine.ts` (`resume`); #0)*
 - **`relavium budget resume <runId> [--approve|--abort]`** *(deferred pull-in)*: the documented command
   over the engine's existing budget-gate resume; plus the Home affordance on budget-paused rows.
 - **Secret re-provide on resume** *(deferred pull-in, security)*: let the operator re-supply a
@@ -641,8 +698,10 @@ security-sensitive `gate.ts` cross-process resume path, so they land together wi
 
 **Acceptance:** a budget-paused run is resumable from the CLI and the Home; a secret-bearing run is
 resumable via re-provide with the security review passed; timers re-arm; a chat hitting its cost cap can
-pause-and-approve instead of failing the turn; the shared resume core is the only resume path (no
-duplication). **Required ADR:** none new (rides ADR-0028/ADR-0006); the security review is the gate.
+pause-and-approve instead of failing the turn; a decision whose kind mismatches the pending gate's
+`gateType` is rejected (CLI + `WorkflowEngine#resume` both enforce it), never silently written; the shared
+resume core is the only resume path (no duplication). **Required ADR:** none new (rides ADR-0028/ADR-0006);
+the security review is the gate.
 
 ### 2.6.L — `/settings`, the theme system, and localization
 
@@ -658,6 +717,19 @@ and the first localized agentic CLI (a genuine differentiator — competitor i18
   `[preferences].theme` (schema-present, read by nothing today) finally read; **`/theme`** switcher with
   live preview. Semantic markers (`✓`/`✗`/`⏸`) survive `--no-color`/`NO_COLOR` and degrade to ASCII
   (`[v]`/`[x]`/`[||]`) without Unicode.
+- **Close five `NO_COLOR`/ASCII-degrade gating gaps in the render layer** *(review findings):* `bold` (an
+  SGR code) is never gated by the `color` flag at 5 call sites, unlike every other style prop (the
+  `colorProps`/`dimProps` pattern) — add a shared `boldProps()` helper alongside them (#68, high). Status/
+  warning glyphs have no ASCII fallback under `NO_COLOR`, unlike `banner.ts`'s already-solved pattern
+  (#70). An attachment-bar pictographic emoji renders unconditionally, contradicting the render layer's
+  own documented no-pictographic-emoji rule (#59, near-duplicate #71). `NO_COLOR=''` (present-but-empty)
+  is treated as absent, diverging from the no-color.org contract (#72).
+  *(M · render-layer style helpers (`colorProps`/`dimProps`), `banner.ts`, the attachment-bar component;
+  #59, #68, #70, #71, #72)*
+- **`/doctor`'s glyph constants have no ASCII fallback** *(review finding):* `/doctor`'s `GLYPH` constants
+  render Unicode check/cross marks unconditionally, with no ASCII-degrade path when `NO_COLOR`/non-ANSI
+  output is active — unlike the semantic-marker degrade this workstream is standardizing everywhere else.
+  Fix `/doctor`'s glyph rendering as part of the same rollout. *(S · `apps/cli/src/chat/doctor.ts`; #9)*
 - **`/settings`** (Home + chat): a sectioned screen (appearance / language / chat defaults / models in use
   / update channel) over the **extended** [ADR-0063](../../decisions/0063-cli-config-write-contract.md)
   typed-setter (new keys: `theme`, `language`, `models_in_use`, `show_pricing`; still
@@ -701,6 +773,14 @@ and the first localized agentic CLI (a genuine differentiator — competitor i18
   a deliberate forward-compat posture, not an in-phase deliverable. Pluralization rules for German and
   French are handled by a minimal in-house pluralization helper (selecting key variants by count); Spanish
   and French accented characters are valid Unicode in the terminal and require no special handling.
+- **i18n-foundation scope inputs — hand-rolled `Intl` formatting and the cost-locale question** *(review
+  findings, planning inputs for the task above, not separate work):* onboarding and the Home chrome
+  currently hand-roll `toLocaleString('en-US')`/relative-time/pluralization strings (~228 unindirected
+  literals) instead of `Intl.NumberFormat`/`Intl.RelativeTimeFormat`/`Intl.PluralRules`, and
+  `[preferences].language` does not exist in config yet — both fold directly into the i18n foundation task
+  above. Decide and record in the i18n architecture ADR whether `$`/period cost formatting stays fixed
+  (English/US) under a `tr`/`es`/`fr`/`de` locale, or localizes too.
+  *(S · onboarding + Home chrome string literals, `config-spec.md`; #73, #261, #262, #263)*
 - Diagnostics/`--json` output stays English-stable (machine contract); localization applies to the
   interactive surfaces.
 
@@ -708,8 +788,10 @@ and the first localized agentic CLI (a genuine differentiator — competitor i18
 filters `/models` to the chosen models (unset ⇒ all, back-compatible); `show_pricing` defaults off and
 hides only the picker's `$/MTok` badge (never `/cost`, never `models pricing`, never an unpriced-model
 safety warning, never `--json` output); themes switch live incl. the
-accessibility pair; the color-free path stays legible; interactive surfaces run fully in all five
-locales with CI-enforced key parity; diagnostics and `--json` remain English-stable per
+accessibility pair; the color-free path stays legible; `NO_COLOR` gating is consistent across every style
+prop including `bold`, `NO_COLOR=''` is honored as set, every status/warning glyph (including `/doctor`'s)
+has an ASCII-degrade form, and no pictographic emoji renders unconditionally; interactive surfaces run
+fully in all five locales with CI-enforced key parity; diagnostics and `--json` remain English-stable per
 [ADR-0049](../../decisions/0049-cli-machine-output-contract.md); the machine-output contract is
 character-for-character unaffected. **Required ADR:** i18n +
 theming architecture.
@@ -756,6 +838,14 @@ sensitive-read floors).
     resolver in the chat-session and workflow-run tool-environment factories, (c) surface search-provider
     configuration in `/providers` and the onboarding wizard, and (d) document the config-pinned provider
     contract in `built-in-tools.md`.
+- **`http_request` has no config path to ever populate `allowedDomains` for chat** *(review finding,
+  structurally the same gap as the `web_search` activation above):* `http_request` is advertised to chat
+  agents (`wireEgressOs=true` for `chat-read-write`), but only `allowed_commands`/`allowed_command_globs`
+  are threaded into `chatToolPolicy` (`session-host.ts`) — there is no config path to ever populate
+  `allowedDomains`, so every `http_request` call deterministically fails `domain_not_allowed` before the
+  approval prompt even renders, defeating the ADR-0057 approval-floor investment. Wire an `allowed_domains`
+  config path alongside the credential-resolver activation above — the same fix pattern.
+  *(S · `apps/cli/src/chat/session-host.ts` (`chatToolPolicy`); G30)*
 - **`extra_roots`** *(deferred pull-in)*: the `[chat].extra_roots` config key + factory wiring, unblocking
   the `project` fs tier's documented allowlist (narrow-only, never a jail hole).
 - **Tool-call rendering v2** (with 2.6.F's renderer): keep the collapsed one-line annotation as the
@@ -764,6 +854,12 @@ sensitive-read floors).
   side-by-side) for `edit_file`/`write_file` at the approval prompt and in details. This deliberately
   revises 2.5's never-render-args posture — it is sanctioned only via the ADR + a security review (every
   string through the shared sanitize floor; secrets structurally excluded; bounded).
+  - **`write_file`'s approval flow has no diff/preview and is silent in `auto` mode** *(review finding,
+    high — a real blind spot on the highest-consequence built-in tool)*: `write_file`'s approval card
+    shows no diff or content preview of what will be written, produces no post-write trace event, and is
+    silent end-to-end when running in `auto` accept-edits mode. Close it as part of render v2's diff
+    rendering, even though `write_file` predates this workstream.
+    *(M · built-in tool registry (`write_file`), the render-v2 diff component; #305)*
 - **Target-scoped approval cache** *(deferred pull-in)*: key `[a]lways` grants by `(toolId, target class)`
   (path prefix / host / MCP server) instead of tool id alone, and give `mcp_call`/`web_search` a structured
   `{server, tool}`/query preview so their blank-preview once-only downgrade becomes a real reviewable
@@ -786,9 +882,11 @@ sensitive-read floors).
 **Acceptance:** the toolbelt covers read / edit / search / find / exec / web / todo / ask-user /
 `invoke_agent` (now wired for chat — 2.6.N); each tool
 is YAML-selectable and correctly mode-gated on every surface; render v2 ships with diffs and the details
-toggle behind a passed security review; the approval cache is target-scoped; the tool-gap table in the
-research record is closed or explicitly deferred per item. **Required ADR:** toolbelt additions +
-tool-render/approval-preview contract (extends ADR-0029/ADR-0057 posture).
+toggle behind a passed security review, including `write_file`'s approval card (content diff/preview, a
+post-write trace event, and visibility in `auto` mode); a chat `http_request` call reaches the approval
+prompt instead of deterministically failing `domain_not_allowed`; the approval cache is target-scoped; the
+tool-gap table in the research record is closed or explicitly deferred per item. **Required ADR:** toolbelt
+additions + tool-render/approval-preview contract (extends ADR-0029/ADR-0057 posture).
 
 ### 2.6.N — Child-session foundation: catalog spawn, standardized I/O, lineage
 
@@ -1113,6 +1211,33 @@ workstreams — each stays checked off **only** in the PR that lands it:
 Items evaluated and **kept deferred** (Phase-3/1.AH homes, SDK-blocked, accepted residuals, or
 scale-gated) remain in [deferred-tasks.md](../deferred-tasks.md) with their reasons — notably the
 `read_media` D12 cluster, retry-from-node, the desktop tool host, and the media/seam 1.AH cluster.
+
+## Review findings folded into this phase (2026-07-19)
+
+A 377-finding multi-agent code review of `HEAD f88b0e8` (373 findings survived two-lens adversarial
+verification, against a green toolchain throughout) triaged 27 confirmed findings — 16 work items, one per row
+below — into this phase's still-open workstreams, folded directly into the `**Tasks:**`/`**Acceptance:**` text
+above. Listed here for traceability; each row's fix is already merged into its workstream's task list, not a
+separate backlog.
+
+| Finding(s) | Issue | Lands in |
+|---|---|---|
+| #2 | `create`/`import`/`export` run parse-only validation while `relavium run` additionally runs the catalog pre-flight (`validateWorkflowWithCatalog`), so an authored file can pass `create` and still be rejected at `run`. | 2.6.A |
+| #6 | The in-tree authoring core (`apps/cli/src/authoring/authoring.ts`) that this phase extracts into `packages/authoring` has no direct unit tests for `detectAndParse`/`buildAuthored`/`validateAuthoredWorkflow` — coverage today is incidental, via command-level integration tests only. | 2.6.A |
+| #88 | `nodeCatalogIssue` (`packages/core/src/validate-catalog.ts`) only reads a node-level model *override*, never the resolved agent's own `model:`, so the catalog pre-flight is silently dead for the canonical pattern of declaring a model once on the `agents:` block. | 2.6.A |
+| #37, G29 | A workflow agent node granted `web_search`, `http_request`, `read_clipboard`, or `notify` is a permanent, silent `tool_unavailable` on `relavium run` — `build-engine.ts` never wires the egress/os host arms for the `workflow-read-write` profile, nothing validates the authored `tools:` grants against that fact before the run starts, and the docs claim these tools are unconditionally available. | 2.6.A |
+| #5 | The onboarding/`create` wizard's TTY prompts (`create-prompter.ts`) never `.trim()` typed input, so accidental leading/trailing whitespace silently corrupts an authored value. | 2.6.B |
+| #229 | `engine.reconcile()` is tested in `packages/core` but is called from nowhere in `apps/cli` — a killed or crashed run's `runs` row stays `'running'` forever, with no PID/heartbeat mechanism to detect it. | 2.6.G |
+| #118, #232 | A failed or cancelled run's persisted `total_cost_microcents` silently undercounts real spend, because `RunFailedEvent`/`RunCancelledEvent` carry no total-cost field of their own and fall back to the last `node:completed` cumulative figure. Found independently by two review rounds. | 2.6.H |
+| #114 | `run-history-store.ts`'s `applyDerived` switch over `RunEvent` has no `const exhaustive: never` guard, unlike the identical pattern already added to `engine.ts` — a new `RunEvent` variant could silently fail to update `runs.status`/`total_cost_microcents`. | 2.6.H |
+| #277, #282 | `loadRunStateEvents` (bare-invocation Home) and `loadRunEvents` (`relavium logs`/`status`) both do an unguarded `RunEventSchema.parse(JSON.parse(...))` with no try/catch — a single corrupted row anywhere in `history.db` crashes the entire read with a generic internal error. | 2.6.H |
+| G12, #273 | `relavium gate list` issues one `loadRunEvents(runId)` query per paused run instead of a single batched query, and `commands/status.ts` independently N+1s the full unbounded token-event firehose per active run instead of the lighter `loadRunStateEvents` API `home-store.ts` already established. | 2.6.H |
+| #0 | `decisionFromFlags`/`gateCommand` (`apps/cli/src/gate/decision.ts`) build a `GateDecision` purely from `--approve`/`--reject`/`--input` before the pending gate's `gateType` is even looked up, and `WorkflowEngine#resume` never cross-checks the decision kind against it either — `relavium gate <runId> --input` against an `approval` gate silently writes the wrong decision shape with no error. | 2.6.K |
+| #9 | `/doctor`'s `GLYPH` constants render Unicode check/cross marks unconditionally, with no ASCII-degrade path when `NO_COLOR`/non-ANSI output is active. | 2.6.L |
+| #73, #261, #262, #263 | Onboarding and the Home chrome hand-roll `toLocaleString('en-US')`/relative-time/pluralization strings (~228 unindirected literals) instead of `Intl.NumberFormat`/`Intl.RelativeTimeFormat`/`Intl.PluralRules`, and `[preferences].language` does not exist in config yet; an open design question on cost-formatting-under-locale needs a recorded decision. | 2.6.L |
+| #59, #68, #70, #71, #72 | Five `NO_COLOR`/ASCII-degrade gating gaps in the render layer: `bold` is never gated by the `color` flag at 5 call sites (unlike every other style prop); status/warning glyphs have no ASCII fallback under `NO_COLOR`; an attachment-bar pictographic emoji renders unconditionally; `NO_COLOR=''` (present-but-empty) is treated as absent. | 2.6.L |
+| #305 | `write_file`'s approval card shows no content diff/preview of what will be written, produces no post-write trace event, and is silent end-to-end when running in `auto` accept-edits mode — a blind spot on the highest-consequence built-in tool. | 2.6.M |
+| G30 | `http_request` is advertised to chat agents (`wireEgressOs=true` for `chat-read-write`), but no config path ever populates `allowedDomains` for chat — every call deterministically fails `domain_not_allowed` before the approval prompt renders. | 2.6.M |
 
 ## Milestones
 

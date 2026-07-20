@@ -2,22 +2,32 @@
 
 > Status: Living
 >
-> Last updated: 2026-07-11
+> Last updated: 2026-07-19
 
-- **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
+- **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
 This page tracks what is active **right now** and the immediate next concrete actions.
 The full phase plan and the global milestone spine are in [README.md](README.md).
 **Phase 2.5 (CLI Consolidation) is complete** (milestone **M2.5-4**, PR #69, 2026-07-08) — its
 breakdown, now historical, is in
 [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md).
+A 2026-07-19 full-project code review then opened **Phase 2.5.5 (Hardening and Remediation)**, an
+interstitial phase holding the review's verified findings against the pre-2.6 codebase; it runs
+**concurrently with Phase 2.6, not before it** — see
+[phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md)
+and [Active now](#what-is-active-now).
 **Phase 2.6 — Conversational Authoring and the First-Class CLI** is **in progress** (re-scoped
 2026-07-08); its plan is in
 [phases/phase-2.6-conversational-authoring.md](phases/phase-2.6-conversational-authoring.md).
 Workstream **2.6.F (platform floor + the full-screen TUI renderer)** is **merged to `main`**
 (PR #74, 2026-07-11), and so is **2.6.C** (the reseat transcript-carry + the `/cost` per-model breakdown,
-PR #75, 2026-07-13) — see [Active now](#what-is-active-now). **2.6.Q** is next and is **blocked**: it carries
-seven decisions the maintainer must answer before any code is written.
+PR #75, 2026-07-13) — see [Active now](#what-is-active-now). **2.6.Q** (dynamic model-catalog
+enrichment) is **no longer blocked**: [ADR-0071](../decisions/0071-models-dev-as-the-model-metadata-source.md)
+and [ADR-0072](../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md) are both
+**Accepted**, resolving the six open maintainer questions the phase file had cited, and the P1–P5
+implementation steps have landed on `development` (PR #76, open, review-folded). P6 and the
+`/settings` → `/models` visibility toggle remain open, and the bundled offline snapshot regen is
+pending a Gemini pricing decision.
 
 ## Where we are
 
@@ -43,6 +53,41 @@ and the [reference specs](../reference/).
 > [release-a-surface.md](../runbooks/release-a-surface.md)).
 
 ## What is active now
+
+### 2026-07-19 full-project code review — triaged, Phase 2.5.5 opened
+
+A multi-agent code review of the whole tree at HEAD `f88b0e8` ran while the toolchain was green
+throughout (lint, typecheck, and all 226 test files passing) — every finding is a defect a green
+build cannot catch. 377 findings went through two-lens adversarial verification (one agent trying
+to refute each finding against the code, one auditing its materiality); 373 survived and were
+triaged into 205 work items. The review's central conclusion: the gap to first-class is a gap in
+**propagation**, not competence — the correct pattern almost always already exists in the repo and
+fails to reach the next site (a redaction helper not called twenty lines away, terminal
+sanitization built for chat and never carried to `relavium run`, `withBusyRetry` applied to every
+writer but the three oldest, cancel-wins implemented in four node handlers and omitted in the
+fifth). That makes the remediation cheap and low-risk: the reference implementation is already
+in-tree.
+
+Disposition: 176 work items opened the new **[Phase 2.5.5 — Hardening and Remediation](phases/phase-2.5.5-hardening-and-remediation.md)**
+(engine/LLM/persistence hardening, MCP/secrets, the CLI operator-safety net, TUI terminal safety,
+docs accuracy, CI/test-infrastructure, and hygiene), running **concurrently with Phase 2.6, not
+before it** (327 findings); 27 findings (16 work items) were folded directly into the charter of an
+already-open 2.6 workstream; 16 findings (10 work items) were already tracked in
+[deferred-tasks.md](deferred-tasks.md) and were re-confirmed rather than duplicated; 3 needed no
+action per the finding's own argument. Severity of the 373 triaged findings: 3 critical, 48 high, 134
+medium, 155 low, 33 polish.
+
+The three critical findings, visible here so they aren't buried in the phase file:
+
+- **A tool-approval preview that is not secret-redacted** (`packages/core/src/tools/registry.ts`)
+  — the persisted, `--json`-visible `ToolActionPreview` echoes a command/path verbatim instead of
+  going through the same redaction its sibling input-sanitizer already applies.
+- **A transient `history.db` write failure silently drops a chat turn, then crashes the session**
+  (`apps/cli/src/chat/persister.ts`) — an async write failure surfaces after the reply was already
+  shown to the user, as an unhandled rejection.
+- **Missing terminal-output sanitization on the `relavium run` TUI** (`apps/cli/src/render/tui/RunApp.tsx`)
+  — `stripTerminalControls`/`sanitizeInline` is applied at nearly every other dynamic-text display
+  boundary but never reaches this one, leaving an ANSI/OSC/Trojan-Source injection hole.
 
 ### Phase 2.6.F — platform floor + the full-screen TUI renderer (merged to `main`, PR #74, 2026-07-11)
 
