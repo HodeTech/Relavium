@@ -181,6 +181,11 @@ certify while the reviews are still booked.
 Decompose, guard and normalize every hot file a 2.6 workstream is about to land on. **The multi-file queue
 runs first and is serialized against the rest**; the remaining queues are file-disjoint, any order.
 
+Two orderings here are not this plan's invention — they are the intra-phase serializations
+[2.5.5 records under Positioning](phases/phase-2.5.5-hardening-and-remediation.md#positioning): **E before I**
+on `home-controller.ts`/`chat-ink.tsx` (the decomposition moves already-guarded code), and **C before E** on
+`packages/db/src/client.ts` (C types the error path in Wave 1; E's `openLocalDb` rewrite lands last, here).
+
 - **Multi-file (strict, first)** — 2.5.5.E · `closeQuietly()` to its four siblings (#22) → `displayPath`
   discipline to `resolve.ts`/`catalog.ts`/`chat-export.ts` (#4, G11) → `const exhaustive: never` across the
   six sites (#300, #301, G3, which also makes `relavium run` render `agent:reasoning`).
@@ -311,7 +316,9 @@ Ship the riskiest surface last, on a fully reviewed codebase.
 4. The **`deferred-tasks.md` + traceability recording pass** for every re-deferral and decline this plan makes
    — it is the only thing that makes 2.5.5 exit criterion 5 certifiable — then 2.5.5's last docs items and the
    **sub-stream F sign-off**.
-5. **Certify 2.5.5 exit criteria 4–8 and all eight Phase-2.6 go/no-go criteria.**
+5. **Certify 2.5.5 exit criteria 4–8, and Phase-2.6 go/no-go criteria 1, 2, 5, 6, 7 and 8.**
+   Criteria **3 and 4 were certified in Wave 6** and are only **re-verified** here as a release
+   prerequisite, not certified again — each go/no-go criterion has exactly one certifying wave.
    **Closes M2.5.5-5, M2.6-5, M2.6-6, M2.6-7 → Phase 3 may open.**
 
 ### Wave-gating decisions

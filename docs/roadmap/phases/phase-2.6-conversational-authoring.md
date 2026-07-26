@@ -190,8 +190,10 @@ the same core.
 
 **Acceptance:** `@relavium/authoring` builds and imports **only** `@relavium/core` + `@relavium/shared`
 (lint-fence enforced); the CLI consumes it with `create`/`import`/`export` round-tripping **unchanged**
-(regression-tested); `create` runs the same catalog pre-flight the run path uses; the core is directly
-unit-tested. **Required ADR:** [ADR-0058](../../decisions/0058-relavium-authoring-package-and-conversational-authoring.md)
+(regression-tested); **all three of `create`, `import` and `export`** run the same run-equivalent catalog
+pre-flight (`validateAuthoredWorkflow` = `parseWorkflow` + `validateWorkflowWithCatalog`) that
+`relavium run` uses, so no authoring entrypoint can accept a file the run path rejects; the core is
+directly unit-tested. **Required ADR:** [ADR-0058](../../decisions/0058-relavium-authoring-package-and-conversational-authoring.md)
 (Proposed → Accepted when this workstream begins).
 
 ### 2.6.B — Conversational + wizard authoring in the Home
@@ -214,10 +216,19 @@ deferred items.
 - **In-Home authoring wizards**: bring `relavium create`'s wizard into the Home/chat palette (`/create` →
   an ink-native agent/workflow wizard over the same injectable prompter seam), so authoring starts from
   the Home, not only from a shell command.
-- **Wizard TTY prompts don't trim input** *(review finding):* `create-prompter.ts`'s TTY prompts pass
+- **Wizard TTY prompts don't normalize input** *(review finding):* `create-prompter.ts`'s TTY prompts pass
   typed values straight through with no `.trim()`, so accidental leading/trailing whitespace silently
-  corrupts an authored value (slug, name, description). Fix in the same prompter seam this task brings
-  into the Home's `/create` wizard. *(S · `apps/cli/src/authoring/create-prompter.ts`; #5)*
+  corrupts an authored value. Fix per field rather than blanket-trimming, in the same prompter seam this
+  task brings into the Home's `/create` wizard:
+  - **`slug`** — trim, then **reject** any value still carrying whitespace with a field-named message.
+    A blanket trim would silently accept `my agent` (interior space), which the schema rejects later and
+    further from the typo.
+  - **`name`** — trim; a leading/trailing space is never meaningful in a display name.
+  - **`description`** — trim leading/trailing whitespace but preserve interior formatting, so a
+    deliberately multi-line description round-trips unchanged.
+
+  Cover each policy with a prompter test, including the boundary cases: whitespace-only input, interior
+  whitespace in a slug, and a multi-line description. *(S · `apps/cli/src/authoring/create-prompter.ts`; #5)*
 - **`AgentParseError` reaches the chat surfaces** *(deferred pull-in)*: a malformed `.agent.yaml` on
   `chat --agent` / `agent run` currently collapses to a generic exit-1 internal error; resolve the design
   call (wrap into `CliError('invalid_invocation')` at `resolveChatAgent`, or teach the top-level renderer

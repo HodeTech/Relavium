@@ -23,8 +23,9 @@ called twenty lines away, terminal sanitization built for chat and never carried
 implemented in four node handlers and omitted in the fifth. That makes this work cheap and
 low-risk in the aggregate — the reference implementation is already in-tree at nearly every
 site — while a small number of items are genuine CRITICAL defects (a secret leaking into a
-persisted approval preview, an unhandled rejection that can crash the CLI mid-turn) that
-justify treating this as its own phase rather than a backlog label.
+persisted approval preview, an unhandled rejection that can crash the CLI mid-turn, an
+unsanitized terminal-injection hole on `relavium run`) that justify treating this as its own
+phase rather than a backlog label.
 
 ## Positioning
 
@@ -52,10 +53,24 @@ Phase 2.6 workstream's own stated charter (not force-fits) and were routed there
 duplicated; **3 findings** required no action per the finding's own argument and were consciously
 declined. All three groups are recorded with their disposition in the traceability appendix
 below. No sub-stream in this phase has a genuine hard code-level dependency on another
-completing first — each targets a disjoint subsystem/file set (`packages/core`,
-`packages/llm`, `packages/db`, `packages/mcp` + secrets, `apps/cli`'s process layer,
-`apps/cli`'s TUI layer, `docs/`, cross-cutting hygiene, and the CI/tooling substrate), and
-all nine can land in any order or fully concurrently.
+completing first — each is centred on its own subsystem (`packages/core`, `packages/llm`,
+`packages/db`, `packages/mcp` + secrets, `apps/cli`'s process layer, `apps/cli`'s TUI layer,
+`docs/`, cross-cutting hygiene, and the CI/tooling substrate). The sub-streams are **not**,
+however, fully file-disjoint, so "any order" holds between disjoint queues rather than across
+the phase as a whole. Two overlaps are known and must be serialized rather than run in parallel:
+
+- **2.5.5.C ↔ 2.5.5.E on `packages/db/src/client.ts`** — C gives `createClient` a typed error and
+  corrects its PRAGMA docstring (`#104`, `#105`); E moves the wrap-and-redact logic inside
+  `openLocalDb` across 8+ call sites (`#278`, `#280`). **E's item lands last**, since it rewrites the
+  error path C types.
+- **2.5.5.E ↔ 2.5.5.I on `apps/cli/src/render/tui/home-controller.ts` and `chat-ink.tsx`** — E adds the
+  `selectGatePrompter` test (`G37`), the swallowed-rejection comment (`#281`) and the
+  `const exhaustive: never` sweep (`#300`, `#301`, `G3`); I decomposes `createHomeController`
+  (`#215`, `#243`) and applies the min-terminal-size guard (`#63`). **E's items land first**, so the
+  decomposition moves already-guarded code.
+
+Everything else may proceed concurrently. The cross-phase file-ownership preferences are separate
+and are called out under [Positioning](#positioning).
 
 ## Goal
 
@@ -66,10 +81,12 @@ reached.
 
 ## Outcomes (Definition of Done)
 
-- The two CRITICAL findings — the unredacted secret in the persisted tool-approval preview
-  (`packages/core/src/tools/registry.ts`'s `previewFor()`) and the chat persister's
-  unhandled-promise-rejection crash path (`apps/cli/src/chat/persister.ts`) — are closed and
-  regression-tested.
+- All three CRITICAL findings — the unredacted secret in the persisted tool-approval preview
+  (`#91`, `packages/core/src/tools/registry.ts`'s `previewFor()`), the chat persister's
+  unhandled-promise-rejection crash path (`#228`, `apps/cli/src/chat/persister.ts`), and the
+  unsanitized `relavium run` TUI (`#56`, `apps/cli/src/render/tui/RunApp.tsx`) — are closed and
+  regression-tested. `#56` lands with 2.5.5.I rather than 2.5.5.A/C, so it certifies under
+  M2.5.5-2; the severity is the traceability appendix's own, not a reclassification.
 - `relavium run`'s TUI, the persisted run summary, the universal error boundary, and the
   human-gate approval card all sanitize dynamic/model-controlled text the same way chat
   already does — a security review confirms the injection class is closed.
@@ -97,10 +114,12 @@ reached.
 
 ### In scope
 
-- The 205 work items enumerated in the nine sub-streams below (2.5.5.A–I), each a fix,
+- The 176 work items enumerated in the nine sub-streams below (2.5.5.A–I), each a fix,
   hardening pass, test-coverage close, or documentation correction against code that
   already ships in `packages/core`, `packages/llm`, `packages/db`, `packages/mcp`, `apps/cli`,
-  or `docs/`.
+  or `docs/`. These are the in-scope subset of the 205 triaged work items; the other 29 are
+  routed to Phase 2.6, re-confirmed in [../deferred-tasks.md](../deferred-tasks.md), or
+  declined — see [Explicitly out of scope](#explicitly-out-of-scope).
 - The handful of maintainer-decision items each sub-stream calls out explicitly as
   **blocked** — resolving those decisions is itself in scope for this phase, even where the
   resulting implementation is small.
@@ -346,7 +365,7 @@ This substream is the development-process substrate itself — `.github/workflow
 - **`release.yml` publishes with an npm provenance attestation but never verifies the tagged commit is reachable from `main`.** The workflow triggers on any `v*` tag push and checks only that the tag's version string matches `apps/cli/package.json` — it never runs a `git merge-base --is-ancestor` check against `origin/main`, and no tag-protection ruleset is visible anywhere in the repo, so the `publish` job's only real gate beyond a green cross-OS smoke is possession of `NPM_TOKEN`. Add the ancestor-reachability assertion to the `pack` job. *(M · `.github/workflows/release.yml` · G26)* Blocking — full closure additionally needs a maintainer decision to configure a GitHub tag-protection ruleset restricting `v*` tag creation, a repo-settings change outside this PR's diff; the in-workflow ancestor check can land independently.
 - **`tools/engine-deps/check.mjs`'s allowlist and its purity model both stop short of the packages that need them.** `ENGINE_ALLOWLISTS` covers only `packages/shared`/`packages/llm`/`packages/core` — `packages/db`'s exclusion is deliberate but undocumented for `packages/mcp`, the one other package (besides `apps/cli`) that imports `@relavium/core`, leaving both packages' dependency growth policed only by human PR review instead of the mechanical gate the other three get (the identical missing-coverage observation, found independently in two review rounds, #285 and #318). Separately, the guard only reads each allowed package's own declared dependency *names* — it never resolves what an allowed transitive dependency (`yaml`, `quickjs-emscripten-core`) actually does, so a routine patch bump introducing a `node:fs`/`node:child_process` call inside one would pass every gate silently (#313). Extend `ENGINE_ALLOWLISTS` to cover `packages/db` and `packages/mcp`, and add a periodic browser-target bundle probe (esbuild `--platform=browser`, `node:*` externals set to fail-on-resolve) to catch transitive purity breaks. *(M · `tools/engine-deps/check.mjs` · #313, #318, #285)*
 - **The documented ≥90% coverage floor is advisory in CI, and the standard says otherwise.** `docs/standards/testing.md` states unconditionally that `packages/core`/`packages/llm`/`packages/mcp` carry an "enforced floor >= 90%", but `vitest.config.ts`'s own header comment and `ci.yml`'s job name (`engine coverage floor (advisory)`) both say the job stays non-required pending a stability check — so a PR that drops core/llm/mcp coverage below 90% merges cleanly today, and the standard contradicts itself between its "coverage expectations" and "CI gate" sections. Found independently in two review rounds citing the identical contradiction. One maintainer decision resolves both: promote the job to required (a checked-in run already shows 92-97% margin) or soften `testing.md`'s wording to "advisory, tracked toward required." *(S · `vitest.config.ts` · #296, #152)*
-- **No automated enforcement exists for CLAUDE.md's own binding documentation rules.** One-canonical-home, relative-only links, single-H1, kebab-case filenames, and no-front-matter are declared non-negotiable, yet `.prettierignore` explicitly excludes `docs/**`/`**/*.md`, and no markdownlint, link checker, or filename check runs anywhere in `.github/` or `tools/`. Write a ~100-line checker in the project's existing `tools/` style — validate every relative Markdown link under `docs/` resolves, assert exactly one `# ` H1 and no front-matter per file, flag non-kebab-case new/changed filenames — and wire it into CI. *(M · `docs/standards/documentation-style.md` · #316)*
+- **No automated enforcement exists for CLAUDE.md's own binding documentation rules.** One-canonical-home, relative-only links, single-H1, kebab-case filenames, and no-front-matter are declared non-negotiable, yet `.prettierignore` explicitly excludes `docs/**`/`**/*.md`, and no markdownlint, link checker, or filename check runs anywhere in `.github/` or `tools/`. Write a ~100-line checker in the project's existing `tools/` style — validate every relative Markdown link under `docs/` resolves, assert exactly one top-level `#` H1 and no front-matter per file, flag non-kebab-case new/changed filenames — and wire it into CI. *(M · `docs/standards/documentation-style.md` · #316)*
 - **The binding logging standard describes an injected-logger architecture that has zero implementation anywhere in the codebase.** `docs/standards/logging-and-observability.md` says the engine "logs through an injected logger interface... so a surface... supplies its own sink"; a repo-wide grep of `packages/*/src` and `apps/cli/src` finds zero `console.*` calls, zero logger type on `ExecutionHost` (`packages/core/src/engine/execution-host.ts`), and no implementation anywhere (#266). Two live consequences: `correlationId` is stamped on every `node:failed`/`run:failed` event (`packages/core/src/engine/engine.ts:1298`) specifically so an operator can "join it to the structured internal log" — but none of the three `RunEvent` renderers nor `relavium logs`'s `detailOf()` ever print it, because there is nothing to join it to (#267); and `media-gc.ts`'s intentional bare `catch { return undefined; }` (lines 161, 194) means a persistent GC failure — a permissions problem, a locked file — has zero trace anywhere for its entire lifetime, not in a log, a `RunEvent`, or the DB (#270). *(L · `docs/standards/logging-and-observability.md` · #266, #267, #270)* Blocking — a maintainer decision gates #267/#270 closing properly: build the minimal injected-logger interface the standard describes and route the swallowed catches through it at `warn`, or formally amend the standard to name the run-event stream + persisted history as the only observability mechanism through Phase 2.6.
 - **`sync:models:check`, the documented staleness-detection mode, is implemented and unused.** `tools/sync-models-dev/sync.mjs`'s own header documents `pnpm sync:models --check` as the CI-facing mode that fails if the committed `packages/llm/src/catalog/snapshot.ts` snapshot is stale, and it is fully implemented with a matching root script (`sync:models:check`), but `models-catalog.yml`'s weekly job calls plain `sync:models` — grepping every workflow file for `sync:models:check` returns zero hits. Wire the `:check` variant into the weekly job as a non-blocking, informational lane. *(S · `tools/sync-models-dev/sync.mjs` · #317)*
 - **Two advisory CI jobs are missing the `(advisory)` label the other two carry.** `coverage` and `windows-concurrency` both self-label `(advisory)` in their job `name:` field in `.github/workflows/ci.yml`, which is what shows in the GitHub Actions/PR checks UI; `floor-check` and `peer-dep-gate` are equally advisory per the file's top-of-file comment but carry no such marker, so a contributor scanning the checks list can mistake them for required. Append `(advisory)` to both job names. *(S · `.github/workflows/ci.yml` · #320)*
@@ -392,17 +411,21 @@ This substream is the development-process substrate itself — `.github/workflow
 
 | In-phase | Completed by | Outcome |
 |----------|--------------|---------|
-| M2.5.5-1 Safety-critical propagation fixes | 2.5.5.A + 2.5.5.C | The two CRITICAL findings closed (the unredacted approval-preview secret leak; the chat-persister unhandled-rejection crash); the budget governor's concurrency gap and the two-process migration race are fixed |
-| M2.5.5-2 Security-surface hardening | 2.5.5.D + 2.5.5.I | MCP tool-poisoning/config-secret-hijack gaps closed; terminal-control sanitization reaches `relavium run`, the error boundary, and the approval card; `chat.ts`/`home-controller.ts` decomposed ahead of 2.6.E/2.6.G |
+| M2.5.5-1 Safety-critical propagation fixes | 2.5.5.A + 2.5.5.C | Two of the three CRITICAL findings closed (`#91` the unredacted approval-preview secret leak; `#228` the chat-persister unhandled-rejection crash — the third, `#56`, lands with 2.5.5.I under M2.5.5-2); the budget governor's concurrency gap and the two-process migration race are fixed |
+| M2.5.5-2 Security-surface hardening | 2.5.5.D + 2.5.5.I | MCP tool-poisoning/config-secret-hijack gaps closed; the third CRITICAL (`#56`) closed as terminal-control sanitization reaches `relavium run`, the error boundary, and the approval card; `chat.ts`/`home-controller.ts` decomposed ahead of 2.6.E/2.6.G |
 | M2.5.5-3 CLI operator-safety net | 2.5.5.E | The outermost crash/signal/error boundary behaves uniformly across every command; `--version`/`--help` startup tax closed |
 | M2.5.5-4 Money-safety & process substrate | 2.5.5.B + 2.5.5.H | The three LLM adapters share guard/classification parity and `FallbackChain` is the sole retry authority; CI actually executes the compiled binary and the coverage/dependency/logging gates match what they claim to enforce |
 | M2.5.5-5 Documentation & hygiene close-out | 2.5.5.F + 2.5.5.G | No canonical doc names a retired data source or an unbuilt surface as shipped; the naming/duplication/dead-code sweep is closed |
 
 ## Sequencing & parallelization
 
-All nine sub-streams are independent (`dependsOn` is empty on every one) and can land in any
-order or fully concurrently — each targets a disjoint subsystem/file set. The order below is
-a value/risk recommendation, not a dependency chain, leading with safety-critical work:
+All nine sub-streams are independent (`dependsOn` is empty on every one) — no sub-stream must
+complete before another starts. They are **not** all file-disjoint, though, so concurrency runs
+between disjoint queues rather than across the phase as a whole: the two known overlaps
+(2.5.5.C ↔ 2.5.5.E on `packages/db/src/client.ts`, and 2.5.5.E ↔ 2.5.5.I on
+`home-controller.ts`/`chat-ink.tsx`) carry a required landing order, recorded under
+[Positioning](#positioning). The order below is a value/risk recommendation, not a dependency
+chain, leading with safety-critical work:
 
 1. **2.5.5.A and 2.5.5.C first** — each contains one CRITICAL, self-contained defect (the
    approval-preview secret leak; the chat-persister crash) with a small, well-understood
@@ -447,8 +470,8 @@ sequencing constraints in this phase; everything else is scheduler's choice.
 
 ## Exit criteria
 
-1. Both CRITICAL findings (the `previewFor()` secret leak; the chat-persister unhandled
-   rejection) are closed and regression-tested.
+1. All three CRITICAL findings (`#91` the `previewFor()` secret leak; `#228` the chat-persister
+   unhandled rejection; `#56` the unsanitized `relavium run` TUI) are closed and regression-tested.
 2. A security review confirms terminal-control sanitization reaches `relavium run`'s TUI,
    the persisted run summary, the universal error boundary, and the human-gate approval card.
 3. A security review confirms the MCP tool-definition untrusted-content gap and the MCP
