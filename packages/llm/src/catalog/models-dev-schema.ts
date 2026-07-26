@@ -255,6 +255,13 @@ export function normalizeCatalogModel(
   ) {
     return undefined;
   }
+  // A PRESENT but zero-rate `cost` is the same hazard as an absent one, and the check above does not catch it:
+  // `lyria-3-*` (music, billed per clip) publishes `{input: 0, output: 0}`, which would import as a $0 row —
+  // and a $0 row *passes* the ADR-0028 cost cap instead of flagging the model as unpriced. Treat a non-positive
+  // input or output rate as unpriceable, on the same reasoning as the null case.
+  if (raw.cost.input <= 0 || raw.cost.output <= 0) {
+    return undefined;
+  }
   const { cost, limit } = raw;
   const reasoning = toReasoningControls(raw);
   const requestCapabilities = toRequestCapabilities(raw);
