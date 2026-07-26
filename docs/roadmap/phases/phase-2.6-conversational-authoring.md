@@ -786,14 +786,21 @@ and the first localized agentic CLI (a genuine differentiator — competitor i18
   **n locales** but only **`en` + `tr`** ship in-phase (maintainer ruling, 2026-07-26 — `es`, `fr`, `de` are
   staged: their key files may land empty/partial, they are not offered in `/settings` until complete);
   a CI **key-parity test** (fails on missing/extra keys across the shipped locales)
-  + a dead-string lint — landing the deferred i18n standard as a `docs/standards/` entry. The five
-  in-phase locales are all **Latin-script**, so in-phase rendering needs only accent-safe (valid Unicode,
-  no special handling) and combining-character-safe layout; full **IME composition** and **wide-character /
-  bidi** handling are **not** in-phase acceptance gates. The catalog architecture stays CJK/RTL-ready
-  (data ≠ code, no hardcoded width assumptions) so a future CJK or RTL locale needs no re-architecture —
-  a deliberate forward-compat posture, not an in-phase deliverable. Pluralization rules for German and
-  French are handled by a minimal in-house pluralization helper (selecting key variants by count); Spanish
-  and French accented characters are valid Unicode in the terminal and require no special handling.
+  + a dead-string lint — landing the deferred i18n standard as a `docs/standards/` entry. Both shipped
+  locales are **Latin-script**, so in-phase rendering needs only accent-safe (valid Unicode, no special
+  handling) and combining-character-safe layout; full **IME composition** and **wide-character / bidi**
+  handling are **not** in-phase acceptance gates. The catalog architecture stays CJK/RTL-ready (data ≠ code,
+  no hardcoded width assumptions) so a future CJK or RTL locale needs no re-architecture — a deliberate
+  forward-compat posture, not an in-phase deliverable.
+  - **`tr` is the locale that actually exercises the seams**, and it is in acceptance scope: Turkish takes
+    **no plural suffix after a numeral** ("3 çalıştırma", never "3 çalıştırmalar"), so the pluralization
+    helper must select by locale rule rather than assume the English count-based form; and Turkish's
+    dotless/dotted `ı`/`i` makes any locale-sensitive `toLowerCase`/`toUpperCase` or `localeCompare` on an
+    identifier a live defect — the same hazard 2.5.5.G's `compareIdentifiers` sweep (`#258`, `#259`) closes
+    for sorting. Neither needs new architecture; both need a test.
+  - **`es`, `fr`, `de` are staged, not acceptance scope.** Their accented characters are valid Unicode and
+    need no special handling, and German/French plural forms are already expressible in the same
+    count-variant helper — so completing them later is catalogue work, not a re-design.
 - **i18n-foundation scope inputs — hand-rolled `Intl` formatting and the cost-locale question** *(review
   findings, planning inputs for the task above, not separate work):* onboarding and the Home chrome
   currently hand-roll `toLocaleString('en-US')`/relative-time/pluralization strings (~228 unindirected

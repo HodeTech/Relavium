@@ -127,9 +127,16 @@ describe('catalog-metadata (ADR-0072 P4 — host projection + seed + install + p
       // Pick a shipped id the snapshot leaves WITHOUT a `knowledgeCutoff`, so this test exercises the
       // carry-forward branch rather than the snapshot-wins one. The snapshot bakes in modalities and a
       // description for every model today, but not always a cutoff.
-      const shippedId = Object.entries(CATALOG_SNAPSHOT).find(
+      const withoutCutoff = Object.entries(CATALOG_SNAPSHOT).find(
         ([, m]) => m.knowledgeCutoff === undefined,
-      )![0];
+      );
+      // If a future snapshot stamps a cutoff on EVERY model, this test can no longer reach the branch it
+      // exists for — say so, rather than dying on an unhelpful undefined-index read.
+      expect(
+        withoutCutoff,
+        'no shipped model lacks knowledgeCutoff — pick another carry-forward column',
+      ).toBeDefined();
+      const shippedId = withoutCutoff![0];
       // A `models refresh --catalog` populated enrichment on a shipped id.
       store.updateEnrichment([
         {
