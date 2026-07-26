@@ -12,7 +12,9 @@
 # only real gate on what gets published. Two layers sit above this one, both in repo settings rather than
 # here: branch protection on `main`, and a `v*` tag ruleset restricting tag creation to maintain/admin.
 # The `allow_off_main` dispatch input is the maintainer escape hatch for building and smoking an unmerged
-# branch — it can never publish, because `publish` is gated on a `v*` tag and a dispatch run has none.
+# BRANCH. It cannot reach a publish: `workflow_dispatch` accepts a tag ref as readily as a branch, so the
+# ancestry assertion ignores the override whenever the ref is a `v*` tag, and `publish` additionally requires
+# `github.event_name == 'push'` — a dispatched run never publishes, whatever ref or input it was given.
 #
 # Third-party actions are pinned to a commit SHA (the `# vX.Y.Z` comment tracks the release), matching ci.yml.
 name: Release CLI
@@ -52,8 +54,11 @@ jobs:
       # tagged `v*` and walk the whole pack → smoke → publish chain; the only other gate was that the tag
       # string matched package.json. Asserted here in `pack` so `smoke` and `publish` inherit it via `needs`.
       # A commit is its own ancestor, so tagging main's tip passes.
+      # `allow_off_main` is honoured ONLY for a non-tag ref. A `workflow_dispatch` can target a tag just as
+      # easily as a branch, so gating solely on the input would let a dispatch against an off-main `v*` tag
+      # skip this assertion entirely — the override is scoped out of every tag ref for exactly that reason.
       - name: Release ref is reachable from `main`
-        if: ${{ !inputs.allow_off_main }}
+        if: ${{ startsWith(github.ref, 'refs/tags/v') || !inputs.allow_off_main }}
         shell: bash
         run: |
           git fetch --no-tags --quiet origin main
@@ -158,8 +163,10 @@ jobs:
   publish:
     name: publish to npm (provenance)
     needs: smoke
-    # Only a real release tag publishes; a manual workflow_dispatch run stops after the cross-OS smoke.
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Only a real pushed release tag publishes. `github.event_name == 'push'` is load-bearing, not
+    # belt-and-suspenders: a `workflow_dispatch` can target a `v*` tag, so the ref check alone would let a
+    # manually dispatched run publish. Every manual run now stops after the cross-OS smoke.
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
