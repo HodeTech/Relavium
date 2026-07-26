@@ -168,7 +168,7 @@ capability declarations are canonical in
 plugins Relavium depends on, at a glance:
 
 - `tauri-plugin-sql` — local SQLite with SQLCipher
-  ([database-schema.md](../reference/desktop/database-schema.md)).
+  ([database-schema.md](../reference/shared-core/database-schema.md)).
 - keychain plugin — OS keychain for API keys
   ([keychain-and-secrets.md](../reference/desktop/keychain-and-secrets.md)).
 - `tauri-plugin-fs` — **scoped** filesystem access (sandboxed to the workspace by

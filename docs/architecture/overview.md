@@ -132,7 +132,7 @@ canonical definitions and per-package purpose are in
   shapes are documented under [../reference/contracts/](../reference/contracts/).
 - **`packages/db`** — Drizzle schema and migrations, with one set of table
   definitions that targets SQLite locally and Postgres in the cloud. See
-  [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md).
+  [../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md).
 - **`packages/ui`** — the shared shadcn/ui component library.
 
 ## Local data (Phase 1)
@@ -141,7 +141,7 @@ In Phase 1 the user's machine is the entire backend:
 
 - **SQLite** (via `tauri-plugin-sql`, with SQLCipher) stores workflows, agents,
   run history, run events, and cost records. DDL lives in
-  [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md).
+  [../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md).
 - **OS keychain** (macOS Keychain / Windows Credential Manager / libsecret)
   stores provider API keys. They are never written to disk in plaintext and never
   sent to the frontend. See

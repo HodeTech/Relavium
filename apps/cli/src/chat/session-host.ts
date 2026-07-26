@@ -12,11 +12,17 @@ import {
   type SessionDeps,
   type SessionEventSink,
   type SessionHandle,
+  type EffortGateResult,
   type SessionResumeState,
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
-import { modelSupportsReasoning, type PricingOverlay, type ProviderId } from '@relavium/llm';
+import {
+  effortTiersFor,
+  type EndpointKind,
+  type PricingOverlay,
+  type ProviderId,
+} from '@relavium/llm';
 import type { ManagerSkippedTool, McpClient, McpServerConfig } from '@relavium/mcp';
 import type {
   AgentSessionRecord,
@@ -34,6 +40,11 @@ import { createProviderResolver, type ProviderResolver } from '../engine/provide
 import { assembleToolEnv, clampChatTier, wiredToolIds } from '../engine/tool-host/assemble.js';
 import { CliError } from '../process/errors.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
+import {
+  effortWithheldNote,
+  reasoningWithheldByCapFor,
+  unpricedModelNote,
+} from './effort-notice.js';
 import { resolveChatAgent } from './agent-source.js';
 
 /**
@@ -106,10 +117,22 @@ export interface BuildChatSessionOptions {
    */
   readonly onBudgetWarning?: (warning: ChatBudgetWarning) => void;
   /**
+   * Sink for a turn on an UNPRICED model (ADR-0071 §K7) — the cost cap could not apply to it. Same channel shape as
+   * {@link BuildChatSessionOptions.onBudgetWarning}; the governor already dedups per-model, so this fires once each.
+   */
+  readonly onUnpriced?: (note: string) => void;
+  /**
+   * Sink for a WITHHELD reasoning tier (ADR-0071 §6) — the bound model does not accept the effective tier, so the
+   * field is not sent. Same channel shape as {@link BuildChatSessionOptions.onBudgetWarning}: a session has no
+   * event for it, so the surface is told directly and puts the sentence in the transcript's notice channel.
+   * Absent ⇒ a no-op, and the tier is still withheld (never guessed at).
+   */
+  readonly onEffortWithheld?: (note: string) => void;
+  /**
    * The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a `ReadonlyMap<modelId, ModelPricing>` the command projects
    * from the `model_catalog` `source='user'` rows (via `buildUserPricing`). It flows into BOTH the pre-egress
    * governor (so a user-priced model is enforced by `[chat].max_cost_microcents`) AND `SessionDeps.resolvePrice`
-   * (so the realized cost of the same model is tracked). Static `MODEL_PRICING` still wins for a known id. Absent ⇒
+   * (so the realized cost of the same model is tracked). The USER outranks the catalog (ADR-0071 §1). Absent ⇒
    * unknown models degrade cost governance to `allow` loudly, unchanged.
    */
   readonly resolvePrice?: PricingOverlay;
@@ -166,7 +189,14 @@ const DEFAULT_FS_SCOPE = 'sandboxed' as const;
 /** The fields {@link buildSessionRuntime} reads — the platform-capability inputs shared by a fresh + resumed session. */
 type SessionRuntimeOptions = Pick<
   BuildChatSessionOptions,
-  'chat' | 'now' | 'providers' | 'toolHost' | 'onBudgetWarning' | 'resolvePrice'
+  | 'chat'
+  | 'now'
+  | 'providers'
+  | 'toolHost'
+  | 'onBudgetWarning'
+  | 'onUnpriced'
+  | 'onEffortWithheld'
+  | 'resolvePrice'
 >;
 
 /**
@@ -218,7 +248,13 @@ function buildSessionRuntime(
       ? {}
       : { allowedCommandGlobs: opts.chat.allowedCommandGlobs }),
   };
-  const governor = buildGovernorWiring(opts.chat, opts.onBudgetWarning, opts.resolvePrice);
+  const governor = buildGovernorWiring(
+    opts.chat,
+    opts.onBudgetWarning,
+    opts.resolvePrice,
+    providers.endpointKind,
+    opts.onUnpriced,
+  );
   // The session event sink (1.W): a draft → bus → stamped sequenceNumber/timestamp. Hoisted so a SURFACE
   // event (the in-REPL `/export`'s `session:exported`, 2.Q) can ride the same monotonic per-session counter.
   const emit = createSessionEventSink(bus, sessionId);
@@ -226,9 +262,24 @@ function buildSessionRuntime(
   const deps: SessionDeps = {
     resolveProvider: providers.resolveProvider,
     keyFor: providers.keyFor,
-    // ADR-0066: the per-model reasoning capability (static registry projection) — gates whether the authored
-    // reasoning_effort tier is sent (a non-reasoning / custom model returns false, so the field is withheld).
-    resolveReasoning: modelSupportsReasoning,
+    // ADR-0071 §6: the host projects WHICH TIERS the model accepts, not merely whether it reasons. `gpt-5.4-pro`
+    // reasons and rejects `low`; the boolean this replaced said `true` and let that straight through to a 400.
+    // The seam's `effortTiersFor` IS the projection — passed by reference, not re-derived, so this host cannot
+    // drift from the picker that renders the same answer.
+    resolveEffortTiers: effortTiersFor,
+    // A budget-shaped model can accept a tier yet still have the adapter drop thinking when this turn's `max_tokens`
+    // leaves no room for its budget floor (review M6). Inject the catalog-backed check so the gate SURFACES that as
+    // a `capped` verdict instead of the adapter dropping it in silence.
+    withheldByCap: reasoningWithheldByCapFor,
+    // …and when the gate withholds, SAY SO. The engine cannot print; it hands back the verdict (which carries the
+    // tiers the model would take) and the surface turns it into the one sentence every path uses.
+    ...(opts.onEffortWithheld === undefined
+      ? {}
+      : {
+          onEffortWithheld: (result: EffortGateResult, model: string) => {
+            opts.onEffortWithheld?.(effortWithheldNote(result, model));
+          },
+        }),
     registry,
     tools,
     sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
@@ -277,6 +328,11 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       cwd: opts.cwd,
       projectConfigDir: opts.projectConfigDir,
       defaultModel: opts.chat.defaultModel,
+      // ADR-0059: the persisted `[chat].default_provider` is used verbatim for the DEFAULT agent so a live-discovered
+      // id whose prefix the inference cannot place still resolves; absent ⇒ inference from the id.
+      ...(opts.chat.defaultProvider === undefined
+        ? {}
+        : { defaultProvider: opts.chat.defaultProvider }),
       // ADR-0066: the `[chat].reasoning_effort` default is baked onto the DEFAULT agent only (an authored agent
       // owns its own). Threaded here so a config default lights up a default-agent chat without a picker step.
       ...(opts.chat.reasoningEffort === undefined
@@ -410,6 +466,14 @@ export interface BuiltResumedChatSession extends BuiltChatSession {
 export interface BuildResumedChatSessionOptions {
   /** The resolved `[chat]` block (turn cap, cost cap) — applied to the resumed session's deps. */
   readonly chat: ResolvedChatConfig;
+  /**
+   * Sink for a WITHHELD reasoning tier (ADR-0071 §6) — see {@link BuildChatSessionOptions.onEffortWithheld}. A
+   * RESUMED session is where a stale tier is likeliest: the snapshot carries the tier the agent was authored
+   * with, and the catalog may have moved under it since.
+   */
+  readonly onEffortWithheld?: (note: string) => void;
+  /** Unpriced-model notice (ADR-0071 §K7) — see {@link BuildChatSessionOptions.onUnpriced}. */
+  readonly onUnpriced?: (note: string) => void;
   /** The loaded session record (its frozen `agentSnapshot` + `context` rebind the session). */
   readonly record: AgentSessionRecord;
   /** The session's persisted transcript, in any order ({@link reconstructSessionState} sorts it). */
@@ -534,18 +598,36 @@ export function buildGovernorWiring(
   chat: ResolvedChatConfig,
   onWarning?: (warning: ChatBudgetWarning) => void,
   resolvePrice?: PricingOverlay,
+  endpointKind?: (id: ProviderId) => EndpointKind,
+  onUnpriced?: (note: string) => void,
 ): GovernorWiring | undefined {
   const cap = chat.maxCostMicrocents;
   if (cap === undefined || cap <= 0) return undefined;
   const budget: Budget = {
     max_cost_microcents: cap,
     on_exceed: chat.onExceed ?? 'pause_for_approval',
+    // ADR-0071 §K7: refuse a turn on a model we cannot price, instead of the silent degrade-to-allow. Default off.
+    ...(chat.strictCostCap ? { strict_cost_cap: true } : {}),
   };
   const governor = new BudgetGovernor({
     budget,
     // The ADR-0065 §2 user-pricing overlay — so the PRE-EGRESS estimate can price a user-priced (otherwise
     // unknown) model and enforce the cost cap on it. Omit ⇒ an unknown model degrades to `allow` loudly.
     ...(resolvePrice === undefined ? {} : { resolvePrice }),
+    // ADR-0071 §7: the adapter clamps an authored `max_tokens` to the model's ceiling on an OFFICIAL endpoint and
+    // not on a custom one. The estimate must make the same call — assume official on a gateway and it lands BELOW
+    // what the wire can spend, so the governor under-authorizes and waves through the call it exists to stop.
+    // Keyed on the ROUTING provider the governor threads per attempt, not the model's catalog provider — a custom
+    // gateway serving another provider's model id would otherwise be mis-read as official and under-clamped (M2).
+    ...(endpointKind === undefined ? {} : { resolveEndpoint: endpointKind }),
+    // ADR-0071 §K7: a turn ran on a model we could not price, so the cap did not apply to it. Say so, once — a cost
+    // cap that silently does not apply is a false sense of safety. `strict_cost_cap` is the block-instead option.
+    ...(onUnpriced === undefined
+      ? {}
+      : {
+          onUnpriced: (model: string, capMicrocents: number) =>
+            onUnpriced(unpricedModelNote(model, capMicrocents, '[chat] strict_cost_cap')),
+        }),
     emit: (event) => {
       // `warn` is non-blocking BY CONTRACT. A misbehaving warn surface must never reject this emit — a
       // rejection would propagate as an `internal` turn error and break sendMessage — so swallow a sync throw.
@@ -563,7 +645,7 @@ export function buildGovernorWiring(
   });
   return {
     preEgress: (info) =>
-      governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate),
+      governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate, info.provider),
     updateCost: (cumulative) => governor.updateCost(cumulative),
   };
 }

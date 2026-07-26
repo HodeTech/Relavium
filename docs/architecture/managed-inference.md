@@ -46,7 +46,7 @@ flowchart TB
 > seam types are the canonical property of
 > [../reference/shared-core/llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md)
 > and are cited, not restated, here. The managed Postgres tables are canonical in
-> [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md);
+> [../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md);
 > the gateway endpoints and tier model are canonical in
 > [../reference/portal/api-reference.md](../reference/portal/api-reference.md).
 > The decisions are recorded in
@@ -273,7 +273,7 @@ guarantee that full LLM transcripts are never stored server-side (see
 [../reference/portal/api-reference.md](../reference/portal/api-reference.md#sync-model-opt-in-metadata-only)).
 The data plane is multi-tenant with Postgres row-level security on `org_id`
 (see the managed tables in
-[../reference/desktop/database-schema.md](../reference/desktop/database-schema.md#managed-inference-tables-phase-2));
+[../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md#managed-inference-tables-phase-2));
 providers become Relavium's sub-processors and are disclosed accordingly.
 
 ## Dual-mode coexistence: no silent mode crossing
@@ -300,7 +300,7 @@ Managed and BYOK coexist as first-class peers, and the mode boundary is hard:
 - [../reference/shared-core/llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md) — the canonical `LLMProvider` seam types (unchanged) and the usage-capture rules the gateway extends.
 - [multi-llm-providers.md](multi-llm-providers.md) — the provider layer; the factory's per-mode selection and gateway-side fallback.
 - [cloud-phase-2.md](cloud-phase-2.md) — the separate cloud-execution plane and the mode-resolution rules managed inference reuses.
-- [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md) — the canonical managed Postgres tables (`usage_events`, `quota_policies`, `subscriptions`, `provider_key_pool`, …).
+- [../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md) — the canonical managed Postgres tables (`usage_events`, `quota_policies`, `subscriptions`, `provider_key_pool`, …).
 - [../reference/portal/api-reference.md](../reference/portal/api-reference.md) — the gateway endpoints, the tier redesign, and the data-handling guarantee.
 - [../analysis/managed-inference-business-model-2026-06-03.md](../analysis/managed-inference-business-model-2026-06-03.md) — the decision analysis (legality, unit economics, Option B).
 - [ADR-0011](../decisions/0011-internal-llm-abstraction.md) — the seam this validates · [ADR-0012](../decisions/0012-managed-inference-dual-mode.md) · [ADR-0013](../decisions/0013-managed-key-vault-and-pools.md) · [ADR-0014](../decisions/0014-managed-metering-quota-and-billing.md) · [ADR-0015](../decisions/0015-managed-mode-data-handling-and-compliance.md).

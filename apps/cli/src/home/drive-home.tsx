@@ -19,6 +19,7 @@ import {
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
+import { onceEffortNotice } from '../chat/effort-notice.js';
 import type { DoctorProbes } from '../chat/doctor.js';
 import {
   createSessionPersister,
@@ -26,7 +27,7 @@ import {
   type SessionPersister,
 } from '../chat/persister.js';
 import { loadResolvedConfig } from '../config/load.js';
-import { writeGlobalDefaultModel, writeGlobalPreferences } from '../config/write.js';
+import { writeGlobalPreferences } from '../config/write.js';
 import { createModelCatalogPort } from '../engine/model-catalog-port.js';
 import { readUserPricingOverlay } from '../engine/pricing-overlay.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
@@ -342,9 +343,13 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // Write to the SAME file the picker re-reads + the started session resolves (honors `--config`), so a `/models`
       // write is never a silent no-op to a different file (2.5.G S7). The effort rides the SAME atomic write; an
       // absent `reasoningEffort` (a non-reasoning model) leaves any prior effort default unchanged.
-      writeDefault: (modelId, reasoningEffort) =>
+      writeDefault: (modelId, provider, reasoningEffort) =>
         writeGlobalPreferences(
-          { defaultModel: modelId, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) },
+          {
+            defaultModel: modelId,
+            defaultProvider: provider, // ADR-0059: persist the provider so the next chat skips id inference
+            ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+          },
           homeDir,
           deps.global.configPath,
         ),
@@ -485,17 +490,27 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
       assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
       // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read FRESH per chat from the SAME `history.db` (empty map
-      // on a read fault). Static `MODEL_PRICING` still wins.
+      // on a read fault). The USER outranks the catalog (ADR-0071 §1).
       const resolvePrice = readUserPricingOverlay(opened.db);
+      // Re-read the EFFECTIVE `[chat]` FRESH per chat (not the load-once `config` snapshot) so a same-session
+      // `/models` write — the model (2.5.G S7) + its effort (ADR-0066 §6) — lights up the next chat. Read it ONCE:
+      // the model and the provider persisted WITH it (ADR-0059) must come from the SAME snapshot, or a fresh model
+      // paired with a stale startup provider dials the wrong adapter → 404 (review M5). So couple them — when the
+      // fresh read supplies a model, take ITS provider (undefined ⇒ infer from the model id, NEVER back-filled from
+      // startup); only with no fresh model (a genuinely unset default, or a malformed-config read fault) fall back
+      // to the startup PAIR. The other `[chat]` settings keep the startup snapshot.
+      const effectiveChat = readEffectiveChat();
+      const freshModel = effectiveChat?.defaultModel;
+      const [defaultModel, defaultProvider] =
+        freshModel !== undefined
+          ? [freshModel, effectiveChat?.defaultProvider]
+          : [config.chat.defaultModel, config.chat.defaultProvider];
       const built: BuiltChatSession = await (deps.buildSession ?? buildChatSession)({
-        // Re-read the EFFECTIVE default model AND reasoning-effort FRESH per chat (not the load-once `config`
-        // snapshot) so a same-session `/models` write — the model (2.5.G S7) AND its effort sub-step (ADR-0066 §6) —
-        // takes effect on the very next chat started in this long-lived Home. A read fault degrades to the startup
-        // value. The other `[chat]` settings keep the startup snapshot.
         chat: {
           ...config.chat,
-          defaultModel: readEffectiveDefault() ?? config.chat.defaultModel,
-          reasoningEffort: readEffectiveEffort() ?? config.chat.reasoningEffort,
+          defaultModel,
+          defaultProvider,
+          reasoningEffort: effectiveChat?.reasoningEffort ?? config.chat.reasoningEffort,
         },
         agentRef: undefined, // the built-in default agent (zero-config first run)
         cwd: deps.global.cwd,
@@ -510,6 +525,11 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // exactly this reason (Step-4b-3 Sonnet fix): a raw write lands on the alt buffer, where ink's next frame
         // overwrites it — the user is warned about their spend on a line that survives a single frame.
         onBudgetWarning: (warning) => store.notice(budgetWarningText(warning)),
+        // Same channel, same reason (ADR-0071 §6): a tier the bound model will not take is withheld at send, and
+        // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
+        // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
+        onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
+        onUnpriced: (note) => store.notice(note),
       });
       return wireHomeChatSession(built, store, { open: true });
     };
@@ -538,16 +558,21 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       );
       const record: AgentSessionRecord = { ...loaded.session, agentSnapshot: newAgent };
       const resolvePrice = readUserPricingOverlay(opened.db);
-      // The store's SEED comes from the build, so it cannot be created first — yet `onBudgetWarning` closes over it and
-      // a pre-egress cap check can fire DURING the build. Hold it in a `let` and fall back to stderr until it exists,
-      // exactly as `emitLiveNotice` does on the standalone chat. Either way the warning is never written raw onto the
-      // alt buffer, where ink's next frame would erase it (Step-4b-3 Sonnet fix, carried here by the phase review).
+      // The store's SEED comes from the build (it needs `built.resumeState`), so it cannot exist before the build —
+      // yet a governor/effort callback could fire DURING it. Every notice sink here goes through this one indirection:
+      // render into the transcript once the store exists, otherwise BUFFER (review M5/bot) and flush after the store
+      // is wired. The old fallback wrote to stderr, which on the alt-screen renderer ink's next frame erases — so a
+      // withheld-effort notice that fired mid-build was lost, and `onceEffortNotice` had already marked it delivered
+      // (never to repeat). `onBudgetWarning` alone used to be guarded; the other two closed over the later `const
+      // store` and would TDZ-crash under the same condition it was protected against.
       const storeRef: { current?: ChatStoreController } = {};
-      const noteBudget = (warning: ChatBudgetWarning): void => {
-        const text = budgetWarningText(warning);
+      const pendingNotes: string[] = [];
+      const noteToStore = (text: string): void => {
         if (storeRef.current !== undefined) storeRef.current.notice(text);
-        else deps.io.writeErr(`${text}\n`);
+        else pendingNotes.push(text);
       };
+      const noteBudget = (warning: ChatBudgetWarning): void =>
+        noteToStore(budgetWarningText(warning));
       const built = await (deps.buildResumedSession ?? buildResumedChatSession)({
         chat: config.chat,
         record,
@@ -558,6 +583,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         mcpRegistrations: config.mcpServers,
         ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
         onBudgetWarning: noteBudget,
+        // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
+        // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
+        onEffortWithheld: onceEffortNotice(noteToStore),
+        onUnpriced: noteToStore,
       });
       // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
       // so without this the footer shows nothing until the first new turn (mirrors chatResumeCommand).
@@ -579,6 +608,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       // agree BY CONSTRUCTION here — this pins that, loudly, if a future edit ever gives them separate sources.
       assertRenderStoreAgree(altScreenActive, store.getSnapshot().state.transcriptBound);
       storeRef.current = store; // from here a budget warning renders in the transcript, not on the alt buffer
+      // Flush any notice that fired DURING the build (an effort-withheld or unpriced note on the reseated model)
+      // into the transcript now that the store exists — it would otherwise have been written to erased stderr.
+      for (const note of pendingNotes) store.notice(note);
+      pendingNotes.length = 0;
       return wireHomeChatSession(built, store, {
         open: false,
         initialSequenceNumber: built.nextSequenceNumber,
@@ -608,8 +641,12 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         io: deps.io,
         // Reuse the SAME config-write target as the `/models` port (honors `--config`) so the wizard's starter
         // model + a later `/models` pick + the started session all agree on one file (2.5.G S7/S8).
-        writeDefaultModel: (modelId) =>
-          writeGlobalDefaultModel(modelId, homeDir, deps.global.configPath),
+        writeDefaultModel: (modelId, provider) =>
+          writeGlobalPreferences(
+            { defaultModel: modelId, defaultProvider: provider },
+            homeDir,
+            deps.global.configPath,
+          ),
         ...(deps.onboardingPrompter === undefined ? {} : { prompter: deps.onboardingPrompter }),
       });
     }

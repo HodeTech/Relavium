@@ -18,6 +18,7 @@ import { buildMediaEngineWiring } from './media-wiring.js';
 
 const EMPTY_CONFIG: ResolvedConfig = {
   updateChannel: undefined,
+  catalogAutoRefresh: false,
   defaultModel: undefined,
   fsScope: undefined,
   maxTokensEstimate: undefined,
@@ -25,6 +26,7 @@ const EMPTY_CONFIG: ResolvedConfig = {
   mediaGcGraceMs: undefined,
   chat: {
     defaultModel: undefined,
+    defaultProvider: undefined,
     fsScope: undefined,
     maxTurns: undefined,
     maxMessages: undefined,
@@ -32,6 +34,7 @@ const EMPTY_CONFIG: ResolvedConfig = {
     compactThreshold: undefined,
     maxCostMicrocents: undefined,
     onExceed: undefined,
+    strictCostCap: false,
     allowedCommands: undefined,
     allowedCommandGlobs: undefined,
     reasoningEffort: undefined,

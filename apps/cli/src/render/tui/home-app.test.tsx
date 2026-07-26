@@ -97,11 +97,10 @@ function makeModelsPort(
     modelId,
     provider,
     displayName: modelId,
-    pricingSource: 'registry',
+    pricingSource: 'catalog',
     priceKnown: true,
     available: true,
     deprecated: false,
-    supportsReasoning: false,
   };
   let written: string | undefined;
   return {

@@ -90,4 +90,32 @@ describe('commander action → executeCommand forwarding (S10)', () => {
       options: { provider: 'openai', input: '3', output: '9', cached: '0.1' },
     });
   });
+
+  it('models pricing forwards --clear (the ADR-0071 §5 retire path)', () => {
+    const { id, input } = drive([
+      'models',
+      'pricing',
+      'my-model',
+      '--provider',
+      'openai',
+      '--clear',
+    ]);
+    expect(id).toBe('models.pricing');
+    expect(input).toMatchObject({
+      positionals: ['my-model'],
+      options: { provider: 'openai', clear: true },
+    });
+  });
+
+  it('models refresh forwards --providers (the ADR-0071 §4a axis flag)', () => {
+    const { id, input } = drive(['models', 'refresh', '--providers']);
+    expect(id).toBe('models.refresh');
+    expect(input).toMatchObject({ positionals: [], options: { providers: true } });
+  });
+
+  it('models refresh forwards --catalog (the ADR-0071 §4a axis flag)', () => {
+    const { id, input } = drive(['models', 'refresh', '--catalog']);
+    expect(id).toBe('models.refresh');
+    expect(input).toMatchObject({ positionals: [], options: { catalog: true } });
+  });
 });

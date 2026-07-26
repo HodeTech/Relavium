@@ -2,7 +2,7 @@
 
 - **Status**: Accepted
 - **Date**: 2026-06-23
-- **Related**: [0005-sqlite-drizzle-local-postgres-cloud.md](0005-sqlite-drizzle-local-postgres-cloud.md) (refines its at-rest framing for the Node/CLI surface), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md) (same), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0021-node-sqlite-driver-better-sqlite3.md](0021-node-sqlite-driver-better-sqlite3.md), [0036-run-loop-substrate-event-bus-and-execution-host.md](0036-run-loop-substrate-event-bus-and-execution-host.md), [../reference/desktop/database-schema.md](../reference/desktop/database-schema.md), [../reference/desktop/keychain-and-secrets.md](../reference/desktop/keychain-and-secrets.md), [../reference/contracts/config-spec.md](../reference/contracts/config-spec.md), [../roadmap/phases/phase-2-cli.md](../roadmap/phases/phase-2-cli.md) (workstream 2.H)
+- **Related**: [0005-sqlite-drizzle-local-postgres-cloud.md](0005-sqlite-drizzle-local-postgres-cloud.md) (refines its at-rest framing for the Node/CLI surface), [0008-local-first-phase-1-cloud-phase-2.md](0008-local-first-phase-1-cloud-phase-2.md) (same), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0021-node-sqlite-driver-better-sqlite3.md](0021-node-sqlite-driver-better-sqlite3.md), [0036-run-loop-substrate-event-bus-and-execution-host.md](0036-run-loop-substrate-event-bus-and-execution-host.md), [../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md), [../reference/desktop/keychain-and-secrets.md](../reference/desktop/keychain-and-secrets.md), [../reference/contracts/config-spec.md](../reference/contracts/config-spec.md), [../roadmap/phases/phase-2-cli.md](../roadmap/phases/phase-2-cli.md) (workstream 2.H)
 
 ## Context
 
@@ -77,7 +77,7 @@ SQLCipher-encrypted `tauri-plugin-sql` path ([ADR-0005](0005-sqlite-drizzle-loca
 unchanged; the Phase-2 cloud history store (PostgreSQL) is out of scope.
 
 **Cross-surface coexistence — a named Phase-3 follow-on.**
-[database-schema.md](../reference/desktop/database-schema.md) previously described a single
+[database-schema.md](../reference/shared-core/database-schema.md) previously described a single
 `~/.relavium/history.db` opened with SQLCipher by *every* host (desktop, CLI, VS Code), so a
 session written on one surface opens on another. Making the CLI's copy **unencrypted** breaks
 that: a standard `better-sqlite3` build cannot open a SQLCipher file (nor vice-versa), so the
@@ -87,7 +87,7 @@ writer of `history.db`. **Reconciling the cross-surface shared-path posture is t
 Phase-3 obligation**: when the desktop lands, its ADR decides among (i) a uniformly-unencrypted
 shared store (OS permissions across surfaces), (ii) per-surface separate files (dropping
 single-file cross-surface resume), or (iii) a CLI/Node SQLCipher-capable build. Until then there is
-**no** cross-surface shared session/run store, and [database-schema.md](../reference/desktop/database-schema.md)
+**no** cross-surface shared session/run store, and [database-schema.md](../reference/shared-core/database-schema.md)
 is updated to say so. (The per-project `runs.db` is unaffected — it is already unencrypted and
 git-committed, holding only non-sensitive metadata.)
 
@@ -98,7 +98,7 @@ secret-detection (infeasible on opaque JSON). The no-raw-secret invariant on the
 `runs.workflow_definition_snapshot` — is the engine's upstream masking guarantee
 ([ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md),
 [ADR-0006](0006-os-keychain-for-api-keys.md)), regression-guarded by the package's secrets
-fixture; it is recorded in [database-schema.md](../reference/desktop/database-schema.md), and
+fixture; it is recorded in [database-schema.md](../reference/shared-core/database-schema.md), and
 is not a new decision.
 
 ## Consequences

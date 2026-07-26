@@ -158,7 +158,7 @@ its message history. This is the foundation for resume and retry; see
 [shared-core-engine.md](shared-core-engine.md#checkpoint-and-resume). There is **no separate
 checkpoint table** — the checkpoint is reconstructed (by a `Checkpointer`) from `step_executions`,
 `run_events` (and `messages` for an orchestrator's history), all defined in
-[../reference/desktop/database-schema.md](../reference/desktop/database-schema.md).
+[../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md).
 
 Three run-loop substrate rules make this reliable ([ADR-0036](../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)):
 a node-boundary / terminal event is **persisted before it is delivered** to consumers, so a crash

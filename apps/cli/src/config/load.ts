@@ -81,12 +81,24 @@ export interface LoadedConfig {
 }
 
 /**
+ * The `~/.relavium` root — WITHOUT parsing any config (ADR-0071 §4, folded from the step-7 Sonnet review).
+ *
+ * `loadResolvedConfig` returns this same value, but only after a project-dir walk and up to three TOML reads. The
+ * boot-time catalog seed needs the home dir and nothing else, and it runs on EVERY invocation — including bare
+ * Home and `--help`. Doing the full resolve there taxed the hottest path with work it throws away. One source of
+ * truth for "what is home", read the cheap way when that is all a caller needs.
+ */
+export function resolveHomeDir(options: Pick<LoadConfigOptions, 'home'>): string {
+  return options.home ?? homedir();
+}
+
+/**
  * Discover and merge every config layer for the given cwd: the global `~/.relavium/config.toml`
  * (or `--config`), then the project `workspace.toml` + `project.toml` if a `.relavium/` is found
  * by walking up from cwd. Returns the resolved config and the discovered project dir.
  */
 export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
-  const home = options.home ?? homedir();
+  const home = resolveHomeDir(options);
   const globalFile = options.configPath ?? join(globalConfigDir(home), 'config.toml');
   const global = loadConfigFile<GlobalConfig>(globalFile, GlobalConfigSchema);
 

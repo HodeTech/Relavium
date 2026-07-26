@@ -1,8 +1,8 @@
 /**
  * `@relavium/db` — the Drizzle schema, the local SQLite client, and the migration
  * runner for Relavium's run history, event log, and cost data. **One schema, two
- * dialects** ([ADR-0005](../../docs/decisions/0005-sqlite-drizzle-local-postgres-cloud.md));
- * the canonical DDL is [database-schema.md](../../docs/reference/desktop/database-schema.md).
+ * dialects** ([ADR-0005](../../../docs/decisions/0005-sqlite-drizzle-local-postgres-cloud.md));
+ * the canonical DDL is [database-schema.md](../../../docs/reference/shared-core/database-schema.md).
  *
  * Curated public surface: the schema tables + their inferred row types, and the client
  * factory / migration runner. Internal column helpers in `schema.ts` are not exported.
@@ -168,3 +168,21 @@ export {
 } from './model-catalog-store.js';
 
 export type { SessionCostEntry, SessionCostRow } from './session-store.js';
+
+// The DB-backed model-metadata mirror (ADR-0072) — the durable overlay backing that replaces the `~/.relavium`
+// file cache. `db`-pure: returns raw rows; the host projects them to `CatalogModel` and applies the
+// `admitRefreshedModels` gate (both `@relavium/llm`), keeping the engine portable.
+export {
+  createModelMetadataStore,
+  coerceCatalogMetadataOrigin,
+  type ModelMetadataStore,
+  type ModelMetadataStoreDeps,
+  type EnrichmentUpdate,
+  type CatalogMetaPatch,
+} from './metadata-store.js';
+export type {
+  ModelMetadataRow,
+  NewModelMetadataRow,
+  CatalogMetaRow,
+  NewCatalogMetaRow,
+} from './schema.js';

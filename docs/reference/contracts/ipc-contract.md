@@ -2,7 +2,7 @@
 
 - **Status**: Stable
 - **Scope**: The boundary between the Tauri v2 **Rust backend** and the **React WebView** in the desktop app.
-- **Related**: [sse-event-schema.md](sse-event-schema.md), [../desktop/tauri-plugins.md](../desktop/tauri-plugins.md), [../desktop/database-schema.md](../desktop/database-schema.md), [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md), [../../architecture/desktop-architecture.md](../../architecture/desktop-architecture.md), [ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)
+- **Related**: [sse-event-schema.md](sse-event-schema.md), [../desktop/tauri-plugins.md](../desktop/tauri-plugins.md), [../shared-core/database-schema.md](../shared-core/database-schema.md), [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md), [../../architecture/desktop-architecture.md](../../architecture/desktop-architecture.md), [ADR-0018](../../decisions/0018-desktop-execution-and-rust-egress.md)
 
 The desktop app is split across a Tauri boundary: the Rust backend owns the filesystem, the OS keychain, SQLite, child processes, the system tray, and the per-call authenticated **LLM HTTP egress**; the React WebView owns the ReactFlow canvas, all UI, **and the `@relavium/core` engine plus agent-node orchestration** (the engine is pure TypeScript and runs in the WebView's JS runtime, identically to every other surface). They communicate only by message passing — every value crossing the boundary is JSON-serializable. This document is the canonical list of that surface.
 

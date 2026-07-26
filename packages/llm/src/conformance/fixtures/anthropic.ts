@@ -264,7 +264,10 @@ const modelsList = JSON.stringify({
       capabilities: null,
     },
     {
-      id: 'claude-haiku-4-5',
+      // The DATED PIN, not the rolling alias — real Anthropic `models.list()` returns the pinned snapshot
+      // (`claude-haiku-4-5-20251001`), and the rolling alias (`claude-haiku-4-5`) is the id the merge's
+      // alias↔dated-pin equivalence rescues from a wrong `not-on-key` dim (model-catalog.ts, ADR-0064 §6 amendment).
+      id: 'claude-haiku-4-5-20251001',
       type: 'model',
       display_name: 'Claude Haiku 4.5',
       created_at: '2025-11-01T00:00:00Z',
@@ -275,7 +278,7 @@ const modelsList = JSON.stringify({
   ],
   has_more: false,
   first_id: 'claude-opus-4-8',
-  last_id: 'claude-haiku-4-5',
+  last_id: 'claude-haiku-4-5-20251001',
 });
 
 // The drift fixture (ADR-0064 §8): one row carries an unknown future field (ignored), one row has NO id
@@ -332,7 +335,7 @@ export const ANTHROPIC_FIXTURES: ConformanceFixtures = {
     reasoningStream: { text: 'let me think', reasoningTokens: 4 },
     structuredOutput: { text: '{"ok":true}' },
     listModels: {
-      ids: ['claude-opus-4-8', 'claude-haiku-4-5'],
+      ids: ['claude-opus-4-8', 'claude-haiku-4-5-20251001'],
       // The rich row: display name + context (max_input_tokens) + output (max_tokens) all mapped.
       sample: {
         id: 'claude-opus-4-8',

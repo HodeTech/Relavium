@@ -224,7 +224,16 @@ export default tseslint.config(
     // flat config ignores `/* eslint-env */` comments, so the grant must live here.
     files: ['tools/**/*.{js,mjs,cjs}'],
     languageOptions: {
-      globals: { console: 'readonly', process: 'readonly' },
+      // `URL` / `fetch` / `AbortSignal` are for `sync-models-dev` (ADR-0071): it resolves the snapshot path
+      // relative to its own module, fetches the upstream catalog, and bounds that fetch with a timeout — a hung
+      // sync in CI is a silent one. All three are Node-22 globals (ADR-0067's floor), so no polyfill is implied.
+      globals: {
+        console: 'readonly',
+        process: 'readonly',
+        URL: 'readonly',
+        fetch: 'readonly',
+        AbortSignal: 'readonly',
+      },
     },
   },
   {

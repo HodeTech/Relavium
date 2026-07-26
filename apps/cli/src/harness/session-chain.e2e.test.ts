@@ -33,6 +33,7 @@ import { CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
 
 const EMPTY_CHAT: ResolvedChatConfig = {
   defaultModel: undefined,
+  defaultProvider: undefined,
   fsScope: undefined,
   maxTurns: undefined,
   maxMessages: undefined,
@@ -40,6 +41,7 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   compactThreshold: undefined,
   maxCostMicrocents: undefined,
   onExceed: undefined,
+  strictCostCap: false,
   allowedCommands: undefined,
   allowedCommandGlobs: undefined,
   reasoningEffort: undefined,

@@ -55,7 +55,7 @@ flowchart TB
 > of [../reference/shared-core/llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md);
 > the model-pricing catalog is canonical in-code in `packages/llm/src/pricing.ts`, seeded
 > into the `model_catalog` display projection
-> ([../reference/desktop/database-schema.md](../reference/desktop/database-schema.md)).
+> ([../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md)).
 > Both are cited, not restated, here.
 
 ## Context
@@ -148,7 +148,7 @@ The canonical **supported-model matrix** — canonical model ids, context window
 prices, and the canonical-id ↔ provider-native-id mapping — lives in-code in
 `packages/llm/src/pricing.ts` (authored and verified against each provider's pricing page at **1.B**),
 and is **seeded into** the `model_catalog` table
-([../reference/desktop/database-schema.md](../reference/desktop/database-schema.md)) and surfaced to the
+([../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md)) and surfaced to the
 UI via `providerStore`. `model_catalog` is the display projection; `pricing.ts` is the source of truth
 the adapters and `CostTracker` read.
 
@@ -241,7 +241,7 @@ attributed **per node and per model**, the run history can show a per-node cost
 waterfall — the user sees exactly which agent (and which model) drove spend, and can
 swap that one node to a cheaper model. To avoid losing precision, costs are stored as
 integer **micro-cents** rather than floats (the SQLite type-mapping detail is in
-[database-schema.md](../reference/desktop/database-schema.md)).
+[database-schema.md](../reference/shared-core/database-schema.md)).
 
 ## Conformance and drift
 

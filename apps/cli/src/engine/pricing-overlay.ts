@@ -4,6 +4,7 @@ import { createModelCatalogStore, createProviderStore, type Db } from '@relavium
 import type { PricingOverlay } from '@relavium/llm';
 
 import { openLocalDb } from '../db/open.js';
+import { syncCatalogFromDb } from './catalog-metadata.js';
 import { buildUserPricing } from './model-catalog-view.js';
 
 /**
@@ -12,8 +13,8 @@ import { buildUserPricing } from './model-catalog-view.js';
  * with no static price, once user-priced, is enforced by `max_cost_microcents` (the cost-cap gap ADR-0064 §6 left
  * open). It is the DB-facing counterpart of the pure {@link buildUserPricing}: it projects the `model_catalog`
  * `source='user'` rows (translating each internal provider UUID → its slug) into the one overlay that serves both
- * the pre-egress estimate and the realized fold. Static `MODEL_PRICING` still wins for a known id — the user tier
- * only fills an UNKNOWN id — so a user can never silently misprice a shipped model.
+ * the pre-egress estimate and the realized fold. The USER tier OUTRANKS the catalog (ADR-0071 §1); what it may not
+ * do is override it SILENTLY, which is why `models pricing` names the catalog price it replaces.
  *
  * Living in the host (not `@relavium/core`/`@relavium/llm`) is what keeps the engine platform-free: the engine
  * receives a plain injected map, exactly like `keyFor`, and never imports `@relavium/db`.
@@ -50,6 +51,11 @@ export function buildUserPricingOverlay(db: Db): PricingOverlay {
  * there is no open-fault case to signal).
  */
 export function readUserPricingOverlay(db: Db): PricingOverlay {
+  // A priced surface: this is where the resolved command is known to price, so it is the M4-safe place to make the
+  // DB the catalog's authoritative backing (ADR-0072 point 7) — seed the shipped rows (SHA-gated) and install the
+  // long-tail overlay from the DB, superseding the boot file-cache overlay. Best-effort: a DB fault leaves the
+  // snapshot floor answering. `--help`/`--version` never reach here, so they never open the DB for the catalog.
+  syncCatalogFromDb(db, readStoreDeps.now);
   try {
     return buildUserPricingOverlay(db);
   } catch {
@@ -72,6 +78,8 @@ export function loadUserPricingOverlay(homeDir: string): PricingOverlay | undefi
     return undefined; // a broken db is reported by the surface's own store open, not this best-effort read
   }
   try {
+    // Same M4-safe catalog cutover as readUserPricingOverlay, on this transient handle (ADR-0072 point 7).
+    syncCatalogFromDb(opened.db, readStoreDeps.now);
     return buildUserPricingOverlay(opened.db);
   } catch {
     // A READ fault too (a corrupt provider/catalog row, a locked table) degrades to `undefined` — the docstring's

@@ -8,13 +8,8 @@ import {
   type SessionStreamHandleEvent,
   type UserCommandOutcome,
 } from '@relavium/core';
-import { modelSupportsReasoning, type ProviderId } from '@relavium/llm';
-import {
-  EFFORT_TIER_HINT,
-  REASONING_EFFORTS,
-  type AgentSessionRecord,
-  type ReasoningEffort,
-} from '@relavium/shared';
+import type { ProviderId } from '@relavium/llm';
+import { REASONING_EFFORTS, type AgentSessionRecord, type ReasoningEffort } from '@relavium/shared';
 import { exportSession } from '../chat/export.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';
@@ -44,6 +39,14 @@ import {
   type ChatMode,
 } from '../chat/chat-mode.js';
 import { applyChatMode, makeChatModeEnv } from '../chat/chat-mode-host.js';
+import {
+  effortRejectedNote,
+  effortRowLabel,
+  effortTiersFor,
+  effortUnavailableNote,
+  onceEffortNotice,
+  projectEffortToRow,
+} from '../chat/effort-notice.js';
 import {
   createSessionPersister,
   makeCatalogIdResolver,
@@ -523,6 +526,11 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     mcpRegistrations: config.mcpServers,
     ...(resolvePrice === undefined ? {} : { resolvePrice }),
     onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
+    // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
+    // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
+    // why the knob they set did nothing.
+    onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+    onUnpriced: (note) => emitLiveNotice(deps.io, note),
   });
   // The session now OWNS the live MCP connections (built.closeMcp). `runReplLoop`'s finally is the steady-state
   // teardown, but the build→loop window (opening history.db can throw) runs first — guard it so a pre-loop fault
@@ -682,6 +690,11 @@ export async function chatResumeCommand(
       mcpRegistrations: config.mcpServers,
       resolvePrice,
       onBudgetWarning: (warning) => emitLiveNotice(deps.io, budgetWarningText(warning)),
+      // ADR-0071 §6: a tier the bound model does not take is WITHHELD at send — and said out loud. Without this the
+      // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
+      // why the knob they set did nothing.
+      onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+      onUnpriced: (note) => emitLiveNotice(deps.io, note),
     });
     closeMcp = resumed.closeMcp;
     surfaceMcpSkipped(deps.io, resumed.mcpSkipped);
@@ -894,11 +907,27 @@ export function createChatModeControl(
     prompt,
   });
   applyChatMode(modeEnv, store.getSnapshot().mode);
-  // ADR-0066: seed the footer's effort indicator from the session's initial effective tier (override ?? agent),
-  // shown only when the bound model is reasoning-capable (a non-reasoning model has no controllable tier, so its
-  // baked config default is not surfaced). Mirrors applyChatMode's initial-mode seed above.
-  const capable = modelSupportsReasoning(built.agent.model);
-  store.setReasoningEffort(capable ? built.session.reasoningEffort : undefined);
+  // ADR-0066/0071: seed the footer's effort indicator from the session's initial effective tier (override ??
+  // agent), shown only when the bound model actually has a tier to control. Mirrors applyChatMode's seed above.
+  //
+  // The predicate is `effortTiersFor` — the SAME one the picker, the `/effort` command and the engine's gate ask.
+  // It used to be `modelSupportsReasoning`, an id heuristic over the hand-typed pricing table, and the two
+  // disagreed on sixteen shipped models: on `claude-sonnet-4-5` the picker offered five tiers and the engine sent
+  // the chosen one, while this line decided the model was not capable and suppressed the footer — so the user was
+  // billed for extended thinking with no indicator that it was on, and `/effort` could never show a ✓ on the tier
+  // it had itself just bound.
+  const tiers = effortTiersFor(built.agent.model);
+  const seeded = built.session.reasoningEffort;
+  const seedAccepted = seeded !== undefined && tiers.includes(seeded);
+  store.setReasoningEffort(seedAccepted ? seeded : undefined);
+  if (seeded !== undefined && !seedAccepted) {
+    // A tier the CURRENT model will not take — and the config keeps a `reasoning_effort` across a model-only
+    // default write, so this is the ordinary way to arrive here: set `off` on a model that could disable, switch
+    // the default model, and the tier stays behind. It is inert now, and being inert SILENTLY is the expensive
+    // half: a user who deliberately turned reasoning off on `gemini-2.5-pro` — which cannot disable thinking at
+    // all — would otherwise see `effort: off` in the footer while Google thought, and billed, on every turn.
+    store.notice(effortRejectedNote(built.agent.model, seeded, tiers));
+  }
   return {
     onAbort: () => {
       built.session.abort(); // void-returning: block body so it never forwards abort()'s return value
@@ -913,7 +942,11 @@ export function createChatModeControl(
     // ReseatTarget); so on a non-reasoning model the tier is stored but inert until the very next same-model turn.
     onSetEffort: (effort) => {
       built.session.setReasoningEffort(effort);
-      store.setReasoningEffort(capable ? effort : undefined);
+      // The footer shows the tier ONLY if the model will actually take it. Every caller of this setter already
+      // filters — the overlay lists only accepted tiers, `/effort <tier>` refuses the rest — so this is the
+      // belt to their braces, and it is the line that used to lie: it asked a boolean that said `true` for
+      // `claude-sonnet-4-5` and `false` for models the picker was happily binding tiers on.
+      store.setReasoningEffort(effort !== undefined && tiers.includes(effort) ? effort : undefined);
     },
   };
 }
@@ -1167,32 +1200,59 @@ export function createChatLineHandler(
     // non-reasoning model the tier is stored but gated off at send, so the note says it will be ignored.
     setReasoningEffort: (effortArg) => {
       const requested = effortArg.trim();
-      const capable = modelSupportsReasoning(built.agent.model);
+      // The tiers THIS model takes — the same list the overlay renders, so the typed form and the interactive form
+      // cannot disagree. They did: the overlay was migrated to the catalog while `/effort <tier>` kept validating
+      // against the fixed five, and on twenty-four shipped models it would happily accept a tier the engine then
+      // silently dropped. `/effort low` on `gpt-5.4-pro` (ladder: medium, high, xhigh) said "applies to your next
+      // message", showed `low` in the footer, and sent nothing — the user paid for the provider's default.
+      const offered = effortTiersFor(built.agent.model);
       if (requested.length === 0) {
-        // Bare `/effort`: show the current tier + EXPLAIN each one (a discovery affordance — the palette submits
-        // this bare form), marking the active one. On a non-reasoning model, say so plainly instead of a tier.
+        // Bare `/effort`: show the current tier + EXPLAIN each one it can actually take (a discovery affordance —
+        // the palette submits this bare form), marking the active one.
         const current = store.getSnapshot().reasoningEffort;
-        const rows = REASONING_EFFORTS.map(
-          (e) => `  ${e.padEnd(8)} ${EFFORT_TIER_HINT[e]}${e === current ? '  (current)' : ''}`,
-        );
-        const header = capable
-          ? `reasoning effort: ${current ?? 'default (provider)'}`
-          : `reasoning effort: ${built.agent.model} has no controllable reasoning tier — a tier would be ignored`;
-        emitOutput(`${header}\n${rows.join('\n')}`);
+        if (offered.length === 0) {
+          emitOutput(`reasoning effort: ${effortUnavailableNote(built.agent.model)}`);
+          return;
+        }
+        // Label + mark through the SAME projection the picker uses, so a budget model reads "on" and a bound tier
+        // that was deduped away still marks its representative row.
+        const currentRow =
+          current === undefined
+            ? undefined
+            : projectEffortToRow(built.agent.model, offered, current);
+        const rows = offered.map((e) => {
+          const { label, hint } = effortRowLabel(built.agent.model, e);
+          return `  ${label.padEnd(8)} ${hint}${e === currentRow ? '  (current)' : ''}`;
+        });
+        const currentLabel =
+          current === undefined
+            ? 'default (provider)'
+            : effortRowLabel(built.agent.model, current).label;
+        emitOutput(`reasoning effort: ${currentLabel}\n${rows.join('\n')}`);
         return;
       }
-      const tier = REASONING_EFFORTS.find((e) => e === requested);
+      // Accept EITHER a canonical tier name OR the DISPLAY label the discovery list above printed — a budget model
+      // advertises an "on" row, so `/effort on` must resolve to that offered tier rather than reading as an unknown
+      // tier (an affordance the list showed but the parser rejected). Label-match is scoped to `offered`, so "on"
+      // on a graded model — which shows no "on" row — still falls through to the raw match and is refused.
+      const tier =
+        offered.find((e) => effortRowLabel(built.agent.model, e).label === requested) ??
+        REASONING_EFFORTS.find((e) => e === requested);
       if (tier === undefined) {
         emitOutput(
           `/effort: unknown tier '${requested.replace(/[^\x20-\x7e]/g, '?').slice(0, 16)}'`,
         );
         return;
       }
+      if (!offered.includes(tier)) {
+        // A REAL tier that THIS model rejects. Refuse it here rather than binding it and letting the gate drop it
+        // at send: a tier that is set, displayed, and never sent is the silent-billing bug this work removes.
+        emitOutput(effortRejectedNote(built.agent.model, tier, offered));
+        return;
+      }
       modeControl.onSetEffort(tier);
       emitOutput(
-        capable
-          ? `reasoning effort: ${tier} — applies to your next message.`
-          : `reasoning effort: ${tier} set, but ${built.agent.model} has no reasoning control — it will be ignored.`,
+        `reasoning effort: ${effortRowLabel(built.agent.model, tier).label} — applies to your next message.`,
       );
     },
     // `/thinking` (2.5.H): toggle the collapsible reasoning panel — a pure store-view flip (no session/engine
@@ -1366,6 +1426,10 @@ interface FreshChatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildSession: typeof buildChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+  /** Withheld-tier sink (ADR-0071 §6) — threaded exactly like {@link FreshChatWiringDeps.onBudgetWarning}, because a
+   *  `/clear` rebuild binds a NEW session and a session with no sink withholds a tier in silence. */
+  readonly onEffortWithheld: NonNullable<BuildChatSessionOptions['onEffortWithheld']>;
+  readonly onUnpriced: NonNullable<BuildChatSessionOptions['onUnpriced']>;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — carried into the rebuilt `ReplWiring` so a `/clear` re-drive
    *  keeps the full-screen render mode (else the mode reverts to the phase default mid-conversation). */
   readonly altScreen?: boolean | undefined;
@@ -1390,6 +1454,8 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
+    onEffortWithheld: deps.onEffortWithheld,
+    onUnpriced: deps.onUnpriced,
   });
   // The SAME signals `runReplLoop` used for the hoist (`deps.altScreen` is `[preferences].alt_screen`, carried here
   // precisely so a `/clear` re-drive keeps the mode) — so a rebuilt session cannot silently re-acquire the 4000-char
@@ -1497,6 +1563,8 @@ function createClearRebuild(params: {
     buildSession: params.buildSession,
     altScreen: params.altScreen,
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
+    onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(params.io, note)),
+    onUnpriced: (note) => emitLiveNotice(params.io, note),
   };
   return (oldSessionId) => buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId));
 }
@@ -1569,6 +1637,10 @@ interface ReseatWiringDeps {
   readonly opened: OpenedSessionStore;
   readonly buildResumedSession: typeof buildResumedChatSession;
   readonly onBudgetWarning: NonNullable<BuildChatSessionOptions['onBudgetWarning']>;
+  /** Withheld-tier sink (ADR-0071 §6) — a `/models` reseat binds a DIFFERENT model, which is precisely when a tier
+   *  that was fine a moment ago stops being accepted. Threaded like {@link ReseatWiringDeps.onBudgetWarning}. */
+  readonly onEffortWithheld: NonNullable<BuildChatSessionOptions['onEffortWithheld']>;
+  readonly onUnpriced: NonNullable<BuildChatSessionOptions['onUnpriced']>;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — carried into the rebuilt `ReplWiring` so a `/models` reseat
    *  keeps the full-screen render mode (else it reverts to the phase default after a mid-session model switch). */
   readonly altScreen?: boolean | undefined;
@@ -1626,6 +1698,8 @@ async function buildReseatWiring(
     ...(deps.mcpRegistrations === undefined ? {} : { mcpRegistrations: deps.mcpRegistrations }),
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
+    onEffortWithheld: deps.onEffortWithheld,
+    onUnpriced: deps.onUnpriced,
   });
   let seeded: { store: ChatStoreController; persister: SessionPersister };
   try {
@@ -1715,6 +1789,8 @@ function createReseatRebuild(params: {
     buildResumedSession: params.buildResumedSession,
     altScreen: params.altScreen,
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
+    onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(params.io, note)),
+    onUnpriced: (note) => emitLiveNotice(params.io, note),
   };
   return (oldSessionId, target, carriedTranscript) =>
     buildReseatWiring(wiringDeps, oldSessionId, target, carriedTranscript);

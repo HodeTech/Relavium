@@ -1,4 +1,4 @@
-import type { Agent, ContentPart, OutputModality } from '@relavium/shared';
+import type { Agent, ContentPart, OutputModality, ReasoningEffort } from '@relavium/shared';
 import { LlmProviderError, UnsupportedCapabilityError, makeLlmError } from '@relavium/llm';
 import type {
   CapabilityFlags,
@@ -1001,12 +1001,20 @@ describe('createAgentNodeExecutor — reasoning-effort gate (ADR-0066, the workf
   }
 
   it('SENDS the authored tier when the model is reasoning-capable', async () => {
-    const req = await capturedReq({ resolveReasoning: () => true }, reasoningAgent);
+    const req = await capturedReq(
+      {
+        resolveEffortTiers: () => new Set<ReasoningEffort>(['off', 'low', 'medium', 'high', 'max']),
+      },
+      reasoningAgent,
+    );
     expect(req?.reasoningEffort).toBe('high');
   });
 
   it('WITHHOLDS the tier when the model is NOT reasoning-capable (a non-reasoning model would reject it)', async () => {
-    const req = await capturedReq({ resolveReasoning: () => false }, reasoningAgent);
+    const req = await capturedReq(
+      { resolveEffortTiers: () => new Set<ReasoningEffort>() },
+      reasoningAgent,
+    );
     expect(req?.reasoningEffort).toBeUndefined();
   });
 
@@ -1015,8 +1023,59 @@ describe('createAgentNodeExecutor — reasoning-effort gate (ADR-0066, the workf
     expect(req?.reasoningEffort).toBeUndefined();
   });
 
+  it('WITHHOLDS a tier the model REJECTS — a NON-EMPTY accepted set that omits the authored one', async () => {
+    // THE case this gate exists for, and the one the suite was missing: the two tests above use "everything" and
+    // "nothing", and both pass against a gate that merely checks whether the set is empty. The real bug is a model
+    // that reasons, offers a ladder, and is simply not offering THIS rung — `gpt-5.4-pro` with `low`. A review
+    // pointed out that `effortToSend` could be changed to promote a rejected tier to `accepted[0]` and every
+    // integration test would still be green.
+    const req = await capturedReq(
+      { resolveEffortTiers: () => new Set<ReasoningEffort>(['medium', 'high', 'max']) },
+      reasoningAgent, // authors `high`… which IS accepted — so re-author to the rejected one below.
+    );
+    expect(req?.reasoningEffort).toBe('high');
+
+    const rejected = await capturedReq(
+      { resolveEffortTiers: () => new Set<ReasoningEffort>(['medium', 'high', 'max']) },
+      { ...reasoningAgent, reasoning_effort: 'low' as const },
+    );
+    expect(rejected?.reasoningEffort).toBeUndefined(); // withheld — NEVER promoted to a neighbouring tier
+  });
+
+  it('TELLS the host when it withholds — a silently-dropped tier is billed at the provider default', async () => {
+    // The gate replaced a loud 400 with a quiet no-op. On an authored workflow the quiet no-op is the worse of the
+    // two: the run succeeds, the knob does nothing, and nothing in the output admits it.
+    const withheld: Array<{ kind: string; model: string }> = [];
+    await capturedReq(
+      {
+        resolveEffortTiers: () => new Set<ReasoningEffort>(['medium', 'high', 'max']),
+        onEffortWithheld: (result, model) => withheld.push({ kind: result.kind, model }),
+      },
+      { ...reasoningAgent, reasoning_effort: 'low' as const },
+    );
+    expect(withheld).toHaveLength(1);
+    expect(withheld[0]?.kind).toBe('rejected');
+    expect(withheld[0]?.model).toBe(reasoningAgent.model);
+
+    // …and it stays quiet when the tier rides, so the channel is a signal and not noise on every turn.
+    const quiet: string[] = [];
+    await capturedReq(
+      {
+        resolveEffortTiers: () => new Set<ReasoningEffort>(['medium', 'high', 'max']),
+        onEffortWithheld: (result) => quiet.push(result.kind),
+      },
+      reasoningAgent,
+    );
+    expect(quiet).toEqual([]);
+  });
+
   it('sends nothing when the agent authored NO tier — even on a capable model', async () => {
-    const req = await capturedReq({ resolveReasoning: () => true }, AGENT);
+    const req = await capturedReq(
+      {
+        resolveEffortTiers: () => new Set<ReasoningEffort>(['off', 'low', 'medium', 'high', 'max']),
+      },
+      AGENT,
+    );
     expect(req?.reasoningEffort).toBeUndefined();
   });
 });

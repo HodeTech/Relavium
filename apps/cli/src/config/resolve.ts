@@ -21,6 +21,10 @@ type ChatConfig = NonNullable<ProjectConfig['chat']>;
 export interface ResolvedChatConfig {
   /** `[chat].default_model` — the model a chat session binds when its agent names none. */
   readonly defaultModel: ChatConfig['default_model'];
+  /** `[chat].default_provider` — the provider serving `default_model`, persisted at pick time (ADR-0059) so the
+   *  built-in default chat agent skips id inference. Resolves like `default_model` (project → workspace → global
+   *  `[preferences].default_provider`). Absent ⇒ inference from the id. */
+  readonly defaultProvider: ChatConfig['default_provider'];
   /** `[chat].fs_scope` — the filesystem permission tier for chat tool dispatch (same tiers as workflows). */
   readonly fsScope: ChatConfig['fs_scope'];
   /** `[chat].max_turns` — the hard session turn cap → `SessionDeps.maxTurns` (absent ⇒ engine default 50;
@@ -41,6 +45,8 @@ export interface ResolvedChatConfig {
   /** `[chat].on_exceed` — action when the cost cap trips (in an interactive REPL, `pause_for_approval`
    *  degrades to a loud turn-end since the prompt itself is the approval gate). */
   readonly onExceed: ChatConfig['on_exceed'];
+  /** `[chat] strict_cost_cap` (ADR-0071 §K7) — refuse a turn on a model we cannot price. Default false. */
+  readonly strictCostCap: boolean;
   /** `[chat].allowed_commands` — the `!`-shell exact-match allowlist (→ engine `allowedCommands`; ADR-0061).
    *  Absent/empty ⇒ `!`-shell disabled (the `empty ⇒ disabled` symmetry; no chat-specific relaxation). */
   readonly allowedCommands: ChatConfig['allowed_commands'];
@@ -53,6 +59,14 @@ export interface ResolvedChatConfig {
 
 export interface ResolvedConfig {
   readonly updateChannel: GlobalConfig['update_channel'];
+  /**
+   * `[catalog] auto_refresh` (ADR-0071 §4) — refresh the models.dev catalog automatically. **DEFAULT `false`.**
+   *
+   * A local-first tool that contacts a third party by default violates its own spirit even when the payload is
+   * innocuous, so the shipped snapshot answers everything offline and the standing egress is opt-in. An explicit
+   * `relavium models refresh` fetches regardless: a command the user typed IS consent.
+   */
+  readonly catalogAutoRefresh: boolean;
   readonly defaultModel: string | undefined;
   readonly fsScope: FsScope;
   readonly maxTokensEstimate: number | undefined;
@@ -97,6 +111,7 @@ export function resolveConfig(layers: ConfigLayers): ResolvedConfig {
   const { global, workspace, project } = layers;
   return {
     updateChannel: global?.update_channel,
+    catalogAutoRefresh: global?.catalog?.auto_refresh === true,
     defaultModel:
       project?.defaults?.model ?? workspace?.defaults?.model ?? global?.preferences?.default_model,
     fsScope: project?.defaults?.fs_scope ?? workspace?.defaults?.fs_scope,
@@ -151,8 +166,33 @@ function resolveChat(
   // (ADR-0061). Only when the project sets NEITHER do both fall through to the workspace, per field.
   const projectSetsAllowlist =
     p?.allowed_commands !== undefined || p?.allowed_command_globs !== undefined;
+  // `default_model` + `default_provider` are a COUPLED pair — the provider must SERVE the model (ADR-0059). Resolve
+  // BOTH from the FIRST layer that sets a model, so a lower layer's stale provider never pairs with a higher layer's
+  // model: independent `??` fallbacks would let a project's claude `default_model` (no provider — a claude id was
+  // always inferable, so no pre-existing config sets one) inherit a global openai `default_provider` written by the
+  // wizard, and `buildDefaultChatAgent` would then bind an OpenAI agent over a Claude id (a 404 the pre-change id
+  // inference avoided). The layer that sets the model owns its provider (absent ⇒ inference); else global
+  // `[preferences]`. This is the same coupling `allowed_commands`/`allowed_command_globs` get just above.
+  let defaultModel: ChatConfig['default_model'];
+  let defaultProvider: ChatConfig['default_provider'];
+  if (p?.default_model !== undefined) {
+    defaultModel = p.default_model;
+    defaultProvider = p.default_provider;
+  } else if (w?.default_model !== undefined) {
+    defaultModel = w.default_model;
+    defaultProvider = w.default_provider;
+  } else if (global?.preferences?.default_model !== undefined) {
+    defaultModel = global.preferences.default_model;
+    defaultProvider = global.preferences.default_provider;
+  } else {
+    // No layer sets a MODEL — so no layer's provider is coupled to one. A stray global `default_provider` (a
+    // hand-edited config; the picker/wizard always write the pair) must NOT pair with the built-in DEFAULT model.
+    defaultModel = undefined;
+    defaultProvider = undefined;
+  }
   return {
-    defaultModel: p?.default_model ?? w?.default_model ?? global?.preferences?.default_model,
+    defaultModel,
+    defaultProvider,
     fsScope: p?.fs_scope ?? w?.fs_scope,
     maxTurns: p?.max_turns ?? w?.max_turns,
     maxMessages: p?.max_messages ?? w?.max_messages,
@@ -160,6 +200,7 @@ function resolveChat(
     compactThreshold: p?.compact_threshold ?? w?.compact_threshold,
     maxCostMicrocents: p?.max_cost_microcents ?? w?.max_cost_microcents,
     onExceed: p?.on_exceed ?? w?.on_exceed,
+    strictCostCap: (p?.strict_cost_cap ?? w?.strict_cost_cap) === true,
     allowedCommands: projectSetsAllowlist ? p?.allowed_commands : w?.allowed_commands,
     allowedCommandGlobs: projectSetsAllowlist ? p?.allowed_command_globs : w?.allowed_command_globs,
     reasoningEffort:

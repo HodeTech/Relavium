@@ -1,8 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
+import { clearCatalogRefresh, installCatalogRefresh } from '../catalog/lookup.js';
+import { catalogModelFixture as catModel } from '../conformance/fixtures/catalog.js';
 import { UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
+import { canDisableReasoning } from '../reasoning-wire.js';
 import type { LlmMessage, StreamChunk } from '../types.js';
 import {
   anthropicErrorToLlmError,
@@ -62,6 +65,89 @@ function captureBody(messages: LlmMessage[]): Promise<string> {
     .generate({ model: 'claude-opus-4-8', maxTokens: 16, messages }, 'k')
     .then(() => body);
 }
+
+describe('AnthropicAdapter — request-capability + thinking/temperature gating (ADR-0071 amendment · review M4)', () => {
+  afterEach(clearCatalogRefresh);
+  const anthropicOk = (): Response =>
+    new Response(
+      JSON.stringify({
+        id: 'm',
+        type: 'message',
+        role: 'assistant',
+        model: 'x',
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    );
+  const capture = (): {
+    adapter: ReturnType<typeof createAnthropicAdapter>;
+    sent: () => Record<string, unknown>;
+  } => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(anthropicOk());
+      },
+      maxRetries: 0,
+    });
+    return { adapter, sent: () => sent };
+  };
+  const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+
+  it('WITHHOLDS temperature when thinking is ENABLED — Anthropic requires temperature=1 with extended thinking (M4)', async () => {
+    // haiku-4-5 is budget-shaped: reasoningEffort `medium` ⇒ thinking:{type:'enabled'}. A caller temperature next to
+    // it is a guaranteed 400. Withhold it — the reasoning the user asked for wins; the temperature is dropped.
+    const { adapter, sent } = capture();
+    await adapter.generate(
+      {
+        model: 'claude-haiku-4-5',
+        maxTokens: 8192,
+        messages,
+        reasoningEffort: 'medium',
+        temperature: 0.7,
+      },
+      'k',
+    );
+    expect(sent()['thinking']).toMatchObject({ type: 'enabled' });
+    expect(sent()).not.toHaveProperty('temperature');
+  });
+
+  it('SENDS temperature when thinking is OFF — the reconcile is scoped to enabled thinking only', async () => {
+    const { adapter, sent } = capture();
+    await adapter.generate(
+      {
+        model: 'claude-haiku-4-5',
+        maxTokens: 8192,
+        messages,
+        reasoningEffort: 'off',
+        temperature: 0.7,
+      },
+      'k',
+    );
+    expect(sent()['thinking']).toEqual({ type: 'disabled' });
+    expect(sent()['temperature']).toBe(0.7);
+  });
+
+  it('WITHHOLDS temperature for a model whose catalog rejects it (per-model capability), no thinking involved', async () => {
+    installCatalogRefresh({
+      'cap-claude': catModel({
+        modelId: 'cap-claude',
+        provider: 'anthropic',
+        requestCapabilities: { temperature: false },
+      }),
+    });
+    const { adapter, sent } = capture();
+    await adapter.generate(
+      { model: 'cap-claude', maxTokens: 8192, messages, temperature: 0.5 },
+      'k',
+    );
+    expect(sent()).not.toHaveProperty('temperature');
+  });
+});
 
 describe('AnthropicAdapter', () => {
   it('exposes the anthropic id and the full capability surface', () => {
@@ -159,6 +245,161 @@ describe('AnthropicAdapter', () => {
     });
   });
 
+  /**
+   * THE OTHER HALF OF THE LIVE BUG (ADR-0071 §6). The reasoning field is chosen PER MODEL.
+   *
+   * `claude-haiku-4-5` publishes a token BUDGET and **no effort axis at all** — the maintainer confirmed this
+   * independently against Anthropic. ADR-0066 filed the budget shape as "legacy", and it is, for the industry;
+   * it is not legacy for one of the four Claude models we ship. The adapter sent `output_config.effort` to it
+   * anyway, which is a parameter that model does not take.
+   */
+  it('a BUDGET-shaped Claude (haiku-4-5) gets thinking.budget_tokens — NOT output_config.effort', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'claude-haiku-4-5',
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+    const base = {
+      model: 'claude-haiku-4-5', // catalog: { budgetTokens: { min: 1024 } } — no `max`, no effort values
+      maxTokens: 8192,
+      messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }],
+    };
+
+    await adapter.generate({ ...base, reasoningEffort: 'high' }, 'k');
+    // The ceiling is 80% of the request's own cap — NOT the whole cap. Thinking that eats every token leaves no
+    // ANSWER: `budget_tokens: max_tokens - 1` is accepted by Anthropic and returns one token of reply, which is
+    // a turn the user pays for in full and gets nothing from. floor(8192 * 0.8) = 6553.
+    expect(sent['thinking']).toEqual({ type: 'enabled', budget_tokens: 5171 }); // 1024 + 75% of [1024, 6553]
+    expect('output_config' in sent).toBe(false); // the field this model does not take is NEVER sent
+
+    await adapter.generate({ ...base, reasoningEffort: 'low' }, 'k');
+    expect(sent['thinking']).toEqual({ type: 'enabled', budget_tokens: 2406 }); // 25% of [1024, 6553]
+
+    // `off` is the independent disable switch on BOTH shapes.
+    await adapter.generate({ ...base, reasoningEffort: 'off' }, 'k');
+    expect(sent['thinking']).toEqual({ type: 'disabled' });
+  });
+
+  it('NEVER sends budget_tokens >= max_tokens — Anthropic rejects it, and we were doing it', async () => {
+    // Found by an adversarial review, and it was real: `reasoningBudgetFor` used to return the model's FLOOR when
+    // the range was degenerate ("the least thinking it can do"). With `max_tokens: 256` on a model whose minimum
+    // budget is 1024, that put `budget_tokens: 1024` on the wire — a guaranteed 400.
+    //
+    // The honest answer is that reasoning cannot be enabled under that cap at all, so the field is WITHHELD. The
+    // tempting alternative — quietly raising `max_tokens` to make room — would change what the user asked for AND
+    // what they pay, without telling them.
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'claude-haiku-4-5',
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+
+    // The full matrix the review swept — extended, because the answer-headroom raises the floor: a cap of 1024 can
+    // no longer afford 1024 tokens of thinking AND a reply. The first viable cap is 1280 (floor(1280*0.8) = 1024).
+    for (const maxTokens of [1, 256, 512, 1000, 1024, 1279]) {
+      for (const tier of ['low', 'medium', 'high', 'max'] as const) {
+        await adapter.generate(
+          {
+            model: 'claude-haiku-4-5',
+            maxTokens,
+            messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }],
+            reasoningEffort: tier,
+          },
+          'k',
+        );
+        expect('thinking' in sent, `maxTokens=${maxTokens} ${tier}: no valid budget exists`).toBe(
+          false,
+        );
+      }
+    }
+
+    // …and the first cap that CAN hold the floor AND leave room for an answer enables it.
+    await adapter.generate(
+      {
+        model: 'claude-haiku-4-5',
+        maxTokens: 1280,
+        messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }],
+        reasoningEffort: 'max',
+      },
+      'k',
+    );
+    const thinking = sent['thinking'] as { type: string; budget_tokens: number };
+    expect(thinking.type).toBe('enabled');
+    expect(thinking.budget_tokens).toBe(1024); // the model's floor — all the headroom allows
+    expect(thinking.budget_tokens).toBeLessThan(1280); // the invariant Anthropic enforces
+    expect(1280 - thinking.budget_tokens).toBeGreaterThanOrEqual(256); // …and the ANSWER still has room
+  });
+
+  it('a model the catalog does not know gets NO reasoning field — a guess is what broke this', async () => {
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'x',
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+    await adapter.generate(
+      {
+        model: 'some-custom-endpoint-model',
+        maxTokens: 1024,
+        messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }],
+        reasoningEffort: 'high',
+      },
+      'k',
+    );
+    expect('thinking' in sent).toBe(false);
+    expect('output_config' in sent).toBe(false);
+  });
+
   it('maps the reasoning-effort tier to output_config.effort + adaptive thinking; off disables; unset omits (ADR-0066)', async () => {
     let sent: Record<string, unknown> = {};
     const adapter = createAnthropicAdapter({
@@ -203,6 +444,101 @@ describe('AnthropicAdapter', () => {
     expect('output_config' in sent).toBe(false); // off never sets output_config
     await adapter.generate({ ...base }, 'k'); // unset ⇒ no thinking, no output_config (provider default)
     expect('thinking' in sent).toBe(false);
+
+    // A tier the LADDER omits is served from the model's OTHER axis, not dropped. `claude-opus-4-5` publishes
+    // ['low','medium','high'] AND `budgetTokens: {min: 1024}`; `max` is not an effort level it takes, so it goes
+    // out as a budget. Reading the two axes as mutually exclusive would have withheld reasoning entirely from a
+    // model that serves the tier perfectly well — including on the failover path, where the rescue turn would
+    // then run with no reasoning at all.
+    await adapter.generate(
+      { ...base, model: 'claude-opus-4-5', maxTokens: 8192, reasoningEffort: 'max' },
+      'k',
+    );
+    expect('output_config' in sent).toBe(false);
+    expect(sent['thinking']).toEqual({ type: 'enabled', budget_tokens: 6553 }); // 80% of 8192
+  });
+
+  it('CLAMPS max_tokens to the model ceiling — and the thinking budget is carved out of the CLAMPED cap', async () => {
+    // ADR-0071 §7. Two facts have to hold TOGETHER, and holding only one of them is a 400:
+    //   1. `max_tokens: 200000` on claude-opus-4-5 (ceiling 64_000) is rejected outright.
+    //   2. Anthropic ALSO requires `budget_tokens < max_tokens`. The thinking ceiling is derived from the cap, so
+    //      clamping the cap and NOT the derivation would put the budget ABOVE the max_tokens we actually send —
+    //      trading one 400 for another. The cap is computed once, and both uses read that one value.
+    //
+    // Driven through STREAM because the Anthropic SDK refuses a non-streaming request whose `max_tokens` implies a
+    // >10-minute generation — which a 64 000-token cap does. Same `buildCommonBody`, same body on the wire.
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response('event: message_stop\ndata: {"type":"message_stop"}\n\n', {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+          }),
+        );
+      },
+      maxRetries: 0,
+    });
+
+    await collect(
+      adapter.stream(
+        {
+          model: 'claude-opus-4-5',
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
+          maxTokens: 200_000,
+          reasoningEffort: 'max', // NOT on opus-4-5's ladder ⇒ served from its budget axis
+        },
+        'k',
+      ),
+    );
+
+    expect(sent['max_tokens']).toBe(64_000); // clamped to the model's real ceiling
+    const thinking = sent['thinking'] as { type: string; budget_tokens: number };
+    expect(thinking.type).toBe('enabled');
+    expect(thinking.budget_tokens).toBe(51_200); // 80% of the CLAMPED cap — not of the 200 000 that was asked for
+    expect(thinking.budget_tokens).toBeLessThan(sent['max_tokens'] as number); // Anthropic's own invariant
+  });
+
+  it('an EMPTY descriptor is NOT disable-able — `thinking: {disabled}` is still a field, and still a 400', async () => {
+    // The `off` branch answered a question about the PROVIDER ("Anthropic can always disable") instead of about the
+    // MODEL. A model whose descriptor is `{}` reasons but publishes no knob at all; sending it a disable is the same
+    // guess, in the opposite direction, as sending it an effort level. The picker offers `off` for no such model,
+    // and now neither does the wire.
+    let sent: Record<string, unknown> = {};
+    const adapter = createAnthropicAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: 'm',
+              type: 'message',
+              role: 'assistant',
+              model: 'x',
+              content: [{ type: 'text', text: 'ok' }],
+              stop_reason: 'end_turn',
+              stop_sequence: null,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          ),
+        );
+      },
+      maxRetries: 0,
+    });
+    expect(canDisableReasoning('anthropic', {})).toBe(false); // the predicate the branch now asks
+    await adapter.generate(
+      {
+        model: 'claude-opus-4-8',
+        maxTokens: 1024,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
+        reasoningEffort: 'off',
+      },
+      'k',
+    );
+    // …and the real catalog model, which DOES publish a knob, still disables — the guard is a filter, not a mute.
+    expect(sent['thinking']).toEqual({ type: 'disabled' });
   });
 
   it('rejects handle and url media sources with an explicit bad_request error (1.AF)', async () => {

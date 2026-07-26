@@ -211,7 +211,7 @@ without drift.
 5. **One Drizzle schema, two dialects.** A single Drizzle schema targets local SQLite
    (Phases 2–4) and cloud Postgres (Phase 6) with no fork; cost is always stored as
    integer micro-cents, never floats ([ADR-0005](../decisions/0005-sqlite-drizzle-local-postgres-cloud.md),
-   [database-schema.md](../reference/desktop/database-schema.md)).
+   [database-schema.md](../reference/shared-core/database-schema.md)).
 6. **Secrets never leak across a boundary.** API keys live only in the OS keychain
    (or the documented headless/`SecretStorage` equivalent), are resolved at call time,
    and never appear in the WebView, logs, `--json`/SSE event payloads, run records, or

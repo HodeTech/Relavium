@@ -13,6 +13,7 @@ import {
   buildEngine as defaultBuildEngine,
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
+import { onceEffortNotice, unpricedModelNote } from '../chat/effort-notice.js';
 import { createCliHost } from '../engine/host.js';
 import {
   connectWorkflowMcp,
@@ -193,7 +194,28 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       workspaceDir: deps.global.cwd,
       fsScopeTier: config.fsScope ?? 'sandboxed',
     };
-    let engineOptions: BuildEngineOptions = { providers, toolEnv, ...mcpOption };
+    // ADR-0071 §6: an authored `reasoning_effort` the bound model does not accept is WITHHELD — and reported. To
+    // STDERR, never stdout: `--json` owns stdout, and a warning line in the middle of the machine-readable stream
+    // would be a parse error for whatever is consuming the run. Silence was the alternative, and it is worse: the
+    // run succeeds, the knob does nothing, and the bill arrives at the provider's default tier.
+    // `onceEffortNotice`: the gate is consulted on EVERY agent-node execution, so an agent inside a `loop` would
+    // otherwise print the same warning on every iteration. A withheld tier is a standing condition, not an event.
+    const onEffortWithheld = onceEffortNotice((note: string): void =>
+      deps.io.writeErr(`warning: ${note}\n`),
+    );
+    // ADR-0071 §K7: a turn ran on a model we could not price, so `budget.max_cost_microcents` did not apply. The
+    // governor already dedups per model. STDERR, never stdout (`--json`). `budget.strict_cost_cap` blocks instead.
+    const onUnpriced = (model: string, capMicrocents: number): void =>
+      deps.io.writeErr(
+        `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap')}\n`,
+      );
+    let engineOptions: BuildEngineOptions = {
+      providers,
+      toolEnv,
+      onEffortWithheld,
+      onUnpriced,
+      ...mcpOption,
+    };
     let mediaCasRoot: string | undefined;
     if (opened !== undefined) {
       const wiring = buildMediaEngineWiring(opened.db, homeDir, deps.global.cwd, config, (m) =>
@@ -213,6 +235,8 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       engineOptions = {
         providers,
         toolEnv,
+        onEffortWithheld,
+        onUnpriced,
         host: createCliHost(opened.store, { media: wiring.media }),
         resolveMediaSurface: wiring.resolveMediaSurface,
         ...(wiring.mediaCostEstimate === undefined

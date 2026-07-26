@@ -1,4 +1,5 @@
 import type { ModelCatalogEntry } from '@relavium/llm';
+import { REASONING_EFFORTS } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -18,11 +19,10 @@ function entry(
   return {
     provider: 'anthropic',
     displayName: partial.modelId,
-    pricingSource: 'registry',
+    pricingSource: 'catalog',
     priceKnown: true,
     available: true,
     deprecated: false,
-    supportsReasoning: false,
     ...partial,
   };
 }
@@ -37,6 +37,7 @@ function state(partial: Partial<ModelPickerState> = {}): ModelPickerState {
     refreshedAt: undefined,
     banner: undefined,
     hint: undefined,
+    effortTiers: [],
     phase: 'model',
     effortStep: false,
     pending: undefined,
@@ -172,8 +173,8 @@ describe('foldModelPickerKey — the ADR-0066 effort sub-step', () => {
   const reasoningState = (partial: Partial<ModelPickerState> = {}): ModelPickerState =>
     state({
       entries: [
-        entry({ modelId: 'claude-opus-4-8', displayName: 'Opus', supportsReasoning: true }),
-        entry({ modelId: 'deepseek-chat', displayName: 'DeepSeek', supportsReasoning: false }),
+        entry({ modelId: 'claude-opus-4-8', displayName: 'Opus' }),
+        entry({ modelId: 'deepseek-chat', displayName: 'DeepSeek' }),
       ],
       effortStep: true,
       ...partial,
@@ -225,11 +226,55 @@ describe('foldModelPickerKey — the ADR-0066 effort sub-step', () => {
     expect(step.state.effortSelected).toBe(3); // index of 'high'
   });
 
-  // A picker already parked in the effort phase over a pending model (selected tier = 'medium').
+  it('THE BUG: choosing gpt-5.4-pro opens a sub-step with {medium, high, max} — `low` is not a row', () => {
+    // The sub-step used to list all five tiers for any reasoning model. `gpt-5.4-pro` REJECTS `low`, so a user who
+    // picked it got an opaque provider 400 — the maintainer's report. The list is now derived from what the model
+    // accepts, so the interactive path cannot produce an illegal tier at all.
+    const step = foldModelPickerKey(
+      '',
+      { return: true },
+      reasoningState({
+        entries: [
+          entry({ modelId: 'gpt-5.4-pro', displayName: 'GPT-5.4 Pro', provider: 'openai' }),
+        ],
+      }),
+    );
+    if (step.kind !== 'state') throw new Error('expected the effort sub-step to open');
+    expect(step.state.effortTiers).toEqual(['medium', 'high', 'max']);
+    expect(step.state.effortTiers).not.toContain('low');
+    expect(step.state.effortTiers).not.toContain('off');
+    // …and the highlight lands on a row that EXISTS. The old default was `indexOf('medium')` over the fixed five.
+    expect(step.state.effortTiers[step.state.effortSelected]).toBe('medium');
+  });
+
+  it('a model that reasons but has NO controllable tier accepts immediately — no empty overlay', () => {
+    // `deepseek-reasoner`. The old gate (`supportsReasoning`) opened a five-row overlay for it; every row was a
+    // tier the model does not take.
+    const step = foldModelPickerKey(
+      '',
+      { return: true },
+      reasoningState({
+        entries: [
+          entry({
+            modelId: 'deepseek-reasoner',
+            displayName: 'R',
+            provider: 'deepseek',
+          }),
+        ],
+      }),
+    );
+    expect(step.kind).toBe('accept'); // straight through — there is nothing to ask
+  });
+
+  // A picker already parked in the effort phase over a pending model (selected tier = 'medium'). `effortTiers` is
+  // what the PENDING model accepts (ADR-0071 §6) — claude-opus-4-8 takes all five, so this fixture is still a
+  // five-row list. A narrower model (gpt-5.4-pro, gpt-5-pro) is exercised in the transition tests below, which is
+  // where the list is actually derived rather than asserted.
   const effortPhase = (partial: Partial<ModelPickerState> = {}): ModelPickerState =>
     reasoningState({
       phase: 'effort',
       pending: { modelId: 'claude-opus-4-8', displayName: 'Opus', provider: 'anthropic' },
+      effortTiers: [...REASONING_EFFORTS],
       effortSelected: 2,
       ...partial,
     });
@@ -278,7 +323,11 @@ describe('foldModelPickerKey — the ADR-0066 effort sub-step', () => {
     const step = foldModelPickerKey('', { escape: true }, effortPhase());
     expect(step).toEqual({
       kind: 'state',
-      state: effortPhase({ phase: 'model', pending: undefined }),
+      // `effortTiers` clears WITH `pending`. They are one fact — "the tiers of the model being confirmed" — and
+      // leaving the list behind makes `pending === undefined && effortTiers.length > 0` a representable state that
+      // the field's own invariant denies. Inert today (the view renders the sub-list only in the effort phase),
+      // and precisely the kind of half-cleared state that a later change reads as still-valid.
+      state: effortPhase({ phase: 'model', pending: undefined, effortTiers: [] }),
     });
   });
 

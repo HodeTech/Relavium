@@ -47,8 +47,10 @@ inbound MCP client, and the full YAML lifecycle (`create`/`import`/`export`).
 Home, the two-registry command system (`/` palette + shell commands), per-tool
 approval/modes (ask/plan/accept-edits/auto), `@`-mention file injection, context
 compaction, the onboarding wizard + live model catalog, reasoning rendering, and regression
-hardening. **Phase 2.6 (Conversational Authoring and the First-Class CLI) is next up**
-— a full-screen Home-managed CLI with conversational workflow authoring, management
+hardening. **Phase 2.6 (Conversational Authoring and the First-Class CLI) is in progress** — two
+workstreams are merged to `main`: **2.6.F** (the platform floor + the full-screen TUI renderer,
+PR #74, 2026-07-11) and **2.6.C** (the reseat transcript-carry + the `/cost` per-model breakdown,
+PR #75, 2026-07-13). The phase is a full-screen Home-managed CLI with conversational workflow authoring, management
 browsers, competitor-breadth tools, settings/theming/`en`+`tr` localization, and the
 run-ops resume follow-up.
 

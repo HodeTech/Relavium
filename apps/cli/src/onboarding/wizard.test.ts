@@ -176,7 +176,10 @@ describe('runOnboardingWizard', () => {
     // ...the provider row + keychain-ref were registered...
     expect(s.get('anthropic')?.apiKeyKeychainRef).toBe(keychainAccount('anthropic'));
     // ...the chosen provider's starter model was set as the default (so the NEXT chat binds a model whose key exists)...
-    expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.anthropic.testModel);
+    expect(writeDefaultModel).toHaveBeenCalledWith(
+      KNOWN_PROVIDERS.anthropic.testModel,
+      'anthropic',
+    );
     // ...a "Connected" note shows only the key HINT (last 4), never the full key, and confirms + hands off.
     const all = [...notes, ...outros].join('\n');
     expect(all).toContain('••••1234');
@@ -199,7 +202,7 @@ describe('runOnboardingWizard', () => {
       writeDefaultModel,
     });
     // NOT the anthropic default — the openai starter, so a first chat doesn't try (and fail) an anthropic key.
-    expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.openai.testModel);
+    expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.openai.testModel, 'openai');
     expect(KNOWN_PROVIDERS.openai.testModel).not.toBe(KNOWN_PROVIDERS.anthropic.testModel);
   });
 
@@ -389,7 +392,7 @@ describe('runOnboardingWizard', () => {
       ]),
     });
     expect(keychain.store.get(keychainAccount('gemini'))).toBe('sk-offline-key');
-    expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.gemini.testModel);
+    expect(writeDefaultModel).toHaveBeenCalledWith(KNOWN_PROVIDERS.gemini.testModel, 'gemini');
     // The NETWORK branch pre-highlights 'continue' so a bare Enter saves anyway (an offline first-run isn't blocked).
     expect(selectCalls[1]?.initialValue).toBe('continue');
   });

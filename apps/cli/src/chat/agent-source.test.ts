@@ -36,6 +36,33 @@ describe('resolveChatAgent', () => {
     expect(agent.provider).toBe('openai');
   });
 
+  it('passes opts.defaultProvider VERBATIM to the default agent — an unplaceable id starts (ADR-0059, Bug-3 wiring)', () => {
+    // The decisive Bug-3 hop: a persisted provider carried into the default agent so a live-discovered id the prefix
+    // map cannot place (`chat-latest`) still resolves. Without this passthrough it throws "cannot infer a provider".
+    const agent = resolveChatAgent(undefined, {
+      cwd: dir,
+      projectConfigDir: undefined,
+      defaultModel: 'chat-latest',
+      defaultProvider: 'openai',
+    });
+    expect(agent.model).toBe('chat-latest');
+    expect(agent.provider).toBe('openai');
+  });
+
+  it('still throws a clean CliError for an unplaceable id when NO defaultProvider is persisted', () => {
+    let caught: unknown;
+    try {
+      resolveChatAgent(undefined, {
+        cwd: dir,
+        projectConfigDir: undefined,
+        defaultModel: 'chat-latest',
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(isCliError(caught)).toBe(true);
+  });
+
   it('falls back to DEFAULT_CHAT_MODEL when neither --agent nor [chat].default_model is set', () => {
     const agent = resolveChatAgent(undefined, {
       cwd: dir,

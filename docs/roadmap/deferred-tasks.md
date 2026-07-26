@@ -456,7 +456,7 @@ Severity is the review's verified rating. Check an item off in the PR that resol
 - [ ] **Content-level workflow-identity guard on resume** — `resumeFromCheckpoint` compares the surrogate
   `workflowId` (catches resuming a *different* workflow → `workflow_mismatch`), but not a *same-slug,
   edited-content* workflow. The stronger guard rides on the frozen `runs.workflow_definition_snapshot` column
-  ([database-schema.md](../reference/desktop/database-schema.md)) — a Phase-2 persistence concern wired with
+  ([database-schema.md](../reference/shared-core/database-schema.md)) — a Phase-2 persistence concern wired with
   the real `RunStore`, not the event-derived in-memory state. **Scheduled → 2.6.H.** *(low · packages/core/src/engine/engine.ts; Phase-2)*
 - [ ] **Cross-process concurrent gate-resolve (TOCTOU)** — idempotent re-delivery holds within a process
   (`#resolvedGates`) and across processes once the prior process's `human_gate:resumed` is persisted (the
@@ -550,6 +550,48 @@ ships.
 
 **Home:** Phase 3 (or a later Phase-2.6 workstream) — natural sibling to the AgentSession (1.V) "Faithful
 cross-turn transcript" item just below; whichever lands first should absorb the other.
+
+## Home's chat has no way to view or pick the bound agent (found 2026-07-14)
+
+> Raised while answering a question about editing the agent used by a Home-opened chat. The headline gap is
+> **already tracked** at [phase-2.6-conversational-authoring.md §2.6.G](phases/phase-2.6-conversational-authoring.md)
+> — recorded here anyway because the investigation surfaced a narrower residual that 2.6.G's current task
+> description does not clearly cover, so it doesn't get lost when that workstream starts.
+
+**Confirmed today:** `apps/cli/src/home/drive-home.tsx:510` launches every Home chat with
+`agentRef: undefined` — i.e. always the built-in `buildDefaultChatAgent` (`apps/cli/src/chat/default-agent.ts`:
+fixed system prompt, a 3-tool read-only grant, no `temperature`). There is no picker, no `--agent`-equivalent
+affordance, and none of the registered chat slash commands
+(`apps/cli/src/commands/repl-commands.ts` — help/exit/cancel/export/workflows/cost/doctor/mode/effort/
+thinking/compact/trim/clear/models/scrollback/edit/copy) shows or edits the bound agent's full config. The
+only way to bind a custom `.agent.yaml` today is `relavium chat --agent <ref>` from a shell — a path Home
+never takes.
+
+**The "pick a different agent" half is already scheduled — do not re-file it.** 2.6.G's task list says, almost
+verbatim: *"`/agents` browser (Home + chat): tabs Defined | Sessions. Defined: the agent catalog with
+'start a chat with this agent' (closing the Home's built-in-agent-only gap)."* That is this exact gap, already
+named and owned.
+
+**The narrower residual 2.6.G's current description does not clearly cover:** a **read-only** view of the
+*full* config of the agent already bound to the *current* session — system prompt, tool grant, `temperature`,
+`reasoning_effort`, provider — not just picking a different agent for a *new* chat. 2.6.G's *Sessions* tab is
+described only as *"recent + in-progress sessions... a detail view (transcript summary, cost, model
+attribution)"* — model attribution (which model/provider) is there, but system prompt / tools / temperature /
+reasoning_effort are not mentioned. Today there is nowhere at all — Home or the terminal `chat` command — to
+inspect that for a session already in flight.
+
+**This should stay read-only, not become an edit surface.** `resolveChatAgent`'s doc comment is explicit that
+one agent binds a session for its whole lifetime by design — *"ADR-0024 — one agent per session, no
+mid-session switching."* So the fix here is a **view**, not a live-mutate command: "show me what I'm actually
+talking to" (worth having even by itself, e.g. after a `/clear` reseat or a `--agent` invocation where the
+resolved config isn't obvious), not "let me tweak the running agent." Changing agents mid-session is already
+correctly out of scope by design, and 2.6.G's "start a chat with this agent" (a *new* session) is the
+sanctioned way to switch.
+
+**Home:** 2.6.G — when that workstream is scoped, confirm the Sessions-tab detail view (or a lightweight
+`/agent` / `/whoami`-style command available in both Home and the terminal `chat` command) explicitly
+includes system prompt, tool grant, `temperature`, and `reasoning_effort` for the *current* session, not only
+model/provider/cost. If it's deliberately left out, that should be a stated decision, not a silent gap.
 
 ## AgentSession (1.V) follow-ups
 
@@ -960,6 +1002,40 @@ cross-turn transcript" item just below; whichever lands first should absorb the 
   expand the thinking to inform the decision; every other key (mode cycle, edits, the most-permissive approve/reject
   chord) stays swallowed. *(apps/cli/src/render/tui/chat-input.ts)*
 
+## The CLI e2e suite opens and MIGRATES the developer's real `~/.relavium/history.db` (2.6.C spin-off, 2026-07-13)
+
+> **DONE 2026-07-13 (PR #76 review fold).** `regression.e2e.test.ts` now redirects `HOME`/`USERPROFILE` to a
+> fresh `mkdtempSync` dir in a suite-wide `beforeEach` (restored + removed in `afterEach`), so the full-shell
+> `run(argv)` case migrates a throwaway db, never the developer's real history. A guard in the same hook refuses
+> to proceed if the redirect fails to take (`resolveHomeDir({}) === realHome`), so a future test cannot silently
+> re-acquire the default path. The evidence and rationale below are kept for the record.
+
+> Found while diagnosing a red CI run during 2.6.C (PR #75). Verified, not inferred — see the evidence below.
+
+`apps/cli/src/harness/regression.e2e.test.ts` drives the real CLI shell (`run(argv('run', …, '--json'), io)`)
+without pointing it at a database, so the run resolves the **default** path and opens
+`~/.relavium/history.db` — the developer's actual chat history. It does not merely read it: it **runs
+migrations against it**.
+
+**Evidence.** Executing that one test file with `HOME` pointed at an empty directory creates
+`$HOME/.relavium/history.db` with all 11 migrations applied. Under a real `HOME` those migrations land on
+real data. (The sibling test at `:315` does this correctly — `mkdtempSync` + an explicit `dbPath` — so the
+isolation exists; this path just does not use it.)
+
+**Why this is worth fixing rather than tolerating.** It is not a hypothetical: during 2.6.C the coupling
+actively **hid a bug from CI and converted it into damage to real data instead**. A migration was re-cut
+while in development, which changes its journal timestamp; drizzle replays such a migration, so
+`CREATE TABLE session_costs` ran a second time against the table it had itself created. On CI this is
+invisible — a fresh runner has no `~/.relavium/history.db`, so nothing had been applied and nothing could
+conflict. The failure surfaced only on the maintainer's machine, against a 3.3 MB database of real
+sessions. A test suite that writes to real user data both damages it and blinds CI to the damage.
+
+**Fix:** give the failing path the same isolation the sibling already has — a temp dir + an explicit db
+path — and, as a floor, make the e2e harness refuse to run against the default history path at all, so a
+future test cannot silently re-acquire it.
+
+**Home:** a `chore` pass, or whichever workstream next touches the CLI harness.
+
 ## Sonar code-quality backlog
 
 > **2026-06-14 (PR #18 review).** Verified Sonar findings in **already-merged** code (1.L/1.L2/1.T/0.x),
@@ -1101,3 +1177,52 @@ cross-turn transcript" item just below; whichever lands first should absorb the 
   `home-input` `DISABLE_BRACKETED_PASTE` export + the drive-home test assertion) so both surfaces rely on ink's
   unmount cleanup uniformly. Low; deferred to ride Step 4's `writeControl` rework rather than churn it twice.
   *(low · apps/cli/src/home/drive-home.tsx + render/tui/home-input.ts; Step 2.6.F-4)*
+
+- **The Anthropic adapter's non-streaming `generate()` cannot carry a large `max_tokens`.** The SDK refuses a
+  non-streaming request whose cap implies a >10-minute generation (empirically: `claude-opus-4-5` is accepted at
+  ~21 000 and refused at ~24 000), and **every** Anthropic row in the catalog has a `maxOutputTokens` of 32 000 or
+  more. So the ADR-0071 §7 clamp — which holds the cap AT the ceiling — cannot bring a large authored cap back
+  under that threshold: `generate()` still fails, just with the SDK's message instead of a provider 400. Reachable
+  only through the public seam (`LlmProvider.generate`, the conformance harness, `validateProviderKey`), because
+  the engine's own agent turn takes `stream()`; the seam's other callers all pass a tiny cap. Resolve by either
+  capping the non-streaming Anthropic request under the SDK threshold, or failing with a typed, actionable
+  `bad_request` naming `stream()` rather than surfacing an SDK string.
+  *(medium · packages/llm/src/adapters/anthropic.ts; found by the 2.6.Q Step-5 Opus review)*
+
+- **Cache WRITES are billed at the flat rate, never a context tier's.** `ratesFor` (`packages/llm/src/cost-tracker.ts`)
+  moves input, output and cache-read onto the tier a prompt lands in (ADR-0071 §11), but cache-write stays on the flat
+  `cacheWritePerMtokMicrocents` — because models.dev's tier schema publishes `input`, `output` and `cache_read` and
+  **no `cache_write`**, so a per-tier write rate is not a number we have. Scaling one from the input tier's multiple
+  would be a guess on a money path, which is the thing this ADR exists to stop. The exposure is a cache-write-heavy
+  prompt above the 272k threshold on the four `gpt-5.6` variants (the only shipped models with both a cache-write rate
+  and a tier). Resolve by extending `CatalogPriceTier` + the upstream schema **if models.dev starts publishing it**, or
+  by asking upstream to.
+  *(medium · packages/llm/src/cost-tracker.ts + catalog/models-dev-schema.ts; found by the 2.6.Q Step-6 Sonnet review)*
+
+- **Auto-open a PR for additive catalog drift.** ADR-0071 §9 wants new models to "merge automatically" while a
+  moved shipped-model price stays a red human-reviewed check. The red check ships (`.github/workflows/models-catalog.yml`
+  `weekly-catalog-check` runs `pnpm sync:models`, red ONLY on a moved/vanished shipped-model price; additive drift is green). The *automatic*
+  half — a bot PR that runs `pnpm sync:models` and commits the additive diff — is deferred because it needs a
+  third-party `create-pull-request` action pinned to a verified commit SHA (the repo pins every action by SHA;
+  inventing one unseen is the supply-chain risk rule 3 forbids). Add it as a second job once the SHA is verified.
+  Until then a maintainer runs `pnpm sync:models` locally when the weekly check goes red — which also forces the
+  `--accept-price-changes` human decision on a moved price, exactly as §9 intends.
+  *(low · .github/workflows/models-catalog.yml; ADR-0071 §9)*
+
+
+- **Per-model capability gating: `tool_call`/`attachment` + a withheld-parameter notice.** The 2.6.Q capability
+  gating (ADR-0071 §12) carries all four per-model `requestCapabilities` in the catalog and WITHHOLDS the two safe
+  silent param-drops — `temperature` and `structured_output` — at the adapters. `tool_call` and `attachment` change
+  request MEANING (dropping tools leaves the agent unable to act; dropping an image input changes what the model
+  sees), so silently withholding them is wrong: they need a LOUDER signal — a config/authoring-time validation, or a
+  gate-level notice like the effort gate (ADR-0066 §6). The catalog data is already parsed and carried, so this is
+  the wiring only. Likewise, a user-facing notice for the two silent withholds (so a dropped `temperature` is *said
+  out loud*, §6's standard) is a follow-up — the correctness fix (no 400) shipped first.
+  *(low · packages/llm/src/adapters/* + a gate-level check; ADR-0071 §12; found by the 2.6.Q capability review)*
+
+- **Surface a user↔catalog price DIVERGENCE on the ongoing surfaces, not only at set-time.** ADR-0071 §5 promises a
+  user price that diverges from the catalog is surfaced in the `/models` picker and `/cost`, not just echoed by
+  `models pricing` when it is set. Today only the set-time echo is wired: the picker and `/cost` show the effective
+  (user) price without flagging that it OVERRIDES a different catalog price. Add a divergence marker to both so a
+  stale/wrong override is visible on the surfaces a user actually reads, per §5's intent.
+  *(low · apps/cli/src/render/tui/model-picker-view.tsx + the /cost breakdown; ADR-0071 §5; found by the 2.6.Q review)*

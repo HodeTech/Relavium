@@ -355,7 +355,7 @@ adding the runtime path without reworking the merge.
 4. **Catalog entry shape** — the new capability fields (accepted effort values, `temperature`
    support, `structured_output`, `modalities`) need a canonical home; likely an extension of the
    [ADR-0064](../decisions/0064-live-model-catalog.md) `ModelCatalogEntry` documented in
-   [database-schema.md](../reference/desktop/database-schema.md) if persisted.
+   [database-schema.md](../reference/shared-core/database-schema.md) if persisted.
 5. **Does the adapter clamp or reject** an out-of-range effort? Clamp (coerce `max`→`xhigh`→
    nearest accepted) is friendlier; reject is more honest. (§5)
 6. **TTL and refresh trigger** — reuse `ModelRefreshService`'s stale/background model, or a

@@ -1,16 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { WorkflowDefinition } from '@relavium/core';
 import { createClient, createRunHistoryStore, runMigrations } from '@relavium/db';
 import { RunEventSchema, type RunEvent } from '@relavium/shared';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { gateCommand } from '../commands/gate.js';
 import { runCommand } from '../commands/run.js';
+import { resolveHomeDir } from '../config/load.js';
 import type { OpenedHistory } from '../history/open.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
@@ -236,6 +237,39 @@ function assertGapFreeSeq(events: readonly RunEvent[]): void {
 const argv = (...tokens: string[]): string[] => ['node', 'relavium', ...tokens];
 
 describe('engine regression harness (2.K) — offline fixtures over `relavium run … --json`', () => {
+  // ISOLATE `~/.relavium` FOR THE WHOLE SUITE (deferred-tasks.md, 2026-07-13). The full-shell `run(argv)` case
+  // below drives the REAL CLI shell, which resolves the DEFAULT history db (`~/.relavium/history.db`) and RUNS
+  // MIGRATIONS against it — the developer's actual chat history under a real HOME. Point HOME at a throwaway dir
+  // for every test (a floor, so a future test cannot silently re-acquire the real path either), and GUARD it: if
+  // the redirect ever fails to take, refuse to run rather than migrate real user data (a suite that writes to real
+  // data both damages it and blinds CI, which is exactly how this was found — PR #75).
+  const realHome = homedir();
+  let isolatedHome: string | undefined;
+  let prevHome: string | undefined;
+  let prevProfile: string | undefined;
+
+  beforeEach(() => {
+    isolatedHome = mkdtempSync(join(tmpdir(), 'relavium-harness-home-'));
+    prevHome = process.env['HOME'];
+    prevProfile = process.env['USERPROFILE'];
+    process.env['HOME'] = isolatedHome;
+    process.env['USERPROFILE'] = isolatedHome; // Windows home
+    if (resolveHomeDir({}) === realHome) {
+      throw new Error(
+        'e2e isolation failed: HOME still resolves to the real home — refusing to run migrations against ~/.relavium.',
+      );
+    }
+  });
+
+  afterEach(() => {
+    if (prevHome === undefined) delete process.env['HOME'];
+    else process.env['HOME'] = prevHome;
+    if (prevProfile === undefined) delete process.env['USERPROFILE'];
+    else process.env['USERPROFILE'] = prevProfile;
+    if (isolatedHome !== undefined) rmSync(isolatedHome, { recursive: true, force: true });
+    isolatedHome = undefined;
+  });
+
   for (const scenario of SCENARIOS) {
     const label = `${scenario.file} [${scenario.input.join(' ') || 'no input'}] → exit ${String(scenario.exit)}`;
     it(label, async () => {

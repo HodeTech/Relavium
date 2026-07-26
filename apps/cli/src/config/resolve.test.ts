@@ -7,6 +7,8 @@ describe('resolveConfig', () => {
   it('returns empty defaults with no layers', () => {
     expect(resolveConfig({})).toEqual({
       updateChannel: undefined,
+      // ADR-0071 §4: default OFF. A local-first tool does not contact a third party unless asked.
+      catalogAutoRefresh: false,
       defaultModel: undefined,
       fsScope: undefined,
       maxTokensEstimate: undefined,
@@ -20,6 +22,7 @@ describe('resolveConfig', () => {
         maxMessages: undefined,
         maxCostMicrocents: undefined,
         onExceed: undefined,
+        strictCostCap: false, // ADR-0071 §K7: default off — the cost cap degrades to allow on an unpriced model
         allowedCommands: undefined,
         allowedCommandGlobs: undefined,
       },
@@ -92,6 +95,42 @@ describe('resolveConfig', () => {
     expect(
       resolveConfig({ global: { preferences: { default_model: 'g' } } }).chat.reasoningEffort,
     ).toBeUndefined();
+  });
+
+  it('resolves default_model + default_provider as a COUPLED pair — the provider follows the model layer (ADR-0059)', () => {
+    // Both come from the SAME layer: a layer that sets the model owns (or omits) its provider.
+    const projectFull: ProjectConfig = {
+      chat: { default_model: 'gpt-4o', default_provider: 'openai' },
+    };
+    const rp = resolveConfig({ project: projectFull }).chat;
+    expect(rp.defaultModel).toBe('gpt-4o');
+    expect(rp.defaultProvider).toBe('openai');
+
+    // THE REGRESSION GUARD (Bug-3 fold): a project pins ONLY the model (no provider — the common case, since the
+    // field is brand new and a claude id was always inferable), while a global [preferences] carries a stale
+    // provider. The provider must NOT leak across the layer boundary — it stays undefined so buildDefaultChatAgent
+    // falls back to inference (which correctly places the claude id), instead of binding an OpenAI agent → 404.
+    const global = {
+      preferences: { default_model: 'chat-latest', default_provider: 'openai' as const },
+    };
+    const projectModelOnly: ProjectConfig = { chat: { default_model: 'claude-sonnet-4-6' } };
+    const coupled = resolveConfig({ global, project: projectModelOnly }).chat;
+    expect(coupled.defaultModel).toBe('claude-sonnet-4-6'); // project wins the model
+    expect(coupled.defaultProvider).toBeUndefined(); // NOT 'openai' — the provider does not leak across layers
+
+    // No [chat] layer sets a model ⇒ the pair comes from global [preferences], TOGETHER.
+    const g = resolveConfig({ global }).chat;
+    expect(g.defaultModel).toBe('chat-latest');
+    expect(g.defaultProvider).toBe('openai');
+
+    // A STRAY global provider with NO global model must NOT pair with the built-in DEFAULT model — it stays
+    // undefined (inference), closing the global-model-absent boundary of the same coupling.
+    const stray = resolveConfig({ global: { preferences: { default_provider: 'openai' } } }).chat;
+    expect(stray.defaultModel).toBeUndefined();
+    expect(stray.defaultProvider).toBeUndefined();
+
+    // Absent everywhere ⇒ undefined (inference from the id).
+    expect(resolveConfig({}).chat.defaultProvider).toBeUndefined();
   });
 
   it('resolves [chat].auto_compact + compact_threshold (ADR-0062) last-writer-wins, per field', () => {

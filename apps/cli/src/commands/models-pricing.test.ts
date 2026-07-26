@@ -7,7 +7,7 @@ import {
   type ModelCatalogStore,
   type ProviderStore,
 } from '@relavium/db';
-import { KNOWN_MODEL_IDS } from '@relavium/llm';
+import { priceModel } from '@relavium/llm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
@@ -116,16 +116,48 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
       inputCostPerMtokMicrocents: 300_000_000,
       outputCostPerMtokMicrocents: 900_000_000,
       cachedInputCostPerMtokMicrocents: 0,
+      // The catalog has never heard of `acme-custom-1` — the case the user tier was invented for. Nothing is
+      // overridden, so there is nothing to declare.
+      overriddenCatalogPrice: null,
     });
   });
 
-  it('REJECTS a canonical model id (the built-in price always wins) — nothing is written', () => {
-    const canonical = KNOWN_MODEL_IDS[0];
-    if (canonical === undefined) throw new Error('test precondition: KNOWN_MODEL_IDS is non-empty');
-    const err = runThrows({ ...baseArgs, model: canonical });
+  it('--json DECLARES the catalog price an override replaces (ADR-0071 §5)', () => {
+    // The flip removed the guarantee that a user cannot misprice a shipped model. The condition on which it was
+    // removed is that the divergence is LOUD — for a machine consumer as much as for a human. Without this, a
+    // `--json` caller cannot tell a price that fills a gap from one that overrules a number we shipped.
+    const { code, out } = run({ ...baseArgs, model: 'gpt-5.5' }, true);
+    expect(code).toBe(EXIT_CODES.success);
+    const [rec] = parseNdjson(out);
+    const overridden = (rec as { overriddenCatalogPrice: { inputCostPerMtokMicrocents: number } })
+      .overriddenCatalogPrice;
+    expect(overridden).not.toBeNull();
+    expect(overridden.inputCostPerMtokMicrocents).toBeGreaterThan(0);
+  });
+
+  it('REFUSES a price under a provider the CATALOG anchors elsewhere — never stored-then-ignored', () => {
+    // The catalog anchors a model id to ONE provider. Both the merge and the cost overlay drop a user row that
+    // contradicts it, so writing one would store a price that silently never applies — the user believes they set
+    // it, and nothing reads it. Worse: before this guard the two DISAGREED — the merge dropped the row while
+    // `priceModel` billed it, so the picker kept showing the catalog price while the CostTracker charged the user's.
+    // `claude-opus-4-8` is Anthropic's; `openai` is the provider registered in this db. The FK guard passes (openai
+    // exists) and the CATALOG guard is the one that must catch it.
+    const err = runThrows({ ...baseArgs, model: 'claude-opus-4-8', provider: 'openai' });
     expect(err.code).toBe('invalid_invocation');
-    expect(err.message).toContain('built-in price');
-    expect(catalog.listAll().find((m) => m.modelId === canonical)).toBeUndefined();
+    expect(err.message).toContain("anthropic's model");
+    expect(catalog.listAll().find((m) => m.modelId === 'claude-opus-4-8')).toBeUndefined();
+  });
+
+  it('ACCEPTS a price for a model the CATALOG already knows — the override is the feature now', () => {
+    // This test asserted a REJECTION until ADR-0071 §1: the shipped table always won, so a user override would have
+    // been a silent no-op, and refusing it was the honest thing. Pricing resolves USER → CATALOG now, so a
+    // negotiated rate — or an enterprise discount, or a price our snapshot has not caught up with — takes effect.
+    // The user is the one holding the invoice.
+    expect(priceModel('gpt-5.5').inputPerMtokMicrocents).toBeGreaterThan(0); // the catalog does know it
+    expect(run({ ...baseArgs, model: 'gpt-5.5' }).code).toBe(0);
+    const written = catalog.listAll().find((m) => m.modelId === 'gpt-5.5');
+    expect(written).toBeDefined();
+    expect(written?.source).toBe('user');
   });
 
   it('REJECTS an unregistered provider (the catalog FK targets llm_providers) — nothing is written', () => {
@@ -224,4 +256,45 @@ describe('modelsPricingCommand (2.5.G S10)', () => {
     }
     throw new Error('expected modelsPricingCommand to throw a CliError');
   }
+
+  it('--clear RETIRES an override — the only way back from a price the user regrets', () => {
+    // Before `--clear`, a mispriced model could be corrected but never UN-priced: a user who overrode a catalog model
+    // by mistake was stuck with their own number for good. The fix commit's own message told them to run this command
+    // — and it did not exist.
+    expect(run({ ...baseArgs, model: 'gpt-5.5' }).code).toBe(EXIT_CODES.success);
+    expect(catalog.listAll().find((m) => m.modelId === 'gpt-5.5')).toBeDefined();
+
+    const { code, out } = run({ model: 'gpt-5.5', provider: 'openai', clear: true });
+    expect(code).toBe(EXIT_CODES.success);
+    expect(out).toContain('falls back to the catalog');
+    // SOFT-deactivated, never deleted (`model_catalog.id` is an FK target from five tables), so the active-only
+    // reader stops seeing it and the model falls back to the catalog's price.
+    expect(catalog.listAll().find((m) => m.modelId === 'gpt-5.5')).toBeUndefined();
+  });
+
+  it('--clear on a model with no user price is an honest no-op, never a lie', () => {
+    const { code, out } = run({ model: 'gpt-5.5', provider: 'openai', clear: true });
+    expect(code).toBe(EXIT_CODES.success);
+    expect(out).toContain('no user price to clear');
+  });
+
+  it('--clear --json reports `source` from the CATALOG price, matching the human line (bot fix)', () => {
+    // A cleared model the catalog PRICES falls back to it → source 'catalog'.
+    run({ ...baseArgs, model: 'gpt-5.5' }); // set a user price first
+    const catalogClear = run({ model: 'gpt-5.5', provider: 'openai', clear: true }, true);
+    expect(JSON.parse(catalogClear.out.trim())).toMatchObject({
+      model: 'gpt-5.5',
+      cleared: true,
+      source: 'catalog',
+    });
+
+    // A cleared model the catalog does NOT price → source null (unpriced; `cleared ? 'catalog'` used to LIE here).
+    run({ ...baseArgs, model: 'acme-custom-1' }); // a user price on a non-catalog id
+    const nullClear = run({ model: 'acme-custom-1', provider: 'openai', clear: true }, true);
+    expect(JSON.parse(nullClear.out.trim())).toMatchObject({
+      model: 'acme-custom-1',
+      cleared: true,
+      source: null,
+    });
+  });
 });

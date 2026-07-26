@@ -28,6 +28,7 @@ import {
   initialEffortPickerState,
   type EffortPickerState,
 } from './effort-picker.js';
+import { effortRowLabel } from '../../chat/effort-notice.js';
 import { EffortTierList } from './effort-tier-list.js';
 import {
   foldModelPickerKey,
@@ -887,6 +888,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       phase: 'model',
       effortStep: props.onSetEffort !== undefined,
       pending: undefined,
+      effortTiers: [], // no model pending yet — populated on the model→effort transition
       effortSelected: 0,
       currentEffort: props.store.getSnapshot().reasoningEffort,
     });
@@ -909,13 +911,15 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   ): void => {
     if (step.modelId === open.currentDefault) {
       if (step.reasoningEffort === undefined || step.reasoningEffort === open.currentEffort) {
-        const at = step.reasoningEffort === undefined ? '' : ` at effort ${step.reasoningEffort}`;
+        const at =
+          step.reasoningEffort === undefined
+            ? ''
+            : ` at effort ${effortRowLabel(step.modelId, step.reasoningEffort).label}`;
         props.store.note(`Already on ${step.displayName}${at}.`);
       } else {
+        const label = effortRowLabel(step.modelId, step.reasoningEffort).label;
         props.onSetEffort?.(step.reasoningEffort);
-        props.store.note(
-          `Reasoning effort set to ${step.reasoningEffort} — applies to your next message.`,
-        );
+        props.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
       }
       return;
     }
@@ -976,17 +980,17 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       case 'close':
         applyEffortPicker(undefined);
         return;
-      case 'accept':
+      case 'accept': {
         applyEffortPicker(undefined);
+        const label = effortRowLabel(open.model, step.effort).label; // a budget model's `medium` reads "on"
         if (step.effort === open.current) {
-          props.store.note(`Already at reasoning effort ${step.effort}.`);
+          props.store.note(`Already at reasoning effort ${label}.`);
         } else {
           props.onSetEffort?.(step.effort);
-          props.store.note(
-            `Reasoning effort set to ${step.effort} — applies to your next message.`,
-          );
+          props.store.note(`Reasoning effort set to ${label} — applies to your next message.`);
         }
         return;
+      }
       case 'state':
         applyEffortPicker(step.state);
         return;
@@ -1548,6 +1552,8 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
       {/* The standalone `/effort` overlay (ADR-0066 §6) — the shared tier list; `Esc` cancels (not a back-out). */}
       {effortPicker !== undefined && (
         <EffortTierList
+          tiers={effortPicker.tiers}
+          model={effortPicker.model}
           selected={effortPicker.selected}
           current={effortPicker.current}
           labelSuffix={effortPicker.model}

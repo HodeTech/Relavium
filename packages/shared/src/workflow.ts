@@ -179,6 +179,16 @@ export const BudgetSchema = z
     // differs from `[chat].max_cost_microcents`, an always-present default where 0 = unbounded.)
     max_cost_microcents: positiveInt,
     on_exceed: z.enum(ON_EXCEED_ACTIONS),
+    /**
+     * Refuse a turn on a model we cannot PRICE (ADR-0071 §K7). **Default `false`.**
+     *
+     * The cost cap is a safety control, and a model with no price is a hole in it: the governor cannot know what a
+     * turn will cost, so it degrades to `allow` and the cap silently does not apply. For most users that is the
+     * right trade — a self-hosted model has ~no metered cost, and refusing to run it would be worse than the small
+     * risk. But a user who set a cap SPECIFICALLY to bound spend on an untrusted model may want the opposite: if
+     * you cannot price it, do not run it. `true` turns the silent degrade into a hard pre-egress refusal.
+     */
+    strict_cost_cap: z.boolean().optional(),
   })
   .strict();
 export type Budget = z.infer<typeof BudgetSchema>;

@@ -95,7 +95,7 @@ everywhere else. The list of single-home artifacts:
 
 - Workflow YAML → `reference/contracts/workflow-yaml-spec.md`
 - Agent YAML → `reference/contracts/agent-yaml-spec.md`
-- AgentSession contract → `reference/contracts/agent-session-spec.md` (its `session:*` events are owned by `reference/contracts/sse-event-schema.md`, and its `agent_sessions` / `session_messages` tables by `reference/desktop/database-schema.md` — the spec cites both, never restates them)
+- AgentSession contract → `reference/contracts/agent-session-spec.md` (its `session:*` events are owned by `reference/contracts/sse-event-schema.md`, and its `agent_sessions` / `session_messages` tables by `reference/shared-core/database-schema.md` — the spec cites both, never restates them)
 - SSE event schema → `reference/contracts/sse-event-schema.md`
 - IPC contract → `reference/contracts/ipc-contract.md`
 - Config spec → `reference/contracts/config-spec.md`
@@ -103,7 +103,7 @@ everywhere else. The list of single-home artifacts:
 - Node types → `reference/shared-core/node-types.md`
 - Built-in tools → `reference/shared-core/built-in-tools.md`
 - MCP integration → `reference/shared-core/mcp-integration.md`
-- Database schema (DDL) → `reference/desktop/database-schema.md`
+- Database schema (DDL) → `reference/shared-core/database-schema.md`
 - Keychain / secrets → `reference/desktop/keychain-and-secrets.md`
 - Tauri plugins → `reference/desktop/tauri-plugins.md`
 - Routes / screens → `reference/desktop/routes-and-screens.md`

@@ -82,6 +82,7 @@ function capturingResolver(scripts: StreamChunk[][]): {
 
 const EMPTY_CHAT: ResolvedChatConfig = {
   defaultModel: undefined,
+  defaultProvider: undefined,
   fsScope: undefined,
   maxTurns: undefined,
   maxMessages: undefined,
@@ -89,6 +90,7 @@ const EMPTY_CHAT: ResolvedChatConfig = {
   compactThreshold: undefined,
   maxCostMicrocents: undefined,
   onExceed: undefined,
+  strictCostCap: false,
   allowedCommands: undefined,
   allowedCommandGlobs: undefined,
   reasoningEffort: undefined,
@@ -122,6 +124,18 @@ describe('buildChatSession', () => {
     expect(built.agent.model).toBe('claude-sonnet-4-6');
     expect(built.context.workingDir).toBe('/workspace');
     expect(built.context.fsScopeTier).toBe('sandboxed'); // default when [chat].fs_scope is unset
+  });
+
+  it('carries [chat].default_provider onto the default agent — an unplaceable id BUILDS (ADR-0059, Bug-3 hop)', async () => {
+    // The session-host wiring hop: buildChatSession threads chat.defaultProvider into resolveChatAgent, so a default
+    // agent over a live-discovered id the prefix cannot place (`chat-latest`) builds instead of throwing "cannot
+    // infer a provider". Drop the spread at session-host.ts:326-328 and this fails; the agent-source test alone
+    // (which calls resolveChatAgent directly) would not catch that.
+    const built = await build({
+      chat: { ...EMPTY_CHAT, defaultModel: 'chat-latest', defaultProvider: 'openai' },
+    });
+    expect(built.agent.model).toBe('chat-latest');
+    expect(built.agent.provider).toBe('openai');
   });
 
   it('honors [chat].fs_scope on the SessionContext', async () => {
@@ -835,6 +849,40 @@ describe('buildGovernorWiring', () => {
     expect(wiring).toBeDefined();
     expect(typeof wiring?.preEgress).toBe('function');
     expect(typeof wiring?.updateCost).toBe('function');
+  });
+
+  it('an UNPRICED model degrades to allow AND forwards the note to onUnpriced (ADR-0071 §K7)', async () => {
+    const notes: string[] = [];
+    const wiring = buildGovernorWiring(
+      { ...EMPTY_CHAT, maxCostMicrocents: 1_000_000, onExceed: 'fail' },
+      undefined,
+      undefined,
+      undefined,
+      (note) => notes.push(note),
+    );
+    // A model neither the catalog nor a user prices — the pre-egress estimate throws, and the governor degrades to
+    // allow. It must not reject (an unpriced self-hosted model is not a failure) but it must SAY so, once.
+    await expect(
+      wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 }),
+    ).resolves.toBeUndefined();
+    await expect(
+      wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 }),
+    ).resolves.toBeUndefined();
+    expect(notes).toHaveLength(1); // deduped per model
+    expect(notes[0]).toContain('my-self-hosted-model');
+    expect(notes[0]).toContain('has no price');
+  });
+
+  it('strict_cost_cap BLOCKS an unpriced model instead of degrading (ADR-0071 §K7)', async () => {
+    const wiring = buildGovernorWiring({
+      ...EMPTY_CHAT,
+      maxCostMicrocents: 1_000_000,
+      onExceed: 'warn', // strict overrides on_exceed — a hard fail regardless
+      strictCostCap: true,
+    });
+    await expect(
+      wiring?.preEgress({ model: 'my-self-hosted-model', maxTokens: 1000 }),
+    ).rejects.toBeInstanceOf(BudgetExceededError);
   });
 
   it('on_exceed:fail — preEgress rejects with BudgetExceededError once the cap is exceeded', async () => {

@@ -5,7 +5,7 @@
 - **Status**: Reference
 - **Surface**: Desktop (Tauri v2)
 - **Scope**: Phase 1, local-first. The Tauri v2 plugin set the desktop app depends on and what each enables.
-- **Related**: [keychain-and-secrets.md](keychain-and-secrets.md), [database-schema.md](database-schema.md), [routes-and-screens.md](routes-and-screens.md), [../contracts/ipc-contract.md](../contracts/ipc-contract.md), [../../architecture/desktop-architecture.md](../../architecture/desktop-architecture.md), [decision 0001](../../decisions/0001-tauri-v2-over-electron.md)
+- **Related**: [keychain-and-secrets.md](keychain-and-secrets.md), [database-schema.md](../shared-core/database-schema.md), [routes-and-screens.md](routes-and-screens.md), [../contracts/ipc-contract.md](../contracts/ipc-contract.md), [../../architecture/desktop-architecture.md](../../architecture/desktop-architecture.md), [decision 0001](../../decisions/0001-tauri-v2-over-electron.md)
 
 The desktop app is built on [Tauri v2](https://v2.tauri.app/). The Rust backend is kept thin — system-level glue only — while all business logic stays in TypeScript in the WebView. Every system capability the app needs is provided by a first-class Tauri v2 plugin, which is the decisive reason Tauri was chosen over Electron and Wails (see [decision 0001](../../decisions/0001-tauri-v2-over-electron.md)).
 
@@ -30,7 +30,7 @@ flowchart LR
 |--------|---------|---------|
 | `tauri-plugin-fs` | Scoped filesystem read/write. Path access is validated against a configured scope before any syscall. | Loading/saving `.relavium.yaml` & `.agent.yaml`; the `read_file` / `write_file` / `list_directory` built-in tools |
 | `tauri-plugin-shell` | Spawning OS child processes from an explicit allowlist. | The `run_command` / `git_status` / `git_commit` built-in tools; stdio MCP server processes |
-| `tauri-plugin-sql` | SQLite access, with the **SQLCipher** feature for encryption at rest. | The desktop `history.db` (SQLCipher-encrypted at rest); the per-project `runs.db` is intentionally **unencrypted** (git-committed metadata) — see [database-schema.md](database-schema.md) |
+| `tauri-plugin-sql` | SQLite access, with the **SQLCipher** feature for encryption at rest. | The desktop `history.db` (SQLCipher-encrypted at rest); the per-project `runs.db` is intentionally **unencrypted** (git-committed metadata) — see [database-schema.md](../shared-core/database-schema.md) |
 | `tauri-plugin-keychain` | OS-native secret storage (macOS Keychain / Windows Credential Manager / Linux libsecret). | API-key and DB-passphrase storage — see [keychain-and-secrets.md](keychain-and-secrets.md) |
 | `tauri-plugin-tray` | System tray icon, menu, and badge. | Active-run monitor, awaiting-gate badge, "New Run" quick menu |
 | `tauri-plugin-global-shortcut` | OS-level global hotkeys. | Command-palette hotkey (`Cmd/Ctrl+Shift+A`) and "run on selection" (`Cmd/Ctrl+Shift+R`) |

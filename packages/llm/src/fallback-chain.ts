@@ -13,7 +13,8 @@ import type {
   Usage,
 } from './types.js';
 import { requestSupportReason } from './capabilities.js';
-import { modelSupportsReasoning } from './pricing.js';
+import { catalogModel } from './catalog/lookup.js';
+import { acceptedTiers } from './reasoning-wire.js';
 
 export type { BackoffStrategy };
 
@@ -112,6 +113,11 @@ export interface AttemptRecord {
 export type PreAttemptHook = (info: {
   readonly model: string;
   readonly maxTokens?: number;
+  /** The provider THIS attempt targets — the routing provider, which on a failover differs from the primary.
+   *  The pre-egress endpoint estimate must key on it (not the model's catalog provider): a custom gateway
+   *  serving another provider's model id is `custom` at the wire yet `official` by catalog, and the mismatch
+   *  under-authorizes real spend (review M2). */
+  readonly provider: ProviderId;
 }) => void | Promise<void>;
 
 /** Dependencies injected into a {@link FallbackChain} — all timing is injectable so tests are deterministic. */
@@ -212,16 +218,30 @@ export function stripReasoningParts(req: LlmRequest): LlmRequest {
  * ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md) §4). A failover to a
  * non-reasoning model must not carry the primary's tier: the provider would reject the unsupported parameter, and a
  * `400` on an unsupported param is fatal + non-retryable — so the whole remaining chain would abort rather than the
- * failover rescuing the turn. The per-model capability is the SAME {@link modelSupportsReasoning} the host projects
+ * failover rescuing the turn. The per-model capability is the SAME {@link acceptedTiers} the host projects
  * to the engine gate, so the primary is gated at the engine and each fallback entry is re-gated here. Exported for
  * a focused unit test (like {@link stripReasoningParts}).
  */
 export function withEntryModel(req: LlmRequest, model: string): LlmRequest {
-  const next = { ...req, model };
-  if (next.reasoningEffort !== undefined && !modelSupportsReasoning(model)) {
-    delete next.reasoningEffort;
-  }
-  return next;
+  const next: LlmRequest = { ...req, model };
+  if (next.reasoningEffort === undefined) return next;
+
+  // ADR-0071 §6: re-gate on the tiers the ENTRY MODEL ACCEPTS — not on whether it reasons.
+  //
+  // This used to ask `modelSupportsReasoning(model)`, a boolean, and that is how the primary bug reached the wire
+  // through a failover: `claude-opus-4-8` accepts `max`, `claude-opus-4-5` does NOT (it publishes
+  // ['low','medium','high']). Both "support reasoning", so the boolean kept the tier — and the fallback, whose
+  // whole job is to RESCUE a failing turn, sent a value the rescue model rejects. A 400 on an unsupported param is
+  // fatal and non-retryable, so the chain aborts instead: the failover kills the turn it exists to save.
+  const entry = catalogModel(model);
+  const accepted = acceptedTiers(entry?.provider ?? 'openai', entry?.reasoning);
+  if (accepted.has(next.reasoningEffort)) return next;
+
+  // The entry model rejects this tier — return it stripped. A fresh object (not a mutate-then-return of `next`)
+  // so the two exit paths are demonstrably distinct values.
+  const stripped: LlmRequest = { ...next };
+  delete stripped.reasoningEffort;
+  return stripped;
 }
 
 /** The backoff delay before the `retryIndex`-th retry of an entry (0 = before the 2nd attempt). */
@@ -461,6 +481,7 @@ export class FallbackChain {
       const maxTokens = entryReq.maxTokens;
       await this.#options.preAttempt?.({
         model: entry.model,
+        provider: entry.provider.id,
         ...(maxTokens === undefined ? {} : { maxTokens }),
       });
       const key = await this.#resolveKey(entry.provider.id);
@@ -495,6 +516,7 @@ export class FallbackChain {
       const maxTokens = entryReq.maxTokens;
       await this.#options.preAttempt?.({
         model: entry.model,
+        provider: entry.provider.id,
         ...(maxTokens === undefined ? {} : { maxTokens }),
       });
       const key = await this.#resolveKey(entry.provider.id);

@@ -3,7 +3,7 @@
 - **Status**: Stable
 - **Validated by**: the `AgentSessionSchema` / `SessionMessageSchema` / `SessionContextSchema` Zod definitions in `@relavium/shared` — `SessionContextSchema` lands with the event union (1.L.0); `SessionMessageSchema` / `AgentSessionSchema` land with the agent-first sub-spine (1.V/1.X), as they reference the shared-owned `ContentPart`
 - **Canonical home**: the runtime contract for an `AgentSession` — its lifecycle, message shape, context, and export-to-workflow contract
-- **Related**: [workflow-yaml-spec.md](workflow-yaml-spec.md), [agent-yaml-spec.md](agent-yaml-spec.md), [config-spec.md](config-spec.md), [sse-event-schema.md](sse-event-schema.md) (the `session:*` event namespace), [../shared-core/llm-provider-seam.md](../shared-core/llm-provider-seam.md) (the `LlmMessage` runtime type this maps to), [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md), [../desktop/database-schema.md](../desktop/database-schema.md) (the `agent_sessions` / `session_messages` tables), [../../architecture/agent-sessions.md](../../architecture/agent-sessions.md), [../../decisions/0024-agent-first-entry-point-agentsession.md](../../decisions/0024-agent-first-entry-point-agentsession.md), [../../decisions/0026-session-export-to-workflow.md](../../decisions/0026-session-export-to-workflow.md)
+- **Related**: [workflow-yaml-spec.md](workflow-yaml-spec.md), [agent-yaml-spec.md](agent-yaml-spec.md), [config-spec.md](config-spec.md), [sse-event-schema.md](sse-event-schema.md) (the `session:*` event namespace), [../shared-core/llm-provider-seam.md](../shared-core/llm-provider-seam.md) (the `LlmMessage` runtime type this maps to), [../shared-core/built-in-tools.md](../shared-core/built-in-tools.md), [../shared-core/database-schema.md](../shared-core/database-schema.md) (the `agent_sessions` / `session_messages` tables), [../../architecture/agent-sessions.md](../../architecture/agent-sessions.md), [../../decisions/0024-agent-first-entry-point-agentsession.md](../../decisions/0024-agent-first-entry-point-agentsession.md), [../../decisions/0026-session-export-to-workflow.md](../../decisions/0026-session-export-to-workflow.md)
 
 An **agent session** is an ongoing, multi-turn conversation between a user and a single agent. It is
 Relavium's **agent-first entry point** — a first-class peer of a workflow run that **reuses the same
@@ -150,7 +150,7 @@ types (resolving durable handles for egress); it never invents a new shape.
 > **`session_messages`**, bound to a **session** — distinct from the existing per-step run `messages`
 > table, which is bound to a **`step_executions`** row within a workflow run. The two are deliberately
 > separate (different lifecycle and FK parent); see the table definitions in
-> [database-schema.md](../desktop/database-schema.md). They share a shape family but must not be
+> [database-schema.md](../shared-core/database-schema.md). They share a shape family but must not be
 > merged, to avoid coupling the session and run persistence stories.
 
 ## Tools, secrets, and security scope
@@ -239,5 +239,5 @@ reproducible and round-trips):
   ([ADR-0023](../../decisions/0023-strict-authored-yaml-validation.md)).
 - Persisted in the global `history.db` (`agent_sessions` + `session_messages`; on the CLI surface
   unencrypted at rest, `0600`/`0700`-guarded per [ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)); the DDL is
-  canonical in [database-schema.md](../desktop/database-schema.md). API keys never appear in a session
+  canonical in [database-schema.md](../shared-core/database-schema.md). API keys never appear in a session
   row, a message, or an event payload (see [keychain-and-secrets.md](../desktop/keychain-and-secrets.md)).

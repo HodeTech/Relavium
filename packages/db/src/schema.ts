@@ -1,10 +1,12 @@
 import {
+  CATALOG_METADATA_ORIGINS,
   EXECUTION_MODES,
   FS_SCOPE_TIERS,
   MEDIA_MODALITIES,
   MEDIA_SCOPE_KINDS,
   RunStatusSchema,
   SessionStatusSchema,
+  type CatalogMetadataOrigin,
   type ExecutionMode,
   type FsScopeTier,
   type MediaModality,
@@ -20,7 +22,7 @@ import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-o
 
 /**
  * The Phase-1 local table set, modeling the canonical DDL in
- * [database-schema.md](../../../docs/reference/desktop/database-schema.md) as a Drizzle
+ * [database-schema.md](../../../docs/reference/shared-core/database-schema.md) as a Drizzle
  * SQLite schema. **One schema, two dialects** ([ADR-0005](../../../docs/decisions/0005-sqlite-drizzle-local-postgres-cloud.md)):
  * table and column names are kept dialect-identical so the Phase-2 Postgres port is a
  * driver/dialect change, not a rewrite.
@@ -114,6 +116,19 @@ export const modelCatalog = sqliteTable(
     inputCostPerMtokMicrocents: microcents('input_cost_per_mtok_microcents'),
     outputCostPerMtokMicrocents: microcents('output_cost_per_mtok_microcents'),
     cachedInputCostPerMtokMicrocents: microcents('cached_input_cost_per_mtok_microcents'),
+    /**
+     * Did the USER actually state a cache-read rate (ADR-0071 §10)?
+     *
+     * The money column is `NOT NULL DEFAULT 0`, so it cannot tell "the user typed `--cached 0`" — a genuinely free
+     * cache on a self-hosted endpoint — apart from "the user never mentioned cache reads". Reading a stored `0` as
+     * "free" bills a whole class of tokens at nothing; reading it as "unset" discards an explicit instruction. One
+     * money column cannot hold both meanings, so the FACT of the statement gets its own flag.
+     *
+     * `0` ⇒ not stated: the cache rate is derived at read time from the catalog's cache DISCOUNT applied to the
+     * user's own input rate (never the catalog's absolute rate — a user who negotiated $0.10/MTok on a model whose
+     * catalog cache rate is $0.50 would otherwise pay 5× MORE for a cache hit than for a miss).
+     */
+    cachedInputStated: boolFlag('cached_input_stated', false),
     // Per-modality media-OUTPUT rates (1.AF/D17, ADR-0044 §3) — integer µ¢ per billed unit (per image,
     // per audio-second, per video-second). NULLABLE: a model with no metered media rate degrades to 0
     // (H4). The projection of `ModelPricing.mediaOutputRates`; no shipped model carries one yet.
@@ -145,6 +160,12 @@ export const modelCatalog = sqliteTable(
     // static/user row or a never-refreshed row. Backs `providerRefreshedAt` (the max over a provider's active
     // `source='live'` rows). Additive nullable ALTER ADD, like the `media_*_cost_microcents` columns (0003).
     lastRefreshedAt: epochMs('last_refreshed_at'),
+    // Per-model PICKER visibility (ADR-0072 point 4) — a HARD filter ABOVE ADR-0064 §6's "dim, never hide"
+    // availability rule, and ORTHOGONAL to is_active: a reachable-but-hidden model is `is_active=1, visible=0`.
+    // The `/settings > /models` toggle writes it; every write path that rewrites a row must PRESERVE it by
+    // read-modify-write, so a routine availability refresh never silently un-hides a model the user hid. Additive
+    // `ALTER ADD` with a constant `1` default (the table's rows are all visible until the user hides one).
+    visible: boolFlag('visible', true),
     isActive: boolFlag('is_active', true),
     deletedAt: epochMs('deleted_at'),
     createdAt: epochMs('created_at').notNull(),
@@ -613,6 +634,95 @@ export const mediaReferences = sqliteTable(
   ],
 );
 
+// --- 14. model_metadata (NO FK — the DB mirror of the models.dev catalog, ADR-0072) ---
+// The durable overlay backing that replaces the `~/.relavium` file cache: price/limits/reasoning/capabilities +
+// pure enrichment for EVERY model, refreshed from models.dev. Keyed by `model_id` alone — the SAME key space as the
+// generated `CATALOG_SNAPSHOT` (`Record<string, CatalogModel>`), NOT the `model_catalog` UUID — so an entry is
+// stored ONCE, provider-agnostic (a `CatalogModel` carries its own `provider`). A LEAF table: no FK referrers, and
+// deliberately NO FK to `model_catalog` (keyed `(provider_id, model_id)`) — a models.dev long-tail model may name a
+// provider the user has not registered. This table is NEVER the terminal money source: the binary snapshot floor
+// stays authoritative for shipped ids; this only BACKS the additive overlay (ADR-0072 point 2).
+export const modelMetadata = sqliteTable(
+  'model_metadata',
+  {
+    modelId: text('model_id').primaryKey(),
+    // Provider as COERCED text (a `ProviderId`) — no FK, validated against the closed set at the read boundary.
+    provider: text('provider').notNull(),
+    displayName: text('display_name').notNull(),
+    contextWindowTokens: integer('context_window_tokens').notNull(),
+    maxOutputTokens: integer('max_output_tokens').notNull(),
+    // MONEY — micro-cents per Mtok. Base input/output are NOT NULL: the additive-admission gate requires both
+    // FINITE and > 0 (ADR-0072 point 3b), so a row missing either is not a valid catalog entry.
+    inputCostPerMtokMicrocents: integer('input_cost_per_mtok_microcents').notNull(),
+    outputCostPerMtokMicrocents: integer('output_cost_per_mtok_microcents').notNull(),
+    // Cache rates: NULLABLE, and the DB→CatalogModel projection maps NULL → `undefined`, NEVER `0` (ADR-0071 §10 /
+    // ADR-0072 point 3c) — `0` means "no discount" and would price a cached read at zero. This is DISTINCT from
+    // `model_catalog.cached_input_*` (NOT NULL DEFAULT 0 + a `stated` flag): here NULL carries "absent" directly.
+    cachedInputCostPerMtokMicrocents: integer('cached_input_cost_per_mtok_microcents'),
+    cacheWriteCostPerMtokMicrocents: integer('cache_write_cost_per_mtok_microcents'),
+    // Context-size pricing tiers (`CatalogPriceTier[]`), JSON. NULL ⇒ the flat rate applies at every length.
+    contextTiers: jsonText('context_tiers'),
+    // Reasoning control shape (`ReasoningControls`), JSON. NULL ⇒ the SAFE default (no reasoning / no knob). It MUST
+    // NOT be conflated with `model_catalog.supports_*` booleans, whose default is REJECT — here absent ⇒ safe.
+    reasoning: jsonText('reasoning'),
+    // Per-model request capabilities (`RequestCapabilities`), JSON. NULL ⇒ accept-ALL (a field is present only when
+    // the model REJECTS that parameter) — again the opposite default from the `supports_*` flags.
+    requestCapabilities: jsonText('request_capabilities'),
+    // --- Pure ENRICHMENT (ADR-0072 point 5): never on the pricing/wire path; freely auto-refreshed for ALL rows. ---
+    inputModalities: jsonText('input_modalities'),
+    outputModalities: jsonText('output_modalities'),
+    knowledgeCutoff: text('knowledge_cutoff'),
+    // models.dev publishes no per-model description today; carried NULLABLE at the maintainer's explicit request,
+    // populated only when a Relavium-owned overlay or a second source exists (ADR-0072 Negative).
+    description: text('description'),
+    // --- Bookkeeping ---
+    // WHICH store is authoritative for this row's money+wire: `shipped` (pinned to the binary snapshot — money+wire
+    // NEVER rewritten by a refresh, only pure-enrichment columns are) vs `refreshed` (a long-tail model admitted
+    // through the shared gate). CHECK'd here — unlike `model_catalog.source`, this is an initial CREATE.
+    origin: text('origin').$type<CatalogMetadataOrigin>().notNull(),
+    // The normalizer version that WROTE this row. A row written by an older normalizer is treated as ABSENT (falls
+    // to the snapshot) until a refresh rewrites it (ADR-0072 points 6-7) — checked BEFORE admission.
+    catalogSchemaVersion: integer('catalog_schema_version').notNull(),
+    refreshedAt: epochMs('refreshed_at'),
+    createdAt: epochMs('created_at').notNull(),
+    updatedAt: epochMs('updated_at').notNull(),
+  },
+  (t) => [
+    check('model_metadata_origin_check', sql`${t.origin} in (${inList(CATALOG_METADATA_ORIGINS)})`),
+    // Money floor AT REST (belt-and-suspenders to the runtime gate). A REFRESHED long-tail row must be priced on
+    // both sides (the gate refuses it otherwise); a SHIPPED row is whatever the reviewed snapshot says — a free
+    // shipped model (input 0) is legitimate and pinned, so the positivity check is scoped to refreshed rows only.
+    check(
+      'model_metadata_refreshed_base_price_positive',
+      sql`${t.origin} = 'shipped' OR (${t.inputCostPerMtokMicrocents} > 0 AND ${t.outputCostPerMtokMicrocents} > 0)`,
+    ),
+    index('idx_model_metadata_provider').on(t.provider),
+  ],
+);
+
+// --- 15. catalog_meta (NO FK — the singleton cursor for the DB-backed catalog, ADR-0072 points 6-7) ---
+// AT MOST one row (id = 1): the PK + the `id = 1` CHECK together forbid a second row and any id ≠ 1, but neither
+// FORCES a row to exist — it is created LAZILY by the host's first `upsertMeta` (there is no bootstrap seed or
+// migration insert), so the table is 0-or-1 rows, never guaranteed-present. Holds the durable state the refresh +
+// boot-seed need: the SHA of the
+// snapshot the shipped rows were last seeded from (gates re-seeding after a binary upgrade), the normalizer version
+// of the stored rows (a read admits DB rows only when it matches the running binary), the two independent per-axis
+// TTL cursors (availability = first-party provider lists; catalog = third-party models.dev), and the last upstream
+// ETag for conditional revalidation.
+export const catalogMeta = sqliteTable(
+  'catalog_meta',
+  {
+    id: integer('id').primaryKey(),
+    seededSnapshotSha: text('seeded_snapshot_sha'),
+    catalogSchemaVersion: integer('catalog_schema_version'),
+    availabilityCheckedAt: epochMs('availability_checked_at'),
+    catalogCheckedAt: epochMs('catalog_checked_at'),
+    catalogSourceEtag: text('catalog_source_etag'),
+    updatedAt: epochMs('updated_at').notNull(),
+  },
+  (t) => [check('catalog_meta_singleton', sql`${t.id} = 1`)],
+);
+
 // --- Inferred row types (select + insert) for each table ---
 
 export type LlmProviderRow = typeof llmProviders.$inferSelect;
@@ -641,3 +751,7 @@ export type MediaObjectRow = typeof mediaObjects.$inferSelect;
 export type NewMediaObjectRow = typeof mediaObjects.$inferInsert;
 export type MediaReferenceRow = typeof mediaReferences.$inferSelect;
 export type NewMediaReferenceRow = typeof mediaReferences.$inferInsert;
+export type ModelMetadataRow = typeof modelMetadata.$inferSelect;
+export type NewModelMetadataRow = typeof modelMetadata.$inferInsert;
+export type CatalogMetaRow = typeof catalogMeta.$inferSelect;
+export type NewCatalogMetaRow = typeof catalogMeta.$inferInsert;

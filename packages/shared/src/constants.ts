@@ -324,6 +324,21 @@ export const MODEL_CATALOG_SOURCES = ['static', 'live', 'user'] as const;
 export type ModelCatalogSource = (typeof MODEL_CATALOG_SOURCES)[number];
 
 /**
+ * The provenance discriminant of a `model_metadata` row ([ADR-0072]) — the DB mirror of the models.dev
+ * catalog. `shipped` is a row seeded at boot from the generated `CATALOG_SNAPSHOT` (its money + wire fields
+ * are pinned to the reviewed binary and NEVER rewritten by a refresh — only its pure-enrichment columns are);
+ * `refreshed` is a long-tail model the snapshot does not carry, written by a models.dev refresh through the
+ * shared additive-admission gate. This is DISTINCT from a `model_catalog` row's {@link ModelCatalogSource}:
+ * `source` is about *availability provenance* (static seed vs live discovery vs user pricing); `origin` is
+ * about *which store is authoritative for this metadata* (the binary snapshot vs a live refresh). A closed set
+ * mirroring {@link MODEL_CATALOG_SOURCES}; `@relavium/db` enforces it with a CHECK in the initial `CREATE
+ * TABLE` (unlike `source`, which is an `ALTER ADD` column) and coerces at the read boundary. Lives here so the
+ * DB layer derives the vocabulary from `@relavium/shared`, never restating it.
+ */
+export const CATALOG_METADATA_ORIGINS = ['shipped', 'refreshed'] as const;
+export type CatalogMetadataOrigin = (typeof CATALOG_METADATA_ORIGINS)[number];
+
+/**
  * The three filesystem permission tiers (built-in-tools.md). The canonical vocabulary
  * for the config `fs_scope` (config-spec.md) and a session's `fsScopeTier`
  * (agent-session-spec.md), so both derive their enum from this one list.

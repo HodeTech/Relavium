@@ -28,8 +28,9 @@ import {
 const TS = 1_700_000_000_000; // fixed epoch-ms so assertions are deterministic
 
 /**
- * The thirteen Phase-1 local tables (database-schema.md) — nine run-history + two agent-session (1.X)
- * + two media retention (1.AF: media_objects + media_references, ADR-0042).
+ * The sixteen Phase-1 local tables (database-schema.md) — nine run-history + three agent-session (1.X:
+ * agent_sessions + session_messages + session_costs, the last added by ADR-0070) + two media retention (1.AF:
+ * media_objects + media_references, ADR-0042) + two catalog-metadata (ADR-0072: model_metadata + catalog_meta).
  */
 const EXPECTED_TABLES = [
   'llm_providers',
@@ -43,8 +44,11 @@ const EXPECTED_TABLES = [
   'run_costs',
   'agent_sessions',
   'session_messages',
+  'session_costs',
   'media_objects',
   'media_references',
+  'model_metadata',
+  'catalog_meta',
 ] as const;
 
 let tmpDir: string;
@@ -97,6 +101,8 @@ describe('@relavium/db migrations + client', () => {
       // 2.5.B (migration 0005): the recency partial indexes that serve the Home top-N reads without a filesort.
       'idx_runs_created',
       'idx_agent_sessions_updated',
+      // ADR-0072 (migration 0012): the model_metadata provider lookup.
+      'idx_model_metadata_provider',
     ]) {
       expect(indexes).toContain(idx);
     }

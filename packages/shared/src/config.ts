@@ -1,7 +1,12 @@
 import { z } from 'zod';
 
 import { URL_HAS_CREDENTIALS, nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
-import { FS_SCOPE_TIERS, ON_EXCEED_ACTIONS, REASONING_EFFORTS } from './constants.js';
+import {
+  FS_SCOPE_TIERS,
+  LLM_PROVIDERS,
+  ON_EXCEED_ACTIONS,
+  REASONING_EFFORTS,
+} from './constants.js';
 
 /**
  * Configuration schemas (config-spec.md). Validation only — no file IO. The global
@@ -133,9 +138,38 @@ export type McpServerRegistration = z.infer<typeof McpServerRegistrationSchema>;
 export const GlobalConfigSchema = z
   .object({
     update_channel: UpdateChannelSchema.optional(),
+    /**
+     * The model-metadata catalog ([ADR-0071](../../../docs/decisions/0071-models-dev-as-the-model-metadata-source.md) §4).
+     *
+     * Relavium ships a generated snapshot of models.dev — every price, ceiling and reasoning control, embedded in the
+     * binary and answering **offline**. That is the whole design, and it is what makes the default here `false`.
+     */
+    catalog: z
+      .object({
+        /**
+         * Refresh the catalog from models.dev automatically. **DEFAULT `false`, and deliberately.**
+         *
+         * A local-first tool that contacts a third party BY DEFAULT violates its own spirit even when the payload is
+         * innocuous (CLAUDE.md rule 6) — so the standing background egress is opt-in, and the shipped snapshot is a
+         * complete answer without it. [ADR-0068](../../../docs/decisions/0068-full-screen-tui-renderer-ink7-harness.md)
+         * established the convention this follows: ship a new risk-bearing surface default-OFF, validate it, then
+         * decide about flipping.
+         *
+         * `relavium models refresh` fetches regardless — an explicit command IS consent. That is what makes
+         * default-OFF a livable default rather than a dead end: a user who wants current prices types one command.
+         */
+        auto_refresh: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
     preferences: z
       .object({
         default_model: z.string().optional(),
+        // The provider that serves `default_model`, PERSISTED at pick time (ADR-0059 — the provider is authoritative,
+        // never re-inferred from the id). Written alongside `default_model` by the `/models` picker + the onboarding
+        // wizard so a next-session chat over a live-discovered id whose spelling the prefix map cannot place (e.g.
+        // `chatgpt-4o-latest`) still resolves its provider. Absent ⇒ fall back to prefix/catalog inference.
+        default_provider: z.enum(LLM_PROVIDERS).optional(),
         theme: z.string().optional(),
         // The GLOBAL default reasoning-effort tier (ADR-0066 §6) — the effort counterpart of `default_model`, the
         // write target of the `/models` picker's effort sub-step. Resolved BELOW project/workspace
@@ -183,6 +217,9 @@ export type GlobalConfig = z.infer<typeof GlobalConfigSchema>;
 export const ChatConfigSchema = z
   .object({
     default_model: z.string().optional(),
+    // The provider serving `[chat].default_model`, persisted at pick time (ADR-0059). See the identical
+    // `[preferences].default_provider` note above; the project layer overrides the global one, like `default_model`.
+    default_provider: z.enum(LLM_PROVIDERS).optional(),
     fs_scope: FsScopeSchema.optional(),
     // `!`-shell allowlist (ADR-0061): exact full-command-string match (`allowed_commands`) + opt-in glob patterns
     // (`allowed_command_globs`, riskier). Both empty/absent ⇒ `!` denied (secure-by-default; the user opts in per
@@ -205,6 +242,10 @@ export const ChatConfigSchema = z
     compact_threshold: z.number().gt(0).lte(1).optional(),
     max_cost_microcents: nonNegativeInt.optional(), // 0/absent = unbounded; >0 = per-session cap
     on_exceed: z.enum(ON_EXCEED_ACTIONS).optional(),
+    // Refuse a turn on a model we cannot PRICE (ADR-0071 §K7). Default false. The chat counterpart of a workflow
+    // `budget.strict_cost_cap`: an unpriced model is a hole in the cap, and a user who set `max_cost_microcents`
+    // to bound an untrusted model may prefer "if you can't price it, don't run it" over the silent degrade.
+    strict_cost_cap: z.boolean().optional(),
     // The default reasoning-effort tier for a chat whose bound agent authors none (ADR-0066) — off/low/medium/high/
     // max. Applied to the built-in default chat agent + surfaced as the picker's starting effort; only sent to a
     // reasoning-capable model. Absent ⇒ the provider default (no reasoning control sent).

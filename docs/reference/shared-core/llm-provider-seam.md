@@ -37,7 +37,11 @@ interface LlmRequest {
   tools?: ToolDef[];             // JSON-Schema params, normalized
   toolChoice?: 'auto' | 'none' | 'required' | { name: string };
   temperature?: number;
-  maxTokens?: number;            // REQUIRED downstream for Anthropic; we default it
+  maxTokens?: number;            // REQUIRED downstream for Anthropic; we default it. CLAMPED to the model's published
+                                 // `maxOutputTokens` (ADR-0071 §7) — down, never up; a cap below the ceiling is the author's
+                                 // budget. NOT clamped on a custom `base_url` (we cannot describe what it serves). The
+                                 // OpenAI-compatible adapter's WIRE FIELD is endpoint-dependent (§10a): OpenAI's own API
+                                 // takes `max_completion_tokens`; DeepSeek's API and every custom base URL take `max_tokens`.
   reasoningEffort?: ReasoningEffort; // normalized tier off|low|medium|high|max (ADR-0066); each adapter maps to its provider's native tier — CANONICAL, wins over a colliding providerOptions key; absent ⇒ provider default
   stopSequences?: string[];
   responseFormat?: ResponseFormat; // structured-output request (ADR-0030)
@@ -500,7 +504,7 @@ Per-provider list-models endpoint contracts:
 | --- | --- | --- | --- |
 | Anthropic (`anthropic`) | `/v1/models` (SDK `models.list()`, auto-paginating `has_more`/`last_id`) | **Rich** | `id`, `display_name`→`displayName`, `max_input_tokens`→`contextWindowTokens` (omit if 0), `max_tokens`→`maxOutputTokens` (omit if 0). The list is clean — no filter (the rich `capabilities` object is ignored). |
 | Gemini (`gemini`) | `/v1beta/models` (SDK `models.list()`) | **Rich** | `name` (strip `models/`)→`id`, `displayName`, `inputTokenLimit`→`contextWindowTokens`, `outputTokenLimit`→`maxOutputTokens`. **Filter:** keep only rows whose `supportedActions` (the SDK's projection of REST `supportedGenerationMethods`) includes `generateContent`. Key sent as the `x-goog-api-key` header, never a `?key=` query param (ADR-0064 §9). |
-| OpenAI / DeepSeek (`openai-compatible`) | `/v1/models` (SDK `models.list()`) | **Id-only** | `id`→`id`, no context/price. **Filter:** keep the `gpt` / `o<digit>` / `*chat*` / `deepseek` families; DENY `embedding`/`tts`/`whisper`/`image`/`moderation`/`realtime`/`audio`/`dall-e`/`transcribe`/`search`/`instruct`/`ocr`/`davinci`/`babbage`/`ft:` — each matched on a `-`/`_` **segment boundary** (so `search` denies `gpt-4o-search-preview` but NOT `o3-deep-research`); **union-in** any id present in `MODEL_PRICING` for that provider (cost-eligibility always wins). |
+| OpenAI / DeepSeek (`openai-compatible`) | `/v1/models` (SDK `models.list()`) | **Id-only** | `id`→`id`, no context/price. **Filter:** keep the `gpt` / `o<digit>` / `*chat*` / `deepseek` families; DENY `embedding`/`tts`/`whisper`/`image`/`moderation`/`realtime`/`audio`/`dall-e`/`transcribe`/`search`/`instruct`/`ocr`/`davinci`/`babbage`/`ft:` — each matched on a `-`/`_` **segment boundary** (so `search` denies `gpt-4o-search-preview` but NOT `o3-deep-research`); **union-in** any id the generated catalog prices for that provider (ADR-0071 — cost-eligibility always wins; the deny-list still applies, so a priced embedding stays out). |
 
 ## What must be normalized
 
@@ -611,7 +615,7 @@ Two streaming subtleties the adapters must handle:
 > micro-cents**, where **1 micro-cent = 1e-8 USD = 1e-6 cent**. Costs are always
 > integers (never floats) to avoid precision loss when summing thousands of
 > per-token charges; the SQLite type-mapping detail is in
-> [../desktop/database-schema.md](../desktop/database-schema.md). Every other
+> [../shared-core/database-schema.md](../shared-core/database-schema.md). Every other
 > document links here rather than restating the unit.
 
 #### Stricter usage-capture rules in managed mode (Phase 2)

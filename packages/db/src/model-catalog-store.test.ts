@@ -5,6 +5,7 @@ import { createClient, runMigrations, type DbClient } from './client.js';
 import {
   createModelCatalogStore,
   ModelCatalogCapabilitiesError,
+  type ModelCatalogListing,
   type ModelCatalogStore,
 } from './model-catalog-store.js';
 import { createProviderStore, type ProviderStore } from './provider-store.js';
@@ -53,6 +54,56 @@ describe('createModelCatalogStore (2.S — media routing + load-check reader)', 
     // The bulk live-upsert reads existing rows then writes — BEGIN IMMEDIATE is what lets two concurrent
     // `relavium` refreshes race the DB write safely (ADR-0064 §5); a DEFERRED begin drops this config arg.
     expect(txnSpy).toHaveBeenCalledWith(expect.any(Function), { behavior: 'immediate' });
+  });
+
+  it('a live refresh NEVER clobbers a hidden model back to visible (ADR-0072 point 4 never-clobber)', () => {
+    store.replaceProviderModels(providerId, [{ modelId: 'gpt-4o', displayName: 'GPT-4o' }], TS_MS);
+    // The user hid it (a future /settings > /models toggle; here a direct column write, as no setter ships yet).
+    client.db
+      .update(modelCatalog)
+      .set({ visible: false })
+      .where(eq(modelCatalog.modelId, 'gpt-4o'))
+      .run();
+    // A routine live refresh re-lists the SAME model — its UPDATE set omits `visible`, so the hide survives.
+    store.replaceProviderModels(
+      providerId,
+      [{ modelId: 'gpt-4o', displayName: 'GPT-4o' }],
+      TS_MS + 1_000,
+    );
+    expect(store.listAll().find((l) => l.modelId === 'gpt-4o')?.visible).toBe(false);
+  });
+
+  it('an upsert (a models-pricing re-write) ALSO preserves a hidden model — never-clobber (ADR-0072 point 4)', () => {
+    store.upsert({ providerId, modelId: 'gpt-4o', displayName: 'GPT-4o' });
+    client.db
+      .update(modelCatalog)
+      .set({ visible: false })
+      .where(eq(modelCatalog.modelId, 'gpt-4o'))
+      .run();
+    // A partial re-upsert (the `models pricing` path) — its `shared` set omits `visible`, so the hide survives.
+    store.upsert({ providerId, modelId: 'gpt-4o', displayName: 'GPT-4o (renamed)' });
+    expect(store.listAll().find((l) => l.modelId === 'gpt-4o')?.visible).toBe(false);
+  });
+
+  it('a REACTIVATED (vanished-then-reappeared) hidden live row still preserves visible=false (ADR-0072 point 4)', () => {
+    store.replaceProviderModels(providerId, [{ modelId: 'gpt-4o', displayName: 'GPT-4o' }], TS_MS);
+    client.db
+      .update(modelCatalog)
+      .set({ visible: false })
+      .where(eq(modelCatalog.modelId, 'gpt-4o'))
+      .run();
+    // The model VANISHES from the provider's list (soft-deactivated)…
+    store.replaceProviderModels(providerId, [], TS_MS + 1_000);
+    // …then REAPPEARS — the reactivation UPDATE reuses the same row and omits `visible`, so the hide survives (the
+    // exact "a refresh never silently un-hides a model the user hid" case the ADR is most worried about).
+    store.replaceProviderModels(
+      providerId,
+      [{ modelId: 'gpt-4o', displayName: 'GPT-4o' }],
+      TS_MS + 2_000,
+    );
+    const listing = store.listAll().find((l) => l.modelId === 'gpt-4o');
+    expect(listing?.visible).toBe(false);
+    expect(listing?.isActive).toBe(true); // genuinely reactivated
   });
 
   it('upsert opens an IMMEDIATE write transaction (2.5.I — the models-pricing read-then-write path)', () => {
@@ -864,6 +915,50 @@ describe('createModelCatalogStore (2.5.G / ADR-0064 — live-discovery cache)', 
     expect(listing?.inputCostPerMtokMicrocents).toBe(1234);
     expect(listing?.outputCostPerMtokMicrocents).toBe(5678);
     expect(listing?.cachedInputCostPerMtokMicrocents).toBe(42);
+  });
+
+  it('clearUserPricing resets the pricing columns, so a later partial re-price does not resurrect the cleared cache rate (review M3)', () => {
+    const read = (): ModelCatalogListing | undefined =>
+      store.listByProvider(providerId).find((m) => m.modelId === 'cache-clear-model');
+
+    // 1) Price it WITH a stated cache rate.
+    store.upsert({
+      providerId,
+      modelId: 'cache-clear-model',
+      displayName: 'Cache Clear',
+      source: 'user',
+      inputCostPerMtokMicrocents: 1_000_000,
+      outputCostPerMtokMicrocents: 2_000_000,
+      cachedInputCostPerMtokMicrocents: 5_000_000,
+      cachedInputStated: true,
+    });
+    expect(read()).toMatchObject({
+      cachedInputCostPerMtokMicrocents: 5_000_000,
+      cachedInputStated: true,
+    });
+
+    // 2) Clear it.
+    expect(store.clearUserPricing('cache-clear-model', providerId)).toBe(true);
+    expect(read()).toBeUndefined(); // deactivated ⇒ off every active-only reader
+
+    // 3) Re-price PARTIALLY — input/output only, NO cache rate. The upsert reuses the FK-stable (now inactive)
+    //    row. Before M3 the cleared row still carried cached=5_000_000/stated=true, and the omitted cache column
+    //    was preserved — silently billing cache tokens at the cleared rate as if the user had just stated it.
+    store.upsert({
+      providerId,
+      modelId: 'cache-clear-model',
+      source: 'user',
+      inputCostPerMtokMicrocents: 3_000_000,
+      outputCostPerMtokMicrocents: 4_000_000,
+    });
+
+    const repriced = read();
+    expect(repriced?.inputCostPerMtokMicrocents).toBe(3_000_000);
+    expect(repriced?.outputCostPerMtokMicrocents).toBe(4_000_000);
+    // THE FIX: the cleared cache rate does not come back, and it is no longer marked user-stated — so a reader
+    // derives the cache rate from the catalog discount instead of billing the stale $5.
+    expect(repriced?.cachedInputCostPerMtokMicrocents).toBe(0);
+    expect(repriced?.cachedInputStated).toBe(false);
   });
 
   it('providerRefreshedAt isolates by provider and ignores non-live rows', () => {

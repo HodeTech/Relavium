@@ -42,6 +42,14 @@ describe('writeGlobalDefaultModel', () => {
     expect(readBack(home)).toEqual({ preferences: { default_model: 'claude-sonnet-4-6' } });
   });
 
+  it('persists [preferences].default_provider alongside default_model, round-tripping both (ADR-0059)', () => {
+    // The provider is persisted at pick time so the next chat over an id the prefix cannot place still resolves.
+    writeGlobalPreferences({ defaultModel: 'chat-latest', defaultProvider: 'openai' }, home);
+    expect(readBack(home)).toEqual({
+      preferences: { default_model: 'chat-latest', default_provider: 'openai' },
+    });
+  });
+
   it('preserves every other config key (update_channel, theme, mcp_servers) — merges only default_model', () => {
     // Seed an existing, valid global config carrying unrelated keys the write must NOT drop.
     mkdirSync(globalDir(home), { recursive: true });

@@ -1,31 +1,37 @@
-import { MODEL_PRICING, modelSupportsReasoning, type ModelPricing } from './pricing.js';
+import { deprecationFor } from './catalog/deprecations.js';
+import { toPricing } from './catalog/pricing.js';
+import { catalogModel, catalogModelIds } from './catalog/lookup.js';
+import type { ModelPricing } from './pricing.js';
 import type { ModelListing, ProviderId } from './types.js';
 
 /**
- * The merged model catalog (ADR-0064 §6) — the pure reconciliation of LIVE discovery (which model ids a key
- * can reach, from `LlmProvider.listModels`), the STATIC registry ({@link MODEL_PRICING}), and the optional
- * USER-pricing tier (ADR-0065, filled additively from the `model_catalog` `source='user'` rows). It lives in
- * `@relavium/llm` and is **pure / I/O-free** (the host does the keychain/db/network work and passes plain data
- * in), so every surface — the CLI `/models` picker, the desktop, the VS Code extension — reuses the same
- * precedence. Selection (availability) and pricing are kept cleanly separate: the live list decides
- * **availability**, the static registry stays the **pricing authority**.
+ * The merged model catalog (ADR-0064 §6, ADR-0071 §1) — the pure reconciliation of LIVE discovery (which model
+ * ids a key can actually reach, from `LlmProvider.listModels`), the generated CATALOG (`catalog/snapshot.ts`,
+ * synced from models.dev — what the hand-typed registry used to be), and the USER-pricing tier (ADR-0065, from
+ * the `model_catalog` `source='user'` rows). It lives in `@relavium/llm` and is **pure / I/O-free** (the host does
+ * the keychain/db/network work and passes plain data in), so every surface — the CLI `/models` picker, the
+ * desktop, the VS Code extension — reuses the same precedence.
+ *
+ * Selection and pricing stay cleanly separate: the **live list decides availability**, and pricing resolves
+ * **user → catalog**, the same order `priceModel` bills at. The live tier is never a pricing authority (providers
+ * rarely return a price, and a refresh must never overwrite a known one).
  */
 
 /** Where an entry's effective pricing came from. `none` ⇒ the cost cap will not apply (ADR-0064 §6 / ADR-0065). */
-export type PricingSource = 'registry' | 'user' | 'none';
+export type PricingSource = 'catalog' | 'user' | 'none';
 
 /** One reconciled model in the merged catalog (ADR-0064 §6). */
 export interface ModelCatalogEntry {
   readonly modelId: string;
   readonly provider: ProviderId;
   readonly displayName: string;
-  /** From live ?? static ?? user (live is fresher when present, e.g. Anthropic's `max_input_tokens`). */
+  /** From live ?? user ?? catalog (live is fresher when present, e.g. Anthropic's `max_input_tokens`). */
   readonly contextWindowTokens?: number;
   readonly maxOutputTokens?: number;
   /**
-   * The **effective** pricing: static ({@link MODEL_PRICING}) for a known id, else the USER tier for an
-   * unknown id, else undefined. The live tier is **never** a pricing authority (ADR-0064 §6) — providers
-   * rarely return a price and a refresh must never overwrite a known one.
+   * The **effective** pricing: the USER's row if they set one, else the generated catalog's, else undefined.
+   * The live tier is **never** a pricing authority (ADR-0064 §6) — providers rarely return a price, and a
+   * refresh must never overwrite a known one.
    */
   readonly pricing?: ModelPricing;
   readonly pricingSource: PricingSource;
@@ -52,14 +58,6 @@ export interface ModelCatalogEntry {
   readonly deprecated: boolean;
   /** The effective ISO deprecation date — the earlier of the static and live dates (their union). */
   readonly deprecatedAt?: string;
-  /**
-   * Whether the model exposes a controllable reasoning-effort tier ([ADR-0066](../../../docs/decisions/0066-normalized-reasoning-effort-control.md)).
-   * Sourced from the STATIC registry only (`MODEL_PRICING[id].reasoning === true`) — the same authority as
-   * `modelSupportsReasoning`, so the picker's effort sub-step and the engine's `resolveReasoning` gate agree. A
-   * live-only / user-only id (no registry tier) is `false` (reasoning capability is a shipped-registry fact, never
-   * inferred from a discovery listing or a user price row).
-   */
-  readonly supportsReasoning: boolean;
 }
 
 /** Input to {@link mergeModelCatalog} — all plain data the host resolves and passes in (keeps the merge pure). */
@@ -67,12 +65,14 @@ export interface MergeModelCatalogInput {
   /**
    * Per-provider LIVE listings from `listModels`. A provider **present** in the map (even with `[]`) has live
    * data, so availability is decided by list membership (an empty `[]` dims all that provider's static models).
-   * A provider **absent** from the map has **no** live data — its registry models fall back to static presence.
+   * A provider **absent** from the map has **no** live data — its catalog models fall back to catalog presence.
    */
   readonly live?: ReadonlyMap<ProviderId, readonly ModelListing[]>;
   /**
-   * ADR-0065 USER tier: user-supplied pricing by model id. Fills an **unknown** id only — the static registry
-   * always wins for a known id (ADR-0064 §6 / ADR-0065 §2), so a user cannot silently misprice a shipped model.
+   * ADR-0065 USER tier: user-supplied pricing by model id — and it **OUTRANKS the catalog** (ADR-0071 §1). It used
+   * to fill an unknown id only, on the reasoning that a user should not be able to misprice a shipped model. That
+   * reasoning belonged to a table WE verified. The catalog is a snapshot of a third-party aggregator, and the user
+   * is the one holding the invoice: their negotiated rate is not a hint for a generated file to overrule.
    */
   readonly userPricing?: ReadonlyMap<string, ModelPricing>;
   /**
@@ -92,7 +92,8 @@ export interface MergeModelCatalogInput {
 interface Tiers {
   provider: ProviderId;
   live?: ModelListing;
-  registry?: ModelPricing;
+  /** The generated catalog's row (ADR-0071) — what the hand-typed `MODEL_PRICING` registry used to be. */
+  catalog?: ModelPricing;
   user?: ModelPricing;
 }
 
@@ -105,11 +106,77 @@ function earlierIsoDate(a: string | undefined, b: string | undefined): string | 
   return pa <= pb ? a : b;
 }
 
-/** The pricing provenance for a merged entry: the registry wins, then the user tier, else none (ADR-0064 §6). */
+/** The pricing provenance for a merged entry: the USER wins, then the catalog, else none (ADR-0064 §6). */
 function pricingSourceOf(t: Tiers): PricingSource {
-  if (t.registry) return 'registry';
+  // USER first — the same precedence `priceModel` applies (ADR-0071 §1). The badge must name the price we would
+  // actually BILL at, or it is a lie the user reads while being charged something else.
   if (t.user) return 'user';
+  if (t.catalog) return 'catalog';
   return 'none';
+}
+
+/** A model id shaped `base-YYYYMMDD` → its rolling-alias base; else `undefined`. Anthropic pins a snapshot with an
+ *  8-digit date suffix (`claude-haiku-4-5-20251001`), and the base (`claude-haiku-4-5`) is the rolling alias. */
+const DATED_PIN = /^(.+)-\d{8}$/;
+export function datedPinBase(id: string): string | undefined {
+  return DATED_PIN.exec(id)?.[1];
+}
+
+/**
+ * Collapse an alias↔dated-pin PAIR to the rolling alias for the display catalog the picker renders (ADR-0064
+ * amendment). Anthropic ships BOTH `claude-opus-4-1` (the rolling alias) and `claude-opus-4-1-20250805` (its dated
+ * pin) as byte-identical priced rows, so the picker offers two selectable rows for one model. Drop the dated pin —
+ * but ONLY when its alias base is ALSO present as an entry (both are real rows): a lone dated pin with no alias
+ * sibling stays visible, or it would disappear from the picker with no substitute, which is worse than a duplicate
+ * (the same "both must be present" gate {@link hasLiveSibling} applies).
+ *
+ * This is IDENTITY dedup, NOT an availability judgement — deliberately distinct from the picker's "never HIDE a
+ * dimmed/deprecated model" rule (model-picker.ts): that rule is about a model you cannot currently USE; this removes
+ * a second copy of one model you can. ANTHROPIC-only by construction — `datedPinBase` matches the `-YYYYMMDD` shape,
+ * and OpenAI's dated variants (`gpt-4o-2024-05-13`, a `YYYY-MM-DD` shape) do not match, so they are naturally out of
+ * scope (the maintainer's existing scoping decision, mirroring `hasLiveSibling`).
+ */
+export function collapseAliasDatedPinPairs(
+  entries: readonly ModelCatalogEntry[],
+): ModelCatalogEntry[] {
+  const byId = new Map(entries.map((e) => [e.modelId, e]));
+  return entries.filter((e) => {
+    if (e.provider !== 'anthropic') return true;
+    const base = datedPinBase(e.modelId);
+    if (base === undefined) return true; // not a dated pin — keep
+    // Drop the dated pin ONLY when its rolling-alias base is itself a present anthropic row (the pair is real).
+    // An absent alias short-circuits to `undefined !== 'anthropic'` ⇒ keep, exactly as the explicit guard did.
+    return byId.get(base)?.provider !== 'anthropic';
+  });
+}
+
+/**
+ * Does a keyed provider's live list carry this model's alias↔dated-pin SIBLING? (ADR-0064 §6 amendment, ADR-0071.)
+ *
+ * Anthropic's `models.list()` returns only ONE of a rolling alias (`claude-haiku-4-5`) and its dated pin
+ * (`claude-haiku-4-5-20251001`), yet the catalog SHIPS BOTH as priced rows — so the id the list omits dimmed as
+ * `not-on-key` even though the SAME key calls it (server-side both resolve to the same model). The current id is
+ * available when its sibling IS in the live list AND is itself a shipped catalog row of the same provider. The
+ * catalog-row gate is what stops this fabricating availability for an arbitrary unpriced id. ANTHROPIC-ONLY, by the
+ * maintainer's scoping decision — the OpenAI `gpt-4o` dated family is deliberately out of scope for this round.
+ */
+function hasLiveSibling(
+  modelId: string,
+  provider: ProviderId,
+  live: ReadonlyMap<ProviderId, readonly ModelListing[]>,
+): boolean {
+  if (provider !== 'anthropic') return false;
+  const listings = live.get(provider);
+  if (listings === undefined) return false;
+  const base = datedPinBase(modelId);
+  if (base !== undefined) {
+    // `modelId` is the dated PIN → the live rolling alias `base` is its sibling.
+    return listings.some((l) => l.id === base) && catalogModel(base)?.provider === provider;
+  }
+  // `modelId` is the rolling ALIAS → a live dated pin whose base equals it is its sibling.
+  return listings.some(
+    (l) => datedPinBase(l.id) === modelId && catalogModel(l.id)?.provider === provider,
+  );
 }
 
 /**
@@ -120,8 +187,12 @@ function pricingSourceOf(t: Tiers): PricingSource {
  * §6 "never everything unavailable" safe default — PRESERVED, but now only for a KEYED provider). `keyedProviders`
  * ABSENT ⇒ not key-gated (every provider treated as keyed): the `available` BOOLEAN is unchanged from pre-change;
  * the only new output is the additive `'not-on-key'` reason on a live-omitted static model — informational.
+ *
+ * ADR-0064 §6 amendment (ADR-0071): before dimming a live-omitted model, {@link hasLiveSibling} rescues an
+ * alias↔dated-pin pair — the id the provider's list left out is still callable on the same key.
  */
 function resolveAvailability(
+  modelId: string,
   t: Tiers,
   live: ReadonlyMap<ProviderId, readonly ModelListing[]>,
   keyedProviders: ReadonlySet<ProviderId> | undefined,
@@ -129,9 +200,9 @@ function resolveAvailability(
   const providerKeyed = keyedProviders === undefined || keyedProviders.has(t.provider);
   if (!providerKeyed) return { available: false, unavailableReason: 'no-key' };
   if (live.has(t.provider)) {
-    return t.live !== undefined
-      ? { available: true }
-      : { available: false, unavailableReason: 'not-on-key' };
+    if (t.live !== undefined) return { available: true };
+    if (hasLiveSibling(modelId, t.provider, live)) return { available: true };
+    return { available: false, unavailableReason: 'not-on-key' };
   }
   return { available: true };
 }
@@ -144,8 +215,12 @@ function buildTiers(
   userPricing: ReadonlyMap<string, ModelPricing>,
 ): Map<string, Tiers> {
   const tiers = new Map<string, Tiers>();
-  for (const [id, registry] of Object.entries(MODEL_PRICING) as [string, ModelPricing][]) {
-    tiers.set(id, { provider: registry.provider, registry });
+  // The refreshed catalog when the host installed one, else the shipped snapshot — `catalogModel` decides, so the
+  // picker shows a model a `models refresh --catalog` just added without a second merge path.
+  for (const id of catalogModelIds()) {
+    const entry = catalogModel(id);
+    if (entry === undefined) continue;
+    tiers.set(entry.modelId, { provider: entry.provider, catalog: toPricing(entry) });
   }
   for (const [provider, listings] of live) {
     for (const listing of listings) {
@@ -169,15 +244,34 @@ function buildEntry(
   input: MergeModelCatalogInput,
   live: ReadonlyMap<ProviderId, readonly ModelListing[]>,
 ): ModelCatalogEntry {
-  const pricing = t.registry ?? t.user; // registry wins for a known id; user fills an unknown one.
+  // USER OUTRANKS THE CATALOG (ADR-0071 §1) — the flip. The old rule was registry-first, and it made sense while
+  // the registry was our own verified table: a user could not misprice a shipped model. The catalog is a snapshot
+  // of a third-party aggregator, and the user is the one holding the invoice. Their negotiated rate, their
+  // enterprise discount, or simply a price we have not re-synced is not a hint to be overruled by a generated file.
+  const pricing = t.user ?? t.catalog;
   const pricingSource = pricingSourceOf(t);
+  // The LIMITS stay live-first: a provider's own list is the freshest word on its own model's window, and a user
+  // pricing row rarely carries one. Below it, the same user > catalog order as the price.
   const contextWindowTokens =
-    t.live?.contextWindowTokens ?? t.registry?.contextWindowTokens ?? t.user?.contextWindowTokens;
+    t.live?.contextWindowTokens ?? t.user?.contextWindowTokens ?? t.catalog?.contextWindowTokens;
   const maxOutputTokens =
-    t.live?.maxOutputTokens ?? t.registry?.maxOutputTokens ?? t.user?.maxOutputTokens;
-  const { available, unavailableReason } = resolveAvailability(t, live, input.keyedProviders);
+    t.live?.maxOutputTokens ?? t.user?.maxOutputTokens ?? t.catalog?.maxOutputTokens;
+  const { available, unavailableReason } = resolveAvailability(
+    modelId,
+    t,
+    live,
+    input.keyedProviders,
+  );
+  // Deprecation is a UNION of three sources, and the EARLIEST wins — a warning is only useful before the date.
+  //
+  // models.dev publishes a `status` flag, not a date, so the retirement date lives in Relavium's own small overlay
+  // (ADR-0071 §10 — an editorial call about our users, not a data fact). It is NOT a second pricing home: one date
+  // per model, from a published announcement. The first version of the swap dropped it on the theory that the live
+  // list would carry it — but no adapter populates `ModelListing.deprecatedAt` (the OpenAI list is id-only), so
+  // `deprecated` was permanently `false` for every model in the product and `deepseek-chat` was set to stop working
+  // in eleven days with nothing to say so.
   const deprecatedAt = earlierIsoDate(
-    earlierIsoDate(t.registry?.deprecatedAt, t.live?.deprecatedAt),
+    earlierIsoDate(deprecationFor(modelId), t.live?.deprecatedAt),
     t.user?.deprecatedAt,
   );
   const parsedDeprecation = deprecatedAt === undefined ? Number.NaN : Date.parse(deprecatedAt);
@@ -185,7 +279,9 @@ function buildEntry(
   return {
     modelId,
     provider: t.provider,
-    displayName: t.registry?.displayName ?? t.live?.displayName ?? t.user?.displayName ?? modelId,
+    // The catalog's name first: models.dev carries a curated one ("GPT-5.4 Pro"), while a provider's live list
+    // often echoes the raw id back. A user row's name is the last resort — they set a PRICE, not a label.
+    displayName: t.catalog?.displayName ?? t.live?.displayName ?? t.user?.displayName ?? modelId,
     ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
     ...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
     ...(pricing !== undefined ? { pricing } : {}),
@@ -195,20 +291,15 @@ function buildEntry(
     ...(unavailableReason !== undefined ? { unavailableReason } : {}),
     deprecated,
     ...(deprecatedAt !== undefined ? { deprecatedAt } : {}),
-    // Reasoning capability via the SAME authority as the engine gate (ADR-0066 §4): the registry flag for a known
-    // id (authoritative — true or false), else the conservative id heuristic for a live-discovered id. So the
-    // picker's effort sub-step lights up exactly for the models the engine will actually honor — including a newly
-    // released reasoning family member absent from the registry.
-    supportsReasoning: modelSupportsReasoning(modelId),
   };
 }
 
 /**
- * Reconcile live discovery ⋈ the static registry ⋈ the user tier into one deterministically-ordered catalog
+ * Reconcile live discovery ⋈ the generated catalog ⋈ the user tier into one deterministically-ordered catalog
  * (ADR-0064 §6). Pure: no I/O, no `Date.now()` (the caller passes `now`). Per-field precedence —
- * availability ← live (else static presence); price ← registry ?? user (never live); context/output ← live ??
- * static ?? user; deprecation ← the earliest of the static, live, and user dates; priceKnown ← a static or
- * user price exists.
+ * availability ← live (else static presence); price ← **user ?? catalog** (the USER outranks the catalog,
+ * ADR-0071 §1; never live); context/output ← live ?? catalog ?? user; deprecation ← the earliest of the catalog,
+ * live, and user dates; priceKnown ← a user or catalog price exists.
  */
 export function mergeModelCatalog(input: MergeModelCatalogInput): ModelCatalogEntry[] {
   const live = input.live ?? new Map<ProviderId, readonly ModelListing[]>();

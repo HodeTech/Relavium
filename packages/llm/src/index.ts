@@ -129,16 +129,19 @@ export {
 } from './llm-error.js';
 
 // CostTracker + the canonical model-pricing table (1.B).
-export {
-  MODEL_PRICING,
-  KNOWN_MODEL_IDS,
-  isCanonicalModelId,
-  contextWindowForModel,
-  modelSupportsReasoning,
-} from './pricing.js';
-export type { ModelPricing, CanonicalModelId } from './pricing.js';
+// The hand-typed price table is GONE from this surface (ADR-0071 §1), and so are the id guards it fed:
+// `MODEL_PRICING`, `KNOWN_MODEL_IDS`, `isCanonicalModelId`, `CanonicalModelId`, and `modelSupportsReasoning`.
+//
+// `isCanonicalModelId` asked "is this one of OUR models". The honest question is "can we price this one", and a
+// user-priced model is perfectly billable while never having been canonical — `priceModel`'s own throw answers it.
+// `modelSupportsReasoning` asked "does this model reason", which is not the question the wire asks at all
+// (`gpt-5.4-pro` reasons AND rejects `low`); `effortTiersFor` is the answer.
+//
+// `ModelPricing` survives as the CONTRACT — the CostTracker bills against it and a `models pricing` row IS one.
+export { contextWindowForModel } from './pricing.js';
+export type { ModelPricing } from './pricing.js';
 // The pure live/static/user merge helper (ADR-0064 §6) — reused by every surface's model catalog / picker.
-export { mergeModelCatalog } from './model-catalog.js';
+export { collapseAliasDatedPinPairs, datedPinBase, mergeModelCatalog } from './model-catalog.js';
 export type { ModelCatalogEntry, MergeModelCatalogInput, PricingSource } from './model-catalog.js';
 export { priceModel, cost, mediaCost, CostTracker } from './cost-tracker.js';
 export type { CostUpdate, PricingOverlay } from './cost-tracker.js';
@@ -175,3 +178,48 @@ export type {
 // `providerKind` derives the ADR-0064 protocol `kind` from a provider id (used by the later merge/refresh steps).
 // `createCustomOpenAiProvider` builds a per-provider OpenAI-compatible adapter for a custom base_url (ADR-0065 §3, S9).
 export { createCustomOpenAiProvider, defaultProviders, providerKind } from './providers.js';
+
+// --- The generated model catalog (ADR-0071) ------------------------------------------------
+// The reasoning CONTROL is per-model data now, not a per-adapter assumption. The host projects a model's
+// ACCEPTED TIERS from it (`resolveEffortTiers`), so a tier the model would reject never reaches the wire.
+export { catalogModel, effortTiersFor, modelAccepts } from './catalog/lookup.js';
+// The generated snapshot itself + its pricing projection (ADR-0071 §1) — what `MODEL_PRICING` used to be.
+// `CATALOG_SHA256` is the snapshot's content hash — the host gates its SHA-based DB re-seed on it (ADR-0072 §6).
+export { CATALOG_SNAPSHOT, CATALOG_SHA256 } from './catalog/snapshot.js';
+// The version of the normalized CatalogModel SHAPE stored in the DB mirror; the host admits a stored row only when
+// it matches (ADR-0072 §6). Bumped when the normalizer's money/wire output shape changes.
+export { CATALOG_SCHEMA_VERSION } from './catalog/catalog-model.js';
+export { catalogPricing, toPricing, pricedModelIds } from './catalog/pricing.js';
+// The refresh seam (ADR-0071 §4): the HOST fetches models.dev and installs the result; `@relavium/llm` does no I/O.
+// Additive only — the shipped snapshot is the floor, so a bad payload degrades to it rather than to a blank catalog.
+// `admitRefreshedModels` is the SHARED pure gate (ADR-0072 point 3): the host DB writer applies the identical
+// additive-admission rule the in-memory install does, so neither path can lower a shipped price or admit an unpriced
+// long-tail row — and the dependency direction stays apps/cli → @relavium/llm.
+export {
+  admitRefreshedModels,
+  installCatalogRefresh,
+  clearCatalogRefresh,
+  catalogModelIds,
+} from './catalog/lookup.js';
+export { CATALOG_PROVIDER_KEYS } from './catalog/catalog-providers.js';
+export { normalizeCatalog, ModelsDevPayloadSchema } from './catalog/models-dev-schema.js';
+export type {
+  CatalogModel,
+  CatalogPriceTier,
+  ReasoningControls,
+  RequestCapabilities,
+} from './catalog/catalog-model.js';
+export {
+  acceptedTiers,
+  canDisableReasoning,
+  openAiWireValue,
+  reasoningControlShape,
+  reasoningWithheldByCap,
+  wireValueFor,
+  CANONICAL_ON_TIER,
+} from './reasoning-wire.js';
+// The output cap (ADR-0071 §7) — an authored `max_tokens` held at or below the model's real ceiling. Exported
+// because the PRE-EGRESS ESTIMATE must be computed from the same number the wire will carry: a governor that
+// pre-authorizes spend on tokens the model is physically incapable of producing kills runs over phantom money.
+export { cappedMaxTokens } from './output-cap.js';
+export type { EndpointKind } from './output-cap.js';

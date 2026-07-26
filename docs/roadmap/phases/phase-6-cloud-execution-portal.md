@@ -2,7 +2,7 @@
 
 > Status: Not started — **PRODUCT PHASE 2**, the **second** Phase-2 deliverable (after [phase-5-managed-inference.md](phase-5-managed-inference.md)). Hard-gated on all of Product Phase 1 (Phases 0–4) being shipped and battle-tested by real users.
 
-- **Related**: [phase-5-managed-inference.md](phase-5-managed-inference.md) (prior phase, the first Phase-2 deliverable), [phase-4-vscode.md](phase-4-vscode.md) (closes Product Phase 1), [../README.md](../README.md), [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md), [../../architecture/managed-inference.md](../../architecture/managed-inference.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../reference/portal/api-reference.md](../../reference/portal/api-reference.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/desktop/database-schema.md](../../reference/desktop/database-schema.md), [../../decisions/0008-local-first-phase-1-cloud-phase-2.md](../../decisions/0008-local-first-phase-1-cloud-phase-2.md), [../../decisions/0012-managed-inference-dual-mode.md](../../decisions/0012-managed-inference-dual-mode.md), [../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md](../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md)
+- **Related**: [phase-5-managed-inference.md](phase-5-managed-inference.md) (prior phase, the first Phase-2 deliverable), [phase-4-vscode.md](phase-4-vscode.md) (closes Product Phase 1), [../README.md](../README.md), [../../architecture/cloud-phase-2.md](../../architecture/cloud-phase-2.md), [../../architecture/managed-inference.md](../../architecture/managed-inference.md), [../../architecture/local-first-and-security.md](../../architecture/local-first-and-security.md), [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md), [../../reference/portal/api-reference.md](../../reference/portal/api-reference.md), [../../reference/contracts/sse-event-schema.md](../../reference/contracts/sse-event-schema.md), [../../reference/shared-core/database-schema.md](../../reference/shared-core/database-schema.md), [../../decisions/0008-local-first-phase-1-cloud-phase-2.md](../../decisions/0008-local-first-phase-1-cloud-phase-2.md), [../../decisions/0012-managed-inference-dual-mode.md](../../decisions/0012-managed-inference-dual-mode.md), [../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md](../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md)
 
 > **Everything in this phase is Product Phase 2.** It must never be mistaken for
 > shipped Phase 1 behavior. The cloud layer is added *alongside* — not replacing —
@@ -158,14 +158,14 @@ forking the local SQLite model ([ADR-0005](../../decisions/0005-sqlite-drizzle-l
 
 **Tasks:**
 - Target the existing `runs` / `run_events` / `run_costs` schema (canonical DDL in
-  [database-schema.md](../../reference/desktop/database-schema.md)) at Postgres,
+  [database-schema.md](../../reference/shared-core/database-schema.md)) at Postgres,
   handling the documented SQLite-vs-Postgres dialect differences in `packages/db`.
 - Add the cloud-only tables: `orgs`, `users`, `memberships`, `api_tokens`,
   `quotas`/`budgets`, `audit_events`, and `triggers` (webhook/schedule registry).
 - Add `org_id` to every multi-tenant row and enforce **Postgres Row-Level Security**
   so tenancy isolation lives at the data layer, not in app code alone.
 - Bring the `media_objects` / `media_references` tables (canonical DDL in
-  [database-schema.md](../../reference/desktop/database-schema.md), [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md))
+  [database-schema.md](../../reference/shared-core/database-schema.md), [ADR-0042](../../decisions/0042-engine-media-storage-substrate-mediastore-deinline-retention.md))
   under tenancy: add `org_id`, enforce RLS on both, and scope the object-storage
   retention sweep per `org_id`. Decide the **cross-org CAS dedup** boundary — content-addressed
   bytes may be physically shared, but a `media_reference` (and any count/byte usage signal) is
@@ -436,7 +436,7 @@ achieved by `6.J + 6.G + 6.K`.
   with `sequenceNumber` gap-detection — the same contract both transports emit.
 - The **one Drizzle schema** and the SQLite↔Postgres dual-DB strategy
   ([ADR-0005](../../decisions/0005-sqlite-drizzle-local-postgres-cloud.md),
-  [database-schema.md](../../reference/desktop/database-schema.md)).
+  [database-schema.md](../../reference/shared-core/database-schema.md)).
 - The **portal/control-plane API surface** and tier model
   ([api-reference.md](../../reference/portal/api-reference.md)).
 - The cross-cutting **secret-handling rules**

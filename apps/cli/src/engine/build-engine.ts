@@ -5,15 +5,17 @@ import {
   createStandardNodeExecutor,
   createToolRegistry,
   type AgentRunnerDeps,
+  type EffortGateResult,
   type ExecutionHost,
   type FsScopeTier,
   type McpCapability,
   type ToolDef,
   type ToolHost,
 } from '@relavium/core';
-import { modelSupportsReasoning, type PricingOverlay } from '@relavium/llm';
+import { effortTiersFor, type PricingOverlay } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
+import { effortWithheldNote, reasoningWithheldByCapFor } from '../chat/effort-notice.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv } from './tool-host/assemble.js';
@@ -55,10 +57,23 @@ export interface BuildEngineOptions {
    * projects from the `model_catalog` `source='user'` rows. Threaded into BOTH the workflow PRE-EGRESS governor
    * (so a user-priced model is enforced by `budget.max_cost_microcents`) AND the agent node's realized
    * `AgentRunnerDeps.resolvePrice` (so the same model's realized cost is tracked, not thrown as `UnknownModel`).
-   * Static `MODEL_PRICING` still wins for a known id. Absent ⇒ an unknown model degrades cost governance to
-   * `allow` loudly, unchanged.
+   * The USER outranks the catalog (ADR-0071 §1). Absent ⇒ an unknown model degrades cost governance
+   * to `allow` loudly, unchanged.
    */
   readonly resolvePrice?: PricingOverlay;
+  /**
+   * Sink for a WITHHELD reasoning tier (ADR-0071 §6) — an agent authored `reasoning_effort: <tier>` that the bound
+   * model does not accept, so the field is not sent. The gate replaced a loud provider 400 with a quiet no-op, and
+   * on an authored workflow that no-op is the dangerous one: the run succeeds, the knob does nothing, and the bill
+   * lands at the provider's default tier. `run.ts` wires this to stderr — never stdout, which `--json` owns.
+   * Absent ⇒ silent (the tier is still withheld).
+   */
+  readonly onEffortWithheld?: (note: string) => void;
+  /**
+   * Sink for an UNPRICED model turn (ADR-0071 §K7) — the cost cap could not apply. `run.ts` wires it to stderr,
+   * never stdout (`--json`). The governor already dedups per model. Absent ⇒ silent.
+   */
+  readonly onUnpriced?: (model: string, capMicrocents: number) => void;
 }
 
 /**
@@ -108,9 +123,22 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
   const agent: AgentRunnerDeps = {
     resolveProvider: providers.resolveProvider,
     keyFor: providers.keyFor,
-    // ADR-0066: the per-model reasoning capability (static registry projection) — gates whether an authored agent's
-    // reasoning_effort tier is sent to a workflow turn (withheld for a non-reasoning / custom model).
-    resolveReasoning: modelSupportsReasoning,
+    // ADR-0071 §6: the host projects WHICH TIERS the model accepts, not merely whether it reasons. `gpt-5.4-pro`
+    // reasons and rejects `low`; the boolean this replaced said `true` and let that straight through to a 400.
+    // The seam's `effortTiersFor` IS the projection — passed by reference, so the workflow path and the chat path
+    // gate on one function rather than on two copies of it that happen to agree today.
+    resolveEffortTiers: effortTiersFor,
+    // A budget-shaped model can accept a tier yet still have the adapter drop thinking when the node's `max_tokens`
+    // leaves no room for its budget floor (review M6). The catalog-backed check surfaces that as a `capped` verdict.
+    withheldByCap: reasoningWithheldByCapFor,
+    // …and when it withholds, the author hears about it. See {@link BuildEngineOptions.onEffortWithheld}.
+    ...(options.onEffortWithheld === undefined
+      ? {}
+      : {
+          onEffortWithheld: (result: EffortGateResult, model: string) => {
+            options.onEffortWithheld?.(effortWithheldNote(result, model));
+          },
+        }),
     registry,
     tools,
     sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
@@ -136,11 +164,22 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     ...(options.resolvePrice === undefined ? {} : { resolvePrice: options.resolvePrice }),
   };
 
+  const endpointKind = providers.endpointKind;
   return new WorkflowEngine({
     host,
     executor: createStandardNodeExecutor({ sandbox, agent, humanGate: {} }),
     // The same overlay for the workflow PRE-EGRESS budget governor (2.5.G S10) — so `budget.max_cost_microcents`
     // is enforced on a user-priced model, closing the ADR-0064 §6 cost-cap gap for the run path.
     ...(options.resolvePrice === undefined ? {} : { resolvePrice: options.resolvePrice }),
+    // ADR-0071 §7: the adapter clamps an authored `max_tokens` to the model's ceiling on an OFFICIAL endpoint and
+    // not on a custom one. The pre-egress estimate must make the same call, or it prices a request we never send —
+    // assume official on a gateway and it under-authorizes, waving through the call the governor exists to stop.
+    // Keyed on the ROUTING provider the governor threads per attempt, not the model's catalog provider — a custom
+    // gateway serving another provider's model id would otherwise be mis-read as official and under-clamped (M2).
+    ...(endpointKind === undefined ? {} : { resolveEndpoint: endpointKind }),
+    // ADR-0071 §K7: a workflow turn ran on a model we could not price, so `budget.max_cost_microcents` did not
+    // apply to it. `run.ts` routes this to stderr (never stdout — `--json`); `budget.strict_cost_cap` is the
+    // block-instead option for a run that must not proceed unpriced.
+    ...(options.onUnpriced === undefined ? {} : { onUnpriced: options.onUnpriced }),
   });
 }

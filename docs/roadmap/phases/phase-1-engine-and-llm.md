@@ -65,7 +65,7 @@ checkpoint/resume, retry, and provider failover all demonstrated.
   happens in our adapter code.
 - A **`FallbackChain` runner outside the adapters** (policy, not adapter logic)
   and a `CostTracker` recording usage as integer **micro-cents** consistent with
-  [database-schema.md](../../reference/desktop/database-schema.md).
+  [database-schema.md](../../reference/shared-core/database-schema.md).
 - A capability-gated common-path surface (text + tools + streaming + usage, plus the
   canonical reasoning and media shapes — ADR-0030/0031) and a typed `providerOptions`
   escape hatch for provider-specific features with no cross-provider shape (prompt-cache
@@ -194,7 +194,7 @@ from a provider field.
   **`packages/llm/src/pricing.ts`** — the in-code source the adapters (1.C/1.G/1.H) and this tracker
   share — keyed on canonical model id (input/output per-token, plus cache-read **and cache-write**
   where the provider exposes it), verified against each provider's pricing page and **seeded into** the
-  `model_catalog` table ([database-schema.md](../../reference/desktop/database-schema.md)) for UI display.
+  `model_catalog` table ([database-schema.md](../../reference/shared-core/database-schema.md)) for UI display.
   (`model_catalog` ships empty; `pricing.ts` is the source of truth.)
 - Implement `CostTracker.cost(modelId, usage) -> costMicrocents` and the accumulator that
   produces `{ inputTokens, outputTokens, costMicrocents, cumulativeCostMicrocents }` for the
@@ -681,7 +681,7 @@ Persist state at every node boundary and reconstruct a run from it.
 **Tasks:**
 - Define the `Checkpointer` interface — `load(runId) → CheckpointState` — with an in-memory
   reference implementation for tests; real persistence (the `step_executions` + `run_events` rows it
-  reads, per [database-schema.md](../../reference/desktop/database-schema.md) and
+  reads, per [database-schema.md](../../reference/shared-core/database-schema.md) and
   [execution-model.md](../../architecture/execution-model.md#5-checkpoint-each-node-boundary)) is wired
   in Phase 2 (CLI). There is **no separate checkpoint table/blob**.
 - After every node completes, persist its `step_executions` row + the ordered `run_events`; the
@@ -705,7 +705,7 @@ Persist state at every node boundary and reconstruct a run from it.
   note for the Phase-2 persistence wiring: bound `run_events` row width — an
   over-threshold node output is stored once out-of-row and referenced, keeping event-log
   replay cheap (canonical DDL change goes to
-  [database-schema.md](../../reference/desktop/database-schema.md) when wired).
+  [database-schema.md](../../reference/shared-core/database-schema.md) when wired).
 
 **Acceptance:** a run interrupted after node 2 resumes from the checkpoint and
 completes nodes 3..N without re-running 1..2; re-applying a checkpointed node is
@@ -830,7 +830,7 @@ These build the `AgentSession` entry point ([ADR-0024](../../decisions/0024-agen
 - **1.W — `session:*` event namespace — ✅ Done (PR #28, 2026-06-17).** Emit session lifecycle events on the shared `RunEventBus` with the same `sequenceNumber` gap/resync logic ([sse-event-schema.md](../../reference/contracts/sse-event-schema.md)). *Acceptance:* session events are disjoint from `run:*` and gap-detected identically.
   - *Also owns (from the 1.V injected-sink split, recorded 2026-06-15):* the `SessionEventSink → RunEventBus` adapter; a **`SessionHandle`** (the async-iterable session stream + `cancel`, mirroring `createRunHandle`); and **reconciling the bus session-event gate** — `RunEventBus` validated against `RunEventSchema` and its `RunEventDraft` type both **excluded** the five `session:*` variants (they live only in the separate `SessionEventSchema`), so the bus needed a combined Run+Session gate before it could carry the session lifecycle events 1.V emits.
   - *Landed mechanism (PR #28):* the combined **`RunOrSessionEventSchema`** gate (`@relavium/shared`); `next`/`emit` **overloads** (run draft → `RunEvent`, session draft → `SessionEvent`, either → `RunOrSessionEvent`) keep the engine **run-precise** rather than widening `RunEventDraft`; `createSessionEventSink` attaches the `sessionId` — defensively dropping the run-only `agent:file_patch_proposed` at the seam — and the bus stamps the per-session `sequenceNumber`; `createSessionHandle` mirrors `createRunHandle` (terminal **only** on `session:cancelled`) over the shared `BoundedEventStream` (extracted from `RunHandle`, with an `onClose` hook that unsubscribes on early consumer abandon); `correlationKey` enforces the runId-XOR-sessionId invariant, and the bus/stream "can never happen" asserts are the typed `RunLoopInvariantError`. See [sse-event-schema.md](../../reference/contracts/sse-event-schema.md) §"The session stream".
-- **1.X — Session persistence — ✅ Done (PR #29, 2026-06-17).** `agent_sessions` + `session_messages` via `@relavium/db` into `history.db` ([database-schema.md](../../reference/desktop/database-schema.md)). **Authors the durable `SessionMessageSchema`** in `@relavium/shared` (deferred from 1.V, which runs on the in-flight `LlmMessage` form): `{ id, sessionId, sequenceNumber, role, content: DurableContentPart[], modelId?, timestamp }` — the persisted transcript type these tables store. *Acceptance:* a session round-trips to the DB and resumes. **Note:** adding these two tables requires a regenerated Drizzle migration snapshot (the schema-migration drift CI gate). **ADR-0030 ephemerality:** a `reasoning` part's `signature`/`redacted` continuity token must **not** be persisted to `session_messages` — strip it (keep reasoning *text* if a transcript needs it, drop the opaque signature). *Acceptance also asserts:* a round-tripped session row carries no reasoning `signature`.
+- **1.X — Session persistence — ✅ Done (PR #29, 2026-06-17).** `agent_sessions` + `session_messages` via `@relavium/db` into `history.db` ([database-schema.md](../../reference/shared-core/database-schema.md)). **Authors the durable `SessionMessageSchema`** in `@relavium/shared` (deferred from 1.V, which runs on the in-flight `LlmMessage` form): `{ id, sessionId, sequenceNumber, role, content: DurableContentPart[], modelId?, timestamp }` — the persisted transcript type these tables store. *Acceptance:* a session round-trips to the DB and resumes. **Note:** adding these two tables requires a regenerated Drizzle migration snapshot (the schema-migration drift CI gate). **ADR-0030 ephemerality:** a `reasoning` part's `signature`/`redacted` continuity token must **not** be persisted to `session_messages` — strip it (keep reasoning *text* if a transcript needs it, drop the opaque signature). *Acceptance also asserts:* a round-tripped session row carries no reasoning `signature`.
   - *Landed mechanism (PR #29):* **data-layer only** (no engine change — `packages/core` never imports `@relavium/db`; the per-turn `AgentSession`→store wiring + cross-restart resume are 1.Y/1.AA). `@relavium/shared` gained `session.ts` (`SessionMessageSchema` / `AgentSessionSchema` (inferred `AgentSessionRecord`, to avoid clashing with the `AgentSession` engine class) / `SessionStatusSchema`), reusing the shared `DurableContentPart` so a reasoning `signature` + inline media are **structurally impossible** to persist; `modelId` is a `model_catalog` id reference (host-resolved). `@relavium/db` added the two tables (migration `0001_pale_scorpion.sql` + snapshot + journal; the drift gate re-generates clean; a 0001 fidelity snapshot test pins the DDL), the `SessionStore`, and the pure domain↔row mappers — the **single validation boundary** (parse on write AND read); `content_parts` is the canonical body (the scalar columns are optional denormalized metadata), and `updateSession` freezes `created_at`. Verified by a multi-dimensional adversarial review (8 dimensions); all confirmed findings folded in.
 - **1.Y — Session checkpoint/resume.** ✅ — **Done (PR #30, 2026-06-17).** Reuse the idempotency-key logic so a session resumes after a restart.
   - *Landed (PR #30):* `reconstructSessionState` (reload-not-replay per [ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md) — sessions are directly stored, not event-sourced) projects the persisted transcript to the **text-only** in-flight `LlmMessage[]` and **rolls back an incomplete trailing turn** (the `sessionId+sequenceNumber` analog of re-running the run-side incomplete node); `AgentSession.resume` is a static factory that preloads the transcript + re-seeds `turnCount`/cost (syncing a host-wired budget governor so the first resumed turn's pre-egress check sees the carried spend) and lands at `idle` **without** re-emitting `session:started`. Core-only (the host loads via the `@relavium/db` `SessionStore`). Verified by an 8-dimension adversarial review; all findings folded.
@@ -1287,7 +1287,7 @@ flowchart LR
   [node-types catalog](../../reference/shared-core/node-types.md), the
   [built-in tools catalog](../../reference/shared-core/built-in-tools.md), the
   workflow/agent YAML specs, and the `model_catalog` table in
-  [database-schema.md](../../reference/desktop/database-schema.md) — the display projection seeded
+  [database-schema.md](../../reference/shared-core/database-schema.md) — the display projection seeded
   from the canonical `packages/llm/src/pricing.ts` (the source of truth for model ids, context
   windows, and pricing) — plus the
   [agent-session contract](../../reference/contracts/agent-session-spec.md) and the `[chat]` defaults in

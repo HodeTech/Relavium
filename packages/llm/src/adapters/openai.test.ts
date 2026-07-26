@@ -1,8 +1,10 @@
 import { APIConnectionError, APIConnectionTimeoutError, APIError, APIUserAbortError } from 'openai';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AbortSignalLike, ReasoningEffort } from '@relavium/shared';
 
+import { clearCatalogRefresh, installCatalogRefresh } from '../catalog/lookup.js';
+import { catalogModelFixture as catModel } from '../conformance/fixtures/catalog.js';
 import { InvalidBaseUrlError, UnsupportedCapabilityError } from '../errors.js';
 import { LlmProviderError } from '../llm-error.js';
 import {
@@ -17,6 +19,7 @@ import {
 } from '../types.js';
 import { encodeMediaJobId } from './shared.js';
 import {
+  clearLearnedParamRejections,
   createOpenAiAdapter,
   deepseekAdapter,
   mapContent,
@@ -26,6 +29,10 @@ import {
   openaiErrorToLlmError,
   outputAudioMime,
 } from './openai.js';
+
+// The learned param-rejections are module state on the OpenAI adapter — reset after EVERY test so a rejection
+// one test teaches (e.g. via `createOpenAiAdapter`) never leaks into another that reuses the same (endpoint, model).
+afterEach(clearLearnedParamRejections);
 
 /** Call the adapter's optional `generateMedia` via `?.()` — a call (binds `this`), never an extraction, so the
  *  unbound-method lint stays happy; the `??` branch asserts the method is implemented. */
@@ -88,6 +95,302 @@ const okResponse = (): Response =>
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
+
+describe('per-model request-capability gating (ADR-0071 amendment)', () => {
+  afterEach(clearCatalogRefresh);
+  const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+  const capture = (): { oai: LlmProvider; sent: () => Record<string, unknown> } => {
+    let sent: Record<string, unknown> = {};
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    return { oai, sent: () => sent };
+  };
+
+  it('WITHHOLDS temperature for a model that rejects it — the 400 becomes a dropped field', async () => {
+    installCatalogRefresh({
+      'cap-openai': catModel({
+        modelId: 'cap-openai',
+        requestCapabilities: { temperature: false },
+      }),
+    });
+    const { oai, sent } = capture();
+    await oai.generate({ model: 'cap-openai', messages, temperature: 0.7 }, 'k');
+    expect(sent()).not.toHaveProperty('temperature');
+  });
+
+  it('SENDS temperature for a model with no capability data (absent ⇒ accepted, unchanged behaviour)', async () => {
+    installCatalogRefresh({ 'cap-ok': catModel({ modelId: 'cap-ok' }) });
+    const { oai, sent } = capture();
+    await oai.generate({ model: 'cap-ok', messages, temperature: 0.7 }, 'k');
+    expect(sent()['temperature']).toBe(0.7);
+  });
+
+  it('WITHHOLDS response_format for a model that rejects structured_output', async () => {
+    installCatalogRefresh({
+      'cap-so': catModel({ modelId: 'cap-so', requestCapabilities: { structuredOutput: false } }),
+    });
+    const { oai, sent } = capture();
+    await oai.generate(
+      { model: 'cap-so', messages, responseFormat: { type: 'json', schema: { type: 'object' } } },
+      'k',
+    );
+    expect(sent()).not.toHaveProperty('response_format');
+  });
+});
+
+/** An OpenAI-shaped 400 that blames a specific request parameter (what the SDK parses into `APIError.param`). */
+const badParamResponse = (param: string): Response =>
+  new Response(
+    JSON.stringify({
+      error: {
+        message: `Unsupported value for '${param}'`,
+        type: 'invalid_request_error',
+        param,
+        code: 'unsupported_value',
+      },
+    }),
+    { status: 400, headers: { 'content-type': 'application/json' } },
+  );
+
+describe('param-rejection self-healing — a wrong models.dev tier the live API rejects (never a hard validation error)', () => {
+  afterEach(clearCatalogRefresh);
+  const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'selam' }] }];
+
+  it('STRIPS reasoning_effort and retries on a 400 naming it, then LEARNS it so later turns skip it up front', async () => {
+    // The catalog CLAIMS `luna` accepts `high` (models.dev), but the live API 400s on it — the exact gpt-5.6-luna case.
+    installCatalogRefresh({
+      luna: catModel({ modelId: 'luna', reasoning: { effortValues: ['low', 'high'] } }),
+    });
+    const bodies: Record<string, unknown>[] = [];
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        const body = parseJsonBody(init);
+        bodies.push(body);
+        // A request carrying reasoning_effort 400s; the stripped retry (and every learned later turn) succeeds.
+        return Promise.resolve(
+          body['reasoning_effort'] === undefined
+            ? okResponse()
+            : badParamResponse('reasoning_effort'),
+        );
+      },
+    });
+    // Turn 1: sent with reasoning_effort → 400 → stripped retry → SUCCESS (no thrown validation error).
+    const r1 = await oai.generate({ model: 'luna', messages, reasoningEffort: 'high' }, 'k');
+    expect(r1.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]?.['reasoning_effort']).toBe('high'); // first attempt carried it
+    expect(bodies[1]).not.toHaveProperty('reasoning_effort'); // the retry dropped it
+
+    // Turn 2 on the SAME model: reasoning_effort is withheld UP FRONT (learned) — one call, no 400, no retry.
+    await oai.generate({ model: 'luna', messages, reasoningEffort: 'high' }, 'k');
+    expect(bodies).toHaveLength(3); // exactly one more fetch, not two
+    expect(bodies[2]).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('a 400 blaming a NON-droppable param (e.g. model) is NOT retried — it surfaces as a real error', async () => {
+    installCatalogRefresh({ plain: catModel({ modelId: 'plain' }) });
+    let calls = 0;
+    const oai = createOpenAiAdapter({
+      fetch: () => {
+        calls += 1;
+        return Promise.resolve(badParamResponse('model')); // 'model' is never auto-stripped
+      },
+    });
+    await expect(oai.generate({ model: 'plain', messages }, 'k')).rejects.toBeInstanceOf(
+      LlmProviderError,
+    );
+    expect(calls).toBe(1); // no retry — a non-droppable rejection stays a loud, honest failure
+  });
+
+  it('the STREAMING path self-heals too — a reasoning_effort 400 at create retries stripped and yields content', async () => {
+    installCatalogRefresh({
+      'luna-s': catModel({ modelId: 'luna-s', reasoning: { effortValues: ['high'] } }),
+    });
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) =>
+        Promise.resolve(
+          parseJsonBody(init)['reasoning_effort'] === undefined
+            ? sse([dchunk({ content: 'ok' }, 'stop')])
+            : badParamResponse('reasoning_effort'),
+        ),
+    });
+    const chunks = await collect(
+      oai.stream({ model: 'luna-s', messages, reasoningEffort: 'high' }, 'k'),
+    );
+    // Self-healed: the create 400 was stripped-and-retried, so the stream yields content, NOT an error chunk.
+    expect(chunks.some((c) => c.type === 'error')).toBe(false);
+    expect(chunks.some((c) => c.type === 'stop')).toBe(true);
+  });
+
+  it('STRIPS temperature on a 400 naming it (another droppable tuning param)', async () => {
+    installCatalogRefresh({ 'temp-luna': catModel({ modelId: 'temp-luna' }) }); // no cap data ⇒ temperature is sent
+    const bodies: Record<string, unknown>[] = [];
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        const body = parseJsonBody(init);
+        bodies.push(body);
+        return Promise.resolve(
+          body['temperature'] === undefined ? okResponse() : badParamResponse('temperature'),
+        );
+      },
+    });
+    await oai.generate({ model: 'temp-luna', messages, temperature: 0.7 }, 'k');
+    expect(bodies[0]?.['temperature']).toBe(0.7);
+    expect(bodies[1]).not.toHaveProperty('temperature'); // stripped on the retry
+  });
+
+  it('falls back to the MESSAGE SCAN when a 400 carries no structured `param` (a custom gateway)', async () => {
+    installCatalogRefresh({
+      'luna-msg': catModel({ modelId: 'luna-msg', reasoning: { effortValues: ['high'] } }),
+    });
+    const bodies: Record<string, unknown>[] = [];
+    const noParamBad = (): Response =>
+      new Response(
+        JSON.stringify({
+          error: {
+            message: "this endpoint does not support 'reasoning_effort'",
+            type: 'invalid_request_error',
+          },
+        }),
+        { status: 400, headers: { 'content-type': 'application/json' } },
+      );
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        const body = parseJsonBody(init);
+        bodies.push(body);
+        return Promise.resolve(
+          body['reasoning_effort'] === undefined ? okResponse() : noParamBad(),
+        );
+      },
+    });
+    await oai.generate({ model: 'luna-msg', messages, reasoningEffort: 'high' }, 'k');
+    expect(bodies[1]).not.toHaveProperty('reasoning_effort'); // healed via the message-name scan
+  });
+
+  it('a persistent 400 on the same param is BOUNDED — the learned-guard throws, never an infinite loop', async () => {
+    installCatalogRefresh({
+      stubborn: catModel({ modelId: 'stubborn', reasoning: { effortValues: ['high'] } }),
+    });
+    let calls = 0;
+    const oai = createOpenAiAdapter({
+      fetch: () => {
+        calls += 1;
+        return Promise.resolve(badParamResponse('reasoning_effort')); // 400s even after the param is stripped/learned
+      },
+    });
+    await expect(
+      oai.generate({ model: 'stubborn', messages, reasoningEffort: 'high' }, 'k'),
+    ).rejects.toBeInstanceOf(LlmProviderError);
+    expect(calls).toBeLessThanOrEqual(3); // the per-invocation strip set + the size cap ⇒ terminates, no loop
+  });
+
+  it('two CONCURRENT turns both self-heal — the one that loses the learning race still retries, never throws', async () => {
+    // A REGRESSION found by review. The retry guard used to consult the MODULE-WIDE learned set, which is also
+    // written by the in-flight sibling: two turns fired together both send the param, both 400, the first learns
+    // it — and the second then reads "already learned" and THROWS the very validation error the self-heal exists
+    // to prevent. Bounding the loop is per-INVOCATION work; learning stays global.
+    installCatalogRefresh({
+      racer: catModel({ modelId: 'racer', reasoning: { effortValues: ['high'] } }),
+    });
+    const bodies: Record<string, unknown>[] = [];
+    const oai = createOpenAiAdapter({
+      fetch: (_i, init) => {
+        const body = parseJsonBody(init);
+        bodies.push(body);
+        return Promise.resolve(
+          body['reasoning_effort'] === undefined
+            ? okResponse()
+            : badParamResponse('reasoning_effort'),
+        );
+      },
+    });
+    const turn = (): Promise<unknown> =>
+      oai.generate({ model: 'racer', messages, reasoningEffort: 'high' }, 'k');
+
+    const [a, b] = await Promise.all([turn(), turn()]); // BOTH must resolve — neither is collateral damage
+    expect(a).toMatchObject({ content: [{ type: 'text', text: 'ok' }] });
+    expect(b).toMatchObject({ content: [{ type: 'text', text: 'ok' }] });
+
+    // …and the per-invocation bound did NOT cost us the global learning: a later turn skips the param up front.
+    // Without this, gutting `learnParamRejection` entirely would still pass the two assertions above.
+    const before = bodies.length;
+    await turn();
+    expect(bodies.length - before).toBe(1); // one call, no 400, no retry
+    expect(bodies.at(-1)).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('a rejection learned on ONE custom gateway does not mute the param on ANOTHER — the key carries the host', async () => {
+    // `EndpointKind` collapses every custom `base_url` to `'custom'`, so keying on it alone let one gateway's 400
+    // silently strip the param on an unrelated gateway serving the same model id. The scope carries the host.
+    installCatalogRefresh({
+      shared: catModel({ modelId: 'shared', reasoning: { effortValues: ['high'] } }),
+    });
+    let sentB: Record<string, unknown> = {};
+    const gatewayA = createOpenAiAdapter({
+      baseURL: 'https://a.example.com/v1',
+      fetch: (_i, init) =>
+        Promise.resolve(
+          parseJsonBody(init)['reasoning_effort'] === undefined
+            ? okResponse()
+            : badParamResponse('reasoning_effort'),
+        ),
+    });
+    const gatewayB = createOpenAiAdapter({
+      baseURL: 'https://b.example.com/v1',
+      fetch: (_i, init) => {
+        sentB = parseJsonBody(init);
+        return Promise.resolve(okResponse()); // B is perfectly happy with the param
+      },
+    });
+
+    await gatewayA.generate({ model: 'shared', messages, reasoningEffort: 'high' }, 'k');
+    await gatewayB.generate({ model: 'shared', messages, reasoningEffort: 'high' }, 'k');
+    expect(sentB['reasoning_effort']).toBe('high'); // A's 400 is A's business
+  });
+
+  it('a providerOptions override of a LEARNED-rejected param is dropped too — it could only re-trigger the 400', async () => {
+    // The escape hatch is spread BEFORE the mapped body, so withholding the mapped field was not enough: a caller
+    // override of the same key sailed straight through and re-armed the rejection the self-heal had just learned.
+    installCatalogRefresh({
+      picky: catModel({ modelId: 'picky', reasoning: { effortValues: ['high'] } }),
+    });
+    const bodies: Record<string, unknown>[] = [];
+    const oai = createOpenAiAdapter({
+      fetch: (_i, init) => {
+        const body = parseJsonBody(init);
+        bodies.push(body);
+        return Promise.resolve(
+          body['reasoning_effort'] === undefined
+            ? okResponse()
+            : badParamResponse('reasoning_effort'),
+        );
+      },
+    });
+    await oai.generate({ model: 'picky', messages, reasoningEffort: 'high' }, 'k'); // teaches the rejection
+
+    await oai.generate(
+      {
+        model: 'picky',
+        messages,
+        reasoningEffort: 'high',
+        providerOptions: { reasoning_effort: 'high' },
+      },
+      'k',
+    );
+    expect(bodies).toHaveLength(3); // one call, no 400, no retry
+    expect(bodies[2]).not.toHaveProperty('reasoning_effort');
+
+    // …and an override of a DROPPABLE param that was never rejected ON THIS MODEL still wins, so this is a filter
+    // and not a mute button. `temperature` is deliberate: a non-droppable key (`top_p`) would pass this assertion
+    // even if the `hasLearnedRejection` guard were deleted outright, pinning nothing.
+    await oai.generate({ model: 'picky', messages, providerOptions: { temperature: 0.9 } }, 'k');
+    expect(bodies[3]?.['temperature']).toBe(0.9);
+  });
+});
 
 /** Build an SSE Response from a list of chunk objects (shared across the streaming describes). */
 const sse = (chunks: readonly unknown[]): Response =>
@@ -231,7 +534,266 @@ describe('OpenAI-compatible adapter', () => {
     });
   });
 
-  it('maps the reasoning-effort tier per provider: OpenAI reasoning_effort (max→xhigh, off→none) + DeepSeek thinking (ADR-0066)', async () => {
+  it('an UNKNOWN model gets NO reasoning field — on the OpenAI arm AND the DeepSeek arm', async () => {
+    // Found by an adversarial review. Fixing Gemini and Anthropic left these two sending the field unconditionally:
+    // an unknown model (a custom `base_url`, or one so new we have no metadata) was handed `reasoning_effort` /
+    // `thinking` regardless. The host's gate already withholds — but `@relavium/llm` is a public SEAM, and it must
+    // not depend on a caller having run the gate. Guessing at a model we cannot describe is the whole bug class.
+    let sent: Record<string, unknown> = {};
+    const capture = (): Response => {
+      return okResponse();
+    };
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(capture());
+      },
+    });
+    const deepseek = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(capture());
+      },
+    });
+    const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+
+    for (const tier of ['off', 'low', 'high', 'max'] as const) {
+      await oai.generate(
+        { model: 'some-custom-endpoint-model', messages, reasoningEffort: tier },
+        'k',
+      );
+      expect('reasoning_effort' in sent, `openai ${tier}`).toBe(false);
+
+      await deepseek.generate(
+        { model: 'some-custom-endpoint-model', messages, reasoningEffort: tier },
+        'k',
+      );
+      expect('thinking' in sent, `deepseek ${tier}`).toBe(false);
+    }
+
+    // …and a model the catalog DOES know still gets it, so the guard is a filter and not a mute button.
+    await oai.generate({ model: 'gpt-5.5', messages, reasoningEffort: 'high' }, 'k');
+    expect(sent['reasoning_effort']).toBe('high');
+  });
+
+  it('THE DIALECT: official OpenAI gets `max_completion_tokens`; DeepSeek and a custom base_url keep `max_tokens`', async () => {
+    // ADR-0071 §10a. OpenAI's official Chat Completions deprecated `max_tokens`, and its REASONING models reject it
+    // outright — the second half of the maintainer's "max tokens errors". But this same adapter serves every custom
+    // OpenAI-compatible endpoint (LM Studio, Ollama, vLLM, LiteLLM, a gateway), most of which implement only the
+    // legacy field. Switching globally would trade one broken population for another, so the rule is by ENDPOINT.
+    let sent: Record<string, unknown> = {};
+    const capture = (init: RequestInit | undefined): Response => {
+      sent = parseJsonBody(init);
+      return okResponse();
+    };
+    const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+
+    const official = createOpenAiAdapter({
+      fetch: (_i, init) => Promise.resolve(capture(init)),
+    });
+    await official.generate({ model: 'gpt-5.5', messages, maxTokens: 100 }, 'k');
+    expect(sent['max_completion_tokens']).toBe(100);
+    expect('max_tokens' in sent).toBe(false); // the deprecated field must NOT ride alongside it
+
+    // DeepSeek's own API is OFFICIAL — it is our default base URL, not a caller's override — and it takes the
+    // legacy field. `official` is not a synonym for `openai`.
+    const deepseek = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: (_i, init) => Promise.resolve(capture(init)),
+    });
+    await deepseek.generate({ model: 'deepseek-chat', messages, maxTokens: 100 }, 'k');
+    expect(sent['max_tokens']).toBe(100);
+    expect('max_completion_tokens' in sent).toBe(false);
+
+    // A custom `base_url` under the `openai` provider id keeps the legacy field too — this is the D3 population
+    // that a global switch would have broken.
+    const custom = createOpenAiAdapter({
+      baseURL: 'https://gateway.example.com/v1',
+      fetch: (_i, init) => Promise.resolve(capture(init)),
+    });
+    await custom.generate({ model: 'gpt-5.5', messages, maxTokens: 100 }, 'k');
+    expect(sent['max_tokens']).toBe(100);
+    expect('max_completion_tokens' in sent).toBe(false);
+  });
+
+  it('CLAMPS an over-ceiling cap on an official endpoint — and leaves a custom endpoint alone', async () => {
+    let sent: Record<string, unknown> = {};
+    const capture = (init: RequestInit | undefined): Response => {
+      sent = parseJsonBody(init);
+      return okResponse();
+    };
+    const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+
+    // gpt-5.4-pro's ceiling is 128_000. An authored 200_000 is a 400 on every turn, not an ambitious request.
+    const official = createOpenAiAdapter({
+      fetch: (_i, init) => Promise.resolve(capture(init)),
+    });
+    await official.generate({ model: 'gpt-5.4-pro', messages, maxTokens: 200_000 }, 'k');
+    expect(sent['max_completion_tokens']).toBe(128_000);
+
+    // …but a custom endpoint may serve a different model under that id, with its own limits. We do not silently
+    // lower a number the user typed on a model we cannot describe.
+    const custom = createOpenAiAdapter({
+      baseURL: 'https://gateway.example.com/v1',
+      fetch: (_i, init) => Promise.resolve(capture(init)),
+    });
+    await custom.generate({ model: 'gpt-5.4-pro', messages, maxTokens: 200_000 }, 'k');
+    expect(sent['max_tokens']).toBe(200_000);
+  });
+
+  it('NEVER sends BOTH cap fields — a providerOptions `max_tokens` cannot ride alongside the mapped one', async () => {
+    // A REGRESSION the dialect rule introduced, caught by review. The escape-hatch merge is `{...providerOptions,
+    // ...body}`, and `body` winning was automatic only while the mapped key and the escape-hatch key were the SAME
+    // STRING. Renaming the mapped key on the official endpoint meant the old one no longer shadowed anything — so
+    // both went out, and OpenAI rejects a request carrying both. A 400 on exactly the population §10a rescues.
+    let sent: Record<string, unknown> = {};
+    const oai = createOpenAiAdapter({
+      fetch: (_i, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    await oai.generate(
+      {
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
+        maxTokens: 100,
+        providerOptions: { max_tokens: 999 }, // the stale key the caller might still be carrying
+      },
+      'k',
+    );
+    expect(sent['max_completion_tokens']).toBe(100); // the mapped cap wins outright…
+    expect('max_tokens' in sent).toBe(false); // …and the colliding key is GONE, not merely outranked
+  });
+
+  it('an escape-hatch cap with NO mapped cap still stands — the §10a override for an exotic gateway', async () => {
+    // The gateway that speaks OpenAI's protocol but wants the modern field has no config key to ask with. It asks
+    // through `providerOptions`, and that only works if we leave an un-mapped cap alone.
+    let sent: Record<string, unknown> = {};
+    const custom = createOpenAiAdapter({
+      baseURL: 'https://gateway.example.com/v1',
+      fetch: (_i, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    await custom.generate(
+      {
+        model: 'gpt-5.5',
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
+        providerOptions: { max_completion_tokens: 256 }, // no req.maxTokens — theirs is the only cap
+      },
+      'k',
+    );
+    expect(sent['max_completion_tokens']).toBe(256);
+    expect('max_tokens' in sent).toBe(false);
+  });
+
+  it("OpenAI's OWN url spelled out by hand is OFFICIAL — a trailing slash must not restore the bug", async () => {
+    // The CLI stores a `--base-url` VERBATIM, so `https://api.openai.com/v1/` and `https://api.openai.com/v1` are
+    // different strings. Classifying by "was a string passed" made the first one CUSTOM: deprecated field, no
+    // clamp — the original bug, restored on the official endpoint by a typo. We classify by HOST.
+    let sent: Record<string, unknown> = {};
+    for (const url of [
+      'https://api.openai.com/v1/', // a trailing slash
+      'https://api.openai.com/v1',
+      'https://api.openai.com', // no /v1 at all
+      'https://API.OpenAI.com/v1', // host case is not significant
+      'https://api.openai.com./v1', // a trailing-dot FQDN — DNS says this is the same host, and so do we
+    ]) {
+      const oai = createOpenAiAdapter({
+        baseURL: url,
+        fetch: (_i, init) => {
+          sent = parseJsonBody(init);
+          return Promise.resolve(okResponse());
+        },
+      });
+      await oai.generate(
+        {
+          model: 'gpt-5.4-pro',
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
+          maxTokens: 200_000,
+        },
+        'k',
+      );
+      expect(sent['max_completion_tokens'], url).toBe(128_000); // the modern field AND the clamp
+      expect('max_tokens' in sent, url).toBe(false);
+    }
+  });
+
+  it('a LOOKALIKE host is NOT official — the classification must never slide the other way', async () => {
+    // The dangerous direction. Misreading a gateway as official would send it the modern field AND clamp its cap
+    // against a catalog that does not describe what it serves.
+    let sent: Record<string, unknown> = {};
+    for (const url of [
+      'https://evil.api.openai.com.attacker.net/v1', // the official host as a SUBDOMAIN of someone else's
+      'https://api.openai.com.evil.com/v1', // …and as a prefix
+      'https://api-openai.com/v1', // a hyphen away
+    ]) {
+      const impostor = createOpenAiAdapter({
+        baseURL: url,
+        fetch: (_i, init) => {
+          sent = parseJsonBody(init);
+          return Promise.resolve(okResponse());
+        },
+      });
+      await impostor.generate(
+        {
+          model: 'gpt-5.4-pro',
+          messages: [{ role: 'user', content: [{ type: 'text', text: 'go' }] }],
+          maxTokens: 200_000,
+        },
+        'k',
+      );
+      expect(sent['max_tokens'], url).toBe(200_000); // legacy field, NOT clamped — it is not OpenAI
+      expect('max_completion_tokens' in sent, url).toBe(false);
+    }
+  });
+
+  it('an EMPTY descriptor gets NO reasoning field either — `deepseek-reasoner` reasons, but publishes no knob', async () => {
+    // The second adversarial review found this: the DeepSeek arm gated on `catalogModel(m)?.reasoning !== undefined`
+    // and then sent `thinking` UNCONDITIONALLY. `deepseek-reasoner`'s descriptor is `{}` — not `undefined` — so the
+    // gate opened, and every tier (including `off` → `thinking: {type:'disabled'}`) went on the wire for a model
+    // whose controllable tiers upstream declined to describe. `acceptedTiers` returns the empty set for `{}`, which
+    // is exactly what the picker already showed the user; the wire now agrees with it.
+    let sent: Record<string, unknown> = {};
+    const deepseek = createOpenAiAdapter({
+      providerId: 'deepseek',
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+
+    for (const tier of ['off', 'low', 'medium', 'high', 'max'] as const) {
+      await deepseek.generate({ model: 'deepseek-reasoner', messages, reasoningEffort: tier }, 'k');
+      expect('thinking' in sent, `deepseek-reasoner ${tier}`).toBe(false);
+    }
+  });
+
+  it('a tier OUTSIDE the published ladder is withheld — `gpt-5.4-pro` rejects both `low` and `off`', async () => {
+    // MEMBERSHIP, not presence. The arm used to test that an effort axis existed and then send its own tier name.
+    let sent: Record<string, unknown> = {};
+    const oai = createOpenAiAdapter({
+      fetch: (_input, init) => {
+        sent = parseJsonBody(init);
+        return Promise.resolve(okResponse());
+      },
+    });
+    const messages = [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'go' }] }];
+
+    for (const tier of ['low', 'off'] as const) {
+      await oai.generate({ model: 'gpt-5.4-pro', messages, reasoningEffort: tier }, 'k');
+      expect('reasoning_effort' in sent, `gpt-5.4-pro ${tier}`).toBe(false);
+    }
+    // …but a tier it DOES publish rides.
+    await oai.generate({ model: 'gpt-5.4-pro', messages, reasoningEffort: 'high' }, 'k');
+    expect(sent['reasoning_effort']).toBe('high');
+  });
+
+  it('maps the reasoning-effort tier per provider: OpenAI reasoning_effort (max→the model’s top, off→none) + DeepSeek thinking (ADR-0066)', async () => {
     let sent: Record<string, unknown> = {};
     const oai = createOpenAiAdapter({
       fetch: (_input, init) => {
@@ -256,6 +818,14 @@ describe('OpenAI-compatible adapter', () => {
     expect(sent['reasoning_effort']).toBe('none');
     await oai.generate({ ...base }, 'k'); // unset ⇒ omitted (provider default, unchanged behavior)
     expect('reasoning_effort' in sent).toBe(false);
+
+    // A model that publishes a DISTINCT `'max'` above `'xhigh'` (the gpt-5.6 family) reaches it: `max` must send
+    // the model's OWN top, not stop one rung short at `'xhigh'` (review M1). gpt-5.5 above tops at `'xhigh'` and
+    // still coarsens `max → 'xhigh'`, so the two together pin the per-model branch.
+    await oai.generate({ model: 'gpt-5.6', messages: base.messages, reasoningEffort: 'max' }, 'k');
+    expect(sent['reasoning_effort']).toBe('max');
+    await oai.generate({ model: 'gpt-5.6', messages: base.messages, reasoningEffort: 'high' }, 'k');
+    expect(sent['reasoning_effort']).toBe('high'); // the intermediate tiers are unchanged
 
     // DeepSeek (the other id this shared adapter serves) controls thinking via a `thinking` OBJECT, not the OpenAI
     // `reasoning_effort` key (ADR-0066): off→disabled; DeepSeek has only two graded levels, so low/medium/high→high
@@ -1015,7 +1585,9 @@ describe('OpenAI-compatible adapter — request building + secret safety', () =>
     });
     await adapter.generate(
       {
-        model: 'gpt-5.5',
+        // gpt-4o ACCEPTS temperature (its catalog requestCapabilities does not forbid it) — the per-model
+        // capability gate (ADR-0071 §12) would rightly withhold it on a `temperature: false` model like gpt-5.5.
+        model: 'gpt-4o',
         temperature: 0.5,
         stopSequences: ['STOP'],
         providerOptions: { seed: 42, model: 'attacker-override' },
@@ -1026,7 +1598,7 @@ describe('OpenAI-compatible adapter — request building + secret safety', () =>
     expect(sent['temperature']).toBe(0.5);
     expect(sent['stop']).toEqual(['STOP']);
     expect(sent['seed']).toBe(42); // escape-hatch field reached the wire
-    expect(sent['model']).toBe('gpt-5.5'); // mapped field wins over providerOptions
+    expect(sent['model']).toBe('gpt-4o'); // mapped field wins over providerOptions
   });
 
   it('maps tool_choice {name} to a named function choice', async () => {
