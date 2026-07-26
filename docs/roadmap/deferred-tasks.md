@@ -6,7 +6,7 @@
 > **Scheduled → 2.6.X** marker pointing at their [phase-2.6](phases/phase-2.6-conversational-authoring.md)
 > workstream (they stay unchecked until the PR that lands them).
 
-- **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md)
+- **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md)
 
 A holding pen so confirmed-but-deferred findings don't get lost. Every item here was
 **adversarially confirmed** by a comprehensive review (the Phase-0 97-agent workflow, or a
@@ -1226,3 +1226,87 @@ future test cannot silently re-acquire it.
   (user) price without flagging that it OVERRIDES a different catalog price. Add a divergence marker to both so a
   stale/wrong override is visible on the surfaces a user actually reads, per §5's intent.
   *(low · apps/cli/src/render/tui/model-picker-view.tsx + the /cost breakdown; ADR-0071 §5; found by the 2.6.Q review)*
+
+## Full-project review (2026-07-19) — deliberately unscheduled findings
+
+> **2026-07-19 — full-project review.** A 377-finding multi-agent code review at HEAD `f88b0e8` was
+> adversarially verified down to 373 confirmed findings — one agent per finding tried to refute it against
+> the code, a second audited its materiality — with the toolchain green throughout (lint, typecheck, all 226
+> test files passing): every finding below is a defect a green build cannot catch. The bulk (205 work items)
+> now live in [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md).
+> Sixteen of the review's findings turned out to duplicate items already recorded in this file — each already
+> carries an accurate `Scheduled →` marker (2.6.B/2.6.H/2.6.I/2.6.K/2.6.M/2.6.Q) or an accurate "no owner yet"
+> note, and the review's own triage confirmed none needed a new entry or a marker change. The items below are
+> the ones the triage deliberately left **unscheduled**: small enough to pick up opportunistically, or
+> genuinely unowned by any phase or workstream.
+
+- [ ] **Annotate the `FallbackChain` cost-underreporting pinning tests as a KNOWN GAP, not a deliberate
+  contract.** `fallback-chain.test.ts`'s "records a content-free success with no usage when the stream omits
+  a stop chunk" (line 984) and its sibling (line 1000) assert `trace[0]?.usage`/`trace[0]?.cost` are
+  `toBeUndefined()` when a provider stream ends without a usage chunk — literally encoding the known
+  spend-under-reporting gap (the two failure paths named in [current.md](current.md)'s 2.6.C carry-overs,
+  filed against 2.6.Q/[ADR-0070](../decisions/0070-durable-per-model-session-cost-attribution.md) §3) as the CORRECT,
+  asserted behavior, with nothing in the suite signaling that the assertion itself is a product gap rather
+  than a design choice. Add a comment on both tests marking them as pinning a known gap (with a pointer to
+  the 2.6.Q fix) so a future engineer editing this file understands it is not a green test to preserve as-is.
+  Independently shippable now — the comment-only annotation does not need 2.6.Q's 7 open maintainer decisions
+  to land, unlike the underlying fix. *(low · packages/llm/src/fallback-chain.test.ts:984,1000; #292)*
+
+- [ ] **Outbound MCP ("workflow-as-MCP-server") has no owner.**
+  [mcp-integration.md](../reference/shared-core/mcp-integration.md) documents an
+  `import { createMcpAdapter } from '@relavium/core/mcp'` API as shipped, tagged "Status: Stable" — neither
+  `createMcpAdapter` nor a `/mcp` subpath exists anywhere in the repo (`packages/core/package.json` exports
+  only `.`; `packages/mcp` implements inbound tool-consumption only, no `listen()`/server capability).
+  [ADR-0034](../decisions/0034-mcp-client-sdk-dependency.md) and
+  [ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) both call outbound MCP
+  "a later workstream," but no phase or workstream ID actually claims it. The doc-honesty half (rewrite the
+  section as unimplemented/roadmap-only, strike the fabricated sample, drop it from "Stable") is scheduled →
+  2.5.5.F; the *implementation* — a real `createMcpAdapter` turning an agent/workflow into an MCP server,
+  firing the already-schema-accepted `mcp_call` trigger — needs **no** later-phase substrate
+  (`packages/mcp`, `packages/core`, and the trigger schema all exist today) and simply has no home.
+  *(medium · packages/mcp, packages/core, docs/reference/shared-core/mcp-integration.md; #141)*
+
+- [ ] **Agent memory policy (`memory: none|window|summary`) has no owner.**
+  [agent-yaml-spec.md](../reference/contracts/agent-yaml-spec.md) documents `memory.type`
+  (`none`/`window`/`summary`) as operational behavior, and `packages/shared/src/agent.ts`'s `MemorySchema`
+  validates it on `AgentSchema.memory`, so an authored `.agent.yaml` with
+  `memory: { type: window, window_size: 10 }` parses cleanly — but nothing in
+  `packages/core/src/engine` or `apps/cli/src` consumes the field anywhere; the unrelated
+  `[chat].max_messages` / ADR-0062 auto-compaction is a separate, session-level mechanism. A user configures
+  a windowing/summary policy and silently gets the full unbounded transcript every turn, with no warning. The
+  doc fix (mark the field reserved/inert, the `node-types.md` `loop`/`best_of_n` pattern) is scheduled →
+  2.5.5.F; wiring `agent.memory` into the turn core is unowned and needs **no** later-phase substrate.
+  *(medium · packages/core/src/engine, packages/shared/src/agent.ts,
+  docs/reference/contracts/agent-yaml-spec.md; #142)*
+
+### Declined findings (considered, not actioned)
+
+- [ ] **Sandbox `Math.random` fallback re-check narrowness — DECLINED, accepted residual.**
+  `packages/core/src/expression/sandbox.ts:219-225` re-checks `typeof Math.random === 'function'` after the
+  neutralizing `delete`, not the wider "is not undefined"; a hypothetical future QuickJS variant that left
+  `Math.random` as some non-function, non-undefined value after a failed delete would slip past this
+  narrower guard. **Declined:** `Object.freeze(Math)` two lines later is the real backstop regardless of
+  what value `Math.random` holds, the currently-pinned QuickJS variant is fully covered by
+  `sandbox.test.ts` (lines 112-116, 533-545), and the finding's own analysis concludes no action is needed
+  until the QuickJS variant changes. *(polish · packages/core/src/expression/sandbox.ts:219; #84)*
+
+- [ ] **Alt-screen `restore()`'s idempotent latch-after-success design — DECLINED, verified strength, not a
+  defect.** `apps/cli/src/render/alt-screen.ts:88-109` sets its idempotence latch only AFTER the
+  terminal-restore write succeeds, so a transient EIO/EPIPE on a half-dead TTY during one teardown net
+  (finally / `process.on('exit')` / a signal handler) leaves the terminal recoverable by the NEXT net rather
+  than being permanently marked "restored" after a failed write. **Declined:** the review confirmed this is
+  the correct pattern, not a bug — recorded here as the bar (`suspend.ts`'s `suspendFullScreen` already
+  matches it) the rest of the codebase should be held to, not as an item to fix.
+  *(polish · apps/cli/src/render/alt-screen.ts:88; #67)*
+
+- [ ] **Full-repo `knip` dead-export inventory — DECLINED, no further action beyond its two spin-offs.** A
+  full-repo `knip` pass surfaced 3 unused-file hits (2 false positives — ESLint fixture configs consumed via
+  ESLint's file-path API, not a TS import), 7 "unused dependency" hits in `apps/cli/package.json` (all false
+  positives — declared for ADR-0051's tsup bundle closure, not directly imported), 39 "unused" function/const
+  exports, and 112 "unused" exported types. Manual verification of all 39 function/const exports found every
+  one but `isDispatchableId` is used internally within its own declaring file (an unnecessary `export`, not
+  dead code); the 112 types are near-entirely `...Deps`/`...Options`/`...Args` DI interfaces exported for
+  documentation, a standard low-cost pattern here. **Declined:** the finding's own conclusion is no action
+  beyond the two genuine hits it already spun off (`isDispatchableId`, the `@relavium/llm/adapters` subpath
+  export) — already tracked under the quality dead-code cleanup work; the remaining ~150 hits are confirmed
+  false positives, not deferred work. *(polish · packages/db/src/media-write.ts; #245)*
