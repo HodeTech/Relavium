@@ -337,9 +337,9 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 |---|------|----------|----------------|
 | D1 | 0 | Mark the `ci` job a **required** check (open since Phase 0) | Yes — every CI item here is advisory until it flips |
 | D2 | 0 | Coverage floor: promote to required, or soften `testing.md`? | Promote, **and implement in the same PR** — a checked-in run already shows 92–97% margin |
-| D3 | 0 | Accept the upstream Gemini price rise the ADR-0071 §9 guard is refusing? | Accept and regenerate — a stale floor *under*-prices the cap, the dangerous direction |
+| D3 | 0 | Accept the upstream price changes the ADR-0071 §9 guard is refusing? | ✅ **Ruled 2026-07-26: take current prices.** Verified: `gemini-flash-latest` moved $0.30→$1.50 in / $2.50→$9.00 out — the shipped floor under-prices by 5×. **Blocked on D3b below** |
 | D4 | 0 | Confirm the number reservation (`0013`–`0017`, ADR-0073+) | As listed — one item per number, in landing order |
-| D5 | 0 | The binding locale bar: EXIT:6 says five, CLAUDE.md says `en`+`tr` | **Maintainer call.** Either amend EXIT:6 to ship `en`+`tr` with three staged, or keep five and fix the prose. 2.5.5.F assumes the latter |
+| D5 | 0 | The binding locale bar | ✅ **Ruled 2026-07-26: ship `en` + `tr`**, catalog architected for n locales, `es`/`fr`/`de` staged. EXIT:6, 2.6.L and 2.5.5.F amended |
 | D7 | 0 | Publish v0.1.1 as-is, or supersede with v0.2.0? | v0.2.0 — ADR-0067's Node `>=22` bump is breaking for 0.x |
 | D8 | 1 | Do already-persisted approval previews need a scrub? | Yes — migration 0013, same PR. Deleting `history.db` also destroys provider registrations |
 | D10 | 1 | `BudgetExceededError`/`BudgetPauseError`: adopt `.code`? | Adopt — must precede Wave 3's `RelaviumError` migration |

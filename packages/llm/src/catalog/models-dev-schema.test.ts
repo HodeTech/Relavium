@@ -148,6 +148,24 @@ describe('normalizeCatalog — what we import, and what we refuse to', () => {
     expect(dropped[0]?.reason).toContain('unpriceable');
   });
 
+  it('drops a model whose cost is PRESENT but zero — the same $0 hazard, and the null check misses it', () => {
+    // Live regression: `lyria-3-*` (music, billed per clip) publishes `{input: 0, output: 0}` rather than
+    // `cost: null`, so it sailed past the null guard and landed in the shipped snapshot at $0 — where it
+    // passes the ADR-0028 cap instead of being flagged unpriced. A zero rate on EITHER axis is unpriceable.
+    for (const cost of [
+      { input: 0, output: 0 },
+      { input: 0, output: 5 },
+      { input: 5, output: 0 },
+    ]) {
+      const raw = ModelsDevPayloadSchema.parse(
+        payload({ openai: { m: upstreamModel({ id: 'zero-rate', cost }) } }),
+      );
+      const { catalog, dropped } = normalizeCatalog(raw);
+      expect(catalog['zero-rate'], JSON.stringify(cost)).toBeUndefined();
+      expect(dropped[0]?.reason).toContain('unpriceable');
+    }
+  });
+
   it('THROWS on a real cross-provider id collision rather than letting one price silently win', () => {
     const raw = ModelsDevPayloadSchema.parse(
       payload({

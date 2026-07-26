@@ -124,8 +124,20 @@ describe('catalog-metadata (ADR-0072 P4 — host projection + seed + install + p
 
     it('a reseed CARRIES FORWARD enrichment a refresh had populated — never blanks it (ADR-0072 point 5)', () => {
       seedShippedCatalog(store, TS);
-      const shippedId = Object.keys(CATALOG_SNAPSHOT)[0]!;
-      // A `models refresh --catalog` populated enrichment on a shipped id (the snapshot itself carries none).
+      // Pick a shipped id the snapshot leaves WITHOUT a `knowledgeCutoff`, so this test exercises the
+      // carry-forward branch rather than the snapshot-wins one. The snapshot bakes in modalities and a
+      // description for every model today, but not always a cutoff.
+      const withoutCutoff = Object.entries(CATALOG_SNAPSHOT).find(
+        ([, m]) => m.knowledgeCutoff === undefined,
+      );
+      // If a future snapshot stamps a cutoff on EVERY model, this test can no longer reach the branch it
+      // exists for — say so, rather than dying on an unhelpful undefined-index read.
+      expect(
+        withoutCutoff,
+        'no shipped model lacks knowledgeCutoff — pick another carry-forward column',
+      ).toBeDefined();
+      const shippedId = withoutCutoff![0];
+      // A `models refresh --catalog` populated enrichment on a shipped id.
       store.updateEnrichment([
         {
           modelId: shippedId,
@@ -139,10 +151,13 @@ describe('catalog-metadata (ADR-0072 P4 — host projection + seed + install + p
       store.upsertMeta({ seededSnapshotSha: 'a-different-sha' });
       expect(seedShippedCatalog(store, TS + 1)).toBe(true); // it reseeds
       const row = store.readAll().find((r) => r.modelId === shippedId)!;
-      // Money+wire came from the (re-reviewed) snapshot; enrichment SURVIVED the reseed rather than resetting to NULL.
+      // The column the snapshot leaves empty SURVIVES the reseed rather than resetting to NULL...
       expect(row.knowledgeCutoff).toBe('2099-01');
-      expect(row.inputModalities).toBe(JSON.stringify(['text', 'image']));
-      expect(row.description).toBe('fetched');
+      // ...while a column the snapshot DOES carry wins over the stale DB value, which is the documented
+      // `?? prior` precedence: the newly-reviewed snapshot is the more trustworthy source for what it states.
+      const shipped = CATALOG_SNAPSHOT[shippedId]!;
+      expect(row.inputModalities).toBe(JSON.stringify(shipped.inputModalities));
+      expect(row.description).toBe(shipped.description);
     });
   });
 
