@@ -52,7 +52,8 @@ Phase 2.6 makes bare `relavium` a **full-screen, Home-centric** product. Key out
   complex sub-tasks; workflows call workflows via `subworkflow` nodes; standardized I/O contracts;
   parent-child lineage tracking; auto-cleaned artifacts.
 - **Settings, theming, localization** — `/settings` over the config-write contract; three built-in
-  themes (default / high-contrast / colorblind-safe); `en`, `es`, `tr`, `fr`, `de` i18n with CI key-parity.
+  themes (default / high-contrast / colorblind-safe); i18n shipping **`en` + `tr`** with CI key-parity, the
+  catalog architected for n locales (`es`, `fr`, `de` staged).
 - **Onboarding v2** — two auth paths: BYOK (live) + Relavium-account stub (disabled, Phase 5).
 - **17 workstreams** (2.6.A–Q), substrate-first: 2.6.F (full-screen TUI + Node 22 floor) runs first;
   agent orchestration is split by safety gradient into 2.6.N (safe mechanism) → 2.6.O (model-generated
@@ -89,7 +90,8 @@ and syntax-highlighted rendering** — all without breaking the `--json` / CI / 
 - Run history is **attributed and drillable**: per-node model/agent/cost durable, a bounded secret-free
   tool trace, gate-resolve TOCTOU closed at the store, crashed runs reconciled, cross-process runs
   watchable live at node granularity.
-- The CLI speaks **`en`, `es`, `tr`, `fr`, `de`** over a string catalog with CI key-parity, and ships a real theme system
+- The CLI speaks **`en` and `tr`** over an n-locale string catalog with CI key-parity (`es`, `fr`, `de`
+  staged behind the same catalog, not shipped this phase), and ships a real theme system
   (default + high-contrast + colorblind-safe) with the color-free path staying legible.
 - An agent in a chat session can **autonomously spawn sub-agents and invoke workflows** for complex
   sub-tasks, with standardized I/O contracts, parent-child lineage tracking, hierarchical cost
@@ -780,8 +782,10 @@ and the first localized agentic CLI (a genuine differentiator — competitor i18
 
   No new ADR beyond the ADR-0063 key addition.
 - **i18n foundation**: an in-house string catalog (data ≠ code — zero conditional logic in translation
-  data; no runtime dependency expected, else ADR); `[preferences].language`; locales **`en`, `es`, `tr`,
-  `fr`, `de`** in-phase; a CI **key-parity test** (fails on missing/extra keys across all locales)
+  data; no runtime dependency expected, else ADR); `[preferences].language`; the catalog is architected for
+  **n locales** but only **`en` + `tr`** ship in-phase (maintainer ruling, 2026-07-26 — `es`, `fr`, `de` are
+  staged: their key files may land empty/partial, they are not offered in `/settings` until complete);
+  a CI **key-parity test** (fails on missing/extra keys across the shipped locales)
   + a dead-string lint — landing the deferred i18n standard as a `docs/standards/` entry. The five
   in-phase locales are all **Latin-script**, so in-phase rendering needs only accent-safe (valid Unicode,
   no special handling) and combining-character-safe layout; full **IME composition** and **wide-character /
@@ -808,7 +812,7 @@ safety warning, never `--json` output); themes switch live incl. the
 accessibility pair; the color-free path stays legible; `NO_COLOR` gating is consistent across every style
 prop including `bold`, `NO_COLOR=''` is honored as set, every status/warning glyph (including `/doctor`'s)
 has an ASCII-degrade form, and no pictographic emoji renders unconditionally; interactive surfaces run
-fully in all five locales with CI-enforced key parity; diagnostics and `--json` remain English-stable per
+fully in the shipped locales (`en`, `tr`) with CI-enforced key parity across every catalog key; diagnostics and `--json` remain English-stable per
 [ADR-0049](../../decisions/0049-cli-machine-output-contract.md); the machine-output contract is
 character-for-character unaffected. **Required ADR:** i18n +
 theming architecture.
@@ -1341,7 +1345,7 @@ Once their deps land:
 | **Browsers** | 2.6.G | F + H + K landed | /workflows, /agents, actionable strip, permissions |
 | **Orchestration foundation** | 2.6.N | F + H landed | Catalog child-session spawn, standardized I/O, artifact-store port + central root, lineage, cost roll-up, guardrails |
 | **Chat UX** | 2.6.E | F + L landed | Syntax highlighting, rewind/fork, message queue, /copy, cheat sheet |
-| **Theme/i18n** | 2.6.L | F landed | Theme system, /settings, 5-locale catalog |
+| **Theme/i18n** | 2.6.L | F landed | Theme system, /settings, n-locale catalog (`en`+`tr` shipped) |
 | **M render-v2** | 2.6.M (render half) | F landed | Tool-call details view, diff rendering |
 
 Final integration (last to land — **phase close**):
@@ -1432,7 +1436,7 @@ flowchart LR
    details, and syntax-highlighted code blocks behind a passed security review.
 5. Run history is attributed and drillable (list → run → node with the quintet + tool summaries); the
    gate TOCTOU is store-closed; crashed runs reconcile; cross-process live watch works.
-6. `/settings`, the theme system (incl. the accessibility pair), and **`en`, `es`, `tr`, `fr`, `de`** localization ship with
+6. `/settings`, the theme system (incl. the accessibility pair), and **`en` + `tr`** localization ship with
    CI key-parity.
 7. **Orchestration ships across the safety gradient**: (2.6.N) a chat agent spawns a **catalog** sub-agent
    — `/spawn <agent> <task>` and model-driven — with standardized I/O, full parent lineage in `history.db`,
