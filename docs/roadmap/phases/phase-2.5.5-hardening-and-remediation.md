@@ -57,10 +57,14 @@ completing first — each is centred on its own subsystem (`packages/core`, `pac
 `packages/db`, `packages/mcp` + secrets, `apps/cli`'s process layer, `apps/cli`'s TUI layer,
 `docs/`, cross-cutting hygiene, and the CI/tooling substrate). The sub-streams are **not**,
 however, fully file-disjoint, so "any order" holds between disjoint queues rather than across
-the phase as a whole. Five overlaps are known today and must be serialized rather than run in
-parallel — the three god-files each draw two sub-streams, and the general rule is to **compare the
-file list in a bullet's `(S/M/L · files · findings)` trailer against the other sub-streams before
-parallelizing anything**, since this list is what the review surfaced, not a proof of completeness:
+the phase as a whole. Ownership is not pairwise: `home-controller.ts` and `chat.ts` are each edited
+from **four** sub-streams (E, F, G and I), `chat-ink.tsx` from three (E, G, I), and `viewport.ts` and
+`client.ts` from two each. The operative rule that falls out is short — **2.5.5.I lands last on every
+god-file**, because its work is decomposition and everything else is edits that decomposition would
+otherwise have to re-apply. The five bullets below record the landing order for the overlaps the review
+surfaced; they are not a proof of completeness, so the standing discipline is to **compare the file list
+in a bullet's `(S/M/L · files · findings)` trailer against the other sub-streams before parallelizing
+anything**:
 
 - **2.5.5.C ↔ 2.5.5.E on `packages/db/src/client.ts`** — C gives `createClient` a typed error and
   corrects its PRAGMA docstring (`#104`, `#105`); E moves the wrap-and-redact logic inside
