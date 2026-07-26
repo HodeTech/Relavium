@@ -2,7 +2,7 @@
 
 > Status: Living
 >
-> Last updated: 2026-07-19
+> Last updated: 2026-07-26
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -28,6 +28,343 @@ and [ADR-0072](../decisions/0072-model-metadata-in-the-db-behind-a-generated-off
 implementation steps have landed on `development` (PR #76, open, review-folded). P6 and the
 `/settings` → `/models` visibility toggle remain open, and the bundled offline snapshot regen is
 pending a Gemini pricing decision.
+
+**The unified build order across both phases is in
+[Execution order — Phase 2.5.5 + Phase 2.6](#execution-order--phase-255--phase-26-temporary) below** — a
+temporary section, deleted when both phases close. Short version: **merge PR #76 first**, because Phase
+2.5.5's whole backlog is written against `f88b0e8`, which lives only on `development`.
+
+## Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
+
+> **Temporary section — delete it when both phases close.** It owns **ordering only**. Every item's
+> definition, size, file list and finding ids live in its phase file —
+> [phase-2.5.5](phases/phase-2.5.5-hardening-and-remediation.md) (176 work items, sub-streams A–I) and
+> [phase-2.6](phases/phase-2.6-conversational-authoring.md) (15 open workstreams) — and nothing below
+> restates them. Items are cited as `<sub-stream> · <the bullet's bold lead-in> (<finding ids>)`, which
+> greps directly against the phase file.
+>
+> Derived 2026-07-26 from a full pass over both phase files, their own sequencing sections, and the live
+> tree. Where it departs from a phase file's own prose, see [Departures](#departures-from-the-phase-files-own-sequencing).
+
+### Ordering root — collapse to one baseline before anything else
+
+Verified against the live tree on 2026-07-26, and stated in neither phase file:
+
+| Fact | Value |
+|------|-------|
+| `development` vs `origin/main` | **64 commits ahead, 0 behind** |
+| Where `f88b0e8` (the 2.5.5 review baseline) lives | **`development` only — not on `main`** |
+| Open PRs | **#76** (`development` → `main`) — the only one |
+| Local `main` vs `origin/main` | **126 commits behind** |
+
+Phase 2.5.5's entire backlog is written against `f88b0e8`. Until PR #76 merges, every `file:line`
+citation in it resolves against a tree nobody branches from, the three picker bugs and the param-rejection
+self-heal are invisible from `main`, and `a10f37b` — landed *after* the 2026-07-19 review and therefore
+unreviewed by it — silently invalidates the premise of 2.5.5.B's `#emitSuccess` catch-narrowing item and
+part of the adapter-parity sweep.
+
+**Start here: merge PR #76.** Then publish the rule *branch from `origin/development`, never local `main`* —
+local `main` contains neither 2.6.F nor 2.6.C.
+
+### The three axes this order is built on
+
+1. **Irreversibility** — a defect whose damage a later fix cannot undo jumps every queue. That is Wave 1:
+   a credential already written into a durable `--json`-visible row, a billed turn lost after the reply
+   rendered, model-controlled ANSI inside the consent card, and the states where the cost cap is silently off.
+2. **File ownership** — whoever edits a file next inherits everyone else's rebase. Every god-file
+   decomposition and naming/convention ruling lands *before* the 2.6 workstream that piles onto it, and
+   eleven items are pulled across the phase line because they edit the exact function another item restructures.
+3. **Certification** — a wave that discharges a phase obligation certifies it while the evidence is fresh,
+   which is why 2.5.5's exit criteria 1–3 close in Wave 2 rather than at the end.
+
+Waves are readable single-branch sequences. Concurrency is expressed as *"these queues are file-disjoint,
+any order"* — never as headcount.
+
+```mermaid
+flowchart TD
+    W0["Wave 0 — One true baseline<br/>PR #76 · CI truth · numbers"]
+    W1["Wave 1 — Stop the bleeding<br/>3 CRITICALs · cost cap"]
+    W2["Wave 2 — Shut the doors<br/>MCP · fs jail · secrets<br/>certifies 2.5.5 EXIT 1–3"]
+    W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
+    W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
+    W4b["Wave 4b — Money floor & close-out<br/>2.5.5.B/C/F/H drain · v0.2.0"]
+    W5a["Wave 5a — Paint before you build<br/>render-v2 · theme · config"]
+    W5b["Wave 5b — Home becomes the product<br/>2.6.G/I/J · then i18n sweep"]
+    W6["Wave 6 — Hands, voice, lineage<br/>2.6.M/B/E + 2.6.N foundation"]
+    W7["Wave 7 — Orchestration & the gate<br/>2.6.O/P · go/no-go → Phase 3"]
+    W0 --> W1 --> W2 --> W3 --> W4a --> W5a --> W5b --> W6 --> W7
+    W3 --> W4b
+    W4b -.->|v0.2.0 release| W7
+    W4a -.->|file-disjoint lanes| W4b
+```
+
+### Wave 0 — One true baseline
+
+Collapse the divergence, make the required gate execute the artifact it ships, and fix the review
+checklists before ~30 security-gated PRs are reviewed against them.
+
+1. **Merge PR #76** (carries 2.6.Q P1–P5, ADR-0071/0072, the three picker bugs, the param self-heal).
+2. **Reserve numbers**, one per number in landing order — migrations end at `0012` and ADRs at `0072`
+   (verified): `0013` = the Wave-1 approval-preview scrub · `0014` = 2.5.5.C's enum CHECKs (#101) ·
+   `0015` = 2.6.H · `0016` = 2.6.G's pins · `0017` = 2.6.N lineage; **ADR-0073+** for the nine unwritten 2.6 ADRs.
+3. **One `ci.yml`/`turbo.json`/`tsup.config.ts` PR** (a five-way collision file — do not split):
+   2.5.5.H · the required gate never runs the compiled binary + undeclared `drizzle` output (#294, #315) →
+   local `pnpm ci` vs `ci.yml` divergence (#312) → the coverage-floor **ruling and its implementation**
+   (#296, #152) → the `(advisory)` labels (#320) → `THIRD_PARTY_EXTERNAL` (G27, #248) → bundle-closure
+   single-chunk assert (#314) → `release.yml`'s in-workflow ancestor check (G26) → `sync:models:check` (#317).
+4. 2.5.5.F · **three skills' hardcoded foreign-project paths** (#162) — filed as docs, actually a functional
+   bug: they write outside the repo.
+5. **One markdown PR** (shared files): `packages/mcp` missing from five inventory tables (#128, #129, #153,
+   #163, #254) + the two review-checklist gaps (#164, #167) + the CLAUDE.md/README i18n clause (#74, #260, #134).
+6. The **locale-bar amendment** (decision D5) and the **snapshot regen** after the Gemini price ruling (D3).
+
+> Why first: nothing lands cleanly around a 64-commit divergence, and every wave after this adds a
+> migration. The coverage gate must flip *before* ~120 items land, not mid-flight.
+
+### Wave 1 — Stop the bleeding
+
+All three CRITICALs, plus the states where `max_cost_microcents` is silently not a cap. Four file-disjoint
+lanes, any order between them:
+
+- **(a) `registry.ts`** — 2.5.5.A · **redact tool-approval previews like `sanitizeInput()` already does**
+  (#91) **+ migration 0013** scrubbing already-persisted previews. *`registry.ts:12` already imports
+  `redactSecretShapedValue`; `previewFor()` at `:436` never calls it — verified.*
+- **(b) `packages/db` chain, strict** — 2.5.5.C · `SQLITE_BUSY_SNAPSHOT` (#100) → async backoff replacing
+  the blocking `Atomics.wait` (#226) → **the chat-persister safety net** (#228, CRITICAL) →
+  serialize `runMigrations` (#99) co-landed with the unconditional 0600 self-heal (#28, #33) →
+  `createClient` typed error + PRAGMA docstring (#104, #105). `deprecationDate` crash guard (G1) is a
+  standalone one-liner, droppable anywhere.
+- **(c) render/signals** — 2.5.5.I · **terminal-control sanitization to the four boundaries it never
+  reached** (G34, G44, #56, #57, CRITICAL — one PR at the shared helper, its own security review) →
+  `SIGTSTP`/`SIGCONT` + onboarding signal-registration ordering (G0, #50). *`RunApp.tsx` has zero
+  `stripTerminalControls`/`sanitizeInline` calls today — verified.*
+- **(d) money, split across two PRs** — `budget-governor.ts` only: 2.5.5.A · reservation ledger under
+  `max_parallel` (G38) → re-armed `budget:warning` + projected `thresholdPct` (G39, G47, G49) → **2.6.Q's
+  strict-cap half**. Then `fallback-chain.ts`/`cost-tracker.ts` only: 2.5.5.B · `maxRetries: 0` + jitter +
+  `Retry-After` (#276, #279) → narrowed `#emitSuccess` catch + `CostTracker` bounds (#194, #198) +
+  **2.6.Q's realized-cost half**.
+
+> 2.6.Q's cost-cap item is **split**: its task text spans both `budget-governor.ts` and `fallback-chain.ts`'s
+> `#emitSuccess` — the same catch 2.5.5.B narrows. The two halves join two different PRs, not one.
+> **Closes M2.5.5-1.**
+
+### Wave 2 — Shut the doors
+
+The two named live security holes, one unified filesystem jail, the secrets layer under test — then
+certify while the reviews are still booked.
+
+1. 2.5.5.D · **project-layer MCP name collision redirecting a global secret** (G19), then **MCP tool-definition
+   poisoning** (#202).
+2. **MCP queue, strict** — connect-phase timeouts on every transport (#35, G32, #205) → transport/discovery/result
+   size bounds against a hostile server (G33, #201, #209, #288) → structured `serverId`/`reason` discriminants
+   (#203, #204) → the two fail-loud violations (#206, #207) → per-file transport-adapter tests (#297) →
+   `CLIENT_INFO.version` (#208).
+3. **The fs jail, ONE reviewed change set** — 2.5.5.D · sensitive-credential floor for `.kube`/`.azure`/gcloud
+   (#36, #39) → extract `deepestExistingReal` to `packages/shared` (#235) → **2.6.M's `project`-tier
+   `extraRoots`** and **2.6.N's fs-floor home-anchoring**, both *pulled forward*. `~/.relavium/tmp/` (G21)
+   is resolved under the same general predicate (decision D12) — otherwise `fs.ts` takes two security reviews.
+4. `discoverCatalog` realpath containment (#1); the secrets-layer test pair — OS-keychain bridge (#27) and
+   `readSecretFromStdin` + stdin cap (#31, #293); secret-typed `run --input` rejection (#25); the unredacted
+   workflow-snapshot doc + lint (#30); 2.5.5.B · `scrubSecrets` param-name broadening (#196).
+5. Persistence-security: 2.5.5.C · `assertRelativePath`'s Windows drive-relative form (#113), media-store
+   hardening (#111, #108, #112), media `mimeType` verification (#107, #109, #110), the masking fixture (#115,
+   after decision D15). 2.5.5.A · chat-export redaction (#80, #81, #83, after D14) and `analyzeSecretTaint`'s
+   context sites (G22). 2.5.5.D · `default_headers` (G20, after D13).
+6. **Certify 2.5.5 exit criteria 1, 2 and 3** + the sub-stream D acceptance sign-off. **Closes M2.5.5-2 (D half).**
+
+> Book **five security-review sittings by threat class** (hostile-MCP · fs/path-jail · secrets-at-rest ·
+> secrets-input · config-trust), not ~30 per-PR passes. Reviewer availability, not code, is this wave's
+> critical path.
+
+### Wave 3 — Clear the ground
+
+Decompose, guard and normalize every hot file a 2.6 workstream is about to land on. **The multi-file queue
+runs first and is serialized against the rest**; the remaining queues are file-disjoint, any order.
+
+- **Multi-file (strict, first)** — 2.5.5.E · `closeQuietly()` to its four siblings (#22) → `displayPath`
+  discipline to `resolve.ts`/`catalog.ts`/`chat-export.ts` (#4, G11) → `const exhaustive: never` across the
+  six sites (#300, #301, G3, which also makes `relavium run` render `agent:reasoning`).
+- **`chat.ts` (strict)** — 2.5.5.G · the four money/token reimplementations (#236, #237, #242, #307) →
+  `swapAgentModel` → `reseatAgentModel` (#218) → 2.5.5.E · SIGINT actually calling `session.abort()` (#21, #23)
+  → `budgetWarningText` → **2.5.5.I · decompose `chat.ts`** (#220, #244). Then **2.6.M's `allowedDomains`
+  chat gap (G30)**, pulled forward into `session-host.ts`.
+- **`home-controller.ts` (strict)** — 2.5.5.E · `selectGatePrompter` test (G37) → the swallowed palette
+  rejection (#281) → **2.5.5.I · decompose `createHomeController` + the overlay discriminated union**
+  (#215, #243) → 2.5.5.G · the `Capability`/`Port` vocabulary split (#217, #222) → 2.5.5.F · Home's
+  `showCost` no-op (#125, after D26).
+- **`chat-ink.tsx`** — 1,795 lines, larger than `home-controller.ts`, decomposed by **neither** phase doc.
+  **Recommendation: decline** a new decomposition (decision D18); take only the exhaustiveness guard and the
+  min-terminal-size guard (#63), and hand restructuring to 2.6.M's render-v2 in Wave 5a.
+- **Viewport (strict)** — 2.5.5.I · share the ADR-0069 grapheme segmenter (#58, #62, G40, G51) →
+  2.5.5.G · tab expansion before width measurement (#65) → per-cluster width cache + resize debounce
+  (#64, #66). Alt-screen word-wrap (#61) is **formally re-deferred**.
+- **`packages/shared` (strict)** — the `.code` ruling (G50, D10) → `findDuplicates`/`superRefine` at all seven
+  remaining schema sites (#89, #90, G16, G17, G18, #210, #211, #212) → `BaseEventSchema` disposition (#213) →
+  the `RelaviumError` base class (#219). *The ruling must precede the base class, or it is baked in permanently.*
+- **`registry.ts` / `builtins.ts` / `engine.ts`** — `ctx.secretArgKeys` producer (#92) → `ctx.fsScope` (#93) →
+  `ok`/`success` (#216, #221) → identifier-sort `localeCompare` pinning (#258, #259) → the `git_commit`
+  denial copy (#308); then the four schema length caps (#95), the `llmVisibleParams` rewrite (#96, #98),
+  stale doc comments (#78, #97, #214); then `#armRunTimeout` (#75), `#dispatch` dead branch (#79),
+  `AbortSignal` into `resolvePrompt` + the human-gate recheck (#76, G9).
+- **Process/CLI boundary (strict head)** — 2.5.5.E · the five crash/signal net gaps (#40, #41, #42, #224,
+  #269) → the `--help`/`--version` ~400 ms tax (#43, #44, #271); then the flag-system ruling (#45, #264,
+  #265, #268), the exit-code and `--help --json` rulings (G35, #13), `logs` coalescing (G15), the `--input`
+  namespace ruling (#18, #310). **`openLocalDb` wrap-and-redact (#278, #280) lands LAST** — it touches 8+
+  call sites the other queues are still moving.
+- Then the tails of 2.5.5.A, E, G and I in any order; sub-stream **A, E and G acceptance sign-offs**;
+  and record the **EXIT:4 reading** (decision D22). **Closes M2.5.5-3.**
+
+### Wave 4a — The spine
+
+The four Day-1-independent 2.6 workstreams everything downstream sits on — and nothing else.
+
+1. **ADR-0058** and **ADR-0060** flipped Proposed → Accepted (0060 with its mandatory security review);
+   **ADR row 6 drafted when 2.6.H starts, not when 2.6.G starts** as the doc says — H must land before G.
+2. 2.6.A · **`nodeCatalogIssue` never resolves the agent's own model** (#88) — ungated pre-existing bug, first.
+3. **2.6.K** — the shared resume core (security review) → `budget resume` → the gate-decision/`gateType`
+   cross-check (#0) → **2.6.G's `engine.reconcile()` wiring (#229), pulled forward** to where its only
+   dependency resolves → secret re-provide (**mandatory security review** — it relaxes a fail-closed
+   guarantee) → gate-timeout re-arm → the `run:paused` park distinction.
+4. **2.6.H** — the `applyDerived` exhaustiveness guard (#114) co-landed with resilient per-row parse
+   (#277, #282) → step attribution → exact per-node cost + failed/cancelled totals (#118, #232) →
+   batched `loadRunEvents` (G12, #273) → the bounded tool trace → gate uniqueness → idempotency.
+   **Its chat-persister atomicity sub-part is STRUCK** — already owned by Wave 1 (#228).
+   Then 2.5.5.C · per-row isolation (#117) as pure propagation of H's skip-and-report ruling.
+5. **2.6.A** (package extraction, `validateAuthoredWorkflow` back-port, the run-path tool pre-flight
+   #37/G29, direct unit tests #6) and **2.6.D**. *2.6.A's `max_tokens` pre-flight moves to Wave 4b — it has
+   a hard dependency on 2.6.Q's `limit.output`.* **Closes M2.6-2 and M2.6-3.**
+
+### Wave 4b — Money floor and close-out
+
+A lane genuinely file-disjoint from the spine. Drain Phase 2.5.5 to its acceptance paragraphs, harden the
+adapter/catalog money floor, cut the release 2.6.Q P6 is gated on.
+
+- **Lane 1 (`packages/llm`)** — wire the **live-nightly conformance lane** *before* 2.5.5.B's seven-gap
+  **adapter-parity sweep** (#168, #170, #173, #174, #175, #186, #192), which is where those gaps came from →
+  **2.6.Q's capability matrix + clamp**, landing on the parity floor → 2.6.A's `max_tokens` pre-flight →
+  the four money-guard blind spots (G6, #177, #178, #181) → Anthropic prompt caching (#172) → the rest of
+  2.5.5.B. `CATALOG_SHA256` (G6) strictly after Wave 0's snapshot regen. **The Sora 2 shutdown (2026-09-24)
+  is a hard external date** — pull it out of wave order if the calendar demands.
+- **Lane 2 (`packages/db`, CI, docs)** — 2.5.5.C's remaining 12 bullets (retention after decision D33;
+  session-resume liveness #227; pagination #272; enum CHECKs #101; DDL coverage #102/#103; the
+  seeded-then-migrated harness #291; …) · 2.5.5.H's remainder (engine-deps allowlist #313/#318/#285; the
+  docs-style checker #316; the logging-standard ruling #266/#267/#270; `fast-check` pilot #299) ·
+  2.5.5.F's 20-site not-yet-built hedge sweep (#122 …) **rebased onto Wave 0's edits, not reverting them**.
+- **Sub-stream B, C and H acceptance sign-offs**, then **cut and publish v0.2.0**. **Closes M2.5.5-4.**
+
+### Wave 5a — Paint before you build
+
+Restructure the render layer and settle the theme/config substrate **once**, before ~24 new screens and a
+five-locale catalog land on it.
+
+1. **ADR row 10 (i18n + theming) is this wave's first gate** — ahead of rows 7 and 8. 2.6.L's palette work
+   is a render-layer freeze and must not open against an undecided contract.
+2. **2.6.M's render-v2 leads**, before 2.6.L's palette sweep — including the pull-in row *approval-consent-line
+   zero-width hardening · shared `[c]` reducer*, which **no 2.6.M task bullet currently covers** and would
+   otherwise be silently dropped. Its security review reverses the 2.5 never-render-args posture and cites
+   Wave 1's sanitization and redaction work as its own technical preconditions.
+3. 2.6.L theme system → **one** ADR-0063 amendment covering both 2.6.I's structured `[[mcp_servers]]` writes
+   and 2.6.L's preference keys → the `models_in_use` ruling (owned by I, consumed by L) → `/settings` →
+   the ADR-0072 `/settings` → `/models` visibility toggle → 2.5.5.I's picker truncation indicator (#60).
+4. **Sub-stream I acceptance sign-off** — completes **M2.5.5-2**.
+
+### Wave 5b — The Home becomes the product
+
+Exit criterion 2: no routine task requires a shell subcommand.
+
+1. **ADR rows 7 and 8** drafted and Accepted; confirm rows 4, 5 and 15 are already discharged by
+   ADR-0067/0068/0069 and ADR-0071/0072 and close them in the table.
+2. **2.6.G** end to end — tab bar → the three browsers → run detail → node detail. Its config-writing
+   permissions step lands **last in G**, behind a security review.
+3. **2.6.I** and **2.6.J**. I's durable tool-list cache **must not precede Wave 2's tool-definition fix**,
+   or a poisoned description becomes persistent. 2.6.M's `web_search` follows I's search-provider config surface.
+4. **2.6.L's locale catalog lands LAST**, after the ~24 new screens exist — landing it earlier makes its own
+   acceptance uncertifiable at its landing point and guarantees a second sweep. **Closes M2.6-4.**
+
+### Wave 6 — Hands, voice and lineage
+
+Exit criteria 3 and 4, plus the child-session foundation — so the riskiest wave does not also carry its
+lineage work.
+
+1. **ADR row 9** (toolbelt + tool-render/approval-preview contract + `ask_user`'s mid-turn engine pause)
+   with its mandatory security review → **2.6.M** end to end. Settle the `curl`/`wget` default-grant question
+   (D49) before the default grant is finalized.
+2. **2.6.B** — the `AgentParseError` design ruling first (its self-correct loop depends on those diagnostics
+   being visible), then the wizard/authoring loop, the import consent gate, the `/export` hint.
+3. **2.6.E** — its cheat sheet lands last in E, enumerating every command and keybinding the phase added.
+   `/rewind`-vs-child-sessions moves to Wave 7 (it gates on 2.6.N).
+4. **ADR row 12** (child-session foundation) → **2.6.N's foundation**: lineage, standardized I/O, the
+   injected artifact-store port, catalog spawn, the depth-3/concurrency-5 guardrails.
+5. **Certify exit criteria 3 and 4 here**, not in Wave 7 — `invoke_agent` gates only on 2.6.N, which lands here.
+
+### Wave 7 — Orchestration and the gate
+
+Ship the riskiest surface last, on a fully reviewed codebase.
+
+1. **One pass over `packages/shared/src/run-event.ts`** settling 2.6.N's `childRunId` and 2.6.P's nested-run
+   namespace together — recommend an additive `parentRunId` discriminator over a new namespace that would
+   change every existing `--json` consumer's shape.
+2. 2.6.N's remainder → **ADR row 14** → **2.6.P** (`subworkflow` + `schema_version` 1.1; dynamic
+   `invoke_workflow` **formally deferred past the phase**) → **ADR row 13 + its dedicated generation security
+   review as a hard ship-gate** → **2.6.O**.
+3. **2.6.Q P6** after v0.2.0 has been on `main` through one release.
+4. The **`deferred-tasks.md` + traceability recording pass** for every re-deferral and decline this plan makes
+   — it is the only thing that makes 2.5.5 exit criterion 5 certifiable — then 2.5.5's last docs items and the
+   **sub-stream F sign-off**.
+5. **Certify 2.5.5 exit criteria 4–8 and all eight Phase-2.6 go/no-go criteria.**
+   **Closes M2.5.5-5, M2.6-5, M2.6-6, M2.6-7 → Phase 3 may open.**
+
+### Wave-gating decisions
+
+Roughly 60 open decisions sit across both phases: the ~14 that 2.5.5 flags **blocked** inline
+([Dependencies](phases/phase-2.5.5-hardening-and-remediation.md#dependencies)), the nine unwritten 2.6 ADRs
+([Required ADRs](phases/phase-2.6-conversational-authoring.md#required-adrs)), and a long tail that is
+decision-shaped without being labelled. The table below is only the subset that **stalls a wave if
+unanswered**; the remainder sit inline in their own phase-file bullet.
+
+| # | Wave | Decision | Recommendation |
+|---|------|----------|----------------|
+| D1 | 0 | Mark the `ci` job a **required** check (open since Phase 0) | Yes — every CI item here is advisory until it flips |
+| D2 | 0 | Coverage floor: promote to required, or soften `testing.md`? | Promote, **and implement in the same PR** — a checked-in run already shows 92–97% margin |
+| D3 | 0 | Accept the upstream Gemini price rise the ADR-0071 §9 guard is refusing? | Accept and regenerate — a stale floor *under*-prices the cap, the dangerous direction |
+| D4 | 0 | Confirm the number reservation (`0013`–`0017`, ADR-0073+) | As listed — one item per number, in landing order |
+| D5 | 0 | The binding locale bar: EXIT:6 says five, CLAUDE.md says `en`+`tr` | **Maintainer call.** Either amend EXIT:6 to ship `en`+`tr` with three staged, or keep five and fix the prose. 2.5.5.F assumes the latter |
+| D7 | 0 | Publish v0.1.1 as-is, or supersede with v0.2.0? | v0.2.0 — ADR-0067's Node `>=22` bump is breaking for 0.x |
+| D8 | 1 | Do already-persisted approval previews need a scrub? | Yes — migration 0013, same PR. Deleting `history.db` also destroys provider registrations |
+| D10 | 1 | `BudgetExceededError`/`BudgetPauseError`: adopt `.code`? | Adopt — must precede Wave 3's `RelaviumError` migration |
+| D12 | 2 | `~/.relavium/tmp/`: `tmp`-specific rule or the general home-anchored predicate? | **General predicate** — a `tmp`-only ruling leaves 2.6.N's real root refused and forces a second `fs.ts` review |
+| D13 | 2 | `default_headers`: keychain-ref indirection vs shape check? | Keychain-ref, shape check as belt-and-suspenders. **Gates work outside this phase** (ADR-0065 §3) |
+| D14 | 2 | chat-export `tool_result`: warn vs redact vs full discipline? | Redact by default + `--include-tool-results`; same reviewer as 2.6.B's write surface |
+| D17 | 2 | Book security reviews **by threat class**, not per PR? | Yes — five sittings; reviewer availability is the wave's critical path |
+| D18 | 3 | `chat-ink.tsx` (1,795 lines, in neither doc): decompose or decline? | **Decline** — hand it to 2.6.M's render-v2 in Wave 5a, where the palette sweep then runs once |
+| D19 | 3 | `--quiet`/`--verbose`/`RELAVIUM_DEBUG` precedence | `--quiet` < default < `--verbose`; `RELAVIUM_DEBUG=1` an alias, explicit flag wins; `--json` overrides for stream shape |
+| D20 | 3 | `--input`'s four-way collision: rename or document? | Rename `models pricing` to `--input-price`/`--output-price`, old spellings deprecated aliases |
+| D22 | 3 | Read EXIT:4 as "no **breaking** change"? | Yes — with the additive exit code and the noun-verb aliases as the two sanctioned, documented exceptions |
+| D28/D29 | 4a | Flip ADR-0058 and ADR-0060 to Accepted | Yes; 0060's taint model is the cited precedent for Wave 7's generation-security ADR |
+| D31 | 4a | Strike 2.6.H's chat-persister atomicity sub-part as a duplicate? | Yes — owned by Wave 1; record the closure |
+| D33 | 4b | Retention policy (the phase's largest single item) | Default bound 50 + `--limit`/`--tail`; ship `chat delete` writing the dead `deleted_at` columns; never auto-hard-delete |
+| D34 | 4b | Logging standard: build the injected-logger seam, or amend the standard? | **Amend** — building it adds a port to `packages/core`, needs its own ADR, breaks 2.5.5 exit criterion 8, and collides with 2.6.N's artifact-store port |
+| D37 | 4b | Provision CI provider keys for the live-nightly lane? | Yes, nightly-only, wired **before** the parity sweep |
+| D50 | 6 | ADR row 11: adopt `ink-syntax-highlight`, or build in-house? | **Decline the dependency** per CLAUDE.md rule 2 — the markdown renderer is already in-house and untrimmed `highlight.js` is the phase's own named bundle risk |
+| D52 | 6 | Draft ADR row 12 in Wave 6, not Wave 7 | Yes — settle the lineage event shape once, covering both 2.6.N and 2.6.P |
+| D57 | 7 | Dynamic runtime sub-workflow selection? | **Defer past the phase** — it is exactly the unauthored composition the *authored surface == executable surface* invariant exists to prevent |
+
+### Departures from the phase files' own sequencing
+
+This ordering is compatible with both phase files' stated dependencies. It departs from their prose in six
+places, each deliberate:
+
+1. **A baseline step neither file has.** Both treat `f88b0e8` as the working tree; it is not on `main`.
+2. **2.5.5's recommended order is A+C → D+I → E → B+H → F+G.** This keeps its risk instinct but re-cuts the
+   batches by **file**, because ~40 files are edited by both a 2.5.5 item and a 2.6 item. Sub-stream letters
+   are filing conventions, not batching units — every split above is declared.
+3. **Eleven items are pulled across the phase line** (2.6.M's `extraRoots` and `allowedDomains`, 2.6.N's
+   fs-floor anchoring, 2.6.G's `engine.reconcile`, 2.6.Q's cost-cap halves, …) because they edit the exact
+   function or file a 2.5.5 item is restructuring.
+4. **2.6's ADR row 6 is drafted when 2.6.H starts**, not when 2.6.G starts as the table says — H must land first.
+5. **2.5.5's own eight exit criteria are certified nowhere in either file.** Criteria 1–3 are attached to
+   Wave 2 and 4–8 to Wave 7; per-sub-stream acceptance sign-offs are attached to the last wave touching each.
+6. **`chat-ink.tsx` is decomposed by neither file** despite being the largest TUI file. Raised as decision D18.
 
 ## Where we are
 
