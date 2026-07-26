@@ -31,8 +31,8 @@ pending a Gemini pricing decision.
 
 **The unified build order across both phases is in
 [Execution order — Phase 2.5.5 + Phase 2.6](#execution-order--phase-255--phase-26-temporary) below** — a
-temporary section, deleted when both phases close. Short version: **merge PR #76 first**, because Phase
-2.5.5's whole backlog is written against `f88b0e8`, which lives only on `development`.
+temporary section, deleted when both phases close. Its baseline step is discharged (PRs #76 and #77 merged);
+**the next unit of work is Wave 0's single `ci.yml`/`turbo.json`/`tsup.config.ts` PR.**
 
 ## Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
 
@@ -46,25 +46,25 @@ temporary section, deleted when both phases close. Short version: **merge PR #76
 > Derived 2026-07-26 from a full pass over both phase files, their own sequencing sections, and the live
 > tree. Where it departs from a phase file's own prose, see [Departures](#departures-from-the-phase-files-own-sequencing).
 
-### Ordering root — collapse to one baseline before anything else
+### Ordering root — one baseline ✅ **discharged 2026-07-26**
 
-Verified against the live tree on 2026-07-26, and stated in neither phase file:
+The plan opened on a divergence neither phase file modelled: Phase 2.5.5's whole backlog is written against
+`f88b0e8`, which existed only on `development` behind PR #76, so every `file:line` citation in it resolved
+against a tree nobody was branching from. **PR #76 and #77 are both merged** — `f88b0e8` is on `origin/main`,
+`origin/development` and `origin/main` hold identical trees, and there are no open PRs. Every citation in
+this plan now resolves.
 
-| Fact | Value |
-|------|-------|
-| `development` vs `origin/main` | **64 commits ahead, 0 behind** |
-| Where `f88b0e8` (the 2.5.5 review baseline) lives | **`development` only — not on `main`** |
-| Open PRs | **#76** (`development` → `main`) — the only one |
-| Local `main` vs `origin/main` | **126 commits behind** |
+One consequence survives and is worth keeping until the phases close:
 
-Phase 2.5.5's entire backlog is written against `f88b0e8`. Until PR #76 merges, every `file:line`
-citation in it resolves against a tree nobody branches from, the three picker bugs and the param-rejection
-self-heal are invisible from `main`, and `a10f37b` — landed *after* the 2026-07-19 review and therefore
-unreviewed by it — silently invalidates the premise of 2.5.5.B's `#emitSuccess` catch-narrowing item and
-part of the adapter-parity sweep.
+> **Branch from `origin/development`, never from a local `main`.** A long-lived `development` merged into
+> `main` by merge commit leaves a stale local `main` behind after every PR, silently and without conflict.
+> Run `git fetch` and cut from `origin/development`.
 
-**Start here: merge PR #76.** Then publish the rule *branch from `origin/development`, never local `main`* —
-local `main` contains neither 2.6.F nor 2.6.C.
+Also settled while discharging this: `main` now carries branch protection (PR required, `lint · typecheck ·
+test` required, force-push and deletion blocked) and a `v*` tag ruleset restricting tag creation to the
+maintain/admin roles — closing the Phase-0 obligation that made `ci.yml`'s own "REQUIRED status check"
+comment untrue. `release.yml` asserts its ref is reachable from `main` before `pack`, so **2.5.5.H's `G26`
+is closed ahead of Wave 0**.
 
 ### The three axes this order is built on
 
@@ -82,7 +82,7 @@ any order"* — never as headcount.
 
 ```mermaid
 flowchart TD
-    W0["Wave 0 — One true baseline<br/>PR #76 · CI truth · numbers"]
+    W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding<br/>3 CRITICALs · cost cap"]
     W2["Wave 2 — Shut the doors<br/>MCP · fs jail · secrets<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
@@ -103,7 +103,8 @@ flowchart TD
 Collapse the divergence, make the required gate execute the artifact it ships, and fix the review
 checklists before ~30 security-gated PRs are reviewed against them.
 
-1. **Merge PR #76** (carries 2.6.Q P1–P5, ADR-0071/0072, the three picker bugs, the param self-heal).
+1. ✅ **Merge PR #76** (2.6.Q P1–P5, ADR-0071/0072, the three picker bugs, the param self-heal) — **done
+   2026-07-26**, along with #77 (this plan + the Phase-2.5.5 opening + `release.yml`'s `G26` ancestry gate).
 2. **Reserve numbers**, one per number in landing order — migrations end at `0012` and ADRs at `0072`
    (verified): `0013` = the Wave-1 approval-preview scrub · `0014` = 2.5.5.C's enum CHECKs (#101) ·
    `0015` = 2.6.H · `0016` = 2.6.G's pins · `0017` = 2.6.N lineage; **ADR-0073+** for the nine unwritten 2.6 ADRs.
@@ -111,15 +112,18 @@ checklists before ~30 security-gated PRs are reviewed against them.
    2.5.5.H · the required gate never runs the compiled binary + undeclared `drizzle` output (#294, #315) →
    local `pnpm ci` vs `ci.yml` divergence (#312) → the coverage-floor **ruling and its implementation**
    (#296, #152) → the `(advisory)` labels (#320) → `THIRD_PARTY_EXTERNAL` (G27, #248) → bundle-closure
-   single-chunk assert (#314) → `release.yml`'s in-workflow ancestor check (G26) → `sync:models:check` (#317).
+   single-chunk assert (#314) → `sync:models:check` (#317). *(`release.yml`'s ancestry check, `G26`, already
+   landed in #77; only its tag-protection half remains, and that is now configured too.)*
 4. 2.5.5.F · **three skills' hardcoded foreign-project paths** (#162) — filed as docs, actually a functional
    bug: they write outside the repo.
 5. **One markdown PR** (shared files): `packages/mcp` missing from five inventory tables (#128, #129, #153,
    #163, #254) + the two review-checklist gaps (#164, #167) + the CLAUDE.md/README i18n clause (#74, #260, #134).
 6. The **locale-bar amendment** (decision D5) and the **snapshot regen** after the Gemini price ruling (D3).
 
-> Why first: nothing lands cleanly around a 64-commit divergence, and every wave after this adds a
-> migration. The coverage gate must flip *before* ~120 items land, not mid-flight.
+> Why first: every wave after this adds a migration, and the required gate still does not execute the
+> binary it ships while turbo does not declare `apps/cli/drizzle/**` as a build output — so a cache-hit
+> replay can leave `dist/index.js` fresh beside a stale `drizzle/`, crashing on first DB touch. The
+> coverage gate must also flip *before* ~120 items land, not mid-flight.
 
 ### Wave 1 — Stop the bleeding
 
@@ -288,7 +292,7 @@ Exit criterion 2: no routine task requires a shell subcommand.
 
 ### Wave 6 — Hands, voice and lineage
 
-Exit criteria 3 and 4, plus the child-session foundation — so the riskiest wave does not also carry its
+Phase-2.6 go/no-go criteria 3 and 4, plus the child-session foundation — so the riskiest wave does not also carry its
 lineage work.
 
 1. **ADR row 9** (toolbelt + tool-render/approval-preview contract + `ask_user`'s mid-turn engine pause)
@@ -300,7 +304,7 @@ lineage work.
    `/rewind`-vs-child-sessions moves to Wave 7 (it gates on 2.6.N).
 4. **ADR row 12** (child-session foundation) → **2.6.N's foundation**: lineage, standardized I/O, the
    injected artifact-store port, catalog spawn, the depth-3/concurrency-5 guardrails.
-5. **Certify exit criteria 3 and 4 here**, not in Wave 7 — `invoke_agent` gates only on 2.6.N, which lands here.
+5. **Certify Phase-2.6 go/no-go criteria 3 and 4 here**, not in Wave 7 — `invoke_agent` gates only on 2.6.N, which lands here.
 
 ### Wave 7 — Orchestration and the gate
 
@@ -361,7 +365,8 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 This ordering is compatible with both phase files' stated dependencies. It departs from their prose in six
 places, each deliberate:
 
-1. **A baseline step neither file has.** Both treat `f88b0e8` as the working tree; it is not on `main`.
+1. **A baseline step neither file has.** Both treated `f88b0e8` as the working tree while it was not yet on
+   `main`. Discharged 2026-07-26; kept here because it is why Wave 0 exists at all.
 2. **2.5.5's recommended order is A+C → D+I → E → B+H → F+G.** This keeps its risk instinct but re-cuts the
    batches by **file**, because ~40 files are edited by both a 2.5.5 item and a 2.6 item. Sub-stream letters
    are filing conventions, not batching units — every split above is declared.
@@ -388,9 +393,10 @@ plumbing + inline & async output generation + generative adapters, 1.m6, 1.AD–
 [Phase 1 detail](phases/phase-1-engine-and-llm.md), the [decision index](../decisions/),
 and the [reference specs](../reference/).
 
-> **Live maintainer obligations:** (1) mark the CI `ci` job a **required check** in GitHub branch
-> protection (carried from Phase 0; optionally add `TURBO_TOKEN`/`TURBO_TEAM` secrets for the
-> cross-runner remote cache); (2) now that **2.L** has landed (PR #49) and **v0.1.1** has been cut, add the
+> **Live maintainer obligations:** (1) ✅ **done 2026-07-26** — the CI `ci` job is now a **required check**
+> under branch protection on `main` (PR required, force-push/deletion blocked), alongside a `v*` tag ruleset
+> limiting tag creation to maintain/admin; the optional `TURBO_TOKEN`/`TURBO_TEAM` secrets for the
+> cross-runner remote cache are still unset; (2) now that **2.L** has landed (PR #49) and **v0.1.1** has been cut, add the
 > **`NPM_TOKEN`** repo secret + npm 2FA so the tag-triggered `Release CLI` workflow can publish — **still pending
 > for the v0.1.1 tag** (the actual `npm publish` is maintainer-gated,
 > [ADR-0051](../decisions/0051-cli-distribution-thin-bundle-private-engine.md) /

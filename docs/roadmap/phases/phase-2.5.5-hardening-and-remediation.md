@@ -57,7 +57,10 @@ completing first — each is centred on its own subsystem (`packages/core`, `pac
 `packages/db`, `packages/mcp` + secrets, `apps/cli`'s process layer, `apps/cli`'s TUI layer,
 `docs/`, cross-cutting hygiene, and the CI/tooling substrate). The sub-streams are **not**,
 however, fully file-disjoint, so "any order" holds between disjoint queues rather than across
-the phase as a whole. Two overlaps are known and must be serialized rather than run in parallel:
+the phase as a whole. Five overlaps are known today and must be serialized rather than run in
+parallel — the three god-files each draw two sub-streams, and the general rule is to **compare the
+file list in a bullet's `(S/M/L · files · findings)` trailer against the other sub-streams before
+parallelizing anything**, since this list is what the review surfaced, not a proof of completeness:
 
 - **2.5.5.C ↔ 2.5.5.E on `packages/db/src/client.ts`** — C gives `createClient` a typed error and
   corrects its PRAGMA docstring (`#104`, `#105`); E moves the wrap-and-redact logic inside
@@ -68,6 +71,14 @@ the phase as a whole. Two overlaps are known and must be serialized rather than 
   `const exhaustive: never` sweep (`#300`, `#301`, `G3`); I decomposes `createHomeController`
   (`#215`, `#243`) and applies the min-terminal-size guard (`#63`). **E's items land first**, so the
   decomposition moves already-guarded code.
+- **2.5.5.F ↔ 2.5.5.I on `home-controller.ts`** — F wires Home's `showCost` past its no-op (`#125`),
+  which edits a line *inside* the function I dissolves (`#215`, `#243`). **F lands first.**
+- **2.5.5.G ↔ 2.5.5.I on `apps/cli/src/commands/chat.ts`** — G replaces the hand-rolled money helpers
+  (`#236`, `#307`) and renames `swapAgentModel` (`#218`); I decomposes the file (`#220`, `#244`).
+  **G lands first**, so the decomposition moves already-canonical code.
+- **2.5.5.G ↔ 2.5.5.I on `apps/cli/src/render/tui/viewport.ts`** — G makes width measurement
+  tab-aware (`#65`); I caches per-cluster widths and debounces resize invalidation (`#64`, `#66`).
+  Both rewrite `graphemeWidth`. **G lands first**, so the cache is built over the corrected measure.
 
 Everything else may proceed concurrently. The cross-phase file-ownership preferences are separate
 and are called out under [Positioning](#positioning).
@@ -85,8 +96,14 @@ reached.
   (`#91`, `packages/core/src/tools/registry.ts`'s `previewFor()`), the chat persister's
   unhandled-promise-rejection crash path (`#228`, `apps/cli/src/chat/persister.ts`), and the
   unsanitized `relavium run` TUI (`#56`, `apps/cli/src/render/tui/RunApp.tsx`) — are closed and
-  regression-tested. `#56` lands with 2.5.5.I rather than 2.5.5.A/C, so it certifies under
-  M2.5.5-2; the severity is the traceability appendix's own, not a reclassification.
+  regression-tested. `#56` lands with 2.5.5.I rather than 2.5.5.A/C, so it certifies under M2.5.5-2.
+  > **`#56`'s severity is contested and needs a maintainer ruling.** The traceability appendix below —
+  > the only classification that ships in git — records it `critical`, and this file follows it. The
+  > untracked review corpus's executive summary argues the corpus's real critical count is **2**, on the
+  > grounds that `#56`'s verifier recommended `high` and the aggregate severity field never picked the
+  > correction up. Nothing downstream changes either way: `#56` is scheduled in Wave 1 and gated by exit
+  > criterion 2's security review regardless. Rule it once, then make the appendix, the exec summary and
+  > this bullet agree.
 - `relavium run`'s TUI, the persisted run summary, the universal error boundary, and the
   human-gate approval card all sanitize dynamic/model-controlled text the same way chat
   already does — a security review confirms the injection class is closed.
@@ -421,33 +438,40 @@ This substream is the development-process substrate itself — `.github/workflow
 
 All nine sub-streams are independent (`dependsOn` is empty on every one) — no sub-stream must
 complete before another starts. They are **not** all file-disjoint, though, so concurrency runs
-between disjoint queues rather than across the phase as a whole: the two known overlaps
-(2.5.5.C ↔ 2.5.5.E on `packages/db/src/client.ts`, and 2.5.5.E ↔ 2.5.5.I on
-`home-controller.ts`/`chat-ink.tsx`) carry a required landing order, recorded under
-[Positioning](#positioning). The order below is a value/risk recommendation, not a dependency
+between disjoint queues rather than across the phase as a whole: the five known overlaps — on
+`packages/db/src/client.ts`, `home-controller.ts`/`chat-ink.tsx`, `chat.ts` and `viewport.ts` —
+each carry a required landing order, recorded under [Positioning](#positioning). The order below is a value/risk recommendation, not a dependency
 chain, leading with safety-critical work:
 
 1. **2.5.5.A and 2.5.5.C first** — each contains one CRITICAL, self-contained defect (the
    approval-preview secret leak; the chat-persister crash) with a small, well-understood
    blast radius. Land these before anything else touches the same files.
-2. **2.5.5.D and 2.5.5.I next** — both close CRITICAL/live security gaps with no existing
-   coverage (MCP tool-definition poisoning, the config-layer secret hijack, terminal-control
-   injection into `relavium run`). Within 2.5.5.I, the `chat.ts`/`home-controller.ts`
-   decompositions are the one item worth sequencing deliberately: land them **before** Phase
-   2.6's **2.6.G** and **2.6.E** add substantial new code to either file, to avoid a large,
-   conflict-prone rebase later. This is a cross-phase file-ownership preference, not a
-   2.5.5-internal dependency.
-3. **2.5.5.E** — the broadest user-facing surface (every command passes through it), best
-   landed once the engine/data/security fixes above are stable under it.
+2. **2.5.5.D next** — it closes CRITICAL/live security gaps with no existing coverage (MCP
+   tool-definition poisoning, the config-layer secret hijack), and it shares no file with any
+   other sub-stream.
+3. **2.5.5.E, then 2.5.5.I** — in that order, not the reverse. E is the broadest user-facing
+   surface (every command passes through it) and is best landed once the engine/data/security
+   fixes above are stable under it; I's decompositions must then move already-guarded,
+   already-canonical code, per the overlap rules above. Two carve-outs: I's terminal-control
+   sanitization item (`#56`, `G34`, `G44`, `#57`) is a CRITICAL sharing no file with E's queue, so it is
+   pulled ahead alongside step 1; and the four **step-5 items that collide with I** — F's `showCost`
+   wiring (`#125`) and G's `chat.ts`/`viewport.ts` items (`#236`, `#307`, `#218`, `#65`) — are pulled
+   **forward to here**, ahead of I, rather than waiting for step 5. Within I, the `chat.ts`/`home-controller.ts` decompositions
+   additionally want to land **before** Phase 2.6's **2.6.G** and **2.6.E** add substantial new code
+   to either file, to avoid a large, conflict-prone rebase later — a cross-phase file-ownership
+   preference, not a 2.5.5-internal dependency.
 4. **2.5.5.B and 2.5.5.H** — money-correctness and process-substrate hardening; neither is
    time-critical, both benefit from the same shared-fixture-per-guard discipline the security
    items above establish.
-5. **2.5.5.F and 2.5.5.G** — documentation accuracy and codebase hygiene; zero runtime risk,
-   safe to run last or interleaved with any of the above at any point.
+5. **2.5.5.F and 2.5.5.G** — documentation accuracy and codebase hygiene; zero runtime risk, safe to
+   interleave anywhere. Minus the four items pulled forward into step 3 (F's `#125`; G's `#236`,
+   `#307`, `#218`, `#65`), which must precede 2.5.5.I on the files they share.
 
-The three items with an explicit cross-phase preference (the two 2.5.5.I decompositions, and
-the authoring run-path tool-preflight item filed directly as a 2.6.A work item) are the only
-sequencing constraints in this phase; everything else is scheduler's choice.
+Two constraint sets bind, and nothing else does. **Cross-phase:** the three items with an explicit
+preference (the two 2.5.5.I decompositions, and the authoring run-path tool-preflight item filed
+directly as a 2.6.A work item). **Intra-phase:** the five file overlaps recorded under
+[Positioning](#positioning) (`client.ts`, `home-controller.ts`/`chat-ink.tsx`, `chat.ts`,
+`viewport.ts`). Everything outside those two sets is scheduler's choice.
 
 ## Dependencies
 

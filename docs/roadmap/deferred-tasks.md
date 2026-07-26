@@ -1232,7 +1232,7 @@ future test cannot silently re-acquire it.
 > **2026-07-19 — full-project review.** A 377-finding multi-agent code review at HEAD `f88b0e8` was
 > adversarially verified down to 373 confirmed findings — one agent per finding tried to refute it against
 > the code, a second audited its materiality — with the toolchain green throughout (lint, typecheck, all 226
-> test files passing): every finding below is a defect a green build cannot catch. The bulk (205 work items)
+> test files passing): every finding below is a defect a green build cannot catch. The bulk (176 of the 205 triaged work items)
 > now live in [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md).
 > Sixteen of the review's findings turned out to duplicate items already recorded in this file — each already
 > carries an accurate `Scheduled →` marker (2.6.B/2.6.H/2.6.I/2.6.K/2.6.M/2.6.Q) or an accurate "no owner yet"

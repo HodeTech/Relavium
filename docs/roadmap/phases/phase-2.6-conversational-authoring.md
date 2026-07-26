@@ -164,7 +164,8 @@ the same core.
   `nodeCatalogIssue` reads a node-level model *override* but never the resolved agent's own `model:`, so
   the catalog pre-flight is silently dead for the canonical, documented authoring pattern — declaring the
   model once on the `agents:` block. Fix early in this workstream, since the acceptance criterion
-  ("`create` runs the same catalog pre-flight as `run`") depends on this function being correct.
+  ("`create`, `import` and `export` all run the same run-equivalent catalog pre-flight") depends on this
+  function being correct.
   *(M · `packages/core/src/validate-catalog.ts`; #88)*
 - **Run-path tool pre-flight for the unwired egress/os arms:** `build-engine.ts` always assembles the tool
   host at `profile: 'workflow-read-write'`, and `assemble.ts`'s `wireEgressOs` only wires
@@ -184,16 +185,18 @@ the same core.
   today `max_tokens` is validated
   only as a bare positive int and an over-ceiling value 400s opaquely at the wire. Leave an unknown-ceiling
   model (custom `base_url`) as pass-through. No new ADR (rides ADR-0058).
-- Add direct unit tests for `detectAndParse` / `buildAuthored` / `validateAuthoredWorkflow` (today only the
-  command wrappers are tested). Confirmed by the review as a real coverage gap in the core this workstream
-  extracts. *(M · `apps/cli/src/authoring/authoring.ts`; #6)*
+- Add direct unit tests for `detectAndParse` / `buildAuthored` — today only their command wrappers are
+  tested — and for the new `validateAuthoredWorkflow` this workstream introduces (it does not exist yet;
+  only its `validateWorkflowWithCatalog` half ships today). Confirmed by the review as a real coverage gap
+  in the core this workstream extracts. *(M · `apps/cli/src/authoring/authoring.ts`; #6)*
 
 **Acceptance:** `@relavium/authoring` builds and imports **only** `@relavium/core` + `@relavium/shared`
 (lint-fence enforced); the CLI consumes it with `create`/`import`/`export` round-tripping **unchanged**
 (regression-tested); **all three of `create`, `import` and `export`** run the same run-equivalent catalog
-pre-flight (`validateAuthoredWorkflow` = `parseWorkflow` + `validateWorkflowWithCatalog`) that
-`relavium run` uses, so no authoring entrypoint can accept a file the run path rejects; the core is
-directly unit-tested. **Required ADR:** [ADR-0058](../../decisions/0058-relavium-authoring-package-and-conversational-authoring.md)
+pre-flight (`validateAuthoredWorkflow`, defined in the task above) that `relavium run` uses, so no authoring
+entrypoint can accept a **workflow** the run path would reject; the core is directly unit-tested. (All three
+commands also accept `.agent.yaml` via `detectAndParse` → `parseAgent`; catalog pre-flight is
+workflow-shaped, so an agent file stays parse-validated only — a deliberate scope line, not an oversight.) **Required ADR:** [ADR-0058](../../decisions/0058-relavium-authoring-package-and-conversational-authoring.md)
 (Proposed → Accepted when this workstream begins).
 
 ### 2.6.B — Conversational + wizard authoring in the Home
@@ -216,19 +219,22 @@ deferred items.
 - **In-Home authoring wizards**: bring `relavium create`'s wizard into the Home/chat palette (`/create` →
   an ink-native agent/workflow wizard over the same injectable prompter seam), so authoring starts from
   the Home, not only from a shell command.
-- **Wizard TTY prompts don't normalize input** *(review finding):* `create-prompter.ts`'s TTY prompts pass
-  typed values straight through with no `.trim()`, so accidental leading/trailing whitespace silently
-  corrupts an authored value. Fix per field rather than blanket-trimming, in the same prompter seam this
-  task brings into the Home's `/create` wizard:
-  - **`slug`** — trim, then **reject** any value still carrying whitespace with a field-named message.
-    A blanket trim would silently accept `my agent` (interior space), which the schema rejects later and
-    further from the typo.
-  - **`name`** — trim; a leading/trailing space is never meaningful in a display name.
-  - **`description`** — trim leading/trailing whitespace but preserve interior formatting, so a
-    deliberately multi-line description round-trips unchanged.
+- **Wizard TTY prompts don't normalize input** *(review finding):* `create-prompter.ts`'s free-text prompts
+  return the typed value verbatim, so accidental leading/trailing whitespace reaches `CreateSpec`. Fix per
+  field rather than blanket-trimming, in the same prompter seam this task brings into the Home's `/create`
+  wizard. `gather()` collects `kind`, `name`, `provider`, `model`, `systemPrompt` and `tools`; the three
+  free-text fields are:
+  - **`model`** — the material case: trim, and **reject** a value still containing interior whitespace, since
+    a model id is a single token. A trailing space breaks catalog lookup and currently 400s at the wire.
+  - **`name`** — trim. It feeds both the display name and `toSlug()`.
+  - **`systemPrompt`** — trim leading/trailing, preserve interior formatting so a multi-line prompt
+    round-trips unchanged.
 
-  Cover each policy with a prompter test, including the boundary cases: whitespace-only input, interior
-  whitespace in a slug, and a multi-line description. *(S · `apps/cli/src/authoring/create-prompter.ts`; #5)*
+  Two guarantees already hold and must not be re-implemented: `required()` rejects whitespace-only input for
+  every field, and `tools` is already trimmed per element. `toSlug()` also already normalizes whitespace
+  (`my agent` → `my-agent`), so there is no slug prompt to police. Cover each policy with a prompter test,
+  with interior whitespace in `model` and a multi-line `systemPrompt` as the boundary cases.
+  *(S · `apps/cli/src/authoring/create-prompter.ts`; #5)*
 - **`AgentParseError` reaches the chat surfaces** *(deferred pull-in)*: a malformed `.agent.yaml` on
   `chat --agent` / `agent run` currently collapses to a generic exit-1 internal error; resolve the design
   call (wrap into `CliError('invalid_invocation')` at `resolveChatAgent`, or teach the top-level renderer
