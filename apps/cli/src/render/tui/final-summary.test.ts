@@ -197,12 +197,28 @@ describe('renderFinalSummary', () => {
     }
     expect(output).toContain('run error visible');
     expect(output).toContain('failure visible');
-    expect(output).toContain('second failure line'); // prose keeps an intentional newline
+    expect(output).toContain('second failure line'); // summary errors stay readable after a newline collapses
     expect(output).toContain('node visible');
     expect(output).toContain('node error visible');
     expect(output).toContain('image/png visible');
     expect(output).toContain('media://visible');
     expect(output).toContain('media node visible');
     expect(output).toContain('gate visible');
+  });
+
+  it('keeps an untrusted failure message on its one summary row (it cannot forge a node status)', () => {
+    const state: RunViewState = {
+      ...initialRunViewState(),
+      summary: {
+        outcome: 'failed',
+        errorMessage: 'provider failed\n  ✓ deploy completed',
+      },
+    };
+
+    const lines = renderFinalSummary(state).trimEnd().split('\n');
+    expect(lines).toHaveLength(2); // headline + one labeled error row; no forged third status row
+    expect(lines[1]).toContain('provider failed');
+    expect(lines[1]).toContain('✓ deploy completed');
+    expect(lines).not.toContain('  ✓ deploy completed');
   });
 });

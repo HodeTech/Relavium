@@ -7,7 +7,7 @@ import {
 } from './format.js';
 import { nodeSuffix } from './projection.js';
 import type { RunViewState } from './run-view-model.js';
-import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
+import { sanitizeInline } from '../sanitize.js';
 
 /**
  * Render the **persistent** final summary the `ink` renderer writes after it unmounts (workstream **2.E**).
@@ -55,7 +55,9 @@ export function renderFinalSummary(state: RunViewState): string {
   lines.push(meta.join(' · '));
 
   if (summary?.errorMessage !== undefined) {
-    lines.push(`  ${stripTerminalControls(summary.errorMessage)}`);
+    // A summary error occupies ONE structural row. Collapse line/column separators as well as terminal
+    // controls, so provider/model text cannot forge a believable node-status row beneath the headline.
+    lines.push(`  ${sanitizeInline(summary.errorMessage)}`);
   }
 
   for (const id of state.nodeOrder) {
