@@ -354,8 +354,14 @@ export function createSessionStore(db: Db): SessionStore {
       }));
 
   return {
+    // The three single-statement session writers below go through `withBusyRetry` (#228). They are NOT wrapped
+    // in a transaction — a lone INSERT/UPDATE already takes the write lock immediately, so `BEGIN IMMEDIATE`
+    // would buy nothing, which is why `database-schema.md` exempts single-statement writes from it. The retry
+    // is the orthogonal half: `busy_timeout` waits 5 s and then *fails*, and for these three writers a failure
+    // is a lost chat turn plus — before this — a dead process, because the chat persister calls them from
+    // inside a `RunEventBus` subscriber whose throw became an unhandled rejection.
     createSession: (record) => {
-      db.insert(agentSessions).values(toAgentSessionRow(record)).run();
+      withBusyRetry(() => db.insert(agentSessions).values(toAgentSessionRow(record)).run());
     },
     updateSession: (record) => {
       // `created_at` is frozen at creation, so it (and the `id` WHERE-key) are dropped from the SET payload —
@@ -372,7 +378,9 @@ export function createSessionStore(db: Db): SessionStore {
       delete mutable.id;
       delete mutable.createdAt;
       delete mutable.totalCostMicrocents;
-      db.update(agentSessions).set(mutable).where(eq(agentSessions.id, record.id)).run();
+      withBusyRetry(() =>
+        db.update(agentSessions).set(mutable).where(eq(agentSessions.id, record.id)).run(),
+      );
     },
 
     recordSessionCost: (entry) => {
@@ -443,7 +451,9 @@ export function createSessionStore(db: Db): SessionStore {
     loadSession,
     listSessions,
     appendMessage: (message, meta) => {
-      db.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run();
+      withBusyRetry(() =>
+        db.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run(),
+      );
     },
     loadMessages,
     loadFull: (sessionId) =>

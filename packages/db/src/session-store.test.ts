@@ -603,6 +603,68 @@ describe('SessionStore — loadFull snapshot isolation (2.5.I)', () => {
  * the two writes into two transactions, since both would normally succeed and the sums would agree anyway. So the
  * mechanism is pinned too.
  */
+/**
+ * #228: the three single-statement session writers under real cross-process lock contention. Before the fix
+ * they went straight at the write lock with nothing but `busy_timeout` behind them — so once that 5 s wait
+ * expired the statement simply threw, and because the chat persister calls these from inside a `RunEventBus`
+ * subscriber, the throw became an unhandled rejection that killed the CLI after the reply was already shown.
+ * A held write lock plus `busy_timeout = 0` reproduces that deterministically, with no waiting and no threads.
+ */
+describe('SessionStore — the session writers survive lock contention (#228)', () => {
+  /** A `better-sqlite3`-shaped lock fault: an `Error` carrying the string `.code` the driver sets. */
+  const busy = (): Error => Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+
+  /**
+   * Inject ONE lock fault into the next `db.<verb>()` call, then let the real implementation through. The
+   * throw lands inside the wrapped `fn`, which is all `withBusyRetry` cares about — so this pins "the wrapper
+   * is present on this writer" deterministically, in ~25 ms, without a second process or a real held lock.
+   * (`withBusyRetry`'s behaviour against REAL `SQLITE_BUSY` contention is covered in `retry.test.ts`.)
+   */
+  const failOnce = (verb: 'insert' | 'update'): void => {
+    vi.spyOn(client.db, verb).mockImplementationOnce(() => {
+      throw busy();
+    });
+  };
+
+  // The suite does not restore mocks globally (the file's other spy-using describe restores its own), so a
+  // leaked `db.insert` spy would silently corrupt every later test in the file.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('appendMessage retries a lock fault instead of throwing — the lost-turn case', () => {
+    store.createSession(makeSession());
+    failOnce('insert');
+    expect(() => store.appendMessage(makeMessage(0))).not.toThrow();
+    expect(store.loadMessages('sess-1')).toHaveLength(1); // the row really landed, not just "didn't throw"
+  });
+
+  it('createSession retries a lock fault', () => {
+    failOnce('insert');
+    expect(() => store.createSession(makeSession())).not.toThrow();
+    expect(store.loadSession('sess-1')).toBeDefined();
+  });
+
+  it('updateSession retries a lock fault', () => {
+    store.createSession(makeSession());
+    failOnce('update');
+    expect(() => store.updateSession(makeSession({ status: 'ended' }))).not.toThrow();
+    expect(store.loadSession('sess-1')?.status).toBe('ended');
+  });
+
+  it('still FAILS LOUD once the budget is exhausted — a dropped turn is never silent', () => {
+    // The point of the retry is to absorb a TRANSIENT lock, never to hide a persistent one: a swallowed write
+    // is silent data loss (ADR-0050). Beyond the budget the ORIGINAL driver error is rethrown, which is exactly
+    // what the bus's `onListenerError` sink then reports to the user.
+    store.createSession(makeSession());
+    const persistent = busy();
+    vi.spyOn(client.db, 'insert').mockImplementation(() => {
+      throw persistent;
+    });
+    expect(() => store.appendMessage(makeMessage(0))).toThrow(persistent);
+  });
+});
+
 describe('session_costs — the ADR-0070 reconciliation invariant', () => {
   const sumRows = (sessionId: string): number =>
     store.loadSessionCosts(sessionId).reduce((n, r) => n + r.costMicrocents, 0);
