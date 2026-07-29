@@ -125,7 +125,9 @@ jobs:
 
       # `tools/` is real code that gates real things (the seam fence, the bundle-closure guard, the
       # models.dev sync). The root `ci` script has always linted it; this job never did, so a lint error in
-      # a guard script could merge while `pnpm ci` was red locally (#312).
+      # a guard script could merge while `pnpm run ci` was red locally (#312).
+      # NB: it is `pnpm run ci`, never `pnpm ci` — pnpm reserves `ci` as a builtin and answers
+      # `ERR_PNPM_CI_NOT_IMPLEMENTED`, so the script is unreachable by the name everyone types.
       - name: Lint the tooling scripts
         run: pnpm lint:tools
 

@@ -54,7 +54,7 @@ export default defineConfig({
       thresholds: {
         'packages/llm/src/**/*.ts': { lines: 90, branches: 90 },
         'packages/mcp/src/**/*.ts': { lines: 90, branches: 90 }, // the inbound-MCP fence + compiler — 2.R
-        ...(process.env.RELAVIUM_COVERAGE_ENFORCED_ONLY === '1'
+        ...(process.env['RELAVIUM_COVERAGE_ENFORCED_ONLY'] === '1'
           ? {}
           : // engine floor — core landed at 1.L
             { 'packages/core/src/**/*.ts': { lines: 90, branches: 90 } }),

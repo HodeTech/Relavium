@@ -110,7 +110,8 @@ checklists before ~30 security-gated PRs are reviewed against them.
    `0015` = 2.6.H · `0016` = 2.6.G's pins · `0017` = 2.6.N lineage; **ADR-0073+** for the nine unwritten 2.6 ADRs.
 3. **One `ci.yml`/`turbo.json`/`tsup.config.ts` PR** (a five-way collision file — do not split):
    2.5.5.H · the required gate never runs the compiled binary + undeclared `drizzle` output (#294, #315) →
-   local `pnpm ci` vs `ci.yml` divergence (#312) → the coverage-floor **ruling and its implementation**
+   local `pnpm run ci` vs `ci.yml` divergence (#312 — and `pnpm ci` is shadowed by a pnpm builtin, so the
+   script was unreachable by the name everyone types) → the coverage-floor **ruling and its implementation**
    (#296, #152) → the `(advisory)` labels (#320) → `THIRD_PARTY_EXTERNAL` (G27, #248) → bundle-closure
    single-chunk assert (#314) → `sync:models:check` (#317). *(`release.yml`'s ancestry check, `G26`, already
    landed in #77; only its tag-protection half remains, and that is now configured too.)*
