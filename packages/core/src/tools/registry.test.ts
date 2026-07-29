@@ -779,6 +779,59 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
     expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ command: 'ls' });
   });
 
+  /* --- #91: the approval preview is secret-redacted, like sanitizeInput() already is (ADR-0029(c)) --- */
+
+  // A syntactically valid but FAKE credential: 20 alphanumerics after `sk-`, which is what
+  // `redactSecretShapedText`'s standalone-shape alternation matches (`sk-[A-Za-z0-9]{16,}`).
+  const FAKE_KEY = 'sk-ABCDEFGHIJKLMNOP1234';
+
+  it('redacts a secret-shaped segment of an fs_write path before it reaches the preview', async () => {
+    const confirm = approving();
+    const { host } = hostWithWriteSpy();
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: `./${FAKE_KEY}/out.txt`, content: 'hi' }),
+      ctx({ approval: { confirm } }),
+    );
+    expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ path: './[redacted]/out.txt' });
+  });
+
+  it('redacts a credential carried in a run_command arg before it reaches the preview', async () => {
+    const confirm = approving();
+    await registry().dispatch(
+      call('run_command', { command: 'curl', args: ['-H', `Authorization: Bearer ${FAKE_KEY}`] }),
+      ctx({ approval: { confirm }, toolPolicy: { allowedCommandGlobs: ['curl *'] } }),
+    );
+    // Assert the SECURITY property (the credential is gone, something was scrubbed) rather than pinning the
+    // exact output — the redactor's pattern set is free to tighten without dragging this test with it.
+    const command = confirm.mock.calls[0]?.[0]?.preview.command;
+    expect(command).not.toContain(FAKE_KEY);
+    expect(command).toContain('[redacted]');
+  });
+
+  it('redacts the EA5 agent:approval_requested preview too — the --json/observability copy, not just the prompt', async () => {
+    const confirm = approving();
+    const emitApprovalRequested = vi.fn<(req: ToolApprovalRequest) => void>();
+    const { host } = hostWithWriteSpy();
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: `./${FAKE_KEY}.txt`, content: 'hi' }),
+      ctx({ approval: { confirm, emitApprovalRequested } }),
+    );
+    expect(emitApprovalRequested.mock.calls[0]?.[0]?.preview).toEqual({ path: './[redacted].txt' });
+  });
+
+  it('leaves an ordinary path untouched — including a PROTECTED one, whose auto-mode classification must survive', async () => {
+    const confirm = approving();
+    const { host } = hostWithWriteSpy();
+    // `.env` is the canonical protected target the CLI's auto-mode `isProtectedTarget` matches on the preview
+    // path. Redaction is shape-targeted, so a protected path passes through byte-identical and that
+    // classification cannot silently degrade into an auto-approve.
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: './config/.env', content: 'hi' }),
+      ctx({ approval: { confirm } }),
+    );
+    expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ path: './config/.env' });
+  });
+
   it('forwards ctx.signal to the confirm hook as its second argument', async () => {
     const signal = mutableSignal();
     const confirm = approving();

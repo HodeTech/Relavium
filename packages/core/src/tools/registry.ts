@@ -9,7 +9,12 @@
 
 import { extractHttpsHost, type ToolActionClass } from '@relavium/shared';
 
-import { boundForModel, redactInlineMedia, redactSecretShapedValue } from './bounding.js';
+import {
+  boundForModel,
+  redactInlineMedia,
+  redactSecretShapedText,
+  redactSecretShapedValue,
+} from './bounding.js';
 import {
   ToolArgsInvalidError,
   ToolCancelledError,
@@ -432,19 +437,39 @@ export function governedAction(def: ToolDef, target: PolicyTarget): ToolActionCl
   return undefined;
 }
 
-/** A secret-free preview for the approval prompt: the resolved path / command / host (never a full URL). */
+/**
+ * A secret-free preview for the approval prompt: the resolved path / command / host (never a full URL).
+ *
+ * "Secret-free" is **enforced**, not merely asserted: every field is scrubbed with the SAME
+ * `redactSecretShapedText` detector `sanitizeInput()` applies to `toolInput` moments later in this dispatch
+ * (ADR-0029(c) — the taint gate only covers KNOWN `secret`-typed args, so a model-placed credential in a
+ * `run_command` arg or a `write_file` path would otherwise ride this preview verbatim onto the approval
+ * prompt and the `agent:approval_requested` / `--json` observability stream).
+ *
+ * Display-only, in both directions: the dispatch has already resolved and policy-checked the REAL target
+ * (`enforcePolicy` runs before `confirmDispatch`), so scrubbing here can never change which side effect runs.
+ * The one consumer that reads a preview field back is the CLI's `auto`-mode `isProtectedTarget` check — and
+ * the scrub is shape-targeted, so an ordinary protected path (`.env`, `.ssh/…`) passes through byte-identical
+ * (pinned in `registry.test.ts`); the fs layer hard-denies protected paths regardless, so that check is the
+ * graceful UX, never the security floor.
+ */
 function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
   switch (action) {
     case 'fs_write':
-      return target.path === undefined ? {} : { path: target.path };
+      return target.path === undefined ? {} : { path: redactSecretShapedText(target.path) };
     case 'process':
-      return target.command === undefined ? {} : { command: target.command };
+      return target.command === undefined
+        ? {}
+        : { command: redactSecretShapedText(target.command) };
     case 'egress': {
       if (target.url === undefined) {
         return {}; // web_search / mcp_call expose no pre-dispatch URL target — the action class is enough
       }
       const parsed = extractHttpsHost(target.url);
-      return parsed === null ? {} : { host: parsed.host };
+      // The host is provably an author-allowlisted FQDN by the time we get here (`enforceHttpEgress` ran in
+      // the floor above), so this scrub is defence in depth: it keeps all three preview fields on one rule,
+      // so a future action class or a reordered floor cannot quietly reopen the leak on this branch alone.
+      return parsed === null ? {} : { host: redactSecretShapedText(parsed.host) };
     }
     case 'os':
       // read_clipboard / notify carry no path/command/host target — the action class + the tool id (on the
