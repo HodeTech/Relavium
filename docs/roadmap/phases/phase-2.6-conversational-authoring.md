@@ -910,9 +910,11 @@ sensitive-read floors).
   (path prefix / host / MCP server) instead of tool id alone, and give `mcp_call`/`web_search` a structured
   `{server, tool}`/query preview so their blank-preview once-only downgrade becomes a real reviewable
   grant.
-- **Dynamic `invoke_workflow` from within a workflow agent node** — **moved to 2.6.P** (workflow
-  composition), where it sits with the `subworkflow` node and the nested-run event namespace. (`invoke_agent`
-  is wired for chat in 2.6.N; the dynamic runtime `invoke_workflow` question is **deferred past the phase** (D57); 2.6.P's ADR records the deferral, not an analysis.)
+- **Dynamic `invoke_workflow` from within a workflow agent node** — **not a 2.6.M deliverable, and not a
+  2.6.P one either.** It is tracked *alongside* 2.6.P (workflow composition), whose `subworkflow` node and
+  nested-run event namespace are its natural home, but the capability itself is **deferred past Phase 2.6**
+  (D57): 2.6.P's ADR records the deferral and its rationale rather than implementing it. (`invoke_agent` is
+  wired for chat in 2.6.N — agent spawning is separate from workflow composition.)
 - **Default chat agent grant review**: widen the built-in agent's grant to the new idempotent read tools
   (search/find/todo); write/exec/egress stay opt-in via mode + approval.
 - **Curl/wget as web-search substrate** *(research item)*: evaluate whether `curl` / `wget` / `httpie` /

@@ -131,20 +131,16 @@ jobs:
       - name: Lint the tooling scripts
         run: pnpm lint:tools
 
-      # RUN the artifact this job just built. Until now nothing in the required gate executed
+      # RUN the artifact this job just built, through the SAME `pnpm smoke:cli` script the root `ci` script
+      # calls — a check that exists in only one of the two is exactly the #312 divergence this change closes.
+      # Until now nothing in the required gate executed
       # `apps/cli/dist/index.js` — only the advisory Windows leg and the tag-gated release smoke did (#294) —
       # so a bundle that builds but cannot boot merged green. The `run --json` leg additionally proves the
       # migrations resolve beside the bundle, which is the failure `apps/cli/drizzle/**` becoming a declared
       # turbo output (#315) exists to prevent: a cache-hit replay used to leave `dist/` fresh next to a
       # missing `drizzle/`, crashing on first DB touch with nothing red anywhere.
       - name: Smoke the compiled binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          node apps/cli/dist/index.js --version
-          node apps/cli/dist/index.js --help >/dev/null
-          node apps/cli/dist/index.js run apps/cli/src/harness/fixtures/sequential.relavium.yaml \
-            --input n=21 --json >/dev/null
+        run: pnpm smoke:cli
 
   # Supported-floor gate (ADR-0067). TWO floors, deliberately different:
   #   * the PUBLISHED floor is `apps/cli` `engines.node` = `>=22` — the max constraint in the CLI's RUNTIME
@@ -207,11 +203,11 @@ jobs:
       - name: Install with strict peers
         run: pnpm install --frozen-lockfile --config.strict-peer-dependencies=true
 
-  # Engine coverage floor (testing.md >=90% line+branch, exit criterion #5). Advisory for now — a
-  # SEPARATE job (not part of the required `ci` job) so it surfaces a regression without blocking merge
-  # while the core-package branch margin is thin. `pnpm coverage` is a repo-ROOT run, which is what makes
-  # the root-relative per-glob thresholds (packages/core, packages/llm) authoritative (vitest.config.ts).
-  # Promote to a required check once the margin is confirmed stable under CI's Node 24.
+  # Engine coverage floor (testing.md >=90% line+branch, exit criterion #5). A REQUIRED check named
+  # `engine coverage floor (llm, mcp)` — kept as a SEPARATE job from `ci` so a coverage regression is
+  # legible on its own line rather than buried in a 12-step job. It is a repo-ROOT vitest run, which is what
+  # makes the root-relative per-glob thresholds authoritative (vitest.config.ts). `packages/core` is measured
+  # but not enforced here; see the header for the ruling and its promotion trigger.
   coverage:
     name: engine coverage floor (llm, mcp)
     runs-on: ubuntu-latest

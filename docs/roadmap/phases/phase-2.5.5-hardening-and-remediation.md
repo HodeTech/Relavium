@@ -11,7 +11,7 @@
 > absorbing 48 originals, 1 split separating a mis-bundled finding), with full 373-finding
 > coverage re-verified programmatically (0 missing, 0 duplicated). This file holds the items
 > that are not a natural fit for an open Phase 2.6 workstream.
-
+>
 > **Authority (until Phase 2.5.5 and Phase 2.6 close):** [`current.md`](../current.md) is canonical for
 > live progress and execution order; the phase documents stay canonical for scope and acceptance. Ordering
 > differences between the two are deliberate. `current.md` may override recommended ordering — it may **not**

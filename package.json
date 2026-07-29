@@ -17,8 +17,8 @@
     "typecheck:tools": "tsc -p tsconfig.tools.json",
     "test": "turbo run test",
     "coverage": "vitest run --coverage",
-    "coverage:enforced": "RELAVIUM_COVERAGE_ENFORCED_ONLY=1 vitest run --coverage",
-    "ci": "turbo run lint typecheck test && pnpm db:sync-check && pnpm typecheck:tools && pnpm lint:tools && turbo run build format:check && pnpm lint:fence-check && pnpm lint:engine-deps && pnpm lint:bundle-closure",
+    "coverage:enforced": "node tools/coverage/enforced.mjs",
+    "ci": "turbo run lint typecheck test && pnpm db:sync-check && pnpm typecheck:tools && pnpm lint:tools && turbo run build format:check && pnpm lint:fence-check && pnpm lint:engine-deps && pnpm lint:bundle-closure && pnpm smoke:cli",
     "lint:fence-check": "node tools/lint-fixtures/assert-fence.mjs",
     "lint:engine-deps": "node tools/engine-deps/check.mjs",
     "lint:bundle-closure": "node tools/bundle-closure/check.mjs",
@@ -27,7 +27,8 @@
     "sync:models": "pnpm turbo run build --filter=@relavium/llm && node tools/sync-models-dev/sync.mjs",
     "sync:models:check": "pnpm turbo run build --filter=@relavium/llm && node tools/sync-models-dev/sync.mjs --check",
     "lint:tools": "eslint tools --ignore-pattern 'tools/lint-fixtures/**'",
-    "db:sync-check": "pnpm --filter @relavium/db db:generate && test -z \"$(git status --porcelain packages/db/drizzle)\" || { git status --porcelain packages/db/drizzle; echo 'error: committed @relavium/db migration is out of sync with src/schema.ts — regenerate and commit: pnpm --filter @relavium/db db:generate'; exit 1; }"
+    "db:sync-check": "pnpm --filter @relavium/db db:generate && test -z \"$(git status --porcelain packages/db/drizzle)\" || { git status --porcelain packages/db/drizzle; echo 'error: committed @relavium/db migration is out of sync with src/schema.ts — regenerate and commit: pnpm --filter @relavium/db db:generate'; exit 1; }",
+    "smoke:cli": "node tools/cli-smoke/check.mjs"
   },
   "devDependencies": {
     "@eslint/js": "catalog:",
