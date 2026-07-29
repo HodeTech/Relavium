@@ -696,6 +696,24 @@ describe('createAgentNodeExecutor — generative media (1.AG Section C, generate
     expect(info?.mediaUnitsEstimate).toEqual([{ modality: 'image', units: 2 }]);
   });
 
+  it('releases the direct generative admission once a synchronous media call has emitted its realized cost', async () => {
+    let releases = 0;
+    const admission = {
+      settle: (): void => undefined,
+      release: (): void => {
+        releases += 1;
+      },
+    };
+    const exec = createAgentNodeExecutor(
+      genDeps(generativeProvider(), {
+        preEgress: () => admission,
+      }),
+    );
+
+    expect((await exec.execute(ctxFor(genVertex()).ctx)).kind).toBe('completed');
+    expect(releases).toBe(1);
+  });
+
   it('maps a generateMedia provider error through the chat taxonomy (content_filter stays content_filter)', async () => {
     const exec = createAgentNodeExecutor(
       genDeps(

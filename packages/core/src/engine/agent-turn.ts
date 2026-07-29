@@ -56,7 +56,7 @@ import {
 import { ToolDispatchError } from '../tools/errors.js';
 import type { ToolCallPart, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
 import { unwrapUntrusted } from '../tools/untrusted.js';
-import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
+import { BudgetExceededError, BudgetPauseError, type BudgetAdmission } from './budget-governor.js';
 import type { NodeStreamEvent } from './node-executor.js';
 
 /**
@@ -103,6 +103,9 @@ export const DEFAULT_AGENT_TURN_LIMITS: AgentTurnLimits = {
  * (`budget_exceeded`) to halt. `outputModalities` + `mediaUnitsEstimate` (1.AF/D17) are populated by the
  * AgentRunner from the node's `output_modalities` + the `[defaults].media_cost_estimate` unit counts so the
  * governor can fold a media cost estimate into the projected total; both absent ⇒ a text-only turn.
+ * When the hook returns a {@link BudgetAdmission}, the matching provider-attempt owner settles it with the
+ * realized charge or releases it on a no-charge outcome. A loop-top cancellation probe releases its transient
+ * admission before the FallbackChain acquires the durable attempt admission.
  */
 export type PreEgressHook = (info: {
   readonly model: string;
@@ -113,7 +116,7 @@ export type PreEgressHook = (info: {
   readonly provider?: ProviderId;
   readonly outputModalities?: readonly OutputModality[];
   readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
-}) => void | Promise<void>;
+}) => void | BudgetAdmission | Promise<void | BudgetAdmission>;
 
 /** The chain capabilities the host supplies (the platform-level subset of {@link FallbackChainOptions}). */
 export type ChainCapabilities = Pick<
@@ -622,8 +625,9 @@ async function awaitPreEgress(
   activeModel: string,
   activeProvider: ProviderId | undefined,
 ): Promise<void> {
+  let admission: BudgetAdmission | undefined;
   try {
-    await params.preEgress?.({
+    const nextAdmission = await params.preEgress?.({
       model: activeModel,
       ...(activeProvider === undefined ? {} : { provider: activeProvider }),
       ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
@@ -634,11 +638,16 @@ async function awaitPreEgress(
         ? {}
         : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
     });
+    if (nextAdmission !== undefined) admission = nextAdmission;
   } catch (err) {
     if (err instanceof BudgetExceededError) {
       throw new AgentTurnError('budget_exceeded', err.message, false);
     }
     throw err;
+  } finally {
+    // The loop-top check protects the cancellation window but is not the true egress boundary. Drop its temporary
+    // admission before the FallbackChain performs the per-attempt admission, or one LLM call would reserve twice.
+    admission?.release();
   }
 }
 
@@ -752,20 +761,47 @@ async function driveAgentTurn(
   // (review M2). Starts on the primary entry's provider.
   let activeProvider: ProviderId | undefined = params.planEntries[0]?.provider.id;
   let nonSkippedAttempts = 0;
+  const preEgress = params.preEgress;
+  // A chain executes one provider attempt at a time, so one per-turn slot is sufficient. It is deliberately NOT a
+  // governor-global FIFO: parallel nodes can settle out of order, and a failed/no-usage attempt has no cost event
+  // from which a global queue could infer which reservation to release.
+  let attemptAdmission: BudgetAdmission | undefined;
+  let admissionPending = false;
+  const releaseAttemptAdmission = (): void => {
+    if (!admissionPending) return;
+    admissionPending = false;
+    const active = attemptAdmission;
+    attemptAdmission = undefined;
+    active?.release();
+  };
+  const takeAttemptAdmission = (): BudgetAdmission | undefined => {
+    if (!admissionPending) return undefined;
+    admissionPending = false;
+    const active = attemptAdmission;
+    attemptAdmission = undefined;
+    return active;
+  };
 
   const onAttempt = (record: AttemptRecord): void => {
     // A SKIPPED entry (cooldown / capability) was not invoked — it must not become `activeModel`, or
     // the next entry's streamed tokens would be mis-attributed to a provider that never ran.
     if (record.outcome === 'skipped') return;
+    const admission = takeAttemptAdmission();
     activeModel = record.model;
     activeProvider = record.provider;
     nonSkippedAttempts += 1;
     usage.engaged = true; // a non-skipped attempt RAN — mark engaged even if it then errored at zero usage
-    if (record.usage === undefined) return;
+    if (record.usage === undefined) {
+      admission?.release();
+      return;
+    }
     usage.input += record.usage.inputTokens;
     usage.output += record.usage.outputTokens;
     // The chain already folded this attempt's usage into our `costTracker` and put the per-attempt
     // figure on `record.cost`; read it rather than re-recording (which would double the total).
+    // Settle BEFORE the event sink: it replaces this attempt's reservation with the realized amount atomically,
+    // keeping the governor safe even if a re-entrant/throwing sink prevents the authoritative engine update below.
+    admission?.settle(record.cost?.costMicrocents ?? 0);
     params.emit({
       type: 'cost:updated',
       nodeId: params.nodeId,
@@ -783,7 +819,6 @@ async function driveAgentTurn(
     });
   };
 
-  const preEgress = params.preEgress;
   const chain = new FallbackChain([...params.planEntries], {
     ...params.chainCapabilities,
     costTracker,
@@ -796,12 +831,18 @@ async function driveAgentTurn(
     ...(preEgress === undefined
       ? {}
       : {
-          preAttempt: (info: {
+          preAttempt: async (info: {
             readonly model: string;
             readonly provider: ProviderId;
             readonly maxTokens?: number;
-          }) =>
-            preEgress({
+          }) => {
+            // The loop-top guard has already performed its temporary cancellation-window check. This is the true
+            // provider-attempt boundary, so retain its admission until FallbackChain reports the matching record.
+            // A defensive release makes an abandoned async iterator fail closed without poisoning a later attempt.
+            releaseAttemptAdmission();
+            admissionPending = true;
+            attemptAdmission = undefined;
+            const nextAdmission = await preEgress({
               ...info,
               ...(params.outputModalities === undefined
                 ? {}
@@ -809,7 +850,9 @@ async function driveAgentTurn(
               ...(params.mediaUnitsEstimate === undefined
                 ? {}
                 : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
-            }),
+            });
+            if (nextAdmission !== undefined) attemptAdmission = nextAdmission;
+          },
         }),
   });
 
@@ -818,66 +861,27 @@ async function driveAgentTurn(
     content: [...m.content],
   }));
 
-  // Inline media-out (1.AG/[ADR-0046]): a node requesting a non-text output modality runs a single-shot
-  // `generate()` (the chain's existing non-streaming path) — terminal, NO tool loop (a media turn is the
-  // agent's final artifact and `generate()` is one round-trip). The two budget gates below mirror the text
-  // path: `awaitPreEgress` (primary-model, zero-egress-on-cancel) then the chain's per-attempt `preAttempt`.
-  if (requestsMediaOutput(params)) {
-    await awaitPreEgress(params, activeModel, activeProvider);
-    throwIfAborted(params.signal);
-    const turn = await generateOneTurn(chain, messages, params);
-    throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)
-    if (turn.stopReason === 'tool_use') {
-      // A media-output turn is single-shot/terminal (ADR-0046): generate() is one round-trip with no tool
-      // loop, and `buildRequest` offers it no tools. A `tool_use` stop is therefore a provider PROTOCOL
-      // ANOMALY — the provider signalled a tool call we never offered and cannot run — so it maps to
-      // `provider_unavailable`, exactly as the stream path's `tool_use`-stop-with-nothing-runnable guard does.
-      throw new AgentTurnError(
-        'provider_unavailable',
-        'a media-output turn signalled a tool_use stop but cannot run a tool round (ADR-0046)',
-        false,
-      );
-    }
-    return {
-      content: turn.content,
-      text: textOf(turn.content),
-      usage: { input: usage.input, output: usage.output },
-      model: activeModel,
-      stopReason: turn.stopReason,
-    };
-  }
-
-  let corrections = 0;
-
-  for (let toolTurn = 0; ; toolTurn += 1) {
-    throwIfAborted(params.signal);
-    if (toolTurn > params.limits.maxToolTurns) {
-      throw new AgentTurnError(
-        'turn_limit',
-        `agent exceeded the ${params.limits.maxToolTurns}-turn tool-call limit`,
-        false,
-      );
-    }
-    // Two distinct budget gates, by design — NOT a duplicate of the chain's per-attempt check:
-    //  • This loop-top `awaitPreEgress` runs ONCE per tool turn against the PRIMARY model. It is the
-    //    zero-egress-on-cancel guarantee — a cancel landing inside its async check is caught by the
-    //    re-check below, before any provider is engaged.
-    //  • `FallbackChain.preAttempt` then runs again per chain attempt against the ACTUAL (possibly
-    //    failed-over) model, so a failover to a pricier model is still enforced. `streamOneTurn` maps a
-    //    chain-path Budget*Error back into this taxonomy via `chunk.error.cause`.
-    await awaitPreEgress(params, activeModel, activeProvider);
-    // The preEgress hook is awaited (its budget check may be async), so the signal can fire during
-    // that await. Re-check before engaging the provider so a cancel there costs no egress — symmetric
-    // with the post-stream re-check below.
-    throwIfAborted(params.signal);
-
-    const turn = await streamOneTurn(chain, messages, params, () => activeModel);
-    // Cancel-wins independent of adapter cooperation: if the signal fired mid-stream but a
-    // non-signal-honoring adapter still settled cleanly, fail `cancelled` rather than return a
-    // stray completed result (mirrors the registry's post-await re-check).
-    throwIfAborted(params.signal);
-
-    if (turn.stopReason !== 'tool_use') {
+  try {
+    // Inline media-out (1.AG/[ADR-0046]): a node requesting a non-text output modality runs a single-shot
+    // `generate()` (the chain's existing non-streaming path) — terminal, NO tool loop (a media turn is the
+    // agent's final artifact and `generate()` is one round-trip). The two budget gates below mirror the text
+    // path: `awaitPreEgress` (primary-model, zero-egress-on-cancel) then the chain's per-attempt `preAttempt`.
+    if (requestsMediaOutput(params)) {
+      await awaitPreEgress(params, activeModel, activeProvider);
+      throwIfAborted(params.signal);
+      const turn = await generateOneTurn(chain, messages, params);
+      throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)
+      if (turn.stopReason === 'tool_use') {
+        // A media-output turn is single-shot/terminal (ADR-0046): generate() is one round-trip with no tool
+        // loop, and `buildRequest` offers it no tools. A `tool_use` stop is therefore a provider PROTOCOL
+        // ANOMALY — the provider signalled a tool call we never offered and cannot run — so it maps to
+        // `provider_unavailable`, exactly as the stream path's `tool_use`-stop-with-nothing-runnable guard does.
+        throw new AgentTurnError(
+          'provider_unavailable',
+          'a media-output turn signalled a tool_use stop but cannot run a tool round (ADR-0046)',
+          false,
+        );
+      }
       return {
         content: turn.content,
         text: textOf(turn.content),
@@ -887,16 +891,61 @@ async function driveAgentTurn(
       };
     }
 
-    // A tool-use turn: append the assistant turn + dispatch its calls (extracted to keep this loop within
-    // the cognitive-complexity budget). Returns the updated correction count; throws on a protocol anomaly
-    // or an exhausted correction budget.
-    corrections = await dispatchToolUseTurn(
-      turn.content,
-      messages,
-      params,
-      () => activeModel,
-      nonSkippedAttempts,
-      corrections,
-    );
+    let corrections = 0;
+
+    for (let toolTurn = 0; ; toolTurn += 1) {
+      throwIfAborted(params.signal);
+      if (toolTurn > params.limits.maxToolTurns) {
+        throw new AgentTurnError(
+          'turn_limit',
+          `agent exceeded the ${params.limits.maxToolTurns}-turn tool-call limit`,
+          false,
+        );
+      }
+      // Two distinct budget gates, by design — NOT a duplicate of the chain's per-attempt check:
+      //  • This loop-top `awaitPreEgress` runs ONCE per tool turn against the PRIMARY model. It is the
+      //    zero-egress-on-cancel guarantee — a cancel landing inside its async check is caught by the
+      //    re-check below, before any provider is engaged.
+      //  • `FallbackChain.preAttempt` then runs again per chain attempt against the ACTUAL (possibly
+      //    failed-over) model, so a failover to a pricier model is still enforced. `streamOneTurn` maps a
+      //    chain-path Budget*Error back into this taxonomy via `chunk.error.cause`.
+      await awaitPreEgress(params, activeModel, activeProvider);
+      // The preEgress hook is awaited (its budget check may be async), so the signal can fire during
+      // that await. Re-check before engaging the provider so a cancel there costs no egress — symmetric
+      // with the post-stream re-check below.
+      throwIfAborted(params.signal);
+
+      const turn = await streamOneTurn(chain, messages, params, () => activeModel);
+      // Cancel-wins independent of adapter cooperation: if the signal fired mid-stream but a
+      // non-signal-honoring adapter still settled cleanly, fail `cancelled` rather than return a
+      // stray completed result (mirrors the registry's post-await re-check).
+      throwIfAborted(params.signal);
+
+      if (turn.stopReason !== 'tool_use') {
+        return {
+          content: turn.content,
+          text: textOf(turn.content),
+          usage: { input: usage.input, output: usage.output },
+          model: activeModel,
+          stopReason: turn.stopReason,
+        };
+      }
+
+      // A tool-use turn: append the assistant turn + dispatch its calls (extracted to keep this loop within
+      // the cognitive-complexity budget). Returns the updated correction count; throws on a protocol anomaly
+      // or an exhausted correction budget.
+      corrections = await dispatchToolUseTurn(
+        turn.content,
+        messages,
+        params,
+        () => activeModel,
+        nonSkippedAttempts,
+        corrections,
+      );
+    }
+  } finally {
+    // An iterator consumer/fold/event sink can throw before FallbackChain emits its record. Never leave that
+    // half-open attempt reserving capacity for the rest of this run/session.
+    releaseAttemptAdmission();
   }
 }

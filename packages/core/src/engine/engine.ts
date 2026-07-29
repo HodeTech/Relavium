@@ -1081,7 +1081,7 @@ class RunExecution {
 
   /**
    * Build the pre-egress hook for this run, when a budget is configured. The hook is stateful:
-   * it sees the run's current cumulative cost and may emit a one-time `budget:warning` or throw
+   * it sees the run's current cumulative cost and may emit a re-armable `budget:warning` or throw
    * `BudgetExceededError` / `BudgetPauseError` for `fail` / `pause_for_approval`.
    */
   #makePreEgressHook(): import('./agent-turn.js').PreEgressHook | undefined {

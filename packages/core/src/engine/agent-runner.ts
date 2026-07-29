@@ -64,7 +64,7 @@ import {
   type ChainCapabilities,
   type PreEgressHook,
 } from './agent-turn.js';
-import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
+import { BudgetExceededError, BudgetPauseError, type BudgetAdmission } from './budget-governor.js';
 import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
 import type {
   EffortGateResult,
@@ -496,14 +496,16 @@ async function executeGenerativeMedia(
   // must not add a spurious token addend on top of the media estimate. `outputModalities` is the validated
   // single modality (singleBilledModality), so the budget governor's media addend resolves the same rate.
   const preEgress = ctx.preEgress ?? deps.preEgress;
+  let admission: BudgetAdmission | undefined;
   if (preEgress !== undefined) {
     try {
-      await preEgress({
+      const nextAdmission = await preEgress({
         model: primary.model,
         maxTokens: 0,
         outputModalities: [modality.modality],
         mediaUnitsEstimate: [{ modality: modality.modality, units }],
       });
+      if (nextAdmission !== undefined) admission = nextAdmission;
     } catch (err) {
       if (err instanceof BudgetExceededError) {
         return failed('budget_exceeded', err.message, false);
@@ -511,58 +513,65 @@ async function executeGenerativeMedia(
       return turnOutcomeForError(err); // BudgetPauseError → paused; anything else re-throws → engine internal
     }
   }
-  // A cancel landing inside the (async) budget check costs no egress: re-check before engaging the provider.
-  if (ctx.signal.aborted) {
-    return failed(
-      'cancelled',
-      `agent node '${node.id}': run cancelled before media generation`,
-      false,
-    );
-  }
-
-  const req: MediaGenRequest = {
-    model: primary.model,
-    prompt,
-    modality: modality.modality,
-    ...(node.count === undefined ? {} : { count: node.count }),
-    ...(node.duration_seconds === undefined ? {} : { durationSeconds: node.duration_seconds }),
-    signal: ctx.signal,
-  };
-
-  let key: string;
   try {
-    key = await deps.keyFor(provider.id);
-  } catch {
-    // A host credential-resolution failure must NEVER surface its (possibly secret-bearing) message — replace
-    // it with a fixed, secret-free `provider_auth` failure, exactly as the FallbackChain's `#resolveKey` does
-    // on the chat path (rule 6). The original is dropped, not carried as a cause a sink could serialize.
-    return failed(
-      'provider_auth',
-      `agent node '${node.id}': credential resolution failed for provider ${provider.id}`,
-      false,
-    );
-  }
+    // A cancel landing inside the (async) budget check costs no egress: re-check before engaging the provider.
+    if (ctx.signal.aborted) {
+      return failed(
+        'cancelled',
+        `agent node '${node.id}': run cancelled before media generation`,
+        false,
+      );
+    }
 
-  let result: MediaGenResult;
-  try {
-    result = await provider.generateMedia(req, key);
-  } catch (err) {
-    return mapGenerateMediaError(err);
-  }
+    const req: MediaGenRequest = {
+      model: primary.model,
+      prompt,
+      modality: modality.modality,
+      ...(node.count === undefined ? {} : { count: node.count }),
+      ...(node.duration_seconds === undefined ? {} : { durationSeconds: node.duration_seconds }),
+      signal: ctx.signal,
+    };
 
-  // A cancel that landed WHILE generateMedia was in-flight (a non-cooperative adapter that ignored the signal,
-  // or one that resolved just as the run cancelled) must win: skip BOTH the async park / sync media outcome AND
-  // the stray cost:updated below — mirroring the post-turn abort re-check the inline/stream chat paths run.
-  // (#onOutcome drops a post-cancel completed anyway; returning `cancelled` here also suppresses the cost emit.)
-  if (ctx.signal.aborted) {
-    return failed(
-      'cancelled',
-      `agent node '${node.id}': run cancelled during media generation`,
-      false,
-    );
-  }
+    let key: string;
+    try {
+      key = await deps.keyFor(provider.id);
+    } catch {
+      // A host credential-resolution failure must NEVER surface its (possibly secret-bearing) message — replace
+      // it with a fixed, secret-free `provider_auth` failure, exactly as the FallbackChain's `#resolveKey` does
+      // on the chat path (rule 6). The original is dropped, not carried as a cause a sink could serialize.
+      return failed(
+        'provider_auth',
+        `agent node '${node.id}': credential resolution failed for provider ${provider.id}`,
+        false,
+      );
+    }
 
-  return buildGenerativeOutcome(ctx, node, primary, modality.modality, units, result);
+    let result: MediaGenResult;
+    try {
+      result = await provider.generateMedia(req, key);
+    } catch (err) {
+      return mapGenerateMediaError(err);
+    }
+
+    // A cancel that landed WHILE generateMedia was in-flight (a non-cooperative adapter that ignored the signal,
+    // or one that resolved just as the run cancelled) must win: skip BOTH the async park / sync media outcome AND
+    // the stray cost:updated below — mirroring the post-turn abort re-check the inline/stream chat paths run.
+    // (#onOutcome drops a post-cancel completed anyway; returning `cancelled` here also suppresses the cost emit.)
+    if (ctx.signal.aborted) {
+      return failed(
+        'cancelled',
+        `agent node '${node.id}': run cancelled during media generation`,
+        false,
+      );
+    }
+
+    return buildGenerativeOutcome(ctx, node, primary, modality.modality, units, result);
+  } finally {
+    // A synchronous media completion emits its realized cost before this point; a failed/cancelled submission has no
+    // attributable cost event. An async job owns a later poll lifecycle, but this admission bounds the provider
+    // submission call itself and must never strand capacity if that job is parked or the run tears down.
+    admission?.release();
+  }
 }
 
 /**

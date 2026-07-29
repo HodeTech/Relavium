@@ -905,9 +905,11 @@ describe('buildGovernorWiring', () => {
       (warning) => warnings.push(warning),
     );
     wiring?.updateCost(999_999);
-    await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined(); // warn never blocks
-    await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined(); // still non-blocking the 2nd time
-    // The governor emits the warning ONCE (#warningEmitted) — the 2nd over-cap call must not re-notify.
+    const first = await wiring?.preEgress(OVER_CAP); // warn never blocks
+    const second = await wiring?.preEgress(OVER_CAP); // still non-blocking the 2nd time
+    first?.release();
+    second?.release();
+    // No realized cost landed between these checks, so the standing condition remains deduped.
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.limitMicrocents).toBe(1);
   });
@@ -917,7 +919,8 @@ describe('buildGovernorWiring', () => {
     // never a rejection that would surface as an `internal` turn error.
     const wiring = buildGovernorWiring({ ...EMPTY_CHAT, maxCostMicrocents: 1, onExceed: 'warn' });
     wiring?.updateCost(999_999);
-    await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined();
+    const admission = await wiring?.preEgress(OVER_CAP);
+    admission?.release();
   });
 
   it('on_exceed:warn — a throwing onWarning surface never rejects preEgress (warn stays non-blocking)', async () => {
@@ -929,7 +932,8 @@ describe('buildGovernorWiring', () => {
     );
     wiring?.updateCost(999_999);
     // A misbehaving warn surface must NOT surface as an `internal` turn error — the throw is swallowed.
-    await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined();
+    const admission = await wiring?.preEgress(OVER_CAP);
+    admission?.release();
   });
 });
 

@@ -1020,6 +1020,86 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     expect(streamed).toBe(false); // the re-check fired before the provider was engaged
   });
 
+  it('releases the loop-top admission and settles the matching provider-attempt admission exactly once', async () => {
+    const provider = scriptedProvider('anthropic', [[{ type: 'text_delta', text: 'ok' }, STOP()]]);
+    let checks = 0;
+    let loopProbeReleases = 0;
+    const loopProbeSettlements: number[] = [];
+    const loopProbe = {
+      settle: (realizedMicrocents: number): void => {
+        loopProbeSettlements.push(realizedMicrocents);
+      },
+      release: (): void => {
+        loopProbeReleases += 1;
+      },
+    };
+    let attemptReleases = 0;
+    const attemptSettlements: number[] = [];
+    const attemptProbe = {
+      settle: (realizedMicrocents: number): void => {
+        attemptSettlements.push(realizedMicrocents);
+      },
+      release: (): void => {
+        attemptReleases += 1;
+      },
+    };
+    const params = baseParams(provider, {
+      preEgress: () => {
+        checks += 1;
+        return checks === 1 ? loopProbe : attemptProbe;
+      },
+    });
+
+    await expect(runAgentTurn(params)).resolves.toMatchObject({ text: 'ok' });
+    expect(checks).toBe(2); // cancellation-window probe, then true FallbackChain provider boundary
+    expect(loopProbeReleases).toBe(1);
+    expect(loopProbeSettlements).toEqual([]);
+    expect(attemptReleases).toBe(0);
+    expect(attemptSettlements).toHaveLength(1);
+    expect(attemptSettlements[0]).toBeGreaterThan(0);
+  });
+
+  it('releases a true provider-attempt admission when the attempt fails before usage is known', async () => {
+    const provider = scriptedProvider('anthropic', [
+      [
+        {
+          type: 'error',
+          error: { kind: 'auth', retryable: false, provider: 'anthropic', message: 'bad key' },
+        },
+      ],
+    ]);
+    let checks = 0;
+    let loopProbeReleases = 0;
+    const loopProbe = {
+      settle: (): void => undefined,
+      release: (): void => {
+        loopProbeReleases += 1;
+      },
+    };
+    let attemptReleases = 0;
+    const attemptSettlements: number[] = [];
+    const attemptProbe = {
+      settle: (realizedMicrocents: number): void => {
+        attemptSettlements.push(realizedMicrocents);
+      },
+      release: (): void => {
+        attemptReleases += 1;
+      },
+    };
+    const params = baseParams(provider, {
+      preEgress: () => {
+        checks += 1;
+        return checks === 1 ? loopProbe : attemptProbe;
+      },
+    });
+
+    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'provider_auth' });
+    expect(checks).toBe(2);
+    expect(loopProbeReleases).toBe(1);
+    expect(attemptReleases).toBe(1);
+    expect(attemptSettlements).toEqual([]);
+  });
+
   it('maps a pre-egress BudgetExceededError to AgentTurnError(budget_exceeded) — no provider egress', async () => {
     let streamed = false;
     const provider: LlmProvider = {
