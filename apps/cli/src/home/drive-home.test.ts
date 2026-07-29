@@ -84,6 +84,7 @@ const INERT_JOB_CONTROL: JobControlLifecycle = {
 };
 const INERT_ONBOARDING_TERMINAL: OnboardingTerminalLifecycle = {
   onInput: () => () => undefined,
+  isRawMode: () => false,
   setRawMode: () => undefined,
 };
 
@@ -702,6 +703,7 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       },
     };
     const terminalEvents: string[] = [];
+    let clackOwnsRawMode = true;
     let rawInput: ((input: string) => void) | undefined;
     let suspend: (() => void) | undefined;
     let activeSuspend: (() => void) | undefined;
@@ -717,7 +719,11 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
             rawInput = undefined;
           };
         },
-        setRawMode: (enabled) => terminalEvents.push(`raw:${String(enabled)}`),
+        isRawMode: () => clackOwnsRawMode,
+        setRawMode: (enabled) => {
+          clackOwnsRawMode = enabled;
+          terminalEvents.push(`raw:${String(enabled)}`);
+        },
       },
       jobControlLifecycle: {
         supported: true,
@@ -758,6 +764,172 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
       'raw:true',
       `control:${HIDE_CURSOR}`,
     ]);
+
+    // After Clack closes its spinner/prompt it has returned cooked input + a visible cursor. The wizard may still be
+    // awaiting keychain/config work, but that interval owns no terminal modes and must not synthesize raw+hidden
+    // state merely because a SIGTSTP arrives.
+    terminalEvents.length = 0;
+    clackOwnsRawMode = false;
+    activeSuspend?.();
+    expect(terminalEvents).toEqual(['self-stop']);
+
+    if (resolveSelect === undefined) throw new Error('the onboarding select did not start');
+    resolveSelect(Symbol('cancel'));
+    await flush();
+    const props = captured;
+    if (props === undefined) throw new Error('the Home did not mount after onboarding');
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('reclaims Clack cursor ownership when the release write faults after raw mode is handed off (G0)', async () => {
+    // stdout can fail after the terminal accepts part of an escape sequence. In particular, a failed SHOW_CURSOR
+    // must be treated as a possible visible cursor: rolling raw mode back alone would return Clack to a live prompt
+    // with its cursor exposed.
+    let resolveSelect: ((value: string | symbol) => void) | undefined;
+    const select = new Promise<string | symbol>((resolve) => {
+      resolveSelect = resolve;
+    });
+    const keylessResolver: ProviderResolver = {
+      resolveProvider: () => undefined,
+      keyFor: () => {
+        throw new Error('no key');
+      },
+    };
+    const terminalEvents: string[] = [];
+    let clackOwnsRawMode = true;
+    let rawInput: ((input: string) => void) | undefined;
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((props) => (captured = props), {
+      providers: keylessResolver,
+      onboardingPrompter: { ...CANCEL_ONBOARDING, select: () => select },
+      writeControl: (sequence) => {
+        terminalEvents.push(`control:${sequence}`);
+        if (sequence === SHOW_CURSOR) throw new Error('partial cursor write');
+      },
+      onboardingTerminalLifecycle: {
+        onInput: (listener) => {
+          rawInput = listener;
+          return () => {
+            rawInput = undefined;
+          };
+        },
+        isRawMode: () => clackOwnsRawMode,
+        setRawMode: (enabled) => {
+          clackOwnsRawMode = enabled;
+          terminalEvents.push(`raw:${String(enabled)}`);
+        },
+      },
+      jobControlLifecycle: {
+        supported: true,
+        onSuspend: () => () => undefined,
+        onContinue: () => () => undefined,
+        // A failed terminal release must never forward SIGTSTP: there is no safe stopped state to return from.
+        suspendSelf: () => terminalEvents.push('self-stop'),
+      },
+    });
+
+    const drivePromise = driveHome(deps);
+    await flush();
+    if (rawInput === undefined) throw new Error('onboarding did not install its raw-input handoff');
+
+    rawInput('\x1a');
+    expect(terminalEvents).toEqual([
+      'raw:false',
+      `control:${SHOW_CURSOR}`,
+      'raw:true',
+      `control:${HIDE_CURSOR}`,
+    ]);
+    expect(clackOwnsRawMode).toBe(true);
+
+    if (resolveSelect === undefined) throw new Error('the onboarding select did not start');
+    resolveSelect(Symbol('cancel'));
+    await flush();
+    const props = captured;
+    if (props === undefined) throw new Error('the Home did not mount after onboarding');
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('retries a failed Clack cursor reclaim before a later stop request (G0)', async () => {
+    let resolveSelect: ((value: string | symbol) => void) | undefined;
+    const select = new Promise<string | symbol>((resolve) => {
+      resolveSelect = resolve;
+    });
+    const keylessResolver: ProviderResolver = {
+      resolveProvider: () => undefined,
+      keyFor: () => {
+        throw new Error('no key');
+      },
+    };
+    const terminalEvents: string[] = [];
+    let clackOwnsRawMode = true;
+    let rawInput: ((input: string) => void) | undefined;
+    let captured: RootAppProps | undefined;
+    let failShowOnce = true;
+    let failHideOnce = true;
+    const { deps } = makeDeps((props) => (captured = props), {
+      providers: keylessResolver,
+      onboardingPrompter: { ...CANCEL_ONBOARDING, select: () => select },
+      writeControl: (sequence) => {
+        terminalEvents.push(`control:${sequence}`);
+        if (sequence === SHOW_CURSOR && failShowOnce) {
+          failShowOnce = false;
+          throw new Error('partial cursor release');
+        }
+        if (sequence === HIDE_CURSOR && failHideOnce) {
+          failHideOnce = false;
+          throw new Error('partial cursor reclaim');
+        }
+      },
+      onboardingTerminalLifecycle: {
+        onInput: (listener) => {
+          rawInput = listener;
+          return () => {
+            rawInput = undefined;
+          };
+        },
+        isRawMode: () => clackOwnsRawMode,
+        setRawMode: (enabled) => {
+          clackOwnsRawMode = enabled;
+          terminalEvents.push(`raw:${String(enabled)}`);
+        },
+      },
+      jobControlLifecycle: {
+        supported: true,
+        onSuspend: () => () => undefined,
+        onContinue: () => () => undefined,
+        suspendSelf: () => terminalEvents.push('self-stop'),
+      },
+    });
+
+    const drivePromise = driveHome(deps);
+    await flush();
+    if (rawInput === undefined) throw new Error('onboarding did not install its raw-input handoff');
+
+    rawInput('\x1a');
+    expect(terminalEvents).toEqual([
+      'raw:false',
+      `control:${SHOW_CURSOR}`,
+      'raw:true',
+      `control:${HIDE_CURSOR}`,
+    ]);
+
+    // The second request must first retry the cursor reclaim left latched above, then safely release/stop/reclaim.
+    rawInput('\x1a');
+    expect(terminalEvents).toEqual([
+      'raw:false',
+      `control:${SHOW_CURSOR}`,
+      'raw:true',
+      `control:${HIDE_CURSOR}`,
+      `control:${HIDE_CURSOR}`,
+      'raw:false',
+      `control:${SHOW_CURSOR}`,
+      'self-stop',
+      'raw:true',
+      `control:${HIDE_CURSOR}`,
+    ]);
+    expect(clackOwnsRawMode).toBe(true);
 
     if (resolveSelect === undefined) throw new Error('the onboarding select did not start');
     resolveSelect(Symbol('cancel'));

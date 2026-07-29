@@ -172,6 +172,8 @@ export function defaultSubscribeProcessExit(onExit: () => void): () => void {
 export interface OnboardingTerminalLifecycle {
   /** Observe raw input bytes while Clack owns stdin; callers remove the exact listener after the wizard settles. */
   readonly onInput: (listener: (input: string) => void) => () => void;
+  /** Whether Clack currently owns raw input (and, by its contract, its hidden cursor). */
+  readonly isRawMode: () => boolean;
   /** Transfer raw-mode ownership between Clack and the user's shell. */
   readonly setRawMode: (enabled: boolean) => void;
 }
@@ -185,6 +187,7 @@ export const defaultOnboardingTerminalLifecycle: OnboardingTerminalLifecycle = {
     process.stdin.on('data', onData);
     return () => process.stdin.removeListener('data', onData);
   },
+  isRawMode: () => process.stdin.isRaw === true,
   setRawMode: (enabled) => {
     // The bare Home is TTY-gated, but retain this guard so a future direct caller never invokes an unsupported
     // `setRawMode` on a redirected stream.
@@ -269,12 +272,26 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
 
   const releaseOnboardingTerminal = (): boolean => {
     if (!onboardingActive) return true; // no Ink and no Clack ownership (the tiny pre-mount handoff window)
-    if (onboardingFinalized || onboardingRawReleased || onboardingCursorReleased) return false;
+    if (onboardingFinalized) return false;
+    // A prior partial release may have restored raw input but failed while hiding the cursor. Retry that exact
+    // reclaim before refusing a later stop request: terminal writes are fallible and retaining the latches without a
+    // recovery attempt would turn one transient stdout fault into a permanently unsuspendable Clack prompt.
+    if (onboardingRawReleased || onboardingCursorReleased) {
+      reclaimOnboardingTerminal();
+      if (onboardingRawReleased || onboardingCursorReleased) return false;
+    }
+    // `runOnboardingWizard` also awaits keychain/config work after Clack has stopped its spinner. Do not manufacture
+    // raw mode + a hidden cursor when a stop lands in that ordinary cooked-input interval: Clack has nothing to
+    // hand over there, so a default SIGTSTP is already terminal-safe.
+    if (!onboardingTerminal.isRawMode()) return true;
     try {
       onboardingTerminal.setRawMode(false);
       onboardingRawReleased = true;
-      writeControl(SHOW_CURSOR);
+      // Mark before the write: a TTY write can throw after emitting a partial escape sequence. The rollback must
+      // conservatively re-hide the cursor in that case; a harmless extra HIDE is far safer than returning Clack to a
+      // live prompt with its cursor visible.
       onboardingCursorReleased = true;
+      writeControl(SHOW_CURSOR);
       return true;
     } catch {
       // We did not stop the process, so put any partial release back immediately rather than leaving Clack half-owned.
