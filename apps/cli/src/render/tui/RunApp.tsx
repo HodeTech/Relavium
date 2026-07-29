@@ -12,6 +12,7 @@ import {
 import { colorProps, dimProps, nodeSuffix } from './projection.js';
 import type { RunStore } from './run-store.js';
 import { MAX_ACTIVE_TOKEN_LINES, type NodeView } from './run-view-model.js';
+import { sanitizeInline, stripTerminalControls } from '../sanitize.js';
 
 /**
  * The thin `ink` projection of the {@link RunStore}'s snapshot (workstream **2.E**). It holds NO logic of
@@ -28,8 +29,8 @@ function NodeLine(
   const glyph = node.status === 'running' ? spinnerFrame(tick) : statusGlyph(node.status);
   return (
     <Text {...colorProps(useColor, statusColor(node.status))}>
-      {glyph} {node.nodeId}
-      {nodeSuffix(node)}
+      {glyph} {sanitizeInline(node.nodeId)}
+      {sanitizeInline(nodeSuffix(node))}
     </Text>
   );
 }
@@ -60,14 +61,14 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
       {activeNode !== undefined && activeLines.length > 0 ? (
         <Box flexDirection="column" marginTop={1}>
           <Text {...colorProps(color, 'cyan')}>
-            ▌ {activeNode.nodeId}
-            {state.activeModel === undefined ? '' : ` · ${state.activeModel}`}
+            ▌ {sanitizeInline(activeNode.nodeId)}
+            {state.activeModel === undefined ? '' : ` · ${sanitizeInline(state.activeModel)}`}
           </Text>
           {/* `truncate-end` bounds each logical line to one terminal row — a newline-free token blast or a
               narrow terminal can't blow the live region up to dozens of wrapped rows (§2.E narrow-terminal). */}
           {activeLines.map((line, i) => (
             <Text key={i} {...dimProps(color)} wrap="truncate-end">
-              {line}
+              {stripTerminalControls(line)}
             </Text>
           ))}
         </Box>
@@ -78,7 +79,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
         <Box flexDirection="column" marginTop={1}>
           {state.toolLines.map((line, i) => (
             <Text key={i} {...dimProps(color)} wrap="truncate-end">
-              {line}
+              {sanitizeInline(line)}
             </Text>
           ))}
         </Box>
@@ -90,7 +91,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
           {state.producedMedia.map((media) => (
             // The content-addressed handle is unique (the view-model dedups by it) + stable — a sound React key.
             <Text key={media.handle} {...colorProps(color, 'magenta')} wrap="truncate-end">
-              {formatProducedMedia(media)}
+              {sanitizeInline(formatProducedMedia(media))}
             </Text>
           ))}
         </Box>
@@ -101,7 +102,7 @@ export function RunApp(props: Readonly<{ store: RunStore }>): ReactElement {
         <Box flexDirection="column" marginTop={1}>
           {state.warnings.map((w, i) => (
             <Text key={i} {...colorProps(color, 'yellow')} wrap="truncate-end">
-              ⚠ {w}
+              ⚠ {sanitizeInline(w)}
             </Text>
           ))}
         </Box>

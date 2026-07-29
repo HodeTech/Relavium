@@ -156,4 +156,53 @@ describe('renderFinalSummary', () => {
     ]);
     expect(renderFinalSummary(state)).not.toContain('produced media');
   });
+
+  it('projects every untrusted terminal value safely while retaining readable final-summary content (#57)', () => {
+    const attack = '\x1b[2J\x1b]52;c;Zm9v\x07\x1bPtmux;\x1b\\\x9b2J\r\b\u202E';
+    const nodeId = `node visible${attack}\nforged node row`;
+    const state: RunViewState = {
+      ...initialRunViewState(),
+      nodeOrder: [nodeId],
+      nodes: {
+        [nodeId]: {
+          nodeId,
+          status: 'failed',
+          errorCode: `node error visible${attack}\nforged node suffix`,
+        },
+      },
+      producedMedia: [
+        {
+          nodeId: `media node visible${attack}\nforged media node`,
+          mimeType: `image/png visible${attack}\nforged mime`,
+          handle: `media://visible${attack}\nforged handle`,
+        },
+      ],
+      summary: {
+        outcome: 'failed',
+        errorCode: `run error visible${attack}\nforged run suffix`,
+        errorMessage: `failure visible${attack}\nsecond failure line`,
+      },
+    };
+    const paused: RunViewState = {
+      ...state,
+      summary: {
+        outcome: 'paused',
+        pausedGateIds: [`gate visible${attack}\nforged gate`],
+      },
+    };
+
+    const output = `${renderFinalSummary(state)}${renderFinalSummary(paused)}`;
+    for (const forbidden of ['\x1b', '\x9b', '\r', '\b', '\u202E']) {
+      expect(output).not.toContain(forbidden);
+    }
+    expect(output).toContain('run error visible');
+    expect(output).toContain('failure visible');
+    expect(output).toContain('second failure line'); // prose keeps an intentional newline
+    expect(output).toContain('node visible');
+    expect(output).toContain('node error visible');
+    expect(output).toContain('image/png visible');
+    expect(output).toContain('media://visible');
+    expect(output).toContain('media node visible');
+    expect(output).toContain('gate visible');
+  });
 });
