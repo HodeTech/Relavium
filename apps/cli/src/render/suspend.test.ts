@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   DISABLE_MOUSE,
@@ -8,7 +8,14 @@ import {
   HIDE_CURSOR,
   SHOW_CURSOR,
 } from './alt-screen.js';
-import { createSuspendPort, suspendFullScreen, type SuspendFullScreenOptions } from './suspend.js';
+import {
+  createSuspendPort,
+  defaultJobControlLifecycle,
+  suspendFullScreen,
+  wireJobControl,
+  type JobControlLifecycle,
+  type SuspendFullScreenOptions,
+} from './suspend.js';
 
 /**
  * The suspend-full-screen primitive (2.6.F Step 5d, ADR-0068 §e). These pin the contract the `/scrollback` and
@@ -294,5 +301,190 @@ describe('createSuspendPort — the suspension window', () => {
     const port = createSuspendPort();
     expect(port.isSuspended()).toBe(false);
     expect(port.current()).toBeUndefined();
+  });
+});
+
+/**
+ * G0 — POSIX job control is intentionally built on the SAME suspension primitive as `/scrollback` and `/edit`, not
+ * on an irreversible termination handler. These use a named signal seam: emitting a real SIGTSTP in a test would
+ * stop the Vitest worker, so the harness proves the release → self-stop → CONT → reclaim ordering without a shell.
+ */
+describe('wireJobControl (G0)', () => {
+  interface Harness {
+    readonly trace: string[];
+    readonly port: ReturnType<typeof createSuspendPort>;
+    readonly lifecycle: JobControlLifecycle;
+    readonly suspendSelf: ReturnType<typeof vi.fn>;
+    readonly fireSuspend: () => void;
+    readonly fireContinue: () => void;
+    readonly removeSuspend: ReturnType<typeof vi.fn>;
+    readonly removeContinue: ReturnType<typeof vi.fn>;
+  }
+
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  const harness = (): Harness => {
+    const trace: string[] = [];
+    const port = createSuspendPort();
+    let onSuspend: () => void = () => undefined;
+    let onContinue: () => void = () => undefined;
+    const removeSuspend = vi.fn();
+    const removeContinue = vi.fn();
+    const suspendSelf = vi.fn(() => trace.push('self-stop'));
+    const lifecycle: JobControlLifecycle = {
+      supported: true,
+      onSuspend: (listener) => {
+        onSuspend = listener;
+        return removeSuspend;
+      },
+      onContinue: (listener) => {
+        onContinue = listener;
+        return removeContinue;
+      },
+      suspendSelf,
+    };
+    return {
+      trace,
+      port,
+      lifecycle,
+      suspendSelf,
+      fireSuspend: () => onSuspend(),
+      fireContinue: () => onContinue(),
+      removeSuspend,
+      removeContinue,
+    };
+  };
+
+  const bind = (h: Harness) =>
+    wireJobControl({
+      suspendPort: h.port,
+      lifecycle: h.lifecycle,
+      run: (suspendTerminal, waitForContinue) =>
+        suspendFullScreen(
+          {
+            suspendTerminal,
+            writeControl: (sequence) => h.trace.push(sequence),
+            inkOwnsAltScreen: false,
+            altActive: true,
+            mouseActive: true,
+          },
+          waitForContinue,
+        ),
+    });
+
+  it('releases terminal state BEFORE self-stop, then reclaims and redraws only after SIGCONT', async () => {
+    const h = harness();
+    h.port.attach(async (callback) => {
+      h.trace.push('ink:begin');
+      try {
+        await callback();
+      } finally {
+        h.trace.push('ink:redraw');
+      }
+    });
+    const binding = bind(h);
+
+    h.fireSuspend();
+    await flush();
+    expect(h.trace).toEqual([
+      'ink:begin',
+      DISABLE_MOUSE,
+      EXIT_ALT_SCREEN + SHOW_CURSOR,
+      'self-stop',
+    ]);
+    expect(h.port.isSuspended()).toBe(true);
+
+    h.fireContinue();
+    await flush();
+    expect(h.trace).toEqual([
+      'ink:begin',
+      DISABLE_MOUSE,
+      EXIT_ALT_SCREEN + SHOW_CURSOR,
+      'self-stop',
+      ENTER_ALT_SCREEN + HIDE_CURSOR,
+      ENABLE_MOUSE,
+      'ink:redraw',
+    ]);
+    expect(h.port.isSuspended()).toBe(false);
+    binding.dispose();
+  });
+
+  it('a stray SIGCONT and duplicate stop request are harmless; only one release/self-stop occurs', async () => {
+    const h = harness();
+    h.port.attach(async (callback) => callback());
+    const binding = bind(h);
+
+    h.fireContinue(); // no pending wait: must not redraw, reclaim, or throw
+    h.fireSuspend();
+    h.fireSuspend(); // re-entrancy is gated while the first stop awaits SIGCONT
+    await flush();
+    expect(h.suspendSelf).toHaveBeenCalledTimes(1);
+    expect(h.trace.filter((entry) => entry === DISABLE_MOUSE)).toHaveLength(1);
+
+    h.fireContinue();
+    await flush();
+    binding.dispose();
+  });
+
+  it('does not nest Ink suspension while a hatch already owns it', async () => {
+    const h = harness();
+    let releaseHatch: (() => void) | undefined;
+    h.port.attach(
+      (callback) =>
+        new Promise<void>((resolve) => {
+          void callback().then(resolve);
+        }),
+    );
+    const binding = bind(h);
+    const hatch = h.port.current()?.(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseHatch = resolve;
+        }),
+    );
+    await flush();
+    expect(h.port.isSuspended()).toBe(true);
+
+    h.fireSuspend();
+    expect(h.suspendSelf).toHaveBeenCalledTimes(1);
+    expect(h.trace).toEqual(['self-stop']); // no second mouse/alt release behind the hatch owner's back
+
+    if (releaseHatch === undefined)
+      throw new Error('the hatch did not enter its suspension window');
+    releaseHatch();
+    await hatch;
+    binding.dispose();
+  });
+
+  it('unsupported platforms register nothing and make raw Ctrl-Z a no-op', () => {
+    const h = harness();
+    const binding = wireJobControl({
+      suspendPort: h.port,
+      lifecycle: { ...h.lifecycle, supported: false },
+      run: () => Promise.resolve(),
+    });
+    binding.requestSuspend();
+    expect(h.suspendSelf).not.toHaveBeenCalled();
+    expect(h.removeSuspend).not.toHaveBeenCalled();
+    expect(h.removeContinue).not.toHaveBeenCalled();
+  });
+
+  it('the production lifecycle adds and removes SIGTSTP/SIGCONT only on POSIX', () => {
+    if (process.platform === 'win32') return;
+    const before = {
+      suspend: process.listenerCount('SIGTSTP'),
+      continue: process.listenerCount('SIGCONT'),
+    };
+    const removeSuspend = defaultJobControlLifecycle.onSuspend(() => undefined);
+    const removeContinue = defaultJobControlLifecycle.onContinue(() => undefined);
+    try {
+      expect(process.listenerCount('SIGTSTP')).toBe(before.suspend + 1);
+      expect(process.listenerCount('SIGCONT')).toBe(before.continue + 1);
+    } finally {
+      removeSuspend();
+      removeContinue();
+    }
+    expect(process.listenerCount('SIGTSTP')).toBe(before.suspend);
+    expect(process.listenerCount('SIGCONT')).toBe(before.continue);
   });
 });

@@ -17,7 +17,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RootAppProps } from '../render/tui/home-app.js';
 import { DISABLE_MOUSE, ENABLE_MOUSE } from '../render/alt-screen.js';
-import type { SuspendPort } from '../render/suspend.js';
+import type { JobControlLifecycle, SuspendPort } from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import {
   defaultSubscribeProcessExit,
@@ -75,6 +75,12 @@ const CANCEL_ONBOARDING: ClackOnboardingDeps = {
 };
 const ENTER = { return: true } as const;
 const CTRL_C = { ctrl: true } as const;
+const INERT_JOB_CONTROL: JobControlLifecycle = {
+  supported: false,
+  onSuspend: () => () => undefined,
+  onContinue: () => () => undefined,
+  suspendSelf: () => undefined,
+};
 
 describe('driveHome (2.5.B / ADR-0054)', () => {
   let client: DbClient;
@@ -151,6 +157,9 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
         exitHandlers.push(onExit);
         return () => undefined;
       },
+      // Signal-oriented tests intentionally leave some drives pending after a simulated process exit. Keep their
+      // default hermetic: dedicated G0 tests inject a recording POSIX lifecycle instead of leaking real listeners.
+      jobControlLifecycle: INERT_JOB_CONTROL,
       writeControl,
       exit: () => undefined,
       // A cancel-immediately onboarding prompter by DEFAULT, so a key-less resolver (e.g. the real keychain-backed
@@ -596,6 +605,113 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     expect(outros.some((o) => o.includes('all set'))).toBe(true);
 
     props.controller.handleKey('c', CTRL_C); // clean exit
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+  });
+
+  it('registers the exit-safety nets BEFORE a key-less onboarding prompt can await the network (G0, #50)', async () => {
+    // Hold the first clack prompt open. The old ordering subscribed only AFTER the wizard settled, so a Ctrl-C or
+    // Ctrl-Z during the wizard's later key-validation request had no Home-owned safety net at all. Capture the
+    // ordering before settling the prompt, then complete the normal clean-exit path so this regression test leaves
+    // no open db handle or pending Home promise behind.
+    const order: string[] = [];
+    let resolveSelect: ((value: string | symbol) => void) | undefined;
+    const select = new Promise<string | symbol>((resolve) => {
+      resolveSelect = resolve;
+    });
+    const onboardingPrompter: ClackOnboardingDeps = {
+      ...CANCEL_ONBOARDING,
+      select: () => {
+        order.push('wizard-select');
+        return select;
+      },
+    };
+    const keylessResolver: ProviderResolver = {
+      resolveProvider: () => undefined,
+      keyFor: () => {
+        throw new Error('no key');
+      },
+    };
+    let captured: RootAppProps | undefined;
+    const { deps } = makeDeps((props) => (captured = props), {
+      providers: keylessResolver,
+      onboardingPrompter,
+      subscribeSignals: () => {
+        order.push('signals');
+        return () => undefined;
+      },
+      subscribeProcessExit: () => {
+        order.push('exit-net');
+        return () => undefined;
+      },
+      jobControlLifecycle: {
+        supported: true,
+        onSuspend: () => {
+          order.push('job-suspend');
+          return () => undefined;
+        },
+        onContinue: () => {
+          order.push('job-continue');
+          return () => undefined;
+        },
+        suspendSelf: () => undefined,
+      },
+    });
+
+    const drivePromise = driveHome(deps);
+    await flush();
+    const beforeWizardSettles = [...order];
+
+    if (resolveSelect === undefined) throw new Error('the onboarding select did not start');
+    resolveSelect(Symbol('cancel'));
+    await flush();
+    const props = captured;
+    if (props === undefined) throw new Error('the Home did not mount after onboarding');
+    props.controller.handleKey('c', CTRL_C);
+    expect(await drivePromise).toBe(EXIT_CODES.success);
+
+    expect(beforeWizardSettles).toEqual([
+      'signals',
+      'exit-net',
+      'job-continue',
+      'job-suspend',
+      'wizard-select',
+    ]);
+  });
+
+  it('SIGTSTP/SIGCONT never take the Home termination path (G0)', async () => {
+    let onSuspend: () => void = () => undefined;
+    let onContinue: () => void = () => undefined;
+    const suspendSelf = vi.fn();
+    const exit = vi.fn();
+    let captured: RootAppProps | undefined;
+    const { deps, unmount, writeControl } = makeDeps((props) => (captured = props), {
+      exit: exit as (code: number) => void,
+      jobControlLifecycle: {
+        supported: true,
+        onSuspend: (listener) => {
+          onSuspend = listener;
+          return () => undefined;
+        },
+        onContinue: (listener) => {
+          onContinue = listener;
+          return () => undefined;
+        },
+        suspendSelf,
+      },
+    });
+    const drivePromise = driveHome(deps);
+    const props = captured;
+    if (props === undefined) throw new Error('the Home did not mount');
+
+    onContinue(); // unexpected continuation: a no-op, not a teardown
+    onSuspend();
+    expect(suspendSelf).toHaveBeenCalledTimes(1);
+    expect(exit).not.toHaveBeenCalled();
+    expect(unmount).not.toHaveBeenCalled();
+    expect(writeControl).not.toHaveBeenCalled();
+    expect(closeSpy).not.toHaveBeenCalled();
+
+    props.controller.handleKey('c', CTRL_C);
     expect(await drivePromise).toBe(EXIT_CODES.success);
   });
 

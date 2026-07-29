@@ -60,7 +60,13 @@ import { nodeCreateTempDocument, nodeSpawnEditor } from '../render/editor.js';
 import { inkOwnedTerminal, type HatchDeps } from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
 import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
-import { createSuspendPort } from '../render/suspend.js';
+import {
+  createSuspendPort,
+  defaultJobControlLifecycle,
+  suspendFullScreen,
+  wireJobControl,
+  type JobControlLifecycle,
+} from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
@@ -111,6 +117,8 @@ export interface HomeDeps {
   readonly subscribeResize?: (onResize: () => void) => () => void;
   /** Subscribe to SIGINT(2)/SIGTERM(15)/SIGHUP(1)/SIGQUIT(3); returns an unsubscribe. Default registers on `process`. */
   readonly subscribeSignals?: (onSignal: (signo: number) => void) => () => void;
+  /** POSIX SIGTSTP/SIGCONT seam. Separate from termination signals: a job stop is reversible and MUST NOT exit. */
+  readonly jobControlLifecycle?: JobControlLifecycle;
   /** Register a synchronous `process.on('exit')` net; returns a remover. Default registers on `process`. The LAST
    *  chance to restore the terminal when something calls `process.exit()` past the `finally` (2.6.F Step 6f). */
   readonly subscribeProcessExit?: (onExit: () => void) => () => void;
@@ -182,6 +190,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   let controller: HomeController | undefined;
   let unsubscribeSignals: (() => void) | undefined;
   let unsubscribeProcessExit: (() => void) | undefined;
+  let disposeJobControl: (() => void) | undefined;
   let dbClosed = false;
   const closeDb = (): void => {
     if (dbClosed) return;
@@ -629,33 +638,11 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       });
     const exitProcess = deps.exit ?? ((code: number) => process.exit(code));
 
-    // First-run onboarding (2.5.G S8): a truly KEY-LESS bare Home offers a `@clack` wizard to connect a provider
-    // BEFORE mounting ink — clack + ink both take the terminal's raw mode, so the wizard must fully settle (and
-    // clack restore the terminal) before `render()`. Already behind `shouldOpenHome`'s TTY/CI gate; a cancel or a
-    // keychain-write failure ends the wizard cleanly and the Home mounts key-less (retry, or add a key manually).
-    if (isProviderKeyless(providers)) {
-      await runOnboardingWizard({
-        store: providerStore,
-        keychain,
-        resolver: providers,
-        io: deps.io,
-        // Reuse the SAME config-write target as the `/models` port (honors `--config`) so the wizard's starter
-        // model + a later `/models` pick + the started session all agree on one file (2.5.G S7/S8).
-        writeDefaultModel: (modelId, provider) =>
-          writeGlobalPreferences(
-            { defaultModel: modelId, defaultProvider: provider },
-            homeDir,
-            deps.global.configPath,
-          ),
-        ...(deps.onboardingPrompter === undefined ? {} : { prompter: deps.onboardingPrompter }),
-      });
-    }
-
-    // Bracketed paste (DECSET 2004) is enabled by ink 7's `usePaste` on mount (home-app.tsx). The defensive
-    // `DISABLE_BRACKETED_PASTE` writes in `restoreTerminalControls` are belt-and-suspenders (usePaste also
-    // disables on unmount) so an external signal can never leave the terminal in bracketed-paste mode.
-
     // One external-signal lifecycle covering the Home, the in-Home chat, and MCP teardown.
+    //
+    // This is deliberately established BEFORE first-run onboarding. Its key-validation probe is network-bound; a
+    // signal arriving while that promise is pending must still restore the terminal / close the db, rather than
+    // falling through a listener-free window (#50). `controller` is optional below, so the pre-mount path is safe.
     let signaled = false;
     const onSignal = (signo: number): void => {
       // A KEYBOARD Ctrl-C during a `/scrollback` or `/edit` hatch arrives here as a REAL SIGINT: the suspension turns
@@ -700,6 +687,54 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     unsubscribeProcessExit = (deps.subscribeProcessExit ?? defaultSubscribeProcessExit)(
       restoreTerminalControls,
     );
+
+    // SIGTSTP/SIGCONT are a SEPARATE, reversible lifecycle. `suspendFullScreen` gives Ink ownership of raw mode and
+    // Home's alt buffer while it temporarily releases our live mouse capture; on SIGCONT Ink restores both and forces
+    // a redraw. It never reaches the termination handler above, so it cannot close the db or end a live chat.
+    const jobControl = wireJobControl({
+      suspendPort,
+      lifecycle: deps.jobControlLifecycle ?? defaultJobControlLifecycle,
+      run: (suspendTerminal, waitForContinue) =>
+        suspendFullScreen(
+          {
+            suspendTerminal,
+            writeControl,
+            // Home mounts Ink with its OWN alternate-screen render option. `suspendFullScreen` must never double
+            // toggle 1049 here, even on an inline Home where `altActive` is false.
+            inkOwnsAltScreen: true,
+            altActive: altScreenActive,
+            mouseActive: mouseCaptured,
+          },
+          waitForContinue,
+        ),
+    });
+    disposeJobControl = jobControl.dispose;
+
+    // First-run onboarding (2.5.G S8): a truly KEY-LESS bare Home offers a `@clack` wizard to connect a provider
+    // BEFORE mounting ink — clack + ink both take the terminal's raw mode, so the wizard must fully settle (and
+    // clack restore the terminal) before `render()`. The signal and job-control nets above are already live before
+    // the wizard can reach its network-bound key-validation request.
+    if (isProviderKeyless(providers)) {
+      await runOnboardingWizard({
+        store: providerStore,
+        keychain,
+        resolver: providers,
+        io: deps.io,
+        // Reuse the SAME config-write target as the `/models` port (honors `--config`) so the wizard's starter
+        // model + a later `/models` pick + the started session all agree on one file (2.5.G S7/S8).
+        writeDefaultModel: (modelId, provider) =>
+          writeGlobalPreferences(
+            { defaultModel: modelId, defaultProvider: provider },
+            homeDir,
+            deps.global.configPath,
+          ),
+        ...(deps.onboardingPrompter === undefined ? {} : { prompter: deps.onboardingPrompter }),
+      });
+    }
+
+    // Bracketed paste (DECSET 2004) is enabled by ink 7's `usePaste` on mount (home-app.tsx). The defensive
+    // `DISABLE_BRACKETED_PASTE` writes in `restoreTerminalControls` are belt-and-suspenders (usePaste also
+    // disables on unmount) so an external signal can never leave the terminal in bracketed-paste mode.
 
     // Resolve the effective render mode (2.6.F, ADR-0068 §e). driveHome only runs on a TTY interactive path
     // (shouldOpenHome-gated), so the output mode is 'tui'; the resolver still short-circuits a 'plain' path to
@@ -751,6 +786,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         alternateScreen,
         // `RootApp` attaches ink's `suspendTerminal` here while mounted (2.6.F Step 5d, ADR-0068 §e).
         suspendPort,
+        // Raw Ink mode delivers Ctrl-Z as a key event, not a process SIGTSTP. Route it into the same coordinator as
+        // an external `kill -TSTP`, so both paths release/reclaim terminal state identically.
+        onSuspend: jobControl.requestSuspend,
         // The branded banner's durable switch (Step 5g); `HomeView` owns the empty-Home rule when it is absent.
         showBanner: config.showBanner,
         // Armed only while the in-Home chat owns the screen (Step 6g). `mouseActive` is the RESOLVED mode
@@ -791,6 +829,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     // terminal can never leak the session or the db handle.
     unsubscribeSignals?.();
     unsubscribeProcessExit?.();
+    disposeJobControl?.();
     restoreTerminalControls();
     await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
     closeDb(); // always close the shared db

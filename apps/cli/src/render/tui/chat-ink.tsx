@@ -235,6 +235,8 @@ interface ChatAppProps {
    *  mounted, which is the ONLY way the non-React slash dispatch can reach `/scrollback` and `/edit`. Absent ⇒ the
    *  hatches surface an honest "needs an interactive terminal" notice. */
   readonly suspendPort?: SuspendPort | undefined;
+  /** Request the shared POSIX job-control flow. Ink raw mode delivers Ctrl-Z as input, not SIGTSTP. */
+  readonly onSuspend?: (() => void) | undefined;
   /** Write the mouse selection to the system clipboard (OSC 52, 2.6.F Step 6). Absent ⇒ selection still highlights
    *  but copy-on-select is inert (a driver/test that wires no terminal). */
   readonly clipboard?: ((text: string) => ClipboardOutcome) | undefined;
@@ -1149,6 +1151,12 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   };
 
   useInput((char, key) => {
+    // Raw Ink input represents Ctrl-Z as Ctrl+`z` (and a few test streams retain the literal SUB byte). It must win
+    // over mouse parsing, overlays, and approval routing: job control is never prompt text and never consent.
+    if (char === '\x1a' || (key.ctrl === true && char.toLowerCase() === 'z')) {
+      props.onSuspend?.();
+      return;
+    }
     // Mouse reports (Step 5): the alt screen enables mouse reporting, so a wheel/click arrives in EVERY state —
     // including while an overlay owns the keyboard. CONSUME every report HERE, ahead of the overlay routing below,
     // so its raw bytes can never type into the prompt, the `/` palette filter, or the `[c]` reason capture. The wheel
@@ -1740,6 +1748,7 @@ export function driveInk(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
         // `!`-shell runner (2.5.D, ADR-0061) — interactive-only; absent ⇒ a leading `!` is a literal message.
         runShellCommand: ctx.runShellCommand,
         suspendPort: ctx.suspendPort,
+        onSuspend: ctx.onSuspend,
         clipboard: ctx.clipboard,
       }),
       {
