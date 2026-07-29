@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 
-import type { AgentSession, ToolActionPreview, ToolDef } from '@relavium/core';
+import type { AgentSession, ToolApprovalRequest, ToolDef } from '@relavium/core';
 
 import { isProtectedPath } from '../engine/tool-host/fs.js';
 import {
@@ -34,8 +34,8 @@ export interface ChatModeEnv {
   /** The REPL's interactive `[y] yes / [a] always / [n] no / [c] reason / [esc] abort` prompt (accept-edits, and
    *  auto's protected-path fallback). `[c]` opens the typed-reason capture (Step 14 — a reject carrying WHY). */
   readonly prompt: ApprovalPrompt;
-  /** Whether an approval preview targets a protected path — `auto` then falls back to a prompt (ADR-0057). */
-  readonly isProtectedTarget: (preview: ToolActionPreview) => boolean;
+  /** Whether an approval REQUEST targets a protected path — `auto` then falls back to a prompt (ADR-0057). */
+  readonly isProtectedTarget: (request: ToolApprovalRequest) => boolean;
 }
 
 export interface MakeChatModeEnvOptions {
@@ -55,11 +55,21 @@ export function makeChatModeEnv(opts: MakeChatModeEnvOptions): ChatModeEnv {
     governed: governedToolIds(opts.tools),
     cache: new ApprovalCache(),
     prompt: opts.prompt,
-    // fs_write is the only preview class with a path; egress/process have none, so they are never "protected"
+    // fs_write is the only action class with a path; egress/process have none, so they are never "protected"
     // (auto approves them directly). A relative path resolves against the session workspace — the SAME anchor
     // the fs jail uses — so the classification matches what the fs layer would enforce.
-    isProtectedTarget: (preview) =>
-      preview.path !== undefined && isProtectedPath(resolve(opts.workspaceDir, preview.path)),
+    //
+    // Reads `request.target`, NOT `request.preview` (#91): the preview is redacted for display, and a scrub
+    // that collapses `./x/.ssh/authorized_keys` would silently reclassify a protected path as unprotected.
+    // Precedence: the REAL target first, the display preview only as a fallback for a hand-built request
+    // that carries none (a test fixture / surface stub — the engine always sets `target`). Falling back is
+    // safe-by-default here because `previewFor` only ever LOSES information: a scrub can turn a protected
+    // path into an unprotected-looking one, never the reverse, so the fallback can under-classify but the
+    // fs floor still hard-denies the write — while the primary path cannot under-classify at all.
+    isProtectedTarget: (request) => {
+      const path = request.unredactedPreview?.path ?? request.preview.path;
+      return path !== undefined && isProtectedPath(resolve(opts.workspaceDir, path));
+    },
   };
 }
 

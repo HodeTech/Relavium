@@ -255,12 +255,19 @@ ADR-0029(c) taint gate only covers *declared* `secret`-typed args — a model-pl
 - **A field may contain the literal `[redacted]` marker and is NOT guaranteed to be a resolvable
   path/command/host. Never parse it.** It is a display projection; the dispatch always runs against the real,
   unscrubbed target.
-- **`path` is scrubbed per path segment**, so a match can never swallow a separator and take the rest of the
-  path with it — the segment count and separators round-trip exactly. `command` has no structure to preserve
-  and is scrubbed whole, which means a *fully model-controlled* command can be shaped to match a detector
-  pattern and be displayed as `[redacted]`; the approver then cannot review it. That is bounded by
-  `allowedCommands`/`allowedCommandGlobs` being deny-all by default and by the fs/egress floors, but it is a
-  real limitation of a redacted preview — surfacing "this was redacted" to the prompt is an open follow-up.
+- **The scrub is whole-string, and a CLASSIFIER must not read it.** Two detector patterns have value classes
+  containing `/`, which cuts both ways: whole-string catches a credential whose value spans a separator, but
+  one match can also swallow the rest of a path (`./Access Token Backup/.ssh/authorized_keys` →
+  `./Access Token [redacted]`). No pattern gives both. So the two *uses* are split: `preview` is the display
+  copy, and `ToolApprovalRequest.unredactedPreview` carries the same field selection unscrubbed for
+  in-process classification only. It is deliberately **not** the raw `PolicyTarget` — an egress entry carries
+  the host and never the URL, whose query string is where a credential lives — and it is absent from the
+  `agent:approval_requested` event, so it never crosses the event / IPC / `--json` boundary.
+- **A `command` preview can be shaped to blind the approver.** The command is fully model-controlled and the
+  detector's patterns are public, so an injected model can match one deliberately and be displayed as
+  `[redacted]` — which reads as "we protected you" rather than "you cannot see this". Bounded by
+  `allowedCommands`/`allowedCommandGlobs` being deny-all by default and by the fs/egress floors, but real;
+  surfacing "this was redacted" to the prompt is an open follow-up.
 
 A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`); a hook that throws a non-abort error ⇒ the same
 fatal `tool_denied` (reason `approval_error`, fail-closed — consent could not be obtained, never the

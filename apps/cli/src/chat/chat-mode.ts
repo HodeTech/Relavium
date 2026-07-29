@@ -159,11 +159,15 @@ export interface TurnPolicyDeps {
   /** The session once/always memory. */
   readonly cache: ApprovalCache;
   /**
-   * Whether an approval preview targets a protected path, so `auto` falls back to a prompt rather than
+   * Whether the approval REQUEST targets a protected path, so `auto` falls back to a prompt rather than
    * auto-approving (ADR-0057). Absent ⇒ `auto` auto-approves every governed action (the fs-layer
    * protected-paths refusal is still the hard floor either way).
+   *
+   * Takes the whole request, not the preview: `request.preview` is a redacted DISPLAY projection (#91) whose
+   * scrub can turn a protected path into an unprotected-looking one, so a security classifier must read
+   * `request.target` — see {@link ToolApprovalRequest.target}.
    */
-  readonly isProtectedTarget?: (preview: ToolActionPreview) => boolean;
+  readonly isProtectedTarget?: (request: ToolApprovalRequest) => boolean;
 }
 
 /**
@@ -232,7 +236,7 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
         // answer is NOT cacheable: a protected-path prompt must re-ask every time, and — since the session
         // cache is shared across modes — an "always" here must not silently blanket-approve that tool id in a
         // later accept-edits turn (a cross-mode consent escalation). So the auto fallback never remembers.
-        if (deps.isProtectedTarget?.(request.preview) === true) {
+        if (deps.isProtectedTarget?.(request) === true) {
           const cacheable = false;
           const answer = await deps.prompt(request, cacheable, signal);
           return toDecision(answer, request.toolId, deps.cache, cacheable);

@@ -850,25 +850,45 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
     expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ path: './config/.env' });
   });
 
-  // The segment-preserving property, against the exact paths the CLI's auto-mode `isProtectedTarget`
-  // classifies (`.git` / `.relavium` / `.ssh` + the rc basenames — NOT `.env`, which is a read-side
-  // sensitivity rule, not a write-side protected one). A whole-string scrub collapses every one of these.
   it.each([
-    ['./Access Token Backup/.ssh/authorized_keys', './Access Token Backup/.ssh/authorized_keys'],
-    ['./my.password=hunterhunter/.ssh/config', './my.[redacted]/.ssh/config'],
-    ['./bearer files/.git/hooks/pre-commit', './bearer files/.git/hooks/pre-commit'],
+    // The credential whose value SPANS a separator — the case a per-segment scrub misses entirely, because
+    // the part before the `/` falls under the key=value pattern's own 6-char value floor.
+    ['./api_key=AAAAA/BBBBBB.txt', './[redacted]'],
+    ['./secret=abc/def.txt', './[redacted]'],
     [`./${FAKE_KEY}/.git/config`, './[redacted]/.git/config'],
-  ])('keeps every path SEGMENT intact so a protected one survives: %s', async (input, expected) => {
+  ])('scrubs a credential that spans a path separator: %s', async (input, expected) => {
     const confirm = approving();
     const { host } = hostWithWriteSpy();
     await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
       call('write_file', { path: input, content: 'hi' }),
       ctx({ approval: { confirm } }),
     );
-    // Scrubbing per segment means a credential-shaped component can still be replaced — but the `.ssh`/`.git`
-    // segment is always still there, so auto-mode's protected-path prompt cannot silently degrade into an
-    // auto-approve. Whole-string redaction collapsed the first three of these entirely.
     expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ path: expected });
+  });
+
+  it('hands the confirm hook the UNREDACTED target alongside the redacted preview (#91)', async () => {
+    // The whole point of splitting the two uses: the display copy can be scrubbed as hard as secrecy needs,
+    // because the host's protected-path CLASSIFIER reads `target`, not `preview`. Here the scrub collapses
+    // the `.ssh` segment out of the preview — and `target` still carries the real path.
+    const confirm = approving();
+    const { host } = hostWithWriteSpy();
+    const path = './Access Token Backupxyz/.ssh/authorized_keys';
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path, content: 'hi' }),
+      ctx({ approval: { confirm } }),
+    );
+    const request = confirm.mock.calls[0]?.[0];
+    expect(request?.unredactedPreview).toEqual({ path });
+    expect(request?.preview.path).not.toBe(path); // the display copy really did lose information
+  });
+
+  it('sets unredactedPreview on EVERY governed class, so a classifier can always prefer it', async () => {
+    const confirm = approving();
+    await registry().dispatch(
+      call('run_command', { command: 'ls' }),
+      ctx({ approval: { confirm }, toolPolicy: { allowedCommands: ['ls'] } }),
+    );
+    expect(confirm.mock.calls[0]?.[0]?.unredactedPreview).toEqual({ command: 'ls' });
   });
 
   it('forwards ctx.signal to the confirm hook as its second argument', async () => {

