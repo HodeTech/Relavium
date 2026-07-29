@@ -103,9 +103,10 @@ export const DEFAULT_AGENT_TURN_LIMITS: AgentTurnLimits = {
  * (`budget_exceeded`) to halt. `outputModalities` + `mediaUnitsEstimate` (1.AF/D17) are populated by the
  * AgentRunner from the node's `output_modalities` + the `[defaults].media_cost_estimate` unit counts so the
  * governor can fold a media cost estimate into the projected total; both absent ⇒ a text-only turn.
- * When the hook returns a {@link BudgetAdmission}, the matching provider-attempt owner settles it with the
- * realized charge or releases it on a no-charge outcome. A loop-top cancellation probe releases its transient
- * admission before the FallbackChain acquires the durable attempt admission.
+ * When the hook returns a {@link BudgetAdmission}, the matching true provider-attempt owner settles it with the
+ * realized charge, conservatively settles its reserved estimate when the provider may have billed without usage,
+ * or releases it only when no egress can be attributed. The hook runs at FallbackChain's real attempt boundary;
+ * there is deliberately no speculative loop-top reservation.
  */
 export type PreEgressHook = (info: {
   readonly model: string;
@@ -615,43 +616,6 @@ async function dispatchToolCalls(
 }
 
 /**
- * Await the pre-egress budget hook before a provider call, mapping a budget-cap failure to the closed turn
- * error taxonomy: a {@link BudgetExceededError} (`on_exceed: fail`) → `AgentTurnError('budget_exceeded')`;
- * a {@link BudgetPauseError} (`pause_for_approval`) and any other error propagate as-is (the run path maps
- * the pause to a `paused` node outcome). Extracted from the turn loop to keep its complexity in budget.
- */
-async function awaitPreEgress(
-  params: AgentTurnParams,
-  activeModel: string,
-  activeProvider: ProviderId | undefined,
-): Promise<void> {
-  let admission: BudgetAdmission | undefined;
-  try {
-    const nextAdmission = await params.preEgress?.({
-      model: activeModel,
-      ...(activeProvider === undefined ? {} : { provider: activeProvider }),
-      ...(params.maxTokens === undefined ? {} : { maxTokens: params.maxTokens }),
-      ...(params.outputModalities === undefined
-        ? {}
-        : { outputModalities: params.outputModalities }),
-      ...(params.mediaUnitsEstimate === undefined
-        ? {}
-        : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
-    });
-    if (nextAdmission !== undefined) admission = nextAdmission;
-  } catch (err) {
-    if (err instanceof BudgetExceededError) {
-      throw new AgentTurnError('budget_exceeded', err.message, false);
-    }
-    throw err;
-  } finally {
-    // The loop-top check protects the cancellation window but is not the true egress boundary. Drop its temporary
-    // admission before the FallbackChain performs the per-attempt admission, or one LLM call would reserve twice.
-    admission?.release();
-  }
-}
-
-/**
  * Append a tool-use assistant turn, dispatch its tool calls, append the results to `messages`, and return
  * the updated correction count. Throws a classified {@link AgentTurnError} on a protocol anomaly (a
  * `tool_use` stop with no tool call) or once the model-correction budget is exhausted. Extracted from the
@@ -756,10 +720,6 @@ async function driveAgentTurn(
   // overlay (2.5.G S10) lets the tracker price a user-priced model the static registry lacks.
   const costTracker = new CostTracker(params.resolvePrice);
   let activeModel = primaryModel;
-  // The provider that pairs with `activeModel`, updated together in `onAttempt`. A failover moves BOTH, so the
-  // pre-egress endpoint estimate keys on the routing provider actually in play, not the model's catalog provider
-  // (review M2). Starts on the primary entry's provider.
-  let activeProvider: ProviderId | undefined = params.planEntries[0]?.provider.id;
   let nonSkippedAttempts = 0;
   const preEgress = params.preEgress;
   // A chain executes one provider attempt at a time, so one per-turn slot is sufficient. It is deliberately NOT a
@@ -767,12 +727,27 @@ async function driveAgentTurn(
   // from which a global queue could infer which reservation to release.
   let attemptAdmission: BudgetAdmission | undefined;
   let admissionPending = false;
-  const releaseAttemptAdmission = (): void => {
+  // A chain record can be emitted for a materialization failure or a rejected pre-attempt hook, both of which are
+  // before provider egress. Only a hook that returned successfully arms this flag, so a budget refusal/cancel does
+  // not falsely count as an engaged provider turn or settle a nonexistent bill.
+  let attemptReady = preEgress === undefined;
+  // `FallbackChain` resolves credentials after its pre-attempt hook. The hook can therefore reserve capacity before
+  // a host key lookup rejects, but a failed lookup is PROVEN pre-provider and must release that reservation rather
+  // than becoming a permanent conservative debit. The wrapped `keyFor` below flips this only after it resolved and
+  // a post-resolution cancellation check still permits the seam call.
+  let credentialResolvedForAttempt = preEgress === undefined;
+  const settleUnreportedAttemptAdmission = (): void => {
+    attemptReady = preEgress === undefined;
+    credentialResolvedForAttempt = preEgress === undefined;
     if (!admissionPending) return;
     admissionPending = false;
     const active = attemptAdmission;
     attemptAdmission = undefined;
-    active?.release();
+    // A prior true-boundary admission with no matching AttemptRecord means the consumer/iterator failed after the
+    // chain might have handed work to a provider. A release would reopen capacity on an unknown bill; retain the
+    // bounded estimate instead. Proven pre-provider cancellation releases its just-returned admission before this
+    // slot is ever armed (below).
+    active?.settleAtReservedEstimate();
   };
   const takeAttemptAdmission = (): BudgetAdmission | undefined => {
     if (!admissionPending) return undefined;
@@ -786,13 +761,29 @@ async function driveAgentTurn(
     // A SKIPPED entry (cooldown / capability) was not invoked — it must not become `activeModel`, or
     // the next entry's streamed tokens would be mis-attributed to a provider that never ran.
     if (record.outcome === 'skipped') return;
+    const providerMayHaveEngaged = attemptReady && credentialResolvedForAttempt;
+    // With no governor hook, preserve the established FallbackChain contract: every non-skipped record represents
+    // the chain's best available attempt trace. With a governor hook, only its successful true-boundary callback
+    // proves the provider could have been reached.
+    if (preEgress !== undefined) {
+      attemptReady = false;
+      credentialResolvedForAttempt = false;
+    }
     const admission = takeAttemptAdmission();
+    if (!providerMayHaveEngaged) {
+      // A successful pre-attempt check followed by a credential failure/cancellation never reached a provider.
+      // This is the one path where the held admission is conclusively safe to release after the hook returned.
+      admission?.release();
+      return;
+    }
     activeModel = record.model;
-    activeProvider = record.provider;
     nonSkippedAttempts += 1;
     usage.engaged = true; // a non-skipped attempt RAN — mark engaged even if it then errored at zero usage
     if (record.usage === undefined) {
-      admission?.release();
+      // A clean EOF and a partial-stream failure can both omit terminal usage AFTER provider egress. Dropping the
+      // reservation would silently reopen cap capacity for money that may already be owed, so fail closed at the
+      // bounded estimate. A credential/materialization failure before the true attempt boundary never reaches here.
+      admission?.settleAtReservedEstimate();
       return;
     }
     usage.input += record.usage.inputTokens;
@@ -801,7 +792,14 @@ async function driveAgentTurn(
     // figure on `record.cost`; read it rather than re-recording (which would double the total).
     // Settle BEFORE the event sink: it replaces this attempt's reservation with the realized amount atomically,
     // keeping the governor safe even if a re-entrant/throwing sink prevents the authoritative engine update below.
-    admission?.settle(record.cost?.costMicrocents ?? 0);
+    // `FallbackChain` intentionally tolerates a CostTracker failure so a successful response stays usable. When
+    // that happens there is no trustworthy actual price, not proof of a free call — keep the reservation as the
+    // conservative charge. For an unpriced model no admission exists, so its existing allow-degrade path remains.
+    if (record.cost === undefined) {
+      admission?.settleAtReservedEstimate();
+    } else {
+      admission?.settle(record.cost.costMicrocents);
+    }
     params.emit({
       type: 'cost:updated',
       nodeId: params.nodeId,
@@ -819,8 +817,26 @@ async function driveAgentTurn(
     });
   };
 
+  const chainCapabilities: ChainCapabilities =
+    preEgress === undefined
+      ? params.chainCapabilities
+      : {
+          ...params.chainCapabilities,
+          keyFor: async (provider) => {
+            const key = await params.chainCapabilities.keyFor(provider);
+            // FallbackChain performs no abort poll between resolving a key and entering the adapter. Keep the
+            // admission in the known-pre-egress state when cancellation lands in that narrow await window; its
+            // ensuing attempt record releases the lease in `onAttempt` above.
+            if (params.signal.aborted) {
+              throw new Error('request aborted before provider egress');
+            }
+            credentialResolvedForAttempt = true;
+            return key;
+          },
+        };
+
   const chain = new FallbackChain([...params.planEntries], {
-    ...params.chainCapabilities,
+    ...chainCapabilities,
     costTracker,
     onAttempt,
     // The pre-egress budget hook runs before EVERY provider attempt, not just the first turn, so a failover
@@ -836,12 +852,11 @@ async function driveAgentTurn(
             readonly provider: ProviderId;
             readonly maxTokens?: number;
           }) => {
-            // The loop-top guard has already performed its temporary cancellation-window check. This is the true
-            // provider-attempt boundary, so retain its admission until FallbackChain reports the matching record.
-            // A defensive release makes an abandoned async iterator fail closed without poisoning a later attempt.
-            releaseAttemptAdmission();
-            admissionPending = true;
-            attemptAdmission = undefined;
+            // This is the only admitting boundary. Check cancellation on BOTH sides of the awaited governor call:
+            // a cancellation landing while warning durability/admission is pending must not reach key resolution
+            // or provider egress, and any just-acquired lease is released before the cancellation propagates.
+            settleUnreportedAttemptAdmission();
+            throwIfAborted(params.signal);
             const nextAdmission = await preEgress({
               ...info,
               ...(params.outputModalities === undefined
@@ -851,7 +866,15 @@ async function driveAgentTurn(
                 ? {}
                 : { mediaUnitsEstimate: params.mediaUnitsEstimate }),
             });
-            if (nextAdmission !== undefined) attemptAdmission = nextAdmission;
+            if (params.signal.aborted) {
+              nextAdmission?.release();
+              throwIfAborted(params.signal);
+            }
+            if (nextAdmission !== undefined) {
+              attemptAdmission = nextAdmission;
+              admissionPending = true;
+            }
+            attemptReady = true;
           },
         }),
   });
@@ -864,10 +887,9 @@ async function driveAgentTurn(
   try {
     // Inline media-out (1.AG/[ADR-0046]): a node requesting a non-text output modality runs a single-shot
     // `generate()` (the chain's existing non-streaming path) — terminal, NO tool loop (a media turn is the
-    // agent's final artifact and `generate()` is one round-trip). The two budget gates below mirror the text
-    // path: `awaitPreEgress` (primary-model, zero-egress-on-cancel) then the chain's per-attempt `preAttempt`.
+    // agent's final artifact and `generate()` is one round-trip). Its sole budget gate is the chain's true
+    // per-attempt `preAttempt`, which retains the admission through the matching attempt record.
     if (requestsMediaOutput(params)) {
-      await awaitPreEgress(params, activeModel, activeProvider);
       throwIfAborted(params.signal);
       const turn = await generateOneTurn(chain, messages, params);
       throwIfAborted(params.signal); // cancel-wins independent of adapter cooperation (mirrors the stream path)
@@ -902,17 +924,9 @@ async function driveAgentTurn(
           false,
         );
       }
-      // Two distinct budget gates, by design — NOT a duplicate of the chain's per-attempt check:
-      //  • This loop-top `awaitPreEgress` runs ONCE per tool turn against the PRIMARY model. It is the
-      //    zero-egress-on-cancel guarantee — a cancel landing inside its async check is caught by the
-      //    re-check below, before any provider is engaged.
-      //  • `FallbackChain.preAttempt` then runs again per chain attempt against the ACTUAL (possibly
-      //    failed-over) model, so a failover to a pricier model is still enforced. `streamOneTurn` maps a
-      //    chain-path Budget*Error back into this taxonomy via `chunk.error.cause`.
-      await awaitPreEgress(params, activeModel, activeProvider);
-      // The preEgress hook is awaited (its budget check may be async), so the signal can fire during
-      // that await. Re-check before engaging the provider so a cancel there costs no egress — symmetric
-      // with the post-stream re-check below.
+      // The FallbackChain hook is the sole true provider-attempt gate (including each failover). It performs its
+      // own post-await cancellation re-check before credential resolution, so there is no speculative loop-top
+      // reservation that can deny a concurrent branch without ever reaching egress.
       throwIfAborted(params.signal);
 
       const turn = await streamOneTurn(chain, messages, params, () => activeModel);
@@ -944,8 +958,8 @@ async function driveAgentTurn(
       );
     }
   } finally {
-    // An iterator consumer/fold/event sink can throw before FallbackChain emits its record. Never leave that
-    // half-open attempt reserving capacity for the rest of this run/session.
-    releaseAttemptAdmission();
+    // An iterator consumer/fold/event sink can throw before FallbackChain emits its record. The provider may
+    // already have received work, so close that half-open admission conservatively rather than freeing capacity.
+    settleUnreportedAttemptAdmission();
   }
 }

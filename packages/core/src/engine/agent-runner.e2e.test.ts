@@ -480,12 +480,25 @@ function cheapProvider(): LlmProvider {
 }
 
 describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
-  it('admits no more parallel priced calls than the shared budget can reserve (G38)', async () => {
+  it('keeps the true in-provider attempt admission while a max_parallel sibling is denied (G38)', async () => {
     // Haiku's 1,000-output-token worst case is 500,000µ¢. Each branch fits a 750,000µ¢ cap in isolation,
-    // but two max_parallel:2 admissions must NOT both reach egress: their combined reservation is 1,000,000µ¢.
-    // Before G38 both checks read the same spent=0 snapshot, so this test goes red with two provider calls and
-    // run:completed at 1,000,200µ¢ (the 1-input-token charge on each call is deliberately included).
+    // but two max_parallel:2 TRUE provider attempts must NOT both reach egress: their combined reservation is
+    // 1,000,000µ¢. The first stream deliberately remains in-flight while the sibling reaches its own actual
+    // attempt boundary; this proves the ledger is not merely a transient loop-top probe. Before G38 this goes red
+    // with two provider calls and run:completed at 1,000,200µ¢ (the 1-input-token charge is included).
     let calls = 0;
+    let signalFirstStarted: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      signalFirstStarted = () => resolve();
+    });
+    let releaseFirst: (() => void) | undefined;
+    const firstMayFinish = new Promise<void>((resolve) => {
+      releaseFirst = () => resolve();
+    });
+    let signalSecondProviderCall: (() => void) | undefined;
+    const secondProviderCall = new Promise<void>((resolve) => {
+      signalSecondProviderCall = () => resolve();
+    });
     const providerWithCount: LlmProvider = {
       id: 'anthropic',
       supports: CAPS,
@@ -494,6 +507,21 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
       },
       stream: () => {
         calls += 1;
+        if (calls === 1) {
+          return (async function* (): AsyncGenerator<StreamChunk> {
+            if (signalFirstStarted === undefined)
+              throw new Error('first-attempt barrier was not initialized');
+            signalFirstStarted();
+            await firstMayFinish;
+            yield { type: 'text_delta', text: 'ok' };
+            yield {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: { inputTokens: 1, outputTokens: 1000 },
+            };
+          })();
+        }
+        signalSecondProviderCall?.();
         return streamOf([
           { type: 'text_delta', text: 'ok' },
           { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1000 } },
@@ -505,12 +533,44 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
       executor: agentExecutor(() => providerWithCount),
     });
 
-    const events = await drain(engine.start({ workflow: parallelBudgetWorkflow() }));
+    const handle = engine.start({ workflow: parallelBudgetWorkflow() });
+    const events: RunEvent[] = [];
+    let signalSiblingDenied: (() => void) | undefined;
+    const siblingDenied = new Promise<void>((resolve) => {
+      signalSiblingDenied = () => resolve();
+    });
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'node:failed' && event.error.code === 'budget_exceeded') {
+          signalSiblingDenied?.();
+        }
+      }
+    })();
+
+    try {
+      await firstStarted;
+      const release = releaseFirst;
+      if (release === undefined) throw new Error('first-attempt barrier was not initialized');
+      // Race the sibling's budget failure against an observable second seam invocation WHILE the first provider is
+      // still blocked. Before G38, the old released probe reaches `stream()` first; the repaired ledger instead
+      // emits the sibling's budget failure before a second provider call exists.
+      const boundary = await Promise.race([
+        siblingDenied.then(() => 'denied' as const),
+        secondProviderCall.then(() => 'second_provider_call' as const),
+      ]);
+      expect(boundary).toBe('denied');
+      expect(calls).toBe(1);
+    } finally {
+      releaseFirst?.();
+    }
+    await consume;
 
     expect(calls).toBe(1);
     expect(events.at(-1)?.type).toBe('run:failed');
     const terminal = events.at(-1);
     expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
+    assertGapFreeSeq(events);
   });
 
   it('warns and continues when on_exceed is warn', async () => {
