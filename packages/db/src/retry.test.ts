@@ -8,8 +8,9 @@ import { createClient, runMigrations } from './client.js';
 import { withBusyRetry, withBusyRetryAsync } from './retry.js';
 
 /** A `better-sqlite3`-shaped lock error: an `Error` with the string `.code` the driver sets. */
-const lockError = (code: 'SQLITE_BUSY' | 'SQLITE_LOCKED' | 'SQLITE_BUSY_SNAPSHOT'): Error =>
-  Object.assign(new Error('database is locked'), { code });
+const lockError = (
+  code: 'SQLITE_BUSY' | 'SQLITE_LOCKED' | 'SQLITE_BUSY_SNAPSHOT' | 'SQLITE_BUSY_RECOVERY',
+): Error => Object.assign(new Error('database is locked'), { code });
 
 describe('withBusyRetry — unit (2.5.I)', () => {
   it('returns the value on first success (no retry, no sleep)', () => {
@@ -84,6 +85,42 @@ describe('withBusyRetry — unit (2.5.I)', () => {
     );
     expect(result).toBe('ok');
     expect(calls).toBe(2);
+  });
+
+  it('retries SQLITE_BUSY_RECOVERY — a WAL-index rebuild after a crash is transient too', () => {
+    // Same route as SQLITE_BUSY_SNAPSHOT: an extended code that `busy_timeout`'s handler loop exits WITH
+    // rather than downgrading, so the set never matched it. Without this a first-run-after-crash write
+    // fails loud on a condition that clears itself in milliseconds.
+    let calls = 0;
+    const result = withBusyRetry(
+      () => {
+        calls += 1;
+        if (calls < 2) throw lockError('SQLITE_BUSY_RECOVERY');
+        return 'ok';
+      },
+      { sleep: () => {} },
+    );
+    expect(result).toBe('ok');
+    expect(calls).toBe(2);
+  });
+
+  it('floors a stray baseDelayMs of 0 to 1ms (the async twin must never spin without yielding)', () => {
+    const sleeps: number[] = [];
+    let caught: unknown;
+    try {
+      withBusyRetry(
+        () => {
+          throw lockError('SQLITE_BUSY');
+        },
+        { baseDelayMs: 0, maxAttempts: 3, sleep: (ms) => sleeps.push(ms) },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    // 0 would make sleepAsync resolve immediately, so the twin would drain only MICROtasks — the contending
+    // writer never gets a chance to commit and I/O never runs, the exact opposite of the twin's purpose.
+    expect(sleeps).toEqual([1, 2]);
   });
 
   it('rethrows a NON-lock error immediately, unchanged (no retry, no sleep)', () => {

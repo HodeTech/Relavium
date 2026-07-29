@@ -678,8 +678,9 @@ describe('SessionStore — the session writers survive lock contention (#228)', 
     });
   };
 
-  // The suite does not restore mocks globally (the file's other spy-using describe restores its own), so a
-  // leaked `db.insert` spy would silently corrupt every later test in the file.
+  // Defence in depth only: the file's global `beforeEach` builds a FRESH `client` per test, so a spy on
+  // `client.db` is attached to an object the next test discards — leakage is structurally impossible here,
+  // not merely prevented. Kept so the hook does not become load-bearing if that setup ever changes.
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -713,7 +714,15 @@ describe('SessionStore — the session writers survive lock contention (#228)', 
     vi.spyOn(client.db, 'insert').mockImplementation(() => {
       throw persistent;
     });
-    expect(() => store.appendMessage(makeMessage(0))).toThrow(persistent);
+    // `toThrow(err)` compares MESSAGES, which cannot tell the original from a same-message wrapper — and
+    // "the ORIGINAL error is rethrown" is exactly the claim. Catch and compare identity.
+    let caught: unknown;
+    try {
+      store.appendMessage(makeMessage(0));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBe(persistent);
   });
 });
 

@@ -31,8 +31,10 @@
  *
  * CAVEAT: `{ behavior: 'immediate' }` only applies to the OUTERMOST `BEGIN`. If a wrapped store method is ever
  * called INSIDE another `db.transaction`, better-sqlite3 demotes it to a `SAVEPOINT` and the IMMEDIATE behavior
- * is silently ignored. All current call sites invoke these as top-level store methods; a future batch-in-one-
- * transaction caller must take the outer `BEGIN IMMEDIATE` itself.
+ * is silently ignored — and the retry cannot rescue that: with the outer transaction still open, a retry cannot
+ * refresh the connection's read snapshot, so every attempt fails identically and the budget is burned for
+ * nothing. All current call sites invoke these as top-level store methods; a future batch-in-one-transaction
+ * caller must take the outer `BEGIN IMMEDIATE` itself.
  */
 
 /**
@@ -41,14 +43,26 @@
  * `better-sqlite3` reports the **extended** result code, so the stale-`BEGIN DEFERRED` upgrade failure this
  * module's header names arrives as `SQLITE_BUSY_SNAPSHOT` — a distinct string, not a `SQLITE_BUSY` prefix
  * match. `BEGIN IMMEDIATE` avoids it on every writer we own; this entry is the belt for one that ever escapes
- * (a store method demoted to a `SAVEPOINT` inside an outer transaction, or a future caller that opens its own
- * DEFERRED transaction). Matched exactly, never by prefix, so an unrelated future `SQLITE_BUSY_*` extended
- * code is not silently swept into the retry set (#100).
+ * (a future caller that opens its own DEFERRED transaction — each retry re-`BEGIN`s, so the snapshot
+ * refreshes). It is NOT a belt for a store method demoted to a `SAVEPOINT` inside an outer transaction: a
+ * retry there cannot refresh the connection's read snapshot while the OUTER transaction is still open, so
+ * every attempt fails identically. That case is unretryable by construction and must be fixed by the outer
+ * caller taking `BEGIN IMMEDIATE` itself. `SQLITE_BUSY_RECOVERY` is the same class and arrives by the same route: SQLite
+ * returns it when another process is actively rebuilding the WAL index — the first open after a crash — and
+ * `busy_timeout`'s handler loop exits with that code still set rather than downgrading it. Genuinely
+ * transient, so retrying is exactly right; without it a first-run-after-crash write fails loud.
+ *
+ * Matched exactly, never by prefix, so an unrelated future `SQLITE_BUSY_*` code is not silently swept in
+ * (#100). The DELIBERATE exclusions, recorded so the set is auditable rather than arbitrary:
+ * `SQLITE_LOCKED_SHAREDCACHE` cannot occur (this build sets `SQLITE_OMIT_SHARED_CACHE`) and
+ * `SQLITE_BUSY_TIMEOUT` requires `SQLITE_ENABLE_SETLK_TIMEOUT`, which is not defined — better-sqlite3 does
+ * not even map it, so were the build to change it would surface as `UNKNOWN_SQLITE_ERROR_773`, not silently.
  */
 const RETRYABLE_CODES: ReadonlySet<string> = new Set([
   'SQLITE_BUSY',
   'SQLITE_LOCKED',
   'SQLITE_BUSY_SNAPSHOT',
+  'SQLITE_BUSY_RECOVERY',
 ]);
 
 /** Default total attempts (the first try + up to 4 retries). */
@@ -109,14 +123,23 @@ function sleepAsync(ms: number): Promise<void> {
 }
 
 /**
- * The shared fail-loud decision for both twins: the last attempt, or any non-lock fault, rethrows the
- * ORIGINAL error unchanged. Factored out so the retry POLICY has exactly one definition — a change to what
- * counts as retryable, or to the budget's boundary condition, cannot apply to one twin and not the other.
+ * The shared retry PREDICATE — one definition, so a change to what counts as retryable cannot apply to one
+ * twin and not the other. Returns a boolean rather than throwing: the loop bound stays visible IN the loop, so
+ * a mutation here degrades to a fail-loud rethrow, never to an infinite CPU-burning loop (the shape the
+ * previous `throwUnlessRetryable` had — breaking it hung the test worker to an OOM instead of failing).
  */
-function throwUnlessRetryable(err: unknown, attempt: number, maxAttempts: number): void {
-  if (attempt >= maxAttempts || !isRetryableLockError(err)) {
-    throw err;
-  }
+function shouldRetry(err: unknown, attempt: number, maxAttempts: number): boolean {
+  return attempt < maxAttempts && isRetryableLockError(err);
+}
+
+/** Resolve the budget once, identically for both twins. Floors guard a stray `0`/negative: `maxAttempts`
+ *  so it can never disable the first attempt, `baseDelayMs` so the async twin cannot spin the microtask
+ *  queue without ever yielding a macrotask — which would defeat the twin's entire purpose. */
+function resolveBudget(options: BusyRetryBudget): { maxAttempts: number; baseDelayMs: number } {
+  return {
+    maxAttempts: Math.max(1, options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS),
+    baseDelayMs: Math.max(1, options.baseDelayMs ?? DEFAULT_BASE_DELAY_MS),
+  };
 }
 
 /**
@@ -125,19 +148,20 @@ function throwUnlessRetryable(err: unknown, attempt: number, maxAttempts: number
  * fault or an exhausted budget (fail-loud). Synchronous — it wraps a synchronous `db.transaction(...)` call.
  */
 export function withBusyRetry<T>(fn: () => T, options: BusyRetryOptions = {}): T {
-  // Floor at 1 so a stray `0`/negative can never disable the first attempt (or spin) — always at least one try.
-  const maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS);
-  const baseDelayMs = options.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
+  const { maxAttempts, baseDelayMs } = resolveBudget(options);
   const sleep = options.sleep ?? sleepSync;
-  for (let attempt = 1; ; attempt += 1) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       return fn();
     } catch (err) {
-      throwUnlessRetryable(err, attempt, maxAttempts);
+      // Fail loud: the last attempt, or any non-lock fault, rethrows the ORIGINAL error unchanged.
+      if (!shouldRetry(err, attempt, maxAttempts)) throw err;
       // Deterministic linear backoff (no jitter): let the contending writer commit before we re-take the lock.
       sleep(baseDelayMs * attempt);
     }
   }
+  // Unreachable: the final attempt either returns or rethrows above. Present so the loop bound is structural.
+  throw new Error('withBusyRetry: exhausted the attempt budget without returning or throwing');
 }
 
 /**
@@ -151,8 +175,13 @@ export function withBusyRetry<T>(fn: () => T, options: BusyRetryOptions = {}): T
  * backoff is therefore the SMALL term — the sub-300 ms of a ~25 s worst case documented in
  * [database-schema.md](../../../docs/reference/shared-core/database-schema.md#concurrency--transaction-behavior).
  * This twin removes that small term where it is free to remove; it does not, and cannot, make the write path
- * non-blocking. Converting the remaining nine synchronous store methods would not change that either — which
- * is why they stay on {@link withBusyRetry} rather than growing an async API for no gain.
+ * non-blocking. Converting the remaining twelve synchronous call sites (across five store interfaces) would not
+ * change that either — which is why they stay on {@link withBusyRetry} rather than growing an async API for
+ * no gain. Note the "small term" claim is precise about WHICH code: for `SQLITE_BUSY`/`SQLITE_LOCKED` — the
+ * codes that actually fire — an attempt blocks inside the driver for up to `busy_timeout` (~5.2 s measured),
+ * so the backoff is small. `SQLITE_BUSY_SNAPSHOT` returns IMMEDIATELY, so for that code the backoff is the
+ * whole cost; it cannot reach a synchronous call site today because every one of them is `IMMEDIATE`,
+ * single-statement, or read-only.
  *
  * One consequence the sync twin does not have: the `await` between attempts is an **observable yield**, so a
  * sibling writer may commit during the backoff. That is precisely the outcome the backoff exists to allow —
@@ -164,15 +193,15 @@ export async function withBusyRetryAsync<T>(
   fn: () => T | Promise<T>,
   options: AsyncBusyRetryOptions = {},
 ): Promise<T> {
-  const maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS);
-  const baseDelayMs = options.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
+  const { maxAttempts, baseDelayMs } = resolveBudget(options);
   const sleep = options.sleep ?? sleepAsync;
-  for (let attempt = 1; ; attempt += 1) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       return await fn();
     } catch (err) {
-      throwUnlessRetryable(err, attempt, maxAttempts);
+      if (!shouldRetry(err, attempt, maxAttempts)) throw err;
       await sleep(baseDelayMs * attempt);
     }
   }
+  throw new Error('withBusyRetryAsync: exhausted the attempt budget without returning or throwing');
 }

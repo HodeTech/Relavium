@@ -454,7 +454,8 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           db.transaction(() => fold(parsed, runId, ts), { behavior: 'immediate' }),
         );
       } catch (error) {
-        throw error instanceof Error ? error : new Error(String(error));
+        // Preserve the root cause (error-handling.md): never swallow it to rethrow a vaguer one.
+        throw error instanceof Error ? error : new Error(String(error), { cause: error });
       }
     },
 
