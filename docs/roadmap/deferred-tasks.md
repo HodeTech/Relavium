@@ -1047,6 +1047,23 @@ future test cannot silently re-acquire it.
 > pass. The 1.O-diff findings (the `tryParseJson` fence regex → string ops, and the `#nodeEmit`
 > duplicate cases → fallthrough) were fixed in PR #18; they are **not** listed here.
 
+- [ ] **2026-07-29 Sonar sweep — ~30 findings in already-merged code, outside the Wave 0 diff.** Recorded
+      per this section's standing policy: a behaviour-preserving refactor of merged, tested code is its own
+      change, not feature scope. Highest-value first: `chat-ink.tsx:1151` cognitive complexity **91 → 15**
+      (the same god-file 2.5.5.I declines to decompose — hand it to 2.6.M's render-v2), `bounding.ts:165/:180`
+      two regexes at complexity 38 and 57, `references.ts:154` a regex with **super-linear backtracking**
+      (the only finding here with a runtime-safety edge — it parses `{{ }}` filter arguments, so treat it as
+      2.5.5.A scope, not cosmetic), `agent-session.ts:545` complexity 17, `create-prompter.ts:70` a nested
+      ternary, three `RunApp.tsx` array-index keys, two `'never' is overridden` union types, two
+      `.some()` → `.includes()`, `openai.ts:481` nested template literals, `node.ts:60` `String.raw`, plus
+      ~10 test-only nits (`toHaveLength`, parameterised tests, `test.skip()`).
+      **Not actioned, with reasons:** the `--ignore-scripts` findings on all four workflows are declined —
+      `pnpm.onlyBuiltDependencies` (root `package.json`) already allowlists the only two packages permitted
+      to run install scripts, and adding the flag would break both while weakening nothing else; the
+      `ci.yml` reserved-lane TODO was deleted in Wave 0 rather than deferred (it was superseded by
+      `models-catalog.yml`'s live nightly lane).
+      *(chore · a dedicated `chore: sonar cleanup` pass)*
+
 - [ ] **Duplicated SQL literal in the initial migration (0.x)** — Sonar flags a 4× literal in the
   generated drizzle migration. Migrations are **append-only / generated** (never hand-edited), so this is
   informational — only act if the literal recurs in the *schema source* a future migration regenerates.

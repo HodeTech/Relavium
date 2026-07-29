@@ -21,6 +21,13 @@
 #
 # Third-party actions are pinned to a full commit SHA (the `# vX.Y.Z` comment tracks the
 # human-readable release) so a moved tag can't inject unreviewed code; bumps are deliberate.
+#
+# Install-script posture: `pnpm install` runs WITHOUT `--ignore-scripts` deliberately. Supply-chain risk is
+# handled more precisely one level up, by `pnpm.onlyBuiltDependencies` in the root package.json, which
+# allowlists the ONLY two packages permitted to run lifecycle scripts (`better-sqlite3` for its native
+# prebuild, `esbuild` for its platform binary). Every other transitive dependency is already blocked.
+# Passing `--ignore-scripts` here would break both of those and gain nothing — it is a weaker, blunter form
+# of a control the repo already applies.
 name: CI
 
 on:
@@ -299,42 +306,3 @@ jobs:
             echo "::error::chat entered raw mode without a TTY (the driver-selection gate regressed)"; exit 1
           fi
           echo "✓ windows headless no-TTY smoke passed"
-
-# --- Reserved Phase-1 lanes (TODO: enable with the first provider adapter) ------------
-# The per-provider conformance suite and the nightly live-API lane land WITH the adapters
-# in Phase 1 (testing.md); only their CI slots are reserved here so the testing standard
-# maps cleanly onto lanes from day one. Do not enable until `packages/llm` exists — and
-# pin each action to a commit SHA (as above) when uncommenting.
-#
-#  conformance:
-#    name: provider conformance (fixtures)
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@<sha>   # pin on enable
-#      - uses: pnpm/action-setup@<sha>
-#      - uses: actions/setup-node@<sha>
-#        with: { node-version-file: .nvmrc, cache: pnpm }
-#      - run: pnpm install --frozen-lockfile
-#      - run: pnpm turbo run test:conformance   # fixture mode — no network, no keys
-#
-# Nightly live-API lane — runs the conformance suite against real providers using keys
-# from CI secrets. Separate workflow trigger so it never gates a PR:
-#  # on:
-#  #   schedule:
-#  #     - cron: '0 7 * * *'   # 07:00 UTC nightly
-#  live-api:
-#    name: provider conformance (live, nightly)
-#    if: github.event_name == 'schedule'
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@<sha>   # pin on enable
-#      - uses: pnpm/action-setup@<sha>
-#      - uses: actions/setup-node@<sha>
-#        with: { node-version-file: .nvmrc, cache: pnpm }
-#      - run: pnpm install --frozen-lockfile
-#      - run: pnpm turbo run test:conformance:live
-#        env:
-#          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-#          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-#          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-# --------------------------------------------------------------------------------------

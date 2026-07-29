@@ -27,7 +27,7 @@
     "sync:models": "pnpm turbo run build --filter=@relavium/llm && node tools/sync-models-dev/sync.mjs",
     "sync:models:check": "pnpm turbo run build --filter=@relavium/llm && node tools/sync-models-dev/sync.mjs --check",
     "lint:tools": "eslint tools --ignore-pattern 'tools/lint-fixtures/**'",
-    "db:sync-check": "pnpm --filter @relavium/db db:generate && test -z \"$(git status --porcelain packages/db/drizzle)\" || { git status --porcelain packages/db/drizzle; echo 'error: committed @relavium/db migration is out of sync with src/schema.ts — regenerate and commit: pnpm --filter @relavium/db db:generate'; exit 1; }",
+    "db:sync-check": "node tools/db-sync/check.mjs",
     "smoke:cli": "node tools/cli-smoke/check.mjs"
   },
   "devDependencies": {
