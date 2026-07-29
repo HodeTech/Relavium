@@ -69,6 +69,29 @@ describe('createClackGatePrompter', () => {
     expect(note.mock.calls[0]?.[0]).toBe('(no message)');
   });
 
+  it('sanitizes a forged runtime timeout action before it reaches the deadline card', async () => {
+    const note = vi.fn<(message: string, title: string) => void>();
+    const event = gate({
+      expiresAt: '2026-06-24T11:00:00.000Z',
+      timeoutAction: 'reject',
+    });
+    // Events are schema-validated at the bus boundary, but the renderer itself must remain safe when a host or
+    // test double violates that contract. Reflect simulates that runtime condition without weakening TypeScript types.
+    expect(
+      Reflect.set(event, 'timeoutAction', 'reject\x1b]52;c;Zm9v\x07\x9b2J\u202E\nforged timeout row'),
+    ).toBe(true);
+
+    await createClackGatePrompter(deps({ note })).prompt(event);
+
+    const body = note.mock.calls[0]?.[0] ?? '';
+    for (const forbidden of ['\x1b', '\x9b', '\r', '\b', '\u202E']) {
+      expect(body).not.toContain(forbidden);
+    }
+    expect(body).toContain('auto-reject');
+    expect(body).toContain('forged timeout row');
+    expect(body.split('\n')).toHaveLength(3); // message + blank separator + one deadline row
+  });
+
   it('approval gate → approve yields an approved decision', async () => {
     const d = await createClackGatePrompter(deps({ confirm: () => Promise.resolve(true) })).prompt(
       gate(),

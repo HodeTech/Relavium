@@ -48,7 +48,7 @@ function cardBody(event: HumanGatePausedEvent): string {
   if (event.expiresAt !== undefined) {
     lines.push(
       '',
-      `Expires at ${sanitizeInline(event.expiresAt)} — auto-${event.timeoutAction ?? 'reject'} on timeout`,
+      `Expires at ${sanitizeInline(event.expiresAt)} — auto-${sanitizeInline(event.timeoutAction ?? 'reject')} on timeout`,
     );
   }
   return lines.join('\n');
