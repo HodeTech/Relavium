@@ -60,6 +60,17 @@ jobs:
       # (sync.mjs says so in its own comments). New models "merge automatically" via the deferred auto-PR
       # (deferred-tasks.md); until it lands they are simply picked up by the next local `pnpm sync:models`. The
       # snapshot this job writes into the ephemeral CI checkout is discarded — only the exit code is the guard.
+      # Staleness signal, informational only — and it MUST run before the guard below. `sync:models` REWRITES
+      # `snapshot.ts` in the ephemeral checkout (sync.mjs's `writeFileSync`), so a `--check` placed after it
+      # would compare upstream against the file the previous step just regenerated and report "current" every
+      # time. `sync.mjs` documents `--check` as the CI-facing mode that fails when the COMMITTED snapshot has
+      # drifted, and a matching `sync:models:check` script has always existed — but no workflow ever called it
+      # (#317). `continue-on-error` keeps it a report: the guard below is what must stay red on a money change,
+      # while ordinary upstream churn (a new model, a renamed display name) should not page anyone.
+      - name: Snapshot freshness vs upstream (informational)
+        continue-on-error: true
+        run: pnpm sync:models:check
+
       - name: No ALREADY-SHIPPED model's price moved or vanished
         run: pnpm sync:models
 

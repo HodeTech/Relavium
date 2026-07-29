@@ -1,7 +1,8 @@
 # Phase 2.6 — Conversational Authoring and the First-Class CLI
 
-> Status: **In progress** — the substrate workstream **2.6.F** (platform floor + full-screen TUI) is
-> ✅ **Done** (merged to `main`, PR #74, 2026-07-11); the rest of the phase follows. Depends on the Phase 2.5
+> Status: **In progress** — **2.6.F** (platform floor + full-screen TUI, PR #74) and **2.6.C** (reseat
+> transcript-carry + `/cost`, PR #75) are ✅ **Done**, and **2.6.Q P1–P5** landed with PR #76 (2026-07-26).
+> Live progress is canonical in [../current.md](../current.md); the rest of the phase follows. Depends on the Phase 2.5
 > spine (the wired tool-environment and the per-tool approval / mode system), which is **complete** (M2.5-4,
 > PR #69, 2026-07-08), so this phase is unblocked.
 >
@@ -22,6 +23,11 @@
 > PR #66, merged 2026-07-07); 2.6.C is retained for the residual per-model cost-breakdown read and as the
 > cross-reference home.
 
+> **Authority (until Phase 2.5.5 and Phase 2.6 close):** [`current.md`](../current.md) is canonical for
+> live progress and execution order; the phase documents stay canonical for scope and acceptance. Ordering
+> differences between the two are deliberate. `current.md` may override recommended ordering — it may **not**
+> redefine a security boundary, a scope line, or a milestone acceptance criterion.
+
 - **Related**: [../README.md](../README.md), [phase-2.5-cli-consolidation.md](phase-2.5-cli-consolidation.md), [phase-2-cli.md](phase-2-cli.md), [phase-3-desktop.md](phase-3-desktop.md), [phase-5-managed-inference.md](phase-5-managed-inference.md), [node-runtime-upgrade.md](node-runtime-upgrade.md), [../deferred-tasks.md](../deferred-tasks.md), [../../reference/cli/commands.md](../../reference/cli/commands.md), [../../reference/cli/home.md](../../reference/cli/home.md), [../../reference/cli/chat-session.md](../../reference/cli/chat-session.md), [../../reference/shared-core/built-in-tools.md](../../reference/shared-core/built-in-tools.md), [../../reference/contracts/config-spec.md](../../reference/contracts/config-spec.md), [../../reference/contracts/workflow-yaml-spec.md](../../reference/contracts/workflow-yaml-spec.md), [../../reference/contracts/agent-yaml-spec.md](../../reference/contracts/agent-yaml-spec.md), [../../decisions/README.md](../../decisions/README.md) (ADR-0058–0060 + the new ADRs below)
 
 The second half of the consolidation work begun in
@@ -30,8 +36,8 @@ the CLI as a product. It realizes the tagline — *"Start as an agent. Ship the 
 **entirely inside the terminal**: a conversation authors a standards-valid workflow, agents spawn sub-agents
 and invoke workflows for complex tasks, the Home starts and monitors runs, the run history is drillable to
 per-node detail. Every management task (providers, models, MCP, settings, gates) is doable from the Home
-without dropping to a shell subcommand. The chat renders syntax-highlighted code blocks; the CLI speaks
-five languages. When this phase closes, `relavium` in a terminal is a first-class experience on par with the
+without dropping to a shell subcommand. The chat renders syntax-highlighted code blocks; the CLI ships in
+English and Turkish over an n-locale catalog. When this phase closes, `relavium` in a terminal is a first-class experience on par with the
 best agentic CLIs — while keeping the postures they lack: OS-keychain-only secrets, a fail-closed approval
 floor, and git-committable YAML artifacts.
 
@@ -160,6 +166,12 @@ the same core.
   `validateWorkflowWithCatalog`, and **back-port** it into `create`/`import`/`export` (today those are
   parse-only; only the run path catalog-validates), so `create` can never accept a model/modality the run
   path rejects. Confirmed as a live gap by the review — `create`/`import`/`export` still parse-only today.
+  Also expose the agent-shaped sibling **`validateAuthoredAgent(yaml, catalog, parentGrants?)`** =
+  `parseAgent` **+** model/catalog validation **+** tool-ID validity **+** a caller-supplied parent-grant
+  clamp. The authoring *commands* do not need it (they author for a human to review), but **2.6.O's
+  model-generated agents execute behind it** — parse success proves none of catalog compatibility, tool
+  validity, or permission containment, and 2.6.O's clamp cannot live only at spawn if the artifact is
+  persisted. Unit-test its reject paths.
   *(L · `apps/cli/src/authoring/`; #2)*
 - **`nodeCatalogIssue` never resolves the agent's own model, only a node-level override** *(review
   finding, pre-existing bug in the function this workstream promotes):* `validate-catalog.ts`'s
@@ -197,8 +209,9 @@ the same core.
 (regression-tested); **all three of `create`, `import` and `export`** run the same run-equivalent catalog
 pre-flight (`validateAuthoredWorkflow`, defined in the task above) that `relavium run` uses, so no authoring
 entrypoint can accept a **workflow** the run path would reject; the core is directly unit-tested. (All three
-commands also accept `.agent.yaml` via `detectAndParse` → `parseAgent`; catalog pre-flight is
-workflow-shaped, so an agent file stays parse-validated only — a deliberate scope line, not an oversight.) **Required ADR:** [ADR-0058](../../decisions/0058-relavium-authoring-package-and-conversational-authoring.md)
+commands also accept `.agent.yaml` via `detectAndParse` → `parseAgent`; the authoring *commands* keep the
+workflow-shaped pre-flight, but the package also exports the agent-shaped `validateAuthoredAgent`,
+unit-tested on its reject paths — it is 2.6.O's execution gate, not a command-surface one.) **Required ADR:** [ADR-0058](../../decisions/0058-relavium-authoring-package-and-conversational-authoring.md)
 (Proposed → Accepted when this workstream begins).
 
 ### 2.6.B — Conversational + wizard authoring in the Home
@@ -504,7 +517,9 @@ last drill-down position.
     sessions.
 - **`/agents` browser** (Home + chat): tabs **Defined | Sessions**. *Defined*: the agent catalog with
   **"start a chat with this agent"** (closing the Home's built-in-agent-only gap). *Sessions*: recent +
-  in-progress sessions — Enter resumes **in place** (the in-Home chat machinery), with a detail view
+  in-progress sessions — Enter resumes **in place**, **with the prior transcript repainted** — the `session_messages` →
+    `TranscriptEntry` projection into the 2.6.C view seed, including the policy for rows a `/compact`/`/trim`
+    dropped and the decision on whether the inline renderer repaints too (the in-Home chat machinery), with a detail view
   (transcript summary, cost, model attribution). Child sessions spawned by a parent agent are shown
   **indented beneath their parent** with a `└─` tree-drawing prefix and the sub-agent's name; a
   collapsed parent hides its children (toggle with `Space`). A filter (`/sessions --roots`) shows
@@ -544,7 +559,7 @@ last drill-down position.
 **Acceptance:** every action above works from the Home without a shell command; the three-level drill-down
 is complete over 2.6.H's data; a run started in another terminal is watchable live at node granularity;
 zombie runs reconcile; the browsers degrade at <80×24; the machine-output contract is untouched
-(harness-proven). **Required ADR:** management browsers + run drill-down contract (shared with 2.6.H).
+(harness-proven). **Required ADR:** management browsers + run drill-down contract (shared with 2.6.H). A session resumed from the browser or `chat-resume` opens with its prior transcript **visible** (or the inline renderer's behaviour is documented as a deliberate difference), restores its agent/model identity and continues — asserted by extending the existing resume chain in `apps/cli/src/harness/session-chain.e2e.test.ts`, with a long-transcript and an alt-screen case.
 
 ### 2.6.H — Durable run detail: the history data layer
 
@@ -863,7 +878,10 @@ sensitive-read floors).
     `apps/cli/src/engine/tool-host/egress.ts` but is **not wired** by any production caller (no
     `egressCredentialResolver` is passed in `session-host.ts` or `build-engine.ts`). The Phase 2.6 task
     is to: (a) add a per-provider search-API key store (keychain namespace `search:*`), (b) wire the
-    resolver in the chat-session and workflow-run tool-environment factories, (c) surface search-provider
+    resolver in the **chat-session and Home-chat** tool-environment factories **only** — the workflow-run
+    factory (`build-engine.ts`) keeps its `fs`+`process` boundary, which
+    [Explicitly out of scope](#explicitly-out-of-scope--phase-3--later) and `build-engine.ts`'s own comment
+    both call permanent and ADR-gated, so wiring it here would breach it silently, (c) surface search-provider
     configuration in `/providers` and the onboarding wizard, and (d) document the config-pinned provider
     contract in `built-in-tools.md`.
 - **`http_request` has no config path to ever populate `allowedDomains` for chat** *(review finding,
@@ -892,9 +910,11 @@ sensitive-read floors).
   (path prefix / host / MCP server) instead of tool id alone, and give `mcp_call`/`web_search` a structured
   `{server, tool}`/query preview so their blank-preview once-only downgrade becomes a real reviewable
   grant.
-- **Dynamic `invoke_workflow` from within a workflow agent node** — **moved to 2.6.P** (workflow
-  composition), where it sits with the `subworkflow` node and the nested-run event namespace. (`invoke_agent`
-  is wired for chat in 2.6.N; the dynamic runtime `invoke_workflow` question is analyzed in 2.6.P's ADR.)
+- **Dynamic `invoke_workflow` from within a workflow agent node** — **not a 2.6.M deliverable, and not a
+  2.6.P one either.** It is tracked *alongside* 2.6.P (workflow composition), whose `subworkflow` node and
+  nested-run event namespace are its natural home, but the capability itself is **deferred past Phase 2.6**
+  (D57): 2.6.P's ADR records the deferral and its rationale rather than implementing it. (`invoke_agent` is
+  wired for chat in 2.6.N — agent spawning is separate from workflow composition.)
 - **Default chat agent grant review**: widen the built-in agent's grant to the new idempotent read tools
   (search/find/todo); write/exec/egress stay opt-in via mode + approval.
 - **Curl/wget as web-search substrate** *(research item)*: evaluate whether `curl` / `wget` / `httpie` /
@@ -909,7 +929,9 @@ sensitive-read floors).
 
 **Acceptance:** the toolbelt covers read / edit / search / find / exec / web / todo / ask-user /
 `invoke_agent` (now wired for chat — 2.6.N); each tool
-is YAML-selectable and correctly mode-gated on every surface; render v2 ships with diffs and the details
+is YAML-selectable and correctly mode-gated on every **surface that wires its capability arm** — egress/OS
+tools on the chat surfaces only, with 2.6.A's pre-flight rejecting an egress/OS grant in an authored workflow
+rather than shipping a permanent `tool_unavailable`; render v2 ships with diffs and the details
 toggle behind a passed security review, including `write_file`'s approval card (content diff/preview, a
 post-write trace event, and visibility in `auto` mode); a chat `http_request` call reaches the approval
 prompt instead of deterministically failing `domain_not_allowed`; the approval cache is target-scoped; the
@@ -1035,8 +1057,10 @@ generation capability ships.
   model describes a task with **no matching catalog agent** (e.g. "analyze this CSV and find outliers"),
   the engine uses the 2.6.B conversational-authoring infrastructure to generate a valid `.agent.yaml` (or
   one-off `.relavium.yaml`) on the fly — written to the central ephemeral root (2.6.N's artifact-store
-  port, `<parentSessionId>/agents/<uuid>.agent.yaml`), **validated against the schema
-  (`validateAuthoredWorkflow`) before it can execute**, then spawned. The model is not limited to
+  port, `<parentSessionId>/agents/<uuid>.agent.yaml`), **validated before it can execute** —
+  `validateAuthoredAgent` for a generated `.agent.yaml`, `validateAuthoredWorkflow` for a one-off
+  `.relavium.yaml` (both from 2.6.A), with the parent-grant clamp enforced **inside the validator**, not
+  only at spawn — then spawned. The model is not limited to
   pre-existing catalog agents — it **composes tooling on demand**.
 - **Generation security review (mandatory, dedicated — the plan's highest-risk surface):** generating and
   running model-authored agents is a **prompt-injection → code-execution** path. Untrusted content in the
@@ -1062,7 +1086,9 @@ generation capability ships.
 
 **Acceptance:** a chat agent with no suitable catalog agent **generates** a valid one-off agent, which
 passes the pre-flight and runs, its result folded into the parent turn — with the generation security
-review passed; a generated agent never escalates tools or carries a secret; a parent fans out to multiple
+review passed; a generated agent never escalates tools or carries a secret; **a generated agent naming an
+unknown tool, an uncatalogued model, or a grant wider than its parent's is rejected by
+`validateAuthoredAgent` before spawn, reject-path tested**; a parent fans out to multiple
 children concurrently under an explicit error policy and collects their results in one turn. **Required
 ADR:** on-the-fly generation + parallel orchestration security (new — the generation-as-codegen threat
 model, tool-grant clamping, the parallel error-policy contract; sits on ADR-0060's taint precedent).
@@ -1106,21 +1132,23 @@ migration story; depends on 2.6.N for the parent-child lineage substrate.
   lineage); its `run:*` events nest under a `run:child_*` namespace (or the bus carries a `parentRunId`
   discriminator — decided in the ADR). This enables **arbitrary workflow composition** — pipelines built
   from smaller, independently testable units without the engine knowing any workflow's domain.
-- **Dynamic `invoke_workflow` from a workflow agent node** *(analysis gate, moved here from 2.6.M)*: an open
-  question — can a running workflow's agent node **dynamically** call `invoke_workflow` as a tool (as a chat
-  agent does), selecting a target at runtime by model judgment, enabling orchestrator workflows that branch
-  to sub-workflows? The ADR evaluates: (a) a separate tool vs an `invoke_agent` overload with a
-  `target: 'workflow'` discriminator; (b) the nested-run event namespace; (c) the cost/resource governance
-  boundary. Decided in this workstream's analysis step.
+- **Dynamic `invoke_workflow` from a workflow agent node — DEFERRED past Phase 2.6** *(decision D57,
+  recorded in [current.md](../current.md#wave-gating-decisions))*: a running workflow's agent node selecting
+  a sub-workflow at runtime by model judgment is exactly the unauthored composition that 2.6.P's
+  *authored surface == executable surface* invariant exists to prevent, and it has no cost-governance
+  boundary yet. **2.6.P ships the authored `subworkflow` node only.** Its ADR records the deferral and the
+  rationale rather than deciding the design; reopening it needs its own ADR + security review covering
+  (a) target selection, (b) the nested-run event namespace, and (c) cost/resource governance. Tracked in
+  [../deferred-tasks.md](../deferred-tasks.md).
 
 **Acceptance:** a workflow invokes another via an authored `subworkflow` node under `schema_version: '1.1'`;
 existing `schema_version: '1.0'` files parse **unchanged** (no forced migration); a 1.0 file using
 `subworkflow` is rejected with a version-hint error; the child run carries `parentRunId` lineage and its
 events attribute to the parent; the parser/spec/migration-note establish the reusable version-migration
 path. **Required ADR:** `subworkflow` node + `schema_version` 1.1 additive migration (new — the
-first versioned-schema bump; the nested-run event namespace; the dynamic-`invoke_workflow` decision).
+first versioned-schema bump; the nested-run event namespace; the recorded deferral of dynamic `invoke_workflow`).
 
-### 2.6.Q — Dynamic model-catalog enrichment (models.dev): per-model capability matrix + pricing long-tail
+### 2.6.Q — Dynamic model-catalog enrichment (models.dev): per-model capability matrix + pricing long-tail — 🟡 **P1–P5 landed (PR #76, 2026-07-26); P6 and the `/settings` → `/models` toggle open**
 
 Added **2026-07-11** from three maintainer manual-test findings that share one root cause — **Relavium has no
 per-model economics or capability data beyond a ~12-entry hand-maintained registry**, and no provider API
@@ -1219,6 +1247,7 @@ workstreams — each stays checked off **only** in the PR that lands it:
 | MCP `stdio` import-trust/consent gate + `npx` pinning (ADR-0052 §2) | 2.6.B |
 | Parse-time gate on system-bound fields (trusted `{{ctx}}`) | 2.6.D |
 | `@`-glob / directory expansion (ADR-0061) | 2.6.E |
+| `chat-resume` opens on an empty viewport (`session_messages` → `TranscriptEntry` projection) | 2.6.G |
 | Cross-process gate-resolve TOCTOU (store uniqueness) | 2.6.H |
 | Run-resume torn-read wrap · chat-persister turn atomicity | 2.6.H |
 | Content-level workflow-identity guard on resume | 2.6.H |
@@ -1431,7 +1460,7 @@ flowchart LR
 1. `relavium` on a TTY opens the **full-screen Home**; `--json` / CI / non-TTY behavior is byte-identical
    (regression-harness proven); the inline renderer remains available.
 2. **The Home manages everything**: providers/keys, models, MCP servers, settings, workflow
-   start/monitor/history with node-level drill-down, agent start/resume, gate + budget resolution, and
+   start/monitor/history with node-level drill-down, agent start/resume (a resumed session repaints its transcript, restores its agent/model identity, and continues), gate + budget resolution, and
    authoring — no routine task requires a shell subcommand. (Subcommands and the ADR-0049 machine surface
    are untouched and permanent; whether to de-emphasize interactive duplicates in `--help` is a phase-end
    review decision, never a removal.)
@@ -1471,9 +1500,11 @@ flowchart LR
 |---|-----|-------|--------|------------|
 | 1 | [ADR-0058][] | `@relavium/authoring` + conversational authoring | Proposed | 2.6.A / 2.6.B |
 | 2 | [ADR-0059][] | Mid-session model reseat | **Accepted** (shipped 2.5.G) | 2.6.C (residual) |
+| 2b | [ADR-0070][] | Durable per-model session cost attribution | **Accepted** | 2.6.C |
 | 3 | [ADR-0060][] | Session `{{ctx.*}}` interpolation | Proposed | 2.6.D |
-| 4 | *(new)* | Node supported-floor bump (`>=22`; supersedes ADR-0021) | Drafted when 2.6.F starts | 2.6.F |
-| 5 | *(new)* | Full-screen TUI renderer + component test harness | Drafted when 2.6.F starts | 2.6.F |
+| 4 | [ADR-0067][] | Node supported-floor `>=22` (supersedes ADR-0021) | **Accepted** | 2.6.F |
+| 5 | [ADR-0068][] | Full-screen TUI renderer + component test harness | **Accepted** | 2.6.F |
+| 5b | [ADR-0069][] | `string-width` for the CLI renderer | **Accepted** | 2.6.F |
 | 6 | *(new)* | Management browsers + durable run detail (amends ADR-0036) | Drafted when 2.6.G starts | 2.6.G / 2.6.H |
 | 7 | *(new)* | MCP management surface + config-write extension (extends ADR-0063) | Drafted when 2.6.I starts | 2.6.I |
 | 8 | *(new)* | Onboarding auth paths + Relavium-account forward design (rides ADR-0012–0015) | Drafted when 2.6.J starts | 2.6.J |
@@ -1482,12 +1513,19 @@ flowchart LR
 | 11 | *(new)* | Syntax highlighting dependency (`highlight.js` + `cli-highlight` via `ink-syntax-highlight`) + markdown rendering architecture | Drafted when 2.6.E starts | 2.6.E |
 | 12 | *(new)* | Child-session **foundation** (extends ADR-0024/ADR-0036; parent-child lineage schema, standardized I/O contract, the **host artifact-store port** + central ephemeral root + fs-floor home-anchoring, catalog spawn, cost roll-up, abort propagation, depth/concurrency guardrails) | Drafted when 2.6.N starts | 2.6.N |
 | 13 | *(new)* | On-the-fly **generation + parallel orchestration security** (the generation-as-codegen threat model, schema-valid≠safe, tool-grant clamping, the parallel error-policy contract; sits on ADR-0060's taint precedent) — **mandatory security review is the ship-gate** | Drafted when 2.6.O starts | 2.6.O |
-| 14 | *(new)* | `subworkflow` node + **`schema_version` 1.1** additive migration (the first versioned-schema bump — additive/opt-in, subworkflow-only not `loop`; the nested-run event namespace; the dynamic-`invoke_workflow` decision) | Drafted when 2.6.P starts | 2.6.P |
-| 15 | *(new)* | Dynamic model-catalog enrichment (models.dev): per-model **capability matrix** (accepted reasoning-effort tiers, output ceiling, temperature/structured_output/modalities → adapter clamp-or-reject before the wire) + **pricing long-tail** with a new `models-dev` `PricingSource` and precedence `registry > user > models-dev > none` feeding the cost cap; bundled snapshot floor + disable-able host-side fetch + integrity validation; SSRF floor if the URL is configurable (extends ADR-0064; rides ADR-0065/ADR-0066; ADR-0011 seam-respecting) — **mandatory security review co-gate** | Drafted when 2.6.Q starts | 2.6.Q |
+| 14 | *(new)* | `subworkflow` node + **`schema_version` 1.1** additive migration (the first versioned-schema bump — additive/opt-in, subworkflow-only not `loop`; the nested-run event namespace; the recorded deferral of dynamic `invoke_workflow`) | Drafted when 2.6.P starts | 2.6.P |
+| 15 | [ADR-0071][] | models.dev as the model-metadata source | **Accepted** | 2.6.Q |
+| 15b | [ADR-0072][] | Model metadata in the DB behind a generated offline floor | **Accepted** | 2.6.Q |
 
 [ADR-0058]: ../../decisions/0058-relavium-authoring-package-and-conversational-authoring.md
 [ADR-0059]: ../../decisions/0059-cli-mid-session-model-reseat.md
 [ADR-0060]: ../../decisions/0060-session-ctx-prompt-interpolation.md
+[ADR-0067]: ../../decisions/0067-node-supported-floor-22-reaffirm-better-sqlite3.md
+[ADR-0068]: ../../decisions/0068-full-screen-tui-renderer-ink7-harness.md
+[ADR-0069]: ../../decisions/0069-string-width-for-the-cli-renderer.md
+[ADR-0070]: ../../decisions/0070-durable-per-model-session-cost-attribution.md
+[ADR-0071]: ../../decisions/0071-models-dev-as-the-model-metadata-source.md
+[ADR-0072]: ../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md
 
 > **Deferred:** A future validator-dependency ADR will be needed for `output_schema` deep JSON-Schema
 > conformance (currently out of scope for this phase; tracked in

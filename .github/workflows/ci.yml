@@ -3,11 +3,16 @@
 # Runs lint + typecheck + test across every workspace in dependency order with the
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
 #
-# Branch protection (set in the GitHub repo settings, not here): the `ci` job below is the
-# REQUIRED status check to merge into `main`. The `peer-dep-gate` job is advisory until the
-# surface packages land their peers in Phase 1. The `coverage` job is advisory too — it enforces
-# the testing.md >=90% line+branch engine floor (exit criterion #5) but stays non-required until the
-# thin core-branch margin is confirmed stable under CI's Node 24; promote it to a required check then.
+# Branch protection (set in the GitHub repo settings, not here): `ci` and `coverage` are the REQUIRED
+# status checks to merge into `main`. Every other job self-labels `(advisory)` in its `name:`, which is
+# what shows in the PR checks list — `floor-check`, `peer-dep-gate` and `windows-concurrency`.
+#
+# `coverage` enforces the testing.md >=90% line+branch floor for `@relavium/llm` and `@relavium/mcp` only.
+# `packages/core` is measured and printed by the same run but does not fail it: its branch margin is +0.83
+# (90.83 measured 2026-07-29) and Phase 2.5.5 Waves 1-3 edit `core` heavily, so blocking merges on a
+# sub-1-point margin would red-CI real work for no defect. That is a scoped, dated ruling with a promotion
+# trigger — Wave 3's test-coverage items — not an open-ended exemption. A local `pnpm coverage` still
+# enforces all three, so the floor never silently relaxes for a developer.
 #
 # Caching: the always-on layer is the GitHub Actions `.turbo` cache (restored/saved below),
 # which makes a no-change re-run a Turborepo cache hit — the M0 "demonstrably hitting"
@@ -16,6 +21,13 @@
 #
 # Third-party actions are pinned to a full commit SHA (the `# vX.Y.Z` comment tracks the
 # human-readable release) so a moved tag can't inject unreviewed code; bumps are deliberate.
+#
+# Install-script posture: `pnpm install` runs WITHOUT `--ignore-scripts` deliberately. Supply-chain risk is
+# handled more precisely one level up, by `pnpm.onlyBuiltDependencies` in the root package.json, which
+# allowlists the ONLY two packages permitted to run lifecycle scripts (`better-sqlite3` for its native
+# prebuild, `esbuild` for its platform binary). Every other transitive dependency is already blocked.
+# Passing `--ignore-scripts` here would break both of those and gain nothing — it is a weaker, blunter form
+# of a control the repo already applies.
 name: CI
 
 on:
@@ -118,6 +130,25 @@ jobs:
       - name: Engine dependency allowlist
         run: pnpm lint:engine-deps
 
+      # `tools/` is real code that gates real things (the seam fence, the bundle-closure guard, the
+      # models.dev sync). The root `ci` script has always linted it; this job never did, so a lint error in
+      # a guard script could merge while `pnpm run ci` was red locally (#312).
+      # NB: it is `pnpm run ci`, never `pnpm ci` — pnpm reserves `ci` as a builtin and answers
+      # `ERR_PNPM_CI_NOT_IMPLEMENTED`, so the script is unreachable by the name everyone types.
+      - name: Lint the tooling scripts
+        run: pnpm lint:tools
+
+      # RUN the artifact this job just built, through the SAME `pnpm smoke:cli` script the root `ci` script
+      # calls — a check that exists in only one of the two is exactly the #312 divergence this change closes.
+      # Until now nothing in the required gate executed
+      # `apps/cli/dist/index.js` — only the advisory Windows leg and the tag-gated release smoke did (#294) —
+      # so a bundle that builds but cannot boot merged green. The `run --json` leg additionally proves the
+      # migrations resolve beside the bundle, which is the failure `apps/cli/drizzle/**` becoming a declared
+      # turbo output (#315) exists to prevent: a cache-hit replay used to leave `dist/` fresh next to a
+      # missing `drizzle/`, crashing on first DB touch with nothing red anywhere.
+      - name: Smoke the compiled binary
+        run: pnpm smoke:cli
+
   # Supported-floor gate (ADR-0067). TWO floors, deliberately different:
   #   * the PUBLISHED floor is `apps/cli` `engines.node` = `>=22` — the max constraint in the CLI's RUNTIME
   #     dependency closure (`ink@7` / `cli-truncate` / `slice-ansi` → `>=22`); nothing runtime needs more.
@@ -131,7 +162,7 @@ jobs:
   # a property of the prod closure, verified at the ADR (see ADR-0067's amendment note) rather than here.
   # A SEPARATE job (the required check stays the ubuntu `ci` job on Node 24); promote once confirmed stable.
   floor-check:
-    name: node 22-line floor (22.13.0) · typecheck · test · build
+    name: node 22-line floor (22.13.0) · typecheck · test · build (advisory)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Fully isolate this job from the shared Turbo remote cache. Turbo's task hash does NOT include the
@@ -164,7 +195,7 @@ jobs:
   # checkouts resolve while the surface packages' peers are not all in the tree yet). Catch
   # peer drift here without breaking local dev.
   peer-dep-gate:
-    name: strict peer-dependency check
+    name: strict peer-dependency check (advisory)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -179,13 +210,13 @@ jobs:
       - name: Install with strict peers
         run: pnpm install --frozen-lockfile --config.strict-peer-dependencies=true
 
-  # Engine coverage floor (testing.md >=90% line+branch, exit criterion #5). Advisory for now — a
-  # SEPARATE job (not part of the required `ci` job) so it surfaces a regression without blocking merge
-  # while the core-package branch margin is thin. `pnpm coverage` is a repo-ROOT run, which is what makes
-  # the root-relative per-glob thresholds (packages/core, packages/llm) authoritative (vitest.config.ts).
-  # Promote to a required check once the margin is confirmed stable under CI's Node 24.
+  # Engine coverage floor (testing.md >=90% line+branch, exit criterion #5). A REQUIRED check named
+  # `engine coverage floor (llm, mcp)` — kept as a SEPARATE job from `ci` so a coverage regression is
+  # legible on its own line rather than buried in a 12-step job. It is a repo-ROOT vitest run, which is what
+  # makes the root-relative per-glob thresholds authoritative (vitest.config.ts). `packages/core` is measured
+  # but not enforced here; see the header for the ruling and its promotion trigger.
   coverage:
-    name: engine coverage floor (advisory)
+    name: engine coverage floor (llm, mcp)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -214,8 +245,13 @@ jobs:
       # each package still covers its OWN src via relative imports, so the floor stays src-accurate).
       - name: Build workspaces (so coverage resolves the @relavium/* package entries)
         run: pnpm turbo run build
-      - name: Engine coverage floor (>=90% line+branch)
-        run: pnpm coverage
+      # ENFORCED subset only: `llm` and `mcp` fail the build below 90% line+branch. `core` is measured and
+      # printed by the same run but does NOT fail it — its branch margin is +0.83 today and Phase 2.5.5
+      # Waves 1-3 edit it heavily, so blocking on a sub-1-point margin would red-CI real work for no
+      # defect (maintainer ruling 2026-07-29). A bare `pnpm coverage` still enforces all three locally.
+      # Promote `core` here once Wave 3's test-coverage items land.
+      - name: Engine coverage floor (>=90% line+branch — llm, mcp enforced; core measured)
+        run: pnpm coverage:enforced
 
   # Cross-OS concurrency + headless gate (2.5.I S6). The DB write-path hardening (BEGIN IMMEDIATE + the
   # SQLITE_BUSY retry's Atomics.wait sleep + WAL locking) and the two-process concurrency e2e (a child spawn +
@@ -270,42 +306,3 @@ jobs:
             echo "::error::chat entered raw mode without a TTY (the driver-selection gate regressed)"; exit 1
           fi
           echo "✓ windows headless no-TTY smoke passed"
-
-# --- Reserved Phase-1 lanes (TODO: enable with the first provider adapter) ------------
-# The per-provider conformance suite and the nightly live-API lane land WITH the adapters
-# in Phase 1 (testing.md); only their CI slots are reserved here so the testing standard
-# maps cleanly onto lanes from day one. Do not enable until `packages/llm` exists — and
-# pin each action to a commit SHA (as above) when uncommenting.
-#
-#  conformance:
-#    name: provider conformance (fixtures)
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@<sha>   # pin on enable
-#      - uses: pnpm/action-setup@<sha>
-#      - uses: actions/setup-node@<sha>
-#        with: { node-version-file: .nvmrc, cache: pnpm }
-#      - run: pnpm install --frozen-lockfile
-#      - run: pnpm turbo run test:conformance   # fixture mode — no network, no keys
-#
-# Nightly live-API lane — runs the conformance suite against real providers using keys
-# from CI secrets. Separate workflow trigger so it never gates a PR:
-#  # on:
-#  #   schedule:
-#  #     - cron: '0 7 * * *'   # 07:00 UTC nightly
-#  live-api:
-#    name: provider conformance (live, nightly)
-#    if: github.event_name == 'schedule'
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@<sha>   # pin on enable
-#      - uses: pnpm/action-setup@<sha>
-#      - uses: actions/setup-node@<sha>
-#        with: { node-version-file: .nvmrc, cache: pnpm }
-#      - run: pnpm install --frozen-lockfile
-#      - run: pnpm turbo run test:conformance:live
-#        env:
-#          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-#          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-#          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-# --------------------------------------------------------------------------------------

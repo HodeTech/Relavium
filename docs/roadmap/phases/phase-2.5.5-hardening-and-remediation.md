@@ -1,6 +1,8 @@
 # Phase 2.5.5 — Hardening and Remediation
 
-> Status: 📋 **Planned, not started.** A full-project multi-agent code review completed
+> Status: 🚧 **Open — Wave 0 in flight.** Live progress and execution order are canonical in
+> [../current.md](../current.md#execution-order--phase-255--phase-26-temporary); this banner does not
+> restate them. A full-project multi-agent code review completed
 > 2026-07-19 at HEAD `f88b0e8` — 377 findings, 373 surviving two-lens adversarial
 > verification (one agent per finding tried to refute it against the code, a second audited
 > its materiality). The toolchain was green throughout (lint, typecheck, all 226 test files
@@ -8,8 +10,12 @@
 > triaged into a 231-item baseline, then consolidated to **205 work items** (22 merges
 > absorbing 48 originals, 1 split separating a mis-bundled finding), with full 373-finding
 > coverage re-verified programmatically (0 missing, 0 duplicated). This file holds the items
-> that are not a natural fit for an open Phase 2.6 workstream. No code has been written
-> against this plan yet.
+> that are not a natural fit for an open Phase 2.6 workstream.
+>
+> **Authority (until Phase 2.5.5 and Phase 2.6 close):** [`current.md`](../current.md) is canonical for
+> live progress and execution order; the phase documents stay canonical for scope and acceptance. Ordering
+> differences between the two are deliberate. `current.md` may override recommended ordering — it may **not**
+> redefine a security boundary, a scope line, or a milestone acceptance criterion.
 
 - **Related**: [phase-2.5-cli-consolidation.md](phase-2.5-cli-consolidation.md), [phase-2.6-conversational-authoring.md](phase-2.6-conversational-authoring.md), [../current.md](../current.md), [../deferred-tasks.md](../deferred-tasks.md), [../../standards/error-handling.md](../../standards/error-handling.md), [../../standards/security-review.md](../../standards/security-review.md), [../../standards/testing.md](../../standards/testing.md), [../../standards/logging-and-observability.md](../../standards/logging-and-observability.md), [../../standards/documentation-style.md](../../standards/documentation-style.md), [../../standards/architectural-principles.md](../../standards/architectural-principles.md), [../../decisions/README.md](../../decisions/README.md)
 
@@ -20,9 +26,10 @@ first-class is a gap in **propagation, not competence**: the correct pattern alm
 already exists in the repo and simply never reached the next site — a redaction helper not
 called twenty lines away, terminal sanitization built for chat and never carried to
 `relavium run`, `withBusyRetry` applied to every writer but the three oldest, cancel-wins
-implemented in four node handlers and omitted in the fifth. That makes this work cheap and
-low-risk in the aggregate — the reference implementation is already in-tree at nearly every
-site — while a small number of items are genuine CRITICAL defects (a secret leaking into a
+implemented in four node handlers and omitted in the fifth. That makes each item cheap and low-risk **individually** — the reference implementation is already in-tree
+at nearly every site — while the set is collectively **high-coordination-risk**: 176 items across ~40 files
+shared with an active Phase 2.6, five intra-phase file overlaps with a required landing order, and ~14
+maintainer decisions — while a small number of items are genuine CRITICAL defects (a secret leaking into a
 persisted approval preview, an unhandled rejection that can crash the CLI mid-turn, an
 unsanitized terminal-injection hole on `relavium run`) that justify treating this as its own
 phase rather than a backlog label.
@@ -127,7 +134,9 @@ reached.
 - Every maintainer-decision item in this phase (retention policy, `--verbose`/`--quiet`
   precedence, the `default_headers` plaintext-secret design, and others named in the work
   breakdown below) has a recorded ruling before its implementation lands.
-- `pnpm turbo run lint typecheck test` stays green throughout; no item in this phase widens
+- `pnpm run ci` stays green throughout — it is `pnpm run ci`, never `pnpm ci` (pnpm reserves `ci` as a
+   builtin) — and so do both required `ci.yml` checks, the `ci` job including its compiled-binary smoke and
+   the `coverage` job (`pnpm coverage:enforced`); no item in this phase widens
   the `LLMProvider` seam, adds a platform import to `packages/core`, or changes the
   `--json`/CI machine-output contract ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)).
 
@@ -166,8 +175,13 @@ reached.
 - Anything requiring code in `apps/desktop`, `apps/vscode-extension`, `packages/ui`,
   `apps/api`, or `apps/portal` — all six are empty scaffolds or non-existent directories;
   no finding in this review's near-term allocation targets them.
-- New product surface area of any kind — this phase adds no new tool, command, node type,
-  or seam capability; every item is a fix to something that already ships.
+- **No net-new product capability** — no new tool, node type, or seam capability; every item is a fix to
+  something that already ships. It does change a small, enumerated set of **public CLI contracts** as
+  remediation: noun-verb aliases for `chat-resume`/`chat-list`/`chat-export` (`#309`), a confirmation /
+  `--force` gate on `provider remove-key` (`#19`), a dedicated exit code for an unclassified internal
+  fault (`G35`), `--help --json` (`#13`), and the `--quiet`/`--verbose` precedence (`#45`). Each is
+  additive or alias-preserving, and each lands with its `reference/cli/commands.md` update — see the
+  EXIT:4 reading recorded in [../current.md](../current.md).
 
 ## Work breakdown
 
@@ -514,8 +528,11 @@ directly as a 2.6.A work item). **Intra-phase:** the five file overlaps recorded
 6. Every maintainer-decision item flagged **blocked** in the work breakdown has a recorded
    ruling before its implementation lands.
 7. The nine sub-streams' acceptance paragraphs (2.5.5.A–I above) each hold in full.
-8. No new ADR is minted by this phase beyond what a blocked maintainer decision might
-   independently require — this is a remediation phase, not an architecture-change phase.
+8. **No new ADR is expected** — this is a remediation phase, not an architecture-change phase — but the
+   standing ADR threshold still applies unchanged: any item that introduces a new seam or port, moves a
+   trust boundary, defines a storage lifecycle, changes a public CLI / machine-output contract, or adds a
+   runtime dependency mints an ADR on its own merits. Minting one is **not** a phase failure; skipping a
+   genuine one is. (D33's `deleted_at` retention lifecycle and D20's flag rename are the closest calls.)
 
 ## Required ADRs
 
