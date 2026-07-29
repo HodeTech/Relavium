@@ -40,7 +40,7 @@ describe('createClackGatePrompter', () => {
     expect(body).toContain('Ship it?');
   });
 
-  it('sanitizes the card body and title while retaining readable multiline gate text (#57)', async () => {
+  it('sanitizes the card body and title while retaining readable multiline gate text (G44)', async () => {
     const attack = '\x1b[2J\x1b]52;c;Zm9v\x07\x1bPtmux;\x1b\\\x9b2J\r\b\u202E';
     const note = vi.fn<(message: string, title: string) => void>();
     await createClackGatePrompter(deps({ note })).prompt(

@@ -36,7 +36,7 @@ function messageFromJson(value: unknown): string {
 }
 
 describe('renderError terminal projection', () => {
-  it('sanitizes the human diagnostic and its verbose stack without suppressing readable content (#57)', () => {
+  it('sanitizes the human diagnostic and its verbose stack without suppressing readable content (G34)', () => {
     const error = new CliError('invalid_invocation', `message visible${ATTACK}\nforged message`);
     error.stack = `stack visible${ATTACK}\nsecond stack line`;
     const capture = captureIo();
