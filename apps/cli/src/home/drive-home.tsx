@@ -529,6 +529,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
         // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
         onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
+        onListenerError: (note) => store.notice(note),
         onUnpriced: (note) => store.notice(note),
       });
       return wireHomeChatSession(built, store, { open: true });
@@ -586,6 +587,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
         // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
         onEffortWithheld: onceEffortNotice(noteToStore),
+        onListenerError: noteToStore,
         onUnpriced: noteToStore,
       });
       // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,

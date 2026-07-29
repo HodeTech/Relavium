@@ -304,9 +304,12 @@ describe('buildChatSession — the onListenerError sink (#228)', () => {
     await built.session.sendMessage('hi');
 
     expect(notes.length).toBeGreaterThan(0);
-    // The note names WHICH event was lost and why — a bare "write failed" would not tell the user that a turn
-    // is missing from their history.
-    expect(notes[0]).toMatch(/could not be recorded to history\.db: database is locked/);
+    // The note names WHICH event failed and why. Deliberately NEUTRAL about the cause: this sink is bus-wide
+    // (the renderer, the Home store and the NDJSON printer subscribe here too), so it must not blame the
+    // database for what may be a render fault.
+    expect(notes[0]).toMatch(
+      /a background handler failed while processing the \S+ event: database is locked/,
+    );
   });
 
   it('does NOT swallow when no sink is supplied — the failure still surfaces out-of-band', async () => {

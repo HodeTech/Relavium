@@ -246,8 +246,10 @@ function buildSessionRuntime(
         // Stated explicitly because "throw to fall through" reads as a bug otherwise.
         throw error;
       }
+      // Bus-WIDE, not persister-specific: the renderer, the Home store and the NDJSON printer all subscribe
+      // here too, so a render fault must not be reported as a database problem.
       const reason = error instanceof Error ? error.message : String(error);
-      report(`the ${event.type} event could not be recorded to history.db: ${reason}`);
+      report(`a background handler failed while processing the ${event.type} event: ${reason}`);
     },
   });
   const providers = opts.providers ?? createProviderResolver();
@@ -506,6 +508,12 @@ export interface BuildResumedChatSessionOptions {
   readonly onEffortWithheld?: (note: string) => void;
   /** Unpriced-model notice (ADR-0071 §K7) — see {@link BuildChatSessionOptions.onUnpriced}. */
   readonly onUnpriced?: (note: string) => void;
+  /**
+   * Sink for a throwing passive subscriber (#228) — see {@link BuildChatSessionOptions.onListenerError}.
+   * A RESUMED session is the HIGHEST-contention surface for it: two `chat-resume` processes on one session
+   * write the same `history.db` rows concurrently (#227).
+   */
+  readonly onListenerError?: (note: string) => void;
   /** The loaded session record (its frozen `agentSnapshot` + `context` rebind the session). */
   readonly record: AgentSessionRecord;
   /** The session's persisted transcript, in any order ({@link reconstructSessionState} sorts it). */
