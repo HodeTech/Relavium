@@ -235,10 +235,10 @@ interface ToolApprovalRequest {
   readonly preview: ToolActionPreview;
 }
 
-/** Secret-free, display-only — never a full URL/query, never a secret. */
+/** Secret-free (ENFORCED, not asserted), display-only — never a full URL/query, never a secret. */
 interface ToolActionPreview {
-  readonly path?: string;    // fs_write — the resolved target path
-  readonly command?: string; // process — the resolved command string
+  readonly path?: string;    // fs_write — the resolved target path, scrubbed per SEGMENT
+  readonly command?: string; // process — the resolved command string, scrubbed whole
   readonly host?: string;    // egress — the target host ONLY
 }
 
@@ -246,6 +246,21 @@ type ToolApprovalDecision =
   | { readonly outcome: 'approve' }
   | { readonly outcome: 'reject'; readonly reason?: string }; // a secret-free, display-safe label
 ```
+
+**Preview redaction (#91).** "Secret-free" is enforced by the registry, not asserted: every preview field is
+scrubbed with the same `redactSecretShapedText` detector applied to `agent:tool_call.toolInput`, because the
+ADR-0029(c) taint gate only covers *declared* `secret`-typed args — a model-placed credential in a
+`run_command` arg or a `write_file` path is not one. Two consequences a consumer must know:
+
+- **A field may contain the literal `[redacted]` marker and is NOT guaranteed to be a resolvable
+  path/command/host. Never parse it.** It is a display projection; the dispatch always runs against the real,
+  unscrubbed target.
+- **`path` is scrubbed per path segment**, so a match can never swallow a separator and take the rest of the
+  path with it — the segment count and separators round-trip exactly. `command` has no structure to preserve
+  and is scrubbed whole, which means a *fully model-controlled* command can be shaped to match a detector
+  pattern and be displayed as `[redacted]`; the approver then cannot review it. That is bounded by
+  `allowedCommands`/`allowedCommandGlobs` being deny-all by default and by the fs/egress floors, but it is a
+  real limitation of a redacted preview — surfacing "this was redacted" to the prompt is an open follow-up.
 
 A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`); a hook that throws a non-abort error ⇒ the same
 fatal `tool_denied` (reason `approval_error`, fail-closed — consent could not be obtained, never the

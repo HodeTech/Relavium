@@ -785,14 +785,32 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
   // `redactSecretShapedText`'s standalone-shape alternation matches (`sk-[A-Za-z0-9]{16,}`).
   const FAKE_KEY = 'sk-ABCDEFGHIJKLMNOP1234';
 
-  it('redacts a secret-shaped segment of an fs_write path before it reaches the preview', async () => {
+  it('redacts a secret-shaped segment of an fs_write path — and dispatches on the REAL, unscrubbed target', async () => {
     const confirm = approving();
-    const { host } = hostWithWriteSpy();
+    const { host, writeFile } = hostWithWriteSpy();
     await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
       call('write_file', { path: `./${FAKE_KEY}/out.txt`, content: 'hi' }),
       ctx({ approval: { confirm } }),
     );
     expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ path: './[redacted]/out.txt' });
+    // The preview is DISPLAY-only: the side effect must still run against the path the model asked for, or
+    // redaction would have silently changed what the tool does.
+    expect(writeFile.mock.calls[0]?.[0]).toBe(`./${FAKE_KEY}/out.txt`);
+  });
+
+  it('scrubs the egress host arm too — the defence-in-depth branch, which nothing else exercises', async () => {
+    // An FQDN whose leftmost label is itself credential-SHAPED: legal DNS, and the only input that tells a
+    // scrubbed host arm apart from an unscrubbed one. Without it, reverting that arm leaves the suite green.
+    const confirm = approving();
+    const secretHost = 'sk-abcdefghijklmnopqrst.example.com';
+    const egressHost = stubHost({
+      egress: { fetch: () => Promise.resolve({ status: 200, headers: {}, body: 'ok' }) },
+    });
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host: egressHost }).dispatch(
+      call('http_request', { url: `https://${secretHost}/x`, method: 'GET' }),
+      ctx({ approval: { confirm }, toolPolicy: { allowedDomains: [secretHost] } }),
+    );
+    expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ host: '[redacted].example.com' });
   });
 
   it('redacts a credential carried in a run_command arg before it reaches the preview', async () => {
@@ -806,6 +824,9 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
     const command = confirm.mock.calls[0]?.[0]?.preview.command;
     expect(command).not.toContain(FAKE_KEY);
     expect(command).toContain('[redacted]');
+    // The other half of the property, and the one now most at risk: the preview must stay REVIEWABLE. Without
+    // this, `command: '[redacted]'` (redact everything) would pass — and the approval prompt would be useless.
+    expect(command).toContain('curl');
   });
 
   it('redacts the EA5 agent:approval_requested preview too — the --json/observability copy, not just the prompt', async () => {
@@ -819,17 +840,35 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
     expect(emitApprovalRequested.mock.calls[0]?.[0]?.preview).toEqual({ path: './[redacted].txt' });
   });
 
-  it('leaves an ordinary path untouched — including a PROTECTED one, whose auto-mode classification must survive', async () => {
+  it('leaves an ordinary path untouched — no over-redaction of a normal target', async () => {
     const confirm = approving();
     const { host } = hostWithWriteSpy();
-    // `.env` is the canonical protected target the CLI's auto-mode `isProtectedTarget` matches on the preview
-    // path. Redaction is shape-targeted, so a protected path passes through byte-identical and that
-    // classification cannot silently degrade into an auto-approve.
     await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
       call('write_file', { path: './config/.env', content: 'hi' }),
       ctx({ approval: { confirm } }),
     );
     expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ path: './config/.env' });
+  });
+
+  // The segment-preserving property, against the exact paths the CLI's auto-mode `isProtectedTarget`
+  // classifies (`.git` / `.relavium` / `.ssh` + the rc basenames — NOT `.env`, which is a read-side
+  // sensitivity rule, not a write-side protected one). A whole-string scrub collapses every one of these.
+  it.each([
+    ['./Access Token Backup/.ssh/authorized_keys', './Access Token Backup/.ssh/authorized_keys'],
+    ['./my.password=hunterhunter/.ssh/config', './my.[redacted]/.ssh/config'],
+    ['./bearer files/.git/hooks/pre-commit', './bearer files/.git/hooks/pre-commit'],
+    [`./${FAKE_KEY}/.git/config`, './[redacted]/.git/config'],
+  ])('keeps every path SEGMENT intact so a protected one survives: %s', async (input, expected) => {
+    const confirm = approving();
+    const { host } = hostWithWriteSpy();
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: input, content: 'hi' }),
+      ctx({ approval: { confirm } }),
+    );
+    // Scrubbing per segment means a credential-shaped component can still be replaced — but the `.ssh`/`.git`
+    // segment is always still there, so auto-mode's protected-path prompt cannot silently degrade into an
+    // auto-approve. Whole-string redaction collapsed the first three of these entirely.
+    expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ path: expected });
   });
 
   it('forwards ctx.signal to the confirm hook as its second argument', async () => {

