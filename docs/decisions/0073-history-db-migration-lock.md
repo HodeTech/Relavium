@@ -41,10 +41,29 @@ of why this decision is being recorded rather than quietly implemented.
 `<db-path>.migrate.lock`, created with `openSync(path, 'wx')`, and fall back to a
 run-then-reconcile retry when the lock cannot be created at all.**
 
-The lock holder writes its pid and start time, releases in a `finally`, and a waiter that finds
-a lock older than a stale threshold takes it over — a crashed holder must not wedge every future
-invocation. The wait is bounded; a migration batch on a local SQLite file completes in
-milliseconds, so any wait beyond a couple of seconds means something is wrong rather than slow.
+**The constants, pinned here rather than left to the implementation** — they are this decision's
+whole tuning surface:
+
+| Constant | Value | Why |
+|---|---|---|
+| Stale threshold | **30 s** | Two orders of magnitude above a real batch (milliseconds on a local file), so a live holder is never mistaken for a dead one even on a loaded CI box; and short enough that a crashed holder costs one pause, not a support ticket. |
+| Max wait | **10 s** | A waiter that has not been let in by then is not waiting on a slow migration; falling through to reconcile beats hanging first-run startup. |
+| Poll interval | **50 ms** | Bounded busy-wait; the whole batch is shorter than this on the happy path. |
+
+**Staleness is decided by the recorded start time, never by the pid.** The holder writes both,
+but pids recycle — a "is that pid alive?" check can be confidently wrong in either direction
+(reporting a stranger's process as our live holder, or a recycled pid as dead). The pid is
+therefore **diagnostic only**, for a human reading a stuck lock file; the timestamp is the only
+input to the takeover decision.
+
+**Takeover is an atomic swap, not delete-then-create.** Naïve "unlink the stale lock, then
+create ours" recreates the original race one level up: two waiters can both observe the same
+stale lock, both unlink, and both create. Instead the taker writes its claim to a
+uniquely-named temp file in the same directory and `rename`s it over the lock path — `rename`
+is atomic and last-writer-wins, so concurrent takers converge on exactly one owner rather than
+two believing they hold it. A taker then re-reads the lock and proceeds only if the claim it
+reads back is its own.
+
 `'wx'` (`O_CREAT|O_EXCL`) is the atomic-create idiom this repo already uses in
 [config/write.ts](../../apps/cli/src/config/write.ts),
 [media-write.ts](../../packages/db/src/media-write.ts) and the tool-host fs arm, so this
@@ -54,6 +73,11 @@ introduces a new *use*, not a new *technique*.
 keep ADR-0064's `BEGIN IMMEDIATE` + `withBusyRetry` convention unchanged, and it is a **Node/CLI**
 mechanism: the Phase-6 Postgres port replaces it with a real advisory lock rather than inheriting
 a lock file, and the desktop's Rust path is untouched.
+
+**It is also a no-op for an in-memory database.** `createClient(':memory:')` is private to its
+own connection, so cross-process contention is impossible by construction and a lock file named
+`:memory:.migrate.lock` would be nonsense. The lock is taken only for a real filesystem path —
+which also keeps the entire test suite (hundreds of `:memory:` migrations) off the lock path.
 
 Considered:
 
@@ -78,6 +102,17 @@ Considered:
   reproduce drizzle-kit's `hash` and `folderMillis` semantics exactly and forever: get it wrong
   and a released build re-applies every migration against a populated database. That is a much
   worse failure than the one being fixed, traded for elegance.
+- **An OS advisory lock (`flock` / `LockFileEx`)** — *rejected, reluctantly: no dependency-free
+  Node primitive exists.* This is the mechanically superior answer and deserves naming as such,
+  because it has **no stale-lock problem at all**: the kernel releases an advisory lock when the
+  holding process dies, however it dies, so the 30 s threshold and the takeover protocol above
+  would both be unnecessary. Node's `fs` does not expose `flock(2)` (`fs.open`'s `'wx'` is
+  `O_CREAT|O_EXCL`, an atomic *create*, which is a different primitive), and `LockFileEx` is
+  unreachable too — so taking this route means a native addon or an npm dependency, which
+  [architectural-principles.md](../standards/architectural-principles.md) §9 gates behind exactly
+  this kind of ADR and which we are not willing to add for a first-run edge case. Recorded as the
+  upgrade path: if Node ever exposes advisory locking, or if `packages/db` acquires a native
+  dependency for another reason, this mechanism should be replaced by it rather than tuned.
 - **Doing nothing / documenting the race** — *rejected.* It is a live, reproduced first-run
   crash, and Wave 1 exists to stop exactly this class of bleeding.
 
@@ -97,14 +132,24 @@ Considered:
 
 ### Negative
 
-- **A new on-disk artifact with its own failure mode.** A crashed holder leaves a lock file
-  behind. Mitigated by the stale-takeover threshold and the bounded wait — but a stale threshold
-  is a tuning constant, and a wrong one either wedges startup or lets two processes in. The
-  threshold is generous relative to a millisecond-scale batch, and the reconcile fallback still
-  catches the double-entry case.
+- **A new on-disk artifact with its own failure mode, and `finally` is not a guarantee.** The
+  holder releases in a `finally`, which covers a thrown migration and a normal exit — but
+  **`SIGKILL`, a power loss, or an OOM kill skips it**, so a crashed holder WILL leave a lock file
+  behind. That is a design assumption, not an oversight: the stale threshold is the only thing
+  that recovers it, which is precisely why an advisory lock (rejected above) would have been
+  better. A wrong threshold either wedges startup or lets two processes in; 30 s against a
+  millisecond-scale batch leaves three orders of magnitude of headroom, and the reconcile
+  fallback still catches the double-entry case.
+- **Windows deserves naming, not lumping in with "exotic".** `'wx'` maps to `CREATE_NEW`, which
+  is atomic on NTFS, so the primary path holds — but a virus scanner or an indexer holding a
+  transient handle can make the *unlink*/`rename` fail in ways POSIX does not, and network
+  redirectors (SMB/DFS) do not guarantee `O_EXCL` semantics at all. This joins the corpus's
+  existing Windows caveat (ADR-0050's `0600`/`0700` no-op) rather than hiding behind it: on
+  Windows the reconcile fallback is load-bearing, not decorative.
 - **Two mechanisms instead of one** (lock, then reconcile), so there are two paths to test rather
   than one. Accepted deliberately: the fallback exists precisely for the environments where the
-  primary cannot run, and both are covered by the two-process regression test.
+  primary cannot run, and both **will be** covered by the two-process regression test the
+  implementation lands with.
 - **A local-only answer to a general problem.** This does not serialize anything for the Phase-2
   cloud/Postgres path, which will need its own advisory lock. Named here so the Postgres port
   does not inherit a lock file by accident.
