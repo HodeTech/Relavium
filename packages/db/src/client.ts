@@ -28,36 +28,77 @@ export interface DbClient {
   readonly sqlite: Database.Database;
 }
 
+/** Why {@link createClient} refused or failed to open a database — narrow on this, never on the message. */
+export type DbOpenErrorCode =
+  /** A `file:…` SQLite URI filename, which this factory deliberately does not support. */
+  | 'uri_unsupported'
+  /** The driver or the parent-directory `mkdir` failed (locked, corrupt, permission, missing dir). */
+  | 'open_failed';
+
+/**
+ * A typed `history.db` open failure — the package convention (`SafeEgressError`, `MediaWriteError`), so a
+ * caller narrows on `.code` rather than matching a message (`docs/standards/error-handling.md`).
+ *
+ * The `message` names a **reason only**: the database path rides as the structured {@link DbOpenError.path}
+ * field instead of being interpolated into it. That is the same rule the sibling errors follow, and it matters
+ * here because this message is surfaced verbatim to the user by the CLI's history openers — an absolute path
+ * carries the OS username, which a user-facing error is not supposed to leak. A caller that wants to show it
+ * still can, redacted, from the field.
+ */
+export class DbOpenError extends Error {
+  readonly code: DbOpenErrorCode;
+  /** The database path that was requested. A diagnostic field — deliberately NOT part of `message`. */
+  readonly path: string;
+  constructor(code: DbOpenErrorCode, message: string, path: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'DbOpenError';
+    this.code = code;
+    this.path = path;
+  }
+}
+
 /**
  * Open a SQLite database and return a schema-bound Drizzle client. `path` defaults to a
  * private in-memory database; pass a filesystem path for a persistent local store.
+ * Throws a typed {@link DbOpenError} on a rejected or failed open.
  *
- * Applies the project PRAGMAs: `journal_mode = WAL` (concurrent reads while a run writes;
- * a no-op for in-memory) and `foreign_keys = ON` (SQLite does not enforce FKs per
- * connection by default — the CASCADE rules in the schema depend on it).
+ * Applies **all four** project PRAGMAs — the canonical home for what they are for is
+ * [database-schema.md §Concurrency & transaction behavior](../../../docs/reference/shared-core/database-schema.md#concurrency--transaction-behavior):
+ *
+ * - `journal_mode = WAL` — readers never block the single writer, and vice-versa (a no-op for in-memory).
+ * - `foreign_keys = ON` — SQLite does not enforce FKs per connection by default, and the schema's CASCADE
+ *   rules depend on it.
+ * - `busy_timeout = 5000` — SQLite's built-in busy handler waits up to 5 s for a contended lock before
+ *   returning `SQLITE_BUSY`. Load-bearing for the concurrent-process write path, and the term that dominates
+ *   `withBusyRetry`'s worst case ([retry.ts](./retry.ts)).
+ * - `synchronous = NORMAL` — the recommended durability/throughput trade-off under WAL.
  */
 export function createClient(path = ':memory:'): DbClient {
   // SQLite URI filenames (`file:…`) are NOT supported: better-sqlite3 needs `{ uri: true }` to
   // interpret them and otherwise silently creates a literal file of that name. Reject up front
   // rather than open the wrong database — pass ':memory:' or a plain filesystem path.
   if (path.startsWith('file:')) {
-    throw new Error(
-      `SQLite URI paths are not supported by createClient — pass ':memory:' or a filesystem path (got '${path}')`,
+    throw new DbOpenError(
+      'uri_unsupported',
+      "SQLite URI paths are not supported by createClient — pass ':memory:' or a filesystem path",
+      path,
     );
   }
   let sqlite: Database.Database;
   try {
     // Create the parent directory for a real file path so a first-run open doesn't fail on a
-    // missing folder (inside the try so a filesystem error gets the same path-rich message).
+    // missing folder (inside the try so a filesystem error is classified the same way).
     if (path !== ':memory:') {
       mkdirSync(dirname(path), { recursive: true });
     }
     sqlite = new Database(path);
   } catch (err) {
-    // Rethrow with the resolved path + reason (locked/corrupt/permission/missing dir),
-    // preserving the original via `cause` — a bare fs/driver error has no path context.
+    // Classify with the reason (locked/corrupt/permission/missing dir) and keep the original via `cause`;
+    // the path is on `.path`, not in the message.
     const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`failed to open SQLite database at '${path}': ${reason}`, { cause: err });
+    throw new DbOpenError('open_failed', `could not open the SQLite database: ${reason}`, path, {
+      cause: err,
+    });
   }
   sqlite.pragma('journal_mode = WAL'); // concurrent reads while a run writes (no-op in memory)
   sqlite.pragma('foreign_keys = ON'); // SQLite does not enforce FKs per connection by default
