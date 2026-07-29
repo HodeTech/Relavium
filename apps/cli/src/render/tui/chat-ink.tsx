@@ -1153,7 +1153,7 @@ export function ChatApp(props: Readonly<ChatAppProps>): ReactElement {
   useInput((char, key) => {
     // Raw Ink input represents Ctrl-Z as Ctrl+`z` (and a few test streams retain the literal SUB byte). It must win
     // over mouse parsing, overlays, and approval routing: job control is never prompt text and never consent.
-    if (char === '\x1a' || (key.ctrl === true && char.toLowerCase() === 'z')) {
+    if (char === '\x1a' || (key.ctrl === true && key.meta !== true && char.toLowerCase() === 'z')) {
       props.onSuspend?.();
       return;
     }

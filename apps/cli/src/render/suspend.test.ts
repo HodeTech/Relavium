@@ -326,8 +326,8 @@ describe('wireJobControl (G0)', () => {
   const harness = (): Harness => {
     const trace: string[] = [];
     const port = createSuspendPort();
-    let onSuspend: () => void = () => undefined;
-    let onContinue: () => void = () => undefined;
+    let onSuspend: (() => void) | undefined;
+    let onContinue: (() => void) | undefined;
     const removeSuspend = vi.fn();
     const removeContinue = vi.fn();
     const suspendSelf = vi.fn(() => trace.push('self-stop'));
@@ -335,11 +335,17 @@ describe('wireJobControl (G0)', () => {
       supported: true,
       onSuspend: (listener) => {
         onSuspend = listener;
-        return removeSuspend;
+        return () => {
+          removeSuspend();
+          if (onSuspend === listener) onSuspend = undefined;
+        };
       },
       onContinue: (listener) => {
         onContinue = listener;
-        return removeContinue;
+        return () => {
+          removeContinue();
+          if (onContinue === listener) onContinue = undefined;
+        };
       },
       suspendSelf,
     };
@@ -348,8 +354,8 @@ describe('wireJobControl (G0)', () => {
       port,
       lifecycle,
       suspendSelf,
-      fireSuspend: () => onSuspend(),
-      fireContinue: () => onContinue(),
+      fireSuspend: () => onSuspend?.(),
+      fireContinue: () => onContinue?.(),
       removeSuspend,
       removeContinue,
     };
@@ -409,21 +415,92 @@ describe('wireJobControl (G0)', () => {
     binding.dispose();
   });
 
-  it('a stray SIGCONT and duplicate stop request are harmless; only one release/self-stop occurs', async () => {
+  it('coalesces a fast second stop request until the first reclaim/redraw is complete', async () => {
     const h = harness();
     h.port.attach(async (callback) => callback());
     const binding = bind(h);
 
     h.fireContinue(); // no pending wait: must not redraw, reclaim, or throw
     h.fireSuspend();
-    h.fireSuspend(); // re-entrancy is gated while the first stop awaits SIGCONT
     await flush();
     expect(h.suspendSelf).toHaveBeenCalledTimes(1);
     expect(h.trace.filter((entry) => entry === DISABLE_MOUSE)).toHaveLength(1);
 
+    // A second request lands after the self-stop returns but before CONT has let Ink reclaim. It is retained rather
+    // than consumed by the re-armed listener and silently discarded.
+    h.fireSuspend();
+    expect(h.suspendSelf).toHaveBeenCalledTimes(1);
+    h.fireContinue();
+    await flush();
+    expect(h.suspendSelf).toHaveBeenCalledTimes(2);
     h.fireContinue();
     await flush();
     binding.dispose();
+  });
+
+  it('replays a captured TSTP only AFTER an explicitly held Ink redraw settles', async () => {
+    const h = harness();
+    let releaseRedraw: (() => void) | undefined;
+    let holdNextRedraw = true;
+    h.port.attach(async (callback) => {
+      h.trace.push('ink:begin');
+      await callback();
+      if (holdNextRedraw) {
+        holdNextRedraw = false;
+        await new Promise<void>((resolve) => {
+          releaseRedraw = resolve;
+        });
+      }
+      h.trace.push('ink:redraw');
+    });
+    const binding = bind(h);
+
+    h.fireSuspend();
+    await flush();
+    h.fireContinue();
+    await flush();
+    // Reclaim has started, but the fake Ink outer promise (its force-redraw boundary) has not returned yet.
+    h.fireSuspend();
+    expect(h.suspendSelf).toHaveBeenCalledTimes(1);
+
+    if (releaseRedraw === undefined) throw new Error('the first redraw was not held');
+    releaseRedraw();
+    await flush();
+    expect(h.suspendSelf).toHaveBeenCalledTimes(2);
+
+    h.fireContinue();
+    await flush();
+    binding.dispose();
+  });
+
+  it('keeps no-Ink/onboarding stops re-armed after each continuation', () => {
+    const h = harness();
+    const binding = bind(h); // no `port.attach` ⇒ the onboarding/no-Ink branch
+
+    h.fireSuspend();
+    h.fireSuspend();
+
+    expect(h.suspendSelf).toHaveBeenCalledTimes(2);
+    binding.dispose();
+  });
+
+  it('permanent disposal suppresses a late SIGCONT reclaim behind terminal teardown', async () => {
+    const h = harness();
+    h.port.attach(async (callback) => callback());
+    const binding = bind(h);
+
+    h.fireSuspend();
+    await flush();
+    binding.dispose();
+    h.fireContinue(); // the listener was removed; a late foregrounding event cannot re-enter 1049/mouse
+    await flush();
+
+    expect(h.trace).toEqual([
+      DISABLE_MOUSE,
+      EXIT_ALT_SCREEN + SHOW_CURSOR,
+      'self-stop',
+    ]);
+    expect(h.removeContinue).toHaveBeenCalledTimes(1);
   });
 
   it('does not nest Ink suspension while a hatch already owns it', async () => {

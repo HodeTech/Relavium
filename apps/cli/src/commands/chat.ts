@@ -2035,6 +2035,12 @@ export async function withHoistedAltScreen(
     readonly lifecycle: ReplLifecycle;
     readonly writeOut: (text: string) => void;
     readonly writeErr: (text: string) => void;
+    /**
+     * Permanently disarm a reversible terminal handoff before this wrapper restores its final terminal state. The
+     * job-control coordinator intentionally leaves a pending SIGCONT waiter unresolved on an external termination:
+     * allowing it to reclaim afterward could re-enter 1049 / re-enable mouse reporting behind this final restore.
+     */
+    readonly beforeTerminalRestore?: () => void;
     /** The ONE suspend port for the loop. `current() === undefined` means NO ink tree is mounted — the only window in
      *  which SIGINT is unowned. Absent ⇒ no SIGINT net (a caller with no ink, e.g. a unit test). */
     readonly suspendPort?: SuspendPort;
@@ -2057,7 +2063,12 @@ export async function withHoistedAltScreen(
   let result: HoistedLoopResult = {};
   try {
     alt.enter();
-    removeExitNet = opts.active ? opts.lifecycle.onProcessExit(() => alt.restore()) : noop;
+    removeExitNet = opts.active
+      ? opts.lifecycle.onProcessExit(() => {
+          opts.beforeTerminalRestore?.();
+          alt.restore();
+        })
+      : noop;
     // SIGINT belongs to ink: while a tree is mounted, `driveInk`'s `onSigintGated` runs the cooperative `/cancel`, and
     // during a `/scrollback` or `/edit` hatch it deliberately DROPS the signal so the suspension can reclaim. But a
     // `/clear` or `/models` rebuild unmounts ink and mounts a fresh tree, and in that window NOTHING listens for
@@ -2068,6 +2079,7 @@ export async function withHoistedAltScreen(
       opts.active && suspendPortForSigint !== undefined
         ? opts.lifecycle.onInterrupt(() => {
             if (suspendPortForSigint.current() !== undefined) return; // ink owns it (mounted, or suspended)
+            opts.beforeTerminalRestore?.();
             alt.restore();
             opts.write(DISABLE_BRACKETED_PASTE);
             try {
@@ -2080,6 +2092,7 @@ export async function withHoistedAltScreen(
         : noop;
     removeSignalNet = opts.active
       ? opts.lifecycle.onTerminationSignal((signo) => {
+          opts.beforeTerminalRestore?.();
           alt.restore();
           opts.write(DISABLE_BRACKETED_PASTE);
           try {
@@ -2097,6 +2110,7 @@ export async function withHoistedAltScreen(
     // DECRST-1049 restore (the Step-4b-3 Opus-review regression: the rebuild-failure `chat-resume <id>` hint vanished
     // once alt became the default). `restore()` is idempotent — the `onProcessExit` net may also have fired. Remove
     // the nets so they cannot outlive the loop.
+    opts.beforeTerminalRestore?.();
     alt.restore();
     removeExitNet();
     removeSignalNet();
@@ -2200,6 +2214,10 @@ export async function runReplLoop(
   // The hoisted controller, captured so `hatchPorts.terminal()` can read the LIVE buffer state (it is created inside
   // `withHoistedAltScreen` below, after `hatchPorts` is built — hence the mutable binding read lazily).
   let altScreenController: AltScreenController | undefined;
+  // The hoist owns the irreversible restore nets, while the job-control binding is created only after its live
+  // controller exists. Keep a tiny indirection so those nets can disarm a pending reversible reclaim BEFORE they
+  // restore 1049/mouse permanently (a SIGCONT must never re-enter the terminal after a TERM/HUP/QUIT path).
+  let disposeJobControl = (): void => undefined;
   // Copy-on-select (2.6.F Step 6e): a durable preference, resolved from the ALREADY-RESOLVED mouse decision, so
   // `--no-mouse` structurally turns it off too. `/copy` is unaffected: it binds the clipboard through `hatchPorts`.
   const copyOnSelect = resolveCopyOnSelect({
@@ -2217,6 +2235,7 @@ export async function runReplLoop(
         lifecycle: deps.lifecycle ?? defaultReplLifecycle,
         writeOut: (text) => deps.io.writeOut(text),
         writeErr: (text) => deps.io.writeErr(text),
+        beforeTerminalRestore: () => disposeJobControl(),
         suspendPort,
       },
       async (alt): Promise<HoistedLoopResult> => {
@@ -2243,6 +2262,7 @@ export async function runReplLoop(
               reclaimWithoutInk: () => alt.reclaimAfterSuspend(),
             })
           : undefined;
+        disposeJobControl = jobControl?.dispose ?? (() => undefined);
         const sessionDeps =
           jobControl === undefined
             ? replDeps
@@ -2290,6 +2310,7 @@ export async function runReplLoop(
           }
         } finally {
           jobControl?.dispose();
+          disposeJobControl = (): void => undefined;
         }
       },
     );

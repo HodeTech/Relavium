@@ -385,7 +385,7 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   useInput((input, key) => {
     // Ink raw mode parses Ctrl-Z as Ctrl+`z` (some harnesses surface the literal SUB byte). Consume it BEFORE mouse,
     // overlays, and the Home controller so it can neither type into a prompt nor answer a pending approval.
-    if (input === '\x1a' || (key.ctrl === true && input.toLowerCase() === 'z')) {
+    if (input === '\x1a' || (key.ctrl === true && key.meta !== true && input.toLowerCase() === 'z')) {
       props.onSuspend?.();
       return;
     }

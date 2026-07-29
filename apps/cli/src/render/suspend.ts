@@ -245,7 +245,9 @@ export interface JobControlBinding {
  *
  * 1. `run` enters Ink's suspension window and releases mouse/alt state.
  * 2. only inside that released window do we remove our SIGTSTP listener and re-deliver SIGTSTP to the process;
- * 3. SIGCONT re-arms SIGTSTP before resolving the wait, after which Ink restores raw input and redraws.
+ * 3. SIGCONT re-arms SIGTSTP before resolving the wait, after which Ink restores raw input and redraws. A second
+ *    stop received while that reclaim is in flight is remembered and replayed only after Ink has finished its redraw;
+ *    it is never silently swallowed.
  *
  * A hatch may already own `SuspendPort` (`/scrollback`/`/edit`), and a chat rebuild has a brief interval with no Ink
  * tree at all. Those paths deliberately do not nest Ink suspension: they release/reclaim only the optional hoisted
@@ -264,6 +266,7 @@ export function wireJobControl(opts: {
 
   let disposed = false;
   let suspending = false;
+  let pendingSuspend = false;
   let resolveContinue: (() => void) | undefined;
   let removeSuspend: (() => void) | undefined;
   let removeContinue: (() => void) | undefined;
@@ -308,10 +311,25 @@ export function wireJobControl(opts: {
     resolveContinue = undefined;
     suspending = false;
     installSuspendListener();
+    // `SIGCONT` deliberately re-arms before Ink starts reclaiming terminal state: an external SIGTSTP can otherwise
+    // default-stop the process in the tiny interval after 1049/raw input has been restored but before the mouse/
+    // redraw have completed. The coordinator is still busy, so retain ONE request and replay it after the terminal is
+    // coherent again. `queueMicrotask` also keeps the signal callback itself synchronous and side-effect bounded.
+    queueMicrotask(() => {
+      if (disposed || suspending || !pendingSuspend) return;
+      pendingSuspend = false;
+      requestSuspend();
+    });
   };
 
   function requestSuspend(): void {
-    if (disposed || suspending) return;
+    if (disposed) return;
+    if (suspending) {
+      // Coalesce a burst into one real follow-up stop. Dropping it would make a fast Ctrl-Z / SIGTSTP after `fg`
+      // appear to succeed (the listener consumed it) while leaving the process running.
+      pendingSuspend = true;
+      return;
+    }
 
     // A hatch has already released Ink's input and its terminal modes. Nesting `suspendTerminal` would throw
     // "already suspended" and could reclaim the hatch's terminal behind its back, so just perform genuine POSIX job
@@ -351,6 +369,7 @@ export function wireJobControl(opts: {
     dispose: (): void => {
       if (disposed) return;
       disposed = true;
+      pendingSuspend = false;
       removeSuspendListener();
       removeContinue?.();
       removeContinue = undefined;
