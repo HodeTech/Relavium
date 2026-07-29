@@ -17,7 +17,7 @@
     "typecheck:tools": "tsc -p tsconfig.tools.json",
     "test": "turbo run test",
     "coverage": "vitest run --coverage",
-    "coverage:enforced": "node tools/coverage/enforced.mjs",
+    "coverage:enforced": "node tools/coverage-gate/run.mjs",
     "ci": "turbo run lint typecheck test && pnpm db:sync-check && pnpm typecheck:tools && pnpm lint:tools && turbo run build format:check && pnpm lint:fence-check && pnpm lint:engine-deps && pnpm lint:bundle-closure && pnpm smoke:cli",
     "lint:fence-check": "node tools/lint-fixtures/assert-fence.mjs",
     "lint:engine-deps": "node tools/engine-deps/check.mjs",
