@@ -40,6 +40,7 @@ const THIRD_PARTY_EXTERNAL = [
   'quickjs-emscripten-core',
   'react',
   'smol-toml',
+  'string-width',
   'yaml',
   'zod',
 ];

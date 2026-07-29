@@ -113,12 +113,19 @@ journeys, not exhaustive logic — exhaustive logic belongs in engine unit tests
 
 ## Coverage expectations
 
-- `packages/core`, `packages/llm`, and `packages/mcp`: high line **and branch** coverage
-  (enforced floor ≥ 90%), because branch coverage is what catches the error/fallback/edge
+- `packages/core`, `packages/llm`, and `packages/mcp`: high line **and branch** coverage,
+  floor **≥ 90%**, because branch coverage is what catches the error/fallback/edge
   paths that matter here — and `packages/mcp` fences a security-critical seam (the SDK +
   `node:child_process`) plus the dependency-free JSON-Schema→Zod compiler. Coverage is a
   floor and a signal, not the goal — an uncovered branch is a question to answer, not a
   number to game.
+  - **Where the floor blocks a merge:** `packages/llm` and `packages/mcp` only. `packages/core` is
+    measured and reported by the same run but does not fail CI — its branch margin is **+0.83**
+    (90.83, measured 2026-07-29) and Phase 2.5.5's Waves 1–3 edit `core` heavily, so gating merges on
+    a sub-1-point margin costs more than it catches. It is promoted once Wave 3's test-coverage items
+    land. A local `pnpm coverage` enforces all three; `pnpm coverage:enforced` is the CI subset.
+    Stating this here rather than only in `ci.yml` is the point: the standard previously claimed an
+    enforcement the pipeline did not perform.
 - Every bug fix lands with a regression test that fails before the fix.
 - Surfaces (`apps/*`, `packages/ui`): smoke + critical-journey coverage; deep logic is
   pushed down into the engine and tested there.

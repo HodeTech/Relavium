@@ -3,11 +3,16 @@
 # Runs lint + typecheck + test across every workspace in dependency order with the
 # Turborepo cache, plus the formatting check and the no-vendor-type-across-the-seam fence.
 #
-# Branch protection (set in the GitHub repo settings, not here): the `ci` job below is the
-# REQUIRED status check to merge into `main`. The `peer-dep-gate` job is advisory until the
-# surface packages land their peers in Phase 1. The `coverage` job is advisory too — it enforces
-# the testing.md >=90% line+branch engine floor (exit criterion #5) but stays non-required until the
-# thin core-branch margin is confirmed stable under CI's Node 24; promote it to a required check then.
+# Branch protection (set in the GitHub repo settings, not here): `ci` and `coverage` are the REQUIRED
+# status checks to merge into `main`. Every other job self-labels `(advisory)` in its `name:`, which is
+# what shows in the PR checks list — `floor-check`, `peer-dep-gate` and `windows-concurrency`.
+#
+# `coverage` enforces the testing.md >=90% line+branch floor for `@relavium/llm` and `@relavium/mcp` only.
+# `packages/core` is measured and printed by the same run but does not fail it: its branch margin is +0.83
+# (90.83 measured 2026-07-29) and Phase 2.5.5 Waves 1-3 edit `core` heavily, so blocking merges on a
+# sub-1-point margin would red-CI real work for no defect. That is a scoped, dated ruling with a promotion
+# trigger — Wave 3's test-coverage items — not an open-ended exemption. A local `pnpm coverage` still
+# enforces all three, so the floor never silently relaxes for a developer.
 #
 # Caching: the always-on layer is the GitHub Actions `.turbo` cache (restored/saved below),
 # which makes a no-change re-run a Turborepo cache hit — the M0 "demonstrably hitting"
@@ -118,6 +123,27 @@ jobs:
       - name: Engine dependency allowlist
         run: pnpm lint:engine-deps
 
+      # `tools/` is real code that gates real things (the seam fence, the bundle-closure guard, the
+      # models.dev sync). The root `ci` script has always linted it; this job never did, so a lint error in
+      # a guard script could merge while `pnpm ci` was red locally (#312).
+      - name: Lint the tooling scripts
+        run: pnpm lint:tools
+
+      # RUN the artifact this job just built. Until now nothing in the required gate executed
+      # `apps/cli/dist/index.js` — only the advisory Windows leg and the tag-gated release smoke did (#294) —
+      # so a bundle that builds but cannot boot merged green. The `run --json` leg additionally proves the
+      # migrations resolve beside the bundle, which is the failure `apps/cli/drizzle/**` becoming a declared
+      # turbo output (#315) exists to prevent: a cache-hit replay used to leave `dist/` fresh next to a
+      # missing `drizzle/`, crashing on first DB touch with nothing red anywhere.
+      - name: Smoke the compiled binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          node apps/cli/dist/index.js --version
+          node apps/cli/dist/index.js --help >/dev/null
+          node apps/cli/dist/index.js run apps/cli/src/harness/fixtures/sequential.relavium.yaml \
+            --input n=21 --json >/dev/null
+
   # Supported-floor gate (ADR-0067). TWO floors, deliberately different:
   #   * the PUBLISHED floor is `apps/cli` `engines.node` = `>=22` — the max constraint in the CLI's RUNTIME
   #     dependency closure (`ink@7` / `cli-truncate` / `slice-ansi` → `>=22`); nothing runtime needs more.
@@ -131,7 +157,7 @@ jobs:
   # a property of the prod closure, verified at the ADR (see ADR-0067's amendment note) rather than here.
   # A SEPARATE job (the required check stays the ubuntu `ci` job on Node 24); promote once confirmed stable.
   floor-check:
-    name: node 22-line floor (22.13.0) · typecheck · test · build
+    name: node 22-line floor (22.13.0) · typecheck · test · build (advisory)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Fully isolate this job from the shared Turbo remote cache. Turbo's task hash does NOT include the
@@ -164,7 +190,7 @@ jobs:
   # checkouts resolve while the surface packages' peers are not all in the tree yet). Catch
   # peer drift here without breaking local dev.
   peer-dep-gate:
-    name: strict peer-dependency check
+    name: strict peer-dependency check (advisory)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -185,7 +211,7 @@ jobs:
   # the root-relative per-glob thresholds (packages/core, packages/llm) authoritative (vitest.config.ts).
   # Promote to a required check once the margin is confirmed stable under CI's Node 24.
   coverage:
-    name: engine coverage floor (advisory)
+    name: engine coverage floor (llm, mcp)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -214,8 +240,13 @@ jobs:
       # each package still covers its OWN src via relative imports, so the floor stays src-accurate).
       - name: Build workspaces (so coverage resolves the @relavium/* package entries)
         run: pnpm turbo run build
-      - name: Engine coverage floor (>=90% line+branch)
-        run: pnpm coverage
+      # ENFORCED subset only: `llm` and `mcp` fail the build below 90% line+branch. `core` is measured and
+      # printed by the same run but does NOT fail it — its branch margin is +0.83 today and Phase 2.5.5
+      # Waves 1-3 edit it heavily, so blocking on a sub-1-point margin would red-CI real work for no
+      # defect (maintainer ruling 2026-07-29). A bare `pnpm coverage` still enforces all three locally.
+      # Promote `core` here once Wave 3's test-coverage items land.
+      - name: Engine coverage floor (>=90% line+branch — llm, mcp enforced; core measured)
+        run: pnpm coverage:enforced
 
   # Cross-OS concurrency + headless gate (2.5.I S6). The DB write-path hardening (BEGIN IMMEDIATE + the
   # SQLITE_BUSY retry's Atomics.wait sleep + WAL locking) and the two-process concurrency e2e (a child spawn +

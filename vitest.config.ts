@@ -44,10 +44,20 @@ export default defineConfig({
       // the root and still match there — a cwd-tolerant `src/**` would wrongly bind shared/db
       // package runs to the engine floor. The advisory `coverage` job (ci.yml) runs at the repo root,
       // which is exactly where this per-glob threshold is authoritative.
+      // `RELAVIUM_COVERAGE_ENFORCED_ONLY=1` narrows the failing set to the packages whose floor is a REQUIRED
+      // CI check, leaving `packages/core` measured and printed but non-blocking. That split is a maintainer
+      // ruling (2026-07-29), not a lowered standard: measured margins are `llm` +7.30 and `mcp` +5.54 on
+      // branch coverage, but `core` sits at 90.83 — **+0.83** — and Phase 2.5.5 Waves 1–3 edit `core` heavily
+      // (registry, budget-governor, engine, tools). Blocking merges on a sub-1-point margin would red-CI real
+      // work for no defect. `core` is promoted once Wave 3's test-coverage items land. A bare `pnpm coverage`
+      // (the local default) still enforces all three, so the floor never silently relaxes for a developer.
       thresholds: {
         'packages/llm/src/**/*.ts': { lines: 90, branches: 90 },
-        'packages/core/src/**/*.ts': { lines: 90, branches: 90 }, // engine floor — core landed at 1.L
         'packages/mcp/src/**/*.ts': { lines: 90, branches: 90 }, // the inbound-MCP fence + compiler — 2.R
+        ...(process.env.RELAVIUM_COVERAGE_ENFORCED_ONLY === '1'
+          ? {}
+          : // engine floor — core landed at 1.L
+            { 'packages/core/src/**/*.ts': { lines: 90, branches: 90 } }),
       },
     },
   },

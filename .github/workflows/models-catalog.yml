@@ -63,6 +63,15 @@ jobs:
       - name: No ALREADY-SHIPPED model's price moved or vanished
         run: pnpm sync:models
 
+      # Staleness signal, informational only. `sync.mjs` documents `--check` as the CI-facing mode that fails
+      # when the COMMITTED snapshot has drifted from upstream, and a matching `sync:models:check` script has
+      # always existed — but no workflow ever called it (#317), so the mode was implemented and unused.
+      # `continue-on-error` keeps it a report: the step above is the guard that must stay red on a money
+      # change, while ordinary upstream churn (a new model, a renamed display name) should not page anyone.
+      - name: Snapshot freshness vs upstream (informational)
+        continue-on-error: true
+        run: pnpm sync:models:check
+
   nightly-effort-conformance:
     name: effort conformance (live)
     # Only the nightly cron (and a manual run); the weekly cron skips this job.

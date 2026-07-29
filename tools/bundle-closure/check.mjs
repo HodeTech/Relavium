@@ -47,6 +47,20 @@ if (outputKey === undefined) {
   process.exit(1);
 }
 
+// This guard reads ONE output chunk. That is correct only while the build emits exactly one, which holds
+// today (no dynamic `import()` in `apps/cli/src`). If a future dynamic import makes esbuild split a chunk,
+// that chunk's external imports would never be inspected and the closure claim would silently narrow — so
+// assert the precondition instead of trusting it. Deferring `driveHome` (2.5.5.E, #43/#44) will trip this
+// deliberately: the fix then is to iterate every `.js` output, not to delete the assert.
+const jsOutputs = Object.keys(meta.outputs ?? {}).filter((k) => k.endsWith('.js'));
+if (jsOutputs.length !== 1) {
+  console.error(
+    `✗ ${METAFILE} has ${jsOutputs.length} .js outputs (${jsOutputs.join(', ')}), expected exactly 1.\n` +
+      '  The bundle was split. Iterate every chunk below before trusting the closure result.',
+  );
+  process.exit(1);
+}
+
 const imported = new Set();
 for (const imp of meta.outputs[outputKey].imports ?? []) {
   const spec = imp.path;
