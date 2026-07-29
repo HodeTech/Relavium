@@ -5,7 +5,12 @@ import {
   type SessionStreamHandleEvent,
 } from '@relavium/core';
 import { createModelCatalogStore, type Db, type SessionStore } from '@relavium/db';
-import type { AgentSessionRecord, SessionContext, SessionStatus } from '@relavium/shared';
+import type {
+  AgentSessionRecord,
+  SessionContext,
+  SessionMessage,
+  SessionStatus,
+} from '@relavium/shared';
 
 import { deriveSessionTitle } from './session-title.js';
 
@@ -112,23 +117,27 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   // prior marker is interleaved — the step-1-review trap). Seeded from the durable transcript on resume.
   const realMessageSeqs: number[] = [];
 
-  /** Append a REAL transcript row + record its sequence for the boundary mapping. `modelCatalogId` (assistant rows
-   *  only) is the already-resolved `model_catalog.id` FK target attributing the row to the model that produced it
-   *  (ADR-0059) — omitted (a NULL column) when unknown/uncataloged; a user row never carries one. */
-  const appendText = (role: 'user' | 'assistant', text: string, modelCatalogId?: string): void => {
-    const seq = sequenceNumber++;
-    realMessageSeqs.push(seq);
-    deps.store.appendMessage({
-      id: deps.uuid(),
-      sessionId: deps.sessionId,
-      sequenceNumber: seq,
-      role,
-      content: [{ type: 'text', text }],
-      // Conditional spread ⇒ no explicit `undefined` under exactOptionalPropertyTypes; a user row never carries one.
-      ...(modelCatalogId === undefined ? {} : { modelId: modelCatalogId }),
-      timestamp: iso(),
-    });
-  };
+  /** BUILD a REAL transcript row at `seq` — pure, no write and no in-memory mutation. `modelCatalogId`
+   *  (assistant rows only) is the already-resolved `model_catalog.id` FK target attributing the row to the model
+   *  that produced it (ADR-0059) — omitted (a NULL column) when unknown/uncataloged; a user row never carries one.
+   *
+   *  Staging is what makes the turn atomic (#228): the sequence counter and `realMessageSeqs` advance ONLY after
+   *  the whole turn has been durably written, so a failed write leaves no phantom sequence behind. */
+  const stageText = (
+    seq: number,
+    role: 'user' | 'assistant',
+    text: string,
+    modelCatalogId?: string,
+  ): SessionMessage => ({
+    id: deps.uuid(),
+    sessionId: deps.sessionId,
+    sequenceNumber: seq,
+    role,
+    content: [{ type: 'text', text }],
+    // Conditional spread ⇒ no explicit `undefined` under exactOptionalPropertyTypes; a user row never carries one.
+    ...(modelCatalogId === undefined ? {} : { modelId: modelCatalogId }),
+    timestamp: iso(),
+  });
 
   /**
    * Append an append-only compaction/trim boundary MARKER row (ADR-0062): `role:'system'`, the summary text
@@ -136,37 +145,41 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
    * ROLE-FILTERED real-message sequences (never the raw row count). Returns `false` when there is nothing to
    * drop (fewer real rows than kept — no marker written). The marker's own seq is NOT a real-message seq.
    */
-  const appendMarker = (summary: string, keptMessageCount: number): boolean => {
-    if (keptMessageCount >= realMessageSeqs.length) return false; // nothing older to supersede
+  const stageMarker = (summary: string, keptMessageCount: number): SessionMessage | undefined => {
+    if (keptMessageCount >= realMessageSeqs.length) return undefined; // nothing older to supersede
     const droppedThroughSequence = realMessageSeqs[realMessageSeqs.length - keptMessageCount - 1];
-    if (droppedThroughSequence === undefined) return false;
-    deps.store.appendMessage({
+    if (droppedThroughSequence === undefined) return undefined;
+    return {
       id: deps.uuid(),
       sessionId: deps.sessionId,
-      sequenceNumber: sequenceNumber++,
+      sequenceNumber,
       role: 'system',
       content: summary.length > 0 ? [{ type: 'text', text: summary }] : [],
       compaction: { droppedThroughSequence },
       timestamp: iso(),
-    });
-    return true;
+    };
   };
   // Derived from the FIRST user message so the Home list shows a readable label (2.5.B). Set once; a resumed
   // session hydrates the existing title in start() so a later message never overwrites it.
   let title: string | undefined;
 
-  const record = (status: SessionStatus): AgentSessionRecord => ({
+  /** Build the session row. `staged` supplies the values a not-yet-committed turn is ABOUT to adopt, so the
+   *  row written inside `writeTurn`'s transaction matches exactly what this process commits on success. */
+  const record = (
+    status: SessionStatus,
+    staged: { title?: string | undefined; input?: number; output?: number } = {},
+  ): AgentSessionRecord => ({
     id: deps.sessionId,
     agentSlug: deps.agent.id,
     agentSnapshot: deps.agent,
     context: deps.context,
     status,
-    totalInputTokens,
-    totalOutputTokens,
+    totalInputTokens: staged.input ?? totalInputTokens,
+    totalOutputTokens: staged.output ?? totalOutputTokens,
     totalCostMicrocents,
     createdAt,
     updatedAt: iso(),
-    ...(title === undefined ? {} : { title }),
+    ...((staged.title ?? title) === undefined ? {} : { title: staged.title ?? title }),
     // The session's coarse primary model (ADR-0059) — the bound model's `model_catalog.id` (the FK target), so a
     // reseat's new persister records the switched model. Omitted (NULL) when the model is not cataloged. Per-turn
     // attribution rides each assistant `SessionMessage.modelId`; this is the row-level label.
@@ -235,15 +248,33 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           // Derive the title HERE (not in beginUserTurn) — from the FIRST user message of a COMPLETED exchange of
           // a titleless session, so an aborted/errored earlier turn never labels the row. A blank message yields
           // undefined, so the next non-blank completed message becomes the title; a resumed session keeps its own.
-          title ??= deriveSessionTitle(pendingUserText);
-          appendText('user', pendingUserText);
+          const nextTitle = title ?? deriveSessionTitle(pendingUserText);
+          // STAGE the whole turn against provisional sequence numbers, then write it in ONE transaction (#228).
+          // Nothing in-memory moves until that write succeeds, so a failure leaves neither a half-written turn
+          // in the transcript nor a phantom sequence in this process.
+          const staged: SessionMessage[] = [stageText(sequenceNumber, 'user', pendingUserText)];
           // The assistant row carries the (resolved) catalog id of the model that produced it (ADR-0059):
           // `turnModelCatalogId` from this turn's last `cost:updated`, or `undefined` (NULL) when uncataloged.
-          if (assistantText.length > 0) appendText('assistant', assistantText, turnModelCatalogId);
-          totalInputTokens += event.tokensUsed.input;
-          totalOutputTokens += event.tokensUsed.output;
+          if (assistantText.length > 0) {
+            staged.push(
+              stageText(sequenceNumber + 1, 'assistant', assistantText, turnModelCatalogId),
+            );
+          }
+          const nextInput = totalInputTokens + event.tokensUsed.input;
+          const nextOutput = totalOutputTokens + event.tokensUsed.output;
+          deps.store.writeTurn({
+            messages: staged.map((message) => ({ message })),
+            session: record('active', { title: nextTitle, input: nextInput, output: nextOutput }),
+          });
+          // Committed: the write landed, so adopt the staged state.
+          title = nextTitle;
+          sequenceNumber += staged.length;
+          realMessageSeqs.push(...staged.map((m) => m.sequenceNumber));
+          totalInputTokens = nextInput;
+          totalOutputTokens = nextOutput;
+        } else {
+          deps.store.updateSession(record('active'));
         }
-        deps.store.updateSession(record('active'));
         pendingUserText = undefined;
         assistantText = '';
         turnModelCatalogId = undefined;
@@ -252,15 +283,29 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // ADR-0062: write the append-only boundary marker (summary + role-filtered droppedThroughSequence) and
         // add the summariser's REAL token usage to the totals (the cost microcents already flowed via
         // cost:updated → totalCostMicrocents; flush the row to persist both). Nothing durable is deleted.
-        appendMarker(event.summary, event.keptMessageCount);
-        totalInputTokens += event.tokensUsed.input;
-        totalOutputTokens += event.tokensUsed.output;
-        deps.store.updateSession(record('active'));
+        {
+          const marker = stageMarker(event.summary, event.keptMessageCount);
+          const nextInput = totalInputTokens + event.tokensUsed.input;
+          const nextOutput = totalOutputTokens + event.tokensUsed.output;
+          deps.store.writeTurn({
+            messages: marker === undefined ? [] : [{ message: marker }],
+            session: record('active', { input: nextInput, output: nextOutput }),
+          });
+          if (marker !== undefined) sequenceNumber += 1; // the marker's seq is NOT a real-message seq
+          totalInputTokens = nextInput;
+          totalOutputTokens = nextOutput;
+        }
         return;
       case 'session:trimmed':
         // A deterministic /trim — a summary-less boundary marker, no cost. Flush the row (updatedAt) after.
-        appendMarker('', event.keptMessageCount);
-        deps.store.updateSession(record('active'));
+        {
+          const marker = stageMarker('', event.keptMessageCount);
+          deps.store.writeTurn({
+            messages: marker === undefined ? [] : [{ message: marker }],
+            session: record('active'),
+          });
+          if (marker !== undefined) sequenceNumber += 1;
+        }
         return;
       case 'session:cancelled':
         // The session's sole terminal — mark it ended (still resumable from the persisted transcript), then

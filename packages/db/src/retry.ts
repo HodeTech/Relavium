@@ -21,8 +21,10 @@
  * DB state.
  *
  * **Two twins, one policy.** {@link withBusyRetry} is synchronous, because `better-sqlite3` is;
- * {@link withBusyRetryAsync} is for the call sites whose caller is genuinely async, where the backoff can yield
- * the event loop instead of parking the thread (#226). They share the retryable-code set, the budget, the
+ * {@link withBusyRetryAsync} is for a call site whose caller is genuinely async — today only `persistEvent`
+ * (run history) — where the backoff can yield the event loop instead of parking the thread (#226). The chat
+ * persister's writers are NOT on it and cannot be: they run inside a synchronous `RunEventBus` subscriber, so
+ * an async write would escape `deliver()`'s catch as a floating promise and never reach the listener sink. They share the retryable-code set, the budget, the
  * schedule and the fail-loud exhaustion — only the sleep differs. Read the async twin's own doc for what that
  * does and, more importantly, what it does NOT buy: each attempt still blocks inside the synchronous driver for
  * up to `busy_timeout`, so the backoff is the small term, not the dominant one.
@@ -140,7 +142,7 @@ export function withBusyRetry<T>(fn: () => T, options: BusyRetryOptions = {}): T
 
 /**
  * The **async twin** of {@link withBusyRetry}, for the call sites whose caller is genuinely async — today
- * `persistEvent` (run history) and the chat persister's write path. Identical budget, identical deterministic
+ * `persistEvent` (run history). Identical budget, identical deterministic
  * linear backoff, identical fail-loud exhaustion; the only difference is that the backoff **yields the event
  * loop** instead of parking the thread on `Atomics.wait` (#226).
  *

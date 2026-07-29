@@ -10,7 +10,7 @@ import {
   type SessionStore,
 } from '@relavium/db';
 import type { AgentSessionRecord, DurableContentPart, SessionMessage } from '@relavium/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { buildDefaultChatAgent } from './default-agent.js';
@@ -75,6 +75,51 @@ describe('createSessionPersister', () => {
     });
     return { built, persister, store };
   }
+
+  /* --- #228: a failed turn write must leave NOTHING, not half a turn --- */
+
+  it('writes a turn ATOMICALLY — a mid-turn failure persists neither message', async () => {
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi'), textTurn('again')]));
+    built.session.start();
+    persister.start();
+    // Fail the FIRST turn's write outright. Before the atomic write this was three auto-committed
+    // statements, so the `user` row landed and the `assistant` row did not.
+    const boom = Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    const writeTurn = vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
+      throw boom;
+    });
+    persister.beginUserTurn('first');
+    await built.session.sendMessage('first');
+    expect(store.loadMessages('sess-1')).toHaveLength(0); // all of it, or none of it
+
+    // The session survives (that is the point of #228's other layers) and the NEXT turn must be clean —
+    // this is where the old behaviour buried an orphan `user` row mid-transcript, which resume does not
+    // roll back and which replays as two consecutive `user` messages a provider rejects.
+    writeTurn.mockRestore();
+    persister.beginUserTurn('second');
+    await built.session.sendMessage('second');
+    const roles = store.loadMessages('sess-1').map((m) => m.role);
+    expect(roles).toEqual(['user', 'assistant']);
+    // No gap: the surviving rows are contiguous from 0, because the failed turn advanced nothing.
+    expect(store.loadMessages('sess-1').map((m) => m.sequenceNumber)).toEqual([0, 1]);
+  });
+
+  it('leaves the in-memory sequence untouched when a turn write fails (no phantom seq)', async () => {
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi'), textTurn('again')]));
+    built.session.start();
+    persister.start();
+    vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    });
+    persister.beginUserTurn('first');
+    await built.session.sendMessage('first');
+    vi.restoreAllMocks();
+    persister.beginUserTurn('second');
+    await built.session.sendMessage('second');
+    // The turn totals must also not have advanced for the turn that never landed.
+    const session = store.loadSession('sess-1');
+    expect(session?.title).toBe('second'); // the FAILED turn never got to title the session either
+  });
 
   it('persists the session row eagerly on start (auto-persisted from the moment it starts)', async () => {
     const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));

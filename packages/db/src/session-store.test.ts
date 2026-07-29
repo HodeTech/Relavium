@@ -610,6 +610,58 @@ describe('SessionStore — loadFull snapshot isolation (2.5.I)', () => {
  * subscriber, the throw became an unhandled rejection that killed the CLI after the reply was already shown.
  * A held write lock plus `busy_timeout = 0` reproduces that deterministically, with no waiting and no threads.
  */
+describe('SessionStore — writeTurn is atomic (#228)', () => {
+  it('rolls the WHOLE turn back when a later message violates a constraint', () => {
+    store.createSession(makeSession());
+    // Two rows at the SAME sequence number: the second trips the (session_id, sequence_number) UNIQUE index
+    // — a real constraint, not an injected fault, so this exercises the actual transaction.
+    expect(() =>
+      store.writeTurn({
+        messages: [{ message: makeMessage(0) }, { message: makeMessage(0, { id: 'msg-dup' }) }],
+        session: makeSession({ status: 'ended' }),
+      }),
+    ).toThrow(/UNIQUE/i);
+    // All of it, or none of it: the FIRST message must not have survived either.
+    expect(store.loadMessages('sess-1')).toHaveLength(0);
+    // …and the session flush in the same transaction is rolled back with it.
+    expect(store.loadSession('sess-1')?.status).toBe('active');
+  });
+
+  it('commits messages and the session flush together on success', () => {
+    store.createSession(makeSession());
+    store.writeTurn({
+      messages: [{ message: makeMessage(0) }, { message: makeMessage(1, { role: 'assistant' }) }],
+      session: makeSession({ status: 'ended', title: 'done' }),
+    });
+    expect(store.loadMessages('sess-1').map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(store.loadSession('sess-1')?.title).toBe('done');
+  });
+
+  it('accepts an empty message list — a row-less flush is still one transaction', () => {
+    store.createSession(makeSession());
+    store.writeTurn({ messages: [], session: makeSession({ status: 'ended' }) });
+    expect(store.loadSession('sess-1')?.status).toBe('ended');
+  });
+
+  it('never SETs total_cost_microcents — recordSessionCost stays its single writer (ADR-0070)', () => {
+    // writeTurn shares `mutableSessionColumns` with updateSession precisely so this invariant cannot be
+    // reintroduced on a second write path.
+    store.createSession(makeSession());
+    store.recordSessionCost({
+      id: 'c1',
+      sessionId: 'sess-1',
+      model: 'm',
+      inputTokens: 1,
+      outputTokens: 1,
+      costMicrocents: 500,
+      priced: true,
+      ts: 1,
+    });
+    store.writeTurn({ messages: [], session: makeSession({ totalCostMicrocents: 0 }) });
+    expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(500); // not clobbered back to 0
+  });
+});
+
 describe('SessionStore — the session writers survive lock contention (#228)', () => {
   /** A `better-sqlite3`-shaped lock fault: an `Error` carrying the string `.code` the driver sets. */
   const busy = (): Error => Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
