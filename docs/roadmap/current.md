@@ -2,9 +2,14 @@
 
 > Status: Living
 >
-> Last updated: 2026-07-26
+> Last updated: 2026-07-29
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
+
+> **Authority (until Phase 2.5.5 and Phase 2.6 close):** This file is canonical for
+> live progress and execution order; the phase documents stay canonical for scope and acceptance. Ordering
+> differences between the two are deliberate. `current.md` may override recommended ordering — it may **not**
+> redefine a security boundary, a scope line, or a milestone acceptance criterion.
 
 This page tracks what is active **right now** and the immediate next concrete actions.
 The full phase plan and the global milestone spine are in [README.md](README.md).
@@ -25,14 +30,14 @@ PR #75, 2026-07-13) — see [Active now](#what-is-active-now). **2.6.Q** (dynami
 enrichment) is **no longer blocked**: [ADR-0071](../decisions/0071-models-dev-as-the-model-metadata-source.md)
 and [ADR-0072](../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md) are both
 **Accepted**, resolving the six open maintainer questions the phase file had cited, and the P1–P5
-implementation steps have landed on `development` (PR #76, open, review-folded). P6 and the
-`/settings` → `/models` visibility toggle remain open, and the bundled offline snapshot regen is
-pending a Gemini pricing decision.
+implementation steps are **merged to `main`** (PR #76, 2026-07-26). P6 and the `/settings` → `/models`
+visibility toggle remain open; the bundled offline snapshot was **regenerated** in PR #79 after the D3
+price ruling.
 
 **The unified build order across both phases is in
 [Execution order — Phase 2.5.5 + Phase 2.6](#execution-order--phase-255--phase-26-temporary) below** — a
-temporary section, deleted when both phases close. Its baseline step is discharged (PRs #76 and #77 merged);
-**the next unit of work is Wave 0's single `ci.yml`/`turbo.json`/`tsup.config.ts` PR.**
+temporary section, deleted when both phases close. Its baseline step is discharged (PRs #76 and #77 merged)
+and **Wave 0's CI-truth PR is in flight on `development` (PR #80)**.
 
 ## Execution order — Phase 2.5.5 + Phase 2.6 (temporary)
 
@@ -51,8 +56,8 @@ temporary section, deleted when both phases close. Its baseline step is discharg
 The plan opened on a divergence neither phase file modelled: Phase 2.5.5's whole backlog is written against
 `f88b0e8`, which existed only on `development` behind PR #76, so every `file:line` citation in it resolved
 against a tree nobody was branching from. **PR #76 and #77 are both merged** — `f88b0e8` is on `origin/main`,
-`origin/development` and `origin/main` hold identical trees, and there are no open PRs. Every citation in
-this plan now resolves.
+`origin/development` and `origin/main` held identical trees with no open PRs as of 2026-07-26. Every
+citation in this plan now resolves. (PR #79 and PR #80 have opened since.)
 
 One consequence survives and is worth keeping until the phases close:
 
@@ -242,7 +247,7 @@ The four Day-1-independent 2.6 workstreams everything downstream sits on — and
    Then 2.5.5.C · per-row isolation (#117) as pure propagation of H's skip-and-report ruling.
 5. **2.6.A** (package extraction, `validateAuthoredWorkflow` back-port, the run-path tool pre-flight
    #37/G29, direct unit tests #6) and **2.6.D**. *2.6.A's `max_tokens` pre-flight moves to Wave 4b — it has
-   a hard dependency on 2.6.Q's `limit.output`.* **Closes M2.6-2 and M2.6-3.**
+   a hard dependency on 2.6.Q's `limit.output`.* **Closes M2.6-2.** (M2.6-3 also needs 2.6.B, which lands in Wave 6.)
 
 ### Wave 4b — Money floor and close-out
 
@@ -265,7 +270,7 @@ adapter/catalog money floor, cut the release 2.6.Q P6 is gated on.
 ### Wave 5a — Paint before you build
 
 Restructure the render layer and settle the theme/config substrate **once**, before ~24 new screens and a
-five-locale catalog land on it.
+an `en`+`tr` string catalog land on it.
 
 1. **ADR row 10 (i18n + theming) is this wave's first gate** — ahead of rows 7 and 8. 2.6.L's palette work
    is a render-layer freeze and must not open against an undecided contract.
@@ -338,9 +343,9 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 |---|------|----------|----------------|
 | D1 | 0 | Mark the `ci` job a **required** check (open since Phase 0) | Yes — every CI item here is advisory until it flips |
 | D2 | 0 | Coverage floor: promote to required, or soften `testing.md`? | Promote, **and implement in the same PR** — a checked-in run already shows 92–97% margin |
-| D3 | 0 | Accept the upstream price changes the ADR-0071 §9 guard is refusing? | ✅ **Ruled 2026-07-26: take current prices.** Verified: `gemini-flash-latest` moved $0.30→$1.50 in / $2.50→$9.00 out — the shipped floor under-prices by 5×. **Blocked on D3b below** |
+| D3 | 0 | Accept the upstream price changes the ADR-0071 §9 guard is refusing? | ✅ **Ruled + executed 2026-07-26: take current prices.** Verified: `gemini-flash-latest` moved $0.30→$1.50 in / $2.50→$9.00 out (the shipped floor under-priced by 5×) and `gemini-flash-lite-latest` $0.10→$0.25 / $0.40→$1.50. The nine upstream retirements were accepted in the same ruling; snapshot regenerated and merged in **PR #79**. Nothing outstanding |
 | D4 | 0 | Confirm the number reservation (`0013`–`0017`, ADR-0073+) | As listed — one item per number, in landing order |
-| D5 | 0 | The binding locale bar | ✅ **Ruled 2026-07-26: ship `en` + `tr`**, catalog architected for n locales, `es`/`fr`/`de` staged. EXIT:6, 2.6.L and 2.5.5.F amended |
+| D5 | 0 | The binding locale bar | ✅ **Ruled + propagated 2026-07-26: ship `en` + `tr`**, catalog architected for n locales, `es`/`fr`/`de` staged. Amended at all seven sites |
 | D7 | 0 | Publish v0.1.1 as-is, or supersede with v0.2.0? | v0.2.0 — ADR-0067's Node `>=22` bump is breaking for 0.x |
 | D8 | 1 | Do already-persisted approval previews need a scrub? | Yes — migration 0013, same PR. Deleting `history.db` also destroys provider registrations |
 | D10 | 1 | `BudgetExceededError`/`BudgetPauseError`: adopt `.code`? | Adopt — must precede Wave 3's `RelaviumError` migration |

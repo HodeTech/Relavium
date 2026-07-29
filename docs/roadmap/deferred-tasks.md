@@ -2,9 +2,12 @@
 
 > Status: Living
 
-> Last updated: 2026-07-08 — the Phase-2.6 rewrite triaged every open item; the now-doable ones carry a
-> **Scheduled → 2.6.X** marker pointing at their [phase-2.6](phases/phase-2.6-conversational-authoring.md)
-> workstream (they stay unchecked until the PR that lands them).
+> Last updated: 2026-07-29 — the Phase-2.6 rewrite triaged every open item and the 2026-07-19 full-project
+> review added the deliberately-unscheduled block at the end.
+>
+> **Lifecycle states**, because this file mixes three: `- [ ]` = unscheduled and actionable ·
+> **Scheduled → 2.6.X / → 2.5.5.X** = owned by that workstream, still unchecked until the PR that lands it ·
+> **DONE / DECLINED** = closed history, written as a plain bullet, never a checkbox.
 
 - **Related**: [current.md](current.md), [README.md](README.md), [phases/phase-0-foundations.md](phases/phase-0-foundations.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md)
 
@@ -487,7 +490,7 @@ is a long-standing UX gap that would have added a DB read path and an inline beh
 The seam it needs (`SessionViewSeed.transcript` + `carriesSeedTranscript`) is already in place after 2.6.C Step 2,
 so the remaining work is the projection and the inline decision.
 
-**Home:** a 2.6 workstream (2.6.C's natural sibling) or 2.6.G's session browser, whichever reaches it first.
+**Scheduled → 2.6.G** (the `/agents > Sessions` browser owns resume-in-place). The earlier "2.6.C's natural sibling or 2.6.G, whichever reaches it first" hedge is spent: 2.6.C shipped 2026-07-13 without it.
 
 ## Cross-turn tool-call memory as a default-off toggle (2.6.C spin-off, 2026-07-12)
 
@@ -1062,6 +1065,14 @@ future test cannot silently re-acquire it.
 > prior tracking entry in this file. Recorded 2026-07-08 so they don't get lost. Each maps to a
 > concrete later phase or decision gate.
 
+- [ ] **Dynamic runtime `invoke_workflow` from a workflow agent node.** Deferred past Phase 2.6 by decision
+      **D57** (2026-07-26): a running workflow's agent node selecting a sub-workflow at runtime by model
+      judgment is the unauthored composition 2.6.P's *authored surface == executable surface* invariant
+      exists to prevent, and it has no cost-governance boundary. 2.6.P ships the **authored** `subworkflow`
+      node only. **Owner:** a dedicated ADR + security review covering target selection, the nested-run
+      event namespace, and cost/resource governance — before any implementation.
+      *(medium · `packages/core` engine + an `invoke_workflow` tool)*
+
 - [ ] **File-snapshot undo (opencode-style revert of message + file changes).** Phase 2.6.E ships
   conversation-level `/rewind`/`/fork` only — reverting the file changes a message made requires an
   engine-level file-snapshot mechanism (tracking which tool calls modified which files at which
@@ -1279,9 +1290,9 @@ future test cannot silently re-acquire it.
   *(medium · packages/core/src/engine, packages/shared/src/agent.ts,
   docs/reference/contracts/agent-yaml-spec.md; #142)*
 
-### Declined findings (considered, not actioned)
+### Declined findings (closed — recorded for the record, never actionable)
 
-- [ ] **Sandbox `Math.random` fallback re-check narrowness — DECLINED, accepted residual.**
+- **Sandbox `Math.random` fallback re-check narrowness — DECLINED, accepted residual.**
   `packages/core/src/expression/sandbox.ts:219-225` re-checks `typeof Math.random === 'function'` after the
   neutralizing `delete`, not the wider "is not undefined"; a hypothetical future QuickJS variant that left
   `Math.random` as some non-function, non-undefined value after a failed delete would slip past this
@@ -1290,7 +1301,7 @@ future test cannot silently re-acquire it.
   `sandbox.test.ts` (lines 112-116, 533-545), and the finding's own analysis concludes no action is needed
   until the QuickJS variant changes. *(polish · packages/core/src/expression/sandbox.ts:219; #84)*
 
-- [ ] **Alt-screen `restore()`'s idempotent latch-after-success design — DECLINED, verified strength, not a
+- **Alt-screen `restore()`'s idempotent latch-after-success design — DECLINED, verified strength, not a
   defect.** `apps/cli/src/render/alt-screen.ts:88-109` sets its idempotence latch only AFTER the
   terminal-restore write succeeds, so a transient EIO/EPIPE on a half-dead TTY during one teardown net
   (finally / `process.on('exit')` / a signal handler) leaves the terminal recoverable by the NEXT net rather
@@ -1299,7 +1310,7 @@ future test cannot silently re-acquire it.
   matches it) the rest of the codebase should be held to, not as an item to fix.
   *(polish · apps/cli/src/render/alt-screen.ts:88; #67)*
 
-- [ ] **Full-repo `knip` dead-export inventory — DECLINED, no further action beyond its two spin-offs.** A
+- **Full-repo `knip` dead-export inventory — DECLINED, no further action beyond its two spin-offs.** A
   full-repo `knip` pass surfaced 3 unused-file hits (2 false positives — ESLint fixture configs consumed via
   ESLint's file-path API, not a TS import), 7 "unused dependency" hits in `apps/cli/package.json` (all false
   positives — declared for ADR-0051's tsup bundle closure, not directly imported), 39 "unused" function/const
