@@ -23,9 +23,7 @@ export function renderError(
   const code = sanitizeInline(userFacing.code);
   const message = sanitizeInline(userFacing.message);
   if (opts.json) {
-    io.writeErr(
-      JSON.stringify({ type: 'error', code, message }) + '\n',
-    );
+    io.writeErr(JSON.stringify({ type: 'error', code, message }) + '\n');
   } else {
     io.writeErr(`relavium: ${message}\n`);
   }

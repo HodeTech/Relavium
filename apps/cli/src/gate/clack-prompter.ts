@@ -57,7 +57,10 @@ function cardBody(event: HumanGatePausedEvent): string {
 export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): GatePrompter {
   return {
     prompt: async (event) => {
-      deps.note(cardBody(event), `⏸ ${GATE_TITLE[event.gateType]} · ${sanitizeInline(event.nodeId)}`);
+      deps.note(
+        cardBody(event),
+        `⏸ ${GATE_TITLE[event.gateType]} · ${sanitizeInline(event.nodeId)}`,
+      );
 
       if (event.gateType === 'input') {
         // A human types a value: kept as the raw string (predictable). The structured/JSON path is the
