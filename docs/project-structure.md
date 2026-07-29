@@ -23,6 +23,7 @@ flowchart TD
         llm["packages/llm<br/>provider adapters"]
         core["packages/core<br/>workflow engine"]
         db["packages/db<br/>Drizzle schema"]
+        mcp["packages/mcp<br/>inbound MCP client"]
         ui["packages/ui<br/>ReactFlow nodes + shadcn"]
     end
     subgraph apps
@@ -66,6 +67,7 @@ flowchart TD
 | `packages/shared` | **`@relavium/shared`** — Zod schemas, TypeScript types, constants used everywhere (`WorkflowSchema`, `AgentSchema`, `RunSchema`, `NodeSchema`, `EdgeSchema`, `RunEvent`, `CostEvent`, `HumanGateEvent`). No runtime deps except zod. |
 | `packages/llm` | **`@relavium/llm`** — provider adapters (`AnthropicAdapter`, `GeminiAdapter`, and a shared OpenAI-compatible adapter serving both OpenAI and DeepSeek via a custom `baseURL`) normalizing streaming, tool calls, and usage tokens to the canonical format. Houses `ToolNormalizer`, `CostTracker`, `FallbackChain`. Three adapters, per [tech-stack.md](tech-stack.md) and ADR-0011. |
 | `packages/db` | **`@relavium/db`** — Drizzle schema + migrations. Same table names and column types for SQLite (local) and Postgres (cloud), different driver. See [reference/shared-core/database-schema.md](reference/shared-core/database-schema.md). |
+| `packages/mcp` | **`@relavium/mcp`** — the inbound MCP client: the SDK fence, the dependency-free JSON-Schema→Zod compiler, and the network transports behind the SSRF pre-connect floor ([ADR-0052](decisions/0052-inbound-mcp-client-package-lifecycle-registration.md), [ADR-0053](decisions/0053-mcp-network-transport-egress-security.md)). |
 | `packages/ui` | **`@relavium/ui`** — shared React component library. All ReactFlow custom node types (Agent, Condition, FanOut, Aggregator, Loop, HumanGate, Input, Output, Tool) and edges, plus shadcn/ui base + Tailwind config. The canvas node types are imported by desktop and VS Code panels; the portal imports only the shadcn/ui base + Tailwind layer for visual consistency (it is a control plane, not a canvas surface). |
 
 ## Build Order

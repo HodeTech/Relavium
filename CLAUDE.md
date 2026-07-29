@@ -26,6 +26,7 @@ It is a **Turborepo + pnpm monorepo**:
 | `packages/llm` (`@relavium/llm`) | Relavium's **own** multi-LLM abstraction: the `LLMProvider` seam + thin hand-rolled adapters over the official provider SDKs. No Vercel AI SDK, no LangChain. |
 | `packages/core` (`@relavium/core`) | **The engine** — YAML→DAG parse, runner, checkpoint/resume, retry. **Zero platform-specific imports.** The most important package. |
 | `packages/db` (`@relavium/db`) | Drizzle schema + migrations — same schema for SQLite (local) and Postgres (cloud). |
+| `packages/mcp` (`@relavium/mcp`) | The inbound MCP client — the SDK-fenced package, the dependency-free JSON-Schema→Zod compiler, and the `http`/`sse`/`websocket` transports behind the SSRF floor. |
 | `packages/ui` (`@relavium/ui`) | Shared React components: ReactFlow node types + shadcn/ui. |
 | `apps/desktop` | Tauri v2 desktop app — the agent-management center (canvas, run monitoring). |
 | `apps/cli` | Terminal CLI (`commander.js` + `ink`). The engine's first real consumer + regression harness. |

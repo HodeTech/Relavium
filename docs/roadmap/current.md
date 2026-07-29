@@ -110,26 +110,32 @@ checklists before ~30 security-gated PRs are reviewed against them.
 
 1. ✅ **Merge PR #76** (2.6.Q P1–P5, ADR-0071/0072, the three picker bugs, the param self-heal) — **done
    2026-07-26**, along with #77 (this plan + the Phase-2.5.5 opening + `release.yml`'s `G26` ancestry gate).
-2. **Reserve numbers**, one per number in landing order — migrations end at `0012` and ADRs at `0072`
-   (verified): `0013` = the Wave-1 approval-preview scrub · `0014` = 2.5.5.C's enum CHECKs (#101) ·
-   `0015` = 2.6.H · `0016` = 2.6.G's pins · `0017` = 2.6.N lineage; **ADR-0073+** for the nine unwritten 2.6 ADRs.
-3. **One `ci.yml`/`turbo.json`/`tsup.config.ts` PR** (a five-way collision file — do not split):
+2. ✅ **Reserve numbers** — **done**, recorded here: migrations end at `0012` and ADRs at `0072` (verified),
+   so `0013` = the Wave-1 approval-preview scrub · `0014` = 2.5.5.C's enum CHECKs (#101) · `0015` = 2.6.H ·
+   `0016` = 2.6.G's pins · `0017` = 2.6.N lineage; **ADR-0073+** for the nine unwritten 2.6 ADRs.
+3. ✅ **One `ci.yml`/`turbo.json`/`tsup.config.ts` PR** — **done 2026-07-29 (PR #80)**, all eight items:
    2.5.5.H · the required gate never runs the compiled binary + undeclared `drizzle` output (#294, #315) →
    local `pnpm run ci` vs `ci.yml` divergence (#312 — and `pnpm ci` is shadowed by a pnpm builtin, so the
    script was unreachable by the name everyone types) → the coverage-floor **ruling and its implementation**
    (#296, #152) → the `(advisory)` labels (#320) → `THIRD_PARTY_EXTERNAL` (G27, #248) → bundle-closure
-   single-chunk assert (#314) → `sync:models:check` (#317). *(`release.yml`'s ancestry check, `G26`, already
-   landed in #77; only its tag-protection half remains, and that is now configured too.)*
-4. 2.5.5.F · **three skills' hardcoded foreign-project paths** (#162) — filed as docs, actually a functional
-   bug: they write outside the repo.
-5. **One markdown PR** (shared files): `packages/mcp` missing from five inventory tables (#128, #129, #153,
-   #163, #254) + the two review-checklist gaps (#164, #167) + the CLAUDE.md/README i18n clause (#74, #260, #134).
-6. The **locale-bar amendment** (decision D5) and the **snapshot regen** after the Gemini price ruling (D3).
+   single-chunk assert (#314) → `sync:models:check` (#317). *(`release.yml`'s ancestry check, `G26`, landed in
+   #77; its tag-protection half is configured.)* The PR also closed the four blockers from the 2026-07-29
+   roadmap review, and its own CI caught two real defects in it — a TS4111 that `turbo run typecheck` does not
+   cover, and `pnpm ci` being unreachable because pnpm reserves `ci` as a builtin.
+4. ✅ **2.5.5.F · three skills' hardcoded foreign-project paths** (#162) — **done 2026-07-29.** Filed as docs,
+   actually a functional bug: they pointed at `/Users/dev/…/Agent-Organizer/`, so `add-package`'s `mkdir -p`
+   would have created a tree outside the repo. All three now anchor on `$(git rev-parse --show-toplevel)`.
+5. ✅ **One markdown PR** — **done 2026-07-29**: `packages/mcp` added to all five inventory sites (#128, #129,
+   #153, #163, #254), the reviewer agent's secrets item extended to the shipped CLI floor (#164), the
+   security-review skill's SSRF step now requires reusing the shared guard rather than re-deriving one (#167),
+   and the i18n clause settled by the D5 ruling (#74, #260, #134).
+6. ✅ **The locale-bar amendment** (D5, `en`+`tr`) and the **snapshot regen** (D3) — **done**, propagated to
+   all seven locale sites and merged as PR #79 (two price rises taken, nine retirements accepted).
 
-> Why first: every wave after this adds a migration, and the required gate still does not execute the
-> binary it ships while turbo does not declare `apps/cli/drizzle/**` as a build output — so a cache-hit
-> replay can leave `dist/index.js` fresh beside a stale `drizzle/`, crashing on first DB touch. The
-> coverage gate must also flip *before* ~120 items land, not mid-flight.
+> ✅ **Wave 0 is COMPLETE (2026-07-29).** The required gate now executes the binary it ships,
+> `apps/cli/drizzle/**` is a declared turbo output, and `lint · typecheck · test` +
+> `engine coverage floor (llm, mcp)` are both required checks under branch protection. In phase terms this
+> closes **8 of 2.5.5.H's 14** tasks and **3 of 2.5.5.F's 20**. **Wave 1 is next.**
 
 ### Wave 1 — Stop the bleeding
 

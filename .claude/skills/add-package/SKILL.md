@@ -35,7 +35,8 @@ Create a new `packages/<x>` or `apps/<x>` workspace that is born consistent with
 3. **Create the directory and the source/test skeleton.**
    ```bash
    PKG=run-history   # your slug
-   mkdir -p /Users/dev/Documents/Projects/Agent-Organizer/packages/$PKG/src
+   R=$(git rev-parse --show-toplevel)
+   mkdir -p "$R/packages/$PKG/src"
    ```
    Resulting tree for a shared package:
    ```text

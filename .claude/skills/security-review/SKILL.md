@@ -76,6 +76,11 @@ encryption (SQLCipher) path, or a new third-party dependency. When in doubt, run
    user explicitly opted into a local endpoint. An agent-config URL must never make the
    engine call an internal address with a real key attached. Confirm TLS verification is not
    disabled and every outbound call carries an `AbortSignal` + timeout.
+   **Confirm the change REUSES the shared guard rather than hand-rolling a second one** — a
+   parallel range check is how the two drift and one of them silently stops covering a range
+   (CLAUDE.md rule 3: never reinvent a security-critical primitive).
+   - Signal: `grep -rn "isPrivateOrLocalHost\|safe-egress" $changed_files` — a new URL path with
+     no hit is either reusing nothing or re-deriving the check locally.
 
 5. **The `run_command` sandbox.** `run_command` spawns model-driven shell execution, so it
    runs sandboxed: only commands on the workflow's `allowedCommands` allowlist execute (never

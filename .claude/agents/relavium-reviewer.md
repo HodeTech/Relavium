@@ -41,33 +41,45 @@ finding, and you list what you verified as clean.
    in Node, the Tauri WebView, and the extension host.
    - Signal: `grep -rn "node:\|from 'fs'\|from 'path'\|@tauri-apps\|\bwindow\.\|\bdocument\." packages/core/src`
 
-4. **No new dependency without an ADR.** A new runtime dependency — especially in
-   `packages/core`/`packages/llm` or a new provider SDK — needs an
+4. **`packages/mcp`'s own fences hold.** The inbound MCP client is the one package besides
+   `apps/cli` that imports `@relavium/core`, and the only one importing the MCP SDK. The SDK
+   stays behind `packages/mcp`'s adapters; a server-supplied tool description or schema is
+   untrusted input (bounded, and never admitted verbatim into a prompt); every network
+   transport keeps its SSRF pre-connect floor and its connect timeout.
+   - Signal: `grep -rn "@modelcontextprotocol/sdk" packages apps | grep -v 'packages/mcp/src/'` — any hit outside is a boundary break.
+   - Source: [ADR-0052](../../docs/decisions/0052-inbound-mcp-client-package-lifecycle-registration.md), [ADR-0053](../../docs/decisions/0053-mcp-network-transport-egress-security.md)
+
+5. **No new dependency without an ADR.** A new runtime dependency — especially in
+   `packages/core`/`packages/llm`/`packages/mcp` or a new provider SDK — needs an
    [ADR](../../docs/decisions/README.md). Reject a casual install that adds or re-introduces
    a banned framework (Vercel AI SDK, LangChain, a Python sidecar).
    - Signal: inspect the `package.json` / `pnpm-lock.yaml` diff.
    - Source: [code-review.md](../../docs/standards/code-review.md)
 
-5. **Secrets never in plaintext, logs, or the frontend.** Keys live only in the OS keychain;
+6. **Secrets never in plaintext, logs, or the frontend.** Keys live only in the OS keychain;
    none in an IPC payload to the WebView, a Zustand store, a React prop, localStorage, a log,
-   an unencrypted DB column, or an error/`node:failed`/`run:failed` event. On the **desktop**
-   the WebView adapter holds only a key *reference*; the raw key is read and attached inside
-   the Rust `llm_stream` command and never crosses into the WebView (ADR-0018).
+   an unencrypted DB column, or an error/`node:failed`/`run:failed` event. On the **CLI** — the
+   surface that actually ships today — a key is read from stdin, never argv; `history.db` and
+   `config.toml` stay `0600`; a tool-approval preview, a persisted run summary, and any `--json`
+   payload go through the secret-shaped redaction helper before they are written. On the
+   **desktop** (not yet built) the WebView adapter holds only a key *reference*; the raw key is
+   read and attached inside the Rust `llm_stream` command and never crosses into the WebView
+   (ADR-0018).
    - Signal: `grep -rni "apikey\|api_key\|secret\|process.env.*KEY" $changed_files` then trace each hit.
    - Source: [security-review.md](../../docs/standards/security-review.md), [ADR-0006](../../docs/decisions/0006-os-keychain-for-api-keys.md), [ADR-0018](../../docs/decisions/0018-desktop-execution-and-rust-egress.md)
 
-6. **One canonical home for specs.** A change to a schema (workflow/agent YAML, SSE/run
+7. **One canonical home for specs.** A change to a schema (workflow/agent YAML, SSE/run
    events, IPC, DB DDL, node types, tools, routes) updates its one
    [docs/reference/](../../docs/reference/) file — no pasted copy elsewhere. Run-event names
    are the canonical colon-namespaced form with `sequenceNumber`.
    - Signal: `grep -rn "node\.\(started\|completed\)\|agent\.token\|\bseqNo\b\|node:error\|run:error\|human_gate:pending" $changed_files` — legacy dotted names, `seqNo`, and the non-canonical `node:error`/`run:error`/`human_gate:pending` are all wrong (canonical: `node:failed`/`run:failed`/`human_gate:paused`, field `sequenceNumber`).
 
-7. **Desktop is an agent-management center, not an IDE.** A change under `apps/desktop`
+8. **Desktop is an agent-management center, not an IDE.** A change under `apps/desktop`
    adding a code editor, file browser, or terminal is out of scope; code-adjacent work
    belongs to the VS Code extension.
    - Source: ADR-0007, [architectural-principles.md](../../docs/standards/architectural-principles.md) §4
 
-8. **Conventional Commits.** `<type>(<scope>): <summary>`, imperative, scope per package
+9. **Conventional Commits.** `<type>(<scope>): <summary>`, imperative, scope per package
    (`llm`, `core`, `shared`, `db`, `ui`, `cli`, `desktop`, `vscode`, `api`, `portal`,
    `docs`, `repo`), `Refs: ADR-XXXX` when implementing a decision.
    - Source: [commit-style.md](../../docs/standards/commit-style.md)
