@@ -1668,6 +1668,29 @@ describe('OpenAI-compatible adapter — stream edge cases', () => {
     messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
   };
 
+  it('does NOT retry a 429 inside the SDK — the chain owns retry policy (#276)', async () => {
+    // Deliberately WITHOUT `maxRetries`: every other test here passes 0 explicitly, so none of them exercised
+    // what PRODUCTION gets. Left to the SDK default the client retried twice more in here, so `FallbackChain`
+    // never saw the first 429 — failover was delayed by the SDK's own backoff (ADR-0011: the runner, not the
+    // adapter, owns retry policy).
+    let calls = 0;
+    const adapter = createOpenAiAdapter({
+      fetch: () => {
+        calls += 1;
+        return Promise.resolve(
+          new Response(JSON.stringify({ error: { message: 'rl', type: 'rate_limit_exceeded' } }), {
+            status: 429,
+            headers: { 'content-type': 'application/json' },
+          }),
+        );
+      },
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    expect(chunks[0]?.type).toBe('error');
+    // EXACTLY one network attempt. Restoring the SDK default makes this 3.
+    expect(calls).toBe(1);
+  });
+
   it('yields a single error chunk when the stream fails to start (429)', async () => {
     const adapter = createOpenAiAdapter({
       fetch: () =>

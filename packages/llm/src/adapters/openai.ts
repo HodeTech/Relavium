@@ -1308,7 +1308,14 @@ export interface OpenAiAdapterDeps {
   readonly baseURL?: string;
   /** Inject a `fetch` (the replayer/recorder) in place of the network. */
   readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-  /** Override the SDK retry count (the replayer sets 0 for deterministic, fast tests). */
+  /**
+   * Override the SDK's own retry count. **Defaults to `0`** — the vendor SDK's built-in retry is deliberately
+   * OFF in production, because `FallbackChain` owns the retry/fallback policy (ADR-0011: "the runner — not the
+   * adapter — owns the retry/fallback policy"). Left at the SDK default it silently retried a 429/5xx two more
+   * times INSIDE the adapter: the chain never saw the first failure, so failover was delayed by the SDK's own
+   * backoff, the node retry budget was double-counted, and a rate limit looked like a slow call rather than a
+   * reason to move to the next provider (#276). Tests that want the SDK's behaviour can still set it.
+   */
   readonly maxRetries?: number;
 }
 
@@ -1339,7 +1346,9 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
       apiKey: key,
       ...(baseURL === undefined ? {} : { baseURL }),
       ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
-      ...(deps.maxRetries === undefined ? {} : { maxRetries: deps.maxRetries }),
+      // ALWAYS passed, never conditionally: an absent option means the SDK's own default (2), which is
+      // exactly the pre-emption #276 is about. `?? 0` makes production explicit rather than implicit.
+      maxRetries: deps.maxRetries ?? 0,
     });
 
   return {
