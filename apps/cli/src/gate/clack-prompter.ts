@@ -3,6 +3,7 @@ import type { HumanGatePausedEvent } from '@relavium/shared';
 
 import { approvalDecision, inputDecision, rejectionDecision } from './decision.js';
 import type { GatePrompter } from './prompter.js';
+import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
 
 /**
  * The `@clack/prompts`-backed {@link GatePrompter} (2.G, [ADR-0047](../../../../docs/decisions/0047-cli-framework-commander-ink-clack.md))
@@ -42,11 +43,12 @@ const GATE_TITLE: Record<HumanGatePausedEvent['gateType'], string> = {
 
 /** The boxed card body shown above the prompt — the gate message, plus the deadline when the gate has one. */
 function cardBody(event: HumanGatePausedEvent): string {
-  const lines = [event.message.trim() === '' ? '(no message)' : event.message];
+  const message = stripTerminalControls(event.message);
+  const lines = [message.trim() === '' ? '(no message)' : message];
   if (event.expiresAt !== undefined) {
     lines.push(
       '',
-      `Expires at ${event.expiresAt} — auto-${event.timeoutAction ?? 'reject'} on timeout`,
+      `Expires at ${sanitizeInline(event.expiresAt)} — auto-${sanitizeInline(event.timeoutAction ?? 'reject')} on timeout`,
     );
   }
   return lines.join('\n');
@@ -55,7 +57,10 @@ function cardBody(event: HumanGatePausedEvent): string {
 export function createClackGatePrompter(deps: ClackPromptDeps = defaultDeps): GatePrompter {
   return {
     prompt: async (event) => {
-      deps.note(cardBody(event), `⏸ ${GATE_TITLE[event.gateType]} · ${event.nodeId}`);
+      deps.note(
+        cardBody(event),
+        `⏸ ${GATE_TITLE[event.gateType]} · ${sanitizeInline(event.nodeId)}`,
+      );
 
       if (event.gateType === 'input') {
         // A human types a value: kept as the raw string (predictable). The structured/JSON path is the

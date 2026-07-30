@@ -40,6 +40,58 @@ describe('createClackGatePrompter', () => {
     expect(body).toContain('Ship it?');
   });
 
+  it('sanitizes the card body and title while retaining readable multiline gate text (G44)', async () => {
+    const attack = '\x1b[2J\x1b]52;c;Zm9v\x07\x1bPtmux;\x1b\\\x9b2J\r\b\u202E';
+    const note = vi.fn<(message: string, title: string) => void>();
+    await createClackGatePrompter(deps({ note })).prompt(
+      gate({
+        nodeId: `node visible${attack}\nforged title row`,
+        message: `message visible${attack}\nsecond message line`,
+      }),
+    );
+
+    const [body, title] = note.mock.calls[0] ?? [];
+    for (const forbidden of ['\x1b', '\x9b', '\r', '\b', '\u202E']) {
+      expect(body).not.toContain(forbidden);
+      expect(title).not.toContain(forbidden);
+    }
+    expect(body).toContain('message visible');
+    expect(body).toContain('second message line');
+    expect(title).toContain('node visible');
+    expect(title).not.toContain('\n'); // a title cannot forge another terminal row
+  });
+
+  it('uses the no-message fallback after controls are stripped (not before)', async () => {
+    const note = vi.fn<(message: string, title: string) => void>();
+    await createClackGatePrompter(deps({ note })).prompt(
+      gate({ message: '\x1b]52;c;Zm9v\x07\u202E' }),
+    );
+    expect(note.mock.calls[0]?.[0]).toBe('(no message)');
+  });
+
+  it('sanitizes a forged runtime timeout action before it reaches the deadline card', async () => {
+    const note = vi.fn<(message: string, title: string) => void>();
+    const event = gate({
+      expiresAt: '2026-06-24T11:00:00.000Z',
+      timeoutAction: 'reject',
+    });
+    // Events are schema-validated at the bus boundary, but the renderer itself must remain safe when a host or
+    // test double violates that contract. Reflect simulates that runtime condition without weakening TypeScript types.
+    expect(
+      Reflect.set(event, 'timeoutAction', 'reject\x1b]52;c;Zm9v\x07\x9b2J\u202E\nforged timeout row'),
+    ).toBe(true);
+
+    await createClackGatePrompter(deps({ note })).prompt(event);
+
+    const body = note.mock.calls[0]?.[0] ?? '';
+    for (const forbidden of ['\x1b', '\x9b', '\r', '\b', '\u202E']) {
+      expect(body).not.toContain(forbidden);
+    }
+    expect(body).toContain('auto-reject');
+    expect(body).toContain('forged timeout row');
+    expect(body.split('\n')).toHaveLength(3); // message + blank separator + one deadline row
+  });
+
   it('approval gate → approve yields an approved decision', async () => {
     const d = await createClackGatePrompter(deps({ confirm: () => Promise.resolve(true) })).prompt(
       gate(),

@@ -7,6 +7,7 @@ import {
 } from './format.js';
 import { nodeSuffix } from './projection.js';
 import type { RunViewState } from './run-view-model.js';
+import { sanitizeInline } from '../sanitize.js';
 
 /**
  * Render the **persistent** final summary the `ink` renderer writes after it unmounts (workstream **2.E**).
@@ -23,7 +24,8 @@ export function renderFinalSummary(state: RunViewState): string {
       case 'completed':
         return 'run completed';
       case 'failed': {
-        const code = summary.errorCode === undefined ? '' : ` (${summary.errorCode})`;
+        const code =
+          summary.errorCode === undefined ? '' : ` (${sanitizeInline(summary.errorCode)})`;
         return `run failed${code}`;
       }
       case 'cancelled':
@@ -32,7 +34,7 @@ export function renderFinalSummary(state: RunViewState): string {
         const gates =
           summary.pausedGateIds === undefined || summary.pausedGateIds.length === 0
             ? ''
-            : ` at gate ${summary.pausedGateIds.join(', ')}`;
+            : ` at gate ${summary.pausedGateIds.map(sanitizeInline).join(', ')}`;
         return `run paused${gates}`;
       }
       default:
@@ -53,7 +55,9 @@ export function renderFinalSummary(state: RunViewState): string {
   lines.push(meta.join(' · '));
 
   if (summary?.errorMessage !== undefined) {
-    lines.push(`  ${summary.errorMessage}`);
+    // A summary error occupies ONE structural row. Collapse line/column separators as well as terminal
+    // controls, so provider/model text cannot forge a believable node-status row beneath the headline.
+    lines.push(`  ${sanitizeInline(summary.errorMessage)}`);
   }
 
   for (const id of state.nodeOrder) {
@@ -62,7 +66,9 @@ export function renderFinalSummary(state: RunViewState): string {
       continue;
     }
     // Reuse the live view's suffix logic (one source of truth) — completed→duration, failed→error code, etc.
-    lines.push(`  ${statusGlyph(node.status)} ${id}${nodeSuffix(node)}`);
+    lines.push(
+      `  ${statusGlyph(node.status)} ${sanitizeInline(id)}${sanitizeInline(nodeSuffix(node))}`,
+    );
   }
 
   // The run's media deliverables — the durable handle per produced artifact (never bytes), attributed to its
@@ -70,7 +76,9 @@ export function renderFinalSummary(state: RunViewState): string {
   if (state.producedMedia.length > 0) {
     lines.push('  produced media:');
     for (const media of state.producedMedia) {
-      lines.push(`    ${formatProducedMedia(media)} (${media.nodeId})`);
+      lines.push(
+        `    ${sanitizeInline(formatProducedMedia(media))} (${sanitizeInline(media.nodeId)})`,
+      );
     }
   }
 

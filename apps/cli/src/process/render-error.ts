@@ -1,5 +1,6 @@
 import { toUserFacing } from './errors.js';
 import type { CliIo } from './io.js';
+import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
 
 /**
  * Render a fatal error once, at the top-level boundary (error-handling.md: the internal →
@@ -17,17 +18,19 @@ export function renderError(
   io: CliIo,
 ): void {
   const userFacing = toUserFacing(value);
+  // The error boundary is shared by every command, including JSON diagnostics and verbose stacks. Keep the
+  // structured envelope valid while also removing terminal/bidi controls before it reaches stderr.
+  const code = sanitizeInline(userFacing.code);
+  const message = sanitizeInline(userFacing.message);
   if (opts.json) {
-    io.writeErr(
-      JSON.stringify({ type: 'error', code: userFacing.code, message: userFacing.message }) + '\n',
-    );
+    io.writeErr(JSON.stringify({ type: 'error', code, message }) + '\n');
   } else {
-    io.writeErr(`relavium: ${userFacing.message}\n`);
+    io.writeErr(`relavium: ${message}\n`);
   }
   // The raw stack is a human-mode debugging affordance only — never under `--json`, where it would
   // mix non-JSON text into the structured stderr diagnostic (error-handling.md: a stack is not machine
   // output). Under `--json` the `{ type: 'error', … }` envelope is the whole stderr diagnostic.
   if (opts.verbose && !opts.json && value instanceof Error && value.stack !== undefined) {
-    io.writeErr(value.stack + '\n');
+    io.writeErr(stripTerminalControls(value.stack) + '\n');
   }
 }
