@@ -78,7 +78,11 @@ describe('createClackGatePrompter', () => {
     // Events are schema-validated at the bus boundary, but the renderer itself must remain safe when a host or
     // test double violates that contract. Reflect simulates that runtime condition without weakening TypeScript types.
     expect(
-      Reflect.set(event, 'timeoutAction', 'reject\x1b]52;c;Zm9v\x07\x9b2J\u202E\nforged timeout row'),
+      Reflect.set(
+        event,
+        'timeoutAction',
+        'reject\x1b]52;c;Zm9v\x07\x9b2J\u202E\nforged timeout row',
+      ),
     ).toBe(true);
 
     await createClackGatePrompter(deps({ note })).prompt(event);

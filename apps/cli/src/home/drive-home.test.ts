@@ -1005,7 +1005,8 @@ describe('driveHome (2.5.B / ADR-0054)', () => {
     });
     void driveHome(deps); // a real TERM calls process.exit; the injected exit intentionally keeps this harness alive
     const props = captured;
-    if (props?.suspendPort === undefined) throw new Error('the Home did not expose its suspend port');
+    if (props?.suspendPort === undefined)
+      throw new Error('the Home did not expose its suspend port');
     props.setMouseCapture?.(true);
     props.suspendPort.attach(async (callback) => callback());
 

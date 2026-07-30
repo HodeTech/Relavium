@@ -495,11 +495,7 @@ describe('wireJobControl (G0)', () => {
     h.fireContinue(); // the listener was removed; a late foregrounding event cannot re-enter 1049/mouse
     await flush();
 
-    expect(h.trace).toEqual([
-      DISABLE_MOUSE,
-      EXIT_ALT_SCREEN + SHOW_CURSOR,
-      'self-stop',
-    ]);
+    expect(h.trace).toEqual([DISABLE_MOUSE, EXIT_ALT_SCREEN + SHOW_CURSOR, 'self-stop']);
     expect(h.removeContinue).toHaveBeenCalledTimes(1);
   });
 

@@ -44,36 +44,42 @@ describe('openLocalDb — the at-rest 0600 (#28, ADR-0050)', () => {
     }
   });
 
-  it.skipIf(!POSIX)('applies 0600 even when the MIGRATIONS throw — the guarantee is unconditional', async () => {
-    // The real driver still opens (and therefore creates) the file; only the migration batch fails. That is
-    // exactly the disk-full / interrupted-first-run shape, and the shape that used to leave the file at 644.
-    const actual = await import('@relavium/db');
-    vi.doMock('@relavium/db', () => ({
-      ...actual,
-      runMigrations: () => {
-        throw new Error('disk full');
-      },
-    }));
-    vi.resetModules();
-    const { openLocalDb } = await import('./open.js');
+  it.skipIf(!POSIX)(
+    'applies 0600 even when the MIGRATIONS throw — the guarantee is unconditional',
+    async () => {
+      // The real driver still opens (and therefore creates) the file; only the migration batch fails. That is
+      // exactly the disk-full / interrupted-first-run shape, and the shape that used to leave the file at 644.
+      const actual = await import('@relavium/db');
+      vi.doMock('@relavium/db', () => ({
+        ...actual,
+        runMigrations: () => {
+          throw new Error('disk full');
+        },
+      }));
+      vi.resetModules();
+      const { openLocalDb } = await import('./open.js');
 
-    expect(() => openLocalDb(home)).toThrow('disk full');
-    // The file exists (createClient made it) and is owner-only despite the failure.
-    expect(modeOf(join(globalConfigDir(home), 'history.db'))).toBe(0o600);
-  });
+      expect(() => openLocalDb(home)).toThrow('disk full');
+      // The file exists (createClient made it) and is owner-only despite the failure.
+      expect(modeOf(join(globalConfigDir(home), 'history.db'))).toBe(0o600);
+    },
+  );
 
-  it.skipIf(!POSIX)('re-asserts 0600 on a SUBSEQUENT open of a file left world-readable', async () => {
-    const { openLocalDb } = await import('./open.js');
-    const dbPath = join(globalConfigDir(home), 'history.db');
-    const first = openLocalDb(home);
-    first.close();
-    // Simulate a file that predates the guard, or one a `cp`/restore/editor left permissive.
-    chmodSync(dbPath, 0o644);
-    const second = openLocalDb(home);
-    try {
-      expect(modeOf(dbPath)).toBe(0o600);
-    } finally {
-      second.close();
-    }
-  });
+  it.skipIf(!POSIX)(
+    're-asserts 0600 on a SUBSEQUENT open of a file left world-readable',
+    async () => {
+      const { openLocalDb } = await import('./open.js');
+      const dbPath = join(globalConfigDir(home), 'history.db');
+      const first = openLocalDb(home);
+      first.close();
+      // Simulate a file that predates the guard, or one a `cp`/restore/editor left permissive.
+      chmodSync(dbPath, 0o644);
+      const second = openLocalDb(home);
+      try {
+        expect(modeOf(dbPath)).toBe(0o600);
+      } finally {
+        second.close();
+      }
+    },
+  );
 });
