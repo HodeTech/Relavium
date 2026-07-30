@@ -370,6 +370,11 @@ export function wireJobControl(opts: {
       if (disposed) return;
       disposed = true;
       pendingSuspend = false;
+      // BOTH listeners, not just SIGCONT: `wireJobControl` installs the SIGTSTP one at construction, so
+      // removing only the continue handler leaked a suspend handler per binding. Every session rebuild — a
+      // `/clear`, a `/model` reseat, the onboarding→Home handoff — added another, so one Ctrl-Z eventually ran
+      // several handlers and Node warned about a listener leak.
+      removeSuspendListener();
       removeContinue?.();
       removeContinue = undefined;
     },

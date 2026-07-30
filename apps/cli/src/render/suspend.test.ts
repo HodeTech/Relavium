@@ -484,6 +484,21 @@ describe('wireJobControl (G0)', () => {
     binding.dispose();
   });
 
+  it('dispose removes the SIGTSTP listener too, not just SIGCONT (no listener leak)', () => {
+    // `wireJobControl` installs a SIGTSTP listener at construction; `dispose` used to remove only the SIGCONT
+    // one. Every rebuild of the session — a `/clear`, a `/model` reseat, an onboarding→Home handoff — left
+    // another SIGTSTP listener behind, so one Ctrl-Z eventually ran several handlers and Node would warn about
+    // a leak. The harness's `removeSuspend` spy is the direct observation.
+    const h = harness();
+    const binding = bind(h);
+    expect(h.removeSuspend).not.toHaveBeenCalled();
+    binding.dispose();
+    expect(h.removeSuspend).toHaveBeenCalledTimes(1);
+    // …and a Ctrl-Z after disposal reaches nothing.
+    h.fireSuspend();
+    expect(h.suspendSelf).not.toHaveBeenCalled();
+  });
+
   it('permanent disposal suppresses a late SIGCONT reclaim behind terminal teardown', async () => {
     const h = harness();
     h.port.attach(async (callback) => callback());
