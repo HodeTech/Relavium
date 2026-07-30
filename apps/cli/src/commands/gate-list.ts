@@ -8,6 +8,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
 import { openHistoryReader } from '../history/reader.js';
+import { sanitizeInline } from '../render/sanitize.js';
 
 /** A pending gate row tagged with its run id — the listing unit (`gate list` JSON record + human line). */
 type GateRow = PendingGate & { readonly runId: string };
@@ -85,7 +86,8 @@ function renderGateRows(io: CliIo, rows: readonly GateRow[], runId: string | und
   }
   io.writeOut(`Pending human gates (${rows.length}):\n`);
   for (const row of rows) {
-    const message = row.message === '' ? '' : `  "${row.message}"`;
+    // Same untrusted `human_gate:paused.message` as `status.ts` — see the note there.
+    const message = row.message === '' ? '' : `  "${sanitizeInline(row.message)}"`;
     io.writeOut(`  ${row.runId}  ${row.gateId}  ${row.gateType}  node=${row.nodeId}${message}\n`);
   }
 }

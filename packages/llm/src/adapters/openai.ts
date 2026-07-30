@@ -1328,26 +1328,22 @@ export interface OpenAiAdapterDeps {
    *
    * This governs the **chain-governed** calls (`generate` / `stream`) only. The surfaces `FallbackChain` does
    * NOT sit above — live model discovery and the async media-job poll — keep a small SDK retry, because for
-   * them there is no runner to own the policy; see {@link OFF_CHAIN_MAX_RETRIES}.
+   * them there is no runner to own the policy — and they run without SDK retry too; see the note below.
    */
   readonly maxRetries?: number;
 }
 
 /** Build an OpenAI-compatible `LlmProvider`. Exposed as `openaiAdapter` / `deepseekAdapter`. */
 /**
- * The SDK retry budget for the surfaces `FallbackChain` does **not** govern: `listModels` (live discovery,
- * bounded by its own timeout) and the async media-job poll.
- *
- * ADR-0011's rule is that the RUNNER owns retry policy — but that rule only reaches calls the runner actually
- * wraps. Nothing retries these two: `boundedListModels` has a timeout and no retry, and a poll fault throws
- * straight through to the engine, which settles the node `provider_unavailable` (the authored `retry` block
- * has no default, so `#shouldRetry` returns false). Setting these to 0 alongside the chain-governed calls
- * (#276) therefore removed their ONLY resilience: one transient 429 on a single status poll of a multi-minute,
- * ALREADY-BILLED video job would kill the node, and one 500 on `models.list` would fail a provider's live
- * discovery. Two attempts is the smallest budget that restores that without inventing a retry policy here.
+ * **The off-chain paths deliberately run with NO SDK retry either — and that is a knowing residual, not an
+ * oversight.** `listModels` and the media-job poll are not governed by `FallbackChain`, so nothing retries a
+ * transient fault on them: one 500 fails a `/models refresh`, and one 429 on a status poll settles an
+ * already-billed media node. Giving them the SDK's retry (an earlier attempt at this) was worse: that sleep is
+ * neither abort-aware nor ceiling-bounded and the SDK parses `Retry-After` itself, so a cancel was ignored for
+ * the whole wait and a hostile `retry-after-ms` could park the call indefinitely — past both
+ * `boundedListModels`'s timeout and the seam's `RETRY_AFTER_CEILING_MS`. Resilience here needs a retry WE own,
+ * abort-aware and ceiling-bounded; until that lands, no retry is the safer of the two failure modes.
  */
-const OFF_CHAIN_MAX_RETRIES = 2;
-
 export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
   const providerId: OpenAiProviderId = deps.providerId ?? 'openai';
   const supports = providerId === 'deepseek' ? DEEPSEEK_SUPPORTS : OPENAI_SUPPORTS;
@@ -1439,8 +1435,7 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
         signal,
         classify: (err) => openaiErrorToLlmError(err, providerId),
         collect: async (innerSignal) => {
-          // Off-chain: live discovery has no runner above it, so it keeps a small SDK retry (#276 fold).
-          const client = createClient(key, OFF_CHAIN_MAX_RETRIES);
+          const client = createClient(key);
           const priced = pricedModelIdsFor(providerId);
           const listings: ModelListing[] = [];
           const seen = new Set<string>();
@@ -1537,15 +1532,15 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
           }),
         };
       }
-      // Off-chain and the highest-stakes of them: a transient fault on ONE status poll of a multi-minute,
-      // already-billed job would otherwise settle the node `provider_unavailable` (#276 fold).
-      return pollMediaJobSora(
-        createClient(key, OFF_CHAIN_MAX_RETRIES),
-        jobId,
-        providerId,
-        signal,
-        key,
-      );
+      // Deliberately maxRetries 0 (the default), NOT the off-chain budget. Giving the poll SDK retry looked
+      // right — nothing else retries it — but it opened a worse hole than it closed: the SDK's retry sleep is
+      // neither abort-aware nor ceiling-bounded, and it parses `Retry-After` ITSELF, so the seam's
+      // RETRY_AFTER_CEILING_MS never runs. A hostile or broken gateway (`base_url` is user-configurable,
+      // ADR-0065) answering one status poll with `retry-after-ms: 999999999` parked the poll for ~11.6 days,
+      // ignoring the user's cancel and holding a run slot and an event-loop timer. Resilience here has to be a
+      // retry WE own — abort-aware and ceiling-bounded — which is the follow-up; an unbounded one is worse
+      // than none.
+      return pollMediaJobSora(createClient(key), jobId, providerId, signal, key);
     },
     // ADR-0062 context-compaction seam — the shared defaults (covers both OpenAI and DeepSeek via this one
     // factory; real usage is authoritative, so the estimate is only a pre-first-turn fallback).

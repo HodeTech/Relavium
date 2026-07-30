@@ -639,7 +639,7 @@ export interface AnthropicAdapterDeps {
    *
    * This governs the **chain-governed** calls (`generate` / `stream`) only. The surfaces `FallbackChain` does
    * NOT sit above — live model discovery and the async media-job poll — keep a small SDK retry, because for
-   * them there is no runner to own the policy; see {@link OFF_CHAIN_MAX_RETRIES}.
+   * them there is no runner to own the policy — and they run without SDK retry too; see the note below.
    */
   readonly maxRetries?: number;
 }
@@ -855,19 +855,15 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
 
 /** Build an Anthropic `LlmProvider`. Exposed as `anthropicAdapter`; the factory enables DI for 1.F. */
 /**
- * The SDK retry budget for the surfaces `FallbackChain` does **not** govern: `listModels` (live discovery,
- * bounded by its own timeout) and the async media-job poll.
- *
- * ADR-0011's rule is that the RUNNER owns retry policy — but that rule only reaches calls the runner actually
- * wraps. Nothing retries these two: `boundedListModels` has a timeout and no retry, and a poll fault throws
- * straight through to the engine, which settles the node `provider_unavailable` (the authored `retry` block
- * has no default, so `#shouldRetry` returns false). Setting these to 0 alongside the chain-governed calls
- * (#276) therefore removed their ONLY resilience: one transient 429 on a single status poll of a multi-minute,
- * ALREADY-BILLED video job would kill the node, and one 500 on `models.list` would fail a provider's live
- * discovery. Two attempts is the smallest budget that restores that without inventing a retry policy here.
+ * **The off-chain paths deliberately run with NO SDK retry either — and that is a knowing residual, not an
+ * oversight.** `listModels` and the media-job poll are not governed by `FallbackChain`, so nothing retries a
+ * transient fault on them: one 500 fails a `/models refresh`, and one 429 on a status poll settles an
+ * already-billed media node. Giving them the SDK's retry (an earlier attempt at this) was worse: that sleep is
+ * neither abort-aware nor ceiling-bounded and the SDK parses `Retry-After` itself, so a cancel was ignored for
+ * the whole wait and a hostile `retry-after-ms` could park the call indefinitely — past both
+ * `boundedListModels`'s timeout and the seam's `RETRY_AFTER_CEILING_MS`. Resilience here needs a retry WE own,
+ * abort-aware and ceiling-bounded; until that lands, no retry is the safer of the two failure modes.
  */
-const OFF_CHAIN_MAX_RETRIES = 2;
-
 export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProvider {
   const createClient = (key: string, maxRetries = deps.maxRetries ?? 0): Anthropic =>
     new Anthropic({
@@ -922,8 +918,7 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
         signal,
         classify: anthropicErrorToLlmError,
         collect: async (innerSignal) => {
-          // Off-chain: live discovery has no runner above it, so it keeps a small SDK retry (#276 fold).
-          const client = createClient(key, OFF_CHAIN_MAX_RETRIES);
+          const client = createClient(key);
           const listings: ModelListing[] = [];
           const seen = new Set<string>();
           let rawCount = 0;

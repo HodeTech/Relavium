@@ -7,6 +7,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
 import { openHistoryReader } from '../history/reader.js';
+import { sanitizeInline } from '../render/sanitize.js';
 
 export interface StatusCommandDeps {
   readonly io: CliIo;
@@ -99,7 +100,11 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
     io.writeOut(`  ${step.status.padEnd(9)} ${step.nodeId} [${step.nodeType}]${attempt}\n`);
   }
   for (const gate of status.pendingGates) {
-    const message = gate.message === '' ? '' : ` — "${gate.message}"`;
+    // The SAME `human_gate:paused.message` the interactive prompt sanitizes (`clack-prompter.ts`), and it is
+    // `resolveTemplate(node.message_template, …)` — i.e. interpolated upstream NODE OUTPUT, the most
+    // model-controlled string in the product. The TUI leaf was hardened; this command leaf was not, so a
+    // pasted OSC 52 / OSC 8 / CSI payload reached the terminal intact here (G34/#57's class).
+    const message = gate.message === '' ? '' : ` — "${sanitizeInline(gate.message)}"`;
     io.writeOut(`  ⏸ pending gate ${gate.gateId} (${gate.gateType}) at ${gate.nodeId}${message}\n`);
   }
 }

@@ -51,6 +51,30 @@ describe('gateListCommand', () => {
     expect(text).not.toContain('r3');
   });
 
+  it('SANITIZES the untrusted gate message (lane-c security review)', async () => {
+    // `human_gate:paused.message` is `resolveTemplate(node.message_template, …)` — interpolated upstream node
+    // output, i.e. the most model-controlled string in the product. The interactive prompt sanitized it
+    // (`clack-prompter.ts`); this command leaf did not, so an OSC 52 clipboard write, an OSC 8 hyperlink, a
+    // CSI erase-display and a bidi override all reached the terminal intact. Confirmed by executing the real
+    // command against a real DB during the review, not by reading.
+    const { io, out } = captureIo();
+    const hostile =
+      'hi\u001b]52;c;ZXZpbA==\u0007\u001b]8;;file:///etc/passwd\u0007click\u001b]8;;\u0007\u001b[2J\u202Egnp.txt';
+    await seedRun(db, {
+      slug: 'x',
+      runId: 'r9',
+      state: 'paused',
+      gate: { gateId: 'g-x', gateType: 'approval', message: hostile },
+    });
+
+    expect(gateListCommand({}, deps(io))).toBe(EXIT_CODES.success);
+    const text = out();
+    expect(text).not.toContain('\u001b'); // no CSI/OSC introducer survives
+    expect(text).not.toContain('\u0007'); // nor the OSC terminator
+    expect(text).not.toContain('\u202E'); // nor a Trojan-Source bidi override
+    expect(text).toContain('hi'); // …while the readable text still reaches the user
+  });
+
   it('scopes to one run when given a runId', async () => {
     const { io, out } = captureIo();
     await seedRun(db, {

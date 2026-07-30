@@ -190,9 +190,16 @@ describe('retryAfterMsFromHeaders (#279)', () => {
     expect(retryAfterMsFromHeaders(headers({ 'retry-after': '   ' }))).toBeUndefined();
   });
 
-  it('DROPS a hostile or nonsensical value rather than honouring it', () => {
-    // A header is untrusted input. Honouring `retry-after: 999999999` would park a turn for ~31 years.
-    expect(retryAfterMsFromHeaders(headers({ 'retry-after': '999999999' }))).toBeUndefined();
+  it('CLAMPS an over-ceiling wait rather than ignoring it', () => {
+    // Dropping it fell back to our own ~250 ms curve — hammering the endpoint that just asked us to back off,
+    // far harder than a capped 60 s wait would. The ceiling stops a hostile value parking a turn; clamping
+    // does that AND still respects a real instruction.
+    expect(retryAfterMsFromHeaders(headers({ 'retry-after': '999999999' }))).toBe(60_000);
+    expect(retryAfterMsFromHeaders(headers({ 'retry-after': '120' }))).toBe(60_000);
+    expect(retryAfterMsFromHeaders(headers({ 'retry-after': '30' }))).toBe(30_000); // under it, verbatim
+  });
+
+  it('DROPS a value that is not a wait at all', () => {
     expect(retryAfterMsFromHeaders(headers({ 'retry-after': '-5' }))).toBeUndefined();
     expect(retryAfterMsFromHeaders(headers({ 'retry-after': 'soon' }))).toBeUndefined();
     expect(retryAfterMsFromHeaders(headers({ 'retry-after-ms': 'NaN' }))).toBeUndefined();

@@ -160,10 +160,20 @@ export function retryAfterMsFromHeaders(headers: {
   return clampRetryAfter(at - Date.now());
 }
 
-/** The hard ceiling on a provider-requested wait: anything beyond it is treated as no instruction. */
+/** The hard ceiling on a provider-requested wait. Beyond it we wait the ceiling — we do not ignore the ask. */
 const RETRY_AFTER_CEILING_MS = 60_000;
 
+/**
+ * CLAMP, never drop. Dropping an over-ceiling value looked safer but is strictly worse: a provider legitimately
+ * asking for 120 s fell back to our own curve and retried after ~250 ms — hammering the exact endpoint that
+ * just told us to back off, and far more aggressively than honouring a capped 60 s would. The ceiling exists to
+ * stop a hostile/broken `retry-after: 999999999` parking a turn, and clamping does that just as well while
+ * still respecting a real instruction.
+ *
+ * Only genuinely uninterpretable values (non-finite, negative — i.e. "this is not a wait") yield `undefined`,
+ * which means "no instruction" and lets the caller keep its own backoff.
+ */
 function clampRetryAfter(ms: number): number | undefined {
   if (!Number.isFinite(ms) || ms < 0) return undefined;
-  return ms > RETRY_AFTER_CEILING_MS ? undefined : Math.round(ms);
+  return Math.round(Math.min(ms, RETRY_AFTER_CEILING_MS));
 }
