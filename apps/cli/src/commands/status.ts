@@ -8,6 +8,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
 import { openHistoryReader } from '../history/reader.js';
 import { sanitizeInline } from '../render/sanitize.js';
+import { readPerRunOrDegrade } from '../history/per-run-read.js';
 
 export interface StatusCommandDeps {
   readonly io: CliIo;
@@ -41,7 +42,11 @@ export function statusCommand(deps: StatusCommandDeps): ExitCode {
       // Only a `paused` run can hold a pending human gate: persisting a `human_gate:paused` event folds the
       // run's status to `paused` (run-history-store applyDerived), so reconstruct the log only for those — a
       // `running` run has no pending gate.
-      pendingGates: run.status === 'paused' ? pendingHumanGates(reader.loadRunEvents(run.id)) : [],
+      // Per-run isolation (`readPerRunOrDegrade`): one damaged row in one run must not blank the whole list.
+      pendingGates:
+        run.status === 'paused'
+          ? readPerRunOrDegrade([], () => pendingHumanGates(reader.loadRunEvents(run.id)))
+          : [],
     }));
 
     if (deps.global.json) {

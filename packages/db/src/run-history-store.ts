@@ -155,12 +155,18 @@ export class CorruptRunEventError extends Error {
   constructor(
     readonly runId: string,
     readonly sequenceNumber: number,
-    /** The row's `event_type` column — safe to surface: it is a schema label, never user content. */
+    /**
+     * The row's `event_type` column. Our own writes put a union literal here, but the column carries no CHECK
+     * (`schema.ts`), so a hand-edited DB could hold arbitrary text — hence the length bound in the message below.
+     * Terminal/bidi control bytes are stripped one layer up, where every user-facing error passes through
+     * `sanitizeInline` (`apps/cli/src/process/render-error.ts`); this field is not a second sanitization seam.
+     */
     readonly eventType: string,
     cause: unknown,
   ) {
     super(
-      `run ${runId} has a damaged event row at seq ${sequenceNumber} (type ${eventType})`,
+      `run ${runId} has a damaged event row at seq ${sequenceNumber} ` +
+        `(type ${eventType.length > 64 ? `${eventType.slice(0, 64)}…` : eventType})`,
       // Preserved so `--verbose` can still show the underlying ZodError/SyntaxError detail.
       { cause },
     );

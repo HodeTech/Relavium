@@ -9,6 +9,7 @@ import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
 import { openHistoryReader } from '../history/reader.js';
 import { sanitizeInline } from '../render/sanitize.js';
+import { readPerRunOrDegrade } from '../history/per-run-read.js';
 
 /** A pending gate row tagged with its run id — the listing unit (`gate list` JSON record + human line). */
 type GateRow = PendingGate & { readonly runId: string };
@@ -38,9 +39,15 @@ export function gateListCommand(args: GateListCommandArgs, deps: GateListCommand
   });
   const { reader, close } = openHistoryReader(homeDir, deps.openDb);
   try {
-    const rows = targetRunIds(reader, args.runId).flatMap((runId) =>
-      pendingHumanGates(reader.loadRunEvents(runId)).map((gate): GateRow => ({ runId, ...gate })),
-    );
+    // Per-run isolation (`readPerRunOrDegrade`) for the no-arg ALL-RUNS form: one damaged run used to abort the
+    // whole listing. With an explicit `runId` there is only one run, so degrading would silently answer "no
+    // gates" for a run the user named — that must still fail loudly, and it does (the throw propagates).
+    const runIds = targetRunIds(reader, args.runId);
+    const rows = runIds.flatMap((runId) => {
+      const read = (): readonly PendingGate[] => pendingHumanGates(reader.loadRunEvents(runId));
+      const gates = args.runId === undefined ? readPerRunOrDegrade([], read) : read();
+      return gates.map((gate): GateRow => ({ runId, ...gate }));
+    });
 
     if (deps.global.json) {
       writeRecordLines(deps.io, rows);

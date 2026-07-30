@@ -74,7 +74,12 @@ export function toUserFacing(value: unknown): UserFacingError {
   if (isCorruptRunEventError(value)) {
     return {
       code: 'internal',
-      message: `${value.message}. The rest of your history is unaffected.`,
+      // Says only what is true. It claimed "the rest of your history is unaffected", which held for the DATA but
+      // not for AVAILABILITY: the Home / `status` / `gate list` fan a per-run read over many runs, and one throw
+      // used to take the whole listing down with it. `readPerRunOrDegrade` now bounds that to the one run, so
+      // those surfaces stay usable — but this message is reached by the per-run commands, where the read really
+      // did fail, so it promises nothing about them.
+      message: `${value.message}. Other runs are still listable.`,
       exitCode: EXIT_CODES.workflowFailed,
     };
   }

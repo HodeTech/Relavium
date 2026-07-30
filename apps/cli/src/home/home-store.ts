@@ -2,6 +2,7 @@ import type { RunHistoryReader, RunRecord, SessionStore } from '@relavium/db';
 import type { AgentSessionRecord } from '@relavium/shared';
 
 import { pendingHumanGates, type PendingGate } from '../gate/pending.js';
+import { readPerRunOrDegrade } from '../history/per-run-read.js';
 
 /**
  * The data aggregator behind the bare-invocation **Home** (2.5.B, [ADR-0054](../../../../docs/decisions/0054-cli-bare-invocation-interactive-home.md)).
@@ -130,7 +131,10 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   const displayedPausedRuns = deps.runs.listRuns({ status: 'paused', limit });
   const gatesByRun = displayedPausedRuns.map((run) => ({
     run,
-    pending: pendingHumanGates(deps.runs.loadRunStateEvents(run.id)),
+    // Per-run isolation: one unreadable row in ONE run used to throw straight out of this loop, so the Home
+    // never mounted and every healthy run vanished with the damaged one. It now degrades to "no gate detail"
+    // for that run and keeps building. See `readPerRunOrDegrade`.
+    pending: readPerRunOrDegrade([], () => pendingHumanGates(deps.runs.loadRunStateEvents(run.id))),
   }));
 
   // "Attention" lifts a FAILED run (by STATUS — any of them, so a failure beyond the cap can never leak into
@@ -153,8 +157,10 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   const humanGatedRunIds = new Set(displayedGatedRunIds);
   for (const run of recentRunRecords) {
     if (run.status !== 'paused' || checkedRunIds.has(run.id)) continue; // not a paused candidate, or already checked
-    if (pendingHumanGates(deps.runs.loadRunStateEvents(run.id)).length > 0)
-      humanGatedRunIds.add(run.id);
+    const pending = readPerRunOrDegrade([], () =>
+      pendingHumanGates(deps.runs.loadRunStateEvents(run.id)),
+    );
+    if (pending.length > 0) humanGatedRunIds.add(run.id);
   }
 
   // ONE batched, primary-key slug lookup for every run we will render (recent ∪ failed ∪ displayed paused), deduped.

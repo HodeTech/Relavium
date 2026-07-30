@@ -8,7 +8,12 @@ import {
   type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
-import { createRunHistoryStore, loadRunSnapshot, type Db } from '@relavium/db';
+import {
+  createRunHistoryStore,
+  isCorruptRunEventError,
+  loadRunSnapshot,
+  type Db,
+} from '@relavium/db';
 import { MaskedSecretSchema, WorkflowSchema, type RunStatus } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
@@ -176,10 +181,15 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       checkpoint = await checkpointer.load(args.runId);
     } catch (err) {
       // A malformed run_events row (bad JSON / failed schema parse during the fold) — surface a corrupt log
-      // as a clean exit-2 fault, matching the snapshot/inputs handling, never a raw escaping error.
+      // as a clean exit-2 fault, matching the snapshot/inputs handling, never a raw escaping error. When the
+      // store could name the row (the typed `CorruptRunEventError`), say WHICH row: this catch pre-dates that
+      // error and would otherwise discard the `seq`/`event_type` it carries, leaving `gate` less diagnosable
+      // than `logs` for the identical fault.
       throw new CliError(
         'invalid_invocation',
-        `the persisted event log for run ${args.runId} could not be read`,
+        isCorruptRunEventError(err)
+          ? `the persisted event log for run ${args.runId} could not be read — a damaged event row at seq ${err.sequenceNumber}`
+          : `the persisted event log for run ${args.runId} could not be read`,
         { cause: err },
       );
     }
