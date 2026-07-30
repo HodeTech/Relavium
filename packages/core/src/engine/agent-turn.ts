@@ -56,7 +56,12 @@ import {
 import { ToolDispatchError } from '../tools/errors.js';
 import type { ToolCallPart, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
 import { unwrapUntrusted } from '../tools/untrusted.js';
-import { BudgetExceededError, BudgetPauseError, type BudgetAdmission } from './budget-governor.js';
+import {
+  BudgetExceededError,
+  BudgetPauseError,
+  CommitmentDurabilityError,
+  type BudgetAdmission,
+} from './budget-governor.js';
 import type { NodeStreamEvent } from './node-executor.js';
 
 /**
@@ -434,6 +439,14 @@ function throwMappedChainError(error: LlmError): never {
     throw new AgentTurnError('budget_exceeded', error.cause.message, false);
   }
   if (error.cause instanceof BudgetPauseError) {
+    throw error.cause;
+  }
+  // ADR-0074 §2. `checkPreEgress` awaits the commitment barrier BEFORE admitting, so it can throw a
+  // `CommitmentDurabilityError` from inside `preAttempt` — and the chain wraps that into a generic
+  // `LlmError{kind:'unknown'}`. Remapping it would discard the `nodeId` the class exists to carry (under a
+  // `fan_out` both branches await the same chain link, so the observer is not necessarily the owner) and would
+  // report a money-durability failure as an ordinary provider fault. Rethrown intact, like `BudgetPauseError`.
+  if (error.cause instanceof CommitmentDurabilityError) {
     throw error.cause;
   }
   throw new AgentTurnError(codeForLlmError(error), error.message, error.retryable);

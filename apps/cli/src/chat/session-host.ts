@@ -696,11 +696,15 @@ export function buildGovernorWiring(
     preEgress: (info) =>
       governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate, info.provider),
     updateCost: (cumulative) => governor.updateCost(cumulative),
-    // ADR-0074 §1's escape hatch is NOT exposed yet, and that is safe only because the total is not persisted
-    // either — ending the session clears it. The moment §4 persists it, a chat that absorbs one usage-less EOF
-    // would carry the debit across `chat-resume` with no way out, which is the "indefinite block … a worse failure
-    // than the overspend it prevents" §1 explicitly rejects. So §4 must expose
-    // `governor.releaseConservativeCommitments()` (and `conservativeDurabilityBroken`, to qualify what it renders)
-    // in the SAME commit that persists the total.
+    // ADR-0074 §1's escape hatch is NOT exposed yet. On THIS surface that is safe only because the total is not
+    // persisted either — ending the session clears it. A chat session is the long-lived owner §1's harm sentence
+    // actually names ("a single usage-less response would permanently shrink a long-lived chat's cap with no way
+    // out"), so the moment §4 persists the total it MUST also expose `governor.releaseConservativeCommitments()`
+    // here — plus `conservativeDurabilityBroken`, so a surface can qualify the amount it renders. Shipping the
+    // persistence without the release would create the exact failure §1 rejects.
+    //
+    // The run surface is a different case and is already covered: a run is not long-lived, and its deliberate
+    // escapes exist (`on_exceed: pause_for_approval`'s per-node bypass, or raising the cap). See ADR-0074 §2's
+    // dated note, which records both halves.
   };
 }

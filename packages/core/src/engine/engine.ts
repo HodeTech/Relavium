@@ -2094,6 +2094,14 @@ class RunExecution {
       } catch {
         if (!TERMINAL_TYPES.has(event.type) && this.#failure === undefined && !this.#cancelling) {
           this.#failure = {
+            // Attribute it when the event names a node. This is the failure a user ACTUALLY sees for a failed
+            // durable write — including a `budget:estimate_committed`, whose typed
+            // `CommitmentDurabilityError` never fires here because this catch is total and resolves rather than
+            // rejecting. Without the id, `run:failed` said only "a durable run-event write failed" with nothing
+            // to point at, in a run that may have dozens of nodes.
+            ...('nodeId' in event && typeof event.nodeId === 'string'
+              ? { nodeId: event.nodeId }
+              : {}),
             error: {
               code: 'internal',
               message: 'a durable run-event write failed',

@@ -48,6 +48,7 @@ import { createExpressionSandbox, type ExpressionSandbox } from '../expression/s
 import { parseWorkflow } from '../parser.js';
 import type { ToolDef as CoreToolDef, ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
+import { reconstructCheckpointState } from './checkpoint.js';
 import { WorkflowEngine } from './engine.js';
 import { createInMemoryHost, InMemoryRunStore } from './execution-host.js';
 import { createStandardNodeExecutor } from './node-handlers/dispatcher.js';
@@ -548,6 +549,82 @@ workflow:
 );
 
 /** A synthetic user-priced generative model: the shipped catalog intentionally has no media rates yet. */
+/**
+ * Two sequential text agents under a cap — the ADR-0074 §1/§2 conservative-commitment path.
+ *
+ * `n1`'s provider ends its stream with NO terminal usage (a clean EOF / partial-stream failure, which
+ * ADR-0074's Context calls routine). The turn therefore CANNOT release the reservation — the provider may
+ * already have billed — so it is retained conservatively and made DURABLE. The cap is sized so exactly one
+ * worst-case call fits: if the retained amount survives, `n2` must be refused.
+ */
+const BUDGETED_TEXT_CONSERVATIVE = parseWorkflow(
+  `schema_version: '1.0'
+workflow:
+  id: m2-harness-budgeted-text-conservative
+  max_parallel: 1
+  budget:
+    max_cost_microcents: 1500
+    on_exceed: fail
+  agents:
+    - id: writer
+      model: budget-text-model
+      provider: anthropic
+      system_prompt: You write.
+      max_tokens: 1000
+  nodes:
+    - { id: n1, type: agent, agent_ref: writer, prompt_template: 'One' }
+    - { id: n2, type: agent, agent_ref: writer, prompt_template: 'Two' }
+  edges:
+    - { from: n1, to: n2 }
+`,
+);
+
+/**
+ * The same conservative path with a GATE between the two agents, so process 1 can pause and a fresh process
+ * must reconstruct the commitment. This is what proves `#seedFromCheckpoint` actually FEEDS the restored total
+ * to the governor: without that call the fold still computes the right number and nothing notices.
+ */
+const BUDGETED_TEXT_CONSERVATIVE_RESUME = parseWorkflow(
+  `schema_version: '1.0'
+workflow:
+  id: m2-harness-budgeted-text-conservative-resume
+  max_parallel: 1
+  budget:
+    max_cost_microcents: 1500
+    on_exceed: fail
+  agents:
+    - id: writer
+      model: budget-text-model
+      provider: anthropic
+      system_prompt: You write.
+      max_tokens: 1000
+  nodes:
+    - { id: n1, type: agent, agent_ref: writer, prompt_template: 'One' }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: n2, type: agent, agent_ref: writer, prompt_template: 'Two' }
+  edges:
+    - { from: n1, to: g }
+    - { from: g, to: n2 }
+`,
+);
+
+/** Prices `budget-text-model` so one 1000-token call costs 1,000µ¢ — the cap fits exactly one. */
+const BUDGET_TEXT_PRICING: PricingOverlay = new Map([
+  [
+    'budget-text-model',
+    {
+      provider: 'anthropic',
+      nativeId: 'budget-text-model',
+      displayName: 'Budget text model',
+      contextWindowTokens: 100_000,
+      maxOutputTokens: 4096,
+      inputPerMtokMicrocents: 0,
+      outputPerMtokMicrocents: 1_000_000,
+      cachedInputPerMtokMicrocents: 0,
+    },
+  ],
+]);
+
 const BUDGET_MEDIA_PRICING: PricingOverlay = new Map([
   [
     'budget-media-model',
@@ -891,6 +968,145 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(events2.filter((e) => e.type === 'run:paused')).toHaveLength(0);
     // The lone realized cost addend fires on the resume→done path too (exactly one — ADR-0045 §5).
     expect(costsOf(events2).filter((c) => c.nodeId === 'work')).toHaveLength(1);
+  });
+
+  it('conservative commitment: a usage-less attempt is DURABLE and still consumes the cap after a resume (ADR-0074 §1/§2)', async () => {
+    // The end-to-end proof for the whole of C2, and the case that had no test at any layer. Before ADR-0074 the
+    // retained estimate lived only in memory, so a crash reset it to zero and the resumed run spent again against
+    // a cap that had forgotten money the provider may already have billed.
+    const store = new InMemoryRunStore();
+    // `n1`'s stream ends with NO terminal usage — a clean EOF, which FallbackChain treats as a successful empty
+    // turn. The provider may still have billed it, so the reservation must be retained, not released.
+    const provider1 = scriptedProvider([[{ type: 'text_delta', text: 'partial' }]]);
+    const host1 = createInMemoryHost({ store });
+    const engine1 = buildEngine(host1, () => provider1, undefined, BUDGET_TEXT_PRICING);
+    const events1 = await drive(
+      engine1.start({ workflow: BUDGETED_TEXT_CONSERVATIVE, inputs: INPUTS }),
+      host1,
+    );
+
+    // 1. The commitment is DURABLE — the whole point of §2. It carries the owning node, the model, its own delta
+    //    and a cumulative that already includes it.
+    const commits = events1.events.filter((e) => e.type === 'budget:estimate_committed');
+    expect(commits).toHaveLength(1);
+    const [commit] = commits;
+    expect(commit?.type === 'budget:estimate_committed' && commit.nodeId).toBe('n1');
+    expect(commit?.type === 'budget:estimate_committed' && commit.model).toBe('budget-text-model');
+    expect(
+      commit?.type === 'budget:estimate_committed' &&
+        commit.cumulativeConservativeMicrocents === commit.estimateMicrocents,
+    ).toBe(true);
+    // 2. It is an ESTIMATE, never spend: no `cost:updated` for n1, and the realized total stays 0.
+    expect(costsOf(events1.events).filter((c) => c.nodeId === 'n1')).toHaveLength(0);
+    const terminal1 = events1.events.at(-1);
+    expect(terminal1?.type).toBe('run:failed');
+    // 3. And it CONSUMED the cap in this process — n2's worst-case call no longer fits beside it.
+    expect(terminal1?.type === 'run:failed' && terminal1.error.code).toBe('budget_exceeded');
+    expect(terminal1?.type === 'run:failed' && terminal1.cumulativeCostMicrocents).toBe(0);
+    // 4. The row is in the DURABLE log, not merely on the stream — this is what survives the crash.
+    const persisted = store.eventsFor(events1.events[0]?.runId ?? '');
+    expect(persisted.filter((e) => e.type === 'budget:estimate_committed')).toHaveLength(1);
+
+    // 5. The fold reads it back. A fresh process reconstructs the SAME conservative total, summing the deltas —
+    //    which is what `#seedFromCheckpoint` hands to the resumed governor before any resumed admission.
+    const rebuilt = reconstructCheckpointState(persisted);
+    expect(rebuilt?.conservativeCostMicrocents).toBe(
+      commit?.type === 'budget:estimate_committed' ? commit.estimateMicrocents : -1,
+    );
+    // …and it never leaks into the realized total.
+    expect(rebuilt?.cumulativeCostMicrocents).toBe(0);
+  });
+
+  it('conservative commitment: the node boundary WAITS for the commitment`s durable write (ADR-0074 §2)', async () => {
+    // §2's other barrier: "the enclosing turn completion waits for the commitment's durability acknowledgement".
+    // Under a SYNCHRONOUS store the ordering happens by accident, which is why removing the flush went unnoticed;
+    // persists are deliberately concurrent ("Persists stay concurrent; only delivery is serialized"). So the store
+    // here defers the commitment's write, and the node's own terminal must not be persisted until it lands.
+    let releaseCommitWrite: (() => void) | undefined;
+    const inner = new InMemoryRunStore();
+    const persistOrder: string[] = [];
+    const store = {
+      resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
+      listInterruptedRuns: () => inner.listInterruptedRuns(),
+      eventsFor: (runId: string) => inner.eventsFor(runId),
+      persistEvent: async (event: RunEvent): Promise<void> => {
+        if (event.type === 'budget:estimate_committed') {
+          await new Promise<void>((resolve) => {
+            releaseCommitWrite = resolve;
+          });
+        }
+        persistOrder.push(event.type);
+        await inner.persistEvent(event);
+      },
+    };
+    const provider = scriptedProvider([[{ type: 'text_delta', text: 'partial' }]]); // no terminal usage
+    const host = createInMemoryHost({ store });
+    const engine = buildEngine(host, () => provider, undefined, BUDGET_TEXT_PRICING);
+    const handle = engine.start({ workflow: BUDGETED_TEXT_CONSERVATIVE, inputs: INPUTS });
+
+    // Let the run reach the commitment and block on its write.
+    for (let i = 0; i < 50; i += 1) await Promise.resolve();
+    expect(releaseCommitWrite).toBeDefined();
+    // n1's OWN terminal must not be durable yet — a crash here would have recorded progress the money log lacks.
+    expect(persistOrder).not.toContain('node:completed');
+
+    releaseCommitWrite?.();
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) events.push(event);
+    // Now it landed, and it landed FIRST.
+    expect(persistOrder.indexOf('budget:estimate_committed')).toBeLessThan(
+      persistOrder.indexOf('node:completed'),
+    );
+  });
+
+  it('conservative commitment: a RESUMED run still cannot spend past the cap it committed against (ADR-0074 §2)', async () => {
+    // The half the previous test cannot reach: `#seedFromCheckpoint` must hand the folded total to the resumed
+    // governor. Remove that one call and the fold still computes the right number, the log still contains the
+    // right row, and nothing else in the suite notices — the resumed process simply spends again against a cap
+    // that has forgotten money the provider may already have billed. That is exactly ADR-0074's bypass.
+    const store = new InMemoryRunStore();
+    const provider1 = scriptedProvider([[{ type: 'text_delta', text: 'partial' }]]); // no terminal usage
+    const host1 = createInMemoryHost({ store });
+    const engine1 = buildEngine(host1, () => provider1, undefined, BUDGET_TEXT_PRICING);
+    const {
+      events: events1,
+      gateId,
+      lastSeq,
+    } = await drive(
+      engine1.start({ workflow: BUDGETED_TEXT_CONSERVATIVE_RESUME, inputs: INPUTS }),
+      host1,
+      { breakOnPause: true },
+    );
+    const runId = events1[0]?.runId ?? '';
+    if (gateId === undefined) throw new Error('expected process 1 to pause at the human gate');
+    expect(events1.filter((e) => e.type === 'budget:estimate_committed')).toHaveLength(1);
+
+    // A FRESH process — its governor starts empty and may only learn the debit from the durable log.
+    const provider2 = scriptedProvider([[{ type: 'text_delta', text: 'two' }, STOP()]]);
+    const host2 = createInMemoryHost({ store });
+    const engine2 = buildEngine(host2, () => provider2, undefined, BUDGET_TEXT_PRICING);
+    const events2: RunEvent[] = [];
+    for await (const event of (
+      await engine2.resumeFromCheckpoint({
+        runId,
+        workflow: BUDGETED_TEXT_CONSERVATIVE_RESUME,
+        inputs: INPUTS,
+        gateId,
+        decision: { decision: 'approved', decidedBy: 'human' },
+      })
+    ).events) {
+      events2.push(event);
+    }
+
+    const terminal = events2.at(-1);
+    expect(terminal?.type).toBe('run:failed');
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
+    // n2 was REFUSED pre-egress: the provider was never called. Without the restore it would have run.
+    expect(events2.some((e) => e.type === 'node:completed' && e.nodeId === 'n2')).toBe(false);
+    // Realized spend is still zero — the block came entirely from an ESTIMATE, which is the point.
+    expect(terminal?.type === 'run:failed' && terminal.cumulativeCostMicrocents).toBe(0);
+    // The resumed segment keeps the prior sequence space (gap-free from last+1).
+    events2.forEach((event, index) => expect(event.sequenceNumber).toBe(lastSeq + index + 1));
   });
 
   it('async media budget: checkpoint resume reconstructs a parked-job reservation before gate-unblocked egress', async () => {

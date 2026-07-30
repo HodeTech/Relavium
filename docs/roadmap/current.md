@@ -160,9 +160,27 @@ lanes, any order between them:
   `Retry-After` (#276, #279) → narrowed `#emitSuccess` catch + `CostTracker` bounds (#194, #198) +
   **2.6.Q's realized-cost half**.
 
+- **(e) ADR-0074 — durable conservative budget commitments** · the money hole the other four lanes leave open:
+  a bounded estimate retained when a provider may already have billed but returned no trustworthy usage was
+  kept only in memory, so a crash or a resume reopened a strict cap against money that may already be owed.
+  §5 (a forward-compatible stored-event READ, the precondition for emitting anything new) → §2 (the
+  `budget:estimate_committed` contract, the governor's durability barrier, the checkpoint fold and the resume
+  restore) → §3 (freeze an async media job's accepted units + price) → §4 (the session's conservative
+  aggregate + per-model attribution + migration + transactional persister write).
+
 > 2.6.Q's cost-cap item is **split**: its task text spans both `budget-governor.ts` and `fallback-chain.ts`'s
 > `#emitSuccess` — the same catch 2.5.5.B narrows. The two halves join two different PRs, not one.
 > **Closes M2.5.5-1.**
+
+> **Outstanding inside lane (e), tracked rather than discovered later.** ADR-0074 §1 ties a commitment's
+> release to the surface that renders it. The **rendering** half shipped with §2 (the run TUI and
+> `relavium logs` both show the amount as *estimated, possibly billed*); the **release** half is not built on
+> any surface, and making the total durable removed the accidental escape a crash used to provide. Neither
+> surface is blocked today — a workflow run is not long-lived and already has `on_exceed`-based escapes, and a
+> chat session's total is not persisted yet — but **§4 must ship `releaseConservativeCommitments` on the same
+> commit that persists the session total**, or it creates the indefinite block §1 explicitly rejects. The
+> reserved `budget:estimate_released` event is what makes the release durable; §2's dated note in
+> [ADR-0074](../decisions/0074-durable-conservative-budget-commitments.md) has the full statement.
 
 ### Wave 2 — Shut the doors
 

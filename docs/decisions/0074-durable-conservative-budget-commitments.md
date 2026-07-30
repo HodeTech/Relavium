@@ -49,6 +49,22 @@ Actual totals, per-model actual-cost attribution, and `cost:updated` remain real
 > DECREASES the total; the sum is correct in both worlds. And **§1's release is representable**: it
 > is a reserved `budget:estimate_released`, declared in the spec but emitted by no Phase-1 code, which is what makes
 > the sum-less-release rule a settled contract rather than an open question.
+>
+> **What that leaves outstanding, stated plainly rather than left to be discovered.** §1 ties the release to the
+> rendering — "the surfaces that render the committed amount as *estimated, possibly billed* also expose releasing
+> it". The rendering half now exists (the run TUI and `relavium logs` both show the amount in those words); the
+> release half does not, on any surface. Before this work a crash reset the in-memory total to zero, so runs had an
+> *accidental* escape; making the total durable removes that accident, and the deliberate replacement is not yet
+> built. The exposure differs by surface, and neither is the indefinite block §1 forbids:
+>
+> - a **workflow run** is not a long-lived owner. It completes, fails, or is resumed to completion, and §1's first
+>   bound then discards the commitment. Within one run the deliberate escapes that already exist are
+>   `on_exceed: pause_for_approval` (approve the node; the engine records a one-shot per-node bypass) and, under
+>   `on_exceed: fail`, raising `max_cost_microcents` — literally the act §1 draws its analogy to.
+> - a **chat session** IS long-lived, which is the case §1's harm sentence actually names. Its total is not
+>   persisted yet, so nothing is blocked today either; §4 must ship `releaseConservativeCommitments` on the same
+>   commit that persists it, or it would create the exact failure §1 rejects. The marker for that lives beside the
+>   wiring, in `apps/cli/src/chat/session-host.ts`.
 
 Add an additive, secret-free dual-envelope event, `budget:estimate_committed`, carrying the node/agent identity, model id, bounded `estimateMicrocents`, and the owner-local cumulative conservative amount. It is a **new event `type`**, not an optional field on `cost:updated` — the rejected alternatives below say why. Its exact Zod shape, which discriminated-union arms it joins, and its envelope rules have one canonical home in [sse-event-schema.md](../reference/contracts/sse-event-schema.md) and [run-event.ts](../../packages/shared/src/run-event.ts); this ADR decides that it exists and what it means, and deliberately does not restate the spec. For workflows it is a durable `run_events` entry; for sessions it is a durable session-budget write and a streamed session event.
 

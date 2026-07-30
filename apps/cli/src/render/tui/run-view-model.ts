@@ -399,6 +399,21 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
         warnings: pushBounded(base.warnings, `budget ${event.thresholdPct}% spent`, MAX_WARNINGS),
       };
 
+    // ADR-0074 §1's rendering half: "the surfaces that render the committed amount as *estimated, possibly billed*".
+    // Without this the user sees NOTHING when real cap capacity is consumed — a usage-less attempt commits
+    // conservatively and returns BEFORE emitting any `cost:updated`, and the realized-only totals never show it, so
+    // the first sign was a later `budget:warning`/`budget:paused` that seemed to come out of nowhere. Worded as an
+    // estimate, never as spend, because that distinction is the whole of the ADR.
+    case 'budget:estimate_committed':
+      return {
+        ...base,
+        warnings: pushBounded(
+          base.warnings,
+          `budget: ~${event.estimateMicrocents}µ¢ held as an estimate (possibly billed; ~${event.cumulativeConservativeMicrocents}µ¢ total)`,
+          MAX_WARNINGS,
+        ),
+      };
+
     case 'budget:paused':
       return {
         ...base,

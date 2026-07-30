@@ -95,6 +95,10 @@ function detailOf(event: RunEvent): string {
       return ` — ${event.error.code}`;
     case 'node:retrying':
       return ` — ${event.error.code} (attempt ${event.attemptNumber ?? 1})`;
+    case 'budget:estimate_committed':
+      // ADR-0074 §1 — an ESTIMATE, said in those words. `logs` was the only human surface that showed the event
+      // existed at all, and it showed no amount.
+      return ` — ~${event.estimateMicrocents}µ¢ estimated, possibly billed (~${event.cumulativeConservativeMicrocents}µ¢ total)`;
     case 'run:completed':
       return ' — completed';
     case 'run:cancelled':
