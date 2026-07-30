@@ -989,8 +989,11 @@ describe('buildGovernorWiring', () => {
     // never a rejection that would surface as an `internal` turn error.
     const wiring = buildGovernorWiring({ ...EMPTY_CHAT, maxCostMicrocents: 1, onExceed: 'warn' });
     wiring?.updateCost(999_999);
+    // Assert the OUTCOME, not merely the absence of a throw: `warn` must still ADMIT the egress. Without this
+    // the test would pass just as happily if admission stopped being granted altogether.
     const admission = await wiring?.preEgress(OVER_CAP);
-    admission?.release();
+    expect(admission).toBeDefined();
+    expect(() => admission?.release()).not.toThrow();
   });
 
   it('on_exceed:warn — a throwing onWarning surface never rejects preEgress (warn stays non-blocking)', async () => {
@@ -1001,9 +1004,11 @@ describe('buildGovernorWiring', () => {
       },
     );
     wiring?.updateCost(999_999);
-    // A misbehaving warn surface must NOT surface as an `internal` turn error — the throw is swallowed.
+    // A misbehaving warn surface must NOT surface as an `internal` turn error — the throw is swallowed, AND
+    // the egress is still admitted. Asserting both is what makes this fail for the right reason.
     const admission = await wiring?.preEgress(OVER_CAP);
-    admission?.release();
+    expect(admission).toBeDefined();
+    expect(() => admission?.release()).not.toThrow();
   });
 });
 

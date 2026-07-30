@@ -542,8 +542,13 @@ describe('wireJobControl (G0)', () => {
     expect(h.removeContinue).not.toHaveBeenCalled();
   });
 
-  it('the production lifecycle adds and removes SIGTSTP/SIGCONT only on POSIX', () => {
-    if (process.platform === 'win32') return;
+  it('the production lifecycle adds and removes SIGTSTP/SIGCONT only on POSIX', (ctx) => {
+    // `ctx.skip()` rather than an early `return`: a bare return reports a PASS on Windows, so the suite would
+    // claim to have verified signal registration on a platform where it never ran.
+    if (process.platform === 'win32') {
+      ctx.skip();
+      return;
+    }
     const before = {
       suspend: process.listenerCount('SIGTSTP'),
       continue: process.listenerCount('SIGCONT'),

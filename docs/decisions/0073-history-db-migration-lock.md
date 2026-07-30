@@ -25,6 +25,27 @@
 > no-op, the run-then-reconcile fallback for a filesystem that refuses the lock, and the Node/CLI scoping (the
 > Phase-6 Postgres port still gets a real advisory lock of its own, not this).
 
+## Decision — current (2026-07-30)
+
+**`runMigrations`'s whole batch runs under an OS advisory lock taken through SQLite: `BEGIN EXCLUSIVE` on a
+dedicated `<db-path>.migrate.lock` database, held for the duration of the batch and committed at the end.**
+
+- **Why it is sound where the lock file was not.** `BEGIN EXCLUSIVE` takes a real `fcntl` write lock, and the
+  kernel releases it when the holder dies — however it dies. There is therefore **no staleness to detect and no
+  lock to break**, which is what made the original protocol unfixable: breaking a stale lock with plain file
+  operations cannot be mutually exclusive.
+- **A separate file, never `history.db` itself.** Taking `BEGIN EXCLUSIVE` on the database drizzle is about to
+  migrate would deadlock it against our own connection.
+- **No new dependency.** `better-sqlite3` is already the driver ([ADR-0021](0021-node-sqlite-driver-better-sqlite3.md)).
+- **Bounded, then reconcile.** A waiter blocks in SQLite's busy handler for up to 10 s; past that — or if the
+  lock file cannot be opened, or the filesystem's locking does not work — it falls through to
+  run-then-reconcile (run `migrate()`, and on failure run it once more, rethrowing the FIRST error) rather than
+  hang or crash first-run startup.
+- **`:memory:` is a no-op.** A private in-memory database cannot be contended by construction.
+
+Everything the amendment note says is unchanged still holds: that the batch must be serialized at all, why
+`BEGIN IMMEDIATE` cannot do it, and the Node/CLI scoping. The mechanism is the only thing that changed.
+
 ## Context
 
 `~/.relavium/history.db` is a **single shared file** that two `relavium` processes may open at
@@ -56,7 +77,14 @@ apply — `packages/db` is a Node-side package that already imports `node:fs`. B
 runtime dependency without an ADR**, which rules out reaching for `proper-lockfile` and is part
 of why this decision is being recorded rather than quietly implemented.
 
-## Decision
+## Decision — original (2026-07-29, SUPERSEDED)
+
+> **Historical.** Everything in this section is the lock-file protocol the amendment above replaced: the
+> `'wx'` acquisition, the constants table, the pid/staleness handling and the `rename` takeover. It is kept
+> because the corpus is append-only and because the rejected-alternatives reasoning below is still the record
+> of why a lock was chosen at all — but **do not implement from it.** The `flock`/`LockFileEx` option it
+> rejected for lacking a Node binding is, in effect, what the current decision adopts by routing the same
+> advisory lock through SQLite.
 
 **We will serialize the whole `runMigrations` batch across processes with an OS lock file at
 `<db-path>.migrate.lock`, created with `openSync(path, 'wx')`, and fall back to a
@@ -152,6 +180,12 @@ Considered:
   places in this repo.
 
 ### Negative
+
+> **Partly historical.** The entries about a stale lock file, the tuning of its threshold, and `finally` not
+> surviving `SIGKILL` describe the superseded protocol and **no longer apply** — the kernel releases the
+> advisory lock on process death. What still applies: two mechanisms rather than one (the lock plus the
+> reconcile fallback), and that this is a local-only answer the Phase-6 Postgres port must not inherit.
+
 
 - **A new on-disk artifact with its own failure mode, and `finally` is not a guarantee.** The
   holder releases in a `finally`, which covers a thrown migration and a normal exit — but
