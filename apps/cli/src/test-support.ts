@@ -51,7 +51,11 @@ export const GENERATIVE_IMAGE_CAPABILITY_FLAGS: CapabilityFlags = CapabilityFlag
  * can assert on the exact stdout (NDJSON / human lines) and stderr (diagnostics) a command produced.
  * Shared by the command tests and the 2.K regression harness so the capture shape never diverges.
  */
-export function captureIo(): { io: CliIo; out: () => string; err: () => string } {
+export function captureIo(env: Readonly<Record<string, string | undefined>> = {}): {
+  io: CliIo;
+  out: () => string;
+  err: () => string;
+} {
   const outChunks: string[] = [];
   const errChunks: string[] = [];
   const io: CliIo = {
@@ -61,7 +65,7 @@ export function captureIo(): { io: CliIo; out: () => string; err: () => string }
     writeErr: (text) => {
       errChunks.push(text);
     },
-    env: {},
+    env,
     stdoutIsTty: false,
     stdinIsTty: false,
     // An empty, already-ended stub: a chat test that exercises the plain loop overrides it with its own stream;

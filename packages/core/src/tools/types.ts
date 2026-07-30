@@ -294,6 +294,30 @@ export interface ToolApprovalRequest {
   readonly toolId: ToolId;
   readonly action: ToolActionClass;
   readonly preview: ToolActionPreview;
+  /**
+   * The same fields as {@link ToolApprovalRequest.preview}, UNSCRUBBED — for **classification only**, never
+   * for display.
+   *
+   * `preview` is a lossy display projection: it is scrubbed (#91), so a credential-shaped run inside a path
+   * can be replaced by `[redacted]`. A host that CLASSIFIES the target — the CLI's `auto`-mode protected-path
+   * check is the one that does — must never read that projection, because the scrub can change the answer:
+   * `./Access Token Backup/.ssh/authorized_keys` collapses to `./Access Token [redacted]`, and a protected
+   * path classifies as unprotected. Splitting the two uses removes the trade-off entirely — the display copy
+   * can be scrubbed as hard as secrecy requires without ever weakening a security decision.
+   *
+   * **In-process only.** The confirm hook runs in the same process; this field is deliberately absent from
+   * `agent:approval_requested` (`packages/shared/src/run-event.ts`, whose preview object is `.strict()`), so
+   * it never crosses the event / IPC / `--json` boundary. A host must not log, persist or forward it.
+   *
+   * Optional only so a HAND-BUILT request (a test fixture, a surface stub) stays constructible; the engine —
+   * the sole production producer, `confirmDispatch` — always sets it, which `registry.test.ts` pins. A
+   * classifier should prefer it and fall back to `preview` only when it is absent.
+   *
+   * Note it is the preview's FIELD SELECTION, not the raw `PolicyTarget`: an egress entry carries the host
+   * and never `target.url`, because a URL's query string is exactly where a credential lives. Withholding it
+   * is what makes an unredacted copy safe to hand out at all.
+   */
+  readonly unredactedPreview?: ToolActionPreview;
 }
 
 /** The host's verdict. `reject.reason` is an optional, secret-free, display-safe label echoed in the error. */

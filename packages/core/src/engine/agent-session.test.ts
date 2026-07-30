@@ -950,6 +950,9 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
       toolId: 'write_file',
       action: 'fs_write',
       preview: { path: './out.txt' },
+      // The unredacted classification copy (#91). It rides the in-process request only — the assertion
+      // below is precisely that it does NOT reach the emitted event.
+      unredactedPreview: { path: './out.txt' },
     });
     const approvalEvent = events.find((e) => e.type === 'agent:approval_requested');
     expect(approvalEvent).toMatchObject({
@@ -959,6 +962,9 @@ describe('AgentSession — reseat-less modes + mid-turn abort (ADR-0057 Step 2)'
       action: 'fs_write',
       preview: { path: './out.txt' },
     });
+    // #91: the UNREDACTED classification target rides the in-process request only. It must never reach the
+    // event — that body is persisted, `--json`-visible, and its preview object is `.strict()`.
+    expect(approvalEvent).not.toHaveProperty('unredactedPreview');
     // The emitted body, once the sink stamps the session envelope (1.W), is a SCHEMA-VALID run event — the
     // action-bound preview + dual-envelope refinements accept it (this is what the bus parses against).
     const validated = RunEventSchema.safeParse({

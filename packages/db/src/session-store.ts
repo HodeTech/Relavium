@@ -114,6 +114,29 @@ export function fromAgentSessionRow(row: AgentSessionRow): AgentSessionRecord {
   return AgentSessionSchema.parse(candidate);
 }
 
+/**
+ * The MUTABLE `agent_sessions` columns of a record — what an update may SET. Shared by `updateSession` and the
+ * atomic `writeTurn` so the two can never disagree about what a flush is allowed to touch.
+ *
+ * `created_at` is frozen at creation, so it (and the `id` WHERE-key) are dropped from the SET payload —
+ * an update overwrites only the mutable columns (status, title, context, exportedWorkflowPath, deletedAt,
+ * updatedAt, …), never the creation timestamp, regardless of what the caller passes.
+ *
+ * `total_cost_microcents` is ALSO dropped (ADR-0070 §2): it has exactly ONE writer, `recordSessionCost`, which
+ * bumps it ADDITIVELY in the same transaction as the `session_costs` row. It used to be SET blindly here from
+ * whatever cumulative the caller happened to hold — from four persister call sites and from `chat-export` — so
+ * any writer with a stale in-memory total (two `chat-resume` processes on one sessionId; a late flush landing
+ * after a cost write) would permanently break `SUM(session_costs) == total_cost_microcents`. A single owner is
+ * what makes the invariant a property of the code rather than a hope about call ordering.
+ */
+function mutableSessionColumns(record: AgentSessionRecord): Partial<NewAgentSessionRow> {
+  const mutable: Partial<NewAgentSessionRow> = { ...toAgentSessionRow(record) };
+  delete mutable.id;
+  delete mutable.createdAt;
+  delete mutable.totalCostMicrocents;
+  return mutable;
+}
+
 /** Map a validated {@link SessionMessage} (+ optional denormalized {@link SessionMessageMeta}) to a row. */
 export function toSessionMessageRow(
   message: SessionMessage,
@@ -222,6 +245,17 @@ export interface SessionCostRow {
   readonly isLegacy: boolean;
 }
 
+/** One atomic turn write: the messages to append (in order) plus the session row to flush. */
+export interface SessionTurnWrite {
+  /** Transcript rows to append, in ascending `sequenceNumber` order. May be empty (a row-less flush). */
+  readonly messages: readonly {
+    readonly message: SessionMessage;
+    readonly meta?: SessionMessageMeta;
+  }[];
+  /** The session row to flush in the SAME transaction — `undefined` to append without touching it. */
+  readonly session?: AgentSessionRecord;
+}
+
 export interface SessionStore {
   /** Insert a new `agent_sessions` row. */
   createSession: (record: AgentSessionRecord) => void;
@@ -270,6 +304,22 @@ export interface SessionStore {
   };
   /** Append a transcript message (the caller assigns the next monotonic `sequenceNumber`). */
   appendMessage: (message: SessionMessage, meta?: SessionMessageMeta) => void;
+  /**
+   * Append a turn's messages AND flush the session row in **one** `BEGIN IMMEDIATE` transaction — all of it,
+   * or none of it (#228).
+   *
+   * The three-statement, auto-committed alternative is not merely slower, it is unsound: a failure between
+   * the `user` append and the `assistant` append leaves an unanswered `user` row in the durable transcript.
+   * `resumableMessageSequences` rolls back only a TRAILING one, so once the session survives the failure and
+   * keeps going, that orphan is buried mid-transcript — and a resume then replays two consecutive `user`
+   * messages, which a provider rejects. Atomicity is what makes "the durable transcript mirrors the engine's"
+   * true rather than probable.
+   *
+   * This also discharges the per-turn transaction follow-up named in `database-schema.md`
+   * §"Concurrency & transaction behavior", and cuts the worst-case contended block roughly threefold by
+   * collapsing three retryable statements into one.
+   */
+  writeTurn: (turn: SessionTurnWrite) => void;
   /** Load a session's full transcript in `sequenceNumber` order. */
   loadMessages: (sessionId: string) => SessionMessage[];
   /** Load a session and its ordered transcript — the resume entry point (`undefined` if the session is absent). */
@@ -354,25 +404,45 @@ export function createSessionStore(db: Db): SessionStore {
       }));
 
   return {
+    // The three single-statement session writers below go through `withBusyRetry` (#228). They are NOT wrapped
+    // in a transaction — a lone INSERT/UPDATE already takes the write lock immediately, so `BEGIN IMMEDIATE`
+    // would buy nothing, which is why `database-schema.md` exempts single-statement writes from it. The retry
+    // is the orthogonal half: `busy_timeout` waits 5 s and then *fails*, and for these three writers a failure
+    // is a lost chat turn plus — before this — a dead process, because the chat persister calls them from
+    // inside a `RunEventBus` subscriber whose throw became an unhandled rejection.
     createSession: (record) => {
-      db.insert(agentSessions).values(toAgentSessionRow(record)).run();
+      withBusyRetry(() => db.insert(agentSessions).values(toAgentSessionRow(record)).run());
     },
+    writeTurn: ({ messages, session }) => {
+      // ONE IMMEDIATE transaction for the whole turn. `BEGIN IMMEDIATE` takes the write lock up front (never
+      // a DEFERRED read→write upgrade race) and `withBusyRetry` waits out residual cross-process contention —
+      // the ADR-0064 §2.5.I convention, now covering the transcript the way it already covered the cost row.
+      withBusyRetry(() =>
+        db.transaction(
+          (tx) => {
+            for (const { message, meta } of messages) {
+              tx.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run();
+            }
+            if (session !== undefined) {
+              tx.update(agentSessions)
+                .set(mutableSessionColumns(session))
+                .where(eq(agentSessions.id, session.id))
+                .run();
+            }
+          },
+          { behavior: 'immediate' },
+        ),
+      );
+    },
+
     updateSession: (record) => {
-      // `created_at` is frozen at creation, so it (and the `id` WHERE-key) are dropped from the SET payload —
-      // an update overwrites only the mutable columns (status, title, context, exportedWorkflowPath, deletedAt,
-      // updatedAt, …), never the creation timestamp, regardless of what the caller passes.
-      //
-      // `total_cost_microcents` is ALSO dropped (ADR-0070 §2): it has exactly ONE writer, `recordSessionCost`, which
-      // bumps it ADDITIVELY in the same transaction as the `session_costs` row. It used to be SET blindly here from
-      // whatever cumulative the caller happened to hold — from four persister call sites and from `chat-export` — so
-      // any writer with a stale in-memory total (two `chat-resume` processes on one sessionId; a late flush landing
-      // after a cost write) would permanently break `SUM(session_costs) == total_cost_microcents`. A single owner is
-      // what makes the invariant a property of the code rather than a hope about call ordering.
-      const mutable: Partial<NewAgentSessionRow> = { ...toAgentSessionRow(record) };
-      delete mutable.id;
-      delete mutable.createdAt;
-      delete mutable.totalCostMicrocents;
-      db.update(agentSessions).set(mutable).where(eq(agentSessions.id, record.id)).run();
+      withBusyRetry(() =>
+        db
+          .update(agentSessions)
+          .set(mutableSessionColumns(record))
+          .where(eq(agentSessions.id, record.id))
+          .run(),
+      );
     },
 
     recordSessionCost: (entry) => {
@@ -443,7 +513,9 @@ export function createSessionStore(db: Db): SessionStore {
     loadSession,
     listSessions,
     appendMessage: (message, meta) => {
-      db.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run();
+      withBusyRetry(() =>
+        db.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run(),
+      );
     },
     loadMessages,
     loadFull: (sessionId) =>

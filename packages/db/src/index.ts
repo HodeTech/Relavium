@@ -53,7 +53,15 @@ export type {
   NewMediaReferenceRow,
 } from './schema.js';
 
-export { createClient, runMigrations, type Db, type DbClient } from './client.js';
+export {
+  createClient,
+  runMigrations,
+  DbOpenError,
+  type Db,
+  type DbClient,
+  type DbOpenErrorCode,
+  type RunMigrationsOptions,
+} from './client.js';
 
 // Session persistence (1.X) — the directly-stored, append-only transcript layer over the
 // agent_sessions + session_messages tables. The domain ↔ row mappers double as the validation

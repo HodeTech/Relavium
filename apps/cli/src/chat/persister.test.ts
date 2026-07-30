@@ -10,7 +10,7 @@ import {
   type SessionStore,
 } from '@relavium/db';
 import type { AgentSessionRecord, DurableContentPart, SessionMessage } from '@relavium/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { buildDefaultChatAgent } from './default-agent.js';
@@ -50,6 +50,18 @@ describe('createSessionPersister', () => {
     client.sqlite.close();
   });
 
+  /**
+   * Notes the bus's `onListenerError` sink reported during a test. Wiring the sink is not cosmetic: a persister
+   * write that throws travels out of a `RunEventBus` subscriber, and with NO sink the bus deliberately
+   * re-throws out-of-band (session-host.ts) — which vitest counts as an unhandled rejection and turns into a
+   * non-zero exit even while every summary line says "passed". So the tests that provoke a write failure MUST
+   * wire it, and asserting on what it reported also pins the #228 fail-loud path the atomicity fix leans on.
+   */
+  let listenerNotes: string[];
+  beforeEach(() => {
+    listenerNotes = [];
+  });
+
   async function setup(providers: ProviderResolver, initialSequenceNumber?: number) {
     let tick = Date.parse('2026-06-25T00:00:00.000Z');
     const now = () => tick++;
@@ -62,6 +74,7 @@ describe('createSessionPersister', () => {
       now,
       uuid: () => 'sess-1',
       providers,
+      onListenerError: (note: string) => listenerNotes.push(note),
     });
     const persister = createSessionPersister({
       store,
@@ -75,6 +88,135 @@ describe('createSessionPersister', () => {
     });
     return { built, persister, store };
   }
+
+  /** {@link setup} against a caller-supplied store — for a scenario that must not share a session row. */
+  async function setupWith(target: SessionStore, providers: ProviderResolver) {
+    let tick = Date.parse('2026-06-25T00:00:00.000Z');
+    const now = () => tick++;
+    let msgId = 0;
+    const built = await buildChatSession({
+      chat: EMPTY_CHAT,
+      agentRef: undefined,
+      cwd: '/workspace',
+      projectConfigDir: undefined,
+      now,
+      uuid: () => 'sess-1',
+      providers,
+      onListenerError: (note: string) => listenerNotes.push(note),
+    });
+    const persister = createSessionPersister({
+      store: target,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now,
+      uuid: () => `msg-${msgId++}`,
+    });
+    return { built, persister };
+  }
+
+  /* --- #228: a failed turn write must leave NOTHING, not half a turn --- */
+
+  it('writes a turn ATOMICALLY — a mid-turn failure persists neither message', async () => {
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi'), textTurn('again')]));
+    built.session.start();
+    persister.start();
+    // Fail the FIRST turn's write outright. Before the atomic write this was three auto-committed
+    // statements, so the `user` row landed and the `assistant` row did not.
+    const boom = Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    const writeTurn = vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
+      throw boom;
+    });
+    persister.beginUserTurn('first');
+    await built.session.sendMessage('first');
+    expect(store.loadMessages('sess-1')).toHaveLength(0); // all of it, or none of it
+    // …and the user was TOLD. A silently dropped turn is the other half of #228.
+    expect(listenerNotes.join('\n')).toMatch(/database is locked/);
+
+    // The session survives (that is the point of #228's other layers) and the NEXT turn must be clean —
+    // this is where the old behaviour buried an orphan `user` row mid-transcript, which resume does not
+    // roll back and which replays as two consecutive `user` messages a provider rejects.
+    writeTurn.mockRestore();
+    persister.beginUserTurn('second');
+    await built.session.sendMessage('second');
+    const roles = store.loadMessages('sess-1').map((m) => m.role);
+    expect(roles).toEqual(['user', 'assistant']);
+    // No gap: the surviving rows are contiguous from 0, because the failed turn advanced nothing.
+    expect(store.loadMessages('sess-1').map((m) => m.sequenceNumber)).toEqual([0, 1]);
+  });
+
+  it('a FAILED turn contributes NO tokens to the session totals', async () => {
+    // The bug this pins was real and mine: the totals were assigned BEFORE `writeTurn`, so a failed write left
+    // them advanced and the next turn's row claimed two turns' tokens for one visible exchange. No magic
+    // numbers — a control run of ONE clean turn establishes what a turn is worth, and failed-then-clean must
+    // match it exactly. `stop()`'s usage is fixed, so a leak shows up as double.
+    const control = await setup(scriptedResolver([textTurn('hi')]));
+    control.built.session.start();
+    control.persister.start();
+    control.persister.beginUserTurn('only');
+    await control.built.session.sendMessage('only');
+    const oneTurn = store.loadSession('sess-1');
+
+    // A separate DB so the two scenarios cannot share a session row.
+    const other = createClient(':memory:');
+    runMigrations(other.db);
+    const store2 = createSessionStore(other.db);
+    try {
+      const { built, persister } = await setupWith(
+        store2,
+        scriptedResolver([textTurn('hi'), textTurn('again')]),
+      );
+      built.session.start();
+      persister.start();
+      vi.spyOn(store2, 'writeTurn').mockImplementationOnce(() => {
+        throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+      });
+      persister.beginUserTurn('first');
+      await built.session.sendMessage('first');
+      vi.restoreAllMocks();
+      persister.beginUserTurn('second');
+      await built.session.sendMessage('second');
+
+      const after = store2.loadSession('sess-1');
+      expect(after?.totalInputTokens).toBe(oneTurn?.totalInputTokens);
+      expect(after?.totalOutputTokens).toBe(oneTurn?.totalOutputTokens);
+    } finally {
+      other.sqlite.close();
+    }
+  });
+
+  it('leaves the in-memory sequence untouched when a turn write fails (no phantom seq)', async () => {
+    // Three scripted turns: the failed one, the landed one, and the summariser's own turn for the /compact
+    // that this test uses to observe `realMessageSeqs`.
+    const { built, persister } = await setup(
+      scriptedResolver([textTurn('hi'), textTurn('again'), textTurn('the summary')]),
+    );
+    built.session.start();
+    persister.start();
+    vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    });
+    persister.beginUserTurn('first');
+    await built.session.sendMessage('first');
+    vi.restoreAllMocks();
+    persister.beginUserTurn('second');
+    await built.session.sendMessage('second');
+    // The turn totals must also not have advanced for the turn that never landed.
+    const session = store.loadSession('sess-1');
+    expect(session?.title).toBe('second'); // the FAILED turn never got to title the session either
+
+    // The load-bearing half, and the one nothing else observes: `realMessageSeqs`. It is the ADR-0062
+    // boundary seed, so a phantom entry from the failed turn shifts
+    // `realMessageSeqs[length - keptMessageCount - 1]` on EVERY later /compact and /trim — a silent
+    // kept-message loss, exactly the "step-3 review data-loss trap" this file's own comment warns about.
+    // Driving a real compaction is the only way to see it: after ONE landed turn (rows 0,1), keeping the
+    // last exchange must drop nothing and therefore write NO marker. A leaked phantom seq makes the array
+    // look two entries longer and a spurious marker appears.
+    const result = await built.session.compact('manual');
+    expect(result.kind).toBe('compacted');
+    expect(store.loadMessages('sess-1').filter((m) => m.role === 'system')).toHaveLength(0);
+  });
 
   it('persists the session row eagerly on start (auto-persisted from the moment it starts)', async () => {
     const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));

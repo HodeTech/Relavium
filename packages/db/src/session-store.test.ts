@@ -603,6 +603,146 @@ describe('SessionStore — loadFull snapshot isolation (2.5.I)', () => {
  * the two writes into two transactions, since both would normally succeed and the sums would agree anyway. So the
  * mechanism is pinned too.
  */
+/**
+ * #228: the three single-statement session writers under real cross-process lock contention. Before the fix
+ * they went straight at the write lock with nothing but `busy_timeout` behind them — so once that 5 s wait
+ * expired the statement simply threw, and because the chat persister calls these from inside a `RunEventBus`
+ * subscriber, the throw became an unhandled rejection that killed the CLI after the reply was already shown.
+ * A held write lock plus `busy_timeout = 0` reproduces that deterministically, with no waiting and no threads.
+ */
+describe('SessionStore — writeTurn is atomic (#228)', () => {
+  // One test spies `db.transaction` to pin the lock MODE; the suite restores no mocks globally, and the fresh
+  // per-test client makes leakage impossible only for spies on THAT object — restore explicitly.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('rolls the WHOLE turn back when a later message violates a constraint', () => {
+    store.createSession(makeSession());
+    // Two rows at the SAME sequence number: the second trips the (session_id, sequence_number) UNIQUE index
+    // — a real constraint, not an injected fault, so this exercises the actual transaction.
+    expect(() =>
+      store.writeTurn({
+        messages: [{ message: makeMessage(0) }, { message: makeMessage(0, { id: 'msg-dup' }) }],
+        session: makeSession({ status: 'ended' }),
+      }),
+    ).toThrow(/UNIQUE/i);
+    // All of it, or none of it: the FIRST message must not have survived either.
+    expect(store.loadMessages('sess-1')).toHaveLength(0);
+    // …and the session flush in the same transaction is rolled back with it.
+    expect(store.loadSession('sess-1')?.status).toBe('active');
+  });
+
+  it('opens an IMMEDIATE transaction — guards against a silent DEFERRED regression', () => {
+    // A mutation that dropped `{ behavior: 'immediate' }` left the whole suite GREEN, so atomicity was pinned
+    // but the LOCK MODE was not. `BEGIN IMMEDIATE` is what closes the read→write upgrade race (ADR-0064's
+    // 2.5.I convention); DEFERRED would still be atomic and still be wrong. Same spy technique `loadFull`
+    // already uses to guard its read transaction.
+    store.createSession(makeSession());
+    const txn = vi.spyOn(client.db, 'transaction');
+    store.writeTurn({ messages: [{ message: makeMessage(0) }], session: makeSession() });
+    expect(txn).toHaveBeenCalledWith(expect.any(Function), { behavior: 'immediate' });
+  });
+
+  it('commits messages and the session flush together on success', () => {
+    store.createSession(makeSession());
+    store.writeTurn({
+      messages: [{ message: makeMessage(0) }, { message: makeMessage(1, { role: 'assistant' }) }],
+      session: makeSession({ status: 'ended', title: 'done' }),
+    });
+    expect(store.loadMessages('sess-1').map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(store.loadSession('sess-1')?.title).toBe('done');
+  });
+
+  it('accepts an empty message list — a row-less flush is still one transaction', () => {
+    store.createSession(makeSession());
+    store.writeTurn({ messages: [], session: makeSession({ status: 'ended' }) });
+    expect(store.loadSession('sess-1')?.status).toBe('ended');
+  });
+
+  it('never SETs total_cost_microcents — recordSessionCost stays its single writer (ADR-0070)', () => {
+    // writeTurn shares `mutableSessionColumns` with updateSession precisely so this invariant cannot be
+    // reintroduced on a second write path.
+    store.createSession(makeSession());
+    store.recordSessionCost({
+      id: 'c1',
+      sessionId: 'sess-1',
+      model: 'm',
+      inputTokens: 1,
+      outputTokens: 1,
+      costMicrocents: 500,
+      priced: true,
+      ts: 1,
+    });
+    store.writeTurn({ messages: [], session: makeSession({ totalCostMicrocents: 0 }) });
+    expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(500); // not clobbered back to 0
+  });
+});
+
+describe('SessionStore — the session writers survive lock contention (#228)', () => {
+  /** A `better-sqlite3`-shaped lock fault: an `Error` carrying the string `.code` the driver sets. */
+  const busy = (): Error => Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+
+  /**
+   * Inject ONE lock fault into the next `db.<verb>()` call, then let the real implementation through. The
+   * throw lands inside the wrapped `fn`, which is all `withBusyRetry` cares about — so this pins "the wrapper
+   * is present on this writer" deterministically, in ~25 ms, without a second process or a real held lock.
+   * (`withBusyRetry`'s behaviour against REAL `SQLITE_BUSY` contention is covered in `retry.test.ts`.)
+   */
+  const failOnce = (verb: 'insert' | 'update'): void => {
+    vi.spyOn(client.db, verb).mockImplementationOnce(() => {
+      throw busy();
+    });
+  };
+
+  // Defence in depth only: the file's global `beforeEach` builds a FRESH `client` per test, so a spy on
+  // `client.db` is attached to an object the next test discards — leakage is structurally impossible here,
+  // not merely prevented. Kept so the hook does not become load-bearing if that setup ever changes.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('appendMessage retries a lock fault instead of throwing — the lost-turn case', () => {
+    store.createSession(makeSession());
+    failOnce('insert');
+    expect(() => store.appendMessage(makeMessage(0))).not.toThrow();
+    expect(store.loadMessages('sess-1')).toHaveLength(1); // the row really landed, not just "didn't throw"
+  });
+
+  it('createSession retries a lock fault', () => {
+    failOnce('insert');
+    expect(() => store.createSession(makeSession())).not.toThrow();
+    expect(store.loadSession('sess-1')).toBeDefined();
+  });
+
+  it('updateSession retries a lock fault', () => {
+    store.createSession(makeSession());
+    failOnce('update');
+    expect(() => store.updateSession(makeSession({ status: 'ended' }))).not.toThrow();
+    expect(store.loadSession('sess-1')?.status).toBe('ended');
+  });
+
+  it('still FAILS LOUD once the budget is exhausted — a dropped turn is never silent', () => {
+    // The point of the retry is to absorb a TRANSIENT lock, never to hide a persistent one: a swallowed write
+    // is silent data loss (ADR-0050). Beyond the budget the ORIGINAL driver error is rethrown, which is exactly
+    // what the bus's `onListenerError` sink then reports to the user.
+    store.createSession(makeSession());
+    const persistent = busy();
+    vi.spyOn(client.db, 'insert').mockImplementation(() => {
+      throw persistent;
+    });
+    // `toThrow(err)` compares MESSAGES, which cannot tell the original from a same-message wrapper — and
+    // "the ORIGINAL error is rethrown" is exactly the claim. Catch and compare identity.
+    let caught: unknown;
+    try {
+      store.appendMessage(makeMessage(0));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBe(persistent);
+  });
+});
+
 describe('session_costs — the ADR-0070 reconciliation invariant', () => {
   const sumRows = (sessionId: string): number =>
     store.loadSessionCosts(sessionId).reduce((n, r) => n + r.costMicrocents, 0);

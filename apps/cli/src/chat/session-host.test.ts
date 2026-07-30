@@ -283,6 +283,76 @@ describe('buildChatSession', () => {
   });
 });
 
+/* --- #228: a throwing passive subscriber must be REPORTED, never left to kill the process --- */
+
+describe('buildChatSession — the onListenerError sink (#228)', () => {
+  /**
+   * The failure chain this pins: the chat persister writes `history.db` from inside a `RunEventBus`
+   * subscriber. `deliver()` isolates the throw so the turn survives — but with no sink the bus re-throws it
+   * out-of-band, and Node kills the process on the resulting unhandled rejection, asynchronously, AFTER the
+   * user already saw the reply. A billed turn is lost and the session dies with it.
+   */
+  it('routes a throwing subscriber to onListenerError instead of an out-of-band rejection', async () => {
+    const notes: string[] = [];
+    const built = await build({ onListenerError: (note: string) => notes.push(note) });
+    built.handle.subscribe(() => {
+      throw new Error('database is locked');
+    });
+
+    // A real turn, so the throw happens on the genuine delivery path rather than a hand-rolled emit.
+    built.session.start();
+    await built.session.sendMessage('hi');
+
+    expect(notes.length).toBeGreaterThan(0);
+    // The note names WHICH event failed and why. Deliberately NEUTRAL about the cause: this sink is bus-wide
+    // (the renderer, the Home store and the NDJSON printer subscribe here too), so it must not blame the
+    // database for what may be a render fault.
+    expect(notes[0]).toMatch(
+      /a background handler failed while processing the \S+ event: database is locked/,
+    );
+  });
+
+  it('does NOT swallow when no sink is supplied — the failure still surfaces out-of-band', async () => {
+    // The alternative implementation (an absent sink degrading to a no-op) would be a silent catch: the turn
+    // would vanish from history with nothing anywhere saying so. `index.ts`'s process-level net is the floor
+    // beneath this path, which is what makes surfacing survivable rather than fatal.
+    const built = await build(); // no onListenerError
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    try {
+      built.handle.subscribe(() => {
+        throw new Error('database is locked');
+      });
+      built.session.start();
+      await built.session.sendMessage('hi');
+      // The out-of-band rethrow is a microtask; give it a macrotask turn to become an unhandled rejection.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+    expect(rejections.some((r) => r instanceof Error && r.message === 'database is locked')).toBe(
+      true,
+    );
+  });
+
+  it('keeps the turn and its SIBLING subscribers intact — a failing observer never breaks the producer', async () => {
+    const built = await build({ onListenerError: () => undefined });
+    const seen: string[] = [];
+    built.handle.subscribe(() => {
+      throw new Error('database is locked');
+    });
+    // Registered AFTER the thrower, so it only ever runs if `deliver()` really isolates each subscriber —
+    // persistence is an observer, never a gate on the turn or on the surface's own rendering.
+    built.handle.subscribe((event) => seen.push(event.type));
+    built.session.start();
+    await built.session.sendMessage('hi');
+    expect(seen).toContain('session:turn_completed');
+  });
+});
+
 describe('buildChatSession + MCP host wiring (2.R)', () => {
   /** Write a throwaway `.agent.yaml` declaring one inline stdio MCP server (optional extra server lines). */
   function writeMcpAgent(extraServerLines: readonly string[] = []): string {

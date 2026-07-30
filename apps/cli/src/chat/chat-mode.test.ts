@@ -25,6 +25,8 @@ const req = (over: Partial<ToolApprovalRequest> = {}): ToolApprovalRequest => ({
   toolId: 'write_file',
   action: 'fs_write',
   preview: { path: 'notes.md' },
+  // The unredacted classification copy (#91) — the classifier's input, distinct from the display preview.
+  unredactedPreview: { path: 'notes.md' },
   ...over,
 });
 
@@ -316,17 +318,20 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     );
     const policy = buildTurnPolicy('auto', {
       ...deps({ prompt }),
-      isProtectedTarget: (preview) => preview.path === '.git/config',
+      isProtectedTarget: (request) => request.unredactedPreview?.path === '.git/config',
     });
     // A normal write auto-approves…
-    expect(await policy.confirm!(req({ preview: { path: 'ok.md' } }))).toEqual({
+    expect(await policy.confirm!(req({ unredactedPreview: { path: 'ok.md' } }))).toEqual({
       outcome: 'approve',
     });
     expect(prompt).not.toHaveBeenCalled();
     // …but a protected-path write prompts, forwarding the request + cacheable:false (the REPL greys out
     // "always" here) + the cancel signal.
     const signal = new AbortController().signal;
-    const protectedReq = req({ preview: { path: '.git/config' } });
+    const protectedReq = req({
+      preview: { path: '.git/config' },
+      unredactedPreview: { path: '.git/config' }, // the classifier reads THIS copy (#91), not the display one
+    });
     const decision = await policy.confirm!(protectedReq, signal);
     expect(prompt).toHaveBeenCalledTimes(1);
     expect(prompt).toHaveBeenCalledWith(protectedReq, false, signal);

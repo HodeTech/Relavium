@@ -68,6 +68,7 @@ const approvalReq: ToolApprovalRequest = {
   toolId: 'write_file',
   action: 'fs_write',
   preview: { path: 'notes.md' },
+  unredactedPreview: { path: 'notes.md' },
 };
 
 const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({

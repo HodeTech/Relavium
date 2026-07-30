@@ -71,6 +71,32 @@ describe('createRunHistoryStore', () => {
     client.sqlite.close();
   });
 
+  it('persistEvent YIELDS the event loop between retries — it is on the async twin (#226)', async () => {
+    // The central behavioural change of #226 had no regression guard: reverting `persistEvent` to the
+    // synchronous `withBusyRetry` left the whole packages/db suite green. This is the assertion that dies.
+    const workflowId = await store.resolveWorkflowId('demo');
+    const observed: string[] = [];
+    let calls = 0;
+    // Fail the first transaction with a lock fault so the retry path (and therefore the backoff) is entered.
+    vi.spyOn(client.db, 'transaction').mockImplementationOnce(() => {
+      calls += 1;
+      observed.push('attempt1');
+      // Armed BEFORE the backoff: under `Atomics.wait` the thread is parked and this cannot fire until the
+      // whole synchronous retry has returned, so its position in `observed` is the proof.
+      setTimeout(() => observed.push('other-work'), 0);
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    });
+
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: { n: 3 }, executionMode: 'local' }),
+    );
+
+    expect(calls).toBe(1); // the first attempt really did fail…
+    expect(observed).toEqual(['attempt1', 'other-work']); // …and the loop ran during the backoff
+    // The write still landed on the retry — a yielding backoff must not cost durability.
+    expect(client.db.select().from(runEvents).all()).toHaveLength(1);
+  });
+
   it('persistEvent opens an IMMEDIATE write transaction (2.5.I — guards against a DEFERRED regression)', async () => {
     const workflowId = await store.resolveWorkflowId('demo');
     const txnSpy = vi.spyOn(client.db, 'transaction');

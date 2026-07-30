@@ -58,6 +58,29 @@ function isProviderId(slug: string): slug is ProviderId {
   return (LLM_PROVIDERS as readonly string[]).includes(slug);
 }
 
+/**
+ * A stored epoch-ms → an ISO string, or `undefined` when the value cannot be a date (G1).
+ *
+ * `new Date(x).toISOString()` throws `RangeError: Invalid time value` on `NaN` or any value outside
+ * ±8.64e15 — and SQLite is dynamically typed, so an `INTEGER` column can hold whatever a bad write or an
+ * external tool put there. Both conversions below run inside a `.map()` over EVERY catalog row, so one
+ * corrupt `deprecation_date` would abort the entire `/models` projection instead of degrading a single row.
+ * A deprecation date is decoration; the catalog is not. Same guarded-parse discipline the limit columns get
+ * from {@link statedLimit} a few lines down.
+ */
+function spreadIfSet<K extends string>(
+  key: K,
+  value: string | undefined,
+): Record<K, string> | Record<string, never> {
+  return value === undefined ? {} : ({ [key]: value } as Record<K, string>);
+}
+
+function isoDateOrUndefined(epochMs: number | undefined): string | undefined {
+  if (epochMs === undefined) return undefined;
+  const date = new Date(epochMs);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
 /** Map a stored catalog row → a seam {@link ModelListing} (the live-discovery half): id + the optional limits +
  *  the live deprecation date as ISO (the store carries epoch-ms; the merge unions ISO dates). Pricing is NOT
  *  carried — the merge's pricing authority is the user tier / the catalog, never a live row (ADR-0064 §6). */
@@ -69,9 +92,7 @@ function rowToListing(row: ModelCatalogListing): ModelListing {
       ? { contextWindowTokens: row.contextWindowTokens }
       : {}),
     ...(row.maxOutputTokens !== undefined ? { maxOutputTokens: row.maxOutputTokens } : {}),
-    ...(row.deprecationDate !== undefined
-      ? { deprecatedAt: new Date(row.deprecationDate).toISOString() }
-      : {}),
+    ...spreadIfSet('deprecatedAt', isoDateOrUndefined(row.deprecationDate)),
   };
 }
 
@@ -185,9 +206,7 @@ function rowToUserPricing(row: ModelCatalogListing, provider: ProviderId): Model
       ? {}
       : { cacheWritePerMtokMicrocents: base.cacheWritePerMtokMicrocents }),
     ...(tiers === undefined ? {} : { contextTiers: tiers }),
-    ...(row.deprecationDate !== undefined
-      ? { deprecatedAt: new Date(row.deprecationDate).toISOString() }
-      : {}),
+    ...spreadIfSet('deprecatedAt', isoDateOrUndefined(row.deprecationDate)),
   };
 }
 

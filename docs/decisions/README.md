@@ -116,6 +116,7 @@ flowchart TD
 | 0070 | [Durable per-model session cost attribution — the `session_costs` aggregate, single-owner cost writes, and the reconciliation invariant](0070-durable-per-model-session-cost-attribution.md) | Accepted | 2026-07-12 |
 | 0071 | [models.dev as the model-metadata source; the hand-maintained registry is retired (supersedes two ADR-0064 clauses, corrects an ADR-0066 premise)](0071-models-dev-as-the-model-metadata-source.md) | Accepted | 2026-07-13 |
 | 0072 | [Model metadata in the DB behind the offline snapshot floor (partially supersedes ADR-0064 §4's seed-prohibition; amends ADR-0071 §3/§4/§9)](0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md) | Accepted | 2026-07-14 |
+| 0073 | [`runMigrations` is serialized across processes by an OS lock file, not by a transaction](0073-history-db-migration-lock.md) | Accepted | 2026-07-29 |
 
 ## Creating a new ADR
 

@@ -7,7 +7,7 @@ import {
 import { and, asc, desc, eq, getTableColumns, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 
 import type { Db } from './client.js';
-import { withBusyRetry } from './retry.js';
+import { withBusyRetryAsync } from './retry.js';
 import {
   runCosts,
   runEvents,
@@ -425,10 +425,11 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
       return Promise.resolve(find() ?? id);
     },
 
-    persistEvent: (event) => {
-      // Synchronous (better-sqlite3) but Promise-returning to honor the async RunStore port — a fault (bad
+    persistEvent: async (event) => {
+      // The DB work is synchronous (better-sqlite3) but this honors the async RunStore port — a fault (bad
       // event, UNIQUE(run_id, seq), FK, disk) becomes a REJECTED promise, never a synchronous throw, so the
       // engine's `await persistEvent(...)` (durability-first: ADR-0050 fatal posture) and any `.catch` see it.
+      // `async` guarantees that on its own: an async function can only ever reject, never throw synchronously.
       try {
         const parsed = RunEventSchema.parse(event); // validate on the way in (round-trip + envelope)
         const runId = parsed.runId;
@@ -439,15 +440,22 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         const ts = isoToEpochMs(parsed.timestamp);
         // One IMMEDIATE transaction per event: the run_events append and its derived rows land atomically, so a
         // crash can never leave a derived row without its event (or vice-versa). `BEGIN IMMEDIATE` takes the
-        // write lock up front (never a DEFERRED read→write upgrade race), and `withBusyRetry` waits out residual
+        // write lock up front (never a DEFERRED read→write upgrade race), and the retry waits out residual
         // cross-process lock contention — fail-loud, so a swallowed write can never be silent data loss
         // (ADR-0050; the ADR-0064 amendment note — DB write-path concurrency).
-        withBusyRetry(() =>
+        //
+        // The ASYNC twin (#226): this caller is already async, so the backoff between attempts yields the event
+        // loop instead of parking the thread on `Atomics.wait`. The yield is observable — a sibling branch's
+        // `persistEvent` may commit during our backoff — which is exactly what the backoff is for, and is safe
+        // because each event's fold is ONE self-contained IMMEDIATE transaction that has already rolled back
+        // before we sleep. Within a single branch the engine awaits these sequentially, so no event can
+        // overtake its own predecessor.
+        await withBusyRetryAsync(() =>
           db.transaction(() => fold(parsed, runId, ts), { behavior: 'immediate' }),
         );
-        return Promise.resolve();
       } catch (error) {
-        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+        // Preserve the root cause (error-handling.md): never swallow it to rethrow a vaguer one.
+        throw error instanceof Error ? error : new Error(String(error), { cause: error });
       }
     },
 

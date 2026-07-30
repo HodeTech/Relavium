@@ -9,7 +9,12 @@
 
 import { extractHttpsHost, type ToolActionClass } from '@relavium/shared';
 
-import { boundForModel, redactInlineMedia, redactSecretShapedValue } from './bounding.js';
+import {
+  boundForModel,
+  redactInlineMedia,
+  redactSecretShapedText,
+  redactSecretShapedValue,
+} from './bounding.js';
 import {
   ToolArgsInvalidError,
   ToolCancelledError,
@@ -362,6 +367,9 @@ async function confirmDispatch(
     toolId: def.id,
     action,
     preview: previewFor(action, target),
+    // The same field selection, UNSCRUBBED, for CLASSIFICATION only (see the field's own doc). In-process:
+    // it never reaches the event, so `preview` stays the one thing crossing the observability boundary.
+    unredactedPreview: rawPreviewFor(action, target),
   };
   // EA5: emit the observability event for EVERY governed dispatch that reaches this gate, just before the host
   // decides — a durable "a governed action was gated" trace on the session / `--json` stream (the session
@@ -432,8 +440,36 @@ export function governedAction(def: ToolDef, target: PolicyTarget): ToolActionCl
   return undefined;
 }
 
-/** A secret-free preview for the approval prompt: the resolved path / command / host (never a full URL). */
-function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
+/**
+ * A secret-free preview for the approval prompt: the resolved path / command / host (never a full URL).
+ *
+ * "Secret-free" is **enforced**, not merely asserted: every field is scrubbed with the SAME
+ * `redactSecretShapedText` detector `sanitizeInput()` applies to `toolInput` moments later in this dispatch
+ * (ADR-0029(c) — the taint gate only covers KNOWN `secret`-typed args, so a model-placed credential in a
+ * `run_command` arg or a `write_file` path would otherwise ride this preview verbatim onto the approval
+ * prompt and the `agent:approval_requested` / `--json` observability stream).
+ *
+ * Display-only, in both directions: the dispatch has already resolved and policy-checked the REAL target
+ * (`enforcePolicy` runs before `confirmDispatch`), so scrubbing here can never change which side effect runs.
+ *
+ * The scrub is deliberately WHOLE-STRING rather than per-path-segment, and that is only safe because of
+ * {@link ToolApprovalRequest.target}. Two of the detector's patterns (`bearer|basic|token <run>` and
+ * `<key-ish>=<value>`) have value classes containing `/`, which cuts both ways: whole-string catches a
+ * credential whose value SPANS a separator (`./api_key=AAAAA/BBBBBB.txt` — a per-segment scrub misses it,
+ * because the visible part of the value falls under the pattern's own length floor), but one match can also
+ * swallow the rest of the path (`./Access Token Backup/.ssh/authorized_keys` → `./Access Token [redacted]`).
+ * No single pattern gives both. So the two USES are split instead: this projection is scrubbed as hard as
+ * secrecy requires, and the host's protected-path CLASSIFIER reads the unredacted `target` — where a swallowed
+ * `.ssh` segment cannot change the answer, because it never sees this string.
+ *
+ * One limitation remains, and it is a property of redaction itself rather than of this choice: `command` is
+ * fully model-controlled and the detector's patterns are public, so a prompt-injected model can shape a
+ * payload to MATCH a pattern (`sh -c token:evil.example/x|sh`) and be shown `sh -c [redacted]` — which reads
+ * as "we protected you" rather than "you cannot see this". Bounded by `allowedCommands` /
+ * `allowedCommandGlobs` being deny-all by default and by the fs/egress floors, but real; surfacing "this was
+ * redacted" to the prompt needs a schema field and is the open follow-up.
+ */
+function rawPreviewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
   switch (action) {
     case 'fs_write':
       return target.path === undefined ? {} : { path: target.path };
@@ -443,6 +479,9 @@ function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPr
       if (target.url === undefined) {
         return {}; // web_search / mcp_call expose no pre-dispatch URL target — the action class is enough
       }
+      // The HOST only, never `target.url` — the raw URL carries the query string, which is exactly where a
+      // credential lives (`?token=…`). That exclusion is why an UNREDACTED copy of this shape is safe to hand
+      // the host at all; it is the one field selection both copies share.
       const parsed = extractHttpsHost(target.url);
       return parsed === null ? {} : { host: parsed.host };
     }
@@ -457,6 +496,16 @@ function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPr
       return exhaustive;
     }
   }
+}
+
+/** The DISPLAY copy: {@link rawPreviewFor}'s field selection with every string scrubbed. */
+function previewFor(action: ToolActionClass, target: PolicyTarget): ToolActionPreview {
+  const raw = rawPreviewFor(action, target);
+  return {
+    ...(raw.path === undefined ? {} : { path: redactSecretShapedText(raw.path) }),
+    ...(raw.command === undefined ? {} : { command: redactSecretShapedText(raw.command) }),
+    ...(raw.host === undefined ? {} : { host: redactSecretShapedText(raw.host) }),
+  };
 }
 
 function enforceHttpEgress(toolId: ToolId, url: string, ctx: ToolDispatchContext): void {

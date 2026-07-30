@@ -129,6 +129,18 @@ export interface BuildChatSessionOptions {
    */
   readonly onEffortWithheld?: (note: string) => void;
   /**
+   * Sink for a **passive subscriber** that threw while handling a session event (#228) — in practice the chat
+   * persister failing a durable `history.db` write after its bounded retry was exhausted. Same channel shape as
+   * {@link BuildChatSessionOptions.onBudgetWarning}: the surface puts the sentence in the transcript's notice
+   * channel so the user learns the turn was not saved, while the session itself continues (the reply is already
+   * on screen and the in-memory transcript is intact).
+   *
+   * Absent ⇒ **not** a no-op, unlike the sinks above. A dropped durable write must never be silent
+   * (`docs/standards/error-handling.md`), so the runtime still surfaces it out-of-band, where the process-level
+   * `unhandledRejection` net in `index.ts` reports it and keeps the process alive.
+   */
+  readonly onListenerError?: (note: string) => void;
+  /**
    * The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a `ReadonlyMap<modelId, ModelPricing>` the command projects
    * from the `model_catalog` `source='user'` rows (via `buildUserPricing`). It flows into BOTH the pre-egress
    * governor (so a user-priced model is enforced by `[chat].max_cost_microcents`) AND `SessionDeps.resolvePrice`
@@ -196,6 +208,7 @@ type SessionRuntimeOptions = Pick<
   | 'onBudgetWarning'
   | 'onUnpriced'
   | 'onEffortWithheld'
+  | 'onListenerError'
   | 'resolvePrice'
 >;
 
@@ -217,7 +230,28 @@ function buildSessionRuntime(
   mcp: McpClient | undefined,
   context: SessionContext,
 ): { bus: RunEventBus; deps: SessionDeps; emit: SessionEventSink; host: ToolHost } {
-  const bus = new RunEventBus({ now: () => new Date(opts.now()).toISOString() });
+  // #228: a passive subscriber that throws — the chat persister failing a durable `history.db` write — is
+  // isolated by `deliver()` either way, so the turn itself is never broken. What was missing is where the
+  // failure GOES: with no sink the bus re-throws it out-of-band, and Node kills the process on the resulting
+  // unhandled rejection, asynchronously, after the reply was already on screen. Wiring the sink turns that into
+  // a reported, survivable event. When the surface supplied no `onListenerError` the sink deliberately re-throws
+  // rather than swallowing (no silent catch) — the process-level net in `index.ts` is the floor beneath it.
+  const bus = new RunEventBus({
+    now: () => new Date(opts.now()).toISOString(),
+    onListenerError: (error, event) => {
+      const report = opts.onListenerError;
+      if (report === undefined) {
+        // Rethrowing from the sink is not a shrug — `RunEventBus.#reportListenerError` catches a throwing sink
+        // and routes it to `#surfaceOutOfBand`, i.e. exactly the no-sink path, which is the fallback we want.
+        // Stated explicitly because "throw to fall through" reads as a bug otherwise.
+        throw error;
+      }
+      // Bus-WIDE, not persister-specific: the renderer, the Home store and the NDJSON printer all subscribe
+      // here too, so a render fault must not be reported as a database problem.
+      const reason = error instanceof Error ? error.message : String(error);
+      report(`a background handler failed while processing the ${event.type} event: ${reason}`);
+    },
+  });
   const providers = opts.providers ?? createProviderResolver();
   const tools = mcp === undefined ? BUILTIN_TOOLS : [...BUILTIN_TOOLS, ...mcp.toolDefs];
   // 2.5.E (ADR-0057): the shared factory wires the FULL-CAPABILITY chat host (fs read+WRITE, process, egress,
@@ -474,6 +508,12 @@ export interface BuildResumedChatSessionOptions {
   readonly onEffortWithheld?: (note: string) => void;
   /** Unpriced-model notice (ADR-0071 §K7) — see {@link BuildChatSessionOptions.onUnpriced}. */
   readonly onUnpriced?: (note: string) => void;
+  /**
+   * Sink for a throwing passive subscriber (#228) — see {@link BuildChatSessionOptions.onListenerError}.
+   * A RESUMED session is the HIGHEST-contention surface for it: two `chat-resume` processes on one session
+   * write the same `history.db` rows concurrently (#227).
+   */
+  readonly onListenerError?: (note: string) => void;
   /** The loaded session record (its frozen `agentSnapshot` + `context` rebind the session). */
   readonly record: AgentSessionRecord;
   /** The session's persisted transcript, in any order ({@link reconstructSessionState} sorts it). */
