@@ -14,6 +14,7 @@ import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { RunRenderer } from '../render/renderer.js';
+import { wireRunJobControl } from '../render/run-job-control.js';
 
 /**
  * The D15 catalog load-check, shared by `run` (a fresh load) and `gate` (a resume — re-validated against the
@@ -90,6 +91,11 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
   // killing the run at 130 before the cooperative cancel completes. Staying registered keeps signal-exit from
   // re-raising, so cancel → run:cancelled → exit 1 wins. Removed in the finally.
   process.on('SIGINT', onSigint);
+  // G0's residue on this path: ink hides the cursor while it renders and `signal-exit` does not handle
+  // SIGTSTP, so a Ctrl-Z during a run left the user's terminal with a permanently invisible cursor. Narrow by
+  // design — this path enters neither the alternate screen nor mouse reporting, so there is nothing else to
+  // release. Removed in the finally alongside the SIGINT handler.
+  const jobControl = wireRunJobControl({ write: (text) => io.writeOut(text) });
   let renderer: RunRenderer | undefined;
   try {
     renderer = makeRenderer();
@@ -118,6 +124,7 @@ export async function driveRun(deps: DriveRunDeps): Promise<RunOutcome | undefin
     if (outcome === undefined) {
       handle.cancel();
     }
+    jobControl.dispose();
     // Tear the renderer down even on a throw: the ink TUI must unmount to restore the terminal and write its
     // persistent final summary. The `?.` is a no-op for the line/NDJSON renderers and when `renderer` is still
     // undefined (construction threw). A teardown error must NOT mask the run's real outcome/error — surface it
