@@ -21,6 +21,7 @@ import type {
   AgentToolCallEvent,
   AgentToolResultEvent,
   AgentTokenEvent,
+  BudgetEstimateCommittedEvent,
   CostUpdatedEvent,
   RunOrSessionEvent,
   SessionEvent,
@@ -44,7 +45,12 @@ export type SessionStreamHandleEvent =
   | AgentToolCallEvent
   | AgentToolResultEvent
   | AgentApprovalRequestedEvent
-  | CostUpdatedEvent;
+  | CostUpdatedEvent
+  // ADR-0074 §2 — a conservative budget commitment, dual-envelope like `cost:updated`. It MUST be listed here:
+  // `isForSession` narrows on the runtime `sessionId` check alone, so a session-enveloped commitment would
+  // otherwise reach every consumer as a value whose static type says it cannot exist, with nothing in the
+  // toolchain objecting until someone writes a `case` for it.
+  | BudgetEstimateCommittedEvent;
 
 /** The session's sole stream terminal — `turn_completed` is per-turn; `exported` (1.Z) is a side event. */
 const TERMINAL_SESSION_TYPES: ReadonlySet<SessionStreamHandleEvent['type']> = new Set([

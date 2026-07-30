@@ -18,8 +18,8 @@ export type SchemaVersion = typeof SCHEMA_VERSION;
  * and the per-event ordinal is always `sequenceNumber`, never `seqNo`. Order mirrors the
  * `RunEvent` union in the spec: `agent:reasoning` sits immediately after `agent:token` (the reasoning
  * host-emit, EA6/2.5.H amending [ADR-0036]); `agent:approval_requested` + `agent:file_patch_proposed`
- * sit after `agent:tool_result`, and the four governance events (`run:paused`, `run:timeout`,
- * `budget:warning`, `budget:paused`; ADR-0028) close the list.
+ * sit after `agent:tool_result`, and the five governance events close the list: `run:paused`, `run:timeout`,
+ * `budget:warning`, `budget:paused` (ADR-0028) and `budget:estimate_committed` ([ADR-0074], dual-envelope).
  */
 export const RUN_EVENT_TYPES = [
   'run:started',

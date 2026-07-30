@@ -170,6 +170,7 @@ const valid: Record<string, Record<string, unknown>> = {
     type: 'budget:estimate_committed',
     ...env,
     nodeId: 'n',
+    attemptNumber: 1,
     model: 'claude-opus-4-8',
     estimateMicrocents: 400,
     cumulativeConservativeMicrocents: 400,
@@ -178,6 +179,46 @@ const valid: Record<string, Record<string, unknown>> = {
 
 /** One targeted invalid payload per variant (a missing/invalid required field). */
 const reject: Record<string, Record<string, unknown>> = {
+  'budget:estimate_committed (no model)': {
+    type: 'budget:estimate_committed',
+    ...env,
+    estimateMicrocents: 400,
+    cumulativeConservativeMicrocents: 400,
+  },
+  'budget:estimate_committed (zero estimate)': {
+    // Unreachable by construction — `#admit` refuses `<= 0` — and the bound must be right on the FIRST version:
+    // tightening later would turn every historical zero row into a §5 corruption that must throw.
+    type: 'budget:estimate_committed',
+    ...env,
+    model: 'm',
+    estimateMicrocents: 0,
+    cumulativeConservativeMicrocents: 0,
+  },
+  'budget:estimate_committed (fractional estimate)': {
+    type: 'budget:estimate_committed',
+    ...env,
+    model: 'm',
+    estimateMicrocents: 12.5,
+    cumulativeConservativeMicrocents: 12.5,
+  },
+  'budget:estimate_committed (cumulative below this commitment)': {
+    // The single most likely producer bug: reading the counter BEFORE the `+=`. That emits a first commitment as
+    // `{estimate: 500, cumulative: 0}`, restores 0 on resume, and hands 500 micro-cents of already-owed money
+    // back to the cap as headroom — with nothing else anywhere complaining.
+    type: 'budget:estimate_committed',
+    ...env,
+    model: 'm',
+    estimateMicrocents: 500,
+    cumulativeConservativeMicrocents: 0,
+  },
+  'budget:estimate_committed (attemptNumber 0)': {
+    type: 'budget:estimate_committed',
+    ...env,
+    model: 'm',
+    attemptNumber: 0,
+    estimateMicrocents: 400,
+    cumulativeConservativeMicrocents: 400,
+  },
   'run:started (bad executionMode)': {
     type: 'run:started',
     ...env,
@@ -544,6 +585,12 @@ describe('RunEvent union — every variant', () => {
     expect(RunEventSchema.innerType().options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
     expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 24
+    // STRUCTURAL, not a comment: the §5 forward-compat fixtures stand in for "a type a newer binary wrote" using
+    // the `test:` prefix. Step B first used `budget:estimate_committed` for that and ADR-0074 §2 then made it
+    // real, silently inverting three fixtures. A `test:`-prefixed name must never become a canonical event.
+    expect([...RUN_EVENT_TYPES, ...SESSION_EVENT_TYPES].some((t) => t.startsWith('test:'))).toBe(
+      false,
+    );
   });
 
   it('pins the RunEvent discriminant to RunEventType (type-level)', () => {
@@ -841,6 +888,55 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
     };
     expect(onCorrelationKey(dual)).toBe(true); // neither
     expect(onCorrelationKey({ ...dual, runId: 'run-1', sessionId: 'sess-1' })).toBe(true); // both
+  });
+
+  it('carries budget:estimate_committed on either envelope (dual), and drops nodeId on a session turn (ADR-0074 §2)', () => {
+    const base = {
+      type: 'budget:estimate_committed',
+      timestamp: '2026-06-04T00:00:00.000Z',
+      sequenceNumber: 7,
+      model: 'claude-opus-4-8',
+      estimateMicrocents: 500,
+      cumulativeConservativeMicrocents: 500,
+    };
+    // A run carries nodeId; a session turn has no node, so the field is genuinely ABSENT rather than empty. That
+    // matters beyond coverage: this is the first run event with an OPTIONAL top-level `nodeId`, and the store's
+    // `'nodeId' in event ? event.nodeId : null` projection depends on Zod omitting an absent optional key.
+    const asRun = RunEventSchema.safeParse({ ...base, runId: 'run-1', nodeId: 'n' });
+    expect(asRun.success).toBe(true);
+    const asSession = RunEventSchema.safeParse({ ...base, sessionId: 'sess-1' });
+    expect(asSession.success).toBe(true);
+    if (asSession.success) {
+      expect('nodeId' in asSession.data).toBe(false);
+    }
+    // neither / both → rejected (the same dualBase invariant agent:token obeys)
+    expect(RunEventSchema.safeParse(base).success).toBe(false);
+    expect(RunEventSchema.safeParse({ ...base, runId: 'r', sessionId: 's' }).success).toBe(false);
+  });
+
+  it('pins the conservative cumulative to include this commitment (the read-before-increment bug)', () => {
+    const base = {
+      type: 'budget:estimate_committed',
+      runId: 'run-1',
+      timestamp: '2026-06-04T00:00:00.000Z',
+      sequenceNumber: 7,
+      model: 'm',
+      estimateMicrocents: 500,
+    };
+    expect(
+      RunEventSchema.safeParse({ ...base, cumulativeConservativeMicrocents: 500 }).success,
+    ).toBe(true);
+    expect(
+      RunEventSchema.safeParse({ ...base, cumulativeConservativeMicrocents: 900 }).success,
+    ).toBe(true); // a later commitment
+    const bad = RunEventSchema.safeParse({ ...base, cumulativeConservativeMicrocents: 499 });
+    expect(bad.success).toBe(false);
+    if (!bad.success) {
+      // The error lands on the cumulative, not on an unrelated field — so the message names the actual mistake.
+      expect(
+        bad.error.issues.some((i) => i.path.includes('cumulativeConservativeMicrocents')),
+      ).toBe(true);
+    }
   });
 
   it('carries agent:reasoning on either envelope (dual), like agent:token (EA6, 2.5.H)', () => {

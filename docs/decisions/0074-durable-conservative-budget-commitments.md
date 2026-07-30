@@ -37,6 +37,18 @@ Actual totals, per-model actual-cost attribution, and `cost:updated` remain real
 
 ### 2. Persist an uncertain provider charge before later egress can proceed
 
+> **Note (2026-07-30).** The event's shape is now settled in its canonical home
+> ([sse-event-schema.md](../reference/contracts/sse-event-schema.md) §Workflow governance and reserved events,
+> [run-event.ts](../../packages/shared/src/run-event.ts)); this ADR is not rewritten (rule 9), and the note records
+> only what implementation SETTLED that the Decision below deliberately left to the spec. Two points a reader of
+> this section alone would get wrong. **A reader restores the conservative total by SUMMING `estimateMicrocents`,
+> not by last-wins over the cumulative snapshot** — the engine assigns `sequenceNumber` after an `await` and states
+> that concurrent events have no canonical order, so under a `fan_out` the lower `seq` can carry the higher
+> cumulative and a last-wins restore would hand already-owed money back to the cap. `Math.max` would fix the order
+> but not the shape, because §1's deliberate release DECREASES the total. And **§1's release is representable**: it
+> is a reserved `budget:estimate_released`, declared in the spec but emitted by no Phase-1 code, which is what makes
+> the sum-less-release rule a settled contract rather than an open question.
+
 Add an additive, secret-free dual-envelope event, `budget:estimate_committed`, carrying the node/agent identity, model id, bounded `estimateMicrocents`, and the owner-local cumulative conservative amount. It is a **new event `type`**, not an optional field on `cost:updated` — the rejected alternatives below say why. Its exact Zod shape, which discriminated-union arms it joins, and its envelope rules have one canonical home in [sse-event-schema.md](../reference/contracts/sse-event-schema.md) and [run-event.ts](../../packages/shared/src/run-event.ts); this ADR decides that it exists and what it means, and deliberately does not restate the spec. For workflows it is a durable `run_events` entry; for sessions it is a durable session-budget write and a streamed session event.
 
 When an admission becomes uncertain, its ledger mutation is synchronous, but the next provider attempt and the enclosing turn completion wait for the commitment's durability acknowledgement. This closes the crash window between a potentially billable provider call and a later node/session boundary. A persistence failure never releases capacity; it fails the active owner loudly while preserving the conservative reservation in memory for the terminal path.

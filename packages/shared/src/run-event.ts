@@ -516,14 +516,42 @@ export const BudgetEstimateCommittedEventSchema = z.object({
   ...dualBase,
   /** The agent node that owned the attempt. Absent on a session turn, which has no node. */
   nodeId: nonEmptyString.optional(),
+  /**
+   * 1-based WITHIN-CHAIN (`FallbackChain`) attempt — matches `cost:updated`. Without it, two commitments from
+   * the SAME callback and the same failover chain are byte-identical apart from the cumulative, and on the
+   * session path (no `nodeId`, no `node:retrying` boundary to partition on) the attempt identity is simply
+   * unrecoverable. Realized money from a failover attempt is attributable; conservative money must be too.
+   */
+  attemptNumber: positiveInt.optional(),
   /** The canonical model id the uncertain attempt ran on — the per-model conservative attribution key (§4). */
   model: nonEmptyString,
-  /** THIS commitment's bounded amount: the reservation that was retained rather than released. */
-  estimateMicrocents: nonNegativeInt,
   /**
-   * The owner-local RUNNING TOTAL of conservative commitments after this one — the same
-   * snapshot-not-delta shape `cost:updated.cumulativeCostMicrocents` uses, so checkpoint reconstruction can
-   * restore the total from the LAST such event rather than by summing a log it may have read only partially.
+   * THIS commitment's bounded amount: the reservation that was retained rather than released. **This is the
+   * field checkpoint reconstruction adds up** — see {@link cumulativeConservativeMicrocents}.
+   *
+   * `positiveInt`, not `nonNegativeInt`: a zero commitment is meaningless and unreachable by construction
+   * (`BudgetGovernor`'s `#admit` refuses `estimateMicrocents <= 0`, so every admission holds at least 1). The
+   * bound has to be right on the first version — loosening later is additive, but TIGHTENING later would turn
+   * every historical zero row into a known type with an invalid body, which {@link parseStoredRunEvent} is
+   * required to THROW on. That is a one-way door.
+   */
+  estimateMicrocents: positiveInt,
+  /**
+   * The owner-local running total of conservative commitments after this one — a producer-side snapshot for
+   * DISPLAY and cross-checking. **Not the restore source.**
+   *
+   * Reconstruction sums `estimateMicrocents` (less any release) instead, because a last-wins read of this
+   * snapshot is order-dependent and the engine explicitly refuses to guarantee the order it would need:
+   * `#emitDurable` awaits the media de-inline BEFORE `#bus.next` assigns the `sequenceNumber`, and its own
+   * comment says "concurrent events have no canonical order". Under a `fan_out`, two branches committing 100
+   * and 150 can land with the LOWER seq carrying the HIGHER cumulative; restoring from the last one then hands
+   * already-owed money back to the cap as headroom — the exact bypass ADR-0074 exists to close.
+   *
+   * `Math.max` over the snapshots (the order-independent trick `node:completed.cumulativeCostMicrocents` uses)
+   * would fix the ordering but not the shape: §1 requires the user to be able to CLEAR a commitment
+   * deliberately, and a release decreases the total, so the sequence is not monotonic. A sum of signed deltas
+   * survives both. (`cost:updated` gets away with last-wins only because it is streamed, never persisted —
+   * `checkpoint.ts` says so — so it is not the precedent for a durable event.)
    */
   cumulativeConservativeMicrocents: nonNegativeInt,
 });
@@ -575,6 +603,29 @@ function refineCorrelationKey(event: RunEventUnion, ctx: z.RefinementCtx): void 
       code: z.ZodIssueCode.custom,
       message: 'exactly one of runId / sessionId must be present',
       path: [hasRunId ? 'sessionId' : 'runId'],
+    });
+  }
+}
+
+/**
+ * A conservative commitment's cumulative total must already INCLUDE it (ADR-0074 §2).
+ *
+ * It holds by construction — the producer reads the counter after adding this commitment to it — and that is
+ * precisely why it is worth pinning: the single most likely bug at the emit site is reading the counter BEFORE
+ * the `+=`. That mistake emits a first commitment as `{ estimate: 500, cumulative: 0 }`, restores 0 on resume,
+ * hands 500 micro-cents of already-owed money back to the cap as headroom, and nothing else anywhere complains.
+ * A structural cross-field check a `discriminatedUnion` member cannot carry — the `refineRunPaused` precedent.
+ */
+function refineBudgetEstimateCommitted(event: RunEventUnion, ctx: z.RefinementCtx): void {
+  if (
+    event.type === 'budget:estimate_committed' &&
+    event.cumulativeConservativeMicrocents < event.estimateMicrocents
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        'cumulativeConservativeMicrocents must already include estimateMicrocents (read the counter AFTER adding this commitment)',
+      path: ['cumulativeConservativeMicrocents'],
     });
   }
 }
@@ -683,6 +734,7 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
   refineRunPaused(event, ctx);
   refineMediaJobDeadline(event, ctx);
   refineApprovalPreview(event, ctx);
+  refineBudgetEstimateCommitted(event, ctx);
 });
 export type RunEvent = z.infer<typeof RunEventSchema>;
 

@@ -504,9 +504,15 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         return;
       }
       default:
-        // node:skipped / media_job:submitted / run:timeout (+ any future durable event): captured in
-        // run_events below; no derived runs/step/cost write in 2.H's scope. (A skipped node has no nodeType
-        // on its event, so it gets no step_executions row — the run_events log records the skip.)
+        // node:skipped / media_job:submitted / run:timeout / budget:estimate_committed (+ any future durable
+        // event): captured in run_events below; no derived runs/step/cost write in 2.H's scope. (A skipped node
+        // has no nodeType on its event, so it gets no step_executions row — the run_events log records the skip.)
+        //
+        // `budget:estimate_committed` is named explicitly because it is the one MONEY event routed here, and
+        // that routing IS ADR-0074's central negative guarantee: a conservative commitment is an ESTIMATE, so it
+        // must never reach `runs.total_cost_microcents` or `run_costs`. Folding it into either would present an
+        // upper bound as an invoice and break ADR-0070's `SUM(run_costs) == runs.total_cost_microcents`. Falling
+        // through here is what keeps that true — asserted, not assumed, in this package's tests.
         return;
     }
   };

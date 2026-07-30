@@ -800,6 +800,43 @@ describe('createRunHistoryReader', () => {
     ]);
   });
 
+  it('persists budget:estimate_committed WITHOUT touching any actual-cost total (ADR-0074 §1/§2)', async () => {
+    // The ADR's central negative guarantee, and it rested entirely on an unasserted `default:` fall-through. A
+    // conservative commitment is an ESTIMATE: folding it into `runs.total_cost_microcents` or `run_costs` would
+    // present an upper bound as an invoice and break ADR-0070's `SUM(run_costs) == runs.total_cost_microcents`.
+    const store = storeFor('wf');
+    const workflowId = await store.resolveWorkflowId('wf');
+    const ts = new Date(TS_MS).toISOString();
+    await store.persistEvent(
+      evRun('run-c', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+    );
+    await store.persistEvent(
+      evRun(
+        'run-c',
+        'budget:estimate_committed',
+        1,
+        {
+          nodeId: 'g',
+          attemptNumber: 1,
+          model: 'claude-opus-4-8',
+          estimateMicrocents: 500,
+          cumulativeConservativeMicrocents: 500,
+        },
+        ts,
+      ),
+    );
+
+    const run = reader.loadRun('run-c');
+    expect(run?.totalCostMicrocents).toBe(0); // NOT 500 — an estimate is not spend
+    expect(client.db.select().from(runCosts).all()).toEqual([]);
+    expect(run?.status).toBe('running'); // not a status change either
+    // It IS in the durable log, though — that is the whole point of §2.
+    expect(reader.loadRunEvents('run-c').map((e) => e.type)).toEqual([
+      'run:started',
+      'budget:estimate_committed',
+    ]);
+  });
+
   /**
    * ADR-0074 §5. The write side stays strict, so the only way a row with an unknown `type` reaches the DB is a
    * NEWER binary having written it — which is exactly the case
