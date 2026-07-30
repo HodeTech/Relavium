@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import Database from 'better-sqlite3';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 
@@ -93,8 +94,17 @@ describe('runMigrations — the two-process race (#99)', () => {
         } finally {
           client.sqlite.close();
         }
-        // No lock file survives a clean pair of runs.
-        expect(existsSync(`${dbPath}.migrate.lock`)).toBe(false);
+        // The lock file is a SQLite database, so it legitimately REMAINS on disk after a clean pair of runs —
+        // what must not remain is a held lock. Prove it is released by acquiring it: a stuck EXCLUSIVE would
+        // make this throw SQLITE_BUSY instead.
+        const probe = new Database(`${dbPath}.migrate.lock`);
+        try {
+          probe.pragma('busy_timeout = 0');
+          expect(() => probe.exec('BEGIN EXCLUSIVE')).not.toThrow();
+          probe.exec('COMMIT');
+        } finally {
+          probe.close();
+        }
       } finally {
         rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
       }

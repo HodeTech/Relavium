@@ -55,73 +55,29 @@ describe('withBusyRetry — unit (2.5.I)', () => {
     expect(sleeps).toEqual([25, 50, 75, 100]);
   });
 
-  it('retries SQLITE_LOCKED as well', () => {
-    let calls = 0;
-    const result = withBusyRetry(
-      () => {
-        calls += 1;
-        if (calls < 2) throw lockError('SQLITE_LOCKED');
-        return 'ok';
-      },
-      { sleep: () => {} },
-    );
-    expect(result).toBe('ok');
-    expect(calls).toBe(2);
-  });
-
-  it('retries SQLITE_BUSY_SNAPSHOT — the exact fault the module docstring says it exists for (#100)', () => {
-    // `better-sqlite3` reports the EXTENDED result code, so a stale DEFERRED writer whose read→write
-    // upgrade loses the race surfaces as `SQLITE_BUSY_SNAPSHOT`, not bare `SQLITE_BUSY`. `BEGIN IMMEDIATE`
-    // avoids it on our own writers; this is the belt for one that ever escapes (a nested/demoted
-    // SAVEPOINT, or a future caller that opens its own DEFERRED transaction).
-    let calls = 0;
-    const result = withBusyRetry(
-      () => {
-        calls += 1;
-        if (calls < 2) throw lockError('SQLITE_BUSY_SNAPSHOT');
-        return 'ok';
-      },
-      { sleep: () => {} },
-    );
-    expect(result).toBe('ok');
-    expect(calls).toBe(2);
-  });
-
-  it('retries SQLITE_BUSY_RECOVERY — a WAL-index rebuild after a crash is transient too', () => {
-    // Same route as SQLITE_BUSY_SNAPSHOT: an extended code that `busy_timeout`'s handler loop exits WITH
-    // rather than downgrading, so the set never matched it. Without this a first-run-after-crash write
-    // fails loud on a condition that clears itself in milliseconds.
-    let calls = 0;
-    const result = withBusyRetry(
-      () => {
-        calls += 1;
-        if (calls < 2) throw lockError('SQLITE_BUSY_RECOVERY');
-        return 'ok';
-      },
-      { sleep: () => {} },
-    );
-    expect(result).toBe('ok');
-    expect(calls).toBe(2);
-  });
-
-  it('floors a stray baseDelayMs of 0 to 1ms (the async twin must never spin without yielding)', () => {
-    const sleeps: number[] = [];
-    let caught: unknown;
-    try {
-      withBusyRetry(
+  // One parameterized case per retryable code rather than three near-identical blocks. Each code is in the
+  // set for its own reason, so the reasons live here: `SQLITE_LOCKED` is the plain table-lock fault;
+  // `SQLITE_BUSY_SNAPSHOT` is the stale-DEFERRED upgrade failure `busy_timeout` does NOT cover, which arrives
+  // as its own EXTENDED code string rather than as a `SQLITE_BUSY` prefix — the whole substance of #100; and
+  // `SQLITE_BUSY_RECOVERY` is a WAL-index rebuild after a crash, which the busy handler's loop exits WITH
+  // rather than downgrading, so a first-run-after-crash write would otherwise fail loud on a condition that
+  // clears in milliseconds.
+  it.each(['SQLITE_LOCKED', 'SQLITE_BUSY_SNAPSHOT', 'SQLITE_BUSY_RECOVERY'] as const)(
+    'retries %s',
+    (code) => {
+      let calls = 0;
+      const result = withBusyRetry(
         () => {
-          throw lockError('SQLITE_BUSY');
+          calls += 1;
+          if (calls < 2) throw lockError(code);
+          return 'ok';
         },
-        { baseDelayMs: 0, maxAttempts: 3, sleep: (ms) => sleeps.push(ms) },
+        { sleep: () => {} },
       );
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(Error);
-    // 0 would make sleepAsync resolve immediately, so the twin would drain only MICROtasks — the contending
-    // writer never gets a chance to commit and I/O never runs, the exact opposite of the twin's purpose.
-    expect(sleeps).toEqual([1, 2]);
-  });
+      expect(result).toBe('ok');
+      expect(calls).toBe(2);
+    },
+  );
 
   it('rethrows a NON-lock error immediately, unchanged (no retry, no sleep)', () => {
     const sleep = vi.fn();

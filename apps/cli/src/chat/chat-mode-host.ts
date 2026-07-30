@@ -59,7 +59,8 @@ export function makeChatModeEnv(opts: MakeChatModeEnvOptions): ChatModeEnv {
     // (auto approves them directly). A relative path resolves against the session workspace — the SAME anchor
     // the fs jail uses — so the classification matches what the fs layer would enforce.
     //
-    // Reads `request.target`, NOT `request.preview` (#91): the preview is redacted for display, and a scrub
+    // Reads `request.unredactedPreview`, NOT `request.preview` (#91): the preview is redacted for display,
+    // and a scrub
     // that collapses `./x/.ssh/authorized_keys` would silently reclassify a protected path as unprotected.
     // Precedence: the REAL target first, the display preview only as a fallback for a hand-built request
     // that carries none (a test fixture / surface stub — the engine always sets `target`). Falling back is

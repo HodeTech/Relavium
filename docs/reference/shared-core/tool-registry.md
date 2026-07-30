@@ -233,6 +233,15 @@ interface ToolApprovalRequest {
   readonly toolId: ToolId;
   readonly action: ToolActionClass; // 'fs_write' | 'process' | 'egress' | 'os' (@relavium/shared TOOL_ACTION_CLASSES)
   readonly preview: ToolActionPreview;
+  /**
+   * The same field selection as `preview`, UNSCRUBBED — for IN-PROCESS CLASSIFICATION ONLY (#91). A host that
+   * classifies the target (the CLI's auto-mode protected-path check) must read this, never `preview`, because
+   * the scrub can turn a protected path into an unprotected-looking one. Deliberately ABSENT from the
+   * `agent:approval_requested` event, and MUST NEVER be serialized, logged, persisted, or forwarded across the
+   * event / IPC / `--json` boundary. Optional so a hand-built request stays constructible; the engine always
+   * sets it.
+   */
+  readonly unredactedPreview?: ToolActionPreview;
 }
 
 /** Secret-free (ENFORCED, not asserted), display-only — never a full URL/query, never a secret. */

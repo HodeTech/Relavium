@@ -4,6 +4,27 @@
 - **Date**: 2026-07-29
 - **Related**: [ADR-0064](0064-live-model-catalog.md) (its 2026-07-07 "2.5.I — DB write-path concurrency" amendment note establishes the `BEGIN IMMEDIATE` + bounded-retry convention this extends), [ADR-0021](0021-node-sqlite-driver-better-sqlite3.md) + [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md) (the synchronous driver), [ADR-0050](0050-cli-history-db-at-rest-posture.md) (the `0700`/`0600` guard the lock file inherits), [ADR-0005](0005-sqlite-drizzle-local-postgres-cloud.md) (one schema, two dialects — the Postgres port must not inherit this mechanism). Canonical home for the mechanism: the "Concurrency & transaction behavior" section of [database-schema.md](../reference/shared-core/database-schema.md).
 
+> **Amended 2026-07-30 (append-only, mechanism replaced — the decision stands).** The Decision below chose an
+> **OS lock file** with a staleness threshold and an atomic-`rename` takeover. Review found that protocol
+> **unsound, and it was replaced before merge.** Two failures, both reproducible: the takeover's `rename` fixes
+> only the file's final contents, so two takers can each `rename` and then each read back their own nonce and
+> both enter the critical section; and `release()` unlinked unconditionally, so a superseded holder could delete
+> the new owner's lock and admit a third process. Breaking a stale lock with plain file operations cannot be
+> made mutually exclusive — which is exactly why this ADR named `flock`/`LockFileEx` the mechanically superior
+> option and rejected it only for lacking a dependency-free Node binding.
+>
+> **The implementation now takes that advisory lock through SQLite instead**: `BEGIN EXCLUSIVE` on a dedicated
+> `<db-path>.migrate.lock` database. That is a real `fcntl` lock held for the life of the transaction, and the
+> kernel releases it when the process dies — so the 30 s threshold, the 50 ms poll, the pid field and the whole
+> takeover protocol are **deleted rather than tuned**, and the negative this ADR recorded about `finally` not
+> surviving `SIGKILL` no longer applies. It needs no new dependency (`better-sqlite3` is already the driver) and
+> keeps a separate file from `history.db`, because taking `BEGIN EXCLUSIVE` on the database drizzle is about to
+> migrate would deadlock it against our own connection.
+>
+> Unchanged: the decision to serialize the batch at all, why `BEGIN IMMEDIATE` cannot do it, the `:memory:`
+> no-op, the run-then-reconcile fallback for a filesystem that refuses the lock, and the Node/CLI scoping (the
+> Phase-6 Postgres port still gets a real advisory lock of its own, not this).
+
 ## Context
 
 `~/.relavium/history.db` is a **single shared file** that two `relavium` processes may open at

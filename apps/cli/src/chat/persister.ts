@@ -186,6 +186,41 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     ...(sessionModelCatalogId === undefined ? {} : { modelId: sessionModelCatalogId }),
   });
 
+  /**
+   * Persist one COMPLETED exchange: stage its rows, write them and the session row in one transaction, then —
+   * and only then — adopt the staged state in memory. Extracted from `onEvent`'s `session:turn_completed` arm
+   * so that arm reads as one decision (persist or just flush) rather than carrying the whole staging protocol
+   * inline; the ordering inside it is load-bearing and is documented where it happens.
+   */
+  const commitTurn = (userText: string, tokensUsed: { input: number; output: number }): void => {
+    const nextTitle = title ?? deriveSessionTitle(userText);
+    // STAGE the whole turn against provisional sequence numbers, then write it in ONE transaction (#228).
+    // Nothing in-memory moves until that write succeeds, so a failure leaves neither a half-written turn
+    // in the transcript nor a phantom sequence in this process.
+    const staged: SessionMessage[] = [stageText(sequenceNumber, 'user', userText)];
+    // The assistant row carries the (resolved) catalog id of the model that produced it (ADR-0059):
+    // `turnModelCatalogId` from this turn's last `cost:updated`, or `undefined` (NULL) when uncataloged.
+    if (assistantText.length > 0) {
+      staged.push(stageText(sequenceNumber + 1, 'assistant', assistantText, turnModelCatalogId));
+    }
+    const nextInput = totalInputTokens + tokensUsed.input;
+    const nextOutput = totalOutputTokens + tokensUsed.output;
+    deps.store.writeTurn({
+      messages: staged.map((message) => ({ message })),
+      session: record('active', { title: nextTitle, input: nextInput, output: nextOutput }),
+    });
+    // Committed. EVERY in-memory mutation for this turn happens here, AFTER the durable write returned —
+    // never before it. The token totals in particular: the columns are deliberately not accumulated for
+    // a turn whose messages did not persist (the same rule the comment above states for an errored or
+    // aborted turn), so advancing them ahead of the write made a failed turn's tokens leak into the next
+    // turn's row — the session then claimed two turns' tokens for one visible exchange.
+    title = nextTitle;
+    sequenceNumber += staged.length;
+    realMessageSeqs.push(...staged.map((m) => m.sequenceNumber));
+    totalInputTokens = nextInput;
+    totalOutputTokens = nextOutput;
+  };
+
   const onEvent = (event: SessionStreamHandleEvent): void => {
     switch (event.type) {
       case 'agent:token':
@@ -248,34 +283,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           // Derive the title HERE (not in beginUserTurn) — from the FIRST user message of a COMPLETED exchange of
           // a titleless session, so an aborted/errored earlier turn never labels the row. A blank message yields
           // undefined, so the next non-blank completed message becomes the title; a resumed session keeps its own.
-          const nextTitle = title ?? deriveSessionTitle(pendingUserText);
-          // STAGE the whole turn against provisional sequence numbers, then write it in ONE transaction (#228).
-          // Nothing in-memory moves until that write succeeds, so a failure leaves neither a half-written turn
-          // in the transcript nor a phantom sequence in this process.
-          const staged: SessionMessage[] = [stageText(sequenceNumber, 'user', pendingUserText)];
-          // The assistant row carries the (resolved) catalog id of the model that produced it (ADR-0059):
-          // `turnModelCatalogId` from this turn's last `cost:updated`, or `undefined` (NULL) when uncataloged.
-          if (assistantText.length > 0) {
-            staged.push(
-              stageText(sequenceNumber + 1, 'assistant', assistantText, turnModelCatalogId),
-            );
-          }
-          const nextInput = totalInputTokens + event.tokensUsed.input;
-          const nextOutput = totalOutputTokens + event.tokensUsed.output;
-          deps.store.writeTurn({
-            messages: staged.map((message) => ({ message })),
-            session: record('active', { title: nextTitle, input: nextInput, output: nextOutput }),
-          });
-          // Committed. EVERY in-memory mutation for this turn happens here, AFTER the durable write returned —
-          // never before it. The token totals in particular: the columns are deliberately not accumulated for
-          // a turn whose messages did not persist (the same rule the comment above states for an errored or
-          // aborted turn), so advancing them ahead of the write made a failed turn's tokens leak into the next
-          // turn's row — the session then claimed two turns' tokens for one visible exchange.
-          title = nextTitle;
-          sequenceNumber += staged.length;
-          realMessageSeqs.push(...staged.map((m) => m.sequenceNumber));
-          totalInputTokens = nextInput;
-          totalOutputTokens = nextOutput;
+          commitTurn(pendingUserText, event.tokensUsed);
         } else {
           // An errored or aborted turn persists no messages and accumulates no TOKENS, but the row is still
           // flushed: `updatedAt` moves, and the session COST (already folded per `cost:updated`) is real.

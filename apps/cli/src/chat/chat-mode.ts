@@ -165,7 +165,7 @@ export interface TurnPolicyDeps {
    *
    * Takes the whole request, not the preview: `request.preview` is a redacted DISPLAY projection (#91) whose
    * scrub can turn a protected path into an unprotected-looking one, so a security classifier must read
-   * `request.target` — see {@link ToolApprovalRequest.target}.
+   * `request.unredactedPreview` — see {@link ToolApprovalRequest.unredactedPreview}.
    */
   readonly isProtectedTarget?: (request: ToolApprovalRequest) => boolean;
 }

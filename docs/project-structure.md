@@ -7,7 +7,7 @@ Relavium is a **Turborepo monorepo with pnpm workspaces**. Every package is
 TypeScript with shared `tsconfig` bases, a single root `package.json` for tooling
 (ESLint, Prettier, Vitest), and Turborepo remote cache for CI. There are **four
 product surfaces** (desktop, VS Code, CLI, portal) plus a Phase-2 backend
-(`apps/api`, infrastructure rather than a product surface), and five shared packages.
+(`apps/api`, infrastructure rather than a product surface), and six shared packages.
 
 Every product surface exposes **both entry points of the one shared engine**: a
 **conversational agent** (chat session) *and* a **workflow interface** (the runner

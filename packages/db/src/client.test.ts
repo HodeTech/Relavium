@@ -463,8 +463,8 @@ describe('@relavium/db migration + constraint invariants', () => {
     } catch (err) {
       caught = err;
     }
-    expect(caught).toBeInstanceOf(DbOpenError);
-    const error = caught as DbOpenError;
+    if (!(caught instanceof DbOpenError)) throw new Error('expected a DbOpenError');
+    const error = caught;
     expect(error.code).toBe('uri_unsupported'); // callers narrow on this, never on the message
     expect(error.name).toBe('DbOpenError');
     expect(error.path).toBe('file::memory:?cache=shared');
@@ -485,8 +485,8 @@ describe('@relavium/db migration + constraint invariants', () => {
       } catch (err) {
         caught = err;
       }
-      expect(caught).toBeInstanceOf(DbOpenError);
-      const error = caught as DbOpenError;
+      if (!(caught instanceof DbOpenError)) throw new Error('expected a DbOpenError');
+      const error = caught;
       expect(error.code).toBe('open_failed');
       expect(error.path).toBe(path);
       expect(error.cause).toBeDefined(); // wrap-and-rethrow preserves the root cause

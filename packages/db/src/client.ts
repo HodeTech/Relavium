@@ -91,7 +91,7 @@ export function createClient(path = ':memory:'): DbClient {
       path,
     );
   }
-  let sqlite: Database.Database;
+  let sqlite: Database.Database | undefined;
   try {
     // Create the parent directory for a real file path so a first-run open doesn't fail on a
     // missing folder (inside the try so a filesystem error is classified the same way).
@@ -99,20 +99,31 @@ export function createClient(path = ':memory:'): DbClient {
       mkdirSync(dirname(path), { recursive: true });
     }
     sqlite = new Database(path);
+    // The PRAGMAs and the Drizzle bind are INSIDE the try: any of them can fail (a corrupt header surfaces on
+    // the first `journal_mode` write, not on open), and outside it a failure would leak the just-opened
+    // connection for the process lifetime AND escape as an untyped driver error — past both this factory's
+    // typed-error contract and `openLocalDb`'s cleanup/at-rest handling.
+    sqlite.pragma('journal_mode = WAL'); // concurrent reads while a run writes (no-op in memory)
+    sqlite.pragma('foreign_keys = ON'); // SQLite does not enforce FKs per connection by default
+    sqlite.pragma('busy_timeout = 5000'); // wait up to 5s for a writer lock instead of erroring
+    sqlite.pragma('synchronous = NORMAL'); // the recommended durability/throughput trade-off with WAL
+    const db = drizzle(sqlite, { schema });
+    return { db, sqlite, path };
   } catch (err) {
-    // Classify with the reason (locked/corrupt/permission/missing dir) and keep the original via `cause`;
-    // the path is on `.path`, not in the message.
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new DbOpenError('open_failed', `could not open the SQLite database: ${reason}`, path, {
+    // Close what we opened before propagating, or the connection leaks on every failed setup.
+    try {
+      sqlite?.close();
+    } catch {
+      /* already failing; a secondary close error must not replace the real cause */
+    }
+    // A STABLE, generic message: `err.message` from better-sqlite3 routinely contains the absolute file path,
+    // and this message is surfaced verbatim to the user by the CLI's history openers — interpolating it would
+    // put the OS username back in user-facing output, which is the very thing moving the path to `.path` was
+    // for. The driver's own error is preserved in full via `cause` for diagnosis.
+    throw new DbOpenError('open_failed', 'could not open the SQLite database', path, {
       cause: err,
     });
   }
-  sqlite.pragma('journal_mode = WAL'); // concurrent reads while a run writes (no-op in memory)
-  sqlite.pragma('foreign_keys = ON'); // SQLite does not enforce FKs per connection by default
-  sqlite.pragma('busy_timeout = 5000'); // wait up to 5s for a writer lock instead of erroring
-  sqlite.pragma('synchronous = NORMAL'); // the recommended durability/throughput trade-off with WAL
-  const db = drizzle(sqlite, { schema });
-  return { db, sqlite, path };
 }
 
 /** The packaged migration set (`./drizzle`), resolved relative to this module so it works
