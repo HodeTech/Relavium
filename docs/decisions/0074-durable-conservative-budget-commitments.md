@@ -44,8 +44,9 @@ Actual totals, per-model actual-cost attribution, and `cost:updated` remain real
 > this section alone would get wrong. **A reader restores the conservative total by SUMMING `estimateMicrocents`,
 > not by last-wins over the cumulative snapshot** — the engine assigns `sequenceNumber` after an `await` and states
 > that concurrent events have no canonical order, so under a `fan_out` the lower `seq` can carry the higher
-> cumulative and a last-wins restore would hand already-owed money back to the cap. `Math.max` would fix the order
-> but not the shape, because §1's deliberate release DECREASES the total. And **§1's release is representable**: it
+> cumulative and a last-wins restore would hand already-owed money back to the cap. `Math.max` over those snapshots
+> would also be order-independent and correct today, but it stops being correct once §1's deliberate release
+> DECREASES the total; the sum is correct in both worlds. And **§1's release is representable**: it
 > is a reserved `budget:estimate_released`, declared in the spec but emitted by no Phase-1 code, which is what makes
 > the sum-less-release rule a settled contract rather than an open question.
 

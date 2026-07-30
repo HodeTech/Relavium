@@ -552,11 +552,12 @@ export const BudgetEstimateCommittedEventSchema = z.object({
    * and 150 can land with the LOWER seq carrying the HIGHER cumulative; restoring from the last one then hands
    * already-owed money back to the cap as headroom — the exact bypass ADR-0074 exists to close.
    *
-   * `Math.max` over the snapshots (the order-independent trick `node:completed.cumulativeCostMicrocents` uses)
-   * would fix the ordering but not the shape: §1 requires the user to be able to CLEAR a commitment
-   * deliberately, and a release decreases the total, so the sequence is not monotonic. A sum of signed deltas
-   * survives both. (`cost:updated` gets away with last-wins only because it is streamed, never persisted —
-   * `checkpoint.ts` says so — so it is not the precedent for a durable event.)
+   * `Math.max` over the snapshots (the trick `node:completed.cumulativeCostMicrocents` uses) is genuinely
+   * order-independent and would be correct today — each snapshot is read right after its own increment, so the
+   * largest is the true total. It is not chosen because it stops being correct the moment §1's deliberate release
+   * DECREASES the total. A sum of signed deltas is correct in both worlds. (`cost:updated` gets away with
+   * last-wins only because it is streamed, never persisted — `checkpoint.ts` says so — so it is not the
+   * precedent for a durable event.)
    */
   cumulativeConservativeMicrocents: nonNegativeInt,
 });

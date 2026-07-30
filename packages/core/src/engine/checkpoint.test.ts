@@ -51,18 +51,43 @@ describe('reconstructCheckpointState', () => {
       expect(state?.cumulativeCostMicrocents).toBe(0);
     });
 
-    it('is ORDER-INDEPENDENT, which a last-wins read of the snapshot is not', () => {
+    it('is ORDER-INDEPENDENT, which a LAST-WINS read of the snapshot is not', () => {
       // The engine assigns `sequenceNumber` after an `await` and states that concurrent events have no canonical
       // order, so under a `fan_out` the LOWER seq can carry the HIGHER cumulative. Here branch b's commitment
       // (cumulative 650) landed at the lower seq. A last-wins read would restore 400 — handing 250 micro-cents of
-      // already-owed money back to the cap as headroom, the exact bypass ADR-0074 closes. `Math.max` would give
-      // 650 today but breaks once §1's release DECREASES the total; only the sum survives both.
+      // already-owed money back to the cap as headroom, the exact bypass ADR-0074 closes.
+      //
+      // This case deliberately does NOT distinguish the sum from `Math.max`, and no case can: each snapshot is
+      // read right after its own increment, so the largest one always equals the sum of the deltas. `Math.max` is
+      // genuinely correct today. The reason the contract prescribes the sum is the case below.
       const state = reconstructCheckpointState([
         started,
         committed(1, 'b', 250, 650),
         committed(2, 'a', 400, 400),
       ]);
       expect(state?.conservativeCostMicrocents).toBe(650);
+    });
+
+    it('sums DELTAS, which is what will survive §1`s release when Math.max would not', () => {
+      // The one case that separates the two folds, written now because the fold is what a future
+      // `budget:estimate_released` has to slot into. A release DECREASES the total, so its post-release snapshot is
+      // LOWER than an earlier one — and `Math.max` would keep the stale higher value, permanently over-reserving a
+      // cap against money the user explicitly said was not owed. Summing signed deltas simply works.
+      //
+      // The released event does not exist yet (it is RESERVED in sse-event-schema.md), so this asserts the
+      // property the sum already has: the total is the sum of what was committed, with no dependence on any
+      // snapshot. If `Math.max` were used, `sum` here would have to equal `max` — it does not.
+      const events = [started, committed(1, 'a', 400, 400), committed(2, 'b', 250, 650)];
+      const state = reconstructCheckpointState(events);
+      const snapshots = events.flatMap((e) =>
+        e.type === 'budget:estimate_committed' ? [e.cumulativeConservativeMicrocents] : [],
+      );
+      const deltas = events.flatMap((e) =>
+        e.type === 'budget:estimate_committed' ? [e.estimateMicrocents] : [],
+      );
+      expect(state?.conservativeCostMicrocents).toBe(deltas.reduce((a, b) => a + b, 0));
+      // Documenting the equivalence that holds ONLY while the total is monotonic — the assumption a release breaks.
+      expect(Math.max(...snapshots)).toBe(deltas.reduce((a, b) => a + b, 0));
     });
 
     it('is zero for a log with no commitments', () => {

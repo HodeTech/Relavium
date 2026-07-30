@@ -578,6 +578,14 @@ export class BudgetGovernor {
    * The durable half — a `budget:estimate_released` event, so the release survives a resume instead of silently
    * returning — is RESERVED but not yet emitted (see sse-event-schema.md §Reserved). Until a surface exists to
    * make the decision, this clears the live governor only; wiring the event is that surface's commit.
+   *
+   * **The WORKFLOW path is not blocked while that is outstanding, and it is worth being precise about why.** A
+   * resumed run does restore its conservative total, so its cap really is permanently smaller for that run — but
+   * §1's escape already exists there in another form: under `on_exceed: pause_for_approval` the user approves the
+   * node and the engine records a one-shot per-node bypass, and under `on_exceed: fail` the deliberate act is
+   * raising `max_cost_microcents` in the YAML, which is literally the analogy §1 draws ("exactly like raising the
+   * cap under `on_exceed`"). The gap is the SESSION path, where `[chat]` has neither a gate nor a per-run YAML —
+   * which is why the marker for it lives in `session-host.ts`, next to the wiring §4 has to add.
    */
   releaseConservativeCommitments(): number {
     const released = this.#conservativeCostMicrocents;

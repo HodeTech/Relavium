@@ -97,11 +97,19 @@ export interface CheckpointState {
    * post-resume pre-egress check projects against a cap that has NOT forgotten it — otherwise a crash reopens a
    * strict cap against money that may already be owed, which is the bypass ADR-0074 exists to close.
    *
-   * Folded as a SUM of `budget:estimate_committed.estimateMicrocents`, deliberately **not** last-wins or
-   * `Math.max` over the events' cumulative snapshot: the engine assigns `sequenceNumber` after an `await` and
-   * states that concurrent events have no canonical order, so under a `fan_out` the lower `seq` can carry the
-   * higher cumulative. A sum is order-independent. (It also survives §1's future release, which DECREASES the
-   * total and would defeat `Math.max`.) The canonical statement of this rule lives in
+   * Folded as a SUM of `budget:estimate_committed.estimateMicrocents`. Three candidate folds, and the reasoning
+   * matters because two of them look fine:
+   *
+   * - **last-wins** over the event's `cumulativeConservativeMicrocents` is WRONG. The engine assigns
+   *   `sequenceNumber` after an `await` and states that concurrent events have no canonical order, so under a
+   *   `fan_out` the lower `seq` can carry the higher cumulative — restoring the last one would hand already-owed
+   *   money back to the cap as headroom.
+   * - **`Math.max`** over those snapshots is, in fact, order-independent and correct TODAY: each snapshot is read
+   *   immediately after its own increment, so the largest one is always the true running total. It is not chosen
+   *   only because it stops being correct the moment §1's deliberate release DECREASES the total.
+   * - **the sum of deltas** is correct in both worlds, so it is what the contract prescribes.
+   *
+   * The canonical statement lives in
    * [sse-event-schema.md](../../../../docs/reference/contracts/sse-event-schema.md).
    */
   readonly conservativeCostMicrocents: number;
@@ -308,9 +316,10 @@ export function reconstructCheckpointState(
       acc.cumulativeCostMicrocents = event.cumulativeCostMicrocents; // already a running total
     }
     if (event.type === 'budget:estimate_committed') {
-      // SUM the per-commitment delta (ADR-0074 §2). Not the event's own `cumulativeConservativeMicrocents`
-      // snapshot: that is a producer-side convenience whose seq order is not guaranteed under a `fan_out`, so a
-      // last-wins read could restore a LOWER total and hand already-owed money back to the cap as headroom.
+      // SUM the per-commitment delta (ADR-0074 §2) — never a LAST-WINS read of the event's own
+      // `cumulativeConservativeMicrocents`, whose seq order is not guaranteed under a `fan_out` and could restore
+      // a LOWER total. (`Math.max` over those snapshots would also be correct today; the sum is what survives
+      // §1's future release. See the field's doc for the full comparison.)
       acc.conservativeCostMicrocents += event.estimateMicrocents;
     }
     applyRunEvent(acc, event);
