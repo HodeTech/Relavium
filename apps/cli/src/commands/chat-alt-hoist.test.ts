@@ -150,6 +150,25 @@ describe('withHoistedAltScreen (2.6.F Step 4b-3, ADR-0068 §c)', () => {
     expect(h.exit).toHaveBeenCalledWith(143); // 128 + 15 (SIGTERM)
   });
 
+  it('disarms a reversible job-control handoff BEFORE TERM performs the final alt restore', async () => {
+    const h = harness();
+    await withHoistedAltScreen(
+      {
+        ...opts(h, true),
+        beforeTerminalRestore: () => h.events.push('job-control:dispose'),
+      },
+      () => {
+        h.fireSignal(15);
+        return Promise.resolve({});
+      },
+    );
+
+    const dispose = h.events.indexOf('job-control:dispose');
+    const exit = h.events.indexOf(`write:${EXIT_SEQ}`);
+    expect(dispose).toBeGreaterThanOrEqual(0);
+    expect(exit).toBeGreaterThan(dispose);
+  });
+
   it('a SIGHUP is 128+1 = 129, a SIGQUIT is 128+3 = 131 (the external kills that skip Node’s exit event)', async () => {
     const hup = harness();
     await withHoistedAltScreen(opts(hup, true), () => {

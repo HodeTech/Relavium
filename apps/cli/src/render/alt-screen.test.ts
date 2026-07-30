@@ -219,3 +219,69 @@ describe('createAltScreenController — a failed restore must not disarm the lat
     expect(alt.isEntered()).toBe(false);
   });
 });
+
+/** The chat REPL has a tiny no-Ink interval between `/clear`/reseat sessions while its hoisted 1049 controller stays
+ * alive. G0 uses this reversible pair there: job control must hand the shell a normal primary buffer, then reclaim
+ * the exact state on SIGCONT — never call the FINAL `restore()` just because the process was briefly stopped. */
+describe('createAltScreenController — reversible job-control release', () => {
+  it('temporarily releases and reclaims the live buffer without tripping the final restore latch', () => {
+    const out: string[] = [];
+    const alt = createAltScreenController({
+      write: (sequence) => out.push(sequence),
+      active: true,
+    });
+    alt.enter();
+
+    expect(alt.releaseForSuspend()).toBe(true);
+    expect(out).toEqual([ENTER_SEQ, EXIT_SEQ]);
+    expect(alt.isEntered()).toBe(false);
+    expect(alt.isMouseEnabled()).toBe(false);
+
+    alt.reclaimAfterSuspend();
+    expect(out).toEqual([ENTER_SEQ, EXIT_SEQ, ENTER_SEQ]);
+    expect(alt.isEntered()).toBe(true);
+    expect(alt.isMouseEnabled()).toBe(true);
+
+    alt.restore(); // still a live controller — final teardown remains available after a suspend/resume cycle
+    expect(out).toEqual([ENTER_SEQ, EXIT_SEQ, ENTER_SEQ, EXIT_SEQ]);
+  });
+
+  it('does not double-release, and a failed temporary release never invents a reclaim', () => {
+    const writes: string[] = [];
+    let failRelease = true;
+    const alt = createAltScreenController({
+      write: (sequence) => {
+        if (sequence === EXIT_SEQ && failRelease) {
+          failRelease = false;
+          throw new Error('EIO');
+        }
+        writes.push(sequence);
+      },
+      active: true,
+    });
+    alt.enter();
+
+    expect(alt.releaseForSuspend()).toBe(false);
+    alt.reclaimAfterSuspend();
+    expect(writes).toEqual([ENTER_SEQ]);
+
+    expect(alt.releaseForSuspend()).toBe(true);
+    expect(alt.releaseForSuspend()).toBe(false);
+    expect(writes).toEqual([ENTER_SEQ, EXIT_SEQ]);
+  });
+
+  it('a final restore while temporarily released keeps the primary buffer visible', () => {
+    const out: string[] = [];
+    const alt = createAltScreenController({
+      write: (sequence) => out.push(sequence),
+      active: true,
+    });
+    alt.enter();
+    alt.releaseForSuspend();
+    alt.restore();
+    alt.reclaimAfterSuspend(); // final state wins: a process that exits while stopped must not re-enter 1049
+
+    expect(out).toEqual([ENTER_SEQ, EXIT_SEQ]);
+    expect(alt.isEntered()).toBe(false);
+  });
+});

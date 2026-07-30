@@ -91,7 +91,14 @@ import {
   type TranscriptBound,
 } from '../render/tui/session-view-model.js';
 import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
-import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
+import {
+  createSuspendPort,
+  defaultJobControlLifecycle,
+  suspendFullScreen,
+  wireJobControl,
+  type JobControlLifecycle,
+  type SuspendPort,
+} from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import {
   errorRecoveryHint,
@@ -291,6 +298,8 @@ export interface ChatDriveContext {
    * a plain / `--json` driver — the hatches then surface an honest "needs an interactive terminal" notice.
    */
   readonly suspendPort?: SuspendPort | undefined;
+  /** Raw-mode Ctrl-Z / external SIGTSTP converge here. Absent for a plain driver, where no Ink terminal is owned. */
+  readonly onSuspend?: (() => void) | undefined;
   /**
    * Write the mouse selection to the system clipboard over OSC 52 (2.6.F Step 6). Only an INK driver has a terminal
    * to write to; a plain / `--json` driver never mounts the viewport, so nothing can be selected there.
@@ -336,6 +345,8 @@ export interface ChatCommandDeps {
    *  `writeControl` + `lifecycle` so the hoist never touches the REAL terminal / process signals; default = real. */
   readonly writeControl?: (sequence: string) => void;
   readonly lifecycle?: ReplLifecycle;
+  /** Injectable POSIX SIGTSTP/SIGCONT seam; kept separate from irreversible termination handling. */
+  readonly jobControlLifecycle?: JobControlLifecycle;
   /** Wall-clock (ms) + id sources (injectable for tests). */
   readonly now?: () => number;
   readonly uuid?: () => string;
@@ -367,6 +378,8 @@ export interface ChatResumeCommandDeps {
    *  never touches the real terminal / process signals (default = real). */
   readonly writeControl?: (sequence: string) => void;
   readonly lifecycle?: ReplLifecycle;
+  /** Injectable POSIX SIGTSTP/SIGCONT seam; kept separate from irreversible termination handling. */
+  readonly jobControlLifecycle?: JobControlLifecycle;
   /** Wall-clock (ms) + id sources (injectable for tests). */
   readonly now?: () => number;
   readonly uuid?: () => string;
@@ -383,6 +396,10 @@ interface ChatReplDeps {
   /** The process lifecycle seam for the alt-buffer exit-safety net (Step 4b-3) — `process.on('exit')`, SIGTERM/SIGHUP,
    *  raw-mode, and exit. Default {@link defaultReplLifecycle}; a test injects fakes to drive the exit paths. */
   readonly lifecycle?: ReplLifecycle;
+  /** Injectable POSIX SIGTSTP/SIGCONT seam; active only for an interactive Ink chat. */
+  readonly jobControlLifecycle?: JobControlLifecycle;
+  /** The current loop's raw Ctrl-Z request. Constructed beside the hoisted terminal state, not by a plain driver. */
+  readonly onSuspend?: (() => void) | undefined;
   /**
    * `[preferences].copy_on_select`, ALREADY resolved against the mouse decision (`resolveCopyOnSelect`). `false` (or
    * absent, on a non-interactive path) means the ink tree gets no `clipboard` prop: a released drag still highlights,
@@ -1919,6 +1936,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       ...(deps.hatchPorts?.suspendPort === undefined
         ? {}
         : { suspendPort: deps.hatchPorts.suspendPort }),
+      ...(deps.onSuspend === undefined ? {} : { onSuspend: deps.onSuspend }),
       // The clipboard rides the SAME control-write sink as the alt-buffer toggles (Step 6). OSC 52 prints nothing and
       // moves no cursor, so writing it mid-frame cannot corrupt ink's line accounting.
       // ABSENT when `[preferences].copy_on_select = false` (or `--no-mouse`, which resolves it false): the selection
@@ -2017,6 +2035,12 @@ export async function withHoistedAltScreen(
     readonly lifecycle: ReplLifecycle;
     readonly writeOut: (text: string) => void;
     readonly writeErr: (text: string) => void;
+    /**
+     * Permanently disarm a reversible terminal handoff before this wrapper restores its final terminal state. The
+     * job-control coordinator intentionally leaves a pending SIGCONT waiter unresolved on an external termination:
+     * allowing it to reclaim afterward could re-enter 1049 / re-enable mouse reporting behind this final restore.
+     */
+    readonly beforeTerminalRestore?: () => void;
     /** The ONE suspend port for the loop. `current() === undefined` means NO ink tree is mounted — the only window in
      *  which SIGINT is unowned. Absent ⇒ no SIGINT net (a caller with no ink, e.g. a unit test). */
     readonly suspendPort?: SuspendPort;
@@ -2039,7 +2063,12 @@ export async function withHoistedAltScreen(
   let result: HoistedLoopResult = {};
   try {
     alt.enter();
-    removeExitNet = opts.active ? opts.lifecycle.onProcessExit(() => alt.restore()) : noop;
+    removeExitNet = opts.active
+      ? opts.lifecycle.onProcessExit(() => {
+          opts.beforeTerminalRestore?.();
+          alt.restore();
+        })
+      : noop;
     // SIGINT belongs to ink: while a tree is mounted, `driveInk`'s `onSigintGated` runs the cooperative `/cancel`, and
     // during a `/scrollback` or `/edit` hatch it deliberately DROPS the signal so the suspension can reclaim. But a
     // `/clear` or `/models` rebuild unmounts ink and mounts a fresh tree, and in that window NOTHING listens for
@@ -2050,6 +2079,7 @@ export async function withHoistedAltScreen(
       opts.active && suspendPortForSigint !== undefined
         ? opts.lifecycle.onInterrupt(() => {
             if (suspendPortForSigint.current() !== undefined) return; // ink owns it (mounted, or suspended)
+            opts.beforeTerminalRestore?.();
             alt.restore();
             opts.write(DISABLE_BRACKETED_PASTE);
             try {
@@ -2062,6 +2092,7 @@ export async function withHoistedAltScreen(
         : noop;
     removeSignalNet = opts.active
       ? opts.lifecycle.onTerminationSignal((signo) => {
+          opts.beforeTerminalRestore?.();
           alt.restore();
           opts.write(DISABLE_BRACKETED_PASTE);
           try {
@@ -2079,6 +2110,7 @@ export async function withHoistedAltScreen(
     // DECRST-1049 restore (the Step-4b-3 Opus-review regression: the rebuild-failure `chat-resume <id>` hint vanished
     // once alt became the default). `restore()` is idempotent — the `onProcessExit` net may also have fired. Remove
     // the nets so they cannot outlive the loop.
+    opts.beforeTerminalRestore?.();
     alt.restore();
     removeExitNet();
     removeSignalNet();
@@ -2182,6 +2214,10 @@ export async function runReplLoop(
   // The hoisted controller, captured so `hatchPorts.terminal()` can read the LIVE buffer state (it is created inside
   // `withHoistedAltScreen` below, after `hatchPorts` is built — hence the mutable binding read lazily).
   let altScreenController: AltScreenController | undefined;
+  // The hoist owns the irreversible restore nets, while the job-control binding is created only after its live
+  // controller exists. Keep a tiny indirection so those nets can disarm a pending reversible reclaim BEFORE they
+  // restore 1049/mouse permanently (a SIGCONT must never re-enter the terminal after a TERM/HUP/QUIT path).
+  let disposeJobControl = (): void => undefined;
   // Copy-on-select (2.6.F Step 6e): a durable preference, resolved from the ALREADY-RESOLVED mouse decision, so
   // `--no-mouse` structurally turns it off too. `/copy` is unaffected: it binds the clipboard through `hatchPorts`.
   const copyOnSelect = resolveCopyOnSelect({
@@ -2199,49 +2235,82 @@ export async function runReplLoop(
         lifecycle: deps.lifecycle ?? defaultReplLifecycle,
         writeOut: (text) => deps.io.writeOut(text),
         writeErr: (text) => deps.io.writeErr(text),
+        beforeTerminalRestore: () => disposeJobControl(),
         suspendPort,
       },
       async (alt): Promise<HoistedLoopResult> => {
         altScreenController = alt; // so `hatchPorts.terminal()` reads the LIVE buffer state, not the startup decision
-        let current = wiring;
-        let summaryText: string | undefined; // the final `/exit` summary, printed after the single alt-exit
-        for (;;) {
-          const outcome = await driveOneSession(current, replDeps);
-          // The end-of-session summary is LIFTED out of driveInk (ADR-0068 §c): the wrapper prints it after the single
-          // alt-exit, on the PRIMARY buffer. Only a final `'exit'` carries one; a `/clear` / reseat swap carries none.
-          if (outcome.kind === 'exit') summaryText = outcome.summaryText;
-          // The old session is ALREADY torn down (driveOneSession's finally fired its terminal → the row is 'ended' +
-          // resumable). Resolve the rebuild for this swap kind, or `undefined` to END the REPL (see resolveSwapRebuild).
-          const oldSessionId = current.built.sessionId;
-          // The old session is torn down but its view STORE is still live (teardown closes the persister + MCP, never
-          // the store), so this is the rendered conversation the reseated session must open with (2.6.C / F1).
-          const next = resolveSwapRebuild(
-            outcome,
-            oldSessionId,
-            rebuild,
-            reseatRebuild,
-            current.store.getSnapshot().state.transcript,
-          );
-          if (next === undefined) return { summaryText };
-          // Clear the persistent alt buffer between the just-unmounted session and the next mount, so a `/clear` swap
-          // never briefly shows two stacked transcripts (ink's non-fullscreen unmount does not erase). No-op inactive.
-          alt.clearBetween();
-          // Build the swap session over the same db and re-drive; a build failure is surfaced actionably (the prior
-          // conversation is still resumable) and ends the REPL rather than looping on a broken build. The message is
-          // RETURNED (not written here) so the wrapper emits it AFTER the alt-exit — writing it inside the still-entered
-          // alt buffer would discard it (the recovery hint with the resumable session id — Step-4b-3 Opus review).
-          try {
-            current = await next();
-          } catch (err) {
-            const errorText =
-              // Sanitize the error text too (not just the id beside it) — a rebuild fault can rethrow an unclassified
-              // message verbatim (session-host.ts), which could carry an ANSI/OSC escape from a spawned MCP server's
-              // error text; strip it exactly as the id + every other display string on this surface is stripped.
-              `could not start a new session after ${outcome.kind === 'reseat' ? 'a model switch' : '/clear'}: ` +
-              `${sanitizeInline(err instanceof Error ? err.message : String(err))}. ` +
-              `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`;
-            return { summaryText, errorText };
+        // The raw-mode Ink surface needs job control even in inline render mode; only plain/non-TTY drivers omit
+        // these listeners. During a `/clear`/reseat gap there is no Ink tree, so the hoisted controller supplies its
+        // reversible 1049/mouse release instead of calling its FINAL `restore()`.
+        const jobControl = chatIsInteractive(deps.io, deps.global)
+          ? wireJobControl({
+              suspendPort,
+              lifecycle: deps.jobControlLifecycle ?? defaultJobControlLifecycle,
+              run: (suspendTerminal, waitForContinue) =>
+                suspendFullScreen(
+                  {
+                    suspendTerminal,
+                    writeControl,
+                    inkOwnsAltScreen: false,
+                    altActive: alt.isEntered(),
+                    mouseActive: alt.isMouseEnabled(),
+                  },
+                  waitForContinue,
+                ),
+              releaseWithoutInk: () => alt.releaseForSuspend(),
+              reclaimWithoutInk: () => alt.reclaimAfterSuspend(),
+            })
+          : undefined;
+        disposeJobControl = jobControl?.dispose ?? (() => undefined);
+        const sessionDeps =
+          jobControl === undefined
+            ? replDeps
+            : { ...replDeps, onSuspend: jobControl.requestSuspend };
+        try {
+          let current = wiring;
+          let summaryText: string | undefined; // the final `/exit` summary, printed after the single alt-exit
+          for (;;) {
+            const outcome = await driveOneSession(current, sessionDeps);
+            // The end-of-session summary is LIFTED out of driveInk (ADR-0068 §c): the wrapper prints it after the single
+            // alt-exit, on the PRIMARY buffer. Only a final `'exit'` carries one; a `/clear` / reseat swap carries none.
+            if (outcome.kind === 'exit') summaryText = outcome.summaryText;
+            // The old session is ALREADY torn down (driveOneSession's finally fired its terminal → the row is 'ended' +
+            // resumable). Resolve the rebuild for this swap kind, or `undefined` to END the REPL (see resolveSwapRebuild).
+            const oldSessionId = current.built.sessionId;
+            // The old session is torn down but its view STORE is still live (teardown closes the persister + MCP, never
+            // the store), so this is the rendered conversation the reseated session must open with (2.6.C / F1).
+            const next = resolveSwapRebuild(
+              outcome,
+              oldSessionId,
+              rebuild,
+              reseatRebuild,
+              current.store.getSnapshot().state.transcript,
+            );
+            if (next === undefined) return { summaryText };
+            // Clear the persistent alt buffer between the just-unmounted session and the next mount, so a `/clear` swap
+            // never briefly shows two stacked transcripts (ink's non-fullscreen unmount does not erase). No-op inactive.
+            alt.clearBetween();
+            // Build the swap session over the same db and re-drive; a build failure is surfaced actionably (the prior
+            // conversation is still resumable) and ends the REPL rather than looping on a broken build. The message is
+            // RETURNED (not written here) so the wrapper emits it AFTER the alt-exit — writing it inside the still-entered
+            // alt buffer would discard it (the recovery hint with the resumable session id — Step-4b-3 Opus review).
+            try {
+              current = await next();
+            } catch (err) {
+              const errorText =
+                // Sanitize the error text too (not just the id beside it) — a rebuild fault can rethrow an unclassified
+                // message verbatim (session-host.ts), which could carry an ANSI/OSC escape from a spawned MCP server's
+                // error text; strip it exactly as the id + every other display string on this surface is stripped.
+                `could not start a new session after ${outcome.kind === 'reseat' ? 'a model switch' : '/clear'}: ` +
+                `${sanitizeInline(err instanceof Error ? err.message : String(err))}. ` +
+                `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`;
+              return { summaryText, errorText };
+            }
           }
+        } finally {
+          jobControl?.dispose();
+          disposeJobControl = (): void => undefined;
         }
       },
     );

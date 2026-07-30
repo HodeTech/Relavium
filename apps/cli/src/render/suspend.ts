@@ -183,3 +183,196 @@ export function createSuspendPort(): SuspendPort {
     isSuspended: () => suspended,
   };
 }
+
+/**
+ * The named, POSIX-only job-control signal seam. `SIGTSTP`/`SIGCONT` are deliberately NOT folded into the normal
+ * termination callbacks: stopping a foreground job is reversible, whereas SIGINT/TERM/HUP/QUIT tear the command
+ * down, close its database, and exit. Keeping the names here also avoids treating platform-specific signal numbers
+ * as a public contract.
+ */
+export interface JobControlLifecycle {
+  /** `false` on platforms without POSIX job control (notably Windows): no listeners are installed and Ctrl-Z is inert. */
+  readonly supported: boolean;
+  /** Register the catchable stop request; returns its exact remover. */
+  readonly onSuspend: (listener: () => void) => () => void;
+  /** Register the continuation notification; it remains installed while the process is stopped. */
+  readonly onContinue: (listener: () => void) => () => void;
+  /** Re-deliver SIGTSTP to this process after our listener has released terminal state and removed itself. */
+  readonly suspendSelf: () => void;
+}
+
+const noop = (): void => undefined;
+
+/** Production process binding for {@link JobControlLifecycle}. No unsupported Windows signal is ever registered. */
+export const defaultJobControlLifecycle: JobControlLifecycle = {
+  supported: process.platform !== 'win32',
+  onSuspend: (listener) => {
+    if (process.platform === 'win32') return noop;
+    process.on('SIGTSTP', listener);
+    return () => process.removeListener('SIGTSTP', listener);
+  },
+  onContinue: (listener) => {
+    if (process.platform === 'win32') return noop;
+    process.on('SIGCONT', listener);
+    return () => process.removeListener('SIGCONT', listener);
+  },
+  suspendSelf: () => {
+    if (process.platform !== 'win32') process.kill(process.pid, 'SIGTSTP');
+  },
+};
+
+/**
+ * Perform an Ink-aware terminal release and wait for a matching SIGCONT. `run` must use {@link suspendFullScreen}
+ * (rather than calling Ink directly), preserving each surface's proven alt-screen and mouse ownership rules.
+ */
+export type JobControlRun = (
+  suspendTerminal: SuspendTerminal,
+  waitForContinue: () => Promise<void>,
+) => Promise<void>;
+
+/** The reversible job-control binding returned by {@link wireJobControl}. */
+export interface JobControlBinding {
+  /** Request a stop from either a process SIGTSTP or the raw-mode Ctrl-Z input byte. */
+  readonly requestSuspend: () => void;
+  /** Remove the process listeners; safe to call more than once. */
+  readonly dispose: () => void;
+}
+
+/**
+ * Bind POSIX job control to one mounted Ink surface.
+ *
+ * The critical ordering is enforced in one place:
+ *
+ * 1. `run` enters Ink's suspension window and releases mouse/alt state.
+ * 2. only inside that released window do we remove our SIGTSTP listener and re-deliver SIGTSTP to the process;
+ * 3. SIGCONT re-arms SIGTSTP before resolving the wait, after which Ink restores raw input and redraws. A second
+ *    stop received while that reclaim is in flight is remembered and replayed only after Ink has finished its redraw;
+ *    it is never silently swallowed.
+ *
+ * A hatch may already own `SuspendPort` (`/scrollback`/`/edit`), and a chat rebuild has a brief interval with no Ink
+ * tree at all. Those paths deliberately do not nest Ink suspension: they release/reclaim only the optional hoisted
+ * terminal state around the real stop, then let the existing owner resume normally.
+ */
+export function wireJobControl(opts: {
+  readonly suspendPort: SuspendPort;
+  readonly lifecycle: JobControlLifecycle;
+  readonly run: JobControlRun;
+  /** Optional reversible release for an interval with no Ink tree (the chat hoist's rebuild window). */
+  readonly releaseWithoutInk?: () => boolean;
+  /** Mirrors {@link releaseWithoutInk} after the stopped process is foregrounded again. */
+  readonly reclaimWithoutInk?: () => void;
+}): JobControlBinding {
+  if (!opts.lifecycle.supported) return { requestSuspend: noop, dispose: noop };
+
+  let disposed = false;
+  let suspending = false;
+  let pendingSuspend = false;
+  let resolveContinue: (() => void) | undefined;
+  let removeSuspend: (() => void) | undefined;
+  let removeContinue: (() => void) | undefined;
+
+  const removeSuspendListener = (): void => {
+    removeSuspend?.();
+    removeSuspend = undefined;
+  };
+
+  const installSuspendListener = (): void => {
+    if (disposed || removeSuspend !== undefined) return;
+    removeSuspend = opts.lifecycle.onSuspend(requestSuspend);
+  };
+
+  const continueSuspension = (): void => {
+    const resolve = resolveContinue;
+    if (resolve === undefined) return; // a stray SIGCONT must not perturb an active surface
+    // Re-arm BEFORE Ink resumes input/redraws. A fast second Ctrl-Z is then captured by our handler rather than
+    // falling through to a default stop while the terminal is still being reclaimed.
+    installSuspendListener();
+    resolveContinue = undefined;
+    resolve();
+  };
+
+  /** Remove our handler just long enough for the OS default SIGTSTP action to stop the process. */
+  const forwardSuspend = (): void => {
+    removeSuspendListener();
+    try {
+      opts.lifecycle.suspendSelf();
+    } catch {
+      // A failed self-signal means there was no stop/continuation. Resolve a pending release so Ink can reclaim;
+      // the finally below restores our SIGTSTP listener too.
+      continueSuspension();
+    } finally {
+      // `suspendSelf()` returns only after SIGCONT. This is the re-arm for the no-Ink and hatch-owned paths; the
+      // Ink-owned path already re-arms in `continueSuspension` before it resolves the deferred, so this is a no-op.
+      installSuspendListener();
+    }
+  };
+
+  const settle = (): void => {
+    resolveContinue = undefined;
+    suspending = false;
+    installSuspendListener();
+    // `SIGCONT` deliberately re-arms before Ink starts reclaiming terminal state: an external SIGTSTP can otherwise
+    // default-stop the process in the tiny interval after 1049/raw input has been restored but before the mouse/
+    // redraw have completed. The coordinator is still busy, so retain ONE request and replay it after the terminal is
+    // coherent again. `queueMicrotask` also keeps the signal callback itself synchronous and side-effect bounded.
+    queueMicrotask(() => {
+      if (disposed || suspending || !pendingSuspend) return;
+      pendingSuspend = false;
+      requestSuspend();
+    });
+  };
+
+  function requestSuspend(): void {
+    if (disposed) return;
+    if (suspending) {
+      // Coalesce a burst into one real follow-up stop. Dropping it would make a fast Ctrl-Z / SIGTSTP after `fg`
+      // appear to succeed (the listener consumed it) while leaving the process running.
+      pendingSuspend = true;
+      return;
+    }
+
+    // A hatch has already released Ink's input and its terminal modes. Nesting `suspendTerminal` would throw
+    // "already suspended" and could reclaim the hatch's terminal behind its back, so just perform genuine POSIX job
+    // control and let the still-pending hatch resume after foregrounding.
+    if (opts.suspendPort.isSuspended()) {
+      forwardSuspend();
+      return;
+    }
+
+    const suspendTerminal = opts.suspendPort.current();
+    if (suspendTerminal === undefined) {
+      // Before Home mounts (onboarding) there is no Ink state to release. In the chat's rebuild window there can be
+      // a live hoisted alt buffer, supplied by the reversible hooks below.
+      if (opts.releaseWithoutInk !== undefined && !opts.releaseWithoutInk()) return;
+      forwardSuspend();
+      opts.reclaimWithoutInk?.();
+      return;
+    }
+
+    suspending = true;
+    const waitForContinue = (): Promise<void> =>
+      new Promise((resolve) => {
+        resolveContinue = resolve;
+        forwardSuspend();
+      });
+    // Signals cannot await a promise. Absorb a terminal-write/Ink failure here: `suspendFullScreen` has already
+    // performed its own partial-state reclaim, and an unhandled rejection from a signal handler is strictly worse.
+    // We intentionally do not re-raise after a failed release because terminal release never reached the safe point.
+    void opts.run(suspendTerminal, waitForContinue).catch(noop).finally(settle);
+  }
+
+  removeContinue = opts.lifecycle.onContinue(continueSuspension);
+  installSuspendListener();
+
+  return {
+    requestSuspend,
+    dispose: (): void => {
+      if (disposed) return;
+      disposed = true;
+      pendingSuspend = false;
+      removeSuspendListener();
+      removeContinue?.();
+      removeContinue = undefined;
+    },
+  };
+}
