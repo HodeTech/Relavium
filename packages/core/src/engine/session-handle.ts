@@ -92,7 +92,7 @@ export function createSessionEventSink(bus: RunEventBus, sessionId: string): Ses
     // (agent-turn.ts), so a session never actually emits it. It is the one `NodeStreamEvent` arm with no
     // session-carrying schema member, so it could not validate on the bus. Drop it at this single
     // translation point — the contract boundary 1.W owns — keeping the session stream to its
-    // sse-event-schema.md contract (the `session:*` lifecycle/side events, the five dual
+    // sse-event-schema.md contract (the `session:*` lifecycle/side events, the dual
     // `agent:*`/`cost:updated` — incl. `agent:reasoning` (EA6) — and the host-emitted
     // `agent:approval_requested` — ADR-0057).
     if (event.type === 'agent:file_patch_proposed') {
@@ -100,7 +100,7 @@ export function createSessionEventSink(bus: RunEventBus, sessionId: string): Ses
     }
     // Attach the correlation key; the bus then stamps the per-session sequenceNumber + timestamp and
     // validates against the combined RunOrSessionEventSchema. After the guard the body is a `session:*`
-    // lifecycle body, one of the five dual `agent:*`/`cost:updated` bodies (incl. `agent:reasoning`), or the
+    // lifecycle body, one of the dual `agent:*`/`cost:updated`/`budget:*` bodies (incl. `agent:reasoning`), or the
     // host-emitted `agent:approval_requested` body, so `+ sessionId` is a
     // BusEventDraft the session-side `emit` overload accepts (a session lifecycle → `SessionEventDraft`,
     // a dual body → the optional-`sessionId` `RunEventDraft` arm). The bus stamps and returns it.

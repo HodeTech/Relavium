@@ -43,6 +43,13 @@ type InNodeEventType =
   | 'agent:tool_result'
   | 'cost:updated'
   | 'agent:file_patch_proposed';
+// `budget:estimate_committed` (ADR-0074 §2) is deliberately NOT here, and the reason is easy to get backwards.
+// It IS produced from inside a turn — in the same callback that emits `cost:updated`, right after
+// `settleAtReservedEstimate()` — so this list looks like its home. But this port is the STREAMED channel
+// (`#nodeEmit` → `#bus.emit`), and §2 requires the commitment to be DURABLE: it exists precisely so the amount
+// survives a crash. The governor owns its own durable hook instead (`engine.ts` wires its `emit` straight to
+// `#emitDurable`), which is why adding the literal here forces `#nodeEmit`'s exhaustiveness guard to route a
+// durable event down a streaming path. If you came here to add it, add it to the governor's emit type instead.
 
 /** Distribute `Omit` across each union member so the discriminated union (and `.type` narrowing) survives. */
 type DistributiveKeyOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;

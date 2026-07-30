@@ -38,10 +38,11 @@ const runBase = { runId: nonEmptyString, ...timestampSeq };
 const sessionBase = { sessionId: nonEmptyString, ...timestampSeq };
 
 /**
- * The dual envelope for the events that may carry EITHER correlation key: the five reused across both
- * streams (`agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` / `cost:updated`)
- * plus `agent:approval_requested` (dual at the schema level, but session-only-emitted in Phase 2.5 — the
- * chat approval regime). They carry `runId` on a run and `sessionId` on a session. A `discriminatedUnion`
+ * The dual envelope for the events that may carry EITHER correlation key: the reused conversational ones
+ * (`agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` / `cost:updated`), plus
+ * `agent:approval_requested` (dual at the schema level, but session-only-emitted in Phase 2.5 — the chat
+ * approval regime) and `budget:estimate_committed` (ADR-0074 §2). **This spread is the definition of the set** —
+ * every member is a `...dualBase` spread and nothing else, so grep it rather than trusting a hand-kept count. They carry `runId` on a run and `sessionId` on a session. A `discriminatedUnion`
  * *member* can't carry a cross-field refinement, so the "exactly one of runId / sessionId" invariant is
  * enforced at the **union** level (see `RunEventSchema`). Run-only / session-only events satisfy it by
  * construction (the other key isn't declared, so it is stripped on parse), so the check only constrains
@@ -592,7 +593,7 @@ type RunEventUnion = z.infer<typeof RunEventUnionSchema>;
  * The **exactly one of `runId` / `sessionId`** correlation-key invariant (sse-event-schema.md §"Correlation
  * key"). Run-only / session-only events satisfy it by construction — a stray opposite key is stripped by their
  * `z.object` before this refine runs (the deliberate non-strict, forward-compatible posture). The `dualBase`
- * events (the five reused agent/cost events plus `agent:approval_requested`) declare both keys as optional, so
+ * events (every `...dualBase` member — see its definition above) declare both keys as optional, so
  * this is where neither/both is rejected.
  */
 function refineCorrelationKey(event: RunEventUnion, ctx: z.RefinementCtx): void {
@@ -829,7 +830,7 @@ export const SessionTrimmedEventSchema = z.object({
 });
 
 /**
- * The `session:*` lifecycle events. Within a turn a session also reuses the five dual-envelope events
+ * The `session:*` lifecycle events. Within a turn a session also reuses the dual-envelope events
  * above (`agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` / `cost:updated`) plus,
  * on the chat approval path, `agent:approval_requested` (ADR-0057) — all carried with `sessionId` — so the
  * complete session stream is this union plus those. Adding an arm is additive; a consumer with a `default` arm
@@ -855,8 +856,9 @@ export type SessionTrimmedEvent = z.infer<typeof SessionTrimmedEventSchema>;
  * The combined event the shared `RunEventBus` carries — the `run:*`/`node:*` family **and** the
  * `session:*` family on **one** bus (ADR-0036 "one bus, two namespaces"). A `z.union` (not a flat
  * discriminated union) so each family keeps its own refinements — notably `RunEventSchema`'s correlation-key
- * cross-check and its six `dualBase` members (the five `agent:*`/`cost:updated` events plus
- * `agent:approval_requested`, which carry `sessionId` when session-emitted and `runId` on a run); a
+ * cross-check and its `dualBase` members (the reused `agent:*`/`cost:updated` events plus
+ * `agent:approval_requested` and `budget:estimate_committed`, which carry `sessionId` when session-emitted and
+ * `runId` on a run); a
  * `session:*` lifecycle event matches the `SessionEventSchema` arm. This is the single validation gate the
  * bus parses against; the per-correlation-key `sequenceNumber` is assigned there.
  */
