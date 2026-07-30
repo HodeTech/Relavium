@@ -121,6 +121,64 @@ export interface RunHistoryStoreDeps {
 }
 
 /**
+ * A stored row this binary could not interpret because a NEWER one wrote it (ADR-0074 §5).
+ *
+ * Both fields come from the denormalized `run_events` COLUMNS, never from the payload: `seq` is the value the
+ * `UNIQUE(run_id, seq)` index actually enforces (so it is the number a resumed run must not collide with), and
+ * `event_type` is the row's own label. Parsing the payload to recover them would mean trusting the very blob we
+ * just failed to read.
+ */
+export interface SkippedRunEvent {
+  readonly sequenceNumber: number;
+  readonly type: string;
+}
+
+/** A run's event log together with what reading it had to leave out. See {@link RunHistoryReader.loadRunEventLog}. */
+export interface RunEventLog {
+  readonly events: RunEvent[];
+  readonly skipped: readonly SkippedRunEvent[];
+}
+
+/**
+ * A stored `run_events` row that is damaged — not merely written by a newer binary.
+ *
+ * Both failure shapes land here: unreadable JSON in `payload_json`, and a `type` this binary DOES know whose body
+ * does not parse. ADR-0050's durability-first posture says neither may be swallowed, and
+ * [error-handling.md](../../../docs/standards/error-handling.md) says the error that surfaces must be typed and
+ * carry structured context. Without this, a single bad row out of thousands reached the user as
+ * `An unexpected internal error occurred.` — no run, no row, no next step.
+ */
+export class CorruptRunEventError extends Error {
+  override readonly name = 'CorruptRunEventError';
+  readonly code = 'corrupt_run_event' as const;
+
+  constructor(
+    readonly runId: string,
+    readonly sequenceNumber: number,
+    /** The row's `event_type` column — safe to surface: it is a schema label, never user content. */
+    readonly eventType: string,
+    cause: unknown,
+  ) {
+    super(
+      `run ${runId} has a damaged event row at seq ${sequenceNumber} (type ${eventType})`,
+      // Preserved so `--verbose` can still show the underlying ZodError/SyntaxError detail.
+      { cause },
+    );
+  }
+}
+
+/**
+ * Narrow an unknown thrown value to {@link CorruptRunEventError} by its `code`, not by `instanceof`.
+ *
+ * The CLI bundles `@relavium/db` into one file while its tests import the package directly, so two realizations of
+ * the class can coexist and `instanceof` would silently answer `false` at exactly the boundary that has to catch it.
+ * Cast-free narrowing (the same shape `content.ts` uses).
+ */
+export function isCorruptRunEventError(value: unknown): value is CorruptRunEventError {
+  return value instanceof Error && 'code' in value && value.code === 'corrupt_run_event';
+}
+
+/**
  * The workflow-agnostic read API the `relavium list`/`logs`/`status`/`gate list` (2.I) commands consume.
  * Constructed from a db handle alone ({@link createRunHistoryReader}) — no `deps.workflow`, since the reads
  * span every workflow (the same standalone-read rationale as {@link loadRunSnapshot}, which the
@@ -142,8 +200,25 @@ export interface RunHistoryReader {
   /** One run by id (soft-deleted excluded), or `undefined` — the existence check `logs`/`status`/`gate list` gate on. */
   loadRun: (runId: string) => RunRecord | undefined;
   /** A run's full event log in `seq` order — for `relavium logs` and the 2.G resume reconstruct. Keyed by
-   *  `runId` alone (no soft-delete re-check); the caller validates existence/deletion via {@link loadRun} first. */
+   *  `runId` alone (no soft-delete re-check); the caller validates existence/deletion via {@link loadRun} first.
+   *
+   *  Rows a NEWER binary wrote are dropped (ADR-0074 §5), so this array can be SHORTER than the stored log. Any
+   *  caller that cares about that — because it counts events, or derives a sequence high-water mark — must use
+   *  {@link loadRunEventLog} instead and account for the skipped rows. */
   loadRunEvents: (runId: string) => RunEvent[];
+  /**
+   * {@link loadRunEvents} plus the identity of every row it had to drop (ADR-0074 §5).
+   *
+   * Two callers genuinely need this, and both break subtly without it:
+   *
+   * - **Resume** seeds the post-resume sequence counter from the fold's `lastSequenceNumber`. If the dropped row
+   *   is the log's TAIL, a fold over `events` alone yields a high-water mark BELOW what is stored, the resumed run
+   *   re-uses a taken `seq`, and `UNIQUE(run_id, seq)` fails the write — turning a run that merely needed a newer
+   *   binary into a terminally failed one. `skipped` carries the authoritative `seq` column so the mark stays true.
+   * - **`relavium logs`** prints an event count and a `[seq]` column. Silently short output over a healthy DB reads
+   *   as data loss, and `sse-event-schema.md` §Transport tells consumers to diagnose gaps from `sequenceNumber`.
+   */
+  loadRunEventLog: (runId: string) => RunEventLog;
   /** A run's STATE-BEARING events in `seq` order — the full log MINUS the per-token/tool streaming firehose
    *  (`agent:token` / `agent:tool_call` / `agent:tool_result`), which neither checkpoint reconstruction nor gate
    *  detection consults. For a bounded gate/checkpoint fold over a long run (the Home strip) that must NOT pay to
@@ -169,7 +244,7 @@ export interface RunHistoryReader {
  */
 export interface RunHistoryStore extends Pick<
   RunHistoryReader,
-  'listRuns' | 'loadRun' | 'loadRunEvents'
+  'listRuns' | 'loadRun' | 'loadRunEvents' | 'loadRunEventLog'
 > {
   resolveWorkflowId: (slug: string) => Promise<string>;
   persistEvent: (event: RunEvent) => Promise<void>;
@@ -189,6 +264,61 @@ const STREAMING_EVENT_TYPES = [
   'agent:tool_call',
   'agent:tool_result',
 ];
+
+/**
+ * The one place a stored `run_events` row becomes a {@link RunEvent} — the read boundary ADR-0074 §5 asks for.
+ *
+ * Three outcomes, and the whole design is in keeping them apart:
+ *
+ * - **readable** ⇒ the event joins `events`;
+ * - **an unknown `type`** ⇒ a newer binary wrote it, so it joins `skipped` with the authoritative `seq`/`type`
+ *   COLUMNS. Dropping it without recording that is what silently truncated the sequence high-water mark;
+ * - **damaged** (bad JSON, or a known `type` with an unparseable body) ⇒ a typed
+ *   {@link CorruptRunEventError} carrying the run and the row, because ADR-0050 forbids swallowing it and
+ *   error-handling.md forbids surfacing it bare.
+ *
+ * `seq` and `event_type` are selected alongside the payload precisely so the last two outcomes can name the row
+ * without parsing the blob that just failed to parse.
+ */
+function readEventLog(
+  db: Db,
+  runId: string,
+  opts: { readonly streamingIncluded: boolean },
+): RunEventLog {
+  const rows = db
+    .select({
+      seq: runEvents.seq,
+      eventType: runEvents.eventType,
+      payloadJson: runEvents.payloadJson,
+    })
+    .from(runEvents)
+    // Excluding the per-token/tool streaming firehose at the DB level keeps a gate/checkpoint fold over a long run
+    // from paying to JSON.parse + Zod-validate thousands of `agent:token` rows the reconstruction ignores.
+    .where(
+      opts.streamingIncluded
+        ? eq(runEvents.runId, runId)
+        : and(eq(runEvents.runId, runId), notInArray(runEvents.eventType, STREAMING_EVENT_TYPES)),
+    )
+    .orderBy(asc(runEvents.seq))
+    .all();
+
+  const events: RunEvent[] = [];
+  const skipped: SkippedRunEvent[] = [];
+  for (const row of rows) {
+    let event: RunEvent | undefined;
+    try {
+      event = parseStoredRunEvent(JSON.parse(row.payloadJson));
+    } catch (cause) {
+      throw new CorruptRunEventError(runId, row.seq, row.eventType, cause);
+    }
+    if (event === undefined) {
+      skipped.push({ sequenceNumber: row.seq, type: row.eventType });
+    } else {
+      events.push(event);
+    }
+  }
+  return { events, skipped };
+}
 
 function fromRunRow(row: RunRow): RunRecord {
   return {
@@ -491,6 +621,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
     listRuns: reader.listRuns,
     loadRun: reader.loadRun,
     loadRunEvents: reader.loadRunEvents,
+    loadRunEventLog: reader.loadRunEventLog,
   };
 }
 
@@ -540,33 +671,19 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
       return row === undefined ? undefined : fromRunRow(row);
     },
 
-    loadRunEvents: (runId) =>
-      db
-        .select({ payloadJson: runEvents.payloadJson })
-        .from(runEvents)
-        .where(eq(runEvents.runId, runId))
-        .orderBy(asc(runEvents.seq))
-        .all()
-        // ADR-0074 §5: an event `type` this binary does not know is a NEWER writer, not corruption, so it is
-        // dropped rather than throwing and making the whole run unreadable. A known type with a bad body still
-        // throws. `flatMap` over the undefined is the drop.
-        .flatMap((r) => parseStoredRunEvent(JSON.parse(r.payloadJson)) ?? []),
+    loadRunEvents: (runId) => readEventLog(db, runId, { streamingIncluded: true }).events,
+
+    // The RESUME read (`createHistoryCheckpointer` → `reconstructCheckpointState`), so its skipped rows are the
+    // ones that can corrupt a sequence high-water mark — which is why `loadRunEventLog` exists and why resume
+    // uses it rather than `loadRunEvents`.
+    loadRunEventLog: (runId) => readEventLog(db, runId, { streamingIncluded: true }),
 
     loadRunStateEvents: (runId) =>
-      db
-        .select({ payloadJson: runEvents.payloadJson })
-        .from(runEvents)
-        // Exclude the per-token/tool streaming firehose at the DB level so a gate/checkpoint fold over a long run
-        // doesn't pay to JSON.parse + Zod-validate thousands of `agent:token` rows the reconstruction ignores.
-        .where(
-          and(eq(runEvents.runId, runId), notInArray(runEvents.eventType, STREAMING_EVENT_TYPES)),
-        )
-        .orderBy(asc(runEvents.seq))
-        .all()
-        // Same forward-compatible read as `loadRunEvents` (ADR-0074 §5). It matters more here, not less: this
-        // is the fold checkpoint/gate reconstruction runs, so a throw would block RESUMING a run rather than
-        // merely listing it.
-        .flatMap((r) => parseStoredRunEvent(JSON.parse(r.payloadJson)) ?? []),
+      // Same forward-compatible read (ADR-0074 §5). The skipped rows are deliberately DISCARDED here rather than
+      // reported: this read is the 2.5.B Home's bounded gate/state fold, it already excludes the streaming
+      // firehose (so its max `seq` is not the run's anyway), and nothing seeds a sequence counter from it. A row
+      // this binary cannot read also cannot describe a gate this binary knows how to render.
+      readEventLog(db, runId, { streamingIncluded: false }).events,
 
     listActiveRuns: () =>
       db

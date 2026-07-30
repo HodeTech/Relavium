@@ -36,7 +36,19 @@ export function logsCommand(args: LogsCommandArgs, deps: LogsCommandDeps): ExitC
     if (run === undefined) {
       throw new CliError('invalid_invocation', `no run found with id ${args.runId}`);
     }
-    const events = reader.loadRunEvents(args.runId);
+    const { events, skipped } = reader.loadRunEventLog(args.runId);
+
+    // ADR-0074 §5: rows a NEWER binary wrote are dropped from the read. Say so — the count below and the `[seq]`
+    // column would otherwise present a short log with a hole in its sequence as a complete one, and
+    // `sse-event-schema.md` §Transport tells consumers to diagnose exactly that as data loss. It goes to
+    // STDERR in both modes, so `--json`'s stdout stays a pure NDJSON `RunEvent` stream (the flag's contract).
+    if (skipped.length > 0) {
+      const seqs = skipped.map((row) => row.sequenceNumber).join(', ');
+      deps.io.writeErr(
+        `note: ${skipped.length} event${skipped.length === 1 ? '' : 's'} written by a newer version of ` +
+          `Relavium ${skipped.length === 1 ? 'was' : 'were'} skipped (seq ${seqs}). Upgrade to read ${skipped.length === 1 ? 'it' : 'them'}.\n`,
+      );
+    }
 
     if (deps.global.json) {
       writeRecordLines(deps.io, events); // raw RunEvent per line — identical to the `run --json` stream

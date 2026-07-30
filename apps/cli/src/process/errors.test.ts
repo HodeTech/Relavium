@@ -1,3 +1,4 @@
+import { CorruptRunEventError } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
 import { CliError, isCliError, toUserFacing } from './errors.js';
@@ -45,6 +46,21 @@ describe('toUserFacing', () => {
       message: 'name it',
       exitCode: EXIT_CODES.invalidInvocation,
     });
+  });
+
+  it('names the run and row for a damaged event row instead of the generic fault (ADR-0074 §5 / ADR-0050)', () => {
+    // The generic branch below would report one corrupt row out of a 4,000-event log as
+    // `An unexpected internal error occurred.` — no run, no row, no next step. The store's typed error already
+    // carries the run id, the `seq` and the `event_type`, none of which is user content or a secret.
+    const projected = toUserFacing(
+      new CorruptRunEventError('run-7', 42, 'node:started', new Error('bad body')),
+    );
+    expect(projected.code).toBe('internal');
+    expect(projected.exitCode).toBe(EXIT_CODES.workflowFailed); // the read genuinely failed — still exit 1
+    expect(projected.message).toContain('run-7');
+    expect(projected.message).toContain('42');
+    expect(projected.message).toContain('node:started');
+    expect(projected.message).not.toContain('bad body'); // the cause stays out of primary output
   });
 
   it('maps an unknown throw to a generic internal error without leaking detail', () => {

@@ -1,3 +1,5 @@
+import { isCorruptRunEventError } from '@relavium/db';
+
 import { EXIT_CODES, type ExitCode } from './exit-codes.js';
 
 /**
@@ -60,6 +62,21 @@ export interface UserFacingError {
 export function toUserFacing(value: unknown): UserFacingError {
   if (isCliError(value)) {
     return { code: value.code, message: value.message, exitCode: value.exitCode };
+  }
+  // A damaged `run_events` row (ADR-0074 §5 / ADR-0050). The generic fallback below would report a corrupt row
+  // out of a 4,000-event log as `An unexpected internal error occurred.` — no run, no row, no next step. The
+  // store's typed error already carries the run id, the `seq`, and the `event_type`, none of which is user
+  // content or a secret, so promote them and name the recovery. Still exit 1: the read genuinely failed.
+  // No remedy is prescribed because the CLI genuinely has none for a single bad row: there is no run-delete
+  // command, and upgrading does not repair corruption (that is the OTHER half of §5 — a skipped row, which is
+  // reported as a note, not an error). Naming the run and the row is the actionable part; it is what makes the
+  // failure diagnosable at all, and what lets a user restore just that history DB from a backup.
+  if (isCorruptRunEventError(value)) {
+    return {
+      code: 'internal',
+      message: `${value.message}. The rest of your history is unaffected.`,
+      exitCode: EXIT_CODES.workflowFailed,
+    };
   }
   return {
     code: 'internal',

@@ -4,6 +4,7 @@ import {
   runMigrations,
   type DbClient,
   type RunHistoryStore,
+  runEvents,
   type RunHistoryWorkflow,
 } from '@relavium/db';
 import type { RunEvent } from '@relavium/shared';
@@ -84,5 +85,66 @@ describe('createHistoryCheckpointer', () => {
 
   it('returns undefined for a run with no persisted run:started (unknown / never-persisted)', async () => {
     expect(await createHistoryCheckpointer(store).load('nope')).toBeUndefined();
+  });
+
+  it('keeps lastSequenceNumber true when a row written by a NEWER binary is the log`s tail (ADR-0074 §5)', async () => {
+    // The destructive shape this guards. `resumeFromCheckpoint` seeds the bus with `lastSequenceNumber + 1`, and a
+    // row whose `type` this binary does not know is DROPPED from the fold (§5). If that row is the tail, folding
+    // only the readable events yields a mark BELOW what is stored, the resumed run stamps a `seq` that is already
+    // taken, `UNIQUE(run_id, seq)` rejects the durable write, and the engine settles `run:failed`. A run that
+    // merely needed a newer binary to read ONE row would become terminally unresumable — by either binary. Note
+    // this is strictly worse than the pre-§5 behaviour, where the read threw and the run stayed cleanly paused.
+    const wf = await store.resolveWorkflowId('demo');
+    const events: RunEvent[] = [
+      {
+        type: 'run:started',
+        runId: 'run-2',
+        timestamp: TS,
+        sequenceNumber: 0,
+        workflowId: wf,
+        inputs: {},
+        executionMode: 'local',
+      },
+      {
+        type: 'human_gate:paused',
+        runId: 'run-2',
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'gate',
+        gateId: 'g1',
+        gateType: 'approval',
+        message: 'ship it?',
+      },
+      {
+        type: 'run:paused',
+        runId: 'run-2',
+        timestamp: TS,
+        sequenceNumber: 2,
+        pendingGateCount: 1,
+        gateIds: ['g1'],
+      },
+    ];
+    for (const event of events) {
+      await store.persistEvent(event);
+    }
+    // Straight through drizzle: `persistEvent` validates on the way in, which is exactly why only a NEWER binary
+    // can produce this row. Seq 3 is the TAIL — the number the next durable write must not re-use.
+    client.db
+      .insert(runEvents)
+      .values({
+        id: '00000000-0000-4000-8000-000000000099',
+        runId: 'run-2',
+        seq: 3,
+        eventType: 'budget:estimate_committed',
+        payloadJson: JSON.stringify({ type: 'budget:estimate_committed', estimateMicrocents: 500 }),
+        ts: new Date(TS).getTime(),
+      })
+      .run();
+
+    const checkpoint = await createHistoryCheckpointer(store).load('run-2');
+    // 3, not 2 — the fold saw only seq 0..2, so the skipped row's authoritative `seq` column is folded back in.
+    expect(checkpoint?.lastSequenceNumber).toBe(3);
+    // The rest of the reconstruction is unaffected: the unreadable row is skipped, not fatal.
+    expect(checkpoint?.runStatus).toBe('paused');
   });
 });

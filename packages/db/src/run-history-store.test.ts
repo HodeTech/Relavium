@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
+import { CorruptRunEventError, isCorruptRunEventError } from './run-history-store.js';
 import { runCosts, runEvents, runs, stepExecutions, workflows } from './schema.js';
 import {
   createRunHistoryReader,
@@ -851,6 +852,58 @@ describe('createRunHistoryReader', () => {
       ]);
     });
 
+    it('REPORTS what it skipped, with the authoritative seq/type COLUMNS', async () => {
+      // The drop cannot be silent. Two consumers depend on knowing: `relavium logs` (whose count and `[seq]`
+      // column otherwise present a short log as a complete one) and resume (see the seq test below). The values
+      // come from the columns, never the payload — parsing the blob that just failed to parse would be circular.
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      const ts = new Date(TS_MS).toISOString();
+      await store.persistEvent(
+        evRun('run-s', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      // Deliberately DISAGREE with the payload's own `sequenceNumber` (77): the `seq` COLUMN is what
+      // `UNIQUE(run_id, seq)` enforces, so it is the only number that can be trusted here.
+      insertRaw('run-s', 1, 'budget:estimate_committed', {
+        type: 'budget:estimate_committed',
+        sequenceNumber: 77,
+      });
+
+      const log = reader.loadRunEventLog('run-s');
+      expect(log.events.map((e) => e.type)).toEqual(['run:started']);
+      expect(log.skipped).toEqual([{ sequenceNumber: 1, type: 'budget:estimate_committed' }]);
+      // A clean log reports nothing, so a caller can branch on emptiness rather than on a count.
+      expect(reader.loadRunEventLog('run-s').skipped).toHaveLength(1);
+    });
+
+    it('does not LOSE the sequence high-water mark when the skipped row is the TAIL', async () => {
+      // The destructive case, and the reason `loadRunEventLog` exists. Resume seeds the post-resume sequence
+      // counter from the fold's `lastSequenceNumber + 1`. Fold only the readable events and a dropped TAIL row
+      // lowers that mark, the resumed run re-uses a taken `seq`, `UNIQUE(run_id, seq)` rejects the write, and the
+      // engine settles `run:failed` — a run that merely needed a newer binary becomes terminally unresumable.
+      // Asserted at this layer because `packages/db` must not depend on `packages/core`; the fold itself is
+      // covered in `apps/cli/src/engine/checkpointer.test.ts`.
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      const ts = new Date(TS_MS).toISOString();
+      await store.persistEvent(
+        evRun('run-t', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      await store.persistEvent(
+        evRun('run-t', 'node:started', 1, { nodeId: 'g', nodeType: 'agent' }, ts),
+      );
+      insertRaw('run-t', 2, 'budget:estimate_committed', { type: 'budget:estimate_committed' }); // the TAIL
+
+      const log = reader.loadRunEventLog('run-t');
+      const foldedMax = Math.max(...log.events.map((e) => e.sequenceNumber));
+      expect(foldedMax).toBe(1); // what a fold over `events` alone would believe
+      const trueMax = log.skipped.reduce(
+        (max, row) => Math.max(max, row.sequenceNumber),
+        foldedMax,
+      );
+      expect(trueMax).toBe(2); // what is actually stored — the number resume must not collide with
+    });
+
     it('still THROWS on a row we can identify but not read — corruption is not forward evolution', async () => {
       const store = storeFor('wf');
       const workflowId = await store.resolveWorkflowId('wf');
@@ -860,10 +913,61 @@ describe('createRunHistoryReader', () => {
       );
       // A type we DO know, with a body that cannot be a `node:started`. ADR-0050's durability posture says a
       // damaged row must be visible, not quietly dropped alongside the forward-compatible ones.
-      insertRaw('run-g', 1, 'node:started', { type: 'node:started', nodeId: 42 });
+      // A SINGLE-issue body (a valid `node:started` with an empty `nodeId`), so what is exercised is precisely the
+      // guard deciding "known type, bad body" — a four-issue blob would pass on the issue COUNT check alone.
+      insertRaw('run-g', 1, 'node:started', {
+        type: 'node:started',
+        runId: 'run-g',
+        sequenceNumber: 1,
+        timestamp: ts,
+        nodeId: '',
+        nodeType: 'agent',
+      });
 
-      expect(() => reader.loadRunEvents('run-g')).toThrow();
-      expect(() => reader.loadRunStateEvents('run-g')).toThrow();
+      // Narrowed on the TYPE, not on "something threw" — a bare `toThrow()` also passes on a `SyntaxError` from
+      // `JSON.parse`, or on any unrelated fault, so it would not pin that corruption was CLASSIFIED.
+      expect(() => reader.loadRunEvents('run-g')).toThrow(CorruptRunEventError);
+      expect(() => reader.loadRunStateEvents('run-g')).toThrow(CorruptRunEventError);
+      expect(() => reader.loadRunEventLog('run-g')).toThrow(CorruptRunEventError);
+
+      // The context is the point: error-handling.md forbids a bare error, and without these fields the CLI
+      // reported one bad row out of thousands as `An unexpected internal error occurred.`
+      try {
+        reader.loadRunEvents('run-g');
+        expect.unreachable('the damaged row must throw');
+      } catch (err) {
+        expect(isCorruptRunEventError(err)).toBe(true);
+        if (!isCorruptRunEventError(err)) return;
+        expect(err.runId).toBe('run-g');
+        expect(err.sequenceNumber).toBe(1);
+        expect(err.eventType).toBe('node:started');
+        expect(err.code).toBe('corrupt_run_event');
+        expect(err.cause).toBeDefined(); // the underlying ZodError survives for `--verbose`
+      }
+    });
+
+    it('classifies unreadable JSON as corruption too, not as a forward row', async () => {
+      // The other damaged shape. `JSON.parse` throws before the schema is ever consulted, so without the wrapper
+      // this reached the user as an untyped `SyntaxError` — a second error shape for the same one-bad-row problem.
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      const ts = new Date(TS_MS).toISOString();
+      await store.persistEvent(
+        evRun('run-h', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      client.db
+        .insert(runEvents)
+        .values({
+          id: counterUuid(950),
+          runId: 'run-h',
+          seq: 1,
+          eventType: 'node:started',
+          payloadJson: '{"type":"node:star', // truncated write / bit-flip
+          ts: TS_MS,
+        })
+        .run();
+
+      expect(() => reader.loadRunEvents('run-h')).toThrow(CorruptRunEventError);
     });
   });
 });

@@ -1012,8 +1012,15 @@ describe('parseStoredRunEvent — the forward-compatible read (ADR-0074 §5)', (
     executionMode: 'local' as const,
   };
 
-  it('parses a known event exactly as the strict schema does', () => {
+  it('parses a known event exactly as the strict schema does — validated and stripped, not passed through', () => {
     expect(parseStoredRunEvent(known)).toEqual(RunEventSchema.parse(known));
+    // The other half of the same §Forward-compatibility sentence: consumers ignore unknown FIELDS too. A newer
+    // binary adding an optional field (ADR-0074 §3 does exactly this to `media_job:submitted`) must not make the
+    // row unreadable — and the returned object must be the STRIPPED parse output, not the raw candidate. Pins the
+    // `return candidate as RunEvent` shortcut as a failure.
+    const withFutureField = { ...known, someFutureField: 1 };
+    expect(parseStoredRunEvent(withFutureField)).toEqual(RunEventSchema.parse(known));
+    expect(parseStoredRunEvent(withFutureField)).not.toHaveProperty('someFutureField');
   });
 
   it('DROPS an unknown event type — a newer writer, not corruption', () => {

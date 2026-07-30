@@ -813,9 +813,12 @@ export type GateDecision = z.infer<typeof GateDecisionSchema>;
  * `RunEventSchema` is a `z.discriminatedUnion('type', …)`, so it **throws** on a `type` it does not know —
  * and `SessionEventSchema` and the `RunOrSessionEventSchema` union over both behave the same way. That
  * contradicts this contract's own promise: [sse-event-schema.md](../../../docs/reference/contracts/sse-event-schema.md)
- * §Forward-compatibility states that adding a new event `type` is "always v1.0-legal and never a breaking
- * change, **provided consumers ignore unknown `type`s**". Until ADR-0074, no consumer did — so one row written
- * by a newer binary made an entire run unreadable to an older one, rather than partially understood.
+ * §Forward-compatibility states that adding a new event `type` — or a new optional field on an existing one — is
+ * "always v1.0-legal and never a breaking change, **provided consumers ignore unknown `type`s and unknown
+ * fields**". Until ADR-0074, no consumer did the first half — so one row written by a newer binary made an entire
+ * run unreadable to an older one, rather than partially understood. (The second half already held: Zod object
+ * schemas strip unknown keys by default, which is what lets a newer binary add a field like ADR-0074 §3's
+ * `media_job:submitted.units` without breaking this reader.)
  *
  * The rule is one distinction, and it is the whole of §5:
  *
@@ -848,24 +851,30 @@ export function parseStoredRunEvent(candidate: unknown): RunEvent | undefined {
 /**
  * Whether `error` says exactly one thing: "`type` is a value I do not recognize".
  *
- * Three conditions, each load-bearing:
+ * **Only the last condition is currently falsifiable, and it is the one that matters.** Zod raises the same
+ * `invalid_union_discriminator` for `type: undefined` as it does for `type: 'some:future_event'` — but those are
+ * opposites. No writer of ours has ever omitted `type`, so a row missing it is damaged and must throw; only a
+ * non-empty string can be a newer writer's event name. That check is what separates the two.
  *
- * 1. **`issues.length === 1`.** On an unrecognized discriminator a `z.discriminatedUnion` reports that single
- *    issue and never opens the branch, so it never reports body problems alongside it. A second issue therefore
- *    means we are looking at something else, and dropping the row would hide it.
- * 2. **`path` is exactly `['type']`.** Zod anchors the issue at the discriminator key, not at the root — and a
- *    deeper `invalid_union_discriminator` would belong to a nested union inside a body we *do* know.
- * 3. **The row actually carries a plausible `type`.** Zod raises the same issue code for `type: undefined` as it
- *    does for `type: 'budget:estimate_committed'`, but the two are opposites: no writer of ours has ever omitted
- *    `type`, so a row missing it is damaged, not forward-written. Only a non-empty string can be a newer writer's
- *    event name.
+ * The first three are defensive. A `z.discriminatedUnion` aborts on the discriminator, so today an unrecognized
+ * `type` *always* yields exactly one issue, coded `invalid_union_discriminator`, anchored at `['type']` — there is
+ * no input that reaches this function and fails one of them. They are kept because each pins an assumption that a
+ * future edit could break silently: a nested discriminated union inside a variant's body would report the same code
+ * at a *deeper* path, and a Zod upgrade could start reporting body issues alongside the discriminator. Losing an
+ * assumption there means silently dropping a damaged row, so they are cheap insurance — not live guards.
+ *
+ * **This helper does NOT generalize to `RunOrSessionEventSchema`.** That is a `z.union` of two discriminated
+ * unions, and a `z.union` reports an unknown `type` as a single `invalid_union` issue at the ROOT — not
+ * `invalid_union_discriminator` at `['type']`. Pointing this function at it would reject every forward-written row
+ * while looking correct. A dual-envelope read needs its own arm-level distinction.
  */
 function isUnknownDiscriminator(error: z.ZodError, candidate: unknown): boolean {
   const [issue, ...rest] = error.issues;
   if (issue === undefined || rest.length > 0) return false;
   if (issue.code !== z.ZodIssueCode.invalid_union_discriminator) return false;
   if (issue.path.length !== 1 || issue.path[0] !== 'type') return false;
-  if (typeof candidate !== 'object' || candidate === null) return false;
-  const type: unknown = (candidate as { type?: unknown }).type;
+  // Cast-free narrowing (the shape `content.ts` and `media-deinline.ts` use), so no `as` sits at this boundary.
+  if (typeof candidate !== 'object' || candidate === null || !('type' in candidate)) return false;
+  const type: unknown = candidate.type;
   return typeof type === 'string' && type.length > 0;
 }

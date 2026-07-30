@@ -12,6 +12,24 @@ import type { RunHistoryStore } from '@relavium/db';
  */
 export function createHistoryCheckpointer(store: RunHistoryStore): Checkpointer {
   return {
-    load: (runId) => Promise.resolve(reconstructCheckpointState(store.loadRunEvents(runId))),
+    load: (runId) => {
+      // `loadRunEventLog`, not `loadRunEvents`: a row written by a NEWER binary is dropped from the fold
+      // (ADR-0074 §5), and if that row is the log's TAIL the fold's `lastSequenceNumber` lands BELOW what is
+      // actually stored. `engine.resumeFromCheckpoint` seeds the bus with `lastSequenceNumber + 1`, so the
+      // resumed run would re-use a taken `seq`, hit `UNIQUE(run_id, seq)`, and fail the durable write — which
+      // the engine treats as an `internal` fault and settles as `run:failed`. A run that merely needed a newer
+      // binary to read one row would become terminally unresumable, by either binary. So the skipped rows'
+      // authoritative `seq` column is folded back in.
+      const log = store.loadRunEventLog(runId);
+      const state = reconstructCheckpointState(log.events);
+      if (state === undefined) {
+        return Promise.resolve(undefined);
+      }
+      const lastSequenceNumber = log.skipped.reduce(
+        (max, row) => Math.max(max, row.sequenceNumber),
+        state.lastSequenceNumber,
+      );
+      return Promise.resolve({ ...state, lastSequenceNumber });
+    },
   };
 }
