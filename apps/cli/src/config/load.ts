@@ -1,4 +1,4 @@
-import { readFileSync, statSync, type Stats } from 'node:fs';
+import { chmodSync, readFileSync, statSync, type Stats } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -22,6 +22,11 @@ const MAX_CONFIG_BYTES = 256 * 1024;
  * contents (config files hold no secrets — config-spec.md).
  */
 export function loadConfigFile<T>(filePath: string, schema: ZodType<T>): T | undefined {
+  // #33: re-assert `0600` on READ, mirroring `history.db`'s self-heal in `db/open.ts`. `config/write.ts`
+  // applies the mode at WRITE time only, so a file that predates that guard — or one a user, an editor, a
+  // `cp`, or a restored backup left at the umask default — stays world-readable forever. Cheap: one `stat`
+  // we already did, and a `chmod` only when the mode is actually wrong.
+
   let stats: Stats;
   try {
     stats = statSync(filePath);
@@ -34,6 +39,7 @@ export function loadConfigFile<T>(filePath: string, schema: ZodType<T>): T | und
   if (!stats.isFile()) {
     throw new ConfigError(filePath, 'is not a regular file.');
   }
+  reassertOwnerOnly(filePath, stats);
   // Enforce the size cap BEFORE reading into memory (ADR-0048 hardened loader) — an oversize
   // file is rejected without ever being loaded.
   if (stats.size > MAX_CONFIG_BYTES) {
@@ -117,6 +123,29 @@ export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
   }
 
   return { config: resolveConfig({ global, workspace, project }), projectConfigDir, homeDir: home };
+}
+
+/**
+ * Best-effort `0600` self-heal for a config layer (#33) — the read-side twin of `config/write.ts`'s write-time
+ * mode and of `db/open.ts`'s db self-heal (ADR-0050).
+ *
+ * Deliberately **never throws**: unlike `history.db`, a config file holds no secrets (config-spec.md — secret
+ * VALUES live in the keychain and are referenced by name), so this is defence in depth, not the guarantee. A
+ * read-only file, a foreign owner, or Windows — where POSIX mode bits do not apply and `chmod` is a documented
+ * no-op — must not turn a perfectly readable config into a startup failure.
+ *
+ * Skips the `chmod` entirely when the mode is already right, so the common path adds no syscall at all.
+ */
+function reassertOwnerOnly(filePath: string, stats: Stats): void {
+  // The permission bits of `st_mode` — masking is the only way to read them.
+  if ((stats.mode & 0o777) === 0o600) {
+    return;
+  }
+  try {
+    chmodSync(filePath, 0o600);
+  } catch {
+    // Best-effort by design — see the doc comment. A config layer is readable either way.
+  }
 }
 
 function errnoCode(err: unknown): string | undefined {

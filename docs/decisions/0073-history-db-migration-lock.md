@@ -1,6 +1,6 @@
 # ADR-0073: `runMigrations` is serialized across processes by an OS lock file, not by a transaction
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-07-29
 - **Related**: [ADR-0064](0064-live-model-catalog.md) (its 2026-07-07 "2.5.I — DB write-path concurrency" amendment note establishes the `BEGIN IMMEDIATE` + bounded-retry convention this extends), [ADR-0021](0021-node-sqlite-driver-better-sqlite3.md) + [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md) (the synchronous driver), [ADR-0050](0050-cli-history-db-at-rest-posture.md) (the `0700`/`0600` guard the lock file inherits), [ADR-0005](0005-sqlite-drizzle-local-postgres-cloud.md) (one schema, two dialects — the Postgres port must not inherit this mechanism). Canonical home for the mechanism: the "Concurrency & transaction behavior" section of [database-schema.md](../reference/shared-core/database-schema.md).
 

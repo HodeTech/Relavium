@@ -31,20 +31,20 @@ const MAX_REPORTED = 5;
 
 export function installBackgroundFailureNet(io: CliIo): BackgroundFailureNet {
   let count = 0;
+  // With `RELAVIUM_DEBUG` set the bound is lifted entirely — otherwise the suppression line below would be
+  // making a promise ("set RELAVIUM_DEBUG to see them") the code does not keep, and a diagnostic flag that
+  // does not actually reveal the diagnostics is worse than no flag.
+  const verbose = io.env['RELAVIUM_DEBUG'] !== undefined;
   const onRejection = (reason: unknown): void => {
     count += 1;
-    if (count <= MAX_REPORTED) {
+    if (verbose || count <= MAX_REPORTED) {
       // Sanitized like every other terminal boundary (`process/render-error.ts`): a rejection reason is
       // arbitrary `unknown` — realistically an MCP server's error text, a provider response body, or a tool
       // result — i.e. exactly the untrusted sources the ANSI/OSC/Trojan-Source guard exists for.
       io.writeErr(
         `relavium: a background operation failed: ${sanitizeInline(describeReason(reason))}\n`,
       );
-      if (
-        io.env['RELAVIUM_DEBUG'] !== undefined &&
-        reason instanceof Error &&
-        reason.stack !== undefined
-      ) {
+      if (verbose && reason instanceof Error && reason.stack !== undefined) {
         io.writeErr(`${stripTerminalControls(reason.stack)}\n`);
       }
     } else if (count === MAX_REPORTED + 1) {

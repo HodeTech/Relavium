@@ -24,19 +24,16 @@ export function openLocalDb(homeDir: string): OpenedDb {
   // If setup (migrations / the at-rest chmod) throws, close the just-opened handle before propagating —
   // otherwise the SQLite connection leaks for the lifetime of the failing process.
   try {
-    runMigrations(client.db);
-    // The db file is guaranteed to exist here — a chmod failure on IT must be LOUD (ADR-0050's at-rest
-    // guarantee rests on this 0600). Its WAL/SHM sidecars may not exist yet (no checkpoint) — best-effort.
-    chmodSync(path, 0o600);
-    for (const suffix of ['-wal', '-shm']) {
-      try {
-        chmodSync(`${path}${suffix}`, 0o600);
-      } catch (err) {
-        if (errnoCode(err) !== 'ENOENT') {
-          throw err;
-        }
-      }
-    }
+    // #28: the 0600 runs BEFORE the migrations, and again after. Before, because `createClient` has already
+    // CREATED the file at the process umask — typically 644 — and a migration that throws (disk full, an
+    // interrupted first run) used to leave it there, world-readable, for the lifetime of the install. The
+    // ADR-0050 at-rest guarantee cannot be conditional on the migration succeeding. After, because the WAL
+    // and SHM sidecars only come into existence once SQLite actually writes.
+    hardenAtRest(path);
+    // The batch is serialized across processes (ADR-0073): two `relavium` invocations racing a fresh
+    // `history.db` wait for each other instead of one dying on a duplicate `CREATE TABLE` (#99).
+    runMigrations(client.db, { dbPath: client.path });
+    hardenAtRest(path);
   } catch (err) {
     client.sqlite.close();
     throw err;
@@ -51,6 +48,27 @@ export function openLocalDb(homeDir: string): OpenedDb {
       }
     },
   };
+}
+
+/**
+ * Apply the ADR-0050 at-rest mode to `history.db` and its sidecars. The db file itself is guaranteed to exist
+ * (`createClient` opened it), so a chmod failure on IT is LOUD — the whole at-rest guarantee rests on this
+ * `0600`. The `-wal`/`-shm` sidecars may legitimately not exist yet (no checkpoint), so `ENOENT` on them is
+ * expected and ignored; any other error still propagates.
+ *
+ * Idempotent, so it is safe to call on both sides of the migration batch.
+ */
+function hardenAtRest(path: string): void {
+  chmodSync(path, 0o600);
+  for (const suffix of ['-wal', '-shm']) {
+    try {
+      chmodSync(`${path}${suffix}`, 0o600);
+    } catch (err) {
+      if (errnoCode(err) !== 'ENOENT') {
+        throw err;
+      }
+    }
+  }
 }
 
 /** The `errno` code of a Node fs error (`ENOENT`, `EPERM`, …), or `undefined` if it is not one. */

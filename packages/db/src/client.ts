@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 
+import { withMigrationLock } from './migrate-lock.js';
 import * as schema from './schema.js';
 
 /**
@@ -26,6 +27,12 @@ export interface DbClient {
   readonly db: Db;
   /** The underlying better-sqlite3 connection (call `.close()` when done). */
   readonly sqlite: Database.Database;
+  /**
+   * The path this client was opened on (`':memory:'` for the default). Carried so a caller can pass it to
+   * {@link runMigrations} for the ADR-0073 cross-process migration lock without having to remember it
+   * separately from the handle.
+   */
+  readonly path: string;
 }
 
 /** Why {@link createClient} refused or failed to open a database — narrow on this, never on the message. */
@@ -105,7 +112,7 @@ export function createClient(path = ':memory:'): DbClient {
   sqlite.pragma('busy_timeout = 5000'); // wait up to 5s for a writer lock instead of erroring
   sqlite.pragma('synchronous = NORMAL'); // the recommended durability/throughput trade-off with WAL
   const db = drizzle(sqlite, { schema });
-  return { db, sqlite };
+  return { db, sqlite, path };
 }
 
 /** The packaged migration set (`./drizzle`), resolved relative to this module so it works
@@ -113,10 +120,30 @@ export function createClient(path = ':memory:'): DbClient {
  * the package root. */
 const MIGRATIONS_DIR = fileURLToPath(new URL('../drizzle', import.meta.url));
 
+/** Options for {@link runMigrations}. */
+export interface RunMigrationsOptions {
+  /**
+   * The database file, so the batch can be serialized across processes by the ADR-0073 migration lock —
+   * pass {@link DbClient.path}. Omitted (or `':memory:'`) runs unlocked, which is correct for a private
+   * in-memory database and is what every unit test wants.
+   *
+   * Optional rather than required deliberately: making it required would be a breaking change for every
+   * existing caller, and the ones that matter — the real `history.db` openers — are a short, reviewable list.
+   */
+  readonly dbPath?: string;
+}
+
 /**
  * Apply every pending `drizzle-kit` migration to the given client. Idempotent: Drizzle
  * tracks applied migrations, so re-running is a no-op. Surfaces call this on first use.
+ *
+ * With `dbPath` set, the whole batch runs under the cross-process lock described in
+ * [ADR-0073](../../../docs/decisions/0073-history-db-migration-lock.md) — because drizzle's migrator decides
+ * what to apply in a `SELECT` OUTSIDE its own transaction, two processes racing a fresh file would otherwise
+ * both apply the full set and one would die on `CREATE TABLE` (finding #99).
  */
-export function runMigrations(db: Db): void {
-  migrate(db, { migrationsFolder: MIGRATIONS_DIR });
+export function runMigrations(db: Db, options: RunMigrationsOptions = {}): void {
+  withMigrationLock(options.dbPath, () => {
+    migrate(db, { migrationsFolder: MIGRATIONS_DIR });
+  });
 }

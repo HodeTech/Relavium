@@ -28,8 +28,12 @@ describe('installBackgroundFailureNet (#228)', () => {
     process.exitCode = originalExitCode;
   });
 
-  /** Drive one real unhandled rejection through Node and wait for the listener to see it. */
-  async function rejectOnce(reason: unknown): Promise<void> {
+  /**
+   * Drive one real unhandled rejection through Node and wait for the listener to see it. Typed `Error`
+   * because every case here rejects with one; the non-Error reasons `describeReason` must survive are
+   * covered by calling it directly, which is cheaper and does not need a real rejection.
+   */
+  async function rejectOnce(reason: Error): Promise<void> {
     void Promise.reject(reason);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -90,6 +94,18 @@ describe('installBackgroundFailureNet (#228)', () => {
     expect(err()).toContain('boom-4'); // the 5th, still reported in full
     expect(err()).not.toContain('boom-5'); // the 6th, suppressed
     expect(err()).toContain('further background failures suppressed');
+  });
+
+  it('RELAVIUM_DEBUG lifts the bound — the suppression line must not promise what it does not deliver', async () => {
+    const { io, err } = captureIo({ RELAVIUM_DEBUG: '1' });
+    const net = installBackgroundFailureNet(io);
+    dispose = net.dispose;
+    for (let i = 0; i < 8; i += 1) {
+      await rejectOnce(new Error(`boom-${i}`));
+    }
+    // Every one reported, and no suppression notice claiming a flag would reveal them.
+    expect(err()).toContain('boom-7');
+    expect(err()).not.toContain('further background failures suppressed');
   });
 
   it('stops listening once disposed', async () => {

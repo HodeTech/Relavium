@@ -60,6 +60,7 @@ export {
   type Db,
   type DbClient,
   type DbOpenErrorCode,
+  type RunMigrationsOptions,
 } from './client.js';
 
 // Session persistence (1.X) — the directly-stored, append-only transcript layer over the

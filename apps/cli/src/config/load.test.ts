@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -102,6 +102,64 @@ describe('loadConfigFile', () => {
       expect(thrown.message).toContain('is not a regular file');
     }
   });
+});
+
+/**
+ * #33 — `config/write.ts` applies `0600` at WRITE time only, so a layer that predates that guard, or one a
+ * user, an editor, a `cp` or a restored backup left permissive, stayed world-readable forever. `history.db`
+ * already self-heals on open (ADR-0050); this is the config twin. POSIX-only — `chmod` is a documented no-op
+ * on Windows.
+ */
+describe('loadConfigFile — the 0600 re-assert on read (#33)', () => {
+  const POSIX = process.platform !== 'win32';
+  let dir: string;
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'relavium-load-mode-'));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const modeOf = (path: string): number => statSync(path).mode & 0o777;
+
+  it.skipIf(!POSIX)('tightens a world-readable config layer on load', () => {
+    const file = join(dir, 'config.toml');
+    writeFileSync(file, 'update_channel = "beta"\n');
+    chmodSync(file, 0o644);
+    // …and still returns the parsed config: the self-heal is a side effect, never a gate.
+    expect(loadConfigFile(file, GlobalConfigSchema)).toEqual({ update_channel: 'beta' });
+    expect(modeOf(file)).toBe(0o600);
+  });
+
+  it.skipIf(!POSIX)(
+    'leaves an already-0600 layer alone (no needless syscall on the common path)',
+    () => {
+      const file = join(dir, 'config.toml');
+      writeFileSync(file, 'update_channel = "beta"\n');
+      chmodSync(file, 0o600);
+      expect(loadConfigFile(file, GlobalConfigSchema)).toEqual({ update_channel: 'beta' });
+      expect(modeOf(file)).toBe(0o600);
+    },
+  );
+
+  it.skipIf(!POSIX)(
+    'NEVER throws when the mode cannot be changed — a config layer holds no secrets',
+    () => {
+      // A read-only parent directory blocks the chmod. Unlike `history.db`, the at-rest guarantee does not rest
+      // on this, so a permissive-but-readable config must still load rather than failing startup.
+      const readOnlyDir = join(dir, 'locked');
+      mkdirSync(readOnlyDir);
+      const file = join(readOnlyDir, 'config.toml');
+      writeFileSync(file, 'update_channel = "beta"\n');
+      chmodSync(file, 0o444);
+      chmodSync(readOnlyDir, 0o500);
+      try {
+        expect(loadConfigFile(file, GlobalConfigSchema)).toEqual({ update_channel: 'beta' });
+      } finally {
+        chmodSync(readOnlyDir, 0o700); // so the temp dir can be swept
+      }
+    },
+  );
 });
 
 describe('loadResolvedConfig', () => {
