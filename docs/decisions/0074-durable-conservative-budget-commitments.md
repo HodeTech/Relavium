@@ -1,6 +1,6 @@
 # ADR-0074: Durable conservative budget commitments across run and session resume (amends ADR-0028, ADR-0036, ADR-0045, and ADR-0070)
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-07-29
 - **Related**: [ADR-0028](0028-workflow-resource-governance.md) (the pre-egress cap), [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) (durable run events), [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) (async media re-attach), [ADR-0070](0070-durable-per-model-session-cost-attribution.md) (session-cost accounting), [ADR-0071](0071-models-dev-as-the-model-metadata-source.md) (the strict-cost-cap posture), and [sse-event-schema.md](../reference/contracts/sse-event-schema.md) (the canonical event contract).
 
@@ -31,11 +31,13 @@ The pre-egress projection is:
 
 `realized + conservativeCommitted + liveAdmissions + nextWorstCaseEstimate`.
 
-Actual totals, per-model actual-cost attribution, and `cost:updated` remain realized-only. A conservative commitment is never silently downgraded by a later actual-cost snapshot; it remains cap-consuming until a future provider protocol supplies a legitimate reconciliation mechanism for that exact attempt.
+Actual totals, per-model actual-cost attribution, and `cost:updated` remain realized-only. A conservative commitment is never silently downgraded by a later actual-cost snapshot; it remains cap-consuming for the lifetime of the owning run or session.
+
+**It is not, however, unbounded in time.** "Until a future provider protocol can reconcile that exact attempt" would mean an indefinite block, which is a worse failure than the overspend it prevents: a single usage-less response would permanently shrink a long-lived chat's cap with no way out. Two bounds apply. The commitment dies with its owner — a completed run and an ended session discard it with the rest of their governor state, so it can never leak into unrelated work. And within a live owner the user must be able to clear it deliberately: the surfaces that render the committed amount as *estimated, possibly billed* also expose releasing it, which is an explicit user decision about their own money, exactly like raising the cap under `on_exceed`. What is forbidden is the system silently deciding the estimate was wrong.
 
 ### 2. Persist an uncertain provider charge before later egress can proceed
 
-Add an additive, secret-free dual-envelope event, `budget:estimate_committed`, carrying the node/agent identity, model id, bounded `estimateMicrocents`, and the owner-local cumulative conservative amount. For workflows it is a durable `run_events` entry; for sessions it is a durable session-budget write and a streamed session event.
+Add an additive, secret-free dual-envelope event, `budget:estimate_committed`, carrying the node/agent identity, model id, bounded `estimateMicrocents`, and the owner-local cumulative conservative amount. It is a **new event `type`**, not an optional field on `cost:updated` — the rejected alternatives below say why. Its exact Zod shape, which discriminated-union arms it joins, and its envelope rules have one canonical home in [sse-event-schema.md](../reference/contracts/sse-event-schema.md) and [run-event.ts](../../packages/shared/src/run-event.ts); this ADR decides that it exists and what it means, and deliberately does not restate the spec. For workflows it is a durable `run_events` entry; for sessions it is a durable session-budget write and a streamed session event.
 
 When an admission becomes uncertain, its ledger mutation is synchronous, but the next provider attempt and the enclosing turn completion wait for the commitment's durability acknowledgement. This closes the crash window between a potentially billable provider call and a later node/session boundary. A persistence failure never releases capacity; it fails the active owner loudly while preserving the conservative reservation in memory for the terminal path.
 
@@ -56,6 +58,34 @@ Legacy submitted-job rows without the fields remain readable. With a configured 
 
 Session persistence receives a separate conservative-cost aggregate and per-model conservative attribution beside ADR-0070's realized `session_costs` data. The persister owns the additive, transactional write of a `budget:estimate_committed`; `AgentSession.resume` restores the realized and conservative totals together into the same `BudgetGovernor` used by a fresh session. The existing invariant for realized cost stays intact rather than being weakened to mix actual and estimated figures.
 
+### 5. Settle forward-compatibility first: a tolerant READ, a strict BODY
+
+The event in §2 cannot be emitted until this is decided, so it is decided here rather than left open.
+
+**The reader tolerates an unknown event `type` and drops it; a KNOWN type with an invalid body still fails
+loud.** That single distinction is the whole rule: an unrecognized discriminator is a newer writer, which is
+forward evolution; a recognized discriminator whose payload does not parse is corruption, and
+[ADR-0050](0050-cli-history-db-at-rest-posture.md)'s durability-first posture says corruption must never be
+swallowed.
+
+This is **not a new choice** — it is the contract [sse-event-schema.md](../reference/contracts/sse-event-schema.md)
+§Forward-compatibility already states: adding a new event `type` is "always v1.0-legal and never a breaking
+change, **provided consumers ignore unknown `type`s and unknown fields**". The code is the deviation, and it
+predates this ADR: `RunEventSchema` and `SessionEventSchema` are both `z.discriminatedUnion('type', …)` and
+`RunOrSessionEventSchema` is a `z.union` of the two, so **all three throw** on an unknown type, and
+`loadRunEvents` parses every stored row through one of them. So the work §2 depends on is *fixing a
+pre-existing doc↔code contradiction*, not weakening a guarantee to make room for a new event.
+
+Both paths need it, not just the run path: `budget:estimate_committed` is dual-envelope, so the session
+discriminated union and the `z.union` wrapper are equally affected. The correct seam is a `safeParse` at the
+**read** boundary that distinguishes the two failure modes, never a `.catch()` at the call site — one rule, one
+place, so a third reader cannot get it wrong.
+
+The rejected alternative was an explicit refusal to downgrade while a run/session carries new events. It needs a
+durable version marker the schema deliberately does not have (it is "versioned by additive evolution, not a
+version field"), it converts a recoverable read into a hard failure, and it would leave the documented
+ignore-unknown promise unfulfilled anyway.
+
 ## Consequences
 
 ### Positive
@@ -63,13 +93,12 @@ Session persistence receives a separate conservative-cost aggregate and per-mode
 - A strict cap stays enforced across concurrent branches, provider responses without usage, async-media re-attach, process crashes, workflow resume, and chat resume.
 - Cost reporting stays honest: actual provider-derived cost is not inflated by an upper bound, while the user can still see the committed uncertainty that protects their cap.
 - Async media's durable descriptor becomes a true replay record: it preserves the acceptance-time request volume and money basis instead of asking current mutable state to reconstruct history.
-- The change remains seam-pure: it introduces no vendor SDK type, no platform import in `@relavium/core`, and no new runtime dependency.
 
 ### Negative
 
 - The event/schema and checkpoint contracts grow, and the session implementation needs a migration plus a transactional persistence path. These are deliberate cross-surface changes, not a local `budget-governor.ts` edit.
 - A conservative commitment can block a later request even when the provider ultimately charged less or nothing. This is the intentionally safe direction; its presentation must identify it as an estimate rather than hide the tradeoff.
-- **Older binaries cannot replay a log containing the new event discriminant, and this is harder than a first reading suggests.** The premise that "current readers already handle unknown event types" is **false**, verified against the code: `RunEventUnionSchema` is a `z.discriminatedUnion('type', …)` ([run-event.ts](../../packages/shared/src/run-event.ts)) and `loadRunEvents` parses **every** row through it ([run-history-store.ts](../../packages/db/src/run-history-store.ts)), so an unknown `type` **throws rather than being skipped** — one new event in the log makes the whole run unreadable to an older binary, not merely partially understood. Implementing §2 therefore also requires deciding the reader posture: either a tolerant read path that drops unknown types (with the fold treating them as no-ops) or an explicit refusal to downgrade while such a run exists. Until that is settled the new event must not be emitted, because emitting it is a one-way door for the log.
+- **Older binaries cannot replay a log containing the new event discriminant, and this is harder than a first reading suggests.** The premise that "current readers already handle unknown event types" is **false**, verified against the code: `RunEventUnionSchema` is a `z.discriminatedUnion('type', …)` ([run-event.ts](../../packages/shared/src/run-event.ts)) and `loadRunEvents` parses **every** row through it ([run-history-store.ts](../../packages/db/src/run-history-store.ts)), so an unknown `type` **throws rather than being skipped** — one new event in the log makes the whole run unreadable to an older binary, not merely partially understood. **§5 settles this**: the read boundary tolerates an unknown `type` and drops it, while a known type with an invalid body still fails loud — which is the contract `sse-event-schema.md` already documents and the code never implemented. The same fix is required on the session discriminated union and the `z.union` wrapper, because this event is dual-envelope. That work is a **precondition** for emitting the event: until the tolerant read ships, one new discriminant in the log makes the whole run unreadable to an older binary.
 - Legacy async-media records cannot recover a price that was never persisted. They therefore choose temporary fail-closed capacity rather than a fabricated historical amount.
 
 ### Rejected alternatives

@@ -49,6 +49,42 @@ describe('createPlainRenderer', () => {
     expect(text).toContain('run completed');
   });
 
+  it('SANITIZES at the single write point, so a later arm cannot reopen the hole (G34/#57 class)', () => {
+    // The third leaf of the same "one seam, three renderers" split lane (c) hardened. The guard sits at the
+    // write, not on today's fields, so an arm added later inherits it. A CI log is a terminal too.
+    const { io, out } = captureIo();
+    createPlainRenderer(io).onEvent(
+      ev({
+        type: 'node:started',
+        nodeType: 'agent',
+        nodeId: 'n\u001b]52;c;ZXZpbA==\u0007\u001b[2J\u202Egnp',
+      }),
+    );
+    const text = out();
+    expect(text).not.toContain('\u001b'); // no CSI/OSC introducer
+    expect(text).not.toContain('\u0007'); // no OSC terminator
+    expect(text).not.toContain('\u202E'); // no Trojan-Source bidi override
+    expect(text).toContain('n'); // …the readable part still renders
+  });
+
+  it('keeps a legitimately multi-line line as multiple rows while neutralizing each', () => {
+    // `node:completed` emits the ok line plus one row per produced media handle; sanitizing the whole string
+    // must not collapse those rows into one.
+    const { io, out } = captureIo();
+    createPlainRenderer(io).onEvent(
+      ev({
+        type: 'node:started',
+        nodeType: 'agent',
+        nodeId: 'plain',
+      }),
+    );
+    expect(
+      out()
+        .split('\n')
+        .filter((l) => l.length > 0),
+    ).toHaveLength(1);
+  });
+
   it('surfaces a node failure with its error code', () => {
     const { io, out } = captureIo();
     createPlainRenderer(io).onEvent(

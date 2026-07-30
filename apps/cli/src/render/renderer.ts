@@ -2,6 +2,7 @@ import { collectDurableMediaHandles, type RunEvent } from '@relavium/shared';
 
 import type { CliIo } from '../process/io.js';
 import { formatProducedMedia } from './tui/format.js';
+import { sanitizeInline } from './sanitize.js';
 
 /**
  * A renderer consumes the run's canonical {@link RunEvent} stream. The renderers below sit behind this one
@@ -45,13 +46,27 @@ export function createJsonRenderer(io: CliIo): RunRenderer {
   };
 }
 
-/** Minimal human renderer — a terse line per lifecycle event; the no-TTY / CI fallback beside the ink TUI (2.E). */
+/**
+ * Minimal human renderer — a terse line per lifecycle event; the no-TTY / CI fallback beside the ink TUI (2.E).
+ *
+ * Sanitized at the SINGLE write, not per field (G34/#57's class). Lane (c) hardened the TUI leaf and four
+ * specific call sites; this is the third leaf of the same "one seam, three renderers" split, and putting the
+ * guard at the boundary rather than on today's fields means an arm added later cannot reopen the hole by
+ * forgetting it. The fields that matter today are authored `nodeId`s and a provider-declared media `mimeType`
+ * (never verified against the bytes — finding #107), so the exposure is narrower than the human-gate message
+ * that `status.ts`/`gate-list.ts` printed, but it is the same class and the same fix.
+ *
+ * `sanitizeInline` rather than `stripTerminalControls`: a lifecycle line is one row, so an embedded newline
+ * would forge extra rows in a CI log just as it would on a terminal.
+ */
 export function createPlainRenderer(io: CliIo): RunRenderer {
   return {
     onEvent: (event) => {
       const line = describe(event);
       if (line !== undefined) {
-        io.writeOut(`${line}\n`);
+        // Per line, so a legitimate multi-line describe() (node:completed's media handles) keeps its rows
+        // while each row is individually neutralized.
+        io.writeOut(`${line.split('\n').map(sanitizeInline).join('\n')}\n`);
       }
     },
   };
