@@ -253,6 +253,15 @@ export const LlmErrorSchema = z.object({
   retryable: z.boolean(),
   code: nonEmptyString.optional(), // normalized provider/transport code, e.g. 'rate_limit'
   status: z.number().int().optional(), // upstream HTTP status, when there was one
+  /**
+   * How long the PROVIDER asked us to wait, in milliseconds, normalized from its `Retry-After` /
+   * `retry-after-ms` header (#279). Present only when the provider actually said so — never guessed.
+   *
+   * A plain `number`, so no vendor header type crosses the seam. `FallbackChain` prefers it over its own
+   * computed backoff, which is the whole point: on a 429 the provider knows when its window reopens and we
+   * were previously ignoring that and retrying on our own schedule.
+   */
+  retryAfterMs: z.number().int().nonnegative().optional(),
   provider: ProviderIdSchema,
   message: z.string(), // human-readable, already redacted of any secret material
   // INTERNAL diagnostic only — may hold a raw vendor error and is NOT scrubbed by `makeLlmError`

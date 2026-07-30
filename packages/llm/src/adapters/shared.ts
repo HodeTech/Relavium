@@ -2,7 +2,7 @@ import type { AbortSignalLike } from '@relavium/shared';
 
 import { mediaSupportReason } from '../capabilities.js';
 import { UnsupportedCapabilityError } from '../errors.js';
-import { LlmProviderError, makeLlmError } from '../llm-error.js';
+import { LlmProviderError, makeLlmError, retryAfterMsFromHeaders } from '../llm-error.js';
 import { catalogModel } from '../catalog/lookup.js';
 import { LlmMessageSchema, ModelListingSchema } from '../types.js';
 import type {
@@ -345,5 +345,24 @@ export async function boundedListModels(params: {
     if (signal !== undefined) {
       signal.removeEventListener('abort', onAbort);
     }
+  }
+}
+
+/**
+ * Read a provider's requested wait off an SDK error's headers, without letting a vendor header type cross the
+ * seam (#279). Structurally typed and fully defensive: an error with no headers, a non-callable `get`, or a
+ * `get` that throws all yield `undefined` — i.e. "the provider said nothing", so the chain keeps its own
+ * backoff. Both Stainless SDKs expose a `Headers`-like object here; a mid-stream error event exposes none.
+ */
+export function readRetryAfter(
+  headers: { readonly get?: unknown } | undefined,
+): number | undefined {
+  if (headers === undefined || typeof headers.get !== 'function') return undefined;
+  const get = headers.get.bind(headers) as (name: string) => string | null | undefined;
+  try {
+    return retryAfterMsFromHeaders({ get });
+  } catch {
+    // A hostile/exotic header container must never break error CLASSIFICATION — the error still surfaces.
+    return undefined;
   }
 }

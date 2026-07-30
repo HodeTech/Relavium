@@ -108,6 +108,15 @@ const rejects =
   (provider: ProviderId, kind: LlmErrorKind, message?: string) => (): Promise<LlmResult> =>
     Promise.reject(providerError(provider, kind, message));
 
+/** A rejecting stub whose `LlmError` carries the provider's own requested wait (#279). */
+const rejectsWithRetryAfter =
+  (provider: ProviderId, retryAfterMs: number) => (): Promise<LlmResult> =>
+    Promise.reject(
+      new LlmProviderError(
+        makeLlmError({ provider, kind: 'rate_limit', message: 'rl', retryAfterMs }),
+      ),
+    );
+
 async function* streamFrom(chunks: StreamChunk[]): AsyncIterable<StreamChunk> {
   await Promise.resolve(); // a real stream awaits I/O; this keeps the fake a true async iterable
   for (const chunk of chunks) {
@@ -830,6 +839,42 @@ describe('FallbackChain — backoff and cooldown', () => {
 
     expect(primary.calls).toHaveLength(3); // exhausted the budget
     expect(sleeps).toEqual([100, 200]); // backoff before attempts 2 and 3, exponential, no inter-entry delay
+  });
+
+  it("honours the provider's Retry-After over its own computed backoff (#279)", async () => {
+    // A rate limit is the one case where the provider knows better than we do: it says when its window
+    // reopens. Computing our own delay either hammered it early or waited longer than needed.
+    const primary = makeProvider({
+      id: 'anthropic',
+      generate: rejectsWithRetryAfter('anthropic', 1_500),
+    });
+    const fallback = makeProvider({ id: 'openai', generate: resolves('ok') });
+    const { options, sleeps } = makeOptions({ backoffBaseMs: 100, backoffMaxMs: 1000 });
+    const chain = new FallbackChain(
+      [{ ...entry(primary, 'claude-opus-4-8'), maxAttempts: 3 }, entry(fallback, 'gpt-5.5')],
+      options,
+    );
+
+    await chain.generate(userReq);
+
+    // 1500 twice — the header, NOT the 100/200 exponential curve this config would otherwise produce.
+    expect(sleeps).toEqual([1_500, 1_500]);
+  });
+
+  it('falls back to its own curve when the provider requested nothing (#279)', async () => {
+    // `undefined` must mean "no instruction", never "wait zero" — otherwise a provider that omits the
+    // header would turn the backoff into a tight retry loop.
+    const primary = makeProvider({ id: 'anthropic', generate: rejects('anthropic', 'rate_limit') });
+    const fallback = makeProvider({ id: 'openai', generate: resolves('ok') });
+    const { options, sleeps } = makeOptions({ backoffBaseMs: 100, backoffMaxMs: 1000 });
+    const chain = new FallbackChain(
+      [{ ...entry(primary, 'claude-opus-4-8'), maxAttempts: 3 }, entry(fallback, 'gpt-5.5')],
+      options,
+    );
+
+    await chain.generate(userReq);
+
+    expect(sleeps).toEqual([100, 200]);
   });
 
   it('respects the linear backoff curve and the ceiling', async () => {

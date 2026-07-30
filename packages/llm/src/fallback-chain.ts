@@ -385,7 +385,7 @@ export class FallbackChain {
         continue;
       }
       if (attempt < budget + bonus) {
-        await this.#backoff(entry, attempt - 1);
+        await this.#backoff(entry, attempt - 1, outcome.error);
       }
     }
     return undefined; // budget exhausted → advance to the next entry
@@ -464,7 +464,7 @@ export class FallbackChain {
         continue;
       }
       if (attempt < budget + bonus) {
-        await this.#backoff(entry, attempt - 1);
+        await this.#backoff(entry, attempt - 1, failure);
       }
     }
     return 'advance'; // budget exhausted → try the next entry
@@ -736,13 +736,31 @@ export class FallbackChain {
     });
   }
 
-  async #backoff(entry: FallbackPlanEntry, retryIndex: number): Promise<void> {
-    const delay = backoffDelayMs(
-      entry.backoff ?? 'exponential',
-      retryIndex,
-      this.#backoffBaseMs,
-      this.#backoffMaxMs,
-    );
+  /**
+   * Wait before re-attempting an entry. The provider's OWN `Retry-After` wins when it sent one (#279): on a
+   * rate limit it knows when its window reopens, and computing our own delay was guesswork that either
+   * hammered it early or waited longer than needed.
+   *
+   * Deliberately NO jitter, in either branch. ADR-0040 pins this backoff as deterministic — no jitter, never
+   * `Math.random` — so a replay reproduces the same schedule; `retry.ts` follows the same convention. The
+   * thundering-herd risk that jitter would address is therefore accepted and left documented rather than
+   * silently traded away here: parallel branches that hit one provider's rate limit together will retry
+   * together. Revisiting that is an ADR-0040 amendment, not a local edit.
+   *
+   * The honoured value is already normalized and ceiling-checked at the seam
+   * ({@link retryAfterMsFromHeaders}), so a hostile `retry-after: 999999999` cannot park a turn — it arrives
+   * as `undefined` and we fall back to our own schedule.
+   */
+  async #backoff(entry: FallbackPlanEntry, retryIndex: number, error?: LlmError): Promise<void> {
+    const requested = error?.retryAfterMs;
+    const delay =
+      requested ??
+      backoffDelayMs(
+        entry.backoff ?? 'exponential',
+        retryIndex,
+        this.#backoffBaseMs,
+        this.#backoffMaxMs,
+      );
     await this.#sleep(delay);
   }
 

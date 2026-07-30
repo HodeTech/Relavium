@@ -39,6 +39,7 @@ import {
   isRecord,
   positiveModelInt,
   toModelListing,
+  readRetryAfter,
 } from './shared.js';
 
 /**
@@ -217,6 +218,8 @@ function mapAnthropicApiError(err: {
   status?: unknown;
   type?: unknown;
   message: string;
+  /** Structurally typed, so no vendor header type crosses the seam — only `.get` is used (#279). */
+  headers?: { readonly get?: unknown } | undefined;
 }): LlmError {
   const status = typeof err.status === 'number' ? err.status : undefined;
   const code = typeof err.type === 'string' && err.type.length > 0 ? err.type : undefined;
@@ -225,12 +228,16 @@ function mapAnthropicApiError(err: {
   const kind =
     (code === undefined ? undefined : kindFromErrorType(code)) ??
     (status === undefined ? 'unknown' : kindFromHttpStatus(status));
+  // #279: carry the provider's OWN requested wait when it sent one. A mid-stream `error` event has no
+  // headers, so this is genuinely optional — absent means "no instruction", never "wait zero".
+  const retryAfterMs = readRetryAfter(err.headers);
   return makeLlmError({
     provider: PROVIDER,
     kind,
     message: err.message,
     ...(status === undefined ? {} : { status }),
     ...(code === undefined ? {} : { code }),
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
   });
 }
 

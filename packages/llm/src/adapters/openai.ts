@@ -56,6 +56,7 @@ import {
   isRecord,
   redactKey,
   toModelListing,
+  readRetryAfter,
 } from './shared.js';
 
 /**
@@ -371,6 +372,11 @@ function mapOpenAiApiError(
 ): LlmError {
   const status = typeof err.status === 'number' ? err.status : undefined;
   const code = firstNonEmptyString(err.code, err.type);
+  // #279: the provider's own requested wait, when it sent one. A value object (not a thrown APIError) has no
+  // headers, so this is genuinely optional — absent means "no instruction", never "wait zero".
+  const retryAfterMs = readRetryAfter(
+    (err as { headers?: { readonly get?: unknown } | undefined }).headers,
+  );
   // A content-policy block normalizes to content_filter regardless of HTTP status (a moderation 400 would
   // otherwise map to bad_request) — the wired image-gen path then delivers the documented taxonomy.
   let kind: LlmErrorKind;
@@ -385,6 +391,7 @@ function mapOpenAiApiError(
     provider,
     kind,
     message: err.message,
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     ...(status === undefined ? {} : { status }),
     ...(code === undefined ? {} : { code }),
   });
@@ -434,6 +441,9 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId, key?: 
     kind: base.kind,
     message: redactKey(base.message, key),
     ...(base.status === undefined ? {} : { status: base.status }),
+    // Carried through the re-wrap: dropping it here would silently discard the provider's Retry-After on
+    // exactly the custom-endpoint path that most needs a polite retry (#279).
+    ...(base.retryAfterMs === undefined ? {} : { retryAfterMs: base.retryAfterMs }),
     ...(base.code === undefined ? {} : { code: redactKey(base.code, key) }),
   });
 }

@@ -5,6 +5,7 @@ import {
   isRetryable,
   kindFromHttpStatus,
   makeLlmError,
+  retryAfterMsFromHeaders,
   scrubSecrets,
 } from './llm-error.js';
 import { LlmErrorSchema } from './types.js';
@@ -156,5 +157,47 @@ describe('scrubSecrets — defense-in-depth secret backstop (no key/token/baseUR
     expect(e.message).toContain('[REDACTED]');
     expect(e.code).not.toContain('pw@');
     expect(LlmErrorSchema.safeParse(e).success).toBe(true);
+  });
+});
+
+describe('retryAfterMsFromHeaders (#279)', () => {
+  /** A minimal `Headers`-like container; only `.get` is used, so no vendor type crosses the seam. */
+  const headers = (map: Record<string, string>) => ({
+    get: (name: string): string | null => map[name.toLowerCase()] ?? null,
+  });
+
+  it('prefers retry-after-ms, which the Stainless SDKs send with millisecond precision', () => {
+    expect(retryAfterMsFromHeaders(headers({ 'retry-after-ms': '1500', 'retry-after': '9' }))).toBe(
+      1500,
+    );
+  });
+
+  it('reads retry-after as delta-seconds', () => {
+    expect(retryAfterMsFromHeaders(headers({ 'retry-after': '2' }))).toBe(2000);
+  });
+
+  it('reads the RFC 7231 HTTP-date form', () => {
+    const at = new Date(Date.now() + 3_000).toUTCString();
+    const ms = retryAfterMsFromHeaders(headers({ 'retry-after': at }));
+    // Second-resolution date, so allow a small window rather than pinning an exact figure.
+    expect(ms).toBeGreaterThan(1_000);
+    expect(ms).toBeLessThanOrEqual(4_000);
+  });
+
+  it('returns undefined when the provider said nothing — NOT zero', () => {
+    // The distinction is load-bearing: zero would turn the chain's backoff into a tight retry loop.
+    expect(retryAfterMsFromHeaders(headers({}))).toBeUndefined();
+    expect(retryAfterMsFromHeaders(headers({ 'retry-after': '   ' }))).toBeUndefined();
+  });
+
+  it('DROPS a hostile or nonsensical value rather than honouring it', () => {
+    // A header is untrusted input. Honouring `retry-after: 999999999` would park a turn for ~31 years.
+    expect(retryAfterMsFromHeaders(headers({ 'retry-after': '999999999' }))).toBeUndefined();
+    expect(retryAfterMsFromHeaders(headers({ 'retry-after': '-5' }))).toBeUndefined();
+    expect(retryAfterMsFromHeaders(headers({ 'retry-after': 'soon' }))).toBeUndefined();
+    expect(retryAfterMsFromHeaders(headers({ 'retry-after-ms': 'NaN' }))).toBeUndefined();
+    // A date already in the past is not an instruction to wait.
+    const past = new Date(Date.now() - 60_000).toUTCString();
+    expect(retryAfterMsFromHeaders(headers({ 'retry-after': past }))).toBeUndefined();
   });
 });
