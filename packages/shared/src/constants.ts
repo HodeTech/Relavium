@@ -51,6 +51,11 @@ export const RUN_EVENT_TYPES = [
   'run:timeout',
   'budget:warning',
   'budget:paused',
+  // A conservative budget commitment made durable (ADR-0074 §2) — a bounded ESTIMATE retained when a provider
+  // may already have billed a call but supplied no trustworthy usage. Dual-envelope, like 'cost:updated': it
+  // rides 'runId' on a run and 'sessionId' on a session, so it is listed here (with the run types) and reused
+  // on the session envelope rather than duplicated into SESSION_EVENT_TYPES. NEVER realized spend.
+  'budget:estimate_committed',
 ] as const;
 export type RunEventType = (typeof RUN_EVENT_TYPES)[number];
 

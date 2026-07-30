@@ -135,8 +135,8 @@ describe('createHistoryCheckpointer', () => {
         id: '00000000-0000-4000-8000-000000000099',
         runId: 'run-2',
         seq: 3,
-        eventType: 'budget:estimate_committed',
-        payloadJson: JSON.stringify({ type: 'budget:estimate_committed', estimateMicrocents: 500 }),
+        eventType: 'test:never_a_real_event',
+        payloadJson: JSON.stringify({ type: 'test:never_a_real_event', estimateMicrocents: 500 }),
         ts: new Date(TS).getTime(),
       })
       .run();

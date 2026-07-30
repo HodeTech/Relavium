@@ -85,8 +85,8 @@ describe('logsCommand', () => {
         id: '00000000-0000-4000-8000-0000000000ff',
         runId: 'run-1',
         seq: 99,
-        eventType: 'budget:estimate_committed',
-        payloadJson: JSON.stringify({ type: 'budget:estimate_committed' }),
+        eventType: 'test:never_a_real_event',
+        payloadJson: JSON.stringify({ type: 'test:never_a_real_event' }),
         ts: 0,
       })
       .run();

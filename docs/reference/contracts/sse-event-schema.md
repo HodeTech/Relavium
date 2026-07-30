@@ -33,7 +33,7 @@ interface BaseEvent {
 }
 ```
 
-> **Correlation key.** Exactly one of `runId` / `sessionId` is present — `runId` on a workflow run, `sessionId` on an agent session. The reused `agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` / `cost:updated` events carry `runId` on a run and `sessionId` on a session; `agent:approval_requested` (ADR-0057) is also dual-envelope but **session-only-emitted** in Phase 2.5. Consumers route on whichever is present.
+> **Correlation key.** Exactly one of `runId` / `sessionId` is present — `runId` on a workflow run, `sessionId` on an agent session. The reused `agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` / `cost:updated` / `budget:estimate_committed` events carry `runId` on a run and `sessionId` on a session; `agent:approval_requested` (ADR-0057) is also dual-envelope but **session-only-emitted** in Phase 2.5. Consumers route on whichever is present.
 
 `sequenceNumber` is monotonic per run and is the basis for **gap detection**: if a consumer sees a jump in `sequenceNumber`, it triggers a full state resync (re-read the durable run state) rather than trusting a partial view. This is what makes reconnection lossless. The **envelope** fields (`sessionId` / `runId`, `sequenceNumber`, `timestamp`) are stamped by the bus, not the producer: `WorkflowEngine` emits through the `RunEventBus`, and `AgentSession` (1.V) emits *envelope-free payload drafts* through an injected `SessionEventSink` — wiring that sink onto the bus, where the per-session `sequenceNumber` (and its same gap/resync rule) is assigned, is **1.W**. So a session's monotonic numbering is the bus's responsibility, not the session core's.
 
@@ -63,10 +63,11 @@ export type RunEvent =
   | RunPausedEvent
   | RunTimeoutEvent
   | BudgetWarningEvent
-  | BudgetPausedEvent;
+  | BudgetPausedEvent
+  | BudgetEstimateCommittedEvent; // dual-envelope (ADR-0074 §2) — a conservative ESTIMATE, never realized spend
 ```
 
-> `RunPausedEvent` is the multi-gate aggregate (below); `RunTimeoutEvent` / `BudgetWarningEvent` / `BudgetPausedEvent` are the resource-governance events defined in [Workflow governance and reserved events](#workflow-governance-and-reserved-events).
+> `RunPausedEvent` is the multi-gate aggregate (below); `RunTimeoutEvent` / `BudgetWarningEvent` / `BudgetPausedEvent` / `BudgetEstimateCommittedEvent` are the resource-governance events defined in [Workflow governance and reserved events](#workflow-governance-and-reserved-events).
 
 | `type` | Meaning | Key payload fields |
 | --- | --- | --- |
@@ -206,6 +207,14 @@ export interface BudgetPausedEvent extends BaseEvent {
   gateId: string;           // stable id of the budget gate; required by engine.resume(runId, gateId, decision)
 }
 
+export interface BudgetEstimateCommittedEvent extends BaseEvent {
+  type: 'budget:estimate_committed';
+  nodeId?: string;          // the agent node that owned the attempt; absent on a session turn
+  model: string;            // canonical model id — the per-model conservative attribution key
+  estimateMicrocents: number;                 // THIS commitment's bounded amount
+  cumulativeConservativeMicrocents: number;   // the owner-local running total after it (a snapshot, not a delta)
+}
+
 export interface RunTimeoutEvent extends BaseEvent {
   type: 'run:timeout';
   elapsedMs: number;
@@ -297,6 +306,7 @@ Within a turn, the conversational work reuses the **same** `agent:token` / `agen
 | --- | --- | --- |
 | `budget:warning` | Pre-egress worst-case cost estimate would exceed the configured cap, and `on_exceed: warn` is set. Emitted once per run before the capped egress; execution continues. `thresholdPct` is `clamp(round(spent / limit * 100), 0, 100)` observed at the pre-egress check point. | `spentMicrocents`, `limitMicrocents`, `thresholdPct` |
 | `budget:paused` | Pre-egress estimate would exceed the cap with `on_exceed: pause_for_approval`; the run suspends like a human gate and is resumed via `engine.resume(runId, gateId, decision)`. `decision: approved` continues; `rejected` closes the run with `run:failed{code: budget_exceeded}`. | `nodeId`, `spentMicrocents`, `limitMicrocents`, `gateId` |
+| `budget:estimate_committed` | A **conservative budget commitment** made durable ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §2): a provider may already have accepted or billed a call, but the response carried no trustworthy usage (a clean EOF with no terminal usage, a partial-stream failure, a cost-tracker failure), so the reservation is retained at its bounded estimate instead of being released — releasing it would reopen a strict cap against money that may already be owed. Persisting it is what makes that survive a crash or a resume. **An ESTIMATE, never realized spend**: it is deliberately its own `type` rather than a field on `cost:updated`, because folding it into actual-cost reporting would present an upper bound as an invoice. `cost:updated`, the per-model actual-cost attribution, and the `total_cost_microcents` totals all stay realized-only. **Dual-envelope** (`runId` on a run, `sessionId` on a session) — the governor is shared by workflows and resumable chat. A surface renders the amount as *estimated, possibly billed*. | `nodeId?`, `model`, `estimateMicrocents`, `cumulativeConservativeMicrocents` |
 | `run:timeout` | The run hit its `timeout_ms`. | `elapsedMs`, `timeoutMs` |
 
 These three (and `run:paused` / `human_gate:paused`) are **non-terminal** — they signal a governance/suspension state, not the run's end. A run that cannot continue past a timeout or budget cap still closes with **exactly one** `run:failed` carrying `code: run_timeout` / `budget_exceeded`. The exactly-one-terminal-event invariant (`run:completed | run:failed | run:cancelled`) and its precedence are owned by [ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md).

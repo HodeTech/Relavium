@@ -166,6 +166,14 @@ const valid: Record<string, Record<string, unknown>> = {
     limitMicrocents: 1000,
     gateId: 'budget-gate-1',
   },
+  'budget:estimate_committed': {
+    type: 'budget:estimate_committed',
+    ...env,
+    nodeId: 'n',
+    model: 'claude-opus-4-8',
+    estimateMicrocents: 400,
+    cumulativeConservativeMicrocents: 400,
+  },
 };
 
 /** One targeted invalid payload per variant (a missing/invalid required field). */
@@ -500,7 +508,7 @@ describe('RunEvent union — every variant', () => {
     }
   });
 
-  it('covers exactly the 23 canonical colon-namespaced names, pinned to a literal list', () => {
+  it('covers exactly the 24 canonical colon-namespaced names, pinned to a literal list', () => {
     // A hardcoded contract list — independent of RUN_EVENT_TYPES — so the union and the
     // constant cannot silently drift together.
     const CONTRACT_NAMES = [
@@ -527,6 +535,7 @@ describe('RunEvent union — every variant', () => {
       'run:timeout',
       'budget:warning',
       'budget:paused',
+      'budget:estimate_committed', // ADR-0074 §2 — a durable conservative commitment; an ESTIMATE, not spend
     ];
     // The matrix above proves each canonical name's valid payload parses (so a
     // renamed/missing variant fails there); the union member count catches an *extra*
@@ -534,7 +543,7 @@ describe('RunEvent union — every variant', () => {
     // RunEventSchema wraps the union in the correlation-key refinement; reach the raw union.
     expect(RunEventSchema.innerType().options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
-    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 23
+    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 24
   });
 
   it('pins the RunEvent discriminant to RunEventType (type-level)', () => {
@@ -1028,7 +1037,11 @@ describe('parseStoredRunEvent — the forward-compatible read (ADR-0074 §5)', (
     // run unreadable. `sse-event-schema.md` promises consumers ignore unknown types; this is that promise.
     expect(
       parseStoredRunEvent({
-        type: 'budget:estimate_committed',
+        // A name reserved for these tests and deliberately never added to the union. The first draft used
+        // `budget:estimate_committed` as the stand-in for "a newer writer" — which then LANDED (ADR-0074 §2) and
+        // silently turned this fixture into a KNOWN type. The pinned-contract test caught it, but the lesson is
+        // the fixture's: a forward-row stand-in must name something that will never become real.
+        type: 'test:never_a_real_event',
         runId: 'r1',
         sequenceNumber: 1,
         timestamp: '2026-07-30T00:00:00.000Z',
@@ -1036,7 +1049,7 @@ describe('parseStoredRunEvent — the forward-compatible read (ADR-0074 §5)', (
       }),
     ).toBeUndefined();
     // And the strict schema still rejects it, so the write side is unchanged.
-    expect(() => RunEventSchema.parse({ type: 'budget:estimate_committed' })).toThrow();
+    expect(() => RunEventSchema.parse({ type: 'test:never_a_real_event' })).toThrow();
   });
 
   it('THROWS on a known type with a damaged body — corruption is never swallowed', () => {

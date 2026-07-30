@@ -830,8 +830,8 @@ describe('createRunHistoryReader', () => {
       await store.persistEvent(
         evRun('run-f', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
       );
-      insertRaw('run-f', 1, 'budget:estimate_committed', {
-        type: 'budget:estimate_committed',
+      insertRaw('run-f', 1, 'test:never_a_real_event', {
+        type: 'test:never_a_real_event',
         runId: 'run-f',
         sequenceNumber: 1,
         timestamp: ts,
@@ -864,14 +864,14 @@ describe('createRunHistoryReader', () => {
       );
       // Deliberately DISAGREE with the payload's own `sequenceNumber` (77): the `seq` COLUMN is what
       // `UNIQUE(run_id, seq)` enforces, so it is the only number that can be trusted here.
-      insertRaw('run-s', 1, 'budget:estimate_committed', {
-        type: 'budget:estimate_committed',
+      insertRaw('run-s', 1, 'test:never_a_real_event', {
+        type: 'test:never_a_real_event',
         sequenceNumber: 77,
       });
 
       const log = reader.loadRunEventLog('run-s');
       expect(log.events.map((e) => e.type)).toEqual(['run:started']);
-      expect(log.skipped).toEqual([{ sequenceNumber: 1, type: 'budget:estimate_committed' }]);
+      expect(log.skipped).toEqual([{ sequenceNumber: 1, type: 'test:never_a_real_event' }]);
       // A clean log reports nothing, so a caller can branch on emptiness rather than on a count.
       expect(reader.loadRunEventLog('run-s').skipped).toHaveLength(1);
     });
@@ -892,7 +892,7 @@ describe('createRunHistoryReader', () => {
       await store.persistEvent(
         evRun('run-t', 'node:started', 1, { nodeId: 'g', nodeType: 'agent' }, ts),
       );
-      insertRaw('run-t', 2, 'budget:estimate_committed', { type: 'budget:estimate_committed' }); // the TAIL
+      insertRaw('run-t', 2, 'test:never_a_real_event', { type: 'test:never_a_real_event' }); // the TAIL
 
       const log = reader.loadRunEventLog('run-t');
       const foldedMax = Math.max(...log.events.map((e) => e.sequenceNumber));

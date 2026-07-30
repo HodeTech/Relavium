@@ -491,6 +491,44 @@ export const BudgetPausedEventSchema = z.object({
   gateId: nonEmptyString, // stable id of the budget gate; required by engine.resume(runId, gateId, decision)
 });
 
+/**
+ * A **conservative budget commitment** made durable ([ADR-0074](../../../docs/decisions/0074-durable-conservative-budget-commitments.md) §2).
+ *
+ * Emitted when a provider may already have accepted or billed a call but the response supplies no trustworthy
+ * usage — a clean EOF with no terminal usage, a partial-stream failure, a cost-tracker failure. The reservation
+ * is retained at its bounded estimate instead of being released, because releasing it would reopen a strict cap
+ * against money that may already be owed. Persisting it is what makes that survive a crash or a resume: keeping
+ * the amount only in memory means the cap reopens the moment the process dies.
+ *
+ * **This is an estimate, never realized spend, and the split is the whole point of the ADR.** It is deliberately
+ * a new `type` rather than a field on `cost:updated`, because folding it into actual-cost reporting would present
+ * an upper bound as an invoice — ADR-0074's first rejected alternative. `cost:updated`, the per-model actual-cost
+ * attribution, `runs.total_cost_microcents` and `agent_sessions.total_cost_microcents` all stay realized-only
+ * ([ADR-0070](../../../docs/decisions/0070-durable-per-model-session-cost-attribution.md)'s
+ * `SUM(session_costs) == total_cost_microcents` invariant is therefore untouched). A surface renders this amount
+ * as *estimated, possibly billed*.
+ *
+ * **Dual-envelope** (`runId` on a run, `sessionId` on a session): the governor is shared by workflows and
+ * resumable chat, and a safety guarantee that vanished after `chat-resume` would not be a first-class cost cap.
+ */
+export const BudgetEstimateCommittedEventSchema = z.object({
+  type: z.literal('budget:estimate_committed'),
+  ...dualBase,
+  /** The agent node that owned the attempt. Absent on a session turn, which has no node. */
+  nodeId: nonEmptyString.optional(),
+  /** The canonical model id the uncertain attempt ran on — the per-model conservative attribution key (§4). */
+  model: nonEmptyString,
+  /** THIS commitment's bounded amount: the reservation that was retained rather than released. */
+  estimateMicrocents: nonNegativeInt,
+  /**
+   * The owner-local RUNNING TOTAL of conservative commitments after this one — the same
+   * snapshot-not-delta shape `cost:updated.cumulativeCostMicrocents` uses, so checkpoint reconstruction can
+   * restore the total from the LAST such event rather than by summing a log it may have read only partially.
+   */
+  cumulativeConservativeMicrocents: nonNegativeInt,
+});
+export type BudgetEstimateCommittedEvent = z.infer<typeof BudgetEstimateCommittedEventSchema>;
+
 /** The run-event variants, discriminated on `type` (exposed via `RunEventSchema.innerType()`). */
 const RunEventUnionSchema = z.discriminatedUnion('type', [
   RunStartedEventSchema,
@@ -516,6 +554,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   RunTimeoutEventSchema,
   BudgetWarningEventSchema,
   BudgetPausedEventSchema,
+  BudgetEstimateCommittedEventSchema,
 ]);
 
 /** The pre-refinement union value — the input every cross-field refinement helper below receives. */
