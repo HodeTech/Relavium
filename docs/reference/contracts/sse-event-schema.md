@@ -323,6 +323,8 @@ This schema is **versioned by additive evolution**, not a version field. The fol
 
 Removing or repurposing an existing field/type is a breaking change and is not done within the contract.
 
+**Where "ignore unknown `type`s" is actually enforced.** For a long time it was not: `RunEventSchema` is a `z.discriminatedUnion('type', …)`, so it *throws* on a type it does not know, and every stored row was parsed through it — one event written by a newer binary made an entire run unreadable to an older one. [ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §5 settles it at a single seam: `parseStoredRunEvent` ([run-event.ts](../../../packages/shared/src/run-event.ts)) is the read boundary, and it draws exactly one distinction — an **unknown `type`** is a newer writer, so the row is dropped; a **known `type` with an unparseable body** is corruption, so it still throws ([ADR-0050](../../decisions/0050-cli-history-db-at-rest-posture.md)'s durability-first posture). Every **write**-side parse stays strict, because a producer emitting an unknown type is a bug, not forward evolution. A new reader of stored events uses that function; it must never re-implement the rule or wrap a read in a `catch`.
+
 ## Transport notes
 
 ### Phase 1 — local (in-process on every surface)
