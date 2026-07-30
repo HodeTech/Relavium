@@ -806,3 +806,66 @@ export const GateDecisionSchema = z.object({
   comment: z.string().optional(),
 });
 export type GateDecision = z.infer<typeof GateDecisionSchema>;
+
+/**
+ * The forward-compatible READ of a stored run event (ADR-0074 §5).
+ *
+ * `RunEventSchema` is a `z.discriminatedUnion('type', …)`, so it **throws** on a `type` it does not know —
+ * and `SessionEventSchema` and the `RunOrSessionEventSchema` union over both behave the same way. That
+ * contradicts this contract's own promise: [sse-event-schema.md](../../../docs/reference/contracts/sse-event-schema.md)
+ * §Forward-compatibility states that adding a new event `type` is "always v1.0-legal and never a breaking
+ * change, **provided consumers ignore unknown `type`s**". Until ADR-0074, no consumer did — so one row written
+ * by a newer binary made an entire run unreadable to an older one, rather than partially understood.
+ *
+ * The rule is one distinction, and it is the whole of §5:
+ *
+ * - an **unknown discriminator** is a newer writer ⇒ `undefined`, and the caller drops the row;
+ * - a **known `type` with an unparseable body** is corruption ⇒ **throws**, because
+ *   [ADR-0050](../../../docs/decisions/0050-cli-history-db-at-rest-posture.md)'s durability-first posture must
+ *   never silently swallow a damaged row.
+ *
+ * Deliberately READ-only. Every WRITE-side parse (the bus's producer gate, `persistEvent`'s validate-on-the-way-in,
+ * the engine's own construction) stays strict: a producer emitting a `type` the schema does not know is our bug,
+ * not forward evolution, and tolerating it there would hide exactly the drift the gate exists to catch.
+ *
+ * There is no `parseStoredSessionEvent` twin because there is nothing for it to read: `run_events` is the only
+ * table that stores serialized events, and a session's history persists as message rows, not as `SessionEvent`s.
+ * `RunOrSessionEventSchema` is parsed in exactly one place — the bus's producer gate — which is a write. Should a
+ * stored-session-event or dual-envelope read ever appear, it needs this same treatment before it ships, for the
+ * same reason: the tolerant read has to precede the first new `type` on the wire, or the log becomes a one-way door.
+ */
+export function parseStoredRunEvent(candidate: unknown): RunEvent | undefined {
+  const parsed = RunEventSchema.safeParse(candidate);
+  if (parsed.success) {
+    return parsed.data;
+  }
+  if (isUnknownDiscriminator(parsed.error, candidate)) {
+    return undefined;
+  }
+  throw parsed.error;
+}
+
+/**
+ * Whether `error` says exactly one thing: "`type` is a value I do not recognize".
+ *
+ * Three conditions, each load-bearing:
+ *
+ * 1. **`issues.length === 1`.** On an unrecognized discriminator a `z.discriminatedUnion` reports that single
+ *    issue and never opens the branch, so it never reports body problems alongside it. A second issue therefore
+ *    means we are looking at something else, and dropping the row would hide it.
+ * 2. **`path` is exactly `['type']`.** Zod anchors the issue at the discriminator key, not at the root — and a
+ *    deeper `invalid_union_discriminator` would belong to a nested union inside a body we *do* know.
+ * 3. **The row actually carries a plausible `type`.** Zod raises the same issue code for `type: undefined` as it
+ *    does for `type: 'budget:estimate_committed'`, but the two are opposites: no writer of ours has ever omitted
+ *    `type`, so a row missing it is damaged, not forward-written. Only a non-empty string can be a newer writer's
+ *    event name.
+ */
+function isUnknownDiscriminator(error: z.ZodError, candidate: unknown): boolean {
+  const [issue, ...rest] = error.issues;
+  if (issue === undefined || rest.length > 0) return false;
+  if (issue.code !== z.ZodIssueCode.invalid_union_discriminator) return false;
+  if (issue.path.length !== 1 || issue.path[0] !== 'type') return false;
+  if (typeof candidate !== 'object' || candidate === null) return false;
+  const type: unknown = (candidate as { type?: unknown }).type;
+  return typeof type === 'string' && type.length > 0;
+}

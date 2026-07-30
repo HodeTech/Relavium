@@ -1,4 +1,5 @@
 import {
+  parseStoredRunEvent,
   RunEventSchema,
   type ExecutionMode,
   type RunEvent,
@@ -546,7 +547,10 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         .where(eq(runEvents.runId, runId))
         .orderBy(asc(runEvents.seq))
         .all()
-        .map((r) => RunEventSchema.parse(JSON.parse(r.payloadJson))),
+        // ADR-0074 §5: an event `type` this binary does not know is a NEWER writer, not corruption, so it is
+        // dropped rather than throwing and making the whole run unreadable. A known type with a bad body still
+        // throws. `flatMap` over the undefined is the drop.
+        .flatMap((r) => parseStoredRunEvent(JSON.parse(r.payloadJson)) ?? []),
 
     loadRunStateEvents: (runId) =>
       db
@@ -559,7 +563,10 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
         )
         .orderBy(asc(runEvents.seq))
         .all()
-        .map((r) => RunEventSchema.parse(JSON.parse(r.payloadJson))),
+        // Same forward-compatible read as `loadRunEvents` (ADR-0074 §5). It matters more here, not less: this
+        // is the fold checkpoint/gate reconstruction runs, so a throw would block RESUMING a run rather than
+        // merely listing it.
+        .flatMap((r) => parseStoredRunEvent(JSON.parse(r.payloadJson)) ?? []),
 
     listActiveRuns: () =>
       db

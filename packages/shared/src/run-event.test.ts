@@ -4,6 +4,7 @@ import { RUN_EVENT_TYPES, SESSION_EVENT_TYPES } from './constants.js';
 import {
   CostUpdatedEventSchema,
   MaskedSecretSchema,
+  parseStoredRunEvent,
   RunEventSchema,
   SessionEventSchema,
   StopReasonSchema,
@@ -997,5 +998,68 @@ describe('correlationId on the shared error shape (ADR-0036)', () => {
         error: { code: 'provider_rate_limit', message: 'slow', retryable: true, correlationId: '' },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('parseStoredRunEvent — the forward-compatible read (ADR-0074 §5)', () => {
+  const known = {
+    type: 'run:started' as const,
+    runId: 'r1',
+    sequenceNumber: 0,
+    timestamp: '2026-07-30T00:00:00.000Z',
+    workflowId: '11111111-2222-4333-8444-555555555555', // surrogate UUID per ADR-0022
+    inputs: {},
+    executionMode: 'local' as const,
+  };
+
+  it('parses a known event exactly as the strict schema does', () => {
+    expect(parseStoredRunEvent(known)).toEqual(RunEventSchema.parse(known));
+  });
+
+  it('DROPS an unknown event type — a newer writer, not corruption', () => {
+    // The whole point: the strict schema throws here, which made one row from a newer binary render an entire
+    // run unreadable. `sse-event-schema.md` promises consumers ignore unknown types; this is that promise.
+    expect(
+      parseStoredRunEvent({
+        type: 'budget:estimate_committed',
+        runId: 'r1',
+        sequenceNumber: 1,
+        timestamp: '2026-07-30T00:00:00.000Z',
+        estimateMicrocents: 500,
+      }),
+    ).toBeUndefined();
+    // And the strict schema still rejects it, so the write side is unchanged.
+    expect(() => RunEventSchema.parse({ type: 'budget:estimate_committed' })).toThrow();
+  });
+
+  it('THROWS on a known type with a damaged body — corruption is never swallowed', () => {
+    // The distinction that keeps ADR-0050's durability posture: a row we can identify but not read is a
+    // damaged row, and hiding it would lose data silently.
+    expect(() => parseStoredRunEvent({ ...known, runId: '' })).toThrow();
+    expect(() => parseStoredRunEvent({ ...known, sequenceNumber: -1 })).toThrow();
+    expect(() => parseStoredRunEvent({ ...known, workflowId: undefined })).toThrow();
+  });
+
+  it('THROWS on something that is not an event at all', () => {
+    expect(() => parseStoredRunEvent({ nope: true })).toThrow();
+    expect(() => parseStoredRunEvent(null)).toThrow();
+    expect(() => parseStoredRunEvent('run:started')).toThrow();
+  });
+
+  it('THROWS on a row with no usable `type` — Zod cannot tell it apart, so we do', () => {
+    // Zod raises the SAME `invalid_union_discriminator` for a missing discriminator as for an unrecognized one.
+    // They are opposites: no writer of ours has ever omitted `type`, so this is a damaged row.
+    expect(() => parseStoredRunEvent({ ...known, type: undefined })).toThrow();
+    expect(() => parseStoredRunEvent({ ...known, type: '' })).toThrow();
+    expect(() => parseStoredRunEvent({ ...known, type: 7 })).toThrow();
+    expect(() => parseStoredRunEvent({ ...known, type: null })).toThrow();
+  });
+
+  it('drops a forward-written row whatever its body looks like', () => {
+    // Both drop: the row is unreadable either way, and we could not judge the body of a variant we do not know.
+    expect(parseStoredRunEvent({ type: 'some:future_event' })).toBeUndefined();
+    expect(
+      parseStoredRunEvent({ type: 'some:future_event', sequenceNumber: 'not-a-number' }),
+    ).toBeUndefined();
   });
 });

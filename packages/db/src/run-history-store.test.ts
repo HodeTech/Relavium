@@ -798,4 +798,72 @@ describe('createRunHistoryReader', () => {
       'human_gate:paused',
     ]);
   });
+
+  /**
+   * ADR-0074 §5. The write side stays strict, so the only way a row with an unknown `type` reaches the DB is a
+   * NEWER binary having written it — which is exactly the case
+   * [sse-event-schema.md](../../../docs/reference/contracts/sse-event-schema.md) §Forward-compatibility already
+   * declared legal. Both reads therefore have to survive it, and `loadRunStateEvents` matters more: a throw there
+   * does not just hide a log, it blocks RESUMING the run.
+   */
+  describe('a row written by a newer binary (ADR-0074 §5)', () => {
+    /** Insert straight through drizzle — `persistEvent` validates on the way in, which is the point. */
+    function insertRaw(runId: string, seq: number, eventType: string, payload: unknown): void {
+      client.db
+        .insert(runEvents)
+        .values({
+          id: counterUuid(900 + seq),
+          runId,
+          seq,
+          eventType,
+          payloadJson: JSON.stringify(payload),
+          ts: TS_MS,
+        })
+        .run();
+    }
+
+    it('SKIPS the unreadable row instead of failing the whole read', async () => {
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      const ts = new Date(TS_MS).toISOString();
+      await store.persistEvent(
+        evRun('run-f', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      insertRaw('run-f', 1, 'budget:estimate_committed', {
+        type: 'budget:estimate_committed',
+        runId: 'run-f',
+        sequenceNumber: 1,
+        timestamp: ts,
+        estimateMicrocents: 500,
+      });
+      await store.persistEvent(
+        evRun('run-f', 'node:started', 2, { nodeId: 'g', nodeType: 'agent' }, ts),
+      );
+
+      // Before ADR-0074 both of these threw, so a single forward row cost the caller the entire log.
+      expect(reader.loadRunEvents('run-f').map((e) => e.type)).toEqual([
+        'run:started',
+        'node:started',
+      ]);
+      expect(reader.loadRunStateEvents('run-f').map((e) => e.type)).toEqual([
+        'run:started',
+        'node:started',
+      ]);
+    });
+
+    it('still THROWS on a row we can identify but not read — corruption is not forward evolution', async () => {
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      const ts = new Date(TS_MS).toISOString();
+      await store.persistEvent(
+        evRun('run-g', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      // A type we DO know, with a body that cannot be a `node:started`. ADR-0050's durability posture says a
+      // damaged row must be visible, not quietly dropped alongside the forward-compatible ones.
+      insertRaw('run-g', 1, 'node:started', { type: 'node:started', nodeId: 42 });
+
+      expect(() => reader.loadRunEvents('run-g')).toThrow();
+      expect(() => reader.loadRunStateEvents('run-g')).toThrow();
+    });
+  });
 });
