@@ -403,6 +403,41 @@ describe('createAgentNodeExecutor — output_schema + grant', () => {
     expect(streamCalls).toBe(1); // a single primary attempt — node.retry does NOT drive within-chain retry
   });
 
+  it('an UNAUTHORED node gets 2 within-chain attempts — nothing else retries it (#276)', async () => {
+    // The companion to the test above. With an authored `retry:` the engine owns the budget above the chain,
+    // so the primary stays at one attempt. WITHOUT one, `#shouldRetry` returns false (`RetrySchema.max` has no
+    // default), so at a chain budget of 1 nothing retried at all and even the chain's backoff was unreachable.
+    // That was invisible until #276 disabled the vendor SDKs' internal retry, which had been absorbing it.
+    let streamCalls = 0;
+    const failing: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: () => {
+        streamCalls += 1;
+        return streamOf([
+          {
+            type: 'error',
+            error: { kind: 'overloaded', retryable: true, provider: 'anthropic', message: 'busy' },
+          },
+        ]);
+      },
+    };
+    const exec = createAgentNodeExecutor(deps(failing));
+    const { ctx } = ctxFor(
+      // No `retry` block — the case the roadmap's own default workflow shape produces.
+      vertexFor({ kind: 'agent', node: agentNode({}), resolvedAgent: AGENT }),
+    );
+
+    const outcome = await exec.execute(ctx);
+
+    expect(outcome.kind).toBe('failed');
+    // TWO attempts: the chain is the only retry here, so it must carry a minimal budget. At 1 this is 1.
+    expect(streamCalls).toBe(2);
+  });
+
   it('resolves {{inputs.x}} into a user message, leaving system as the authored prompt', async () => {
     let capturedSystem: string | undefined;
     let capturedUser: string | undefined;

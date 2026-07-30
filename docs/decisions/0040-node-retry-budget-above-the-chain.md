@@ -12,8 +12,15 @@
 > backoff unreachable, so nothing retried at all. That was invisible until **#276**, because the vendor SDKs'
 > internal retry was silently absorbing transient 429/5xx inside the adapter; with that correctly disabled, a
 > bare 429 would have ended the user's turn with no wait. The session path's primary therefore defaults to
-> **`maxAttempts: 2`** (`SESSION_PRIMARY_MAX_ATTEMPTS`, `agent-session.ts`). The workflow path is **unchanged at
-> 1** — raising both would multiply the authored node-retry budget, which is exactly what this ADR exists to
+> **`maxAttempts: 2`** (`SESSION_PRIMARY_MAX_ATTEMPTS`, `agent-session.ts`).
+>
+> **Extended the same day, after review:** the workflow path needed the same treatment for a narrower case, and
+> the first reading of this note was wrong to leave it wholly at 1. The above-chain budget only exists when a
+> node AUTHORS `retry:` — `#shouldRetry` returns false for `retry === undefined` and `RetrySchema.max` has no
+> default — so an unauthored node had no retry above the chain either, and the #276 regression was live there
+> too. The workflow primary is therefore **2 when `node.retry` is absent and 1 when it is present**
+> (`UNAUTHORED_PRIMARY_MAX_ATTEMPTS`, `agent-runner.ts`): never both, because that would multiply the author's
+> budget (an authored `retry.max: 3` becoming up to 6 real calls) — which is exactly what this ADR exists to
 > prevent. Nothing else here changes: the above-chain budget, the no-jitter/deterministic backoff convention,
 > and A.2's still-deferred authored primary `max_attempts` field all stand.
 

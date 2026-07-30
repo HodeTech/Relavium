@@ -1668,6 +1668,28 @@ describe('OpenAI-compatible adapter — stream edge cases', () => {
     messages: [{ role: 'user' as const, content: [{ type: 'text' as const, text: 'hi' }] }],
   };
 
+  it("carries the provider's Retry-After from a real SDK 429 into the LlmError (#279)", async () => {
+    // Same unpinned wire as the Anthropic adapter: a real 429 carrying the header is the only thing that
+    // proves the SDK's own header container is what gets read.
+    const adapter = createOpenAiAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(JSON.stringify({ error: { message: 'rl', type: 'rate_limit_exceeded' } }), {
+            status: 429,
+            headers: { 'content-type': 'application/json', 'retry-after-ms': '2500' },
+          }),
+        ),
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    const first = chunks[0];
+    expect(first?.type).toBe('error');
+    if (first?.type === 'error') {
+      expect(first.error.kind).toBe('rate_limit');
+      // `retry-after-ms` wins over `retry-after` and is read verbatim in milliseconds.
+      expect(first.error.retryAfterMs).toBe(2_500);
+    }
+  });
+
   it('does NOT retry a 429 inside the SDK — the chain owns retry policy (#276)', async () => {
     // Deliberately WITHOUT `maxRetries`: every other test here passes 0 explicitly, so none of them exercised
     // what PRODUCTION gets. Left to the SDK default the client retried twice more in here, so `FallbackChain`

@@ -792,6 +792,13 @@ export function realizedMediaCost(
 }
 
 /** Build the ordered fallback plan: primary (node-over-agent model) + each authored fallback entry. */
+/**
+ * The primary chain entry's attempt budget on a workflow node with NO authored `retry:` block — the only case
+ * where the chain is the sole retry, because the engine's above-chain loop needs an authored budget to run.
+ * Mirrors `SESSION_PRIMARY_MAX_ATTEMPTS` in `agent-session.ts`; ADR-0040 carries the dated amendment.
+ */
+const UNAUTHORED_PRIMARY_MAX_ATTEMPTS = 2;
+
 function buildPlanEntries(
   agent: Agent,
   node: AgentNode,
@@ -801,16 +808,28 @@ function buildPlanEntries(
   if (primary === undefined) {
     return { ok: false, code: 'internal', message: `no provider wired for '${agent.provider}'` };
   }
-  // The primary entry does NOT consume `node.retry` any more: ADR-0040 (amending ADR-0038) makes
-  // `node.retry` the engine's ABOVE-chain node-retry budget (applied around the whole chain), not the
-  // primary provider's within-chain same-model retry. The primary defaults to a single attempt + the
-  // chain's own default backoff; a within-chain primary retry, if ever wanted, is a future primary
+  // The primary entry does NOT consume `node.retry`: ADR-0040 (amending ADR-0038) makes `node.retry` the
+  // engine's ABOVE-chain node-retry budget (applied around the whole chain), not the primary provider's
+  // within-chain same-model retry. A within-chain primary retry, if ever wanted, is a future primary
   // `max_attempts` field (ADR-0040 A.2), not `retry`.
+  //
+  // But ONE attempt only when there IS an above-chain budget. `#shouldRetry` returns false for
+  // `retry === undefined`, and `RetrySchema.max` has no default — so a node with no authored `retry:` block
+  // has no retry above the chain at all, and at a chain budget of 1 the chain's own guard (`attempt < budget`)
+  // is false too, so nothing retries and even the backoff is unreachable. That was invisible until #276,
+  // because the vendor SDKs' internal retry was quietly absorbing transient 429/5xx inside the adapter.
+  // So: 2 when unauthored, 1 when authored — never both, which would MULTIPLY the author's budget (an
+  // authored `retry.max: 3` would become up to 6 real calls), exactly what ADR-0040 exists to prevent.
+  //
+  // "Authored" is `node.retry ?? agent.retry`, matching `Engine#retryConfig` EXACTLY (ADR-0040 A.8). Checking
+  // only `node.retry` looked right and was wrong: an AGENT-level `retry:` also gives the engine a budget, so
+  // that reading double-counted it. Two e2e tests caught it, which is what they are for.
+  const aboveChainBudgetExists = (node.retry ?? agent.retry) !== undefined;
   const entries: FallbackPlanEntry[] = [
     {
       provider: primary,
       model: node.model ?? agent.model,
-      maxAttempts: 1,
+      maxAttempts: aboveChainBudgetExists ? 1 : UNAUTHORED_PRIMARY_MAX_ATTEMPTS,
     },
   ];
   for (const entry of agent.fallback_chain ?? []) {

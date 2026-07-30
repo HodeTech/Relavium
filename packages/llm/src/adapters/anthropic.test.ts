@@ -935,6 +935,50 @@ describe('AnthropicAdapter — stream edge cases', () => {
   const sse = (body: string): Response =>
     new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
 
+  it("carries the provider's Retry-After from a real SDK 429 into the LlmError (#279)", async () => {
+    // The adapter→chain wire, which nothing pinned: severing `readRetryAfter` in either adapter left all 718
+    // llm tests green even though the feature works in production. A real 429 WITH the header is the only
+    // thing that proves the SDK's header container is read rather than the shape a hand-built error happens
+    // to have.
+    const adapter = createAnthropicAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'rl' } }),
+            {
+              status: 429,
+              headers: { 'content-type': 'application/json', 'retry-after': '3' },
+            },
+          ),
+        ),
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    const first = chunks[0];
+    expect(first?.type).toBe('error');
+    if (first?.type === 'error') {
+      expect(first.error.kind).toBe('rate_limit');
+      expect(first.error.retryAfterMs).toBe(3_000);
+    }
+  });
+
+  it('leaves retryAfterMs absent when the provider sent no header (#279)', async () => {
+    // Absent must mean "no instruction", never 0 — the chain falls back to its own curve on that distinction.
+    const adapter = createAnthropicAdapter({
+      fetch: () =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'rl' } }),
+            { status: 429, headers: { 'content-type': 'application/json' } },
+          ),
+        ),
+    });
+    const chunks = await collect(adapter.stream(REQ, 'k'));
+    const first = chunks[0];
+    if (first?.type === 'error') {
+      expect(first.error.retryAfterMs).toBeUndefined();
+    }
+  });
+
   it('does NOT retry a 429 inside the SDK — the chain owns retry policy (#276)', async () => {
     // Deliberately WITHOUT `maxRetries`, which is the whole point: every other test in this file passes
     // `maxRetries: 0` explicitly, so none of them exercised what PRODUCTION gets. Left to the SDK default the
