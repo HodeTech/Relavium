@@ -24,6 +24,64 @@ const completed = (seq: number, nodeId: string, output: unknown): RunEvent => ({
 });
 
 describe('reconstructCheckpointState', () => {
+  describe('conservative budget commitments (ADR-0074 §2)', () => {
+    /** A durable conservative commitment. `cumulative` is the producer's snapshot; `estimate` is this one's delta. */
+    const committed = (
+      seq: number,
+      nodeId: string,
+      estimate: number,
+      cumulative: number,
+    ): RunEvent => ({
+      type: 'budget:estimate_committed',
+      ...base(seq),
+      nodeId,
+      model: 'claude-opus-4-8',
+      estimateMicrocents: estimate,
+      cumulativeConservativeMicrocents: cumulative,
+    });
+
+    it('SUMS the deltas, and keeps them out of the realized total', () => {
+      const state = reconstructCheckpointState([
+        started,
+        committed(1, 'a', 400, 400),
+        committed(2, 'b', 250, 650),
+      ]);
+      expect(state?.conservativeCostMicrocents).toBe(650);
+      // An ESTIMATE never inflates realized spend — ADR-0074 §1's whole point.
+      expect(state?.cumulativeCostMicrocents).toBe(0);
+    });
+
+    it('is ORDER-INDEPENDENT, which a last-wins read of the snapshot is not', () => {
+      // The engine assigns `sequenceNumber` after an `await` and states that concurrent events have no canonical
+      // order, so under a `fan_out` the LOWER seq can carry the HIGHER cumulative. Here branch b's commitment
+      // (cumulative 650) landed at the lower seq. A last-wins read would restore 400 — handing 250 micro-cents of
+      // already-owed money back to the cap as headroom, the exact bypass ADR-0074 closes. `Math.max` would give
+      // 650 today but breaks once §1's release DECREASES the total; only the sum survives both.
+      const state = reconstructCheckpointState([
+        started,
+        committed(1, 'b', 250, 650),
+        committed(2, 'a', 400, 400),
+      ]);
+      expect(state?.conservativeCostMicrocents).toBe(650);
+    });
+
+    it('is zero for a log with no commitments', () => {
+      expect(reconstructCheckpointState([started])?.conservativeCostMicrocents).toBe(0);
+    });
+
+    it('stays summable across a resume, so a SECOND resume cannot double-count', () => {
+      // After a resume the governor is seeded with the restored sum, so the next commitment's snapshot is
+      // `restored + itself`. Because the fold never reads that snapshot, replaying the whole log — which is what
+      // reconstruction always does, there being no checkpoint table — still yields the true total.
+      const state = reconstructCheckpointState([
+        started,
+        committed(1, 'a', 400, 400), // pre-resume
+        committed(2, 'b', 250, 650), // post-resume: snapshot = restored 400 + 250
+      ]);
+      expect(state?.conservativeCostMicrocents).toBe(650);
+    });
+  });
+
   it('returns undefined for a run with no run:started', () => {
     expect(reconstructCheckpointState([completed(1, 'a', 1)])).toBeUndefined();
   });

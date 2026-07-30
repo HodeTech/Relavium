@@ -88,6 +88,23 @@ export interface CheckpointState {
    *  wins (`Math.max`, order-independent). (`cost:updated` is also folded when present, but it is streamed,
    *  not persisted, so it never appears in a real durable log.) Keeps post-resume cost cumulative. */
   readonly cumulativeCostMicrocents: number;
+  /**
+   * The run-wide durable **conservative** total (integer micro-cents) — money a provider may already have billed
+   * for an attempt that returned no trustworthy usage ([ADR-0074](../../../../docs/decisions/0074-durable-conservative-budget-commitments.md) §1/§2).
+   *
+   * Kept strictly apart from {@link cumulativeCostMicrocents}: this is an ESTIMATE, never realized spend, so it
+   * consumes cap capacity without ever inflating a reported actual cost. Restored on resume so the first
+   * post-resume pre-egress check projects against a cap that has NOT forgotten it — otherwise a crash reopens a
+   * strict cap against money that may already be owed, which is the bypass ADR-0074 exists to close.
+   *
+   * Folded as a SUM of `budget:estimate_committed.estimateMicrocents`, deliberately **not** last-wins or
+   * `Math.max` over the events' cumulative snapshot: the engine assigns `sequenceNumber` after an `await` and
+   * states that concurrent events have no canonical order, so under a `fan_out` the lower `seq` can carry the
+   * higher cumulative. A sum is order-independent. (It also survives §1's future release, which DECREASES the
+   * total and would defeat `Math.max`.) The canonical statement of this rule lives in
+   * [sse-event-schema.md](../../../../docs/reference/contracts/sse-event-schema.md).
+   */
+  readonly conservativeCostMicrocents: number;
 }
 
 /**
@@ -109,6 +126,7 @@ interface ReconAccumulator {
   totalInputTokens: number;
   totalOutputTokens: number;
   cumulativeCostMicrocents: number;
+  conservativeCostMicrocents: number;
   readonly nodeStates: Map<string, CheckpointNodeState>;
   readonly pendingGates: Map<string, { nodeId: string; isBudgetGate: boolean }>;
   /** Keyed by `nodeId` — one in-flight media job per node; a re-submit replaces the entry (latest wins). */
@@ -277,6 +295,7 @@ export function reconstructCheckpointState(
     totalInputTokens: 0,
     totalOutputTokens: 0,
     cumulativeCostMicrocents: 0,
+    conservativeCostMicrocents: 0,
     nodeStates: new Map(),
     pendingGates: new Map(),
     pendingMediaJobs: new Map(),
@@ -287,6 +306,12 @@ export function reconstructCheckpointState(
     acc.lastSequenceNumber = Math.max(acc.lastSequenceNumber, event.sequenceNumber);
     if (event.type === 'cost:updated') {
       acc.cumulativeCostMicrocents = event.cumulativeCostMicrocents; // already a running total
+    }
+    if (event.type === 'budget:estimate_committed') {
+      // SUM the per-commitment delta (ADR-0074 §2). Not the event's own `cumulativeConservativeMicrocents`
+      // snapshot: that is a producer-side convenience whose seq order is not guaranteed under a `fan_out`, so a
+      // last-wins read could restore a LOWER total and hand already-owed money back to the cap as headroom.
+      acc.conservativeCostMicrocents += event.estimateMicrocents;
     }
     applyRunEvent(acc, event);
     applyNodeEvent(acc, event);
@@ -318,5 +343,6 @@ export function reconstructCheckpointState(
     totalInputTokens: acc.totalInputTokens,
     totalOutputTokens: acc.totalOutputTokens,
     cumulativeCostMicrocents: acc.cumulativeCostMicrocents,
+    conservativeCostMicrocents: acc.conservativeCostMicrocents,
   };
 }

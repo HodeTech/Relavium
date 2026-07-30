@@ -9,6 +9,7 @@ import type {
 import type { ContentPart } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
+import type { CommitmentOrigin } from './budget-governor.js';
 import {
   ToolCancelledError,
   ToolExecutionError,
@@ -1188,6 +1189,7 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     let attemptReleases = 0;
     const attemptSettlements: number[] = [];
     let conservativeSettlements = 0;
+    const origins: (CommitmentOrigin | undefined)[] = [];
     let settled = false;
     const attemptProbe = {
       settle: (realizedMicrocents: number): void => {
@@ -1195,10 +1197,11 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
         settled = true;
         attemptSettlements.push(realizedMicrocents);
       },
-      settleAtReservedEstimate: (): void => {
+      settleAtReservedEstimate: (origin?: CommitmentOrigin): void => {
         if (settled) return;
         settled = true;
         conservativeSettlements += 1;
+        origins.push(origin);
       },
       release: (): void => {
         if (settled) return;
@@ -1218,6 +1221,12 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     expect(attemptReleases).toBe(0);
     expect(conservativeSettlements).toBe(1);
     expect(attemptSettlements).toEqual([]);
+    // ADR-0074's identity, pinned at the CALLER — the schema cannot catch a wrong attempt number, so nothing else
+    // would. `onAttempt` consumed this admission, so the commitment carries the within-chain attempt: the same
+    // counter the `cost:updated` from that callback carries, which is what makes realized and conservative money
+    // attributable together.
+    expect(origins).toHaveLength(1);
+    expect(origins[0]).toEqual({ nodeId: params.nodeId, attemptNumber: 1 });
   });
 
   it('conservatively settles a clean provider EOF that omits the terminal usage record', async () => {
@@ -1226,25 +1235,25 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     const provider = scriptedProvider('anthropic', [[]]);
     let releases = 0;
     let conservativeSettlements = 0;
+    const origins: (CommitmentOrigin | undefined)[] = [];
     const admission = {
       settle: (): void => undefined,
-      settleAtReservedEstimate: (): void => {
+      settleAtReservedEstimate: (origin?: CommitmentOrigin): void => {
         conservativeSettlements += 1;
+        origins.push(origin);
       },
       release: (): void => {
         releases += 1;
       },
     };
 
-    await expect(
-      runAgentTurn(
-        baseParams(provider, {
-          preEgress: () => admission,
-        }),
-      ),
-    ).resolves.toMatchObject({ text: '' });
+    const params = baseParams(provider, { preEgress: () => admission });
+    await expect(runAgentTurn(params)).resolves.toMatchObject({ text: '' });
     expect(conservativeSettlements).toBe(1);
     expect(releases).toBe(0);
+    // Here `onAttempt` DID fire, so the commitment carries the within-chain attempt — the same counter the
+    // `cost:updated` emitted from this very callback carries, which is what makes the two attributable together.
+    expect(origins[0]).toEqual({ nodeId: params.nodeId, attemptNumber: 1 });
   });
 
   it('maps a pre-egress BudgetExceededError to AgentTurnError(budget_exceeded) — no provider egress', async () => {

@@ -63,6 +63,7 @@ import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import { RunLoopInvariantError } from './invariant-error.js';
 import {
   BudgetGovernor,
+  CommitmentDurabilityError,
   DEFAULT_MAX_TOKENS_ESTIMATE,
   type BudgetAdmission,
 } from './budget-governor.js';
@@ -575,6 +576,11 @@ class RunExecution {
     this.#totalOutputTokens = cp.totalOutputTokens;
     this.#cumulativeCostMicrocents = cp.cumulativeCostMicrocents;
     this.#budgetGovernor?.updateCost(cp.cumulativeCostMicrocents);
+    // ADR-0074 §2: BOTH totals restored before any resumed work is scheduled. Without the conservative half the
+    // first post-resume pre-egress check projects against a cap that has forgotten money a provider may already
+    // have billed — a crash would reopen a strict cap, which is the bypass ADR-0074 exists to close. It must
+    // precede the `reserveCommittedEgress` loop below, whose admissions project against this total.
+    this.#budgetGovernor?.restoreConservativeCost(cp.conservativeCostMicrocents);
 
     // Re-attach each parked async media job (MJ-1, ADR-0045 §3): re-register it + RE-ARM a poll of the
     // persisted opaque jobId. NEVER re-call generateMedia — the node is `'paused'` (applyMediaJobEvent set it),
@@ -1990,7 +1996,7 @@ class RunExecution {
    * failed the run — before the node reaches any boundary. Without it the node could settle while the write was
    * still in flight, and a crash in that window loses money the provider may have billed.
    *
-   * The catch below is a BACKSTOP, and on this path it is deliberately unreachable: `#emitDurable` is total for
+   * The catch below is a BACKSTOP, and on the run path it is deliberately unreachable: `#emitDurable` is total for
    * store faults, so a failed non-terminal write sets `#failure` and aborts there rather than rejecting. It
    * matters for a HOST-wired governor whose sink can reject — the chat path, once §4 gives it a real durable
    * write. Kept here so the two surfaces cannot diverge in what a durability failure means: never a released
@@ -2001,14 +2007,18 @@ class RunExecution {
     if (governor === undefined) return;
     try {
       await governor.flushCommitments();
-    } catch {
-      // The cause is deliberately dropped rather than threaded into the user-facing message (see below).
+    } catch (error) {
+      // Attribute it to the node whose commitment actually failed, not to whichever node reached this barrier
+      // first — under a `fan_out` both branches await the same chain link, so the first to flush may have made no
+      // commitment at all. Falls back to this node when the error carries no owner.
+      const owner = error instanceof CommitmentDurabilityError ? (error.nodeId ?? nodeId) : nodeId;
       this.#failure ??= {
-        nodeId,
+        nodeId: owner,
         error: {
           code: 'internal',
-          // No `error` detail in the message: a durable-write failure's cause can carry a filesystem path, and a
-          // user-facing `run:failed` message must not. The store's own typed error carries the context for a log.
+          // The cause is deliberately NOT in the message: a durable-write failure can carry a filesystem path, and
+          // a user-facing `run:failed` message must not. It survives on `CommitmentDurabilityError.cause` for a
+          // host that narrows on the class — which is the only carrier, since this path has no store to log it.
           message: 'a conservative budget commitment could not be made durable',
           retryable: false,
         },

@@ -515,7 +515,11 @@ export const BudgetPausedEventSchema = z.object({
 export const BudgetEstimateCommittedEventSchema = z.object({
   type: z.literal('budget:estimate_committed'),
   ...dualBase,
-  /** The agent node that owned the attempt. Absent on a session turn, which has no node. */
+  /**
+   * The agent node that owned the attempt. On a SESSION turn this is the agent ref — the same thing
+   * `cost:updated` carries there — so realized and conservative money are attributable the same way on both
+   * surfaces. Optional so a future emitter with no owning node stays legal.
+   */
   nodeId: nonEmptyString.optional(),
   /**
    * 1-based WITHIN-CHAIN (`FallbackChain`) attempt — matches `cost:updated`. Without it, two commitments from

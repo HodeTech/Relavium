@@ -749,8 +749,13 @@ async function driveAgentTurn(
     // slot is ever armed (below).
     // The chain may have handed work to a provider before the consumer/iterator failed, so this is the
     // conservative retain. NO `attemptNumber`: reaching here means `onAttempt` never fired for this admission, so
-    // there is no `AttemptRecord` and `nonSkippedAttempts` has not counted it — passing that counter would
-    // attribute this commitment to the PREVIOUS attempt. Absent is the honest answer.
+    // there is no `AttemptRecord` and `nonSkippedAttempts` has not counted it. Passing that counter would not just
+    // be imprecise — it would COLLIDE with the number a later real attempt receives, making two commitments
+    // indistinguishable. Absent is the honest answer.
+    //
+    // UNTESTED, and known to be: a mutation here survives the whole `packages/core` suite (verified by making it
+    // throw — nothing reached it). Provoking it needs a consumer/iterator failure after a true-boundary admission
+    // but before the chain reports an attempt. Recorded rather than glossed, because this is a money path.
     active?.settleAtReservedEstimate({ nodeId: params.nodeId });
   };
   const takeAttemptAdmission = (): BudgetAdmission | undefined => {

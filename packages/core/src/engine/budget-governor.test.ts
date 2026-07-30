@@ -256,6 +256,7 @@ describe('BudgetGovernor', () => {
       admission?.settleAtReservedEstimate({ nodeId: 'g', attemptNumber: 2 });
       await governor.flushCommitments();
 
+      expect(governor.conservativeDurabilityBroken).toBe(false); // clean until proven otherwise
       const commits = emitted.filter((e) => e.type === 'budget:estimate_committed');
       expect(commits).toHaveLength(1);
       const [commit] = commits;
@@ -375,6 +376,96 @@ describe('BudgetGovernor', () => {
       b?.settleAtReservedEstimate({ nodeId: 'h' });
       await governor.flushCommitments();
       expect(emitted.filter((e) => e.type === 'budget:estimate_committed')).toHaveLength(2);
+    });
+
+    it('survives a sink that throws SYNCHRONOUSLY instead of bricking for the process', async () => {
+      // A `better-sqlite3` write throws synchronously, and §4's transactional persister write will be one. If the
+      // emit were called bare inside the `.then`, that throw would escape before `.catch`/`.finally`: no typed
+      // error, the pending counter leaked at ≥1 forever, and the chain left permanently REJECTED — so every later
+      // `checkPreEgress` would throw at the barrier BEFORE `#admit`, with no way for a new commitment to clear it.
+      let mode: 'throw' | 'ok' = 'throw';
+      const { governor, emitted } = makeGovernor({
+        emitOutcome: (event) => {
+          if (event.type === 'budget:estimate_committed' && mode === 'throw') {
+            throw new Error('SQLITE_FULL');
+          }
+          return Promise.resolve();
+        },
+      });
+      const a = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      a?.settleAtReservedEstimate({ nodeId: 'g' });
+
+      // Classified, not escaped raw.
+      await expect(governor.flushCommitments()).rejects.toBeInstanceOf(CommitmentDurabilityError);
+      // And the governor still WORKS: a later admission and commitment go through.
+      mode = 'ok';
+      const b = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      expect(b).toBeDefined();
+      b?.settleAtReservedEstimate({ nodeId: 'h' });
+      await governor.flushCommitments();
+      expect(emitted.filter((e) => e.type === 'budget:estimate_committed')).toHaveLength(2);
+    });
+
+    it('names the node whose commitment failed, not whichever node flushes first', async () => {
+      // Under a `fan_out` both branches await the same chain link, so attributing the failure to the first
+      // flusher blames a node that may have made no commitment at all.
+      const { governor } = makeGovernor({
+        emitOutcome: (event) =>
+          event.type === 'budget:estimate_committed'
+            ? Promise.reject(new Error('disk full'))
+            : Promise.resolve(),
+      });
+      const a = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      a?.settleAtReservedEstimate({ nodeId: 'branch-b' });
+      const thrown = await governor.flushCommitments().catch((err: unknown) => err);
+      expect(thrown).toBeInstanceOf(CommitmentDurabilityError);
+      expect((thrown as CommitmentDurabilityError).nodeId).toBe('branch-b');
+    });
+
+    it('does not FORGET that durability is broken after reporting it once', async () => {
+      // The error is surfaced once, so after that nothing would remember — and a long-lived owner (a chat session)
+      // would render its conservative amount as if safely recorded when a crash would lose it. §1 requires a
+      // surface to show that amount; the sticky flag is how the surface knows to qualify it.
+      let failNext = true;
+      const { governor } = makeGovernor({
+        emitOutcome: (event) => {
+          if (event.type !== 'budget:estimate_committed') return Promise.resolve();
+          return failNext ? Promise.reject(new Error('disk full')) : Promise.resolve();
+        },
+      });
+      const a = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      a?.settleAtReservedEstimate({ nodeId: 'g' });
+      await expect(governor.flushCommitments()).rejects.toBeInstanceOf(CommitmentDurabilityError);
+
+      // A SECOND failure is still reported — proving the barrier is still being entered.
+      const b = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      b?.settleAtReservedEstimate({ nodeId: 'h' });
+      await expect(governor.flushCommitments()).rejects.toBeInstanceOf(CommitmentDurabilityError);
+
+      // And a clean write afterwards does not throw — the flag REPORTS, it does not permanently block, because
+      // the safety property (the debit still consuming capacity in memory) holds regardless.
+      failNext = false;
+      const c = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      c?.settleAtReservedEstimate({ nodeId: 'i' });
+      await expect(governor.flushCommitments()).resolves.toBeUndefined();
+      // …but the owner is still marked, which is what a surface reads to qualify the amount it renders.
+      expect(governor.conservativeDurabilityBroken).toBe(true);
+    });
+
+    it('IGNORES a non-integer or non-positive restore rather than poisoning the next commitment', async () => {
+      // A fractional total would ride the next commitment's `cumulativeConservativeMicrocents`, fail
+      // `nonNegativeInt` at the bus, and surface a CALLER's bad input as a durability failure that kills the run.
+      const { governor, emitted } = makeGovernor();
+      for (const bad of [1234.5, -1, 0, Number.NaN, Number.POSITIVE_INFINITY]) {
+        governor.restoreConservativeCost(bad);
+        expect(governor.conservativeCostMicrocents).toBe(0);
+      }
+      governor.restoreConservativeCost(900);
+      const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      admission?.settleAtReservedEstimate({ nodeId: 'g' });
+      await governor.flushCommitments();
+      const [commit] = emitted.filter((e) => e.type === 'budget:estimate_committed');
+      expect(Number.isSafeInteger(commit?.cumulativeConservativeMicrocents)).toBe(true);
     });
 
     it('restoreConservativeCost seeds a resume and never LOWERS a live total', () => {

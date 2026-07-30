@@ -151,7 +151,15 @@ export class CommitmentDurabilityError extends Error {
   override readonly name = 'CommitmentDurabilityError';
   readonly code = 'commitment_not_durable' as const;
 
-  constructor(cause: unknown) {
+  constructor(
+    cause: unknown,
+    /**
+     * The node whose commitment failed to persist — NOT whichever node happens to reach a barrier first. Under a
+     * `fan_out` both branches await the same chain link, so without this the run blamed the first branch to
+     * flush, which may have made no commitment at all.
+     */
+    readonly nodeId?: string,
+  ) {
     super('a conservative budget commitment could not be made durable', { cause });
   }
 }
@@ -175,7 +183,12 @@ export type GovernorEventDraft = WithoutRunId<
  * caller supplies the identity that goes on the durable event; the model comes from the admission itself.
  */
 export interface CommitmentOrigin {
-  /** The agent node that owned the attempt. Absent on a session turn, which has no node. */
+  /**
+   * The agent node that owned the attempt — and on a SESSION turn the agent ref, which is what the turn core
+   * carries as its `nodeId` there. That matches `cost:updated`, which does the same, so a consumer can attribute
+   * both realized and conservative money the same way on both surfaces. Optional because the field is optional
+   * on the event; every current caller supplies it.
+   */
   readonly nodeId?: string;
   /** 1-based within-chain attempt, matching `cost:updated` — see the event's schema doc. */
   readonly attemptNumber?: number;
@@ -232,6 +245,19 @@ export class BudgetGovernor {
    * site, so without this the rejection would be unhandled.
    */
   #commitmentFailure: CommitmentDurabilityError | undefined;
+  /**
+   * STICKY: this owner's conservative-money record has failed to persist at least once.
+   *
+   * Deliberately NOT a barrier input — `#pendingCommitments` and the unsurfaced `#commitmentFailure` already
+   * decide when to wait, and making a past failure block every later turn would be harsher than §2 asks for (the
+   * safety property, capacity preserved in memory, holds regardless).
+   *
+   * What it is for: `#commitmentFailure` is surfaced ONCE, so after that nothing remembers. A long-lived owner —
+   * a chat session — then renders its conservative amount as if it were safely recorded, when in fact a crash
+   * would lose it. §1 requires a surface to show that amount; this is how the surface knows to qualify it. Read
+   * via {@link conservativeDurabilityBroken}.
+   */
+  #durabilityBroken = false;
   #reservedCostMicrocents = 0;
   #nextAdmissionId = 0;
   readonly #reservedAdmissions = new Map<number, number>();
@@ -446,22 +472,30 @@ export class BudgetGovernor {
    * Chain one commitment's durable write onto the barrier. Never awaited HERE — the caller is a synchronous chain
    * callback — so a rejection is captured rather than left unhandled, and re-thrown at the next barrier.
    */
-  #persistCommitment(draft: GovernorEventDraft): void {
+  #persistCommitment(
+    draft: Extract<GovernorEventDraft, { type: 'budget:estimate_committed' }>,
+  ): void {
     this.#pendingCommitments += 1;
-    this.#commitmentsInFlight = this.#commitmentsInFlight.then(
-      () =>
-        this.#emit(draft)
-          .catch((error: unknown) => {
-            // Keep the FIRST failure: it is the one that broke durability, and later writes may well fail for the
-            // same reason. The in-memory reservation stays — see `#commitmentFailure`.
-            this.#commitmentFailure ??= new CommitmentDurabilityError(error);
-          })
-          .finally(() => {
-            this.#pendingCommitments -= 1;
-          }),
-      // The prior link already routed its own failure into `#commitmentFailure`; this arm only exists so one
-      // rejection cannot poison the chain and skip every later write.
-      () => undefined,
+    this.#commitmentsInFlight = this.#commitmentsInFlight.then(() =>
+      // `Promise.resolve().then(…)`, NOT a bare `this.#emit(draft)`. A sink that throws SYNCHRONOUSLY — a
+      // `better-sqlite3` write is exactly that, and §4's transactional persister write will be one — would escape
+      // before `.catch`/`.finally` are attached. Then: no typed error, `#pendingCommitments` leaked at ≥1 for the
+      // process, and `#commitmentsInFlight` left permanently REJECTED — so every later `checkPreEgress` throws at
+      // the barrier and, because that happens before `#admit`, no new commitment can ever chain a fresh link to
+      // clear it. The governor would be bricked. `#emitWarning` below already uses this shape.
+      //
+      // The inner chain therefore ALWAYS resolves, which is why there is no onRejected arm here: it would be dead.
+      Promise.resolve()
+        .then(() => this.#emit(draft))
+        .catch((error: unknown) => {
+          // Keep the FIRST failure: it is the one that broke durability, and later writes may well fail for the
+          // same reason. The in-memory reservation stays — see `#commitmentFailure`.
+          this.#commitmentFailure ??= new CommitmentDurabilityError(error, draft.nodeId);
+          this.#durabilityBroken = true;
+        })
+        .finally(() => {
+          this.#pendingCommitments -= 1;
+        }),
     );
   }
 
@@ -477,7 +511,10 @@ export class BudgetGovernor {
     await this.#commitmentsInFlight;
     const failure = this.#commitmentFailure;
     if (failure !== undefined) {
-      this.#commitmentFailure = undefined; // surfaced once; the reservation itself is not rolled back
+      // The ERROR is surfaced once (a later flush must not re-report the same broken write as if it were new),
+      // but `#durabilityBroken` stays set, so the barrier is still entered and a subsequent failure is still
+      // reported. The reservation is never rolled back either way.
+      this.#commitmentFailure = undefined;
       throw failure;
     }
     return;
@@ -493,7 +530,22 @@ export class BudgetGovernor {
   }
 
   /**
+   * Has any conservative commitment failed to persist for this owner? Sticky for the owner's life.
+   *
+   * A surface rendering the committed amount (§1) uses this to qualify it: the cap is still being enforced in this
+   * process, but the record would not survive a crash. The one-shot error tells the owner once; this is what is
+   * left afterwards.
+   */
+  get conservativeDurabilityBroken(): boolean {
+    return this.#durabilityBroken;
+  }
+
+  /**
    * Seed the conservative total when rehydrating (checkpoint resume, `chat-resume`).
+   *
+   * Takes the MAXIMUM, which cannot express §1's future DECREASE. So once `budget:estimate_released` lands, the
+   * caller must compute "sum less releases" and pass the RESULT — a two-step `restore(sum)` then
+   * `restore(sum - released)` silently keeps the higher value.
    *
    * ADR-0074 §2 requires both totals restored BEFORE resumed work is scheduled — otherwise the first post-resume
    * pre-egress check projects against a cap that has forgotten money the provider may already have billed. Takes
@@ -501,6 +553,15 @@ export class BudgetGovernor {
    * double-restore or a restore racing a live commitment cannot reopen capacity.
    */
   restoreConservativeCost(microcents: number): void {
+    // VALIDATED, because this is the one public setter on a money path. Every internal figure is integer by
+    // construction (`estimateMaxNextCost`/`estimateMediaCost` both round), but a fractional value here would be
+    // carried into the next commitment's `cumulativeConservativeMicrocents`, fail `nonNegativeInt` at the bus, and
+    // KILL THE RUN with "a conservative budget commitment could not be made durable" — a caller's bad input
+    // surfacing as a durability failure. `NaN`/negatives would fail the `>` comparison harmlessly and `Infinity`
+    // would degrade to a permanent block, but relying on that is luck rather than a contract.
+    if (!Number.isSafeInteger(microcents) || microcents <= 0) {
+      return;
+    }
     if (microcents > this.#conservativeCostMicrocents) {
       this.#conservativeCostMicrocents = microcents;
     }

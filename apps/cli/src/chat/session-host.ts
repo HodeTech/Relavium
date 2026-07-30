@@ -696,5 +696,11 @@ export function buildGovernorWiring(
     preEgress: (info) =>
       governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate, info.provider),
     updateCost: (cumulative) => governor.updateCost(cumulative),
+    // ADR-0074 §1's escape hatch is NOT exposed yet, and that is safe only because the total is not persisted
+    // either — ending the session clears it. The moment §4 persists it, a chat that absorbs one usage-less EOF
+    // would carry the debit across `chat-resume` with no way out, which is the "indefinite block … a worse failure
+    // than the overspend it prevents" §1 explicitly rejects. So §4 must expose
+    // `governor.releaseConservativeCommitments()` (and `conservativeDurabilityBroken`, to qualify what it renders)
+    // in the SAME commit that persists the total.
   };
 }

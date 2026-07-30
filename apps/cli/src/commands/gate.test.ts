@@ -685,6 +685,7 @@ describe('selectGate', () => {
     totalInputTokens: 0,
     totalOutputTokens: 0,
     cumulativeCostMicrocents: 0,
+    conservativeCostMicrocents: 0,
     ...over,
   });
   const gate = (gateId: string, isBudgetGate = false) => ({ gateId, nodeId: gateId, isBudgetGate });
