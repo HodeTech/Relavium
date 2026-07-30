@@ -10,6 +10,7 @@ import {
   type FallbackChainOptions,
   type FallbackPlanEntry,
 } from './fallback-chain.js';
+import { UnknownModelError } from './errors.js';
 import { LlmProviderError, makeLlmError } from './llm-error.js';
 import type {
   CapabilityFlags,
@@ -839,6 +840,42 @@ describe('FallbackChain — backoff and cooldown', () => {
 
     expect(primary.calls).toHaveLength(3); // exhausted the budget
     expect(sleeps).toEqual([100, 200]); // backoff before attempts 2 and 3, exponential, no inter-entry delay
+  });
+
+  it('records an unpriced model as priced:false rather than silently as no cost (#194, 2.6.Q)', async () => {
+    // "No cost" used to be ambiguous between *could not price* and *genuinely free*. A strict cap cannot be
+    // enforced over spend it cannot see, so the surface has to be able to say which one happened.
+    const provider = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options, trace } = makeOptions({
+      costTracker: {
+        record: () => {
+          throw new UnknownModelError('self-hosted-model', ['claude-opus-4-8']);
+        },
+      } as unknown as CostTracker,
+    });
+    const chain = new FallbackChain([entry(provider, 'self-hosted-model')], options);
+
+    await chain.generate(userReq);
+
+    const succeeded = trace.find((r) => r.outcome === 'succeeded');
+    expect(succeeded?.priced).toBe(false);
+    expect(succeeded?.cost).toBeUndefined();
+  });
+
+  it('does NOT swallow a non-pricing failure from the cost tracker (#194)', async () => {
+    // The catch used to be bare, so a genuine defect in the money path — a bad Usage, a broken overlay, a
+    // throwing custom tracker — produced "no cost" and looked exactly like an unpriced model.
+    const provider = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options } = makeOptions({
+      costTracker: {
+        record: () => {
+          throw new TypeError('cumulative overflowed');
+        },
+      } as unknown as CostTracker,
+    });
+    const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+
+    await expect(chain.generate(userReq)).rejects.toThrow('cumulative overflowed');
   });
 
   it("honours the provider's Retry-After over its own computed backoff (#279)", async () => {

@@ -1,6 +1,7 @@
 import type { BackoffStrategy, ContentPart, MediaSource } from '@relavium/shared';
 
 import type { CostTracker, CostUpdate } from './cost-tracker.js';
+import { UnknownModelError } from './errors.js';
 import { isRetryable, LlmProviderError, makeLlmError } from './llm-error.js';
 import type {
   LlmError,
@@ -102,6 +103,16 @@ export interface AttemptRecord {
   readonly error?: LlmError;
   /** Why a `'skipped'` entry was skipped (provider in cooldown, or it can't satisfy the request). */
   readonly skipReason?: string;
+  /**
+   * `false` when the attempt produced real usage but the model could not be PRICED, so `cost` is absent for a
+   * reason other than "there was nothing to charge" (2.6.Q's realized-cost half, ADR-0071 §K7).
+   *
+   * Without it, "no cost" was ambiguous between *could not price* and *genuinely free* — and a strict cost cap
+   * cannot be enforced over a model whose spend is unknown, so the surface must be able to say so instead of
+   * silently reporting zero. Absent (rather than `true`) on the ordinary priced path, so nothing changes shape
+   * for existing consumers; ADR-0070's durable `unpriced_calls` counter is the same distinction, persisted.
+   */
+  readonly priced?: false;
 }
 
 /**
@@ -791,18 +802,27 @@ export class FallbackChain {
       this.#emit({ ...record, outcome: 'succeeded' });
       return;
     }
-    // Best-effort: `priceModel` throws `UnknownModelError` for a model id outside the pricing table
-    // (a new snapshot, an OpenAI-compatible / self-hosted / custom-base-URL model). The attempt has
-    // ALREADY succeeded and its tokens were delivered — an unpriced model must degrade to no cost,
-    // never fail the call. Cost accuracy for unlisted models is a pricing-table concern, not a runtime error.
+    // `priceModel` throws `UnknownModelError` for a model id outside the pricing table (a new snapshot, an
+    // OpenAI-compatible / self-hosted / custom-base-URL model). The attempt has ALREADY succeeded and its
+    // tokens were delivered — an unpriced model must degrade to no cost, never fail the call. Cost accuracy
+    // for unlisted models is a pricing-table concern, not a runtime error.
+    //
+    // NARROW, not bare (#194): the catch used to swallow EVERY exception, so a genuine defect in the money
+    // path — a bad `Usage`, a broken overlay, a throwing custom tracker — silently produced "no cost" and
+    // looked exactly like an unpriced model. Anything that is not `UnknownModelError` now propagates, because
+    // a money bug must be loud (`docs/standards/error-handling.md` — no silent catches).
     let cost: CostUpdate | undefined;
+    let unpriced = false;
     try {
       cost = this.#options.costTracker?.record(model, usage);
-    } catch {
-      cost = undefined;
+    } catch (error_) {
+      if (!(error_ instanceof UnknownModelError)) throw error_;
+      unpriced = true;
     }
     this.#emit({
       ...record,
+      // 2.6.Q's realized-cost half: distinguish "could not price" from "nothing to charge".
+      ...(unpriced ? { priced: false as const } : {}),
       outcome: 'succeeded',
       usage,
       ...(cost === undefined ? {} : { cost }),

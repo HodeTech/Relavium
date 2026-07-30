@@ -120,6 +120,30 @@ export function worstCaseRates(p: ModelPricing): Rates {
  * this (Anthropic's `input_tokens` is already net; the OpenAI-compatible adapter subtracts the
  * cached subset). So each token class is billed exactly once.
  */
+/**
+ * Reject a `Usage` that cannot be accounted (#198). Every token/unit count must be a finite, non-negative,
+ * safe integer — the same shape `UsageSchema` pins at the seam, re-asserted at the arithmetic.
+ *
+ * `Number.isSafeInteger` rather than `>= 0`: beyond 2^53 integer arithmetic stops being exact, so a cumulative
+ * total built from such a value is already wrong before any cap compares against it.
+ */
+function assertAccountableUsage(modelId: string, usage: Usage): void {
+  const counts: readonly (readonly [string, number | undefined])[] = [
+    ['inputTokens', usage.inputTokens],
+    ['outputTokens', usage.outputTokens],
+    ['cacheReadTokens', usage.cacheReadTokens],
+    ['cacheWriteTokens', usage.cacheWriteTokens],
+  ];
+  for (const [field, value] of counts) {
+    if (value === undefined) continue;
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new TypeError(
+        `cost accounting for '${modelId}' received a non-accountable ${field}: expected a non-negative safe integer`,
+      );
+    }
+  }
+}
+
 export function cost(modelId: string, usage: Usage, overlay?: PricingOverlay): number {
   const p = priceModel(modelId, overlay);
   const cacheReadTokens = usage.cacheReadTokens ?? 0;
@@ -202,8 +226,18 @@ export class CostTracker {
     this.#overlay = overlay;
   }
 
-  /** Price one attempt's usage and fold it into the running total. */
+  /**
+   * Price one attempt's usage and fold it into the running total.
+   *
+   * Validates the usage FIRST (#198). This is the money-accounting call site: a `NaN`, negative, or
+   * non-finite token count coming off an adapter would otherwise flow straight into the cumulative total and
+   * poison it permanently — `NaN` is absorbing, so every later comparison against the cost cap silently
+   * becomes false and the cap stops being a cap. The schema at the seam boundary is the first line of
+   * defence, but a tracker is also handed to custom hosts and callers, so the invariant is asserted here too,
+   * where the arithmetic actually happens. Fail loud: a bad number is a defect, never something to round away.
+   */
   record(modelId: string, usage: Usage): CostUpdate {
+    assertAccountableUsage(modelId, usage);
     const costMicrocents = cost(modelId, usage, this.#overlay);
     this.#cumulativeMicrocents += costMicrocents;
     return {

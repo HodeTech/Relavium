@@ -295,3 +295,41 @@ describe("the priced catalog's invariants (the values seeded into model_catalog)
     }
   });
 });
+
+describe('CostTracker.record — usage bounds at the money call site (#198)', () => {
+  const good = { inputTokens: 100, outputTokens: 50 };
+
+  it.each([
+    ['NaN inputTokens', { ...good, inputTokens: Number.NaN }],
+    ['Infinity outputTokens', { ...good, outputTokens: Number.POSITIVE_INFINITY }],
+    ['negative inputTokens', { ...good, inputTokens: -1 }],
+    ['a fractional count', { ...good, outputTokens: 1.5 }],
+    ['beyond the safe-integer range', { ...good, inputTokens: 2 ** 53 }],
+    ['a bad cacheReadTokens', { ...good, cacheReadTokens: Number.NaN }],
+  ])('rejects %s rather than folding it into the cumulative total', (_label, usage) => {
+    const tracker = new CostTracker();
+    expect(() => tracker.record('claude-opus-4-8', usage)).toThrow(/non-accountable/);
+    // The total must be untouched — a rejected value that still moved the running figure would be worse
+    // than no check at all.
+    expect(tracker.cumulativeCostMicrocents).toBe(0);
+  });
+
+  it('still accepts a legitimate zero and an absent optional count', () => {
+    const tracker = new CostTracker();
+    expect(() =>
+      tracker.record('claude-opus-4-8', { inputTokens: 0, outputTokens: 0 }),
+    ).not.toThrow();
+  });
+
+  it('NaN would otherwise poison the cap permanently — the reason this is fail-loud', () => {
+    // Documents the failure mode: NaN is absorbing, so once folded in, every later `cumulative > cap`
+    // comparison is false and the cost cap silently stops being a cap.
+    const tracker = new CostTracker();
+    expect(() =>
+      tracker.record('claude-opus-4-8', { inputTokens: Number.NaN, outputTokens: 1 }),
+    ).toThrow();
+    tracker.record('claude-opus-4-8', good);
+    expect(Number.isFinite(tracker.cumulativeCostMicrocents)).toBe(true);
+    expect(tracker.cumulativeCostMicrocents).toBeGreaterThan(0);
+  });
+});
