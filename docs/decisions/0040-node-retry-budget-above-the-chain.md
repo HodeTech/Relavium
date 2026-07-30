@@ -4,6 +4,19 @@
 - **Date**: 2026-06-15
 - **Related**: [ADR-0038](0038-agentrunner-llm-call-boundary.md) (amended — see Decision A.2), [ADR-0011](0011-internal-llm-abstraction.md) (the `FallbackChain` owns within-chain policy), [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) (run loop + the injected one-shot timer), [ADR-0027](0027-expression-sandbox.md) / [ADR-0029](0029-tool-policy-hardening.md) (failure classification), [error-handling.md](../standards/error-handling.md), [run-plan.md](../reference/shared-core/run-plan.md) and [node-types.md](../reference/shared-core/node-types.md) (which already pre-describe this layer), [expression-sandbox-spec.md](../reference/shared-core/expression-sandbox-spec.md) (the `runId + nodeId + retryCount` idempotency key)
 
+> **Amended 2026-07-30 (append-only — the primary's default budget on the SESSION path only).** This ADR puts
+> the retry budget ABOVE the chain and lets the primary `FallbackPlanEntry` default to `maxAttempts: 1`. That
+> holds on the **workflow** path, where `WorkflowEngine` really does retry above the chain. It does **not** hold
+> on the **session** path (`relavium chat`, one-shot `agent run`): an `AgentSession` has no above-chain loop, so
+> the chain is the only retry — and at a budget of 1 the chain's own guard (`attempt < budget`) makes even its
+> backoff unreachable, so nothing retried at all. That was invisible until **#276**, because the vendor SDKs'
+> internal retry was silently absorbing transient 429/5xx inside the adapter; with that correctly disabled, a
+> bare 429 would have ended the user's turn with no wait. The session path's primary therefore defaults to
+> **`maxAttempts: 2`** (`SESSION_PRIMARY_MAX_ATTEMPTS`, `agent-session.ts`). The workflow path is **unchanged at
+> 1** — raising both would multiply the authored node-retry budget, which is exactly what this ADR exists to
+> prevent. Nothing else here changes: the above-chain budget, the no-jitter/deterministic backoff convention,
+> and A.2's still-deferred authored primary `max_attempts` field all stand.
+
 > **Amended 2026-06-20 by [ADR-0045](0045-async-media-job-loop-poll-checkpoint-resume-cancel.md).** A scoped exception, not a reversal: for the async-media node only, ADR-0045 **re-attaches** to a persisted provider job on crash-resume instead of re-running from pending (the default A.6 quotes), and **carves the wall-clock media-poll cadence out of the A.3 deterministic-replay invariant** (an external job result is non-deterministic state already). The node-retry budget + classification rules are otherwise unchanged.
 
 ## Context

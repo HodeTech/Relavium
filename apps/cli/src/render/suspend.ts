@@ -370,7 +370,6 @@ export function wireJobControl(opts: {
       if (disposed) return;
       disposed = true;
       pendingSuspend = false;
-      removeSuspendListener();
       removeContinue?.();
       removeContinue = undefined;
     },

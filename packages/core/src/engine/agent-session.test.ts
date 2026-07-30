@@ -451,6 +451,35 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     expect(completed.tokensUsed).toEqual({ input: 4, output: 2 });
   });
 
+  it('RETRIES a retryable failure once on the session path — the primary carries a budget of 2 (#276)', async () => {
+    // A session has no above-chain retry loop, so the chain is the only retry here. Until #276 the vendor
+    // SDK's internal retry was quietly absorbing a transient 429 inside the adapter; with that correctly
+    // disabled, a primary budget of 1 would end the user's turn on the first rate limit with no wait at all
+    // (at budget 1 the chain's own guard `attempt < budget` is false, so even its backoff is unreachable).
+    // Two scripted turns: the first fails retryable, the second succeeds — one turn must consume BOTH.
+    const { deps, events } = harness([
+      [
+        {
+          type: 'error',
+          error: { kind: 'rate_limit', retryable: true, provider: 'anthropic', message: 'rl' },
+        },
+      ],
+      [
+        { type: 'text_delta', text: 'recovered' },
+        { type: 'stop', stopReason: 'stop', usage: { inputTokens: 5, outputTokens: 3 } },
+      ],
+    ]);
+    const s = session(deps);
+    s.start();
+    await s.sendMessage('go');
+
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    // The turn SUCCEEDS: the retry landed. At maxAttempts 1 this is `stopReason: 'error'`.
+    expect(completed?.type === 'session:turn_completed' ? completed.stopReason : undefined).toBe(
+      'stop',
+    );
+  });
+
   it('completes a turn with an error (stopReason error) when the provider chain is exhausted', async () => {
     const { deps, events } = harness([
       [

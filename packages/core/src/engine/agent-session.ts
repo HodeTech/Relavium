@@ -370,6 +370,18 @@ function isProcessResult(value: unknown): value is ProcessResult {
  * `sessionId`, call {@link start} once, then {@link sendMessage} per user turn; {@link cancel} aborts an
  * in-flight turn. Events flow through the injected {@link SessionEventSink}.
  */
+/**
+ * The primary chain entry's attempt budget on the SESSION path (chat / one-shot `agent run`).
+ *
+ * **2, not 1**, and the difference is load-bearing: a session has no above-chain retry loop, so the chain is
+ * the only retry there — and a budget of 1 makes even the chain's own backoff unreachable (`attempt < budget`).
+ * Until #276 the vendor SDK's internal retry hid that; with the SDK correctly out of the retry business, a
+ * transient 429 would end the user's turn with no wait at all. Two attempts restores a single polite retry
+ * without touching the authored node-retry budget, which does not exist on this path.
+ * ADR-0040 carries the dated amendment.
+ */
+const SESSION_PRIMARY_MAX_ATTEMPTS = 2;
+
 export class AgentSession {
   readonly sessionId: string;
 
@@ -1199,10 +1211,17 @@ export class AgentSession {
       this.#plan = { ok: false, message: `no provider wired for '${agent.provider}'` };
       return this.#plan;
     }
-    // The primary entry does NOT consume a node/agent retry budget — ADR-0040 makes node retry the
-    // engine's ABOVE-chain budget (a session has no such loop in 1.V); the primary is a single attempt.
+    // ADR-0040 makes node retry the engine's ABOVE-chain budget, and the primary entry does not consume it.
+    // But a SESSION has no such loop (this comment used to end there, with `maxAttempts: 1`), so on the chat
+    // and one-shot `agent run` surfaces the chain was the ONLY place a retry could happen — and with a budget
+    // of 1 the guard `attempt < budget` is false, so `#backoff` is unreachable and nothing retried at all.
+    // That was masked until #276: the vendor SDK's own retry was silently absorbing transient 429/5xx here.
+    // With the SDK's retry correctly off, a bare 429 would fail the turn outright with no wait, so the primary
+    // carries a minimal budget of 2 on this path. The WORKFLOW path deliberately stays at 1 (see
+    // `agent-runner.ts`) because the engine retries above it there — raising both would multiply the authored
+    // budget. Recorded as a dated amendment on ADR-0040.
     const entries: FallbackPlanEntry[] = [
-      { provider: primary, model: agent.model, maxAttempts: 1 },
+      { provider: primary, model: agent.model, maxAttempts: SESSION_PRIMARY_MAX_ATTEMPTS },
     ];
     for (const entry of agent.fallback_chain ?? []) {
       const provider = this.#deps.resolveProvider(entry.provider);
