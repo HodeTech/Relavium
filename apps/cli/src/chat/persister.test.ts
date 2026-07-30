@@ -50,6 +50,18 @@ describe('createSessionPersister', () => {
     client.sqlite.close();
   });
 
+  /**
+   * Notes the bus's `onListenerError` sink reported during a test. Wiring the sink is not cosmetic: a persister
+   * write that throws travels out of a `RunEventBus` subscriber, and with NO sink the bus deliberately
+   * re-throws out-of-band (session-host.ts) — which vitest counts as an unhandled rejection and turns into a
+   * non-zero exit even while every summary line says "passed". So the tests that provoke a write failure MUST
+   * wire it, and asserting on what it reported also pins the #228 fail-loud path the atomicity fix leans on.
+   */
+  let listenerNotes: string[];
+  beforeEach(() => {
+    listenerNotes = [];
+  });
+
   async function setup(providers: ProviderResolver, initialSequenceNumber?: number) {
     let tick = Date.parse('2026-06-25T00:00:00.000Z');
     const now = () => tick++;
@@ -62,6 +74,7 @@ describe('createSessionPersister', () => {
       now,
       uuid: () => 'sess-1',
       providers,
+      onListenerError: (note: string) => listenerNotes.push(note),
     });
     const persister = createSessionPersister({
       store,
@@ -89,6 +102,7 @@ describe('createSessionPersister', () => {
       now,
       uuid: () => 'sess-1',
       providers,
+      onListenerError: (note: string) => listenerNotes.push(note),
     });
     const persister = createSessionPersister({
       store: target,
@@ -117,6 +131,8 @@ describe('createSessionPersister', () => {
     persister.beginUserTurn('first');
     await built.session.sendMessage('first');
     expect(store.loadMessages('sess-1')).toHaveLength(0); // all of it, or none of it
+    // …and the user was TOLD. A silently dropped turn is the other half of #228.
+    expect(listenerNotes.join('\n')).toMatch(/database is locked/);
 
     // The session survives (that is the point of #228's other layers) and the NEXT turn must be clean —
     // this is where the old behaviour buried an orphan `user` row mid-transcript, which resume does not
@@ -171,7 +187,11 @@ describe('createSessionPersister', () => {
   });
 
   it('leaves the in-memory sequence untouched when a turn write fails (no phantom seq)', async () => {
-    const { built, persister } = await setup(scriptedResolver([textTurn('hi'), textTurn('again')]));
+    // Three scripted turns: the failed one, the landed one, and the summariser's own turn for the /compact
+    // that this test uses to observe `realMessageSeqs`.
+    const { built, persister } = await setup(
+      scriptedResolver([textTurn('hi'), textTurn('again'), textTurn('the summary')]),
+    );
     built.session.start();
     persister.start();
     vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
@@ -185,6 +205,17 @@ describe('createSessionPersister', () => {
     // The turn totals must also not have advanced for the turn that never landed.
     const session = store.loadSession('sess-1');
     expect(session?.title).toBe('second'); // the FAILED turn never got to title the session either
+
+    // The load-bearing half, and the one nothing else observes: `realMessageSeqs`. It is the ADR-0062
+    // boundary seed, so a phantom entry from the failed turn shifts
+    // `realMessageSeqs[length - keptMessageCount - 1]` on EVERY later /compact and /trim — a silent
+    // kept-message loss, exactly the "step-3 review data-loss trap" this file's own comment warns about.
+    // Driving a real compaction is the only way to see it: after ONE landed turn (rows 0,1), keeping the
+    // last exchange must drop nothing and therefore write NO marker. A leaked phantom seq makes the array
+    // look two entries longer and a spurious marker appears.
+    const result = await built.session.compact('manual');
+    expect(result.kind).toBe('compacted');
+    expect(store.loadMessages('sess-1').filter((m) => m.role === 'system')).toHaveLength(0);
   });
 
   it('persists the session row eagerly on start (auto-persisted from the moment it starts)', async () => {

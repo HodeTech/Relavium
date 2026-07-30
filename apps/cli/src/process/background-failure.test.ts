@@ -112,7 +112,16 @@ describe('installBackgroundFailureNet (#228)', () => {
     const { io, err } = captureIo();
     const net = installBackgroundFailureNet(io);
     net.dispose();
-    await rejectOnce(new Error('after dispose'));
+    // A throwaway absorber, because this is the ONE case with no net installed: without it the rejection is
+    // genuinely unhandled, vitest counts it as a file-level error, and the run exits NON-ZERO while every
+    // summary line still says "passed" — the exact failure mode that hid this from me the first time.
+    const absorb = (): void => undefined;
+    process.on('unhandledRejection', absorb);
+    try {
+      await rejectOnce(new Error('after dispose'));
+    } finally {
+      process.off('unhandledRejection', absorb);
+    }
     expect(net.occurred()).toBe(false);
     expect(err()).toBe('');
   });
