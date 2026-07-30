@@ -9,7 +9,7 @@ import { defineConformanceSuite, type MakeReplayAdapter } from './spec.js';
 // distinct provider id + cache field. The fetch override keeps the SDK inside src/adapters/*. `replayFor`
 // serves one body (one-shot scenarios) or a sequence (the multi-turn tool loop).
 const makeReplayAdapter: MakeReplayAdapter = (recorded) =>
-  createOpenAiAdapter({ providerId: 'deepseek', fetch: replayFor(recorded), maxRetries: 0 });
+  createOpenAiAdapter({ providerId: 'deepseek', fetch: replayFor(recorded) });
 
 defineConformanceSuite('deepseek', makeReplayAdapter, DEEPSEEK_FIXTURES);
 

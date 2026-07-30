@@ -9,7 +9,7 @@ import { defineConformanceSuite, type MakeReplayAdapter } from './spec.js';
 // takes a `fetch` override, so the SDK stays inside src/adapters/* (the seam fence). `replayFor` serves
 // one body (one-shot scenarios) or a sequence (the multi-turn tool loop).
 const makeReplayAdapter: MakeReplayAdapter = (recorded) =>
-  createOpenAiAdapter({ providerId: 'openai', fetch: replayFor(recorded), maxRetries: 0 });
+  createOpenAiAdapter({ providerId: 'openai', fetch: replayFor(recorded) });
 
 defineConformanceSuite('openai', makeReplayAdapter, OPENAI_FIXTURES);
 

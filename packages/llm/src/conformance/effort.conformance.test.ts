@@ -99,7 +99,7 @@ describe('anthropic — effort conformance (live, nightly): the catalog does not
   it.skipIf(anthropicKey === '' || tiers.length === 0)(
     `${model} accepts every tier the catalog claims (${tiers.join(', ')})`,
     async () => {
-      const adapter = createAnthropicAdapter({ maxRetries: 0 });
+      const adapter = createAnthropicAdapter();
       for (const tier of probeTiers) {
         await assertTierAccepted(adapter, model, tier, anthropicKey);
       }
@@ -115,7 +115,7 @@ describe('openai — effort conformance (live, nightly): the catalog does not li
   it.skipIf(openaiKey === '' || tiers.length === 0)(
     `${model} accepts every tier the catalog claims (${tiers.join(', ')})`,
     async () => {
-      const adapter = createOpenAiAdapter({ providerId: 'openai', maxRetries: 0 });
+      const adapter = createOpenAiAdapter({ providerId: 'openai' });
       for (const tier of probeTiers) {
         await assertTierAccepted(adapter, model, tier, openaiKey);
       }
@@ -147,7 +147,7 @@ describe('deepseek — effort conformance (live, nightly): the catalog does not 
   it.skipIf(deepseekKey === '' || tiers.length === 0)(
     `${model} accepts every tier the catalog claims (${tiers.join(', ')})`,
     async () => {
-      const adapter = createOpenAiAdapter({ providerId: 'deepseek', maxRetries: 0 });
+      const adapter = createOpenAiAdapter({ providerId: 'deepseek' });
       for (const tier of probeTiers) {
         await assertTierAccepted(adapter, model, tier, deepseekKey);
       }

@@ -9,7 +9,7 @@ import { defineConformanceSuite, type MakeReplayAdapter } from './spec.js';
 // the adapter takes a `fetch` override, so the SDK stays inside src/adapters/* (the seam fence).
 // `replayFor` serves one body (one-shot scenarios) or a sequence (the multi-turn tool loop).
 const makeReplayAdapter: MakeReplayAdapter = (recorded) =>
-  createAnthropicAdapter({ fetch: replayFor(recorded), maxRetries: 0 });
+  createAnthropicAdapter({ fetch: replayFor(recorded) });
 
 defineConformanceSuite('anthropic', makeReplayAdapter, ANTHROPIC_FIXTURES);
 
