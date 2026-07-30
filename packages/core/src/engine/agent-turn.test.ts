@@ -1008,16 +1008,243 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
         return streamOf([{ type: 'text_delta', text: 'must not run' }, STOP()]);
       },
     };
+    let releases = 0;
+    let conservativeSettlements = 0;
+    const admission = {
+      settle: (): void => undefined,
+      settleAtReservedEstimate: (): void => {
+        conservativeSettlements += 1;
+      },
+      release: (): void => {
+        releases += 1;
+      },
+    };
     // The budget hook is awaited, so the signal can fire during that await; simulate it firing there.
     const params = baseParams(provider, {
       signal: aborted,
       preEgress: () => {
         aborted.aborted = true;
-        return Promise.resolve();
+        return Promise.resolve(admission);
       },
     });
     await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'cancelled' });
     expect(streamed).toBe(false); // the re-check fired before the provider was engaged
+    expect(releases).toBe(1);
+    expect(conservativeSettlements).toBe(0);
+  });
+
+  it('releases an admission when credential resolution fails before provider egress', async () => {
+    let streamed = false;
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('generate not used in these tests');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        streamed = true;
+        return streamOf([{ type: 'text_delta', text: 'must not run' }, STOP()]);
+      },
+    };
+    let releases = 0;
+    let conservativeSettlements = 0;
+    const admission = {
+      settle: (): void => undefined,
+      settleAtReservedEstimate: (): void => {
+        conservativeSettlements += 1;
+      },
+      release: (): void => {
+        releases += 1;
+      },
+    };
+
+    await expect(
+      runAgentTurn(
+        baseParams(provider, {
+          chainCapabilities: {
+            ...CAPABILITIES,
+            keyFor: () => Promise.reject(new Error('secret-bearing credential lookup failure')),
+          },
+          preEgress: () => admission,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'provider_auth' });
+
+    expect(streamed).toBe(false);
+    expect(releases).toBe(1);
+    expect(conservativeSettlements).toBe(0);
+  });
+
+  it('releases an admission when cancellation lands during credential resolution', async () => {
+    const aborted = {
+      aborted: false,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    };
+    let streamed = false;
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('generate not used in these tests');
+      },
+      stream: (): AsyncIterable<StreamChunk> => {
+        streamed = true;
+        return streamOf([{ type: 'text_delta', text: 'must not run' }, STOP()]);
+      },
+    };
+    let resolveKey: ((key: string) => void) | undefined;
+    const deferredKey = new Promise<string>((resolve) => {
+      resolveKey = resolve;
+    });
+    let signalKeyRequested: (() => void) | undefined;
+    const keyRequested = new Promise<void>((resolve) => {
+      signalKeyRequested = resolve;
+    });
+    let releases = 0;
+    let conservativeSettlements = 0;
+    const admission = {
+      settle: (): void => undefined,
+      settleAtReservedEstimate: (): void => {
+        conservativeSettlements += 1;
+      },
+      release: (): void => {
+        releases += 1;
+      },
+    };
+    const pending = runAgentTurn(
+      baseParams(provider, {
+        signal: aborted,
+        chainCapabilities: {
+          ...CAPABILITIES,
+          keyFor: () => {
+            signalKeyRequested?.();
+            return deferredKey;
+          },
+        },
+        preEgress: () => admission,
+      }),
+    );
+    await keyRequested;
+    aborted.aborted = true;
+    if (resolveKey === undefined) throw new Error('credential lookup was not started');
+    resolveKey('test-key');
+
+    await expect(pending).rejects.toMatchObject({ code: 'cancelled' });
+    expect(streamed).toBe(false);
+    expect(releases).toBe(1);
+    expect(conservativeSettlements).toBe(0);
+  });
+
+  it('admits once at the true provider boundary and settles that matching admission exactly once', async () => {
+    const provider = scriptedProvider('anthropic', [[{ type: 'text_delta', text: 'ok' }, STOP()]]);
+    let checks = 0;
+    let attemptReleases = 0;
+    const attemptSettlements: number[] = [];
+    let conservativelySettled = 0;
+    let settled = false;
+    const attemptProbe = {
+      settle: (realizedMicrocents: number): void => {
+        if (settled) return;
+        settled = true;
+        attemptSettlements.push(realizedMicrocents);
+      },
+      settleAtReservedEstimate: (): void => {
+        if (settled) return;
+        settled = true;
+        conservativelySettled += 1;
+      },
+      release: (): void => {
+        if (settled) return;
+        settled = true;
+        attemptReleases += 1;
+      },
+    };
+    const params = baseParams(provider, {
+      preEgress: () => {
+        checks += 1;
+        return attemptProbe;
+      },
+    });
+
+    await expect(runAgentTurn(params)).resolves.toMatchObject({ text: 'ok' });
+    expect(checks).toBe(1); // exactly the true FallbackChain provider boundary
+    expect(attemptReleases).toBe(0);
+    expect(conservativelySettled).toBe(0);
+    expect(attemptSettlements).toHaveLength(1);
+    expect(attemptSettlements[0]).toBeGreaterThan(0);
+  });
+
+  it('conservatively settles a true provider-attempt admission when usage is absent', async () => {
+    const provider = scriptedProvider('anthropic', [
+      [
+        {
+          type: 'error',
+          error: { kind: 'auth', retryable: false, provider: 'anthropic', message: 'bad key' },
+        },
+      ],
+    ]);
+    let checks = 0;
+    let attemptReleases = 0;
+    const attemptSettlements: number[] = [];
+    let conservativeSettlements = 0;
+    let settled = false;
+    const attemptProbe = {
+      settle: (realizedMicrocents: number): void => {
+        if (settled) return;
+        settled = true;
+        attemptSettlements.push(realizedMicrocents);
+      },
+      settleAtReservedEstimate: (): void => {
+        if (settled) return;
+        settled = true;
+        conservativeSettlements += 1;
+      },
+      release: (): void => {
+        if (settled) return;
+        settled = true;
+        attemptReleases += 1;
+      },
+    };
+    const params = baseParams(provider, {
+      preEgress: () => {
+        checks += 1;
+        return attemptProbe;
+      },
+    });
+
+    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'provider_auth' });
+    expect(checks).toBe(1);
+    expect(attemptReleases).toBe(0);
+    expect(conservativeSettlements).toBe(1);
+    expect(attemptSettlements).toEqual([]);
+  });
+
+  it('conservatively settles a clean provider EOF that omits the terminal usage record', async () => {
+    // FallbackChain treats an iterator ending without a `stop` chunk as a successful empty turn. It may still have
+    // reached/billed the provider, so this must not be mistaken for the proven pre-egress release path.
+    const provider = scriptedProvider('anthropic', [[]]);
+    let releases = 0;
+    let conservativeSettlements = 0;
+    const admission = {
+      settle: (): void => undefined,
+      settleAtReservedEstimate: (): void => {
+        conservativeSettlements += 1;
+      },
+      release: (): void => {
+        releases += 1;
+      },
+    };
+
+    await expect(
+      runAgentTurn(
+        baseParams(provider, {
+          preEgress: () => admission,
+        }),
+      ),
+    ).resolves.toMatchObject({ text: '' });
+    expect(conservativeSettlements).toBe(1);
+    expect(releases).toBe(0);
   });
 
   it('maps a pre-egress BudgetExceededError to AgentTurnError(budget_exceeded) — no provider egress', async () => {

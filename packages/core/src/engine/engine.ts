@@ -61,7 +61,11 @@ import type { WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import { RunLoopInvariantError } from './invariant-error.js';
-import { BudgetGovernor, DEFAULT_MAX_TOKENS_ESTIMATE } from './budget-governor.js';
+import {
+  BudgetGovernor,
+  DEFAULT_MAX_TOKENS_ESTIMATE,
+  type BudgetAdmission,
+} from './budget-governor.js';
 import type { CheckpointState } from './checkpoint.js';
 import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
 import type {
@@ -74,7 +78,12 @@ import type {
   NodeStreamEvent,
 } from './node-executor.js';
 import { codeForLlmError } from './agent-turn.js';
-import { DEFAULT_MEDIA_UNIT_ESTIMATE, generativeUnits, realizedMediaCost } from './agent-runner.js';
+import {
+  DEFAULT_MEDIA_UNIT_ESTIMATE,
+  generativeUnits,
+  realizedMediaCost,
+  takeMediaJobAdmission,
+} from './agent-runner.js';
 import { createClosedRunHandle, createRunHandle, type RunHandle } from './run-handle.js';
 
 /** A vertex's live status in one run. `paused` (at a gate) and `running` are not yet *settled*. */
@@ -108,6 +117,10 @@ interface ParkedMediaJob {
   readonly submittedAtMs: number;
   /** The current poll interval (ms), grown exponentially per `pending` poll, capped at `pollMaxMs`. */
   backoffMs: number;
+  /** Process-local cost-cap reservation for an already-submitted job; reconstructed on checkpoint resume. */
+  admission?: BudgetAdmission;
+  /** Guards every terminal/error sweep from emitting the paid-job addend more than once. */
+  costAccounted?: boolean;
 }
 
 /** A vertex status counts as *settled* (its dependents can evaluate) when it is one of these. */
@@ -299,6 +312,7 @@ class RunExecution {
   readonly #onSettled: (runId: string) => void;
   readonly #resolverCapabilities: ResolverCapabilities;
   readonly #maxTokensEstimate: number;
+  readonly #resolvePrice: PricingOverlay | undefined;
   /** The resolved workflow `context:` (`ctx.*`), folded once at run start (or re-resolved on resume). */
   #resolvedContext: Readonly<Record<string, string>> = {};
 
@@ -380,6 +394,7 @@ class RunExecution {
     this.#secretInputNames = secretNames;
     this.#maskedInputs = maskInputs(params.inputs, secretNames);
     this.#maxTokensEstimate = params.maxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
+    this.#resolvePrice = params.resolvePrice;
     if (params.plan.budget !== undefined) {
       this.#budgetGovernor = new BudgetGovernor({
         budget: params.plan.budget,
@@ -554,6 +569,13 @@ class RunExecution {
         isBudgetGate: gate.isBudgetGate,
       });
     }
+    // Re-seed totals BEFORE restoring submitted-job reservations: a committed job must reserve alongside the
+    // checkpoint's known spend, and its reservation must exist before the first re-armed poll/schedule can run.
+    this.#totalInputTokens = cp.totalInputTokens;
+    this.#totalOutputTokens = cp.totalOutputTokens;
+    this.#cumulativeCostMicrocents = cp.cumulativeCostMicrocents;
+    this.#budgetGovernor?.updateCost(cp.cumulativeCostMicrocents);
+
     // Re-attach each parked async media job (MJ-1, ADR-0045 §3): re-register it + RE-ARM a poll of the
     // persisted opaque jobId. NEVER re-call generateMedia — the node is `'paused'` (applyMediaJobEvent set it),
     // not absent, so it is not re-run via the `'pending'` path; this overrides the checkpoint
@@ -574,6 +596,15 @@ class RunExecution {
         vertex?.config.kind === 'agent'
           ? generativeUnits(job.modality, vertex.config.node)
           : DEFAULT_MEDIA_UNIT_ESTIMATE[job.modality];
+      // This provider job was accepted before the crash, so normal cap policy cannot retroactively refuse it.
+      // Recreate only its priced reservation (if any) before poll scheduling; the eventual terminal media-cost
+      // event reconciles it with the realized charge exactly as in the original process.
+      const admission = this.#budgetGovernor?.reserveCommittedEgress(
+        job.model,
+        0,
+        [{ modality: job.modality, units }],
+        job.provider,
+      );
       this.#pendingMediaJobs.set(job.nodeId, {
         jobId: job.jobId,
         provider: job.provider,
@@ -586,6 +617,7 @@ class RunExecution {
         // is the same value seeded into `#startEpochMs` below.
         submittedAtMs: Date.parse(job.startedAt) - cp.startedAtMs,
         backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
+        ...(admission === undefined ? {} : { admission }),
       });
       this.#armMediaPoll(job.nodeId);
     }
@@ -601,13 +633,6 @@ class RunExecution {
     for (const gateId of cp.resolvedGateIds) {
       this.#resolvedGates.add(gateId);
     }
-    this.#totalInputTokens = cp.totalInputTokens;
-    this.#totalOutputTokens = cp.totalOutputTokens;
-    this.#cumulativeCostMicrocents = cp.cumulativeCostMicrocents;
-    // Re-seed the budget governor with the restored cumulative cost (H2): it starts at 0 and only advances
-    // on `cost:updated`, which a resume does NOT replay — so without this a resumed budgeted run would
-    // under-block by up to ~a full cap on its first post-resume pre-egress check (ADR-0028).
-    this.#budgetGovernor?.updateCost(cp.cumulativeCostMicrocents);
     // Post-resume events continue gap-free from the last persisted sequence number.
     bus.seedSequence(runId, cp.lastSequenceNumber + 1);
     // Keep measuring durationMs from the ORIGINAL start, so a resumed run's terminal reports total
@@ -1081,7 +1106,7 @@ class RunExecution {
 
   /**
    * Build the pre-egress hook for this run, when a budget is configured. The hook is stateful:
-   * it sees the run's current cumulative cost and may emit a one-time `budget:warning` or throw
+   * it sees the run's current cumulative cost and may emit a re-armable `budget:warning` or throw
    * `BudgetExceededError` / `BudgetPauseError` for `fail` / `pause_for_approval`.
    */
   #makePreEgressHook(): import('./agent-turn.js').PreEgressHook | undefined {
@@ -1383,6 +1408,9 @@ class RunExecution {
     const deadlineAt = new Date(
       Date.parse(startedAt) + (job.deadlineMs ?? MEDIA_JOB_POLL_DEFAULTS.deadlineMs),
     ).toISOString();
+    // Consume the exact submission object before the first await. The runner's WeakMap never crosses persistence;
+    // after this point the parked-job record owns the lease through poll, cancel, failure and completion.
+    const admission = takeMediaJobAdmission(job);
     this.#pendingMediaJobs.set(vertex.id, {
       jobId: job.jobId,
       provider: job.provider,
@@ -1394,6 +1422,7 @@ class RunExecution {
       // recompute (from the checkpoint slot) yields an identical value (M2).
       submittedAtMs: Date.parse(startedAt) - this.#startEpochMs,
       backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
+      ...(admission === undefined ? {} : { admission }),
     });
     await this.#emitDurable({
       type: 'media_job:submitted',
@@ -1445,13 +1474,30 @@ class RunExecution {
    *  streamed by `#nodeEmit`. Emitted exactly once per job: at `done`, or — for a paid job abandoned by a
    *  fail/deadline/cancel — at that settle (the provider bills regardless, a cost-integrity requirement). */
   #emitMediaJobCost(nodeId: string, job: ParkedMediaJob): void {
+    if (job.costAccounted === true) {
+      return;
+    }
+    // Mark before the first side effect. A terminal/error path may re-enter while a sink is unwinding; the provider
+    // has only one submitted job, so the engine must never manufacture a second billed addend for it.
+    job.costAccounted = true;
+    const costMicrocents = realizedMediaCost(
+      job.model,
+      job.modality,
+      job.units,
+      this.#resolvePrice,
+    );
+    // Reconcile the lease BEFORE publishing the engine cost event. If event delivery faults after a provider-paid
+    // job, the reservation cannot be released as though the submission were free. Clear the process-local handle
+    // after its idempotent settle so every terminal sweep remains exactly-once from the governor's perspective.
+    job.admission?.settle(costMicrocents);
+    delete job.admission;
     this.#nodeEmit({
       type: 'cost:updated',
       nodeId,
       model: job.model,
       inputTokens: 0,
       outputTokens: 0,
-      costMicrocents: realizedMediaCost(job.model, job.modality, job.units),
+      costMicrocents,
       cumulativeCostMicrocents: 0, // #nodeEmit overwrites with the authoritative run-wide total
     });
   }
@@ -1555,7 +1601,18 @@ class RunExecution {
         // Exponential backoff (no jitter) capped at pollMaxMs, then re-arm. Progress is TRANSIENT (ADR-0045
         // §2) — never persisted; no run event today.
         job.backoffMs = Math.min(job.backoffMs * 2, MEDIA_JOB_POLL_DEFAULTS.pollMaxMs);
-        this.#armMediaPoll(vertex.id);
+        try {
+          this.#armMediaPoll(vertex.id);
+        } catch {
+          // The job was already accepted by the provider. A host timer fault is an engine failure, not evidence
+          // that the job was free: settle its single paid addend before failing the node, so both the admission and
+          // durable terminal total survive this otherwise easy-to-miss out-of-band path.
+          await this.#settleMediaJobFailed(vertex, job, {
+            code: 'internal',
+            message: 'the media job poll timer could not be re-armed',
+            retryable: false,
+          });
+        }
         return;
       }
       case 'done':

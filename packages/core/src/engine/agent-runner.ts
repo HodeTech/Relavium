@@ -64,7 +64,7 @@ import {
   type ChainCapabilities,
   type PreEgressHook,
 } from './agent-turn.js';
-import { BudgetExceededError, BudgetPauseError } from './budget-governor.js';
+import { BudgetExceededError, BudgetPauseError, type BudgetAdmission } from './budget-governor.js';
 import { effortToSend, gateReasoningEffort } from './reasoning-effort.js';
 import type {
   EffortGateResult,
@@ -79,6 +79,28 @@ import type {
 } from './node-executor.js';
 
 type AgentNode = AgentPlanConfig['node'];
+
+/**
+ * An async media submission crosses from the runner to the engine as the exact `MediaJobSubmission` object. Keep
+ * its admission out of the persisted seam object: a lease is process-local bookkeeping, never checkpoint data or
+ * an adapter-visible type. The engine consumes it once when it parks the job; resume reconstructs a fresh lease
+ * from durable model/modality/units instead.
+ */
+const mediaJobAdmissions = new WeakMap<MediaJobSubmission, BudgetAdmission>();
+
+function retainMediaJobAdmission(
+  job: MediaJobSubmission,
+  admission: BudgetAdmission | undefined,
+): void {
+  if (admission !== undefined) mediaJobAdmissions.set(job, admission);
+}
+
+/** Consume the process-local budget admission attached to a freshly submitted async media job, if any. */
+export function takeMediaJobAdmission(job: MediaJobSubmission): BudgetAdmission | undefined {
+  const admission = mediaJobAdmissions.get(job);
+  if (admission !== undefined) mediaJobAdmissions.delete(job);
+  return admission;
+}
 
 /**
  * The AgentRunner's injected dependencies — **platform capabilities only**. The genuinely-new one is
@@ -496,14 +518,16 @@ async function executeGenerativeMedia(
   // must not add a spurious token addend on top of the media estimate. `outputModalities` is the validated
   // single modality (singleBilledModality), so the budget governor's media addend resolves the same rate.
   const preEgress = ctx.preEgress ?? deps.preEgress;
+  let admission: BudgetAdmission | undefined;
   if (preEgress !== undefined) {
     try {
-      await preEgress({
+      const nextAdmission = await preEgress({
         model: primary.model,
         maxTokens: 0,
         outputModalities: [modality.modality],
         mediaUnitsEstimate: [{ modality: modality.modality, units }],
       });
+      if (nextAdmission !== undefined) admission = nextAdmission;
     } catch (err) {
       if (err instanceof BudgetExceededError) {
         return failed('budget_exceeded', err.message, false);
@@ -511,58 +535,100 @@ async function executeGenerativeMedia(
       return turnOutcomeForError(err); // BudgetPauseError → paused; anything else re-throws → engine internal
     }
   }
-  // A cancel landing inside the (async) budget check costs no egress: re-check before engaging the provider.
-  if (ctx.signal.aborted) {
-    return failed(
-      'cancelled',
-      `agent node '${node.id}': run cancelled before media generation`,
-      false,
-    );
-  }
-
-  const req: MediaGenRequest = {
-    model: primary.model,
-    prompt,
-    modality: modality.modality,
-    ...(node.count === undefined ? {} : { count: node.count }),
-    ...(node.duration_seconds === undefined ? {} : { durationSeconds: node.duration_seconds }),
-    signal: ctx.signal,
-  };
-
-  let key: string;
+  let egressStarted = false;
   try {
-    key = await deps.keyFor(provider.id);
-  } catch {
-    // A host credential-resolution failure must NEVER surface its (possibly secret-bearing) message — replace
-    // it with a fixed, secret-free `provider_auth` failure, exactly as the FallbackChain's `#resolveKey` does
-    // on the chat path (rule 6). The original is dropped, not carried as a cause a sink could serialize.
-    return failed(
-      'provider_auth',
-      `agent node '${node.id}': credential resolution failed for provider ${provider.id}`,
-      false,
+    // A cancel landing inside the (async) budget check costs no egress: re-check before engaging the provider.
+    if (ctx.signal.aborted) {
+      return failed(
+        'cancelled',
+        `agent node '${node.id}': run cancelled before media generation`,
+        false,
+      );
+    }
+
+    const req: MediaGenRequest = {
+      model: primary.model,
+      prompt,
+      modality: modality.modality,
+      ...(node.count === undefined ? {} : { count: node.count }),
+      ...(node.duration_seconds === undefined ? {} : { durationSeconds: node.duration_seconds }),
+      signal: ctx.signal,
+    };
+
+    let key: string;
+    try {
+      key = await deps.keyFor(provider.id);
+    } catch {
+      // A host credential-resolution failure must NEVER surface its (possibly secret-bearing) message — replace
+      // it with a fixed, secret-free `provider_auth` failure, exactly as the FallbackChain's `#resolveKey` does
+      // on the chat path (rule 6). The original is dropped, not carried as a cause a sink could serialize.
+      return failed(
+        'provider_auth',
+        `agent node '${node.id}': credential resolution failed for provider ${provider.id}`,
+        false,
+      );
+    }
+
+    // A key lookup can be asynchronous. If the run was cancelled while it was resolving, do not hand the now-stale
+    // credential to generateMedia: this is still proven pre-egress, so the `finally` below releases its admission.
+    if (ctx.signal.aborted) {
+      return failed(
+        'cancelled',
+        `agent node '${node.id}': run cancelled before media generation`,
+        false,
+      );
+    }
+
+    let result: MediaGenResult;
+    try {
+      // From this call onward the provider may have accepted/billed the generation even if its SDK throws or omits
+      // a terminal payload. Preserve the bounded reservation in those uncertain paths; only credential resolution
+      // above is proven pre-egress and may release it.
+      egressStarted = true;
+      result = await provider.generateMedia(req, key);
+    } catch (err) {
+      admission?.settleAtReservedEstimate();
+      return mapGenerateMediaError(err);
+    }
+
+    // A cancel that landed WHILE generateMedia was in-flight (a non-cooperative adapter that ignored the signal,
+    // or one that resolved just as the run cancelled) must win: skip BOTH the async park / sync media outcome AND
+    // the stray cost:updated below — mirroring the post-turn abort re-check the inline/stream chat paths run.
+    // (#onOutcome drops a post-cancel completed anyway; returning `cancelled` here also suppresses the cost emit.)
+    if (ctx.signal.aborted) {
+      admission?.settleAtReservedEstimate();
+      return failed(
+        'cancelled',
+        `agent node '${node.id}': run cancelled during media generation`,
+        false,
+      );
+    }
+
+    const outcome = buildGenerativeOutcome(
+      ctx,
+      node,
+      primary,
+      modality.modality,
+      units,
+      result,
+      deps.resolvePrice,
+      (realizedMicrocents) => admission?.settle(realizedMicrocents),
     );
+    if (outcome.kind === 'media_job') {
+      retainMediaJobAdmission(outcome.job, admission);
+      admission = undefined; // ownership moved to the engine-owned parked-job lifecycle
+    } else if (outcome.kind !== 'completed' && egressStarted) {
+      // A malformed/mismatched provider result is still evidence that the provider processed a request. No exact
+      // charge is trustworthy, so retain the bounded estimate instead of treating an internal validation failure as
+      // a free call.
+      admission?.settleAtReservedEstimate();
+    }
+    return outcome;
+  } finally {
+    // A synchronous completion settles actual cost before its event; a known pre-egress credential/cancel failure
+    // releases. Async ownership was transferred above. All ambiguous post-egress paths settled conservatively.
+    admission?.release();
   }
-
-  let result: MediaGenResult;
-  try {
-    result = await provider.generateMedia(req, key);
-  } catch (err) {
-    return mapGenerateMediaError(err);
-  }
-
-  // A cancel that landed WHILE generateMedia was in-flight (a non-cooperative adapter that ignored the signal,
-  // or one that resolved just as the run cancelled) must win: skip BOTH the async park / sync media outcome AND
-  // the stray cost:updated below — mirroring the post-turn abort re-check the inline/stream chat paths run.
-  // (#onOutcome drops a post-cancel completed anyway; returning `cancelled` here also suppresses the cost emit.)
-  if (ctx.signal.aborted) {
-    return failed(
-      'cancelled',
-      `agent node '${node.id}': run cancelled during media generation`,
-      false,
-    );
-  }
-
-  return buildGenerativeOutcome(ctx, node, primary, modality.modality, units, result);
 }
 
 /**
@@ -596,6 +662,8 @@ function buildGenerativeOutcome(
   modality: MediaBilledModality,
   units: number,
   result: MediaGenResult,
+  resolvePrice: PricingOverlay | undefined,
+  onRealizedCost: (costMicrocents: number) => void,
 ): NodeOutcome {
   if (result.jobId !== undefined && result.media !== undefined) {
     return failed(
@@ -638,13 +706,17 @@ function buildGenerativeOutcome(
   }
   // Exactly ONE realized cost:updated (ADR-0045 §5) — derived from the request volume × the per-model media
   // rate (best-effort: an unknown/unrated model degrades to 0, H4). The engine folds it into the run cumulative.
+  const costMicrocents = realizedMediaCost(primary.model, modality, units, resolvePrice);
+  // Settle before emitting to the engine: if a synchronous event sink faults after provider success, the admission
+  // cannot be released as though the charged generation never happened.
+  onRealizedCost(costMicrocents);
   ctx.emit({
     type: 'cost:updated',
     nodeId: node.id,
     model: primary.model,
     inputTokens: 0,
     outputTokens: 0,
-    costMicrocents: realizedMediaCost(primary.model, modality, units),
+    costMicrocents,
     cumulativeCostMicrocents: 0, // placeholder — the engine overwrites with the authoritative run-wide total
   });
   // The pure-media node output ({ text:'', media:[part] }) de-inlines at #emitDurable exactly like the inline
@@ -704,12 +776,13 @@ export function realizedMediaCost(
   model: string,
   modality: MediaBilledModality,
   units: number,
+  resolvePrice?: PricingOverlay,
 ): number {
   const mediaUnits: MediaUnitsEntry[] = [
     { modality, direction: 'output', units, unit: modality === 'image' ? 'count' : 'second' },
   ];
   try {
-    return cost(model, { inputTokens: 0, outputTokens: 0, mediaUnits });
+    return cost(model, { inputTokens: 0, outputTokens: 0, mediaUnits }, resolvePrice);
   } catch {
     // Best-effort (H4): an unknown/unrated model — OR any pricing-layer fault — must NEVER turn a successful,
     // already-paid generation into a failed node. Degrade to 0, matching the chain's best-effort cost fold

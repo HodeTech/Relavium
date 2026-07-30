@@ -30,6 +30,7 @@ import type {
   CapabilityFlags,
   LlmProvider,
   MediaJobStatus,
+  PricingOverlay,
   ProviderId,
   StreamChunk,
 } from '@relavium/llm';
@@ -502,6 +503,68 @@ workflow:
 `,
 );
 
+/** Two independent async-media submissions: a parked job is slot-free but its priced admission must stay live. */
+const BUDGETED_ASYNC_MEDIA_PARALLEL = parseWorkflow(
+  `schema_version: '1.0'
+workflow:
+  id: m2-harness-budgeted-async-media-parallel
+  max_parallel: 1
+  budget:
+    max_cost_microcents: 1500
+    on_exceed: fail
+  agents:
+    - id: painter
+      model: budget-media-model
+      provider: openai
+      system_prompt: You make images.
+  nodes:
+    - { id: n1, type: agent, agent_ref: painter, prompt_template: 'Draw one', output_modalities: [image], count: 1 }
+    - { id: n2, type: agent, agent_ref: painter, prompt_template: 'Draw two', output_modalities: [image], count: 1 }
+  edges: []
+`,
+);
+
+/** A parked media job and a human gate; resuming the gate reveals whether the parked-job reservation was restored. */
+const BUDGETED_ASYNC_MEDIA_RESUME = parseWorkflow(
+  `schema_version: '1.0'
+workflow:
+  id: m2-harness-budgeted-async-media-resume
+  max_parallel: 2
+  budget:
+    max_cost_microcents: 1500
+    on_exceed: fail
+  agents:
+    - id: painter
+      model: budget-media-model
+      provider: openai
+      system_prompt: You make images.
+  nodes:
+    - { id: gen, type: agent, agent_ref: painter, prompt_template: 'Draw one', output_modalities: [image], count: 1 }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: after, type: agent, agent_ref: painter, prompt_template: 'Draw two', output_modalities: [image], count: 1 }
+  edges:
+    - { from: g, to: after }
+`,
+);
+
+/** A synthetic user-priced generative model: the shipped catalog intentionally has no media rates yet. */
+const BUDGET_MEDIA_PRICING: PricingOverlay = new Map([
+  [
+    'budget-media-model',
+    {
+      provider: 'openai',
+      nativeId: 'budget-media-model',
+      displayName: 'Budget media model',
+      contextWindowTokens: 1,
+      maxOutputTokens: 1,
+      inputPerMtokMicrocents: 0,
+      outputPerMtokMicrocents: 0,
+      cachedInputPerMtokMicrocents: 0,
+      mediaOutputRates: { image: 1000 },
+    },
+  ],
+]);
+
 const INPUTS = { topic: 'the report' } as const;
 
 // --- The reusable driver ---------------------------------------------------------------------------
@@ -512,14 +575,17 @@ function buildEngine(
   host: Host,
   resolveProvider: (id: ProviderId) => LlmProvider | undefined,
   resolveMediaSurface?: (model: string) => 'chat' | 'generative' | undefined,
+  resolvePrice?: PricingOverlay,
 ): WorkflowEngine {
   return new WorkflowEngine({
     host,
+    ...(resolvePrice === undefined ? {} : { resolvePrice }),
     executor: createStandardNodeExecutor({
       sandbox,
       agent: {
         resolveProvider,
         ...(resolveMediaSurface === undefined ? {} : { resolveMediaSurface }),
+        ...(resolvePrice === undefined ? {} : { resolvePrice }),
         registry: echoRegistry,
         tools: [echoToolDef],
         keyFor: () => 'k',
@@ -751,6 +817,40 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(costsOf(events).filter((c) => c.nodeId === 'work')).toHaveLength(1);
   });
 
+  it('async media budget: a slot-free parked job retains its priced admission and blocks the next submission (G38)', async () => {
+    // `max_parallel:1` deliberately frees the execution slot when n1 parks. The money reservation must NOT follow
+    // that scheduling slot: n2's same-priced submission would take the total from 1,000 to 2,000µ¢ over a 1,500µ¢
+    // cap. Before the retained lease, both generateMedia calls ran and the workflow completed after both polls.
+    const host = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore: stubMediaStore(),
+    });
+    const job = asyncMediaProvider([{ state: 'done', media: IMAGE_PART }]);
+    const engine = buildEngine(
+      host,
+      () => job.provider,
+      () => 'generative',
+      BUDGET_MEDIA_PRICING,
+    );
+
+    const events = await driveMediaRun(
+      engine.start({ workflow: BUDGETED_ASYNC_MEDIA_PARALLEL, inputs: INPUTS }),
+      host,
+    );
+
+    const terminal = events.at(-1);
+    expect(terminal?.type).toBe('run:failed');
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
+    expect(terminal?.type === 'run:failed' && terminal.cumulativeCostMicrocents).toBe(1000);
+    expect(job.generateCalls()).toBe(1);
+    expect(events.filter((event) => event.type === 'media_job:submitted')).toHaveLength(1);
+    const costs = costsOf(events);
+    expect(costs).toHaveLength(1);
+    expect(costs[0]?.costMicrocents).toBe(1000);
+    assertGapFreeSeq(events);
+    assertCanonicalSchema(events);
+  });
+
   it('async media job: a cross-process resume RE-ATTACHES (re-polls) the persisted jobId — never re-submits (MJ-1)', async () => {
     const store = new InMemoryRunStore();
     // Process 1: submit + park, then "crash" (break at run:paused; the poll timer is never fired).
@@ -791,6 +891,65 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(events2.filter((e) => e.type === 'run:paused')).toHaveLength(0);
     // The lone realized cost addend fires on the resume→done path too (exactly one — ADR-0045 §5).
     expect(costsOf(events2).filter((c) => c.nodeId === 'work')).toHaveLength(1);
+  });
+
+  it('async media budget: checkpoint resume reconstructs a parked-job reservation before gate-unblocked egress', async () => {
+    const store = new InMemoryRunStore();
+    // Process 1: submit the priced job and park it alongside a human gate. Its timer is intentionally not fired;
+    // the checkpoint is the only thing process 2 may use to reconstruct the already-paid commitment.
+    const job1 = asyncMediaProvider([{ state: 'pending' }]);
+    const host1 = createInMemoryHost({ store, mediaStore: stubMediaStore() });
+    const engine1 = buildEngine(
+      host1,
+      () => job1.provider,
+      () => 'generative',
+      BUDGET_MEDIA_PRICING,
+    );
+    const {
+      events: events1,
+      gateId,
+      lastSeq,
+    } = await drive(
+      engine1.start({ workflow: BUDGETED_ASYNC_MEDIA_RESUME, inputs: INPUTS }),
+      host1,
+      { breakOnPause: true },
+    );
+    const runId = events1[0]?.runId ?? '';
+    if (gateId === undefined)
+      throw new Error('expected the process-1 checkpoint to contain a human gate');
+    expect(job1.generateCalls()).toBe(1);
+
+    // Process 2 approves the gate, making `after` ready. It must see gen's reconstructed 1,000µ¢ reservation and
+    // fail before submit; normal `checkPreEgress` is intentionally NOT rerun for gen itself because it is paid.
+    const job2 = asyncMediaProvider([{ state: 'done', media: IMAGE_PART }]);
+    const host2 = createInMemoryHost({ store, mediaStore: stubMediaStore() });
+    const engine2 = buildEngine(
+      host2,
+      () => job2.provider,
+      () => 'generative',
+      BUDGET_MEDIA_PRICING,
+    );
+    const events2 = await driveMediaRun(
+      await engine2.resumeFromCheckpoint({
+        runId,
+        workflow: BUDGETED_ASYNC_MEDIA_RESUME,
+        inputs: INPUTS,
+        gateId,
+        decision: { decision: 'approved', decidedBy: 'human' },
+      }),
+      host2,
+    );
+
+    const terminal = events2.at(-1);
+    expect(terminal?.type).toBe('run:failed');
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
+    expect(terminal?.type === 'run:failed' && terminal.cumulativeCostMicrocents).toBe(1000);
+    expect(job2.generateCalls()).toBe(0); // gen re-attached; `after` never submitted
+    expect(costsOf(events2).filter((cost) => cost.nodeId === 'gen')).toHaveLength(1);
+    // Resume keeps the prior process's sequence space; the resumed segment starts at the persisted last+1 and is
+    // gap-free from there (rather than restarting at 0 like a fresh run).
+    events2.forEach((event, index) => expect(event.sequenceNumber).toBe(lastSeq + index + 1));
+    assertCanonicalSchema(events2);
   });
 
   it('async media job: a run cancel aborts the in-flight poll → run:cancelled (ADR-0045 §4)', async () => {
@@ -1173,6 +1332,44 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     // each poll advanced the harness clock, so the elapsed across the 3 pending polls is strictly positive.
     const done = events.find((e) => e.type === 'node:completed' && e.nodeId === 'work');
     expect(done?.type === 'node:completed' && done.durationMs > 0).toBe(true);
+  });
+
+  it('async media job: a poll re-arm timer fault still accounts the paid submission exactly once', async () => {
+    const baseHost = createInMemoryHost({
+      store: new InMemoryRunStore(),
+      mediaStore: stubMediaStore(),
+    });
+    let timerCalls = 0;
+    const host: Host = {
+      ...baseHost,
+      setTimer: (ms, onFire) => {
+        timerCalls += 1;
+        // The first timer parks the submitted job. Its first pending poll then attempts the second arm, which
+        // models a host timer failure outside the normal executor/adapter path.
+        if (timerCalls === 2) throw new Error('timer unavailable');
+        return baseHost.setTimer(ms, onFire);
+      },
+    };
+    const job = asyncMediaProvider([{ state: 'pending' }]);
+    const engine = buildEngine(
+      host,
+      () => job.provider,
+      () => 'generative',
+    );
+    const events = await driveMediaRun(
+      engine.start({ workflow: GENERATIVE_OUT, inputs: INPUTS }),
+      host,
+    );
+
+    expect(events.at(-1)?.type).toBe('run:failed');
+    const costs = costsOf(events).filter((event) => event.nodeId === 'work');
+    expect(costs).toHaveLength(1);
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.cumulativeCostMicrocents).toBe(
+      costs[0]?.costMicrocents,
+    );
+    assertGapFreeSeq(events);
+    assertCanonicalSchema(events);
   });
 
   it('flagship: one run — retry then failover, pause at the gate, cross-process resume reproduces the final output', async () => {

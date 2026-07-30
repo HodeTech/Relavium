@@ -442,6 +442,36 @@ workflow:
   );
 }
 
+/** Two independently-admissible calls whose combined worst-case output cost exceeds the authored cap (G38). */
+function parallelBudgetWorkflow(): ReturnType<typeof parseWorkflow> {
+  return parseWorkflow(
+    `schema_version: '1.0'
+workflow:
+  id: e2e-budget-parallel-admission
+  max_parallel: 2
+  budget:
+    max_cost_microcents: 750000
+    on_exceed: fail
+  agents:
+    - id: a
+      model: claude-haiku-4-5
+      provider: anthropic
+      system_prompt: hi
+      max_tokens: 1000
+  nodes:
+    - id: n1
+      type: agent
+      agent_ref: a
+      prompt_template: 'one'
+    - id: n2
+      type: agent
+      agent_ref: a
+      prompt_template: 'two'
+  edges: []
+`,
+  );
+}
+
 function cheapProvider(): LlmProvider {
   return provider([
     { type: 'text_delta', text: 'ok' },
@@ -450,6 +480,99 @@ function cheapProvider(): LlmProvider {
 }
 
 describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
+  it('keeps the true in-provider attempt admission while a max_parallel sibling is denied (G38)', async () => {
+    // Haiku's 1,000-output-token worst case is 500,000µ¢. Each branch fits a 750,000µ¢ cap in isolation,
+    // but two max_parallel:2 TRUE provider attempts must NOT both reach egress: their combined reservation is
+    // 1,000,000µ¢. The first stream deliberately remains in-flight while the sibling reaches its own actual
+    // attempt boundary; this proves the ledger is not merely a transient loop-top probe. Before G38 this goes red
+    // with two provider calls and run:completed at 1,000,200µ¢ (the 1-input-token charge is included).
+    let calls = 0;
+    let signalFirstStarted: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      signalFirstStarted = () => resolve();
+    });
+    let releaseFirst: (() => void) | undefined;
+    const firstMayFinish = new Promise<void>((resolve) => {
+      releaseFirst = () => resolve();
+    });
+    let signalSecondProviderCall: (() => void) | undefined;
+    const secondProviderCall = new Promise<void>((resolve) => {
+      signalSecondProviderCall = () => resolve();
+    });
+    const providerWithCount: LlmProvider = {
+      id: 'anthropic',
+      supports: CAPS,
+      generate: () => {
+        throw new Error('unused');
+      },
+      stream: () => {
+        calls += 1;
+        if (calls === 1) {
+          return (async function* (): AsyncGenerator<StreamChunk> {
+            if (signalFirstStarted === undefined)
+              throw new Error('first-attempt barrier was not initialized');
+            signalFirstStarted();
+            await firstMayFinish;
+            yield { type: 'text_delta', text: 'ok' };
+            yield {
+              type: 'stop',
+              stopReason: 'stop',
+              usage: { inputTokens: 1, outputTokens: 1000 },
+            };
+          })();
+        }
+        signalSecondProviderCall?.();
+        return streamOf([
+          { type: 'text_delta', text: 'ok' },
+          { type: 'stop', stopReason: 'stop', usage: { inputTokens: 1, outputTokens: 1000 } },
+        ]);
+      },
+    };
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost(),
+      executor: agentExecutor(() => providerWithCount),
+    });
+
+    const handle = engine.start({ workflow: parallelBudgetWorkflow() });
+    const events: RunEvent[] = [];
+    let signalSiblingDenied: (() => void) | undefined;
+    const siblingDenied = new Promise<void>((resolve) => {
+      signalSiblingDenied = () => resolve();
+    });
+    const consume = (async (): Promise<void> => {
+      for await (const event of handle.events) {
+        events.push(event);
+        if (event.type === 'node:failed' && event.error.code === 'budget_exceeded') {
+          signalSiblingDenied?.();
+        }
+      }
+    })();
+
+    try {
+      await firstStarted;
+      const release = releaseFirst;
+      if (release === undefined) throw new Error('first-attempt barrier was not initialized');
+      // Race the sibling's budget failure against an observable second seam invocation WHILE the first provider is
+      // still blocked. Before G38, the old released probe reaches `stream()` first; the repaired ledger instead
+      // emits the sibling's budget failure before a second provider call exists.
+      const boundary = await Promise.race([
+        siblingDenied.then(() => 'denied' as const),
+        secondProviderCall.then(() => 'second_provider_call' as const),
+      ]);
+      expect(boundary).toBe('denied');
+      expect(calls).toBe(1);
+    } finally {
+      releaseFirst?.();
+    }
+    await consume;
+
+    expect(calls).toBe(1);
+    expect(events.at(-1)?.type).toBe('run:failed');
+    const terminal = events.at(-1);
+    expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
+    assertGapFreeSeq(events);
+  });
+
   it('warns and continues when on_exceed is warn', async () => {
     const engine = new WorkflowEngine({
       host: createInMemoryHost(),
@@ -461,8 +584,9 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
     expect(events.at(-1)?.type).toBe('run:completed');
     const warning = events.find((e) => e.type === 'budget:warning');
     expect(warning).toBeDefined();
-    // The warning fires before any spend, so the observed spent/limit fraction is 0%.
-    expect(warning?.type === 'budget:warning' && warning.thresholdPct).toBe(0);
+    // `spentMicrocents` remains the honest realized 0, but G47 projects the post-call total for the warning
+    // threshold; the 1µ¢ cap is therefore fully exceeded (clamped to the event schema's 100%).
+    expect(warning?.type === 'budget:warning' && warning.thresholdPct).toBe(100);
   });
 
   it('an UNPRICED model reaches the onUnpriced sink THROUGH WorkflowEngine (ADR-0071 §K7)', async () => {
