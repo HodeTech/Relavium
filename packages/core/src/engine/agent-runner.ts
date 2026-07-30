@@ -587,7 +587,7 @@ async function executeGenerativeMedia(
       egressStarted = true;
       result = await provider.generateMedia(req, key);
     } catch (err) {
-      admission?.settleAtReservedEstimate();
+      admission?.settleAtReservedEstimate({ nodeId: node.id });
       return mapGenerateMediaError(err);
     }
 
@@ -596,7 +596,7 @@ async function executeGenerativeMedia(
     // the stray cost:updated below — mirroring the post-turn abort re-check the inline/stream chat paths run.
     // (#onOutcome drops a post-cancel completed anyway; returning `cancelled` here also suppresses the cost emit.)
     if (ctx.signal.aborted) {
-      admission?.settleAtReservedEstimate();
+      admission?.settleAtReservedEstimate({ nodeId: node.id });
       return failed(
         'cancelled',
         `agent node '${node.id}': run cancelled during media generation`,
@@ -621,7 +621,7 @@ async function executeGenerativeMedia(
       // A malformed/mismatched provider result is still evidence that the provider processed a request. No exact
       // charge is trustworthy, so retain the bounded estimate instead of treating an internal validation failure as
       // a free call.
-      admission?.settleAtReservedEstimate();
+      admission?.settleAtReservedEstimate({ nodeId: node.id });
     }
     return outcome;
   } finally {

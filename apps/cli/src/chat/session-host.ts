@@ -669,6 +669,15 @@ export function buildGovernorWiring(
             onUnpriced(unpricedModelNote(model, capMicrocents, '[chat] strict_cost_cap')),
         }),
     emit: (event) => {
+      if (event.type === 'budget:estimate_committed') {
+        // ADR-0074 §2 on the SESSION path. The DURABLE half — a session-budget write plus a streamed session
+        // event — is §4, which needs the migration and the transactional persister write; it is not wired here
+        // yet, and this comment is the marker for that. Deliberately NOT swallowed into silence beyond that:
+        // resolving lets the governor's barrier proceed (the ordering guarantee holds on this surface too), and
+        // the reservation is already consuming cap capacity in memory, which is what protects THIS process.
+        // What is still missing is only survival across `chat-resume`.
+        return Promise.resolve();
+      }
       // `warn` is non-blocking BY CONTRACT. A misbehaving warn surface must never reject this emit — a
       // rejection would propagate as an `internal` turn error and break sendMessage — so swallow a sync throw.
       try {

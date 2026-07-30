@@ -1048,6 +1048,13 @@ class RunExecution {
     const budgetApproved = this.#budgetApprovedVertices.delete(vertex.id);
     for (;;) {
       const outcome = await this.#runAttempt(vertex, attempt, budgetApproved);
+      // ADR-0074 §2's other barrier: "the enclosing turn completion waits for the commitment's durability
+      // acknowledgement." A commitment made inside this attempt must be durable before the node reaches ANY
+      // boundary — its terminal, or a `node:retrying` that will dispatch again. The governor's own barrier covers
+      // the next pre-egress check; this covers the node boundary, which a crash could otherwise land inside with
+      // a possibly-billed call recorded nowhere. Awaited (not fire-and-forget) so a failed write fails the node
+      // loudly; the conservative amount keeps consuming capacity either way.
+      await this.#flushBudgetCommitments(vertex.id);
       const willRetry =
         outcome.kind === 'failed' &&
         !this.#settled &&
@@ -1972,6 +1979,41 @@ class RunExecution {
         const exhaustive: never = event;
         return exhaustive;
       }
+    }
+  }
+
+  /**
+   * Await the budget governor's conservative-commitment barrier at a node boundary (ADR-0074 §2).
+   *
+   * **The await is the substance.** `#emitDurable` resolves only after `persistEvent` has settled (its `await
+   * settled` at the end), so waiting here means a commitment made inside the attempt is on disk — or has already
+   * failed the run — before the node reaches any boundary. Without it the node could settle while the write was
+   * still in flight, and a crash in that window loses money the provider may have billed.
+   *
+   * The catch below is a BACKSTOP, and on this path it is deliberately unreachable: `#emitDurable` is total for
+   * store faults, so a failed non-terminal write sets `#failure` and aborts there rather than rejecting. It
+   * matters for a HOST-wired governor whose sink can reject — the chat path, once §4 gives it a real durable
+   * write. Kept here so the two surfaces cannot diverge in what a durability failure means: never a released
+   * reservation, always a loud failure.
+   */
+  async #flushBudgetCommitments(nodeId: string): Promise<void> {
+    const governor = this.#budgetGovernor;
+    if (governor === undefined) return;
+    try {
+      await governor.flushCommitments();
+    } catch {
+      // The cause is deliberately dropped rather than threaded into the user-facing message (see below).
+      this.#failure ??= {
+        nodeId,
+        error: {
+          code: 'internal',
+          // No `error` detail in the message: a durable-write failure's cause can carry a filesystem path, and a
+          // user-facing `run:failed` message must not. The store's own typed error carries the context for a log.
+          message: 'a conservative budget commitment could not be made durable',
+          retryable: false,
+        },
+      };
+      this.#abort.abort();
     }
   }
 

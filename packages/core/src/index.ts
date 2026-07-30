@@ -179,9 +179,16 @@ export {
   BudgetGovernor,
   BudgetExceededError,
   BudgetPauseError,
+  // ADR-0074 §2 — a conservative commitment's durable write failed. A host that wires the governor (the chat path
+  // does) must be able to narrow on it: the reservation is deliberately still consuming capacity when it throws.
+  CommitmentDurabilityError,
   DEFAULT_MAX_TOKENS_ESTIMATE,
 } from './engine/budget-governor.js';
-export type { BudgetCheckResult } from './engine/budget-governor.js';
+export type {
+  BudgetCheckResult,
+  CommitmentOrigin,
+  GovernorEventDraft,
+} from './engine/budget-governor.js';
 
 // AgentSession (1.V) — the agent-first entry point: a multi-turn conversation bound to one agent,
 // driving the SAME turn core a workflow `agent` node uses ([ADR-0024], agent-session-spec.md). A surface

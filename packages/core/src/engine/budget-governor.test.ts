@@ -11,9 +11,10 @@ import {
   BudgetExceededError,
   BudgetGovernor,
   BudgetPauseError,
+  CommitmentDurabilityError,
   type BudgetAdmission,
+  type GovernorEventDraft,
 } from './budget-governor.js';
-import type { RunEventDraft } from './event-bus.js';
 
 describe('BudgetGovernor', () => {
   const budget: Budget = { max_cost_microcents: 1_000_000, on_exceed: 'warn' };
@@ -24,13 +25,18 @@ describe('BudgetGovernor', () => {
       defaultMaxTokensEstimate?: number;
       resolvePrice?: PricingOverlay;
       resolveEndpoint?: (provider: ProviderId) => EndpointKind;
+      /** Let a test make the durable write FAIL — ADR-0074 §2's "never releases capacity" path. */
+      emitOutcome?: (event: GovernorEventDraft) => Promise<void>;
     } = {},
   ): {
     governor: BudgetGovernor;
-    warnings: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>[];
+    emitted: GovernorEventDraft[];
+    /** The `budget:warning` subset — what every pre-ADR-0074 assertion in this file is about. */
+    warnings: Extract<GovernorEventDraft, { type: 'budget:warning' }>[];
     unpriced: string[];
   } {
-    const warnings: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>[] = [];
+    const emitted: GovernorEventDraft[] = [];
+    const warnings: Extract<GovernorEventDraft, { type: 'budget:warning' }>[] = [];
     const unpriced: string[] = [];
     const governor = new BudgetGovernor({
       budget: overrides.budget ?? budget,
@@ -43,11 +49,12 @@ describe('BudgetGovernor', () => {
         : { resolveEndpoint: overrides.resolveEndpoint }),
       onUnpriced: (model) => unpriced.push(model),
       emit: (event) => {
-        warnings.push(event);
-        return Promise.resolve();
+        emitted.push(event);
+        if (event.type === 'budget:warning') warnings.push(event);
+        return overrides.emitOutcome?.(event) ?? Promise.resolve();
       },
     });
-    return { governor, warnings, unpriced };
+    return { governor, emitted, warnings, unpriced };
   }
 
   it('allows a call whose estimate stays within the cap', async () => {
@@ -240,6 +247,183 @@ describe('BudgetGovernor', () => {
     const next = await governor.checkPreEgress('claude-haiku-4-5', 1000);
     expect(next).toBeDefined();
     next?.release();
+  });
+
+  describe('durable conservative commitments (ADR-0074 §1/§2)', () => {
+    it('emits budget:estimate_committed with the identity, the delta, and a cumulative that INCLUDES it', async () => {
+      const { governor, emitted } = makeGovernor();
+      const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      admission?.settleAtReservedEstimate({ nodeId: 'g', attemptNumber: 2 });
+      await governor.flushCommitments();
+
+      const commits = emitted.filter((e) => e.type === 'budget:estimate_committed');
+      expect(commits).toHaveLength(1);
+      const [commit] = commits;
+      expect(commit?.nodeId).toBe('g');
+      expect(commit?.attemptNumber).toBe(2);
+      expect(commit?.model).toBe('claude-haiku-4-5');
+      expect(commit?.estimateMicrocents).toBe(estimateMaxNextCost('claude-haiku-4-5', 1000));
+      // Read AFTER the increment. The reverse is the one bug the schema refinement exists to catch, and it would
+      // restore a total that forgets this commitment — silently reopening the cap.
+      expect(commit?.cumulativeConservativeMicrocents).toBe(commit?.estimateMicrocents);
+      expect(governor.conservativeCostMicrocents).toBe(commit?.estimateMicrocents);
+    });
+
+    it('OMITS nodeId/attemptNumber for a session turn, which has neither', async () => {
+      const { governor, emitted } = makeGovernor();
+      const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      admission?.settleAtReservedEstimate(); // no origin — the chat path
+      await governor.flushCommitments();
+
+      const [commit] = emitted.filter((e) => e.type === 'budget:estimate_committed');
+      // ABSENT, not undefined: an explicit `undefined` retains the key, and the store's
+      // `'nodeId' in event ? … : null` projection reads that differently.
+      expect(commit !== undefined && 'nodeId' in commit).toBe(false);
+      expect(commit !== undefined && 'attemptNumber' in commit).toBe(false);
+    });
+
+    it('carries a RUNNING cumulative whose deltas sum to the total (the restore rule)', async () => {
+      // ADR-0074 §2's restore rule is a SUM of `estimateMicrocents`, never last-wins over the snapshot. Pin both:
+      // each event's own delta, and that they add up to what the governor holds.
+      const { governor, emitted } = makeGovernor();
+      for (let i = 0; i < 3; i += 1) {
+        const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+        admission?.settleAtReservedEstimate({ nodeId: 'g' });
+      }
+      await governor.flushCommitments();
+
+      const commits = emitted.filter((e) => e.type === 'budget:estimate_committed');
+      expect(commits).toHaveLength(3);
+      const summed = commits.reduce((total, e) => total + e.estimateMicrocents, 0);
+      expect(summed).toBe(governor.conservativeCostMicrocents);
+      expect(commits.at(-1)?.cumulativeConservativeMicrocents).toBe(summed);
+    });
+
+    it('makes the NEXT pre-egress check wait for the prior commitment`s durable write', async () => {
+      // §2's barrier: the crash window between a possibly-billable call and its durable record. Without the
+      // await, the next attempt is admitted while the first commitment's write could still fail.
+      let resolveWrite: (() => void) | undefined;
+      const { governor } = makeGovernor({
+        emitOutcome: (event) =>
+          event.type === 'budget:estimate_committed'
+            ? new Promise<void>((resolve) => {
+                resolveWrite = resolve;
+              })
+            : Promise.resolve(),
+      });
+      const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      admission?.settleAtReservedEstimate({ nodeId: 'g' });
+
+      let admitted = false;
+      const next = governor.checkPreEgress('claude-haiku-4-5', 1000).then((a) => {
+        admitted = true;
+        return a;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(admitted).toBe(false); // still blocked on the durable write
+      resolveWrite?.();
+      await next;
+      expect(admitted).toBe(true);
+    });
+
+    it('a FAILED durable write never releases capacity, and fails the owner loudly', async () => {
+      // §2, both halves. The in-memory debit must survive (the provider may have billed) AND the owner must be
+      // told, because it is now spending against a cap whose state will not survive a crash.
+      const estimatedCallCost = estimateMaxNextCost('claude-haiku-4-5', 1000);
+      const { governor } = makeGovernor({
+        budget: { max_cost_microcents: estimatedCallCost * 10, on_exceed: 'fail' },
+        emitOutcome: (event) =>
+          event.type === 'budget:estimate_committed'
+            ? Promise.reject(new Error('disk full'))
+            : Promise.resolve(),
+      });
+      const admission = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      admission?.settleAtReservedEstimate({ nodeId: 'g' });
+
+      // Capacity NOT reopened — the conservative debit stands even though its write failed.
+      expect(governor.conservativeCostMicrocents).toBe(estimatedCallCost);
+      // And the failure surfaces at the barrier rather than vanishing as an unhandled rejection.
+      // A TYPED failure carrying the original as `cause`, not a re-thrown unknown — so the engine narrows on the
+      // class rather than on a message, and a log can still show what actually broke.
+      const thrown = await governor.flushCommitments().catch((err: unknown) => err);
+      expect(thrown).toBeInstanceOf(CommitmentDurabilityError);
+      expect((thrown as CommitmentDurabilityError).cause).toBeInstanceOf(Error);
+      expect(((thrown as CommitmentDurabilityError).cause as Error).message).toBe('disk full');
+      expect(governor.conservativeCostMicrocents).toBe(estimatedCallCost); // still not rolled back
+      // Surfaced once — a second flush is clean, so the owner is not told the same thing forever.
+      await expect(governor.flushCommitments()).resolves.toBeUndefined();
+    });
+
+    it('one failed write does not skip the writes that follow it', async () => {
+      const failures: string[] = [];
+      const { governor, emitted } = makeGovernor({
+        emitOutcome: (event) => {
+          if (event.type !== 'budget:estimate_committed') return Promise.resolve();
+          if (failures.length === 0) {
+            failures.push('first');
+            return Promise.reject(new Error('transient'));
+          }
+          return Promise.resolve();
+        },
+      });
+      const a = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      a?.settleAtReservedEstimate({ nodeId: 'g' });
+      // The barrier rejects for the first, but the chain must not be poisoned.
+      await expect(governor.flushCommitments()).rejects.toBeInstanceOf(CommitmentDurabilityError);
+      const b = await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      b?.settleAtReservedEstimate({ nodeId: 'h' });
+      await governor.flushCommitments();
+      expect(emitted.filter((e) => e.type === 'budget:estimate_committed')).toHaveLength(2);
+    });
+
+    it('restoreConservativeCost seeds a resume and never LOWERS a live total', () => {
+      // §2 requires both totals restored before resumed work is scheduled. Taking the max means a double-restore,
+      // or a restore racing a live commitment, cannot reopen capacity.
+      const { governor } = makeGovernor();
+      governor.restoreConservativeCost(900);
+      expect(governor.conservativeCostMicrocents).toBe(900);
+      governor.restoreConservativeCost(400); // a stale/duplicate restore
+      expect(governor.conservativeCostMicrocents).toBe(900);
+      governor.restoreConservativeCost(1500);
+      expect(governor.conservativeCostMicrocents).toBe(1500);
+    });
+
+    it('a restored conservative total consumes cap capacity on the FIRST post-resume check', async () => {
+      // The point of restoring it at all: without this the first check after a resume projects against a cap that
+      // has forgotten money the provider may already have billed.
+      const estimatedCallCost = estimateMaxNextCost('claude-haiku-4-5', 1000);
+      const { governor } = makeGovernor({
+        budget: {
+          max_cost_microcents: estimatedCallCost + Math.floor(estimatedCallCost / 2),
+          on_exceed: 'fail',
+        },
+      });
+      governor.restoreConservativeCost(estimatedCallCost);
+      await expect(governor.checkPreEgress('claude-haiku-4-5', 1000)).rejects.toBeInstanceOf(
+        BudgetExceededError,
+      );
+    });
+
+    it('releaseConservativeCommitments clears it — a user decision, never an engine heuristic', async () => {
+      // §1's bound against an indefinite block. The engine never calls this; a surface does, on the user's choice.
+      const estimatedCallCost = estimateMaxNextCost('claude-haiku-4-5', 1000);
+      const { governor } = makeGovernor({
+        budget: {
+          max_cost_microcents: estimatedCallCost + Math.floor(estimatedCallCost / 2),
+          on_exceed: 'fail',
+        },
+      });
+      governor.restoreConservativeCost(estimatedCallCost);
+      await expect(governor.checkPreEgress('claude-haiku-4-5', 1000)).rejects.toBeInstanceOf(
+        BudgetExceededError,
+      );
+
+      expect(governor.releaseConservativeCommitments()).toBe(estimatedCallCost);
+      expect(governor.conservativeCostMicrocents).toBe(0);
+      // Capacity is genuinely back, so the same call now passes.
+      await expect(governor.checkPreEgress('claude-haiku-4-5', 1000)).resolves.toBeDefined();
+    });
   });
 
   it('keeps an uncertain billed attempt as a separate conservative debit across lower durable totals', async () => {

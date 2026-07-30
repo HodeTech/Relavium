@@ -122,7 +122,7 @@ export interface BudgetAdmission {
    * did not supply trustworthy usage. This is intentionally distinct from {@link release}: an uncertain bill must
    * never reopen capacity under a strict cap.
    */
-  readonly settleAtReservedEstimate: () => void;
+  readonly settleAtReservedEstimate: (origin?: CommitmentOrigin) => void;
   /** Drop an admission that produced no attributable realized cost. Equivalent to `settle(0)`. */
   readonly release: () => void;
 }
@@ -140,6 +140,48 @@ type EstimateResult =
   | { readonly kind: 'unpriced' };
 
 /**
+ * A conservative commitment whose durable write failed (ADR-0074 §2).
+ *
+ * Typed rather than a re-thrown `unknown`, so the engine and a host can narrow on it instead of on a message, and
+ * so the original rejection survives as `cause` for a log. The reservation it describes is deliberately STILL
+ * consuming cap capacity when this throws — §2: "a persistence failure never releases capacity; it fails the
+ * active owner loudly while preserving the conservative reservation in memory for the terminal path."
+ */
+export class CommitmentDurabilityError extends Error {
+  override readonly name = 'CommitmentDurabilityError';
+  readonly code = 'commitment_not_durable' as const;
+
+  constructor(cause: unknown) {
+    super('a conservative budget commitment could not be made durable', { cause });
+  }
+}
+
+/**
+ * What the governor may emit, envelope-less — the host attaches the correlation key.
+ *
+ * `budget:warning` is a streamed advisory; `budget:estimate_committed` MUST be durable (ADR-0074 §2 — surviving a
+ * crash is the whole reason it exists), which is why the governor has its own emit hook rather than routing
+ * through the node executor's streamed `params.emit`.
+ */
+type WithoutRunId<T> = T extends unknown ? Omit<T, 'runId'> : never;
+export type GovernorEventDraft = WithoutRunId<
+  // DISTRIBUTIVE: a bare `Omit` over a union collapses it to the shared keys, silently losing `model` /
+  // `spentMicrocents` and turning both drafts into the same near-empty shape.
+  Extract<RunEventDraft, { type: 'budget:warning' | 'budget:estimate_committed' }>
+>;
+
+/**
+ * Who owned the attempt a commitment is made for. The governor prices calls but does not know the graph, so the
+ * caller supplies the identity that goes on the durable event; the model comes from the admission itself.
+ */
+export interface CommitmentOrigin {
+  /** The agent node that owned the attempt. Absent on a session turn, which has no node. */
+  readonly nodeId?: string;
+  /** 1-based within-chain attempt, matching `cost:updated` — see the event's schema doc. */
+  readonly attemptNumber?: number;
+}
+
+/**
  * The pre-egress budget governor (ADR-0028, 1.AC). It is stateful per run: it tracks the current
  * cumulative cost plus in-flight admissions, re-arms warn-mode notices after new realized spend, and throws a
  * typed error for `fail` / `pause_for_approval`. All cost figures are integer micro-cents.
@@ -147,9 +189,7 @@ type EstimateResult =
 export class BudgetGovernor {
   readonly #budget: Budget;
   readonly #defaultMaxTokensEstimate: number;
-  readonly #emit: (
-    event: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>,
-  ) => Promise<void>;
+  readonly #emit: (event: GovernorEventDraft) => Promise<void>;
   readonly #overlay: PricingOverlay | undefined;
   readonly #resolveEndpoint: ((provider: ProviderId) => EndpointKind) | undefined;
   /** The durable/realized total reported by the engine or session cost stream. */
@@ -160,6 +200,38 @@ export class BudgetGovernor {
    * silently reopen strict-cap capacity.
    */
   #conservativeCostMicrocents = 0;
+  /**
+   * The durability barrier for conservative commitments (ADR-0074 §2).
+   *
+   * The ledger mutation is SYNCHRONOUS — `settleAtReservedEstimate` is called from inside the fallback chain's
+   * `onAttempt` callback, which cannot await — but "the next provider attempt and the enclosing turn completion
+   * wait for the commitment's durability acknowledgement". So the emit is chained here and awaited at exactly
+   * those two points: {@link checkPreEgress} before it admits anything else, and {@link flushCommitments} at the
+   * turn/run boundary. Chaining (rather than keeping a set) also serializes the writes, so two commitments in the
+   * same tick cannot interleave their persists.
+   */
+  #commitmentsInFlight: Promise<void> = Promise.resolve();
+  /**
+   * How many commitment writes are outstanding — so the barrier costs NOTHING when there is nothing to wait for.
+   *
+   * `await`ing an already-resolved promise still burns a microtask, and `checkPreEgress` is the hot pre-egress
+   * path taken by every attempt. Worse than the cost: an unconditional await changes the observable interleaving
+   * of concurrent admissions, which the warning latch's own tests legitimately pin. So the barrier is entered only
+   * when a commitment is actually in flight or a prior write failed.
+   */
+  #pendingCommitments = 0;
+  /**
+   * A commitment whose durable write FAILED, retained until someone awaits the barrier.
+   *
+   * §2: "A persistence failure never releases capacity; it fails the active owner loudly while preserving the
+   * conservative reservation in memory for the terminal path." Both halves matter. The in-memory
+   * `#conservativeCostMicrocents` is already incremented and is deliberately NOT rolled back — the provider may
+   * have billed, so the cap must stay closed for the rest of this process. And the failure is not swallowed: it
+   * is re-thrown at the next barrier, so the owner learns that its money record is not durable rather than
+   * continuing to spend against a cap whose state will not survive a crash. Nobody awaits the emit at the call
+   * site, so without this the rejection would be unhandled.
+   */
+  #commitmentFailure: CommitmentDurabilityError | undefined;
   #reservedCostMicrocents = 0;
   #nextAdmissionId = 0;
   readonly #reservedAdmissions = new Map<number, number>();
@@ -174,9 +246,7 @@ export class BudgetGovernor {
   constructor(params: {
     readonly budget: Budget;
     readonly defaultMaxTokensEstimate?: number;
-    readonly emit: (
-      event: Omit<Extract<RunEventDraft, { type: 'budget:warning' }>, 'runId'>,
-    ) => Promise<void>;
+    readonly emit: (event: GovernorEventDraft) => Promise<void>;
     /** The user-pricing overlay (2.5.G S10) — makes the PRE-EGRESS estimate price a user-priced model that the
      *  static registry lacks, so `max_cost_microcents` enforces it (the cap-gap fix). Absent ⇒ static-only. */
     readonly resolvePrice?: PricingOverlay;
@@ -332,9 +402,18 @@ export class BudgetGovernor {
     mediaUnitsEstimate?: readonly MediaUnitsEstimate[],
     provider?: ProviderId,
   ): Promise<BudgetAdmission | undefined> {
+    // ADR-0074 §2's barrier: the NEXT provider attempt waits for any prior commitment's durability. Before this
+    // point a crash between a possibly-billable call and its durable record would reopen the cap; awaiting here is
+    // what closes that window, and it throws if the write failed rather than admitting more spend against a cap
+    // whose state will not survive. It runs BEFORE `#evaluate` so the projection also sees the settled ledger —
+    // and deliberately not between `#evaluate` and `#admit`, where an await would break admission control.
+    // Guarded so the common case (nothing outstanding) pays no microtask at all; see `#pendingCommitments`.
+    if (this.#pendingCommitments > 0 || this.#commitmentFailure !== undefined) {
+      await this.flushCommitments();
+    }
     const evaluation = this.#evaluate(model, maxTokens, mediaUnitsEstimate, provider);
     const { result } = evaluation;
-    if (result.kind === 'allow') return this.#admit(evaluation.estimateMicrocents);
+    if (result.kind === 'allow') return this.#admit(model, evaluation.estimateMicrocents);
     if (result.kind === 'unpriced') {
       // Once per model — a standing condition, not an event (a `loop` over an unpriced model must not repeat it
       // every iteration). The engine cannot print; the host is told and decides where the sentence goes.
@@ -351,7 +430,7 @@ export class BudgetGovernor {
       return undefined;
     }
     if (result.kind === 'warn') {
-      const admission = this.#admit(evaluation.estimateMicrocents);
+      const admission = this.#admit(model, evaluation.estimateMicrocents);
       try {
         await this.#emitWarning(result);
         return admission;
@@ -361,6 +440,89 @@ export class BudgetGovernor {
       }
     }
     throw result.error;
+  }
+
+  /**
+   * Chain one commitment's durable write onto the barrier. Never awaited HERE — the caller is a synchronous chain
+   * callback — so a rejection is captured rather than left unhandled, and re-thrown at the next barrier.
+   */
+  #persistCommitment(draft: GovernorEventDraft): void {
+    this.#pendingCommitments += 1;
+    this.#commitmentsInFlight = this.#commitmentsInFlight.then(
+      () =>
+        this.#emit(draft)
+          .catch((error: unknown) => {
+            // Keep the FIRST failure: it is the one that broke durability, and later writes may well fail for the
+            // same reason. The in-memory reservation stays — see `#commitmentFailure`.
+            this.#commitmentFailure ??= new CommitmentDurabilityError(error);
+          })
+          .finally(() => {
+            this.#pendingCommitments -= 1;
+          }),
+      // The prior link already routed its own failure into `#commitmentFailure`; this arm only exists so one
+      // rejection cannot poison the chain and skip every later write.
+      () => undefined,
+    );
+  }
+
+  /**
+   * Await every conservative commitment's durable write, then surface a failure.
+   *
+   * ADR-0074 §2's barrier. Called at the enclosing turn/run boundary and — critically — before the governor
+   * admits the NEXT provider attempt, which is what closes the crash window between a possibly-billable call and
+   * the point its money became durable. Throws the retained failure so the owner fails loudly; the conservative
+   * amount is deliberately still consuming capacity when it does.
+   */
+  async flushCommitments(): Promise<void> {
+    await this.#commitmentsInFlight;
+    const failure = this.#commitmentFailure;
+    if (failure !== undefined) {
+      this.#commitmentFailure = undefined; // surfaced once; the reservation itself is not rolled back
+      throw failure;
+    }
+    return;
+  }
+
+  /**
+   * The durable conservative total — what a persister writes and a resume restores. Deliberately separate from
+   * any realized figure: ADR-0074 §1 keeps actual and conservative money apart, and `cost:updated` /
+   * `total_cost_microcents` stay realized-only.
+   */
+  get conservativeCostMicrocents(): number {
+    return this.#conservativeCostMicrocents;
+  }
+
+  /**
+   * Seed the conservative total when rehydrating (checkpoint resume, `chat-resume`).
+   *
+   * ADR-0074 §2 requires both totals restored BEFORE resumed work is scheduled — otherwise the first post-resume
+   * pre-egress check projects against a cap that has forgotten money the provider may already have billed. Takes
+   * the MAXIMUM rather than assigning: seeding must never lower a total this process has already accumulated, so a
+   * double-restore or a restore racing a live commitment cannot reopen capacity.
+   */
+  restoreConservativeCost(microcents: number): void {
+    if (microcents > this.#conservativeCostMicrocents) {
+      this.#conservativeCostMicrocents = microcents;
+    }
+  }
+
+  /**
+   * Clear the conservative total by an explicit user decision (ADR-0074 §1).
+   *
+   * The bound that keeps a commitment from becoming an indefinite block: "the user must be able to clear it
+   * deliberately … exactly like raising the cap under `on_exceed`. What is forbidden is the system silently
+   * deciding the estimate was wrong." So this is only ever called from a surface acting on a user's choice, never
+   * from an engine heuristic. It re-arms the warning latch because capacity genuinely changed.
+   *
+   * The durable half — a `budget:estimate_released` event, so the release survives a resume instead of silently
+   * returning — is RESERVED but not yet emitted (see sse-event-schema.md §Reserved). Until a surface exists to
+   * make the decision, this clears the live governor only; wiring the event is that surface's commit.
+   */
+  releaseConservativeCommitments(): number {
+    const released = this.#conservativeCostMicrocents;
+    this.#conservativeCostMicrocents = 0;
+    this.#warningArmed = true;
+    return released;
   }
 
   /**
@@ -376,7 +538,7 @@ export class BudgetGovernor {
     provider?: ProviderId,
   ): BudgetAdmission | undefined {
     const estimate = this.#estimate(model, maxTokens, mediaUnitsEstimate, provider);
-    return estimate.kind === 'priced' ? this.#admit(estimate.estimateMicrocents) : undefined;
+    return estimate.kind === 'priced' ? this.#admit(model, estimate.estimateMicrocents) : undefined;
   }
 
   /** Calculate a price without applying cap policy; shared by prospective admission and committed-job restoration. */
@@ -411,7 +573,7 @@ export class BudgetGovernor {
   }
 
   /** Insert one reservation synchronously. Zero/unpriced/unbounded evaluations intentionally carry no lease. */
-  #admit(estimateMicrocents: number | undefined): BudgetAdmission | undefined {
+  #admit(model: string, estimateMicrocents: number | undefined): BudgetAdmission | undefined {
     if (estimateMicrocents === undefined || estimateMicrocents <= 0) return undefined;
     const id = this.#nextAdmissionId++;
     this.#reservedAdmissions.set(id, estimateMicrocents);
@@ -433,7 +595,7 @@ export class BudgetGovernor {
     };
     return {
       settle,
-      settleAtReservedEstimate: () => {
+      settleAtReservedEstimate: (origin) => {
         if (settled) return;
         settled = true;
         const reserved = this.#reservedAdmissions.get(id);
@@ -442,6 +604,16 @@ export class BudgetGovernor {
         this.#reservedCostMicrocents -= reserved;
         this.#conservativeCostMicrocents += reserved;
         this.#warningArmed = true;
+        // The snapshot is read AFTER the increment, so it always includes this commitment — the invariant the
+        // event's schema refinement pins, and the one bug the refinement exists to catch.
+        this.#persistCommitment({
+          type: 'budget:estimate_committed',
+          ...(origin?.nodeId === undefined ? {} : { nodeId: origin.nodeId }),
+          ...(origin?.attemptNumber === undefined ? {} : { attemptNumber: origin.attemptNumber }),
+          model,
+          estimateMicrocents: reserved,
+          cumulativeConservativeMicrocents: this.#conservativeCostMicrocents,
+        });
       },
       release: () => settle(0),
     };

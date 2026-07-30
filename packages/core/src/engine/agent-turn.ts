@@ -747,7 +747,11 @@ async function driveAgentTurn(
     // chain might have handed work to a provider. A release would reopen capacity on an unknown bill; retain the
     // bounded estimate instead. Proven pre-provider cancellation releases its just-returned admission before this
     // slot is ever armed (below).
-    active?.settleAtReservedEstimate();
+    // The chain may have handed work to a provider before the consumer/iterator failed, so this is the
+    // conservative retain. NO `attemptNumber`: reaching here means `onAttempt` never fired for this admission, so
+    // there is no `AttemptRecord` and `nonSkippedAttempts` has not counted it — passing that counter would
+    // attribute this commitment to the PREVIOUS attempt. Absent is the honest answer.
+    active?.settleAtReservedEstimate({ nodeId: params.nodeId });
   };
   const takeAttemptAdmission = (): BudgetAdmission | undefined => {
     if (!admissionPending) return undefined;
@@ -783,7 +787,10 @@ async function driveAgentTurn(
       // A clean EOF and a partial-stream failure can both omit terminal usage AFTER provider egress. Dropping the
       // reservation would silently reopen cap capacity for money that may already be owed, so fail closed at the
       // bounded estimate. A credential/materialization failure before the true attempt boundary never reaches here.
-      admission?.settleAtReservedEstimate();
+      admission?.settleAtReservedEstimate({
+        nodeId: params.nodeId,
+        attemptNumber: nonSkippedAttempts,
+      });
       return;
     }
     usage.input += record.usage.inputTokens;
@@ -796,7 +803,10 @@ async function driveAgentTurn(
     // that happens there is no trustworthy actual price, not proof of a free call — keep the reservation as the
     // conservative charge. For an unpriced model no admission exists, so its existing allow-degrade path remains.
     if (record.cost === undefined) {
-      admission?.settleAtReservedEstimate();
+      admission?.settleAtReservedEstimate({
+        nodeId: params.nodeId,
+        attemptNumber: nonSkippedAttempts,
+      });
     } else {
       admission?.settle(record.cost.costMicrocents);
     }
