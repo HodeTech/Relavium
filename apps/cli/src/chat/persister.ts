@@ -262,17 +262,23 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           }
           const nextInput = totalInputTokens + event.tokensUsed.input;
           const nextOutput = totalOutputTokens + event.tokensUsed.output;
-          totalInputTokens = nextInput;
-          totalOutputTokens = nextOutput;
           deps.store.writeTurn({
             messages: staged.map((message) => ({ message })),
             session: record('active', { title: nextTitle, input: nextInput, output: nextOutput }),
           });
-          // Committed: the write landed, so adopt the staged state.
+          // Committed. EVERY in-memory mutation for this turn happens here, AFTER the durable write returned —
+          // never before it. The token totals in particular: the columns are deliberately not accumulated for
+          // a turn whose messages did not persist (the same rule the comment above states for an errored or
+          // aborted turn), so advancing them ahead of the write made a failed turn's tokens leak into the next
+          // turn's row — the session then claimed two turns' tokens for one visible exchange.
           title = nextTitle;
           sequenceNumber += staged.length;
           realMessageSeqs.push(...staged.map((m) => m.sequenceNumber));
+          totalInputTokens = nextInput;
+          totalOutputTokens = nextOutput;
         } else {
+          // An errored or aborted turn persists no messages and accumulates no TOKENS, but the row is still
+          // flushed: `updatedAt` moves, and the session COST (already folded per `cost:updated`) is real.
           deps.store.updateSession(record('active'));
         }
         pendingUserText = undefined;
@@ -287,11 +293,11 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           const marker = stageMarker(event.summary, event.keptMessageCount);
           const nextInput = totalInputTokens + event.tokensUsed.input;
           const nextOutput = totalOutputTokens + event.tokensUsed.output;
-          if (marker !== undefined) sequenceNumber += 1; // the marker's seq is NOT a real-message seq
           deps.store.writeTurn({
             messages: marker === undefined ? [] : [{ message: marker }],
             session: record('active', { input: nextInput, output: nextOutput }),
           });
+          if (marker !== undefined) sequenceNumber += 1; // the marker's seq is NOT a real-message seq
           totalInputTokens = nextInput;
           totalOutputTokens = nextOutput;
         }

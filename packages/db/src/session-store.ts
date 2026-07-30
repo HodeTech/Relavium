@@ -420,7 +420,7 @@ export function createSessionStore(db: Db): SessionStore {
       withBusyRetry(() =>
         db.transaction(
           (tx) => {
-            for (const { message, meta } of [...messages].reverse()) {
+            for (const { message, meta } of messages) {
               tx.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run();
             }
             if (session !== undefined) {

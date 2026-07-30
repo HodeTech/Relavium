@@ -611,6 +611,12 @@ describe('SessionStore — loadFull snapshot isolation (2.5.I)', () => {
  * A held write lock plus `busy_timeout = 0` reproduces that deterministically, with no waiting and no threads.
  */
 describe('SessionStore — writeTurn is atomic (#228)', () => {
+  // One test spies `db.transaction` to pin the lock MODE; the suite restores no mocks globally, and the fresh
+  // per-test client makes leakage impossible only for spies on THAT object — restore explicitly.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('rolls the WHOLE turn back when a later message violates a constraint', () => {
     store.createSession(makeSession());
     // Two rows at the SAME sequence number: the second trips the (session_id, sequence_number) UNIQUE index
@@ -625,6 +631,17 @@ describe('SessionStore — writeTurn is atomic (#228)', () => {
     expect(store.loadMessages('sess-1')).toHaveLength(0);
     // …and the session flush in the same transaction is rolled back with it.
     expect(store.loadSession('sess-1')?.status).toBe('active');
+  });
+
+  it('opens an IMMEDIATE transaction — guards against a silent DEFERRED regression', () => {
+    // A mutation that dropped `{ behavior: 'immediate' }` left the whole suite GREEN, so atomicity was pinned
+    // but the LOCK MODE was not. `BEGIN IMMEDIATE` is what closes the read→write upgrade race (ADR-0064's
+    // 2.5.I convention); DEFERRED would still be atomic and still be wrong. Same spy technique `loadFull`
+    // already uses to guard its read transaction.
+    store.createSession(makeSession());
+    const txn = vi.spyOn(client.db, 'transaction');
+    store.writeTurn({ messages: [{ message: makeMessage(0) }], session: makeSession() });
+    expect(txn).toHaveBeenCalledWith(expect.any(Function), { behavior: 'immediate' });
   });
 
   it('commits messages and the session flush together on success', () => {
