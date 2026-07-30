@@ -22,6 +22,14 @@ import { createClient, runMigrations } from './client.js';
  * It needs the BUILT `@relavium/db` (the child cannot use vitest's source resolution) and is visibly SKIPPED —
  * never silently passed — when the dist is absent, mirroring `apps/cli/src/harness/concurrency.e2e.test.ts`.
  * A `pnpm turbo run build` produces it; CI builds upstream packages first.
+ *
+ * **What this proves, precisely.** With the lock it passes every run. WITHOUT the lock it fails roughly one
+ * run in three — measured, not assumed — because the collision depends on how closely the two `spawn`s land.
+ * That is the same flakiness that let #99 ship, so this is a coexistence SMOKE, not the clause-guard: the
+ * deterministic guards for every branch of the protocol (wait, stale takeover, garbage lock, reconcile,
+ * fail-loud) are the injected-clock unit tests in `migrate-lock.test.ts`. Exactly the division of labour
+ * `concurrency.e2e.test.ts` documents for `withBusyRetry`. A READY-handshake barrier would make the collision
+ * deterministic, as it does there; it is a worthwhile follow-up, not a blocker for the fix itself.
  */
 
 // The child receives the built db as a file:// URL (its `import()` needs a URL — a bare Windows path like

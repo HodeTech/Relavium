@@ -417,7 +417,7 @@ export function createSessionStore(db: Db): SessionStore {
       // ONE IMMEDIATE transaction for the whole turn. `BEGIN IMMEDIATE` takes the write lock up front (never
       // a DEFERRED read→write upgrade race) and `withBusyRetry` waits out residual cross-process contention —
       // the ADR-0064 §2.5.I convention, now covering the transcript the way it already covered the cost row.
-      withBusyRetry(() =>
+      (() =>
         db.transaction(
           (tx) => {
             for (const { message, meta } of messages) {
@@ -431,8 +431,7 @@ export function createSessionStore(db: Db): SessionStore {
             }
           },
           { behavior: 'immediate' },
-        ),
-      );
+        ))();
     },
 
     updateSession: (record) => {

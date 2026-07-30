@@ -262,6 +262,8 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           }
           const nextInput = totalInputTokens + event.tokensUsed.input;
           const nextOutput = totalOutputTokens + event.tokensUsed.output;
+          totalInputTokens = nextInput;
+          totalOutputTokens = nextOutput;
           deps.store.writeTurn({
             messages: staged.map((message) => ({ message })),
             session: record('active', { title: nextTitle, input: nextInput, output: nextOutput }),
@@ -270,8 +272,6 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           title = nextTitle;
           sequenceNumber += staged.length;
           realMessageSeqs.push(...staged.map((m) => m.sequenceNumber));
-          totalInputTokens = nextInput;
-          totalOutputTokens = nextOutput;
         } else {
           deps.store.updateSession(record('active'));
         }
@@ -287,11 +287,11 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           const marker = stageMarker(event.summary, event.keptMessageCount);
           const nextInput = totalInputTokens + event.tokensUsed.input;
           const nextOutput = totalOutputTokens + event.tokensUsed.output;
+          if (marker !== undefined) sequenceNumber += 1; // the marker's seq is NOT a real-message seq
           deps.store.writeTurn({
             messages: marker === undefined ? [] : [{ message: marker }],
             session: record('active', { input: nextInput, output: nextOutput }),
           });
-          if (marker !== undefined) sequenceNumber += 1; // the marker's seq is NOT a real-message seq
           totalInputTokens = nextInput;
           totalOutputTokens = nextOutput;
         }
