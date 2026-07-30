@@ -8,6 +8,8 @@
   FK target and the `BEGIN IMMEDIATE`/`SQLITE_BUSY` write convention this obeys · [ADR-0028](0028-workflow-resource-governance.md) —
   the budget governor that *reads* the session total this ADR gives a single writer.
 - **Related (secondary)**: [ADR-0005](0005-sqlite-drizzle-local-postgres-cloud.md) (one schema, two dialects) ·
+
+> **Amended 2026-07-30 by [ADR-0074](0074-durable-conservative-budget-commitments.md) — a refinement, not a reversal.** ADR-0074 keeps this ADR's realized-cost invariant intact — `SUM(session_costs) == agent_sessions.total_cost_microcents` stays realized-only — and adds a **separate** conservative aggregate beside it rather than mixing an estimate into the actual total. `recordSessionCost` remains the single writer of the realized total. ADR-0074 is **Proposed**, so this note records the amendment, not a settled change to the behaviour described below.
   [ADR-0024](0024-agent-first-entry-point-agentsession.md) (one model per `AgentSession` *instance*, not per billed
   egress) · [ADR-0065](0065-provider-economics-and-extensibility.md) · [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md) ·
   [ADR-0050](0050-cli-history-db-at-rest-posture.md) · [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md)
