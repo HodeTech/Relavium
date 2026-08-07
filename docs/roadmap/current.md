@@ -236,6 +236,26 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 
 **Every item names the check that would close it, not just the defect.**
 
+> **Status, 2026-08-07 — 18 of 24 closed.** Everything marked ✅ below is fixed, break-verified with the
+> mutation confirmed applied, and committed on `development`. What is left is exactly two categories, and
+> neither is a fix that was skipped:
+>
+> - **`#W15-1` and `#W15-2`** — §A, unchanged. Each needs an append-only ADR before any code (one changes what
+>   "spent" means across a crash; the other supersedes a decision ADR-0074 §5 already recorded), and each earns
+>   its own PR. That was the framing when this list was written and it still holds.
+> - **`#W15-16`, `#W15-18`, `#W15-19`, `#W15-20`** — four of §E's six coverage gaps. `#W15-17` and `#W15-21`
+>   are closed; these four each need engine- or e2e-level scaffolding that does not exist yet (a budgeted
+>   resume with a legacy media job and a concurrent sibling; a seeded `model_catalog` FK row; the H3 approved
+>   bypass). None is a shipped defect — every one has mutation-verified coverage one layer down — and shipping
+>   a hollow test in place of the real one is the mistake this register already caught three times.
+>
+> Two decisions inside those 18 are worth surfacing here rather than leaving in a commit message. `#W15-4`
+> **changed a previously-tested behaviour**: #228 pinned that a session survives a failed durable write and the
+> next turn is clean; it now stops instead, because continuing to spend above a transcript that has fallen
+> behind is the defect. And `#W15-23` is scoped to `run-history-store` only — the other `packages/db` stores
+> share the same outer-`db`-inside-a-transaction convention, which remains open and is stated here rather than
+> implied closed.
+
 #### A. Needs an ADR first — the only part that is NOT PR #81's to close
 
 - **`#W15-1` (blocker) — a workflow's REALIZED cost is not durable at the provider-attempt boundary.**
@@ -258,7 +278,7 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 
 #### B. PR #81 — ADR-0074 §1, the half that makes the rest safe
 
-- **`#W15-3` (blocker) — the release is exposed but unreachable, and nothing renders `durabilityBroken`.**
+- ✅ **`#W15-3`** (blocker) — the release is exposed but unreachable, and nothing renders `durabilityBroken`.
   `GovernorWiring.releaseConservativeCommitments` and `conservativeState()` exist and are tested; no command,
   REPL action or Home affordance calls either. §1 requires the surface that RENDERS the amount to also expose
   clearing it, and this PR removed the accidental escape a restart used to provide.
@@ -268,7 +288,7 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 
 #### C. PR #81 — data integrity, each with a concrete failure
 
-- **`#W15-4` (blocker) — session persistence failures are invisible to the producer.** `RunEventBus` isolates
+- ✅ **`#W15-4`** (blocker) — session persistence failures are invisible to the producer. `RunEventBus` isolates
   listener errors by design, so a persister that cannot write still lets the turn complete. Two consequences:
   `persister.ts` advances the in-memory cost total BEFORE the DB write, so a failed `recordSessionCost` leaves
   the durable total low and a resume restores a cap that has forgotten real spend; and a failed `commitTurn`
@@ -277,25 +297,25 @@ Ordered by whether the repo currently states something untrue, then by blast rad
   *Closes when: cost and transcript persistence move to an awaited durability port (UI subscribers may stay
   passive), and a persistent write failure puts the session in a durability-degraded state that refuses new
   egress rather than reporting success.*
-- **`#W15-5` (high) — stored payloads are not checked against the authoritative columns.** `readEventLog`
+- ✅ **`#W15-5`** (high) — stored payloads are not checked against the authoritative columns. `readEventLog`
   selects `seq`/`event_type` alongside the payload but never compares them to the parsed event's own `runId`,
   `sequenceNumber` and `type`. A row with `seq = 2` carrying `sequenceNumber: 1` is accepted, leaving the
   high-water mark wrong and the resume colliding on the next write.
   *Closes when: every denormalized projection is compared after parse and any mismatch is a
   `CorruptRunEventError`.*
-- **`#W15-6` (high) — terminal cost snapshots on failed/cancelled runs are dropped by the read models.**
+- ✅ **`#W15-6`** (high) — terminal cost snapshots on failed/cancelled runs are dropped by the read models.
   `node:failed`, `run:failed` and `run:cancelled` all carry cost in the shared schema, but the store folds
   none of them, the checkpoint folds none, and the run TUI's summary ignores the terminal figure. A sibling's
   paid media cleanup after a root failure exists ONLY on `run:failed.cumulativeCostMicrocents`, so replay and
   history lose it. Pre-dates this PR, but the PR touches all three files and claims cost safety.
-- **`#W15-7` (medium) — `media_job:submitted` accepts a half-frozen basis.** `units` and
+- ✅ **`#W15-7`** (medium) — `media_job:submitted` accepts a half-frozen basis. `units` and
   `acceptedCostMicrocents` are independently optional, so a row with a frozen cost and no frozen units resumes
   with the old reservation and a re-derived volume. The invariant is not "both or neither" (the approved-bypass
   case legitimately has units only) but **`acceptedCostMicrocents` present ⇒ `units` required**.
 
 #### D. PR #81 — security and correctness
 
-- **`#W15-8` (high) — the new failure-reporting paths can leak credentials.** `background-failure.ts` prints an
+- ✅ **`#W15-8`** (high) — the new failure-reporting paths can leak credentials. `background-failure.ts` prints an
   arbitrary rejection message and, under `RELAVIUM_DEBUG`, a raw stack; `sanitize.ts` strips ANSI/control/bidi
   but performs no secret redaction. Same class in the session listener notice, `render-error.ts`'s verbose
   stack and `index.ts`'s fatal debug stack. The rejection can be an MCP error, a provider response body or a
@@ -303,28 +323,28 @@ Ordered by whether the repo currently states something untrue, then by blast rad
   a secret.
   *Closes when: the shared secret-shape redactor runs BEFORE terminal sanitization on every one of those paths
   (stacks included), with tests planting `sk-*`, `Bearer`, `Basic`, credentialed URLs, query tokens and PEM.*
-- **`#W15-9` (high) — the stream path can throw out of a contract that says it never throws.**
+- ✅ **`#W15-9`** (high) — the stream path can throw out of a contract that says it never throws.
   `#runStreamAttempt` calls `#emitSuccess` OUTSIDE its try/catch (the `generate()` path has it inside), so a
   provider returning non-integer usage makes `assertAccountableUsage` throw raw out of the async generator —
   and `streamOneTurn`'s `for await` has no try/catch, so it crashes the turn unclassified, AFTER the content was
   produced and paid for.
-- **`#W15-10` (high) — `--json` output is not sanitized.** `status --json` / `gate list --json` carry
+- ✅ **`#W15-10`** (high) — `--json` output is not sanitized. `status --json` / `gate list --json` carry
   model-controlled text; `JSON.stringify` does not escape Unicode bidi overrides (CVE-2021-42574). The human
   render path is sanitized; the JSON branch is not. `createJsonRenderer` is the same gap on the NDJSON path.
-- **`#W15-11` (high) — `createPlainRenderer` sanitizes AFTER splitting on newlines**, so an embedded newline
+- ✅ **`#W15-11`** (high) — `createPlainRenderer` sanitizes AFTER splitting on newlines, so an embedded newline
   still forges a line. Every other boundary this PR touched sanitizes first; `renderer.ts` is the exception.
-- **`#W15-12` (high) — `isBlankPreview` treats a fully-redacted preview as informative** (`chat-mode.ts`), so a
+- ✅ **`#W15-12`** (high) — `isBlankPreview` treats a fully-redacted preview as informative (`chat-mode.ts`), so a
   user pressing "always" on `Approve write to [redacted]?` auto-approves every `write_file`/`run_command`/
   `http_request` for the session, having been shown nothing.
-- **`#W15-13` (medium) — the config reader chmods PROJECT configs to 0600.** `reassertOwnerOnly` runs on every
+- ✅ **`#W15-13`** (medium) — the config reader chmods PROJECT configs to 0600. `reassertOwnerOnly` runs on every
   layer, but `config-spec.md` says project files are committed and shared. Reading a config mutates repo file
   permissions, and `statSync`/`chmodSync` follow symlinks. Self-heal belongs to the canonical global config
   only.
-- **`#W15-14` (medium) — a provider `Retry-After` sleep is not abort-aware.** `fallback-chain.ts` passes the
+- ✅ **`#W15-14`** (medium) — a provider `Retry-After` sleep is not abort-aware. `fallback-chain.ts` passes the
   delay straight to an injected `sleep` with no signal, and the real hosts use a plain `setTimeout`. A cancel
   during a 60 s clamped wait hangs until the timer fires. The existing abort test resolves `sleep` immediately,
   so the window is untested. The docblock also says an oversized value becomes `undefined`; the code clamps.
-- **`#W15-15` (medium) — corruption is reported to a multi-run view as "no data".** `readPerRunOrDegrade`
+- ✅ **`#W15-15`** (medium) — corruption is reported to a multi-run view as "no data". `readPerRunOrDegrade`
   returns only the fallback, so `gate list` can print "No pending human gates." for a run whose gates were lost
   to corruption. It must return the degradation alongside the value, with a warning in human output and a
   machine-readable marker under `--json`.
@@ -336,24 +356,24 @@ mutation-verified coverage one layer down.
 
 - **`#W15-16`** — the engine-level composition test for §3's abort-breakable media-job hold; deleting the abort
   listener leaves the whole suite green.
-- **`#W15-17`** — the CLI-layer test that `restoreConservativeCost` is wired through `buildSessionRuntime`.
+- ✅ **`#W15-17`** — the CLI-layer test that `restoreConservativeCost` is wired through `buildSessionRuntime`.
 - **`#W15-18`** — the `coalesce` backfill of `session_costs.model_catalog_id` (needs a `model_catalog` FK row
   the block does not seed).
 - **`#W15-19`** — that a chat turn's terminal is emitted only AFTER `flushBudgetCommitments` resolves.
 - **`#W15-20`** — the H3 approved-bypass `acceptedCostMicrocents` omission; reverting it leaves the suite green.
-- **`#W15-21`** — `agent-run.ts`'s `attachConservativeWriter`; deleting it silently breaks every capped
+- ✅ **`#W15-21`** — `agent-run.ts`'s `attachConservativeWriter`; deleting it silently breaks every capped
   `agent run`.
 
 #### F. PR #81 — standards and documentation drift
 
-- **`#W15-22` (low) — the PR's "no unsafe `as`" conformance claim is false.** Two assertions in new production
+- ✅ **`#W15-22`** (low) — the PR's "no unsafe `as`" conformance claim is false. Two assertions in new production
   code: `shared.ts`'s `readRetryAfter` casts an arbitrary `headers.get`, and `openai.ts`'s `mapOpenAiApiError`
   casts a `headers` field back onto a parameter type that lacks it. A structural `headers?:` plus runtime
   narrowing removes both.
-- **`#W15-23` (medium) — `persistEvent`'s `applyDerived` uses the outer `db`, not the transaction handle.**
+- ✅ **`#W15-23`** (medium) — `persistEvent`'s `applyDerived` uses the outer `db`, not the transaction handle.
   Harmless under `better-sqlite3`, but it breaks ADR-0005's Postgres-portability promise on the highest-volume
   money write.
-- **`#W15-24` (low) — canonical docs describe code that was not shipped.** `tool-registry.md` says path
+- ✅ **`#W15-24`** (low) — canonical docs describe code that was not shipped. `tool-registry.md` says path
   redaction is per-segment (it is whole-string, and the same file says so correctly three paragraphs later);
   `llm-provider-seam.md` still claims model-discovery/media-poll keep a small SDK retry; ADR-0028's amendment
   note still says ADR-0074 §2–§5 have not landed. Each could send a future reader back toward a #91-class hole.
