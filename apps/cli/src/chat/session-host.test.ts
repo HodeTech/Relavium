@@ -762,12 +762,35 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(errorCodes).toContain('budget_exceeded'); // tripped on the carried cost, no provider call
   });
 
-  // NOT COVERED at this layer: that `restoreConservativeCost` is actually wired through `buildSessionRuntime` →
-  // `GovernorWiring` → `AgentSession.resume`. I cloned the realized test above for the conservative total and
-  // mutation-tested it — deleting the wiring spread left it GREEN, so it was passing for a reason unrelated to
-  // what it claimed, exactly like the two tests I removed earlier in this ADR. Removed rather than kept as false
-  // assurance. The core-package unit tests DO pin `AgentSession.resume` calling the hook (mutation-verified);
-  // what is unproven is only the CLI-layer spread that supplies it.
+  it('seeds the governor with the carried CONSERVATIVE total too (#W15-17, ADR-0074 §4)', async () => {
+    // The CLI-layer spread that was previously untestable. A first attempt cloned the realized test above and
+    // was VACUOUS: it left `totalCostMicrocents` high, so the cap tripped on the realized seeding either way
+    // and deleting the conservative spread stayed green.
+    //
+    // A second attempt was vacuous for a DIFFERENT reason: with a 1µ¢ cap the next-worst-case ESTIMATE alone
+    // exceeds it, so the turn trips whatever the seeding did.
+    //
+    // The isolating shape is a cap large enough that the estimate alone leaves headroom, ZERO realized cost,
+    // and a conservative total that consumes all but 1µ¢ of it. Then the only thing that can trip pre-egress
+    // is `restoreConservativeCost` having arrived — money the provider may ALREADY have billed for an attempt
+    // that returned no trustworthy usage. Without it the resumed session starts at 0, keeps the whole cap as
+    // headroom, and the turn goes through: the bypass ADR-0074 §4 exists to close.
+    const built = await buildResumedChatSession({
+      chat: { ...EMPTY_CHAT, maxCostMicrocents: 1_000_000_000, onExceed: 'fail' },
+      record: record({ totalCostMicrocents: 0, totalConservativeMicrocents: 999_999_999 }),
+      messages: [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+      now: () => Date.parse(ISO),
+      providers: scriptedResolver([textTurn('should never stream')]),
+    });
+    await built.session.sendMessage('again');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const errorCodes = events.flatMap((e) =>
+      e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
+    );
+    expect(errorCodes).toContain('budget_exceeded'); // tripped on the CONSERVATIVE total alone
+  });
 
   it('rejects a record with no stored agent snapshot as a clean exit-2 invocation fault', async () => {
     // The build is async now (2.R MCP connect), so the no-snapshot guard surfaces as a REJECTED promise.
