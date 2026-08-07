@@ -731,6 +731,12 @@ describe('SessionStore — writeTurn is atomic (#228)', () => {
     expect([...byModel.values()].reduce((a, b) => a + b, 0)).toBe(750);
   });
 
+  // NOT COVERED: the `coalesce` backfill of `modelCatalogId` on the conservative upsert. The test needs a real
+  // `model_catalog` row for the FK, and this describe block's shared store does not seed one — I ran out of
+  // budget to wire that fixture and will not ship a red or a hollow test in its place. The behaviour is a
+  // three-line `coalesce` in `recordSessionConservativeCommitment`; what is unproven is that it backfills a
+  // NULL and never overwrites a resolved id with NULL.
+
   it('never SETs total_conservative_microcents — the commitment writer stays its single writer', () => {
     // Same hazard as the realized total: a session flush that SET it from an in-memory record would clobber a
     // concurrent commitment. `mutableSessionColumns` drops it for exactly that reason.

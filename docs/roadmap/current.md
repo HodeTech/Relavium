@@ -187,7 +187,7 @@ are named in their lane and marked in the source, and neither is a shipped defec
 > 2.6.Q's cost-cap item is **split**: its task text spans both `budget-governor.ts` and `fallback-chain.ts`'s
 > `#emitSuccess` — the same catch 2.5.5.B narrows. The two halves join two different PRs, not one.
 > **Closes M2.5.5-1.**
-
+>
 > **Outstanding inside lane (e) — restated at close, because §4 changed the facts.** ADR-0074 §1 ties a
 > commitment's release to the surface that renders it.
 >

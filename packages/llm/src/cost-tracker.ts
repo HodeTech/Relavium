@@ -142,6 +142,23 @@ function assertAccountableUsage(modelId: string, usage: Usage): void {
       );
     }
   }
+
+  // The media units are money inputs exactly like the token counts — `mediaCost` multiplies by them. A NaN or a
+  // negative here poisons `#cumulativeMicrocents` the same way, and NaN is ABSORBING: once folded in, every
+  // `cumulative > cap` comparison is false and the cap stops being a cap.
+  //
+  // The bound matches `MediaUnitsEntrySchema`'s own `nonNegativeInt` rather than merely checking finiteness: a
+  // review suggested allowing fractional units on the grounds that audio/video bill by duration, but the SEAM
+  // type already forbids it, and a guard looser than the contract it defends is a guard that lets the
+  // contract drift. This is defense-in-depth for a `Usage` that reached us without being parsed.
+  for (const entry of usage.mediaUnits ?? []) {
+    if (!Number.isSafeInteger(entry.units) || entry.units < 0) {
+      throw new TypeError(
+        `cost accounting for '${modelId}' received a non-accountable mediaUnits.${entry.modality}: ` +
+          `expected a non-negative safe integer, got ${String(entry.units)}`,
+      );
+    }
+  }
 }
 
 export function cost(modelId: string, usage: Usage, overlay?: PricingOverlay): number {

@@ -638,8 +638,9 @@ export interface AnthropicAdapterDeps {
    * reason to move to the next provider (#276). Tests that want the SDK's behaviour can still set it.
    *
    * This governs the **chain-governed** calls (`generate` / `stream`) only. The surfaces `FallbackChain` does
-   * NOT sit above — live model discovery and the async media-job poll — keep a small SDK retry, because for
-   * them there is no runner to own the policy — and they run without SDK retry too; see the note below.
+   * NOT sit above — live model discovery and the async media-job poll — run with `maxRetries: 0` as well. A
+   * small SDK retry there was tried and REVERTED: the SDK's sleep honours `retry-after` with no ceiling and no
+   * abort awareness, so a hostile `retry-after-ms` parks the call for days. See the note below.
    */
   readonly maxRetries?: number;
 }
@@ -872,7 +873,10 @@ export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProv
       // ALWAYS passed, never conditionally: an absent option means the SDK's own default (2), which is
       // exactly the pre-emption #276 is about. Explicit beats implicit. Floored, because a negative value
       // makes the SDK's retry loop unbounded (`retriesRemaining - 1` stays truthy at -1).
-      maxRetries: Math.max(0, Math.trunc(maxRetries)),
+      // `Math.trunc(NaN)` is NaN and `Math.max(0, NaN)` is NaN, so a non-finite budget would reach the SDK as
+      // one. Normalise to 0 first: a caller who cannot name a retry count gets none, which is this seam's
+      // documented default (the runner owns retry policy — ADR-0011).
+      maxRetries: Number.isFinite(maxRetries) ? Math.max(0, Math.trunc(maxRetries)) : 0,
     });
 
   return {

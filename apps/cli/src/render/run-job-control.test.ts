@@ -11,6 +11,7 @@ import type { JobControlLifecycle } from './suspend.js';
  */
 function harness(supported = true) {
   let onSuspend: (() => void) | undefined;
+  let attaches = 0;
   let onContinue: (() => void) | undefined;
   const removeSuspend = vi.fn();
   const removeContinue = vi.fn();
@@ -20,6 +21,7 @@ function harness(supported = true) {
     supported,
     onSuspend: (listener) => {
       onSuspend = listener;
+      attaches += 1;
       return removeSuspend;
     },
     onContinue: (listener) => {
@@ -35,6 +37,7 @@ function harness(supported = true) {
     removeContinue,
     suspendSelf,
     write: (text: string) => written.push(text),
+    attaches: () => attaches,
     fireSuspend: () => onSuspend?.(),
     fireContinue: () => onContinue?.(),
     out: () => written.join(''),
@@ -68,6 +71,31 @@ describe('wireRunJobControl (G0, the run/gate path)', () => {
     }
   });
 
+  it('DETACHES before re-raising, or the self-sent SIGTSTP re-enters this handler forever', () => {
+    // `suspendSelf` sends SIGTSTP to our own pid, and a signal with a handler installed runs the handler
+    // instead of taking the default stop action. Raising while still attached therefore re-enters this
+    // function rather than stopping the process — an infinite loop, not a suspend.
+    const h = harness();
+    const order: string[] = [];
+    const lifecycle = {
+      ...h.lifecycle,
+      suspendSelf: () => order.push('raise'),
+    };
+    const removeSuspendSpy = h.removeSuspend.mockImplementation(() => order.push('detach'));
+    const jc = wireRunJobControl({ write: h.write, lifecycle });
+    try {
+      h.fireSuspend();
+      expect(order).toEqual(['detach', 'raise']); // detach FIRST
+      expect(removeSuspendSpy).toHaveBeenCalled();
+      // SIGCONT puts it back, or a second Ctrl-Z would stop with no cursor restore.
+      const before = h.attaches();
+      h.fireContinue();
+      expect(h.attaches()).toBe(before + 1);
+    } finally {
+      jc.dispose();
+    }
+  });
+
   it('dispose removes BOTH listeners — the leak shape suspend.ts already had', () => {
     const h = harness();
     const jc = wireRunJobControl({ write: h.write, lifecycle: h.lifecycle });
@@ -77,6 +105,7 @@ describe('wireRunJobControl (G0, the run/gate path)', () => {
     // Idempotent: the caller's `finally` also runs on the throw path.
     jc.dispose();
     expect(h.removeSuspend).toHaveBeenCalledTimes(1);
+    expect(h.removeContinue).toHaveBeenCalledTimes(1); // BOTH stay at one, not just the one we checked
   });
 
   it('is a no-op where job control does not exist, rather than half-wired', () => {

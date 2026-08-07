@@ -910,7 +910,7 @@ describe('createRunHistoryReader', () => {
       expect(log.events.map((e) => e.type)).toEqual(['run:started']);
       expect(log.skipped).toEqual([{ sequenceNumber: 1, type: 'test:never_a_real_event' }]);
       // A clean log reports nothing, so a caller can branch on emptiness rather than on a count.
-      expect(reader.loadRunEventLog('run-s').skipped).toHaveLength(1);
+      expect(reader.loadRunEventLog('run-a').skipped).toEqual([]);
     });
 
     it('does not LOSE the sequence high-water mark when the skipped row is the TAIL', async () => {

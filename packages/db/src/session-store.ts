@@ -578,6 +578,14 @@ export function createSessionStore(db: Db): SessionStore {
                 target: [sessionCosts.sessionId, sessionCosts.model, sessionCosts.isLegacy],
                 set: {
                   conservativeMicrocents: sql`${sessionCosts.conservativeMicrocents} + ${entry.estimateMicrocents}`,
+                  // Fill the catalog id in when THIS write resolved one and the row has none — a model can be
+                  // catalogued mid-session (2.6.Q). Never overwrite an existing value with NULL: an unresolved
+                  // lookup is "we don't know", not "there is none".
+                  ...(entry.modelCatalogId === undefined
+                    ? {}
+                    : {
+                        modelCatalogId: sql`coalesce(${sessionCosts.modelCatalogId}, ${entry.modelCatalogId})`,
+                      }),
                   updatedAt: entry.ts,
                 },
               })

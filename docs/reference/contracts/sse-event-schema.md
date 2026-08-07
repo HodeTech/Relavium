@@ -212,6 +212,7 @@ export interface BudgetPausedEvent extends BaseEvent {
 export interface BudgetEstimateCommittedEvent extends BaseEvent {
   type: 'budget:estimate_committed';
   nodeId?: string;          // the agent node that owned the attempt; on a session turn, the agent ref (as on cost:updated)
+  attemptNumber?: number;   // 1-based WITHIN-CHAIN attempt, same semantics as cost:updated
   model: string;            // canonical model id — the per-model conservative attribution key
   estimateMicrocents: number;                 // THIS commitment's bounded amount
   cumulativeConservativeMicrocents: number;   // the owner-local running total after it (a snapshot, not a delta)

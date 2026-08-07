@@ -18,6 +18,37 @@ const PRICED_MEDIA: ModelPricing = {
   mediaOutputRates: { image: 1_000, audio: 200, video: 5_000 }, // µ¢ per image / audio-sec / video-sec
 };
 
+describe('assertAccountableUsage — media units are money inputs too (#198)', () => {
+  it('REFUSES a non-finite or negative media unit before it can reach the cumulative', () => {
+    // `mediaCost` multiplies by these, and NaN is ABSORBING: once folded into the cumulative, every
+    // `cumulative > cap` comparison is false and the cap stops being a cap.
+    for (const units of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      const tracker = new CostTracker();
+      expect(() =>
+        tracker.record('claude-haiku-4-5', {
+          inputTokens: 1,
+          outputTokens: 1,
+          mediaUnits: [{ modality: 'image', direction: 'output', unit: 'count', units }],
+        }),
+      ).toThrow(TypeError);
+      expect(tracker.cumulativeCostMicrocents).toBe(0); // nothing was folded in
+    }
+  });
+
+  it('REFUSES a fractional unit too — the seam type declares them integers', () => {
+    // The guard matches `MediaUnitsEntrySchema`'s `nonNegativeInt`. A looser guard than the contract it defends
+    // is one that lets the contract drift.
+    const tracker = new CostTracker();
+    expect(() =>
+      tracker.record('claude-haiku-4-5', {
+        inputTokens: 1,
+        outputTokens: 1,
+        mediaUnits: [{ modality: 'video', direction: 'output', unit: 'second', units: 12.5 }],
+      }),
+    ).toThrow(TypeError);
+  });
+});
+
 describe('priceModel', () => {
   it('returns pricing for a known canonical model id', () => {
     const p = priceModel('claude-opus-4-8');

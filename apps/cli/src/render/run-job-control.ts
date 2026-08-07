@@ -39,15 +39,30 @@ export function wireRunJobControl(opts: WireRunJobControlOptions): RunJobControl
   }
 
   let disposed = false;
-  const removeSuspend = lifecycle.onSuspend(() => {
+  let removeSuspend: () => void = () => undefined;
+  const onSuspend = (): void => {
     // Restore the cursor BEFORE the process stops. Once stopped we run no code, so there is no later chance —
     // and the shell the user lands in inherits whatever state we left.
     opts.write(SHOW_CURSOR);
-    // Re-raise so the process actually stops. Without this the handler swallows Ctrl-Z and the run keeps
-    // going, which is worse than the bug being fixed: the user pressed a key that did nothing.
-    lifecycle.suspendSelf();
-  });
+    // DETACH before re-raising. `suspendSelf` sends SIGTSTP to our own pid, and a signal with a handler
+    // installed runs the handler instead of taking the default stop action — so raising while still attached
+    // re-enters this function forever and the process never actually stops. Removing the listener lets the
+    // default action run; SIGCONT reattaches it below.
+    removeSuspend();
+    try {
+      // Re-raise so the process actually stops. Without this the handler swallows Ctrl-Z and the run keeps
+      // going, which is worse than the bug being fixed: the user pressed a key that did nothing.
+      lifecycle.suspendSelf();
+    } catch {
+      // The raise failed, so we are still running and still need Ctrl-Z to work — put the handler back.
+      if (!disposed) removeSuspend = lifecycle.onSuspend(onSuspend);
+    }
+  };
+  removeSuspend = lifecycle.onSuspend(onSuspend);
   const removeContinue = lifecycle.onContinue(() => {
+    // Reattach FIRST: the suspend handler detached itself before raising, so without this a second Ctrl-Z
+    // would take the default action with no cursor restore — exactly the bug this file exists to fix.
+    if (!disposed) removeSuspend = lifecycle.onSuspend(onSuspend);
     // Foregrounded: ink is drawing again, so hide the cursor as it expects. If the run already finished while
     // we were stopped, the extra hide is harmless — the renderer's own teardown shows it again.
     opts.write(HIDE_CURSOR);
