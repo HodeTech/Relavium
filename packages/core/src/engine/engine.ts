@@ -1511,8 +1511,11 @@ class RunExecution {
     this.#pauseEpisode = false;
     // ADR-0074 §3: the job is over, so its unknown-basis hold ends with it — done, failed, deadline or cancel
     // alike, because every one of those settles the realized charge (`#emitMediaJobCost` fires on all of them).
-    // Placed HERE, at the single choke point every exit route already goes through, so a future exit path cannot
-    // forget it and strand the cap in a permanent refusal.
+    //
+    // This is the choke point for every PER-JOB exit, so a future one cannot forget it and strand the cap in a
+    // permanent refusal. It is deliberately not the only place `#pendingMediaJobs` shrinks: the two bulk
+    // `.clear()`s are run TEARDOWN, and there the governor is discarded with the run, so a leftover registration
+    // cannot outlive anything. Stated explicitly because "every path goes through here" would be false.
     this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
   }
 
