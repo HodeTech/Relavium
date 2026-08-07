@@ -9,7 +9,7 @@ import type {
 import type { ContentPart } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
-import type { CommitmentOrigin } from './budget-governor.js';
+import { LegacyMediaJobBasisError, type CommitmentOrigin } from './budget-governor.js';
 import {
   ToolCancelledError,
   ToolExecutionError,
@@ -1291,6 +1291,27 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     // Here `onAttempt` DID fire, so the commitment carries the within-chain attempt — the same counter the
     // `cost:updated` emitted from this very callback carries, which is what makes the two attributable together.
     expect(origins[0]).toEqual({ nodeId: params.nodeId, attemptNumber: 1 });
+  });
+
+  it('maps a §3 legacy-media-job HOLD to a RETRYABLE budget_exceeded, not an internal fault', async () => {
+    // ADR-0074 §3's hold refuses new egress while a resumed media job's cost basis is unknown. Without this
+    // mapping it fell through to the generic chain-error path and became an `internal`-class failure — FAILING
+    // the node for a condition that resolves by itself the moment the job settles, which is worse than the
+    // under-reservation the hold prevents. Retryable, so an authored `retry` budget simply carries the node past
+    // it; and the message must name the node to wait for.
+    const provider = scriptedProvider('anthropic', [[STOP()]]);
+    const thrown = await runAgentTurn(
+      baseParams(provider, {
+        preEgress: () => {
+          throw new LegacyMediaJobBasisError(['gen-1']);
+        },
+      }),
+    ).catch((e: unknown) => e);
+
+    expect(thrown).toBeInstanceOf(AgentTurnError);
+    expect((thrown as AgentTurnError).code).toBe('budget_exceeded');
+    expect((thrown as AgentTurnError).retryable).toBe(true);
+    expect((thrown as AgentTurnError).message).toContain('gen-1');
   });
 
   it('maps a pre-egress BudgetExceededError to AgentTurnError(budget_exceeded) — no provider egress', async () => {

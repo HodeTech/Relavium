@@ -59,6 +59,7 @@ import { unwrapUntrusted } from '../tools/untrusted.js';
 import {
   BudgetExceededError,
   BudgetPauseError,
+  LegacyMediaJobBasisError,
   CommitmentDurabilityError,
   type BudgetAdmission,
 } from './budget-governor.js';
@@ -448,6 +449,20 @@ function throwMappedChainError(error: LlmError): never {
   // report a money-durability failure as an ordinary provider fault. Rethrown intact, like `BudgetPauseError`.
   if (error.cause instanceof CommitmentDurabilityError) {
     throw error.cause;
+  }
+  // ADR-0074 §3. `checkPreEgress` refuses new egress while a RESUMED media job's cost basis is unknown (a row
+  // written before §3 froze it). Falling through to the generic mapping below would report this as an ordinary
+  // provider fault — an `internal`-class failure — and FAIL the node for a condition that resolves on its own the
+  // moment the job settles. That is worse than the under-reservation the hold prevents.
+  //
+  // `budget_exceeded` because the cap genuinely is why egress was refused, and `retryable: true` because the
+  // condition is temporary: an authored `retry` budget carries the node past it after a backoff, by which time
+  // the job has almost certainly reported its real charge. A node without a retry budget still fails, but with a
+  // message that names the node to wait for instead of an opaque internal error. Deliberately NOT a new
+  // `ErrorCode`: the enum is validated on read, so a new value would make this event unreadable to an older
+  // binary — the one thing ADR-0074 §5 is about.
+  if (error.cause instanceof LegacyMediaJobBasisError) {
+    throw new AgentTurnError('budget_exceeded', error.cause.message, true);
   }
   throw new AgentTurnError(codeForLlmError(error), error.message, error.retryable);
 }
