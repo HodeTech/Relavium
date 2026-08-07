@@ -355,7 +355,12 @@ function buildSessionRuntime(
     ...(opts.chat.maxMessages === undefined ? {} : { maxMessages: opts.chat.maxMessages }),
     ...(governor === undefined
       ? {}
-      : { preEgress: governor.preEgress, updateCost: governor.updateCost }),
+      : {
+          preEgress: governor.preEgress,
+          updateCost: governor.updateCost,
+          // ADR-0074 §4: resume restores BOTH totals into the same governor a fresh session uses.
+          restoreConservativeCost: governor.restoreConservativeCost,
+        }),
     // The realized-cost overlay (2.5.G S10, ADR-0065 §2) — so the CostTracker prices a user-priced (otherwise
     // unknown) model instead of throwing UnknownModelError. Same map the governor uses; both fill an UNKNOWN id
     // only (static MODEL_PRICING wins). Absent ⇒ unchanged (an unknown model's realized cost degrades loudly).
@@ -647,6 +652,8 @@ export interface SessionConservativeCommitment {
 export interface GovernorWiring {
   readonly preEgress: NonNullable<SessionDeps['preEgress']>;
   readonly updateCost: NonNullable<SessionDeps['updateCost']>;
+  /** Seed the conservative total on `chat-resume` (ADR-0074 §4) — see `AgentSession.resume`. */
+  readonly restoreConservativeCost: NonNullable<SessionDeps['restoreConservativeCost']>;
   /**
    * Late-bind the durable writer for conservative commitments (ADR-0074 §4).
    *
@@ -759,6 +766,7 @@ export function buildGovernorWiring(
     preEgress: (info) =>
       governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate, info.provider),
     updateCost: (cumulative) => governor.updateCost(cumulative),
+    restoreConservativeCost: (microcents) => governor.restoreConservativeCost(microcents),
     attachConservativeWriter: (write) => {
       writeCommitment = write;
     },

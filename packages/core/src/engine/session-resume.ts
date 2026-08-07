@@ -30,6 +30,18 @@ export interface SessionResumeState {
   readonly turnCount: number;
   readonly cumulativeCostMicrocents: number;
   /**
+   * The session's durable CONSERVATIVE total ([ADR-0074](../../../../docs/decisions/0074-durable-conservative-budget-commitments.md) §1/§4)
+   * — money a provider may already have billed for an attempt that returned no trustworthy usage.
+   *
+   * Restored ALONGSIDE {@link cumulativeCostMicrocents}, never instead of it: §2 requires both totals back
+   * before any resumed work is scheduled, because a cap that has forgotten this figure hands already-owed money
+   * back as headroom on the very first turn. It is an ESTIMATE and stays apart from the realized total —
+   * `SUM(session_costs.cost_microcents) == total_cost_microcents` is unaffected.
+   *
+   * `0` for a session written before §4, which is the truth for it: nothing was ever committed.
+   */
+  readonly conservativeCostMicrocents: number;
+  /**
    * The context-compaction **preamble** ([ADR-0062](../../../../docs/decisions/0062-context-compaction-and-cli-history-commands.md))
    * to restore into the resumed session — the summary text of the **newest boundary marker that carries a
    * summary** (a `/compact` marker; a summary-less `/trim` marker never provides one). Absent when the session
@@ -136,6 +148,7 @@ export function reconstructSessionState(
     messages: committed,
     turnCount: committed.filter((message) => message.role === 'assistant').length,
     cumulativeCostMicrocents: record.totalCostMicrocents,
+    conservativeCostMicrocents: record.totalConservativeMicrocents,
     ...(contextPreamble === undefined ? {} : { contextPreamble }),
   };
 }

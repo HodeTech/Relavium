@@ -279,6 +279,14 @@ export interface SessionDeps {
    */
   readonly updateCost?: (cumulativeCostMicrocents: number) => void;
   /**
+   * Seed the host governor's CONSERVATIVE total on resume ([ADR-0074](../../../../docs/decisions/0074-durable-conservative-budget-commitments.md) §4).
+   *
+   * Separate from {@link updateCost} because the two figures are separate by design: one is realized spend, the
+   * other an estimate the provider may already have billed. Folding them would present an upper bound as an
+   * invoice. No-op by default; the host wires it to `governor.restoreConservativeCost`.
+   */
+  readonly restoreConservativeCost?: (conservativeCostMicrocents: number) => void;
+  /**
    * Automatic context compaction (ADR-0062) — the surface-mapped form of `[chat].auto_compact`. When not
    * `false` (absent ⇒ enabled), after a turn completes the session compacts if the turn's real input tokens
    * exceed {@link SessionDeps.compactThreshold} × the serving model's context window. The host wires this from
@@ -476,6 +484,12 @@ export class AgentSession {
     // check sees the real cumulative — not 0 — before any cost:updated fires (mirrors #onTurnEmit). Without
     // this, a resumed session's first turn could bypass a near-exhausted budget cap.
     session.#deps.updateCost?.(state.cumulativeCostMicrocents);
+    // ADR-0074 §2/§4: BOTH totals, together, before the session is idle and can take a turn. The realized sync
+    // above is not enough on its own — a conservative commitment is money the provider may ALREADY have billed
+    // for an attempt that returned no trustworthy usage, so a resumed cap that forgets it hands already-owed
+    // headroom back on the first turn, which is the bypass ADR-0074 exists to close. The governor takes the
+    // maximum rather than assigning, so this can never LOWER a total a live governor already holds.
+    session.#deps.restoreConservativeCost?.(state.conservativeCostMicrocents);
     session.#status = 'idle';
     return session;
   }

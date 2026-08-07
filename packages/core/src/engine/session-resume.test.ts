@@ -259,6 +259,7 @@ describe('AgentSession.resume (1.Y)', () => {
       ],
       turnCount: 1,
       cumulativeCostMicrocents: 0,
+      conservativeCostMicrocents: 0,
     };
     const session = AgentSession.resume(params(depsFor(capturingProvider(seen), events, 1)), state);
 
@@ -269,6 +270,53 @@ describe('AgentSession.resume (1.Y)', () => {
     expect(completed).toHaveLength(1);
     const only = completed[0];
     expect(only?.type === 'session:turn_completed' && only.error?.code).toBe('turn_limit');
+  });
+
+  it('restores the CONSERVATIVE total too, and keeps it apart from the realized one (ADR-0074 §4)', () => {
+    // §2 requires BOTH totals back before any resumed work is scheduled. Restoring only the realized figure
+    // hands already-owed money back to the cap as headroom on the very first resumed turn — the bypass the ADR
+    // exists to close. They travel through SEPARATE hooks because they are separate kinds of money: folding an
+    // estimate into a realized total would present an upper bound as an invoice.
+    const events: SessionStreamEvent[] = [];
+    const costs: number[] = [];
+    const conservative: number[] = [];
+    const deps: SessionDeps = {
+      ...depsFor(capturingProvider([]), events),
+      updateCost: (cost) => {
+        costs.push(cost);
+      },
+      restoreConservativeCost: (amount) => {
+        conservative.push(amount);
+      },
+    };
+    AgentSession.resume(params(deps), {
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      turnCount: 1,
+      cumulativeCostMicrocents: 4200,
+      conservativeCostMicrocents: 900,
+    });
+    expect(costs).toEqual([4200]);
+    expect(conservative).toEqual([900]); // seeded once, with the absolute total — never summed into the above
+  });
+
+  it('carries a pre-ADR-0074 session through as zero committed, not as unknown', () => {
+    // Every session written before §4 has `total_conservative_microcents = 0`, and that is the TRUTH for it —
+    // nothing was ever committed. It must seed 0 rather than being skipped, so the governor's state is explicit.
+    const events: SessionStreamEvent[] = [];
+    const conservative: number[] = [];
+    const deps: SessionDeps = {
+      ...depsFor(capturingProvider([]), events),
+      restoreConservativeCost: (amount) => {
+        conservative.push(amount);
+      },
+    };
+    AgentSession.resume(params(deps), {
+      messages: [],
+      turnCount: 0,
+      cumulativeCostMicrocents: 0,
+      conservativeCostMicrocents: 0,
+    });
+    expect(conservative).toEqual([0]);
   });
 
   it('syncs a host-wired budget governor with the carried-over cost on resume', () => {
@@ -284,6 +332,7 @@ describe('AgentSession.resume (1.Y)', () => {
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
       turnCount: 1,
       cumulativeCostMicrocents: 4200,
+      conservativeCostMicrocents: 0,
     });
     // the governor is seeded once, at resume, with the absolute cumulative — so the first resumed turn's
     // pre-egress check sees the real spend, not 0 (before any cost:updated fires).
