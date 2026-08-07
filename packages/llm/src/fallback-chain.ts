@@ -1,4 +1,4 @@
-import type { BackoffStrategy, ContentPart, MediaSource } from '@relavium/shared';
+import type { AbortSignalLike, BackoffStrategy, ContentPart, MediaSource } from '@relavium/shared';
 
 import type { CostTracker, CostUpdate } from './cost-tracker.js';
 import { UnknownModelError } from './errors.js';
@@ -155,8 +155,13 @@ export interface FallbackChainOptions {
    * The delay primitive used for backoff between same-entry retries. **Required and host-injected**:
    * the seam is platform-free (no ambient `setTimeout`), so the host supplies the timer — a
    * `setTimeout`-based delay on every real surface, a controllable fake in tests.
+   *
+   * The optional `signal` must settle the delay EARLY when it aborts, and clear the underlying timer
+   * (#W15-14). A provider's `Retry-After` is honoured up to a 60 s ceiling, and without this a cancel
+   * during that window did nothing: the turn kept sitting in a timer no one was waiting for any more.
+   * Optional so a 1-argument implementation stays assignable — but every real host takes it.
    */
-  readonly sleep: (ms: number) => Promise<void>;
+  readonly sleep: (ms: number, signal?: AbortSignalLike) => Promise<void>;
   /** Injectable clock for cooldown bookkeeping (default: `Date.now`, an ECMAScript primitive). */
   readonly now?: () => number;
   /** Base backoff delay in ms before the first retry of an entry (default 250). */
@@ -286,7 +291,7 @@ type GenerateAttempt =
 export class FallbackChain {
   readonly #plan: readonly FallbackPlanEntry[];
   readonly #options: FallbackChainOptions;
-  readonly #sleep: (ms: number) => Promise<void>;
+  readonly #sleep: (ms: number, signal?: AbortSignalLike) => Promise<void>;
   readonly #now: () => number;
   readonly #backoffBaseMs: number;
   readonly #backoffMaxMs: number;
@@ -396,7 +401,7 @@ export class FallbackChain {
         continue;
       }
       if (attempt < budget + bonus) {
-        await this.#backoff(entry, attempt - 1, outcome.error);
+        await this.#backoff(entry, attempt - 1, req, outcome.error);
       }
     }
     return undefined; // budget exhausted → advance to the next entry
@@ -475,7 +480,7 @@ export class FallbackChain {
         continue;
       }
       if (attempt < budget + bonus) {
-        await this.#backoff(entry, attempt - 1, failure);
+        await this.#backoff(entry, attempt - 1, req, failure);
       }
     }
     return 'advance'; // budget exhausted → try the next entry
@@ -796,11 +801,22 @@ export class FallbackChain {
    * silently traded away here: parallel branches that hit one provider's rate limit together will retry
    * together. Revisiting that is an ADR-0040 amendment, not a local edit.
    *
-   * The honoured value is already normalized and ceiling-checked at the seam
-   * ({@link retryAfterMsFromHeaders}), so a hostile `retry-after: 999999999` cannot park a turn — it arrives
-   * as `undefined` and we fall back to our own schedule.
+   * The honoured value is already normalized and CLAMPED at the seam ({@link retryAfterMsFromHeaders}): a
+   * hostile `retry-after: 999999999` arrives as the 60 s ceiling, not as `undefined`. This docblock used to
+   * claim the opposite — that an oversized value was dropped and we fell back to our own curve (#W15-14) —
+   * which is exactly the behaviour `clampRetryAfter` was changed AWAY from, because falling back meant
+   * retrying after ~250 ms against an endpoint that had just asked for two minutes.
+   *
+   * That ceiling is why the wait must be abort-aware: 60 s is long enough that a cancel arriving mid-wait
+   * has to be honoured. The signal is threaded to the host's timer, which clears it and settles early; the
+   * caller's next loop iteration then sees `#aborted(req)` and emits the cancellation.
    */
-  async #backoff(entry: FallbackPlanEntry, retryIndex: number, error?: LlmError): Promise<void> {
+  async #backoff(
+    entry: FallbackPlanEntry,
+    retryIndex: number,
+    req: LlmRequest,
+    error?: LlmError,
+  ): Promise<void> {
     const requested = error?.retryAfterMs;
     const delay =
       requested ??
@@ -810,7 +826,7 @@ export class FallbackChain {
         this.#backoffBaseMs,
         this.#backoffMaxMs,
       );
-    await this.#sleep(delay);
+    await this.#sleep(delay, req.signal);
   }
 
   async #resolveKey(provider: ProviderId): Promise<string> {

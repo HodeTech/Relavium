@@ -47,6 +47,7 @@ import {
 } from './effort-notice.js';
 import { resolveChatAgent } from './agent-source.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
+import { hostSleep } from '../process/sleep.js';
 
 /**
  * Assemble a ready-to-run `relavium chat` session over `@relavium/core`'s {@link AgentSession} (2.M — the
@@ -334,7 +335,7 @@ function buildSessionRuntime(
         }),
     registry,
     tools,
-    sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
+    sleep: hostSleep,
     now: opts.now,
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
     newAbortController: () => new AbortController(),

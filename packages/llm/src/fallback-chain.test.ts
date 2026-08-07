@@ -1,3 +1,4 @@
+import type { AbortSignalLike } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { CostTracker } from './cost-tracker.js';
@@ -150,13 +151,16 @@ function makeOptions(overrides?: Partial<FallbackChainOptions>): {
   options: FallbackChainOptions;
   trace: AttemptRecord[];
   sleeps: number[];
+  sleepSignals: (AbortSignalLike | undefined)[];
 } {
   const trace: AttemptRecord[] = [];
   const sleeps: number[] = [];
+  const sleepSignals: (AbortSignalLike | undefined)[] = [];
   const options: FallbackChainOptions = {
     keyFor: () => 'test-key',
-    sleep: (ms) => {
+    sleep: (ms, signal) => {
       sleeps.push(ms);
+      sleepSignals.push(signal);
       return Promise.resolve();
     },
     onAttempt: (record) => {
@@ -164,7 +168,7 @@ function makeOptions(overrides?: Partial<FallbackChainOptions>): {
     },
     ...overrides,
   };
-  return { options, trace, sleeps };
+  return { options, trace, sleeps, sleepSignals };
 }
 
 /** Run a promise that should reject with an `LlmProviderError`, returning the carried `LlmError`. */
@@ -876,6 +880,26 @@ describe('FallbackChain — backoff and cooldown', () => {
     const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
 
     await expect(chain.generate(userReq)).rejects.toThrow('cumulative overflowed');
+  });
+
+  it("threads the request's signal into the host timer, so a cancel can break the wait (#W15-14)", async () => {
+    // The honoured Retry-After is clamped to a 60 s ceiling, not dropped — long enough that a cancel arriving
+    // mid-wait has to be honoured. The chain passed the delay to a bare timer with no signal, so it could not.
+    const primary = makeProvider({
+      id: 'anthropic',
+      generate: rejectsWithRetryAfter('anthropic', 1_500),
+    });
+    const { options, sleeps, sleepSignals } = makeOptions();
+    const chain = new FallbackChain(
+      [{ ...entry(primary, 'claude-opus-4-8'), maxAttempts: 2 }],
+      options,
+    );
+    const controller = new AbortController();
+
+    await rejectedError(chain.generate({ ...userReq, signal: controller.signal }));
+
+    expect(sleeps).toEqual([1_500]);
+    expect(sleepSignals).toEqual([controller.signal]);
   });
 
   it("honours the provider's Retry-After over its own computed backoff (#279)", async () => {

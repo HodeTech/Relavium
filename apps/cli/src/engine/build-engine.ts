@@ -16,6 +16,7 @@ import { effortTiersFor, type PricingOverlay } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
 import { effortWithheldNote, reasoningWithheldByCapFor } from '../chat/effort-notice.js';
+import { hostSleep } from '../process/sleep.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv } from './tool-host/assemble.js';
@@ -143,7 +144,7 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
         }),
     registry,
     tools,
-    sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
+    sleep: hostSleep,
     now: () => Date.now(),
     // Keep the dispatch-context `fsScope` consistent with the tier the fs host jails to (ADR-0055's
     // "three concepts, three channels"); absent ⇒ the engine default `sandboxed`.
