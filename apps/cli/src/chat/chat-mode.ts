@@ -204,12 +204,33 @@ function isBlankPreview(preview: ToolActionPreview): boolean {
   // Keyed by `keyof ToolActionPreview` so a NEW reviewable field breaks the build HERE (it must be added below)
   // rather than silently making a preview that carries it look "blank" — which would re-open the `always` blank
   // check this closes. Every field must be absent for the preview to count as blank.
-  const fields: Record<keyof ToolActionPreview, unknown> = {
+  const fields: Record<keyof ToolActionPreview, string | undefined> = {
     path: preview.path,
     command: preview.command,
     host: preview.host,
   };
-  return Object.values(fields).every((value) => value === undefined);
+  return Object.values(fields).every((value) => !isInformative(value));
+}
+
+/**
+ * The redaction marker `redactSecretShapedText` substitutes. A preview field reduced ENTIRELY to these carries
+ * no information, even though it is present.
+ */
+const REDACTION_MARKER = /\[redacted\]/gi;
+
+/**
+ * Does this preview field actually tell the approver anything?
+ *
+ * PRESENT is not the same as INFORMATIVE, and #91's fix is what made the difference reachable: `previewFor` now
+ * scrubs secret-shaped text, so a path or command can arrive as literally `[redacted]`. Treating that as
+ * informative meant a user could be shown `Approve write to [redacted]?`, press "always", and silently
+ * authorise EVERY later `write_file` / `run_command` / `http_request` for the session — having seen nothing.
+ * A blanket grant must be paid for with real information.
+ */
+function isInformative(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  // Strip the markers and any punctuation/whitespace that framed them; what remains is the real content.
+  return value.replace(REDACTION_MARKER, '').replace(/[\s/\\.:,;'"`|=-]+/g, '').length > 0;
 }
 
 /** The per-mode approval hook. The registry only invokes it for a GOVERNED dispatch, so every call is gated. */
