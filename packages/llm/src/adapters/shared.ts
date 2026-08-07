@@ -357,8 +357,17 @@ export async function boundedListModels(params: {
 export function readRetryAfter(
   headers: { readonly get?: unknown } | undefined,
 ): number | undefined {
-  if (headers === undefined || typeof headers.get !== 'function') return undefined;
-  const get = headers.get.bind(headers) as (name: string) => string | null | undefined;
+  if (headers === undefined) return undefined;
+  const rawGet: unknown = headers.get;
+  if (typeof rawGet !== 'function') return undefined;
+  // NARROWED at runtime, not asserted (#W15-22). The previous form asserted a call SIGNATURE onto a value
+  // pulled off an arbitrary object — the one thing an `as` cannot check. `Reflect.apply` calls the function
+  // without claiming to know its type, and the result is narrowed to the string the parser needs; anything
+  // else (a number, an object, `null`) becomes `undefined`, which already means "the provider said nothing".
+  const get = (name: string): string | undefined => {
+    const value: unknown = Reflect.apply(rawGet, headers, [name]);
+    return typeof value === 'string' ? value : undefined;
+  };
   try {
     return retryAfterMsFromHeaders({ get });
   } catch {

@@ -367,16 +367,23 @@ function isContentPolicyCode(code: string | undefined): boolean {
 
 /** Normalize an SDK `APIError` into an `LlmError`, typed by the structural subset it reads. */
 function mapOpenAiApiError(
-  err: { status?: unknown; code?: unknown; type?: unknown; message: string },
+  err: {
+    status?: unknown;
+    code?: unknown;
+    type?: unknown;
+    message: string;
+    // #W15-22: declared on the PARAMETER instead of cast back on at the call site. The old form asserted a
+    // `headers` field onto a type that did not have one — an assertion that would have kept compiling if the
+    // shape ever changed. `readRetryAfter` is already fully defensive about what it receives.
+    headers?: { readonly get?: unknown } | undefined;
+  },
   provider: ProviderId,
 ): LlmError {
   const status = typeof err.status === 'number' ? err.status : undefined;
   const code = firstNonEmptyString(err.code, err.type);
   // #279: the provider's own requested wait, when it sent one. A value object (not a thrown APIError) has no
   // headers, so this is genuinely optional — absent means "no instruction", never "wait zero".
-  const retryAfterMs = readRetryAfter(
-    (err as { headers?: { readonly get?: unknown } | undefined }).headers,
-  );
+  const retryAfterMs = readRetryAfter(err.headers);
   // A content-policy block normalizes to content_filter regardless of HTTP status (a moderation 400 would
   // otherwise map to bad_request) — the wired image-gen path then delivers the documented taxonomy.
   let kind: LlmErrorKind;

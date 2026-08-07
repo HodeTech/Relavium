@@ -14,6 +14,7 @@ import {
   encodeMediaJobId,
   estimateRequestTokens,
   isAbortSignal,
+  readRetryAfter,
 } from './shared.js';
 
 const textOnly: LlmRequest = {
@@ -529,5 +530,59 @@ describe('context/token helpers + adapter seam methods (ADR-0062)', () => {
         }),
       ).toBeGreaterThan(0);
     }
+  });
+});
+
+/**
+ * `readRetryAfter` receives whatever an SDK error carried, so its narrowing has to be RUNTIME narrowing
+ * (#W15-22). It used to assert a call signature onto a `get` pulled off an arbitrary object — the one thing
+ * an `as` cannot check.
+ */
+describe('readRetryAfter — narrowed, not asserted (#W15-22)', () => {
+  const headersOf = (map: Record<string, unknown>): { get: (name: string) => unknown } => ({
+    get: (name: string) => map[name],
+  });
+
+  it('reads a well-formed retry-after', () => {
+    expect(readRetryAfter(headersOf({ 'retry-after': '3' }))).toBe(3_000);
+  });
+
+  it('yields undefined when get returns a NON-string — the case the cast quietly promised away', () => {
+    // A container whose `get` hands back a number, an object or `null` is not a protocol violation the
+    // classifier may throw on: it just means the provider said nothing we can act on.
+    for (const value of [3, { seconds: 3 }, [], true]) {
+      expect(readRetryAfter(headersOf({ 'retry-after': value }))).toBeUndefined();
+    }
+  });
+
+  it('falls through to retry-after when retry-after-ms is a non-string', () => {
+    // The observable half of the fix. Under the old cast a non-string `retry-after-ms` reached `.trim()`,
+    // threw, and the outer catch swallowed it — so the perfectly good `retry-after` below was never read and
+    // a real provider instruction was dropped. Narrowing turns it into "this header said nothing".
+    expect(readRetryAfter(headersOf({ 'retry-after-ms': 5, 'retry-after': '3' }))).toBe(3_000);
+  });
+
+  it('yields undefined for a missing, non-callable or throwing get', () => {
+    expect(readRetryAfter(undefined)).toBeUndefined();
+    expect(readRetryAfter({})).toBeUndefined();
+    expect(readRetryAfter({ get: 'not a function' })).toBeUndefined();
+    expect(
+      readRetryAfter({
+        get: () => {
+          throw new Error('hostile container');
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('calls get with the header name bound to its own container', () => {
+    // `Reflect.apply` must keep `this` — a real `Headers` reads private state through it.
+    class Container {
+      readonly #map = new Map([['retry-after', '5']]);
+      get(name: string): string | undefined {
+        return this.#map.get(name);
+      }
+    }
+    expect(readRetryAfter(new Container())).toBe(5_000);
   });
 });
