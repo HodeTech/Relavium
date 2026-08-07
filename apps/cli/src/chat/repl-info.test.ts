@@ -180,6 +180,45 @@ describe('costNotice — the per-model breakdown', () => {
     expect(costNotice(0, [])).toBe('Session cost: $0.0000');
   });
 
+  it('shows a conservative estimate as ESTIMATED, never folded into the money (ADR-0074 §1/§4)', () => {
+    // The panel is the first surface that renders §1's amount at all, and it is what a user reads to understand
+    // why a `$0.0000` session is refusing their next turn. The estimate must be visible AND must never be added
+    // into the spend figure or the share — an upper bound presented as an invoice is the whole thing the ADR
+    // keeps apart.
+    const out = costNotice(0, [
+      row({
+        model: 'claude-haiku-4-5',
+        costMicrocents: 0,
+        callCount: 0,
+        conservativeMicrocents: 900,
+      }),
+    ]);
+    expect(out).toContain('estimated, possibly billed');
+    expect(out).toContain('900');
+    // NOT "(0 calls, 0 tok)" — that asserts a model was used zero times for zero money while an estimate
+    // against it is holding the cap.
+    expect(out).toContain('(no completed call)');
+    expect(out).not.toContain('0 calls');
+    // The money line stays the realized total.
+    expect(out).toContain('Session cost: $0.0000');
+  });
+
+  it('shows BOTH figures when a model has realized spend AND a live commitment', () => {
+    // The realistic case the single-branch version could hide: turn 1 bills, turn 2 goes usage-less. The row
+    // must keep its normal call/token clause and still surface the estimate.
+    const out = costNotice(10_000, [
+      row({
+        model: 'claude-opus-4-8',
+        costMicrocents: 10_000,
+        callCount: 2,
+        conservativeMicrocents: 450,
+      }),
+    ]);
+    expect(out).toContain('(2 calls,');
+    expect(out).toContain('estimated, possibly billed');
+    expect(out).toContain('100%'); // the share is of REALIZED spend — the estimate does not move it
+  });
+
   it('renders one line per model, and the ROWS SUM TO THE TOTAL the panel shows', () => {
     const rows = [
       row({ model: 'claude-opus-4-8', costMicrocents: 7500, callCount: 3 }),

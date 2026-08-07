@@ -762,6 +762,13 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(errorCodes).toContain('budget_exceeded'); // tripped on the carried cost, no provider call
   });
 
+  // NOT COVERED at this layer: that `restoreConservativeCost` is actually wired through `buildSessionRuntime` →
+  // `GovernorWiring` → `AgentSession.resume`. I cloned the realized test above for the conservative total and
+  // mutation-tested it — deleting the wiring spread left it GREEN, so it was passing for a reason unrelated to
+  // what it claimed, exactly like the two tests I removed earlier in this ADR. Removed rather than kept as false
+  // assurance. The core-package unit tests DO pin `AgentSession.resume` calling the hook (mutation-verified);
+  // what is unproven is only the CLI-layer spread that supplies it.
+
   it('rejects a record with no stored agent snapshot as a clean exit-2 invocation fault', async () => {
     // The build is async now (2.R MCP connect), so the no-snapshot guard surfaces as a REJECTED promise.
     await expect(resume([], record({ agentSnapshot: undefined }))).rejects.toThrow(

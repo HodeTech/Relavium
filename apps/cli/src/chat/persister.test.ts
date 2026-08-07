@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import { createSessionPersister, makeCatalogIdResolver } from './persister.js';
-import { buildChatSession, buildResumedChatSession } from './session-host.js';
+import { buildChatSession, buildGovernorWiring, buildResumedChatSession } from './session-host.js';
 import { scriptedResolver, stop, textTurn, unresolvedResolver } from './test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
 
@@ -119,6 +119,44 @@ describe('createSessionPersister', () => {
   }
 
   /* --- #228: a failed turn write must leave NOTHING, not half a turn --- */
+
+  it('SELF-ATTACHES to a real governor, so a commitment reaches the db with no manual wiring', async () => {
+    // The gap that let the original bug ship: every other test here either passes `governor: undefined` (so the
+    // real writer runs but the attach does not) or hand-builds a fake writer (so the attach runs but the real
+    // writer does not). Nothing crossed both at once — which is why `attachConservativeWriter` being wired at
+    // one of five construction sites was caught by a manual audit rather than by the suite.
+    //
+    // This drives the REAL chain: a real `buildGovernorWiring`, a real admission, a real
+    // `settleAtReservedEstimate`, and the persister's own self-attach — then asserts the money in the store.
+    const { built, store } = await setup(scriptedResolver([textTurn('hi')]));
+    const governor = buildGovernorWiring({
+      ...EMPTY_CHAT,
+      maxCostMicrocents: 10_000_000,
+      onExceed: 'fail',
+    });
+    expect(governor).toBeDefined();
+    const persister = createSessionPersister({
+      governor, // NOT undefined — the whole point
+      store,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now: () => Date.parse('2026-06-25T00:00:00.000Z'),
+      uuid: () => 'commit-1',
+    });
+    persister.start();
+
+    const admission = await governor?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+    expect(admission).toBeDefined(); // pins that the emit path is reachable at all (a priced model)
+    admission?.settleAtReservedEstimate();
+    // The §2 barrier is what forces the durable write to have completed before the next admission.
+    await governor?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+
+    const total = store.loadSession(built.sessionId)?.totalConservativeMicrocents ?? 0;
+    expect(total).toBeGreaterThan(0);
+    expect(governor?.conservativeState().durabilityBroken).toBe(false); // it wrote, it did not reject
+  });
 
   it('carries a conservative commitment through to history.db (ADR-0074 §4)', async () => {
     // The seam nothing crossed before: persister → store → the two columns. Every other test of this path drove
