@@ -242,6 +242,7 @@ describe('createSessionPersister', () => {
       totalInputTokens: 7,
       totalOutputTokens: 11,
       totalCostMicrocents: 1300,
+      totalConservativeMicrocents: 0,
       createdAt: '2026-06-24T00:00:00.000Z',
       updatedAt: '2026-06-24T00:00:00.000Z',
     });
@@ -265,6 +266,7 @@ describe('createSessionPersister', () => {
       totalInputTokens: 100,
       totalOutputTokens: 50,
       totalCostMicrocents: 1300,
+      totalConservativeMicrocents: 0,
       createdAt: '2026-06-24T00:00:00.000Z',
       updatedAt: '2026-06-24T00:00:00.000Z',
     });
@@ -293,6 +295,7 @@ describe('createSessionPersister', () => {
       totalInputTokens: 0,
       totalOutputTokens: 0,
       totalCostMicrocents: 1300,
+      totalConservativeMicrocents: 0,
       createdAt: '2026-06-24T00:00:00.000Z',
       updatedAt: '2026-06-24T00:00:00.000Z',
     });
@@ -648,6 +651,7 @@ describe('createSessionPersister', () => {
       totalInputTokens: 0,
       totalOutputTokens: 0,
       totalCostMicrocents: 0,
+      totalConservativeMicrocents: 0,
       createdAt: iso,
       updatedAt: iso,
     };

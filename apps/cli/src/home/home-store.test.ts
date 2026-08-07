@@ -43,6 +43,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     totalInputTokens: 0,
     totalOutputTokens: 0,
     totalCostMicrocents: 0,
+    totalConservativeMicrocents: 0,
     createdAt: ISO(T0),
     updatedAt: ISO(T0),
     ...overrides,

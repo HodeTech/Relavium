@@ -572,6 +572,7 @@ describe('buildResumedChatSession (2.N)', () => {
     totalInputTokens: 10,
     totalOutputTokens: 5,
     totalCostMicrocents: 1234,
+    totalConservativeMicrocents: 0,
     createdAt: ISO,
     updatedAt: ISO,
     ...overrides,

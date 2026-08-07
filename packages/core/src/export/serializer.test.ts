@@ -29,6 +29,7 @@ const session = (overrides: Partial<AgentSessionRecord> = {}): AgentSessionRecor
   totalInputTokens: 0,
   totalOutputTokens: 0,
   totalCostMicrocents: 0,
+  totalConservativeMicrocents: 0,
   createdAt: TS,
   updatedAt: TS,
   ...overrides,

@@ -444,6 +444,12 @@ export const agentSessions = sqliteTable(
     totalInputTokens: tokenCount('total_input_tokens'),
     totalOutputTokens: tokenCount('total_output_tokens'),
     totalCostMicrocents: microcents('total_cost_microcents'),
+    // ADR-0074 §1/§4 — money a provider MAY already have billed for an attempt that returned no trustworthy
+    // usage. Deliberately a SEPARATE column from `total_cost_microcents`, never folded into it: this is an
+    // ESTIMATE, and mixing it in would present an upper bound as an invoice and break ADR-0070's
+    // `SUM(session_costs.cost_microcents) == total_cost_microcents`. It consumes cap capacity on resume without
+    // ever inflating a reported cost. Single-writer, like its realized sibling.
+    totalConservativeMicrocents: microcents('total_conservative_microcents'),
     exportedWorkflowPath: text('exported_workflow_path'),
     deletedAt: epochMs('deleted_at'),
     createdAt: epochMs('created_at').notNull(),
@@ -546,6 +552,10 @@ export const sessionCosts = sqliteTable(
     inputTokens: tokenCount('input_tokens'),
     outputTokens: tokenCount('output_tokens'),
     costMicrocents: microcents('cost_microcents'),
+    // ADR-0074 §4's per-model conservative attribution, keyed by the SAME `(session_id, model, is_legacy)` unique
+    // index as the realized figure — so the two are joinable per model with no second key to keep in step. Kept
+    // out of `cost_microcents` for the same reason the session total keeps them apart: an estimate is not spend.
+    conservativeMicrocents: microcents('conservative_microcents'),
     // COUNTERS, not booleans: 2.6.Q can price a model MID-SESSION, so a single (session, model) row folds both priced
     // and unpriced egresses. A boolean would become meaningless the moment that happens (ADR-0070 §6).
     callCount: tokenCount('call_count'),

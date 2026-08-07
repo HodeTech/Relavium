@@ -70,6 +70,7 @@ const session = (id: string, totalOutputTokens = 0): AgentSessionRecord => ({
   totalInputTokens: 0,
   totalOutputTokens,
   totalCostMicrocents: 0,
+  totalConservativeMicrocents: 0,
   createdAt: ISO,
   updatedAt: ISO,
 });

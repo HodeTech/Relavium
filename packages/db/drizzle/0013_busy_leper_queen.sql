@@ -1,0 +1,2 @@
+ALTER TABLE `agent_sessions` ADD `total_conservative_microcents` integer DEFAULT 0 NOT NULL;--> statement-breakpoint
+ALTER TABLE `session_costs` ADD `conservative_microcents` integer DEFAULT 0 NOT NULL;

@@ -168,6 +168,7 @@ describe('costNotice — the per-model breakdown', () => {
     modelCatalogId: undefined,
     inputTokens: 100,
     outputTokens: 200,
+    conservativeMicrocents: 0,
     costMicrocents: 0,
     callCount: 1,
     unpricedCalls: 0,

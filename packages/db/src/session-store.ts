@@ -74,6 +74,7 @@ export function toAgentSessionRow(record: AgentSessionRecord): NewAgentSessionRo
     totalInputTokens: s.totalInputTokens,
     totalOutputTokens: s.totalOutputTokens,
     totalCostMicrocents: s.totalCostMicrocents,
+    totalConservativeMicrocents: s.totalConservativeMicrocents,
     exportedWorkflowPath: s.exportedWorkflowPath ?? null,
     deletedAt: s.deletedAt === undefined ? null : isoToEpochMs(s.deletedAt),
     createdAt: isoToEpochMs(s.createdAt),
@@ -104,6 +105,7 @@ export function fromAgentSessionRow(row: AgentSessionRow): AgentSessionRecord {
     totalInputTokens: row.totalInputTokens,
     totalOutputTokens: row.totalOutputTokens,
     totalCostMicrocents: row.totalCostMicrocents,
+    totalConservativeMicrocents: row.totalConservativeMicrocents,
     ...(row.exportedWorkflowPath === null
       ? {}
       : { exportedWorkflowPath: row.exportedWorkflowPath }),
@@ -134,6 +136,11 @@ function mutableSessionColumns(record: AgentSessionRecord): Partial<NewAgentSess
   delete mutable.id;
   delete mutable.createdAt;
   delete mutable.totalCostMicrocents;
+  // ADR-0074 §4: the conservative total has exactly ONE writer too — `recordSessionConservativeCommitment`,
+  // which bumps it additively in the same transaction as its `session_costs` row. Letting a session flush SET it
+  // from an in-memory record would clobber a concurrent commitment, which is precisely the race the realized
+  // total's single-writer rule already defends against.
+  delete mutable.totalConservativeMicrocents;
   return mutable;
 }
 
@@ -223,6 +230,26 @@ export interface SessionCostEntry {
   readonly ts: number;
 }
 
+/**
+ * One conservative budget commitment to persist for a session (ADR-0074 §2/§4).
+ *
+ * Deliberately a SEPARATE entry type from {@link SessionCostEntry}, not a flag on it: a commitment carries no
+ * tokens, no call, and no realized charge. It is money the provider MAY already have billed for an attempt that
+ * returned no trustworthy usage — an estimate that must consume cap capacity across a resume without ever
+ * inflating a reported cost.
+ */
+export interface SessionConservativeEntry {
+  /** A fresh `uuid()`; DISCARDED on the common path — the conflict target is the `(session, model)` unique index. */
+  readonly id: string;
+  readonly sessionId: string;
+  /** The RAW provider model string — the SAME attribution key the realized row uses, so the two stay joinable. */
+  readonly model: string;
+  readonly modelCatalogId?: string | undefined;
+  /** The PER-COMMITMENT increment, never a running cumulative — the store adds it to both the row and the total. */
+  readonly estimateMicrocents: number;
+  readonly ts: number;
+}
+
 /** A per-`(session, model)` row of the durable money attribution. */
 export interface SessionCostRow {
   readonly model: string;
@@ -230,6 +257,12 @@ export interface SessionCostRow {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly costMicrocents: number;
+  /**
+   * ADR-0074 §4's per-model CONSERVATIVE attribution — an estimate the provider may already have billed, kept
+   * strictly apart from {@link costMicrocents}. A surface renders it as *estimated, possibly billed*, never as
+   * spend, and never adds the two together into one figure.
+   */
+  readonly conservativeMicrocents: number;
   /** Every `cost:updated` folded into this row — priced or not. {@link unpricedCalls} is a SUBSET of it. */
   readonly callCount: number;
   /** Of `callCount`, how many could not be priced. `> 0` ⇒ a free-LOOKING row is not a free model. */
@@ -285,6 +318,16 @@ export interface SessionStore {
    * accumulators start at zero, so an absolute write would zero every model row the prior process had committed.
    */
   recordSessionCost: (entry: SessionCostEntry) => void;
+  /**
+   * Persist one conservative commitment (ADR-0074 §4) — the estimate twin of {@link recordSessionCost}, and the
+   * durable half §2 requires on the session surface.
+   *
+   * The SAME single-writer, one-transaction, two-additive-writes discipline: `session_costs.conservative_microcents`
+   * and `agent_sessions.total_conservative_microcents` move together under `BEGIN IMMEDIATE`, so a crash between
+   * them is impossible and the per-model breakdown can never disagree with the aggregate. It touches NEITHER
+   * realized column, so ADR-0070's `SUM(cost_microcents) == total_cost_microcents` is untouched by construction.
+   */
+  recordSessionConservativeCommitment: (entry: SessionConservativeEntry) => void;
   /** The per-model money attribution of a session, ordered by spend (descending). Empty — never `null` — when the
    *  session has not spent. The `/cost` breakdown reads THIS, never an in-memory counter: a resumed session's total
    *  is seeded from the row and covers the whole session, while memory knows only this process's models. */
@@ -398,6 +441,7 @@ export function createSessionStore(db: Db): SessionStore {
         inputTokens: r.inputTokens,
         outputTokens: r.outputTokens,
         costMicrocents: r.costMicrocents,
+        conservativeMicrocents: r.conservativeMicrocents,
         callCount: r.callCount,
         unpricedCalls: r.unpricedCalls,
         isLegacy: r.isLegacy,
@@ -487,6 +531,60 @@ export function createSessionStore(db: Db): SessionStore {
             tx.update(agentSessions)
               .set({
                 totalCostMicrocents: sql`${agentSessions.totalCostMicrocents} + ${entry.costMicrocents}`,
+                updatedAt: entry.ts,
+              })
+              .where(eq(agentSessions.id, entry.sessionId))
+              .run();
+          },
+          { behavior: 'immediate' },
+        ),
+      );
+    },
+
+    recordSessionConservativeCommitment: (entry) => {
+      // ONE transaction, TWO additive writes — the exact discipline `recordSessionCost` uses above, and for the
+      // same reason: a crash between the per-model row and the aggregate would leave the breakdown disagreeing
+      // with the total forever. `BEGIN IMMEDIATE` takes the write lock up front rather than upgrading a DEFERRED
+      // one mid-transaction, which is where SQLITE_BUSY comes from.
+      //
+      // Note what it does NOT touch: `cost_microcents`, `total_cost_microcents`, `call_count`, `input_tokens`,
+      // `output_tokens`. A conservative commitment is an ESTIMATE, not a call and not spend, so ADR-0070's
+      // `SUM(cost_microcents) == total_cost_microcents` holds by construction rather than by care.
+      withBusyRetry(() =>
+        db.transaction(
+          (tx) => {
+            tx.insert(sessionCosts)
+              .values({
+                id: entry.id, // discarded on conflict — the target is the unique index, never the PK
+                sessionId: entry.sessionId,
+                model: entry.model,
+                modelCatalogId: entry.modelCatalogId ?? null,
+                inputTokens: 0,
+                outputTokens: 0,
+                costMicrocents: 0,
+                conservativeMicrocents: entry.estimateMicrocents,
+                // NOT a call: `callCount` stays 0 so `/cost`'s "N of M calls" arithmetic is unaffected by an
+                // estimate. A commitment describes an attempt whose usage we could not trust, and counting it
+                // would inflate the denominator with something that produced no attributable usage at all.
+                callCount: 0,
+                unpricedCalls: 0,
+                // Never legacy, for the same reason a real cost row never is: it rides the conflict target, so a
+                // live commitment cannot fold into the 0009 backfill's un-attributable aggregate row.
+                isLegacy: false,
+                createdAt: entry.ts,
+                updatedAt: entry.ts,
+              })
+              .onConflictDoUpdate({
+                target: [sessionCosts.sessionId, sessionCosts.model, sessionCosts.isLegacy],
+                set: {
+                  conservativeMicrocents: sql`${sessionCosts.conservativeMicrocents} + ${entry.estimateMicrocents}`,
+                  updatedAt: entry.ts,
+                },
+              })
+              .run();
+            tx.update(agentSessions)
+              .set({
+                totalConservativeMicrocents: sql`${agentSessions.totalConservativeMicrocents} + ${entry.estimateMicrocents}`,
                 updatedAt: entry.ts,
               })
               .where(eq(agentSessions.id, entry.sessionId))

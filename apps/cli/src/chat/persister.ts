@@ -172,6 +172,10 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     id: deps.sessionId,
     agentSlug: deps.agent.id,
     agentSnapshot: deps.agent,
+    // ADR-0074 §4: a placeholder only. `mutableSessionColumns` DROPS this column on every session write, exactly
+    // as it drops `totalCostMicrocents` — `recordSessionConservativeCommitment` is its single writer, and letting
+    // a turn flush SET it from this in-memory record would clobber a concurrent commitment.
+    totalConservativeMicrocents: 0,
     context: deps.context,
     status,
     totalInputTokens: staged.input ?? totalInputTokens,

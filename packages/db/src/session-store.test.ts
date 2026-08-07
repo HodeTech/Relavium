@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -71,6 +71,7 @@ const makeSession = (overrides: Partial<AgentSessionRecord> = {}): AgentSessionR
   totalInputTokens: 0,
   totalOutputTokens: 0,
   totalCostMicrocents: 0,
+  totalConservativeMicrocents: 0,
   createdAt: TS_ISO,
   updatedAt: TS_ISO,
   ...overrides,
@@ -660,6 +661,81 @@ describe('SessionStore — writeTurn is atomic (#228)', () => {
     expect(store.loadSession('sess-1')?.status).toBe('ended');
   });
 
+  it('records a conservative commitment WITHOUT touching any realized figure (ADR-0074 §4)', () => {
+    // The central negative guarantee. A commitment is an ESTIMATE: folding it into the realized total would
+    // present an upper bound as an invoice and break ADR-0070's `SUM(cost_microcents) == total_cost_microcents`.
+    store.createSession(makeSession());
+    store.recordSessionCost({
+      id: 'c1',
+      sessionId: 'sess-1',
+      model: 'm',
+      inputTokens: 3,
+      outputTokens: 4,
+      costMicrocents: 500,
+      priced: true,
+      ts: 1,
+    });
+    store.recordSessionConservativeCommitment({
+      id: 'k1',
+      sessionId: 'sess-1',
+      model: 'm',
+      estimateMicrocents: 900,
+      ts: 2,
+    });
+
+    const session = store.loadSession('sess-1');
+    expect(session?.totalCostMicrocents).toBe(500); // realized: unmoved
+    expect(session?.totalConservativeMicrocents).toBe(900); // conservative: its own total
+    const [row] = store.loadSessionCosts('sess-1');
+    // ONE row per (session, model) — the conservative figure lands beside the realized one, on the same key.
+    expect(store.loadSessionCosts('sess-1')).toHaveLength(1);
+    expect(row?.costMicrocents).toBe(500);
+    expect(row?.inputTokens).toBe(3);
+    // NOT a call: `/cost`'s "N of M calls" arithmetic must not count an attempt that produced no usage.
+    expect(row?.callCount).toBe(1);
+    expect(row?.unpricedCalls).toBe(0);
+  });
+
+  it('accumulates commitments additively, and per model', () => {
+    store.createSession(makeSession());
+    for (const [model, amount] of [
+      ['m1', 400],
+      ['m1', 250],
+      ['m2', 100],
+    ] as const) {
+      store.recordSessionConservativeCommitment({
+        id: `k-${model}-${amount}`,
+        sessionId: 'sess-1',
+        model,
+        estimateMicrocents: amount,
+        ts: 1,
+      });
+    }
+    expect(store.loadSession('sess-1')?.totalConservativeMicrocents).toBe(750);
+    const byModel = new Map(
+      store.loadSessionCosts('sess-1').map((r) => [r.model, r.conservativeMicrocents]),
+    );
+    expect(byModel.get('m1')).toBe(650);
+    expect(byModel.get('m2')).toBe(100);
+    // The aggregate is exactly the sum of the per-model rows — the invariant the one transaction buys.
+    expect([...byModel.values()].reduce((a, b) => a + b, 0)).toBe(750);
+  });
+
+  it('never SETs total_conservative_microcents — the commitment writer stays its single writer', () => {
+    // Same hazard as the realized total: a session flush that SET it from an in-memory record would clobber a
+    // concurrent commitment. `mutableSessionColumns` drops it for exactly that reason.
+    store.createSession(makeSession());
+    store.recordSessionConservativeCommitment({
+      id: 'k1',
+      sessionId: 'sess-1',
+      model: 'm',
+      estimateMicrocents: 900,
+      ts: 1,
+    });
+    store.writeTurn({ messages: [], session: makeSession({ totalConservativeMicrocents: 0 }) });
+    expect(store.loadSession('sess-1')?.totalConservativeMicrocents).toBe(900); // not clobbered
+  });
+
   it('never SETs total_cost_microcents — recordSessionCost stays its single writer (ADR-0070)', () => {
     // writeTurn shares `mutableSessionColumns` with updateSession precisely so this invariant cannot be
     // reintroduced on a second write path.
@@ -1008,8 +1084,15 @@ describe('migrations 0009 + 0010 — the legacy backfill and its discriminator (
     stageUpTo(8, dir); // BEFORE session_costs existed
     const c = createClient(':memory:');
     migrate(c.db, { migrationsFolder: dir });
-    createSessionStore(c.db).createSession(
-      makeSession({ id: 'legacy-1', totalCostMicrocents: spend }),
+    // RAW insert, not `createSessionStore(...).createSession(...)`: the store maps the CURRENT schema, which
+    // since ADR-0074 §4 writes `total_conservative_microcents` — a column that does not exist until 0013. Using
+    // the live mapper against a deliberately-old schema is what makes such a test brittle; only the columns that
+    // existed at 0008 belong here.
+    c.db.run(
+      sql`INSERT INTO agent_sessions
+            (id, agent_slug, context_json, status, total_input_tokens, total_output_tokens,
+             total_cost_microcents, created_at, updated_at)
+          VALUES ('legacy-1', 'chatter', ${JSON.stringify(CTX)}, 'active', 0, 0, ${spend}, ${TS_MS}, ${TS_MS})`,
     );
     if (atIdx > 8) {
       const upgrade = mkdtempSync(join(tmpdir(), 'relavium-mig-up-'));
