@@ -1159,14 +1159,29 @@ export function createChatLineHandler(
     // covers the whole session, while memory knows only the models used in THIS process — so an in-memory breakdown
     // would visibly fail to sum to the total on the first `/cost` after a resume, breaking the one guarantee the
     // panel makes. The total comes from the same row the rows reconcile against.
-    showCost: () => {
+    showCost: (release = false) => {
       try {
+        // `--release` FIRST, so the panel below renders the post-release state rather than the amount the user
+        // just cleared (#W15-3). Both halves, in this order: the durable columns (which is what a resumed
+        // session seeds its cap from — clearing only the live governor let a released commitment come straight
+        // back on the next `chat-resume`), then the in-memory governor.
+        const released = release
+          ? opened.store.releaseSessionConservativeCommitments(built.sessionId, Date.now())
+          : undefined;
+        if (release) built.governor?.releaseConservativeCommitments();
         // ONE snapshot: the rows and the total they are printed under must come from the same read, or a concurrent
         // process's cost write can land between them and the panel prints rows summing to MORE than its own total.
         const { totalCostMicrocents, rows } = opened.store.loadSessionCostBreakdown(
           built.sessionId,
         );
-        emitOutput(costNotice(totalCostMicrocents, rows));
+        emitOutput(
+          costNotice(totalCostMicrocents, rows, {
+            ...(released === undefined ? {} : { released }),
+            ...(built.governor === undefined
+              ? {}
+              : { durabilityBroken: built.governor.conservativeState().durabilityBroken }),
+          }),
+        );
       } catch (err) {
         // A read-only info command must never end the conversation. `handleSlashCommand` awaits `run` unguarded, and
         // on the ink driver a rejection routes to `onError` → teardown; every sibling info handler is guarded for

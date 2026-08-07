@@ -301,3 +301,32 @@ describe('costNotice — the per-model breakdown', () => {
     expect(out).not.toContain('');
   });
 });
+
+/**
+ * ADR-0074 §1 requires the surface that RENDERS the committed amount to also expose clearing it, and to say
+ * when the record behind it is no longer durable (#W15-3). Both were reachable in code and invisible here.
+ */
+describe('costNotice — the §1 release and durability state', () => {
+  it('reports what a release actually cleared', () => {
+    const text = costNotice(500, [], { released: 1_200 });
+    expect(text).toContain('Released ~1200µ¢');
+  });
+
+  it('says nothing about a release that cleared nothing', () => {
+    expect(costNotice(500, [], { released: 0 })).not.toContain('Released');
+    expect(costNotice(500, [])).not.toContain('Released');
+  });
+
+  it('warns when the commitment record is not durable — and says only what is true', () => {
+    const text = costNotice(500, [], { durabilityBroken: true });
+    // The cap IS still enforced in this process; what is broken is its survival. A user reading "the cap is
+    // off" would behave very differently from one reading this.
+    expect(text).toContain('the cap still holds in this session');
+    expect(text).toContain('a resume would not see it');
+    expect(text).toContain('/cost --release'); // the escape hatch, named where the amount is rendered
+  });
+
+  it('stays silent on the healthy path', () => {
+    expect(costNotice(500, [], { durabilityBroken: false })).toBe(costNotice(500, []));
+  });
+});

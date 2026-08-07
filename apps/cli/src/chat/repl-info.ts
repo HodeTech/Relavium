@@ -33,9 +33,27 @@ import { formatCostUsd } from '../render/tui/format.js';
  * content but ended without a usage chunk, and a mid-stream failure, are both recorded as 0 on BOTH sides (ADR-0070
  * §3), so the reported spend is a systematic under-estimate of the bill. That is stated here, not buried.
  */
-export function costNotice(totalCostMicrocents: number, rows: readonly SessionCostRow[]): string {
+export function costNotice(
+  totalCostMicrocents: number,
+  rows: readonly SessionCostRow[],
+  opts: { readonly durabilityBroken?: boolean; readonly released?: number } = {},
+): string {
   const total = `Session cost: ${formatCostUsd(totalCostMicrocents)}`;
-  if (rows.length === 0) return total;
+  // ADR-0074 §1 requires the surface that RENDERS the committed amount to also expose clearing it, and to say
+  // when the record behind it is no longer durable (#W15-3). Both were reachable in code and invisible here.
+  const notes: string[] = [];
+  if (opts.released !== undefined && opts.released > 0) {
+    notes.push(`Released ~${opts.released}µ¢ of estimated-but-unconfirmed spend back to the cap.`);
+  }
+  if (opts.durabilityBroken === true) {
+    // Says only what is true: the cap IS still being enforced in this process; what is broken is the record's
+    // survival. A user who reads "the cap is off" would behave very differently from one who reads this.
+    notes.push(
+      'warning: a conservative commitment could not be written durably — the cap still holds in this ' +
+        'session, but a resume would not see it. Use /cost --release to clear it deliberately.',
+    );
+  }
+  if (rows.length === 0) return [total, ...notes].join('\n');
 
   const lines = rows.map((r) => {
     const share =
@@ -73,7 +91,7 @@ export function costNotice(totalCostMicrocents: number, rows: readonly SessionCo
       r.unpricedCalls > 0 ? `  — price unknown for ${r.unpricedCalls} of ${calls}` : '';
     return `${money}  ${sanitizeInline(r.model)}  (${calls}, ${tokens})${unpriced}${held}`;
   });
-  return [total, ...lines].join('\n');
+  return [total, ...notes, ...lines].join('\n');
 }
 
 /** The `/workflows` notice — the discovered workflow + agent catalogs (each slug sanitized), grouped by kind. A

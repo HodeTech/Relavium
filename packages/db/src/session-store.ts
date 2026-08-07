@@ -328,6 +328,14 @@ export interface SessionStore {
    * realized column, so ADR-0070's `SUM(cost_microcents) == total_cost_microcents` is untouched by construction.
    */
   recordSessionConservativeCommitment: (entry: SessionConservativeEntry) => void;
+  /**
+   * Clear every conservative commitment this session holds — the durable half of ADR-0074 §1's escape hatch
+   * (#W15-3), called only from a surface acting on an explicit user decision, never from a heuristic.
+   *
+   * Zeroes the per-model `session_costs` holds AND the `agent_sessions` aggregate in one transaction, and
+   * returns the amount released (0 when nothing was held).
+   */
+  releaseSessionConservativeCommitments: (sessionId: string, ts: number) => number;
   /** The per-model money attribution of a session, ordered by spend (descending). Empty — never `null` — when the
    *  session has not spent. The `/cost` breakdown reads THIS, never an in-memory counter: a resumed session's total
    *  is seeded from the row and covers the whole session, while memory knows only this process's models. */
@@ -602,6 +610,37 @@ export function createSessionStore(db: Db): SessionStore {
         ),
       );
     },
+
+    releaseSessionConservativeCommitments: (sessionId, ts) =>
+      // ADR-0074 §1's escape hatch, made DURABLE (#W15-3). Clearing only the in-memory governor meant a
+      // released commitment came straight back on the next `chat-resume`, because §4 seeds the resumed
+      // governor from these columns — so the "deliberate user decision" survived exactly as long as the
+      // process did.
+      //
+      // ONE `BEGIN IMMEDIATE`, both writes: the per-model rows AND the session aggregate. Zeroing one without
+      // the other would leave `/cost` printing per-model holds that no longer sum to the session's total, or
+      // a total holding against models that show nothing — and the aggregate is what the resumed cap reads.
+      //
+      // Returns the amount released, read INSIDE the transaction, so the number reported to the user is the
+      // number that was actually cleared rather than a re-read that a concurrent commitment could have moved.
+      withBusyRetry(() =>
+        db.transaction(
+          (tx) => {
+            const released = loadSession(sessionId, tx)?.totalConservativeMicrocents ?? 0;
+            if (released === 0) return 0; // nothing held — do not touch `updated_at` for a no-op
+            tx.update(sessionCosts)
+              .set({ conservativeMicrocents: 0, updatedAt: ts })
+              .where(eq(sessionCosts.sessionId, sessionId))
+              .run();
+            tx.update(agentSessions)
+              .set({ totalConservativeMicrocents: 0, updatedAt: ts })
+              .where(eq(agentSessions.id, sessionId))
+              .run();
+            return released;
+          },
+          { behavior: 'immediate' },
+        ),
+      ),
 
     loadSessionCosts: (sessionId) => readCostRows(sessionId),
 

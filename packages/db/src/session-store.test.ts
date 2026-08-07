@@ -731,6 +731,56 @@ describe('SessionStore — writeTurn is atomic (#228)', () => {
     expect([...byModel.values()].reduce((a, b) => a + b, 0)).toBe(750);
   });
 
+  it('releases every commitment durably — per-model AND aggregate, in one go (#W15-3)', () => {
+    // ADR-0074 §1's escape hatch had no durable half: clearing the in-memory governor left these columns
+    // untouched, and §4 seeds a resumed governor FROM them — so a released commitment came straight back on
+    // the next `chat-resume` and the "deliberate user decision" survived exactly as long as the process did.
+    store.createSession(makeSession());
+    store.recordSessionCost({
+      id: 'c1',
+      sessionId: 'sess-1',
+      model: 'm1',
+      inputTokens: 3,
+      outputTokens: 4,
+      costMicrocents: 500,
+      priced: true,
+      ts: 1,
+    });
+    for (const [model, amount] of [
+      ['m1', 400],
+      ['m2', 100],
+    ] as const) {
+      store.recordSessionConservativeCommitment({
+        id: `k-${model}`,
+        sessionId: 'sess-1',
+        model,
+        estimateMicrocents: amount,
+        ts: 1,
+      });
+    }
+
+    expect(store.releaseSessionConservativeCommitments('sess-1', 9)).toBe(500);
+
+    // The aggregate — what a resumed cap reads.
+    expect(store.loadSession('sess-1')?.totalConservativeMicrocents).toBe(0);
+    // …and every per-model hold, so `/cost` cannot print holds that no longer sum to the session total.
+    for (const row of store.loadSessionCosts('sess-1')) {
+      expect(row.conservativeMicrocents).toBe(0);
+    }
+    // REALIZED spend is untouched: a release clears an estimate, never an invoice.
+    expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(500);
+    expect(store.loadSessionCosts('sess-1').find((r) => r.model === 'm1')?.costMicrocents).toBe(
+      500,
+    );
+  });
+
+  it('reports 0 and touches nothing when there is no commitment to release', () => {
+    store.createSession(makeSession());
+    const before = store.loadSession('sess-1')?.updatedAt;
+    expect(store.releaseSessionConservativeCommitments('sess-1', 9)).toBe(0);
+    expect(store.loadSession('sess-1')?.updatedAt).toBe(before); // a no-op must not stamp updated_at
+  });
+
   // NOT COVERED: the `coalesce` backfill of `modelCatalogId` on the conservative upsert. The test needs a real
   // `model_catalog` row for the FK, and this describe block's shared store does not seed one — I ran out of
   // budget to wire that fixture and will not ship a red or a hollow test in its place. The behaviour is a
