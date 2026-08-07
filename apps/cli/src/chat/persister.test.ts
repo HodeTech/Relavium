@@ -77,6 +77,7 @@ describe('createSessionPersister', () => {
       onListenerError: (note: string) => listenerNotes.push(note),
     });
     const persister = createSessionPersister({
+      governor: undefined,
       store,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -105,6 +106,7 @@ describe('createSessionPersister', () => {
       onListenerError: (note: string) => listenerNotes.push(note),
     });
     const persister = createSessionPersister({
+      governor: undefined,
       store: target,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -360,6 +362,7 @@ describe('createSessionPersister', () => {
       providers: scriptedResolver([textTurn('hi there')]),
     });
     const persister = createSessionPersister({
+      governor: undefined,
       store,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -684,6 +687,7 @@ describe('createSessionPersister', () => {
     });
     let mid = 100;
     const persister = createSessionPersister({
+      governor: undefined,
       store,
       handle: built.handle,
       sessionId: built.sessionId,

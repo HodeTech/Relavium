@@ -514,6 +514,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       let persister: SessionPersister | undefined;
       try {
         persister = createSessionPersister({
+          governor: built.governor,
           store: opened.store,
           handle: built.handle,
           sessionId: built.sessionId,

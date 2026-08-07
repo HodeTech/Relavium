@@ -107,6 +107,13 @@ export async function agentRunCommand(
     ...(offline ? { disableMcp: true } : {}),
   });
 
+  // ADR-0074 §4: `agent run` is a ONE-SHOT, non-persisted invocation — it opens no session store and builds no
+  // persister, so a conservative commitment has nowhere durable to go and that is correct, not a gap. Attach an
+  // explicit no-op so the governor's emit resolves: without it every commitment would reject, mark the session
+  // durability-broken, and the §2 barrier would fail a turn for a session nobody was ever going to resume. The
+  // in-memory debit still consumes cap capacity for this process, which is the whole of what a one-shot needs.
+  built.governor?.attachConservativeWriter(() => Promise.resolve());
+
   // Render the live stream + run the single turn + tear down — a classified turn failure maps to exit 1.
   const turnErrorCode = await runOneShotTurn(built, message, deps);
   return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;

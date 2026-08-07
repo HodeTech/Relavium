@@ -566,6 +566,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   let persister: SessionPersister;
   try {
     persister = createSessionPersister({
+      governor: built.governor,
       store: opened.store,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -582,15 +583,6 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     await built.closeMcp?.().catch(() => undefined);
     throw err;
   }
-  // ADR-0074 §4: the governor's conservative commitments become durable HERE, the first moment both halves
-  // exist. It cannot be a constructor argument — the persister needs the session's handle, id, agent and
-  // context, all of which only exist after `buildChatSession` returns, and that construction sequence's
-  // teardown-on-failure ordering is load-bearing. Until this line the governor's emit REJECTS rather than
-  // resolving, so a commitment made in the gap would fail loudly instead of vanishing; no turn can run before
-  // here, so it should never fire.
-  built.governor?.attachConservativeWriter((commitment) =>
-    persister.recordConservativeCommitment(commitment),
-  );
 
   const doctorProbes =
     deps.doctorProbes ??
@@ -1507,6 +1499,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
   let persister: SessionPersister;
   try {
     persister = createSessionPersister({
+      governor: built.governor,
       store: deps.opened.store,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -1637,6 +1630,7 @@ function seedResumedWiring(
     transcriptBound,
   );
   const persister = createSessionPersister({
+    governor: resumed.governor,
     store: opened.store,
     handle: resumed.handle,
     sessionId: resumed.sessionId,

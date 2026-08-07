@@ -12,6 +12,7 @@ import type {
   SessionStatus,
 } from '@relavium/shared';
 
+import type { GovernorWiring } from './session-host.js';
 import { deriveSessionTitle } from './session-title.js';
 
 /**
@@ -52,6 +53,18 @@ export function makeCatalogIdResolver(
 
 export interface SessionPersisterDeps {
   readonly store: SessionStore;
+  /**
+   * The session's budget wiring (`built.governor`), so the persister can attach itself as the durable sink for
+   * conservative commitments (ADR-0074 §4). `undefined` when the chat declares no cost cap — no governor exists,
+   * so there is nothing to commit.
+   *
+   * REQUIRED as a key, deliberately, even though the value may be `undefined`: attaching used to be a separate
+   * call at the persister's construction site, and there are FOUR such sites (`chat`, the `/clear` re-drive, the
+   * Home's inline chat, `chat-resume`). Wiring only one of them left every commitment on the others rejecting —
+   * a whole surface silently marked durability-broken. Making it a dep the compiler demands is what stops that
+   * recurring: a new persister site cannot forget what it cannot omit.
+   */
+  readonly governor: GovernorWiring | undefined;
   readonly handle: SessionHandle;
   readonly sessionId: string;
   /** The bound agent — frozen into `agent_snapshot` for reproducible resume/export; its `id` is the slug. */
@@ -352,7 +365,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     }
   };
 
-  return {
+  const persister: SessionPersister = {
     start(): void {
       if (started) return;
       started = true;
@@ -387,7 +400,10 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       assistantText = '';
       turnModelCatalogId = undefined; // a fresh turn: attribute the assistant row to THIS turn's egress, never a prior one
     },
-    recordConservativeCommitment(commitment): Promise<void> {
+    recordConservativeCommitment(commitment: {
+      readonly model: string;
+      readonly estimateMicrocents: number;
+    }): Promise<void> {
       // ADR-0074 §4. The store's own transaction is what makes this durable: the per-model row and the session
       // aggregate move together under `BEGIN IMMEDIATE`, so a crash between them is impossible. Nothing here
       // touches a realized figure — that separation is the ADR's central negative guarantee, and it lives in the
@@ -413,4 +429,12 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       unsubscribe = undefined;
     },
   };
+  // ADR-0074 §4: the persister attaches ITSELF as the durable sink, rather than every construction site
+  // remembering to. That inversion is the fix for a real gap — the manual call had been wired at exactly one of
+  // the four sites, so `/clear`, the Home's inline chat and `chat-resume` were all committing into a rejected
+  // promise and marking their session durability-broken on the first usage-less response.
+  deps.governor?.attachConservativeWriter((commitment) =>
+    persister.recordConservativeCommitment(commitment),
+  );
+  return persister;
 }
