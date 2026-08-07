@@ -382,6 +382,27 @@ describe('BudgetGovernor', () => {
       await expect(pending).resolves.toBeDefined();
     });
 
+    it('releases EVERY hold at once, so an abort can always break it', async () => {
+      // The hang this exists to prevent: a suspended `checkPreEgress` keeps its node counted as `running`, so
+      // the engine's `#step` never reaches `#countRunning() === 0` and the run emits NO terminal at all. The
+      // awaited job cannot rescue it either — its poll returns silently once the signal is aborted. An
+      // unkillable run is strictly worse than the under-reservation the hold prevents.
+      const { governor } = makeGovernor();
+      governor.registerLegacyMediaJob('gen-1');
+      governor.registerLegacyMediaJob('gen-2');
+      let settled = false;
+      const pending = governor.checkPreEgress('claude-haiku-4-5', 1000).then((a) => {
+        settled = true;
+        return a;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      governor.releaseAllLegacyMediaJobHolds();
+      await expect(pending).resolves.toBeDefined();
+      expect(governor.legacyMediaJobNodes).toEqual([]);
+    });
+
     it('is idempotent per node, so a re-entrant resume cannot strand the cap', () => {
       const { governor } = makeGovernor();
       governor.registerLegacyMediaJob('gen-1');

@@ -730,6 +730,19 @@ export class BudgetGovernor {
     entry.settle();
   }
 
+  /**
+   * Release EVERY outstanding hold at once — the run is ending, so nothing will ever settle.
+   *
+   * Without this a `checkPreEgress` suspended in the hold keeps its node counted as `running`, `#step` never
+   * reaches `#countRunning() === 0`, and the run never emits a terminal at all. The hold was meant to delay
+   * egress, not to make a run unkillable, so the abort path must always be able to break it.
+   */
+  releaseAllLegacyMediaJobHolds(): void {
+    for (const nodeId of [...this.#legacyMediaJobNodes.keys()]) {
+      this.clearLegacyMediaJob(nodeId);
+    }
+  }
+
   /** Node ids whose resumed media job still has an unknown money basis. */
   get legacyMediaJobNodes(): readonly string[] {
     return [...this.#legacyMediaJobNodes.keys()];

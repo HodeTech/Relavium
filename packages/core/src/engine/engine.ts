@@ -418,6 +418,14 @@ class RunExecution {
           ? {}
           : { onLegacyMediaJobHold: params.onLegacyMediaJobHold }),
       });
+      // ADR-0074 §3: an abort must ALWAYS be able to break the legacy-media-job hold. A `checkPreEgress`
+      // suspended in it keeps its node counted as `running`, so `#step` never reaches `#countRunning() === 0`
+      // and the run never emits a terminal — an unkillable run, which is strictly worse than the
+      // under-reservation the hold prevents. The awaited job cannot rescue it either: its poll returns silently
+      // once the signal is aborted. Registered ONCE here, so no future abort site can forget it.
+      this.#abort.signal.addEventListener('abort', () => {
+        this.#budgetGovernor?.releaseAllLegacyMediaJobHolds();
+      });
     }
 
     if (params.checkpoint === undefined) {
@@ -1112,7 +1120,7 @@ class RunExecution {
         !this.#abort.signal.aborted &&
         this.#shouldRetry(retry, outcome.error, attempt);
       if (!willRetry || outcome.kind !== 'failed') {
-        await this.#onOutcome(vertex, outcome, startedAtMs, attempt);
+        await this.#onOutcome(vertex, outcome, startedAtMs, attempt, budgetApproved);
         return;
       }
       const delayMs = this.#backoffMs(retry, attempt);
@@ -1286,6 +1294,8 @@ class RunExecution {
     outcome: NodeOutcome,
     startedAtMs: number,
     attemptNumber = 1,
+    /** H3's one-shot cap bypass was active for this dispatch — so NO pre-egress hook ran (ADR-0074 §3). */
+    budgetApproved = false,
   ): Promise<void> {
     if (this.#settled) {
       return; // terminal already emitted — ignore a late settle (e.g. an aborted straggler)
@@ -1303,7 +1313,7 @@ class RunExecution {
           await this.#settlePaused(vertex, outcome.gate);
           break;
         case 'media_job':
-          await this.#settleMediaJobParked(vertex, outcome.job);
+          await this.#settleMediaJobParked(vertex, outcome.job, budgetApproved);
           break;
       }
     } catch {
@@ -1452,7 +1462,11 @@ class RunExecution {
    * record the job, emit the durable `media_job:submitted`, and arm the first poll. The realized cost is
    * emitted by the poll loop at `done`, NEVER here (§5).
    */
-  async #settleMediaJobParked(vertex: PlanVertex, job: MediaJobSubmission): Promise<void> {
+  async #settleMediaJobParked(
+    vertex: PlanVertex,
+    job: MediaJobSubmission,
+    budgetApproved = false,
+  ): Promise<void> {
     const state = this.#states.get(vertex.id);
     if (state !== undefined) {
       state.status = 'paused';
@@ -1492,7 +1506,15 @@ class RunExecution {
       // unpriced and the allow-degrade path held no admission). Resume restores from these instead of
       // re-deriving, so neither a workflow edit nor a price change can move an accepted commitment.
       units: job.units,
-      acceptedCostMicrocents: admission?.reservedMicrocents ?? 0,
+      // ADR-0074 §3. `0` means "the gate RAN and reserved nothing" — an unpriced model's allow-degrade path.
+      // Under H3's approved bypass NO hook runs at all (`#runAttempt` passes `preEgress: undefined`), so there
+      // is no priced basis to freeze, and emitting `0` would claim one. That is not a cosmetic difference: on
+      // resume the frozen branch would call `reserveAcceptedCost(model, 0)`, reserve NOTHING, and skip
+      // `registerLegacyMediaJob` — so a job deliberately submitted OVER the cap would come back holding no
+      // reservation and no hold, letting a sibling spend headroom that is still owed. Omitting it routes the
+      // resume through the legacy branch, which re-prices AND fails closed — the conservative answer, and the
+      // one the pre-§3 code already gave.
+      ...(budgetApproved ? {} : { acceptedCostMicrocents: admission?.reservedMicrocents ?? 0 }),
     });
     this.#armMediaPoll(vertex.id);
   }
@@ -1628,6 +1650,10 @@ class RunExecution {
         // A cancel (the abort surfaced as a throw) / terminal / cleared job → return silently; the #settle
         // path emits run:cancelled. Only a genuine poll fault on a live job settles node:failed.
         if (this.#settled || this.#abort.signal.aborted || !this.#pendingMediaJobs.has(nodeId)) {
+          // This job will never settle now, so anything waiting on its unknown basis must be released here too
+          // (ADR-0074 §3). The abort listener above is the primary guarantee; this covers the
+          // job-already-cleared case, where no abort fires at all.
+          this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
           return;
         }
         // A raw throw escaping the executor poll on a LIVE job (the missing-adapter + credential cases are
@@ -1642,6 +1668,7 @@ class RunExecution {
         return;
       }
       if (this.#settled || this.#abort.signal.aborted || !this.#pendingMediaJobs.has(nodeId)) {
+        this.#budgetGovernor?.clearLegacyMediaJob(nodeId); // see the catch above — never strand a waiter
         return; // a cancel / terminal raced the poll await — let #settle close the run
       }
       await this.#applyMediaJobStatus(vertex, job, status);
