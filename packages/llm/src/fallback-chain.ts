@@ -560,7 +560,45 @@ export class FallbackChain {
       }
       return error; // pre-content throw → caller decides failover
     }
-    this.#emitSuccess(record, entry.model, usage);
+    // The success emit sits OUTSIDE the try above, deliberately — but the FOLD inside it needs its own guard
+    // (#W15-9). `#foldUsage` re-throws anything that is not `UnknownModelError` so a money bug is loud: a
+    // provider returning non-integer usage trips `assertAccountableUsage`, a broken overlay or a custom tracker
+    // throws. On the `generate()` path that work sits INSIDE the attempt's try, so the throw reaches the caller
+    // classified. Here it escaped the async generator raw — breaking this method's own contract ("a terminal
+    // failure is surfaced as an `error` chunk, not a throw") and taking down a turn whose content had already
+    // been produced and billed for.
+    //
+    // Only the fold is guarded. A throw from the attempt OBSERVER is the consumer's bug, and it keeps
+    // propagating on both paths exactly as before — narrowing here means this guard cannot quietly become the
+    // handler for someone else's defect.
+    if (usage === undefined) {
+      this.#emitSuccess(record, entry.model, undefined); // nothing to fold
+      return undefined;
+    }
+    let folded: FoldedUsage;
+    try {
+      folded = this.#foldUsage(entry.model, usage);
+    } catch (err) {
+      // A FIXED message, with the original only as `cause`. The raw text is arbitrary — a custom tracker's
+      // throw — and this message is serialized into `session:turn_completed.error` / `node:failed.error`,
+      // where `cause` never goes. `kind: 'unknown'` derives `retryable: false`, so the node-retry layer does
+      // not re-run a call the provider already billed for.
+      const error = makeLlmError({
+        provider: entry.provider.id,
+        kind: 'unknown',
+        message: 'cost accounting failed after a successful streamed attempt',
+        cause: err,
+      });
+      // The fold runs BEFORE the emit, so no success record was written — this `failed` record is the
+      // attempt's only one, not a duplicate.
+      this.#emit({ ...record, outcome: 'failed', error });
+      // SURFACED, not returned. `#runEntryStream` checks `state.committed` before it looks at the returned
+      // failure, so on the committed path a returned error is dropped on the floor — silence, in the one
+      // place the money path was made loud on purpose.
+      yield { type: 'error', error };
+      return undefined;
+    }
+    this.#emitFolded(record, usage, folded);
     return undefined;
   }
 
@@ -802,36 +840,59 @@ export class FallbackChain {
       this.#emit({ ...record, outcome: 'succeeded' });
       return;
     }
-    // `priceModel` throws `UnknownModelError` for a model id outside the pricing table (a new snapshot, an
-    // OpenAI-compatible / self-hosted / custom-base-URL model). The attempt has ALREADY succeeded and its
-    // tokens were delivered — an unpriced model must degrade to no cost, never fail the call. Cost accuracy
-    // for unlisted models is a pricing-table concern, not a runtime error.
-    //
-    // NARROW, not bare (#194): the catch used to swallow EVERY exception, so a genuine defect in the money
-    // path — a bad `Usage`, a broken overlay, a throwing custom tracker — silently produced "no cost" and
-    // looked exactly like an unpriced model. Anything that is not `UnknownModelError` now propagates, because
-    // a money bug must be loud (`docs/standards/error-handling.md` — no silent catches).
+    this.#emitFolded(record, usage, this.#foldUsage(model, usage));
+  }
+
+  /**
+   * Fold usage into the cost tracker, and return the priced/unpriced outcome.
+   *
+   * `priceModel` throws `UnknownModelError` for a model id outside the pricing table (a new snapshot, an
+   * OpenAI-compatible / self-hosted / custom-base-URL model). The attempt has ALREADY succeeded and its
+   * tokens were delivered — an unpriced model must degrade to no cost, never fail the call. Cost accuracy for
+   * unlisted models is a pricing-table concern, not a runtime error.
+   *
+   * NARROW, not bare (#194): the catch used to swallow EVERY exception, so a genuine defect in the money path —
+   * a bad `Usage`, a broken overlay, a throwing custom tracker — silently produced "no cost" and looked exactly
+   * like an unpriced model. Anything that is not `UnknownModelError` propagates, because a money bug must be
+   * loud (`docs/standards/error-handling.md` — no silent catches).
+   *
+   * Split out of {@link #emitSuccess} for #W15-9: the streaming path needs to guard THIS — an accounting
+   * defect — without also swallowing a throw from the attempt observer, which is the consumer's bug and keeps
+   * propagating on both paths exactly as before.
+   */
+  #foldUsage(model: string, usage: Usage): FoldedUsage {
     let cost: CostUpdate | undefined;
-    let unpriced = false;
     try {
       cost = this.#options.costTracker?.record(model, usage);
     } catch (error_) {
       if (!(error_ instanceof UnknownModelError)) throw error_;
-      unpriced = true;
+      return { unpriced: true };
     }
+    return { unpriced: false, ...(cost === undefined ? {} : { cost }) };
+  }
+
+  /** Emit the success record for an attempt whose usage has already been folded by {@link #foldUsage}. */
+  #emitFolded(record: AttemptRecord, usage: Usage, folded: FoldedUsage): void {
     this.#emit({
       ...record,
       // 2.6.Q's realized-cost half: distinguish "could not price" from "nothing to charge".
-      ...(unpriced ? { priced: false as const } : {}),
+      ...(folded.unpriced ? { priced: false as const } : {}),
       outcome: 'succeeded',
       usage,
-      ...(cost === undefined ? {} : { cost }),
+      ...(folded.cost === undefined ? {} : { cost: folded.cost }),
     });
   }
 
   #emit(record: AttemptRecord): void {
     this.#options.onAttempt?.(record);
   }
+}
+
+/** The outcome of folding one attempt's usage into the cost tracker — `unpriced` when the model is outside
+ *  the pricing table (`cost` absent for a reason other than "there was nothing to charge"). */
+interface FoldedUsage {
+  readonly cost?: CostUpdate;
+  readonly unpriced: boolean;
 }
 
 /** Mutable per-attempt flag: whether any content chunk has been forwarded (commits the stream). */

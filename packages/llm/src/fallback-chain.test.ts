@@ -1063,6 +1063,58 @@ describe('FallbackChain.stream', () => {
     expect(trace[0]?.cost?.costMicrocents).toBe(350_000);
   });
 
+  it('surfaces an accounting throw as an error chunk instead of throwing out of the generator (#W15-9)', async () => {
+    // `#emitSuccess` re-throws anything that is not `UnknownModelError` so a money bug is loud (#194) — a
+    // provider returning non-integer usage trips `assertAccountableUsage`, a broken overlay or a custom
+    // tracker throws. On the `generate()` path that call sits inside the attempt's try, so the throw arrives
+    // classified. On this path it sat OUTSIDE, and escaped raw — breaking `stream`'s own contract ("a terminal
+    // failure is surfaced as an `error` chunk, not a throw") and crashing the turn unclassified AFTER the
+    // content had been produced and the provider had billed for it.
+    const provider = makeProvider({
+      id: 'anthropic',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'hello' }, STOP_CHUNK]),
+    });
+    const fallback = makeProvider({
+      id: 'openai',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'never' }, STOP_CHUNK]),
+    });
+    const thrown = new TypeError('cumulative overflowed');
+    const { options, trace } = makeOptions({
+      costTracker: {
+        record: () => {
+          throw thrown;
+        },
+      } as unknown as CostTracker,
+    });
+    const chain = new FallbackChain(
+      [entry(provider, 'claude-haiku-4-5'), entry(fallback, 'gpt-5.5')],
+      options,
+    );
+
+    // Does not reject: `collect` would propagate a raw throw.
+    const chunks = await collect(chain.stream(userReq));
+
+    const last = chunks.at(-1);
+    expect(last?.type).toBe('error');
+    // A FIXED message: the raw text is arbitrary (a custom tracker's throw) and this message is serialized
+    // into the turn/node terminal, so it must not echo it. The original survives as `cause`, which no sink
+    // serializes.
+    expect(last?.type === 'error' && last.error.message).toBe(
+      'cost accounting failed after a successful streamed attempt',
+    );
+    expect(JSON.stringify(last)).not.toContain('cumulative overflowed');
+    expect(last?.type === 'error' && last.error.cause).toBe(thrown);
+    expect(last?.type === 'error' && last.error.retryable).toBe(false); // never re-run a billed call
+    // Still LOUD: the content chunks were forwarded before it, so the consumer sees both.
+    expect(chunks[0]).toEqual({ type: 'text_delta', text: 'hello' });
+    // Surfaced, NOT failed over — the provider already billed for this call.
+    expect(fallback.calls).toHaveLength(0);
+    // Exactly one attempt record, and it is the failure — `#emitSuccess` folds usage before it emits, so no
+    // success record was written first.
+    expect(trace).toHaveLength(1);
+    expect(trace[0]).toMatchObject({ outcome: 'failed' });
+  });
+
   it('records a content-free success with no usage when the stream omits a stop chunk', async () => {
     const provider = makeProvider({
       id: 'anthropic',
