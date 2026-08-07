@@ -83,6 +83,21 @@ export interface SessionPersister {
   start(): void;
   /** Record the user's text for the in-flight turn — the REPL calls this immediately before `sendMessage`. */
   beginUserTurn(text: string): void;
+  /**
+   * Persist ONE conservative budget commitment (ADR-0074 §2/§4) — the estimate twin of the `cost:updated` write.
+   *
+   * §4 puts the write here rather than in the governor because the persister already owns every `history.db`
+   * write for a session and the catalog-id resolution that goes with it. It is called DIRECTLY by the governor's
+   * emit, not through the bus: the promise this returns is the durability the governor's barrier awaits, and a
+   * bus delivery would resolve whether or not anything reached disk.
+   *
+   * The store write is synchronous under `better-sqlite3`; the async signature is the seam the barrier needs and
+   * the shape a cloud store would require anyway.
+   */
+  recordConservativeCommitment(commitment: {
+    readonly model: string;
+    readonly estimateMicrocents: number;
+  }): Promise<void>;
   /** Unsubscribe from the stream (REPL teardown). The persisted session remains resumable. */
   close(): void;
 }
@@ -371,6 +386,27 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       pendingUserText = text;
       assistantText = '';
       turnModelCatalogId = undefined; // a fresh turn: attribute the assistant row to THIS turn's egress, never a prior one
+    },
+    recordConservativeCommitment(commitment): Promise<void> {
+      // ADR-0074 §4. The store's own transaction is what makes this durable: the per-model row and the session
+      // aggregate move together under `BEGIN IMMEDIATE`, so a crash between them is impossible. Nothing here
+      // touches a realized figure — that separation is the ADR's central negative guarantee, and it lives in the
+      // store rather than being re-asserted at every caller.
+      //
+      // The catalog id is resolved the same way the realized write resolves it, so the conservative row lands on
+      // the SAME `(session, model)` bucket and the two figures stay joinable. Not awaited-then-caught here: the
+      // governor's barrier is the caller and it needs a real rejection to classify.
+      deps.store.recordSessionConservativeCommitment({
+        id: deps.uuid(),
+        sessionId: deps.sessionId,
+        model: commitment.model, // the RAW provider string — the attribution key, never the catalog UUID
+        ...(deps.resolveModelCatalogId?.(commitment.model) === undefined
+          ? {}
+          : { modelCatalogId: deps.resolveModelCatalogId(commitment.model) }),
+        estimateMicrocents: commitment.estimateMicrocents,
+        ts: deps.now(),
+      });
+      return Promise.resolve();
     },
     close(): void {
       unsubscribe?.();

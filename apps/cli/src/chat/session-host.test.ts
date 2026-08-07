@@ -911,6 +911,54 @@ describe('buildGovernorWiring', () => {
     expect(buildGovernorWiring({ ...EMPTY_CHAT, maxCostMicrocents: 0 })).toBeUndefined();
   });
 
+  describe('durable conservative commitments (ADR-0074 §4)', () => {
+    const wiringWithCap = () =>
+      buildGovernorWiring({ ...EMPTY_CHAT, maxCostMicrocents: 10_000_000, onExceed: 'fail' });
+
+    it('writes a commitment through the ATTACHED persister, with the model as the attribution key', async () => {
+      const written: { model: string; estimateMicrocents: number }[] = [];
+      const wiring = wiringWithCap();
+      wiring?.attachConservativeWriter((c) => {
+        written.push(c);
+        return Promise.resolve();
+      });
+
+      const admission = await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      admission?.settleAtReservedEstimate();
+      // The barrier is what forces the write to have completed — the next pre-egress check awaits it.
+      await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+
+      expect(written).toHaveLength(1);
+      expect(written[0]?.model).toBe('claude-haiku-4-5');
+      expect(written[0]?.estimateMicrocents).toBeGreaterThan(0);
+    });
+
+    // NOT COVERED, and demonstrably so. A commitment made BEFORE `attachConservativeWriter` runs makes the
+    // governor's emit reject, which its barrier turns into a durability failure — the alternative being a
+    // silently dropped commitment, i.e. money the cap forgets across a resume. I wrote two tests for it and
+    // mutation-tested both: replacing that `Promise.reject` with a silent `Promise.resolve()` left BOTH green,
+    // so neither was measuring the behaviour it named. They are removed rather than kept as false assurance.
+    //
+    // The gap is narrow — the path is unreachable in production, since no turn can run before the persister is
+    // built — but it is a money path, and the honest record is that it is unproven. What is still owed: a test
+    // that drives a real commitment through an unattached wiring and distinguishes reject-vs-resolve.
+
+    it('exposes §1`s release, which persisting the total makes mandatory on this surface', async () => {
+      // §1 names a long-lived chat as the harm case: "a single usage-less response would permanently shrink a
+      // long-lived chat's cap with no way out". Shipping the persistence without the release would BE that.
+      const wiring = wiringWithCap();
+      wiring?.attachConservativeWriter(() => Promise.resolve());
+      const admission = await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      admission?.settleAtReservedEstimate();
+      await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+
+      const held = wiring?.conservativeState().microcents ?? 0;
+      expect(held).toBeGreaterThan(0);
+      expect(wiring?.releaseConservativeCommitments()).toBe(held);
+      expect(wiring?.conservativeState().microcents).toBe(0);
+    });
+  });
+
   it('wires preEgress + updateCost when a positive cost cap is set', () => {
     const wiring = buildGovernorWiring({
       ...EMPTY_CHAT,
