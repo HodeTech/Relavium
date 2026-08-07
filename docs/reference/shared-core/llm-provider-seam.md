@@ -704,7 +704,7 @@ modes. The full design — gateway, key vault and pools, metering — is in
 ## Dependency posture
 
 The adapters prefer the official SDKs (`@anthropic-ai/sdk`, `openai`,
-`@google/genai`) for typed event parsing and wire/SSE handling. **Their own retry is deliberately disabled (`maxRetries: 0`) for the chain-governed calls — `FallbackChain` is the sole retry authority there (error-handling.md §6, per ADR-0011; #276). The two surfaces the chain does not sit above — live model discovery and the async media-job poll — keep a small SDK retry, because nothing else can retry them.** **DeepSeek reuses
+`@google/genai`) for typed event parsing and wire/SSE handling. **Their own retry is deliberately disabled (`maxRetries: 0`) for the chain-governed calls — `FallbackChain` is the sole retry authority there (error-handling.md §6, per ADR-0011; #276). The two surfaces the chain does not sit above — live model discovery and the async media-job poll — run with `maxRetries: 0` **as well**. A small SDK retry there was tried and REVERTED: the SDK's sleep honours `retry-after` with no ceiling and no abort awareness, so a hostile `retry-after-ms` parks the call for days.** **DeepSeek reuses
 the `openai` SDK with a custom `baseURL` (`api.deepseek.com`)** — no separate
 dependency. The SDKs live strictly **behind the adapter boundary** so they are
 swappable without touching any caller. A future implementation may drop the

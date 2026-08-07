@@ -246,7 +246,7 @@ interface ToolApprovalRequest {
 
 /** Secret-free (ENFORCED, not asserted), display-only — never a full URL/query, never a secret. */
 interface ToolActionPreview {
-  readonly path?: string;    // fs_write — the resolved target path, scrubbed per SEGMENT
+  readonly path?: string;    // fs_write — the resolved target path, scrubbed WHOLE-STRING
   readonly command?: string; // process — the resolved command string, scrubbed whole
   readonly host?: string;    // egress — the target host ONLY
 }
