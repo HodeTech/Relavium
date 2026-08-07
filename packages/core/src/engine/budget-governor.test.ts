@@ -14,6 +14,8 @@ import {
   CommitmentDurabilityError,
   isBudgetExceededError,
   isBudgetPauseError,
+  isLegacyMediaJobBasisError,
+  LegacyMediaJobBasisError,
   type BudgetAdmission,
   type GovernorEventDraft,
 } from './budget-governor.js';
@@ -274,6 +276,74 @@ describe('BudgetGovernor', () => {
       expect(isBudgetExceededError({ code: 'budget_exceeded' })).toBe(false);
       expect(isBudgetPauseError('budget_paused')).toBe(false);
       expect(isBudgetExceededError(undefined)).toBe(false);
+    });
+  });
+
+  describe('frozen media-job basis (ADR-0074 §3)', () => {
+    it('reserveAcceptedCost restores the EXACT frozen amount, with no pricing lookup', () => {
+      // The whole point of §3. `reserveCommittedEgress` re-prices from today's catalog, so a price change between
+      // a job's submission and a resume rewrote a commitment the provider had already accepted. This one cannot:
+      // it never consults pricing at all, which is why an arbitrary model id still works.
+      const { governor } = makeGovernor();
+      const admission = governor.reserveAcceptedCost('a-model-no-catalog-has-ever-heard-of', 4321);
+      expect(admission?.reservedMicrocents).toBe(4321);
+    });
+
+    it('treats 0 as "priced, reserved nothing" — not as a reservation to invent', () => {
+      // An unpriced model under a non-strict cap takes the allow-degrade path and holds NO admission at submit
+      // time. Restoring one would invent a reservation that never existed.
+      const { governor } = makeGovernor();
+      expect(governor.reserveAcceptedCost('m', 0)).toBeUndefined();
+      // And a persisted figure is the one input the governor cannot type-check its way out of.
+      expect(governor.reserveAcceptedCost('m', -5)).toBeUndefined();
+      expect(governor.reserveAcceptedCost('m', 1.5)).toBeUndefined();
+      expect(governor.reserveAcceptedCost('m', Number.NaN)).toBeUndefined();
+    });
+
+    it('HOLDS new egress while a legacy job`s basis is unknown, and says which node to wait for', async () => {
+      // §3's fail-closed rule. A pre-§3 row can only be reserved by re-pricing from today's catalog; if the price
+      // fell, that reserves less than the provider will bill, and admitting new egress spends headroom that does
+      // not exist. The refusal is a DISTINCT error from an exceeded cap because the operator's action differs:
+      // one says lower your ambition, the other says wait — the job settles on its own.
+      const { governor } = makeGovernor();
+      governor.registerLegacyMediaJob('gen-1');
+      const thrown = await governor
+        .checkPreEgress('claude-haiku-4-5', 1000)
+        .catch((e: unknown) => e);
+      expect(isLegacyMediaJobBasisError(thrown)).toBe(true);
+      expect(isBudgetExceededError(thrown)).toBe(false); // NOT confusable with a real cap breach
+      expect((thrown as LegacyMediaJobBasisError).nodeIds).toEqual(['gen-1']);
+      expect((thrown as Error).message).toContain('gen-1');
+
+      // It ends when the job settles and its realized charge replaces the guess.
+      governor.clearLegacyMediaJob('gen-1');
+      await expect(governor.checkPreEgress('claude-haiku-4-5', 1000)).resolves.toBeDefined();
+    });
+
+    it('holds regardless of on_exceed, because a governor existing IS the configured cap', async () => {
+      // §3 scopes the hold to "with a configured cap", and that needs no extra condition: the engine builds a
+      // governor only when the workflow declares a budget, and `Budget` requires `max_cost_microcents`. A run
+      // without one has no governor to refuse anything — correctly, since there is no headroom to misjudge. So
+      // the policy knob is irrelevant here; `warn` must hold exactly as `fail` does.
+      for (const onExceed of ['warn', 'fail', 'pause_for_approval'] as const) {
+        const { governor } = makeGovernor({
+          budget: { max_cost_microcents: 1_000_000, on_exceed: onExceed },
+        });
+        governor.registerLegacyMediaJob('gen-1');
+        const thrown = await governor
+          .checkPreEgress('claude-haiku-4-5', 1000)
+          .catch((e: unknown) => e);
+        expect(isLegacyMediaJobBasisError(thrown)).toBe(true);
+      }
+    });
+
+    it('is idempotent per node, so a re-entrant resume cannot strand the cap', () => {
+      const { governor } = makeGovernor();
+      governor.registerLegacyMediaJob('gen-1');
+      governor.registerLegacyMediaJob('gen-1');
+      expect(governor.legacyMediaJobNodes).toEqual(['gen-1']);
+      governor.clearLegacyMediaJob('gen-1');
+      expect(governor.legacyMediaJobNodes).toEqual([]);
     });
   });
 

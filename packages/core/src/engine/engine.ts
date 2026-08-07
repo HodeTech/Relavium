@@ -598,19 +598,41 @@ class RunExecution {
       // vertex that is missing or non-agent (an invariant violation, e.g. a workflow edited between processes);
       // there is no AgentNode to read, so the conservative per-modality DEFAULT is the only available estimate —
       // it never executes on a well-formed resume.
+      // ADR-0074 §3: prefer the basis FROZEN at submit time. Re-deriving `units` from the workflow definition
+      // means a node edited between processes silently changes the volume an accepted job was priced on; the
+      // fallback below stays only for legacy rows written before §3.
       const units =
-        vertex?.config.kind === 'agent'
+        job.units ??
+        (vertex?.config.kind === 'agent'
           ? generativeUnits(job.modality, vertex.config.node)
-          : DEFAULT_MEDIA_UNIT_ESTIMATE[job.modality];
+          : DEFAULT_MEDIA_UNIT_ESTIMATE[job.modality]);
       // This provider job was accepted before the crash, so normal cap policy cannot retroactively refuse it.
-      // Recreate only its priced reservation (if any) before poll scheduling; the eventual terminal media-cost
-      // event reconciles it with the realized charge exactly as in the original process.
-      const admission = this.#budgetGovernor?.reserveCommittedEgress(
-        job.model,
-        0,
-        [{ modality: job.modality, units }],
-        job.provider,
-      );
+      // Recreate only its reservation before poll scheduling; the eventual terminal media-cost event reconciles
+      // it with the realized charge exactly as in the original process.
+      //
+      // With a frozen `acceptedCostMicrocents` there is NO pricing lookup: a user-price or catalog change between
+      // submission and resume must not move a commitment the provider already accepted, in either direction. A
+      // legacy row has no frozen amount, so it falls back to re-pricing — which §3 requires be handled
+      // fail-closed rather than trusted.
+      let admission: BudgetAdmission | undefined;
+      if (job.acceptedCostMicrocents === undefined) {
+        admission = this.#budgetGovernor?.reserveCommittedEgress(
+          job.model,
+          0,
+          [{ modality: job.modality, units }],
+          job.provider,
+        );
+        // The reservation above is a re-price from TODAY's catalog, so it may be lower than what the provider
+        // will actually bill. Register the node as an unknown basis: with a cap configured the governor then
+        // refuses NEW egress until this job settles, rather than admitting spend against headroom that may not
+        // exist. It clears itself when the job reports its real charge.
+        this.#budgetGovernor?.registerLegacyMediaJob(job.nodeId);
+      } else {
+        admission = this.#budgetGovernor?.reserveAcceptedCost(
+          job.model,
+          job.acceptedCostMicrocents,
+        );
+      }
       this.#pendingMediaJobs.set(job.nodeId, {
         jobId: job.jobId,
         provider: job.provider,
@@ -1447,6 +1469,12 @@ class RunExecution {
       modality: job.modality,
       startedAt,
       deadlineAt,
+      // ADR-0074 §3 — freeze the money basis at submit time. `units` is the authored volume this submission was
+      // priced on, and `acceptedCostMicrocents` is what the admission actually reserved (0 when the model was
+      // unpriced and the allow-degrade path held no admission). Resume restores from these instead of
+      // re-deriving, so neither a workflow edit nor a price change can move an accepted commitment.
+      units: job.units,
+      acceptedCostMicrocents: admission?.reservedMicrocents ?? 0,
     });
     this.#armMediaPoll(vertex.id);
   }
@@ -1481,6 +1509,11 @@ class RunExecution {
     this.#pendingMediaJobs.delete(nodeId);
     this.#disarmMediaTimer(nodeId);
     this.#pauseEpisode = false;
+    // ADR-0074 §3: the job is over, so its unknown-basis hold ends with it — done, failed, deadline or cancel
+    // alike, because every one of those settles the realized charge (`#emitMediaJobCost` fires on all of them).
+    // Placed HERE, at the single choke point every exit route already goes through, so a future exit path cannot
+    // forget it and strand the cap in a permanent refusal.
+    this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
   }
 
   /** Emit the lone realized media-cost addend for a job (ADR-0045 §5) — folded into the run cumulative +

@@ -42,7 +42,8 @@ const sessionBase = { sessionId: nonEmptyString, ...timestampSeq };
  * (`agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` / `cost:updated`), plus
  * `agent:approval_requested` (dual at the schema level, but session-only-emitted in Phase 2.5 — the chat
  * approval regime) and `budget:estimate_committed` (ADR-0074 §2). **This spread is the definition of the set** —
- * every member is a `...dualBase` spread and nothing else, so grep it rather than trusting a hand-kept count. They carry `runId` on a run and `sessionId` on a session. A `discriminatedUnion`
+ * every member is a `...dualBase` spread and nothing else, so grep it rather than trusting a hand-kept count.
+ * They carry `runId` on a run and `sessionId` on a session. A `discriminatedUnion`
  * *member* can't carry a cross-field refinement, so the "exactly one of runId / sessionId" invariant is
  * enforced at the **union** level (see `RunEventSchema`). Run-only / session-only events satisfy it by
  * construction (the other key isn't declared, so it is stripped on parse), so the check only constrains
@@ -371,6 +372,27 @@ export const MediaJobSubmittedEventSchema = z.object({
   // deadlineAt = startedAt + [defaults].media_job_deadline_ms; on resume `now > deadlineAt` short-circuits a
   // doomed re-poll. An offset is allowed, so a consumer MUST compare via Date.parse, never lexicographically.
   deadlineAt: z.string().datetime({ offset: true }),
+  /**
+   * The exact authored billed volume at SUBMIT time (count for image, `duration_seconds` for audio/video) —
+   * frozen here by [ADR-0074](../../docs/decisions/0074-durable-conservative-budget-commitments.md) §3.
+   *
+   * Resume used to recompute this from the workflow definition, so editing the node between processes silently
+   * changed the basis of a job the provider had already accepted. Optional because rows written before §3 do not
+   * carry it; absent means LEGACY, and a resumed legacy job is handled fail-closed rather than re-derived.
+   */
+  units: positiveInt.optional(),
+  /**
+   * The priced amount actually reserved for this job's admission at submit time — the number a resume restores
+   * WITHOUT a pricing lookup (ADR-0074 §3).
+   *
+   * `nonNegativeInt`, not `positiveInt`: `0` is meaningful and distinct from absent. It says the submission was
+   * priced and reserved nothing — an unpriced model under a non-strict cap takes the documented allow-degrade
+   * path and holds no admission. Absent says the row predates §3 and the basis is simply unknown.
+   *
+   * A user-price or catalog change after submission cannot move an already accepted commitment, and cannot
+   * rewrite the job's historical cost.
+   */
+  acceptedCostMicrocents: nonNegativeInt.optional(),
 });
 export type MediaJobSubmittedEvent = z.infer<typeof MediaJobSubmittedEventSchema>;
 

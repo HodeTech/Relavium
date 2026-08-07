@@ -133,6 +133,17 @@ export interface BudgetAdmission {
   readonly settleAtReservedEstimate: (origin?: CommitmentOrigin) => void;
   /** Drop an admission that produced no attributable realized cost. Equivalent to `settle(0)`. */
   readonly release: () => void;
+  /**
+   * The exact priced amount this admission reserved — the number ADR-0074 §3 freezes onto
+   * `media_job:submitted.acceptedCostMicrocents` at submit time.
+   *
+   * Without it the resume path had to RE-PRICE an already-accepted job, so a user-price or catalog change between
+   * submission and resume silently rewrote a commitment the provider had already accepted.
+   *
+   * Optional so the many hand-built `{ settle, settleAtReservedEstimate, release }` doubles in the test suite stay
+   * constructible; every admission the governor actually issues carries it.
+   */
+  readonly reservedMicrocents?: number;
 }
 
 /** Internal evaluation detail: the public verdict stays compact while admission keeps the exact priced estimate. */
@@ -146,6 +157,32 @@ interface BudgetEvaluation {
 type EstimateResult =
   | { readonly kind: 'priced'; readonly estimateMicrocents: number }
   | { readonly kind: 'unpriced' };
+
+/**
+ * New egress is refused while a resumed media job's money basis is unknown (ADR-0074 §3).
+ *
+ * Distinct from {@link BudgetExceededError} on purpose, and that distinction IS §3's observability requirement:
+ * "the compatibility fallback is observable so operators can distinguish legacy uncertainty from a current priced
+ * submission." A cap that was genuinely exceeded and a cap we merely cannot trust demand different actions — the
+ * first says lower your ambition, the second says wait for the job to settle, which it will on its own.
+ */
+export class LegacyMediaJobBasisError extends Error {
+  override readonly name = 'LegacyMediaJobBasisError';
+  readonly code = 'legacy_media_job_basis' as const;
+
+  constructor(readonly nodeIds: readonly string[]) {
+    super(
+      `new egress is held while a resumed media job submitted by an older version of Relavium settles ` +
+        `(node${nodeIds.length === 1 ? '' : 's'} ${nodeIds.join(', ')}): its cost basis was not recorded, so the ` +
+        `cap cannot be trusted until the job reports its real charge`,
+    );
+  }
+}
+
+/** Narrow a thrown value to {@link LegacyMediaJobBasisError} by its `code` — see {@link isBudgetExceededError}. */
+export function isLegacyMediaJobBasisError(value: unknown): value is LegacyMediaJobBasisError {
+  return value instanceof Error && 'code' in value && value.code === 'legacy_media_job_basis';
+}
 
 /**
  * Narrow a thrown value to {@link BudgetExceededError} by its `code` (D10).
@@ -283,6 +320,20 @@ export class BudgetGovernor {
    * via {@link conservativeDurabilityBroken}.
    */
   #durabilityBroken = false;
+  /**
+   * Nodes with a resumed media job whose money basis is UNKNOWN — a row written before ADR-0074 §3 froze it.
+   *
+   * §3: "With a configured cap, a resumed legacy pending job is treated fail-closed for new egress until it
+   * settles; it is never silently under-reserved from a newer, cheaper price." The hazard is specific: the only
+   * reservation we can make for such a job is a re-price from TODAY's catalog, and if the price dropped, that
+   * reserves less than the provider will actually bill — so the cap would admit new spend against headroom that
+   * does not exist. Refusing new egress until the job settles is the only honest answer, because when it settles
+   * the realized charge replaces the guess and the uncertainty is gone.
+   *
+   * Cleared per node by {@link clearLegacyMediaJob}. Empty in every run that has no pre-§3 rows, which is every
+   * run started after §3 ships — so this costs nothing on the normal path.
+   */
+  readonly #legacyMediaJobNodes = new Set<string>();
   #reservedCostMicrocents = 0;
   #nextAdmissionId = 0;
   readonly #reservedAdmissions = new Map<number, number>();
@@ -462,6 +513,18 @@ export class BudgetGovernor {
     if (this.#pendingCommitments > 0 || this.#commitmentFailure !== undefined) {
       await this.flushCommitments();
     }
+    // ADR-0074 §3's fail-closed gate. A resumed pre-§3 media job holds a reservation we could only obtain by
+    // RE-PRICING from today's catalog; if the price fell since submission, that reserves less than the provider
+    // will bill, and admitting new egress against the difference spends headroom that does not exist. It lasts
+    // only until the job settles and its realized charge replaces the guess.
+    //
+    // §3 scopes this to "with a configured cap", and no extra condition is needed to honour that: the engine
+    // constructs a governor ONLY when the workflow declares a budget, and `Budget` requires
+    // `max_cost_microcents`. So reaching this line already means a cap exists — a run without one has no
+    // governor to refuse anything, which is the correct behaviour (there is no headroom to misjudge).
+    if (this.#legacyMediaJobNodes.size > 0) {
+      throw new LegacyMediaJobBasisError([...this.#legacyMediaJobNodes]);
+    }
     const evaluation = this.#evaluate(model, maxTokens, mediaUnitsEstimate, provider);
     const { result } = evaluation;
     if (result.kind === 'allow') return this.#admit(model, evaluation.estimateMicrocents);
@@ -620,6 +683,44 @@ export class BudgetGovernor {
   }
 
   /**
+   * Mark a resumed media job as carrying a pre-§3, unknown money basis (ADR-0074 §3).
+   *
+   * Deliberately node-keyed rather than a bare counter: the refusal message can then name what to wait for, and a
+   * re-entrant resume of the same node cannot double-register.
+   */
+  registerLegacyMediaJob(nodeId: string): void {
+    this.#legacyMediaJobNodes.add(nodeId);
+  }
+
+  /** The job settled, so its realized charge has replaced the guess — the uncertainty is over. */
+  clearLegacyMediaJob(nodeId: string): void {
+    this.#legacyMediaJobNodes.delete(nodeId);
+  }
+
+  /** Node ids whose resumed media job has an unknown money basis — what a surface renders to explain a refusal. */
+  get legacyMediaJobNodes(): readonly string[] {
+    return [...this.#legacyMediaJobNodes];
+  }
+
+  /**
+   * Recreate a reservation at an amount that was ALREADY priced and accepted — no pricing lookup (ADR-0074 §3).
+   *
+   * The difference from {@link reserveCommittedEgress} is the whole point: that one re-prices from the current
+   * catalog and user overlay, so a price change between a job's submission and a resume silently rewrote a
+   * commitment the provider had already accepted. This one restores the exact frozen figure.
+   *
+   * `0` is a legitimate input and correctly yields no admission — an unpriced model under a non-strict cap took
+   * the allow-degrade path and held none at submit time either, so restoring one would invent a reservation that
+   * never existed.
+   */
+  reserveAcceptedCost(model: string, acceptedMicrocents: number): BudgetAdmission | undefined {
+    // Guarded like `restoreConservativeCost`: this reads a persisted figure from a `run_events` row, which is the
+    // one input path the governor cannot type-check its way out of.
+    if (!Number.isSafeInteger(acceptedMicrocents) || acceptedMicrocents <= 0) return undefined;
+    return this.#admit(model, acceptedMicrocents);
+  }
+
+  /**
    * Recreate a reservation for egress that is already irrevocably submitted (currently an async media job during
    * checkpoint resume). It intentionally bypasses cap policy and warnings: rejecting a job after its provider has
    * accepted it cannot prevent spend. Unknown prices have no meaningful reservation and preserve the normal
@@ -688,6 +789,7 @@ export class BudgetGovernor {
       }
     };
     return {
+      reservedMicrocents: estimateMicrocents,
       settle,
       settleAtReservedEstimate: (origin) => {
         if (settled) return;

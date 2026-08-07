@@ -56,6 +56,17 @@ export interface CheckpointPendingMediaJob {
   /** ISO-8601 submit time and absolute deadline; on resume `now > deadlineAt` short-circuits a doomed re-poll. */
   readonly startedAt: string;
   readonly deadlineAt: string;
+  /**
+   * The money basis FROZEN at submit time ([ADR-0074](../../../../docs/decisions/0074-durable-conservative-budget-commitments.md) §3):
+   * the authored billed volume, and the amount the admission actually reserved.
+   *
+   * Both absent ⇒ a LEGACY row written before §3. Resume then has to re-derive the volume from the workflow
+   * definition and re-price from the current catalog — which is exactly what §3 stops doing, because a node edit
+   * or a price change between submission and resume would otherwise move a commitment the provider had already
+   * accepted. A legacy job is therefore handled fail-closed rather than trusted.
+   */
+  readonly units?: number;
+  readonly acceptedCostMicrocents?: number;
 }
 
 /** The derived state a rehydrating run is rebuilt from — never a persisted blob (reconstructed from rows). */
@@ -241,6 +252,12 @@ function applyMediaJobEvent(acc: ReconAccumulator, event: RunEvent): void {
     modality: event.modality,
     startedAt: event.startedAt,
     deadlineAt: event.deadlineAt,
+    // Carried through verbatim, never defaulted: ABSENT is the signal that this row predates ADR-0074 §3, and
+    // substituting a value here would erase the very distinction the resume path needs.
+    ...(event.units === undefined ? {} : { units: event.units }),
+    ...(event.acceptedCostMicrocents === undefined
+      ? {}
+      : { acceptedCostMicrocents: event.acceptedCostMicrocents }),
   });
 }
 

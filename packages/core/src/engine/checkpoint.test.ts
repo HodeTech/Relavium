@@ -107,6 +107,53 @@ describe('reconstructCheckpointState', () => {
     });
   });
 
+  describe('frozen media-job basis (ADR-0074 §3)', () => {
+    /** `extra` is deliberately loose so a test can OMIT the §3 fields — the legacy shape it must still read. */
+    const submitted = (extra: {
+      readonly units?: number;
+      readonly acceptedCostMicrocents?: number;
+    }): RunEvent => ({
+      type: 'media_job:submitted',
+      ...base(1),
+      nodeId: 'gen',
+      jobId: 'job-1',
+      provider: 'openai',
+      model: 'gpt-image-1',
+      modality: 'image',
+      startedAt: TS,
+      deadlineAt: TS,
+      ...extra,
+    });
+
+    it('carries the frozen units and accepted cost through to resume', () => {
+      const state = reconstructCheckpointState([
+        started,
+        submitted({ units: 3, acceptedCostMicrocents: 12_000 }),
+      ]);
+      const job = state?.pendingMediaJobs[0];
+      expect(job?.units).toBe(3);
+      expect(job?.acceptedCostMicrocents).toBe(12_000);
+    });
+
+    it('leaves both ABSENT for a legacy row rather than defaulting them', () => {
+      // The distinction is the whole mechanism: absent is what tells resume the basis is unknown, so it must
+      // re-price AND fail closed. Substituting a value here would erase exactly that signal — and a `0` default
+      // would be worse than wrong, since `0` legitimately means "priced, reserved nothing".
+      const state = reconstructCheckpointState([started, submitted({})]);
+      const job = state?.pendingMediaJobs[0];
+      expect(job !== undefined && 'units' in job).toBe(false);
+      expect(job !== undefined && 'acceptedCostMicrocents' in job).toBe(false);
+    });
+
+    it('keeps a frozen ZERO distinguishable from a legacy absence', () => {
+      const state = reconstructCheckpointState([
+        started,
+        submitted({ units: 1, acceptedCostMicrocents: 0 }),
+      ]);
+      expect(state?.pendingMediaJobs[0]?.acceptedCostMicrocents).toBe(0);
+    });
+  });
+
   it('returns undefined for a run with no run:started', () => {
     expect(reconstructCheckpointState([completed(1, 'a', 1)])).toBeUndefined();
   });
