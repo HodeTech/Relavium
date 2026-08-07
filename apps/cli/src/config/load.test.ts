@@ -1,4 +1,12 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -111,6 +119,9 @@ describe('loadConfigFile', () => {
  * on Windows.
  */
 describe('loadConfigFile — the 0600 re-assert on read (#33)', () => {
+  // Opt-in since #W15-13: only the canonical global config self-heals. See the two tests at the end of this
+  // block for the layers that must NOT.
+  const HEAL = { selfHealMode: true } as const;
   const POSIX = process.platform !== 'win32';
   let dir: string;
   beforeEach(() => {
@@ -127,7 +138,7 @@ describe('loadConfigFile — the 0600 re-assert on read (#33)', () => {
     writeFileSync(file, 'update_channel = "beta"\n');
     chmodSync(file, 0o644);
     // …and still returns the parsed config: the self-heal is a side effect, never a gate.
-    expect(loadConfigFile(file, GlobalConfigSchema)).toEqual({ update_channel: 'beta' });
+    expect(loadConfigFile(file, GlobalConfigSchema, HEAL)).toEqual({ update_channel: 'beta' });
     expect(modeOf(file)).toBe(0o600);
   });
 
@@ -137,7 +148,7 @@ describe('loadConfigFile — the 0600 re-assert on read (#33)', () => {
       const file = join(dir, 'config.toml');
       writeFileSync(file, 'update_channel = "beta"\n');
       chmodSync(file, 0o600);
-      expect(loadConfigFile(file, GlobalConfigSchema)).toEqual({ update_channel: 'beta' });
+      expect(loadConfigFile(file, GlobalConfigSchema, HEAL)).toEqual({ update_channel: 'beta' });
       expect(modeOf(file)).toBe(0o600);
     },
   );
@@ -154,12 +165,38 @@ describe('loadConfigFile — the 0600 re-assert on read (#33)', () => {
       chmodSync(file, 0o444);
       chmodSync(readOnlyDir, 0o500);
       try {
-        expect(loadConfigFile(file, GlobalConfigSchema)).toEqual({ update_channel: 'beta' });
+        expect(loadConfigFile(file, GlobalConfigSchema, HEAL)).toEqual({ update_channel: 'beta' });
       } finally {
         chmodSync(readOnlyDir, 0o700); // so the temp dir can be swept
       }
     },
   );
+
+  it.skipIf(!POSIX)(
+    'does NOT touch a layer that did not opt in — project configs are committed (#W15-13)',
+    () => {
+      // `config-spec.md` says `workspace.toml` / `project.toml` are committed and shared. Healing them meant
+      // that merely READING a project's config rewrote a mode in the user's repo, surfacing as an unexplained
+      // `git diff` on a file the CLI was only supposed to read.
+      const file = join(dir, 'project.toml');
+      writeFileSync(file, 'update_channel = "beta"\n');
+      chmodSync(file, 0o644);
+      expect(loadConfigFile(file, GlobalConfigSchema)).toEqual({ update_channel: 'beta' });
+      expect(modeOf(file)).toBe(0o644); // unchanged
+    },
+  );
+
+  it.skipIf(!POSIX)('does NOT follow a symlink when healing (#W15-13)', () => {
+    // `stat` followed the link to get here and `chmod` would follow it too, changing the mode of whatever the
+    // link points at — a file this heal has no business touching.
+    const target = join(dir, 'elsewhere.toml');
+    const link = join(dir, 'config.toml');
+    writeFileSync(target, 'update_channel = "beta"\n');
+    chmodSync(target, 0o644);
+    symlinkSync(target, link);
+    expect(loadConfigFile(link, GlobalConfigSchema, HEAL)).toEqual({ update_channel: 'beta' });
+    expect(modeOf(target)).toBe(0o644); // the link's target is left exactly as it was
+  });
 });
 
 describe('loadResolvedConfig', () => {
