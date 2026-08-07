@@ -537,6 +537,7 @@ session variables); `agent_snapshot` freezes the agent config the session ran ag
 | `total_input_tokens` | INTEGER | NOT NULL DEFAULT 0 |
 | `total_output_tokens` | INTEGER | NOT NULL DEFAULT 0 |
 | `total_cost_microcents` | INTEGER | NOT NULL DEFAULT 0 |
+| `total_conservative_microcents` | INTEGER | NOT NULL DEFAULT 0 — the session's **conservative** total ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §1/§4): money a provider MAY already have billed for an attempt that returned no trustworthy usage. An **ESTIMATE**, deliberately apart from `total_cost_microcents` — it consumes cap capacity across a resume without ever inflating a reported cost. Single-writer (`recordSessionConservativeCommitment`), like its realized sibling |
 | `exported_workflow_path` | TEXT | NULL — set when the session is exported to a `.relavium.yaml` |
 | `deleted_at` | INTEGER | NULL |
 | `created_at` | INTEGER | NOT NULL |
@@ -591,6 +592,12 @@ The durable **per-`(session, model)` money attribution** ([ADR-0070](../../decis
 > **The invariant, true by construction for every session:**
 > `SUM(session_costs.cost_microcents) == agent_sessions.total_cost_microcents`.
 >
+> That invariant is **realized-only**, and stays so. `agent_sessions.total_conservative_microcents` is a separate
+> aggregate reconciled by `SUM(session_costs.conservative_microcents)` ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §4),
+> written only by `recordSessionConservativeCommitment` in the same one-transaction, two-additive-writes shape.
+> The two totals are never added together: one is spend, the other an upper bound on spend that may already have
+> been billed, and folding them would present an estimate as an invoice.
+>
 > Both sides are fed by the **same** `cost:updated` egress, with the same arithmetic, in the **same transaction**,
 > from a **single owner** (`SessionStore.recordSessionCost` — `total_cost_microcents` is written by nothing else).
 > It holds across resume, reseat, failover, tool loops, compaction, errored turns and aborted turns. It is
@@ -607,7 +614,8 @@ The durable **per-`(session, model)` money attribution** ([ADR-0070](../../decis
 | `input_tokens` | INTEGER | NOT NULL DEFAULT 0 |
 | `output_tokens` | INTEGER | NOT NULL DEFAULT 0 |
 | `cost_microcents` | INTEGER | NOT NULL DEFAULT 0 |
-| `call_count` | INTEGER | NOT NULL DEFAULT 0 — **every** `cost:updated` folded into this row, priced or not |
+| `conservative_microcents` | INTEGER | NOT NULL DEFAULT 0 — the per-model **conservative** attribution ([ADR-0074](../../decisions/0074-durable-conservative-budget-commitments.md) §4), on the SAME `(session_id, model, is_legacy)` key as the realized figure so the two are joinable per model. An estimate; a surface renders it as *estimated, possibly billed* and never sums it into `cost_microcents` |
+| `call_count` | INTEGER | NOT NULL DEFAULT 0 — **every** `cost:updated` folded into this row, priced or not. **Since ADR-0074 §4 a row may exist with `call_count = 0` and `is_legacy = 0`** — a conservative commitment made before any realized egress on that model. Any repair/audit query that treated `call_count = 0` as "not a real egress row" must account for it |
 | `unpriced_calls` | INTEGER | NOT NULL DEFAULT 0 — the **subset** of `call_count` we could not price (a `$0` row with real tokens is **unpriced**, not free). `unpriced_calls <= call_count` always; `/cost` renders it as "price unknown for N of M calls" |
 | `is_legacy` | INTEGER (bool) | NOT NULL DEFAULT 0 — `1` **only** on the aggregate row a pre-2.6.C session was backfilled with (0009 writes the row, **0010** adds this column and flags it; [ADR-0070](../../decisions/0070-durable-per-model-session-cost-attribution.md) §4). It is in the unique index, so a real egress (always `0`) can never upsert onto that row. **Branch on this column, never on the `model` string** — the `(pre-2.6.C)` label is not reserved, and a custom model may legally be named it |
 | `created_at` | INTEGER | NOT NULL |

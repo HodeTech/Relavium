@@ -412,13 +412,15 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       // The catalog id is resolved the same way the realized write resolves it, so the conservative row lands on
       // the SAME `(session, model)` bucket and the two figures stay joinable. Not awaited-then-caught here: the
       // governor's barrier is the caller and it needs a real rejection to classify.
+      // ONCE, not twice: the resolver is documented "live per lookup", so calling it in both the guard and the
+      // value costs two catalog queries on a promise the governor's barrier awaits — and leaves a window where a
+      // concurrent `/models` refresh between them yields `undefined`. The realized path already does this.
+      const catalogId = deps.resolveModelCatalogId?.(commitment.model);
       deps.store.recordSessionConservativeCommitment({
         id: deps.uuid(),
         sessionId: deps.sessionId,
         model: commitment.model, // the RAW provider string — the attribution key, never the catalog UUID
-        ...(deps.resolveModelCatalogId?.(commitment.model) === undefined
-          ? {}
-          : { modelCatalogId: deps.resolveModelCatalogId(commitment.model) }),
+        ...(catalogId === undefined ? {} : { modelCatalogId: catalogId }),
         estimateMicrocents: commitment.estimateMicrocents,
         ts: deps.now(),
       });

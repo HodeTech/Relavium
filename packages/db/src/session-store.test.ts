@@ -712,6 +712,16 @@ describe('SessionStore — writeTurn is atomic (#228)', () => {
       });
     }
     expect(store.loadSession('sess-1')?.totalConservativeMicrocents).toBe(750);
+    // The INSERT branch's literals, asserted rather than assumed. `callCount: 1` would make `/cost` print
+    // "(1 call, 0 tok)" for an attempt that produced no usage; `isLegacy: true` would land the commitment on a
+    // SECOND row under the `(session, model, is_legacy)` index — and for a model named `(pre-2.6.C)` it would
+    // upsert straight onto the 0009 backfill aggregate, the collision ADR-0070 §4 exists to prevent.
+    const m1 = store.loadSessionCosts('sess-1').find((r) => r.model === 'm1');
+    expect(m1?.costMicrocents).toBe(0);
+    expect(m1?.callCount).toBe(0);
+    expect(m1?.unpricedCalls).toBe(0);
+    expect(m1?.isLegacy).toBe(false);
+    expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(0);
     const byModel = new Map(
       store.loadSessionCosts('sess-1').map((r) => [r.model, r.conservativeMicrocents]),
     );

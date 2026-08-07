@@ -120,6 +120,25 @@ describe('createSessionPersister', () => {
 
   /* --- #228: a failed turn write must leave NOTHING, not half a turn --- */
 
+  it('carries a conservative commitment through to history.db (ADR-0074 §4)', async () => {
+    // The seam nothing crossed before: persister → store → the two columns. Every other test of this path drove
+    // a FAKE writer, which is exactly how five unwired construction sites shipped green.
+    const { persister, store } = await setup(scriptedResolver([textTurn('hi')]));
+    persister.start();
+    await persister.recordConservativeCommitment({
+      model: 'claude-haiku-4-5',
+      estimateMicrocents: 900,
+    });
+
+    expect(store.loadSession('sess-1')?.totalConservativeMicrocents).toBe(900);
+    const row = store.loadSessionCosts('sess-1').find((r) => r.model === 'claude-haiku-4-5');
+    expect(row?.conservativeMicrocents).toBe(900);
+    // An ESTIMATE — the realized side is untouched, which is ADR-0070's invariant surviving ADR-0074.
+    expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(0);
+    expect(row?.costMicrocents).toBe(0);
+    expect(row?.callCount).toBe(0);
+  });
+
   it('writes a turn ATOMICALLY — a mid-turn failure persists neither message', async () => {
     const { built, persister } = await setup(scriptedResolver([textTurn('hi'), textTurn('again')]));
     built.session.start();

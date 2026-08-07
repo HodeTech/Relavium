@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { BudgetExceededError, BudgetPauseError } from '@relavium/core';
+import { BudgetExceededError, BudgetPauseError, CommitmentDurabilityError } from '@relavium/core';
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import {
   buildServerToolDefs,
@@ -933,15 +933,32 @@ describe('buildGovernorWiring', () => {
       expect(written[0]?.estimateMicrocents).toBeGreaterThan(0);
     });
 
-    // NOT COVERED, and demonstrably so. A commitment made BEFORE `attachConservativeWriter` runs makes the
-    // governor's emit reject, which its barrier turns into a durability failure — the alternative being a
-    // silently dropped commitment, i.e. money the cap forgets across a resume. I wrote two tests for it and
-    // mutation-tested both: replacing that `Promise.reject` with a silent `Promise.resolve()` left BOTH green,
-    // so neither was measuring the behaviour it named. They are removed rather than kept as false assurance.
-    //
-    // The gap is narrow — the path is unreachable in production, since no turn can run before the persister is
-    // built — but it is a money path, and the honest record is that it is unproven. What is still owed: a test
-    // that drives a real commitment through an unattached wiring and distinguishes reject-vs-resolve.
+    it('FAILS LOUDLY when a commitment is made before the writer is attached', async () => {
+      // A commitment made before `attachConservativeWriter` runs makes the emit reject, which the governor's
+      // barrier turns into a durability failure — the alternative being a silently dropped commitment, i.e.
+      // money the cap forgets across a resume.
+      //
+      // Worth knowing how this test was nearly lost. I removed two earlier versions after a mutation check
+      // showed them "staying green" — but the mutation had never been applied: my edit script matched a source
+      // string that a prettier reflow had already changed, so it silently no-oped and I read an unmutated run as
+      // proof of vacuity. The tests were probably fine; the harness was not. Verified properly this time —
+      // replacing the reject with a silent resolve reddens this, with "promise resolved instead of rejecting".
+      //
+      // Two lines still earn their place. `expect(admission).toBeDefined()` pins that the emit path is reachable
+      // AT ALL: it is only reached for a PRICED model, since an unpriced one gets no admission and
+      // `settleAtReservedEstimate()` on `undefined` is a silent no-op. And the typed `toBeInstanceOf` matters
+      // because a bare `.toThrow()` would also pass on a tripped cap.
+      const wiring = wiringWithCap();
+      const admission = await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      expect(admission).toBeDefined(); // pins that the emit path is reachable AT ALL
+      admission?.settleAtReservedEstimate();
+      await expect(
+        wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 }),
+      ).rejects.toBeInstanceOf(CommitmentDurabilityError);
+      expect(wiring?.conservativeState().durabilityBroken).toBe(true);
+      // …and the debit is NOT rolled back: the provider may already have billed it.
+      expect(wiring?.conservativeState().microcents).toBeGreaterThan(0);
+    });
 
     it('exposes §1`s release, which persisting the total makes mandatory on this surface', async () => {
       // §1 names a long-lived chat as the harm case: "a single usage-less response would permanently shrink a

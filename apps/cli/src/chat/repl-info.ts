@@ -54,11 +54,24 @@ export function costNotice(totalCostMicrocents: number, rows: readonly SessionCo
       return `${money}  before per-model attribution — breakdown unavailable (this spend predates it)`;
     }
 
+    // ADR-0074 §1/§4 — the conservative estimate, rendered as *estimated, possibly billed* and NEVER added into
+    // the money figure. It is what the cap is actually holding against this model, so a user refused a turn on a
+    // `$0.0000` session can see why. Same wording as `relavium logs`, so the two surfaces cannot drift.
+    const held =
+      r.conservativeMicrocents > 0
+        ? `  — ~${r.conservativeMicrocents}µ¢ estimated, possibly billed`
+        : '';
+    // A commitment made BEFORE any realized egress on this model leaves a row with no calls and no tokens. Saying
+    // "(0 calls, 0 tok)" would assert the model was used zero times for zero money, while an estimate against it
+    // is holding the cap — the opposite of what the panel is for.
+    if (r.callCount === 0 && r.conservativeMicrocents > 0) {
+      return `${money}  ${sanitizeInline(r.model)}  (no completed call)${held}`;
+    }
     const calls = `${r.callCount} ${r.callCount === 1 ? 'call' : 'calls'}`;
     const tokens = `${r.inputTokens + r.outputTokens} tok`;
     const unpriced =
       r.unpricedCalls > 0 ? `  — price unknown for ${r.unpricedCalls} of ${calls}` : '';
-    return `${money}  ${sanitizeInline(r.model)}  (${calls}, ${tokens})${unpriced}`;
+    return `${money}  ${sanitizeInline(r.model)}  (${calls}, ${tokens})${unpriced}${held}`;
   });
   return [total, ...lines].join('\n');
 }
