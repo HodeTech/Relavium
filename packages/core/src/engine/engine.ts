@@ -423,6 +423,12 @@ class RunExecution {
       // and the run never emits a terminal — an unkillable run, which is strictly worse than the
       // under-reservation the hold prevents. The awaited job cannot rescue it either: its poll returns silently
       // once the signal is aborted. Registered ONCE here, so no future abort site can forget it.
+      //
+      // NOT yet covered by an engine-level test: removing this listener compiles and leaves the whole suite
+      // green, because the only proof lives in `budget-governor.test.ts` and exercises the governor in
+      // isolation. The missing case is a budgeted resume with a legacy media job AND a concurrent sibling,
+      // cancelled mid-hold, asserting the run still reaches `run:cancelled`. Recorded rather than glossed: this
+      // exact composition gap — unit-correct parts, untested together — is what let the hang ship.
       this.#abort.signal.addEventListener('abort', () => {
         this.#budgetGovernor?.releaseAllLegacyMediaJobHolds();
       });
