@@ -274,6 +274,13 @@ export interface WorkflowEngineDeps {
    * engine cannot print; the host routes it (`run` → stderr). Absent ⇒ silent (`strict_cost_cap` is the block).
    */
   readonly onUnpriced?: (model: string, capMicrocents: number) => void;
+  /**
+   * Called once when new egress is HELD because a resumed media job's cost basis is unknown — a row written
+   * before ADR-0074 §3 froze it. §3 requires this fallback be observable; without it a `resume` looks like an
+   * unexplained stall. The engine cannot print; the host routes it (`run`/`gate` → stderr), exactly as
+   * {@link onUnpriced}. Absent ⇒ silent.
+   */
+  readonly onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
 }
 
 function maskInputs(
@@ -372,6 +379,7 @@ class RunExecution {
     resolvePrice?: PricingOverlay;
     resolveEndpoint?: (provider: ProviderId) => EndpointKind;
     onUnpriced?: (model: string, capMicrocents: number) => void;
+    onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
     /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
     checkpoint?: CheckpointState;
   }) {
@@ -406,6 +414,9 @@ class RunExecution {
           ? {}
           : { resolveEndpoint: params.resolveEndpoint }),
         ...(params.onUnpriced === undefined ? {} : { onUnpriced: params.onUnpriced }),
+        ...(params.onLegacyMediaJobHold === undefined
+          ? {}
+          : { onLegacyMediaJobHold: params.onLegacyMediaJobHold }),
       });
     }
 

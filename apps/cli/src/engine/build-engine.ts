@@ -74,6 +74,8 @@ export interface BuildEngineOptions {
    * never stdout (`--json`). The governor already dedups per model. Absent ⇒ silent.
    */
   readonly onUnpriced?: (model: string, capMicrocents: number) => void;
+  /** ADR-0074 §3 — new egress is held while a resumed legacy media job's cost basis is unknown. Routed to stderr. */
+  readonly onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
 }
 
 /**
@@ -181,5 +183,8 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     // apply to it. `run.ts` routes this to stderr (never stdout — `--json`); `budget.strict_cost_cap` is the
     // block-instead option for a run that must not proceed unpriced.
     ...(options.onUnpriced === undefined ? {} : { onUnpriced: options.onUnpriced }),
+    ...(options.onLegacyMediaJobHold === undefined
+      ? {}
+      : { onLegacyMediaJobHold: options.onLegacyMediaJobHold }),
   });
 }

@@ -29,6 +29,7 @@ describe('BudgetGovernor', () => {
       defaultMaxTokensEstimate?: number;
       resolvePrice?: PricingOverlay;
       resolveEndpoint?: (provider: ProviderId) => EndpointKind;
+      onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
       /** Let a test make the durable write FAIL — ADR-0074 §2's "never releases capacity" path. */
       emitOutcome?: (event: GovernorEventDraft) => Promise<void>;
     } = {},
@@ -52,6 +53,9 @@ describe('BudgetGovernor', () => {
         ? {}
         : { resolveEndpoint: overrides.resolveEndpoint }),
       onUnpriced: (model) => unpriced.push(model),
+      ...(overrides.onLegacyMediaJobHold === undefined
+        ? {}
+        : { onLegacyMediaJobHold: overrides.onLegacyMediaJobHold }),
       emit: (event) => {
         emitted.push(event);
         if (event.type === 'budget:warning') warnings.push(event);
@@ -304,6 +308,35 @@ describe('BudgetGovernor', () => {
       expect(governor.reserveAcceptedCost('m', -5)).toBeUndefined();
       expect(governor.reserveAcceptedCost('m', 1.5)).toBeUndefined();
       expect(governor.reserveAcceptedCost('m', Number.NaN)).toBeUndefined();
+    });
+
+    it('ANNOUNCES the hold once per wait, so a resume is not an unexplained stall', async () => {
+      // §3 requires the compatibility fallback be observable "so operators can distinguish legacy uncertainty
+      // from a current priced submission". Turning the throw into a wait removed the only signal there was —
+      // correct behaviour presented as a mysterious hang is the worst possible presentation of it.
+      const held: (readonly string[])[] = [];
+      const { governor } = makeGovernor({ onLegacyMediaJobHold: (ids) => held.push(ids) });
+      governor.registerLegacyMediaJob('gen-1');
+      const pending = governor.checkPreEgress('claude-haiku-4-5', 1000);
+      await Promise.resolve();
+      expect(held).toEqual([['gen-1']]); // announced BEFORE the first await, naming what to wait for
+      governor.clearLegacyMediaJob('gen-1');
+      await pending;
+      // Not announced when there is nothing to hold.
+      await governor.checkPreEgress('claude-haiku-4-5', 1000);
+      expect(held).toHaveLength(1);
+    });
+
+    it('does not let a throwing notice sink turn a budget check into a failure', async () => {
+      const { governor } = makeGovernor({
+        onLegacyMediaJobHold: () => {
+          throw new Error('the renderer blew up');
+        },
+      });
+      governor.registerLegacyMediaJob('gen-1');
+      const pending = governor.checkPreEgress('claude-haiku-4-5', 1000);
+      governor.clearLegacyMediaJob('gen-1');
+      await expect(pending).resolves.toBeDefined();
     });
 
     it('WAITS for a legacy job to settle instead of failing the caller', async () => {

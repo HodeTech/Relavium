@@ -335,6 +335,7 @@ export class BudgetGovernor {
   /** The one durable warning currently being written. Concurrent admissions await this exact promise. */
   #warningInFlight: Promise<void> | undefined;
   readonly #onUnpriced: ((model: string, capMicrocents: number) => void) | undefined;
+  readonly #onLegacyMediaJobHold: ((nodeIds: readonly string[]) => void) | undefined;
   readonly #unpricedNotified = new Set<string>(); // once per model — a standing condition, not a per-turn event
 
   constructor(params: {
@@ -367,12 +368,21 @@ export class BudgetGovernor {
      * Absent ⇒ silent, and `strict_cost_cap` (which BLOCKS instead) is the loud alternative for anyone who wants it.
      */
     readonly onUnpriced?: (model: string, capMicrocents: number) => void;
+    /**
+     * New egress is being HELD while a resumed pre-§3 media job's cost basis is unknown (ADR-0074 §3).
+     *
+     * §3 requires the compatibility fallback be OBSERVABLE "so operators can distinguish legacy uncertainty from
+     * a current priced submission". Without this the hold is silent, and a `resume` simply appears to stall with
+     * no explanation — the worst possible presentation of correct behaviour. Fired ONCE per wait, not per check.
+     */
+    readonly onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
   }) {
     this.#budget = params.budget;
     this.#defaultMaxTokensEstimate = params.defaultMaxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
     this.#emit = params.emit;
     this.#overlay = params.resolvePrice;
     this.#onUnpriced = params.onUnpriced;
+    this.#onLegacyMediaJobHold = params.onLegacyMediaJobHold;
     this.#resolveEndpoint = params.resolveEndpoint;
   }
 
@@ -520,6 +530,16 @@ export class BudgetGovernor {
     // governor ONLY when the workflow declares a budget, and `Budget` requires `max_cost_microcents`. Reaching
     // this line already means a cap exists — a run without one has no governor to hold anything, which is right,
     // since there is no headroom to misjudge.
+    if (this.#legacyMediaJobNodes.size > 0) {
+      // Announce BEFORE the first await, once per wait — §3's observability clause. A silent hold presents
+      // correct behaviour as an unexplained stall. Best-effort: a misbehaving notice sink must never turn a
+      // budget check into a failure, which is the same posture `onUnpriced` takes below.
+      try {
+        this.#onLegacyMediaJobHold?.([...this.#legacyMediaJobNodes.keys()]);
+      } catch {
+        // The notice is advisory; it cannot block or fail the check.
+      }
+    }
     while (this.#legacyMediaJobNodes.size > 0) {
       // Re-checked in a loop: a second legacy job can register while we await the first.
       await Promise.all([...this.#legacyMediaJobNodes.values()].map((e) => e.promise));
