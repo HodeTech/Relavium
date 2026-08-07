@@ -164,9 +164,9 @@ export class CorruptRunEventError extends Error {
     readonly eventType: string,
     cause: unknown,
   ) {
+    const shownType = eventType.length > 64 ? `${eventType.slice(0, 64)}…` : eventType;
     super(
-      `run ${runId} has a damaged event row at seq ${sequenceNumber} ` +
-        `(type ${eventType.length > 64 ? `${eventType.slice(0, 64)}…` : eventType})`,
+      `run ${runId} has a damaged event row at seq ${sequenceNumber} (type ${shownType})`,
       // Preserved so `--verbose` can still show the underlying ZodError/SyntaxError detail.
       { cause },
     );

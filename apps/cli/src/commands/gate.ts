@@ -246,12 +246,15 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       // ADR-0074 §3: new egress is HELD while a resumed media job submitted by an older Relavium settles — its
       // cost basis was not recorded, so the cap cannot be trusted until the job reports its real charge. Say so,
       // or a resume looks like an unexplained stall. stderr, never stdout (`--json` stays a pure event stream).
-      onLegacyMediaJobHold: (nodeIds) =>
+      onLegacyMediaJobHold: (nodeIds) => {
+        const one = nodeIds.length === 1;
+        const subject = one ? 'a media job' : `${nodeIds.length} media jobs`;
         deps.io.writeErr(
-          `note: holding new model calls until ${nodeIds.length === 1 ? 'a media job' : `${nodeIds.length} media jobs`} ` +
-            `submitted by an older version of Relavium settle${nodeIds.length === 1 ? 's' : ''} ` +
-            `(node${nodeIds.length === 1 ? '' : 's'} ${nodeIds.join(', ')}) — their cost was not recorded, so the budget cap cannot be applied until then\n`,
-        ),
+          `note: holding new model calls until ${subject} submitted by an older version of Relavium ` +
+            `settle${one ? 's' : ''} (node${one ? '' : 's'} ${nodeIds.join(', ')}) — their cost was not ` +
+            `recorded, so the budget cap cannot be applied until then\n`,
+        );
+      },
       // 2.5.A (ADR-0055): wire the SAME read+write fs + process ToolHost the `relavium run` path wires, jailed
       // to the ORIGINAL run's project root (`saveToRoot` — the original `runs.project_root` when it still exists
       // on this machine, else the resumer's cwd, exactly like the `save_to` root) at the resolved `fs_scope`. So a

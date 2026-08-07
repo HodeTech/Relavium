@@ -67,7 +67,7 @@ import {
   DEFAULT_MAX_TOKENS_ESTIMATE,
   type BudgetAdmission,
 } from './budget-governor.js';
-import type { CheckpointState } from './checkpoint.js';
+import type { CheckpointPendingMediaJob, CheckpointState } from './checkpoint.js';
 import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
 import type {
   GateRequest,
@@ -567,6 +567,67 @@ class RunExecution {
     }
   }
 
+  /**
+   * Rehydrate ONE parked media job (ADR-0045 §2-3, ADR-0074 §3) — extracted from `#seedFromCheckpoint` so that
+   * method stays inside its complexity budget. The whole of §3's frozen-vs-legacy branch lives here.
+   */
+  #restoreParkedMediaJob(plan: RunPlan, cp: CheckpointState, job: CheckpointPendingMediaJob): void {
+    const vertex = plan.vertices.get(job.nodeId);
+    // The agent branch is the only one ever taken in practice — a media job is ALWAYS sourced from an agent
+    // vertex (executeGenerativeMedia), so `generativeUnits` (which honors the authored count/duration_seconds,
+    // matching the submit-side compute exactly) is the real path. The else is a defensive last resort for a
+    // vertex that is missing or non-agent (an invariant violation, e.g. a workflow edited between processes);
+    // there is no AgentNode to read, so the conservative per-modality DEFAULT is the only available estimate —
+    // it never executes on a well-formed resume.
+    // ADR-0074 §3: prefer the basis FROZEN at submit time. Re-deriving `units` from the workflow definition
+    // means a node edited between processes silently changes the volume an accepted job was priced on; the
+    // fallback below stays only for legacy rows written before §3.
+    const units =
+      job.units ??
+      (vertex?.config.kind === 'agent'
+        ? generativeUnits(job.modality, vertex.config.node)
+        : DEFAULT_MEDIA_UNIT_ESTIMATE[job.modality]);
+    // This provider job was accepted before the crash, so normal cap policy cannot retroactively refuse it.
+    // Recreate only its reservation before poll scheduling; the eventual terminal media-cost event reconciles
+    // it with the realized charge exactly as in the original process.
+    //
+    // With a frozen `acceptedCostMicrocents` there is NO pricing lookup: a user-price or catalog change between
+    // submission and resume must not move a commitment the provider already accepted, in either direction. A
+    // legacy row has no frozen amount, so it falls back to re-pricing — which §3 requires be handled
+    // fail-closed rather than trusted.
+    let admission: BudgetAdmission | undefined;
+    if (job.acceptedCostMicrocents === undefined) {
+      admission = this.#budgetGovernor?.reserveCommittedEgress(
+        job.model,
+        0,
+        [{ modality: job.modality, units }],
+        job.provider,
+      );
+      // The reservation above is a re-price from TODAY's catalog, so it may be lower than what the provider
+      // will actually bill. Register the node as an unknown basis: with a cap configured the governor then
+      // refuses NEW egress until this job settles, rather than admitting spend against headroom that may not
+      // exist. It clears itself when the job reports its real charge.
+      this.#budgetGovernor?.registerLegacyMediaJob(job.nodeId);
+    } else {
+      admission = this.#budgetGovernor?.reserveAcceptedCost(job.model, job.acceptedCostMicrocents);
+    }
+    this.#pendingMediaJobs.set(job.nodeId, {
+      jobId: job.jobId,
+      provider: job.provider,
+      model: job.model,
+      modality: job.modality,
+      units,
+      deadlineAt: job.deadlineAt,
+      // Recompute elapsed-at-submit from the persisted `startedAt` against the ORIGINAL run start so a
+      // completed re-attached job reports its full submit→done wall-clock `durationMs` (M2). `cp.startedAtMs`
+      // is the same value seeded into `#startEpochMs` below.
+      submittedAtMs: Date.parse(job.startedAt) - cp.startedAtMs,
+      backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
+      ...(admission === undefined ? {} : { admission }),
+    });
+    this.#armMediaPoll(job.nodeId);
+  }
+
   /** Seed `#states` / `#pendingGates` / tallies / the bus sequence from a checkpoint (rehydration, 1.R). */
   #seedFromCheckpoint(plan: RunPlan, cp: CheckpointState, bus: RunEventBus, runId: string): void {
     for (const id of plan.vertices.keys()) {
@@ -617,63 +678,7 @@ class RunExecution {
     // engine's own re-poll advances it, so the re-arm is unconditional here. A past-deadline job is
     // short-circuited to a timeout by the first `#pollMediaJob` (which checks `now > deadlineAt`).
     for (const job of cp.pendingMediaJobs) {
-      const vertex = plan.vertices.get(job.nodeId);
-      // The agent branch is the only one ever taken in practice — a media job is ALWAYS sourced from an agent
-      // vertex (executeGenerativeMedia), so `generativeUnits` (which honors the authored count/duration_seconds,
-      // matching the submit-side compute exactly) is the real path. The else is a defensive last resort for a
-      // vertex that is missing or non-agent (an invariant violation, e.g. a workflow edited between processes);
-      // there is no AgentNode to read, so the conservative per-modality DEFAULT is the only available estimate —
-      // it never executes on a well-formed resume.
-      // ADR-0074 §3: prefer the basis FROZEN at submit time. Re-deriving `units` from the workflow definition
-      // means a node edited between processes silently changes the volume an accepted job was priced on; the
-      // fallback below stays only for legacy rows written before §3.
-      const units =
-        job.units ??
-        (vertex?.config.kind === 'agent'
-          ? generativeUnits(job.modality, vertex.config.node)
-          : DEFAULT_MEDIA_UNIT_ESTIMATE[job.modality]);
-      // This provider job was accepted before the crash, so normal cap policy cannot retroactively refuse it.
-      // Recreate only its reservation before poll scheduling; the eventual terminal media-cost event reconciles
-      // it with the realized charge exactly as in the original process.
-      //
-      // With a frozen `acceptedCostMicrocents` there is NO pricing lookup: a user-price or catalog change between
-      // submission and resume must not move a commitment the provider already accepted, in either direction. A
-      // legacy row has no frozen amount, so it falls back to re-pricing — which §3 requires be handled
-      // fail-closed rather than trusted.
-      let admission: BudgetAdmission | undefined;
-      if (job.acceptedCostMicrocents === undefined) {
-        admission = this.#budgetGovernor?.reserveCommittedEgress(
-          job.model,
-          0,
-          [{ modality: job.modality, units }],
-          job.provider,
-        );
-        // The reservation above is a re-price from TODAY's catalog, so it may be lower than what the provider
-        // will actually bill. Register the node as an unknown basis: with a cap configured the governor then
-        // refuses NEW egress until this job settles, rather than admitting spend against headroom that may not
-        // exist. It clears itself when the job reports its real charge.
-        this.#budgetGovernor?.registerLegacyMediaJob(job.nodeId);
-      } else {
-        admission = this.#budgetGovernor?.reserveAcceptedCost(
-          job.model,
-          job.acceptedCostMicrocents,
-        );
-      }
-      this.#pendingMediaJobs.set(job.nodeId, {
-        jobId: job.jobId,
-        provider: job.provider,
-        model: job.model,
-        modality: job.modality,
-        units,
-        deadlineAt: job.deadlineAt,
-        // Recompute elapsed-at-submit from the persisted `startedAt` against the ORIGINAL run start so a
-        // completed re-attached job reports its full submit→done wall-clock `durationMs` (M2). `cp.startedAtMs`
-        // is the same value seeded into `#startEpochMs` below.
-        submittedAtMs: Date.parse(job.startedAt) - cp.startedAtMs,
-        backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
-        ...(admission === undefined ? {} : { admission }),
-      });
-      this.#armMediaPoll(job.nodeId);
+      this.#restoreParkedMediaJob(plan, cp, job);
     }
     // Suppress a DUPLICATE `run:paused` on resume ONLY when the prior process actually announced one — i.e. the
     // checkpoint's runStatus is already `'paused'` (L2). In the CRASH-IN-WINDOW case (`media_job:submitted`

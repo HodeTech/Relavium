@@ -624,7 +624,6 @@ export class BudgetGovernor {
       this.#commitmentFailure = undefined;
       throw failure;
     }
-    return;
   }
 
   /**
@@ -738,7 +737,10 @@ export class BudgetGovernor {
    * egress, not to make a run unkillable, so the abort path must always be able to break it.
    */
   releaseAllLegacyMediaJobHolds(): void {
-    for (const nodeId of [...this.#legacyMediaJobNodes.keys()]) {
+    // Iterating the LIVE map while `clearLegacyMediaJob` deletes from it is safe: a `Map` iterator tolerates the
+    // deletion of the entry it is currently on, and each call deletes exactly that one. A snapshot copy would
+    // only matter if a callee ever deleted an entry the iterator had not reached yet.
+    for (const nodeId of this.#legacyMediaJobNodes.keys()) {
       this.clearLegacyMediaJob(nodeId);
     }
   }

@@ -465,6 +465,43 @@ function buildChatTurnOutcome(
 }
 
 /**
+ * Take the pre-egress budget admission for a generative-media call, or the outcome that refuses it.
+ *
+ * Extracted from `executeGenerativeMedia` so that function stays inside its cognitive-complexity budget: the
+ * try/catch and its two typed refusals are a cohesive unit — `BudgetExceededError` is a clean node failure,
+ * `BudgetPauseError` becomes a gate, and anything else re-throws to the engine as internal.
+ */
+async function acquireGenerativeAdmission(
+  preEgress: NodeExecContext['preEgress'],
+  req: { readonly model: string; readonly modality: MediaBilledModality; readonly units: number },
+): Promise<
+  | { kind: 'admitted'; admission: BudgetAdmission | undefined }
+  | { kind: 'refused'; outcome: NodeOutcome }
+> {
+  if (preEgress === undefined) {
+    return { kind: 'admitted', admission: undefined };
+  }
+  try {
+    // The port may resolve `void` (a host that governs nothing); normalise it to `undefined` here so the
+    // caller has one shape to reason about.
+    const admission =
+      (await preEgress({
+        model: req.model,
+        maxTokens: 0,
+        outputModalities: [req.modality],
+        mediaUnitsEstimate: [{ modality: req.modality, units: req.units }],
+      })) ?? undefined;
+    return { kind: 'admitted', admission };
+  } catch (err) {
+    if (err instanceof BudgetExceededError) {
+      return { kind: 'refused', outcome: failed('budget_exceeded', err.message, false) };
+    }
+    // BudgetPauseError → paused; anything else re-throws → engine internal.
+    return { kind: 'refused', outcome: turnOutcomeForError(err) };
+  }
+}
+
+/**
  * Dispatch a `media_surface: 'generative'` agent node through the seam's `generateMedia` (1.AG Section C,
  * [ADR-0045](../../../../docs/decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md) §1/§5/§6):
  * SYNC one-round-trip generation (gpt-image-1, Imagen, OpenAI TTS) resolving `{ media }`. ONE provider, NO
@@ -517,24 +554,15 @@ async function executeGenerativeMedia(
   // TOKEN estimate to zero — a generative call emits no tokens, so once generative pricing rows land the gate
   // must not add a spurious token addend on top of the media estimate. `outputModalities` is the validated
   // single modality (singleBilledModality), so the budget governor's media addend resolves the same rate.
-  const preEgress = ctx.preEgress ?? deps.preEgress;
-  let admission: BudgetAdmission | undefined;
-  if (preEgress !== undefined) {
-    try {
-      const nextAdmission = await preEgress({
-        model: primary.model,
-        maxTokens: 0,
-        outputModalities: [modality.modality],
-        mediaUnitsEstimate: [{ modality: modality.modality, units }],
-      });
-      if (nextAdmission !== undefined) admission = nextAdmission;
-    } catch (err) {
-      if (err instanceof BudgetExceededError) {
-        return failed('budget_exceeded', err.message, false);
-      }
-      return turnOutcomeForError(err); // BudgetPauseError → paused; anything else re-throws → engine internal
-    }
+  const gated = await acquireGenerativeAdmission(ctx.preEgress ?? deps.preEgress, {
+    model: primary.model,
+    modality: modality.modality,
+    units,
+  });
+  if (gated.kind === 'refused') {
+    return gated.outcome;
   }
+  let admission = gated.admission;
   let egressStarted = false;
   try {
     // A cancel landing inside the (async) budget check costs no egress: re-check before engaging the provider.
@@ -604,16 +632,10 @@ async function executeGenerativeMedia(
       );
     }
 
-    const outcome = buildGenerativeOutcome(
-      ctx,
-      node,
-      primary,
-      modality.modality,
-      units,
-      result,
-      deps.resolvePrice,
-      (realizedMicrocents) => admission?.settle(realizedMicrocents),
-    );
+    const outcome = buildGenerativeOutcome(ctx, node, primary, modality.modality, units, result, {
+      resolvePrice: deps.resolvePrice,
+      onRealizedCost: (realizedMicrocents: number) => admission?.settle(realizedMicrocents),
+    });
     if (outcome.kind === 'media_job') {
       retainMediaJobAdmission(outcome.job, admission);
       admission = undefined; // ownership moved to the engine-owned parked-job lifecycle
@@ -662,9 +684,13 @@ function buildGenerativeOutcome(
   modality: MediaBilledModality,
   units: number,
   result: MediaGenResult,
-  resolvePrice: PricingOverlay | undefined,
-  onRealizedCost: (costMicrocents: number) => void,
+  /** The money seam, grouped: the user-pricing overlay and the realized-cost sink always travel together. */
+  costing: {
+    readonly resolvePrice: PricingOverlay | undefined;
+    readonly onRealizedCost: (costMicrocents: number) => void;
+  },
 ): NodeOutcome {
+  const { resolvePrice, onRealizedCost } = costing;
   if (result.jobId !== undefined && result.media !== undefined) {
     return failed(
       'internal',
