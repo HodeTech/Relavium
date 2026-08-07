@@ -140,27 +140,42 @@ checklists before ~30 security-gated PRs are reviewed against them.
 ### Wave 1 — Stop the bleeding
 
 All three CRITICALs, plus the states where `max_cost_microcents` is silently not a cap. Four file-disjoint
-lanes, any order between them:
+lanes, any order between them, plus the money hole they left open.
 
-- **(a) `registry.ts`** — 2.5.5.A · **redact tool-approval previews like `sanitizeInput()` already does**
-  (#91). *(The originally-planned migration 0013 scrubbing already-persisted previews was ruled OUT — see D8.)* *`registry.ts:12` already imports
-  `redactSecretShapedValue`; `previewFor()` at `:436` never calls it — verified.*
-- **(b) `packages/db` chain, strict** — 2.5.5.C · `SQLITE_BUSY_SNAPSHOT` (#100) → async backoff replacing
+**✅ Wave 1 is COMPLETE (2026-07-30, PR #81).** Every lane below is verified against the shipped code, not
+against its own task text — the check for each is stated inline. Two gaps are recorded rather than closed; both
+are named in their lane and marked in the source, and neither is a shipped defect:
+
+1. the engine-level composition test for ADR-0074 §3's abort-breakable media-job hold (`engine.ts`, at the abort
+   listener) — the governor's own state machine is mutation-verified, the composition with `#countRunning`'s
+   termination gate is not;
+2. the CLI-layer test that `restoreConservativeCost` is wired through `buildSessionRuntime` → `GovernorWiring`
+   (`session-host.test.ts`) — `AgentSession.resume` calling the hook IS mutation-verified in `packages/core`;
+   only the spread that supplies it is unproven.
+
+- ✅ **(a) `registry.ts`** — 2.5.5.A · **redact tool-approval previews like `sanitizeInput()` already does**
+  (#91). *(The originally-planned migration 0013 scrubbing already-persisted previews was ruled OUT — see D8.)* *Closed: `previewFor()` now scrubs the DISPLAY copy while `rawPreviewFor()` keeps an
+  `unredactedPreview` for in-process classification — splitting the two uses, because a whole-string scrub
+  flipped the protected-path decision and a per-segment one reopened the leak. Verified: `registry.ts` and
+  `tools/types.ts` both carry `unredactedPreview`.*
+- ✅ **(b) `packages/db` chain, strict** — 2.5.5.C · `SQLITE_BUSY_SNAPSHOT` (#100) → async backoff replacing
   the blocking `Atomics.wait` (#226) → **the chat-persister safety net** (#228, CRITICAL) →
   serialize `runMigrations` (#99) co-landed with the unconditional 0600 self-heal (#28, #33) →
   `createClient` typed error + PRAGMA docstring (#104, #105). `deprecationDate` crash guard (G1) is a
   standalone one-liner, droppable anywhere.
-- **(c) render/signals** — 2.5.5.I · **terminal-control sanitization to the four boundaries it never
+- ✅ **(c) render/signals** — 2.5.5.I · **terminal-control sanitization to the four boundaries it never
   reached** (G34, G44, #56, #57, CRITICAL — one PR at the shared helper, its own security review) →
-  `SIGTSTP`/`SIGCONT` + onboarding signal-registration ordering (G0, #50). *`RunApp.tsx` has zero
-  `stripTerminalControls`/`sanitizeInline` calls today — verified.*
-- **(d) money, split across two PRs** — `budget-governor.ts` only: 2.5.5.A · reservation ledger under
+  `SIGTSTP`/`SIGCONT` + onboarding signal-registration ordering (G0, #50). *Closed at all four boundaries the register names, verified by call count:
+  `RunApp.tsx` (#56) 9, `final-summary.ts` (#57) 6, `render-error.ts` (G34) 4, `clack-prompter.ts` (G44) 4. G0's
+  run/gate `SIGTSTP`/`SIGCONT` is `render/run-job-control.ts`; #50 is closed by ordering —
+  `drive-home.tsx` subscribes signals at `:808`, before `runOnboardingWizard` at `:855`.*
+- ✅ **(d) money, split across two PRs** — `budget-governor.ts` only: 2.5.5.A · reservation ledger under
   `max_parallel` (G38) → re-armed `budget:warning` + projected `thresholdPct` (G39, G47, G49) → **2.6.Q's
   strict-cap half**. Then `fallback-chain.ts`/`cost-tracker.ts` only: 2.5.5.B · `maxRetries: 0` + jitter +
   `Retry-After` (#276, #279) → narrowed `#emitSuccess` catch + `CostTracker` bounds (#194, #198) +
   **2.6.Q's realized-cost half**.
 
-- **(e) ADR-0074 — durable conservative budget commitments** · the money hole the other four lanes leave open:
+- ✅ **(e) ADR-0074 — durable conservative budget commitments** · the money hole the other four lanes leave open:
   a bounded estimate retained when a provider may already have billed but returned no trustworthy usage was
   kept only in memory, so a crash or a resume reopened a strict cap against money that may already be owed.
   §5 (a forward-compatible stored-event READ, the precondition for emitting anything new) → §2 (the
@@ -172,14 +187,22 @@ lanes, any order between them:
 > `#emitSuccess` — the same catch 2.5.5.B narrows. The two halves join two different PRs, not one.
 > **Closes M2.5.5-1.**
 
-> **Outstanding inside lane (e), tracked rather than discovered later.** ADR-0074 §1 ties a commitment's
-> release to the surface that renders it. The **rendering** half shipped with §2 (the run TUI and
-> `relavium logs` both show the amount as *estimated, possibly billed*); the **release** half is not built on
-> any surface, and making the total durable removed the accidental escape a crash used to provide. Neither
-> surface is blocked today — a workflow run is not long-lived and already has `on_exceed`-based escapes, and a
-> chat session's total is not persisted yet — but **§4 must ship `releaseConservativeCommitments` on the same
-> commit that persists the session total**, or it creates the indefinite block §1 explicitly rejects. The
-> reserved `budget:estimate_released` event is what makes the release durable; §2's dated note in
+> **Outstanding inside lane (e) — restated at close, because §4 changed the facts.** ADR-0074 §1 ties a
+> commitment's release to the surface that renders it.
+>
+> **Rendering: done on all three surfaces.** The run TUI and `relavium logs` shipped with §2; `/cost` shipped
+> with §4's fold and reads *estimated, possibly billed*, with `(no completed call)` for a model that has one
+> without a completed call. All three are mutation-verified.
+>
+> **Release: exposed, not reachable.** `GovernorWiring.releaseConservativeCommitments()` exists and is tested,
+> and it landed in the same commit that persisted the session total — the obligation this note previously
+> stated. But **no slash command or affordance calls it**, so a user cannot actually clear a commitment. The
+> workflow surface is unaffected (a run is not long-lived, and `on_exceed: pause_for_approval`'s per-node bypass
+> or raising the YAML cap are §1's own analogy). The **chat** surface is where the gap bites: its total is now
+> durable and restored on every resume, so the accidental escape a restart used to provide is gone and the
+> deliberate one is one wiring step away. That step is the remaining work, and it needs the reserved
+> `budget:estimate_released` event to make the release itself survive a resume — otherwise a released
+> commitment simply returns on the next `chat-resume`. §2's dated note in
 > [ADR-0074](../decisions/0074-durable-conservative-budget-commitments.md) has the full statement.
 
 ### Wave 2 — Shut the doors
