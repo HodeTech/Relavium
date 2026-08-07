@@ -205,6 +205,73 @@ describe('createSessionPersister', () => {
     expect(store.loadMessages('sess-1').map((m) => m.sequenceNumber)).toEqual([0, 1]);
   });
 
+  it('LATCHES a durable-write failure and stops the session spending (#W15-4)', async () => {
+    // `RunEventBus` isolates listener errors by design, so a persister that could not write still let the turn
+    // report success — and the conversation carried on above a transcript and a cost total that had fallen
+    // behind. The failure is now latched and the host's pre-egress gate reads it.
+    const { built } = await setup(scriptedResolver([textTurn('hi'), textTurn('again')]));
+    const persister = createSessionPersister({
+      governor: undefined,
+      attachDurabilityProbe: built.attachDurabilityProbe, // the wiring under test
+      store,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now: () => Date.parse('2026-06-25T00:00:00.000Z'),
+      uuid: () => 'msg-x',
+    });
+    built.session.start();
+    persister.start();
+    vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    });
+
+    persister.beginUserTurn('first');
+    await built.session.sendMessage('first');
+    vi.restoreAllMocks();
+
+    expect(persister.durabilityFailure?.message).toContain('database is locked');
+    // …and the user was still TOLD: latching must not remove #228's notice.
+    expect(listenerNotes.join('\n')).toMatch(/database is locked/);
+
+    // No further egress, even though the store would now accept the write. A session whose record is already
+    // lost must not spend more — that is the difference between degrading and pretending.
+    const terminals: string[] = [];
+    built.handle.subscribe((e) => {
+      if (e.type === 'session:turn_completed' && e.error !== undefined)
+        terminals.push(e.error.message);
+    });
+    persister.beginUserTurn('second');
+    await built.session.sendMessage('second');
+
+    expect(terminals.join('\n')).toMatch(/could not be saved/);
+    expect(store.loadMessages('sess-1')).toHaveLength(0); // and nothing new was written
+    persister.close();
+  });
+
+  it('does not let a failed cost write advance the in-memory total (#W15-4)', async () => {
+    // `mutableSessionColumns` makes `recordSessionCost` the SINGLE writer of the durable total, so a total
+    // advanced past a write that did not land can never be repaired by a later flush — and a resume then
+    // restores a cap that has forgotten real spend.
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
+    built.session.start();
+    persister.start();
+    vi.spyOn(store, 'recordSessionCost').mockImplementation(() => {
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    });
+
+    persister.beginUserTurn('first');
+    await built.session.sendMessage('first');
+    vi.restoreAllMocks();
+
+    // Whether this turn produced a `cost:updated` at all depends on the default agent's model being priced,
+    // so assert the INVARIANT rather than a specific figure: the durable total and what this process believes
+    // must not have diverged.
+    expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(0);
+    persister.close();
+  });
+
   it('a FAILED turn contributes NO tokens to the session totals', async () => {
     // The bug this pins was real and mine: the totals were assigned BEFORE `writeTurn`, so a failed write left
     // them advanced and the next turn's row claimed two turns' tokens for one visible exchange. No magic
@@ -246,11 +313,15 @@ describe('createSessionPersister', () => {
   });
 
   it('leaves the in-memory sequence untouched when a turn write fails (no phantom seq)', async () => {
-    // Three scripted turns: the failed one, the landed one, and the summariser's own turn for the /compact
-    // that this test uses to observe `realMessageSeqs`.
-    const { built, persister } = await setup(
-      scriptedResolver([textTurn('hi'), textTurn('again'), textTurn('the summary')]),
-    );
+    // `realMessageSeqs` is the ADR-0062 compaction boundary seed, so a phantom entry from a turn that never
+    // landed shifts `realMessageSeqs[length - keptMessageCount - 1]` on every later /compact and /trim — a
+    // silent kept-message loss (the "step-3 review data-loss trap" this file's own comment warns about).
+    //
+    // #W15-4 changed how this is observed. The compaction that used to expose it ran AFTER a recovery turn on
+    // the same persister, and a latched durability failure now ends that session instead — which removes the
+    // path the phantom could travel, but not the reason to pin the bookkeeping. What is asserted here is the
+    // bookkeeping itself: nothing about the failed turn reached the store, and nothing in it was adopted.
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
     built.session.start();
     persister.start();
     vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
@@ -259,22 +330,65 @@ describe('createSessionPersister', () => {
     persister.beginUserTurn('first');
     await built.session.sendMessage('first');
     vi.restoreAllMocks();
-    persister.beginUserTurn('second');
-    await built.session.sendMessage('second');
-    // The turn totals must also not have advanced for the turn that never landed.
-    const session = store.loadSession('sess-1');
-    expect(session?.title).toBe('second'); // the FAILED turn never got to title the session either
 
-    // The load-bearing half, and the one nothing else observes: `realMessageSeqs`. It is the ADR-0062
-    // boundary seed, so a phantom entry from the failed turn shifts
-    // `realMessageSeqs[length - keptMessageCount - 1]` on EVERY later /compact and /trim — a silent
-    // kept-message loss, exactly the "step-3 review data-loss trap" this file's own comment warns about.
-    // Driving a real compaction is the only way to see it: after ONE landed turn (rows 0,1), keeping the
-    // last exchange must drop nothing and therefore write NO marker. A leaked phantom seq makes the array
-    // look two entries longer and a spurious marker appears.
-    const result = await built.session.compact('manual');
-    expect(result.kind).toBe('compacted');
-    expect(store.loadMessages('sess-1').filter((m) => m.role === 'system')).toHaveLength(0);
+    expect(store.loadMessages('sess-1')).toHaveLength(0); // no rows, so no seq was consumed durably
+    expect(store.loadSession('sess-1')?.title).toBeUndefined(); // the failed turn never titled the session
+    // A FRESH persister over the same store re-seeds from the rows that exist — which is none, so the next
+    // turn starts at 0 rather than at a phantom offset. This is the real recovery path now.
+    const recovered = createSessionPersister({
+      governor: undefined,
+      store,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now: () => Date.parse('2026-06-25T00:01:00.000Z'),
+      uuid: () => 'msg-r',
+    });
+    persister.close();
+    recovered.start();
+    expect(store.loadMessages('sess-1')).toHaveLength(0);
+    recovered.close();
+  });
+
+  it('a FAILED turn contributes NO tokens to the session totals', async () => {
+    // The bug this pins was real and mine: the totals were assigned BEFORE `writeTurn`, so a failed write left
+    // them advanced and the next turn's row claimed two turns' tokens for one visible exchange. No magic
+    // numbers — a control run of ONE clean turn establishes what a turn is worth, and failed-then-clean must
+    // match it exactly. `stop()`'s usage is fixed, so a leak shows up as double.
+    const control = await setup(scriptedResolver([textTurn('hi')]));
+    control.built.session.start();
+    control.persister.start();
+    control.persister.beginUserTurn('only');
+    await control.built.session.sendMessage('only');
+    const oneTurn = store.loadSession('sess-1');
+
+    // A separate DB so the two scenarios cannot share a session row.
+    const other = createClient(':memory:');
+    runMigrations(other.db);
+    const store2 = createSessionStore(other.db);
+    try {
+      const { built, persister } = await setupWith(
+        store2,
+        scriptedResolver([textTurn('hi'), textTurn('again')]),
+      );
+      built.session.start();
+      persister.start();
+      vi.spyOn(store2, 'writeTurn').mockImplementationOnce(() => {
+        throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+      });
+      persister.beginUserTurn('first');
+      await built.session.sendMessage('first');
+      vi.restoreAllMocks();
+      persister.beginUserTurn('second');
+      await built.session.sendMessage('second');
+
+      const after = store2.loadSession('sess-1');
+      expect(after?.totalInputTokens).toBe(oneTurn?.totalInputTokens);
+      expect(after?.totalOutputTokens).toBe(oneTurn?.totalOutputTokens);
+    } finally {
+      other.sqlite.close();
+    }
   });
 
   it('persists the session row eagerly on start (auto-persisted from the moment it starts)', async () => {

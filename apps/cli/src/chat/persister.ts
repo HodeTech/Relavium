@@ -65,6 +65,8 @@ export interface SessionPersisterDeps {
    * recurring: a new persister site cannot forget what it cannot omit.
    */
   readonly governor: GovernorWiring | undefined;
+  /** Late-bind this persister as the session's durability probe (#W15-4) — see `SessionPersister.durabilityFailure`. */
+  readonly attachDurabilityProbe?: (probe: () => Error | undefined) => void;
   readonly handle: SessionHandle;
   readonly sessionId: string;
   /** The bound agent — frozen into `agent_snapshot` for reproducible resume/export; its `id` is the slug. */
@@ -94,6 +96,20 @@ export interface SessionPersisterDeps {
 export interface SessionPersister {
   /** Insert the session row and subscribe the stream. Call once, before the first turn. Idempotent-guarded. */
   start(): void;
+  /**
+   * The FIRST durable-write failure this persister hit, or `undefined` while the transcript and the cost
+   * columns still reflect what happened (#W15-4).
+   *
+   * `RunEventBus` isolates listener errors by design, so a persister that cannot write still lets the turn
+   * report success. That is right for a UI subscriber and wrong for the one subscriber that owns the money and
+   * the transcript: a failed `recordSessionCost` leaves the durable total low, so a resumed cap forgets real
+   * spend; a failed `writeTurn` leaves the exchange unwritten while the conversation carries on above it.
+   *
+   * So the failure is LATCHED here instead of vanishing, and the host gates new egress on it — the session
+   * degrades loudly rather than continuing to look healthy. Latched, never cleared: a store that failed once
+   * has already lost data this process cannot reconstruct.
+   */
+  readonly durabilityFailure: Error | undefined;
   /** Record the user's text for the in-flight turn — the REPL calls this immediately before `sendMessage`. */
   beginUserTurn(text: string): void;
   /**
@@ -253,6 +269,27 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     totalOutputTokens = nextOutput;
   };
 
+  let durabilityFailure: Error | undefined;
+
+  /**
+   * Run a durable write, LATCHING the first failure and then re-throwing it (#W15-4).
+   *
+   * Re-throwing is load-bearing twice over. It skips every in-memory mutation the arm had queued after the
+   * write — which is the whole point: a total that advances past a write that did not land makes this process
+   * believe spend it never recorded, and `mutableSessionColumns` makes that write the SINGLE writer, so no
+   * later flush can repair it. And it keeps #228's other half: `RunEventBus` isolates the throw and routes it
+   * to the listener-error sink, so the user is still TOLD. Swallowing it here would have latched the state
+   * and silently removed the notice.
+   */
+  const persistDurably = (write: () => void): void => {
+    try {
+      write();
+    } catch (err) {
+      durabilityFailure ??= err instanceof Error ? err : new Error(String(err), { cause: err });
+      throw err;
+    }
+  };
+
   const onEvent = (event: SessionStreamHandleEvent): void => {
     switch (event.type) {
       case 'agent:token':
@@ -264,13 +301,10 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         assistantText = '';
         return;
       case 'cost:updated': {
-        // The sink stamps the session-wide running total here; the latest value is the session's cost.
-        totalCostMicrocents = event.cumulativeCostMicrocents;
         // ADR-0059: the invoking model of this billed egress — attributable across a failover. Resolve it to its
         // catalog id NOW (the FK target); the LAST such event of the turn is the model that produced the committed
         // text, so it becomes the assistant row's `modelId` in `session:turn_completed`. Undefined ⇒ NULL (uncataloged).
         const catalogId = deps.resolveModelCatalogId?.(event.model);
-        turnModelCatalogId = catalogId;
         // ADR-0070: fold THIS egress into the durable per-model attribution — the single writer of
         // `agent_sessions.total_cost_microcents`, additively, in one transaction with the `session_costs` row.
         //
@@ -280,17 +314,24 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // would silently break the invariant on every errored turn. Writing per event also closes a live hole: a
         // manual `/compact` whose summariser BILLED and then FAILED emits no compaction/turn terminal at all, so its
         // real spend would otherwise sit unflushed forever.
-        deps.store.recordSessionCost({
-          id: deps.uuid(),
-          sessionId: deps.sessionId,
-          model: event.model, // the RAW provider string — the attribution key (never the catalog UUID)
-          ...(catalogId === undefined ? {} : { modelCatalogId: catalogId }),
-          inputTokens: event.inputTokens,
-          outputTokens: event.outputTokens,
-          costMicrocents: event.costMicrocents, // the PER-ATTEMPT increment, never the cumulative
-          priced: event.priced ?? true, // absent on an older event ⇒ assume priced (the pre-ADR-0070 behaviour)
-          ts: deps.now(),
+        persistDurably(() => {
+          deps.store.recordSessionCost({
+            id: deps.uuid(),
+            sessionId: deps.sessionId,
+            model: event.model, // the RAW provider string — the attribution key (never the catalog UUID)
+            ...(catalogId === undefined ? {} : { modelCatalogId: catalogId }),
+            inputTokens: event.inputTokens,
+            outputTokens: event.outputTokens,
+            costMicrocents: event.costMicrocents, // the PER-ATTEMPT increment, never the cumulative
+            priced: event.priced ?? true, // absent on an older event ⇒ assume priced (the pre-ADR-0070 behaviour)
+            ts: deps.now(),
+          });
         });
+        // AFTER the durable write, never before it (#W15-4) — `persistDurably` re-throws, so a failed write
+        // never reaches these two lines. The running total used to advance FIRST, so a failed
+        // `recordSessionCost` left this process believing spend it had not recorded.
+        totalCostMicrocents = event.cumulativeCostMicrocents;
+        turnModelCatalogId = catalogId;
         return;
       }
       case 'session:turn_completed':
@@ -315,11 +356,19 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           // Derive the title HERE (not in beginUserTurn) — from the FIRST user message of a COMPLETED exchange of
           // a titleless session, so an aborted/errored earlier turn never labels the row. A blank message yields
           // undefined, so the next non-blank completed message becomes the title; a resumed session keeps its own.
-          commitTurn(pendingUserText, event.tokensUsed);
+          // A failed write already skipped the reset below by throwing, so `pendingUserText` survived — but
+          // only by ACCIDENT, and the next `beginUserTurn` overwrote it anyway, losing an exchange the
+          // in-memory session still showed (#W15-4). The failure is now latched as well, which is what makes
+          // `beginUserTurn` refuse the overwrite and the host refuse further egress.
+          persistDurably(() => {
+            commitTurn(pendingUserText as string, event.tokensUsed);
+          });
         } else {
           // An errored or aborted turn persists no messages and accumulates no TOKENS, but the row is still
           // flushed: `updatedAt` moves, and the session COST (already folded per `cost:updated`) is real.
-          deps.store.updateSession(record('active'));
+          persistDurably(() => {
+            deps.store.updateSession(record('active'));
+          });
         }
         pendingUserText = undefined;
         assistantText = '';
@@ -392,7 +441,15 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       }
       unsubscribe = deps.handle.subscribe(onEvent);
     },
+    get durabilityFailure(): Error | undefined {
+      return durabilityFailure;
+    },
     beginUserTurn(text: string): void {
+      // A staged turn that is still pending because its write FAILED must never be overwritten (#W15-4) —
+      // that overwrite is how the durable transcript lost an exchange the in-memory session still had. The
+      // host refuses new egress once `durabilityFailure` is set, so this is the backstop rather than the
+      // gate; on the healthy path `pendingUserText` is always cleared by the turn terminal above.
+      if (durabilityFailure !== undefined) return;
       // Only STAGE the user text; the title is derived when (and if) the exchange COMPLETES + persists (see
       // `session:turn_completed`). Deriving it here would stamp the session row with a title from an ABORTED /
       // errored first turn whose message rows are rolled back — a label with no transcript behind it.
@@ -435,6 +492,9 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   // remembering to. That inversion is the fix for a real gap — the manual call had been wired at exactly one of
   // the four sites, so `/clear`, the Home's inline chat and `chat-resume` were all committing into a rejected
   // promise and marking their session durability-broken on the first usage-less response.
+  // #W15-4: the host's `preEgress` gate reads THIS persister's latched failure, so a session whose record is
+  // already lost stops spending instead of carrying on above a transcript that fell behind.
+  deps.attachDurabilityProbe?.(() => persister.durabilityFailure);
   deps.governor?.attachConservativeWriter((commitment) =>
     persister.recordConservativeCommitment(commitment),
   );

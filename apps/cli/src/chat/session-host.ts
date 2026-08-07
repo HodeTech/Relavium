@@ -197,6 +197,12 @@ export interface BuiltChatSession {
    */
   readonly governor?: GovernorWiring;
   /**
+   * Late-bind the session's durability probe (#W15-4) — the persister is created by the CALLER, after this,
+   * so `preEgress`'s gate cannot take it as an argument. Same shape as `attachConservativeWriter`, and the
+   * persister self-attaches through it exactly as it does for the commitment writer.
+   */
+  readonly attachDurabilityProbe: (probe: () => Error | undefined) => void;
+  /**
    * Tools dropped at MCP discovery (allowlist / unsupported schema / collision / unsafe id) — a non-fatal
    * diagnostic the command surfaces to the user (stderr). Empty when no MCP server is declared.
    */
@@ -243,7 +249,15 @@ function buildSessionRuntime(
   emit: SessionEventSink;
   host: ToolHost;
   governor: GovernorWiring | undefined;
+  /**
+   * Late-bind the session's durability probe (#W15-4). The persister is created by the CALLER, after this
+   * runtime exists, so the gate inside `preEgress` cannot take it as an argument — the same reason
+   * `attachConservativeWriter` is late-bound. Until it is attached the probe reports healthy, which is
+   * correct: nothing has been persisted yet either.
+   */
+  attachDurabilityProbe: (probe: () => Error | undefined) => void;
 } {
+  let durabilityProbe: () => Error | undefined = () => undefined;
   // #228: a passive subscriber that throws — the chat persister failing a durable `history.db` write — is
   // isolated by `deliver()` either way, so the turn itself is never broken. What was missing is where the
   // failure GOES: with no sink the bus re-throws it out-of-band, and Node kills the process on the resulting
@@ -360,10 +374,28 @@ function buildSessionRuntime(
       ? {}
       : { compactThreshold: opts.chat.compactThreshold }),
     ...(opts.chat.maxMessages === undefined ? {} : { maxMessages: opts.chat.maxMessages }),
+    // ALWAYS present, cap or no cap (#W15-4). `RunEventBus` isolates listener errors, so a persister that
+    // cannot write still let the turn report success — the durable transcript and the cost columns silently
+    // fell behind a conversation that carried on above them. This is the gate that stops it: once the
+    // persister latches a write failure, no further egress is admitted. It composes with the governor rather
+    // than replacing it, and it runs FIRST — a session whose record is already lost must not spend more.
+    preEgress: (info) => {
+      const failure = durabilityProbe();
+      if (failure !== undefined) {
+        // A plain Error, deliberately: the chain classifies a `preAttempt` throw as a fatal (non-retryable)
+        // turn failure and carries this MESSAGE onto the terminal, which is all this needs. Exporting the
+        // turn-error class from `@relavium/core` to type it would widen a package's public API for a string.
+        // The message names the state without echoing the store's own text, which can carry a path.
+        throw new Error(
+          'this session could not be saved, so it will not send anything further — the transcript and cost on disk are behind what you see',
+          { cause: failure },
+        );
+      }
+      return governor?.preEgress(info);
+    },
     ...(governor === undefined
       ? {}
       : {
-          preEgress: governor.preEgress,
           updateCost: governor.updateCost,
           // ADR-0074 §4: resume restores BOTH totals into the same governor a fresh session uses.
           restoreConservativeCost: governor.restoreConservativeCost,
@@ -377,7 +409,16 @@ function buildSessionRuntime(
   };
   // `governor` rides out so the CALLER can attach the durable conservative-commitment writer once the persister
   // exists (ADR-0074 §4) and expose §1's release. Undefined when the chat declares no cap.
-  return { bus, deps, emit, host, governor };
+  return {
+    bus,
+    deps,
+    emit,
+    host,
+    governor,
+    attachDurabilityProbe: (probe) => {
+      durabilityProbe = probe;
+    },
+  };
 }
 
 export async function buildChatSession(opts: BuildChatSessionOptions): Promise<BuiltChatSession> {
@@ -424,7 +465,12 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       });
 
   try {
-    const { bus, deps, emit, host, governor } = buildSessionRuntime(opts, sessionId, mcp, context);
+    const { bus, deps, emit, host, governor, attachDurabilityProbe } = buildSessionRuntime(
+      opts,
+      sessionId,
+      mcp,
+      context,
+    );
     // The session runs against the EFFECTIVE agent: its grant unioned with the discovered MCP tool ids (2.R)
     // and then narrowed by the 2.5.A advertise-filter to the tools whose ToolHost arm is actually wired (an
     // unwired tool is never offered). The ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
@@ -446,6 +492,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       emitSessionEvent: emit,
       mcpSkipped: mcp?.skipped ?? [],
       ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
+      attachDurabilityProbe,
       ...(governor === undefined ? {} : { governor }),
     };
   } catch (err) {
@@ -610,7 +657,12 @@ export async function buildResumedChatSession(
   });
 
   try {
-    const { bus, deps, emit, host, governor } = buildSessionRuntime(opts, record.id, mcp, context);
+    const { bus, deps, emit, host, governor, attachDurabilityProbe } = buildSessionRuntime(
+      opts,
+      record.id,
+      mcp,
+      context,
+    );
     const session = AgentSession.resume(
       {
         sessionId: record.id,
@@ -640,6 +692,7 @@ export async function buildResumedChatSession(
       nextSequenceNumber,
       mcpSkipped: mcp?.skipped ?? [],
       ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
+      attachDurabilityProbe,
       ...(governor === undefined ? {} : { governor }),
     };
   } catch (err) {

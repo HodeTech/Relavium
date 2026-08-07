@@ -567,6 +567,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   try {
     persister = createSessionPersister({
       governor: built.governor,
+      attachDurabilityProbe: built.attachDurabilityProbe,
       store: opened.store,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -1515,6 +1516,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
   try {
     persister = createSessionPersister({
       governor: built.governor,
+      attachDurabilityProbe: built.attachDurabilityProbe,
       store: deps.opened.store,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -1646,6 +1648,7 @@ function seedResumedWiring(
   );
   const persister = createSessionPersister({
     governor: resumed.governor,
+    attachDurabilityProbe: resumed.attachDurabilityProbe,
     store: opened.store,
     handle: resumed.handle,
     sessionId: resumed.sessionId,
