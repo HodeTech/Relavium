@@ -88,7 +88,7 @@ any order"* — never as headcount.
 ```mermaid
 flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
-    W1["Wave 1 — Stop the bleeding<br/>3 CRITICALs · cost cap"]
+    W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     W2["Wave 2 — Shut the doors<br/>MCP · fs jail · secrets<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
@@ -135,7 +135,8 @@ checklists before ~30 security-gated PRs are reviewed against them.
 > ✅ **Wave 0 is COMPLETE (2026-07-29).** The required gate now executes the binary it ships,
 > `apps/cli/drizzle/**` is a declared turbo output, and `lint · typecheck · test` +
 > `engine coverage floor (llm, mcp)` are both required checks under branch protection. In phase terms this
-> closes **8 of 2.5.5.H's 14** tasks and **3 of 2.5.5.F's 20**. **Wave 1 is next.**
+> closes **8 of 2.5.5.H's 14** tasks and **3 of 2.5.5.F's 20**. **Wave 1 followed and is also complete
+> (2026-07-30, PR #81) — see below; Wave 2 is next.**
 
 ### Wave 1 — Stop the bleeding
 
