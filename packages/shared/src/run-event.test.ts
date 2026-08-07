@@ -399,6 +399,13 @@ const reject: Record<string, Record<string, unknown>> = {
     ...valid['media_job:submitted'],
     modality: 'document', // billed modalities are image|audio|video only
   },
+  // #W15-7 / ADR-0074 §3: a frozen cost on an unfrozen basis. A resume would restore the old reservation
+  // while RE-DERIVING the volume from a workflow definition the user may have edited in between — the exact
+  // drift §3 exists to prevent, reintroduced through the half-populated case.
+  'media_job:submitted (acceptedCostMicrocents without units)': {
+    ...valid['media_job:submitted'],
+    acceptedCostMicrocents: 1_500,
+  },
   'media_job:submitted (non-datetime deadlineAt)': {
     ...valid['media_job:submitted'],
     deadlineAt: 'soon',
@@ -1203,5 +1210,40 @@ describe('parseStoredRunEvent — the forward-compatible read (ADR-0074 §5)', (
     expect(
       parseStoredRunEvent({ type: 'some:future_event', sequenceNumber: 'not-a-number' }),
     ).toBeUndefined();
+  });
+});
+
+/**
+ * ADR-0074 §3 freezes the media-job basis at SUBMIT time. The invariant is a one-way implication, not
+ * "both or neither" (#W15-7) — so the guard has to reject the half-frozen case WITHOUT rejecting the
+ * legitimate units-only one.
+ */
+describe('media_job:submitted — the frozen basis (#W15-7)', () => {
+  const base = valid['media_job:submitted'];
+
+  it('accepts units alone — the H3 approved-bypass freezes the volume and omits the cost on purpose', () => {
+    // No pricing hook ran on that path, and `0` would freeze "priced at zero" for a job that was never
+    // priced. Rejecting this would break the bypass outright.
+    expect(RunEventSchema.safeParse({ ...base, units: 12.5 }).success).toBe(true);
+  });
+
+  it('accepts both together, with a FRACTIONAL volume', () => {
+    // `duration_seconds` is fractional by contract; an integer bound here would make a 12.5-second video
+    // job unwritable after the provider had already accepted and billed it.
+    expect(
+      RunEventSchema.safeParse({ ...base, units: 12.5, acceptedCostMicrocents: 1_500 }).success,
+    ).toBe(true);
+  });
+
+  it('accepts a reserved-nothing commitment, which is distinct from absent', () => {
+    // `0` says "priced, reserved nothing" — the allow-degrade path for an unpriced model under a
+    // non-strict cap. It still needs its basis.
+    expect(RunEventSchema.safeParse({ ...base, units: 4, acceptedCostMicrocents: 0 }).success).toBe(
+      true,
+    );
+  });
+
+  it('accepts neither — a legacy row written before §3', () => {
+    expect(RunEventSchema.safeParse(base).success).toBe(true);
   });
 });

@@ -721,6 +721,32 @@ function refineMediaJobDeadline(event: RunEventUnion, ctx: z.RefinementCtx): voi
 }
 
 /**
+ * A frozen media-job cost must sit on a frozen basis (#W15-7). ADR-0074 §3 freezes both `units` and
+ * `acceptedCostMicrocents` at SUBMIT time, but they were independently optional, so a row could carry a frozen
+ * cost with no frozen volume — and a resume would then restore the old reservation while RE-DERIVING the volume
+ * from a workflow definition the user may have edited in between. That is the exact drift §3 exists to prevent,
+ * reintroduced through the half-populated case.
+ *
+ * The invariant is NOT "both or neither". `units` alone is legitimate: the approved-bypass path (H3) freezes the
+ * volume and deliberately omits the cost, because no pricing hook ran and `0` would freeze "priced at zero" for
+ * a job that was never priced. The one-way implication is what holds — a cost implies a basis.
+ */
+function refineMediaJobFrozenBasis(event: RunEventUnion, ctx: z.RefinementCtx): void {
+  if (
+    event.type === 'media_job:submitted' &&
+    event.acceptedCostMicrocents !== undefined &&
+    event.units === undefined
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        'acceptedCostMicrocents requires units — a frozen cost with an unfrozen basis resumes against a re-derived volume (ADR-0074 §3)',
+      path: ['units'],
+    });
+  }
+}
+
+/**
  * Bind an approval preview to its action class (ADR-0057 EA5). Two rules:
  *  1. DRIFT — a preview may carry ONLY the field its action produces (see {@link APPROVAL_PREVIEW_FIELD}); an
  *     `egress` approval must never surface a `path`, etc. (`.strict()` on the preview already bars an UNKNOWN
@@ -766,6 +792,7 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
   refineHumanGateTimeout(event, ctx);
   refineRunPaused(event, ctx);
   refineMediaJobDeadline(event, ctx);
+  refineMediaJobFrozenBasis(event, ctx);
   refineApprovalPreview(event, ctx);
   refineBudgetEstimateCommitted(event, ctx);
 });
