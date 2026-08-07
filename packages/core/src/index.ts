@@ -186,10 +186,6 @@ export {
   CommitmentDurabilityError,
   isBudgetExceededError,
   isBudgetPauseError,
-  // ADR-0074 §3 — new egress is held while a resumed pre-§3 media job's cost basis is unknown. A surface must be
-  // able to tell it from a real cap breach: one says lower your ambition, the other says wait for the job.
-  LegacyMediaJobBasisError,
-  isLegacyMediaJobBasisError,
   DEFAULT_MAX_TOKENS_ESTIMATE,
 } from './engine/budget-governor.js';
 export type {

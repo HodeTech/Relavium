@@ -159,32 +159,6 @@ type EstimateResult =
   | { readonly kind: 'unpriced' };
 
 /**
- * New egress is refused while a resumed media job's money basis is unknown (ADR-0074 §3).
- *
- * Distinct from {@link BudgetExceededError} on purpose, and that distinction IS §3's observability requirement:
- * "the compatibility fallback is observable so operators can distinguish legacy uncertainty from a current priced
- * submission." A cap that was genuinely exceeded and a cap we merely cannot trust demand different actions — the
- * first says lower your ambition, the second says wait for the job to settle, which it will on its own.
- */
-export class LegacyMediaJobBasisError extends Error {
-  override readonly name = 'LegacyMediaJobBasisError';
-  readonly code = 'legacy_media_job_basis' as const;
-
-  constructor(readonly nodeIds: readonly string[]) {
-    super(
-      `new egress is held while a resumed media job submitted by an older version of Relavium settles ` +
-        `(node${nodeIds.length === 1 ? '' : 's'} ${nodeIds.join(', ')}): its cost basis was not recorded, so the ` +
-        `cap cannot be trusted until the job reports its real charge`,
-    );
-  }
-}
-
-/** Narrow a thrown value to {@link LegacyMediaJobBasisError} by its `code` — see {@link isBudgetExceededError}. */
-export function isLegacyMediaJobBasisError(value: unknown): value is LegacyMediaJobBasisError {
-  return value instanceof Error && 'code' in value && value.code === 'legacy_media_job_basis';
-}
-
-/**
  * Narrow a thrown value to {@link BudgetExceededError} by its `code` (D10).
  *
  * `instanceof` is correct INSIDE `packages/core`, where there is one realization of the class. It is not safe for
@@ -193,12 +167,30 @@ export function isLegacyMediaJobBasisError(value: unknown): value is LegacyMedia
  * Same hazard, same shape as `isCorruptRunEventError` in `@relavium/db`.
  */
 export function isBudgetExceededError(value: unknown): value is BudgetExceededError {
-  return value instanceof Error && 'code' in value && value.code === 'budget_exceeded';
+  // The `code` alone is NOT enough. `AgentTurnError` carries `readonly code: ErrorCode`, and the taxonomy
+  // contains `'budget_exceeded'` — so a code-only guard admits it and then hands the caller `spentMicrocents` /
+  // `limitMicrocents` typed `number` but actually `undefined`, printing "spent undefined of undefined" through a
+  // guard whose whole promise is safety. So also require a field only THIS class has.
+  return (
+    value instanceof Error &&
+    'code' in value &&
+    value.code === 'budget_exceeded' &&
+    'limitMicrocents' in value &&
+    typeof value.limitMicrocents === 'number'
+  );
 }
 
 /** Narrow a thrown value to {@link BudgetPauseError} by its `code` — see {@link isBudgetExceededError}. */
 export function isBudgetPauseError(value: unknown): value is BudgetPauseError {
-  return value instanceof Error && 'code' in value && value.code === 'budget_paused';
+  // Same structural check as {@link isBudgetExceededError}. No class collides on `'budget_paused'` today, but
+  // relying on that is relying on nobody ever adding one — and the sibling guard already proved how that ends.
+  return (
+    value instanceof Error &&
+    'code' in value &&
+    value.code === 'budget_paused' &&
+    'thresholdPct' in value &&
+    typeof value.thresholdPct === 'number'
+  );
 }
 
 /**
@@ -333,7 +325,7 @@ export class BudgetGovernor {
    * Cleared per node by {@link clearLegacyMediaJob}. Empty in every run that has no pre-§3 rows, which is every
    * run started after §3 ships — so this costs nothing on the normal path.
    */
-  readonly #legacyMediaJobNodes = new Set<string>();
+  readonly #legacyMediaJobNodes = new Map<string, { promise: Promise<void>; settle: () => void }>();
   #reservedCostMicrocents = 0;
   #nextAdmissionId = 0;
   readonly #reservedAdmissions = new Map<number, number>();
@@ -513,17 +505,24 @@ export class BudgetGovernor {
     if (this.#pendingCommitments > 0 || this.#commitmentFailure !== undefined) {
       await this.flushCommitments();
     }
-    // ADR-0074 §3's fail-closed gate. A resumed pre-§3 media job holds a reservation we could only obtain by
+    // ADR-0074 §3's fail-closed hold. A resumed pre-§3 media job holds a reservation we could only obtain by
     // RE-PRICING from today's catalog; if the price fell since submission, that reserves less than the provider
-    // will bill, and admitting new egress against the difference spends headroom that does not exist. It lasts
-    // only until the job settles and its realized charge replaces the guess.
+    // will bill, and admitting new egress against the difference spends headroom that does not exist.
     //
-    // §3 scopes this to "with a configured cap", and no extra condition is needed to honour that: the engine
-    // constructs a governor ONLY when the workflow declares a budget, and `Budget` requires
-    // `max_cost_microcents`. So reaching this line already means a cap exists — a run without one has no
-    // governor to refuse anything, which is the correct behaviour (there is no headroom to misjudge).
-    if (this.#legacyMediaJobNodes.size > 0) {
-      throw new LegacyMediaJobBasisError([...this.#legacyMediaJobNodes]);
+    // It WAITS rather than throwing, and that distinction is the whole of §3's "until it settles". Throwing was
+    // unimplementable as a hold: `budget_exceeded` is not in `RETRYABLE_ERROR_CODES` and `retry_on` is
+    // schema-restricted to that same set, so no author can opt a node into retrying it — a sibling node would
+    // simply die, aborting the run and abandoning the very job it was waiting for, often seconds before it
+    // reported. Waiting is bounded without any timer of our own: the job's `deadlineAt` already fails it through
+    // the poll loop, and every exit route resolves this promise (run teardown included, or a waiter would hang).
+    //
+    // §3 scopes this to "with a configured cap", and no extra condition is needed: the engine constructs a
+    // governor ONLY when the workflow declares a budget, and `Budget` requires `max_cost_microcents`. Reaching
+    // this line already means a cap exists — a run without one has no governor to hold anything, which is right,
+    // since there is no headroom to misjudge.
+    while (this.#legacyMediaJobNodes.size > 0) {
+      // Re-checked in a loop: a second legacy job can register while we await the first.
+      await Promise.all([...this.#legacyMediaJobNodes.values()].map((e) => e.promise));
     }
     const evaluation = this.#evaluate(model, maxTokens, mediaUnitsEstimate, provider);
     const { result } = evaluation;
@@ -689,17 +688,31 @@ export class BudgetGovernor {
    * re-entrant resume of the same node cannot double-register.
    */
   registerLegacyMediaJob(nodeId: string): void {
-    this.#legacyMediaJobNodes.add(nodeId);
+    if (this.#legacyMediaJobNodes.has(nodeId)) return; // idempotent; a re-entrant resume must not double-register
+    let settle = (): void => undefined;
+    const promise = new Promise<void>((resolve) => {
+      settle = resolve;
+    });
+    this.#legacyMediaJobNodes.set(nodeId, { promise, settle });
   }
 
-  /** The job settled, so its realized charge has replaced the guess — the uncertainty is over. */
+  /**
+   * The job settled, so its realized charge has replaced the guess — the uncertainty is over, and anything
+   * waiting on it may proceed.
+   *
+   * MUST also be called at run teardown for every still-registered node. A waiter blocked on a job that will now
+   * never settle would hang forever, which is worse than either failing or admitting.
+   */
   clearLegacyMediaJob(nodeId: string): void {
+    const entry = this.#legacyMediaJobNodes.get(nodeId);
+    if (entry === undefined) return;
     this.#legacyMediaJobNodes.delete(nodeId);
+    entry.settle();
   }
 
-  /** Node ids whose resumed media job has an unknown money basis — what a surface renders to explain a refusal. */
+  /** Node ids whose resumed media job still has an unknown money basis. */
   get legacyMediaJobNodes(): readonly string[] {
-    return [...this.#legacyMediaJobNodes];
+    return [...this.#legacyMediaJobNodes.keys()];
   }
 
   /**

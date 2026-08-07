@@ -890,6 +890,32 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
     expect(onCorrelationKey({ ...dual, runId: 'run-1', sessionId: 'sess-1' })).toBe(true); // both
   });
 
+  it('accepts a FRACTIONAL media-job units volume (ADR-0074 §3)', () => {
+    // `duration_seconds` is `z.number().positive()`, so `units = duration × count` is fractional by contract.
+    // An integer bound here would reject a 12.5-second video job at the bus — and the row is written AFTER the
+    // provider has accepted and billed the job, so the run would die holding an unpollable paid job.
+    const base = {
+      type: 'media_job:submitted',
+      runId: 'run-1',
+      timestamp: '2026-06-04T00:00:00.000Z',
+      sequenceNumber: 3,
+      nodeId: 'gen',
+      jobId: 'j1',
+      provider: 'openai',
+      model: 'sora-2',
+      modality: 'video',
+      startedAt: '2026-06-04T00:00:00.000Z',
+      deadlineAt: '2026-06-04T01:00:00.000Z',
+    };
+    expect(
+      RunEventSchema.safeParse({ ...base, units: 12.5, acceptedCostMicrocents: 900 }).success,
+    ).toBe(true);
+    expect(RunEventSchema.safeParse({ ...base, units: 0 }).success).toBe(false); // still a positive volume
+    expect(RunEventSchema.safeParse({ ...base, units: -1 }).success).toBe(false);
+    // The MONEY field stays an integer — micro-cents are not fractional.
+    expect(RunEventSchema.safeParse({ ...base, acceptedCostMicrocents: 1.5 }).success).toBe(false);
+  });
+
   it('carries budget:estimate_committed on either envelope (dual), and drops nodeId on a session turn (ADR-0074 §2)', () => {
     const base = {
       type: 'budget:estimate_committed',

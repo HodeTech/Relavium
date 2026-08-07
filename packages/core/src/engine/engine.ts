@@ -585,8 +585,9 @@ class RunExecution {
     // Re-attach each parked async media job (MJ-1, ADR-0045 §3): re-register it + RE-ARM a poll of the
     // persisted opaque jobId. NEVER re-call generateMedia — the node is `'paused'` (applyMediaJobEvent set it),
     // not absent, so it is not re-run via the `'pending'` path; this overrides the checkpoint
-    // running-at-crash-re-runs default for the async-media node specifically. `units` is NOT persisted in the
-    // slot — recompute it from the node config (count/duration_seconds), which IS persisted in the workflow.
+    // running-at-crash-re-runs default for the async-media node specifically. `units` IS persisted on the event
+    // since ADR-0074 §3; the node-config recompute (count/duration_seconds) below survives only as the LEGACY
+    // fallback for rows written before it.
     // Unlike a gate (whose decision arrives externally), a media job has no external trigger — only the
     // engine's own re-poll advances it, so the re-arm is unconditional here. A past-deadline job is
     // short-circuited to a timeout by the first `#pollMediaJob` (which checks `now > deadlineAt`).
@@ -760,6 +761,12 @@ class RunExecution {
       disarm();
     }
     this.#mediaJobTimers.clear();
+    // ADR-0074 §3: release every unknown-basis HOLD before dropping the jobs. A `checkPreEgress` awaiting a job
+    // that will now never settle would hang forever — worse than either failing or admitting. This is the reason
+    // the bulk paths cannot simply drop the map.
+    for (const nodeId of this.#pendingMediaJobs.keys()) {
+      this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
+    }
     this.#pendingMediaJobs.clear();
     this.#disarmRunTimeout();
   }
@@ -1820,6 +1827,12 @@ class RunExecution {
       disarm();
     }
     this.#mediaJobTimers.clear();
+    // ADR-0074 §3: release every unknown-basis HOLD before dropping the jobs. A `checkPreEgress` awaiting a job
+    // that will now never settle would hang forever — worse than either failing or admitting. This is the reason
+    // the bulk paths cannot simply drop the map.
+    for (const nodeId of this.#pendingMediaJobs.keys()) {
+      this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
+    }
     this.#pendingMediaJobs.clear();
     this.#budgetApprovedVertices.clear(); // drop any unconsumed budget-approval (a sibling failure/cancel
     // can settle the run between resume() arming it and the re-dispatch — no stale entry on the retained run)

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+
+import { AgentTurnError } from './agent-turn.js';
 import {
   estimateMaxNextCost,
   type EndpointKind,
@@ -14,8 +16,6 @@ import {
   CommitmentDurabilityError,
   isBudgetExceededError,
   isBudgetPauseError,
-  isLegacyMediaJobBasisError,
-  LegacyMediaJobBasisError,
   type BudgetAdmission,
   type GovernorEventDraft,
 } from './budget-governor.js';
@@ -268,6 +268,12 @@ describe('BudgetGovernor', () => {
       expect(isBudgetExceededError(paused)).toBe(false);
       expect(isBudgetPauseError(exceeded)).toBe(false);
       expect(isBudgetExceededError(new CommitmentDurabilityError(new Error('x')))).toBe(false);
+      // The collision that actually exists: `AgentTurnError` carries `readonly code: ErrorCode`, and the taxonomy
+      // contains 'budget_exceeded'. A code-only guard admitted it and then handed the caller `limitMicrocents`
+      // typed `number` but actually undefined — "spent undefined of undefined" from a safety guard.
+      expect(isBudgetExceededError(new AgentTurnError('budget_exceeded', 'held', true))).toBe(
+        false,
+      );
     });
 
     it('rejects a non-Error that merely carries the code', () => {
@@ -300,41 +306,47 @@ describe('BudgetGovernor', () => {
       expect(governor.reserveAcceptedCost('m', Number.NaN)).toBeUndefined();
     });
 
-    it('HOLDS new egress while a legacy job`s basis is unknown, and says which node to wait for', async () => {
-      // §3's fail-closed rule. A pre-§3 row can only be reserved by re-pricing from today's catalog; if the price
-      // fell, that reserves less than the provider will bill, and admitting new egress spends headroom that does
-      // not exist. The refusal is a DISTINCT error from an exceeded cap because the operator's action differs:
-      // one says lower your ambition, the other says wait — the job settles on its own.
+    it('WAITS for a legacy job to settle instead of failing the caller', async () => {
+      // §3's "until it settles", implemented as a wait rather than a throw. Throwing was unimplementable as a
+      // hold: `budget_exceeded` is not in `RETRYABLE_ERROR_CODES` and `retry_on` is schema-restricted to that
+      // same set, so no author could opt a node into retrying it — the sibling node simply died, aborting the run
+      // and abandoning the very job it was waiting for, often seconds before it reported.
       const { governor } = makeGovernor();
       governor.registerLegacyMediaJob('gen-1');
-      const thrown = await governor
-        .checkPreEgress('claude-haiku-4-5', 1000)
-        .catch((e: unknown) => e);
-      expect(isLegacyMediaJobBasisError(thrown)).toBe(true);
-      expect(isBudgetExceededError(thrown)).toBe(false); // NOT confusable with a real cap breach
-      expect((thrown as LegacyMediaJobBasisError).nodeIds).toEqual(['gen-1']);
-      expect((thrown as Error).message).toContain('gen-1');
 
-      // It ends when the job settles and its realized charge replaces the guess.
+      let admitted = false;
+      const pending = governor.checkPreEgress('claude-haiku-4-5', 1000).then((a) => {
+        admitted = true;
+        return a;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(admitted).toBe(false); // held, not failed
+
       governor.clearLegacyMediaJob('gen-1');
-      await expect(governor.checkPreEgress('claude-haiku-4-5', 1000)).resolves.toBeDefined();
+      await expect(pending).resolves.toBeDefined();
+      expect(admitted).toBe(true);
     });
 
-    it('holds regardless of on_exceed, because a governor existing IS the configured cap', async () => {
-      // §3 scopes the hold to "with a configured cap", and that needs no extra condition: the engine builds a
-      // governor only when the workflow declares a budget, and `Budget` requires `max_cost_microcents`. A run
-      // without one has no governor to refuse anything — correctly, since there is no headroom to misjudge. So
-      // the policy knob is irrelevant here; `warn` must hold exactly as `fail` does.
-      for (const onExceed of ['warn', 'fail', 'pause_for_approval'] as const) {
-        const { governor } = makeGovernor({
-          budget: { max_cost_microcents: 1_000_000, on_exceed: onExceed },
-        });
-        governor.registerLegacyMediaJob('gen-1');
-        const thrown = await governor
-          .checkPreEgress('claude-haiku-4-5', 1000)
-          .catch((e: unknown) => e);
-        expect(isLegacyMediaJobBasisError(thrown)).toBe(true);
-      }
+    it('keeps waiting when a SECOND legacy job registers while the first is still pending', async () => {
+      // The loop, not a single await: a multi-job resume registers each in turn, and releasing only the first
+      // would admit egress against the second job's still-unknown basis.
+      const { governor } = makeGovernor();
+      governor.registerLegacyMediaJob('gen-1');
+      let admitted = false;
+      const pending = governor.checkPreEgress('claude-haiku-4-5', 1000).then((a) => {
+        admitted = true;
+        return a;
+      });
+      await Promise.resolve();
+      governor.registerLegacyMediaJob('gen-2');
+      governor.clearLegacyMediaJob('gen-1');
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(admitted).toBe(false); // gen-2 still unknown
+
+      governor.clearLegacyMediaJob('gen-2');
+      await expect(pending).resolves.toBeDefined();
     });
 
     it('is idempotent per node, so a re-entrant resume cannot strand the cap', () => {

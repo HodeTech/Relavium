@@ -380,7 +380,12 @@ export const MediaJobSubmittedEventSchema = z.object({
    * changed the basis of a job the provider had already accepted. Optional because rows written before §3 do not
    * carry it; absent means LEGACY, and a resumed legacy job is handled fail-closed rather than re-derived.
    */
-  units: positiveInt.optional(),
+  // NOT `positiveInt`: this is a VOLUME, not micro-cents. `duration_seconds` is `z.number().positive()` —
+  // fractional by contract — and `units = duration × count`, so a 12.5-second video job would fail validation at
+  // the bus, the `media_job:submitted` row would never be written, and a job the provider had already ACCEPTED
+  // AND BILLED would be unpollable and unresumable. Rounding at the freeze site is equally wrong: `units` also
+  // drives the one terminal cost addend, so rounding would move the realized charge away from what was priced.
+  units: z.number().positive().optional(),
   /**
    * The priced amount actually reserved for this job's admission at submit time — the number a resume restores
    * WITHOUT a pricing lookup (ADR-0074 §3).
