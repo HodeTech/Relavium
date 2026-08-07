@@ -766,9 +766,10 @@ async function driveAgentTurn(
     // be imprecise — it would COLLIDE with the number a later real attempt receives, making two commitments
     // indistinguishable. Absent is the honest answer.
     //
-    // UNTESTED, and known to be: a mutation here survives the whole `packages/core` suite (verified by making it
-    // throw — nothing reached it). Provoking it needs a consumer/iterator failure after a true-boundary admission
-    // but before the chain reports an attempt. Recorded rather than glossed, because this is a money path.
+    // Covered by "conservatively settles an admission the chain never reported, when the CONSUMER throws
+    // mid-stream": a `params.emit` that throws on an `agent:token` drops out of the drain loop after the provider
+    // has already produced a delta but before the chain records an `AttemptRecord`. Both wrong answers are
+    // mutation-killed there — releasing instead of retaining, and passing the un-incremented counter.
     active?.settleAtReservedEstimate({ nodeId: params.nodeId });
   };
   const takeAttemptAdmission = (): BudgetAdmission | undefined => {

@@ -12,6 +12,8 @@ import {
   BudgetGovernor,
   BudgetPauseError,
   CommitmentDurabilityError,
+  isBudgetExceededError,
+  isBudgetPauseError,
   type BudgetAdmission,
   type GovernorEventDraft,
 } from './budget-governor.js';
@@ -247,6 +249,32 @@ describe('BudgetGovernor', () => {
     const next = await governor.checkPreEgress('claude-haiku-4-5', 1000);
     expect(next).toBeDefined();
     next?.release();
+  });
+
+  describe('typed error discriminants (D10)', () => {
+    it('carries a stable `code` on both cap errors, narrowable without instanceof', () => {
+      // D10, and it must precede Wave 3's `RelaviumError` migration. The guards exist because `instanceof` is
+      // unsafe from a surface: the CLI bundles the engine, so two realizations of a class coexist and `instanceof`
+      // answers `false` at exactly the boundary that has to catch it.
+      const exceeded = new BudgetExceededError(10, 5, 12);
+      const paused = new BudgetPauseError(10, 5, 90);
+      expect(exceeded.code).toBe('budget_exceeded');
+      expect(paused.code).toBe('budget_paused');
+      expect(isBudgetExceededError(exceeded)).toBe(true);
+      expect(isBudgetPauseError(paused)).toBe(true);
+      // The discriminants are DISJOINT — a guard must not admit its sibling.
+      expect(isBudgetExceededError(paused)).toBe(false);
+      expect(isBudgetPauseError(exceeded)).toBe(false);
+      expect(isBudgetExceededError(new CommitmentDurabilityError(new Error('x')))).toBe(false);
+    });
+
+    it('rejects a non-Error that merely carries the code', () => {
+      // The guard requires `instanceof Error` before looking at `code`, so a bare payload shaped like the error
+      // cannot smuggle itself past a catch.
+      expect(isBudgetExceededError({ code: 'budget_exceeded' })).toBe(false);
+      expect(isBudgetPauseError('budget_paused')).toBe(false);
+      expect(isBudgetExceededError(undefined)).toBe(false);
+    });
   });
 
   describe('durable conservative commitments (ADR-0074 §1/§2)', () => {

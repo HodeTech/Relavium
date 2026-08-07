@@ -174,7 +174,9 @@ export type { AgentTurnLimits, PreEgressHook } from './engine/agent-turn.js';
 
 // Budget governor (1.AC) — the pre-egress cost gate a surface wires behind the `PreEgressHook` seam and
 // whose typed cap errors the run/session loops classify (ADR-0028). Exported so a surface can construct the
-// governor and narrow on `BudgetExceededError`/`BudgetPauseError` by class (never by message).
+// governor and narrow on `BudgetExceededError`/`BudgetPauseError` — by `.code` via the exported guards (D10),
+// never by message, and never by `instanceof` from a surface: the CLI bundles the engine, so two realizations of
+// a class can coexist and `instanceof` answers `false` at the one boundary that must catch it.
 export {
   BudgetGovernor,
   BudgetExceededError,
@@ -182,6 +184,8 @@ export {
   // ADR-0074 §2 — a conservative commitment's durable write failed. A host that wires the governor (the chat path
   // does) must be able to narrow on it: the reservation is deliberately still consuming capacity when it throws.
   CommitmentDurabilityError,
+  isBudgetExceededError,
+  isBudgetPauseError,
   DEFAULT_MAX_TOKENS_ESTIMATE,
 } from './engine/budget-governor.js';
 export type {

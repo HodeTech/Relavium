@@ -28,6 +28,12 @@ export type BudgetExceededReason = 'projected_over_cap' | 'unpriced_model';
  */
 export class BudgetExceededError extends Error {
   override readonly name = 'BudgetExceededError';
+  /**
+   * The stable discriminant (D10). Callers narrow on `.code`, never on `.name` or `.message` — and never on
+   * `instanceof` across a bundle seam, where two realizations of the class can coexist and silently answer
+   * `false`. Adopted ahead of Wave 3's `RelaviumError` migration, which this shape has to slot into.
+   */
+  readonly code = 'budget_exceeded' as const;
   constructor(
     readonly spentMicrocents: number,
     readonly limitMicrocents: number,
@@ -62,6 +68,8 @@ export class BudgetExceededError extends Error {
  */
 export class BudgetPauseError extends Error {
   override readonly name = 'BudgetPauseError';
+  /** The stable discriminant (D10) — see {@link BudgetExceededError.code}. */
+  readonly code = 'budget_paused' as const;
   constructor(
     readonly spentMicrocents: number,
     readonly limitMicrocents: number,
@@ -138,6 +146,23 @@ interface BudgetEvaluation {
 type EstimateResult =
   | { readonly kind: 'priced'; readonly estimateMicrocents: number }
   | { readonly kind: 'unpriced' };
+
+/**
+ * Narrow a thrown value to {@link BudgetExceededError} by its `code` (D10).
+ *
+ * `instanceof` is correct INSIDE `packages/core`, where there is one realization of the class. It is not safe for
+ * a surface: the CLI bundles the engine into one file while its tests import the package directly, so two
+ * realizations can coexist and `instanceof` silently answers `false` at exactly the boundary that has to catch it.
+ * Same hazard, same shape as `isCorruptRunEventError` in `@relavium/db`.
+ */
+export function isBudgetExceededError(value: unknown): value is BudgetExceededError {
+  return value instanceof Error && 'code' in value && value.code === 'budget_exceeded';
+}
+
+/** Narrow a thrown value to {@link BudgetPauseError} by its `code` — see {@link isBudgetExceededError}. */
+export function isBudgetPauseError(value: unknown): value is BudgetPauseError {
+  return value instanceof Error && 'code' in value && value.code === 'budget_paused';
+}
 
 /**
  * A conservative commitment whose durable write failed (ADR-0074 §2).

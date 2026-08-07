@@ -1229,6 +1229,43 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     expect(origins[0]).toEqual({ nodeId: params.nodeId, attemptNumber: 1 });
   });
 
+  it('conservatively settles an admission the chain never reported, when the CONSUMER throws mid-stream', async () => {
+    // The `settleUnreportedAttemptAdmission` path — the third commit site, and the one the code marked UNTESTED.
+    // It fires when `preAttempt` granted an admission but `onAttempt` never consumed it, so there is no
+    // `AttemptRecord` at all. Reached here by making OUR consumer throw while draining the stream: the provider
+    // was already engaged (it produced a delta), so releasing would reopen cap capacity against money that may
+    // already be owed — the retain is the whole point.
+    const provider = scriptedProvider('anthropic', [
+      [{ type: 'text_delta', text: 'partial' }, STOP()],
+    ]);
+    let releases = 0;
+    const origins: (CommitmentOrigin | undefined)[] = [];
+    const admission = {
+      settle: (): void => undefined,
+      settleAtReservedEstimate: (origin?: CommitmentOrigin): void => {
+        origins.push(origin);
+      },
+      release: (): void => {
+        releases += 1;
+      },
+    };
+    const boom = new Error('the renderer threw while consuming the stream');
+    const params = baseParams(provider, {
+      preEgress: () => admission,
+      emit: (event) => {
+        if (event.type === 'agent:token') throw boom;
+      },
+    });
+
+    await expect(runAgentTurn(params)).rejects.toBe(boom);
+    // RETAINED, not released — the provider had already streamed a delta.
+    expect(releases).toBe(0);
+    expect(origins).toHaveLength(1);
+    // And NO `attemptNumber`: `onAttempt` never fired, so the counter has not counted this attempt. Passing it
+    // would COLLIDE with the number a later real attempt receives, making two commitments indistinguishable.
+    expect(origins[0]).toEqual({ nodeId: params.nodeId });
+  });
+
   it('conservatively settles a clean provider EOF that omits the terminal usage record', async () => {
     // FallbackChain treats an iterator ending without a `stop` chunk as a successful empty turn. It may still have
     // reached/billed the provider, so this must not be mistaken for the proven pre-egress release path.
