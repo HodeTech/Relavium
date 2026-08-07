@@ -272,6 +272,21 @@ const STREAMING_EVENT_TYPES = [
 ];
 
 /**
+ * The `run_costs.node_id` used for a RUN-level cost addend — the residual a `run:failed` / `run:cancelled`
+ * terminal carries (#W15-6).
+ *
+ * The empty string, deliberately. That money is real (a sibling's paid media job, billed provider-side and
+ * folded just before the terminal — ADR-0045 §5) but the event does NOT say which node it belongs to, and
+ * inventing an attribution would be worse than admitting there is none. `run_costs.node_id` is `NOT NULL`, and
+ * every event-carried `nodeId` is `nonEmptyString`, so an empty one is PROVABLY not an authored node — no
+ * sentinel string could collide with a real id the way a plausible-looking `(run)` might.
+ *
+ * Writing the row (rather than only bumping `runs.total_cost_microcents`) is what keeps ADR-0070's
+ * `SUM(run_costs) == runs.total_cost_microcents` exactly true.
+ */
+const RUN_LEVEL_COST_NODE_ID = '';
+
+/**
  * The one place a stored `run_events` row becomes a {@link RunEvent} — the read boundary ADR-0074 §5 asks for.
  *
  * Three outcomes, and the whole design is in keeping them apart:
@@ -393,6 +408,66 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
   const currentRunCost = (tx: TxDb, runId: string): number =>
     tx.select({ c: runs.totalCostMicrocents }).from(runs).where(eq(runs.id, runId)).get()?.c ?? 0;
 
+  /** Close an attempt's `step_executions` row as `failed` — shared by `node:failed` and `node:retrying`. */
+  const failStepRow = (
+    tx: TxDb,
+    event: {
+      readonly nodeId: string;
+      readonly error: unknown;
+      readonly attemptNumber?: number | undefined;
+    },
+    runId: string,
+    ts: number,
+  ): void => {
+    tx.update(stepExecutions)
+      .set({
+        status: 'failed',
+        errorJson: JSON.stringify(event.error),
+        completedAt: ts,
+        updatedAt: ts,
+      })
+      .where(stepMatch(runId, event.nodeId, event.attemptNumber))
+      .run();
+  };
+
+  /**
+   * Fold a durable run-wide cumulative SNAPSHOT into the money of record, and return the delta it added
+   * (#W15-6). The same telescoping arithmetic `node:completed` uses: the delta since the last boundary, so
+   * `sum(run_costs) == runs.total_cost_microcents` keeps holding exactly.
+   *
+   * `Math.max(0, …)` guards a non-monotonic snapshot (a deeper engine bug) and makes a re-emitted or absent
+   * snapshot a no-op rather than a negative charge. A zero delta writes nothing at all — the common case for a
+   * failure with no spend after the last boundary, which must not litter `run_costs` with empty rows.
+   */
+  const foldCumulative = (
+    tx: TxDb,
+    runId: string,
+    cumulative: number | undefined,
+    ts: number,
+    nodeId: string,
+  ): number => {
+    if (cumulative === undefined) return 0; // a log written before the field existed
+    const prev = currentRunCost(tx, runId);
+    const delta = Math.max(0, cumulative - prev);
+    if (delta === 0) return 0;
+    tx.insert(runCosts)
+      .values({
+        id: deps.uuid(),
+        runId,
+        nodeId,
+        inputTokens: 0, // a fail-cost addend carries no token attribution — only money
+        outputTokens: 0,
+        costMicrocents: delta,
+        createdAt: ts,
+      } satisfies NewRunCostRow)
+      .run();
+    tx.update(runs)
+      .set({ totalCostMicrocents: prev + delta, updatedAt: ts })
+      .where(eq(runs.id, runId))
+      .run();
+    return delta;
+  };
+
   /** Apply an event's derived `runs`/`step_executions`/`run_costs` writes (`run:started` inserts the runs row). */
   const applyDerived = (tx: TxDb, event: RunEvent, runId: string, ts: number): void => {
     switch (event.type) {
@@ -476,21 +551,34 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           .run();
         return;
       }
-      case 'node:failed':
       case 'node:retrying': {
-        // Mark the attempt's step row `failed`. For `node:failed` this is the node's TERMINAL failure
-        // (node-retry budget exhausted); for `node:retrying` it is the intermediate attempt that will
-        // re-dispatch as a fresh row on the next `node:started`. Either way the attempt's row must not
-        // linger as `running` (a ghost in `relavium status`, 2.I). Both carry `error` + `attemptNumber`.
-        tx.update(stepExecutions)
-          .set({
-            status: 'failed',
-            errorJson: JSON.stringify(event.error),
-            completedAt: ts,
-            updatedAt: ts,
-          })
-          .where(stepMatch(runId, event.nodeId, event.attemptNumber))
-          .run();
+        // The intermediate attempt that will re-dispatch as a fresh row on the next `node:started`. Its row
+        // must not linger as `running` (a ghost in `relavium status`, 2.I). It carries no cost snapshot —
+        // the node has not reached a boundary yet.
+        failStepRow(tx, event, runId, ts);
+        return;
+      }
+      case 'node:failed': {
+        // The node's TERMINAL failure (node-retry budget exhausted). Same step-row close as `node:retrying`,
+        // PLUS the cost fold `node:completed` gets and this arm was missing (#W15-6): a node that failed can
+        // still have SPENT — a paid media job billed provider-side before the failure (ADR-0045 §5), or a
+        // provider call that returned usage and then failed downstream. `cost:updated` is streamed, never
+        // persisted, so this snapshot is the only durable carrier, and dropping it left the run total (and
+        // `sum(run_costs)`) short of money that was really charged.
+        failStepRow(tx, event, runId, ts);
+        const nodeCost = foldCumulative(
+          tx,
+          runId,
+          event.cumulativeCostMicrocents,
+          ts,
+          event.nodeId,
+        );
+        if (nodeCost > 0) {
+          tx.update(stepExecutions)
+            .set({ costMicrocents: nodeCost, updatedAt: ts })
+            .where(stepMatch(runId, event.nodeId, event.attemptNumber))
+            .run();
+        }
         return;
       }
       case 'human_gate:paused':
@@ -519,11 +607,12 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         return;
       }
       case 'run:failed': {
-        // Known limitation: run:failed / run:cancelled carry no total-cost field in the run-event schema,
-        // and the failing node's cost is unrecoverable here (node:failed has no cost; cost:updated is not
-        // persisted). So a failed run's runs.total_cost_microcents is the last node:completed cumulative —
-        // it may undercount spend incurred after it. `sum(run_costs) == total` still holds (both undercount).
-        // A true failed-run total needs a shared-schema change (a total on run:failed) — out of 2.H scope.
+        // Both terminals DO carry the run-wide cumulative now, and folding it is the point (#W15-6). The
+        // root-cause node's `node:failed` snapshots the cumulative as of THAT node, but a SIBLING's paid
+        // media job abandoned by the failure is folded only just BEFORE this terminal (ADR-0045 §5) — after
+        // that `node:failed` was already emitted. So this event is the only durable carrier of that last
+        // addend, and without it a failed run's total silently undercounted real spend.
+        foldCumulative(tx, runId, event.cumulativeCostMicrocents, ts, RUN_LEVEL_COST_NODE_ID);
         tx.update(runs)
           .set({
             status: 'failed',
@@ -537,6 +626,9 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         return;
       }
       case 'run:cancelled': {
+        // Same fold as `run:failed`: a paid media job still pending at the cancel was billed provider-side
+        // and its lone estimate addend lands just before this terminal (#W15-6, ADR-0045 §5).
+        foldCumulative(tx, runId, event.cumulativeCostMicrocents, ts, RUN_LEVEL_COST_NODE_ID);
         tx.update(runs)
           .set({ status: 'cancelled', completedAt: ts, updatedAt: ts })
           .where(eq(runs.id, runId))

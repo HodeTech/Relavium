@@ -1088,4 +1088,132 @@ describe('createRunHistoryReader', () => {
       expect(() => reader.loadRunEvents('run-h')).toThrow(CorruptRunEventError);
     });
   });
+
+  /**
+   * #W15-6 — `node:failed`, `run:failed` and `run:cancelled` all carry a durable run-wide cost snapshot, and
+   * the store folded none of them. `cost:updated` is streamed and never persisted, so those snapshots are the
+   * ONLY durable carriers of money spent after the last `node:completed`.
+   */
+  describe('the durable fail-cost folds (#W15-6)', () => {
+    /** `sum(run_costs)` for a run — ADR-0070's invariant, checked directly rather than assumed. */
+    const sumRunCosts = (runId: string): number =>
+      client.db
+        .select({ c: runCosts.costMicrocents })
+        .from(runCosts)
+        .where(eq(runCosts.runId, runId))
+        .all()
+        .reduce((total, row) => total + row.c, 0);
+
+    const ts = TS;
+
+    it('folds a failed node cost, so a billed-but-failed paid job is not lost', async () => {
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      await store.persistEvent(
+        evRun('run-f', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      await store.persistEvent(
+        evRun('run-f', 'node:started', 1, { nodeId: 'n1', nodeType: 'agent' }, ts),
+      );
+      await store.persistEvent(
+        evRun(
+          'run-f',
+          'node:failed',
+          2,
+          {
+            nodeId: 'n1',
+            error: { code: 'provider_unavailable', message: 'boom', retryable: false },
+            cumulativeCostMicrocents: 4_200,
+          },
+          ts,
+        ),
+      );
+
+      expect(reader.loadRun('run-f')?.totalCostMicrocents).toBe(4_200);
+      expect(sumRunCosts('run-f')).toBe(4_200); // ADR-0070's invariant still holds exactly
+    });
+
+    it('folds the run terminal residual — a sibling cleanup lands AFTER its node:failed', async () => {
+      // The root-cause node's `node:failed` snapshots the cumulative as of THAT node; a sibling's abandoned
+      // paid media job is folded only just before the run terminal (ADR-0045 §5). Without this fold the run
+      // total stopped at the earlier figure.
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      await store.persistEvent(
+        evRun('run-r', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      await store.persistEvent(
+        evRun('run-r', 'node:started', 1, { nodeId: 'n1', nodeType: 'agent' }, ts),
+      );
+      await store.persistEvent(
+        evRun(
+          'run-r',
+          'node:failed',
+          2,
+          {
+            nodeId: 'n1',
+            error: { code: 'provider_unavailable', message: 'boom', retryable: false },
+            cumulativeCostMicrocents: 1_000,
+          },
+          ts,
+        ),
+      );
+      await store.persistEvent(
+        evRun(
+          'run-r',
+          'run:failed',
+          3,
+          {
+            error: { code: 'provider_unavailable', message: 'boom', retryable: false },
+            partialOutputs: {},
+            cumulativeCostMicrocents: 3_500, // +2500 of sibling media cleanup
+          },
+          ts,
+        ),
+      );
+
+      expect(reader.loadRun('run-r')?.totalCostMicrocents).toBe(3_500);
+      expect(sumRunCosts('run-r')).toBe(3_500);
+    });
+
+    it('folds a cancellation snapshot the same way', async () => {
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      await store.persistEvent(
+        evRun('run-c', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      await store.persistEvent(
+        evRun('run-c', 'run:cancelled', 1, { cumulativeCostMicrocents: 900 }, ts),
+      );
+
+      expect(reader.loadRun('run-c')?.totalCostMicrocents).toBe(900);
+      expect(sumRunCosts('run-c')).toBe(900);
+    });
+
+    it('writes NO run_costs row when a terminal adds nothing — the common no-spend failure', async () => {
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      await store.persistEvent(
+        evRun('run-z', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      await store.persistEvent(
+        evRun(
+          'run-z',
+          'run:failed',
+          1,
+          {
+            error: { code: 'validation', message: 'bad input', retryable: false },
+            partialOutputs: {},
+            cumulativeCostMicrocents: 0,
+          },
+          ts,
+        ),
+      );
+
+      expect(
+        client.db.select().from(runCosts).where(eq(runCosts.runId, 'run-z')).all(),
+      ).toHaveLength(0);
+      expect(reader.loadRun('run-z')?.totalCostMicrocents).toBe(0);
+    });
+  });
 });

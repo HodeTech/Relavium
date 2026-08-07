@@ -437,13 +437,24 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
       };
 
     case 'run:failed':
+      // Same durable fail-cost fold as `run:cancelled` and `node:failed` (#W15-6). The root-cause node's
+      // `node:failed` snapshots the cumulative as of THAT node, but a SIBLING's paid media job abandoned by
+      // the failure is folded only just BEFORE this terminal (ADR-0045 §5) — after that `node:failed` was
+      // already emitted. So this event is the only durable carrier of that last addend, and the summary was
+      // showing the pre-cleanup figure. Optional (older logs omit it); absent ⇒ the live total stands.
       return {
         ...base,
         summary: {
           outcome: 'failed',
           errorCode: event.error.code,
           errorMessage: event.error.message,
+          ...(event.cumulativeCostMicrocents === undefined
+            ? {}
+            : { totalCostMicrocents: event.cumulativeCostMicrocents }),
         },
+        ...(event.cumulativeCostMicrocents === undefined
+          ? {}
+          : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
       };
 
     case 'run:cancelled':

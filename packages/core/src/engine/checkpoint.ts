@@ -215,6 +215,17 @@ function applyNodeEvent(acc: ReconAccumulator, event: RunEvent): void {
           retryable: event.error.retryable,
         },
       });
+      // The SAME durable cost restore as `node:completed` above, which this arm was missing (#W15-6). A node
+      // that failed can still have SPENT: a paid media job billed provider-side before the failure, or a
+      // provider call that returned usage and then failed downstream. `cost:updated` is streamed, never
+      // persisted, so this snapshot is the only durable carrier — and a resume that skips it restores a
+      // cumulative that has forgotten real spend, handing the cap headroom it does not have.
+      if (event.cumulativeCostMicrocents !== undefined) {
+        acc.cumulativeCostMicrocents = Math.max(
+          acc.cumulativeCostMicrocents,
+          event.cumulativeCostMicrocents,
+        );
+      }
       break;
     case 'node:skipped':
       acc.nodeStates.set(event.nodeId, { status: 'skipped' });

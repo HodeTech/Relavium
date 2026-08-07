@@ -485,6 +485,33 @@ describe('reconstructCheckpointState', () => {
     expect(state?.cumulativeCostMicrocents).toBe(1600); // survives the plain-human-gate resume (was ~0 before)
   });
 
+  it('restores the cumulative from a durable node:failed too (#W15-6)', () => {
+    // A node that FAILED can still have spent: a paid media job billed provider-side before the failure, or
+    // a provider call that returned usage and then failed downstream. `node:completed` was folded and
+    // `node:failed` was not, so a run that failed a node, paused at a gate and resumed came back with a
+    // cumulative that had forgotten real spend — handing the cap headroom it did not have.
+    const state = reconstructCheckpointState([
+      started,
+      {
+        type: 'node:failed',
+        ...base(1),
+        nodeId: 'media',
+        error: { code: 'provider_unavailable', message: 'boom', retryable: false },
+        cumulativeCostMicrocents: 2_400,
+      },
+      {
+        type: 'human_gate:paused',
+        ...base(2),
+        nodeId: 'gate',
+        gateId: 'g1',
+        gateType: 'approval',
+        message: 'ok?',
+      },
+      { type: 'run:paused', ...base(3), pendingGateCount: 1, gateIds: ['g1'] },
+    ]);
+    expect(state?.cumulativeCostMicrocents).toBe(2_400);
+  });
+
   it('reconciles two durable cost sources — a later budget:paused.spentMicrocents above a node:completed snapshot', () => {
     // A node completes (running total 800), then the next node's pre-egress trips a budget gate at a higher
     // running total (900). Both are durable cost sources; the fold must end at the higher value.

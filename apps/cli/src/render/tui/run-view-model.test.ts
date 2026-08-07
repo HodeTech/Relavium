@@ -401,6 +401,28 @@ describe('reduceRunEvent', () => {
     expect(s.cumulativeCostMicrocents).toBe(4242);
   });
 
+  it('folds run:failed.cumulativeCostMicrocents into the summary + running total (#W15-6)', () => {
+    // The one terminal arm that ignored its own snapshot. The root-cause node's `node:failed` carries the
+    // cumulative as of THAT node; a sibling's abandoned paid media job is folded only just BEFORE this
+    // terminal (ADR-0045 §5), so the summary was showing the pre-cleanup figure.
+    const s = reduceRunEvent(initialRunViewState(), {
+      type: 'run:failed',
+      runId: RUN,
+      timestamp: TS,
+      sequenceNumber: 1,
+      error: { code: 'tool_failed', message: 'boom', retryable: false },
+      partialOutputs: {},
+      cumulativeCostMicrocents: 5150,
+    });
+    expect(s.summary).toEqual({
+      outcome: 'failed',
+      errorCode: 'tool_failed',
+      errorMessage: 'boom',
+      totalCostMicrocents: 5150,
+    });
+    expect(s.cumulativeCostMicrocents).toBe(5150);
+  });
+
   it('folds node:failed.cumulativeCostMicrocents into the running total (2.S durable fail-cost)', () => {
     const s = reduceRunEvent(initialRunViewState(), {
       type: 'node:failed',
