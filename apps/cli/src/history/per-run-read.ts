@@ -20,16 +20,30 @@ import { isCorruptRunEventError } from '@relavium/db';
  * NOT for the resume path, where a run's log failing to read must fail loudly rather than resume a run from a
  * partial fold (`checkpointer.ts` / `gate.ts` keep their own strict handling).
  *
+ * It returns the DEGRADATION alongside the value (#W15-15). Returning only the fallback made a damaged run
+ * indistinguishable from a healthy empty one: `gate list` printed "No pending human gates." for a run whose
+ * gates had been lost, and the Home showed it as an ordinary run with nothing to do. "I could not read this"
+ * and "there is nothing here" are different answers, and a listing is exactly where a user goes to find out
+ * which run is broken — so every caller has to decide how to say so rather than being handed silence.
+ *
  * @param fallback what this run contributes when its log cannot be read
  * @param read the per-run read
  */
-export function readPerRunOrDegrade<T>(fallback: T, read: () => T): T {
+export function readPerRunOrDegrade<T>(fallback: T, read: () => T): PerRunRead<T> {
   try {
-    return read();
+    return { value: read(), degraded: false };
   } catch (err) {
     if (isCorruptRunEventError(err)) {
-      return fallback;
+      return { value: fallback, degraded: true };
     }
     throw err;
   }
+}
+
+/** One per-run read's outcome: the value, plus whether it is real data or the degraded fallback. */
+export interface PerRunRead<T> {
+  /** The read's result, or `fallback` when {@link degraded}. */
+  readonly value: T;
+  /** `true` when this run's event log could not be read — the value is a stand-in, not an answer. */
+  readonly degraded: boolean;
 }

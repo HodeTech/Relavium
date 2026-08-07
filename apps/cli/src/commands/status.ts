@@ -1,4 +1,4 @@
-import type { Db, RunRecord, StepRecord } from '@relavium/db';
+import type { Db, RunHistoryReader, RunRecord, StepRecord } from '@relavium/db';
 
 import { loadResolvedConfig } from '../config/load.js';
 import { pendingHumanGates, type PendingGate } from '../gate/pending.js';
@@ -20,6 +20,8 @@ interface ActiveRunStatus {
   readonly run: RunRecord;
   readonly steps: readonly StepRecord[];
   readonly pendingGates: readonly PendingGate[];
+  /** `true` when this run's event log could not be read, so `pendingGates` is a stand-in (#W15-15). */
+  readonly gatesUnavailable: boolean;
 }
 
 /**
@@ -43,10 +45,9 @@ export function statusCommand(deps: StatusCommandDeps): ExitCode {
       // run's status to `paused` (run-history-store applyDerived), so reconstruct the log only for those — a
       // `running` run has no pending gate.
       // Per-run isolation (`readPerRunOrDegrade`): one damaged row in one run must not blank the whole list.
-      pendingGates:
-        run.status === 'paused'
-          ? readPerRunOrDegrade([], () => pendingHumanGates(reader.loadRunEvents(run.id)))
-          : [],
+      // The degradation travels WITH the value (#W15-15) — an empty `pendingGates` on a damaged run would
+      // otherwise read as "this run has no gates" when the truth is "its gates could not be read".
+      ...gatesOf(reader, run),
     }));
 
     if (deps.global.json) {
@@ -67,6 +68,24 @@ export function statusCommand(deps: StatusCommandDeps): ExitCode {
   }
 }
 
+/**
+ * A paused run's pending gates, plus whether they could be read at all (#W15-15). Only a `paused` run can hold
+ * one — persisting `human_gate:paused` folds the run's status to `paused` (run-history-store `applyDerived`) —
+ * so a `running` run is answered without touching its log, and is never "unavailable".
+ */
+function gatesOf(
+  reader: RunHistoryReader,
+  run: RunRecord,
+): { pendingGates: readonly PendingGate[]; gatesUnavailable: boolean } {
+  if (run.status !== 'paused') {
+    return { pendingGates: [], gatesUnavailable: false };
+  }
+  const read = readPerRunOrDegrade<readonly PendingGate[]>([], () =>
+    pendingHumanGates(reader.loadRunEvents(run.id)),
+  );
+  return { pendingGates: read.value, gatesUnavailable: read.degraded };
+}
+
 /** One active run as a machine record: identity + status + per-node steps + any pending human gates. */
 function toJson(status: ActiveRunStatus): unknown {
   return {
@@ -84,6 +103,11 @@ function toJson(status: ActiveRunStatus): unknown {
       durationMs: step.durationMs ?? null,
       costMicrocents: step.costMicrocents,
     })),
+    // Present ONLY when the log could not be read, so an existing consumer's records are unchanged and a
+    // careful one can tell a damaged run from a run with nothing pending (#W15-15).
+    ...(status.gatesUnavailable
+      ? { gatesUnavailable: true, gatesUnavailableReason: 'corrupt_event_log' }
+      : {}),
     pendingGates: status.pendingGates.map((gate) => ({
       gateId: gate.gateId,
       nodeId: gate.nodeId,
@@ -103,6 +127,12 @@ function renderRun(io: CliIo, status: ActiveRunStatus): void {
   for (const step of status.steps) {
     const attempt = step.attemptNumber > 1 ? ` (attempt ${step.attemptNumber})` : '';
     io.writeOut(`  ${step.status.padEnd(9)} ${step.nodeId} [${step.nodeType}]${attempt}\n`);
+  }
+  if (status.gatesUnavailable) {
+    // NOT silence (#W15-15). Without this line a run whose gates were lost to a damaged `run_events` row
+    // rendered identically to a paused run with nothing pending — the reader's own listing being the place
+    // they would come to find out which run is broken.
+    io.writeOut("  ⚠ pending gates unavailable — this run's event log could not be read\n");
   }
   for (const gate of status.pendingGates) {
     // The SAME `human_gate:paused.message` the interactive prompt sanitizes (`clack-prompter.ts`), and it is

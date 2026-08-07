@@ -5,18 +5,23 @@ import { readPerRunOrDegrade } from './per-run-read.js';
 
 describe('readPerRunOrDegrade', () => {
   it('returns the read`s value when it succeeds', () => {
-    expect(readPerRunOrDegrade(['fallback'], () => ['real'])).toEqual(['real']);
+    expect(readPerRunOrDegrade(['fallback'], () => ['real'])).toEqual({
+      value: ['real'],
+      degraded: false,
+    });
   });
 
   it('degrades ONE damaged run instead of aborting the aggregation', () => {
     // The whole point: the Home / `status` / `gate list` fan this read over many runs with no isolation, so one
     // unreadable row used to take away every run — including the healthy ones — and no CLI command can repair it.
     const err = new CorruptRunEventError('run-9', 3, 'node:started', new Error('bad body'));
+    // …and SAYS it degraded (#W15-15): returning only the fallback made a damaged run indistinguishable from
+    // a healthy empty one, so `gate list` answered "No pending human gates." for gates that were lost.
     expect(
       readPerRunOrDegrade([], () => {
         throw err;
       }),
-    ).toEqual([]);
+    ).toEqual({ value: [], degraded: true });
   });
 
   it('RETHROWS anything else — a closed handle or a programming fault is not a per-run condition', () => {

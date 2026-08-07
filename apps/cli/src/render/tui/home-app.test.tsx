@@ -56,6 +56,7 @@ const EMPTY: HomeSnapshot = {
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
+  unreadableRunIds: [],
   isEmpty: true,
 };
 const homeStore: HomeStore = { read: () => EMPTY };
@@ -807,6 +808,7 @@ describe('RootApp — the branded Home banner', () => {
     ],
     recentRuns: [],
     recentAgents: [],
+    unreadableRunIds: [],
     isEmpty: false,
   };
 

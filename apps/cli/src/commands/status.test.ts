@@ -85,6 +85,40 @@ describe('statusCommand', () => {
     expect(text).toContain('run paused-1 — paused');
     expect(text).toContain('pending gate gate-1 (approval)'); // the healthy run keeps its full detail
     expect(text).toContain('run broken — paused'); // the damaged run is still LISTED, just without gate detail
+    // …and it SAYS the detail is missing (#W15-15). Degrading silently made a damaged run render identically
+    // to a paused run with nothing pending — "no data" standing in for "could not read".
+    expect(text).toContain('pending gates unavailable');
+  });
+
+  it('marks the damaged run in --json too, without changing a healthy record (#W15-15)', async () => {
+    const { io, out } = captureIo();
+    await seedRun(db, {
+      slug: 'demo',
+      runId: 'paused-1',
+      state: 'paused',
+      gate: { gateId: 'gate-1', gateType: 'approval', message: 'ship it?' },
+    });
+    await seedRun(db, { slug: 'demo', runId: 'broken', state: 'paused' });
+    client.db
+      .insert(runEvents)
+      .values({
+        id: '00000000-0000-4000-8000-0000000000de',
+        runId: 'broken',
+        seq: 900,
+        eventType: 'node:started',
+        payloadJson: JSON.stringify({ type: 'node:started', nodeId: 42 }),
+        ts: 0,
+      })
+      .run();
+
+    expect(statusCommand(deps(io, true))).toBe(EXIT_CODES.success);
+    const records = parseNdjson(out());
+    const broken = records.find((r) => r['runId'] === 'broken');
+    const healthy = records.find((r) => r['runId'] === 'paused-1');
+    expect(broken?.['gatesUnavailable']).toBe(true);
+    expect(broken?.['gatesUnavailableReason']).toBe('corrupt_event_log');
+    // Absent, not `false`, on the healthy path — an existing consumer's records are byte-identical.
+    expect(healthy).not.toHaveProperty('gatesUnavailable');
   });
 
   it('lists a running run with its steps and no pending gate', async () => {

@@ -1,4 +1,4 @@
-import { createClient, runMigrations, type Db, type DbClient } from '@relavium/db';
+import { createClient, runEvents, runMigrations, type Db, type DbClient } from '@relavium/db';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
@@ -143,5 +143,78 @@ describe('gateListCommand', () => {
       nodeId: 'g',
       message: 'A?',
     });
+  });
+});
+
+/**
+ * #W15-15 — a run whose event log cannot be read used to contribute nothing AND say nothing, so the listing
+ * answered "No pending human gates." for gates that had been lost. "I could not read this" and "there is
+ * nothing here" are different answers.
+ */
+describe('gateListCommand — a damaged run is named, not silently skipped (#W15-15)', () => {
+  let client: DbClient;
+  let db: Db;
+
+  beforeEach(() => {
+    client = createClient(':memory:');
+    runMigrations(client.db);
+    db = client.db;
+  });
+  afterEach(() => {
+    client.sqlite.close();
+  });
+
+  function deps(io: ReturnType<typeof captureIo>['io'], json = false): GateListCommandDeps {
+    return { io, global: globalOptions(json), openDb: () => ({ db, close: () => {} }) };
+  }
+
+  /** A `type` this binary DOES know, with a body that cannot be one — corruption, not a forward-written row. */
+  async function seedDamagedRun(runId: string): Promise<void> {
+    await seedRun(db, { slug: 'demo', runId, state: 'paused' });
+    db.insert(runEvents)
+      .values({
+        id: `00000000-0000-4000-8000-0000000000${runId.slice(-2)}`,
+        runId,
+        seq: 900,
+        eventType: 'node:started',
+        payloadJson: JSON.stringify({ type: 'node:started', nodeId: 42 }),
+        ts: 0,
+      })
+      .run();
+  }
+
+  it('warns on stderr while stdout keeps the healthy listing', async () => {
+    const { io, out, err } = captureIo();
+    await seedRun(db, {
+      slug: 'demo',
+      runId: 'ok-01',
+      state: 'paused',
+      gate: { gateId: 'g-ok', gateType: 'approval', message: 'ship it?' },
+    });
+    await seedDamagedRun('bad-01');
+
+    expect(gateListCommand({}, deps(io))).toBe(EXIT_CODES.success);
+    expect(out()).toContain('g-ok'); // the healthy run is unaffected
+    expect(err()).toContain('bad-01');
+    expect(err()).toContain('could not be read');
+  });
+
+  it('emits a machine-readable marker record under --json', async () => {
+    const { io, out } = captureIo();
+    await seedDamagedRun('bad-01');
+
+    expect(gateListCommand({}, deps(io, true))).toBe(EXIT_CODES.success);
+    const records = parseNdjson(out());
+    expect(records).toEqual([{ runId: 'bad-01', unavailable: 'corrupt_event_log' }]);
+    // Without it the stream was EMPTY — indistinguishable from a run with no pending gates, which is the
+    // whole defect.
+    expect(records.some((r) => r['gateId'] !== undefined)).toBe(false);
+  });
+
+  it('still fails LOUDLY for an explicitly named run — degrading there would answer for a run the user asked about', async () => {
+    const { io } = captureIo();
+    await seedDamagedRun('bad-01');
+
+    expect(() => gateListCommand({ runId: 'bad-01' }, deps(io))).toThrow();
   });
 });

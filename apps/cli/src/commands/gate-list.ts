@@ -11,6 +11,10 @@ import { openHistoryReader } from '../history/reader.js';
 import { sanitizeInline } from '../render/sanitize.js';
 import { readPerRunOrDegrade } from '../history/per-run-read.js';
 
+/** How many unreadable run ids the #W15-15 warning names before it elides — same bound-the-diagnostic
+ *  reasoning as `logs.ts`'s `MAX_REPORTED_SKIPS`. */
+const MAX_REPORTED_UNREADABLE = 8;
+
 /** A pending gate row tagged with its run id — the listing unit (`gate list` JSON record + human line). */
 type GateRow = PendingGate & { readonly runId: string };
 
@@ -43,21 +47,55 @@ export function gateListCommand(args: GateListCommandArgs, deps: GateListCommand
     // whole listing. With an explicit `runId` there is only one run, so degrading would silently answer "no
     // gates" for a run the user named — that must still fail loudly, and it does (the throw propagates).
     const runIds = targetRunIds(reader, args.runId);
-    const rows = runIds.flatMap((runId) => {
+    const rows: GateRow[] = [];
+    const unreadableRunIds: string[] = [];
+    for (const runId of runIds) {
       const read = (): readonly PendingGate[] => pendingHumanGates(reader.loadRunEvents(runId));
-      const gates = args.runId === undefined ? readPerRunOrDegrade([], read) : read();
-      return gates.map((gate): GateRow => ({ runId, ...gate }));
-    });
+      if (args.runId !== undefined) {
+        rows.push(...read().map((gate): GateRow => ({ runId, ...gate })));
+        continue;
+      }
+      const result = readPerRunOrDegrade<readonly PendingGate[]>([], read);
+      // #W15-15: a degraded run used to contribute nothing and say nothing, so "No pending human gates."
+      // covered a run whose gates had been LOST. Both output modes now name it.
+      if (result.degraded) unreadableRunIds.push(runId);
+      rows.push(...result.value.map((gate): GateRow => ({ runId, ...gate })));
+    }
 
     if (deps.global.json) {
-      writeRecordLines(deps.io, rows);
+      // One extra record per unreadable run, on the SAME one-record-per-line stream (ADR-0049). It carries no
+      // `gateId`, so a consumer selecting gates is unaffected while a careful one can tell "damaged" from
+      // "none". A stderr-only note (the `logs --json` precedent) would have kept stdout pure but left the
+      // machine contract silently short of gates, which is the defect itself.
+      writeRecordLines(deps.io, [
+        ...rows,
+        ...unreadableRunIds.map((runId) => ({ runId, unavailable: 'corrupt_event_log' })),
+      ]);
       return EXIT_CODES.success;
     }
+    renderUnreadableRuns(deps.io, unreadableRunIds);
     renderGateRows(deps.io, rows, args.runId);
     return EXIT_CODES.success;
   } finally {
     close();
   }
+}
+
+/**
+ * Name the runs whose gates could not be read, on **stderr** so the human listing on stdout stays pipeable
+ * (#W15-15). Bounded like `logs.ts`'s skipped-row note: the COUNT is the signal, the first few ids are the
+ * lead. No remedy is offered because the CLI genuinely has none for a damaged row — naming the run is what
+ * makes it diagnosable, and what lets a user restore just that history DB from a backup.
+ */
+function renderUnreadableRuns(io: CliIo, runIds: readonly string[]): void {
+  if (runIds.length === 0) return;
+  const shown = runIds.slice(0, MAX_REPORTED_UNREADABLE);
+  const ids = runIds.length > shown.length ? `${shown.join(', ')}, …` : shown.join(', ');
+  const one = runIds.length === 1;
+  io.writeErr(
+    `warning: ${runIds.length} run${one ? '' : 's'} could not be read, so ${one ? 'its' : 'their'} ` +
+      `pending gates are NOT listed below (${ids}).\n`,
+  );
 }
 
 /**

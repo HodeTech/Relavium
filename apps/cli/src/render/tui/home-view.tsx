@@ -14,6 +14,7 @@ import {
   runLabel,
   sessionLabel,
   tooSmallMessage,
+  unreadableRunLabel,
 } from './home-projection.js';
 import { colorProps, dimProps } from './projection.js';
 import { PromptEditor } from './prompt-view.js';
@@ -106,6 +107,7 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
 
   // Keyed by each row's durable id (gate: run+gate; run: runId; session: sessionId; agent: slug) — never the
   // array index, so React reconciliation is stable as the strip's contents change between reads.
+  const unreadable = snapshot.unreadableRunIds;
   const gateRows = snapshot.attention.gates.map((g) => ({
     key: `${g.runId}:${g.gateId}`,
     line: `⚠ ${gateLabel(g, nowMs)}`,
@@ -169,12 +171,25 @@ export function HomeView(props: Readonly<HomeViewProps>): ReactElement {
         </Box>
       ) : (
         <Box flexDirection="column" marginTop={1}>
-          {(gateRows.length > 0 || failed.length > 0) && (
+          {(gateRows.length > 0 || failed.length > 0 || unreadable.length > 0) && (
             <Box flexDirection="column" marginBottom={1}>
               <Text {...colorProps(color, 'yellow')} wrap="truncate-end">
                 Attention required
               </Text>
               <Box flexDirection="column" marginLeft={2}>
+                {/* #W15-15: a run whose event log cannot be read used to render as an ordinary run with
+                    nothing pending. Its gate detail is MISSING, not absent, and the Home is where a user
+                    comes to find out which run is broken. */}
+                {unreadable.map((runId) => (
+                  <Text
+                    key={`unreadable-${runId}`}
+                    {...colorProps(color, 'red')}
+                    wrap="truncate-end"
+                  >
+                    {'  '}
+                    {`⚠ ${unreadableRunLabel(runId)}`}
+                  </Text>
+                ))}
                 {gateRows.map((g) => (
                   <Text
                     key={g.key}
