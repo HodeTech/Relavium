@@ -319,11 +319,51 @@ function readEventLog(
     }
     if (event === undefined) {
       skipped.push({ sequenceNumber: row.seq, type: row.eventType });
-    } else {
-      events.push(event);
+      continue;
     }
+    const mismatch = projectionMismatch(event, runId, row);
+    if (mismatch !== undefined) {
+      throw new CorruptRunEventError(runId, row.seq, row.eventType, new Error(mismatch));
+    }
+    events.push(event);
   }
   return { events, skipped };
+}
+
+/**
+ * Compare the parsed event against the denormalized COLUMNS that were supposed to project it (#W15-5).
+ *
+ * `run_id`, `seq` and `event_type` are written from the event at persist time and are the authoritative keys
+ * afterwards: `seq` carries the `UNIQUE(run_id, seq)` constraint and orders this read, `run_id` scopes it, and
+ * `event_type` is what the streaming-firehose filter and the skip path name a row by. Nothing checked that the
+ * blob still agreed with them.
+ *
+ * The failure that makes this worth a throw: a row at `seq = 2` whose payload says `sequenceNumber: 1` parses
+ * fine and is accepted, so the log's high-water mark comes back one short — and the resumed run's first write
+ * collides on `UNIQUE(run_id, seq)` and fails the run. A `run_id` mismatch is worse: one run's event folded
+ * into another's state. Both are silent today and neither is recoverable downstream, which is precisely the
+ * shape ADR-0050 says must fail loudly at the read boundary rather than propagate.
+ *
+ * Returns the mismatch description, or `undefined` when the projections agree.
+ */
+function projectionMismatch(
+  event: RunEvent,
+  runId: string,
+  row: { readonly seq: number; readonly eventType: string },
+): string | undefined {
+  if (event.runId !== runId) {
+    // `undefined` counts as a mismatch: a row living in `run_events` under a `run_id` must carry it. The
+    // dual-envelope events (ADR-0074 §1) have a session form WITHOUT a runId, and one of those reaching this
+    // table means the bus routed a session event into run history — a real defect, not a tolerable variant.
+    return `payload runId ${String(event.runId)} does not match the run_id column ${runId}`;
+  }
+  if (event.sequenceNumber !== row.seq) {
+    return `payload sequenceNumber ${event.sequenceNumber} does not match the seq column ${row.seq}`;
+  }
+  if (event.type !== row.eventType) {
+    return `payload type ${event.type} does not match the event_type column ${row.eventType}`;
+  }
+  return undefined;
 }
 
 function fromRunRow(row: RunRow): RunRecord {

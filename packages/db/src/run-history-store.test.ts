@@ -1,5 +1,5 @@
 import { RunEventSchema, type RunEvent } from '@relavium/shared';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
@@ -860,6 +860,14 @@ describe('createRunHistoryReader', () => {
         .run();
     }
 
+    /** Remove one raw row again, so a table-driven case can plant the next mismatch in isolation. */
+    function deleteRaw(runId: string, seq: number): void {
+      client.db
+        .delete(runEvents)
+        .where(and(eq(runEvents.runId, runId), eq(runEvents.seq, seq)))
+        .run();
+    }
+
     it('SKIPS the unreadable row instead of failing the whole read', async () => {
       const store = storeFor('wf');
       const workflowId = await store.resolveWorkflowId('wf');
@@ -939,6 +947,79 @@ describe('createRunHistoryReader', () => {
         foldedMax,
       );
       expect(trueMax).toBe(2); // what is actually stored — the number resume must not collide with
+    });
+
+    it('THROWS when the payload disagrees with the authoritative columns (#W15-5)', async () => {
+      // The columns are the authority afterwards: `seq` carries `UNIQUE(run_id, seq)` and orders the read,
+      // `run_id` scopes it, `event_type` labels it. A payload that no longer agrees parsed cleanly and was
+      // accepted, so a `seq = 2` row saying `sequenceNumber: 1` brought the high-water mark back one short —
+      // and the resumed run's first write then collided on the UNIQUE index and failed the run.
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      const ts = new Date(TS_MS).toISOString();
+      await store.persistEvent(
+        evRun('run-p', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+
+      const cases: readonly [string, number, string, Record<string, unknown>][] = [
+        // seq column 2, payload says 1 — the high-water-mark truncation.
+        [
+          'seq',
+          2,
+          'node:started',
+          {
+            type: 'node:started',
+            runId: 'run-p',
+            sequenceNumber: 1,
+            timestamp: ts,
+            nodeId: 'n',
+            nodeType: 'agent',
+          },
+        ],
+        // run_id column 'run-p', payload says another run — one run's event folded into another's state.
+        [
+          'runId',
+          3,
+          'node:started',
+          {
+            type: 'node:started',
+            runId: 'other',
+            sequenceNumber: 3,
+            timestamp: ts,
+            nodeId: 'n',
+            nodeType: 'agent',
+          },
+        ],
+        // event_type column vs payload type — the label the skip path and the firehose filter read.
+        [
+          'type',
+          4,
+          'node:completed',
+          {
+            type: 'node:started',
+            runId: 'run-p',
+            sequenceNumber: 4,
+            timestamp: ts,
+            nodeId: 'n',
+            nodeType: 'agent',
+          },
+        ],
+      ];
+
+      for (const [label, seq, eventType, payload] of cases) {
+        insertRaw('run-p', seq, eventType, payload);
+        expect(() => reader.loadRunEventLog('run-p'), label).toThrow(CorruptRunEventError);
+        // The row is named by its COLUMNS, so the diagnostic points at the row that is actually wrong.
+        try {
+          reader.loadRunEventLog('run-p');
+          expect.unreachable('the mismatched row must throw');
+        } catch (err) {
+          if (!isCorruptRunEventError(err)) throw err;
+          expect(err.sequenceNumber).toBe(seq);
+          expect(err.eventType).toBe(eventType);
+        }
+        deleteRaw('run-p', seq);
+      }
     });
 
     it('still THROWS on a row we can identify but not read — corruption is not forward evolution', async () => {
