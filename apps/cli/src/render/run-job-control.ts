@@ -40,6 +40,26 @@ export function wireRunJobControl(opts: WireRunJobControlOptions): RunJobControl
 
   let disposed = false;
   let removeSuspend: () => void = () => undefined;
+  /**
+   * Is the suspend listener currently attached?
+   *
+   * Load-bearing, not bookkeeping. Both re-attach sites are reachable without an intervening detach — a second
+   * SIGCONT with no SIGTSTP between them, or a `suspendSelf` that throws and is then followed by one — and an
+   * unconditional re-attach would register a SECOND listener while OVERWRITING `removeSuspend` with the new
+   * handle. The first listener then leaks for the process's life and the next Ctrl-Z runs the handler twice,
+   * writing `SHOW_CURSOR` and raising SIGTSTP twice over.
+   */
+  let attached = false;
+  const attach = (): void => {
+    if (disposed || attached) return;
+    removeSuspend = lifecycle.onSuspend(onSuspend);
+    attached = true;
+  };
+  const detach = (): void => {
+    if (!attached) return;
+    attached = false;
+    removeSuspend();
+  };
   const onSuspend = (): void => {
     // Restore the cursor BEFORE the process stops. Once stopped we run no code, so there is no later chance —
     // and the shell the user lands in inherits whatever state we left.
@@ -48,21 +68,21 @@ export function wireRunJobControl(opts: WireRunJobControlOptions): RunJobControl
     // installed runs the handler instead of taking the default stop action — so raising while still attached
     // re-enters this function forever and the process never actually stops. Removing the listener lets the
     // default action run; SIGCONT reattaches it below.
-    removeSuspend();
+    detach();
     try {
       // Re-raise so the process actually stops. Without this the handler swallows Ctrl-Z and the run keeps
       // going, which is worse than the bug being fixed: the user pressed a key that did nothing.
       lifecycle.suspendSelf();
     } catch {
       // The raise failed, so we are still running and still need Ctrl-Z to work — put the handler back.
-      if (!disposed) removeSuspend = lifecycle.onSuspend(onSuspend);
+      attach();
     }
   };
-  removeSuspend = lifecycle.onSuspend(onSuspend);
+  attach();
   const removeContinue = lifecycle.onContinue(() => {
     // Reattach FIRST: the suspend handler detached itself before raising, so without this a second Ctrl-Z
     // would take the default action with no cursor restore — exactly the bug this file exists to fix.
-    if (!disposed) removeSuspend = lifecycle.onSuspend(onSuspend);
+    attach();
     // Foregrounded: ink is drawing again, so hide the cursor as it expects. If the run already finished while
     // we were stopped, the extra hide is harmless — the renderer's own teardown shows it again.
     opts.write(HIDE_CURSOR);
@@ -71,9 +91,10 @@ export function wireRunJobControl(opts: WireRunJobControlOptions): RunJobControl
   return {
     dispose: () => {
       if (disposed) return;
-      disposed = true;
       // BOTH, not just one — the leak `suspend.ts`'s own `dispose` had (see its comment) is exactly this shape.
-      removeSuspend();
+      // `detach()` before flipping `disposed`, since it is a no-op once the listener is already off.
+      detach();
+      disposed = true;
       removeContinue();
     },
   };

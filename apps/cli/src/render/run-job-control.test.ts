@@ -96,6 +96,26 @@ describe('wireRunJobControl (G0, the run/gate path)', () => {
     }
   });
 
+  it('does NOT stack a second listener when SIGCONT arrives twice', () => {
+    // A spurious or duplicated SIGCONT with no SIGTSTP between them used to attach a SECOND listener while
+    // overwriting the removal handle — leaking the first for the process's life and making the next Ctrl-Z run
+    // the handler twice (two `SHOW_CURSOR` writes, two raises).
+    const h = harness();
+    const jc = wireRunJobControl({ write: h.write, lifecycle: h.lifecycle });
+    try {
+      const afterWiring = h.attaches();
+      h.fireContinue();
+      h.fireContinue();
+      expect(h.attaches()).toBe(afterWiring); // still attached from wiring — nothing stacked
+      // And exactly one detach still turns it off, which a leaked duplicate would defeat.
+      h.fireSuspend();
+      expect(h.removeSuspend).toHaveBeenCalledTimes(1);
+      expect(h.suspendSelf).toHaveBeenCalledTimes(1);
+    } finally {
+      jc.dispose();
+    }
+  });
+
   it('dispose removes BOTH listeners — the leak shape suspend.ts already had', () => {
     const h = harness();
     const jc = wireRunJobControl({ write: h.write, lifecycle: h.lifecycle });
