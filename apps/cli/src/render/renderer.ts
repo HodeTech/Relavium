@@ -64,9 +64,12 @@ export function createPlainRenderer(io: CliIo): RunRenderer {
     onEvent: (event) => {
       const line = describe(event);
       if (line !== undefined) {
-        // Per line, so a legitimate multi-line describe() (node:completed's media handles) keeps its rows
-        // while each row is individually neutralized.
-        io.writeOut(`${line.split('\n').map(sanitizeInline).join('\n')}\n`);
+        // `describe()` sanitizes each untrusted FIELD as it interpolates it (the `final-summary.ts` pattern), so
+        // every `\n` still in `line` is one this file put there — a legitimate row break for `node:completed`'s
+        // media handles. Sanitizing the ASSEMBLED line and splitting on newlines was the wrong order: the split
+        // ran on raw text first, so an embedded newline in a `nodeId` or an error code forged a whole extra row
+        // and each forged row was then neutralized individually, which made the forgery look intentional.
+        io.writeOut(`${line}\n`);
       }
     },
   };
@@ -75,26 +78,27 @@ export function createPlainRenderer(io: CliIo): RunRenderer {
 function describe(event: RunEvent): string | undefined {
   switch (event.type) {
     case 'run:started':
-      return `> run ${event.runId} started`;
+      return `> run ${sanitizeInline(event.runId)} started`;
     case 'node:started':
-      return `  - ${event.nodeId} ...`;
+      return `  - ${sanitizeInline(event.nodeId)} ...`;
     case 'node:completed': {
       // Surface each produced media handle (never bytes) on its own indented line — the plain/CI leaf of the
       // cross-surface "render a produced media handle" acceptance. A text-only node yields no extra lines.
-      const ok = `  ok ${event.nodeId}`;
+      const ok = `  ok ${sanitizeInline(event.nodeId)}`;
       const mediaLines = collectDurableMediaHandles(event.output).map(
-        (m) => `    ${formatProducedMedia(m)}`,
+        // The handle is provider/model-derived, so it is untrusted like every other field here.
+        (m) => `    ${sanitizeInline(formatProducedMedia(m))}`,
       );
       return [ok, ...mediaLines].join('\n');
     }
     case 'node:failed':
-      return `  FAIL ${event.nodeId}: ${event.error.code}`;
+      return `  FAIL ${sanitizeInline(event.nodeId)}: ${sanitizeInline(event.error.code)}`;
     case 'human_gate:paused':
-      return `  paused at gate ${event.gateId} (${event.gateType})`;
+      return `  paused at gate ${sanitizeInline(event.gateId)} (${sanitizeInline(event.gateType)})`;
     case 'run:completed':
       return `done: run completed`;
     case 'run:failed':
-      return `done: run failed (${event.error.code})`;
+      return `done: run failed (${sanitizeInline(event.error.code)})`;
     case 'run:cancelled':
       return `done: run cancelled`;
     default:

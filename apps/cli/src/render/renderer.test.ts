@@ -11,6 +11,27 @@ function ev(partial: Record<string, unknown>): RunEvent {
   return RunEventSchema.parse({ ...ENVELOPE, ...partial });
 }
 
+describe('createPlainRenderer — line forgery (#W15-11)', () => {
+  it('neutralises an embedded newline instead of letting it forge a row', () => {
+    // The order matters and was wrong: sanitising the ASSEMBLED line and splitting on newlines ran the split
+    // over raw text first, so a newline inside a nodeId produced a whole extra row — which was then neutralised
+    // individually, making the forgery look like intentional output.
+    const io = captureIo();
+    const renderer = createPlainRenderer(io.io);
+    renderer.onEvent({
+      type: 'node:started',
+      runId: 'r1',
+      sequenceNumber: 0,
+      timestamp: '2026-06-04T00:00:00.000Z',
+      nodeId: 'a\n  ok forged-node',
+      nodeType: 'transform',
+    });
+    // ONE row out, whatever the input claimed.
+    expect(io.out().trimEnd().split('\n')).toHaveLength(1);
+    expect(io.out()).not.toContain('ok forged-node\n');
+  });
+});
+
 describe('createPlainRenderer', () => {
   it('writes a terse line per lifecycle event', () => {
     const { io, out } = captureIo();

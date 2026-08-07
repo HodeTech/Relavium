@@ -154,7 +154,7 @@ lanes, any order between them, plus the money hole they left open.
 > it done made four other documents inherit the error. Two independent reviews flagged it; both were right.
 >
 > Lane (e)'s remaining work, and two defects it exposed that ADR-0074 does not cover, are tracked in
-> **[Wave 1.5](#wave-15--finish-the-money-floor)** below. Every lane below is verified against the shipped code, not
+> **[PR #81's closing list](#pr-81s-closing-list-and-the-two-items-that-need-an-adr)** below. Every lane below is verified against the shipped code, not
 against its own task text — the check for each is stated inline. Two gaps are recorded rather than closed; both
 are named in their lane and marked in the source, and neither is a shipped defect:
 
@@ -217,15 +217,26 @@ are named in their lane and marked in the source, and neither is a shipped defec
 > commitment simply returns on the next `chat-resume`. §2's dated note in
 > [ADR-0074](../decisions/0074-durable-conservative-budget-commitments.md) has the full statement.
 
-### Wave 1.5 — Finish the money floor
+### PR #81's closing list, and the two items that need an ADR
 
 Two independent adversarial reviews of PR #81 (2026-07-30) found that the cap's core safety claim does not yet
-hold across a process boundary. Everything below is recorded so nothing lives only in a review comment; ordered
-by whether the repo currently states something untrue, then by blast radius.
+hold across a process boundary.
+
+**Almost all of this belongs to PR #81 itself, not to a later wave** — a first framing filed it as one, which
+was wrong. The test is simple: this PR either ADDED the code a finding is in (`background-failure.ts`), or
+claimed to have closed the area it sits in (the terminal-safety boundaries, ADR-0074 §1), or REMOVED a
+protection without replacing it (§1's escape hatch, which a restart used to provide). Shipping a regression and
+deferring its fix is not a schedule decision.
+
+**Only §A is genuinely separable.** Both of its items need an append-only ADR before any code — one changes what
+"spent" means across a crash, the other supersedes a decision ADR-0074 §5 already recorded. Those earn their own
+PRs. Everything from §B down is #81's to close.
+
+Ordered by whether the repo currently states something untrue, then by blast radius.
 
 **Every item names the check that would close it, not just the defect.**
 
-#### A. The two claims that need an ADR before any code
+#### A. Needs an ADR first — the only part that is NOT PR #81's to close
 
 - **`#W15-1` (blocker) — a workflow's REALIZED cost is not durable at the provider-attempt boundary.**
   `engine.ts` folds `cost:updated` into memory and streams it; the store documents that it is never persisted,
@@ -245,7 +256,7 @@ by whether the repo currently states something untrue, then by blast radius.
   required" when any row was skipped, while read-only surfaces stay tolerant — or classify events as
   state-bearing vs not, and tolerate only the latter.*
 
-#### B. ADR-0074 §1 — the half that makes the rest safe
+#### B. PR #81 — ADR-0074 §1, the half that makes the rest safe
 
 - **`#W15-3` (blocker) — the release is exposed but unreachable, and nothing renders `durabilityBroken`.**
   `GovernorWiring.releaseConservativeCommitments` and `conservativeState()` exist and are tested; no command,
@@ -255,7 +266,7 @@ by whether the repo currently states something untrue, then by blast radius.
   durable `budget:estimate_released` so the release survives `chat-resume`, per-model AND aggregate decrement,
   and a resume test proving a released commitment does not come back.*
 
-#### C. Data integrity — wrong or missing, with a concrete failure
+#### C. PR #81 — data integrity, each with a concrete failure
 
 - **`#W15-4` (blocker) — session persistence failures are invisible to the producer.** `RunEventBus` isolates
   listener errors by design, so a persister that cannot write still lets the turn complete. Two consequences:
@@ -282,7 +293,7 @@ by whether the repo currently states something untrue, then by blast radius.
   with the old reservation and a re-derived volume. The invariant is not "both or neither" (the approved-bypass
   case legitimately has units only) but **`acceptedCostMicrocents` present ⇒ `units` required**.
 
-#### D. Security and correctness
+#### D. PR #81 — security and correctness
 
 - **`#W15-8` (high) — the new failure-reporting paths can leak credentials.** `background-failure.ts` prints an
   arbitrary rejection message and, under `RELAVIUM_DEBUG`, a raw stack; `sanitize.ts` strips ANSI/control/bidi
@@ -318,7 +329,7 @@ by whether the repo currently states something untrue, then by blast radius.
   to corruption. It must return the degradation alongside the value, with a warning in human output and a
   machine-readable marker under `--json`.
 
-#### E. Coverage gaps this PR shipped knowingly
+#### E. PR #81 — coverage gaps it shipped knowingly
 
 Each is marked in the source at the line it concerns; none is a shipped defect, and every one has
 mutation-verified coverage one layer down.
@@ -333,7 +344,7 @@ mutation-verified coverage one layer down.
 - **`#W15-21`** — `agent-run.ts`'s `attachConservativeWriter`; deleting it silently breaks every capped
   `agent run`.
 
-#### F. Standards and documentation drift
+#### F. PR #81 — standards and documentation drift
 
 - **`#W15-22` (low) — the PR's "no unsafe `as`" conformance claim is false.** Two assertions in new production
   code: `shared.ts`'s `readRetryAfter` casts an arbitrary `headers.get`, and `openai.ts`'s `mapOpenAiApiError`
