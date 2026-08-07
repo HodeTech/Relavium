@@ -7,7 +7,7 @@ import {
 } from '@relavium/shared';
 import { and, asc, desc, eq, getTableColumns, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 
-import type { Db } from './client.js';
+import type { Db, TxDb } from './client.js';
 import { withBusyRetryAsync } from './retry.js';
 import {
   runCosts,
@@ -350,11 +350,11 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
   const reader = createRunHistoryReader(db);
 
   /** The run-wide cumulative cost already persisted on `runs` — the baseline a node-cost delta subtracts from. */
-  const currentRunCost = (runId: string): number =>
-    db.select({ c: runs.totalCostMicrocents }).from(runs).where(eq(runs.id, runId)).get()?.c ?? 0;
+  const currentRunCost = (tx: TxDb, runId: string): number =>
+    tx.select({ c: runs.totalCostMicrocents }).from(runs).where(eq(runs.id, runId)).get()?.c ?? 0;
 
   /** Apply an event's derived `runs`/`step_executions`/`run_costs` writes (`run:started` inserts the runs row). */
-  const applyDerived = (event: RunEvent, runId: string, ts: number): void => {
+  const applyDerived = (tx: TxDb, event: RunEvent, runId: string, ts: number): void => {
     switch (event.type) {
       case 'run:started': {
         const row: NewRunRow = {
@@ -370,7 +370,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           createdAt: ts,
           updatedAt: ts,
         };
-        db.insert(runs).values(row).run();
+        tx.insert(runs).values(row).run();
         return;
       }
       case 'node:started': {
@@ -385,7 +385,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           createdAt: ts,
           updatedAt: ts,
         };
-        db.insert(stepExecutions).values(row).run();
+        tx.insert(stepExecutions).values(row).run();
         return;
       }
       case 'node:completed': {
@@ -396,10 +396,10 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         // sibling's — so `relavium status`/`logs` per-node cost is exact only for serial execution. Absent
         // cumulative (backward-compat for pre-field logs) ⇒ delta 0; `Math.max(0, …)` guards a non-monotonic
         // cumulative (a deeper engine bug).
-        const prev = currentRunCost(runId);
+        const prev = currentRunCost(tx, runId);
         const cumulative = event.cumulativeCostMicrocents ?? prev;
         const nodeCost = Math.max(0, cumulative - prev);
-        db.insert(runCosts)
+        tx.insert(runCosts)
           .values({
             id: deps.uuid(),
             runId,
@@ -410,7 +410,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
             createdAt: ts,
           } satisfies NewRunCostRow)
           .run();
-        db.update(stepExecutions)
+        tx.update(stepExecutions)
           .set({
             status: 'completed',
             outputJson: JSON.stringify(event.output),
@@ -423,7 +423,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           })
           .where(stepMatch(runId, event.nodeId, event.attemptNumber))
           .run();
-        db.update(runs)
+        tx.update(runs)
           .set({
             totalInputTokens: sql`${runs.totalInputTokens} + ${event.tokensUsed.input}`,
             totalOutputTokens: sql`${runs.totalOutputTokens} + ${event.tokensUsed.output}`,
@@ -442,7 +442,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         // (node-retry budget exhausted); for `node:retrying` it is the intermediate attempt that will
         // re-dispatch as a fresh row on the next `node:started`. Either way the attempt's row must not
         // linger as `running` (a ghost in `relavium status`, 2.I). Both carry `error` + `attemptNumber`.
-        db.update(stepExecutions)
+        tx.update(stepExecutions)
           .set({
             status: 'failed',
             errorJson: JSON.stringify(event.error),
@@ -456,15 +456,15 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
       case 'human_gate:paused':
       case 'budget:paused':
       case 'run:paused': {
-        db.update(runs).set({ status: 'paused', updatedAt: ts }).where(eq(runs.id, runId)).run();
+        tx.update(runs).set({ status: 'paused', updatedAt: ts }).where(eq(runs.id, runId)).run();
         return;
       }
       case 'human_gate:resumed': {
-        db.update(runs).set({ status: 'running', updatedAt: ts }).where(eq(runs.id, runId)).run();
+        tx.update(runs).set({ status: 'running', updatedAt: ts }).where(eq(runs.id, runId)).run();
         return;
       }
       case 'run:completed': {
-        db.update(runs)
+        tx.update(runs)
           .set({
             status: 'completed',
             outputJson: JSON.stringify(event.outputs),
@@ -484,7 +484,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         // persisted). So a failed run's runs.total_cost_microcents is the last node:completed cumulative —
         // it may undercount spend incurred after it. `sum(run_costs) == total` still holds (both undercount).
         // A true failed-run total needs a shared-schema change (a total on run:failed) — out of 2.H scope.
-        db.update(runs)
+        tx.update(runs)
           .set({
             status: 'failed',
             errorJson: JSON.stringify(event.error),
@@ -497,7 +497,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         return;
       }
       case 'run:cancelled': {
-        db.update(runs)
+        tx.update(runs)
           .set({ status: 'cancelled', completedAt: ts, updatedAt: ts })
           .where(eq(runs.id, runId))
           .run();
@@ -521,9 +521,15 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
    * Persist one event: derived writes FIRST, then the `run_events` append — so `run:started`'s `runs` row
    * (the FK target of `run_events.run_id`) exists before its event row. The whole pair is one transaction
    * (the caller wraps it), so a crash never leaves a derived row without its event, or vice-versa.
+   *
+   * Every statement goes through the {@link TxDb} handle the transaction hands in, never the outer `db`
+   * (#W15-23). Under `better-sqlite3` the two share a connection and the difference is invisible; with a
+   * pooled Postgres driver the outer handle is a DIFFERENT client, so its statements would run outside the
+   * transaction and survive a rollback — on the run's highest-volume money write. The handle is a parameter
+   * rather than a closure so the compiler, not a reviewer, is what keeps this true.
    */
-  const fold = (event: RunEvent, runId: string, ts: number): void => {
-    applyDerived(event, runId, ts);
+  const fold = (tx: TxDb, event: RunEvent, runId: string, ts: number): void => {
+    applyDerived(tx, event, runId, ts);
     const eventRow: NewRunEventRow = {
       id: deps.uuid(),
       runId,
@@ -534,7 +540,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
       payloadJson: JSON.stringify(event),
       ts,
     };
-    db.insert(runEvents).values(eventRow).run();
+    tx.insert(runEvents).values(eventRow).run();
   };
 
   return {
@@ -594,7 +600,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         // before we sleep. Within a single branch the engine awaits these sequentially, so no event can
         // overtake its own predecessor.
         await withBusyRetryAsync(() =>
-          db.transaction(() => fold(parsed, runId, ts), { behavior: 'immediate' }),
+          db.transaction((tx) => fold(tx, parsed, runId, ts), { behavior: 'immediate' }),
         );
       } catch (error) {
         // Preserve the root cause (error-handling.md): never swallow it to rethrow a vaguer one.

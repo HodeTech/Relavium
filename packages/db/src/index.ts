@@ -58,6 +58,7 @@ export {
   runMigrations,
   DbOpenError,
   type Db,
+  type TxDb,
   type DbClient,
   type DbOpenErrorCode,
   type RunMigrationsOptions,

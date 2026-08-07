@@ -22,6 +22,18 @@ import * as schema from './schema.js';
 /** A Drizzle handle bound to the full Relavium schema. */
 export type Db = BetterSQLite3Database<typeof schema>;
 
+/**
+ * The handle a `db.transaction(...)` callback receives — the one a transaction body must issue its statements
+ * through (#W15-23).
+ *
+ * Under `better-sqlite3` the outer {@link Db} and this handle share a connection, so using the outer one
+ * inside a transaction body is invisible. It is not invisible on the other half of ADR-0005's promise: with a
+ * pooled Postgres driver `tx` is a distinct client, and a statement issued through the outer handle runs
+ * OUTSIDE the transaction — committed even when the transaction rolls back. Derived by the driver type rather
+ * than written out, so it cannot drift from whatever `Db` is.
+ */
+export type TxDb = Parameters<Parameters<Db['transaction']>[0]>[0];
+
 /** A connected client: the Drizzle handle plus the raw driver for lifecycle control. */
 export interface DbClient {
   readonly db: Db;
