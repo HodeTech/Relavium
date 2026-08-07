@@ -360,6 +360,8 @@ function buildSessionRuntime(
           updateCost: governor.updateCost,
           // ADR-0074 §4: resume restores BOTH totals into the same governor a fresh session uses.
           restoreConservativeCost: governor.restoreConservativeCost,
+          // ADR-0074 §2's turn-boundary half — the session's equivalent of the engine's node-boundary flush.
+          flushBudgetCommitments: governor.flushBudgetCommitments,
         }),
     // The realized-cost overlay (2.5.G S10, ADR-0065 §2) — so the CostTracker prices a user-priced (otherwise
     // unknown) model instead of throwing UnknownModelError. Same map the governor uses; both fill an UNKNOWN id
@@ -654,6 +656,8 @@ export interface GovernorWiring {
   readonly updateCost: NonNullable<SessionDeps['updateCost']>;
   /** Seed the conservative total on `chat-resume` (ADR-0074 §4) — see `AgentSession.resume`. */
   readonly restoreConservativeCost: NonNullable<SessionDeps['restoreConservativeCost']>;
+  /** Await the conservative-commitment durability barrier at a turn boundary (ADR-0074 §2). */
+  readonly flushBudgetCommitments: NonNullable<SessionDeps['flushBudgetCommitments']>;
   /**
    * Late-bind the durable writer for conservative commitments (ADR-0074 §4).
    *
@@ -767,6 +771,7 @@ export function buildGovernorWiring(
       governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate, info.provider),
     updateCost: (cumulative) => governor.updateCost(cumulative),
     restoreConservativeCost: (microcents) => governor.restoreConservativeCost(microcents),
+    flushBudgetCommitments: () => governor.flushCommitments(),
     attachConservativeWriter: (write) => {
       writeCommitment = write;
     },

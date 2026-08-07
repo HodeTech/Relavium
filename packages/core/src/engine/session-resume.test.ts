@@ -272,6 +272,12 @@ describe('AgentSession.resume (1.Y)', () => {
     expect(only?.type === 'session:turn_completed' && only.error?.code).toBe('turn_limit');
   });
 
+  // NOT COVERED: that `sendMessage` awaits `flushBudgetCommitments` BEFORE emitting `session:turn_completed`
+  // (ADR-0074 §2's turn-boundary half, wired just below in `agent-session.ts`). I wrote the test — a deferred
+  // flush, asserting the terminal has not been emitted until it resolves — and could not get its tick
+  // accounting right within this session's remaining budget. Removed rather than left flaky or hollow. The
+  // production change is one awaited call on the success path; what is unproven is the ORDERING it buys.
+
   it('restores the CONSERVATIVE total too, and keeps it apart from the realized one (ADR-0074 §4)', () => {
     // §2 requires BOTH totals back before any resumed work is scheduled. Restoring only the realized figure
     // hands already-owed money back to the cap as headroom on the very first resumed turn — the bypass the ADR

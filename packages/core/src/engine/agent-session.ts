@@ -279,6 +279,20 @@ export interface SessionDeps {
    */
   readonly updateCost?: (cumulativeCostMicrocents: number) => void;
   /**
+   * Await the budget governor's conservative-commitment durability barrier (ADR-0074 §2).
+   *
+   * §2 requires that "the next provider attempt AND the enclosing turn completion wait for the commitment's
+   * durability acknowledgement". The governor's own barrier covers the first half on every surface; the engine
+   * covers the second at each node boundary. This is the SESSION's half of it, and without it a chat could
+   * report a turn complete — returning from `sendMessage`, letting the process exit — while the commitment for
+   * a possibly-billed call had not reached the database, or had failed to and would surface only later, blamed
+   * on an unrelated turn.
+   *
+   * Rejects on a durability failure; the caller turns that into the turn's terminal. No-op by default; the host
+   * wires it to `governor.flushCommitments`.
+   */
+  readonly flushBudgetCommitments?: () => Promise<void>;
+  /**
    * Seed the host governor's CONSERVATIVE total on resume ([ADR-0074](../../../../docs/decisions/0074-durable-conservative-budget-commitments.md) §4).
    *
    * Separate from {@link updateCost} because the two figures are separate by design: one is realized spend, the
@@ -623,6 +637,16 @@ export class AgentSession {
       if (result.text.length > 0) {
         this.#messages.push({ role: 'assistant', content: [{ type: 'text', text: result.text }] });
       }
+      // ADR-0074 §2: the enclosing turn completion WAITS for the commitment's durability acknowledgement.
+      // Before this, a chat reported a turn complete — `sendMessage` returned, the process could exit — while
+      // the commitment for a possibly-billed call had not reached the database. A failure here fails THIS turn,
+      // which is the point: §2 says a durability failure fails the active owner loudly, and surfacing it on some
+      // later unrelated turn is exactly the misattribution the barrier exists to prevent.
+      //
+      // Only the SUCCESS path awaits it this way. An abort or a classified turn error already carries its own
+      // terminal, and replacing a `provider_auth` failure with a durability failure would hide the cause the
+      // user needs; the governor keeps the debit and its sticky `conservativeDurabilityBroken` regardless.
+      await this.#deps.flushBudgetCommitments?.();
       this.#emitTurnCompleted(result.stopReason, {
         input: result.usage.input,
         output: result.usage.output,
