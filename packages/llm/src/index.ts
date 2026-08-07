@@ -126,6 +126,10 @@ export {
   kindFromHttpStatus,
   makeLlmError,
   LlmProviderError,
+  // The defense-in-depth secret backstop `makeLlmError` already applies to every adapter error. Exported so a
+  // SURFACE can run it on arbitrary text it is about to print — a CLI failure path can carry a provider
+  // response body, an MCP error or a tool result, and terminal-control sanitization does nothing about a key.
+  scrubSecrets,
 } from './llm-error.js';
 
 // CostTracker + the canonical model-pricing table (1.B).

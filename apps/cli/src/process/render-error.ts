@@ -1,6 +1,6 @@
 import { toUserFacing } from './errors.js';
 import type { CliIo } from './io.js';
-import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
+import { sanitizeInline, sanitizeUntrusted, sanitizeUntrustedInline } from '../render/sanitize.js';
 
 /**
  * Render a fatal error once, at the top-level boundary (error-handling.md: the internal →
@@ -21,7 +21,8 @@ export function renderError(
   // The error boundary is shared by every command, including JSON diagnostics and verbose stacks. Keep the
   // structured envelope valid while also removing terminal/bidi controls before it reaches stderr.
   const code = sanitizeInline(userFacing.code);
-  const message = sanitizeInline(userFacing.message);
+  // The message can carry a provider/MCP/tool string, so it is redacted as well as control-stripped.
+  const message = sanitizeUntrustedInline(userFacing.message);
   if (opts.json) {
     io.writeErr(JSON.stringify({ type: 'error', code, message }) + '\n');
   } else {
@@ -31,6 +32,7 @@ export function renderError(
   // mix non-JSON text into the structured stderr diagnostic (error-handling.md: a stack is not machine
   // output). Under `--json` the `{ type: 'error', … }` envelope is the whole stderr diagnostic.
   if (opts.verbose && !opts.json && value instanceof Error && value.stack !== undefined) {
-    io.writeErr(stripTerminalControls(value.stack) + '\n');
+    // A stack embeds the message, and often argument values with it — this is the likeliest leak of the four.
+    io.writeErr(sanitizeUntrusted(value.stack) + '\n');
   }
 }

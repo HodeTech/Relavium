@@ -1,3 +1,5 @@
+import { scrubSecrets } from '@relavium/llm';
+
 /**
  * Terminal-output sanitization primitives — the CLI's Trojan-Source / ANSI-injection floor.
  *
@@ -59,4 +61,31 @@ export function stripTerminalControls(text: string): string {
  */
 export function sanitizeInline(text: string): string {
   return stripTerminalControls(text).replace(/[\t\n]+/g, ' ');
+}
+
+/**
+ * The sanitizer for text this process did NOT author — a rejection message, a provider response body, an MCP
+ * error, a tool result, a stack trace.
+ *
+ * Two passes: redact secrets, then strip terminal controls. Redaction runs first on the theory that a credential
+ * split by a control byte would rejoin once that byte is removed — but I could NOT construct a case where the
+ * order changes the outcome (`scrubSecrets` matches the surviving prefix either way), so treat that as the
+ * reason it is written this way, not as a proven property. What IS proven is that both passes run.
+ *
+ * `scrubSecrets` rather than the tool-input detector `redactSecretShapedText`: the two catch different things,
+ * and this path needs the KEY-PREFIX patterns (`sk-*`, `AIza*`, `Bearer`/`Basic` headers, URL userinfo, secret
+ * query params) that an error message actually carries. The tool detector is tuned for authored paths and
+ * commands and does not match a bare API key.
+ *
+ * `sanitizeInline`/`stripTerminalControls` deliberately do NOT redact: they run on text this codebase composed,
+ * where redaction would mangle legitimate output. This is the variant for the failure paths, where the content
+ * is arbitrary and the cost of a false positive is a `[redacted]` in a diagnostic rather than a leaked key.
+ */
+export function sanitizeUntrusted(text: string): string {
+  return stripTerminalControls(scrubSecrets(text));
+}
+
+/** {@link sanitizeUntrusted}, collapsed to one row — for a one-line notice. */
+export function sanitizeUntrustedInline(text: string): string {
+  return sanitizeInline(scrubSecrets(text));
 }

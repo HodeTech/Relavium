@@ -1,4 +1,4 @@
-import { sanitizeInline, stripTerminalControls } from '../render/sanitize.js';
+import { sanitizeUntrusted, sanitizeUntrustedInline } from '../render/sanitize.js';
 import { EXIT_CODES } from './exit-codes.js';
 import type { CliIo } from './io.js';
 
@@ -42,10 +42,10 @@ export function installBackgroundFailureNet(io: CliIo): BackgroundFailureNet {
       // arbitrary `unknown` — realistically an MCP server's error text, a provider response body, or a tool
       // result — i.e. exactly the untrusted sources the ANSI/OSC/Trojan-Source guard exists for.
       io.writeErr(
-        `relavium: a background operation failed: ${sanitizeInline(describeReason(reason))}\n`,
+        `relavium: a background operation failed: ${sanitizeUntrustedInline(describeReason(reason))}\n`,
       );
       if (verbose && reason instanceof Error && reason.stack !== undefined) {
-        io.writeErr(`${stripTerminalControls(reason.stack)}\n`);
+        io.writeErr(`${sanitizeUntrusted(reason.stack)}\n`);
       }
     } else if (count === MAX_REPORTED + 1) {
       // Bounded: a repeating fault in a long interactive session must not scroll the transcript away.

@@ -46,6 +46,7 @@ import {
   unpricedModelNote,
 } from './effort-notice.js';
 import { resolveChatAgent } from './agent-source.js';
+import { sanitizeUntrustedInline } from '../render/sanitize.js';
 
 /**
  * Assemble a ready-to-run `relavium chat` session over `@relavium/core`'s {@link AgentSession} (2.M — the
@@ -260,7 +261,12 @@ function buildSessionRuntime(
       }
       // Bus-WIDE, not persister-specific: the renderer, the Home store and the NDJSON printer all subscribe
       // here too, so a render fault must not be reported as a database problem.
-      const reason = error instanceof Error ? error.message : String(error);
+      // Redacted, not merely control-stripped: a listener fault here can be a persister write error carrying a
+      // path, or an MCP/provider error carrying a key or a `Bearer` header. The surface's own writer strips
+      // terminal bytes; nothing else strips secrets.
+      const reason = sanitizeUntrustedInline(
+        error instanceof Error ? error.message : String(error),
+      );
       report(`a background handler failed while processing the ${event.type} event: ${reason}`);
     },
   });

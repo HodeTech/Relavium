@@ -2,6 +2,7 @@ import { escalateExitCode, installBackgroundFailureNet } from './process/backgro
 import { EXIT_CODES } from './process/exit-codes.js';
 import { processIo } from './process/io.js';
 import { run } from './run.js';
+import { sanitizeUntrusted } from './render/sanitize.js';
 
 // The `bin` entry: wire the real-process IO seam, install the background-failure net, run, and set the
 // deterministic exit code.
@@ -18,7 +19,10 @@ try {
   // without leaking a stack as primary output. Set `RELAVIUM_DEBUG` to see the stack.
   io.writeErr('relavium: a fatal internal error occurred.\n');
   if (io.env['RELAVIUM_DEBUG'] !== undefined && err instanceof Error && err.stack !== undefined) {
-    io.writeErr(`${err.stack}\n`);
+    // A stack embeds the message and often argument values with it, and at this point the error can be
+    // anything a provider, an MCP server or a tool produced — so redact secret shapes before the control-byte
+    // strip, not after (a credential split by an escape byte would otherwise rejoin once the byte is removed).
+    io.writeErr(`${sanitizeUntrusted(err.stack)}\n`);
   }
   process.exitCode = EXIT_CODES.workflowFailed;
 }
