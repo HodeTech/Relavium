@@ -2,7 +2,7 @@ import { collectDurableMediaHandles, type RunEvent } from '@relavium/shared';
 
 import type { CliIo } from '../process/io.js';
 import { formatProducedMedia } from './tui/format.js';
-import { sanitizeInline } from './sanitize.js';
+import { sanitizeInline, stringifyJsonLine } from './sanitize.js';
 
 /**
  * A renderer consumes the run's canonical {@link RunEvent} stream. The renderers below sit behind this one
@@ -35,13 +35,18 @@ export interface RunRenderer {
  * [sse-event-schema.md](../../../../docs/reference/contracts/sse-event-schema.md). No wrapper, no stream
  * header — the per-line RunEvent IS the stable envelope, and the terminal `run:completed` event is
  * itself the final result line (it carries `outputs` + totals). Secret-typed values are already masked
- * by the engine (`MaskedSecret`); `JSON.stringify` emits that masked shape verbatim and never unwraps
+ * by the engine (`MaskedSecret`); the serializer emits that masked shape verbatim and never unwraps
  * it. Only stdout is touched here — all diagnostics (incl. the CLI-fault envelope) go to stderr.
+ *
+ * {@link stringifyJsonLine} rather than bare `JSON.stringify` — the same reason `records.ts` uses it. A
+ * `--json` stream is read on a terminal as often as it is piped, and `JSON.stringify` escapes `ESC` but leaves
+ * DEL, the C1 controls (incl. the 8-bit CSI) and the Trojan-Source bidi family raw. The escape is lossless, so
+ * the "serialized verbatim" contract above still holds for any JSON parser.
  */
 export function createJsonRenderer(io: CliIo): RunRenderer {
   return {
     onEvent: (event) => {
-      io.writeOut(`${JSON.stringify(event)}\n`);
+      io.writeOut(`${stringifyJsonLine(event)}\n`);
     },
   };
 }

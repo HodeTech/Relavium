@@ -318,3 +318,19 @@ describe('createJsonRenderer', () => {
     expect(JSON.parse(line)).toEqual(event); // ...verbatim (the renderer neither inlines bytes nor drops it)
   });
 });
+
+/**
+ * The `run --json` NDJSON stream is the other half of #W15-10: same bare `JSON.stringify`, same
+ * model-controlled fields, same terminal on the other end.
+ */
+describe('createJsonRenderer — Trojan Source on the NDJSON stream (#W15-10)', () => {
+  it('escapes a bidi override in an event field without changing what a parser reads', () => {
+    const io = captureIo();
+    const event = ev({ type: 'node:started', nodeId: 'deploy\u202eprod', nodeType: 'agent' });
+    createJsonRenderer(io.io).onEvent(event);
+    const line = io.out();
+    expect(line).not.toContain('\u202e');
+    expect(line).toContain('\\u202e');
+    expect(JSON.parse(line)).toEqual(event); // the envelope contract survives the escape
+  });
+});

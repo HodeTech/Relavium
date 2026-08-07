@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { sanitizeUntrusted, sanitizeUntrustedInline } from './sanitize.js';
+import { sanitizeUntrusted, sanitizeUntrustedInline, stringifyJsonLine } from './sanitize.js';
 
 /**
  * The redacting sanitizer for text this process did NOT author (#W15-8) — a rejection message, a provider
@@ -45,5 +45,43 @@ describe('sanitizeUntrusted — the failure paths carry arbitrary text (#W15-8)'
     for (const msg of ['ENOENT: no such file', 'database is locked', 'rate limited, retry later']) {
       expect(sanitizeUntrusted(msg)).toBe(msg);
     }
+  });
+});
+
+/**
+ * `--json` is machine output that is read on a terminal as often as it is piped (#W15-10). `JSON.stringify`
+ * escapes `ESC` but leaves DEL, the C1 controls and the Trojan-Source bidi family raw, so the human path's
+ * floor did not reach this branch.
+ */
+describe('stringifyJsonLine — the --json branch had no Trojan-Source floor (#W15-10)', () => {
+  const RLO = '\u202e';
+  const ALM = '\u061c';
+  const DEL = '\u007f';
+  const CSI_8BIT = '\u009b';
+
+  it('escapes what JSON.stringify leaves raw — bidi, DEL and the 8-bit CSI', () => {
+    for (const hostile of [RLO, ALM, DEL, CSI_8BIT + '2J', '\u200f', '\u2066']) {
+      const line = stringifyJsonLine({ message: 'a' + hostile + 'b' });
+      // The point of the finding: the raw code point must not survive into the emitted line.
+      expect(line).not.toContain(hostile);
+      expect(line).toContain('\\u' + hostile.codePointAt(0)!.toString(16).padStart(4, '0'));
+    }
+  });
+
+  it('is LOSSLESS — a parser reads back the identical string, so the jq contract is unchanged', () => {
+    // This is why the fix escapes rather than strips: `--json` promises to reproduce the data.
+    const record = { id: 'n1', message: 'transfer ' + RLO + ' to attacker' + DEL, n: 42, ok: true };
+    expect(JSON.parse(stringifyJsonLine(record))).toEqual(record);
+  });
+
+  it('leaves ordinary records byte-identical to JSON.stringify', () => {
+    for (const record of [{ a: 1 }, { s: 'plain text — with an em dash' }, [1, 'two'], null]) {
+      expect(stringifyJsonLine(record)).toBe(JSON.stringify(record));
+    }
+  });
+
+  it('preserves the pre-existing behaviour for a value JSON.stringify cannot represent', () => {
+    // The call sites take `unknown`; `.replace` on `undefined` would throw where the old template did not.
+    expect(stringifyJsonLine(undefined)).toBe('undefined');
   });
 });

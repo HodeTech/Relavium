@@ -89,3 +89,46 @@ export function sanitizeUntrusted(text: string): string {
 export function sanitizeUntrustedInline(text: string): string {
   return sanitizeInline(scrubSecrets(text));
 }
+
+/**
+ * The code points `JSON.stringify` emits **raw** even though a terminal acts on them. Verified empirically, not
+ * assumed: it escapes `U+0000`-`U+001F` (a 7-bit `ESC` becomes the six characters `\u001b`), the quote, the
+ * backslash and lone surrogates — and nothing above that. Two families survive:
+ *
+ * - **`U+007F`-`U+009F`** — DEL plus the C1 controls. `U+009B` is the 8-bit CSI: a terminal with C1 support
+ *   reads `U+009B` `2` `J` as "clear the screen", with no `ESC` anywhere for the JSON escaper to have caught.
+ * - **The bidi family** {@link BIDI_CONTROLS} covers — Trojan Source (CVE-2021-42574), which reorders how a
+ *   line renders without changing its bytes.
+ *
+ * In sync with the human path by construction: this is exactly the part of {@link BARE_CONTROLS} +
+ * {@link BIDI_CONTROLS} that `JSON.stringify` does not already handle. Written with `\u` escapes (never
+ * literal bidi bytes), like {@link BIDI_CONTROLS}, so the source itself carries no Trojan-Source hazard.
+ */
+const JSON_DISPLAY_UNSAFE = /[\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+
+/**
+ * Serialize one `--json` record as a display-safe JSON line
+ * ([ADR-0049](../../../../docs/decisions/0049-cli-machine-output-contract.md)).
+ *
+ * `--json` is machine output that lands on a **terminal** anyway — a developer runs `relavium status --json`
+ * and reads it, or pipes it through a pager. Those records carry model- and provider-controlled text (a
+ * human-gate message, a node id, an error code), so the Trojan-Source floor the human renderers apply is owed
+ * here too; lane (c) hardened the human path and left this branch alone.
+ *
+ * It **escapes** rather than strips, and that distinction is the whole point: `\u202e` is standard JSON and
+ * any parser decodes it back to the identical string, so `jq` sees exactly what it saw before — while a
+ * terminal renders an inert six-character escape instead of acting on the control. Stripping would have
+ * silently mutated the data a machine contract promises to reproduce.
+ */
+export function stringifyJsonLine(value: unknown): string {
+  const json = JSON.stringify(value);
+  // `JSON.stringify` returns `undefined` for `undefined`/a function/a symbol. The call sites accept `unknown`,
+  // so preserve the pre-existing template-literal behaviour (`undefined`) rather than throwing on `.replace`.
+  return json === undefined ? String(json) : json.replace(JSON_DISPLAY_UNSAFE, escapeAsJsonUnicode);
+}
+
+/** One BMP code point as its `\uXXXX` JSON escape. Every member of {@link JSON_DISPLAY_UNSAFE} is a
+ *  non-surrogate BMP code point, so one UTF-16 unit is the whole character. */
+function escapeAsJsonUnicode(char: string): string {
+  return `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`;
+}
