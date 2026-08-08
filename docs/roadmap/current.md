@@ -351,8 +351,11 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 
 #### E. PR #81 — coverage gaps it shipped knowingly
 
-Each is marked in the source at the line it concerns; none is a shipped defect, and every one has
-mutation-verified coverage one layer down.
+All six are now CLOSED and their in-source markers removed. None had been a shipped defect — each had
+mutation-verified coverage one layer down — but closing them surfaced one that was: `onLegacyMediaJobHold`
+reached `WorkflowEngine` from a real `gate.ts` sentence and the constructor never read it, so ADR-0074 §3's
+hold notice was dead and a `relavium gate` resume of a legacy parked media job stalled silently. Found by
+the review of `#W15-16`, fixed with it, and now the signal that test drives.
 
 - ✅ **`#W15-16`** — the engine-level composition test for §3's abort-breakable media-job hold; deleting the abort
   listener leaves the whole suite green.

@@ -305,10 +305,13 @@ describe('AgentSession.resume (1.Y)', () => {
     // Let any queued continuation run: if the terminal were emitted without waiting, it would land here.
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
 
-    const terminalsBefore = events.filter((e) => e.type === 'session:turn_completed');
-    expect(terminalsBefore).toHaveLength(0); // the durability barrier is real, not decorative
-
-    release();
+    // `finally`, because a FAILING assertion here would otherwise leave `flushed` unresolved and `sent`
+    // pending for the life of the worker — a real failure reported as a hang.
+    try {
+      expect(events.filter((e) => e.type === 'session:turn_completed')).toHaveLength(0);
+    } finally {
+      release();
+    }
     await sent;
     expect(events.filter((e) => e.type === 'session:turn_completed')).toHaveLength(1);
   });

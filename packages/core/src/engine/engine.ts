@@ -2433,6 +2433,13 @@ export class WorkflowEngine {
   // authorized a custom-base_url turn) and without an unpriced sink (§K7 — the notice was dead on `run`/`gate`).
   readonly #resolveEndpoint: ((provider: ProviderId) => EndpointKind) | undefined;
   readonly #onUnpriced: ((model: string, capMicrocents: number) => void) | undefined;
+  /**
+   * The THIRD occurrence of the same bug the comment above records, found by the #W15-16 review: declared on
+   * `WorkflowEngineDeps`, forwarded by `build-engine.ts` from a real `gate.ts` sentence, and never read here —
+   * so the governor's hold notice was dead on `run` / `gate`. ADR-0074 §3 requires the legacy-media-job hold be
+   * OBSERVABLE precisely so a resume is not a silent stall, and it was exactly that.
+   */
+  readonly #onLegacyMediaJobHold: ((nodeIds: readonly string[]) => void) | undefined;
   readonly #runs = new Map<string, RunExecution>();
 
   constructor(deps: WorkflowEngineDeps) {
@@ -2445,6 +2452,7 @@ export class WorkflowEngine {
     this.#resolvePrice = deps.resolvePrice;
     this.#resolveEndpoint = deps.resolveEndpoint;
     this.#onUnpriced = deps.onUnpriced;
+    this.#onLegacyMediaJobHold = deps.onLegacyMediaJobHold;
   }
 
   /**
@@ -2476,6 +2484,9 @@ export class WorkflowEngine {
       ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
       ...(this.#resolveEndpoint === undefined ? {} : { resolveEndpoint: this.#resolveEndpoint }),
       ...(this.#onUnpriced === undefined ? {} : { onUnpriced: this.#onUnpriced }),
+      ...(this.#onLegacyMediaJobHold === undefined
+        ? {}
+        : { onLegacyMediaJobHold: this.#onLegacyMediaJobHold }),
     });
     this.#runs.set(runId, execution);
     void execution.begin();
@@ -2574,6 +2585,9 @@ export class WorkflowEngine {
       ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
       ...(this.#resolveEndpoint === undefined ? {} : { resolveEndpoint: this.#resolveEndpoint }),
       ...(this.#onUnpriced === undefined ? {} : { onUnpriced: this.#onUnpriced }),
+      ...(this.#onLegacyMediaJobHold === undefined
+        ? {}
+        : { onLegacyMediaJobHold: this.#onLegacyMediaJobHold }),
       checkpoint,
     });
     this.#runs.set(input.runId, execution);
