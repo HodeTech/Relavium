@@ -121,7 +121,15 @@ function expectThrowsCode(fn: () => void, code: string): void {
 }
 
 /** Seed a store with a `run:started` (and optionally a trailing event) to simulate a crashed run. */
-function seedStarted(store: RunStore, runId: string, lastType?: RunEvent['type']): Promise<void> {
+function seedStarted(
+  store: RunStore,
+  runId: string,
+  lastType?: RunEvent['type'],
+  /** The run's workflow id. Defaults to a fixed value for the reconcile tests, which never re-plan; a
+   *  `resumeFromCheckpoint` test MUST pass the id `resolveWorkflowId` mints for its slug, or the resume is
+   *  refused with `workflow_mismatch`. */
+  workflowId = '00000000-0000-4000-8000-000000000099',
+): Promise<void> {
   const startedAt = '2026-06-13T00:00:00.000Z';
   const events: RunEvent[] = [
     {
@@ -129,7 +137,7 @@ function seedStarted(store: RunStore, runId: string, lastType?: RunEvent['type']
       runId,
       timestamp: startedAt,
       sequenceNumber: 0,
-      workflowId: '00000000-0000-4000-8000-000000000099',
+      workflowId,
       inputs: {},
       executionMode: 'local',
     },
@@ -3040,5 +3048,80 @@ describe('WorkflowEngine — media_job:submitted freezes its money basis (ADR-00
     if (submitted?.type !== 'media_job:submitted') throw new Error('expected media_job:submitted');
     // `0` — the hook ran (no governor is configured, so it admitted freely) and reserved nothing.
     expect(submitted.acceptedCostMicrocents).toBe(0);
+  });
+});
+
+describe('WorkflowEngine — an abort always breaks the legacy media-job hold (ADR-0074 §3)', () => {
+  const HELD = `  id: media-hold
+  nodes:
+    - { id: gen, type: transform, transform: 'g' }
+    - { id: sib, type: transform, transform: 's' }
+    - { id: out, type: output }
+  edges:
+    - { from: gen, to: out }
+    - { from: sib, to: out }
+  budget:
+    max_cost_microcents: 100000000
+    on_exceed: fail`;
+
+  it('still reaches run:cancelled with a sibling suspended in the hold (#W15-16)', async () => {
+    // The composition gap that let a hang ship: every part was unit-correct and nothing exercised them
+    // TOGETHER. `budget-governor.test.ts` proves the governor releases its holds; nothing proved the engine
+    // ever calls that on abort.
+    //
+    // Without the listener a `checkPreEgress` suspended in the hold keeps its node counted as `running`, so
+    // `#step` never reaches `#countRunning() === 0` and the run emits NO terminal — an unkillable run, which
+    // is strictly worse than the under-reservation the hold prevents. The awaited job cannot rescue it: its
+    // poll returns silently once the signal is aborted.
+    const store = new InMemoryRunStore();
+    // A LEGACY parked job — no `units`, no `acceptedCostMicrocents` — which is what makes the resume register
+    // the hold rather than restoring a frozen reservation.
+    const workflowId = await store.resolveWorkflowId('media-hold');
+    await seedStarted(store, 'hold-1', 'media_job:submitted', workflowId);
+
+    let atHold = false;
+    const engine = engineWith(
+      {
+        // `gen` is restored from the checkpoint as PARKED, so it must never dispatch.
+        gen: () => {
+          throw new Error('the parked media node must not re-dispatch');
+        },
+        sib: async (ctx) => {
+          atHold = true;
+          await ctx.preEgress?.({
+            model: 'claude-haiku-4-5',
+            maxTokens: 100,
+            provider: 'anthropic',
+          });
+          return { kind: 'completed', output: 'sib' };
+        },
+      },
+      createInMemoryHost({ store }),
+    );
+
+    const handle = await engine.resumeFromCheckpoint({
+      runId: 'hold-1',
+      workflow: workflow(HELD),
+    });
+    const events: RunEvent[] = [];
+    const collected = (async () => {
+      for await (const event of handle.events) events.push(event);
+    })();
+
+    // Yield until the sibling is provably inside `checkPreEgress`, then a generous margin so its `while`
+    // loop is parked on the hold rather than merely about to enter it.
+    for (let i = 0; i < 500 && !atHold; i += 1) await Promise.resolve();
+    expect(atHold).toBe(true);
+    for (let i = 0; i < 200; i += 1) await Promise.resolve();
+    // Still running: the hold really is holding, so what follows tests the release and not a run that had
+    // already finished.
+    expect(terminalsIn(events)).toHaveLength(0);
+
+    handle.cancel();
+
+    // The assertion IS that this await returns. Without the abort listener the stream never closes and this
+    // test times out — a hang is the failure mode being pinned.
+    await collected;
+    expect(events.some((e) => e.type === 'run:cancelled')).toBe(true);
   });
 });

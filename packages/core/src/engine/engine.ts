@@ -424,11 +424,12 @@ class RunExecution {
       // under-reservation the hold prevents. The awaited job cannot rescue it either: its poll returns silently
       // once the signal is aborted. Registered ONCE here, so no future abort site can forget it.
       //
-      // NOT yet covered by an engine-level test: removing this listener compiles and leaves the whole suite
-      // green, because the only proof lives in `budget-governor.test.ts` and exercises the governor in
-      // isolation. The missing case is a budgeted resume with a legacy media job AND a concurrent sibling,
-      // cancelled mid-hold, asserting the run still reaches `run:cancelled`. Recorded rather than glossed: this
-      // exact composition gap — unit-correct parts, untested together — is what let the hang ship.
+      // Covered at the ENGINE level since #W15-16 (`engine.test.ts`, "an abort always breaks the legacy
+      // media-job hold"): a budgeted resume with a legacy media job AND a concurrent sibling, cancelled
+      // mid-hold. Deleting this listener makes that test TIME OUT rather than fail an assertion — the run
+      // never terminates, which is the defect stated exactly. The governor's own release stays pinned in
+      // isolation by `budget-governor.test.ts`; this composition — unit-correct parts, untested together —
+      // is what let the hang ship.
       this.#abort.signal.addEventListener('abort', () => {
         this.#budgetGovernor?.releaseAllLegacyMediaJobHolds();
       });
