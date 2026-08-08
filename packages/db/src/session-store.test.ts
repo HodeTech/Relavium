@@ -781,11 +781,70 @@ describe('SessionStore — writeTurn is atomic (#228)', () => {
     expect(store.loadSession('sess-1')?.updatedAt).toBe(before); // a no-op must not stamp updated_at
   });
 
-  // NOT COVERED: the `coalesce` backfill of `modelCatalogId` on the conservative upsert. The test needs a real
-  // `model_catalog` row for the FK, and this describe block's shared store does not seed one — I ran out of
-  // budget to wire that fixture and will not ship a red or a hollow test in its place. The behaviour is a
-  // three-line `coalesce` in `recordSessionConservativeCommitment`; what is unproven is that it backfills a
-  // NULL and never overwrites a resolved id with NULL.
+  describe('the modelCatalogId coalesce on a conservative upsert (#W15-18)', () => {
+    // A model can be CATALOGUED mid-session (2.6.Q): the first commitment resolves nothing, a later one
+    // resolves an id. So the upsert has to backfill a NULL — while never letting a later unresolved lookup
+    // wipe an id that IS known, because "we don't know" is not "there is none".
+    //
+    // The fixture the earlier note said was missing is `seedModelCatalog`, in this same file; the block just
+    // never called it. A SECOND catalog row is added here for the re-catalogued case (the `model_catalog`
+    // table is refreshed from models.dev, so the same model string can resolve to a new UUID).
+    const catalogIdOf = (model: string): string | undefined =>
+      store.loadSessionCosts('sess-1').find((r) => r.model === model)?.modelCatalogId;
+
+    const commit = (id: string, modelCatalogId?: string): void => {
+      store.recordSessionConservativeCommitment({
+        id,
+        sessionId: 'sess-1',
+        model: 'claude-opus-4-8',
+        estimateMicrocents: 100,
+        ...(modelCatalogId === undefined ? {} : { modelCatalogId }),
+        ts: 1,
+      });
+    };
+
+    beforeEach(() => {
+      seedModelCatalog(client);
+      client.db
+        .insert(modelCatalog)
+        .values({
+          id: 'model-2',
+          providerId: 'prov-1',
+          modelId: 'claude-opus-4-8-refreshed',
+          displayName: 'Opus 4.8 (re-catalogued)',
+          contextWindowTokens: 200_000,
+          maxOutputTokens: 64_000,
+          createdAt: TS_MS,
+          updatedAt: TS_MS,
+        })
+        .run();
+      store.createSession(makeSession());
+    });
+
+    it('BACKFILLS a null id once the model becomes catalogued', () => {
+      commit('k1'); // unresolved: the INSERT branch leaves the column NULL
+      expect(catalogIdOf('claude-opus-4-8')).toBeUndefined();
+
+      commit('k2', 'model-1'); // resolved: the UPDATE branch coalesces it in
+      expect(catalogIdOf('claude-opus-4-8')).toBe('model-1');
+    });
+
+    it('never wipes a known id when a later lookup resolves NOTHING', () => {
+      commit('k1', 'model-1');
+      commit('k2'); // unresolved — the SET clause must omit the column entirely
+      expect(catalogIdOf('claude-opus-4-8')).toBe('model-1');
+    });
+
+    it('never REPLACES a known id, even with another resolved one', () => {
+      // `coalesce(existing, incoming)` keeps the existing. Asserted as the behaviour it IS, not as an intent
+      // the code states: the docblock only promises "never overwrite with NULL". This pins the rest so a
+      // future change to `coalesce` has to be a deliberate one — the row's id stays the FK it was written
+      // under, which is what keeps the join stable across a catalog refresh.
+      commit('k1', 'model-1');
+      commit('k2', 'model-2');
+      expect(catalogIdOf('claude-opus-4-8')).toBe('model-1');
+    });
+  });
 
   it('never SETs total_conservative_microcents — the commitment writer stays its single writer', () => {
     // Same hazard as the realized total: a session flush that SET it from an in-memory record would clobber a
