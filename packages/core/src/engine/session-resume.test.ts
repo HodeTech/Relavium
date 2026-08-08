@@ -272,11 +272,46 @@ describe('AgentSession.resume (1.Y)', () => {
     expect(only?.type === 'session:turn_completed' && only.error?.code).toBe('turn_limit');
   });
 
-  // NOT COVERED: that `sendMessage` awaits `flushBudgetCommitments` BEFORE emitting `session:turn_completed`
-  // (ADR-0074 §2's turn-boundary half, wired just below in `agent-session.ts`). I wrote the test — a deferred
-  // flush, asserting the terminal has not been emitted until it resolves — and could not get its tick
-  // accounting right within this session's remaining budget. Removed rather than left flaky or hollow. The
-  // production change is one awaited call on the success path; what is unproven is the ORDERING it buys.
+  it('emits the turn terminal only AFTER flushBudgetCommitments resolves (#W15-19, ADR-0074 §2)', async () => {
+    // §2's turn-boundary half. Before it, a chat reported a turn complete — `sendMessage` returned, the
+    // process could exit — while the commitment for a possibly-billed call had not reached the database.
+    //
+    // The first attempt at this test tried to count microtask ticks before asserting, which is both fragile
+    // and VACUOUS in the failure direction: drain too few and the turn has not started, so "no terminal yet"
+    // passes for the wrong reason. The barrier itself is the signal instead — the hook records that it was
+    // called, and the assertion runs only once the turn is provably parked on it.
+    const events: SessionStreamEvent[] = [];
+    let release!: () => void;
+    const flushed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let atBarrier = false;
+    const deps: SessionDeps = {
+      ...depsFor(capturingProvider([]), events),
+      flushBudgetCommitments: () => {
+        atBarrier = true;
+        return flushed;
+      },
+    };
+    const session = new AgentSession(params(deps));
+    session.start();
+
+    const sent = session.sendMessage('go');
+    // Bounded drain: yield until the turn reaches the barrier. It cannot loop forever on a passing run —
+    // and on a run where the `await` was removed, `atBarrier` still flips, so the assertion below is the
+    // thing that decides, not the loop.
+    for (let i = 0; i < 100 && !atBarrier; i += 1) await Promise.resolve();
+    expect(atBarrier).toBe(true);
+    // Let any queued continuation run: if the terminal were emitted without waiting, it would land here.
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+
+    const terminalsBefore = events.filter((e) => e.type === 'session:turn_completed');
+    expect(terminalsBefore).toHaveLength(0); // the durability barrier is real, not decorative
+
+    release();
+    await sent;
+    expect(events.filter((e) => e.type === 'session:turn_completed')).toHaveLength(1);
+  });
 
   it('restores the CONSERVATIVE total too, and keeps it apart from the realized one (ADR-0074 §4)', () => {
     // §2 requires BOTH totals back before any resumed work is scheduled. Restoring only the realized figure
