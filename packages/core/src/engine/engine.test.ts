@@ -10,7 +10,12 @@ import {
   type ExecutionHost,
   type RunStore,
 } from './execution-host.js';
-import type { NodeExecContext, NodeExecutor, NodeOutcome } from './node-executor.js';
+import type {
+  MediaJobSubmission,
+  NodeExecContext,
+  NodeExecutor,
+  NodeOutcome,
+} from './node-executor.js';
 import type { RunHandle } from './run-handle.js';
 import { WorkflowEngine } from './engine.js';
 
@@ -2921,5 +2926,119 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     const reconciled = await new WorkflowEngine({ host, executor: new StubExecutor() }).reconcile();
     // crash-a's write failed and is skipped; crash-b still reconciled — one fault doesn't abandon the rest.
     expect(reconciled.map((e) => e.runId)).toEqual(['crash-b']);
+  });
+});
+
+// --- ADR-0074 §3: the frozen money basis on a parked media job --------------------------------
+
+/**
+ * A `media_job` outcome from a stub handler — the engine parks the node and emits `media_job:submitted`.
+ *
+ * No budget admission is attached, and cannot be: `retainMediaJobAdmission` is module-private to
+ * `agent-runner`. That is not a limitation here — it is exactly the shape the approved-bypass case has
+ * anyway, since an approved re-dispatch runs with `preEgress: undefined` and therefore holds no admission.
+ * `units` is FRACTIONAL on purpose: `duration_seconds` is fractional by contract (ADR-0074 §3), and an
+ * integer bound here once made a 12.5-second job unwritable after the provider had accepted it.
+ */
+function mediaJobOutcome(overrides: Partial<MediaJobSubmission> = {}): NodeOutcome {
+  return {
+    kind: 'media_job',
+    job: {
+      jobId: 'job-1',
+      provider: 'openai',
+      model: 'sora-2',
+      modality: 'video',
+      units: 12.5,
+      ...overrides,
+    },
+  };
+}
+
+/**
+ * Collect a run's events up to and including its `media_job:submitted`, then cancel and drain to the
+ * terminal. A parked media job never completes on its own — the poll timer is host-injected and this host
+ * fires timers only on demand — so a plain `drain()` would hang.
+ */
+async function untilMediaJobSubmitted(handle: RunHandle): Promise<RunEvent[]> {
+  const events: RunEvent[] = [];
+  for await (const event of handle.events) {
+    events.push(event);
+    if (event.type === 'media_job:submitted') handle.cancel();
+  }
+  return events;
+}
+
+const MEDIA_GATED = `  id: media-gate
+  nodes:
+    - { id: gen, type: transform, transform: 'g' }
+    - { id: out, type: output }
+  edges:
+    - { from: gen, to: out }`;
+
+describe('WorkflowEngine — media_job:submitted freezes its money basis (ADR-0074 §3)', () => {
+  it('OMITS acceptedCostMicrocents under the H3 approved bypass (#W15-20)', async () => {
+    // `0` means "the gate RAN and reserved nothing" — an unpriced model's allow-degrade path. Under H3's
+    // approved bypass NO hook runs at all (`#runAttempt` passes `preEgress: undefined`), so there is no
+    // priced basis to freeze and emitting `0` would claim one.
+    //
+    // Not cosmetic: on resume the frozen branch would call `reserveAcceptedCost(model, 0)`, reserve NOTHING,
+    // and skip `registerLegacyMediaJob` — so a job deliberately submitted OVER the cap comes back holding no
+    // reservation and no hold, letting a sibling spend headroom that is still owed. Omitting it routes the
+    // resume through the legacy branch, which re-prices AND fails closed.
+    let dispatches = 0;
+    const engine = engineWith({
+      gen: (ctx) => {
+        dispatches += 1;
+        if (dispatches === 1) {
+          // The budget gate, in the shape the governor's `BudgetPauseError` is converted into. The governor
+          // raising it is pinned in `budget-governor.test.ts`; what is unproven is what the ENGINE does with
+          // the approval afterwards.
+          return {
+            kind: 'paused',
+            gate: {
+              gateType: 'approval',
+              message: 'over budget — continue?',
+              isBudgetGate: true,
+              spentMicrocents: 900,
+              limitMicrocents: 1000,
+            },
+          };
+        }
+        // The approved re-dispatch: the bypass is what makes this hook absent.
+        expect(ctx.preEgress).toBeUndefined();
+        return mediaJobOutcome();
+      },
+    });
+    const handle = engine.start({ workflow: workflow(MEDIA_GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, { decision: 'approved', decidedBy: 'tester' });
+        }
+      }
+      if (event.type === 'media_job:submitted') handle.cancel();
+    }
+
+    expect(dispatches).toBe(2); // the approval RE-DISPATCHED the node rather than completing it
+    const submitted = events.find((e) => e.type === 'media_job:submitted');
+    expect(submitted?.type).toBe('media_job:submitted');
+    if (submitted?.type !== 'media_job:submitted') return;
+    expect(submitted).not.toHaveProperty('acceptedCostMicrocents');
+    // …while the BASIS is still frozen. `units` alone is the legitimate half-populated row (#W15-7).
+    expect(submitted.units).toBe(12.5);
+  });
+
+  it('carries acceptedCostMicrocents when the gate actually ran (the contrast that makes the omission mean something)', async () => {
+    // Without this row the assertion above would also pass on a build that never emitted the field at all.
+    const engine = engineWith({ gen: () => mediaJobOutcome() });
+    const events = await untilMediaJobSubmitted(engine.start({ workflow: workflow(MEDIA_GATED) }));
+
+    const submitted = events.find((e) => e.type === 'media_job:submitted');
+    if (submitted?.type !== 'media_job:submitted') throw new Error('expected media_job:submitted');
+    // `0` — the hook ran (no governor is configured, so it admitted freely) and reserved nothing.
+    expect(submitted.acceptedCostMicrocents).toBe(0);
   });
 });
