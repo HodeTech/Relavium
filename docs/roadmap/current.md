@@ -236,25 +236,25 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 
 **Every item names the check that would close it, not just the defect.**
 
-> **Status, 2026-08-07 — 18 of 24 closed.** Everything marked ✅ below is fixed, break-verified with the
-> mutation confirmed applied, and committed on `development`. What is left is exactly two categories, and
-> neither is a fix that was skipped:
+> **Status, 2026-08-09 — 22 of 24 closed; §B–§F are DONE.** Everything marked ✅ below is fixed,
+> break-verified with the mutation confirmed applied, and committed on `development`. §E's six coverage gaps
+> are all closed — `#W15-16`'s composition test fails by TIMING OUT when the abort listener is removed, which
+> is the unkillable run reproduced exactly rather than an assertion standing in for it.
 >
-> - **`#W15-1` and `#W15-2`** — §A, unchanged. Each needs an append-only ADR before any code (one changes what
->   "spent" means across a crash; the other supersedes a decision ADR-0074 §5 already recorded), and each earns
->   its own PR. That was the framing when this list was written and it still holds.
-> - **`#W15-16`, `#W15-18`, `#W15-19`, `#W15-20`** — four of §E's six coverage gaps. `#W15-17` and `#W15-21`
->   are closed; these four each need engine- or e2e-level scaffolding that does not exist yet (a budgeted
->   resume with a legacy media job and a concurrent sibling; a seeded `model_catalog` FK row; the H3 approved
->   bypass). None is a shipped defect — every one has mutation-verified coverage one layer down — and shipping
->   a hollow test in place of the real one is the mistake this register already caught three times.
+> **What is left is §A only, and it is not a fix that was skipped.** `#W15-1` and `#W15-2` each need an
+> append-only ADR before any code — one changes what "spent" means across a crash, the other supersedes a
+> decision ADR-0074 §5 already recorded — and each earns its own PR. `#W15-2` lands FIRST: `#W15-1` adds a new
+> durable event type, and an older binary reading it falls straight into §5's skip path, so `#W15-2`'s decision
+> governs how `#W15-1`'s event is read. Maintainer decision, 2026-08-09: fail closed on ANY skipped row on the
+> resume path (read-only surfaces stay tolerant), and the ledger is a new durable run event folded into a
+> `run_costs` row.
 >
-> Two decisions inside those 18 are worth surfacing here rather than leaving in a commit message. `#W15-4`
-> **changed a previously-tested behaviour**: #228 pinned that a session survives a failed durable write and the
-> next turn is clean; it now stops instead, because continuing to spend above a transcript that has fallen
-> behind is the defect. And `#W15-23` is scoped to `run-history-store` only — the other `packages/db` stores
-> share the same outer-`db`-inside-a-transaction convention, which remains open and is stated here rather than
-> implied closed.
+> Two decisions inside the closed set are worth surfacing here rather than leaving in a commit message.
+> `#W15-4` **changed a previously-tested behaviour**: #228 pinned that a session survives a failed durable
+> write and the next turn is clean; it now stops instead, because continuing to spend above a transcript that
+> has fallen behind is the defect. And `#W15-23` is scoped to `run-history-store` only — the other
+> `packages/db` stores share the same outer-`db`-inside-a-transaction convention, which remains open, is
+> stated here rather than implied closed, and has its own PR queued after this one.
 
 #### A. Needs an ADR first — the only part that is NOT PR #81's to close
 
@@ -354,13 +354,13 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 Each is marked in the source at the line it concerns; none is a shipped defect, and every one has
 mutation-verified coverage one layer down.
 
-- **`#W15-16`** — the engine-level composition test for §3's abort-breakable media-job hold; deleting the abort
+- ✅ **`#W15-16`** — the engine-level composition test for §3's abort-breakable media-job hold; deleting the abort
   listener leaves the whole suite green.
 - ✅ **`#W15-17`** — the CLI-layer test that `restoreConservativeCost` is wired through `buildSessionRuntime`.
-- **`#W15-18`** — the `coalesce` backfill of `session_costs.model_catalog_id` (needs a `model_catalog` FK row
+- ✅ **`#W15-18`** — the `coalesce` backfill of `session_costs.model_catalog_id` (needs a `model_catalog` FK row
   the block does not seed).
-- **`#W15-19`** — that a chat turn's terminal is emitted only AFTER `flushBudgetCommitments` resolves.
-- **`#W15-20`** — the H3 approved-bypass `acceptedCostMicrocents` omission; reverting it leaves the suite green.
+- ✅ **`#W15-19`** — that a chat turn's terminal is emitted only AFTER `flushBudgetCommitments` resolves.
+- ✅ **`#W15-20`** — the H3 approved-bypass `acceptedCostMicrocents` omission; reverting it leaves the suite green.
 - ✅ **`#W15-21`** — `agent-run.ts`'s `attachConservativeWriter`; deleting it silently breaks every capped
   `agent run`.
 
