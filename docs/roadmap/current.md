@@ -264,8 +264,8 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 > **The implementation is staged, and starts here.** In order, because each step is a precondition for the
 > next:
 >
-> 1. `packages/shared/src/run-event.ts` — the event schema, its union arm, and `parseStoredRunEvent`. Until
->    this lands nothing else compiles.
+> 1. `packages/shared/src/run-event.ts` — `cost:attempt_settled`'s schema, its union arm, and
+>    `parseStoredRunEvent`. Until this lands nothing else compiles.
 > 2. `docs/reference/contracts/sse-event-schema.md` — the canonical shape + which of the two cost events is
 >    authoritative (ADR-0076's last Negative names that drift risk).
 > 3. `packages/db/src/run-history-store.ts` — the `applyDerived` arm writing the `run_costs` row in the SAME
@@ -280,6 +280,12 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 >
 > The break-verify that matters most is step 4's ordering: deleting the `await` must redden a test, or the
 > ledger records the charge without the guarantee that makes it one.
+>
+> **What ADR-0076 explicitly does NOT close**, so it is not read as more than it is: the cost of a TOOL EFFECT.
+> A resumed run can still re-execute an `http_request` POST, a `run_command` or an MCP mutation — the
+> duplicate EFFECT is the harm, and no cost bookkeeping prevents it. That needs a durable effect journal with
+> a prepare/receipt pair, which is a different decision about a different failure and earns its own ADR. It is
+> the natural next one after this chain (forward-compatibility → conservative commitment → realized cost).
 >
 > Two decisions inside the closed set are worth surfacing here rather than leaving in a commit message.
 > `#W15-4` **changed a previously-tested behaviour**: #228 pinned that a session survives a failed durable

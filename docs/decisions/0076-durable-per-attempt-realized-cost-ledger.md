@@ -22,15 +22,36 @@ There is also an accounting consequence independent of the cap. `run_costs` is p
 
 ## Decision
 
-**Add an additive, durable run event recording one settled provider attempt's realized charge, emitted through the same durability barrier ADR-0074 §2 uses, and folded into a `run_costs` row at persist time.**
+**Add an additive, durable run event — `cost:attempt_settled` — recording one settled provider attempt's realized charge, emitted through an awaited durable write, and folded into a `run_costs` row at persist time.**
+
+The name pairs with its estimate twin: `budget:estimate_committed` records an amount that MIGHT have been billed, `cost:attempt_settled` records one that WAS, per attempt. It reuses the admission vocabulary (`settle`, `settleAtReservedEstimate`) deliberately, because a settled admission is exactly the moment it is emitted.
 
 The event carries the attempt's identity (node, model, the within-chain attempt index), its realized `costMicrocents` and token counts, the run-wide cumulative *after* it, and whether it could be priced. Its exact Zod shape and envelope rules have one canonical home in [sse-event-schema.md](../reference/contracts/sse-event-schema.md) and [run-event.ts](../../packages/shared/src/run-event.ts); this ADR decides that it exists, when it is written, and what it means.
 
 Three properties make it a ledger rather than another observation:
 
-1. **Written before the next thing that can spend or mutate.** It goes through the engine's durable-emit choke point, and the attempt boundary awaits it — before the next tool side effect, before the next egress, and before the node/turn terminal. A durability failure fails the active owner loudly, exactly as ADR-0074 §2 decided for its estimate twin; surfacing it on a later unrelated node is the misattribution that barrier exists to prevent.
+1. **Written before the next thing that can spend or mutate.** It goes through the engine's `#emitDurable` choke point, and the attempt boundary AWAITS that call — before the next tool side effect, before the next egress, and before the node/turn terminal. A durability failure fails the active owner loudly, exactly as ADR-0074 §2 decided for its estimate twin; surfacing it on a later unrelated node is the misattribution that barrier exists to prevent.
+
+   **The mechanism is the awaited emit itself, NOT a §2-style queue-and-flush**, and the difference is worth stating so it is not rebuilt by mistake. §2 needs `flushBudgetCommitments` because a conservative commitment is emitted fire-and-forget from inside the governor, so something has to join the outstanding writes at the turn boundary. A settled attempt is emitted by the engine at the point it settles, on the path that is about to continue — so awaiting `#emitDurable` there IS the barrier, and it is total for store faults (it absorbs a `persistEvent` rejection into the run's failure state and resolves, so the await cannot hang). Adding a second queue would introduce the very concurrency the await removes.
 2. **Idempotent by construction, not by a new key.** `run_events` carries `UNIQUE(run_id, seq)` and the derived `run_costs` row is written in the SAME transaction as its event (ADR-0074 §5's persist path). Re-persisting an attempt is therefore impossible rather than merely discouraged, and a resume READS the log rather than re-emitting it, so replay adds nothing. No second uniqueness key is introduced, because a second key is a second thing that can disagree.
 3. **It does not double-count.** The `node:completed` delta fold is `max(0, cumulative − sum(run_costs so far))`. Once the attempt rows have advanced that sum to the node's cumulative, the terminal's delta is zero by arithmetic — the telescoping is self-correcting, and ADR-0070's `SUM(run_costs) == runs.total_cost_microcents` continues to hold without a special case. The terminal row is still written, because it carries the node's token totals and its `node_id` attribution.
+
+### Scope: the RUN path only, and why that is not an omission
+
+`cost:updated` is dual-envelope, so the obvious question is whether this event needs a session arm. It does
+not, and the reason is that **the session path already has this ledger**: `persister.ts` writes
+`recordSessionCost` on every `cost:updated`, carrying the PER-ATTEMPT increment — not a cumulative snapshot —
+into `session_costs` and `agent_sessions` under ADR-0070. Since `#W15-4` that write is also latched, and a
+failure gates further egress. So a chat session already records what it spent, per attempt, before it spends
+again. This ADR closes the RUN path's equivalent gap; the asymmetry it removes is the one ADR-0074 §4 removed
+in the other direction, and after both the two surfaces state the same guarantee.
+
+**Explicitly out of scope: the cost of a TOOL effect.** This ledger covers provider egress. A tool that
+mutates the world — an `http_request` POST, a `run_command`, an MCP call — can still be re-executed by a
+resume, and no amount of cost bookkeeping prevents that; the duplicate EFFECT is the harm, not its price. That
+needs a durable effect journal with a prepare/receipt pair, which is a different decision about a different
+failure, and it earns its own ADR. Named here so the reader does not read "realized cost is now durable" as
+"a resume cannot repeat work".
 
 Considered and rejected:
 
