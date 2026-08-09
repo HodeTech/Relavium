@@ -425,6 +425,27 @@ the review of `#W15-16`, fixed with it, and now the signal that test drives.
   `llm-provider-seam.md` still claims model-discovery/media-poll keep a small SDK retry; ADR-0028's amendment
   note still says ADR-0074 §2–§5 have not landed. Each could send a future reader back toward a #91-class hole.
 
+### Phase 2.6.5 — Core reliability remediation (before Wave 2)
+
+Three independent core reviews of the post-Wave-1 tree converged — independently — on the **same seven blocking
+gaps**: effect journal, stdio MCP consent-before-spawn, run lease, compaction trust elevation, stream grammar,
+input admission, event-log ordering. Three separate reviews landing on the same seven points is not opinion.
+
+The full, self-contained work list is
+[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — 40 items
+(`CR-01`…`CR-95`) with evidence, fix and acceptance criteria for each, written so the work can be done from that
+document alone.
+
+Two things it changes about the plan below:
+
+- **Wave 2 is amended, not replaced.** Its MCP timeout/SSRF/ingress cluster stays; `CR-16`
+  (consent before a stdio MCP spawn) is added to it as a P0 in the same code area.
+- **Its seven P0 items are ADR-first**, in dependency order — an effect journal is meaningless while two
+  processes can own one run, and run ownership rests on the log being an ordered prefix.
+
+Three items are already half-closed by Wave 1 and finish first (`CR-01`–`CR-03`); `CR-03` is a propagation gap
+from `#W15-10`'s own fix — three `--json` paths never got the safe serializer.
+
 ### Wave 2 — Shut the doors
 
 The two named live security holes, one unified filesystem jail, the secrets layer under test — then
