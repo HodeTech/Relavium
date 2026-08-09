@@ -244,7 +244,7 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 **Every item names the check that would close it, not just the defect.**
 
 > **Status, 2026-08-09 — 23 of 24 closed.** Everything marked ✅ below is fixed,
-> break-verified with the mutation confirmed applied, and committed on `development`. §E's six coverage gaps
+> break-verified with the mutation confirmed applied, and **merged to `main` via PR #81** (2026-08-09). §E's six coverage gaps
 > are all closed — `#W15-16`'s composition test fails by TIMING OUT when the abort listener is removed, which
 > is the unkillable run reproduced exactly rather than an assertion standing in for it.
 >
