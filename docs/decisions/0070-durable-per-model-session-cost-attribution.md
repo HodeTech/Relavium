@@ -18,6 +18,12 @@
 - **Forward**: 2.6.Q's pricing-enrichment decision (the models.dev tier + the strict cost cap, F5) will be **ADR-0071**;
   §6 is written so it needs no schema re-open, and §3 files exceptions 1–2 against it.
 
+> **Amended 2026-08-09 by [ADR-0076](0076-durable-per-attempt-realized-cost-ledger.md) — an addition, not a
+> change.** `run_costs` gains a second writer: a durable per-ATTEMPT realized-cost row, beside the per-node
+> delta this ADR established. The `SUM(run_costs) == runs.total_cost_microcents` invariant is unchanged and
+> continues to hold by arithmetic — the node terminal's delta is `max(0, cumulative − sum so far)`, so once the
+> attempt rows have advanced that sum the terminal contributes zero. No reconciliation step, no second key.
+
 ## Context
 
 2.6.C promises a **per-model `/cost` breakdown**. Today `/cost` is one line off in-memory state — `costNotice()` ([repl-info.ts](../../apps/cli/src/chat/repl-info.ts) L15–17), wired at [chat.ts](../../apps/cli/src/commands/chat.ts) L1098–1100 — and in the bare Home it is inert (`showCost: () => undefined`, [home-controller.ts](../../apps/cli/src/render/tui/home-controller.ts) L932). There is nothing durable to render a breakdown *from*.
