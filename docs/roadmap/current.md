@@ -206,16 +206,18 @@ are named in their lane and marked in the source, and neither is a shipped defec
 > with §4's fold and reads *estimated, possibly billed*, with `(no completed call)` for a model that has one
 > without a completed call. All three are mutation-verified.
 >
-> **Release: exposed, not reachable.** `GovernorWiring.releaseConservativeCommitments()` exists and is tested,
-> and it landed in the same commit that persisted the session total — the obligation this note previously
-> stated. But **no slash command or affordance calls it**, so a user cannot actually clear a commitment. The
-> workflow surface is unaffected (a run is not long-lived, and `on_exceed: pause_for_approval`'s per-node bypass
-> or raising the YAML cap are §1's own analogy). The **chat** surface is where the gap bites: its total is now
-> durable and restored on every resume, so the accidental escape a restart used to provide is gone and the
-> deliberate one is one wiring step away. That step is the remaining work, and it needs the reserved
-> `budget:estimate_released` event to make the release itself survive a resume — otherwise a released
-> commitment simply returns on the next `chat-resume`. §2's dated note in
-> [ADR-0074](../decisions/0074-durable-conservative-budget-commitments.md) has the full statement.
+> **Release: reachable, as of `#W15-3` (2026-08-09).** `/cost --release` on the chat surface — the one that
+> renders the amount, which is what §1 ties it to — clears the durable per-model and aggregate columns first
+> and the live governor second, so a released commitment does not return on the next `chat-resume`. `/cost`
+> also renders the durability state. This note previously said no affordance called it; that was true and no
+> longer is.
+>
+> The reserved `budget:estimate_released` event stays **reserved and unemitted**, and that is a decision, not
+> an omission: the session path restores its conservative total from COLUMNS rather than by replaying events,
+> so zeroing them is what makes the release durable there. The event is needed only by a workflow-run release
+> surface, which does not exist — a run is not long-lived, and `on_exceed: pause_for_approval`'s per-node
+> bypass or raising the YAML cap are §1's own analogy. §1's dated note in
+> [ADR-0074](../decisions/0074-durable-conservative-budget-commitments.md) carries the same statement.
 
 ### PR #81's closing list, and the two items that need an ADR
 
@@ -236,18 +238,18 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 
 **Every item names the check that would close it, not just the defect.**
 
-> **Status, 2026-08-09 — 22 of 24 closed; §B–§F are DONE.** Everything marked ✅ below is fixed,
+> **Status, 2026-08-09 — 23 of 24 closed.** Everything marked ✅ below is fixed,
 > break-verified with the mutation confirmed applied, and committed on `development`. §E's six coverage gaps
 > are all closed — `#W15-16`'s composition test fails by TIMING OUT when the abort listener is removed, which
 > is the unkillable run reproduced exactly rather than an assertion standing in for it.
 >
-> **What is left is §A only, and it is not a fix that was skipped.** `#W15-1` and `#W15-2` each need an
-> append-only ADR before any code — one changes what "spent" means across a crash, the other supersedes a
-> decision ADR-0074 §5 already recorded — and each earns its own PR. `#W15-2` lands FIRST: `#W15-1` adds a new
-> durable event type, and an older binary reading it falls straight into §5's skip path, so `#W15-2`'s decision
-> governs how `#W15-1`'s event is read. Maintainer decision, 2026-08-09: fail closed on ANY skipped row on the
-> resume path (read-only surfaces stay tolerant), and the ledger is a new durable run event folded into a
-> `run_costs` row.
+> **`#W15-2` closed 2026-08-09** as [ADR-0075](../decisions/0075-fail-closed-resume-on-an-unreadable-event-log.md),
+> amending ADR-0074 §5: a read that feeds a REPLAY refuses when any row was skipped, a read that feeds a
+> DISPLAY stays tolerant. It landed first on purpose — `#W15-1` adds a new durable event type, and an older
+> binary reading it falls straight into §5's skip path, so this decision governs how that event degrades.
+>
+> **`#W15-1` is what remains**: a durable per-attempt realized-cost ledger, which changes what "spent" means
+> across a crash. Maintainer decision, 2026-08-09: a new durable run event folded into a `run_costs` row.
 >
 > Two decisions inside the closed set are worth surfacing here rather than leaving in a commit message.
 > `#W15-4` **changed a previously-tested behaviour**: #228 pinned that a session survives a failed durable
@@ -266,7 +268,7 @@ Ordered by whether the repo currently states something untrue, then by blast rad
   the CONSERVATIVE commitment durable; a call that returned trustworthy usage has no equivalent barrier.
   *Needs an ADR: an idempotent per-attempt durable ledger, written before the next tool side-effect, the next
   egress and the turn/node terminal. Not a local fix — it changes what "spent" means across a crash.*
-- **`#W15-2` (blocker) — a tolerant read is fail-OPEN on the resume path.** ADR-0074 §5 drops an event whose
+- ✅ **`#W15-2` (blocker) — a tolerant read is fail-OPEN on the resume path.** ADR-0074 §5 drops an event whose
   `type` an older binary does not know, and `checkpointer.ts` builds resumable state from what remains. An
   older binary cannot know whether the dropped row was a node terminal, a job submission, a gate decision or a
   cost commitment — so it may re-run completed or already-submitted work. Preserving the sequence high-water
@@ -282,9 +284,10 @@ Ordered by whether the repo currently states something untrue, then by blast rad
   `GovernorWiring.releaseConservativeCommitments` and `conservativeState()` exist and are tested; no command,
   REPL action or Home affordance calls either. §1 requires the surface that RENDERS the amount to also expose
   clearing it, and this PR removed the accidental escape a restart used to provide.
-  *Closes when: a reachable `/budget release` (or `/cost --release`), `/cost` showing the durability state, a
-  durable `budget:estimate_released` so the release survives `chat-resume`, per-model AND aggregate decrement,
-  and a resume test proving a released commitment does not come back.*
+  *Closed by `/cost --release`: `/cost` renders the durability state, and the release clears the per-model AND
+  aggregate columns before the live governor, so it survives `chat-resume`. The durable
+  `budget:estimate_released` named here was NOT needed — the session path restores from columns, not from an
+  event replay — so it stays reserved; see the lane-(e) note above.*
 
 #### C. PR #81 — data integrity, each with a concrete failure
 

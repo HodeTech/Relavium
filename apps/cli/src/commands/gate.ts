@@ -11,6 +11,7 @@ import {
 import {
   createRunHistoryStore,
   isCorruptRunEventError,
+  isUnreadableRunEventLogError,
   loadRunSnapshot,
   type Db,
 } from '@relavium/db';
@@ -210,6 +211,14 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     try {
       checkpoint = await checkpointer.load(args.runId);
     } catch (err) {
+      // ADR-0075's refusal passes through UNTOUCHED. This catch pre-dates it and would otherwise fold a
+      // "your Relavium is too old" into the generic branch below: the user would get no count, no `seq`
+      // values, no upgrade remedy, no "your history is still readable" — and exit 2 (`invalid_invocation`),
+      // which is semantically wrong, since the invocation was valid. `toUserFacing` already renders this
+      // error properly; re-wrapping it here made that mapper unreachable.
+      if (isUnreadableRunEventLogError(err)) {
+        throw err;
+      }
       // A malformed run_events row (bad JSON / failed schema parse during the fold) — surface a corrupt log
       // as a clean exit-2 fault, matching the snapshot/inputs handling, never a raw escaping error. When the
       // store could name the row (the typed `CorruptRunEventError`), say WHICH row: this catch pre-dates that

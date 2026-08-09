@@ -33,7 +33,7 @@ export interface GateListCommandDeps {
  * The `relavium gate list [<runId>]` core (**2.I**) — list the pending human gates across all paused runs, or
  * of one run, so an operator can pick the `gateId` to pass to `relavium gate <runId> --gate <gateId>` (the
  * multi-gate discovery surface the 2.G `gate` command's `--gate` requirement points at). It rests on the SAME
- * `pendingHumanGates` reconstruction the resume path uses, so the two can never disagree; budget gates are
+ * `pendingHumanGates` reconstruction the resume path uses, so the two cannot disagree on the FOLD (they deliberately differ on the READ — ADR-0075 makes the resume refuse a log a display still shows, so a discovery surface may list a gate `relavium gate` will decline); budget gates are
  * excluded (that is `relavium budget resume`). An unknown `runId` is an invalid invocation (exit `2`).
  */
 export function gateListCommand(args: GateListCommandArgs, deps: GateListCommandDeps): ExitCode {

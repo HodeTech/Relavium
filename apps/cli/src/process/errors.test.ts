@@ -1,4 +1,4 @@
-import { CorruptRunEventError } from '@relavium/db';
+import { CorruptRunEventError, UnreadableRunEventLogError } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
 import { CliError, isCliError, toUserFacing } from './errors.js';
@@ -61,6 +61,20 @@ describe('toUserFacing', () => {
     expect(projected.message).toContain('42');
     expect(projected.message).toContain('node:started');
     expect(projected.message).not.toContain('bad body'); // the cause stays out of primary output
+  });
+
+  it('distinguishes "your binary is too old" from "the data is damaged" (ADR-0075)', () => {
+    // The two errors deserve different sentences because they have different remedies: corruption is not
+    // repaired by upgrading, and a version gap is not repaired by restoring a backup. Projecting both as one
+    // generic fault is what made the refusal indistinguishable from data loss.
+    const projected = toUserFacing(new UnreadableRunEventLogError('run-9', [3, 4]));
+    expect(projected.code).toBe('internal');
+    // Exit 1: the resume genuinely did not happen. NOT exit 2 — the invocation was valid.
+    expect(projected.exitCode).toBe(EXIT_CODES.workflowFailed);
+    expect(projected.message).toContain('run-9');
+    expect(projected.message).toContain('seq 3, 4');
+    expect(projected.message).toContain('Upgrade'); // the remedy the user can actually perform
+    expect(projected.message).toContain('still readable'); // …and what is NOT lost
   });
 
   it('maps an unknown throw to a generic internal error without leaking detail', () => {

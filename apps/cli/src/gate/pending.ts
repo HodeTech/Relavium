@@ -14,7 +14,7 @@ export interface PendingGate {
 /**
  * The human gates still pending on a run, derived from its persisted event log — the same authoritative
  * reconstruction `relavium gate` resumes from (`reconstructCheckpointState`), so `gate list`/`status` and the
- * resume path can never disagree on what is pending. Budget gates (`isBudgetGate`) are excluded — those are the
+ * resume path cannot disagree on the FOLD (they deliberately differ on the READ — ADR-0075 makes the resume refuse a log a display still shows, so a discovery surface may list a gate `relavium gate` will decline) on what is pending. Budget gates (`isBudgetGate`) are excluded — those are the
  * `relavium budget resume` surface (ADR-0028), not human gates. Each pending gate's display detail (`gateType`,
  * `message`, `expiresAt`) comes from its own `human_gate:paused` event, so an operator sees what to resolve.
  */

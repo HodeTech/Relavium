@@ -3,7 +3,12 @@ import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
-import { CorruptRunEventError, isCorruptRunEventError } from './run-history-store.js';
+import {
+  CorruptRunEventError,
+  isCorruptRunEventError,
+  isUnreadableRunEventLogError,
+  UnreadableRunEventLogError,
+} from './run-history-store.js';
 import { runCosts, runEvents, runs, stepExecutions, workflows } from './schema.js';
 import {
   createRunHistoryReader,
@@ -926,8 +931,13 @@ describe('createRunHistoryReader', () => {
       // counter from the fold's `lastSequenceNumber + 1`. Fold only the readable events and a dropped TAIL row
       // lowers that mark, the resumed run re-uses a taken `seq`, `UNIQUE(run_id, seq)` rejects the write, and the
       // engine settles `run:failed` — a run that merely needed a newer binary becomes terminally unresumable.
-      // Asserted at this layer because `packages/db` must not depend on `packages/core`; the fold itself is
-      // covered in `apps/cli/src/engine/checkpointer.test.ts`.
+      // Asserted at this layer because `packages/db` must not depend on `packages/core`.
+      //
+      // The rationale ABOVE is history now, and kept for it: resume no longer seeds a counter from a fold that
+      // can contain skipped rows, because ADR-0075 made it REFUSE such a log outright
+      // (`loadRunEventLogForReplay`, covered in the block below and in
+      // `apps/cli/src/engine/checkpointer.test.ts`, whose counterpart test now asserts the refusal). The
+      // `skipped[].sequenceNumber` column contract is still worth pinning — `logs` reports it as a note.
       const store = storeFor('wf');
       const workflowId = await store.resolveWorkflowId('wf');
       const ts = new Date(TS_MS).toISOString();
@@ -947,6 +957,144 @@ describe('createRunHistoryReader', () => {
         foldedMax,
       );
       expect(trueMax).toBe(2); // what is actually stored — the number resume must not collide with
+    });
+
+    describe('loadRunEventLogForReplay — the strict read (ADR-0075)', () => {
+      /** Seed a run whose log has one row this binary cannot interpret, at `skipSeq`. */
+      async function seedWithSkip(runId: string, skipSeq: number): Promise<void> {
+        const store = storeFor('wf');
+        const workflowId = await store.resolveWorkflowId('wf');
+        await store.persistEvent(
+          evRun(runId, 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, TS),
+        );
+        insertRaw(runId, skipSeq, 'test:never_a_real_event', {
+          type: 'test:never_a_real_event',
+          runId,
+          sequenceNumber: skipSeq,
+        });
+        // A readable row AFTER the skipped one, so the skip is genuinely mid-log: it cannot corrupt the
+        // sequence high-water mark, which is the case that distinguishes ADR-0075's rule from the tail-only
+        // one the removed repair needed.
+        await store.persistEvent(
+          evRun(runId, 'node:started', skipSeq + 1, { nodeId: 'n1', nodeType: 'agent' }, TS),
+        );
+      }
+
+      it('refuses a MID-LOG skip, not only a tail one', async () => {
+        // ADR-0075 decides "any row was skipped", which is strictly wider than the tail-only rule the
+        // sequence high-water mark used to need. A mid-log row is the case that distinguishes them: it
+        // cannot corrupt the mark at all, and it is exactly the row whose LOSS is dangerous — it could have
+        // been a node terminal or a job submission.
+        await seedWithSkip('run-mid', 1);
+        expect(() => reader.loadRunEventLogForReplay('run-mid')).toThrow(
+          UnreadableRunEventLogError,
+        );
+      });
+
+      it('names the RUN and the skipped seq, and points at the remedy', async () => {
+        await seedWithSkip('run-named', 9);
+        try {
+          reader.loadRunEventLogForReplay('run-named');
+          expect.unreachable('the strict read must refuse');
+        } catch (err) {
+          if (!isUnreadableRunEventLogError(err)) throw err;
+          expect(err.runId).toBe('run-named');
+          expect(err.skippedSequenceNumbers).toEqual([9]);
+          expect(err.message).toContain('run-named'); // the run id, not just the count
+          expect(err.message).toContain('seq 9');
+          expect(err.message).toContain('Upgrade'); // the remedy — the whole reason this type is distinct
+        }
+      });
+
+      it('BOUNDS the seq list — a run under a much newer binary can skip thousands', async () => {
+        const store = storeFor('wf');
+        const workflowId = await store.resolveWorkflowId('wf');
+        await store.persistEvent(
+          evRun(
+            'run-many',
+            'run:started',
+            0,
+            { workflowId, inputs: {}, executionMode: 'local' },
+            TS,
+          ),
+        );
+        for (let seq = 1; seq <= 12; seq += 1) {
+          insertRaw('run-many', seq, 'test:never_a_real_event', {
+            type: 'test:never_a_real_event',
+            runId: 'run-many',
+            sequenceNumber: seq,
+          });
+        }
+        try {
+          reader.loadRunEventLogForReplay('run-many');
+          expect.unreachable('the strict read must refuse');
+        } catch (err) {
+          if (!isUnreadableRunEventLogError(err)) throw err;
+          expect(err.skippedSequenceNumbers).toHaveLength(12); // the field keeps them all…
+          expect(err.message).toContain('12 events');
+          expect(err.message).toContain('seq 1, 2, 3, 4, 5, 6, 7, 8, …'); // …the MESSAGE elides
+          expect(err.message).not.toContain(', 9,');
+        }
+      });
+
+      it('lets CORRUPTION win over a skip — the two are different answers', async () => {
+        // A damaged row means upgrading will not help; a skipped row means it will. If a damaged row is read
+        // first, that is the truth the user needs, and the strict read must not relabel it.
+        const store = storeFor('wf');
+        const workflowId = await store.resolveWorkflowId('wf');
+        await store.persistEvent(
+          evRun(
+            'run-both',
+            'run:started',
+            0,
+            { workflowId, inputs: {}, executionMode: 'local' },
+            TS,
+          ),
+        );
+        insertRaw('run-both', 1, 'node:started', { type: 'node:started', nodeId: 42 }); // damaged
+        insertRaw('run-both', 2, 'test:never_a_real_event', {
+          type: 'test:never_a_real_event',
+          runId: 'run-both',
+          sequenceNumber: 2,
+        });
+        expect(() => reader.loadRunEventLogForReplay('run-both')).toThrow(CorruptRunEventError);
+      });
+
+      it('includes the STREAMING firehose, so no persisted row can be silently absent', async () => {
+        // `{ streamingIncluded: true }` is load-bearing: the display read excludes `agent:*` for speed, and a
+        // replay read that inherited that would fold a log missing rows it never even counted as skipped.
+        const store = storeFor('wf');
+        const workflowId = await store.resolveWorkflowId('wf');
+        await store.persistEvent(
+          evRun(
+            'run-fire',
+            'run:started',
+            0,
+            { workflowId, inputs: {}, executionMode: 'local' },
+            TS,
+          ),
+        );
+        await store.persistEvent(
+          evRun('run-fire', 'agent:token', 1, { nodeId: 'n1', token: 'hi', model: 'm' }, TS),
+        );
+        // Present in the replay read; ABSENT from the state read, which is the difference being pinned.
+        expect(reader.loadRunEventLogForReplay('run-fire').map((e) => e.type)).toEqual([
+          'run:started',
+          'agent:token',
+        ]);
+        expect(reader.loadRunStateEvents('run-fire').map((e) => e.type)).toEqual(['run:started']);
+      });
+
+      it('returns the events unchanged when nothing was skipped', async () => {
+        const store = storeFor('wf');
+        const workflowId = await store.resolveWorkflowId('wf');
+        await store.persistEvent(
+          evRun('run-ok', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, TS),
+        );
+        expect(reader.loadRunEventLogForReplay('run-ok').map((e) => e.type)).toEqual([
+          'run:started',
+        ]);
+      });
     });
 
     it('THROWS when the payload disagrees with the authoritative columns (#W15-5)', async () => {

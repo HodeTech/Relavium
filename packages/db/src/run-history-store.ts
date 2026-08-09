@@ -234,7 +234,7 @@ export function isUnreadableRunEventLogError(value: unknown): value is Unreadabl
  * Constructed from a db handle alone ({@link createRunHistoryReader}) — no `deps.workflow`, since the reads
  * span every workflow (the same standalone-read rationale as {@link loadRunSnapshot}, which the
  * workflow-scoped {@link createRunHistoryStore} can't satisfy for a cross-workflow listing).
- * {@link RunHistoryStore} re-exposes the first three (the writer also reads back its own event log).
+ * {@link RunHistoryStore} re-exposes the read members listed in its own `Pick` (the writer also reads back its own event log).
  */
 export interface RunHistoryReader {
   /**
