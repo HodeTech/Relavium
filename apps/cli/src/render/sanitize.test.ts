@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { sanitizeUntrusted, sanitizeUntrustedInline, stringifyJsonLine } from './sanitize.js';
+import {
+  sanitizeUntrusted,
+  sanitizeUntrustedInline,
+  stringifyJsonLine,
+  stripTerminalControls,
+} from './sanitize.js';
 
 /**
  * The redacting sanitizer for text this process did NOT author (#W15-8) — a rejection message, a provider
@@ -44,19 +49,27 @@ describe('sanitizeUntrusted — the failure paths carry arbitrary text (#W15-8)'
     expect(sanitizeUntrusted(split)).toContain('[REDACTED]');
   });
 
-  it('does NOT redact a newline-split credential — a KNOWN limitation, pinned so it is not mistaken for safe', () => {
-    // The case that misled the earlier reasoning: a newline is COLLAPSED to a space, not removed, so the
-    // halves never become contiguous and NEITHER order redacts. The contiguous key never appears — which is
-    // all the previous assertion checked, and why it read as a pass.
-    //
-    // But the secret SUFFIX is still printed, so this is an exposure, not a clean miss. It is pinned as the
-    // current behaviour rather than asserted away, because closing it means teaching the shared `scrubSecrets`
-    // to match across a separator — which broadens a redactor every surface depends on, and risks destroying
-    // ordinary diagnostics. That trade is a change to `@relavium/llm`, not a local edit here.
+  it('REDACTS a credential split across a newline, which the in-place pass cannot see', () => {
+    // Unlike the control bytes the strip REMOVES, a newline is display-significant and is COLLAPSED to a
+    // space — so the halves never become contiguous and the in-place pass sees nothing. The public
+    // `sk-ant-…` prefix was never the issue; the secret SUFFIX was, and it used to be printed.
     const key = join('sk-', 'ant-', 'api03-', 'AbCdEf0123456789xyz');
     const out = sanitizeUntrustedInline(`${key.slice(0, 12)}\n${key.slice(12)}`);
-    expect(out).not.toContain(key); // the contiguous form is gone…
-    expect(out).toContain('0123456789xyz'); // …but the suffix is NOT. Documented, not fixed.
+    expect(out).not.toContain('0123456789xyz'); // the part that matters
+    expect(out).toContain('[REDACTED]');
+  });
+
+  it('leaves ordinary multi-word diagnostics alone — the coarse fallback must not fire on prose', () => {
+    // The fallback redacts the WHOLE text when it fires, so a false positive costs a diagnostic. These are
+    // the shapes that must NOT trip it.
+    for (const msg of [
+      'ENOENT: no such file or directory',
+      'database is locked\nretrying in 250ms',
+      'rate limited by the provider, retry after 30s',
+      'node deploy-prod failed\n  at step 2 of 5',
+    ]) {
+      expect(sanitizeUntrusted(msg)).toBe(stripTerminalControls(msg));
+    }
   });
 
   it('still removes terminal control bytes, so it is a superset of the old behaviour', () => {

@@ -90,13 +90,36 @@ export function sanitizeInline(text: string): string {
  * is arbitrary and the cost of a false positive is a `[redacted]` in a diagnostic rather than a leaked key.
  */
 export function sanitizeUntrusted(text: string): string {
-  return scrubSecrets(stripTerminalControls(text));
+  return redactIncludingAcrossSeparators(stripTerminalControls(text));
 }
 
 /** {@link sanitizeUntrusted}, collapsed to one row — for a one-line notice. Same normalize-then-redact order:
  *  `sanitizeInline` is the normalization (strip + collapse), so the scrub sees the final text. */
 export function sanitizeUntrustedInline(text: string): string {
-  return scrubSecrets(sanitizeInline(text));
+  return redactIncludingAcrossSeparators(sanitizeInline(text));
+}
+
+/**
+ * Redact `normalized`, INCLUDING a credential split across whitespace.
+ *
+ * The ordinary pass replaces a contiguous match in place, which is what almost every case is. What it cannot
+ * see is a key broken by a newline or a tab: unlike the control bytes {@link stripTerminalControls} removes,
+ * those are display-significant, so normalization COLLAPSES them to a space rather than deleting them — and
+ * the halves never become contiguous for the matcher. The prefix (`sk-ant-…`) is public, so what leaked was
+ * the part that matters: the secret suffix.
+ *
+ * So when the in-place pass finds nothing, this asks a second question — is there a credential once the
+ * separators are gone? — and if so redacts the WHOLE text. Coarse on purpose: a boolean cannot locate the
+ * span, and this function's whole posture (see {@link sanitizeUntrusted}) is that the cost of a false
+ * positive is a `[REDACTED]` in a diagnostic, while the cost of a miss is a printed key. It stays out of the
+ * shared `scrubSecrets`, which every surface depends on and where the same broadening would put ordinary
+ * output at risk.
+ */
+function redactIncludingAcrossSeparators(normalized: string): string {
+  const scrubbed = scrubSecrets(normalized);
+  if (scrubbed !== normalized) return scrubbed; // located and replaced in place — the common case
+  const joined = normalized.replace(/\s+/g, '');
+  return scrubSecrets(joined) === joined ? normalized : '[REDACTED]';
 }
 
 /**

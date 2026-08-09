@@ -91,7 +91,7 @@ A new durable event `type` is precisely the input ADR-0075 governs. Before it, a
 
 ### Positive
 
-- A crash mid-agent-loop no longer discards realized spend, and a resumed run no longer re-spends it. The cap survives the boundary it was previously blind to, which is what makes it a control rather than a heuristic.
+- A crash mid-agent-loop no longer discards realized spend: the charges already incurred survive for accounting and for the cap's next decision. A resumed run may still REPLAY the provider call and incur a new charge — that is the effect-duplication this ADR scopes out — but it now does so against a cap that remembers the first one, instead of one understated by exactly that amount. The cap survives the boundary it was previously blind to, which is what makes it a control rather than a heuristic.
 - Cost attribution becomes per-attempt and per-model on the run path, matching what ADR-0070 already gives sessions. "Why did this run cost that" becomes answerable from the durable log, including for a run that never reached a terminal.
 - A failed or cancelled run's realized cost is recorded as it is incurred rather than reconstructed from a terminal that may never arrive — the same class of gap `#W15-6` closed for the terminal snapshots, closed at its source.
 - The SUM invariant holds by arithmetic rather than by a new rule, so no reconciliation step and no second key.
