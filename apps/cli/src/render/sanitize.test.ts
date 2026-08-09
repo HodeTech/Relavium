@@ -44,12 +44,19 @@ describe('sanitizeUntrusted — the failure paths carry arbitrary text (#W15-8)'
     expect(sanitizeUntrusted(split)).toContain('[REDACTED]');
   });
 
-  it('does not leak when a NEWLINE splits it either — the near-miss that made the old order look safe', () => {
-    // Recorded because it is the case that misled the earlier reasoning: a newline is COLLAPSED to a space,
-    // not removed, so the halves never become contiguous and neither order redacts a usable key. That is why
-    // "I could not construct a case" was not evidence — only the REMOVED bytes rejoin.
+  it('does NOT redact a newline-split credential — a KNOWN limitation, pinned so it is not mistaken for safe', () => {
+    // The case that misled the earlier reasoning: a newline is COLLAPSED to a space, not removed, so the
+    // halves never become contiguous and NEITHER order redacts. The contiguous key never appears — which is
+    // all the previous assertion checked, and why it read as a pass.
+    //
+    // But the secret SUFFIX is still printed, so this is an exposure, not a clean miss. It is pinned as the
+    // current behaviour rather than asserted away, because closing it means teaching the shared `scrubSecrets`
+    // to match across a separator — which broadens a redactor every surface depends on, and risks destroying
+    // ordinary diagnostics. That trade is a change to `@relavium/llm`, not a local edit here.
     const key = join('sk-', 'ant-', 'api03-', 'AbCdEf0123456789xyz');
-    expect(sanitizeUntrustedInline(`${key.slice(0, 12)}\n${key.slice(12)}`)).not.toContain(key);
+    const out = sanitizeUntrustedInline(`${key.slice(0, 12)}\n${key.slice(12)}`);
+    expect(out).not.toContain(key); // the contiguous form is gone…
+    expect(out).toContain('0123456789xyz'); // …but the suffix is NOT. Documented, not fixed.
   });
 
   it('still removes terminal control bytes, so it is a superset of the old behaviour', () => {
@@ -80,7 +87,9 @@ describe('stringifyJsonLine — the --json branch had no Trojan-Source floor (#W
       const line = stringifyJsonLine({ message: 'a' + hostile + 'b' });
       // The point of the finding: the raw code point must not survive into the emitted line.
       expect(line).not.toContain(hostile);
-      expect(line).toContain('\\u' + hostile.codePointAt(0)!.toString(16).padStart(4, '0'));
+      const codePoint = hostile.codePointAt(0);
+      expect(codePoint).toBeDefined(); // no `!` — a bad fixture must fail HERE, not as a confusing miss below
+      expect(line).toContain('\\u' + (codePoint ?? 0).toString(16).padStart(4, '0'));
     }
   });
 

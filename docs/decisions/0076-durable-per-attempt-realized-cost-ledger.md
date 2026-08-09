@@ -32,8 +32,31 @@ Three properties make it a ledger rather than another observation:
 
 1. **Written before the next thing that can spend or mutate.** It goes through the engine's `#emitDurable` choke point, and the attempt boundary AWAITS that call — before the next tool side effect, before the next egress, and before the node/turn terminal. A durability failure fails the active owner loudly, exactly as ADR-0074 §2 decided for its estimate twin; surfacing it on a later unrelated node is the misattribution that barrier exists to prevent.
 
-   **The mechanism is the awaited emit itself, NOT a §2-style queue-and-flush**, and the difference is worth stating so it is not rebuilt by mistake. §2 needs `flushBudgetCommitments` because a conservative commitment is emitted fire-and-forget from inside the governor, so something has to join the outstanding writes at the turn boundary. A settled attempt is emitted by the engine at the point it settles, on the path that is about to continue — so awaiting `#emitDurable` there IS the barrier, and it is total for store faults (it absorbs a `persistEvent` rejection into the run's failure state and resolves, so the await cannot hang). Adding a second queue would introduce the very concurrency the await removes.
-2. **Idempotent by construction, not by a new key.** `run_events` carries `UNIQUE(run_id, seq)` and the derived `run_costs` row is written in the SAME transaction as its event (ADR-0074 §5's persist path). Re-persisting an attempt is therefore impossible rather than merely discouraged, and a resume READS the log rather than re-emitting it, so replay adds nothing. No second uniqueness key is introduced, because a second key is a second thing that can disagree.
+   **The mechanism is the awaited emit plus an explicit check, NOT a §2-style queue-and-flush.** §2 needs
+   `flushBudgetCommitments` because a conservative commitment is emitted fire-and-forget from inside the
+   governor, so something has to join the outstanding writes at the turn boundary. A settled attempt is
+   emitted by the engine at the point it settles, on the path that is about to continue, so no queue is
+   needed — and adding one would introduce the very concurrency the await removes.
+
+   But the await ALONE is not the barrier, and this is the implementation trap worth naming. `#emitDurable`
+   is **total for store faults**: a `persistEvent` rejection is absorbed into the run's failure state and the
+   promise RESOLVES. So a caller that only awaits it proceeds normally into the next tool effect or egress on
+   a run whose ledger write did not land — the exact thing this property exists to forbid. The attempt
+   boundary must therefore await AND observe the run's failure/abort state before dispatching anything
+   further, and a regression test must plant a rejecting `persistEvent` and assert that no subsequent side
+   effect runs. Changing `#emitDurable` to reject instead is NOT the fix: its totality is what keeps the
+   exactly-one-terminal-event invariant and stops an unhandled rejection escaping the fire-and-forget loop.
+2. **Idempotent by construction, not by a new key — and the boundary of that claim, stated.** `run_events`
+   carries `UNIQUE(run_id, seq)` and the derived `run_costs` row is written in the SAME transaction as its
+   event (ADR-0074 §5's persist path), so one emitted event cannot be recorded twice and a resume READS the
+   log rather than re-emitting it. No second uniqueness key is introduced, because a second key is a second
+   thing that can disagree.
+
+   What that does NOT cover, so it is not mistaken for more: a crash AFTER the ledger row commits but before
+   the engine acts on it. The resumed run re-dispatches the node and makes a **new** provider call, which is
+   a genuinely new charge and correctly gets its own row — the ledger is not double-counting a single charge,
+   it is recording two real ones. The duplicate the user experiences is the re-run itself, and no cost key
+   prevents that; preventing it is the effect-journal decision this ADR puts out of scope below.
 3. **It does not double-count.** The `node:completed` delta fold is `max(0, cumulative − sum(run_costs so far))`. Once the attempt rows have advanced that sum to the node's cumulative, the terminal's delta is zero by arithmetic — the telescoping is self-correcting, and ADR-0070's `SUM(run_costs) == runs.total_cost_microcents` continues to hold without a special case. The terminal row is still written, because it carries the node's token totals and its `node_id` attribution.
 
 ### Scope: the RUN path only, and why that is not an omission

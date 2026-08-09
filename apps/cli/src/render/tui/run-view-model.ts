@@ -425,6 +425,45 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
       };
 
     case 'run:completed':
+    case 'run:failed':
+    case 'run:cancelled':
+      // The three terminal arms live in `reduceTerminal` — each folds a durable cost snapshot onto BOTH the
+      // summary and the running total, and keeping them here pushed this switch past its complexity budget.
+      return reduceTerminal(base, event);
+    case 'run:paused':
+      return { ...base, summary: { outcome: 'paused', pausedGateIds: event.gateIds } };
+
+    case 'run:timeout':
+      // The engine emits run:timeout then settles the run with a terminal run:failed (run_timeout), which
+      // refines this summary with the closed error code. This descriptive summary is the FALLBACK that stands
+      // if (only) the timeout event is observed; the warning persists regardless of which arrives.
+      return {
+        ...base,
+        summary: {
+          outcome: 'failed',
+          errorMessage: `run timed out after ${event.elapsedMs}ms (limit ${event.timeoutMs}ms)`,
+        },
+        warnings: pushBounded(base.warnings, `run timed out (${event.elapsedMs}ms)`, MAX_WARNINGS),
+      };
+
+    default:
+      // Forward-compatible: a future RunEvent variant is reflected only in the seq/gap tracking above.
+      return base;
+  }
+}
+
+/**
+ * The three run terminals. Each carries the run-wide cost snapshot that is the ONLY durable record of money
+ * spent after the last node boundary (a sibling's abandoned paid media job is folded just before the
+ * terminal, ADR-0045 §5), so each folds it onto the summary AND the running total. Absent ⇒ the live total
+ * already on `base` stands (older logs omit it).
+ */
+function reduceTerminal(
+  base: RunViewState,
+  event: Extract<RunEvent, { type: 'run:completed' | 'run:failed' | 'run:cancelled' }>,
+): RunViewState {
+  switch (event.type) {
+    case 'run:completed':
       return {
         ...base,
         summary: {
@@ -474,25 +513,5 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
           ? {}
           : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
       };
-
-    case 'run:paused':
-      return { ...base, summary: { outcome: 'paused', pausedGateIds: event.gateIds } };
-
-    case 'run:timeout':
-      // The engine emits run:timeout then settles the run with a terminal run:failed (run_timeout), which
-      // refines this summary with the closed error code. This descriptive summary is the FALLBACK that stands
-      // if (only) the timeout event is observed; the warning persists regardless of which arrives.
-      return {
-        ...base,
-        summary: {
-          outcome: 'failed',
-          errorMessage: `run timed out after ${event.elapsedMs}ms (limit ${event.timeoutMs}ms)`,
-        },
-        warnings: pushBounded(base.warnings, `run timed out (${event.elapsedMs}ms)`, MAX_WARNINGS),
-      };
-
-    default:
-      // Forward-compatible: a future RunEvent variant is reflected only in the seq/gap tracking above.
-      return base;
   }
 }

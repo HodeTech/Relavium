@@ -211,30 +211,7 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     try {
       checkpoint = await checkpointer.load(args.runId);
     } catch (err) {
-      // ADR-0075's refusal passes through UNTOUCHED. This catch pre-dates it and would otherwise fold a
-      // "your Relavium is too old" into the generic branch below: the user would get no count, no `seq`
-      // values, no upgrade remedy, no "your history is still readable" — and exit 2 (`invalid_invocation`),
-      // which is semantically wrong, since the invocation was valid. `toUserFacing` already renders this
-      // error properly; re-wrapping it here made that mapper unreachable.
-      if (isUnreadableRunEventLogError(err)) {
-        throw err;
-      }
-      // A damaged row passes through typed too, for the SAME reason and to fix an asymmetry the reasoning
-      // above exposed: `relavium logs` on a corrupt log exits 1 (its typed error reaches `toUserFacing`),
-      // while `gate` on the IDENTICAL log exited 2 because this catch re-wrapped it as `invalid_invocation`.
-      // The invocation was valid in both. `toUserFacing`'s corrupt branch already composes the better
-      // sentence — the run, the `seq`, the `event_type`, and what is still listable — so re-wrapping made
-      // `gate` both less diagnosable and inconsistent with every other single-run surface.
-      if (isCorruptRunEventError(err)) {
-        throw err;
-      }
-      // Anything else from the fold: an unreadable file, a closed handle, a driver fault. Still a clean
-      // exit-2 invocation fault, matching the snapshot/inputs handling, never a raw escaping error.
-      throw new CliError(
-        'invalid_invocation',
-        `the persisted event log for run ${args.runId} could not be read`,
-        { cause: err },
-      );
+      throwGateLoadFault(err, args.runId);
     }
     if (checkpoint === undefined) {
       // A run row with a snapshot but no reconstructable checkpoint (no run:started in the log) — corrupt/partial.
@@ -466,4 +443,36 @@ function assertNoMaskedSecretInputs(inputs: Record<string, unknown>, runId: stri
         `cross-process resume cannot restore them — re-run the workflow instead of resuming.`,
     );
   }
+}
+
+/**
+ * Map a checkpoint-read fault to the surface error it deserves, and never return. Extracted from
+ * `gateCommand` so its three branches do not count against that function's cognitive-complexity budget —
+ * they belong together and nowhere else.
+ */
+function throwGateLoadFault(err: unknown, runId: string): never {
+  // ADR-0075's refusal passes through UNTOUCHED. This catch pre-dates it and would otherwise fold a
+  // "your Relavium is too old" into the generic branch below: the user would get no count, no `seq`
+  // values, no upgrade remedy, no "your history is still readable" — and exit 2 (`invalid_invocation`),
+  // which is semantically wrong, since the invocation was valid. `toUserFacing` already renders this
+  // error properly; re-wrapping it here made that mapper unreachable.
+  if (isUnreadableRunEventLogError(err)) {
+    throw err;
+  }
+  // A damaged row passes through typed too, for the SAME reason and to fix an asymmetry the reasoning
+  // above exposed: `relavium logs` on a corrupt log exits 1 (its typed error reaches `toUserFacing`),
+  // while `gate` on the IDENTICAL log exited 2 because this catch re-wrapped it as `invalid_invocation`.
+  // The invocation was valid in both. `toUserFacing`'s corrupt branch already composes the better
+  // sentence — the run, the `seq`, the `event_type`, and what is still listable — so re-wrapping made
+  // `gate` both less diagnosable and inconsistent with every other single-run surface.
+  if (isCorruptRunEventError(err)) {
+    throw err;
+  }
+  // Anything else from the fold: an unreadable file, a closed handle, a driver fault. Still a clean
+  // exit-2 invocation fault, matching the snapshot/inputs handling, never a raw escaping error.
+  throw new CliError(
+    'invalid_invocation',
+    `the persisted event log for run ${runId} could not be read`,
+    { cause: err },
+  );
 }
