@@ -41,12 +41,42 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
+import { sanitizeInline } from '../render/sanitize.js';
 import {
   assertWorkflowCatalogValid,
   driveRun,
   isTerminalOutcome,
   outcomeToExitCode,
 } from './drive.js';
+
+/** How many held node ids the ADR-0074 §3 hold notice names before it elides — the same bound-the-diagnostic
+ *  reasoning as `logs.ts`'s `MAX_REPORTED_SKIPS`: the COUNT is the signal, the first few ids are the lead. */
+const MAX_REPORTED_HELD_NODES = 8;
+
+/**
+ * The ADR-0074 §3 hold notice — a resumed media job submitted by an older Relavium has no recorded cost
+ * basis, so the cap holds new egress until it settles. Without the sentence a resume is an unexplained stall,
+ * which is precisely what §3's observability clause forbids.
+ *
+ * SANITIZED and BOUNDED, like every other place a node id reaches this terminal. A node id is authored rather
+ * than model-controlled, but `renderer.ts` runs `sanitizeInline` over one for the same reason — a workflow
+ * YAML can arrive from anywhere — and an unbounded id list is not a diagnostic: the COUNT is the signal and
+ * the first few ids are the lead (`logs.ts`'s `MAX_REPORTED_SKIPS`).
+ *
+ * Exported for its test. The engine sink that feeds it was DEAD until the wiring was fixed, so this line had
+ * never rendered in production and nothing pinned it.
+ */
+export function legacyMediaJobHoldNotice(nodeIds: readonly string[]): string {
+  const one = nodeIds.length === 1;
+  const subject = one ? 'a media job' : `${nodeIds.length} media jobs`;
+  const shown = nodeIds.slice(0, MAX_REPORTED_HELD_NODES).map((id) => sanitizeInline(id));
+  const ids = nodeIds.length > shown.length ? `${shown.join(', ')}, …` : shown.join(', ');
+  return (
+    `note: holding new model calls until ${subject} submitted by an older version of Relavium ` +
+    `settle${one ? 's' : ''} (node${one ? '' : 's'} ${ids}) — their cost was not ` +
+    `recorded, so the budget cap cannot be applied until then\n`
+  );
+}
 
 export interface GateCommandArgs extends GateFlags {
   readonly runId: string;
@@ -246,14 +276,11 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       // ADR-0074 §3: new egress is HELD while a resumed media job submitted by an older Relavium settles — its
       // cost basis was not recorded, so the cap cannot be trusted until the job reports its real charge. Say so,
       // or a resume looks like an unexplained stall. stderr, never stdout (`--json` stays a pure event stream).
+      // stderr, never stdout, so `--json` stays a pure event stream. The SENTENCE is
+      // {@link legacyMediaJobHoldNotice} so it can be pinned directly — this sink reached the terminal for the
+      // first time only when the engine wiring was fixed, and nothing had ever rendered it.
       onLegacyMediaJobHold: (nodeIds) => {
-        const one = nodeIds.length === 1;
-        const subject = one ? 'a media job' : `${nodeIds.length} media jobs`;
-        deps.io.writeErr(
-          `note: holding new model calls until ${subject} submitted by an older version of Relavium ` +
-            `settle${one ? 's' : ''} (node${one ? '' : 's'} ${nodeIds.join(', ')}) — their cost was not ` +
-            `recorded, so the budget cap cannot be applied until then\n`,
-        );
+        deps.io.writeErr(legacyMediaJobHoldNotice(nodeIds));
       },
       // 2.5.A (ADR-0055): wire the SAME read+write fs + process ToolHost the `relavium run` path wires, jailed
       // to the ORIGINAL run's project root (`saveToRoot` — the original `runs.project_root` when it still exists

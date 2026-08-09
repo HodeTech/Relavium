@@ -30,7 +30,13 @@ import { isCliError } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
-import { gateCommand, resolveSaveToRoot, selectGate, type GateCommandDeps } from './gate.js';
+import {
+  gateCommand,
+  legacyMediaJobHoldNotice,
+  resolveSaveToRoot,
+  selectGate,
+  type GateCommandDeps,
+} from './gate.js';
 
 /** A WorkflowEngine stub exposing only resumeFromCheckpoint — for the closed-handle / EngineStateError paths
  *  that the real engine can't be driven into deterministically (they need a concurrent-settle race). */
@@ -778,5 +784,45 @@ describe('resolveSaveToRoot (save_to scope root on resume)', () => {
 
   it('falls back to the resumer cwd when no project root was persisted (null — pre-column run)', () => {
     expect(resolveSaveToRoot(null, '/resumer/cwd')).toBe('/resumer/cwd');
+  });
+});
+
+/**
+ * ADR-0074 §3's hold notice. The engine sink that feeds it was DEAD — `WorkflowEngine` never read
+ * `onLegacyMediaJobHold` — so this sentence had never rendered in production and nothing pinned it. It is
+ * what stops a resumed run that is correctly holding from looking like an unexplained stall.
+ */
+describe('legacyMediaJobHoldNotice (ADR-0074 §3)', () => {
+  it('agrees in number for one held job', () => {
+    const line = legacyMediaJobHoldNotice(['gen']);
+    expect(line).toContain('until a media job submitted by an older version of Relavium settles');
+    expect(line).toContain('(node gen)');
+  });
+
+  it('agrees in number for several', () => {
+    const line = legacyMediaJobHoldNotice(['gen', 'clip']);
+    expect(line).toContain('until 2 media jobs submitted by an older version of Relavium settle ');
+    expect(line).toContain('(nodes gen, clip)');
+  });
+
+  it('SANITIZES a node id — a workflow YAML can arrive from anywhere', () => {
+    // The same treatment `renderer.ts` gives a nodeId. An embedded newline would forge a whole extra stderr
+    // row; an ANSI escape would reach the terminal intact.
+    const line = legacyMediaJobHoldNotice([`ge\u001b[31mn\nspoofed`]);
+    expect(line).not.toContain('\u001b');
+    expect(line.trimEnd()).not.toContain('\n'); // one row, and only the trailing newline this line owns
+  });
+
+  it('BOUNDS the id list — the count is the signal, the ids are the lead', () => {
+    const many = Array.from({ length: 12 }, (_, i) => `n${i}`);
+    const line = legacyMediaJobHoldNotice(many);
+    expect(line).toContain('12 media jobs');
+    expect(line).toContain('n0, n1, n2, n3, n4, n5, n6, n7, …');
+    expect(line).not.toContain('n8'); // elided, not printed
+  });
+
+  it('ends with exactly one newline, so stderr rows do not run together', () => {
+    expect(legacyMediaJobHoldNotice(['gen']).endsWith('\n')).toBe(true);
+    expect(legacyMediaJobHoldNotice(['gen']).trimEnd()).not.toContain('\n');
   });
 });

@@ -43,8 +43,12 @@ class StubExecutor implements NodeExecutor {
 function engineWith(
   handlers?: Readonly<Record<string, Handler>>,
   host?: ExecutionHost,
-  /** Extra `WorkflowEngineDeps` — the observability sinks a test needs to see what the governor decided. */
-  deps?: Partial<WorkflowEngineDeps>,
+  /**
+   * Extra `WorkflowEngineDeps` — the observability sinks a test needs to see what the governor decided.
+   * `host`/`executor` are OMITTED: the spread runs after them, so leaving them assignable would let a future
+   * caller silently override the second argument with no compiler error.
+   */
+  deps?: Partial<Omit<WorkflowEngineDeps, 'host' | 'executor'>>,
 ): WorkflowEngine {
   return new WorkflowEngine({
     host: host ?? createInMemoryHost(),

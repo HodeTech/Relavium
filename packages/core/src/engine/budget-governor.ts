@@ -534,6 +534,13 @@ export class BudgetGovernor {
       // Announce BEFORE the first await, once per wait — §3's observability clause. A silent hold presents
       // correct behaviour as an unexplained stall. Best-effort: a misbehaving notice sink must never turn a
       // budget check into a failure, which is the same posture `onUnpriced` takes below.
+      //
+      // NOT deduped, unlike `onUnpriced` — deliberately, and the asymmetry is the point. Unpriced is a
+      // STANDING CONDITION of a model, so repeating it every loop iteration would be noise. A hold is an
+      // EVENT against one attempted egress: each blocked attempt is a distinct thing the user is waiting on,
+      // and silently dropping the second one would leave a sibling stalled with no explanation — the exact
+      // failure §3 exists to prevent. Bounded in practice by the job's own `deadlineAt`, and the CLI's
+      // renderer bounds the id list it prints.
       try {
         this.#onLegacyMediaJobHold?.([...this.#legacyMediaJobNodes.keys()]);
       } catch {

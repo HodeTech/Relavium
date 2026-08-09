@@ -277,8 +277,13 @@ export interface WorkflowEngineDeps {
   /**
    * Called once when new egress is HELD because a resumed media job's cost basis is unknown — a row written
    * before ADR-0074 §3 froze it. §3 requires this fallback be observable; without it a `resume` looks like an
-   * unexplained stall. The engine cannot print; the host routes it (`run`/`gate` → stderr), exactly as
+   * unexplained stall. The engine cannot print; the host routes it (`gate` → stderr), exactly as
    * {@link onUnpriced}. Absent ⇒ silent.
+   *
+   * Only `gate` wires it, and only `gate` CAN reach it: the hold is registered from `#restoreParkedMediaJob`,
+   * reachable only through `resumeFromCheckpoint`, and a fresh `relavium run` has no checkpoint to restore a
+   * legacy job from. Stated because this line claimed `run` routed it too, which was harmless only while the
+   * sink was dead.
    */
   readonly onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
 }
