@@ -71,10 +71,11 @@ describe('toUserFacing', () => {
     expect(projected.code).toBe('internal');
     // Exit 1: the resume genuinely did not happen. NOT exit 2 — the invocation was valid.
     expect(projected.exitCode).toBe(EXIT_CODES.workflowFailed);
-    expect(projected.message).toContain('run-9');
-    expect(projected.message).toContain('seq 3, 4');
-    expect(projected.message).toContain('Upgrade'); // the remedy the user can actually perform
-    expect(projected.message).toContain('still readable'); // …and what is NOT lost
+    // ORDERED, not four independent substrings: the reading order is the point — what is wrong, then the
+    // remedy, then what is NOT lost. Four `toContain`s pass on any shuffle of the same words.
+    expect(projected.message).toMatch(
+      /^run run-9 contains 2 events.*seq 3, 4.*Upgrade.*still readable/,
+    );
   });
 
   it('maps an unknown throw to a generic internal error without leaking detail', () => {

@@ -88,6 +88,62 @@ describe('createHistoryCheckpointer', () => {
     expect(await createHistoryCheckpointer(store).load('nope')).toBeUndefined();
   });
 
+  it('counts a STREAMING tail row in lastSequenceNumber (the replay read includes the firehose)', async () => {
+    // Closes the loop the `streamingIncluded: true` assertion in `run-history-store.test.ts` only half
+    // closes. That one proves the two DB reads return different event lists; this proves the CONSEQUENCE:
+    // `reconstructCheckpointState` takes `Math.max` over every event it is handed, so a replay read that
+    // inherited the display read's `agent:*` exclusion would reconstruct a mark BELOW the true stored max
+    // whenever the log's tail is a token row — reintroducing the `UNIQUE(run_id, seq)` collision the removed
+    // high-water repair used to guard, and NOT through the skip/refuse path (an excluded row is a SQL
+    // `WHERE` filter, never recorded as skipped).
+    const wf = await store.resolveWorkflowId('demo');
+    const events: RunEvent[] = [
+      {
+        type: 'run:started',
+        runId: 'run-3',
+        timestamp: TS,
+        sequenceNumber: 0,
+        workflowId: wf,
+        inputs: {},
+        executionMode: 'local',
+      },
+      {
+        type: 'human_gate:paused',
+        runId: 'run-3',
+        timestamp: TS,
+        sequenceNumber: 1,
+        nodeId: 'gate',
+        gateId: 'g1',
+        gateType: 'approval',
+        message: 'ship it?',
+      },
+      {
+        type: 'run:paused',
+        runId: 'run-3',
+        timestamp: TS,
+        sequenceNumber: 2,
+        pendingGateCount: 1,
+        gateIds: ['g1'],
+      },
+      // The TAIL is a firehose row — the case the exclusion would silently drop.
+      {
+        type: 'agent:token',
+        runId: 'run-3',
+        timestamp: TS,
+        sequenceNumber: 3,
+        nodeId: 'gate',
+        model: 'm',
+        token: 'hi',
+      },
+    ];
+    for (const event of events) {
+      await store.persistEvent(event);
+    }
+
+    const checkpoint = await createHistoryCheckpointer(store).load('run-3');
+    expect(checkpoint?.lastSequenceNumber).toBe(3); // 3, not 2 — the next durable write must not re-use it
+  });
+
   it('REFUSES the resume when a row was written by a NEWER binary (ADR-0075)', async () => {
     // This test previously asserted the OPPOSITE, and the change is deliberate (ADR-0075 amends ADR-0074 §5).
     //

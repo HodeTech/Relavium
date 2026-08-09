@@ -15,6 +15,7 @@ import {
   createModelCatalogStore,
   createProviderStore,
   createRunHistoryStore,
+  isCorruptRunEventError,
   isUnreadableRunEventLogError,
   runEvents,
   runMigrations,
@@ -448,13 +449,6 @@ workflow:
           .run('{not json', runId),
     },
     {
-      label: 'a corrupt persisted event log (non-JSON payload)',
-      corrupt: (runId: string) =>
-        client.sqlite
-          .prepare('UPDATE run_events SET payload_json = ? WHERE run_id = ? AND seq = 0')
-          .run('{not json', runId),
-    },
-    {
       label: 'a valid-JSON-but-non-object inputs blob (array)',
       corrupt: (runId: string) =>
         client.sqlite.prepare('UPDATE runs SET input_json = ? WHERE id = ?').run('[]', runId),
@@ -485,6 +479,31 @@ workflow:
     await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
       code: 'invalid_invocation',
     });
+  });
+
+  it('surfaces a DAMAGED event row as its typed error, at exit 1 like every other surface', async () => {
+    // Moved out of the exit-2 table above, deliberately. `relavium logs` on this identical log exits 1 (its
+    // typed error reaches `toUserFacing`); `gate` exited 2 only because its catch re-wrapped the error as
+    // `invalid_invocation`. The invocation was valid in both, and `toUserFacing`'s corrupt branch already
+    // composes the better sentence — the run, the `seq`, the `event_type`, and what is still listable.
+    const { runId } = await setupPausedRun();
+    client.sqlite
+      .prepare('UPDATE run_events SET payload_json = ? WHERE run_id = ? AND seq = 0')
+      .run('{not json', runId);
+    const { io } = captureIo();
+
+    let thrown: unknown;
+    try {
+      await gateCommand({ runId, approve: true }, deps(io));
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(isCorruptRunEventError(thrown)).toBe(true);
+    const projected = toUserFacing(thrown);
+    expect(projected.exitCode).toBe(EXIT_CODES.workflowFailed); // 1, not 2 — matches `logs` on the same log
+    expect(projected.message).toContain(runId);
+    expect(projected.message).toContain('seq 0');
   });
 
   it('fails closed (exit-2) on a run with a SECRET input — a masked value can never be restored on resume', async () => {
@@ -813,6 +832,13 @@ describe('gateCommand — a run written by a NEWER binary (ADR-0075)', () => {
     client.sqlite.close();
   });
 
+  // NOT COVERED, and named precisely rather than implied: this case calls `gateCommand` directly and calls
+  // `toUserFacing` itself, so it pins the layer where the blocker actually was — `gate.ts`'s own catch — and
+  // NOT the layers above it. Adding a `try/catch` that re-wraps in `dispatch.ts`'s `executeGate` or
+  // `specs.ts`'s `gate.action` reproduces a variant of that same blocker (wrong exit code, generic message,
+  // lost `seq`/upgrade text) and leaves this test AND `errors.test.ts`'s sibling green. Closing it needs a
+  // `run(argv, io)` drive with a redirected HOME and a seeded on-disk `history.db`; no such harness exists in
+  // this file today, and a partial one would read as coverage it is not.
   it('refuses with the upgrade remedy and exit 1, not a generic invalid invocation', async () => {
     const def = parseWorkflow(GATED, { source: 'gate.test' });
     const store = createRunHistoryStore(db, {

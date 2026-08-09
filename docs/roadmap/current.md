@@ -248,6 +248,13 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 > DISPLAY stays tolerant. It landed first on purpose — `#W15-1` adds a new durable event type, and an older
 > binary reading it falls straight into §5's skip path, so this decision governs how that event degrades.
 >
+> **One gap this closing deliberately left open**, named here rather than implied: ADR-0075's refusal is
+> pinned at `gate.ts`'s own catch (where the blocker was) and at `toUserFacing`, but NOT through
+> `dispatch.ts` / `specs.ts` to the process exit. A re-wrapping `try/catch` added in either layer reproduces
+> the same blocker and leaves both tests green. Closing it needs a `run(argv, io)` drive with a redirected
+> HOME and a seeded on-disk `history.db`; no such harness exists for `gate` yet, and the marker sits at the
+> test it concerns.
+>
 > **`#W15-1` is what remains**: a durable per-attempt realized-cost ledger, which changes what "spent" means
 > across a crash. Maintainer decision, 2026-08-09: a new durable run event folded into a `run_costs` row.
 >

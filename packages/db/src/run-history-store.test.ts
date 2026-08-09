@@ -1003,6 +1003,9 @@ describe('createRunHistoryReader', () => {
           expect(err.message).toContain('run-named'); // the run id, not just the count
           expect(err.message).toContain('seq 9');
           expect(err.message).toContain('Upgrade'); // the remedy — the whole reason this type is distinct
+          // The SINGULAR wording. Hardcoding the plural suffix reads "1 events" here and stays green in the
+          // 12-skip case below, so the count=1 branch needs its own assertion.
+          expect(err.message).toContain('contains 1 event written');
         }
       });
 

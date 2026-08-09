@@ -219,16 +219,20 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       if (isUnreadableRunEventLogError(err)) {
         throw err;
       }
-      // A malformed run_events row (bad JSON / failed schema parse during the fold) — surface a corrupt log
-      // as a clean exit-2 fault, matching the snapshot/inputs handling, never a raw escaping error. When the
-      // store could name the row (the typed `CorruptRunEventError`), say WHICH row: this catch pre-dates that
-      // error and would otherwise discard the `seq`/`event_type` it carries, leaving `gate` less diagnosable
-      // than `logs` for the identical fault.
+      // A damaged row passes through typed too, for the SAME reason and to fix an asymmetry the reasoning
+      // above exposed: `relavium logs` on a corrupt log exits 1 (its typed error reaches `toUserFacing`),
+      // while `gate` on the IDENTICAL log exited 2 because this catch re-wrapped it as `invalid_invocation`.
+      // The invocation was valid in both. `toUserFacing`'s corrupt branch already composes the better
+      // sentence — the run, the `seq`, the `event_type`, and what is still listable — so re-wrapping made
+      // `gate` both less diagnosable and inconsistent with every other single-run surface.
+      if (isCorruptRunEventError(err)) {
+        throw err;
+      }
+      // Anything else from the fold: an unreadable file, a closed handle, a driver fault. Still a clean
+      // exit-2 invocation fault, matching the snapshot/inputs handling, never a raw escaping error.
       throw new CliError(
         'invalid_invocation',
-        isCorruptRunEventError(err)
-          ? `the persisted event log for run ${args.runId} could not be read — a damaged event row at seq ${err.sequenceNumber}`
-          : `the persisted event log for run ${args.runId} could not be read`,
+        `the persisted event log for run ${args.runId} could not be read`,
         { cause: err },
       );
     }
