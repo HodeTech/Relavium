@@ -118,6 +118,7 @@ flowchart TD
 | 0072 | [Model metadata in the DB behind the offline snapshot floor (partially supersedes ADR-0064 §4's seed-prohibition; amends ADR-0071 §3/§4/§9)](0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md) | Accepted | 2026-07-14 |
 | 0073 | [`runMigrations` is serialized across processes by an OS lock file, not by a transaction](0073-history-db-migration-lock.md) | Accepted | 2026-07-29 |
 | 0074 | [Durable conservative budget commitments across run and session resume (amends ADR-0028, ADR-0036, ADR-0045, ADR-0070)](0074-durable-conservative-budget-commitments.md) | Accepted | 2026-07-30 |
+| 0075 | [A resume fails closed on an unreadable event log (amends ADR-0074 §5)](0075-fail-closed-resume-on-an-unreadable-event-log.md) | Accepted | 2026-08-09 |
 
 ## Creating a new ADR
 

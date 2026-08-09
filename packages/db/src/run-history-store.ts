@@ -185,6 +185,51 @@ export function isCorruptRunEventError(value: unknown): value is CorruptRunEvent
 }
 
 /**
+ * A run whose event log cannot be fully read by THIS binary, refused because the caller is a REPLAY
+ * ([ADR-0075](../../../docs/decisions/0075-fail-closed-resume-on-an-unreadable-event-log.md)).
+ *
+ * ADR-0074 §5's tolerant read drops a row whose `type` a newer binary wrote, which is right for a display and
+ * wrong for a resume: `checkpointer.ts` builds resumable state from what the read returns, and an older binary
+ * cannot know whether the dropped row was a node terminal, a job submission, a gate decision or a cost
+ * commitment — so it may re-run completed work or re-submit an already-billed media job.
+ *
+ * Distinct from {@link CorruptRunEventError}: that one means the DATA is damaged and upgrading will not help;
+ * this one means the data is fine and this binary is too old, so the remedy is real and the user can perform it.
+ */
+export class UnreadableRunEventLogError extends Error {
+  override readonly name = 'UnreadableRunEventLogError';
+  readonly code = 'unreadable_run_event_log' as const;
+
+  constructor(
+    readonly runId: string,
+    /** The skipped rows' authoritative `seq` values, ascending — the lead a support conversation needs. */
+    readonly skippedSequenceNumbers: readonly number[],
+  ) {
+    const count = skippedSequenceNumbers.length;
+    // BOUNDED, like `logs.ts`'s note: the count is the signal, the first few numbers are the lead. A run
+    // replayed under a much newer binary could skip thousands, and one unbounded integer list is not a
+    // diagnostic. The row TYPES are deliberately not named — this binary does not know what they are.
+    const shown = skippedSequenceNumbers.slice(0, MAX_REPORTED_UNREADABLE_SEQS);
+    const seqs = count > shown.length ? `${shown.join(', ')}, …` : shown.join(', ');
+    super(
+      `run ${runId} contains ${count} event${count === 1 ? '' : 's'} written by a newer version of ` +
+        `Relavium (seq ${seqs}); it cannot be resumed by this one. Upgrade to resume it.`,
+    );
+  }
+}
+
+/** How many skipped `seq` values {@link UnreadableRunEventLogError} names before it elides. */
+const MAX_REPORTED_UNREADABLE_SEQS = 8;
+
+/**
+ * Narrow an unknown thrown value to {@link UnreadableRunEventLogError} by its `code`, not by `instanceof` —
+ * same bundling reason as {@link isCorruptRunEventError}.
+ */
+export function isUnreadableRunEventLogError(value: unknown): value is UnreadableRunEventLogError {
+  return value instanceof Error && 'code' in value && value.code === 'unreadable_run_event_log';
+}
+
+/**
  * The workflow-agnostic read API the `relavium list`/`logs`/`status`/`gate list` (2.I) commands consume.
  * Constructed from a db handle alone ({@link createRunHistoryReader}) — no `deps.workflow`, since the reads
  * span every workflow (the same standalone-read rationale as {@link loadRunSnapshot}, which the
@@ -225,6 +270,18 @@ export interface RunHistoryReader {
    *   as data loss, and `sse-event-schema.md` §Transport tells consumers to diagnose gaps from `sequenceNumber`.
    */
   loadRunEventLog: (runId: string) => RunEventLog;
+  /**
+   * The log for a REPLAY — the same read, refusing when anything had to be skipped (ADR-0075).
+   *
+   * Use this, never {@link loadRunEvents} / {@link loadRunEventLog}, from any caller that reconstructs state
+   * in order to DO something (resume, re-attach a job, re-ask a gate). The tolerant reads are for surfaces
+   * that DISPLAY a log; tolerating a hole in a fold that decides what work still has to happen is how a resume
+   * silently re-runs completed work.
+   *
+   * @throws {UnreadableRunEventLogError} when any row was written by a newer binary.
+   * @throws {CorruptRunEventError} when a row is damaged (unchanged from the tolerant reads).
+   */
+  loadRunEventLogForReplay: (runId: string) => RunEvent[];
   /** A run's STATE-BEARING events in `seq` order — the full log MINUS the per-token/tool streaming firehose
    *  (`agent:token` / `agent:tool_call` / `agent:tool_result`), which neither checkpoint reconstruction nor gate
    *  detection consults. For a bounded gate/checkpoint fold over a long run (the Home strip) that must NOT pay to
@@ -250,7 +307,7 @@ export interface RunHistoryReader {
  */
 export interface RunHistoryStore extends Pick<
   RunHistoryReader,
-  'listRuns' | 'loadRun' | 'loadRunEvents' | 'loadRunEventLog'
+  'listRuns' | 'loadRun' | 'loadRunEvents' | 'loadRunEventLog' | 'loadRunEventLogForReplay'
 > {
   resolveWorkflowId: (slug: string) => Promise<string>;
   persistEvent: (event: RunEvent) => Promise<void>;
@@ -772,6 +829,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
     loadRun: reader.loadRun,
     loadRunEvents: reader.loadRunEvents,
     loadRunEventLog: reader.loadRunEventLog,
+    loadRunEventLogForReplay: reader.loadRunEventLogForReplay,
   };
 }
 
@@ -823,10 +881,22 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
 
     loadRunEvents: (runId) => readEventLog(db, runId, { streamingIncluded: true }).events,
 
-    // The RESUME read (`createHistoryCheckpointer` → `reconstructCheckpointState`), so its skipped rows are the
-    // ones that can corrupt a sequence high-water mark — which is why `loadRunEventLog` exists and why resume
-    // uses it rather than `loadRunEvents`.
+    // The tolerant log + what it had to leave out. `logs` reports the skipped rows as a note; the RESUME path
+    // does not use this — see `loadRunEventLogForReplay` below (ADR-0075).
     loadRunEventLog: (runId) => readEventLog(db, runId, { streamingIncluded: true }),
+
+    loadRunEventLogForReplay: (runId) => {
+      const log = readEventLog(db, runId, { streamingIncluded: true });
+      if (log.skipped.length > 0) {
+        // ADR-0075. The skipped rows' `seq` values come from the COLUMN, so the diagnostic names rows this
+        // binary could not parse — which is the whole reason `readEventLog` selects them separately.
+        throw new UnreadableRunEventLogError(
+          runId,
+          log.skipped.map((row) => row.sequenceNumber),
+        );
+      }
+      return log.events;
+    },
 
     loadRunStateEvents: (runId) =>
       // Same forward-compatible read (ADR-0074 §5). The skipped rows are deliberately DISCARDED here rather than

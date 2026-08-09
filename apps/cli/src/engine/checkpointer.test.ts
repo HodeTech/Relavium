@@ -1,6 +1,7 @@
 import {
   createClient,
   createRunHistoryStore,
+  isUnreadableRunEventLogError,
   runMigrations,
   type DbClient,
   type RunHistoryStore,
@@ -87,13 +88,19 @@ describe('createHistoryCheckpointer', () => {
     expect(await createHistoryCheckpointer(store).load('nope')).toBeUndefined();
   });
 
-  it('keeps lastSequenceNumber true when a row written by a NEWER binary is the log`s tail (ADR-0074 §5)', async () => {
-    // The destructive shape this guards. `resumeFromCheckpoint` seeds the bus with `lastSequenceNumber + 1`, and a
-    // row whose `type` this binary does not know is DROPPED from the fold (§5). If that row is the tail, folding
-    // only the readable events yields a mark BELOW what is stored, the resumed run stamps a `seq` that is already
-    // taken, `UNIQUE(run_id, seq)` rejects the durable write, and the engine settles `run:failed`. A run that
-    // merely needed a newer binary to read ONE row would become terminally unresumable — by either binary. Note
-    // this is strictly worse than the pre-§5 behaviour, where the read threw and the run stayed cleanly paused.
+  it('REFUSES the resume when a row was written by a NEWER binary (ADR-0075)', async () => {
+    // This test previously asserted the OPPOSITE, and the change is deliberate (ADR-0075 amends ADR-0074 §5).
+    //
+    // What it used to pin: a skipped TAIL row left `lastSequenceNumber` below what is stored, so the resumed
+    // run stamped a taken `seq`, `UNIQUE(run_id, seq)` rejected the write, and the engine settled
+    // `run:failed`. The fix folded the skipped row's authoritative `seq` back in. That was a real repair —
+    // and it addressed the write COLLISION while leaving the lost STATE unaddressed, which is the more
+    // dangerous half: this binary cannot know whether the dropped row was a node terminal, a job submission,
+    // a gate decision or a cost commitment, so the resumed run may re-run completed work or re-submit an
+    // already-billed media job, silently and with no error at all.
+    //
+    // So the resume now REFUSES. The collision it used to repair cannot occur, because the resume does not
+    // happen; every read-only surface still shows the run.
     const wf = await store.resolveWorkflowId('demo');
     const events: RunEvent[] = [
       {
@@ -141,10 +148,25 @@ describe('createHistoryCheckpointer', () => {
       })
       .run();
 
-    const checkpoint = await createHistoryCheckpointer(store).load('run-2');
-    // 3, not 2 — the fold saw only seq 0..2, so the skipped row's authoritative `seq` column is folded back in.
-    expect(checkpoint?.lastSequenceNumber).toBe(3);
-    // The rest of the reconstruction is unaffected: the unreadable row is skipped, not fatal.
-    expect(checkpoint?.runStatus).toBe('paused');
+    const load = createHistoryCheckpointer(store).load('run-2');
+
+    await expect(load).rejects.toThrow(/newer version of Relavium/);
+    // Narrowed on the TYPE, not on "something threw" — and DISTINCT from `CorruptRunEventError`, because the
+    // difference is the whole value of the message: the data is fine, this binary is too old, and the remedy
+    // is an upgrade the user can actually perform.
+    await expect(load).rejects.toSatisfy(isUnreadableRunEventLogError);
+    // The diagnostic names the row by its authoritative `seq` COLUMN — the one number this binary can trust
+    // about a payload it could not parse.
+    await expect(load).rejects.toThrow(/seq 3/);
+
+    // …and the run is NOT lost: the tolerant read that every display surface uses still returns it.
+    expect(store.loadRunEventLog('run-2').events.map((e) => e.type)).toEqual([
+      'run:started',
+      'human_gate:paused',
+      'run:paused',
+    ]);
+    expect(store.loadRunEventLog('run-2').skipped).toEqual([
+      { sequenceNumber: 3, type: 'test:never_a_real_event' },
+    ]);
   });
 });

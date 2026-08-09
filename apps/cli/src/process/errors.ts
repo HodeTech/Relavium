@@ -1,4 +1,4 @@
-import { isCorruptRunEventError } from '@relavium/db';
+import { isCorruptRunEventError, isUnreadableRunEventLogError } from '@relavium/db';
 
 import { EXIT_CODES, type ExitCode } from './exit-codes.js';
 
@@ -71,6 +71,19 @@ export function toUserFacing(value: unknown): UserFacingError {
   // command, and upgrading does not repair corruption (that is the OTHER half of §5 — a skipped row, which is
   // reported as a note, not an error). Naming the run and the row is the actionable part; it is what makes the
   // failure diagnosable at all, and what lets a user restore just that history DB from a backup.
+  // ADR-0075: this binary is too OLD to replay the run, which is a different thing from the data being
+  // damaged — and the difference is the whole value of the message. The remedy is real and the user can
+  // perform it, so it is named. Exit 1: the resume genuinely did not happen.
+  if (isUnreadableRunEventLogError(value)) {
+    return {
+      code: 'internal',
+      // The store's message already carries the run, the count and the leading `seq` values, and none of it
+      // is user content or a secret. Adding what is still POSSIBLE matters as much as the refusal: the run is
+      // not lost, and every read-only surface still shows it.
+      message: `${value.message} Its history is still readable — \`relavium logs\` and \`status\` are unaffected.`,
+      exitCode: EXIT_CODES.workflowFailed,
+    };
+  }
   if (isCorruptRunEventError(value)) {
     return {
       code: 'internal',

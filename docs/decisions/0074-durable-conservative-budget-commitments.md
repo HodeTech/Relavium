@@ -65,6 +65,14 @@ Actual totals, per-model actual-cost attribution, and `cost:updated` remain real
 >   persisted yet, so nothing is blocked today either; §4 must ship `releaseConservativeCommitments` on the same
 >   commit that persists it, or it would create the exact failure §1 rejects. The marker for that lives beside the
 >   wiring, in `apps/cli/src/chat/session-host.ts`.
+>
+> **Closed 2026-08-09.** The release half shipped with the persistence, as this note required: `/cost --release`
+> on the chat surface — the one that renders the amount, which is what §1 ties it to — clearing the durable
+> per-model and aggregate columns first and the live governor second, so a released commitment does not return
+> on the next `chat-resume`. `/cost` also renders the durability state. The reserved `budget:estimate_released`
+> event stays reserved and unemitted: the session path restores its conservative total from COLUMNS rather than
+> by replaying events, so zeroing them is what makes the release durable there. That event is needed only by a
+> workflow-run release surface, which does not exist — the workflow escapes named above still stand.
 
 Add an additive, secret-free dual-envelope event, `budget:estimate_committed`, carrying the node/agent identity, model id, bounded `estimateMicrocents`, and the owner-local cumulative conservative amount. It is a **new event `type`**, not an optional field on `cost:updated` — the rejected alternatives below say why. Its exact Zod shape, which discriminated-union arms it joins, and its envelope rules have one canonical home in [sse-event-schema.md](../reference/contracts/sse-event-schema.md) and [run-event.ts](../../packages/shared/src/run-event.ts); this ADR decides that it exists and what it means, and deliberately does not restate the spec. For workflows it is a durable `run_events` entry; for sessions it is a durable session-budget write and a streamed session event.
 
@@ -87,7 +95,17 @@ Legacy submitted-job rows without the fields remain readable. With a configured 
 
 Session persistence receives a separate conservative-cost aggregate and per-model conservative attribution beside ADR-0070's realized `session_costs` data. The persister owns the additive, transactional write of a `budget:estimate_committed`; `AgentSession.resume` restores the realized and conservative totals together into the same `BudgetGovernor` used by a fresh session. The existing invariant for realized cost stays intact rather than being weakened to mix actual and estimated figures.
 
-### 5. Settle forward-compatibility first: a tolerant READ, a strict BODY
+### 5. Settle forward-compatibility first: a tolerant READ, a strict BODY (amended by ADR-0075)
+
+> **Amended 2026-08-09 by [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md) — a narrowing, not
+> a reversal.** The tolerant read below stands for every read that feeds a DISPLAY (`logs`, `status`,
+> `gate list`, the Home). It does NOT stand for the read that feeds a REPLAY: `checkpointer.ts` builds
+> resumable state from what the read returns, and an older binary that drops a row cannot know whether it was
+> a node terminal, a job submission, a gate decision or a cost commitment — so it may re-run completed or
+> already-submitted work. The resume path now refuses when any row was skipped. ADR-0075 answers this
+> section's three stated reasons for rejecting that, including the one that has since become false: the
+> refusal needs no durable version marker, because `skipped.length > 0` is derived at read time.
+
 
 The event in §2 cannot be emitted until this is decided, so it is decided here rather than left open.
 

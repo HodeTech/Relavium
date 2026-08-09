@@ -87,6 +87,8 @@ export {
   loadRunSnapshot,
   CorruptRunEventError,
   isCorruptRunEventError,
+  UnreadableRunEventLogError,
+  isUnreadableRunEventLogError,
   type RunEventLog,
   type SkippedRunEvent,
   type RunHistoryStore,
