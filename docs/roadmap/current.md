@@ -255,8 +255,31 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 > HOME and a seeded on-disk `history.db`; no such harness exists for `gate` yet, and the marker sits at the
 > test it concerns.
 >
-> **`#W15-1` is what remains**: a durable per-attempt realized-cost ledger, which changes what "spent" means
-> across a crash. Maintainer decision, 2026-08-09: a new durable run event folded into a `run_costs` row.
+> **`#W15-1` is what remains, and its DECISION is now made**:
+> [ADR-0076](../decisions/0076-durable-per-attempt-realized-cost-ledger.md) (Accepted 2026-08-09) — an
+> additive durable run event recording one settled provider attempt, emitted through ADR-0074 §2's barrier and
+> folded into a `run_costs` row at persist time. It landed after ADR-0075 on purpose: a new durable event type
+> is exactly the input that decision governs.
+>
+> **The implementation is staged, and starts here.** In order, because each step is a precondition for the
+> next:
+>
+> 1. `packages/shared/src/run-event.ts` — the event schema, its union arm, and `parseStoredRunEvent`. Until
+>    this lands nothing else compiles.
+> 2. `docs/reference/contracts/sse-event-schema.md` — the canonical shape + which of the two cost events is
+>    authoritative (ADR-0076's last Negative names that drift risk).
+> 3. `packages/db/src/run-history-store.ts` — the `applyDerived` arm writing the `run_costs` row in the SAME
+>    transaction as its event. The `node:completed` delta then telescopes to zero on its own; a test must pin
+>    that `SUM(run_costs) == runs.total_cost_microcents` still holds, since that is the invariant carrying the
+>    no-double-count claim.
+> 4. `packages/core/src/engine/engine.ts` — emit through `#emitDurable` at the attempt boundary, AWAITED before
+>    the next tool side effect, the next egress and the node terminal. This is the barrier; without the await
+>    the event is just another observation.
+> 5. `packages/core/src/engine/checkpoint.ts` — fold it as a SUM of deltas, never a last-wins snapshot (ADR-0074
+>    §2's reasoning: concurrent events under a `fan_out` have no canonical `seq` order).
+>
+> The break-verify that matters most is step 4's ordering: deleting the `await` must redden a test, or the
+> ledger records the charge without the guarantee that makes it one.
 >
 > Two decisions inside the closed set are worth surfacing here rather than leaving in a commit message.
 > `#W15-4` **changed a previously-tested behaviour**: #228 pinned that a session survives a failed durable
