@@ -34,6 +34,7 @@ const record = (overrides: Partial<AgentSessionRecord> = {}): AgentSessionRecord
   totalInputTokens: 0,
   totalOutputTokens: 0,
   totalCostMicrocents: 0,
+  totalConservativeMicrocents: 0,
   createdAt: ISO,
   updatedAt: ISO,
   ...overrides,

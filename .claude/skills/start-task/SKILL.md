@@ -28,7 +28,8 @@ Convert a roadmap phase workstream into a tightly scoped plan an engineer (human
 ## Workflow
 1. **Locate the workstream.** Read `docs/roadmap/current.md` for what is active, then open the phase file and find the workstream by id. Copy its Tasks + Acceptance as the starting point.
    ```bash
-   grep -rn "FallbackChain\|1\.K" /Users/dev/Documents/Projects/Agent-Organizer/docs/roadmap/phases/
+   R=$(git rev-parse --show-toplevel)
+   grep -rn "FallbackChain\|1\.K" "$R/docs/roadmap/phases/"
    ```
 2. **Check dependencies and build order.** Confirm the workstreams it depends on (per the phase's Mermaid graph) are done, and that you are not building a surface before its engine (architectural-principles §1, engine-first: `shared → llm → core → cli → desktop → vscode`).
 3. **Define scope explicitly — in and out.** Write a short scope block:

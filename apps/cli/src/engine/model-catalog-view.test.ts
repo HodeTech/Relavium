@@ -198,6 +198,51 @@ describe('buildMergedCatalog', () => {
   });
 });
 
+describe('a corrupt deprecation_date degrades one row, never the whole catalog (G1)', () => {
+  // `new Date(x).toISOString()` throws RangeError on NaN or |x| > 8.64e15, and the conversion runs inside a
+  // `.map()` over EVERY row — so before the guard, one bad value aborted the entire `/models` projection.
+  // SQLite is dynamically typed, so an INTEGER column really can hold these.
+  it.each([
+    ['NaN', Number.NaN],
+    ['out of Date range', 8.64e15 + 1],
+    ['negative out of range', -(8.64e15 + 1)],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ])('survives a %s deprecation_date and still returns the catalog', (_label, value) => {
+    const rows = [
+      row({
+        modelId: MODEL_PRESENT,
+        providerId: 'p-anthropic',
+        source: 'live',
+        deprecationDate: 0,
+      }),
+      row({
+        modelId: MODEL_ABSENT,
+        providerId: 'p-anthropic',
+        source: 'live',
+        deprecationDate: value,
+      }),
+    ];
+    let view: ReturnType<typeof buildMergedCatalog> | undefined;
+    expect(() => {
+      view = buildMergedCatalog({
+        rows,
+        providerSlug: slugResolver({ 'p-anthropic': 'anthropic' }),
+        now: 0,
+      });
+    }).not.toThrow();
+    // The whole projection survived — every static model plus both live rows.
+    expect(view?.entries.length ?? 0).toBeGreaterThan(1);
+    // The corrupt row is still PRESENT; only its decorative date is dropped.
+    const bad = view?.entries.find((entry) => entry.modelId === MODEL_ABSENT);
+    expect(bad).toBeDefined();
+    expect(bad?.deprecatedAt).toBeUndefined();
+    // …and a valid neighbour keeps its date, so the guard is not blanket-dropping the field.
+    expect(view?.entries.find((entry) => entry.modelId === MODEL_PRESENT)?.deprecatedAt).toBe(
+      new Date(0).toISOString(),
+    );
+  });
+});
+
 describe('buildUserPricing (2.5.G S10, ADR-0065 §2)', () => {
   it('projects a source="user" row into a ModelPricing keyed by model id', () => {
     const overlay = buildUserPricing({

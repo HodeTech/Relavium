@@ -8,6 +8,12 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { writeRecordLines } from '../render/records.js';
 import { openHistoryReader } from '../history/reader.js';
+import { sanitizeInline } from '../render/sanitize.js';
+import { readPerRunOrDegrade } from '../history/per-run-read.js';
+
+/** How many unreadable run ids the #W15-15 warning names before it elides — same bound-the-diagnostic
+ *  reasoning as `logs.ts`'s `MAX_REPORTED_SKIPS`. */
+const MAX_REPORTED_UNREADABLE = 8;
 
 /** A pending gate row tagged with its run id — the listing unit (`gate list` JSON record + human line). */
 type GateRow = PendingGate & { readonly runId: string };
@@ -27,8 +33,13 @@ export interface GateListCommandDeps {
  * The `relavium gate list [<runId>]` core (**2.I**) — list the pending human gates across all paused runs, or
  * of one run, so an operator can pick the `gateId` to pass to `relavium gate <runId> --gate <gateId>` (the
  * multi-gate discovery surface the 2.G `gate` command's `--gate` requirement points at). It rests on the SAME
- * `pendingHumanGates` reconstruction the resume path uses, so the two can never disagree; budget gates are
+ * `pendingHumanGates` reconstruction the resume path uses, so the two cannot disagree on the FOLD (they deliberately differ on the READ — ADR-0075 makes the resume refuse a log a display still shows, so a discovery surface may list a gate `relavium gate` will decline); budget gates are
  * excluded (that is `relavium budget resume`). An unknown `runId` is an invalid invocation (exit `2`).
+ *
+ * `--json` is one record per line (ADR-0049). Two shapes share that stream: a pending-gate row
+ * (`{ runId, gateId, nodeId, gateType, message, expiresAt? }`) and, for a run whose event log could not be
+ * read, a marker (`{ runId, unavailable: 'corrupt_event_log' }`) — no `gateId`, so a consumer selecting gates
+ * is unaffected while a careful one can tell "damaged" from "none" (#W15-15).
  */
 export function gateListCommand(args: GateListCommandArgs, deps: GateListCommandDeps): ExitCode {
   const { homeDir } = loadResolvedConfig({
@@ -37,19 +48,61 @@ export function gateListCommand(args: GateListCommandArgs, deps: GateListCommand
   });
   const { reader, close } = openHistoryReader(homeDir, deps.openDb);
   try {
-    const rows = targetRunIds(reader, args.runId).flatMap((runId) =>
-      pendingHumanGates(reader.loadRunEvents(runId)).map((gate): GateRow => ({ runId, ...gate })),
-    );
+    // Per-run isolation (`readPerRunOrDegrade`) for the no-arg ALL-RUNS form: one damaged run used to abort the
+    // whole listing. With an explicit `runId` there is only one run, so degrading would silently answer "no
+    // gates" for a run the user named — that must still fail loudly, and it does (the throw propagates).
+    const runIds = targetRunIds(reader, args.runId);
+    const rows: GateRow[] = [];
+    const unreadableRunIds: string[] = [];
+    for (const runId of runIds) {
+      const read = (): readonly PendingGate[] => pendingHumanGates(reader.loadRunEvents(runId));
+      if (args.runId !== undefined) {
+        rows.push(...read().map((gate): GateRow => ({ runId, ...gate })));
+        continue;
+      }
+      const result = readPerRunOrDegrade<readonly PendingGate[]>([], read);
+      // #W15-15: a degraded run used to contribute nothing and say nothing, so "No pending human gates."
+      // covered a run whose gates had been LOST. Both output modes now name it.
+      if (result.degraded) unreadableRunIds.push(runId);
+      rows.push(...result.value.map((gate): GateRow => ({ runId, ...gate })));
+    }
 
     if (deps.global.json) {
-      writeRecordLines(deps.io, rows);
+      // One extra record per unreadable run, on the SAME one-record-per-line stream (ADR-0049). It carries no
+      // `gateId`, so a consumer selecting gates is unaffected while a careful one can tell "damaged" from
+      // "none". A stderr-only note (the `logs --json` precedent) would have kept stdout pure but left the
+      // machine contract silently short of gates, which is the defect itself.
+      writeRecordLines(deps.io, [
+        ...rows,
+        ...unreadableRunIds.map((runId) => ({ runId, unavailable: 'corrupt_event_log' })),
+      ]);
       return EXIT_CODES.success;
     }
+    renderUnreadableRuns(deps.io, unreadableRunIds);
     renderGateRows(deps.io, rows, args.runId);
     return EXIT_CODES.success;
   } finally {
     close();
   }
+}
+
+/**
+ * Name the runs whose gates could not be read, on **stderr** so the human listing on stdout stays pipeable
+ * (#W15-15). Bounded like `logs.ts`'s skipped-row note: the COUNT is the signal, the first few ids are the
+ * lead. No remedy is offered because the CLI genuinely has none for a damaged row — naming the run is what
+ * makes it diagnosable, and what lets a user restore just that history DB from a backup.
+ */
+function renderUnreadableRuns(io: CliIo, runIds: readonly string[]): void {
+  if (runIds.length === 0) return;
+  // SANITIZED like `legacyMediaJobHoldNotice`: a run id is a DB value with no CHECK behind it, and this is a
+  // terminal write.
+  const shown = runIds.slice(0, MAX_REPORTED_UNREADABLE).map((id) => sanitizeInline(id));
+  const ids = runIds.length > shown.length ? `${shown.join(', ')}, …` : shown.join(', ');
+  const one = runIds.length === 1;
+  io.writeErr(
+    `warning: ${runIds.length} run${one ? '' : 's'} could not be read, so ${one ? 'its' : 'their'} ` +
+      `pending gates are NOT listed below (${ids}).\n`,
+  );
 }
 
 /**
@@ -85,7 +138,8 @@ function renderGateRows(io: CliIo, rows: readonly GateRow[], runId: string | und
   }
   io.writeOut(`Pending human gates (${rows.length}):\n`);
   for (const row of rows) {
-    const message = row.message === '' ? '' : `  "${row.message}"`;
+    // Same untrusted `human_gate:paused.message` as `status.ts` — see the note there.
+    const message = row.message === '' ? '' : `  "${sanitizeInline(row.message)}"`;
     io.writeOut(`  ${row.runId}  ${row.gateId}  ${row.gateType}  node=${row.nodeId}${message}\n`);
   }
 }

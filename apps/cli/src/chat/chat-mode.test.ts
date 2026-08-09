@@ -25,6 +25,8 @@ const req = (over: Partial<ToolApprovalRequest> = {}): ToolApprovalRequest => ({
   toolId: 'write_file',
   action: 'fs_write',
   preview: { path: 'notes.md' },
+  // The unredacted classification copy (#91) — the classifier's input, distinct from the display preview.
+  unredactedPreview: { path: 'notes.md' },
   ...over,
 });
 
@@ -216,6 +218,47 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     expect(prompt).toHaveBeenCalledTimes(1);
   });
 
+  it('accept-edits: a FULLY REDACTED preview does NOT earn a blanket grant (#W15-12)', async () => {
+    // PRESENT is not INFORMATIVE, and #91's fix made the difference reachable: `previewFor` scrubs secret-shaped
+    // text, so a path can arrive as literally `[redacted]`. Treating that as concrete let a user be shown
+    // `Approve write to [redacted]?`, press "always", and silently authorise EVERY later governed tool call for
+    // the session — having seen nothing at all.
+    const prompt = vi.fn<ApprovalPrompt>(() =>
+      Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
+    );
+    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    for (const preview of [
+      { path: '[redacted]' },
+      { command: '[redacted]' },
+      { host: '[REDACTED]' },
+      { path: '[redacted]/[redacted]' }, // framing punctuation is not information either
+    ]) {
+      const request = req({ toolId: 'write_file', action: 'fs_write', preview });
+      expect(await policy.confirm!(request)).toEqual({ outcome: 'approve' });
+      // cacheable=false: the REPL greys out `[a]`, and the "always" is downgraded to a once.
+      expect(prompt).toHaveBeenLastCalledWith(request, false, undefined);
+    }
+    // …so a LATER call still prompts rather than short-circuiting on a cached grant.
+    const later = req({ toolId: 'write_file', action: 'fs_write', preview: { path: '/tmp/x' } });
+    await policy.confirm!(later);
+    expect(prompt).toHaveBeenLastCalledWith(later, true, undefined);
+  });
+
+  it('accept-edits: a PARTLY redacted preview still counts — real content survived', async () => {
+    // The guard must not over-reach: `/etc/[redacted]/config` tells the approver where the write lands.
+    const prompt = vi.fn<ApprovalPrompt>(() =>
+      Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
+    );
+    const policy = buildTurnPolicy('accept-edits', deps({ prompt }));
+    const request = req({
+      toolId: 'write_file',
+      action: 'fs_write',
+      preview: { path: '/etc/[redacted]/config' },
+    });
+    expect(await policy.confirm!(request)).toEqual({ outcome: 'approve' });
+    expect(prompt).toHaveBeenLastCalledWith(request, true, undefined);
+  });
+
   it('accept-edits: a CONCRETE process preview (command) STILL caches "always" — pins isBlankPreview`s command check', async () => {
     const prompt = vi.fn<ApprovalPrompt>(() =>
       Promise.resolve<ApprovalAnswer>({ outcome: 'approve', scope: 'always' }),
@@ -316,17 +359,20 @@ describe('buildTurnPolicy — the mode → { advertise, confirm } mapping', () =
     );
     const policy = buildTurnPolicy('auto', {
       ...deps({ prompt }),
-      isProtectedTarget: (preview) => preview.path === '.git/config',
+      isProtectedTarget: (request) => request.unredactedPreview?.path === '.git/config',
     });
     // A normal write auto-approves…
-    expect(await policy.confirm!(req({ preview: { path: 'ok.md' } }))).toEqual({
+    expect(await policy.confirm!(req({ unredactedPreview: { path: 'ok.md' } }))).toEqual({
       outcome: 'approve',
     });
     expect(prompt).not.toHaveBeenCalled();
     // …but a protected-path write prompts, forwarding the request + cacheable:false (the REPL greys out
     // "always" here) + the cancel signal.
     const signal = new AbortController().signal;
-    const protectedReq = req({ preview: { path: '.git/config' } });
+    const protectedReq = req({
+      preview: { path: '.git/config' },
+      unredactedPreview: { path: '.git/config' }, // the classifier reads THIS copy (#91), not the display one
+    });
     const decision = await policy.confirm!(protectedReq, signal);
     expect(prompt).toHaveBeenCalledTimes(1);
     expect(prompt).toHaveBeenCalledWith(protectedReq, false, signal);

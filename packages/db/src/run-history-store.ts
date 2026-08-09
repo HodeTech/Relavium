@@ -1,4 +1,5 @@
 import {
+  parseStoredRunEvent,
   RunEventSchema,
   type ExecutionMode,
   type RunEvent,
@@ -6,8 +7,8 @@ import {
 } from '@relavium/shared';
 import { and, asc, desc, eq, getTableColumns, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 
-import type { Db } from './client.js';
-import { withBusyRetry } from './retry.js';
+import type { Db, TxDb } from './client.js';
+import { withBusyRetryAsync } from './retry.js';
 import {
   runCosts,
   runEvents,
@@ -120,11 +121,120 @@ export interface RunHistoryStoreDeps {
 }
 
 /**
+ * A stored row this binary could not interpret because a NEWER one wrote it (ADR-0074 §5).
+ *
+ * Both fields come from the denormalized `run_events` COLUMNS, never from the payload: `seq` is the value the
+ * `UNIQUE(run_id, seq)` index actually enforces (so it is the number a resumed run must not collide with), and
+ * `event_type` is the row's own label. Parsing the payload to recover them would mean trusting the very blob we
+ * just failed to read.
+ */
+export interface SkippedRunEvent {
+  readonly sequenceNumber: number;
+  readonly type: string;
+}
+
+/** A run's event log together with what reading it had to leave out. See {@link RunHistoryReader.loadRunEventLog}. */
+export interface RunEventLog {
+  readonly events: RunEvent[];
+  readonly skipped: readonly SkippedRunEvent[];
+}
+
+/**
+ * A stored `run_events` row that is damaged — not merely written by a newer binary.
+ *
+ * Both failure shapes land here: unreadable JSON in `payload_json`, and a `type` this binary DOES know whose body
+ * does not parse. ADR-0050's durability-first posture says neither may be swallowed, and
+ * [error-handling.md](../../../docs/standards/error-handling.md) says the error that surfaces must be typed and
+ * carry structured context. Without this, a single bad row out of thousands reached the user as
+ * `An unexpected internal error occurred.` — no run, no row, no next step.
+ */
+export class CorruptRunEventError extends Error {
+  override readonly name = 'CorruptRunEventError';
+  readonly code = 'corrupt_run_event' as const;
+
+  constructor(
+    readonly runId: string,
+    readonly sequenceNumber: number,
+    /**
+     * The row's `event_type` column. Our own writes put a union literal here, but the column carries no CHECK
+     * (`schema.ts`), so a hand-edited DB could hold arbitrary text — hence the length bound in the message below.
+     * Terminal/bidi control bytes are stripped one layer up, where every user-facing error passes through
+     * `sanitizeInline` (`apps/cli/src/process/render-error.ts`); this field is not a second sanitization seam.
+     */
+    readonly eventType: string,
+    cause: unknown,
+  ) {
+    const shownType = eventType.length > 64 ? `${eventType.slice(0, 64)}…` : eventType;
+    super(
+      `run ${runId} has a damaged event row at seq ${sequenceNumber} (type ${shownType})`,
+      // Preserved so `--verbose` can still show the underlying ZodError/SyntaxError detail.
+      { cause },
+    );
+  }
+}
+
+/**
+ * Narrow an unknown thrown value to {@link CorruptRunEventError} by its `code`, not by `instanceof`.
+ *
+ * The CLI bundles `@relavium/db` into one file while its tests import the package directly, so two realizations of
+ * the class can coexist and `instanceof` would silently answer `false` at exactly the boundary that has to catch it.
+ * Cast-free narrowing (the same shape `content.ts` uses).
+ */
+export function isCorruptRunEventError(value: unknown): value is CorruptRunEventError {
+  return value instanceof Error && 'code' in value && value.code === 'corrupt_run_event';
+}
+
+/**
+ * A run whose event log cannot be fully read by THIS binary, refused because the caller is a REPLAY
+ * ([ADR-0075](../../../docs/decisions/0075-fail-closed-resume-on-an-unreadable-event-log.md)).
+ *
+ * ADR-0074 §5's tolerant read drops a row whose `type` a newer binary wrote, which is right for a display and
+ * wrong for a resume: `checkpointer.ts` builds resumable state from what the read returns, and an older binary
+ * cannot know whether the dropped row was a node terminal, a job submission, a gate decision or a cost
+ * commitment — so it may re-run completed work or re-submit an already-billed media job.
+ *
+ * Distinct from {@link CorruptRunEventError}: that one means the DATA is damaged and upgrading will not help;
+ * this one means the data is fine and this binary is too old, so the remedy is real and the user can perform it.
+ */
+export class UnreadableRunEventLogError extends Error {
+  override readonly name = 'UnreadableRunEventLogError';
+  readonly code = 'unreadable_run_event_log' as const;
+
+  constructor(
+    readonly runId: string,
+    /** The skipped rows' authoritative `seq` values, ascending — the lead a support conversation needs. */
+    readonly skippedSequenceNumbers: readonly number[],
+  ) {
+    const count = skippedSequenceNumbers.length;
+    // BOUNDED, like `logs.ts`'s note: the count is the signal, the first few numbers are the lead. A run
+    // replayed under a much newer binary could skip thousands, and one unbounded integer list is not a
+    // diagnostic. The row TYPES are deliberately not named — this binary does not know what they are.
+    const shown = skippedSequenceNumbers.slice(0, MAX_REPORTED_UNREADABLE_SEQS);
+    const seqs = count > shown.length ? `${shown.join(', ')}, …` : shown.join(', ');
+    super(
+      `run ${runId} contains ${count} event${count === 1 ? '' : 's'} written by a newer version of ` +
+        `Relavium (seq ${seqs}); it cannot be resumed by this one. Upgrade to resume it.`,
+    );
+  }
+}
+
+/** How many skipped `seq` values {@link UnreadableRunEventLogError} names before it elides. */
+const MAX_REPORTED_UNREADABLE_SEQS = 8;
+
+/**
+ * Narrow an unknown thrown value to {@link UnreadableRunEventLogError} by its `code`, not by `instanceof` —
+ * same bundling reason as {@link isCorruptRunEventError}.
+ */
+export function isUnreadableRunEventLogError(value: unknown): value is UnreadableRunEventLogError {
+  return value instanceof Error && 'code' in value && value.code === 'unreadable_run_event_log';
+}
+
+/**
  * The workflow-agnostic read API the `relavium list`/`logs`/`status`/`gate list` (2.I) commands consume.
  * Constructed from a db handle alone ({@link createRunHistoryReader}) — no `deps.workflow`, since the reads
  * span every workflow (the same standalone-read rationale as {@link loadRunSnapshot}, which the
  * workflow-scoped {@link createRunHistoryStore} can't satisfy for a cross-workflow listing).
- * {@link RunHistoryStore} re-exposes the first three (the writer also reads back its own event log).
+ * {@link RunHistoryStore} re-exposes the read members listed in its own `Pick` (the writer also reads back its own event log).
  */
 export interface RunHistoryReader {
   /**
@@ -141,8 +251,37 @@ export interface RunHistoryReader {
   /** One run by id (soft-deleted excluded), or `undefined` — the existence check `logs`/`status`/`gate list` gate on. */
   loadRun: (runId: string) => RunRecord | undefined;
   /** A run's full event log in `seq` order — for `relavium logs` and the 2.G resume reconstruct. Keyed by
-   *  `runId` alone (no soft-delete re-check); the caller validates existence/deletion via {@link loadRun} first. */
+   *  `runId` alone (no soft-delete re-check); the caller validates existence/deletion via {@link loadRun} first.
+   *
+   *  Rows a NEWER binary wrote are dropped (ADR-0074 §5), so this array can be SHORTER than the stored log. Any
+   *  caller that cares about that — because it counts events, or derives a sequence high-water mark — must use
+   *  {@link loadRunEventLog} instead and account for the skipped rows. */
   loadRunEvents: (runId: string) => RunEvent[];
+  /**
+   * {@link loadRunEvents} plus the identity of every row it had to drop (ADR-0074 §5).
+   *
+   * Two callers genuinely need this, and both break subtly without it:
+   *
+   * - **Resume** seeds the post-resume sequence counter from the fold's `lastSequenceNumber`. If the dropped row
+   *   is the log's TAIL, a fold over `events` alone yields a high-water mark BELOW what is stored, the resumed run
+   *   re-uses a taken `seq`, and `UNIQUE(run_id, seq)` fails the write — turning a run that merely needed a newer
+   *   binary into a terminally failed one. `skipped` carries the authoritative `seq` column so the mark stays true.
+   * - **`relavium logs`** prints an event count and a `[seq]` column. Silently short output over a healthy DB reads
+   *   as data loss, and `sse-event-schema.md` §Transport tells consumers to diagnose gaps from `sequenceNumber`.
+   */
+  loadRunEventLog: (runId: string) => RunEventLog;
+  /**
+   * The log for a REPLAY — the same read, refusing when anything had to be skipped (ADR-0075).
+   *
+   * Use this, never {@link loadRunEvents} / {@link loadRunEventLog}, from any caller that reconstructs state
+   * in order to DO something (resume, re-attach a job, re-ask a gate). The tolerant reads are for surfaces
+   * that DISPLAY a log; tolerating a hole in a fold that decides what work still has to happen is how a resume
+   * silently re-runs completed work.
+   *
+   * @throws {UnreadableRunEventLogError} when any row was written by a newer binary.
+   * @throws {CorruptRunEventError} when a row is damaged (unchanged from the tolerant reads).
+   */
+  loadRunEventLogForReplay: (runId: string) => RunEvent[];
   /** A run's STATE-BEARING events in `seq` order — the full log MINUS the per-token/tool streaming firehose
    *  (`agent:token` / `agent:tool_call` / `agent:tool_result`), which neither checkpoint reconstruction nor gate
    *  detection consults. For a bounded gate/checkpoint fold over a long run (the Home strip) that must NOT pay to
@@ -168,7 +307,7 @@ export interface RunHistoryReader {
  */
 export interface RunHistoryStore extends Pick<
   RunHistoryReader,
-  'listRuns' | 'loadRun' | 'loadRunEvents'
+  'listRuns' | 'loadRun' | 'loadRunEvents' | 'loadRunEventLog' | 'loadRunEventLogForReplay'
 > {
   resolveWorkflowId: (slug: string) => Promise<string>;
   persistEvent: (event: RunEvent) => Promise<void>;
@@ -188,6 +327,116 @@ const STREAMING_EVENT_TYPES = [
   'agent:tool_call',
   'agent:tool_result',
 ];
+
+/**
+ * The `run_costs.node_id` used for a RUN-level cost addend — the residual a `run:failed` / `run:cancelled`
+ * terminal carries (#W15-6).
+ *
+ * The empty string, deliberately. That money is real (a sibling's paid media job, billed provider-side and
+ * folded just before the terminal — ADR-0045 §5) but the event does NOT say which node it belongs to, and
+ * inventing an attribution would be worse than admitting there is none. `run_costs.node_id` is `NOT NULL`, and
+ * every event-carried `nodeId` is `nonEmptyString`, so an empty one is PROVABLY not an authored node — no
+ * sentinel string could collide with a real id the way a plausible-looking `(run)` might.
+ *
+ * Writing the row (rather than only bumping `runs.total_cost_microcents`) is what keeps ADR-0070's
+ * `SUM(run_costs) == runs.total_cost_microcents` exactly true.
+ */
+const RUN_LEVEL_COST_NODE_ID = '';
+
+/**
+ * The one place a stored `run_events` row becomes a {@link RunEvent} — the read boundary ADR-0074 §5 asks for.
+ *
+ * Three outcomes, and the whole design is in keeping them apart:
+ *
+ * - **readable** ⇒ the event joins `events`;
+ * - **an unknown `type`** ⇒ a newer binary wrote it, so it joins `skipped` with the authoritative `seq`/`type`
+ *   COLUMNS. Dropping it without recording that is what silently truncated the sequence high-water mark;
+ * - **damaged** (bad JSON, or a known `type` with an unparseable body) ⇒ a typed
+ *   {@link CorruptRunEventError} carrying the run and the row, because ADR-0050 forbids swallowing it and
+ *   error-handling.md forbids surfacing it bare.
+ *
+ * `seq` and `event_type` are selected alongside the payload precisely so the last two outcomes can name the row
+ * without parsing the blob that just failed to parse.
+ */
+function readEventLog(
+  db: Db,
+  runId: string,
+  opts: { readonly streamingIncluded: boolean },
+): RunEventLog {
+  const rows = db
+    .select({
+      seq: runEvents.seq,
+      eventType: runEvents.eventType,
+      payloadJson: runEvents.payloadJson,
+    })
+    .from(runEvents)
+    // Excluding the per-token/tool streaming firehose at the DB level keeps a gate/checkpoint fold over a long run
+    // from paying to JSON.parse + Zod-validate thousands of `agent:token` rows the reconstruction ignores.
+    .where(
+      opts.streamingIncluded
+        ? eq(runEvents.runId, runId)
+        : and(eq(runEvents.runId, runId), notInArray(runEvents.eventType, STREAMING_EVENT_TYPES)),
+    )
+    .orderBy(asc(runEvents.seq))
+    .all();
+
+  const events: RunEvent[] = [];
+  const skipped: SkippedRunEvent[] = [];
+  for (const row of rows) {
+    let event: RunEvent | undefined;
+    try {
+      event = parseStoredRunEvent(JSON.parse(row.payloadJson));
+    } catch (cause) {
+      throw new CorruptRunEventError(runId, row.seq, row.eventType, cause);
+    }
+    if (event === undefined) {
+      skipped.push({ sequenceNumber: row.seq, type: row.eventType });
+      continue;
+    }
+    const mismatch = projectionMismatch(event, runId, row);
+    if (mismatch !== undefined) {
+      throw new CorruptRunEventError(runId, row.seq, row.eventType, new Error(mismatch));
+    }
+    events.push(event);
+  }
+  return { events, skipped };
+}
+
+/**
+ * Compare the parsed event against the denormalized COLUMNS that were supposed to project it (#W15-5).
+ *
+ * `run_id`, `seq` and `event_type` are written from the event at persist time and are the authoritative keys
+ * afterwards: `seq` carries the `UNIQUE(run_id, seq)` constraint and orders this read, `run_id` scopes it, and
+ * `event_type` is what the streaming-firehose filter and the skip path name a row by. Nothing checked that the
+ * blob still agreed with them.
+ *
+ * The failure that makes this worth a throw: a row at `seq = 2` whose payload says `sequenceNumber: 1` parses
+ * fine and is accepted, so the log's high-water mark comes back one short — and the resumed run's first write
+ * collides on `UNIQUE(run_id, seq)` and fails the run. A `run_id` mismatch is worse: one run's event folded
+ * into another's state. Both are silent today and neither is recoverable downstream, which is precisely the
+ * shape ADR-0050 says must fail loudly at the read boundary rather than propagate.
+ *
+ * Returns the mismatch description, or `undefined` when the projections agree.
+ */
+function projectionMismatch(
+  event: RunEvent,
+  runId: string,
+  row: { readonly seq: number; readonly eventType: string },
+): string | undefined {
+  if (event.runId !== runId) {
+    // `undefined` counts as a mismatch: a row living in `run_events` under a `run_id` must carry it. The
+    // dual-envelope events (ADR-0074 §1) have a session form WITHOUT a runId, and one of those reaching this
+    // table means the bus routed a session event into run history — a real defect, not a tolerable variant.
+    return `payload runId ${String(event.runId)} does not match the run_id column ${runId}`;
+  }
+  if (event.sequenceNumber !== row.seq) {
+    return `payload sequenceNumber ${event.sequenceNumber} does not match the seq column ${row.seq}`;
+  }
+  if (event.type !== row.eventType) {
+    return `payload type ${event.type} does not match the event_type column ${row.eventType}`;
+  }
+  return undefined;
+}
 
 function fromRunRow(row: RunRow): RunRecord {
   return {
@@ -213,11 +462,71 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
   const reader = createRunHistoryReader(db);
 
   /** The run-wide cumulative cost already persisted on `runs` — the baseline a node-cost delta subtracts from. */
-  const currentRunCost = (runId: string): number =>
-    db.select({ c: runs.totalCostMicrocents }).from(runs).where(eq(runs.id, runId)).get()?.c ?? 0;
+  const currentRunCost = (tx: TxDb, runId: string): number =>
+    tx.select({ c: runs.totalCostMicrocents }).from(runs).where(eq(runs.id, runId)).get()?.c ?? 0;
+
+  /** Close an attempt's `step_executions` row as `failed` — shared by `node:failed` and `node:retrying`. */
+  const failStepRow = (
+    tx: TxDb,
+    event: {
+      readonly nodeId: string;
+      readonly error: unknown;
+      readonly attemptNumber?: number | undefined;
+    },
+    runId: string,
+    ts: number,
+  ): void => {
+    tx.update(stepExecutions)
+      .set({
+        status: 'failed',
+        errorJson: JSON.stringify(event.error),
+        completedAt: ts,
+        updatedAt: ts,
+      })
+      .where(stepMatch(runId, event.nodeId, event.attemptNumber))
+      .run();
+  };
+
+  /**
+   * Fold a durable run-wide cumulative SNAPSHOT into the money of record, and return the delta it added
+   * (#W15-6). The same telescoping arithmetic `node:completed` uses: the delta since the last boundary, so
+   * `sum(run_costs) == runs.total_cost_microcents` keeps holding exactly.
+   *
+   * `Math.max(0, …)` guards a non-monotonic snapshot (a deeper engine bug) and makes a re-emitted or absent
+   * snapshot a no-op rather than a negative charge. A zero delta writes nothing at all — the common case for a
+   * failure with no spend after the last boundary, which must not litter `run_costs` with empty rows.
+   */
+  const foldCumulative = (
+    tx: TxDb,
+    runId: string,
+    cumulative: number | undefined,
+    ts: number,
+    nodeId: string,
+  ): number => {
+    if (cumulative === undefined) return 0; // a log written before the field existed
+    const prev = currentRunCost(tx, runId);
+    const delta = Math.max(0, cumulative - prev);
+    if (delta === 0) return 0;
+    tx.insert(runCosts)
+      .values({
+        id: deps.uuid(),
+        runId,
+        nodeId,
+        inputTokens: 0, // a fail-cost addend carries no token attribution — only money
+        outputTokens: 0,
+        costMicrocents: delta,
+        createdAt: ts,
+      } satisfies NewRunCostRow)
+      .run();
+    tx.update(runs)
+      .set({ totalCostMicrocents: prev + delta, updatedAt: ts })
+      .where(eq(runs.id, runId))
+      .run();
+    return delta;
+  };
 
   /** Apply an event's derived `runs`/`step_executions`/`run_costs` writes (`run:started` inserts the runs row). */
-  const applyDerived = (event: RunEvent, runId: string, ts: number): void => {
+  const applyDerived = (tx: TxDb, event: RunEvent, runId: string, ts: number): void => {
     switch (event.type) {
       case 'run:started': {
         const row: NewRunRow = {
@@ -233,7 +542,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           createdAt: ts,
           updatedAt: ts,
         };
-        db.insert(runs).values(row).run();
+        tx.insert(runs).values(row).run();
         return;
       }
       case 'node:started': {
@@ -248,7 +557,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           createdAt: ts,
           updatedAt: ts,
         };
-        db.insert(stepExecutions).values(row).run();
+        tx.insert(stepExecutions).values(row).run();
         return;
       }
       case 'node:completed': {
@@ -259,10 +568,10 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         // sibling's — so `relavium status`/`logs` per-node cost is exact only for serial execution. Absent
         // cumulative (backward-compat for pre-field logs) ⇒ delta 0; `Math.max(0, …)` guards a non-monotonic
         // cumulative (a deeper engine bug).
-        const prev = currentRunCost(runId);
+        const prev = currentRunCost(tx, runId);
         const cumulative = event.cumulativeCostMicrocents ?? prev;
         const nodeCost = Math.max(0, cumulative - prev);
-        db.insert(runCosts)
+        tx.insert(runCosts)
           .values({
             id: deps.uuid(),
             runId,
@@ -273,7 +582,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
             createdAt: ts,
           } satisfies NewRunCostRow)
           .run();
-        db.update(stepExecutions)
+        tx.update(stepExecutions)
           .set({
             status: 'completed',
             outputJson: JSON.stringify(event.output),
@@ -286,7 +595,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           })
           .where(stepMatch(runId, event.nodeId, event.attemptNumber))
           .run();
-        db.update(runs)
+        tx.update(runs)
           .set({
             totalInputTokens: sql`${runs.totalInputTokens} + ${event.tokensUsed.input}`,
             totalOutputTokens: sql`${runs.totalOutputTokens} + ${event.tokensUsed.output}`,
@@ -299,35 +608,48 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           .run();
         return;
       }
-      case 'node:failed':
       case 'node:retrying': {
-        // Mark the attempt's step row `failed`. For `node:failed` this is the node's TERMINAL failure
-        // (node-retry budget exhausted); for `node:retrying` it is the intermediate attempt that will
-        // re-dispatch as a fresh row on the next `node:started`. Either way the attempt's row must not
-        // linger as `running` (a ghost in `relavium status`, 2.I). Both carry `error` + `attemptNumber`.
-        db.update(stepExecutions)
-          .set({
-            status: 'failed',
-            errorJson: JSON.stringify(event.error),
-            completedAt: ts,
-            updatedAt: ts,
-          })
-          .where(stepMatch(runId, event.nodeId, event.attemptNumber))
-          .run();
+        // The intermediate attempt that will re-dispatch as a fresh row on the next `node:started`. Its row
+        // must not linger as `running` (a ghost in `relavium status`, 2.I). It carries no cost snapshot —
+        // the node has not reached a boundary yet.
+        failStepRow(tx, event, runId, ts);
+        return;
+      }
+      case 'node:failed': {
+        // The node's TERMINAL failure (node-retry budget exhausted). Same step-row close as `node:retrying`,
+        // PLUS the cost fold `node:completed` gets and this arm was missing (#W15-6): a node that failed can
+        // still have SPENT — a paid media job billed provider-side before the failure (ADR-0045 §5), or a
+        // provider call that returned usage and then failed downstream. `cost:updated` is streamed, never
+        // persisted, so this snapshot is the only durable carrier, and dropping it left the run total (and
+        // `sum(run_costs)`) short of money that was really charged.
+        failStepRow(tx, event, runId, ts);
+        const nodeCost = foldCumulative(
+          tx,
+          runId,
+          event.cumulativeCostMicrocents,
+          ts,
+          event.nodeId,
+        );
+        if (nodeCost > 0) {
+          tx.update(stepExecutions)
+            .set({ costMicrocents: nodeCost, updatedAt: ts })
+            .where(stepMatch(runId, event.nodeId, event.attemptNumber))
+            .run();
+        }
         return;
       }
       case 'human_gate:paused':
       case 'budget:paused':
       case 'run:paused': {
-        db.update(runs).set({ status: 'paused', updatedAt: ts }).where(eq(runs.id, runId)).run();
+        tx.update(runs).set({ status: 'paused', updatedAt: ts }).where(eq(runs.id, runId)).run();
         return;
       }
       case 'human_gate:resumed': {
-        db.update(runs).set({ status: 'running', updatedAt: ts }).where(eq(runs.id, runId)).run();
+        tx.update(runs).set({ status: 'running', updatedAt: ts }).where(eq(runs.id, runId)).run();
         return;
       }
       case 'run:completed': {
-        db.update(runs)
+        tx.update(runs)
           .set({
             status: 'completed',
             outputJson: JSON.stringify(event.outputs),
@@ -342,12 +664,13 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         return;
       }
       case 'run:failed': {
-        // Known limitation: run:failed / run:cancelled carry no total-cost field in the run-event schema,
-        // and the failing node's cost is unrecoverable here (node:failed has no cost; cost:updated is not
-        // persisted). So a failed run's runs.total_cost_microcents is the last node:completed cumulative —
-        // it may undercount spend incurred after it. `sum(run_costs) == total` still holds (both undercount).
-        // A true failed-run total needs a shared-schema change (a total on run:failed) — out of 2.H scope.
-        db.update(runs)
+        // Both terminals DO carry the run-wide cumulative now, and folding it is the point (#W15-6). The
+        // root-cause node's `node:failed` snapshots the cumulative as of THAT node, but a SIBLING's paid
+        // media job abandoned by the failure is folded only just BEFORE this terminal (ADR-0045 §5) — after
+        // that `node:failed` was already emitted. So this event is the only durable carrier of that last
+        // addend, and without it a failed run's total silently undercounted real spend.
+        foldCumulative(tx, runId, event.cumulativeCostMicrocents, ts, RUN_LEVEL_COST_NODE_ID);
+        tx.update(runs)
           .set({
             status: 'failed',
             errorJson: JSON.stringify(event.error),
@@ -360,16 +683,25 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         return;
       }
       case 'run:cancelled': {
-        db.update(runs)
+        // Same fold as `run:failed`: a paid media job still pending at the cancel was billed provider-side
+        // and its lone estimate addend lands just before this terminal (#W15-6, ADR-0045 §5).
+        foldCumulative(tx, runId, event.cumulativeCostMicrocents, ts, RUN_LEVEL_COST_NODE_ID);
+        tx.update(runs)
           .set({ status: 'cancelled', completedAt: ts, updatedAt: ts })
           .where(eq(runs.id, runId))
           .run();
         return;
       }
       default:
-        // node:skipped / media_job:submitted / run:timeout (+ any future durable event): captured in
-        // run_events below; no derived runs/step/cost write in 2.H's scope. (A skipped node has no nodeType
-        // on its event, so it gets no step_executions row — the run_events log records the skip.)
+        // node:skipped / media_job:submitted / run:timeout / budget:estimate_committed (+ any future durable
+        // event): captured in run_events below; no derived runs/step/cost write in 2.H's scope. (A skipped node
+        // has no nodeType on its event, so it gets no step_executions row — the run_events log records the skip.)
+        //
+        // `budget:estimate_committed` is named explicitly because it is the one MONEY event routed here, and
+        // that routing IS ADR-0074's central negative guarantee: a conservative commitment is an ESTIMATE, so it
+        // must never reach `runs.total_cost_microcents` or `run_costs`. Folding it into either would present an
+        // upper bound as an invoice and break ADR-0070's `SUM(run_costs) == runs.total_cost_microcents`. Falling
+        // through here is what keeps that true — asserted, not assumed, in this package's tests.
         return;
     }
   };
@@ -378,9 +710,15 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
    * Persist one event: derived writes FIRST, then the `run_events` append — so `run:started`'s `runs` row
    * (the FK target of `run_events.run_id`) exists before its event row. The whole pair is one transaction
    * (the caller wraps it), so a crash never leaves a derived row without its event, or vice-versa.
+   *
+   * Every statement goes through the {@link TxDb} handle the transaction hands in, never the outer `db`
+   * (#W15-23). Under `better-sqlite3` the two share a connection and the difference is invisible; with a
+   * pooled Postgres driver the outer handle is a DIFFERENT client, so its statements would run outside the
+   * transaction and survive a rollback — on the run's highest-volume money write. The handle is a parameter
+   * rather than a closure so the compiler, not a reviewer, is what keeps this true.
    */
-  const fold = (event: RunEvent, runId: string, ts: number): void => {
-    applyDerived(event, runId, ts);
+  const fold = (tx: TxDb, event: RunEvent, runId: string, ts: number): void => {
+    applyDerived(tx, event, runId, ts);
     const eventRow: NewRunEventRow = {
       id: deps.uuid(),
       runId,
@@ -391,7 +729,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
       payloadJson: JSON.stringify(event),
       ts,
     };
-    db.insert(runEvents).values(eventRow).run();
+    tx.insert(runEvents).values(eventRow).run();
   };
 
   return {
@@ -425,10 +763,11 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
       return Promise.resolve(find() ?? id);
     },
 
-    persistEvent: (event) => {
-      // Synchronous (better-sqlite3) but Promise-returning to honor the async RunStore port — a fault (bad
+    persistEvent: async (event) => {
+      // The DB work is synchronous (better-sqlite3) but this honors the async RunStore port — a fault (bad
       // event, UNIQUE(run_id, seq), FK, disk) becomes a REJECTED promise, never a synchronous throw, so the
       // engine's `await persistEvent(...)` (durability-first: ADR-0050 fatal posture) and any `.catch` see it.
+      // `async` guarantees that on its own: an async function can only ever reject, never throw synchronously.
       try {
         const parsed = RunEventSchema.parse(event); // validate on the way in (round-trip + envelope)
         const runId = parsed.runId;
@@ -439,15 +778,22 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         const ts = isoToEpochMs(parsed.timestamp);
         // One IMMEDIATE transaction per event: the run_events append and its derived rows land atomically, so a
         // crash can never leave a derived row without its event (or vice-versa). `BEGIN IMMEDIATE` takes the
-        // write lock up front (never a DEFERRED read→write upgrade race), and `withBusyRetry` waits out residual
+        // write lock up front (never a DEFERRED read→write upgrade race), and the retry waits out residual
         // cross-process lock contention — fail-loud, so a swallowed write can never be silent data loss
         // (ADR-0050; the ADR-0064 amendment note — DB write-path concurrency).
-        withBusyRetry(() =>
-          db.transaction(() => fold(parsed, runId, ts), { behavior: 'immediate' }),
+        //
+        // The ASYNC twin (#226): this caller is already async, so the backoff between attempts yields the event
+        // loop instead of parking the thread on `Atomics.wait`. The yield is observable — a sibling branch's
+        // `persistEvent` may commit during our backoff — which is exactly what the backoff is for, and is safe
+        // because each event's fold is ONE self-contained IMMEDIATE transaction that has already rolled back
+        // before we sleep. Within a single branch the engine awaits these sequentially, so no event can
+        // overtake its own predecessor.
+        await withBusyRetryAsync(() =>
+          db.transaction((tx) => fold(tx, parsed, runId, ts), { behavior: 'immediate' }),
         );
-        return Promise.resolve();
       } catch (error) {
-        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+        // Preserve the root cause (error-handling.md): never swallow it to rethrow a vaguer one.
+        throw error instanceof Error ? error : new Error(String(error), { cause: error });
       }
     },
 
@@ -482,6 +828,8 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
     listRuns: reader.listRuns,
     loadRun: reader.loadRun,
     loadRunEvents: reader.loadRunEvents,
+    loadRunEventLog: reader.loadRunEventLog,
+    loadRunEventLogForReplay: reader.loadRunEventLogForReplay,
   };
 }
 
@@ -531,27 +879,31 @@ export function createRunHistoryReader(db: Db): RunHistoryReader {
       return row === undefined ? undefined : fromRunRow(row);
     },
 
-    loadRunEvents: (runId) =>
-      db
-        .select({ payloadJson: runEvents.payloadJson })
-        .from(runEvents)
-        .where(eq(runEvents.runId, runId))
-        .orderBy(asc(runEvents.seq))
-        .all()
-        .map((r) => RunEventSchema.parse(JSON.parse(r.payloadJson))),
+    loadRunEvents: (runId) => readEventLog(db, runId, { streamingIncluded: true }).events,
+
+    // The tolerant log + what it had to leave out. `logs` reports the skipped rows as a note; the RESUME path
+    // does not use this — see `loadRunEventLogForReplay` below (ADR-0075).
+    loadRunEventLog: (runId) => readEventLog(db, runId, { streamingIncluded: true }),
+
+    loadRunEventLogForReplay: (runId) => {
+      const log = readEventLog(db, runId, { streamingIncluded: true });
+      if (log.skipped.length > 0) {
+        // ADR-0075. The skipped rows' `seq` values come from the COLUMN, so the diagnostic names rows this
+        // binary could not parse — which is the whole reason `readEventLog` selects them separately.
+        throw new UnreadableRunEventLogError(
+          runId,
+          log.skipped.map((row) => row.sequenceNumber),
+        );
+      }
+      return log.events;
+    },
 
     loadRunStateEvents: (runId) =>
-      db
-        .select({ payloadJson: runEvents.payloadJson })
-        .from(runEvents)
-        // Exclude the per-token/tool streaming firehose at the DB level so a gate/checkpoint fold over a long run
-        // doesn't pay to JSON.parse + Zod-validate thousands of `agent:token` rows the reconstruction ignores.
-        .where(
-          and(eq(runEvents.runId, runId), notInArray(runEvents.eventType, STREAMING_EVENT_TYPES)),
-        )
-        .orderBy(asc(runEvents.seq))
-        .all()
-        .map((r) => RunEventSchema.parse(JSON.parse(r.payloadJson))),
+      // Same forward-compatible read (ADR-0074 §5). The skipped rows are deliberately DISCARDED here rather than
+      // reported: this read is the 2.5.B Home's bounded gate/state fold, it already excludes the streaming
+      // firehose (so its max `seq` is not the run's anyway), and nothing seeds a sequence counter from it. A row
+      // this binary cannot read also cannot describe a gate this binary knows how to render.
+      readEventLog(db, runId, { streamingIncluded: false }).events,
 
     listActiveRuns: () =>
       db

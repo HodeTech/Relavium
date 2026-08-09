@@ -159,11 +159,15 @@ export interface TurnPolicyDeps {
   /** The session once/always memory. */
   readonly cache: ApprovalCache;
   /**
-   * Whether an approval preview targets a protected path, so `auto` falls back to a prompt rather than
+   * Whether the approval REQUEST targets a protected path, so `auto` falls back to a prompt rather than
    * auto-approving (ADR-0057). Absent ⇒ `auto` auto-approves every governed action (the fs-layer
    * protected-paths refusal is still the hard floor either way).
+   *
+   * Takes the whole request, not the preview: `request.preview` is a redacted DISPLAY projection (#91) whose
+   * scrub can turn a protected path into an unprotected-looking one, so a security classifier must read
+   * `request.unredactedPreview` — see {@link ToolApprovalRequest.unredactedPreview}.
    */
-  readonly isProtectedTarget?: (preview: ToolActionPreview) => boolean;
+  readonly isProtectedTarget?: (request: ToolApprovalRequest) => boolean;
 }
 
 /**
@@ -191,21 +195,46 @@ function advertiseFor(
 }
 
 /**
- * Whether an approval preview carries NO concrete target to review — no `path` (fs_write), `command` (process),
- * or `host` (egress http). True for `mcp_call` / `web_search` (`previewFor` returns `{}`), whose action class is
- * "enough" to gate but shows the user no specific server/tool/args. Such a grant must be once-only (never an
- * `always`-cached blank check).
+ * Whether an approval preview carries NO concrete target to review — no INFORMATIVE `path` (fs_write),
+ * `command` (process), or `host` (egress http).
+ *
+ * "Informative", not merely "present" (#W15-12): a field reduced entirely to redaction markers and separators
+ * shows the user nothing, and treating it as concrete let a blank check be cached. True for `mcp_call` /
+ * `web_search` (`previewFor` returns `{}`), whose action class is "enough" to gate but names no specific
+ * server/tool/args, AND for a fully-scrubbed target. Such a grant must be once-only (never an `always`-cached
+ * blank check). See {@link isInformative} for where the line falls.
  */
 function isBlankPreview(preview: ToolActionPreview): boolean {
   // Keyed by `keyof ToolActionPreview` so a NEW reviewable field breaks the build HERE (it must be added below)
   // rather than silently making a preview that carries it look "blank" — which would re-open the `always` blank
   // check this closes. Every field must be absent for the preview to count as blank.
-  const fields: Record<keyof ToolActionPreview, unknown> = {
+  const fields: Record<keyof ToolActionPreview, string | undefined> = {
     path: preview.path,
     command: preview.command,
     host: preview.host,
   };
-  return Object.values(fields).every((value) => value === undefined);
+  return Object.values(fields).every((value) => !isInformative(value));
+}
+
+/**
+ * The redaction marker `redactSecretShapedText` substitutes. A preview field reduced ENTIRELY to these carries
+ * no information, even though it is present.
+ */
+const REDACTION_MARKER = /\[redacted\]/gi;
+
+/**
+ * Does this preview field actually tell the approver anything?
+ *
+ * PRESENT is not the same as INFORMATIVE, and #91's fix is what made the difference reachable: `previewFor` now
+ * scrubs secret-shaped text, so a path or command can arrive as literally `[redacted]`. Treating that as
+ * informative meant a user could be shown `Approve write to [redacted]?`, press "always", and silently
+ * authorise EVERY later `write_file` / `run_command` / `http_request` for the session — having seen nothing.
+ * A blanket grant must be paid for with real information.
+ */
+function isInformative(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  // Strip the markers and any punctuation/whitespace that framed them; what remains is the real content.
+  return value.replace(REDACTION_MARKER, '').replace(/[\s/\\.:,;'"`|=-]+/g, '').length > 0;
 }
 
 /** The per-mode approval hook. The registry only invokes it for a GOVERNED dispatch, so every call is gated. */
@@ -232,7 +261,7 @@ function confirmFor(mode: ChatMode, deps: TurnPolicyDeps): ConfirmActionHook {
         // answer is NOT cacheable: a protected-path prompt must re-ask every time, and — since the session
         // cache is shared across modes — an "always" here must not silently blanket-approve that tool id in a
         // later accept-edits turn (a cross-mode consent escalation). So the auto fallback never remembers.
-        if (deps.isProtectedTarget?.(request.preview) === true) {
+        if (deps.isProtectedTarget?.(request) === true) {
           const cacheable = false;
           const answer = await deps.prompt(request, cacheable, signal);
           return toDecision(answer, request.toolId, deps.cache, cacheable);

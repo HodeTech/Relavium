@@ -233,12 +233,21 @@ interface ToolApprovalRequest {
   readonly toolId: ToolId;
   readonly action: ToolActionClass; // 'fs_write' | 'process' | 'egress' | 'os' (@relavium/shared TOOL_ACTION_CLASSES)
   readonly preview: ToolActionPreview;
+  /**
+   * The same field selection as `preview`, UNSCRUBBED — for IN-PROCESS CLASSIFICATION ONLY (#91). A host that
+   * classifies the target (the CLI's auto-mode protected-path check) must read this, never `preview`, because
+   * the scrub can turn a protected path into an unprotected-looking one. Deliberately ABSENT from the
+   * `agent:approval_requested` event, and MUST NEVER be serialized, logged, persisted, or forwarded across the
+   * event / IPC / `--json` boundary. Optional so a hand-built request stays constructible; the engine always
+   * sets it.
+   */
+  readonly unredactedPreview?: ToolActionPreview;
 }
 
-/** Secret-free, display-only — never a full URL/query, never a secret. */
+/** Secret-free (ENFORCED, not asserted), display-only — never a full URL/query, never a secret. */
 interface ToolActionPreview {
-  readonly path?: string;    // fs_write — the resolved target path
-  readonly command?: string; // process — the resolved command string
+  readonly path?: string;    // fs_write — the resolved target path, scrubbed WHOLE-STRING
+  readonly command?: string; // process — the resolved command string, scrubbed whole
   readonly host?: string;    // egress — the target host ONLY
 }
 
@@ -246,6 +255,28 @@ type ToolApprovalDecision =
   | { readonly outcome: 'approve' }
   | { readonly outcome: 'reject'; readonly reason?: string }; // a secret-free, display-safe label
 ```
+
+**Preview redaction (#91).** "Secret-free" is enforced by the registry, not asserted: every preview field is
+scrubbed with the same `redactSecretShapedText` detector applied to `agent:tool_call.toolInput`, because the
+ADR-0029(c) taint gate only covers *declared* `secret`-typed args — a model-placed credential in a
+`run_command` arg or a `write_file` path is not one. Two consequences a consumer must know:
+
+- **A field may contain the literal `[redacted]` marker and is NOT guaranteed to be a resolvable
+  path/command/host. Never parse it.** It is a display projection; the dispatch always runs against the real,
+  unscrubbed target.
+- **The scrub is whole-string, and a CLASSIFIER must not read it.** Two detector patterns have value classes
+  containing `/`, which cuts both ways: whole-string catches a credential whose value spans a separator, but
+  one match can also swallow the rest of a path (`./Access Token Backup/.ssh/authorized_keys` →
+  `./Access Token [redacted]`). No pattern gives both. So the two *uses* are split: `preview` is the display
+  copy, and `ToolApprovalRequest.unredactedPreview` carries the same field selection unscrubbed for
+  in-process classification only. It is deliberately **not** the raw `PolicyTarget` — an egress entry carries
+  the host and never the URL, whose query string is where a credential lives — and it is absent from the
+  `agent:approval_requested` event, so it never crosses the event / IPC / `--json` boundary.
+- **A `command` preview can be shaped to blind the approver.** The command is fully model-controlled and the
+  detector's patterns are public, so an injected model can match one deliberately and be displayed as
+  `[redacted]` — which reads as "we protected you" rather than "you cannot see this". Bounded by
+  `allowedCommands`/`allowedCommandGlobs` being deny-all by default and by the fs/egress floors, but real;
+  surfacing "this was redacted" to the prompt is an open follow-up.
 
 A reject ⇒ `ToolDeniedByUserError` (reason `user_rejected`); a hook that throws a non-abort error ⇒ the same
 fatal `tool_denied` (reason `approval_error`, fail-closed — consent could not be obtained, never the

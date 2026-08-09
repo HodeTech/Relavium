@@ -5,8 +5,14 @@ import {
   type SessionStreamHandleEvent,
 } from '@relavium/core';
 import { createModelCatalogStore, type Db, type SessionStore } from '@relavium/db';
-import type { AgentSessionRecord, SessionContext, SessionStatus } from '@relavium/shared';
+import type {
+  AgentSessionRecord,
+  SessionContext,
+  SessionMessage,
+  SessionStatus,
+} from '@relavium/shared';
 
+import type { GovernorWiring } from './session-host.js';
 import { deriveSessionTitle } from './session-title.js';
 
 /**
@@ -47,6 +53,20 @@ export function makeCatalogIdResolver(
 
 export interface SessionPersisterDeps {
   readonly store: SessionStore;
+  /**
+   * The session's budget wiring (`built.governor`), so the persister can attach itself as the durable sink for
+   * conservative commitments (ADR-0074 §4). `undefined` when the chat declares no cost cap — no governor exists,
+   * so there is nothing to commit.
+   *
+   * REQUIRED as a key, deliberately, even though the value may be `undefined`: attaching used to be a separate
+   * call at the persister's construction site, and there are FOUR such sites (`chat`, the `/clear` re-drive, the
+   * Home's inline chat, `chat-resume`). Wiring only one of them left every commitment on the others rejecting —
+   * a whole surface silently marked durability-broken. Making it a dep the compiler demands is what stops that
+   * recurring: a new persister site cannot forget what it cannot omit.
+   */
+  readonly governor: GovernorWiring | undefined;
+  /** Late-bind this persister as the session's durability probe (#W15-4) — see `SessionPersister.durabilityFailure`. */
+  readonly attachDurabilityProbe?: (probe: () => Error | undefined) => void;
   readonly handle: SessionHandle;
   readonly sessionId: string;
   /** The bound agent — frozen into `agent_snapshot` for reproducible resume/export; its `id` is the slug. */
@@ -76,8 +96,37 @@ export interface SessionPersisterDeps {
 export interface SessionPersister {
   /** Insert the session row and subscribe the stream. Call once, before the first turn. Idempotent-guarded. */
   start(): void;
+  /**
+   * The FIRST durable-write failure this persister hit, or `undefined` while the transcript and the cost
+   * columns still reflect what happened (#W15-4).
+   *
+   * `RunEventBus` isolates listener errors by design, so a persister that cannot write still lets the turn
+   * report success. That is right for a UI subscriber and wrong for the one subscriber that owns the money and
+   * the transcript: a failed `recordSessionCost` leaves the durable total low, so a resumed cap forgets real
+   * spend; a failed `writeTurn` leaves the exchange unwritten while the conversation carries on above it.
+   *
+   * So the failure is LATCHED here instead of vanishing, and the host gates new egress on it — the session
+   * degrades loudly rather than continuing to look healthy. Latched, never cleared: a store that failed once
+   * has already lost data this process cannot reconstruct.
+   */
+  readonly durabilityFailure: Error | undefined;
   /** Record the user's text for the in-flight turn — the REPL calls this immediately before `sendMessage`. */
   beginUserTurn(text: string): void;
+  /**
+   * Persist ONE conservative budget commitment (ADR-0074 §2/§4) — the estimate twin of the `cost:updated` write.
+   *
+   * §4 puts the write here rather than in the governor because the persister already owns every `history.db`
+   * write for a session and the catalog-id resolution that goes with it. It is called DIRECTLY by the governor's
+   * emit, not through the bus: the promise this returns is the durability the governor's barrier awaits, and a
+   * bus delivery would resolve whether or not anything reached disk.
+   *
+   * The store write is synchronous under `better-sqlite3`; the async signature is the seam the barrier needs and
+   * the shape a cloud store would require anyway.
+   */
+  recordConservativeCommitment(commitment: {
+    readonly model: string;
+    readonly estimateMicrocents: number;
+  }): Promise<void>;
   /** Unsubscribe from the stream (REPL teardown). The persisted session remains resumable. */
   close(): void;
 }
@@ -112,23 +161,27 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
   // prior marker is interleaved — the step-1-review trap). Seeded from the durable transcript on resume.
   const realMessageSeqs: number[] = [];
 
-  /** Append a REAL transcript row + record its sequence for the boundary mapping. `modelCatalogId` (assistant rows
-   *  only) is the already-resolved `model_catalog.id` FK target attributing the row to the model that produced it
-   *  (ADR-0059) — omitted (a NULL column) when unknown/uncataloged; a user row never carries one. */
-  const appendText = (role: 'user' | 'assistant', text: string, modelCatalogId?: string): void => {
-    const seq = sequenceNumber++;
-    realMessageSeqs.push(seq);
-    deps.store.appendMessage({
-      id: deps.uuid(),
-      sessionId: deps.sessionId,
-      sequenceNumber: seq,
-      role,
-      content: [{ type: 'text', text }],
-      // Conditional spread ⇒ no explicit `undefined` under exactOptionalPropertyTypes; a user row never carries one.
-      ...(modelCatalogId === undefined ? {} : { modelId: modelCatalogId }),
-      timestamp: iso(),
-    });
-  };
+  /** BUILD a REAL transcript row at `seq` — pure, no write and no in-memory mutation. `modelCatalogId`
+   *  (assistant rows only) is the already-resolved `model_catalog.id` FK target attributing the row to the model
+   *  that produced it (ADR-0059) — omitted (a NULL column) when unknown/uncataloged; a user row never carries one.
+   *
+   *  Staging is what makes the turn atomic (#228): the sequence counter and `realMessageSeqs` advance ONLY after
+   *  the whole turn has been durably written, so a failed write leaves no phantom sequence behind. */
+  const stageText = (
+    seq: number,
+    role: 'user' | 'assistant',
+    text: string,
+    modelCatalogId?: string,
+  ): SessionMessage => ({
+    id: deps.uuid(),
+    sessionId: deps.sessionId,
+    sequenceNumber: seq,
+    role,
+    content: [{ type: 'text', text }],
+    // Conditional spread ⇒ no explicit `undefined` under exactOptionalPropertyTypes; a user row never carries one.
+    ...(modelCatalogId === undefined ? {} : { modelId: modelCatalogId }),
+    timestamp: iso(),
+  });
 
   /**
    * Append an append-only compaction/trim boundary MARKER row (ADR-0062): `role:'system'`, the summary text
@@ -136,42 +189,106 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
    * ROLE-FILTERED real-message sequences (never the raw row count). Returns `false` when there is nothing to
    * drop (fewer real rows than kept — no marker written). The marker's own seq is NOT a real-message seq.
    */
-  const appendMarker = (summary: string, keptMessageCount: number): boolean => {
-    if (keptMessageCount >= realMessageSeqs.length) return false; // nothing older to supersede
+  const stageMarker = (summary: string, keptMessageCount: number): SessionMessage | undefined => {
+    if (keptMessageCount >= realMessageSeqs.length) return undefined; // nothing older to supersede
     const droppedThroughSequence = realMessageSeqs[realMessageSeqs.length - keptMessageCount - 1];
-    if (droppedThroughSequence === undefined) return false;
-    deps.store.appendMessage({
+    if (droppedThroughSequence === undefined) return undefined;
+    return {
       id: deps.uuid(),
       sessionId: deps.sessionId,
-      sequenceNumber: sequenceNumber++,
+      sequenceNumber,
       role: 'system',
       content: summary.length > 0 ? [{ type: 'text', text: summary }] : [],
       compaction: { droppedThroughSequence },
       timestamp: iso(),
-    });
-    return true;
+    };
   };
   // Derived from the FIRST user message so the Home list shows a readable label (2.5.B). Set once; a resumed
   // session hydrates the existing title in start() so a later message never overwrites it.
   let title: string | undefined;
 
-  const record = (status: SessionStatus): AgentSessionRecord => ({
+  /** Build the session row. `staged` supplies the values a not-yet-committed turn is ABOUT to adopt, so the
+   *  row written inside `writeTurn`'s transaction matches exactly what this process commits on success. */
+  const record = (
+    status: SessionStatus,
+    staged: { title?: string | undefined; input?: number; output?: number } = {},
+  ): AgentSessionRecord => ({
     id: deps.sessionId,
     agentSlug: deps.agent.id,
     agentSnapshot: deps.agent,
+    // ADR-0074 §4: a placeholder only. `mutableSessionColumns` DROPS this column on every session write, exactly
+    // as it drops `totalCostMicrocents` — `recordSessionConservativeCommitment` is its single writer, and letting
+    // a turn flush SET it from this in-memory record would clobber a concurrent commitment.
+    totalConservativeMicrocents: 0,
     context: deps.context,
     status,
-    totalInputTokens,
-    totalOutputTokens,
+    totalInputTokens: staged.input ?? totalInputTokens,
+    totalOutputTokens: staged.output ?? totalOutputTokens,
     totalCostMicrocents,
     createdAt,
     updatedAt: iso(),
-    ...(title === undefined ? {} : { title }),
+    ...((staged.title ?? title) === undefined ? {} : { title: staged.title ?? title }),
     // The session's coarse primary model (ADR-0059) — the bound model's `model_catalog.id` (the FK target), so a
     // reseat's new persister records the switched model. Omitted (NULL) when the model is not cataloged. Per-turn
     // attribution rides each assistant `SessionMessage.modelId`; this is the row-level label.
     ...(sessionModelCatalogId === undefined ? {} : { modelId: sessionModelCatalogId }),
   });
+
+  /**
+   * Persist one COMPLETED exchange: stage its rows, write them and the session row in one transaction, then —
+   * and only then — adopt the staged state in memory. Extracted from `onEvent`'s `session:turn_completed` arm
+   * so that arm reads as one decision (persist or just flush) rather than carrying the whole staging protocol
+   * inline; the ordering inside it is load-bearing and is documented where it happens.
+   */
+  const commitTurn = (userText: string, tokensUsed: { input: number; output: number }): void => {
+    const nextTitle = title ?? deriveSessionTitle(userText);
+    // STAGE the whole turn against provisional sequence numbers, then write it in ONE transaction (#228).
+    // Nothing in-memory moves until that write succeeds, so a failure leaves neither a half-written turn
+    // in the transcript nor a phantom sequence in this process.
+    const staged: SessionMessage[] = [stageText(sequenceNumber, 'user', userText)];
+    // The assistant row carries the (resolved) catalog id of the model that produced it (ADR-0059):
+    // `turnModelCatalogId` from this turn's last `cost:updated`, or `undefined` (NULL) when uncataloged.
+    if (assistantText.length > 0) {
+      staged.push(stageText(sequenceNumber + 1, 'assistant', assistantText, turnModelCatalogId));
+    }
+    const nextInput = totalInputTokens + tokensUsed.input;
+    const nextOutput = totalOutputTokens + tokensUsed.output;
+    deps.store.writeTurn({
+      messages: staged.map((message) => ({ message })),
+      session: record('active', { title: nextTitle, input: nextInput, output: nextOutput }),
+    });
+    // Committed. EVERY in-memory mutation for this turn happens here, AFTER the durable write returned —
+    // never before it. The token totals in particular: the columns are deliberately not accumulated for
+    // a turn whose messages did not persist (the same rule the comment above states for an errored or
+    // aborted turn), so advancing them ahead of the write made a failed turn's tokens leak into the next
+    // turn's row — the session then claimed two turns' tokens for one visible exchange.
+    title = nextTitle;
+    sequenceNumber += staged.length;
+    realMessageSeqs.push(...staged.map((m) => m.sequenceNumber));
+    totalInputTokens = nextInput;
+    totalOutputTokens = nextOutput;
+  };
+
+  let durabilityFailure: Error | undefined;
+
+  /**
+   * Run a durable write, LATCHING the first failure and then re-throwing it (#W15-4).
+   *
+   * Re-throwing is load-bearing twice over. It skips every in-memory mutation the arm had queued after the
+   * write — which is the whole point: a total that advances past a write that did not land makes this process
+   * believe spend it never recorded, and `mutableSessionColumns` makes that write the SINGLE writer, so no
+   * later flush can repair it. And it keeps #228's other half: `RunEventBus` isolates the throw and routes it
+   * to the listener-error sink, so the user is still TOLD. Swallowing it here would have latched the state
+   * and silently removed the notice.
+   */
+  const persistDurably = (write: () => void): void => {
+    try {
+      write();
+    } catch (err) {
+      durabilityFailure ??= err instanceof Error ? err : new Error(String(err), { cause: err });
+      throw err;
+    }
+  };
 
   const onEvent = (event: SessionStreamHandleEvent): void => {
     switch (event.type) {
@@ -184,13 +301,10 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         assistantText = '';
         return;
       case 'cost:updated': {
-        // The sink stamps the session-wide running total here; the latest value is the session's cost.
-        totalCostMicrocents = event.cumulativeCostMicrocents;
         // ADR-0059: the invoking model of this billed egress — attributable across a failover. Resolve it to its
         // catalog id NOW (the FK target); the LAST such event of the turn is the model that produced the committed
         // text, so it becomes the assistant row's `modelId` in `session:turn_completed`. Undefined ⇒ NULL (uncataloged).
         const catalogId = deps.resolveModelCatalogId?.(event.model);
-        turnModelCatalogId = catalogId;
         // ADR-0070: fold THIS egress into the durable per-model attribution — the single writer of
         // `agent_sessions.total_cost_microcents`, additively, in one transaction with the `session_costs` row.
         //
@@ -200,17 +314,24 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // would silently break the invariant on every errored turn. Writing per event also closes a live hole: a
         // manual `/compact` whose summariser BILLED and then FAILED emits no compaction/turn terminal at all, so its
         // real spend would otherwise sit unflushed forever.
-        deps.store.recordSessionCost({
-          id: deps.uuid(),
-          sessionId: deps.sessionId,
-          model: event.model, // the RAW provider string — the attribution key (never the catalog UUID)
-          ...(catalogId === undefined ? {} : { modelCatalogId: catalogId }),
-          inputTokens: event.inputTokens,
-          outputTokens: event.outputTokens,
-          costMicrocents: event.costMicrocents, // the PER-ATTEMPT increment, never the cumulative
-          priced: event.priced ?? true, // absent on an older event ⇒ assume priced (the pre-ADR-0070 behaviour)
-          ts: deps.now(),
+        persistDurably(() => {
+          deps.store.recordSessionCost({
+            id: deps.uuid(),
+            sessionId: deps.sessionId,
+            model: event.model, // the RAW provider string — the attribution key (never the catalog UUID)
+            ...(catalogId === undefined ? {} : { modelCatalogId: catalogId }),
+            inputTokens: event.inputTokens,
+            outputTokens: event.outputTokens,
+            costMicrocents: event.costMicrocents, // the PER-ATTEMPT increment, never the cumulative
+            priced: event.priced ?? true, // absent on an older event ⇒ assume priced (the pre-ADR-0070 behaviour)
+            ts: deps.now(),
+          });
         });
+        // AFTER the durable write, never before it (#W15-4) — `persistDurably` re-throws, so a failed write
+        // never reaches these two lines. The running total used to advance FIRST, so a failed
+        // `recordSessionCost` left this process believing spend it had not recorded.
+        totalCostMicrocents = event.cumulativeCostMicrocents;
+        turnModelCatalogId = catalogId;
         return;
       }
       case 'session:turn_completed':
@@ -235,15 +356,23 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           // Derive the title HERE (not in beginUserTurn) — from the FIRST user message of a COMPLETED exchange of
           // a titleless session, so an aborted/errored earlier turn never labels the row. A blank message yields
           // undefined, so the next non-blank completed message becomes the title; a resumed session keeps its own.
-          title ??= deriveSessionTitle(pendingUserText);
-          appendText('user', pendingUserText);
-          // The assistant row carries the (resolved) catalog id of the model that produced it (ADR-0059):
-          // `turnModelCatalogId` from this turn's last `cost:updated`, or `undefined` (NULL) when uncataloged.
-          if (assistantText.length > 0) appendText('assistant', assistantText, turnModelCatalogId);
-          totalInputTokens += event.tokensUsed.input;
-          totalOutputTokens += event.tokensUsed.output;
+          // A failed write already skipped the reset below by throwing, so `pendingUserText` survived — but
+          // only by ACCIDENT, and the next `beginUserTurn` overwrote it anyway, losing an exchange the
+          // in-memory session still showed (#W15-4). The failure is now latched as well, which is what makes
+          // `beginUserTurn` refuse the overwrite and the host refuse further egress.
+          // The guard above already narrowed it; capture it so the callback closes over a `string` rather
+          // than re-asserting one (CLAUDE.md rule 1 — no unsafe `as`).
+          const userText = pendingUserText;
+          persistDurably(() => {
+            commitTurn(userText, event.tokensUsed);
+          });
+        } else {
+          // An errored or aborted turn persists no messages and accumulates no TOKENS, but the row is still
+          // flushed: `updatedAt` moves, and the session COST (already folded per `cost:updated`) is real.
+          persistDurably(() => {
+            deps.store.updateSession(record('active'));
+          });
         }
-        deps.store.updateSession(record('active'));
         pendingUserText = undefined;
         assistantText = '';
         turnModelCatalogId = undefined;
@@ -252,15 +381,33 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // ADR-0062: write the append-only boundary marker (summary + role-filtered droppedThroughSequence) and
         // add the summariser's REAL token usage to the totals (the cost microcents already flowed via
         // cost:updated → totalCostMicrocents; flush the row to persist both). Nothing durable is deleted.
-        appendMarker(event.summary, event.keptMessageCount);
-        totalInputTokens += event.tokensUsed.input;
-        totalOutputTokens += event.tokensUsed.output;
-        deps.store.updateSession(record('active'));
+        {
+          const marker = stageMarker(event.summary, event.keptMessageCount);
+          const nextInput = totalInputTokens + event.tokensUsed.input;
+          const nextOutput = totalOutputTokens + event.tokensUsed.output;
+          persistDurably(() => {
+            deps.store.writeTurn({
+              messages: marker === undefined ? [] : [{ message: marker }],
+              session: record('active', { input: nextInput, output: nextOutput }),
+            });
+          });
+          if (marker !== undefined) sequenceNumber += 1; // the marker's seq is NOT a real-message seq
+          totalInputTokens = nextInput;
+          totalOutputTokens = nextOutput;
+        }
         return;
       case 'session:trimmed':
         // A deterministic /trim — a summary-less boundary marker, no cost. Flush the row (updatedAt) after.
-        appendMarker('', event.keptMessageCount);
-        deps.store.updateSession(record('active'));
+        {
+          const marker = stageMarker('', event.keptMessageCount);
+          persistDurably(() => {
+            deps.store.writeTurn({
+              messages: marker === undefined ? [] : [{ message: marker }],
+              session: record('active'),
+            });
+          });
+          if (marker !== undefined) sequenceNumber += 1;
+        }
         return;
       case 'session:cancelled':
         // The session's sole terminal — mark it ended (still resumable from the persisted transcript), then
@@ -274,7 +421,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
     }
   };
 
-  return {
+  const persister: SessionPersister = {
     start(): void {
       if (started) return;
       started = true;
@@ -301,7 +448,15 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       }
       unsubscribe = deps.handle.subscribe(onEvent);
     },
+    get durabilityFailure(): Error | undefined {
+      return durabilityFailure;
+    },
     beginUserTurn(text: string): void {
+      // A staged turn that is still pending because its write FAILED must never be overwritten (#W15-4) —
+      // that overwrite is how the durable transcript lost an exchange the in-memory session still had. The
+      // host refuses new egress once `durabilityFailure` is set, so this is the backstop rather than the
+      // gate; on the healthy path `pendingUserText` is always cleared by the turn terminal above.
+      if (durabilityFailure !== undefined) return;
       // Only STAGE the user text; the title is derived when (and if) the exchange COMPLETES + persists (see
       // `session:turn_completed`). Deriving it here would stamp the session row with a title from an ABORTED /
       // errored first turn whose message rows are rolled back — a label with no transcript behind it.
@@ -309,9 +464,49 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       assistantText = '';
       turnModelCatalogId = undefined; // a fresh turn: attribute the assistant row to THIS turn's egress, never a prior one
     },
+    async recordConservativeCommitment(commitment: {
+      readonly model: string;
+      readonly estimateMicrocents: number;
+    }): Promise<void> {
+      // `async`, so a SYNCHRONOUS store throw reaches the governor's barrier as a REJECTION. The store write
+      // is synchronous under `better-sqlite3`, and the comment below already says the barrier "needs a real
+      // rejection to classify" — which a sync throw is not. Same class as `checkpointer.load`.
+      // ADR-0074 §4. The store's own transaction is what makes this durable: the per-model row and the session
+      // aggregate move together under `BEGIN IMMEDIATE`, so a crash between them is impossible. Nothing here
+      // touches a realized figure — that separation is the ADR's central negative guarantee, and it lives in the
+      // store rather than being re-asserted at every caller.
+      //
+      // The catalog id is resolved the same way the realized write resolves it, so the conservative row lands on
+      // the SAME `(session, model)` bucket and the two figures stay joinable. Not awaited-then-caught here: the
+      // governor's barrier is the caller and it needs a real rejection to classify.
+      // ONCE, not twice: the resolver is documented "live per lookup", so calling it in both the guard and the
+      // value costs two catalog queries on a promise the governor's barrier awaits — and leaves a window where a
+      // concurrent `/models` refresh between them yields `undefined`. The realized path already does this.
+      const catalogId = deps.resolveModelCatalogId?.(commitment.model);
+      deps.store.recordSessionConservativeCommitment({
+        id: deps.uuid(),
+        sessionId: deps.sessionId,
+        model: commitment.model, // the RAW provider string — the attribution key, never the catalog UUID
+        ...(catalogId === undefined ? {} : { modelCatalogId: catalogId }),
+        estimateMicrocents: commitment.estimateMicrocents,
+        ts: deps.now(),
+      });
+      await Promise.resolve();
+    },
     close(): void {
       unsubscribe?.();
       unsubscribe = undefined;
     },
   };
+  // ADR-0074 §4: the persister attaches ITSELF as the durable sink, rather than every construction site
+  // remembering to. That inversion is the fix for a real gap — the manual call had been wired at exactly one of
+  // the four sites, so `/clear`, the Home's inline chat and `chat-resume` were all committing into a rejected
+  // promise and marking their session durability-broken on the first usage-less response.
+  // #W15-4: the host's `preEgress` gate reads THIS persister's latched failure, so a session whose record is
+  // already lost stops spending instead of carrying on above a transcript that fell behind.
+  deps.attachDurabilityProbe?.(() => persister.durabilityFailure);
+  deps.governor?.attachConservativeWriter((commitment) =>
+    persister.recordConservativeCommitment(commitment),
+  );
+  return persister;
 }

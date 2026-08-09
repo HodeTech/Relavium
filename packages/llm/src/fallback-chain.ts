@@ -1,6 +1,7 @@
-import type { BackoffStrategy, ContentPart, MediaSource } from '@relavium/shared';
+import type { AbortSignalLike, BackoffStrategy, ContentPart, MediaSource } from '@relavium/shared';
 
 import type { CostTracker, CostUpdate } from './cost-tracker.js';
+import { UnknownModelError } from './errors.js';
 import { isRetryable, LlmProviderError, makeLlmError } from './llm-error.js';
 import type {
   LlmError,
@@ -102,6 +103,16 @@ export interface AttemptRecord {
   readonly error?: LlmError;
   /** Why a `'skipped'` entry was skipped (provider in cooldown, or it can't satisfy the request). */
   readonly skipReason?: string;
+  /**
+   * `false` when the attempt produced real usage but the model could not be PRICED, so `cost` is absent for a
+   * reason other than "there was nothing to charge" (2.6.Q's realized-cost half, ADR-0071 §K7).
+   *
+   * Without it, "no cost" was ambiguous between *could not price* and *genuinely free* — and a strict cost cap
+   * cannot be enforced over a model whose spend is unknown, so the surface must be able to say so instead of
+   * silently reporting zero. Absent (rather than `true`) on the ordinary priced path, so nothing changes shape
+   * for existing consumers; ADR-0070's durable `unpriced_calls` counter is the same distinction, persisted.
+   */
+  readonly priced?: false;
 }
 
 /**
@@ -144,8 +155,13 @@ export interface FallbackChainOptions {
    * The delay primitive used for backoff between same-entry retries. **Required and host-injected**:
    * the seam is platform-free (no ambient `setTimeout`), so the host supplies the timer — a
    * `setTimeout`-based delay on every real surface, a controllable fake in tests.
+   *
+   * The optional `signal` must settle the delay EARLY when it aborts, and clear the underlying timer
+   * (#W15-14). A provider's `Retry-After` is honoured up to a 60 s ceiling, and without this a cancel
+   * during that window did nothing: the turn kept sitting in a timer no one was waiting for any more.
+   * Optional so a 1-argument implementation stays assignable — but every real host takes it.
    */
-  readonly sleep: (ms: number) => Promise<void>;
+  readonly sleep: (ms: number, signal?: AbortSignalLike) => Promise<void>;
   /** Injectable clock for cooldown bookkeeping (default: `Date.now`, an ECMAScript primitive). */
   readonly now?: () => number;
   /** Base backoff delay in ms before the first retry of an entry (default 250). */
@@ -275,7 +291,7 @@ type GenerateAttempt =
 export class FallbackChain {
   readonly #plan: readonly FallbackPlanEntry[];
   readonly #options: FallbackChainOptions;
-  readonly #sleep: (ms: number) => Promise<void>;
+  readonly #sleep: (ms: number, signal?: AbortSignalLike) => Promise<void>;
   readonly #now: () => number;
   readonly #backoffBaseMs: number;
   readonly #backoffMaxMs: number;
@@ -385,7 +401,7 @@ export class FallbackChain {
         continue;
       }
       if (attempt < budget + bonus) {
-        await this.#backoff(entry, attempt - 1);
+        await this.#backoff(entry, attempt - 1, req, outcome.error);
       }
     }
     return undefined; // budget exhausted → advance to the next entry
@@ -464,7 +480,7 @@ export class FallbackChain {
         continue;
       }
       if (attempt < budget + bonus) {
-        await this.#backoff(entry, attempt - 1);
+        await this.#backoff(entry, attempt - 1, req, failure);
       }
     }
     return 'advance'; // budget exhausted → try the next entry
@@ -549,7 +565,45 @@ export class FallbackChain {
       }
       return error; // pre-content throw → caller decides failover
     }
-    this.#emitSuccess(record, entry.model, usage);
+    // The success emit sits OUTSIDE the try above, deliberately — but the FOLD inside it needs its own guard
+    // (#W15-9). `#foldUsage` re-throws anything that is not `UnknownModelError` so a money bug is loud: a
+    // provider returning non-integer usage trips `assertAccountableUsage`, a broken overlay or a custom tracker
+    // throws. On the `generate()` path that work sits INSIDE the attempt's try, so the throw reaches the caller
+    // classified. Here it escaped the async generator raw — breaking this method's own contract ("a terminal
+    // failure is surfaced as an `error` chunk, not a throw") and taking down a turn whose content had already
+    // been produced and billed for.
+    //
+    // Only the fold is guarded. A throw from the attempt OBSERVER is the consumer's bug, and it keeps
+    // propagating on both paths exactly as before — narrowing here means this guard cannot quietly become the
+    // handler for someone else's defect.
+    if (usage === undefined) {
+      this.#emitSuccess(record, entry.model, undefined); // nothing to fold
+      return undefined;
+    }
+    let folded: FoldedUsage;
+    try {
+      folded = this.#foldUsage(entry.model, usage);
+    } catch (err) {
+      // A FIXED message, with the original only as `cause`. The raw text is arbitrary — a custom tracker's
+      // throw — and this message is serialized into `session:turn_completed.error` / `node:failed.error`,
+      // where `cause` never goes. `kind: 'unknown'` derives `retryable: false`, so the node-retry layer does
+      // not re-run a call the provider already billed for.
+      const error = makeLlmError({
+        provider: entry.provider.id,
+        kind: 'unknown',
+        message: 'cost accounting failed after a successful streamed attempt',
+        cause: err,
+      });
+      // The fold runs BEFORE the emit, so no success record was written — this `failed` record is the
+      // attempt's only one, not a duplicate.
+      this.#emit({ ...record, outcome: 'failed', error });
+      // SURFACED, not returned. `#runEntryStream` checks `state.committed` before it looks at the returned
+      // failure, so on the committed path a returned error is dropped on the floor — silence, in the one
+      // place the money path was made loud on purpose.
+      yield { type: 'error', error };
+      return undefined;
+    }
+    this.#emitFolded(record, usage, folded);
     return undefined;
   }
 
@@ -736,14 +790,43 @@ export class FallbackChain {
     });
   }
 
-  async #backoff(entry: FallbackPlanEntry, retryIndex: number): Promise<void> {
-    const delay = backoffDelayMs(
-      entry.backoff ?? 'exponential',
-      retryIndex,
-      this.#backoffBaseMs,
-      this.#backoffMaxMs,
-    );
-    await this.#sleep(delay);
+  /**
+   * Wait before re-attempting an entry. The provider's OWN `Retry-After` wins when it sent one (#279): on a
+   * rate limit it knows when its window reopens, and computing our own delay was guesswork that either
+   * hammered it early or waited longer than needed.
+   *
+   * Deliberately NO jitter, in either branch. ADR-0040 pins this backoff as deterministic — no jitter, never
+   * `Math.random` — so a replay reproduces the same schedule; `retry.ts` follows the same convention. The
+   * thundering-herd risk that jitter would address is therefore accepted and left documented rather than
+   * silently traded away here: parallel branches that hit one provider's rate limit together will retry
+   * together. Revisiting that is an ADR-0040 amendment, not a local edit.
+   *
+   * The honoured value is already normalized and CLAMPED at the seam ({@link retryAfterMsFromHeaders}): a
+   * hostile `retry-after: 999999999` arrives as the 60 s ceiling, not as `undefined`. This docblock used to
+   * claim the opposite — that an oversized value was dropped and we fell back to our own curve (#W15-14) —
+   * which is exactly the behaviour `clampRetryAfter` was changed AWAY from, because falling back meant
+   * retrying after ~250 ms against an endpoint that had just asked for two minutes.
+   *
+   * That ceiling is why the wait must be abort-aware: 60 s is long enough that a cancel arriving mid-wait
+   * has to be honoured. The signal is threaded to the host's timer, which clears it and settles early; the
+   * caller's next loop iteration then sees `#aborted(req)` and emits the cancellation.
+   */
+  async #backoff(
+    entry: FallbackPlanEntry,
+    retryIndex: number,
+    req: LlmRequest,
+    error?: LlmError,
+  ): Promise<void> {
+    const requested = error?.retryAfterMs;
+    const delay =
+      requested ??
+      backoffDelayMs(
+        entry.backoff ?? 'exponential',
+        retryIndex,
+        this.#backoffBaseMs,
+        this.#backoffMaxMs,
+      );
+    await this.#sleep(delay, req.signal);
   }
 
   async #resolveKey(provider: ProviderId): Promise<string> {
@@ -773,27 +856,59 @@ export class FallbackChain {
       this.#emit({ ...record, outcome: 'succeeded' });
       return;
     }
-    // Best-effort: `priceModel` throws `UnknownModelError` for a model id outside the pricing table
-    // (a new snapshot, an OpenAI-compatible / self-hosted / custom-base-URL model). The attempt has
-    // ALREADY succeeded and its tokens were delivered — an unpriced model must degrade to no cost,
-    // never fail the call. Cost accuracy for unlisted models is a pricing-table concern, not a runtime error.
+    this.#emitFolded(record, usage, this.#foldUsage(model, usage));
+  }
+
+  /**
+   * Fold usage into the cost tracker, and return the priced/unpriced outcome.
+   *
+   * `priceModel` throws `UnknownModelError` for a model id outside the pricing table (a new snapshot, an
+   * OpenAI-compatible / self-hosted / custom-base-URL model). The attempt has ALREADY succeeded and its
+   * tokens were delivered — an unpriced model must degrade to no cost, never fail the call. Cost accuracy for
+   * unlisted models is a pricing-table concern, not a runtime error.
+   *
+   * NARROW, not bare (#194): the catch used to swallow EVERY exception, so a genuine defect in the money path —
+   * a bad `Usage`, a broken overlay, a throwing custom tracker — silently produced "no cost" and looked exactly
+   * like an unpriced model. Anything that is not `UnknownModelError` propagates, because a money bug must be
+   * loud (`docs/standards/error-handling.md` — no silent catches).
+   *
+   * Split out of {@link #emitSuccess} for #W15-9: the streaming path needs to guard THIS — an accounting
+   * defect — without also swallowing a throw from the attempt observer, which is the consumer's bug and keeps
+   * propagating on both paths exactly as before.
+   */
+  #foldUsage(model: string, usage: Usage): FoldedUsage {
     let cost: CostUpdate | undefined;
     try {
       cost = this.#options.costTracker?.record(model, usage);
-    } catch {
-      cost = undefined;
+    } catch (error_) {
+      if (!(error_ instanceof UnknownModelError)) throw error_;
+      return { unpriced: true };
     }
+    return { unpriced: false, ...(cost === undefined ? {} : { cost }) };
+  }
+
+  /** Emit the success record for an attempt whose usage has already been folded by {@link #foldUsage}. */
+  #emitFolded(record: AttemptRecord, usage: Usage, folded: FoldedUsage): void {
     this.#emit({
       ...record,
+      // 2.6.Q's realized-cost half: distinguish "could not price" from "nothing to charge".
+      ...(folded.unpriced ? { priced: false as const } : {}),
       outcome: 'succeeded',
       usage,
-      ...(cost === undefined ? {} : { cost }),
+      ...(folded.cost === undefined ? {} : { cost: folded.cost }),
     });
   }
 
   #emit(record: AttemptRecord): void {
     this.#options.onAttempt?.(record);
   }
+}
+
+/** The outcome of folding one attempt's usage into the cost tracker — `unpriced` when the model is outside
+ *  the pricing table (`cost` absent for a reason other than "there was nothing to charge"). */
+interface FoldedUsage {
+  readonly cost?: CostUpdate;
+  readonly unpriced: boolean;
 }
 
 /** Mutable per-attempt flag: whether any content chunk has been forwarded (commits the stream). */

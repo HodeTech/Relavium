@@ -56,6 +56,7 @@ import {
   isRecord,
   redactKey,
   toModelListing,
+  readRetryAfter,
 } from './shared.js';
 
 /**
@@ -366,11 +367,23 @@ function isContentPolicyCode(code: string | undefined): boolean {
 
 /** Normalize an SDK `APIError` into an `LlmError`, typed by the structural subset it reads. */
 function mapOpenAiApiError(
-  err: { status?: unknown; code?: unknown; type?: unknown; message: string },
+  err: {
+    status?: unknown;
+    code?: unknown;
+    type?: unknown;
+    message: string;
+    // #W15-22: declared on the PARAMETER instead of cast back on at the call site. The old form asserted a
+    // `headers` field onto a type that did not have one — an assertion that would have kept compiling if the
+    // shape ever changed. `readRetryAfter` is already fully defensive about what it receives.
+    headers?: { readonly get?: unknown } | undefined;
+  },
   provider: ProviderId,
 ): LlmError {
   const status = typeof err.status === 'number' ? err.status : undefined;
   const code = firstNonEmptyString(err.code, err.type);
+  // #279: the provider's own requested wait, when it sent one. A value object (not a thrown APIError) has no
+  // headers, so this is genuinely optional — absent means "no instruction", never "wait zero".
+  const retryAfterMs = readRetryAfter(err.headers);
   // A content-policy block normalizes to content_filter regardless of HTTP status (a moderation 400 would
   // otherwise map to bad_request) — the wired image-gen path then delivers the documented taxonomy.
   let kind: LlmErrorKind;
@@ -385,6 +398,7 @@ function mapOpenAiApiError(
     provider,
     kind,
     message: err.message,
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     ...(status === undefined ? {} : { status }),
     ...(code === undefined ? {} : { code }),
   });
@@ -434,6 +448,9 @@ export function openaiErrorToLlmError(err: unknown, provider: ProviderId, key?: 
     kind: base.kind,
     message: redactKey(base.message, key),
     ...(base.status === undefined ? {} : { status: base.status }),
+    // Carried through the re-wrap: dropping it here would silently discard the provider's Retry-After on
+    // exactly the custom-endpoint path that most needs a polite retry (#279).
+    ...(base.retryAfterMs === undefined ? {} : { retryAfterMs: base.retryAfterMs }),
     ...(base.code === undefined ? {} : { code: redactKey(base.code, key) }),
   });
 }
@@ -1308,11 +1325,33 @@ export interface OpenAiAdapterDeps {
   readonly baseURL?: string;
   /** Inject a `fetch` (the replayer/recorder) in place of the network. */
   readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-  /** Override the SDK retry count (the replayer sets 0 for deterministic, fast tests). */
+  /**
+   * Override the SDK's own retry count. **Defaults to `0`** — the vendor SDK's built-in retry is deliberately
+   * OFF in production, because `FallbackChain` owns the retry/fallback policy (ADR-0011: "the runner — not the
+   * adapter — owns the retry/fallback policy"). Left at the SDK default it silently retried a 429/5xx two more
+   * times INSIDE the adapter: the chain never saw the first failure, so failover was delayed by the SDK's own
+   * backoff, the node retry budget was double-counted, and a rate limit looked like a slow call rather than a
+   * reason to move to the next provider (#276). Tests that want the SDK's behaviour can still set it.
+   *
+   * This governs the **chain-governed** calls (`generate` / `stream`) only. The surfaces `FallbackChain` does
+   * NOT sit above — live model discovery and the async media-job poll — run with `maxRetries: 0` as well. A
+   * small SDK retry there was tried and REVERTED: the SDK'''s sleep honours `retry-after` with no ceiling and no
+   * abort awareness, so a hostile `retry-after-ms` parks the call for days. See the note below.
+   */
   readonly maxRetries?: number;
 }
 
 /** Build an OpenAI-compatible `LlmProvider`. Exposed as `openaiAdapter` / `deepseekAdapter`. */
+/**
+ * **The off-chain paths deliberately run with NO SDK retry either — and that is a knowing residual, not an
+ * oversight.** `listModels` and the media-job poll are not governed by `FallbackChain`, so nothing retries a
+ * transient fault on them: one 500 fails a `/models refresh`, and one 429 on a status poll settles an
+ * already-billed media node. Giving them the SDK's retry (an earlier attempt at this) was worse: that sleep is
+ * neither abort-aware nor ceiling-bounded and the SDK parses `Retry-After` itself, so a cancel was ignored for
+ * the whole wait and a hostile `retry-after-ms` could park the call indefinitely — past both
+ * `boundedListModels`'s timeout and the seam's `RETRY_AFTER_CEILING_MS`. Resilience here needs a retry WE own,
+ * abort-aware and ceiling-bounded; until that lands, no retry is the safer of the two failure modes.
+ */
 export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
   const providerId: OpenAiProviderId = deps.providerId ?? 'openai';
   const supports = providerId === 'deepseek' ? DEEPSEEK_SUPPORTS : OPENAI_SUPPORTS;
@@ -1334,12 +1373,18 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
   const endpoint: EndpointKind = endpointKindFor(providerId, deps.baseURL);
   // Host-qualified so two custom gateways never share learned param rejections (see `endpointScope`).
   const rejectionScope = endpointScope(endpoint, deps.baseURL);
-  const createClient = (key: string): OpenAI =>
+  const createClient = (key: string, maxRetries = deps.maxRetries ?? 0): OpenAI =>
     new OpenAI({
       apiKey: key,
       ...(baseURL === undefined ? {} : { baseURL }),
       ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
-      ...(deps.maxRetries === undefined ? {} : { maxRetries: deps.maxRetries }),
+      // ALWAYS passed, never conditionally: an absent option means the SDK's own default (2), which is
+      // exactly the pre-emption #276 is about. Explicit beats implicit. Floored, because a negative value
+      // makes the SDK's retry loop unbounded (`retriesRemaining - 1` stays truthy at -1).
+      // `Math.trunc(NaN)` is NaN and `Math.max(0, NaN)` is NaN, so a non-finite budget would reach the SDK as
+      // one. Normalise to 0 first: a caller who cannot name a retry count gets none, which is this seam's
+      // documented default (the runner owns retry policy — ADR-0011).
+      maxRetries: Number.isFinite(maxRetries) ? Math.max(0, Math.trunc(maxRetries)) : 0,
     });
 
   return {
@@ -1498,6 +1543,14 @@ export function createOpenAiAdapter(deps: OpenAiAdapterDeps = {}): LlmProvider {
           }),
         };
       }
+      // Deliberately maxRetries 0 (the default), NOT the off-chain budget. Giving the poll SDK retry looked
+      // right — nothing else retries it — but it opened a worse hole than it closed: the SDK's retry sleep is
+      // neither abort-aware nor ceiling-bounded, and it parses `Retry-After` ITSELF, so the seam's
+      // RETRY_AFTER_CEILING_MS never runs. A hostile or broken gateway (`base_url` is user-configurable,
+      // ADR-0065) answering one status poll with `retry-after-ms: 999999999` parked the poll for ~11.6 days,
+      // ignoring the user's cancel and holding a run slot and an event-loop timer. Resilience here has to be a
+      // retry WE own — abort-aware and ceiling-bounded — which is the follow-up; an unbounded one is worse
+      // than none.
       return pollMediaJobSora(createClient(key), jobId, providerId, signal, key);
     },
     // ADR-0062 context-compaction seam — the shared defaults (covers both OpenAI and DeepSeek via this one

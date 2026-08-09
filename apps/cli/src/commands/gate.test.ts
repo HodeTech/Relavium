@@ -15,6 +15,9 @@ import {
   createModelCatalogStore,
   createProviderStore,
   createRunHistoryStore,
+  isCorruptRunEventError,
+  isUnreadableRunEventLogError,
+  runEvents,
   runMigrations,
   type Db,
   type DbClient,
@@ -26,11 +29,17 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
 import { createCliHost } from '../engine/host.js';
 import type { GatePrompter } from '../gate/prompter.js';
-import { isCliError } from '../process/errors.js';
+import { isCliError, toUserFacing } from '../process/errors.js';
 import { EXIT_CODES } from '../process/exit-codes.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo, CHAT_TEXT_CAPABILITY_FLAGS } from '../test-support.js';
-import { gateCommand, resolveSaveToRoot, selectGate, type GateCommandDeps } from './gate.js';
+import {
+  gateCommand,
+  legacyMediaJobHoldNotice,
+  resolveSaveToRoot,
+  selectGate,
+  type GateCommandDeps,
+} from './gate.js';
 
 /** A WorkflowEngine stub exposing only resumeFromCheckpoint — for the closed-handle / EngineStateError paths
  *  that the real engine can't be driven into deterministically (they need a concurrent-settle race). */
@@ -440,13 +449,6 @@ workflow:
           .run('{not json', runId),
     },
     {
-      label: 'a corrupt persisted event log (non-JSON payload)',
-      corrupt: (runId: string) =>
-        client.sqlite
-          .prepare('UPDATE run_events SET payload_json = ? WHERE run_id = ? AND seq = 0')
-          .run('{not json', runId),
-    },
-    {
       label: 'a valid-JSON-but-non-object inputs blob (array)',
       corrupt: (runId: string) =>
         client.sqlite.prepare('UPDATE runs SET input_json = ? WHERE id = ?').run('[]', runId),
@@ -477,6 +479,31 @@ workflow:
     await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
       code: 'invalid_invocation',
     });
+  });
+
+  it('surfaces a DAMAGED event row as its typed error, at exit 1 like every other surface', async () => {
+    // Moved out of the exit-2 table above, deliberately. `relavium logs` on this identical log exits 1 (its
+    // typed error reaches `toUserFacing`); `gate` exited 2 only because its catch re-wrapped the error as
+    // `invalid_invocation`. The invocation was valid in both, and `toUserFacing`'s corrupt branch already
+    // composes the better sentence — the run, the `seq`, the `event_type`, and what is still listable.
+    const { runId } = await setupPausedRun();
+    client.sqlite
+      .prepare('UPDATE run_events SET payload_json = ? WHERE run_id = ? AND seq = 0')
+      .run('{not json', runId);
+    const { io } = captureIo();
+
+    let thrown: unknown;
+    try {
+      await gateCommand({ runId, approve: true }, deps(io));
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(isCorruptRunEventError(thrown)).toBe(true);
+    const projected = toUserFacing(thrown);
+    expect(projected.exitCode).toBe(EXIT_CODES.workflowFailed); // 1, not 2 — matches `logs` on the same log
+    expect(projected.message).toContain(runId);
+    expect(projected.message).toContain('seq 0');
   });
 
   it('fails closed (exit-2) on a run with a SECRET input — a masked value can never be restored on resume', async () => {
@@ -685,6 +712,7 @@ describe('selectGate', () => {
     totalInputTokens: 0,
     totalOutputTokens: 0,
     cumulativeCostMicrocents: 0,
+    conservativeCostMicrocents: 0,
     ...over,
   });
   const gate = (gateId: string, isBudgetGate = false) => ({ gateId, nodeId: gateId, isBudgetGate });
@@ -777,5 +805,125 @@ describe('resolveSaveToRoot (save_to scope root on resume)', () => {
 
   it('falls back to the resumer cwd when no project root was persisted (null — pre-column run)', () => {
     expect(resolveSaveToRoot(null, '/resumer/cwd')).toBe('/resumer/cwd');
+  });
+});
+
+/**
+ * ADR-0074 §3's hold notice. The engine sink that feeds it was DEAD — `WorkflowEngine` never read
+ * `onLegacyMediaJobHold` — so this sentence had never rendered in production and nothing pinned it. It is
+ * what stops a resumed run that is correctly holding from looking like an unexplained stall.
+ */
+/**
+ * ADR-0075's refusal, at the surface a user actually meets. The typed error was introduced with a mapper in
+ * `toUserFacing` and this catch — which pre-dates it — folded it into a generic `invalid_invocation`, so the
+ * count, the `seq` values, the upgrade remedy and the exit code were all discarded one frame above the mapper
+ * written for them. Nothing pinned the rendered outcome, which is why that was possible.
+ */
+describe('gateCommand — a run written by a NEWER binary (ADR-0075)', () => {
+  let client: DbClient;
+  let db: Db;
+
+  beforeEach(() => {
+    client = createClient(':memory:');
+    runMigrations(client.db);
+    db = client.db;
+  });
+  afterEach(() => {
+    client.sqlite.close();
+  });
+
+  // NOT COVERED, and named precisely rather than implied: this case calls `gateCommand` directly and calls
+  // `toUserFacing` itself, so it pins the layer where the blocker actually was — `gate.ts`'s own catch — and
+  // NOT the layers above it. Adding a `try/catch` that re-wraps in `dispatch.ts`'s `executeGate` or
+  // `specs.ts`'s `gate.action` reproduces a variant of that same blocker (wrong exit code, generic message,
+  // lost `seq`/upgrade text) and leaves this test AND `errors.test.ts`'s sibling green. Closing it needs a
+  // `run(argv, io)` drive with a redirected HOME and a seeded on-disk `history.db`; no such harness exists in
+  // this file today, and a partial one would read as coverage it is not.
+  it('refuses with the upgrade remedy and exit 1, not a generic invalid invocation', async () => {
+    const def = parseWorkflow(GATED, { source: 'gate.test' });
+    const store = createRunHistoryStore(db, {
+      uuid: () => randomUUID(),
+      now: () => Date.now(),
+      workflow: {
+        slug: def.workflow.id,
+        name: def.workflow.name ?? def.workflow.id,
+        definitionJson: JSON.stringify(def),
+      },
+    });
+    const engine = await buildEngine({ host: createCliHost(store) });
+    const handle = engine.start({ workflow: def, inputs: { n: 7 } });
+    let runId = '';
+    let lastSeq = 0;
+    for await (const event of handle.events) {
+      if (event.type === 'run:started') runId = event.runId;
+      lastSeq = Math.max(lastSeq, event.sequenceNumber);
+      if (event.type === 'run:paused') break;
+    }
+    // A row only a NEWER binary could have written — `persistEvent` validates on the way in.
+    db.insert(runEvents)
+      .values({
+        id: randomUUID(),
+        runId,
+        seq: lastSeq + 1,
+        eventType: 'test:never_a_real_event',
+        payloadJson: JSON.stringify({ type: 'test:never_a_real_event' }),
+        ts: Date.now(),
+      })
+      .run();
+
+    const { io, err } = captureIo();
+    let thrown: unknown;
+    try {
+      await gateCommand(
+        { runId, approve: true },
+        { io, global: globalOptions(), openDb: () => ({ db, close: () => {} }) },
+      );
+    } catch (e) {
+      thrown = e;
+    }
+
+    // The TYPED error survives the catch that used to re-wrap it — that is what makes the mapper reachable.
+    expect(isUnreadableRunEventLogError(thrown)).toBe(true);
+    const projected = toUserFacing(thrown);
+    expect(projected.exitCode).toBe(EXIT_CODES.workflowFailed); // 1, not 2: the invocation was valid
+    expect(projected.message).toContain('newer version of Relavium');
+    expect(projected.message).toContain('Upgrade');
+    expect(projected.message).toContain('still readable');
+    expect(err()).not.toContain('could not be read'); // never the generic corrupt-log sentence
+  });
+});
+
+describe('legacyMediaJobHoldNotice (ADR-0074 §3)', () => {
+  it('agrees in number for one held job', () => {
+    const line = legacyMediaJobHoldNotice(['gen']);
+    expect(line).toContain('until a media job submitted by an older version of Relavium settles');
+    expect(line).toContain('(node gen)');
+  });
+
+  it('agrees in number for several', () => {
+    const line = legacyMediaJobHoldNotice(['gen', 'clip']);
+    expect(line).toContain('until 2 media jobs submitted by an older version of Relavium settle ');
+    expect(line).toContain('(nodes gen, clip)');
+  });
+
+  it('SANITIZES a node id — a workflow YAML can arrive from anywhere', () => {
+    // The same treatment `renderer.ts` gives a nodeId. An embedded newline would forge a whole extra stderr
+    // row; an ANSI escape would reach the terminal intact.
+    const line = legacyMediaJobHoldNotice([`ge\u001b[31mn\nspoofed`]);
+    expect(line).not.toContain('\u001b');
+    expect(line.trimEnd()).not.toContain('\n'); // one row, and only the trailing newline this line owns
+  });
+
+  it('BOUNDS the id list — the count is the signal, the ids are the lead', () => {
+    const many = Array.from({ length: 12 }, (_, i) => `n${i}`);
+    const line = legacyMediaJobHoldNotice(many);
+    expect(line).toContain('12 media jobs');
+    expect(line).toContain('n0, n1, n2, n3, n4, n5, n6, n7, …');
+    expect(line).not.toContain('n8'); // elided, not printed
+  });
+
+  it('ends with exactly one newline, so stderr rows do not run together', () => {
+    expect(legacyMediaJobHoldNotice(['gen']).endsWith('\n')).toBe(true);
+    expect(legacyMediaJobHoldNotice(['gen']).trimEnd()).not.toContain('\n');
   });
 });

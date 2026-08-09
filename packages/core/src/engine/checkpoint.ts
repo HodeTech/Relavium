@@ -56,6 +56,17 @@ export interface CheckpointPendingMediaJob {
   /** ISO-8601 submit time and absolute deadline; on resume `now > deadlineAt` short-circuits a doomed re-poll. */
   readonly startedAt: string;
   readonly deadlineAt: string;
+  /**
+   * The money basis FROZEN at submit time ([ADR-0074](../../../../docs/decisions/0074-durable-conservative-budget-commitments.md) §3):
+   * the authored billed volume, and the amount the admission actually reserved.
+   *
+   * Both absent ⇒ a LEGACY row written before §3. Resume then has to re-derive the volume from the workflow
+   * definition and re-price from the current catalog — which is exactly what §3 stops doing, because a node edit
+   * or a price change between submission and resume would otherwise move a commitment the provider had already
+   * accepted. A legacy job is therefore handled fail-closed rather than trusted.
+   */
+  readonly units?: number;
+  readonly acceptedCostMicrocents?: number;
 }
 
 /** The derived state a rehydrating run is rebuilt from — never a persisted blob (reconstructed from rows). */
@@ -88,6 +99,31 @@ export interface CheckpointState {
    *  wins (`Math.max`, order-independent). (`cost:updated` is also folded when present, but it is streamed,
    *  not persisted, so it never appears in a real durable log.) Keeps post-resume cost cumulative. */
   readonly cumulativeCostMicrocents: number;
+  /**
+   * The run-wide durable **conservative** total (integer micro-cents) — money a provider may already have billed
+   * for an attempt that returned no trustworthy usage ([ADR-0074](../../../../docs/decisions/0074-durable-conservative-budget-commitments.md) §1/§2).
+   *
+   * Kept strictly apart from {@link cumulativeCostMicrocents}: this is an ESTIMATE, never realized spend, so it
+   * consumes cap capacity without ever inflating a reported actual cost. Restored on resume so the first
+   * post-resume pre-egress check projects against a cap that has NOT forgotten it — otherwise a crash reopens a
+   * strict cap against money that may already be owed, which is the bypass ADR-0074 exists to close.
+   *
+   * Folded as a SUM of `budget:estimate_committed.estimateMicrocents`. Three candidate folds, and the reasoning
+   * matters because two of them look fine:
+   *
+   * - **last-wins** over the event's `cumulativeConservativeMicrocents` is WRONG. The engine assigns
+   *   `sequenceNumber` after an `await` and states that concurrent events have no canonical order, so under a
+   *   `fan_out` the lower `seq` can carry the higher cumulative — restoring the last one would hand already-owed
+   *   money back to the cap as headroom.
+   * - **`Math.max`** over those snapshots is, in fact, order-independent and correct TODAY: each snapshot is read
+   *   immediately after its own increment, so the largest one is always the true running total. It is not chosen
+   *   only because it stops being correct the moment §1's deliberate release DECREASES the total.
+   * - **the sum of deltas** is correct in both worlds, so it is what the contract prescribes.
+   *
+   * The canonical statement lives in
+   * [sse-event-schema.md](../../../../docs/reference/contracts/sse-event-schema.md).
+   */
+  readonly conservativeCostMicrocents: number;
 }
 
 /**
@@ -109,6 +145,7 @@ interface ReconAccumulator {
   totalInputTokens: number;
   totalOutputTokens: number;
   cumulativeCostMicrocents: number;
+  conservativeCostMicrocents: number;
   readonly nodeStates: Map<string, CheckpointNodeState>;
   readonly pendingGates: Map<string, { nodeId: string; isBudgetGate: boolean }>;
   /** Keyed by `nodeId` — one in-flight media job per node; a re-submit replaces the entry (latest wins). */
@@ -178,6 +215,17 @@ function applyNodeEvent(acc: ReconAccumulator, event: RunEvent): void {
           retryable: event.error.retryable,
         },
       });
+      // The SAME durable cost restore as `node:completed` above, which this arm was missing (#W15-6). A node
+      // that failed can still have SPENT: a paid media job billed provider-side before the failure, or a
+      // provider call that returned usage and then failed downstream. `cost:updated` is streamed, never
+      // persisted, so this snapshot is the only durable carrier — and a resume that skips it restores a
+      // cumulative that has forgotten real spend, handing the cap headroom it does not have.
+      if (event.cumulativeCostMicrocents !== undefined) {
+        acc.cumulativeCostMicrocents = Math.max(
+          acc.cumulativeCostMicrocents,
+          event.cumulativeCostMicrocents,
+        );
+      }
       break;
     case 'node:skipped':
       acc.nodeStates.set(event.nodeId, { status: 'skipped' });
@@ -215,6 +263,12 @@ function applyMediaJobEvent(acc: ReconAccumulator, event: RunEvent): void {
     modality: event.modality,
     startedAt: event.startedAt,
     deadlineAt: event.deadlineAt,
+    // Carried through verbatim, never defaulted: ABSENT is the signal that this row predates ADR-0074 §3, and
+    // substituting a value here would erase the very distinction the resume path needs.
+    ...(event.units === undefined ? {} : { units: event.units }),
+    ...(event.acceptedCostMicrocents === undefined
+      ? {}
+      : { acceptedCostMicrocents: event.acceptedCostMicrocents }),
   });
 }
 
@@ -277,6 +331,7 @@ export function reconstructCheckpointState(
     totalInputTokens: 0,
     totalOutputTokens: 0,
     cumulativeCostMicrocents: 0,
+    conservativeCostMicrocents: 0,
     nodeStates: new Map(),
     pendingGates: new Map(),
     pendingMediaJobs: new Map(),
@@ -287,6 +342,13 @@ export function reconstructCheckpointState(
     acc.lastSequenceNumber = Math.max(acc.lastSequenceNumber, event.sequenceNumber);
     if (event.type === 'cost:updated') {
       acc.cumulativeCostMicrocents = event.cumulativeCostMicrocents; // already a running total
+    }
+    if (event.type === 'budget:estimate_committed') {
+      // SUM the per-commitment delta (ADR-0074 §2) — never a LAST-WINS read of the event's own
+      // `cumulativeConservativeMicrocents`, whose seq order is not guaranteed under a `fan_out` and could restore
+      // a LOWER total. (`Math.max` over those snapshots would also be correct today; the sum is what survives
+      // §1's future release. See the field's doc for the full comparison.)
+      acc.conservativeCostMicrocents += event.estimateMicrocents;
     }
     applyRunEvent(acc, event);
     applyNodeEvent(acc, event);
@@ -318,5 +380,6 @@ export function reconstructCheckpointState(
     totalInputTokens: acc.totalInputTokens,
     totalOutputTokens: acc.totalOutputTokens,
     cumulativeCostMicrocents: acc.cumulativeCostMicrocents,
+    conservativeCostMicrocents: acc.conservativeCostMicrocents,
   };
 }

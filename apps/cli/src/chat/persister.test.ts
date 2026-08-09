@@ -10,12 +10,12 @@ import {
   type SessionStore,
 } from '@relavium/db';
 import type { AgentSessionRecord, DurableContentPart, SessionMessage } from '@relavium/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ResolvedChatConfig } from '../config/resolve.js';
 import { buildDefaultChatAgent } from './default-agent.js';
 import { createSessionPersister, makeCatalogIdResolver } from './persister.js';
-import { buildChatSession, buildResumedChatSession } from './session-host.js';
+import { buildChatSession, buildGovernorWiring, buildResumedChatSession } from './session-host.js';
 import { scriptedResolver, stop, textTurn, unresolvedResolver } from './test-support.js';
 import type { ProviderResolver } from '../engine/providers.js';
 
@@ -50,6 +50,18 @@ describe('createSessionPersister', () => {
     client.sqlite.close();
   });
 
+  /**
+   * Notes the bus's `onListenerError` sink reported during a test. Wiring the sink is not cosmetic: a persister
+   * write that throws travels out of a `RunEventBus` subscriber, and with NO sink the bus deliberately
+   * re-throws out-of-band (session-host.ts) — which vitest counts as an unhandled rejection and turns into a
+   * non-zero exit even while every summary line says "passed". So the tests that provoke a write failure MUST
+   * wire it, and asserting on what it reported also pins the #228 fail-loud path the atomicity fix leans on.
+   */
+  let listenerNotes: string[];
+  beforeEach(() => {
+    listenerNotes = [];
+  });
+
   async function setup(providers: ProviderResolver, initialSequenceNumber?: number) {
     let tick = Date.parse('2026-06-25T00:00:00.000Z');
     const now = () => tick++;
@@ -62,8 +74,10 @@ describe('createSessionPersister', () => {
       now,
       uuid: () => 'sess-1',
       providers,
+      onListenerError: (note: string) => listenerNotes.push(note),
     });
     const persister = createSessionPersister({
+      governor: undefined,
       store,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -75,6 +89,308 @@ describe('createSessionPersister', () => {
     });
     return { built, persister, store };
   }
+
+  /** {@link setup} against a caller-supplied store — for a scenario that must not share a session row. */
+  async function setupWith(target: SessionStore, providers: ProviderResolver) {
+    let tick = Date.parse('2026-06-25T00:00:00.000Z');
+    const now = () => tick++;
+    let msgId = 0;
+    const built = await buildChatSession({
+      chat: EMPTY_CHAT,
+      agentRef: undefined,
+      cwd: '/workspace',
+      projectConfigDir: undefined,
+      now,
+      uuid: () => 'sess-1',
+      providers,
+      onListenerError: (note: string) => listenerNotes.push(note),
+    });
+    const persister = createSessionPersister({
+      governor: undefined,
+      store: target,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now,
+      uuid: () => `msg-${msgId++}`,
+    });
+    return { built, persister };
+  }
+
+  /* --- #228: a failed turn write must leave NOTHING, not half a turn --- */
+
+  it('SELF-ATTACHES to a real governor, so a commitment reaches the db with no manual wiring', async () => {
+    // The gap that let the original bug ship: every other test here either passes `governor: undefined` (so the
+    // real writer runs but the attach does not) or hand-builds a fake writer (so the attach runs but the real
+    // writer does not). Nothing crossed both at once — which is why `attachConservativeWriter` being wired at
+    // one of five construction sites was caught by a manual audit rather than by the suite.
+    //
+    // This drives the REAL chain: a real `buildGovernorWiring`, a real admission, a real
+    // `settleAtReservedEstimate`, and the persister's own self-attach — then asserts the money in the store.
+    const { built, store } = await setup(scriptedResolver([textTurn('hi')]));
+    const governor = buildGovernorWiring({
+      ...EMPTY_CHAT,
+      maxCostMicrocents: 10_000_000,
+      onExceed: 'fail',
+    });
+    expect(governor).toBeDefined();
+    const persister = createSessionPersister({
+      governor, // NOT undefined — the whole point
+      store,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now: () => Date.parse('2026-06-25T00:00:00.000Z'),
+      uuid: () => 'commit-1',
+    });
+    persister.start();
+
+    const admission = await governor?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+    expect(admission).toBeDefined(); // pins that the emit path is reachable at all (a priced model)
+    admission?.settleAtReservedEstimate();
+    // The §2 barrier is what forces the durable write to have completed before the next admission.
+    await governor?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+
+    const total = store.loadSession(built.sessionId)?.totalConservativeMicrocents ?? 0;
+    expect(total).toBeGreaterThan(0);
+    expect(governor?.conservativeState().durabilityBroken).toBe(false); // it wrote, it did not reject
+  });
+
+  it('carries a conservative commitment through to history.db (ADR-0074 §4)', async () => {
+    // The seam nothing crossed before: persister → store → the two columns. Every other test of this path drove
+    // a FAKE writer, which is exactly how five unwired construction sites shipped green.
+    const { persister, store } = await setup(scriptedResolver([textTurn('hi')]));
+    persister.start();
+    await persister.recordConservativeCommitment({
+      model: 'claude-haiku-4-5',
+      estimateMicrocents: 900,
+    });
+
+    expect(store.loadSession('sess-1')?.totalConservativeMicrocents).toBe(900);
+    const row = store.loadSessionCosts('sess-1').find((r) => r.model === 'claude-haiku-4-5');
+    expect(row?.conservativeMicrocents).toBe(900);
+    // An ESTIMATE — the realized side is untouched, which is ADR-0070's invariant surviving ADR-0074.
+    expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(0);
+    expect(row?.costMicrocents).toBe(0);
+    expect(row?.callCount).toBe(0);
+  });
+
+  it('writes a turn ATOMICALLY — a mid-turn failure persists neither message', async () => {
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi'), textTurn('again')]));
+    built.session.start();
+    persister.start();
+    // Fail the FIRST turn's write outright. Before the atomic write this was three auto-committed
+    // statements, so the `user` row landed and the `assistant` row did not.
+    const boom = Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    const writeTurn = vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
+      throw boom;
+    });
+    persister.beginUserTurn('first');
+    await built.session.sendMessage('first');
+    expect(store.loadMessages('sess-1')).toHaveLength(0); // all of it, or none of it
+    // …and the user was TOLD. A silently dropped turn is the other half of #228.
+    expect(listenerNotes.join('\n')).toMatch(/database is locked/);
+
+    // The session survives (that is the point of #228's other layers) and the NEXT turn must be clean —
+    // this is where the old behaviour buried an orphan `user` row mid-transcript, which resume does not
+    // roll back and which replays as two consecutive `user` messages a provider rejects.
+    writeTurn.mockRestore();
+    persister.beginUserTurn('second');
+    await built.session.sendMessage('second');
+    const roles = store.loadMessages('sess-1').map((m) => m.role);
+    expect(roles).toEqual(['user', 'assistant']);
+    // No gap: the surviving rows are contiguous from 0, because the failed turn advanced nothing.
+    expect(store.loadMessages('sess-1').map((m) => m.sequenceNumber)).toEqual([0, 1]);
+  });
+
+  it('LATCHES a durable-write failure and stops the session spending (#W15-4)', async () => {
+    // `RunEventBus` isolates listener errors by design, so a persister that could not write still let the turn
+    // report success — and the conversation carried on above a transcript and a cost total that had fallen
+    // behind. The failure is now latched and the host's pre-egress gate reads it.
+    const { built } = await setup(scriptedResolver([textTurn('hi'), textTurn('again')]));
+    const persister = createSessionPersister({
+      governor: undefined,
+      attachDurabilityProbe: built.attachDurabilityProbe, // the wiring under test
+      store,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now: () => Date.parse('2026-06-25T00:00:00.000Z'),
+      uuid: () => 'msg-x',
+    });
+    built.session.start();
+    persister.start();
+    vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    });
+
+    persister.beginUserTurn('first');
+    await built.session.sendMessage('first');
+    vi.restoreAllMocks();
+
+    expect(persister.durabilityFailure?.message).toContain('database is locked');
+    // …and the user was still TOLD: latching must not remove #228's notice.
+    expect(listenerNotes.join('\n')).toMatch(/database is locked/);
+
+    // No further egress, even though the store would now accept the write. A session whose record is already
+    // lost must not spend more — that is the difference between degrading and pretending.
+    const terminals: string[] = [];
+    built.handle.subscribe((e) => {
+      if (e.type === 'session:turn_completed' && e.error !== undefined)
+        terminals.push(e.error.message);
+    });
+    persister.beginUserTurn('second');
+    await built.session.sendMessage('second');
+
+    expect(terminals.join('\n')).toMatch(/could not be saved/);
+    expect(store.loadMessages('sess-1')).toHaveLength(0); // and nothing new was written
+    persister.close();
+  });
+
+  it('does not let a failed cost write advance the in-memory total (#W15-4)', async () => {
+    // `mutableSessionColumns` makes `recordSessionCost` the SINGLE writer of the durable total, so a total
+    // advanced past a write that did not land can never be repaired by a later flush — and a resume then
+    // restores a cap that has forgotten real spend.
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
+    built.session.start();
+    persister.start();
+    const record = vi.spyOn(store, 'recordSessionCost').mockImplementation(() => {
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    });
+
+    persister.beginUserTurn('first');
+    await built.session.sendMessage('first');
+
+    // The spy is asserted BEFORE the restore, because without it this test passes when no `cost:updated` was
+    // emitted at all — which is the vacuous reading its earlier comment settled for rather than closed.
+    expect(record).toHaveBeenCalled();
+    expect(persister.durabilityFailure?.message).toContain('database is locked');
+    vi.restoreAllMocks();
+    expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(0);
+    persister.close();
+  });
+
+  it('a FAILED turn contributes NO tokens to the session totals (the write LANDED; only the turn failed)', async () => {
+    // The bug this pins was real and mine: the totals were assigned BEFORE `writeTurn`, so a failed write left
+    // them advanced and the next turn's row claimed two turns' tokens for one visible exchange. No magic
+    // numbers — a control run of ONE clean turn establishes what a turn is worth, and failed-then-clean must
+    // match it exactly. `stop()`'s usage is fixed, so a leak shows up as double.
+    const control = await setup(scriptedResolver([textTurn('hi')]));
+    control.built.session.start();
+    control.persister.start();
+    control.persister.beginUserTurn('only');
+    await control.built.session.sendMessage('only');
+    const oneTurn = store.loadSession('sess-1');
+
+    // A separate DB so the two scenarios cannot share a session row.
+    const other = createClient(':memory:');
+    runMigrations(other.db);
+    const store2 = createSessionStore(other.db);
+    try {
+      const { built, persister } = await setupWith(
+        store2,
+        scriptedResolver([textTurn('hi'), textTurn('again')]),
+      );
+      built.session.start();
+      persister.start();
+      vi.spyOn(store2, 'writeTurn').mockImplementationOnce(() => {
+        throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+      });
+      persister.beginUserTurn('first');
+      await built.session.sendMessage('first');
+      vi.restoreAllMocks();
+      persister.beginUserTurn('second');
+      await built.session.sendMessage('second');
+
+      const after = store2.loadSession('sess-1');
+      expect(after?.totalInputTokens).toBe(oneTurn?.totalInputTokens);
+      expect(after?.totalOutputTokens).toBe(oneTurn?.totalOutputTokens);
+    } finally {
+      other.sqlite.close();
+    }
+  });
+
+  it('leaves the in-memory sequence untouched when a turn write fails (no phantom seq)', async () => {
+    // `realMessageSeqs` is the ADR-0062 compaction boundary seed, so a phantom entry from a turn that never
+    // landed shifts `realMessageSeqs[length - keptMessageCount - 1]` on every later /compact and /trim — a
+    // silent kept-message loss (the "step-3 review data-loss trap" this file's own comment warns about).
+    //
+    // #W15-4 changed how this is observed. The compaction that used to expose it ran AFTER a recovery turn on
+    // the same persister, and a latched durability failure now ends that session instead — which removes the
+    // path the phantom could travel, but not the reason to pin the bookkeeping. What is asserted here is the
+    // bookkeeping itself: nothing about the failed turn reached the store, and nothing in it was adopted.
+    const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
+    built.session.start();
+    persister.start();
+    vi.spyOn(store, 'writeTurn').mockImplementationOnce(() => {
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    });
+    persister.beginUserTurn('first');
+    await built.session.sendMessage('first');
+    vi.restoreAllMocks();
+
+    expect(store.loadMessages('sess-1')).toHaveLength(0); // no rows, so no seq was consumed durably
+    expect(store.loadSession('sess-1')?.title).toBeUndefined(); // the failed turn never titled the session
+    // A FRESH persister over the same store re-seeds from the rows that exist — which is none, so the next
+    // turn starts at 0 rather than at a phantom offset. This is the real recovery path now.
+    const recovered = createSessionPersister({
+      governor: undefined,
+      store,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now: () => Date.parse('2026-06-25T00:01:00.000Z'),
+      uuid: () => 'msg-r',
+    });
+    persister.close();
+    recovered.start();
+    expect(store.loadMessages('sess-1')).toHaveLength(0);
+    recovered.close();
+  });
+
+  it('a FAILED turn contributes NO tokens to the session totals', async () => {
+    // The bug this pins was real and mine: the totals were assigned BEFORE `writeTurn`, so a failed write left
+    // them advanced and the next turn's row claimed two turns' tokens for one visible exchange. No magic
+    // numbers — a control run of ONE clean turn establishes what a turn is worth, and failed-then-clean must
+    // match it exactly. `stop()`'s usage is fixed, so a leak shows up as double.
+    const control = await setup(scriptedResolver([textTurn('hi')]));
+    control.built.session.start();
+    control.persister.start();
+    control.persister.beginUserTurn('only');
+    await control.built.session.sendMessage('only');
+    const oneTurn = store.loadSession('sess-1');
+
+    // A separate DB so the two scenarios cannot share a session row.
+    const other = createClient(':memory:');
+    runMigrations(other.db);
+    const store2 = createSessionStore(other.db);
+    try {
+      const { built, persister } = await setupWith(
+        store2,
+        scriptedResolver([textTurn('hi'), textTurn('again')]),
+      );
+      built.session.start();
+      persister.start();
+      vi.spyOn(store2, 'writeTurn').mockImplementationOnce(() => {
+        throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+      });
+      persister.beginUserTurn('first');
+      await built.session.sendMessage('first');
+      vi.restoreAllMocks();
+      persister.beginUserTurn('second');
+      await built.session.sendMessage('second');
+
+      const after = store2.loadSession('sess-1');
+      expect(after?.totalInputTokens).toBe(oneTurn?.totalInputTokens);
+      expect(after?.totalOutputTokens).toBe(oneTurn?.totalOutputTokens);
+    } finally {
+      other.sqlite.close();
+    }
+  });
 
   it('persists the session row eagerly on start (auto-persisted from the moment it starts)', async () => {
     const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
@@ -100,6 +416,7 @@ describe('createSessionPersister', () => {
       totalInputTokens: 7,
       totalOutputTokens: 11,
       totalCostMicrocents: 1300,
+      totalConservativeMicrocents: 0,
       createdAt: '2026-06-24T00:00:00.000Z',
       updatedAt: '2026-06-24T00:00:00.000Z',
     });
@@ -123,6 +440,7 @@ describe('createSessionPersister', () => {
       totalInputTokens: 100,
       totalOutputTokens: 50,
       totalCostMicrocents: 1300,
+      totalConservativeMicrocents: 0,
       createdAt: '2026-06-24T00:00:00.000Z',
       updatedAt: '2026-06-24T00:00:00.000Z',
     });
@@ -151,6 +469,7 @@ describe('createSessionPersister', () => {
       totalInputTokens: 0,
       totalOutputTokens: 0,
       totalCostMicrocents: 1300,
+      totalConservativeMicrocents: 0,
       createdAt: '2026-06-24T00:00:00.000Z',
       updatedAt: '2026-06-24T00:00:00.000Z',
     });
@@ -215,6 +534,7 @@ describe('createSessionPersister', () => {
       providers: scriptedResolver([textTurn('hi there')]),
     });
     const persister = createSessionPersister({
+      governor: undefined,
       store,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -506,6 +826,7 @@ describe('createSessionPersister', () => {
       totalInputTokens: 0,
       totalOutputTokens: 0,
       totalCostMicrocents: 0,
+      totalConservativeMicrocents: 0,
       createdAt: iso,
       updatedAt: iso,
     };
@@ -538,6 +859,7 @@ describe('createSessionPersister', () => {
     });
     let mid = 100;
     const persister = createSessionPersister({
+      governor: undefined,
       store,
       handle: built.handle,
       sessionId: built.sessionId,

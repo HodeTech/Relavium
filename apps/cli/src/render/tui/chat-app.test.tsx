@@ -43,7 +43,10 @@ afterEach(cleanup);
 
 /** Mount `ChatApp` with the minimal REQUIRED props (no optional ports) — the surface under test is the ink
  *  lifecycle + the raw-mode input/paste handlers, so the driver callbacks are inert stubs. */
-function mountChat(store: ChatStoreController): ReturnType<typeof render> {
+function mountChat(
+  store: ChatStoreController,
+  opts: { onSuspend?: () => void } = {},
+): ReturnType<typeof render> {
   // Self-policing fixture (2.6.C): this helper mounts INLINE, so its store must carry the INLINE bound — the pairing
   // production builds. A divergent fixture would otherwise pass on a DEAD TREE: the tripwire throws inside the
   // component and ink swallows it (no-op error callbacks), leaving an empty frame and a green test.
@@ -56,6 +59,7 @@ function mountChat(store: ChatStoreController): ReturnType<typeof render> {
       onExit={() => {}}
       onError={() => {}}
       onModeChange={() => {}}
+      {...(opts.onSuspend === undefined ? {} : { onSuspend: opts.onSuspend })}
     />,
   );
 }
@@ -64,6 +68,7 @@ const approvalReq: ToolApprovalRequest = {
   toolId: 'write_file',
   action: 'fs_write',
   preview: { path: 'notes.md' },
+  unredactedPreview: { path: 'notes.md' },
 };
 
 const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({
@@ -71,6 +76,19 @@ const turnStarted = (timestamp: string): SessionStreamHandleEvent => ({
   sessionId: 'sess-1',
   sequenceNumber: 1,
   timestamp,
+});
+
+describe('ChatApp — raw Ctrl-Z job-control routing (G0)', () => {
+  it('routes the raw control byte to onSuspend exactly once and never submits prompt text', async () => {
+    const onSuspend = vi.fn();
+    const h = mountChat(createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), { onSuspend });
+    await waitFor(() => (h.lastFrame() ?? '').length > 0);
+
+    h.stdin.write('\x1a');
+    await waitFor(() => onSuspend.mock.calls.length === 1);
+    expect(onSuspend).toHaveBeenCalledTimes(1);
+    expect(h.lastFrame() ?? '').not.toContain('^Z');
+  });
 });
 
 describe('ChatApp bracketed paste — ink-7 usePaste channel (ADR-0068)', () => {

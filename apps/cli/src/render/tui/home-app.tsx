@@ -67,6 +67,9 @@ export interface RootAppProps {
    *  mounted — the ONLY way the non-React slash dispatch (`createHomeController` is built before this tree exists)
    *  can reach `/scrollback` and `/edit`. Absent (a test) ⇒ the hatches notice "needs an interactive terminal". */
   readonly suspendPort?: SuspendPort | undefined;
+  /** Request POSIX job control. In Ink raw mode Ctrl-Z is input, not a kernel SIGTSTP, so this routes both forms
+   *  through the shared release → stop → reclaim coordinator. Absent on a focused component test ⇒ a harmless no-op. */
+  readonly onSuspend?: (() => void) | undefined;
   /** Write the in-Home chat's mouse selection to the system clipboard over OSC 52 (2.6.F Step 6). Absent ⇒ the
    *  selection still highlights but copy-on-select is inert (a test that wires no terminal). */
   readonly clipboard?: ((text: string) => ClipboardOutcome) | undefined;
@@ -380,6 +383,15 @@ export function RootApp(props: Readonly<RootAppProps>): ReactElement {
   };
 
   useInput((input, key) => {
+    // Ink raw mode parses Ctrl-Z as Ctrl+`z` (some harnesses surface the literal SUB byte). Consume it BEFORE mouse,
+    // overlays, and the Home controller so it can neither type into a prompt nor answer a pending approval.
+    if (
+      input === '\x1a' ||
+      (key.ctrl === true && key.meta !== true && input.toLowerCase() === 'z')
+    ) {
+      props.onSuspend?.();
+      return;
+    }
     if (consumeMouseReport(input)) return;
     if (altChat) {
       // Esc DISMISSES a live selection. Gated on an IDLE chat: while a turn streams, Esc is the mid-turn ABORT that

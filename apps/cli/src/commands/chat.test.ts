@@ -15,7 +15,7 @@ import {
   type DbClient,
 } from '@relavium/db';
 import { startMcpClient as realStartMcpClient, type McpConnection } from '@relavium/mcp';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { DoctorProbes } from '../chat/doctor.js';
 import { buildChatSession, buildResumedChatSession } from '../chat/session-host.js';
@@ -153,13 +153,23 @@ const INERT_HOIST = {
     setRawMode: (): void => undefined,
     exit: (): void => undefined,
   },
+  jobControlLifecycle: {
+    supported: false,
+    onSuspend: (): (() => void) => () => undefined,
+    onContinue: (): (() => void) => () => undefined,
+    suspendSelf: (): void => undefined,
+  },
 } as const;
 
 /** Like {@link INERT_HOIST} but RECORDS the control-sequence writes (still never touching the real fd) so a test can
  *  assert WHETHER the hoist entered the alt buffer — pinning `runReplLoop`'s `altActive` derivation, the single wiring
  *  the whole flicker fix depends on, which the fully-inert `INERT_HOIST` cannot observe (Step-4b-3 Sonnet review). */
 function recordingHoist(): {
-  hoist: { writeControl: (s: string) => void; lifecycle: typeof INERT_HOIST.lifecycle };
+  hoist: {
+    writeControl: (s: string) => void;
+    lifecycle: typeof INERT_HOIST.lifecycle;
+    jobControlLifecycle: typeof INERT_HOIST.jobControlLifecycle;
+  };
   writes: string[];
 } {
   const writes: string[] = [];
@@ -170,6 +180,7 @@ function recordingHoist(): {
         writes.push(s);
       },
       lifecycle: INERT_HOIST.lifecycle,
+      jobControlLifecycle: INERT_HOIST.jobControlLifecycle,
     },
   };
 }
@@ -235,6 +246,59 @@ describe('chatCommand', () => {
     expect(full?.session.agentSlug).toBe('relavium-chat'); // the built-in default agent
     expect(full?.messages.map((m) => m.role)).toEqual(['user', 'assistant']);
     expect(full?.messages[1]?.content[0]).toEqual({ type: 'text', text: 'hi there' });
+  });
+
+  it('routes chat SIGTSTP/SIGCONT through reversible job control, never the termination lifecycle (G0)', async () => {
+    const { d } = deps([], [textTurn('unused')]);
+    const writes: string[] = [];
+    const exit = vi.fn();
+    const setRawMode = vi.fn();
+    const suspendSelf = vi.fn();
+    let onSuspendSignal: () => void = () => undefined;
+    let onContinueSignal: () => void = () => undefined;
+    const drive: ChatDriver = async (ctx) => {
+      ctx.startSession();
+      onContinueSignal(); // stray SIGCONT: no terminal teardown and no redraw before a stop
+      onSuspendSignal();
+      await ctx.processLine('/exit');
+      return { kind: ctx.stopReason() };
+    };
+
+    await chatCommand(
+      { agent: undefined },
+      {
+        ...d,
+        io: { ...d.io, stdoutIsTty: true },
+        writeControl: (sequence) => writes.push(sequence),
+        lifecycle: {
+          onProcessExit: () => () => undefined,
+          onTerminationSignal: () => () => undefined,
+          onInterrupt: () => () => undefined,
+          setRawMode,
+          exit,
+        },
+        jobControlLifecycle: {
+          supported: true,
+          onSuspend: (listener) => {
+            onSuspendSignal = listener;
+            return () => undefined;
+          },
+          onContinue: (listener) => {
+            onContinueSignal = listener;
+            return () => undefined;
+          },
+          suspendSelf,
+        },
+        drive,
+      },
+    );
+
+    expect(suspendSelf).toHaveBeenCalledTimes(1);
+    expect(exit).not.toHaveBeenCalled();
+    expect(setRawMode).not.toHaveBeenCalledWith(false);
+    // Hoisted 1049 is TEMPORARILY released/reclaimed around the stop, then finally restored at normal REPL exit.
+    expect(writes.filter((sequence) => sequence.includes(EXIT_ALT_SCREEN))).toHaveLength(2);
+    expect(writes.filter((sequence) => sequence.includes(ENTER_ALT_SCREEN))).toHaveLength(2);
   });
 
   it('streams a multi-turn conversation that includes a tool call, persisting each turn', async () => {
@@ -1662,6 +1726,7 @@ describe('chatResumeCommand (2.N)', () => {
       totalInputTokens: 0,
       totalOutputTokens: 0,
       totalCostMicrocents: 0,
+      totalConservativeMicrocents: 0,
       createdAt: '2026-06-25T00:00:00.000Z',
       updatedAt: '2026-06-25T00:00:00.000Z',
     });

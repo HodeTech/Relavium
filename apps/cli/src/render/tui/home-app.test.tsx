@@ -56,6 +56,7 @@ const EMPTY: HomeSnapshot = {
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
+  unreadableRunIds: [],
   isEmpty: true,
 };
 const homeStore: HomeStore = { read: () => EMPTY };
@@ -150,6 +151,8 @@ function mountHome(
     color?: boolean;
     /** Record the mouse-capture toggles `RootApp` requests (2.6.F Step 6g). */
     setMouseCapture?: (enabled: boolean) => void;
+    /** Capture the raw Ctrl-Z job-control request. */
+    onSuspend?: () => void;
   } = {},
 ): MountedHome {
   let onResize: () => void = () => {};
@@ -183,6 +186,7 @@ function mountHome(
       {...(opts.clipboard === undefined ? {} : { clipboard: opts.clipboard })}
       {...(opts.showBanner === undefined ? {} : { showBanner: opts.showBanner })}
       {...(opts.setMouseCapture === undefined ? {} : { setMouseCapture: opts.setMouseCapture })}
+      {...(opts.onSuspend === undefined ? {} : { onSuspend: opts.onSuspend })}
     />,
   );
   return {
@@ -203,6 +207,20 @@ async function enterChat(c: HomeController): Promise<void> {
   c.handleKey('', { return: true });
   await waitFor(() => c.getSnapshot().mode === 'chat'); // startChat resolves on a microtask
 }
+
+describe('RootApp — raw Ctrl-Z job-control routing (G0)', () => {
+  it('routes the raw control byte to onSuspend without changing the Home controller state', async () => {
+    const onSuspend = vi.fn();
+    const m = mountHome(createChatStore(false, undefined, INLINE_TRANSCRIPT_BOUND), { onSuspend });
+    await settleFrames();
+
+    m.harness.stdin.write('\x1a');
+    await waitFor(() => onSuspend.mock.calls.length === 1);
+    expect(onSuspend).toHaveBeenCalledTimes(1);
+    expect(m.c.getSnapshot().mode).toBe('home');
+    expect(m.c.getSnapshot().input.text).toBe('');
+  });
+});
 
 describe('RootApp (Home) bracketed paste — usePaste → controller.handlePaste wiring (ADR-0068)', () => {
   it('inserts an idle paste into the in-Home chat buffer', async () => {
@@ -790,6 +808,7 @@ describe('RootApp — the branded Home banner', () => {
     ],
     recentRuns: [],
     recentAgents: [],
+    unreadableRunIds: [],
     isEmpty: false,
   };
 

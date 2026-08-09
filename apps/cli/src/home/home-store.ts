@@ -2,6 +2,7 @@ import type { RunHistoryReader, RunRecord, SessionStore } from '@relavium/db';
 import type { AgentSessionRecord } from '@relavium/shared';
 
 import { pendingHumanGates, type PendingGate } from '../gate/pending.js';
+import { readPerRunOrDegrade } from '../history/per-run-read.js';
 
 /**
  * The data aggregator behind the bare-invocation **Home** (2.5.B, [ADR-0054](../../../../docs/decisions/0054-cli-bare-invocation-interactive-home.md)).
@@ -85,6 +86,12 @@ export interface HomeSnapshot {
   readonly recentSessions: readonly HomeSessionRow[];
   readonly recentRuns: readonly HomeRunRow[];
   readonly recentAgents: readonly HomeAgentRow[];
+  /**
+   * Runs whose event log could not be read while building this snapshot (#W15-15). Their gate detail is
+   * MISSING, not absent: without this the Home showed a damaged run as an ordinary run with nothing pending,
+   * and the listing is where a user would come to find out which run is broken. Empty on the healthy path.
+   */
+  readonly unreadableRunIds: readonly string[];
   /** True when there is NOTHING to show (a fresh install) — the UI renders a first-run welcome, not empty strips. */
   readonly isEmpty: boolean;
 }
@@ -128,9 +135,22 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   // filter over all active history); a paused run accumulates indefinitely (a gate never resolved, a crash before
   // the terminal) and each gate check costs a `loadRunStateEvents`, so the shown fan-out is capped. Derive each ONCE.
   const displayedPausedRuns = deps.runs.listRuns({ status: 'paused', limit });
+  // Per-run isolation: one unreadable row in ONE run used to throw straight out of this loop, so the Home
+  // never mounted and every healthy run vanished with the damaged one. It now degrades to "no gate detail"
+  // for that run and keeps building. See `readPerRunOrDegrade`.
+  const unreadableRunIds: string[] = [];
+  const readGates = (runId: string): readonly PendingGate[] => {
+    const read = readPerRunOrDegrade<readonly PendingGate[]>([], () =>
+      pendingHumanGates(deps.runs.loadRunStateEvents(runId)),
+    );
+    // #W15-15: collected, not discarded. A damaged run otherwise rendered as an ordinary run with nothing to
+    // do — the Home being exactly where a user would look to find out which run is broken.
+    if (read.degraded) unreadableRunIds.push(runId);
+    return read.value;
+  };
   const gatesByRun = displayedPausedRuns.map((run) => ({
     run,
-    pending: pendingHumanGates(deps.runs.loadRunStateEvents(run.id)),
+    pending: readGates(run.id),
   }));
 
   // "Attention" lifts a FAILED run (by STATUS — any of them, so a failure beyond the cap can never leak into
@@ -153,8 +173,8 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
   const humanGatedRunIds = new Set(displayedGatedRunIds);
   for (const run of recentRunRecords) {
     if (run.status !== 'paused' || checkedRunIds.has(run.id)) continue; // not a paused candidate, or already checked
-    if (pendingHumanGates(deps.runs.loadRunStateEvents(run.id)).length > 0)
-      humanGatedRunIds.add(run.id);
+    const pending = readGates(run.id);
+    if (pending.length > 0) humanGatedRunIds.add(run.id);
   }
 
   // ONE batched, primary-key slug lookup for every run we will render (recent ∪ failed ∪ displayed paused), deduped.
@@ -179,7 +199,14 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
 
   const failedRuns = failedRunRecords.map((run) => toRunRow(run, slugOf(run)));
   const recentRuns = recentRunRecords
-    .filter((run) => run.status !== 'failed' && !humanGatedRunIds.has(run.id)) // never repeat an attention run
+    // Never repeat an attention row. A run whose log could not be read is an attention row too (#W15-15) —
+    // without this it rendered in BOTH strips, once as "event log unreadable" and once as an ordinary run.
+    .filter(
+      (run) =>
+        run.status !== 'failed' &&
+        !humanGatedRunIds.has(run.id) &&
+        !unreadableRunIds.includes(run.id),
+    )
     .slice(0, limit) // trim the over-fetch back to the top-N survivors
     .map((run) => toRunRow(run, slugOf(run)));
 
@@ -193,9 +220,20 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
     recentSessions.length === 0 &&
     recentRuns.length === 0 &&
     gates.length === 0 &&
-    failedRuns.length === 0;
+    failedRuns.length === 0 &&
+    // A Home whose only content is a damaged run must not render the fresh-install welcome (#W15-15) — that
+    // would be the "no data" answer this finding is about, in its most misleading form.
+    unreadableRunIds.length === 0;
 
-  return { attention: { gates, failedRuns }, recentSessions, recentRuns, recentAgents, isEmpty };
+  return {
+    attention: { gates, failedRuns },
+    recentSessions,
+    recentRuns,
+    recentAgents,
+    // Deduped: the second pass re-checks paused runs the first pass may already have found unreadable.
+    unreadableRunIds: [...new Set(unreadableRunIds)],
+    isEmpty,
+  };
 }
 
 function toRunRow(run: RunRecord, workflowSlug: string | undefined): HomeRunRow {

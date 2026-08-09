@@ -61,8 +61,13 @@ import type { WorkflowDefinition } from '../parser.js';
 import { EngineStateError } from './errors.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import { RunLoopInvariantError } from './invariant-error.js';
-import { BudgetGovernor, DEFAULT_MAX_TOKENS_ESTIMATE } from './budget-governor.js';
-import type { CheckpointState } from './checkpoint.js';
+import {
+  BudgetGovernor,
+  CommitmentDurabilityError,
+  DEFAULT_MAX_TOKENS_ESTIMATE,
+  type BudgetAdmission,
+} from './budget-governor.js';
+import type { CheckpointPendingMediaJob, CheckpointState } from './checkpoint.js';
 import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
 import type {
   GateRequest,
@@ -74,7 +79,12 @@ import type {
   NodeStreamEvent,
 } from './node-executor.js';
 import { codeForLlmError } from './agent-turn.js';
-import { DEFAULT_MEDIA_UNIT_ESTIMATE, generativeUnits, realizedMediaCost } from './agent-runner.js';
+import {
+  DEFAULT_MEDIA_UNIT_ESTIMATE,
+  generativeUnits,
+  realizedMediaCost,
+  takeMediaJobAdmission,
+} from './agent-runner.js';
 import { createClosedRunHandle, createRunHandle, type RunHandle } from './run-handle.js';
 
 /** A vertex's live status in one run. `paused` (at a gate) and `running` are not yet *settled*. */
@@ -108,6 +118,10 @@ interface ParkedMediaJob {
   readonly submittedAtMs: number;
   /** The current poll interval (ms), grown exponentially per `pending` poll, capped at `pollMaxMs`. */
   backoffMs: number;
+  /** Process-local cost-cap reservation for an already-submitted job; reconstructed on checkpoint resume. */
+  admission?: BudgetAdmission;
+  /** Guards every terminal/error sweep from emitting the paid-job addend more than once. */
+  costAccounted?: boolean;
 }
 
 /** A vertex status counts as *settled* (its dependents can evaluate) when it is one of these. */
@@ -260,6 +274,18 @@ export interface WorkflowEngineDeps {
    * engine cannot print; the host routes it (`run` → stderr). Absent ⇒ silent (`strict_cost_cap` is the block).
    */
   readonly onUnpriced?: (model: string, capMicrocents: number) => void;
+  /**
+   * Called once when new egress is HELD because a resumed media job's cost basis is unknown — a row written
+   * before ADR-0074 §3 froze it. §3 requires this fallback be observable; without it a `resume` looks like an
+   * unexplained stall. The engine cannot print; the host routes it (`gate` → stderr), exactly as
+   * {@link onUnpriced}. Absent ⇒ silent.
+   *
+   * Only `gate` wires it, and only `gate` CAN reach it: the hold is registered from `#restoreParkedMediaJob`,
+   * reachable only through `resumeFromCheckpoint`, and a fresh `relavium run` has no checkpoint to restore a
+   * legacy job from. Stated because this line claimed `run` routed it too, which was harmless only while the
+   * sink was dead.
+   */
+  readonly onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
 }
 
 function maskInputs(
@@ -299,6 +325,7 @@ class RunExecution {
   readonly #onSettled: (runId: string) => void;
   readonly #resolverCapabilities: ResolverCapabilities;
   readonly #maxTokensEstimate: number;
+  readonly #resolvePrice: PricingOverlay | undefined;
   /** The resolved workflow `context:` (`ctx.*`), folded once at run start (or re-resolved on resume). */
   #resolvedContext: Readonly<Record<string, string>> = {};
 
@@ -357,6 +384,7 @@ class RunExecution {
     resolvePrice?: PricingOverlay;
     resolveEndpoint?: (provider: ProviderId) => EndpointKind;
     onUnpriced?: (model: string, capMicrocents: number) => void;
+    onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
     /** When present, the run is REHYDRATED from this checkpoint (resume) rather than started fresh (1.R). */
     checkpoint?: CheckpointState;
   }) {
@@ -380,6 +408,7 @@ class RunExecution {
     this.#secretInputNames = secretNames;
     this.#maskedInputs = maskInputs(params.inputs, secretNames);
     this.#maxTokensEstimate = params.maxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
+    this.#resolvePrice = params.resolvePrice;
     if (params.plan.budget !== undefined) {
       this.#budgetGovernor = new BudgetGovernor({
         budget: params.plan.budget,
@@ -390,6 +419,24 @@ class RunExecution {
           ? {}
           : { resolveEndpoint: params.resolveEndpoint }),
         ...(params.onUnpriced === undefined ? {} : { onUnpriced: params.onUnpriced }),
+        ...(params.onLegacyMediaJobHold === undefined
+          ? {}
+          : { onLegacyMediaJobHold: params.onLegacyMediaJobHold }),
+      });
+      // ADR-0074 §3: an abort must ALWAYS be able to break the legacy-media-job hold. A `checkPreEgress`
+      // suspended in it keeps its node counted as `running`, so `#step` never reaches `#countRunning() === 0`
+      // and the run never emits a terminal — an unkillable run, which is strictly worse than the
+      // under-reservation the hold prevents. The awaited job cannot rescue it either: its poll returns silently
+      // once the signal is aborted. Registered ONCE here, so no future abort site can forget it.
+      //
+      // Covered at the ENGINE level since #W15-16 (`engine.test.ts`, "an abort always breaks the legacy
+      // media-job hold"): a budgeted resume with a legacy media job AND a concurrent sibling, cancelled
+      // mid-hold. Deleting this listener makes that test TIME OUT rather than fail an assertion — the run
+      // never terminates, which is the defect stated exactly. The governor's own release stays pinned in
+      // isolation by `budget-governor.test.ts`; this composition — unit-correct parts, untested together —
+      // is what let the hang ship.
+      this.#abort.signal.addEventListener('abort', () => {
+        this.#budgetGovernor?.releaseAllLegacyMediaJobHolds();
       });
     }
 
@@ -526,6 +573,67 @@ class RunExecution {
     }
   }
 
+  /**
+   * Rehydrate ONE parked media job (ADR-0045 §2-3, ADR-0074 §3) — extracted from `#seedFromCheckpoint` so that
+   * method stays inside its complexity budget. The whole of §3's frozen-vs-legacy branch lives here.
+   */
+  #restoreParkedMediaJob(plan: RunPlan, cp: CheckpointState, job: CheckpointPendingMediaJob): void {
+    const vertex = plan.vertices.get(job.nodeId);
+    // The agent branch is the only one ever taken in practice — a media job is ALWAYS sourced from an agent
+    // vertex (executeGenerativeMedia), so `generativeUnits` (which honors the authored count/duration_seconds,
+    // matching the submit-side compute exactly) is the real path. The else is a defensive last resort for a
+    // vertex that is missing or non-agent (an invariant violation, e.g. a workflow edited between processes);
+    // there is no AgentNode to read, so the conservative per-modality DEFAULT is the only available estimate —
+    // it never executes on a well-formed resume.
+    // ADR-0074 §3: prefer the basis FROZEN at submit time. Re-deriving `units` from the workflow definition
+    // means a node edited between processes silently changes the volume an accepted job was priced on; the
+    // fallback below stays only for legacy rows written before §3.
+    const units =
+      job.units ??
+      (vertex?.config.kind === 'agent'
+        ? generativeUnits(job.modality, vertex.config.node)
+        : DEFAULT_MEDIA_UNIT_ESTIMATE[job.modality]);
+    // This provider job was accepted before the crash, so normal cap policy cannot retroactively refuse it.
+    // Recreate only its reservation before poll scheduling; the eventual terminal media-cost event reconciles
+    // it with the realized charge exactly as in the original process.
+    //
+    // With a frozen `acceptedCostMicrocents` there is NO pricing lookup: a user-price or catalog change between
+    // submission and resume must not move a commitment the provider already accepted, in either direction. A
+    // legacy row has no frozen amount, so it falls back to re-pricing — which §3 requires be handled
+    // fail-closed rather than trusted.
+    let admission: BudgetAdmission | undefined;
+    if (job.acceptedCostMicrocents === undefined) {
+      admission = this.#budgetGovernor?.reserveCommittedEgress(
+        job.model,
+        0,
+        [{ modality: job.modality, units }],
+        job.provider,
+      );
+      // The reservation above is a re-price from TODAY's catalog, so it may be lower than what the provider
+      // will actually bill. Register the node as an unknown basis: with a cap configured the governor then
+      // refuses NEW egress until this job settles, rather than admitting spend against headroom that may not
+      // exist. It clears itself when the job reports its real charge.
+      this.#budgetGovernor?.registerLegacyMediaJob(job.nodeId);
+    } else {
+      admission = this.#budgetGovernor?.reserveAcceptedCost(job.model, job.acceptedCostMicrocents);
+    }
+    this.#pendingMediaJobs.set(job.nodeId, {
+      jobId: job.jobId,
+      provider: job.provider,
+      model: job.model,
+      modality: job.modality,
+      units,
+      deadlineAt: job.deadlineAt,
+      // Recompute elapsed-at-submit from the persisted `startedAt` against the ORIGINAL run start so a
+      // completed re-attached job reports its full submit→done wall-clock `durationMs` (M2). `cp.startedAtMs`
+      // is the same value seeded into `#startEpochMs` below.
+      submittedAtMs: Date.parse(job.startedAt) - cp.startedAtMs,
+      backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
+      ...(admission === undefined ? {} : { admission }),
+    });
+    this.#armMediaPoll(job.nodeId);
+  }
+
   /** Seed `#states` / `#pendingGates` / tallies / the bus sequence from a checkpoint (rehydration, 1.R). */
   #seedFromCheckpoint(plan: RunPlan, cp: CheckpointState, bus: RunEventBus, runId: string): void {
     for (const id of plan.vertices.keys()) {
@@ -554,40 +662,29 @@ class RunExecution {
         isBudgetGate: gate.isBudgetGate,
       });
     }
+    // Re-seed totals BEFORE restoring submitted-job reservations: a committed job must reserve alongside the
+    // checkpoint's known spend, and its reservation must exist before the first re-armed poll/schedule can run.
+    this.#totalInputTokens = cp.totalInputTokens;
+    this.#totalOutputTokens = cp.totalOutputTokens;
+    this.#cumulativeCostMicrocents = cp.cumulativeCostMicrocents;
+    this.#budgetGovernor?.updateCost(cp.cumulativeCostMicrocents);
+    // ADR-0074 §2: BOTH totals restored before any resumed work is scheduled. Without the conservative half the
+    // first post-resume pre-egress check projects against a cap that has forgotten money a provider may already
+    // have billed — a crash would reopen a strict cap, which is the bypass ADR-0074 exists to close. It must
+    // precede the `reserveCommittedEgress` loop below, whose admissions project against this total.
+    this.#budgetGovernor?.restoreConservativeCost(cp.conservativeCostMicrocents);
+
     // Re-attach each parked async media job (MJ-1, ADR-0045 §3): re-register it + RE-ARM a poll of the
     // persisted opaque jobId. NEVER re-call generateMedia — the node is `'paused'` (applyMediaJobEvent set it),
     // not absent, so it is not re-run via the `'pending'` path; this overrides the checkpoint
-    // running-at-crash-re-runs default for the async-media node specifically. `units` is NOT persisted in the
-    // slot — recompute it from the node config (count/duration_seconds), which IS persisted in the workflow.
+    // running-at-crash-re-runs default for the async-media node specifically. `units` IS persisted on the event
+    // since ADR-0074 §3; the node-config recompute (count/duration_seconds) below survives only as the LEGACY
+    // fallback for rows written before it.
     // Unlike a gate (whose decision arrives externally), a media job has no external trigger — only the
     // engine's own re-poll advances it, so the re-arm is unconditional here. A past-deadline job is
     // short-circuited to a timeout by the first `#pollMediaJob` (which checks `now > deadlineAt`).
     for (const job of cp.pendingMediaJobs) {
-      const vertex = plan.vertices.get(job.nodeId);
-      // The agent branch is the only one ever taken in practice — a media job is ALWAYS sourced from an agent
-      // vertex (executeGenerativeMedia), so `generativeUnits` (which honors the authored count/duration_seconds,
-      // matching the submit-side compute exactly) is the real path. The else is a defensive last resort for a
-      // vertex that is missing or non-agent (an invariant violation, e.g. a workflow edited between processes);
-      // there is no AgentNode to read, so the conservative per-modality DEFAULT is the only available estimate —
-      // it never executes on a well-formed resume.
-      const units =
-        vertex?.config.kind === 'agent'
-          ? generativeUnits(job.modality, vertex.config.node)
-          : DEFAULT_MEDIA_UNIT_ESTIMATE[job.modality];
-      this.#pendingMediaJobs.set(job.nodeId, {
-        jobId: job.jobId,
-        provider: job.provider,
-        model: job.model,
-        modality: job.modality,
-        units,
-        deadlineAt: job.deadlineAt,
-        // Recompute elapsed-at-submit from the persisted `startedAt` against the ORIGINAL run start so a
-        // completed re-attached job reports its full submit→done wall-clock `durationMs` (M2). `cp.startedAtMs`
-        // is the same value seeded into `#startEpochMs` below.
-        submittedAtMs: Date.parse(job.startedAt) - cp.startedAtMs,
-        backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
-      });
-      this.#armMediaPoll(job.nodeId);
+      this.#restoreParkedMediaJob(plan, cp, job);
     }
     // Suppress a DUPLICATE `run:paused` on resume ONLY when the prior process actually announced one — i.e. the
     // checkpoint's runStatus is already `'paused'` (L2). In the CRASH-IN-WINDOW case (`media_job:submitted`
@@ -601,13 +698,6 @@ class RunExecution {
     for (const gateId of cp.resolvedGateIds) {
       this.#resolvedGates.add(gateId);
     }
-    this.#totalInputTokens = cp.totalInputTokens;
-    this.#totalOutputTokens = cp.totalOutputTokens;
-    this.#cumulativeCostMicrocents = cp.cumulativeCostMicrocents;
-    // Re-seed the budget governor with the restored cumulative cost (H2): it starts at 0 and only advances
-    // on `cost:updated`, which a resume does NOT replay — so without this a resumed budgeted run would
-    // under-block by up to ~a full cap on its first post-resume pre-egress check (ADR-0028).
-    this.#budgetGovernor?.updateCost(cp.cumulativeCostMicrocents);
     // Post-resume events continue gap-free from the last persisted sequence number.
     bus.seedSequence(runId, cp.lastSequenceNumber + 1);
     // Keep measuring durationMs from the ORIGINAL start, so a resumed run's terminal reports total
@@ -707,6 +797,12 @@ class RunExecution {
       disarm();
     }
     this.#mediaJobTimers.clear();
+    // ADR-0074 §3: release every unknown-basis HOLD before dropping the jobs. A `checkPreEgress` awaiting a job
+    // that will now never settle would hang forever — worse than either failing or admitting. This is the reason
+    // the bulk paths cannot simply drop the map.
+    for (const nodeId of this.#pendingMediaJobs.keys()) {
+      this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
+    }
     this.#pendingMediaJobs.clear();
     this.#disarmRunTimeout();
   }
@@ -1023,6 +1119,13 @@ class RunExecution {
     const budgetApproved = this.#budgetApprovedVertices.delete(vertex.id);
     for (;;) {
       const outcome = await this.#runAttempt(vertex, attempt, budgetApproved);
+      // ADR-0074 §2's other barrier: "the enclosing turn completion waits for the commitment's durability
+      // acknowledgement." A commitment made inside this attempt must be durable before the node reaches ANY
+      // boundary — its terminal, or a `node:retrying` that will dispatch again. The governor's own barrier covers
+      // the next pre-egress check; this covers the node boundary, which a crash could otherwise land inside with
+      // a possibly-billed call recorded nowhere. Awaited (not fire-and-forget) so a failed write fails the node
+      // loudly; the conservative amount keeps consuming capacity either way.
+      await this.#flushBudgetCommitments(vertex.id);
       const willRetry =
         outcome.kind === 'failed' &&
         !this.#settled &&
@@ -1034,7 +1137,7 @@ class RunExecution {
         !this.#abort.signal.aborted &&
         this.#shouldRetry(retry, outcome.error, attempt);
       if (!willRetry || outcome.kind !== 'failed') {
-        await this.#onOutcome(vertex, outcome, startedAtMs, attempt);
+        await this.#onOutcome(vertex, outcome, startedAtMs, attempt, budgetApproved);
         return;
       }
       const delayMs = this.#backoffMs(retry, attempt);
@@ -1081,7 +1184,7 @@ class RunExecution {
 
   /**
    * Build the pre-egress hook for this run, when a budget is configured. The hook is stateful:
-   * it sees the run's current cumulative cost and may emit a one-time `budget:warning` or throw
+   * it sees the run's current cumulative cost and may emit a re-armable `budget:warning` or throw
    * `BudgetExceededError` / `BudgetPauseError` for `fail` / `pause_for_approval`.
    */
   #makePreEgressHook(): import('./agent-turn.js').PreEgressHook | undefined {
@@ -1208,6 +1311,8 @@ class RunExecution {
     outcome: NodeOutcome,
     startedAtMs: number,
     attemptNumber = 1,
+    /** H3's one-shot cap bypass was active for this dispatch — so NO pre-egress hook ran (ADR-0074 §3). */
+    budgetApproved = false,
   ): Promise<void> {
     if (this.#settled) {
       return; // terminal already emitted — ignore a late settle (e.g. an aborted straggler)
@@ -1225,7 +1330,7 @@ class RunExecution {
           await this.#settlePaused(vertex, outcome.gate);
           break;
         case 'media_job':
-          await this.#settleMediaJobParked(vertex, outcome.job);
+          await this.#settleMediaJobParked(vertex, outcome.job, budgetApproved);
           break;
       }
     } catch {
@@ -1374,7 +1479,11 @@ class RunExecution {
    * record the job, emit the durable `media_job:submitted`, and arm the first poll. The realized cost is
    * emitted by the poll loop at `done`, NEVER here (§5).
    */
-  async #settleMediaJobParked(vertex: PlanVertex, job: MediaJobSubmission): Promise<void> {
+  async #settleMediaJobParked(
+    vertex: PlanVertex,
+    job: MediaJobSubmission,
+    budgetApproved = false,
+  ): Promise<void> {
     const state = this.#states.get(vertex.id);
     if (state !== undefined) {
       state.status = 'paused';
@@ -1383,6 +1492,9 @@ class RunExecution {
     const deadlineAt = new Date(
       Date.parse(startedAt) + (job.deadlineMs ?? MEDIA_JOB_POLL_DEFAULTS.deadlineMs),
     ).toISOString();
+    // Consume the exact submission object before the first await. The runner's WeakMap never crosses persistence;
+    // after this point the parked-job record owns the lease through poll, cancel, failure and completion.
+    const admission = takeMediaJobAdmission(job);
     this.#pendingMediaJobs.set(vertex.id, {
       jobId: job.jobId,
       provider: job.provider,
@@ -1394,6 +1506,7 @@ class RunExecution {
       // recompute (from the checkpoint slot) yields an identical value (M2).
       submittedAtMs: Date.parse(startedAt) - this.#startEpochMs,
       backoffMs: MEDIA_JOB_POLL_DEFAULTS.pollInitialMs,
+      ...(admission === undefined ? {} : { admission }),
     });
     await this.#emitDurable({
       type: 'media_job:submitted',
@@ -1405,6 +1518,20 @@ class RunExecution {
       modality: job.modality,
       startedAt,
       deadlineAt,
+      // ADR-0074 §3 — freeze the money basis at submit time. `units` is the authored volume this submission was
+      // priced on, and `acceptedCostMicrocents` is what the admission actually reserved (0 when the model was
+      // unpriced and the allow-degrade path held no admission). Resume restores from these instead of
+      // re-deriving, so neither a workflow edit nor a price change can move an accepted commitment.
+      units: job.units,
+      // ADR-0074 §3. `0` means "the gate RAN and reserved nothing" — an unpriced model's allow-degrade path.
+      // Under H3's approved bypass NO hook runs at all (`#runAttempt` passes `preEgress: undefined`), so there
+      // is no priced basis to freeze, and emitting `0` would claim one. That is not a cosmetic difference: on
+      // resume the frozen branch would call `reserveAcceptedCost(model, 0)`, reserve NOTHING, and skip
+      // `registerLegacyMediaJob` — so a job deliberately submitted OVER the cap would come back holding no
+      // reservation and no hold, letting a sibling spend headroom that is still owed. Omitting it routes the
+      // resume through the legacy branch, which re-prices AND fails closed — the conservative answer, and the
+      // one the pre-§3 code already gave.
+      ...(budgetApproved ? {} : { acceptedCostMicrocents: admission?.reservedMicrocents ?? 0 }),
     });
     this.#armMediaPoll(vertex.id);
   }
@@ -1439,19 +1566,44 @@ class RunExecution {
     this.#pendingMediaJobs.delete(nodeId);
     this.#disarmMediaTimer(nodeId);
     this.#pauseEpisode = false;
+    // ADR-0074 §3: the job is over, so its unknown-basis hold ends with it — done, failed, deadline or cancel
+    // alike, because every one of those settles the realized charge (`#emitMediaJobCost` fires on all of them).
+    //
+    // This is the choke point for every PER-JOB exit, so a future one cannot forget it and strand the cap in a
+    // permanent refusal. It is deliberately not the only place `#pendingMediaJobs` shrinks: the two bulk
+    // `.clear()`s are run TEARDOWN, and there the governor is discarded with the run, so a leftover registration
+    // cannot outlive anything. Stated explicitly because "every path goes through here" would be false.
+    this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
   }
 
   /** Emit the lone realized media-cost addend for a job (ADR-0045 §5) — folded into the run cumulative +
    *  streamed by `#nodeEmit`. Emitted exactly once per job: at `done`, or — for a paid job abandoned by a
    *  fail/deadline/cancel — at that settle (the provider bills regardless, a cost-integrity requirement). */
   #emitMediaJobCost(nodeId: string, job: ParkedMediaJob): void {
+    if (job.costAccounted === true) {
+      return;
+    }
+    // Mark before the first side effect. A terminal/error path may re-enter while a sink is unwinding; the provider
+    // has only one submitted job, so the engine must never manufacture a second billed addend for it.
+    job.costAccounted = true;
+    const costMicrocents = realizedMediaCost(
+      job.model,
+      job.modality,
+      job.units,
+      this.#resolvePrice,
+    );
+    // Reconcile the lease BEFORE publishing the engine cost event. If event delivery faults after a provider-paid
+    // job, the reservation cannot be released as though the submission were free. Clear the process-local handle
+    // after its idempotent settle so every terminal sweep remains exactly-once from the governor's perspective.
+    job.admission?.settle(costMicrocents);
+    delete job.admission;
     this.#nodeEmit({
       type: 'cost:updated',
       nodeId,
       model: job.model,
       inputTokens: 0,
       outputTokens: 0,
-      costMicrocents: realizedMediaCost(job.model, job.modality, job.units),
+      costMicrocents,
       cumulativeCostMicrocents: 0, // #nodeEmit overwrites with the authoritative run-wide total
     });
   }
@@ -1515,6 +1667,10 @@ class RunExecution {
         // A cancel (the abort surfaced as a throw) / terminal / cleared job → return silently; the #settle
         // path emits run:cancelled. Only a genuine poll fault on a live job settles node:failed.
         if (this.#settled || this.#abort.signal.aborted || !this.#pendingMediaJobs.has(nodeId)) {
+          // This job will never settle now, so anything waiting on its unknown basis must be released here too
+          // (ADR-0074 §3). The abort listener above is the primary guarantee; this covers the
+          // job-already-cleared case, where no abort fires at all.
+          this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
           return;
         }
         // A raw throw escaping the executor poll on a LIVE job (the missing-adapter + credential cases are
@@ -1529,6 +1685,7 @@ class RunExecution {
         return;
       }
       if (this.#settled || this.#abort.signal.aborted || !this.#pendingMediaJobs.has(nodeId)) {
+        this.#budgetGovernor?.clearLegacyMediaJob(nodeId); // see the catch above — never strand a waiter
         return; // a cancel / terminal raced the poll await — let #settle close the run
       }
       await this.#applyMediaJobStatus(vertex, job, status);
@@ -1555,7 +1712,18 @@ class RunExecution {
         // Exponential backoff (no jitter) capped at pollMaxMs, then re-arm. Progress is TRANSIENT (ADR-0045
         // §2) — never persisted; no run event today.
         job.backoffMs = Math.min(job.backoffMs * 2, MEDIA_JOB_POLL_DEFAULTS.pollMaxMs);
-        this.#armMediaPoll(vertex.id);
+        try {
+          this.#armMediaPoll(vertex.id);
+        } catch {
+          // The job was already accepted by the provider. A host timer fault is an engine failure, not evidence
+          // that the job was free: settle its single paid addend before failing the node, so both the admission and
+          // durable terminal total survive this otherwise easy-to-miss out-of-band path.
+          await this.#settleMediaJobFailed(vertex, job, {
+            code: 'internal',
+            message: 'the media job poll timer could not be re-armed',
+            retryable: false,
+          });
+        }
         return;
       }
       case 'done':
@@ -1714,6 +1882,12 @@ class RunExecution {
       disarm();
     }
     this.#mediaJobTimers.clear();
+    // ADR-0074 §3: release every unknown-basis HOLD before dropping the jobs. A `checkPreEgress` awaiting a job
+    // that will now never settle would hang forever — worse than either failing or admitting. This is the reason
+    // the bulk paths cannot simply drop the map.
+    for (const nodeId of this.#pendingMediaJobs.keys()) {
+      this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
+    }
     this.#pendingMediaJobs.clear();
     this.#budgetApprovedVertices.clear(); // drop any unconsumed budget-approval (a sibling failure/cancel
     // can settle the run between resume() arming it and the re-dispatch — no stale entry on the retained run)
@@ -1918,6 +2092,45 @@ class RunExecution {
     }
   }
 
+  /**
+   * Await the budget governor's conservative-commitment barrier at a node boundary (ADR-0074 §2).
+   *
+   * **The await is the substance.** `#emitDurable` resolves only after `persistEvent` has settled (its `await
+   * settled` at the end), so waiting here means a commitment made inside the attempt is on disk — or has already
+   * failed the run — before the node reaches any boundary. Without it the node could settle while the write was
+   * still in flight, and a crash in that window loses money the provider may have billed.
+   *
+   * The catch below is a BACKSTOP, and on the run path it is deliberately unreachable: `#emitDurable` is total for
+   * store faults, so a failed non-terminal write sets `#failure` and aborts there rather than rejecting. It
+   * matters for a HOST-wired governor whose sink can reject — the chat path, once §4 gives it a real durable
+   * write. Kept here so the two surfaces cannot diverge in what a durability failure means: never a released
+   * reservation, always a loud failure.
+   */
+  async #flushBudgetCommitments(nodeId: string): Promise<void> {
+    const governor = this.#budgetGovernor;
+    if (governor === undefined) return;
+    try {
+      await governor.flushCommitments();
+    } catch (error) {
+      // Attribute it to the node whose commitment actually failed, not to whichever node reached this barrier
+      // first — under a `fan_out` both branches await the same chain link, so the first to flush may have made no
+      // commitment at all. Falls back to this node when the error carries no owner.
+      const owner = error instanceof CommitmentDurabilityError ? (error.nodeId ?? nodeId) : nodeId;
+      this.#failure ??= {
+        nodeId: owner,
+        error: {
+          code: 'internal',
+          // The cause is deliberately NOT in the message: a durable-write failure can carry a filesystem path, and
+          // a user-facing `run:failed` message must not. It survives on `CommitmentDurabilityError.cause` for a
+          // host that narrows on the class — which is the only carrier, since this path has no store to log it.
+          message: 'a conservative budget commitment could not be made durable',
+          retryable: false,
+        },
+      };
+      this.#abort.abort();
+    }
+  }
+
   async #emitDurable(draft: RunEventDraft): Promise<void> {
     // Persist the boundary/terminal event, then deliver (ADR-0036 persist-before-deliver, so a crash
     // can never re-run a completed node or lose its output). This method is **total for store faults** (the
@@ -1985,6 +2198,14 @@ class RunExecution {
       } catch {
         if (!TERMINAL_TYPES.has(event.type) && this.#failure === undefined && !this.#cancelling) {
           this.#failure = {
+            // Attribute it when the event names a node. This is the failure a user ACTUALLY sees for a failed
+            // durable write — including a `budget:estimate_committed`, whose typed
+            // `CommitmentDurabilityError` never fires here because this catch is total and resolves rather than
+            // rejecting. Without the id, `run:failed` said only "a durable run-event write failed" with nothing
+            // to point at, in a run that may have dozens of nodes.
+            ...('nodeId' in event && typeof event.nodeId === 'string'
+              ? { nodeId: event.nodeId }
+              : {}),
             error: {
               code: 'internal',
               message: 'a durable run-event write failed',
@@ -2217,6 +2438,13 @@ export class WorkflowEngine {
   // authorized a custom-base_url turn) and without an unpriced sink (§K7 — the notice was dead on `run`/`gate`).
   readonly #resolveEndpoint: ((provider: ProviderId) => EndpointKind) | undefined;
   readonly #onUnpriced: ((model: string, capMicrocents: number) => void) | undefined;
+  /**
+   * The THIRD occurrence of the same bug the comment above records, found by the #W15-16 review: declared on
+   * `WorkflowEngineDeps`, forwarded by `build-engine.ts` from a real `gate.ts` sentence, and never read here —
+   * so the governor's hold notice was dead on `run` / `gate`. ADR-0074 §3 requires the legacy-media-job hold be
+   * OBSERVABLE precisely so a resume is not a silent stall, and it was exactly that.
+   */
+  readonly #onLegacyMediaJobHold: ((nodeIds: readonly string[]) => void) | undefined;
   readonly #runs = new Map<string, RunExecution>();
 
   constructor(deps: WorkflowEngineDeps) {
@@ -2229,6 +2457,7 @@ export class WorkflowEngine {
     this.#resolvePrice = deps.resolvePrice;
     this.#resolveEndpoint = deps.resolveEndpoint;
     this.#onUnpriced = deps.onUnpriced;
+    this.#onLegacyMediaJobHold = deps.onLegacyMediaJobHold;
   }
 
   /**
@@ -2260,6 +2489,9 @@ export class WorkflowEngine {
       ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
       ...(this.#resolveEndpoint === undefined ? {} : { resolveEndpoint: this.#resolveEndpoint }),
       ...(this.#onUnpriced === undefined ? {} : { onUnpriced: this.#onUnpriced }),
+      ...(this.#onLegacyMediaJobHold === undefined
+        ? {}
+        : { onLegacyMediaJobHold: this.#onLegacyMediaJobHold }),
     });
     this.#runs.set(runId, execution);
     void execution.begin();
@@ -2358,6 +2590,9 @@ export class WorkflowEngine {
       ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
       ...(this.#resolveEndpoint === undefined ? {} : { resolveEndpoint: this.#resolveEndpoint }),
       ...(this.#onUnpriced === undefined ? {} : { onUnpriced: this.#onUnpriced }),
+      ...(this.#onLegacyMediaJobHold === undefined
+        ? {}
+        : { onLegacyMediaJobHold: this.#onLegacyMediaJobHold }),
       checkpoint,
     });
     this.#runs.set(input.runId, execution);

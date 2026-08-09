@@ -779,6 +779,118 @@ describe('ToolRegistry — per-tool approval (ADR-0057 EA3)', () => {
     expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ command: 'ls' });
   });
 
+  /* --- #91: the approval preview is secret-redacted, like sanitizeInput() already is (ADR-0029(c)) --- */
+
+  // A syntactically valid but FAKE credential: 20 alphanumerics after `sk-`, which is what
+  // `redactSecretShapedText`'s standalone-shape alternation matches (`sk-[A-Za-z0-9]{16,}`).
+  const FAKE_KEY = 'sk-ABCDEFGHIJKLMNOP1234';
+
+  it('redacts a secret-shaped segment of an fs_write path — and dispatches on the REAL, unscrubbed target', async () => {
+    const confirm = approving();
+    const { host, writeFile } = hostWithWriteSpy();
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: `./${FAKE_KEY}/out.txt`, content: 'hi' }),
+      ctx({ approval: { confirm } }),
+    );
+    expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ path: './[redacted]/out.txt' });
+    // The preview is DISPLAY-only: the side effect must still run against the path the model asked for, or
+    // redaction would have silently changed what the tool does.
+    expect(writeFile.mock.calls[0]?.[0]).toBe(`./${FAKE_KEY}/out.txt`);
+  });
+
+  it('scrubs the egress host arm too — the defence-in-depth branch, which nothing else exercises', async () => {
+    // An FQDN whose leftmost label is itself credential-SHAPED: legal DNS, and the only input that tells a
+    // scrubbed host arm apart from an unscrubbed one. Without it, reverting that arm leaves the suite green.
+    const confirm = approving();
+    const secretHost = 'sk-abcdefghijklmnopqrst.example.com';
+    const egressHost = stubHost({
+      egress: { fetch: () => Promise.resolve({ status: 200, headers: {}, body: 'ok' }) },
+    });
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host: egressHost }).dispatch(
+      call('http_request', { url: `https://${secretHost}/x`, method: 'GET' }),
+      ctx({ approval: { confirm }, toolPolicy: { allowedDomains: [secretHost] } }),
+    );
+    expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ host: '[redacted].example.com' });
+  });
+
+  it('redacts a credential carried in a run_command arg before it reaches the preview', async () => {
+    const confirm = approving();
+    await registry().dispatch(
+      call('run_command', { command: 'curl', args: ['-H', `Authorization: Bearer ${FAKE_KEY}`] }),
+      ctx({ approval: { confirm }, toolPolicy: { allowedCommandGlobs: ['curl *'] } }),
+    );
+    // Assert the SECURITY property (the credential is gone, something was scrubbed) rather than pinning the
+    // exact output — the redactor's pattern set is free to tighten without dragging this test with it.
+    const command = confirm.mock.calls[0]?.[0]?.preview.command;
+    expect(command).not.toContain(FAKE_KEY);
+    expect(command).toContain('[redacted]');
+    // The other half of the property, and the one now most at risk: the preview must stay REVIEWABLE. Without
+    // this, `command: '[redacted]'` (redact everything) would pass — and the approval prompt would be useless.
+    expect(command).toContain('curl');
+  });
+
+  it('redacts the EA5 agent:approval_requested preview too — the --json/observability copy, not just the prompt', async () => {
+    const confirm = approving();
+    const emitApprovalRequested = vi.fn<(req: ToolApprovalRequest) => void>();
+    const { host } = hostWithWriteSpy();
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: `./${FAKE_KEY}.txt`, content: 'hi' }),
+      ctx({ approval: { confirm, emitApprovalRequested } }),
+    );
+    expect(emitApprovalRequested.mock.calls[0]?.[0]?.preview).toEqual({ path: './[redacted].txt' });
+  });
+
+  it('leaves an ordinary path untouched — no over-redaction of a normal target', async () => {
+    const confirm = approving();
+    const { host } = hostWithWriteSpy();
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: './config/.env', content: 'hi' }),
+      ctx({ approval: { confirm } }),
+    );
+    expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ path: './config/.env' });
+  });
+
+  it.each([
+    // The credential whose value SPANS a separator — the case a per-segment scrub misses entirely, because
+    // the part before the `/` falls under the key=value pattern's own 6-char value floor.
+    ['./api_key=AAAAA/BBBBBB.txt', './[redacted]'],
+    ['./secret=abc/def.txt', './[redacted]'],
+    [`./${FAKE_KEY}/.git/config`, './[redacted]/.git/config'],
+  ])('scrubs a credential that spans a path separator: %s', async (input, expected) => {
+    const confirm = approving();
+    const { host } = hostWithWriteSpy();
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path: input, content: 'hi' }),
+      ctx({ approval: { confirm } }),
+    );
+    expect(confirm.mock.calls[0]?.[0]?.preview).toEqual({ path: expected });
+  });
+
+  it('hands the confirm hook the UNREDACTED target alongside the redacted preview (#91)', async () => {
+    // The whole point of splitting the two uses: the display copy can be scrubbed as hard as secrecy needs,
+    // because the host's protected-path CLASSIFIER reads `target`, not `preview`. Here the scrub collapses
+    // the `.ssh` segment out of the preview — and `target` still carries the real path.
+    const confirm = approving();
+    const { host } = hostWithWriteSpy();
+    const path = './Access Token Backupxyz/.ssh/authorized_keys';
+    await createToolRegistry({ tools: BUILTIN_TOOLS, host }).dispatch(
+      call('write_file', { path, content: 'hi' }),
+      ctx({ approval: { confirm } }),
+    );
+    const request = confirm.mock.calls[0]?.[0];
+    expect(request?.unredactedPreview).toEqual({ path });
+    expect(request?.preview.path).not.toBe(path); // the display copy really did lose information
+  });
+
+  it('sets unredactedPreview on EVERY governed class, so a classifier can always prefer it', async () => {
+    const confirm = approving();
+    await registry().dispatch(
+      call('run_command', { command: 'ls' }),
+      ctx({ approval: { confirm }, toolPolicy: { allowedCommands: ['ls'] } }),
+    );
+    expect(confirm.mock.calls[0]?.[0]?.unredactedPreview).toEqual({ command: 'ls' });
+  });
+
   it('forwards ctx.signal to the confirm hook as its second argument', async () => {
     const signal = mutableSignal();
     const confirm = approving();

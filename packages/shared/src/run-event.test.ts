@@ -4,6 +4,7 @@ import { RUN_EVENT_TYPES, SESSION_EVENT_TYPES } from './constants.js';
 import {
   CostUpdatedEventSchema,
   MaskedSecretSchema,
+  parseStoredRunEvent,
   RunEventSchema,
   SessionEventSchema,
   StopReasonSchema,
@@ -165,10 +166,59 @@ const valid: Record<string, Record<string, unknown>> = {
     limitMicrocents: 1000,
     gateId: 'budget-gate-1',
   },
+  'budget:estimate_committed': {
+    type: 'budget:estimate_committed',
+    ...env,
+    nodeId: 'n',
+    attemptNumber: 1,
+    model: 'claude-opus-4-8',
+    estimateMicrocents: 400,
+    cumulativeConservativeMicrocents: 400,
+  },
 };
 
 /** One targeted invalid payload per variant (a missing/invalid required field). */
 const reject: Record<string, Record<string, unknown>> = {
+  'budget:estimate_committed (no model)': {
+    type: 'budget:estimate_committed',
+    ...env,
+    estimateMicrocents: 400,
+    cumulativeConservativeMicrocents: 400,
+  },
+  'budget:estimate_committed (zero estimate)': {
+    // Unreachable by construction — `#admit` refuses `<= 0` — and the bound must be right on the FIRST version:
+    // tightening later would turn every historical zero row into a §5 corruption that must throw.
+    type: 'budget:estimate_committed',
+    ...env,
+    model: 'm',
+    estimateMicrocents: 0,
+    cumulativeConservativeMicrocents: 0,
+  },
+  'budget:estimate_committed (fractional estimate)': {
+    type: 'budget:estimate_committed',
+    ...env,
+    model: 'm',
+    estimateMicrocents: 12.5,
+    cumulativeConservativeMicrocents: 12.5,
+  },
+  'budget:estimate_committed (cumulative below this commitment)': {
+    // The single most likely producer bug: reading the counter BEFORE the `+=`. That emits a first commitment as
+    // `{estimate: 500, cumulative: 0}`, restores 0 on resume, and hands 500 micro-cents of already-owed money
+    // back to the cap as headroom — with nothing else anywhere complaining.
+    type: 'budget:estimate_committed',
+    ...env,
+    model: 'm',
+    estimateMicrocents: 500,
+    cumulativeConservativeMicrocents: 0,
+  },
+  'budget:estimate_committed (attemptNumber 0)': {
+    type: 'budget:estimate_committed',
+    ...env,
+    model: 'm',
+    attemptNumber: 0,
+    estimateMicrocents: 400,
+    cumulativeConservativeMicrocents: 400,
+  },
   'run:started (bad executionMode)': {
     type: 'run:started',
     ...env,
@@ -349,6 +399,13 @@ const reject: Record<string, Record<string, unknown>> = {
     ...valid['media_job:submitted'],
     modality: 'document', // billed modalities are image|audio|video only
   },
+  // #W15-7 / ADR-0074 §3: a frozen cost on an unfrozen basis. A resume would restore the old reservation
+  // while RE-DERIVING the volume from a workflow definition the user may have edited in between — the exact
+  // drift §3 exists to prevent, reintroduced through the half-populated case.
+  'media_job:submitted (acceptedCostMicrocents without units)': {
+    ...valid['media_job:submitted'],
+    acceptedCostMicrocents: 1_500,
+  },
   'media_job:submitted (non-datetime deadlineAt)': {
     ...valid['media_job:submitted'],
     deadlineAt: 'soon',
@@ -499,7 +556,7 @@ describe('RunEvent union — every variant', () => {
     }
   });
 
-  it('covers exactly the 23 canonical colon-namespaced names, pinned to a literal list', () => {
+  it('covers exactly the 24 canonical colon-namespaced names, pinned to a literal list', () => {
     // A hardcoded contract list — independent of RUN_EVENT_TYPES — so the union and the
     // constant cannot silently drift together.
     const CONTRACT_NAMES = [
@@ -526,6 +583,7 @@ describe('RunEvent union — every variant', () => {
       'run:timeout',
       'budget:warning',
       'budget:paused',
+      'budget:estimate_committed', // ADR-0074 §2 — a durable conservative commitment; an ESTIMATE, not spend
     ];
     // The matrix above proves each canonical name's valid payload parses (so a
     // renamed/missing variant fails there); the union member count catches an *extra*
@@ -533,7 +591,13 @@ describe('RunEvent union — every variant', () => {
     // RunEventSchema wraps the union in the correlation-key refinement; reach the raw union.
     expect(RunEventSchema.innerType().options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
-    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 23
+    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 24
+    // STRUCTURAL, not a comment: the §5 forward-compat fixtures stand in for "a type a newer binary wrote" using
+    // the `test:` prefix. Step B first used `budget:estimate_committed` for that and ADR-0074 §2 then made it
+    // real, silently inverting three fixtures. A `test:`-prefixed name must never become a canonical event.
+    expect([...RUN_EVENT_TYPES, ...SESSION_EVENT_TYPES].some((t) => t.startsWith('test:'))).toBe(
+      false,
+    );
   });
 
   it('pins the RunEvent discriminant to RunEventType (type-level)', () => {
@@ -833,6 +897,81 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
     expect(onCorrelationKey({ ...dual, runId: 'run-1', sessionId: 'sess-1' })).toBe(true); // both
   });
 
+  it('accepts a FRACTIONAL media-job units volume (ADR-0074 §3)', () => {
+    // `duration_seconds` is `z.number().positive()`, so `units = duration × count` is fractional by contract.
+    // An integer bound here would reject a 12.5-second video job at the bus — and the row is written AFTER the
+    // provider has accepted and billed the job, so the run would die holding an unpollable paid job.
+    const base = {
+      type: 'media_job:submitted',
+      runId: 'run-1',
+      timestamp: '2026-06-04T00:00:00.000Z',
+      sequenceNumber: 3,
+      nodeId: 'gen',
+      jobId: 'j1',
+      provider: 'openai',
+      model: 'sora-2',
+      modality: 'video',
+      startedAt: '2026-06-04T00:00:00.000Z',
+      deadlineAt: '2026-06-04T01:00:00.000Z',
+    };
+    expect(
+      RunEventSchema.safeParse({ ...base, units: 12.5, acceptedCostMicrocents: 900 }).success,
+    ).toBe(true);
+    expect(RunEventSchema.safeParse({ ...base, units: 0 }).success).toBe(false); // still a positive volume
+    expect(RunEventSchema.safeParse({ ...base, units: -1 }).success).toBe(false);
+    // The MONEY field stays an integer — micro-cents are not fractional.
+    expect(RunEventSchema.safeParse({ ...base, acceptedCostMicrocents: 1.5 }).success).toBe(false);
+  });
+
+  it('carries budget:estimate_committed on either envelope (dual), and drops nodeId on a session turn (ADR-0074 §2)', () => {
+    const base = {
+      type: 'budget:estimate_committed',
+      timestamp: '2026-06-04T00:00:00.000Z',
+      sequenceNumber: 7,
+      model: 'claude-opus-4-8',
+      estimateMicrocents: 500,
+      cumulativeConservativeMicrocents: 500,
+    };
+    // A run carries nodeId; a session turn has no node, so the field is genuinely ABSENT rather than empty. That
+    // matters beyond coverage: this is the first run event with an OPTIONAL top-level `nodeId`, and the store's
+    // `'nodeId' in event ? event.nodeId : null` projection depends on Zod omitting an absent optional key.
+    const asRun = RunEventSchema.safeParse({ ...base, runId: 'run-1', nodeId: 'n' });
+    expect(asRun.success).toBe(true);
+    const asSession = RunEventSchema.safeParse({ ...base, sessionId: 'sess-1' });
+    expect(asSession.success).toBe(true);
+    if (asSession.success) {
+      expect('nodeId' in asSession.data).toBe(false);
+    }
+    // neither / both → rejected (the same dualBase invariant agent:token obeys)
+    expect(RunEventSchema.safeParse(base).success).toBe(false);
+    expect(RunEventSchema.safeParse({ ...base, runId: 'r', sessionId: 's' }).success).toBe(false);
+  });
+
+  it('pins the conservative cumulative to include this commitment (the read-before-increment bug)', () => {
+    const base = {
+      type: 'budget:estimate_committed',
+      runId: 'run-1',
+      timestamp: '2026-06-04T00:00:00.000Z',
+      sequenceNumber: 7,
+      model: 'm',
+      estimateMicrocents: 500,
+    };
+    expect(
+      RunEventSchema.safeParse({ ...base, cumulativeConservativeMicrocents: 500 }).success,
+    ).toBe(true);
+    expect(
+      RunEventSchema.safeParse({ ...base, cumulativeConservativeMicrocents: 900 }).success,
+    ).toBe(true); // a later commitment
+    const bad = RunEventSchema.safeParse({ ...base, cumulativeConservativeMicrocents: 499 });
+    expect(bad.success).toBe(false);
+    if (!bad.success) {
+      // The error lands on the cumulative, not on an unrelated field — so the message names the actual mistake.
+      expect(
+        bad.error.issues.some((i) => i.path.includes('cumulativeConservativeMicrocents')),
+      ).toBe(true);
+    }
+  });
+
   it('carries agent:reasoning on either envelope (dual), like agent:token (EA6, 2.5.H)', () => {
     const base = {
       type: 'agent:reasoning',
@@ -997,5 +1136,114 @@ describe('correlationId on the shared error shape (ADR-0036)', () => {
         error: { code: 'provider_rate_limit', message: 'slow', retryable: true, correlationId: '' },
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('parseStoredRunEvent — the forward-compatible read (ADR-0074 §5)', () => {
+  const known = {
+    type: 'run:started' as const,
+    runId: 'r1',
+    sequenceNumber: 0,
+    timestamp: '2026-07-30T00:00:00.000Z',
+    workflowId: '11111111-2222-4333-8444-555555555555', // surrogate UUID per ADR-0022
+    inputs: {},
+    executionMode: 'local' as const,
+  };
+
+  it('parses a known event exactly as the strict schema does — validated and stripped, not passed through', () => {
+    expect(parseStoredRunEvent(known)).toEqual(RunEventSchema.parse(known));
+    // The other half of the same §Forward-compatibility sentence: consumers ignore unknown FIELDS too. A newer
+    // binary adding an optional field (ADR-0074 §3 does exactly this to `media_job:submitted`) must not make the
+    // row unreadable — and the returned object must be the STRIPPED parse output, not the raw candidate. Pins the
+    // `return candidate as RunEvent` shortcut as a failure.
+    const withFutureField = { ...known, someFutureField: 1 };
+    expect(parseStoredRunEvent(withFutureField)).toEqual(RunEventSchema.parse(known));
+    expect(parseStoredRunEvent(withFutureField)).not.toHaveProperty('someFutureField');
+  });
+
+  it('DROPS an unknown event type — a newer writer, not corruption', () => {
+    // The whole point: the strict schema throws here, which made one row from a newer binary render an entire
+    // run unreadable. `sse-event-schema.md` promises consumers ignore unknown types; this is that promise.
+    expect(
+      parseStoredRunEvent({
+        // A name reserved for these tests and deliberately never added to the union. The first draft used
+        // `budget:estimate_committed` as the stand-in for "a newer writer" — which then LANDED (ADR-0074 §2) and
+        // silently turned this fixture into a KNOWN type. The pinned-contract test caught it, but the lesson is
+        // the fixture's: a forward-row stand-in must name something that will never become real.
+        type: 'test:never_a_real_event',
+        runId: 'r1',
+        sequenceNumber: 1,
+        timestamp: '2026-07-30T00:00:00.000Z',
+        estimateMicrocents: 500,
+      }),
+    ).toBeUndefined();
+    // And the strict schema still rejects it, so the write side is unchanged.
+    expect(() => RunEventSchema.parse({ type: 'test:never_a_real_event' })).toThrow();
+  });
+
+  it('THROWS on a known type with a damaged body — corruption is never swallowed', () => {
+    // The distinction that keeps ADR-0050's durability posture: a row we can identify but not read is a
+    // damaged row, and hiding it would lose data silently.
+    expect(() => parseStoredRunEvent({ ...known, runId: '' })).toThrow();
+    expect(() => parseStoredRunEvent({ ...known, sequenceNumber: -1 })).toThrow();
+    expect(() => parseStoredRunEvent({ ...known, workflowId: undefined })).toThrow();
+  });
+
+  it('THROWS on something that is not an event at all', () => {
+    expect(() => parseStoredRunEvent({ nope: true })).toThrow();
+    expect(() => parseStoredRunEvent(null)).toThrow();
+    expect(() => parseStoredRunEvent('run:started')).toThrow();
+  });
+
+  it('THROWS on a row with no usable `type` — Zod cannot tell it apart, so we do', () => {
+    // Zod raises the SAME `invalid_union_discriminator` for a missing discriminator as for an unrecognized one.
+    // They are opposites: no writer of ours has ever omitted `type`, so this is a damaged row.
+    expect(() => parseStoredRunEvent({ ...known, type: undefined })).toThrow();
+    expect(() => parseStoredRunEvent({ ...known, type: '' })).toThrow();
+    expect(() => parseStoredRunEvent({ ...known, type: 7 })).toThrow();
+    expect(() => parseStoredRunEvent({ ...known, type: null })).toThrow();
+  });
+
+  it('drops a forward-written row whatever its body looks like', () => {
+    // Both drop: the row is unreadable either way, and we could not judge the body of a variant we do not know.
+    expect(parseStoredRunEvent({ type: 'some:future_event' })).toBeUndefined();
+    expect(
+      parseStoredRunEvent({ type: 'some:future_event', sequenceNumber: 'not-a-number' }),
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * ADR-0074 §3 freezes the media-job basis at SUBMIT time. The invariant is a one-way implication, not
+ * "both or neither" (#W15-7) — so the guard has to reject the half-frozen case WITHOUT rejecting the
+ * legitimate units-only one.
+ */
+describe('media_job:submitted — the frozen basis (#W15-7)', () => {
+  const base = valid['media_job:submitted'];
+
+  it('accepts units alone — the H3 approved-bypass freezes the volume and omits the cost on purpose', () => {
+    // No pricing hook ran on that path, and `0` would freeze "priced at zero" for a job that was never
+    // priced. Rejecting this would break the bypass outright.
+    expect(RunEventSchema.safeParse({ ...base, units: 12.5 }).success).toBe(true);
+  });
+
+  it('accepts both together, with a FRACTIONAL volume', () => {
+    // `duration_seconds` is fractional by contract; an integer bound here would make a 12.5-second video
+    // job unwritable after the provider had already accepted and billed it.
+    expect(
+      RunEventSchema.safeParse({ ...base, units: 12.5, acceptedCostMicrocents: 1_500 }).success,
+    ).toBe(true);
+  });
+
+  it('accepts a reserved-nothing commitment, which is distinct from absent', () => {
+    // `0` says "priced, reserved nothing" — the allow-degrade path for an unpriced model under a
+    // non-strict cap. It still needs its basis.
+    expect(RunEventSchema.safeParse({ ...base, units: 4, acceptedCostMicrocents: 0 }).success).toBe(
+      true,
+    );
+  });
+
+  it('accepts neither — a legacy row written before §3', () => {
+    expect(RunEventSchema.safeParse(base).success).toBe(true);
   });
 });

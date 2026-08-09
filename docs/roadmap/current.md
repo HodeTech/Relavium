@@ -88,7 +88,7 @@ any order"* — never as headcount.
 ```mermaid
 flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
-    W1["Wave 1 — Stop the bleeding<br/>3 CRITICALs · cost cap"]
+    W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     W2["Wave 2 — Shut the doors<br/>MCP · fs jail · secrets<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
@@ -110,53 +110,320 @@ checklists before ~30 security-gated PRs are reviewed against them.
 
 1. ✅ **Merge PR #76** (2.6.Q P1–P5, ADR-0071/0072, the three picker bugs, the param self-heal) — **done
    2026-07-26**, along with #77 (this plan + the Phase-2.5.5 opening + `release.yml`'s `G26` ancestry gate).
-2. **Reserve numbers**, one per number in landing order — migrations end at `0012` and ADRs at `0072`
-   (verified): `0013` = the Wave-1 approval-preview scrub · `0014` = 2.5.5.C's enum CHECKs (#101) ·
-   `0015` = 2.6.H · `0016` = 2.6.G's pins · `0017` = 2.6.N lineage; **ADR-0073+** for the nine unwritten 2.6 ADRs.
-3. **One `ci.yml`/`turbo.json`/`tsup.config.ts` PR** (a five-way collision file — do not split):
+2. ✅ **Reserve numbers** — **done**, recorded here: migrations end at `0012` and ADRs at `0072` (verified),
+   so `0013` = **ADR-0074 §4's conservative money columns** (`agent_sessions.total_conservative_microcents` + `session_costs.conservative_microcents`) — the number was freed when D8 ruled against the approval-preview scrub and is RE-USED here rather than left as a hole · `0014` = 2.5.5.C's enum CHECKs (#101) · `0015` = 2.6.H ·
+   `0016` = 2.6.G's pins · `0017` = 2.6.N lineage; **ADR-0075+** for the nine unwritten 2.6 ADRs (`0073` = the history.db migration lock, `0074` = durable conservative budget commitments — both landed in Wave 1).
+3. ✅ **One `ci.yml`/`turbo.json`/`tsup.config.ts` PR** — **done 2026-07-29 (PR #80)**, all eight items:
    2.5.5.H · the required gate never runs the compiled binary + undeclared `drizzle` output (#294, #315) →
    local `pnpm run ci` vs `ci.yml` divergence (#312 — and `pnpm ci` is shadowed by a pnpm builtin, so the
    script was unreachable by the name everyone types) → the coverage-floor **ruling and its implementation**
    (#296, #152) → the `(advisory)` labels (#320) → `THIRD_PARTY_EXTERNAL` (G27, #248) → bundle-closure
-   single-chunk assert (#314) → `sync:models:check` (#317). *(`release.yml`'s ancestry check, `G26`, already
-   landed in #77; only its tag-protection half remains, and that is now configured too.)*
-4. 2.5.5.F · **three skills' hardcoded foreign-project paths** (#162) — filed as docs, actually a functional
-   bug: they write outside the repo.
-5. **One markdown PR** (shared files): `packages/mcp` missing from five inventory tables (#128, #129, #153,
-   #163, #254) + the two review-checklist gaps (#164, #167) + the CLAUDE.md/README i18n clause (#74, #260, #134).
-6. The **locale-bar amendment** (decision D5) and the **snapshot regen** after the Gemini price ruling (D3).
+   single-chunk assert (#314) → `sync:models:check` (#317). *(`release.yml`'s ancestry check, `G26`, landed in
+   #77; its tag-protection half is configured.)* The PR also closed the four blockers from the 2026-07-29
+   roadmap review, and its own CI caught two real defects in it — a TS4111 that `turbo run typecheck` does not
+   cover, and `pnpm ci` being unreachable because pnpm reserves `ci` as a builtin.
+4. ✅ **2.5.5.F · three skills' hardcoded foreign-project paths** (#162) — **done 2026-07-29.** Filed as docs,
+   actually a functional bug: they pointed at `/Users/dev/…/Agent-Organizer/`, so `add-package`'s `mkdir -p`
+   would have created a tree outside the repo. All three now anchor on `$(git rev-parse --show-toplevel)`.
+5. ✅ **One markdown PR** — **done 2026-07-29**: `packages/mcp` added to all five inventory sites (#128, #129,
+   #153, #163, #254), the reviewer agent's secrets item extended to the shipped CLI floor (#164), the
+   security-review skill's SSRF step now requires reusing the shared guard rather than re-deriving one (#167),
+   and the i18n clause settled by the D5 ruling (#74, #260, #134).
+6. ✅ **The locale-bar amendment** (D5, `en`+`tr`) and the **snapshot regen** (D3) — **done**, propagated to
+   all seven locale sites and merged as PR #79 (two price rises taken, nine retirements accepted).
 
-> Why first: every wave after this adds a migration, and the required gate still does not execute the
-> binary it ships while turbo does not declare `apps/cli/drizzle/**` as a build output — so a cache-hit
-> replay can leave `dist/index.js` fresh beside a stale `drizzle/`, crashing on first DB touch. The
-> coverage gate must also flip *before* ~120 items land, not mid-flight.
+> ✅ **Wave 0 is COMPLETE (2026-07-29).** The required gate now executes the binary it ships,
+> `apps/cli/drizzle/**` is a declared turbo output, and `lint · typecheck · test` +
+> `engine coverage floor (llm, mcp)` are both required checks under branch protection. In phase terms this
+> closes **8 of 2.5.5.H's 14** tasks and **3 of 2.5.5.F's 20**. **Wave 1 followed and is also complete
+> (2026-07-30, PR #81) — see below; Wave 2 is next.**
 
 ### Wave 1 — Stop the bleeding
 
 All three CRITICALs, plus the states where `max_cost_microcents` is silently not a cap. Four file-disjoint
-lanes, any order between them:
+lanes, any order between them, plus the money hole they left open.
 
-- **(a) `registry.ts`** — 2.5.5.A · **redact tool-approval previews like `sanitizeInput()` already does**
-  (#91) **+ migration 0013** scrubbing already-persisted previews. *`registry.ts:12` already imports
-  `redactSecretShapedValue`; `previewFor()` at `:436` never calls it — verified.*
-- **(b) `packages/db` chain, strict** — 2.5.5.C · `SQLITE_BUSY_SNAPSHOT` (#100) → async backoff replacing
+**✅ Wave 1 is COMPLETE — lanes (a)–(d) on 2026-07-30 (PR #81), lane (e) on 2026-08-09 (`#W15-3`).**
+
+> **Superseded 2026-08-09 — kept because the correction is the record.** Lane (e) closed with `#W15-3`:
+> `/cost --release` makes §1's escape hatch reachable, and `/cost` renders the durability state. The
+> retraction below was accurate when written and is no longer; it stays so the history of the false
+> completion claim is not quietly erased.
+>
+> **Retraction (2026-07-30).** This section previously said Wave 1 was complete and ADR-0074 fully implemented.
+> That was wrong on lane (e) and I am correcting it rather than leaving it: **§1's release escape hatch is
+> exposed on `GovernorWiring` but reachable from no command, REPL action or Home affordance**, and `/cost` never
+> renders `conservativeDurabilityBroken`. §1 names this exact state as forbidden — "a single usage-less response
+> would permanently shrink a long-lived chat's cap with no way out" — and this PR REMOVED the accidental escape
+> a restart used to provide. A section whose compensating bound is unreachable is not implemented, and marking
+> it done made four other documents inherit the error. Two independent reviews flagged it; both were right.
+>
+> Lane (e)'s remaining work, and two defects it exposed that ADR-0074 does not cover, are tracked in
+> **[PR #81's closing list](#pr-81s-closing-list-and-the-two-items-that-need-an-adr)** below. Every lane below is verified against the shipped code, not
+against its own task text — the check for each is stated inline. Two gaps are recorded rather than closed; both
+are named in their lane and marked in the source, and neither is a shipped defect:
+
+1. the engine-level composition test for ADR-0074 §3's abort-breakable media-job hold (`engine.ts`, at the abort
+   listener) — the governor's own state machine is mutation-verified, the composition with `#countRunning`'s
+   termination gate is not;
+2. the CLI-layer test that `restoreConservativeCost` is wired through `buildSessionRuntime` → `GovernorWiring`
+   (`session-host.test.ts`) — `AgentSession.resume` calling the hook IS mutation-verified in `packages/core`;
+   only the spread that supplies it is unproven.
+
+- ✅ **(a) `registry.ts`** — 2.5.5.A · **redact tool-approval previews like `sanitizeInput()` already does**
+  (#91). *(The originally-planned migration 0013 scrubbing already-persisted previews was ruled OUT — see D8.)* *Closed: `previewFor()` now scrubs the DISPLAY copy while `rawPreviewFor()` keeps an
+  `unredactedPreview` for in-process classification — splitting the two uses, because a whole-string scrub
+  flipped the protected-path decision and a per-segment one reopened the leak. Verified: `registry.ts` and
+  `tools/types.ts` both carry `unredactedPreview`.*
+- ✅ **(b) `packages/db` chain, strict** — 2.5.5.C · `SQLITE_BUSY_SNAPSHOT` (#100) → async backoff replacing
   the blocking `Atomics.wait` (#226) → **the chat-persister safety net** (#228, CRITICAL) →
   serialize `runMigrations` (#99) co-landed with the unconditional 0600 self-heal (#28, #33) →
   `createClient` typed error + PRAGMA docstring (#104, #105). `deprecationDate` crash guard (G1) is a
   standalone one-liner, droppable anywhere.
-- **(c) render/signals** — 2.5.5.I · **terminal-control sanitization to the four boundaries it never
+- ✅ **(c) render/signals** — 2.5.5.I · **terminal-control sanitization to the four boundaries it never
   reached** (G34, G44, #56, #57, CRITICAL — one PR at the shared helper, its own security review) →
-  `SIGTSTP`/`SIGCONT` + onboarding signal-registration ordering (G0, #50). *`RunApp.tsx` has zero
-  `stripTerminalControls`/`sanitizeInline` calls today — verified.*
-- **(d) money, split across two PRs** — `budget-governor.ts` only: 2.5.5.A · reservation ledger under
+  `SIGTSTP`/`SIGCONT` + onboarding signal-registration ordering (G0, #50). *Closed at all four boundaries the register names, verified by call count:
+  `RunApp.tsx` (#56) 9, `final-summary.ts` (#57) 6, `render-error.ts` (G34) 4, `clack-prompter.ts` (G44) 4. G0's
+  run/gate `SIGTSTP`/`SIGCONT` is `render/run-job-control.ts`; #50 is closed by ordering —
+  `drive-home.tsx` subscribes signals at `:808`, before `runOnboardingWizard` at `:855`.*
+- ✅ **(d) money, split across two PRs** — `budget-governor.ts` only: 2.5.5.A · reservation ledger under
   `max_parallel` (G38) → re-armed `budget:warning` + projected `thresholdPct` (G39, G47, G49) → **2.6.Q's
   strict-cap half**. Then `fallback-chain.ts`/`cost-tracker.ts` only: 2.5.5.B · `maxRetries: 0` + jitter +
   `Retry-After` (#276, #279) → narrowed `#emitSuccess` catch + `CostTracker` bounds (#194, #198) +
   **2.6.Q's realized-cost half**.
 
+- 🔶 **(e) ADR-0074 — durable conservative budget commitments (§2–§5 shipped; §1 INCOMPLETE)** · the money hole the other four lanes leave open:
+  a bounded estimate retained when a provider may already have billed but returned no trustworthy usage was
+  kept only in memory, so a crash or a resume reopened a strict cap against money that may already be owed.
+  §5 (a forward-compatible stored-event READ, the precondition for emitting anything new) → §2 (the
+  `budget:estimate_committed` contract, the governor's durability barrier, the checkpoint fold and the resume
+  restore) → §3 (freeze an async media job's accepted units + price) → §4 (the session's conservative
+  aggregate + per-model attribution + migration + transactional persister write).
+
 > 2.6.Q's cost-cap item is **split**: its task text spans both `budget-governor.ts` and `fallback-chain.ts`'s
 > `#emitSuccess` — the same catch 2.5.5.B narrows. The two halves join two different PRs, not one.
 > **Closes M2.5.5-1.**
+>
+> **Outstanding inside lane (e) — restated at close, because §4 changed the facts.** ADR-0074 §1 ties a
+> commitment's release to the surface that renders it.
+>
+> **Rendering: done on all three surfaces.** The run TUI and `relavium logs` shipped with §2; `/cost` shipped
+> with §4's fold and reads *estimated, possibly billed*, with `(no completed call)` for a model that has one
+> without a completed call. All three are mutation-verified.
+>
+> **Release: reachable, as of `#W15-3` (2026-08-09).** `/cost --release` on the chat surface — the one that
+> renders the amount, which is what §1 ties it to — clears the durable per-model and aggregate columns first
+> and the live governor second, so a released commitment does not return on the next `chat-resume`. `/cost`
+> also renders the durability state. This note previously said no affordance called it; that was true and no
+> longer is.
+>
+> The reserved `budget:estimate_released` event stays **reserved and unemitted**, and that is a decision, not
+> an omission: the session path restores its conservative total from COLUMNS rather than by replaying events,
+> so zeroing them is what makes the release durable there. The event is needed only by a workflow-run release
+> surface, which does not exist — a run is not long-lived, and `on_exceed: pause_for_approval`'s per-node
+> bypass or raising the YAML cap are §1's own analogy. §1's dated note in
+> [ADR-0074](../decisions/0074-durable-conservative-budget-commitments.md) carries the same statement.
+
+### PR #81's closing list, and the two items that need an ADR
+
+Two independent adversarial reviews of PR #81 (2026-07-30) found that the cap's core safety claim does not yet
+hold across a process boundary.
+
+**Almost all of this belongs to PR #81 itself, not to a later wave** — a first framing filed it as one, which
+was wrong. The test is simple: this PR either ADDED the code a finding is in (`background-failure.ts`), or
+claimed to have closed the area it sits in (the terminal-safety boundaries, ADR-0074 §1), or REMOVED a
+protection without replacing it (§1's escape hatch, which a restart used to provide). Shipping a regression and
+deferring its fix is not a schedule decision.
+
+**Only §A is genuinely separable.** Both of its items need an append-only ADR before any code — one changes what
+"spent" means across a crash, the other supersedes a decision ADR-0074 §5 already recorded. Those earn their own
+PRs. Everything from §B down is #81's to close.
+
+Ordered by whether the repo currently states something untrue, then by blast radius.
+
+**Every item names the check that would close it, not just the defect.**
+
+> **Status, 2026-08-09 — 23 of 24 closed.** Everything marked ✅ below is fixed,
+> break-verified with the mutation confirmed applied, and committed on `development`. §E's six coverage gaps
+> are all closed — `#W15-16`'s composition test fails by TIMING OUT when the abort listener is removed, which
+> is the unkillable run reproduced exactly rather than an assertion standing in for it.
+>
+> **`#W15-2` closed 2026-08-09** as [ADR-0075](../decisions/0075-fail-closed-resume-on-an-unreadable-event-log.md),
+> amending ADR-0074 §5: a read that feeds a REPLAY refuses when any row was skipped, a read that feeds a
+> DISPLAY stays tolerant. It landed first on purpose — `#W15-1` adds a new durable event type, and an older
+> binary reading it falls straight into §5's skip path, so this decision governs how that event degrades.
+>
+> **One gap this closing deliberately left open**, named here rather than implied: ADR-0075's refusal is
+> pinned at `gate.ts`'s own catch (where the blocker was) and at `toUserFacing`, but NOT through
+> `dispatch.ts` / `specs.ts` to the process exit. A re-wrapping `try/catch` added in either layer reproduces
+> the same blocker and leaves both tests green. Closing it needs a `run(argv, io)` drive with a redirected
+> HOME and a seeded on-disk `history.db`; no such harness exists for `gate` yet, and the marker sits at the
+> test it concerns.
+>
+> **`#W15-1` is what remains, and its DECISION is now made**:
+> [ADR-0076](../decisions/0076-durable-per-attempt-realized-cost-ledger.md) (Accepted 2026-08-09) — an
+> additive durable run event recording one settled provider attempt, emitted through ADR-0074 §2's barrier and
+> folded into a `run_costs` row at persist time. It landed after ADR-0075 on purpose: a new durable event type
+> is exactly the input that decision governs.
+>
+> **The implementation is staged, and starts here.** In order, because each step is a precondition for the
+> next:
+>
+> 1. `packages/shared/src/run-event.ts` — `cost:attempt_settled`'s schema, its union arm, and
+>    `parseStoredRunEvent`. Until this lands nothing else compiles.
+> 2. `docs/reference/contracts/sse-event-schema.md` — the canonical shape + which of the two cost events is
+>    authoritative (ADR-0076's last Negative names that drift risk).
+> 3. `packages/db/src/run-history-store.ts` — the `applyDerived` arm writing the `run_costs` row in the SAME
+>    transaction as its event. The `node:completed` delta then telescopes to zero on its own; a test must pin
+>    that `SUM(run_costs) == runs.total_cost_microcents` still holds, since that is the invariant carrying the
+>    no-double-count claim.
+> 4. `packages/core/src/engine/engine.ts` — emit through `#emitDurable` at the attempt boundary, AWAITED before
+>    the next tool side effect, the next egress and the node terminal. This is the barrier; without the await
+>    the event is just another observation.
+> 5. `packages/core/src/engine/checkpoint.ts` — fold it as a SUM of deltas, never a last-wins snapshot (ADR-0074
+>    §2's reasoning: concurrent events under a `fan_out` have no canonical `seq` order).
+>
+> The break-verify that matters most is step 4's ordering: deleting the `await` must redden a test, or the
+> ledger records the charge without the guarantee that makes it one.
+>
+> **What ADR-0076 explicitly does NOT close**, so it is not read as more than it is: the cost of a TOOL EFFECT.
+> A resumed run can still re-execute an `http_request` POST, a `run_command` or an MCP mutation — the
+> duplicate EFFECT is the harm, and no cost bookkeeping prevents it. That needs a durable effect journal with
+> a prepare/receipt pair, which is a different decision about a different failure and earns its own ADR. It is
+> the natural next one after this chain (forward-compatibility → conservative commitment → realized cost).
+>
+> Two decisions inside the closed set are worth surfacing here rather than leaving in a commit message.
+> `#W15-4` **changed a previously-tested behaviour**: #228 pinned that a session survives a failed durable
+> write and the next turn is clean; it now stops instead, because continuing to spend above a transcript that
+> has fallen behind is the defect. And `#W15-23` is scoped to `run-history-store` only — the other
+> `packages/db` stores share the same outer-`db`-inside-a-transaction convention, which remains open, is
+> stated here rather than implied closed, and has its own PR queued after this one.
+
+#### A. Needs an ADR first — the only part that is NOT PR #81's to close
+
+- **`#W15-1` (blocker) — a workflow's REALIZED cost is not durable at the provider-attempt boundary.**
+  `engine.ts` folds `cost:updated` into memory and streams it; the store documents that it is never persisted,
+  and the checkpoint can only recover cost from a LATER `node:completed`/gate snapshot. So: a paid call
+  succeeds → the model asks for a tool → the process dies during the tool → the realized cost is gone and the
+  resumed node re-runs the same paid call, against a cap that has forgotten the first one. ADR-0074 makes only
+  the CONSERVATIVE commitment durable; a call that returned trustworthy usage has no equivalent barrier.
+  *Needs an ADR: an idempotent per-attempt durable ledger, written before the next tool side-effect, the next
+  egress and the turn/node terminal. Not a local fix — it changes what "spent" means across a crash.*
+- ✅ **`#W15-2` (blocker) — a tolerant read is fail-OPEN on the resume path.** ADR-0074 §5 drops an event whose
+  `type` an older binary does not know, and `checkpointer.ts` builds resumable state from what remains. An
+  older binary cannot know whether the dropped row was a node terminal, a job submission, a gate decision or a
+  cost commitment — so it may re-run completed or already-submitted work. Preserving the sequence high-water
+  mark prevents a UNIQUE collision; it does not restore lost state. Tolerance is right for `logs`/`status`
+  (read-only); it is wrong for a replay that changes the world.
+  *Needs a superseding ADR (§5 is append-only): fail closed on the resume path with "a newer Relavium is
+  required" when any row was skipped, while read-only surfaces stay tolerant — or classify events as
+  state-bearing vs not, and tolerate only the latter.*
+
+#### B. PR #81 — ADR-0074 §1, the half that makes the rest safe
+
+- ✅ **`#W15-3`** (blocker) — the release is exposed but unreachable, and nothing renders `durabilityBroken`.
+  `GovernorWiring.releaseConservativeCommitments` and `conservativeState()` exist and are tested; no command,
+  REPL action or Home affordance calls either. §1 requires the surface that RENDERS the amount to also expose
+  clearing it, and this PR removed the accidental escape a restart used to provide.
+  *Closed by `/cost --release`: `/cost` renders the durability state, and the release clears the per-model AND
+  aggregate columns before the live governor, so it survives `chat-resume`. The durable
+  `budget:estimate_released` named here was NOT needed — the session path restores from columns, not from an
+  event replay — so it stays reserved; see the lane-(e) note above.*
+
+#### C. PR #81 — data integrity, each with a concrete failure
+
+- ✅ **`#W15-4`** (blocker) — session persistence failures are invisible to the producer. `RunEventBus` isolates
+  listener errors by design, so a persister that cannot write still lets the turn complete. Two consequences:
+  `persister.ts` advances the in-memory cost total BEFORE the DB write, so a failed `recordSessionCost` leaves
+  the durable total low and a resume restores a cap that has forgotten real spend; and a failed `commitTurn`
+  leaves the staged turn uncleared, so the next `beginUserTurn` overwrites the previous user message and the
+  durable transcript loses an exchange the in-memory session still has.
+  *Closes when: cost and transcript persistence move to an awaited durability port (UI subscribers may stay
+  passive), and a persistent write failure puts the session in a durability-degraded state that refuses new
+  egress rather than reporting success.*
+- ✅ **`#W15-5`** (high) — stored payloads are not checked against the authoritative columns. `readEventLog`
+  selects `seq`/`event_type` alongside the payload but never compares them to the parsed event's own `runId`,
+  `sequenceNumber` and `type`. A row with `seq = 2` carrying `sequenceNumber: 1` is accepted, leaving the
+  high-water mark wrong and the resume colliding on the next write.
+  *Closes when: every denormalized projection is compared after parse and any mismatch is a
+  `CorruptRunEventError`.*
+- ✅ **`#W15-6`** (high) — terminal cost snapshots on failed/cancelled runs are dropped by the read models.
+  `node:failed`, `run:failed` and `run:cancelled` all carry cost in the shared schema, but the store folds
+  none of them, the checkpoint folds none, and the run TUI's summary ignores the terminal figure. A sibling's
+  paid media cleanup after a root failure exists ONLY on `run:failed.cumulativeCostMicrocents`, so replay and
+  history lose it. Pre-dates this PR, but the PR touches all three files and claims cost safety.
+- ✅ **`#W15-7`** (medium) — `media_job:submitted` accepts a half-frozen basis. `units` and
+  `acceptedCostMicrocents` are independently optional, so a row with a frozen cost and no frozen units resumes
+  with the old reservation and a re-derived volume. The invariant is not "both or neither" (the approved-bypass
+  case legitimately has units only) but **`acceptedCostMicrocents` present ⇒ `units` required**.
+
+#### D. PR #81 — security and correctness
+
+- ✅ **`#W15-8`** (high) — the new failure-reporting paths can leak credentials. `background-failure.ts` prints an
+  arbitrary rejection message and, under `RELAVIUM_DEBUG`, a raw stack; `sanitize.ts` strips ANSI/control/bidi
+  but performs no secret redaction. Same class in the session listener notice, `render-error.ts`'s verbose
+  stack and `index.ts`'s fatal debug stack. The rejection can be an MCP error, a provider response body or a
+  tool result — all of which carry keys, `Bearer` headers or credentialed URLs. Existing tests plant ANSI, never
+  a secret.
+  *Closes when: the shared secret-shape redactor runs BEFORE terminal sanitization on every one of those paths
+  (stacks included), with tests planting `sk-*`, `Bearer`, `Basic`, credentialed URLs, query tokens and PEM.*
+- ✅ **`#W15-9`** (high) — the stream path can throw out of a contract that says it never throws.
+  `#runStreamAttempt` calls `#emitSuccess` OUTSIDE its try/catch (the `generate()` path has it inside), so a
+  provider returning non-integer usage makes `assertAccountableUsage` throw raw out of the async generator —
+  and `streamOneTurn`'s `for await` has no try/catch, so it crashes the turn unclassified, AFTER the content was
+  produced and paid for.
+- ✅ **`#W15-10`** (high) — `--json` output is not sanitized. `status --json` / `gate list --json` carry
+  model-controlled text; `JSON.stringify` does not escape Unicode bidi overrides (CVE-2021-42574). The human
+  render path is sanitized; the JSON branch is not. `createJsonRenderer` is the same gap on the NDJSON path.
+- ✅ **`#W15-11`** (high) — `createPlainRenderer` sanitizes AFTER splitting on newlines, so an embedded newline
+  still forges a line. Every other boundary this PR touched sanitizes first; `renderer.ts` is the exception.
+- ✅ **`#W15-12`** (high) — `isBlankPreview` treats a fully-redacted preview as informative (`chat-mode.ts`), so a
+  user pressing "always" on `Approve write to [redacted]?` auto-approves every `write_file`/`run_command`/
+  `http_request` for the session, having been shown nothing.
+- ✅ **`#W15-13`** (medium) — the config reader chmods PROJECT configs to 0600. `reassertOwnerOnly` runs on every
+  layer, but `config-spec.md` says project files are committed and shared. Reading a config mutates repo file
+  permissions, and `statSync`/`chmodSync` follow symlinks. Self-heal belongs to the canonical global config
+  only.
+- ✅ **`#W15-14`** (medium) — a provider `Retry-After` sleep is not abort-aware. `fallback-chain.ts` passes the
+  delay straight to an injected `sleep` with no signal, and the real hosts use a plain `setTimeout`. A cancel
+  during a 60 s clamped wait hangs until the timer fires. The existing abort test resolves `sleep` immediately,
+  so the window is untested. The docblock also says an oversized value becomes `undefined`; the code clamps.
+- ✅ **`#W15-15`** (medium) — corruption is reported to a multi-run view as "no data". `readPerRunOrDegrade`
+  returns only the fallback, so `gate list` can print "No pending human gates." for a run whose gates were lost
+  to corruption. It must return the degradation alongside the value, with a warning in human output and a
+  machine-readable marker under `--json`.
+
+#### E. PR #81 — coverage gaps it shipped knowingly
+
+All six are now CLOSED and their in-source markers removed. None had been a shipped defect — each had
+mutation-verified coverage one layer down — but closing them surfaced one that was: `onLegacyMediaJobHold`
+reached `WorkflowEngine` from a real `gate.ts` sentence and the constructor never read it, so ADR-0074 §3's
+hold notice was dead and a `relavium gate` resume of a legacy parked media job stalled silently. Found by
+the review of `#W15-16`, fixed with it, and now the signal that test drives.
+
+- ✅ **`#W15-16`** — the engine-level composition test for §3's abort-breakable media-job hold; deleting the abort
+  listener leaves the whole suite green.
+- ✅ **`#W15-17`** — the CLI-layer test that `restoreConservativeCost` is wired through `buildSessionRuntime`.
+- ✅ **`#W15-18`** — the `coalesce` backfill of `session_costs.model_catalog_id` (needs a `model_catalog` FK row
+  the block does not seed).
+- ✅ **`#W15-19`** — that a chat turn's terminal is emitted only AFTER `flushBudgetCommitments` resolves.
+- ✅ **`#W15-20`** — the H3 approved-bypass `acceptedCostMicrocents` omission; reverting it leaves the suite green.
+- ✅ **`#W15-21`** — `agent-run.ts`'s `attachConservativeWriter`; deleting it silently breaks every capped
+  `agent run`.
+
+#### F. PR #81 — standards and documentation drift
+
+- ✅ **`#W15-22`** (low) — the PR's "no unsafe `as`" conformance claim is false. Two assertions in new production
+  code: `shared.ts`'s `readRetryAfter` casts an arbitrary `headers.get`, and `openai.ts`'s `mapOpenAiApiError`
+  casts a `headers` field back onto a parameter type that lacks it. A structural `headers?:` plus runtime
+  narrowing removes both.
+- ✅ **`#W15-23`** (medium) — `persistEvent`'s `applyDerived` uses the outer `db`, not the transaction handle.
+  Harmless under `better-sqlite3`, but it breaks ADR-0005's Postgres-portability promise on the highest-volume
+  money write.
+- ✅ **`#W15-24`** (low) — canonical docs describe code that was not shipped. `tool-registry.md` says path
+  redaction is per-segment (it is whole-string, and the same file says so correctly three paragraphs later);
+  `llm-provider-seam.md` still claims model-discovery/media-poll keep a small SDK retry; ADR-0028's amendment
+  note still says ADR-0074 §2–§5 have not landed. Each could send a future reader back toward a #91-class hole.
 
 ### Wave 2 — Shut the doors
 
@@ -347,8 +614,8 @@ unanswered**; the remainder sit inline in their own phase-file bullet.
 | D4 | 0 | Confirm the number reservation (`0013`–`0017`, ADR-0073+) | As listed — one item per number, in landing order |
 | D5 | 0 | The binding locale bar | ✅ **Ruled + propagated 2026-07-26: ship `en` + `tr`**, catalog architected for n locales, `es`/`fr`/`de` staged. Amended at all seven sites |
 | D7 | 0 | Publish v0.1.1 as-is, or supersede with v0.2.0? | v0.2.0 — ADR-0067's Node `>=22` bump is breaking for 0.x |
-| D8 | 1 | Do already-persisted approval previews need a scrub? | Yes — migration 0013, same PR. Deleting `history.db` also destroys provider registrations |
-| D10 | 1 | `BudgetExceededError`/`BudgetPauseError`: adopt `.code`? | Adopt — must precede Wave 3's `RelaviumError` migration |
+| D8 | 1 | Do already-persisted approval previews need a scrub? | ✅ **Ruled 2026-07-30: NO scrub migration.** The recommendation had been "yes, migration 0013, same PR"; the ruling went the other way, so `0013` was left free by this ruling and is now taken by ADR-0074 §4's conservative money columns; the reservation ledger above shifts nothing — `0014` (#101) keeps its number. The forward fix shipped (#91: `previewFor` scrubs the display copy, `unredactedPreview` carries the in-process classification copy), so no NEW row can carry an unscrubbed preview; historical rows in a local `history.db` keep theirs. Recorded here because the shipped state contradicted this table for four days |
+| D10 | 1 | `BudgetExceededError`/`BudgetPauseError`: adopt `.code`? | ✅ **Ruled + executed 2026-07-30: adopt.** Both carry a stable `code` (`budget_exceeded` / `budget_paused`), with exported `isBudgetExceededError` / `isBudgetPauseError` guards — because `instanceof` is unsafe from a surface (the CLI bundles the engine, so two realizations of a class coexist and `instanceof` answers `false` at the boundary that must catch it). Same shape as `isCorruptRunEventError`. Precedes Wave 3's `RelaviumError` migration as required |
 | D12 | 2 | `~/.relavium/tmp/`: `tmp`-specific rule or the general home-anchored predicate? | **General predicate** — a `tmp`-only ruling leaves 2.6.N's real root refused and forces a second `fs.ts` review |
 | D13 | 2 | `default_headers`: keychain-ref indirection vs shape check? | Keychain-ref, shape check as belt-and-suspenders. **Gates work outside this phase** (ADR-0065 §3) |
 | D14 | 2 | chat-export `tool_result`: warn vs redact vs full discipline? | Redact by default + `--include-tool-results`; same reviewer as 2.6.B's write surface |

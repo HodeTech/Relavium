@@ -87,6 +87,8 @@ export async function agentRunCommand(
     // completely — the turn runs, the authored knob does nothing, and the bill arrives at the provider's default.
     // STDERR, never stdout: `--json` owns stdout, and a warning line mid-stream is a parse error downstream.
     onEffortWithheld: onceEffortNotice((note) => deps.io.writeErr(`warning: ${note}\n`)),
+    // stderr, never stdout: `--json` owns stdout and a notice must not corrupt the NDJSON stream.
+    onListenerError: (note) => deps.io.writeErr(`warning: ${note}\n`),
     onUnpriced: (note) => deps.io.writeErr(`warning: ${note}\n`),
     agentRef: args.agent,
     cwd: deps.global.cwd,
@@ -104,6 +106,13 @@ export async function agentRunCommand(
     // recorded tool results, so the replay needs no live MCP.
     ...(offline ? { disableMcp: true } : {}),
   });
+
+  // ADR-0074 §4: `agent run` is a ONE-SHOT, non-persisted invocation — it opens no session store and builds no
+  // persister, so a conservative commitment has nowhere durable to go and that is correct, not a gap. Attach an
+  // explicit no-op so the governor's emit resolves: without it every commitment would reject, mark the session
+  // durability-broken, and the §2 barrier would fail a turn for a session nobody was ever going to resume. The
+  // in-memory debit still consumes cap capacity for this process, which is the whole of what a one-shot needs.
+  built.governor?.attachConservativeWriter(() => Promise.resolve());
 
   // Render the live stream + run the single turn + tear down — a classified turn failure maps to exit 1.
   const turnErrorCode = await runOneShotTurn(built, message, deps);

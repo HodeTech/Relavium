@@ -1,4 +1,4 @@
-import { createClient, runMigrations, type Db, type DbClient } from '@relavium/db';
+import { createClient, runEvents, runMigrations, type Db, type DbClient } from '@relavium/db';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { isCliError } from '../process/errors.js';
@@ -72,6 +72,47 @@ describe('logsCommand', () => {
 
     expect(logsCommand({ runId: 'failed-1' }, deps(io))).toBe(EXIT_CODES.success);
     expect(out()).toContain('run:failed — internal'); // detailOf surfaces the error code
+  });
+
+  it('reports rows written by a NEWER binary on stderr, keeping stdout`s contract intact (ADR-0074 §5)', async () => {
+    // A dropped row (§5) makes the count below and the `[seq]` column describe a log that is short and has a hole
+    // in its sequence — which `sse-event-schema.md` §Transport tells consumers to read as data loss. So it is
+    // announced. On STDERR in both modes, because `--json`'s stdout is contractually a pure `RunEvent` stream.
+    await seedRun(db, { slug: 'demo', runId: 'run-1', state: 'completed' });
+    client.db
+      .insert(runEvents)
+      .values({
+        id: '00000000-0000-4000-8000-0000000000ff',
+        runId: 'run-1',
+        seq: 99,
+        eventType: 'test:never_a_real_event',
+        payloadJson: JSON.stringify({ type: 'test:never_a_real_event' }),
+        ts: 0,
+      })
+      .run();
+
+    const human = captureIo();
+    expect(logsCommand({ runId: 'run-1' }, deps(human.io))).toBe(EXIT_CODES.success);
+    expect(human.err()).toContain(
+      '1 event written by a newer version of Relavium was skipped (seq 99)',
+    );
+    expect(human.out()).not.toContain('newer version'); // the note never pollutes the log body
+
+    const json = captureIo();
+    expect(logsCommand({ runId: 'run-1' }, deps(json.io, true))).toBe(EXIT_CODES.success);
+    expect(json.err()).toContain('seq 99');
+    // Every stdout line still parses as a RunEvent — the note did not become an NDJSON record.
+    for (const record of parseNdjson(json.out())) {
+      expect(record).toHaveProperty('type');
+      expect(record).not.toHaveProperty('skipped');
+    }
+  });
+
+  it('says nothing when the log is clean — no note on the happy path', async () => {
+    await seedRun(db, { slug: 'demo', runId: 'run-1', state: 'completed' });
+    const { io, err } = captureIo();
+    expect(logsCommand({ runId: 'run-1' }, deps(io))).toBe(EXIT_CODES.success);
+    expect(err()).toBe('');
   });
 
   it('--json emits each raw RunEvent as one NDJSON line in seq order', async () => {

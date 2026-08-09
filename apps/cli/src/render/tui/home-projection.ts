@@ -104,6 +104,15 @@ export function runLabel(row: HomeRunRow, nowMs: number): string {
     .join(SEP);
 }
 
+/**
+ * A run whose event log could not be read (#W15-15) → a short id plus what is missing. There is no workflow
+ * slug to fall back on here: the snapshot only carries the id, because the read that would have named the run
+ * is the one that failed.
+ */
+export function unreadableRunLabel(runId: string): string {
+  return `${shortId(runId)}${SEP}event log unreadable${SEP}gate detail unavailable`;
+}
+
 /** A pending-gate row → workflow (or short id) · gateType · message · expiry-urgency. */
 export function gateLabel(row: HomeGateRow, nowMs: number): string {
   const name = row.workflowSlug ?? shortId(row.runId);

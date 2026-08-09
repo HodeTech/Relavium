@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 import { AgentSchema, type AgentSessionRecord, type SessionMessage } from '@relavium/shared';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -71,6 +71,7 @@ const makeSession = (overrides: Partial<AgentSessionRecord> = {}): AgentSessionR
   totalInputTokens: 0,
   totalOutputTokens: 0,
   totalCostMicrocents: 0,
+  totalConservativeMicrocents: 0,
   createdAt: TS_ISO,
   updatedAt: TS_ISO,
   ...overrides,
@@ -603,6 +604,346 @@ describe('SessionStore — loadFull snapshot isolation (2.5.I)', () => {
  * the two writes into two transactions, since both would normally succeed and the sums would agree anyway. So the
  * mechanism is pinned too.
  */
+/**
+ * #228: the three single-statement session writers under real cross-process lock contention. Before the fix
+ * they went straight at the write lock with nothing but `busy_timeout` behind them — so once that 5 s wait
+ * expired the statement simply threw, and because the chat persister calls these from inside a `RunEventBus`
+ * subscriber, the throw became an unhandled rejection that killed the CLI after the reply was already shown.
+ * A held write lock plus `busy_timeout = 0` reproduces that deterministically, with no waiting and no threads.
+ */
+describe('SessionStore — writeTurn is atomic (#228)', () => {
+  // One test spies `db.transaction` to pin the lock MODE; the suite restores no mocks globally, and the fresh
+  // per-test client makes leakage impossible only for spies on THAT object — restore explicitly.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('rolls the WHOLE turn back when a later message violates a constraint', () => {
+    store.createSession(makeSession());
+    // Two rows at the SAME sequence number: the second trips the (session_id, sequence_number) UNIQUE index
+    // — a real constraint, not an injected fault, so this exercises the actual transaction.
+    expect(() =>
+      store.writeTurn({
+        messages: [{ message: makeMessage(0) }, { message: makeMessage(0, { id: 'msg-dup' }) }],
+        session: makeSession({ status: 'ended' }),
+      }),
+    ).toThrow(/UNIQUE/i);
+    // All of it, or none of it: the FIRST message must not have survived either.
+    expect(store.loadMessages('sess-1')).toHaveLength(0);
+    // …and the session flush in the same transaction is rolled back with it.
+    expect(store.loadSession('sess-1')?.status).toBe('active');
+  });
+
+  it('opens an IMMEDIATE transaction — guards against a silent DEFERRED regression', () => {
+    // A mutation that dropped `{ behavior: 'immediate' }` left the whole suite GREEN, so atomicity was pinned
+    // but the LOCK MODE was not. `BEGIN IMMEDIATE` is what closes the read→write upgrade race (ADR-0064's
+    // 2.5.I convention); DEFERRED would still be atomic and still be wrong. Same spy technique `loadFull`
+    // already uses to guard its read transaction.
+    store.createSession(makeSession());
+    const txn = vi.spyOn(client.db, 'transaction');
+    store.writeTurn({ messages: [{ message: makeMessage(0) }], session: makeSession() });
+    expect(txn).toHaveBeenCalledWith(expect.any(Function), { behavior: 'immediate' });
+  });
+
+  it('commits messages and the session flush together on success', () => {
+    store.createSession(makeSession());
+    store.writeTurn({
+      messages: [{ message: makeMessage(0) }, { message: makeMessage(1, { role: 'assistant' }) }],
+      session: makeSession({ status: 'ended', title: 'done' }),
+    });
+    expect(store.loadMessages('sess-1').map((m) => m.role)).toEqual(['user', 'assistant']);
+    expect(store.loadSession('sess-1')?.title).toBe('done');
+  });
+
+  it('accepts an empty message list — a row-less flush is still one transaction', () => {
+    store.createSession(makeSession());
+    store.writeTurn({ messages: [], session: makeSession({ status: 'ended' }) });
+    expect(store.loadSession('sess-1')?.status).toBe('ended');
+  });
+
+  it('records a conservative commitment WITHOUT touching any realized figure (ADR-0074 §4)', () => {
+    // The central negative guarantee. A commitment is an ESTIMATE: folding it into the realized total would
+    // present an upper bound as an invoice and break ADR-0070's `SUM(cost_microcents) == total_cost_microcents`.
+    store.createSession(makeSession());
+    store.recordSessionCost({
+      id: 'c1',
+      sessionId: 'sess-1',
+      model: 'm',
+      inputTokens: 3,
+      outputTokens: 4,
+      costMicrocents: 500,
+      priced: true,
+      ts: 1,
+    });
+    store.recordSessionConservativeCommitment({
+      id: 'k1',
+      sessionId: 'sess-1',
+      model: 'm',
+      estimateMicrocents: 900,
+      ts: 2,
+    });
+
+    const session = store.loadSession('sess-1');
+    expect(session?.totalCostMicrocents).toBe(500); // realized: unmoved
+    expect(session?.totalConservativeMicrocents).toBe(900); // conservative: its own total
+    const [row] = store.loadSessionCosts('sess-1');
+    // ONE row per (session, model) — the conservative figure lands beside the realized one, on the same key.
+    expect(store.loadSessionCosts('sess-1')).toHaveLength(1);
+    expect(row?.costMicrocents).toBe(500);
+    expect(row?.inputTokens).toBe(3);
+    // NOT a call: `/cost`'s "N of M calls" arithmetic must not count an attempt that produced no usage.
+    expect(row?.callCount).toBe(1);
+    expect(row?.unpricedCalls).toBe(0);
+  });
+
+  it('accumulates commitments additively, and per model', () => {
+    store.createSession(makeSession());
+    for (const [model, amount] of [
+      ['m1', 400],
+      ['m1', 250],
+      ['m2', 100],
+    ] as const) {
+      store.recordSessionConservativeCommitment({
+        id: `k-${model}-${amount}`,
+        sessionId: 'sess-1',
+        model,
+        estimateMicrocents: amount,
+        ts: 1,
+      });
+    }
+    expect(store.loadSession('sess-1')?.totalConservativeMicrocents).toBe(750);
+    // The INSERT branch's literals, asserted rather than assumed. `callCount: 1` would make `/cost` print
+    // "(1 call, 0 tok)" for an attempt that produced no usage; `isLegacy: true` would land the commitment on a
+    // SECOND row under the `(session, model, is_legacy)` index — and for a model named `(pre-2.6.C)` it would
+    // upsert straight onto the 0009 backfill aggregate, the collision ADR-0070 §4 exists to prevent.
+    const m1 = store.loadSessionCosts('sess-1').find((r) => r.model === 'm1');
+    expect(m1?.costMicrocents).toBe(0);
+    expect(m1?.callCount).toBe(0);
+    expect(m1?.unpricedCalls).toBe(0);
+    expect(m1?.isLegacy).toBe(false);
+    expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(0);
+    const byModel = new Map(
+      store.loadSessionCosts('sess-1').map((r) => [r.model, r.conservativeMicrocents]),
+    );
+    expect(byModel.get('m1')).toBe(650);
+    expect(byModel.get('m2')).toBe(100);
+    // The aggregate is exactly the sum of the per-model rows — the invariant the one transaction buys.
+    expect([...byModel.values()].reduce((a, b) => a + b, 0)).toBe(750);
+  });
+
+  it('releases every commitment durably — per-model AND aggregate, in one go (#W15-3)', () => {
+    // ADR-0074 §1's escape hatch had no durable half: clearing the in-memory governor left these columns
+    // untouched, and §4 seeds a resumed governor FROM them — so a released commitment came straight back on
+    // the next `chat-resume` and the "deliberate user decision" survived exactly as long as the process did.
+    store.createSession(makeSession());
+    store.recordSessionCost({
+      id: 'c1',
+      sessionId: 'sess-1',
+      model: 'm1',
+      inputTokens: 3,
+      outputTokens: 4,
+      costMicrocents: 500,
+      priced: true,
+      ts: 1,
+    });
+    for (const [model, amount] of [
+      ['m1', 400],
+      ['m2', 100],
+    ] as const) {
+      store.recordSessionConservativeCommitment({
+        id: `k-${model}`,
+        sessionId: 'sess-1',
+        model,
+        estimateMicrocents: amount,
+        ts: 1,
+      });
+    }
+
+    expect(store.releaseSessionConservativeCommitments('sess-1', 9)).toBe(500);
+
+    // The aggregate — what a resumed cap reads.
+    expect(store.loadSession('sess-1')?.totalConservativeMicrocents).toBe(0);
+    // …and every per-model hold, so `/cost` cannot print holds that no longer sum to the session total.
+    for (const row of store.loadSessionCosts('sess-1')) {
+      expect(row.conservativeMicrocents).toBe(0);
+    }
+    // REALIZED spend is untouched: a release clears an estimate, never an invoice.
+    expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(500);
+    expect(store.loadSessionCosts('sess-1').find((r) => r.model === 'm1')?.costMicrocents).toBe(
+      500,
+    );
+  });
+
+  it('reports 0 and touches nothing when there is no commitment to release', () => {
+    store.createSession(makeSession());
+    const before = store.loadSession('sess-1')?.updatedAt;
+    expect(store.releaseSessionConservativeCommitments('sess-1', 9)).toBe(0);
+    expect(store.loadSession('sess-1')?.updatedAt).toBe(before); // a no-op must not stamp updated_at
+  });
+
+  describe('the modelCatalogId coalesce on a conservative upsert (#W15-18)', () => {
+    // A model can be CATALOGUED mid-session (2.6.Q): the first commitment resolves nothing, a later one
+    // resolves an id. So the upsert has to backfill a NULL — while never letting a later unresolved lookup
+    // wipe an id that IS known, because "we don't know" is not "there is none".
+    //
+    // The fixture the earlier note said was missing is `seedModelCatalog`, in this same file; the block just
+    // never called it. A SECOND catalog row is added here for the re-catalogued case (the `model_catalog`
+    // table is refreshed from models.dev, so the same model string can resolve to a new UUID).
+    const catalogIdOf = (model: string): string | undefined =>
+      store.loadSessionCosts('sess-1').find((r) => r.model === model)?.modelCatalogId;
+
+    const commit = (id: string, modelCatalogId?: string): void => {
+      store.recordSessionConservativeCommitment({
+        id,
+        sessionId: 'sess-1',
+        model: 'claude-opus-4-8',
+        estimateMicrocents: 100,
+        ...(modelCatalogId === undefined ? {} : { modelCatalogId }),
+        ts: 1,
+      });
+    };
+
+    beforeEach(() => {
+      seedModelCatalog(client);
+      client.db
+        .insert(modelCatalog)
+        .values({
+          id: 'model-2',
+          providerId: 'prov-1',
+          modelId: 'claude-opus-4-8-refreshed',
+          displayName: 'Opus 4.8 (re-catalogued)',
+          contextWindowTokens: 200_000,
+          maxOutputTokens: 64_000,
+          createdAt: TS_MS,
+          updatedAt: TS_MS,
+        })
+        .run();
+      store.createSession(makeSession());
+    });
+
+    it('BACKFILLS a null id once the model becomes catalogued', () => {
+      commit('k1'); // unresolved: the INSERT branch leaves the column NULL
+      expect(catalogIdOf('claude-opus-4-8')).toBeUndefined();
+
+      commit('k2', 'model-1'); // resolved: the UPDATE branch coalesces it in
+      expect(catalogIdOf('claude-opus-4-8')).toBe('model-1');
+    });
+
+    it('never wipes a known id when a later lookup resolves NOTHING', () => {
+      commit('k1', 'model-1');
+      commit('k2'); // unresolved — the SET clause must omit the column entirely
+      expect(catalogIdOf('claude-opus-4-8')).toBe('model-1');
+    });
+
+    it('never REPLACES a known id, even with another resolved one', () => {
+      // `coalesce(existing, incoming)` keeps the existing. Asserted as the behaviour it IS, not as an intent
+      // the code states: the docblock only promises "never overwrite with NULL". This pins the rest so a
+      // future change to `coalesce` has to be a deliberate one — the row's id stays the FK it was written
+      // under, which is what keeps the join stable across a catalog refresh.
+      commit('k1', 'model-1');
+      commit('k2', 'model-2');
+      expect(catalogIdOf('claude-opus-4-8')).toBe('model-1');
+    });
+  });
+
+  it('never SETs total_conservative_microcents — the commitment writer stays its single writer', () => {
+    // Same hazard as the realized total: a session flush that SET it from an in-memory record would clobber a
+    // concurrent commitment. `mutableSessionColumns` drops it for exactly that reason.
+    store.createSession(makeSession());
+    store.recordSessionConservativeCommitment({
+      id: 'k1',
+      sessionId: 'sess-1',
+      model: 'm',
+      estimateMicrocents: 900,
+      ts: 1,
+    });
+    store.writeTurn({ messages: [], session: makeSession({ totalConservativeMicrocents: 0 }) });
+    expect(store.loadSession('sess-1')?.totalConservativeMicrocents).toBe(900); // not clobbered
+  });
+
+  it('never SETs total_cost_microcents — recordSessionCost stays its single writer (ADR-0070)', () => {
+    // writeTurn shares `mutableSessionColumns` with updateSession precisely so this invariant cannot be
+    // reintroduced on a second write path.
+    store.createSession(makeSession());
+    store.recordSessionCost({
+      id: 'c1',
+      sessionId: 'sess-1',
+      model: 'm',
+      inputTokens: 1,
+      outputTokens: 1,
+      costMicrocents: 500,
+      priced: true,
+      ts: 1,
+    });
+    store.writeTurn({ messages: [], session: makeSession({ totalCostMicrocents: 0 }) });
+    expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(500); // not clobbered back to 0
+  });
+});
+
+describe('SessionStore — the session writers survive lock contention (#228)', () => {
+  /** A `better-sqlite3`-shaped lock fault: an `Error` carrying the string `.code` the driver sets. */
+  const busy = (): Error => Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+
+  /**
+   * Inject ONE lock fault into the next `db.<verb>()` call, then let the real implementation through. The
+   * throw lands inside the wrapped `fn`, which is all `withBusyRetry` cares about — so this pins "the wrapper
+   * is present on this writer" deterministically, in ~25 ms, without a second process or a real held lock.
+   * (`withBusyRetry`'s behaviour against REAL `SQLITE_BUSY` contention is covered in `retry.test.ts`.)
+   */
+  const failOnce = (verb: 'insert' | 'update'): void => {
+    vi.spyOn(client.db, verb).mockImplementationOnce(() => {
+      throw busy();
+    });
+  };
+
+  // Defence in depth only: the file's global `beforeEach` builds a FRESH `client` per test, so a spy on
+  // `client.db` is attached to an object the next test discards — leakage is structurally impossible here,
+  // not merely prevented. Kept so the hook does not become load-bearing if that setup ever changes.
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('appendMessage retries a lock fault instead of throwing — the lost-turn case', () => {
+    store.createSession(makeSession());
+    failOnce('insert');
+    expect(() => store.appendMessage(makeMessage(0))).not.toThrow();
+    expect(store.loadMessages('sess-1')).toHaveLength(1); // the row really landed, not just "didn't throw"
+  });
+
+  it('createSession retries a lock fault', () => {
+    failOnce('insert');
+    expect(() => store.createSession(makeSession())).not.toThrow();
+    expect(store.loadSession('sess-1')).toBeDefined();
+  });
+
+  it('updateSession retries a lock fault', () => {
+    store.createSession(makeSession());
+    failOnce('update');
+    expect(() => store.updateSession(makeSession({ status: 'ended' }))).not.toThrow();
+    expect(store.loadSession('sess-1')?.status).toBe('ended');
+  });
+
+  it('still FAILS LOUD once the budget is exhausted — a dropped turn is never silent', () => {
+    // The point of the retry is to absorb a TRANSIENT lock, never to hide a persistent one: a swallowed write
+    // is silent data loss (ADR-0050). Beyond the budget the ORIGINAL driver error is rethrown, which is exactly
+    // what the bus's `onListenerError` sink then reports to the user.
+    store.createSession(makeSession());
+    const persistent = busy();
+    vi.spyOn(client.db, 'insert').mockImplementation(() => {
+      throw persistent;
+    });
+    // `toThrow(err)` compares MESSAGES, which cannot tell the original from a same-message wrapper — and
+    // "the ORIGINAL error is rethrown" is exactly the claim. Catch and compare identity.
+    let caught: unknown;
+    try {
+      store.appendMessage(makeMessage(0));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBe(persistent);
+  });
+});
+
 describe('session_costs — the ADR-0070 reconciliation invariant', () => {
   const sumRows = (sessionId: string): number =>
     store.loadSessionCosts(sessionId).reduce((n, r) => n + r.costMicrocents, 0);
@@ -868,8 +1209,15 @@ describe('migrations 0009 + 0010 — the legacy backfill and its discriminator (
     stageUpTo(8, dir); // BEFORE session_costs existed
     const c = createClient(':memory:');
     migrate(c.db, { migrationsFolder: dir });
-    createSessionStore(c.db).createSession(
-      makeSession({ id: 'legacy-1', totalCostMicrocents: spend }),
+    // RAW insert, not `createSessionStore(...).createSession(...)`: the store maps the CURRENT schema, which
+    // since ADR-0074 §4 writes `total_conservative_microcents` — a column that does not exist until 0013. Using
+    // the live mapper against a deliberately-old schema is what makes such a test brittle; only the columns that
+    // existed at 0008 belong here.
+    c.db.run(
+      sql`INSERT INTO agent_sessions
+            (id, agent_slug, context_json, status, total_input_tokens, total_output_tokens,
+             total_cost_microcents, created_at, updated_at)
+          VALUES ('legacy-1', 'chatter', ${JSON.stringify(CTX)}, 'active', 0, 0, ${spend}, ${TS_MS}, ${TS_MS})`,
     );
     if (atIdx > 8) {
       const upgrade = mkdtempSync(join(tmpdir(), 'relavium-mig-up-'));

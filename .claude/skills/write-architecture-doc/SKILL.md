@@ -40,7 +40,8 @@ Produce or update a `docs/architecture/*.md` doc that answers **"how is this bui
 5. **Explain the diagram in prose**, then the flow and the boundaries. Reinforce the invariants the topology depends on: engine zero-platform-imports, no vendor type across the `@relavium/llm` seam, secrets staying engine-side, the canonical `RunEvent` union.
 6. **Cite specs — never restate them.** Every concrete shape is a relative link to its `reference/` home (e.g. `[run-event schema](../reference/contracts/sse-event-schema.md)`, `[node types](../reference/shared-core/node-types.md)`, `[LLM-provider seam](../reference/shared-core/llm-provider-seam.md)`). If you catch yourself pasting a schema or event body, replace it with a link.
    ```bash
-   ls /Users/dev/Documents/Projects/Agent-Organizer/docs/reference/contracts/ /Users/dev/Documents/Projects/Agent-Organizer/docs/reference/shared-core/
+   R=$(git rev-parse --show-toplevel)
+   ls "$R/docs/reference/contracts/" "$R/docs/reference/shared-core/"
    ```
 7. **Link decisions and mark phases.** Cite the relevant ADRs for *why*; mark any Phase-2 (cloud) behavior explicitly with a bold marker or blockquote so it is never mistaken for shipped Phase-1 (documentation-style §9).
 8. **Checkpoint — run ../standards-check/SKILL.md docs checks.** Confirm: one H1, no front-matter, diagram-first, relative links resolve, **no duplicated spec body**, ISO dates, Phase-2 marked. Then commit with ../commit-and-pr/SKILL.md (`docs(architecture): …`).

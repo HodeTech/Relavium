@@ -10,9 +10,14 @@ import {
   type ExecutionHost,
   type RunStore,
 } from './execution-host.js';
-import type { NodeExecContext, NodeExecutor, NodeOutcome } from './node-executor.js';
+import type {
+  MediaJobSubmission,
+  NodeExecContext,
+  NodeExecutor,
+  NodeOutcome,
+} from './node-executor.js';
 import type { RunHandle } from './run-handle.js';
-import { WorkflowEngine } from './engine.js';
+import { WorkflowEngine, type WorkflowEngineDeps } from './engine.js';
 
 // --- helpers ----------------------------------------------------------------------------------
 
@@ -38,10 +43,17 @@ class StubExecutor implements NodeExecutor {
 function engineWith(
   handlers?: Readonly<Record<string, Handler>>,
   host?: ExecutionHost,
+  /**
+   * Extra `WorkflowEngineDeps` — the observability sinks a test needs to see what the governor decided.
+   * `host`/`executor` are OMITTED: the spread runs after them, so leaving them assignable would let a future
+   * caller silently override the second argument with no compiler error.
+   */
+  deps?: Partial<Omit<WorkflowEngineDeps, 'host' | 'executor'>>,
 ): WorkflowEngine {
   return new WorkflowEngine({
     host: host ?? createInMemoryHost(),
     executor: new StubExecutor(handlers),
+    ...deps,
   });
 }
 
@@ -116,7 +128,15 @@ function expectThrowsCode(fn: () => void, code: string): void {
 }
 
 /** Seed a store with a `run:started` (and optionally a trailing event) to simulate a crashed run. */
-function seedStarted(store: RunStore, runId: string, lastType?: RunEvent['type']): Promise<void> {
+function seedStarted(
+  store: RunStore,
+  runId: string,
+  lastType?: RunEvent['type'],
+  /** The run's workflow id. Defaults to a fixed value for the reconcile tests, which never re-plan; a
+   *  `resumeFromCheckpoint` test MUST pass the id `resolveWorkflowId` mints for its slug, or the resume is
+   *  refused with `workflow_mismatch`. */
+  workflowId = '00000000-0000-4000-8000-000000000099',
+): Promise<void> {
   const startedAt = '2026-06-13T00:00:00.000Z';
   const events: RunEvent[] = [
     {
@@ -124,7 +144,7 @@ function seedStarted(store: RunStore, runId: string, lastType?: RunEvent['type']
       runId,
       timestamp: startedAt,
       sequenceNumber: 0,
-      workflowId: '00000000-0000-4000-8000-000000000099',
+      workflowId,
       inputs: {},
       executionMode: 'local',
     },
@@ -2921,5 +2941,221 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
     const reconciled = await new WorkflowEngine({ host, executor: new StubExecutor() }).reconcile();
     // crash-a's write failed and is skipped; crash-b still reconciled — one fault doesn't abandon the rest.
     expect(reconciled.map((e) => e.runId)).toEqual(['crash-b']);
+  });
+});
+
+// --- ADR-0074 §3: the frozen money basis on a parked media job --------------------------------
+
+/**
+ * A `media_job` outcome from a stub handler — the engine parks the node and emits `media_job:submitted`.
+ *
+ * No budget admission is attached, and cannot be: `retainMediaJobAdmission` is module-private to
+ * `agent-runner`. That is not a limitation here — it is exactly the shape the approved-bypass case has
+ * anyway, since an approved re-dispatch runs with `preEgress: undefined` and therefore holds no admission.
+ * `units` is FRACTIONAL on purpose: `duration_seconds` is fractional by contract (ADR-0074 §3), and an
+ * integer bound here once made a 12.5-second job unwritable after the provider had accepted it.
+ */
+function mediaJobOutcome(overrides: Partial<MediaJobSubmission> = {}): NodeOutcome {
+  return {
+    kind: 'media_job',
+    job: {
+      jobId: 'job-1',
+      provider: 'openai',
+      model: 'sora-2',
+      modality: 'video',
+      units: 12.5,
+      ...overrides,
+    },
+  };
+}
+
+/**
+ * Collect a run's events up to and including its `media_job:submitted`, then cancel and drain to the
+ * terminal. A parked media job never completes on its own — the poll timer is host-injected and this host
+ * fires timers only on demand — so a plain `drain()` would hang.
+ */
+async function untilMediaJobSubmitted(handle: RunHandle): Promise<RunEvent[]> {
+  const events: RunEvent[] = [];
+  for await (const event of handle.events) {
+    events.push(event);
+    if (event.type === 'media_job:submitted') handle.cancel();
+  }
+  return events;
+}
+
+// A REAL `budget:` block, so a governor exists and `#makePreEgressHook()` returns a hook. Without it
+// `ctx.preEgress` is `undefined` on every dispatch and the bypass assertion below would be vacuous — it would
+// pass on a build where `budgetApproved` never gated anything. The cap is large enough that nothing here
+// legitimately trips it.
+const MEDIA_GATED = `  id: media-gate
+  nodes:
+    - { id: gen, type: transform, transform: 'g' }
+    - { id: out, type: output }
+  edges:
+    - { from: gen, to: out }
+  budget:
+    max_cost_microcents: 100000000
+    on_exceed: pause_for_approval`;
+
+describe('WorkflowEngine — media_job:submitted freezes its money basis (ADR-0074 §3)', () => {
+  it('OMITS acceptedCostMicrocents under the H3 approved bypass (#W15-20)', async () => {
+    // `0` means "the gate RAN and reserved nothing" — an unpriced model's allow-degrade path. Under H3's
+    // approved bypass NO hook runs at all (`#runAttempt` passes `preEgress: undefined`), so there is no
+    // priced basis to freeze and emitting `0` would claim one.
+    //
+    // Not cosmetic: on resume the frozen branch would call `reserveAcceptedCost(model, 0)`, reserve NOTHING,
+    // and skip `registerLegacyMediaJob` — so a job deliberately submitted OVER the cap comes back holding no
+    // reservation and no hold, letting a sibling spend headroom that is still owed. Omitting it routes the
+    // resume through the legacy branch, which re-prices AND fails closed.
+    // Captured, never asserted INSIDE the handler: `#runAttempt`'s catch-all turns any handler throw into a
+    // generic `internal` node failure, so a failing in-handler `expect` would surface as a confusing
+    // `run:failed` rather than as itself.
+    const hookPresent: boolean[] = [];
+    let dispatches = 0;
+    const engine = engineWith({
+      gen: (ctx) => {
+        dispatches += 1;
+        hookPresent.push(ctx.preEgress !== undefined);
+        if (dispatches === 1) {
+          // The budget gate, in the shape the governor's `BudgetPauseError` is converted into. The governor
+          // raising it is pinned in `budget-governor.test.ts`; what is unproven is what the ENGINE does with
+          // the approval afterwards.
+          return {
+            kind: 'paused',
+            gate: {
+              gateType: 'approval',
+              message: 'over budget — continue?',
+              isBudgetGate: true,
+              spentMicrocents: 900,
+              limitMicrocents: 1000,
+            },
+          };
+        }
+        return mediaJobOutcome();
+      },
+    });
+    const handle = engine.start({ workflow: workflow(MEDIA_GATED) });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'run:paused') {
+        const gateId = event.gateIds[0];
+        if (gateId !== undefined) {
+          await engine.resume(handle.runId, gateId, { decision: 'approved', decidedBy: 'tester' });
+        }
+      }
+      if (event.type === 'media_job:submitted') handle.cancel();
+    }
+
+    expect(dispatches).toBe(2); // the approval RE-DISPATCHED the node rather than completing it
+    // The bypass, observed rather than assumed: the hook is there on the first dispatch and GONE on the
+    // approved one. That contrast is what makes the omission below attributable to `budgetApproved`.
+    expect(hookPresent).toEqual([true, false]);
+    const submitted = events.find((e) => e.type === 'media_job:submitted');
+    expect(submitted?.type).toBe('media_job:submitted');
+    if (submitted?.type !== 'media_job:submitted') return;
+    expect(submitted).not.toHaveProperty('acceptedCostMicrocents');
+    // …while the BASIS is still frozen. `units` alone is the legitimate half-populated row (#W15-7).
+    expect(submitted.units).toBe(12.5);
+  });
+
+  it('carries acceptedCostMicrocents when the bypass did NOT fire', async () => {
+    // Without this row the assertion above would also pass on a build that never emitted the field at all.
+    //
+    // What it pins is PRESENCE, not the amount. `retainMediaJobAdmission` is module-private to `agent-runner`,
+    // so a `StubExecutor` cannot attach an admission and the value here is necessarily the `?? 0` fallback —
+    // it does NOT prove the frozen amount tracks a real reservation. That assertion needs a fixture where an
+    // admission exists (the agent-runner e2e harness) and is called out here rather than implied.
+    const engine = engineWith({ gen: () => mediaJobOutcome() });
+    const events = await untilMediaJobSubmitted(engine.start({ workflow: workflow(MEDIA_GATED) }));
+
+    const submitted = events.find((e) => e.type === 'media_job:submitted');
+    if (submitted?.type !== 'media_job:submitted') throw new Error('expected media_job:submitted');
+    expect(submitted.acceptedCostMicrocents).toBe(0);
+  });
+});
+
+describe('WorkflowEngine — an abort always breaks the legacy media-job hold (ADR-0074 §3)', () => {
+  const HELD = `  id: media-hold
+  nodes:
+    - { id: gen, type: transform, transform: 'g' }
+    - { id: sib, type: transform, transform: 's' }
+    - { id: out, type: output }
+  edges:
+    - { from: gen, to: out }
+    - { from: sib, to: out }
+  budget:
+    max_cost_microcents: 100000000
+    on_exceed: fail`;
+
+  it('still reaches run:cancelled with a sibling suspended in the hold (#W15-16)', async () => {
+    // The composition gap that let a hang ship: every part was unit-correct and nothing exercised them
+    // TOGETHER. `budget-governor.test.ts` proves the governor releases its holds; nothing proved the engine
+    // ever calls that on abort.
+    //
+    // Without the listener a `checkPreEgress` suspended in the hold keeps its node counted as `running`, so
+    // `#step` never reaches `#countRunning() === 0` and the run emits NO terminal — an unkillable run, which
+    // is strictly worse than the under-reservation the hold prevents. The awaited job cannot rescue it: its
+    // poll returns silently once the signal is aborted.
+    const store = new InMemoryRunStore();
+    // A LEGACY parked job — no `units`, no `acceptedCostMicrocents` — which is what makes the resume register
+    // the hold rather than restoring a frozen reservation.
+    const workflowId = await store.resolveWorkflowId('media-hold');
+    await seedStarted(store, 'hold-1', 'media_job:submitted', workflowId);
+
+    // The governor calls this when it ACTUALLY holds — a deterministic signal, and the only one that
+    // distinguishes "parked on the hold" from "entered the handler". A first version of this test flagged the
+    // handler ENTRY instead and passed with `registerLegacyMediaJob` deleted: no hold was ever created, so it
+    // was quietly asserting "a media-parked resume can be cancelled" while its name claimed otherwise.
+    const held: string[][] = [];
+    let released = false;
+    const engine = engineWith(
+      {
+        // `gen` is restored from the checkpoint as PARKED, so it must never dispatch.
+        gen: () => {
+          throw new Error('the parked media node must not re-dispatch');
+        },
+        sib: async (ctx) => {
+          await ctx.preEgress?.({
+            model: 'claude-haiku-4-5',
+            maxTokens: 100,
+            provider: 'anthropic',
+          });
+          released = true;
+          return { kind: 'completed', output: 'sib' };
+        },
+      },
+      createInMemoryHost({ store }),
+      {
+        onLegacyMediaJobHold: (nodeIds) => {
+          held.push([...nodeIds]);
+        },
+      },
+    );
+
+    const handle = await engine.resumeFromCheckpoint({
+      runId: 'hold-1',
+      workflow: workflow(HELD),
+    });
+    const events: RunEvent[] = [];
+    const collected = (async () => {
+      for await (const event of handle.events) events.push(event);
+    })();
+
+    // Yield until the governor reports the hold. The loop is `held.length`-conditioned and the assertion
+    // right after it is what decides, so a drain that is too short fails loudly instead of passing trivially.
+    for (let i = 0; i < 500 && held.length === 0; i += 1) await Promise.resolve();
+    expect(held).toEqual([['gen']]); // the hold engaged, and it names the node to wait for
+    // PARKED, not merely entered: the sibling has not come out the other side of `checkPreEgress`.
+    expect(released).toBe(false);
+    expect(terminalsIn(events)).toHaveLength(0);
+
+    handle.cancel();
+
+    // The assertion IS that this await returns. Without the abort listener the stream never closes and this
+    // test times out — a hang is the failure mode being pinned.
+    await collected;
+    expect(released).toBe(true); // the abort is what let the suspended sibling through
+    expect(events.some((e) => e.type === 'run:cancelled')).toBe(true);
   });
 });

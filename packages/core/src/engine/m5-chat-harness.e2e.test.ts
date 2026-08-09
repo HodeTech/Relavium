@@ -280,6 +280,7 @@ describe('1.AA — chat harness (1.m5 agent-first sub-spine)', () => {
       totalInputTokens: 25,
       totalOutputTokens: 15,
       totalCostMicrocents: 4200,
+      totalConservativeMicrocents: 0,
       createdAt: TS,
       updatedAt: TS,
     };
@@ -395,6 +396,7 @@ describe('1.AA — chat harness (1.m5 agent-first sub-spine)', () => {
         totalInputTokens: 10,
         totalOutputTokens: 5,
         totalCostMicrocents: 2100,
+        totalConservativeMicrocents: 0,
         createdAt: TS,
         updatedAt: TS,
       },

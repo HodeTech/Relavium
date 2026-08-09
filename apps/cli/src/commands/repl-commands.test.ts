@@ -72,6 +72,18 @@ describe('curated REPL command registry (ADR-0056 amendment)', () => {
     ]);
   });
 
+  it('/cost --release reaches the capability WITH the flag (#W15-3)', async () => {
+    // ADR-0074 §1's escape hatch existed in code and no command called it. The `args.includes` binding is the
+    // whole of what makes it reachable, so it needs its own row: presence in the command list proves nothing.
+    const released = spyContext();
+    await REPL_COMMANDS_BY_NAME.get('cost')?.run(released.ctx, ['--release']);
+    expect(released.ctx.showCost).toHaveBeenCalledWith(true);
+
+    const bare = spyContext();
+    await REPL_COMMANDS_BY_NAME.get('cost')?.run(bare.ctx, []);
+    expect(bare.ctx.showCost).toHaveBeenCalledWith(false); // the palette's bare form never releases
+  });
+
   it('each command run() invokes EXACTLY its one capability', async () => {
     const cases: Array<[string, string]> = [
       // [command name, the capability it must call]

@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { BudgetExceededError, BudgetPauseError } from '@relavium/core';
+import { BudgetExceededError, BudgetPauseError, CommitmentDurabilityError } from '@relavium/core';
 import type { SessionStreamHandleEvent } from '@relavium/core';
 import {
   buildServerToolDefs,
@@ -283,6 +283,76 @@ describe('buildChatSession', () => {
   });
 });
 
+/* --- #228: a throwing passive subscriber must be REPORTED, never left to kill the process --- */
+
+describe('buildChatSession — the onListenerError sink (#228)', () => {
+  /**
+   * The failure chain this pins: the chat persister writes `history.db` from inside a `RunEventBus`
+   * subscriber. `deliver()` isolates the throw so the turn survives — but with no sink the bus re-throws it
+   * out-of-band, and Node kills the process on the resulting unhandled rejection, asynchronously, AFTER the
+   * user already saw the reply. A billed turn is lost and the session dies with it.
+   */
+  it('routes a throwing subscriber to onListenerError instead of an out-of-band rejection', async () => {
+    const notes: string[] = [];
+    const built = await build({ onListenerError: (note: string) => notes.push(note) });
+    built.handle.subscribe(() => {
+      throw new Error('database is locked');
+    });
+
+    // A real turn, so the throw happens on the genuine delivery path rather than a hand-rolled emit.
+    built.session.start();
+    await built.session.sendMessage('hi');
+
+    expect(notes.length).toBeGreaterThan(0);
+    // The note names WHICH event failed and why. Deliberately NEUTRAL about the cause: this sink is bus-wide
+    // (the renderer, the Home store and the NDJSON printer subscribe here too), so it must not blame the
+    // database for what may be a render fault.
+    expect(notes[0]).toMatch(
+      /a background handler failed while processing the \S+ event: database is locked/,
+    );
+  });
+
+  it('does NOT swallow when no sink is supplied — the failure still surfaces out-of-band', async () => {
+    // The alternative implementation (an absent sink degrading to a no-op) would be a silent catch: the turn
+    // would vanish from history with nothing anywhere saying so. `index.ts`'s process-level net is the floor
+    // beneath this path, which is what makes surfacing survivable rather than fatal.
+    const built = await build(); // no onListenerError
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown): void => {
+      rejections.push(reason);
+    };
+    process.on('unhandledRejection', onRejection);
+    try {
+      built.handle.subscribe(() => {
+        throw new Error('database is locked');
+      });
+      built.session.start();
+      await built.session.sendMessage('hi');
+      // The out-of-band rethrow is a microtask; give it a macrotask turn to become an unhandled rejection.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+    expect(rejections.some((r) => r instanceof Error && r.message === 'database is locked')).toBe(
+      true,
+    );
+  });
+
+  it('keeps the turn and its SIBLING subscribers intact — a failing observer never breaks the producer', async () => {
+    const built = await build({ onListenerError: () => undefined });
+    const seen: string[] = [];
+    built.handle.subscribe(() => {
+      throw new Error('database is locked');
+    });
+    // Registered AFTER the thrower, so it only ever runs if `deliver()` really isolates each subscriber —
+    // persistence is an observer, never a gate on the turn or on the surface's own rendering.
+    built.handle.subscribe((event) => seen.push(event.type));
+    built.session.start();
+    await built.session.sendMessage('hi');
+    expect(seen).toContain('session:turn_completed');
+  });
+});
+
 describe('buildChatSession + MCP host wiring (2.R)', () => {
   /** Write a throwaway `.agent.yaml` declaring one inline stdio MCP server (optional extra server lines). */
   function writeMcpAgent(extraServerLines: readonly string[] = []): string {
@@ -502,6 +572,7 @@ describe('buildResumedChatSession (2.N)', () => {
     totalInputTokens: 10,
     totalOutputTokens: 5,
     totalCostMicrocents: 1234,
+    totalConservativeMicrocents: 0,
     createdAt: ISO,
     updatedAt: ISO,
     ...overrides,
@@ -691,6 +762,36 @@ describe('buildResumedChatSession (2.N)', () => {
     expect(errorCodes).toContain('budget_exceeded'); // tripped on the carried cost, no provider call
   });
 
+  it('seeds the governor with the carried CONSERVATIVE total too (#W15-17, ADR-0074 §4)', async () => {
+    // The CLI-layer spread that was previously untestable. A first attempt cloned the realized test above and
+    // was VACUOUS: it left `totalCostMicrocents` high, so the cap tripped on the realized seeding either way
+    // and deleting the conservative spread stayed green.
+    //
+    // A second attempt was vacuous for a DIFFERENT reason: with a 1µ¢ cap the next-worst-case ESTIMATE alone
+    // exceeds it, so the turn trips whatever the seeding did.
+    //
+    // The isolating shape is a cap large enough that the estimate alone leaves headroom, ZERO realized cost,
+    // and a conservative total that consumes all but 1µ¢ of it. Then the only thing that can trip pre-egress
+    // is `restoreConservativeCost` having arrived — money the provider may ALREADY have billed for an attempt
+    // that returned no trustworthy usage. Without it the resumed session starts at 0, keeps the whole cap as
+    // headroom, and the turn goes through: the bypass ADR-0074 §4 exists to close.
+    const built = await buildResumedChatSession({
+      chat: { ...EMPTY_CHAT, maxCostMicrocents: 1_000_000_000, onExceed: 'fail' },
+      record: record({ totalCostMicrocents: 0, totalConservativeMicrocents: 999_999_999 }),
+      messages: [message(0, 'user', 'hi'), message(1, 'assistant', 'hello')],
+      now: () => Date.parse(ISO),
+      providers: scriptedResolver([textTurn('should never stream')]),
+    });
+    await built.session.sendMessage('again');
+    built.session.cancel();
+    const events = await drainHandle(built.handle.events);
+
+    const errorCodes = events.flatMap((e) =>
+      e.type === 'session:turn_completed' && e.error !== undefined ? [e.error.code] : [],
+    );
+    expect(errorCodes).toContain('budget_exceeded'); // tripped on the CONSERVATIVE total alone
+  });
+
   it('rejects a record with no stored agent snapshot as a clean exit-2 invocation fault', async () => {
     // The build is async now (2.R MCP connect), so the no-snapshot guard surfaces as a REJECTED promise.
     await expect(resume([], record({ agentSnapshot: undefined }))).rejects.toThrow(
@@ -840,6 +941,71 @@ describe('buildGovernorWiring', () => {
     expect(buildGovernorWiring({ ...EMPTY_CHAT, maxCostMicrocents: 0 })).toBeUndefined();
   });
 
+  describe('durable conservative commitments (ADR-0074 §4)', () => {
+    const wiringWithCap = () =>
+      buildGovernorWiring({ ...EMPTY_CHAT, maxCostMicrocents: 10_000_000, onExceed: 'fail' });
+
+    it('writes a commitment through the ATTACHED persister, with the model as the attribution key', async () => {
+      const written: { model: string; estimateMicrocents: number }[] = [];
+      const wiring = wiringWithCap();
+      wiring?.attachConservativeWriter((c) => {
+        written.push(c);
+        return Promise.resolve();
+      });
+
+      const admission = await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      admission?.settleAtReservedEstimate();
+      // The barrier is what forces the write to have completed — the next pre-egress check awaits it.
+      await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+
+      expect(written).toHaveLength(1);
+      expect(written[0]?.model).toBe('claude-haiku-4-5');
+      expect(written[0]?.estimateMicrocents).toBeGreaterThan(0);
+    });
+
+    it('FAILS LOUDLY when a commitment is made before the writer is attached', async () => {
+      // A commitment made before `attachConservativeWriter` runs makes the emit reject, which the governor's
+      // barrier turns into a durability failure — the alternative being a silently dropped commitment, i.e.
+      // money the cap forgets across a resume.
+      //
+      // Worth knowing how this test was nearly lost. I removed two earlier versions after a mutation check
+      // showed them "staying green" — but the mutation had never been applied: my edit script matched a source
+      // string that a prettier reflow had already changed, so it silently no-oped and I read an unmutated run as
+      // proof of vacuity. The tests were probably fine; the harness was not. Verified properly this time —
+      // replacing the reject with a silent resolve reddens this, with "promise resolved instead of rejecting".
+      //
+      // Two lines still earn their place. `expect(admission).toBeDefined()` pins that the emit path is reachable
+      // AT ALL: it is only reached for a PRICED model, since an unpriced one gets no admission and
+      // `settleAtReservedEstimate()` on `undefined` is a silent no-op. And the typed `toBeInstanceOf` matters
+      // because a bare `.toThrow()` would also pass on a tripped cap.
+      const wiring = wiringWithCap();
+      const admission = await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      expect(admission).toBeDefined(); // pins that the emit path is reachable AT ALL
+      admission?.settleAtReservedEstimate();
+      await expect(
+        wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 }),
+      ).rejects.toBeInstanceOf(CommitmentDurabilityError);
+      expect(wiring?.conservativeState().durabilityBroken).toBe(true);
+      // …and the debit is NOT rolled back: the provider may already have billed it.
+      expect(wiring?.conservativeState().microcents).toBeGreaterThan(0);
+    });
+
+    it('exposes §1`s release, which persisting the total makes mandatory on this surface', async () => {
+      // §1 names a long-lived chat as the harm case: "a single usage-less response would permanently shrink a
+      // long-lived chat's cap with no way out". Shipping the persistence without the release would BE that.
+      const wiring = wiringWithCap();
+      wiring?.attachConservativeWriter(() => Promise.resolve());
+      const admission = await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+      admission?.settleAtReservedEstimate();
+      await wiring?.preEgress({ model: 'claude-haiku-4-5', maxTokens: 1000 });
+
+      const held = wiring?.conservativeState().microcents ?? 0;
+      expect(held).toBeGreaterThan(0);
+      expect(wiring?.releaseConservativeCommitments()).toBe(held);
+      expect(wiring?.conservativeState().microcents).toBe(0);
+    });
+  });
+
   it('wires preEgress + updateCost when a positive cost cap is set', () => {
     const wiring = buildGovernorWiring({
       ...EMPTY_CHAT,
@@ -905,9 +1071,11 @@ describe('buildGovernorWiring', () => {
       (warning) => warnings.push(warning),
     );
     wiring?.updateCost(999_999);
-    await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined(); // warn never blocks
-    await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined(); // still non-blocking the 2nd time
-    // The governor emits the warning ONCE (#warningEmitted) — the 2nd over-cap call must not re-notify.
+    const first = await wiring?.preEgress(OVER_CAP); // warn never blocks
+    const second = await wiring?.preEgress(OVER_CAP); // still non-blocking the 2nd time
+    first?.release();
+    second?.release();
+    // No realized cost landed between these checks, so the standing condition remains deduped.
     expect(warnings).toHaveLength(1);
     expect(warnings[0]?.limitMicrocents).toBe(1);
   });
@@ -917,7 +1085,11 @@ describe('buildGovernorWiring', () => {
     // never a rejection that would surface as an `internal` turn error.
     const wiring = buildGovernorWiring({ ...EMPTY_CHAT, maxCostMicrocents: 1, onExceed: 'warn' });
     wiring?.updateCost(999_999);
-    await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined();
+    // Assert the OUTCOME, not merely the absence of a throw: `warn` must still ADMIT the egress. Without this
+    // the test would pass just as happily if admission stopped being granted altogether.
+    const admission = await wiring?.preEgress(OVER_CAP);
+    expect(admission).toBeDefined();
+    expect(() => admission?.release()).not.toThrow();
   });
 
   it('on_exceed:warn — a throwing onWarning surface never rejects preEgress (warn stays non-blocking)', async () => {
@@ -928,8 +1100,11 @@ describe('buildGovernorWiring', () => {
       },
     );
     wiring?.updateCost(999_999);
-    // A misbehaving warn surface must NOT surface as an `internal` turn error — the throw is swallowed.
-    await expect(wiring?.preEgress(OVER_CAP)).resolves.toBeUndefined();
+    // A misbehaving warn surface must NOT surface as an `internal` turn error — the throw is swallowed, AND
+    // the egress is still admitted. Asserting both is what makes this fail for the right reason.
+    const admission = await wiring?.preEgress(OVER_CAP);
+    expect(admission).toBeDefined();
+    expect(() => admission?.release()).not.toThrow();
   });
 });
 

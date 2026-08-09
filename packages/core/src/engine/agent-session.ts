@@ -164,7 +164,7 @@ export type SessionApprovalStreamEvent = DistributiveOmit<
 >;
 
 /**
- * Everything a session emits, envelope-less: the `session:*` lifecycle/side bodies, the five dual-envelope
+ * Everything a session emits, envelope-less: the `session:*` lifecycle/side bodies, the dual-envelope
  * in-turn bodies the turn core produces (`agent:token` / `agent:reasoning` / `agent:tool_call` /
  * `agent:tool_result` / `cost:updated`), and the engine-emitted `agent:approval_requested` body (ADR-0057 EA5 — the registry's
  * `confirmDispatch` emits it via the dispatch context's `emitApprovalRequested`). The injected sink receives
@@ -279,6 +279,28 @@ export interface SessionDeps {
    */
   readonly updateCost?: (cumulativeCostMicrocents: number) => void;
   /**
+   * Await the budget governor's conservative-commitment durability barrier (ADR-0074 §2).
+   *
+   * §2 requires that "the next provider attempt AND the enclosing turn completion wait for the commitment's
+   * durability acknowledgement". The governor's own barrier covers the first half on every surface; the engine
+   * covers the second at each node boundary. This is the SESSION's half of it, and without it a chat could
+   * report a turn complete — returning from `sendMessage`, letting the process exit — while the commitment for
+   * a possibly-billed call had not reached the database, or had failed to and would surface only later, blamed
+   * on an unrelated turn.
+   *
+   * Rejects on a durability failure; the caller turns that into the turn's terminal. No-op by default; the host
+   * wires it to `governor.flushCommitments`.
+   */
+  readonly flushBudgetCommitments?: () => Promise<void>;
+  /**
+   * Seed the host governor's CONSERVATIVE total on resume ([ADR-0074](../../../../docs/decisions/0074-durable-conservative-budget-commitments.md) §4).
+   *
+   * Separate from {@link updateCost} because the two figures are separate by design: one is realized spend, the
+   * other an estimate the provider may already have billed. Folding them would present an upper bound as an
+   * invoice. No-op by default; the host wires it to `governor.restoreConservativeCost`.
+   */
+  readonly restoreConservativeCost?: (conservativeCostMicrocents: number) => void;
+  /**
    * Automatic context compaction (ADR-0062) — the surface-mapped form of `[chat].auto_compact`. When not
    * `false` (absent ⇒ enabled), after a turn completes the session compacts if the turn's real input tokens
    * exceed {@link SessionDeps.compactThreshold} × the serving model's context window. The host wires this from
@@ -370,6 +392,18 @@ function isProcessResult(value: unknown): value is ProcessResult {
  * `sessionId`, call {@link start} once, then {@link sendMessage} per user turn; {@link cancel} aborts an
  * in-flight turn. Events flow through the injected {@link SessionEventSink}.
  */
+/**
+ * The primary chain entry's attempt budget on the SESSION path (chat / one-shot `agent run`).
+ *
+ * **2, not 1**, and the difference is load-bearing: a session has no above-chain retry loop, so the chain is
+ * the only retry there — and a budget of 1 makes even the chain's own backoff unreachable (`attempt < budget`).
+ * Until #276 the vendor SDK's internal retry hid that; with the SDK correctly out of the retry business, a
+ * transient 429 would end the user's turn with no wait at all. Two attempts restores a single polite retry
+ * without touching the authored node-retry budget, which does not exist on this path.
+ * ADR-0040 carries the dated amendment.
+ */
+const SESSION_PRIMARY_MAX_ATTEMPTS = 2;
+
 export class AgentSession {
   readonly sessionId: string;
 
@@ -464,6 +498,12 @@ export class AgentSession {
     // check sees the real cumulative — not 0 — before any cost:updated fires (mirrors #onTurnEmit). Without
     // this, a resumed session's first turn could bypass a near-exhausted budget cap.
     session.#deps.updateCost?.(state.cumulativeCostMicrocents);
+    // ADR-0074 §2/§4: BOTH totals, together, before the session is idle and can take a turn. The realized sync
+    // above is not enough on its own — a conservative commitment is money the provider may ALREADY have billed
+    // for an attempt that returned no trustworthy usage, so a resumed cap that forgets it hands already-owed
+    // headroom back on the first turn, which is the bypass ADR-0074 exists to close. The governor takes the
+    // maximum rather than assigning, so this can never LOWER a total a live governor already holds.
+    session.#deps.restoreConservativeCost?.(state.conservativeCostMicrocents);
     session.#status = 'idle';
     return session;
   }
@@ -594,6 +634,21 @@ export class AgentSession {
       // otherwise carry a fallback-provider signature into the next turn's primary request. Faithful
       // cross-turn tool/reasoning history is the 1.X/1.Z deferral (it needs the turn core to expose the
       // intermediate messages, which the concurrent 1.AC work currently owns in agent-turn.ts).
+      // ADR-0074 §2: the enclosing turn completion WAITS for the commitment's durability acknowledgement.
+      // Before this, a chat reported a turn complete — `sendMessage` returned, the process could exit — while
+      // the commitment for a possibly-billed call had not reached the database. A failure here fails THIS turn,
+      // which is the point: §2 says a durability failure fails the active owner loudly, and surfacing it on some
+      // later unrelated turn is exactly the misattribution the barrier exists to prevent.
+      //
+      // Only the SUCCESS path awaits it this way. An abort or a classified turn error already carries its own
+      // terminal, and replacing a `provider_auth` failure with a durability failure would hide the cause the
+      // user needs; the governor keeps the debit and its sticky `conservativeDurabilityBroken` regardless.
+      //
+      // It runs BEFORE the assistant append below, not after. The catch's rollback pops exactly ONE message
+      // and its comment relies on "nothing is pushed after the user message on a throw" — which stopped being
+      // true when this await landed between them: a flush rejection popped the ASSISTANT message and left the
+      // user turn dangling, the exact shape that rollback exists to prevent. Awaiting first restores it.
+      await this.#deps.flushBudgetCommitments?.();
       if (result.text.length > 0) {
         this.#messages.push({ role: 'assistant', content: [{ type: 'text', text: result.text }] });
       }
@@ -1199,10 +1254,17 @@ export class AgentSession {
       this.#plan = { ok: false, message: `no provider wired for '${agent.provider}'` };
       return this.#plan;
     }
-    // The primary entry does NOT consume a node/agent retry budget — ADR-0040 makes node retry the
-    // engine's ABOVE-chain budget (a session has no such loop in 1.V); the primary is a single attempt.
+    // ADR-0040 makes node retry the engine's ABOVE-chain budget, and the primary entry does not consume it.
+    // But a SESSION has no such loop (this comment used to end there, with `maxAttempts: 1`), so on the chat
+    // and one-shot `agent run` surfaces the chain was the ONLY place a retry could happen — and with a budget
+    // of 1 the guard `attempt < budget` is false, so `#backoff` is unreachable and nothing retried at all.
+    // That was masked until #276: the vendor SDK's own retry was silently absorbing transient 429/5xx here.
+    // With the SDK's retry correctly off, a bare 429 would fail the turn outright with no wait, so the primary
+    // carries a minimal budget of 2 on this path. The WORKFLOW path deliberately stays at 1 (see
+    // `agent-runner.ts`) because the engine retries above it there — raising both would multiply the authored
+    // budget. Recorded as a dated amendment on ADR-0040.
     const entries: FallbackPlanEntry[] = [
-      { provider: primary, model: agent.model, maxAttempts: 1 },
+      { provider: primary, model: agent.model, maxAttempts: SESSION_PRIMARY_MAX_ATTEMPTS },
     ];
     for (const entry of agent.fallback_chain ?? []) {
       const provider = this.#deps.resolveProvider(entry.provider);

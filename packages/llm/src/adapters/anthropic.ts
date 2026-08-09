@@ -39,6 +39,7 @@ import {
   isRecord,
   positiveModelInt,
   toModelListing,
+  readRetryAfter,
 } from './shared.js';
 
 /**
@@ -217,6 +218,8 @@ function mapAnthropicApiError(err: {
   status?: unknown;
   type?: unknown;
   message: string;
+  /** Structurally typed, so no vendor header type crosses the seam — only `.get` is used (#279). */
+  headers?: { readonly get?: unknown } | undefined;
 }): LlmError {
   const status = typeof err.status === 'number' ? err.status : undefined;
   const code = typeof err.type === 'string' && err.type.length > 0 ? err.type : undefined;
@@ -225,12 +228,16 @@ function mapAnthropicApiError(err: {
   const kind =
     (code === undefined ? undefined : kindFromErrorType(code)) ??
     (status === undefined ? 'unknown' : kindFromHttpStatus(status));
+  // #279: carry the provider's OWN requested wait when it sent one. A mid-stream `error` event has no
+  // headers, so this is genuinely optional — absent means "no instruction", never "wait zero".
+  const retryAfterMs = readRetryAfter(err.headers);
   return makeLlmError({
     provider: PROVIDER,
     kind,
     message: err.message,
     ...(status === undefined ? {} : { status }),
     ...(code === undefined ? {} : { code }),
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
   });
 }
 
@@ -622,7 +629,19 @@ function buildRequestOptions(req: LlmRequest): { signal?: AbortSignal } {
 export interface AnthropicAdapterDeps {
   /** Inject a `fetch` (the replayer/recorder) in place of the network. */
   readonly fetch?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
-  /** Override the SDK retry count (the replayer sets 0 for deterministic, fast tests). */
+  /**
+   * Override the SDK's own retry count. **Defaults to `0`** — the vendor SDK's built-in retry is deliberately
+   * OFF in production, because `FallbackChain` owns the retry/fallback policy (ADR-0011: "the runner — not the
+   * adapter — owns the retry/fallback policy"). Left at the SDK default it silently retried a 429/5xx two more
+   * times INSIDE the adapter: the chain never saw the first failure, so failover was delayed by the SDK's own
+   * backoff, the node retry budget was double-counted, and a rate limit looked like a slow call rather than a
+   * reason to move to the next provider (#276). Tests that want the SDK's behaviour can still set it.
+   *
+   * This governs the **chain-governed** calls (`generate` / `stream`) only. The surfaces `FallbackChain` does
+   * NOT sit above — live model discovery and the async media-job poll — run with `maxRetries: 0` as well. A
+   * small SDK retry there was tried and REVERTED: the SDK's sleep honours `retry-after` with no ceiling and no
+   * abort awareness, so a hostile `retry-after-ms` parks the call for days. See the note below.
+   */
   readonly maxRetries?: number;
 }
 
@@ -836,12 +855,28 @@ async function* streamChunks(client: Anthropic, req: LlmRequest): AsyncIterable<
 }
 
 /** Build an Anthropic `LlmProvider`. Exposed as `anthropicAdapter`; the factory enables DI for 1.F. */
+/**
+ * **The off-chain paths deliberately run with NO SDK retry either — and that is a knowing residual, not an
+ * oversight.** `listModels` and the media-job poll are not governed by `FallbackChain`, so nothing retries a
+ * transient fault on them: one 500 fails a `/models refresh`, and one 429 on a status poll settles an
+ * already-billed media node. Giving them the SDK's retry (an earlier attempt at this) was worse: that sleep is
+ * neither abort-aware nor ceiling-bounded and the SDK parses `Retry-After` itself, so a cancel was ignored for
+ * the whole wait and a hostile `retry-after-ms` could park the call indefinitely — past both
+ * `boundedListModels`'s timeout and the seam's `RETRY_AFTER_CEILING_MS`. Resilience here needs a retry WE own,
+ * abort-aware and ceiling-bounded; until that lands, no retry is the safer of the two failure modes.
+ */
 export function createAnthropicAdapter(deps: AnthropicAdapterDeps = {}): LlmProvider {
-  const createClient = (key: string): Anthropic =>
+  const createClient = (key: string, maxRetries = deps.maxRetries ?? 0): Anthropic =>
     new Anthropic({
       apiKey: key,
       ...(deps.fetch === undefined ? {} : { fetch: deps.fetch }),
-      ...(deps.maxRetries === undefined ? {} : { maxRetries: deps.maxRetries }),
+      // ALWAYS passed, never conditionally: an absent option means the SDK's own default (2), which is
+      // exactly the pre-emption #276 is about. Explicit beats implicit. Floored, because a negative value
+      // makes the SDK's retry loop unbounded (`retriesRemaining - 1` stays truthy at -1).
+      // `Math.trunc(NaN)` is NaN and `Math.max(0, NaN)` is NaN, so a non-finite budget would reach the SDK as
+      // one. Normalise to 0 first: a caller who cannot name a retry count gets none, which is this seam's
+      // documented default (the runner owns retry policy — ADR-0011).
+      maxRetries: Number.isFinite(maxRetries) ? Math.max(0, Math.trunc(maxRetries)) : 0,
     });
 
   return {

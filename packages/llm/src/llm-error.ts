@@ -72,6 +72,8 @@ interface MakeLlmErrorArgs {
   readonly status?: number;
   /** Original error, for debugging only — never re-thrown across the seam. */
   readonly cause?: unknown;
+  /** The provider's own requested wait, normalized to ms (#279). Set only when a header supplied it. */
+  readonly retryAfterMs?: number;
 }
 
 /**
@@ -116,6 +118,9 @@ export function makeLlmError(args: MakeLlmErrorArgs): LlmError {
   if (args.status !== undefined) {
     error.status = args.status;
   }
+  if (args.retryAfterMs !== undefined) {
+    error.retryAfterMs = args.retryAfterMs;
+  }
   // `cause` is an INTERNAL diagnostic only (error-handling.md): it is NOT scrubbed and may hold a raw
   // vendor object, so it must never be logged/serialized raw. The run-event boundary already carries
   // only { code, message, retryable } (run-event.ts), never `cause`; a future adapter that sets `cause`
@@ -124,4 +129,51 @@ export function makeLlmError(args: MakeLlmErrorArgs): LlmError {
     error.cause = args.cause;
   }
   return error;
+}
+
+/**
+ * Normalize a provider's requested wait to milliseconds, from either header shape (#279).
+ *
+ * Both Anthropic and OpenAI send `retry-after` (RFC 7231: delta-seconds OR an HTTP-date) and the Stainless
+ * SDKs additionally send `retry-after-ms`. Only a value the provider actually supplied is returned —
+ * `undefined` means "no instruction", never "wait zero", so the caller keeps its own backoff.
+ *
+ * Defensive by design: a header is untrusted input. A non-numeric, negative, or absurd value is dropped
+ * rather than honoured, because a hostile or broken `retry-after: 999999999` would otherwise park a turn
+ * indefinitely. The ceiling is the caller's problem too, but rejecting nonsense here keeps one rule in one place.
+ */
+export function retryAfterMsFromHeaders(headers: {
+  readonly get: (name: string) => string | null | undefined;
+}): number | undefined {
+  const ms = headers.get('retry-after-ms');
+  if (ms !== null && ms !== undefined && ms.trim() !== '') {
+    const parsed = Number(ms);
+    if (Number.isFinite(parsed) && parsed >= 0) return clampRetryAfter(parsed);
+  }
+  const after = headers.get('retry-after');
+  if (after === null || after === undefined || after.trim() === '') return undefined;
+  const seconds = Number(after);
+  if (Number.isFinite(seconds) && seconds >= 0) return clampRetryAfter(seconds * 1000);
+  // An HTTP-date form: honour it only if it is in the future by a sane margin.
+  const at = Date.parse(after);
+  if (Number.isNaN(at)) return undefined;
+  return clampRetryAfter(at - Date.now());
+}
+
+/** The hard ceiling on a provider-requested wait. Beyond it we wait the ceiling — we do not ignore the ask. */
+const RETRY_AFTER_CEILING_MS = 60_000;
+
+/**
+ * CLAMP, never drop. Dropping an over-ceiling value looked safer but is strictly worse: a provider legitimately
+ * asking for 120 s fell back to our own curve and retried after ~250 ms — hammering the exact endpoint that
+ * just told us to back off, and far more aggressively than honouring a capped 60 s would. The ceiling exists to
+ * stop a hostile/broken `retry-after: 999999999` parking a turn, and clamping does that just as well while
+ * still respecting a real instruction.
+ *
+ * Only genuinely uninterpretable values (non-finite, negative — i.e. "this is not a wait") yield `undefined`,
+ * which means "no instruction" and lets the caller keep its own backoff.
+ */
+function clampRetryAfter(ms: number): number | undefined {
+  if (!Number.isFinite(ms) || ms < 0) return undefined;
+  return Math.round(Math.min(ms, RETRY_AFTER_CEILING_MS));
 }

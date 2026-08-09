@@ -399,6 +399,21 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
         warnings: pushBounded(base.warnings, `budget ${event.thresholdPct}% spent`, MAX_WARNINGS),
       };
 
+    // ADR-0074 §1's rendering half: "the surfaces that render the committed amount as *estimated, possibly billed*".
+    // Without this the user sees NOTHING when real cap capacity is consumed — a usage-less attempt commits
+    // conservatively and returns BEFORE emitting any `cost:updated`, and the realized-only totals never show it, so
+    // the first sign was a later `budget:warning`/`budget:paused` that seemed to come out of nowhere. Worded as an
+    // estimate, never as spend, because that distinction is the whole of the ADR.
+    case 'budget:estimate_committed':
+      return {
+        ...base,
+        warnings: pushBounded(
+          base.warnings,
+          `budget: ~${event.estimateMicrocents}µ¢ held as an estimate (possibly billed; ~${event.cumulativeConservativeMicrocents}µ¢ total)`,
+          MAX_WARNINGS,
+        ),
+      };
+
     case 'budget:paused':
       return {
         ...base,
@@ -410,45 +425,11 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
       };
 
     case 'run:completed':
-      return {
-        ...base,
-        summary: {
-          outcome: 'completed',
-          totalCostMicrocents: event.totalCostMicrocents,
-          totalTokens: event.totalTokensUsed,
-          durationMs: event.durationMs,
-        },
-        cumulativeCostMicrocents: event.totalCostMicrocents,
-      };
-
     case 'run:failed':
-      return {
-        ...base,
-        summary: {
-          outcome: 'failed',
-          errorCode: event.error.code,
-          errorMessage: event.error.message,
-        },
-      };
-
     case 'run:cancelled':
-      // run:cancelled carries the run-wide cost snapshot (2.S/D-GC — a paid media job billed before the cancel,
-      // ADR-0045 §5). Fold it onto the summary + the running total (mirrors run:completed) so the final cost is
-      // the durable terminal figure, not just whatever the last transient cost:updated left. Optional (older
-      // logs omit it); absent ⇒ the live `cumulativeCostMicrocents` already on `base` stands.
-      return {
-        ...base,
-        summary: {
-          outcome: 'cancelled',
-          ...(event.cumulativeCostMicrocents === undefined
-            ? {}
-            : { totalCostMicrocents: event.cumulativeCostMicrocents }),
-        },
-        ...(event.cumulativeCostMicrocents === undefined
-          ? {}
-          : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
-      };
-
+      // The three terminal arms live in `reduceTerminal` — each folds a durable cost snapshot onto BOTH the
+      // summary and the running total, and keeping them here pushed this switch past its complexity budget.
+      return reduceTerminal(base, event);
     case 'run:paused':
       return { ...base, summary: { outcome: 'paused', pausedGateIds: event.gateIds } };
 
@@ -468,5 +449,69 @@ export function reduceRunEvent(state: RunViewState, event: RunEvent): RunViewSta
     default:
       // Forward-compatible: a future RunEvent variant is reflected only in the seq/gap tracking above.
       return base;
+  }
+}
+
+/**
+ * The three run terminals. Each carries the run-wide cost snapshot that is the ONLY durable record of money
+ * spent after the last node boundary (a sibling's abandoned paid media job is folded just before the
+ * terminal, ADR-0045 §5), so each folds it onto the summary AND the running total. Absent ⇒ the live total
+ * already on `base` stands (older logs omit it).
+ */
+function reduceTerminal(
+  base: RunViewState,
+  event: Extract<RunEvent, { type: 'run:completed' | 'run:failed' | 'run:cancelled' }>,
+): RunViewState {
+  switch (event.type) {
+    case 'run:completed':
+      return {
+        ...base,
+        summary: {
+          outcome: 'completed',
+          totalCostMicrocents: event.totalCostMicrocents,
+          totalTokens: event.totalTokensUsed,
+          durationMs: event.durationMs,
+        },
+        cumulativeCostMicrocents: event.totalCostMicrocents,
+      };
+
+    case 'run:failed':
+      // Same durable fail-cost fold as `run:cancelled` and `node:failed` (#W15-6). The root-cause node's
+      // `node:failed` snapshots the cumulative as of THAT node, but a SIBLING's paid media job abandoned by
+      // the failure is folded only just BEFORE this terminal (ADR-0045 §5) — after that `node:failed` was
+      // already emitted. So this event is the only durable carrier of that last addend, and the summary was
+      // showing the pre-cleanup figure. Optional (older logs omit it); absent ⇒ the live total stands.
+      return {
+        ...base,
+        summary: {
+          outcome: 'failed',
+          errorCode: event.error.code,
+          errorMessage: event.error.message,
+          ...(event.cumulativeCostMicrocents === undefined
+            ? {}
+            : { totalCostMicrocents: event.cumulativeCostMicrocents }),
+        },
+        ...(event.cumulativeCostMicrocents === undefined
+          ? {}
+          : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
+      };
+
+    case 'run:cancelled':
+      // run:cancelled carries the run-wide cost snapshot (2.S/D-GC — a paid media job billed before the cancel,
+      // ADR-0045 §5). Fold it onto the summary + the running total (mirrors run:completed) so the final cost is
+      // the durable terminal figure, not just whatever the last transient cost:updated left. Optional (older
+      // logs omit it); absent ⇒ the live `cumulativeCostMicrocents` already on `base` stands.
+      return {
+        ...base,
+        summary: {
+          outcome: 'cancelled',
+          ...(event.cumulativeCostMicrocents === undefined
+            ? {}
+            : { totalCostMicrocents: event.cumulativeCostMicrocents }),
+        },
+        ...(event.cumulativeCostMicrocents === undefined
+          ? {}
+          : { cumulativeCostMicrocents: event.cumulativeCostMicrocents }),
+      };
   }
 }

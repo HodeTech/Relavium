@@ -1,8 +1,14 @@
 import { RunEventSchema, type RunEvent } from '@relavium/shared';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
+import {
+  CorruptRunEventError,
+  isCorruptRunEventError,
+  isUnreadableRunEventLogError,
+  UnreadableRunEventLogError,
+} from './run-history-store.js';
 import { runCosts, runEvents, runs, stepExecutions, workflows } from './schema.js';
 import {
   createRunHistoryReader,
@@ -69,6 +75,32 @@ describe('createRunHistoryStore', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     client.sqlite.close();
+  });
+
+  it('persistEvent YIELDS the event loop between retries — it is on the async twin (#226)', async () => {
+    // The central behavioural change of #226 had no regression guard: reverting `persistEvent` to the
+    // synchronous `withBusyRetry` left the whole packages/db suite green. This is the assertion that dies.
+    const workflowId = await store.resolveWorkflowId('demo');
+    const observed: string[] = [];
+    let calls = 0;
+    // Fail the first transaction with a lock fault so the retry path (and therefore the backoff) is entered.
+    vi.spyOn(client.db, 'transaction').mockImplementationOnce(() => {
+      calls += 1;
+      observed.push('attempt1');
+      // Armed BEFORE the backoff: under `Atomics.wait` the thread is parked and this cannot fire until the
+      // whole synchronous retry has returned, so its position in `observed` is the proof.
+      setTimeout(() => observed.push('other-work'), 0);
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    });
+
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: { n: 3 }, executionMode: 'local' }),
+    );
+
+    expect(calls).toBe(1); // the first attempt really did fail…
+    expect(observed).toEqual(['attempt1', 'other-work']); // …and the loop ran during the backoff
+    // The write still landed on the retry — a yielding backoff must not cost durability.
+    expect(client.db.select().from(runEvents).all()).toHaveLength(1);
   });
 
   it('persistEvent opens an IMMEDIATE write transaction (2.5.I — guards against a DEFERRED regression)', async () => {
@@ -771,5 +803,568 @@ describe('createRunHistoryReader', () => {
       'node:started',
       'human_gate:paused',
     ]);
+  });
+
+  it('persists budget:estimate_committed WITHOUT touching any actual-cost total (ADR-0074 §1/§2)', async () => {
+    // The ADR's central negative guarantee, and it rested entirely on an unasserted `default:` fall-through. A
+    // conservative commitment is an ESTIMATE: folding it into `runs.total_cost_microcents` or `run_costs` would
+    // present an upper bound as an invoice and break ADR-0070's `SUM(run_costs) == runs.total_cost_microcents`.
+    const store = storeFor('wf');
+    const workflowId = await store.resolveWorkflowId('wf');
+    const ts = new Date(TS_MS).toISOString();
+    await store.persistEvent(
+      evRun('run-c', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+    );
+    await store.persistEvent(
+      evRun(
+        'run-c',
+        'budget:estimate_committed',
+        1,
+        {
+          nodeId: 'g',
+          attemptNumber: 1,
+          model: 'claude-opus-4-8',
+          estimateMicrocents: 500,
+          cumulativeConservativeMicrocents: 500,
+        },
+        ts,
+      ),
+    );
+
+    const run = reader.loadRun('run-c');
+    expect(run?.totalCostMicrocents).toBe(0); // NOT 500 — an estimate is not spend
+    expect(client.db.select().from(runCosts).all()).toEqual([]);
+    expect(run?.status).toBe('running'); // not a status change either
+    // It IS in the durable log, though — that is the whole point of §2.
+    expect(reader.loadRunEvents('run-c').map((e) => e.type)).toEqual([
+      'run:started',
+      'budget:estimate_committed',
+    ]);
+  });
+
+  /**
+   * ADR-0074 §5. The write side stays strict, so the only way a row with an unknown `type` reaches the DB is a
+   * NEWER binary having written it — which is exactly the case
+   * [sse-event-schema.md](../../../docs/reference/contracts/sse-event-schema.md) §Forward-compatibility already
+   * declared legal. Both reads therefore have to survive it, and `loadRunStateEvents` matters more: a throw there
+   * does not just hide a log, it blocks RESUMING the run.
+   */
+  describe('a row written by a newer binary (ADR-0074 §5)', () => {
+    /** Insert straight through drizzle — `persistEvent` validates on the way in, which is the point. */
+    function insertRaw(runId: string, seq: number, eventType: string, payload: unknown): void {
+      client.db
+        .insert(runEvents)
+        .values({
+          id: counterUuid(900 + seq),
+          runId,
+          seq,
+          eventType,
+          payloadJson: JSON.stringify(payload),
+          ts: TS_MS,
+        })
+        .run();
+    }
+
+    /** Remove one raw row again, so a table-driven case can plant the next mismatch in isolation. */
+    function deleteRaw(runId: string, seq: number): void {
+      client.db
+        .delete(runEvents)
+        .where(and(eq(runEvents.runId, runId), eq(runEvents.seq, seq)))
+        .run();
+    }
+
+    it('SKIPS the unreadable row instead of failing the whole read', async () => {
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      const ts = new Date(TS_MS).toISOString();
+      await store.persistEvent(
+        evRun('run-f', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      insertRaw('run-f', 1, 'test:never_a_real_event', {
+        type: 'test:never_a_real_event',
+        runId: 'run-f',
+        sequenceNumber: 1,
+        timestamp: ts,
+        estimateMicrocents: 500,
+      });
+      await store.persistEvent(
+        evRun('run-f', 'node:started', 2, { nodeId: 'g', nodeType: 'agent' }, ts),
+      );
+
+      // Before ADR-0074 both of these threw, so a single forward row cost the caller the entire log.
+      expect(reader.loadRunEvents('run-f').map((e) => e.type)).toEqual([
+        'run:started',
+        'node:started',
+      ]);
+      expect(reader.loadRunStateEvents('run-f').map((e) => e.type)).toEqual([
+        'run:started',
+        'node:started',
+      ]);
+    });
+
+    it('REPORTS what it skipped, with the authoritative seq/type COLUMNS', async () => {
+      // The drop cannot be silent. Two consumers depend on knowing: `relavium logs` (whose count and `[seq]`
+      // column otherwise present a short log as a complete one) and resume (see the seq test below). The values
+      // come from the columns, never the payload — parsing the blob that just failed to parse would be circular.
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      const ts = new Date(TS_MS).toISOString();
+      await store.persistEvent(
+        evRun('run-s', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      // Deliberately DISAGREE with the payload's own `sequenceNumber` (77): the `seq` COLUMN is what
+      // `UNIQUE(run_id, seq)` enforces, so it is the only number that can be trusted here.
+      insertRaw('run-s', 1, 'test:never_a_real_event', {
+        type: 'test:never_a_real_event',
+        sequenceNumber: 77,
+      });
+
+      const log = reader.loadRunEventLog('run-s');
+      expect(log.events.map((e) => e.type)).toEqual(['run:started']);
+      expect(log.skipped).toEqual([{ sequenceNumber: 1, type: 'test:never_a_real_event' }]);
+      // A clean log reports nothing, so a caller can branch on emptiness rather than on a count.
+      expect(reader.loadRunEventLog('run-a').skipped).toEqual([]);
+    });
+
+    it('does not LOSE the sequence high-water mark when the skipped row is the TAIL', async () => {
+      // The destructive case, and the reason `loadRunEventLog` exists. Resume seeds the post-resume sequence
+      // counter from the fold's `lastSequenceNumber + 1`. Fold only the readable events and a dropped TAIL row
+      // lowers that mark, the resumed run re-uses a taken `seq`, `UNIQUE(run_id, seq)` rejects the write, and the
+      // engine settles `run:failed` — a run that merely needed a newer binary becomes terminally unresumable.
+      // Asserted at this layer because `packages/db` must not depend on `packages/core`.
+      //
+      // The rationale ABOVE is history now, and kept for it: resume no longer seeds a counter from a fold that
+      // can contain skipped rows, because ADR-0075 made it REFUSE such a log outright
+      // (`loadRunEventLogForReplay`, covered in the block below and in
+      // `apps/cli/src/engine/checkpointer.test.ts`, whose counterpart test now asserts the refusal). The
+      // `skipped[].sequenceNumber` column contract is still worth pinning — `logs` reports it as a note.
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      const ts = new Date(TS_MS).toISOString();
+      await store.persistEvent(
+        evRun('run-t', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      await store.persistEvent(
+        evRun('run-t', 'node:started', 1, { nodeId: 'g', nodeType: 'agent' }, ts),
+      );
+      insertRaw('run-t', 2, 'test:never_a_real_event', { type: 'test:never_a_real_event' }); // the TAIL
+
+      const log = reader.loadRunEventLog('run-t');
+      const foldedMax = Math.max(...log.events.map((e) => e.sequenceNumber));
+      expect(foldedMax).toBe(1); // what a fold over `events` alone would believe
+      const trueMax = log.skipped.reduce(
+        (max, row) => Math.max(max, row.sequenceNumber),
+        foldedMax,
+      );
+      expect(trueMax).toBe(2); // what is actually stored — the number resume must not collide with
+    });
+
+    describe('loadRunEventLogForReplay — the strict read (ADR-0075)', () => {
+      /** Seed a run whose log has one row this binary cannot interpret, at `skipSeq`. */
+      async function seedWithSkip(runId: string, skipSeq: number): Promise<void> {
+        const store = storeFor('wf');
+        const workflowId = await store.resolveWorkflowId('wf');
+        await store.persistEvent(
+          evRun(runId, 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, TS),
+        );
+        insertRaw(runId, skipSeq, 'test:never_a_real_event', {
+          type: 'test:never_a_real_event',
+          runId,
+          sequenceNumber: skipSeq,
+        });
+        // A readable row AFTER the skipped one, so the skip is genuinely mid-log: it cannot corrupt the
+        // sequence high-water mark, which is the case that distinguishes ADR-0075's rule from the tail-only
+        // one the removed repair needed.
+        await store.persistEvent(
+          evRun(runId, 'node:started', skipSeq + 1, { nodeId: 'n1', nodeType: 'agent' }, TS),
+        );
+      }
+
+      it('refuses a MID-LOG skip, not only a tail one', async () => {
+        // ADR-0075 decides "any row was skipped", which is strictly wider than the tail-only rule the
+        // sequence high-water mark used to need. A mid-log row is the case that distinguishes them: it
+        // cannot corrupt the mark at all, and it is exactly the row whose LOSS is dangerous — it could have
+        // been a node terminal or a job submission.
+        await seedWithSkip('run-mid', 1);
+        expect(() => reader.loadRunEventLogForReplay('run-mid')).toThrow(
+          UnreadableRunEventLogError,
+        );
+      });
+
+      it('names the RUN and the skipped seq, and points at the remedy', async () => {
+        await seedWithSkip('run-named', 9);
+        try {
+          reader.loadRunEventLogForReplay('run-named');
+          expect.unreachable('the strict read must refuse');
+        } catch (err) {
+          if (!isUnreadableRunEventLogError(err)) throw err;
+          expect(err.runId).toBe('run-named');
+          expect(err.skippedSequenceNumbers).toEqual([9]);
+          expect(err.message).toContain('run-named'); // the run id, not just the count
+          expect(err.message).toContain('seq 9');
+          expect(err.message).toContain('Upgrade'); // the remedy — the whole reason this type is distinct
+          // The SINGULAR wording. Hardcoding the plural suffix reads "1 events" here and stays green in the
+          // 12-skip case below, so the count=1 branch needs its own assertion.
+          expect(err.message).toContain('contains 1 event written');
+        }
+      });
+
+      it('BOUNDS the seq list — a run under a much newer binary can skip thousands', async () => {
+        const store = storeFor('wf');
+        const workflowId = await store.resolveWorkflowId('wf');
+        await store.persistEvent(
+          evRun(
+            'run-many',
+            'run:started',
+            0,
+            { workflowId, inputs: {}, executionMode: 'local' },
+            TS,
+          ),
+        );
+        for (let seq = 1; seq <= 12; seq += 1) {
+          insertRaw('run-many', seq, 'test:never_a_real_event', {
+            type: 'test:never_a_real_event',
+            runId: 'run-many',
+            sequenceNumber: seq,
+          });
+        }
+        try {
+          reader.loadRunEventLogForReplay('run-many');
+          expect.unreachable('the strict read must refuse');
+        } catch (err) {
+          if (!isUnreadableRunEventLogError(err)) throw err;
+          expect(err.skippedSequenceNumbers).toHaveLength(12); // the field keeps them all…
+          expect(err.message).toContain('12 events');
+          expect(err.message).toContain('seq 1, 2, 3, 4, 5, 6, 7, 8, …'); // …the MESSAGE elides
+          expect(err.message).not.toContain(', 9,');
+        }
+      });
+
+      it('lets CORRUPTION win over a skip — the two are different answers', async () => {
+        // A damaged row means upgrading will not help; a skipped row means it will. If a damaged row is read
+        // first, that is the truth the user needs, and the strict read must not relabel it.
+        const store = storeFor('wf');
+        const workflowId = await store.resolveWorkflowId('wf');
+        await store.persistEvent(
+          evRun(
+            'run-both',
+            'run:started',
+            0,
+            { workflowId, inputs: {}, executionMode: 'local' },
+            TS,
+          ),
+        );
+        insertRaw('run-both', 1, 'node:started', { type: 'node:started', nodeId: 42 }); // damaged
+        insertRaw('run-both', 2, 'test:never_a_real_event', {
+          type: 'test:never_a_real_event',
+          runId: 'run-both',
+          sequenceNumber: 2,
+        });
+        expect(() => reader.loadRunEventLogForReplay('run-both')).toThrow(CorruptRunEventError);
+      });
+
+      it('includes the STREAMING firehose, so no persisted row can be silently absent', async () => {
+        // `{ streamingIncluded: true }` is load-bearing: the display read excludes `agent:*` for speed, and a
+        // replay read that inherited that would fold a log missing rows it never even counted as skipped.
+        const store = storeFor('wf');
+        const workflowId = await store.resolveWorkflowId('wf');
+        await store.persistEvent(
+          evRun(
+            'run-fire',
+            'run:started',
+            0,
+            { workflowId, inputs: {}, executionMode: 'local' },
+            TS,
+          ),
+        );
+        await store.persistEvent(
+          evRun('run-fire', 'agent:token', 1, { nodeId: 'n1', token: 'hi', model: 'm' }, TS),
+        );
+        // Present in the replay read; ABSENT from the state read, which is the difference being pinned.
+        expect(reader.loadRunEventLogForReplay('run-fire').map((e) => e.type)).toEqual([
+          'run:started',
+          'agent:token',
+        ]);
+        expect(reader.loadRunStateEvents('run-fire').map((e) => e.type)).toEqual(['run:started']);
+      });
+
+      it('returns the events unchanged when nothing was skipped', async () => {
+        const store = storeFor('wf');
+        const workflowId = await store.resolveWorkflowId('wf');
+        await store.persistEvent(
+          evRun('run-ok', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, TS),
+        );
+        expect(reader.loadRunEventLogForReplay('run-ok').map((e) => e.type)).toEqual([
+          'run:started',
+        ]);
+      });
+    });
+
+    it('THROWS when the payload disagrees with the authoritative columns (#W15-5)', async () => {
+      // The columns are the authority afterwards: `seq` carries `UNIQUE(run_id, seq)` and orders the read,
+      // `run_id` scopes it, `event_type` labels it. A payload that no longer agrees parsed cleanly and was
+      // accepted, so a `seq = 2` row saying `sequenceNumber: 1` brought the high-water mark back one short —
+      // and the resumed run's first write then collided on the UNIQUE index and failed the run.
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      const ts = new Date(TS_MS).toISOString();
+      await store.persistEvent(
+        evRun('run-p', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+
+      const cases: readonly [string, number, string, Record<string, unknown>][] = [
+        // seq column 2, payload says 1 — the high-water-mark truncation.
+        [
+          'seq',
+          2,
+          'node:started',
+          {
+            type: 'node:started',
+            runId: 'run-p',
+            sequenceNumber: 1,
+            timestamp: ts,
+            nodeId: 'n',
+            nodeType: 'agent',
+          },
+        ],
+        // run_id column 'run-p', payload says another run — one run's event folded into another's state.
+        [
+          'runId',
+          3,
+          'node:started',
+          {
+            type: 'node:started',
+            runId: 'other',
+            sequenceNumber: 3,
+            timestamp: ts,
+            nodeId: 'n',
+            nodeType: 'agent',
+          },
+        ],
+        // event_type column vs payload type — the label the skip path and the firehose filter read.
+        [
+          'type',
+          4,
+          'node:completed',
+          {
+            type: 'node:started',
+            runId: 'run-p',
+            sequenceNumber: 4,
+            timestamp: ts,
+            nodeId: 'n',
+            nodeType: 'agent',
+          },
+        ],
+      ];
+
+      for (const [label, seq, eventType, payload] of cases) {
+        insertRaw('run-p', seq, eventType, payload);
+        expect(() => reader.loadRunEventLog('run-p'), label).toThrow(CorruptRunEventError);
+        // The row is named by its COLUMNS, so the diagnostic points at the row that is actually wrong.
+        try {
+          reader.loadRunEventLog('run-p');
+          expect.unreachable('the mismatched row must throw');
+        } catch (err) {
+          if (!isCorruptRunEventError(err)) throw err;
+          expect(err.sequenceNumber).toBe(seq);
+          expect(err.eventType).toBe(eventType);
+        }
+        deleteRaw('run-p', seq);
+      }
+    });
+
+    it('still THROWS on a row we can identify but not read — corruption is not forward evolution', async () => {
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      const ts = new Date(TS_MS).toISOString();
+      await store.persistEvent(
+        evRun('run-g', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      // A type we DO know, with a body that cannot be a `node:started`. ADR-0050's durability posture says a
+      // damaged row must be visible, not quietly dropped alongside the forward-compatible ones.
+      // A SINGLE-issue body (a valid `node:started` with an empty `nodeId`), so what is exercised is precisely the
+      // guard deciding "known type, bad body" — a four-issue blob would pass on the issue COUNT check alone.
+      insertRaw('run-g', 1, 'node:started', {
+        type: 'node:started',
+        runId: 'run-g',
+        sequenceNumber: 1,
+        timestamp: ts,
+        nodeId: '',
+        nodeType: 'agent',
+      });
+
+      // Narrowed on the TYPE, not on "something threw" — a bare `toThrow()` also passes on a `SyntaxError` from
+      // `JSON.parse`, or on any unrelated fault, so it would not pin that corruption was CLASSIFIED.
+      expect(() => reader.loadRunEvents('run-g')).toThrow(CorruptRunEventError);
+      expect(() => reader.loadRunStateEvents('run-g')).toThrow(CorruptRunEventError);
+      expect(() => reader.loadRunEventLog('run-g')).toThrow(CorruptRunEventError);
+
+      // The context is the point: error-handling.md forbids a bare error, and without these fields the CLI
+      // reported one bad row out of thousands as `An unexpected internal error occurred.`
+      try {
+        reader.loadRunEvents('run-g');
+        expect.unreachable('the damaged row must throw');
+      } catch (err) {
+        expect(isCorruptRunEventError(err)).toBe(true);
+        if (!isCorruptRunEventError(err)) return;
+        expect(err.runId).toBe('run-g');
+        expect(err.sequenceNumber).toBe(1);
+        expect(err.eventType).toBe('node:started');
+        expect(err.code).toBe('corrupt_run_event');
+        expect(err.cause).toBeDefined(); // the underlying ZodError survives for `--verbose`
+      }
+    });
+
+    it('classifies unreadable JSON as corruption too, not as a forward row', async () => {
+      // The other damaged shape. `JSON.parse` throws before the schema is ever consulted, so without the wrapper
+      // this reached the user as an untyped `SyntaxError` — a second error shape for the same one-bad-row problem.
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      const ts = new Date(TS_MS).toISOString();
+      await store.persistEvent(
+        evRun('run-h', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      client.db
+        .insert(runEvents)
+        .values({
+          id: counterUuid(950),
+          runId: 'run-h',
+          seq: 1,
+          eventType: 'node:started',
+          payloadJson: '{"type":"node:star', // truncated write / bit-flip
+          ts: TS_MS,
+        })
+        .run();
+
+      expect(() => reader.loadRunEvents('run-h')).toThrow(CorruptRunEventError);
+    });
+  });
+
+  /**
+   * #W15-6 — `node:failed`, `run:failed` and `run:cancelled` all carry a durable run-wide cost snapshot, and
+   * the store folded none of them. `cost:updated` is streamed and never persisted, so those snapshots are the
+   * ONLY durable carriers of money spent after the last `node:completed`.
+   */
+  describe('the durable fail-cost folds (#W15-6)', () => {
+    /** `sum(run_costs)` for a run — ADR-0070's invariant, checked directly rather than assumed. */
+    const sumRunCosts = (runId: string): number =>
+      client.db
+        .select({ c: runCosts.costMicrocents })
+        .from(runCosts)
+        .where(eq(runCosts.runId, runId))
+        .all()
+        .reduce((total, row) => total + row.c, 0);
+
+    const ts = TS;
+
+    it('folds a failed node cost, so a billed-but-failed paid job is not lost', async () => {
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      await store.persistEvent(
+        evRun('run-f', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      await store.persistEvent(
+        evRun('run-f', 'node:started', 1, { nodeId: 'n1', nodeType: 'agent' }, ts),
+      );
+      await store.persistEvent(
+        evRun(
+          'run-f',
+          'node:failed',
+          2,
+          {
+            nodeId: 'n1',
+            error: { code: 'provider_unavailable', message: 'boom', retryable: false },
+            cumulativeCostMicrocents: 4_200,
+          },
+          ts,
+        ),
+      );
+
+      expect(reader.loadRun('run-f')?.totalCostMicrocents).toBe(4_200);
+      expect(sumRunCosts('run-f')).toBe(4_200); // ADR-0070's invariant still holds exactly
+    });
+
+    it('folds the run terminal residual — a sibling cleanup lands AFTER its node:failed', async () => {
+      // The root-cause node's `node:failed` snapshots the cumulative as of THAT node; a sibling's abandoned
+      // paid media job is folded only just before the run terminal (ADR-0045 §5). Without this fold the run
+      // total stopped at the earlier figure.
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      await store.persistEvent(
+        evRun('run-r', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      await store.persistEvent(
+        evRun('run-r', 'node:started', 1, { nodeId: 'n1', nodeType: 'agent' }, ts),
+      );
+      await store.persistEvent(
+        evRun(
+          'run-r',
+          'node:failed',
+          2,
+          {
+            nodeId: 'n1',
+            error: { code: 'provider_unavailable', message: 'boom', retryable: false },
+            cumulativeCostMicrocents: 1_000,
+          },
+          ts,
+        ),
+      );
+      await store.persistEvent(
+        evRun(
+          'run-r',
+          'run:failed',
+          3,
+          {
+            error: { code: 'provider_unavailable', message: 'boom', retryable: false },
+            partialOutputs: {},
+            cumulativeCostMicrocents: 3_500, // +2500 of sibling media cleanup
+          },
+          ts,
+        ),
+      );
+
+      expect(reader.loadRun('run-r')?.totalCostMicrocents).toBe(3_500);
+      expect(sumRunCosts('run-r')).toBe(3_500);
+    });
+
+    it('folds a cancellation snapshot the same way', async () => {
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      await store.persistEvent(
+        evRun('run-c', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      await store.persistEvent(
+        evRun('run-c', 'run:cancelled', 1, { cumulativeCostMicrocents: 900 }, ts),
+      );
+
+      expect(reader.loadRun('run-c')?.totalCostMicrocents).toBe(900);
+      expect(sumRunCosts('run-c')).toBe(900);
+    });
+
+    it('writes NO run_costs row when a terminal adds nothing — the common no-spend failure', async () => {
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      await store.persistEvent(
+        evRun('run-z', 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      await store.persistEvent(
+        evRun(
+          'run-z',
+          'run:failed',
+          1,
+          {
+            error: { code: 'validation', message: 'bad input', retryable: false },
+            partialOutputs: {},
+            cumulativeCostMicrocents: 0,
+          },
+          ts,
+        ),
+      );
+
+      expect(
+        client.db.select().from(runCosts).where(eq(runCosts.runId, 'run-z')).all(),
+      ).toHaveLength(0);
+      expect(reader.loadRun('run-z')?.totalCostMicrocents).toBe(0);
+    });
   });
 });

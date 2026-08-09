@@ -127,6 +127,7 @@ describe('session chain e2e (2.5.I S4) — Home→chat→resume→export over a 
         disableMcp: true, // fully offline: the default agent declares no mcp_servers, so make the intent explicit
       });
       const persister = createSessionPersister({
+        governor: undefined,
         store: first.store,
         handle: built.handle,
         sessionId: built.sessionId,
@@ -172,6 +173,7 @@ describe('session chain e2e (2.5.I S4) — Home→chat→resume→export over a 
       });
       expect(resumed.sessionId).toBe(SESSION_ID); // resume continues the SAME session, never a fresh one
       const persister = createSessionPersister({
+        governor: undefined,
         store: second.store,
         handle: resumed.handle,
         sessionId: resumed.sessionId,

@@ -45,6 +45,7 @@ const EMPTY: HomeSnapshot = {
   recentSessions: [],
   recentRuns: [],
   recentAgents: [],
+  unreadableRunIds: [],
   isEmpty: true,
 };
 
@@ -1751,6 +1752,7 @@ describe('the /models picker in the bare Home (2.5.G S7 / ADR-0064 §10)', () =>
     recentSessions: [],
     recentRuns: [],
     recentAgents: [],
+    unreadableRunIds: [],
     isEmpty: true,
   };
   const homeStore: HomeStore = { read: () => EMPTY_HOME };

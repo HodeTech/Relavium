@@ -24,6 +24,136 @@ const completed = (seq: number, nodeId: string, output: unknown): RunEvent => ({
 });
 
 describe('reconstructCheckpointState', () => {
+  describe('conservative budget commitments (ADR-0074 §2)', () => {
+    /** A durable conservative commitment. `cumulative` is the producer's snapshot; `estimate` is this one's delta. */
+    const committed = (
+      seq: number,
+      nodeId: string,
+      estimate: number,
+      cumulative: number,
+    ): RunEvent => ({
+      type: 'budget:estimate_committed',
+      ...base(seq),
+      nodeId,
+      model: 'claude-opus-4-8',
+      estimateMicrocents: estimate,
+      cumulativeConservativeMicrocents: cumulative,
+    });
+
+    it('SUMS the deltas, and keeps them out of the realized total', () => {
+      const state = reconstructCheckpointState([
+        started,
+        committed(1, 'a', 400, 400),
+        committed(2, 'b', 250, 650),
+      ]);
+      expect(state?.conservativeCostMicrocents).toBe(650);
+      // An ESTIMATE never inflates realized spend — ADR-0074 §1's whole point.
+      expect(state?.cumulativeCostMicrocents).toBe(0);
+    });
+
+    it('is ORDER-INDEPENDENT, which a LAST-WINS read of the snapshot is not', () => {
+      // The engine assigns `sequenceNumber` after an `await` and states that concurrent events have no canonical
+      // order, so under a `fan_out` the LOWER seq can carry the HIGHER cumulative. Here branch b's commitment
+      // (cumulative 650) landed at the lower seq. A last-wins read would restore 400 — handing 250 micro-cents of
+      // already-owed money back to the cap as headroom, the exact bypass ADR-0074 closes.
+      //
+      // This case deliberately does NOT distinguish the sum from `Math.max`, and no case can: each snapshot is
+      // read right after its own increment, so the largest one always equals the sum of the deltas. `Math.max` is
+      // genuinely correct today. The reason the contract prescribes the sum is the case below.
+      const state = reconstructCheckpointState([
+        started,
+        committed(1, 'b', 250, 650),
+        committed(2, 'a', 400, 400),
+      ]);
+      expect(state?.conservativeCostMicrocents).toBe(650);
+    });
+
+    it('sums DELTAS, which is what will survive §1`s release when Math.max would not', () => {
+      // The one case that separates the two folds, written now because the fold is what a future
+      // `budget:estimate_released` has to slot into. A release DECREASES the total, so its post-release snapshot is
+      // LOWER than an earlier one — and `Math.max` would keep the stale higher value, permanently over-reserving a
+      // cap against money the user explicitly said was not owed. Summing signed deltas simply works.
+      //
+      // The released event does not exist yet (it is RESERVED in sse-event-schema.md), so this asserts the
+      // property the sum already has: the total is the sum of what was committed, with no dependence on any
+      // snapshot. If `Math.max` were used, `sum` here would have to equal `max` — it does not.
+      const events = [started, committed(1, 'a', 400, 400), committed(2, 'b', 250, 650)];
+      const state = reconstructCheckpointState(events);
+      const snapshots = events.flatMap((e) =>
+        e.type === 'budget:estimate_committed' ? [e.cumulativeConservativeMicrocents] : [],
+      );
+      const deltas = events.flatMap((e) =>
+        e.type === 'budget:estimate_committed' ? [e.estimateMicrocents] : [],
+      );
+      expect(state?.conservativeCostMicrocents).toBe(deltas.reduce((a, b) => a + b, 0));
+      // Documenting the equivalence that holds ONLY while the total is monotonic — the assumption a release breaks.
+      expect(Math.max(...snapshots)).toBe(deltas.reduce((a, b) => a + b, 0));
+    });
+
+    it('is zero for a log with no commitments', () => {
+      expect(reconstructCheckpointState([started])?.conservativeCostMicrocents).toBe(0);
+    });
+
+    it('stays summable across a resume, so a SECOND resume cannot double-count', () => {
+      // After a resume the governor is seeded with the restored sum, so the next commitment's snapshot is
+      // `restored + itself`. Because the fold never reads that snapshot, replaying the whole log — which is what
+      // reconstruction always does, there being no checkpoint table — still yields the true total.
+      const state = reconstructCheckpointState([
+        started,
+        committed(1, 'a', 400, 400), // pre-resume
+        committed(2, 'b', 250, 650), // post-resume: snapshot = restored 400 + 250
+      ]);
+      expect(state?.conservativeCostMicrocents).toBe(650);
+    });
+  });
+
+  describe('frozen media-job basis (ADR-0074 §3)', () => {
+    /** `extra` is deliberately loose so a test can OMIT the §3 fields — the legacy shape it must still read. */
+    const submitted = (extra: {
+      readonly units?: number;
+      readonly acceptedCostMicrocents?: number;
+    }): RunEvent => ({
+      type: 'media_job:submitted',
+      ...base(1),
+      nodeId: 'gen',
+      jobId: 'job-1',
+      provider: 'openai',
+      model: 'gpt-image-1',
+      modality: 'image',
+      startedAt: TS,
+      deadlineAt: TS,
+      ...extra,
+    });
+
+    it('carries the frozen units and accepted cost through to resume', () => {
+      const state = reconstructCheckpointState([
+        started,
+        submitted({ units: 3, acceptedCostMicrocents: 12_000 }),
+      ]);
+      const job = state?.pendingMediaJobs[0];
+      expect(job?.units).toBe(3);
+      expect(job?.acceptedCostMicrocents).toBe(12_000);
+    });
+
+    it('leaves both ABSENT for a legacy row rather than defaulting them', () => {
+      // The distinction is the whole mechanism: absent is what tells resume the basis is unknown, so it must
+      // re-price AND fail closed. Substituting a value here would erase exactly that signal — and a `0` default
+      // would be worse than wrong, since `0` legitimately means "priced, reserved nothing".
+      const state = reconstructCheckpointState([started, submitted({})]);
+      const job = state?.pendingMediaJobs[0];
+      expect(job !== undefined && 'units' in job).toBe(false);
+      expect(job !== undefined && 'acceptedCostMicrocents' in job).toBe(false);
+    });
+
+    it('keeps a frozen ZERO distinguishable from a legacy absence', () => {
+      const state = reconstructCheckpointState([
+        started,
+        submitted({ units: 1, acceptedCostMicrocents: 0 }),
+      ]);
+      expect(state?.pendingMediaJobs[0]?.acceptedCostMicrocents).toBe(0);
+    });
+  });
+
   it('returns undefined for a run with no run:started', () => {
     expect(reconstructCheckpointState([completed(1, 'a', 1)])).toBeUndefined();
   });
@@ -353,6 +483,33 @@ describe('reconstructCheckpointState', () => {
     ]);
     expect(state?.runStatus).toBe('paused');
     expect(state?.cumulativeCostMicrocents).toBe(1600); // survives the plain-human-gate resume (was ~0 before)
+  });
+
+  it('restores the cumulative from a durable node:failed too (#W15-6)', () => {
+    // A node that FAILED can still have spent: a paid media job billed provider-side before the failure, or
+    // a provider call that returned usage and then failed downstream. `node:completed` was folded and
+    // `node:failed` was not, so a run that failed a node, paused at a gate and resumed came back with a
+    // cumulative that had forgotten real spend — handing the cap headroom it did not have.
+    const state = reconstructCheckpointState([
+      started,
+      {
+        type: 'node:failed',
+        ...base(1),
+        nodeId: 'media',
+        error: { code: 'provider_unavailable', message: 'boom', retryable: false },
+        cumulativeCostMicrocents: 2_400,
+      },
+      {
+        type: 'human_gate:paused',
+        ...base(2),
+        nodeId: 'gate',
+        gateId: 'g1',
+        gateType: 'approval',
+        message: 'ok?',
+      },
+      { type: 'run:paused', ...base(3), pendingGateCount: 1, gateIds: ['g1'] },
+    ]);
+    expect(state?.cumulativeCostMicrocents).toBe(2_400);
   });
 
   it('reconciles two durable cost sources — a later budget:paused.spentMicrocents above a node:completed snapshot', () => {

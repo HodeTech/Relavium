@@ -1,4 +1,4 @@
-import { readFileSync, statSync, type Stats } from 'node:fs';
+import { chmodSync, lstatSync, readFileSync, statSync, type Stats } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -21,7 +21,11 @@ const MAX_CONFIG_BYTES = 256 * 1024;
  * `ConfigError` (exit 2) whose detail is a TOML position or a Zod field path, never the file's
  * contents (config files hold no secrets — config-spec.md).
  */
-export function loadConfigFile<T>(filePath: string, schema: ZodType<T>): T | undefined {
+export function loadConfigFile<T>(
+  filePath: string,
+  schema: ZodType<T>,
+  opts?: { readonly selfHealMode?: boolean },
+): T | undefined {
   let stats: Stats;
   try {
     stats = statSync(filePath);
@@ -33,6 +37,9 @@ export function loadConfigFile<T>(filePath: string, schema: ZodType<T>): T | und
   }
   if (!stats.isFile()) {
     throw new ConfigError(filePath, 'is not a regular file.');
+  }
+  if (opts?.selfHealMode === true) {
+    reassertOwnerOnly(filePath, stats);
   }
   // Enforce the size cap BEFORE reading into memory (ADR-0048 hardened loader) — an oversize
   // file is rejected without ever being loaded.
@@ -100,7 +107,15 @@ export function resolveHomeDir(options: Pick<LoadConfigOptions, 'home'>): string
 export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
   const home = resolveHomeDir(options);
   const globalFile = options.configPath ?? join(globalConfigDir(home), 'config.toml');
-  const global = loadConfigFile<GlobalConfig>(globalFile, GlobalConfigSchema);
+  // #33's `0600` self-heal applies to the CANONICAL global config and nothing else (#W15-13). It used to run
+  // on every layer, including `workspace.toml` / `project.toml` — which `config-spec.md` describes as
+  // committed and shared, so merely READING a project's config rewrote a file's mode in the user's repo and
+  // showed up as an unexplained `git diff`. `--config` is excluded for the same reason: it names an arbitrary
+  // path the user chose, and mutating permissions on it is a surprise, not a guarantee. Skipping the heal is
+  // never a regression — the file's mode is simply left as it was.
+  const global = loadConfigFile<GlobalConfig>(globalFile, GlobalConfigSchema, {
+    selfHealMode: options.configPath === undefined,
+  });
 
   const projectConfigDir = findProjectConfigDir(options.cwd);
   let workspace: ProjectConfig | undefined;
@@ -117,6 +132,37 @@ export function loadResolvedConfig(options: LoadConfigOptions): LoadedConfig {
   }
 
   return { config: resolveConfig({ global, workspace, project }), projectConfigDir, homeDir: home };
+}
+
+/**
+ * Best-effort `0600` self-heal for the CANONICAL global config (#33) — the read-side twin of
+ * `config/write.ts`'s write-time mode and of `db/open.ts`'s db self-heal (ADR-0050). Only the caller that
+ * passes `selfHealMode` reaches it; see the call site for why the project layers and `--config` do not.
+ *
+ * Deliberately **never throws**: unlike `history.db`, a config file holds no secrets (config-spec.md — secret
+ * VALUES live in the keychain and are referenced by name), so this is defence in depth, not the guarantee. A
+ * read-only file, a foreign owner, or Windows — where POSIX mode bits do not apply and `chmod` is a documented
+ * no-op — must not turn a perfectly readable config into a startup failure.
+ *
+ * Skips the `chmod` entirely when the mode is already right, so the common path adds no syscall at all.
+ */
+function reassertOwnerOnly(filePath: string, stats: Stats): void {
+  // The permission bits of `st_mode` — masking is the only way to read them.
+  if ((stats.mode & 0o777) === 0o600) {
+    return;
+  }
+  // `stat` followed the link to get here, and `chmod` would follow it too — changing the mode of whatever the
+  // link points AT, which may be a file outside `~/.relavium` that this heal has no business touching
+  // (#W15-13). `lstat` is the only way to ask about the link itself. A symlinked config is left alone; that is
+  // the same "leave it as it was" outcome as any other failure on this best-effort path.
+  try {
+    if (lstatSync(filePath).isSymbolicLink()) {
+      return;
+    }
+    chmodSync(filePath, 0o600);
+  } catch {
+    // Best-effort by design — see the doc comment. A config layer is readable either way.
+  }
 }
 
 function errnoCode(err: unknown): string | undefined {

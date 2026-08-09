@@ -56,6 +56,14 @@ export interface AltScreenController {
   restore(): void;
   /** Clear the persistent alt buffer between sessions (see {@link CLEAR_ALT_SCREEN}). No-op once restored / inactive. */
   clearBetween(): void;
+  /**
+   * Temporarily give the terminal back for POSIX job control while a chat re-drive has no mounted Ink tree. Unlike
+   * {@link restore}, this is reversible: SIGCONT calls {@link reclaimAfterSuspend} and the REPL remains alive.
+   * Returns `false` only when the release write itself failed or a second release is already in flight.
+   */
+  releaseForSuspend(): boolean;
+  /** Re-enter the buffer after {@link releaseForSuspend}; no-op unless this controller released it successfully. */
+  reclaimAfterSuspend(): void;
   /** Whether the alt buffer is currently entered (and not yet restored) — for a caller that must know the live state. */
   readonly isEntered: () => boolean;
 }
@@ -77,6 +85,7 @@ export function createAltScreenController(opts: {
   const mouse = opts.mouse ?? true;
   let entered = false;
   let restored = false;
+  let temporarilyReleased = false;
   return {
     enter: (): void => {
       if (!active || entered) return;
@@ -87,6 +96,13 @@ export function createAltScreenController(opts: {
     },
     restore: (): void => {
       if (!entered || restored) return; // never exit a buffer we never entered; never exit twice
+      // A job-control stop already wrote the exact exit sequence and left the terminal on its primary buffer. Mark
+      // the controller final without writing it again: a SIGTERM delivered while the process is stopped must not
+      // double-toggle 1049 back INTO the alt buffer on its way out.
+      if (temporarilyReleased) {
+        restored = true;
+        return;
+      }
       // Disable mouse reporting FIRST (restore native selection), then exit the alt buffer + show the cursor. The
       // DISABLE is UNCONDITIONAL even when `mouse` is off: a disable of a mode that was never enabled is a no-op, and
       // an unconditional teardown can never strand DECSET-1002 if the option is ever mis-threaded.
@@ -108,10 +124,30 @@ export function createAltScreenController(opts: {
       restored = true;
     },
     clearBetween: (): void => {
-      if (!entered || restored) return;
+      if (!entered || restored || temporarilyReleased) return;
       write(CLEAR_ALT_SCREEN);
     },
-    isEntered: (): boolean => entered && !restored,
-    isMouseEnabled: (): boolean => mouse && entered && !restored,
+    releaseForSuspend: (): boolean => {
+      if (!entered || restored) return true; // inline / inactive: no terminal state belongs to this controller
+      if (temporarilyReleased) return false; // the coordinator gates this; a duplicate must not write 1049 twice
+      try {
+        write(DISABLE_MOUSE + EXIT_ALT_SCREEN + SHOW_CURSOR);
+      } catch {
+        return false; // never claim a release we could not complete — no phantom reclaim on SIGCONT
+      }
+      temporarilyReleased = true;
+      return true;
+    },
+    reclaimAfterSuspend: (): void => {
+      if (!temporarilyReleased || restored) return;
+      try {
+        write(ENTER_ALT_SCREEN + HIDE_CURSOR + (mouse ? ENABLE_MOUSE : ''));
+      } catch {
+        return; // leave the latch up so a later recovery opportunity can retry the exact missing reclaim
+      }
+      temporarilyReleased = false;
+    },
+    isEntered: (): boolean => entered && !restored && !temporarilyReleased,
+    isMouseEnabled: (): boolean => mouse && entered && !restored && !temporarilyReleased,
   };
 }

@@ -2,6 +2,7 @@ import { collectDurableMediaHandles, type RunEvent } from '@relavium/shared';
 
 import type { CliIo } from '../process/io.js';
 import { formatProducedMedia } from './tui/format.js';
+import { sanitizeInline, stringifyJsonLine } from './sanitize.js';
 
 /**
  * A renderer consumes the run's canonical {@link RunEvent} stream. The renderers below sit behind this one
@@ -34,23 +35,45 @@ export interface RunRenderer {
  * [sse-event-schema.md](../../../../docs/reference/contracts/sse-event-schema.md). No wrapper, no stream
  * header — the per-line RunEvent IS the stable envelope, and the terminal `run:completed` event is
  * itself the final result line (it carries `outputs` + totals). Secret-typed values are already masked
- * by the engine (`MaskedSecret`); `JSON.stringify` emits that masked shape verbatim and never unwraps
+ * by the engine (`MaskedSecret`); the serializer emits that masked shape verbatim and never unwraps
  * it. Only stdout is touched here — all diagnostics (incl. the CLI-fault envelope) go to stderr.
+ *
+ * {@link stringifyJsonLine} rather than bare `JSON.stringify` — the same reason `records.ts` uses it. A
+ * `--json` stream is read on a terminal as often as it is piped, and `JSON.stringify` escapes `ESC` but leaves
+ * DEL, the C1 controls (incl. the 8-bit CSI) and the Trojan-Source bidi family raw. The escape is lossless, so
+ * the "serialized verbatim" contract above still holds for any JSON parser.
  */
 export function createJsonRenderer(io: CliIo): RunRenderer {
   return {
     onEvent: (event) => {
-      io.writeOut(`${JSON.stringify(event)}\n`);
+      io.writeOut(`${stringifyJsonLine(event)}\n`);
     },
   };
 }
 
-/** Minimal human renderer — a terse line per lifecycle event; the no-TTY / CI fallback beside the ink TUI (2.E). */
+/**
+ * Minimal human renderer — a terse line per lifecycle event; the no-TTY / CI fallback beside the ink TUI (2.E).
+ *
+ * Sanitized at the SINGLE write, not per field (G34/#57's class). Lane (c) hardened the TUI leaf and four
+ * specific call sites; this is the third leaf of the same "one seam, three renderers" split, and putting the
+ * guard at the boundary rather than on today's fields means an arm added later cannot reopen the hole by
+ * forgetting it. The fields that matter today are authored `nodeId`s and a provider-declared media `mimeType`
+ * (never verified against the bytes — finding #107), so the exposure is narrower than the human-gate message
+ * that `status.ts`/`gate-list.ts` printed, but it is the same class and the same fix.
+ *
+ * `sanitizeInline` rather than `stripTerminalControls`: a lifecycle line is one row, so an embedded newline
+ * would forge extra rows in a CI log just as it would on a terminal.
+ */
 export function createPlainRenderer(io: CliIo): RunRenderer {
   return {
     onEvent: (event) => {
       const line = describe(event);
       if (line !== undefined) {
+        // `describe()` sanitizes each untrusted FIELD as it interpolates it (the `final-summary.ts` pattern), so
+        // every `\n` still in `line` is one this file put there — a legitimate row break for `node:completed`'s
+        // media handles. Sanitizing the ASSEMBLED line and splitting on newlines was the wrong order: the split
+        // ran on raw text first, so an embedded newline in a `nodeId` or an error code forged a whole extra row
+        // and each forged row was then neutralized individually, which made the forgery look intentional.
         io.writeOut(`${line}\n`);
       }
     },
@@ -60,26 +83,27 @@ export function createPlainRenderer(io: CliIo): RunRenderer {
 function describe(event: RunEvent): string | undefined {
   switch (event.type) {
     case 'run:started':
-      return `> run ${event.runId} started`;
+      return `> run ${sanitizeInline(event.runId)} started`;
     case 'node:started':
-      return `  - ${event.nodeId} ...`;
+      return `  - ${sanitizeInline(event.nodeId)} ...`;
     case 'node:completed': {
       // Surface each produced media handle (never bytes) on its own indented line — the plain/CI leaf of the
       // cross-surface "render a produced media handle" acceptance. A text-only node yields no extra lines.
-      const ok = `  ok ${event.nodeId}`;
+      const ok = `  ok ${sanitizeInline(event.nodeId)}`;
       const mediaLines = collectDurableMediaHandles(event.output).map(
-        (m) => `    ${formatProducedMedia(m)}`,
+        // The handle is provider/model-derived, so it is untrusted like every other field here.
+        (m) => `    ${sanitizeInline(formatProducedMedia(m))}`,
       );
       return [ok, ...mediaLines].join('\n');
     }
     case 'node:failed':
-      return `  FAIL ${event.nodeId}: ${event.error.code}`;
+      return `  FAIL ${sanitizeInline(event.nodeId)}: ${sanitizeInline(event.error.code)}`;
     case 'human_gate:paused':
-      return `  paused at gate ${event.gateId} (${event.gateType})`;
+      return `  paused at gate ${sanitizeInline(event.gateId)} (${sanitizeInline(event.gateType)})`;
     case 'run:completed':
       return `done: run completed`;
     case 'run:failed':
-      return `done: run failed (${event.error.code})`;
+      return `done: run failed (${sanitizeInline(event.error.code)})`;
     case 'run:cancelled':
       return `done: run cancelled`;
     default:

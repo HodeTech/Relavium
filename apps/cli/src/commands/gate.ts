@@ -8,7 +8,13 @@ import {
   type WorkflowDefinition,
   type WorkflowEngine,
 } from '@relavium/core';
-import { createRunHistoryStore, loadRunSnapshot, type Db } from '@relavium/db';
+import {
+  createRunHistoryStore,
+  isCorruptRunEventError,
+  isUnreadableRunEventLogError,
+  loadRunSnapshot,
+  type Db,
+} from '@relavium/db';
 import { MaskedSecretSchema, WorkflowSchema, type RunStatus } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
@@ -36,12 +42,42 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { selectRenderer } from '../render/select.js';
+import { sanitizeInline } from '../render/sanitize.js';
 import {
   assertWorkflowCatalogValid,
   driveRun,
   isTerminalOutcome,
   outcomeToExitCode,
 } from './drive.js';
+
+/** How many held node ids the ADR-0074 §3 hold notice names before it elides — the same bound-the-diagnostic
+ *  reasoning as `logs.ts`'s `MAX_REPORTED_SKIPS`: the COUNT is the signal, the first few ids are the lead. */
+const MAX_REPORTED_HELD_NODES = 8;
+
+/**
+ * The ADR-0074 §3 hold notice — a resumed media job submitted by an older Relavium has no recorded cost
+ * basis, so the cap holds new egress until it settles. Without the sentence a resume is an unexplained stall,
+ * which is precisely what §3's observability clause forbids.
+ *
+ * SANITIZED and BOUNDED, like every other place a node id reaches this terminal. A node id is authored rather
+ * than model-controlled, but `renderer.ts` runs `sanitizeInline` over one for the same reason — a workflow
+ * YAML can arrive from anywhere — and an unbounded id list is not a diagnostic: the COUNT is the signal and
+ * the first few ids are the lead (`logs.ts`'s `MAX_REPORTED_SKIPS`).
+ *
+ * Exported for its test. The engine sink that feeds it was DEAD until the wiring was fixed, so this line had
+ * never rendered in production and nothing pinned it.
+ */
+export function legacyMediaJobHoldNotice(nodeIds: readonly string[]): string {
+  const one = nodeIds.length === 1;
+  const subject = one ? 'a media job' : `${nodeIds.length} media jobs`;
+  const shown = nodeIds.slice(0, MAX_REPORTED_HELD_NODES).map((id) => sanitizeInline(id));
+  const ids = nodeIds.length > shown.length ? `${shown.join(', ')}, …` : shown.join(', ');
+  return (
+    `note: holding new model calls until ${subject} submitted by an older version of Relavium ` +
+    `settle${one ? 's' : ''} (node${one ? '' : 's'} ${ids}) — their cost was not ` +
+    `recorded, so the budget cap cannot be applied until then\n`
+  );
+}
 
 export interface GateCommandArgs extends GateFlags {
   readonly runId: string;
@@ -175,13 +211,7 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     try {
       checkpoint = await checkpointer.load(args.runId);
     } catch (err) {
-      // A malformed run_events row (bad JSON / failed schema parse during the fold) — surface a corrupt log
-      // as a clean exit-2 fault, matching the snapshot/inputs handling, never a raw escaping error.
-      throw new CliError(
-        'invalid_invocation',
-        `the persisted event log for run ${args.runId} could not be read`,
-        { cause: err },
-      );
+      throwGateLoadFault(err, args.runId);
     }
     if (checkpoint === undefined) {
       // A run row with a snapshot but no reconstructable checkpoint (no run:started in the log) — corrupt/partial.
@@ -233,6 +263,15 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
         deps.io.writeErr(
           `warning: ${unpricedModelNote(model, capMicrocents, 'budget.strict_cost_cap')}\n`,
         ),
+      // ADR-0074 §3: new egress is HELD while a resumed media job submitted by an older Relavium settles — its
+      // cost basis was not recorded, so the cap cannot be trusted until the job reports its real charge. Say so,
+      // or a resume looks like an unexplained stall. stderr, never stdout (`--json` stays a pure event stream).
+      // stderr, never stdout, so `--json` stays a pure event stream. The SENTENCE is
+      // {@link legacyMediaJobHoldNotice} so it can be pinned directly — this sink reached the terminal for the
+      // first time only when the engine wiring was fixed, and nothing had ever rendered it.
+      onLegacyMediaJobHold: (nodeIds) => {
+        deps.io.writeErr(legacyMediaJobHoldNotice(nodeIds));
+      },
       // 2.5.A (ADR-0055): wire the SAME read+write fs + process ToolHost the `relavium run` path wires, jailed
       // to the ORIGINAL run's project root (`saveToRoot` — the original `runs.project_root` when it still exists
       // on this machine, else the resumer's cwd, exactly like the `save_to` root) at the resolved `fs_scope`. So a
@@ -404,4 +443,36 @@ function assertNoMaskedSecretInputs(inputs: Record<string, unknown>, runId: stri
         `cross-process resume cannot restore them — re-run the workflow instead of resuming.`,
     );
   }
+}
+
+/**
+ * Map a checkpoint-read fault to the surface error it deserves, and never return. Extracted from
+ * `gateCommand` so its three branches do not count against that function's cognitive-complexity budget —
+ * they belong together and nowhere else.
+ */
+function throwGateLoadFault(err: unknown, runId: string): never {
+  // ADR-0075's refusal passes through UNTOUCHED. This catch pre-dates it and would otherwise fold a
+  // "your Relavium is too old" into the generic branch below: the user would get no count, no `seq`
+  // values, no upgrade remedy, no "your history is still readable" — and exit 2 (`invalid_invocation`),
+  // which is semantically wrong, since the invocation was valid. `toUserFacing` already renders this
+  // error properly; re-wrapping it here made that mapper unreachable.
+  if (isUnreadableRunEventLogError(err)) {
+    throw err;
+  }
+  // A damaged row passes through typed too, for the SAME reason and to fix an asymmetry the reasoning
+  // above exposed: `relavium logs` on a corrupt log exits 1 (its typed error reaches `toUserFacing`),
+  // while `gate` on the IDENTICAL log exited 2 because this catch re-wrapped it as `invalid_invocation`.
+  // The invocation was valid in both. `toUserFacing`'s corrupt branch already composes the better
+  // sentence — the run, the `seq`, the `event_type`, and what is still listable — so re-wrapping made
+  // `gate` both less diagnosable and inconsistent with every other single-run surface.
+  if (isCorruptRunEventError(err)) {
+    throw err;
+  }
+  // Anything else from the fold: an unreadable file, a closed handle, a driver fault. Still a clean
+  // exit-2 invocation fault, matching the snapshot/inputs handling, never a raw escaping error.
+  throw new CliError(
+    'invalid_invocation',
+    `the persisted event log for run ${runId} could not be read`,
+    { cause: err },
+  );
 }

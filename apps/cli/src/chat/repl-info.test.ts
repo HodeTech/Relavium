@@ -168,6 +168,7 @@ describe('costNotice — the per-model breakdown', () => {
     modelCatalogId: undefined,
     inputTokens: 100,
     outputTokens: 200,
+    conservativeMicrocents: 0,
     costMicrocents: 0,
     callCount: 1,
     unpricedCalls: 0,
@@ -177,6 +178,45 @@ describe('costNotice — the per-model breakdown', () => {
 
   it('with no rows it is the total alone — a session that has not spent says so in one line', () => {
     expect(costNotice(0, [])).toBe('Session cost: $0.0000');
+  });
+
+  it('shows a conservative estimate as ESTIMATED, never folded into the money (ADR-0074 §1/§4)', () => {
+    // The panel is the first surface that renders §1's amount at all, and it is what a user reads to understand
+    // why a `$0.0000` session is refusing their next turn. The estimate must be visible AND must never be added
+    // into the spend figure or the share — an upper bound presented as an invoice is the whole thing the ADR
+    // keeps apart.
+    const out = costNotice(0, [
+      row({
+        model: 'claude-haiku-4-5',
+        costMicrocents: 0,
+        callCount: 0,
+        conservativeMicrocents: 900,
+      }),
+    ]);
+    expect(out).toContain('estimated, possibly billed');
+    expect(out).toContain('900');
+    // NOT "(0 calls, 0 tok)" — that asserts a model was used zero times for zero money while an estimate
+    // against it is holding the cap.
+    expect(out).toContain('(no completed call)');
+    expect(out).not.toContain('0 calls');
+    // The money line stays the realized total.
+    expect(out).toContain('Session cost: $0.0000');
+  });
+
+  it('shows BOTH figures when a model has realized spend AND a live commitment', () => {
+    // The realistic case the single-branch version could hide: turn 1 bills, turn 2 goes usage-less. The row
+    // must keep its normal call/token clause and still surface the estimate.
+    const out = costNotice(10_000, [
+      row({
+        model: 'claude-opus-4-8',
+        costMicrocents: 10_000,
+        callCount: 2,
+        conservativeMicrocents: 450,
+      }),
+    ]);
+    expect(out).toContain('(2 calls,');
+    expect(out).toContain('estimated, possibly billed');
+    expect(out).toContain('100%'); // the share is of REALIZED spend — the estimate does not move it
   });
 
   it('renders one line per model, and the ROWS SUM TO THE TOTAL the panel shows', () => {
@@ -259,5 +299,34 @@ describe('costNotice — the per-model breakdown', () => {
   it('sanitizes the model id — it is provider-sourced and history.db is shared across surfaces', () => {
     const out = costNotice(100, [row({ model: `evil[31m`, costMicrocents: 100 })]);
     expect(out).not.toContain('');
+  });
+});
+
+/**
+ * ADR-0074 §1 requires the surface that RENDERS the committed amount to also expose clearing it, and to say
+ * when the record behind it is no longer durable (#W15-3). Both were reachable in code and invisible here.
+ */
+describe('costNotice — the §1 release and durability state', () => {
+  it('reports what a release actually cleared', () => {
+    const text = costNotice(500, [], { released: 1_200 });
+    expect(text).toContain('Released ~1200µ¢');
+  });
+
+  it('says nothing about a release that cleared nothing', () => {
+    expect(costNotice(500, [], { released: 0 })).not.toContain('Released');
+    expect(costNotice(500, [])).not.toContain('Released');
+  });
+
+  it('warns when the commitment record is not durable — and says only what is true', () => {
+    const text = costNotice(500, [], { durabilityBroken: true });
+    // The cap IS still enforced in this process; what is broken is its survival. A user reading "the cap is
+    // off" would behave very differently from one reading this.
+    expect(text).toContain('the cap still holds in this session');
+    expect(text).toContain('a resume would not see it');
+    expect(text).toContain('/cost --release'); // the escape hatch, named where the amount is rendered
+  });
+
+  it('stays silent on the healthy path', () => {
+    expect(costNotice(500, [], { durabilityBroken: false })).toBe(costNotice(500, []));
   });
 });

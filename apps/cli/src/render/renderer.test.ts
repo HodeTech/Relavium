@@ -11,6 +11,27 @@ function ev(partial: Record<string, unknown>): RunEvent {
   return RunEventSchema.parse({ ...ENVELOPE, ...partial });
 }
 
+describe('createPlainRenderer — line forgery (#W15-11)', () => {
+  it('neutralises an embedded newline instead of letting it forge a row', () => {
+    // The order matters and was wrong: sanitising the ASSEMBLED line and splitting on newlines ran the split
+    // over raw text first, so a newline inside a nodeId produced a whole extra row — which was then neutralised
+    // individually, making the forgery look like intentional output.
+    const io = captureIo();
+    const renderer = createPlainRenderer(io.io);
+    renderer.onEvent({
+      type: 'node:started',
+      runId: 'r1',
+      sequenceNumber: 0,
+      timestamp: '2026-06-04T00:00:00.000Z',
+      nodeId: 'a\n  ok forged-node',
+      nodeType: 'transform',
+    });
+    // ONE row out, whatever the input claimed.
+    expect(io.out().trimEnd().split('\n')).toHaveLength(1);
+    expect(io.out()).not.toContain('ok forged-node\n');
+  });
+});
+
 describe('createPlainRenderer', () => {
   it('writes a terse line per lifecycle event', () => {
     const { io, out } = captureIo();
@@ -47,6 +68,42 @@ describe('createPlainRenderer', () => {
     expect(text).toContain('- a ...');
     expect(text).toContain('ok a');
     expect(text).toContain('run completed');
+  });
+
+  it('SANITIZES at the single write point, so a later arm cannot reopen the hole (G34/#57 class)', () => {
+    // The third leaf of the same "one seam, three renderers" split lane (c) hardened. The guard sits at the
+    // write, not on today's fields, so an arm added later inherits it. A CI log is a terminal too.
+    const { io, out } = captureIo();
+    createPlainRenderer(io).onEvent(
+      ev({
+        type: 'node:started',
+        nodeType: 'agent',
+        nodeId: 'n\u001b]52;c;ZXZpbA==\u0007\u001b[2J\u202Egnp',
+      }),
+    );
+    const text = out();
+    expect(text).not.toContain('\u001b'); // no CSI/OSC introducer
+    expect(text).not.toContain('\u0007'); // no OSC terminator
+    expect(text).not.toContain('\u202E'); // no Trojan-Source bidi override
+    expect(text).toContain('n'); // …the readable part still renders
+  });
+
+  it('keeps a legitimately multi-line line as multiple rows while neutralizing each', () => {
+    // `node:completed` emits the ok line plus one row per produced media handle; sanitizing the whole string
+    // must not collapse those rows into one.
+    const { io, out } = captureIo();
+    createPlainRenderer(io).onEvent(
+      ev({
+        type: 'node:started',
+        nodeType: 'agent',
+        nodeId: 'plain',
+      }),
+    );
+    expect(
+      out()
+        .split('\n')
+        .filter((l) => l.length > 0),
+    ).toHaveLength(1);
   });
 
   it('surfaces a node failure with its error code', () => {
@@ -259,5 +316,21 @@ describe('createJsonRenderer', () => {
     const line = out().trim();
     expect(line).toContain(handle); // the handle is on the machine stream...
     expect(JSON.parse(line)).toEqual(event); // ...verbatim (the renderer neither inlines bytes nor drops it)
+  });
+});
+
+/**
+ * The `run --json` NDJSON stream is the other half of #W15-10: same bare `JSON.stringify`, same
+ * model-controlled fields, same terminal on the other end.
+ */
+describe('createJsonRenderer — Trojan Source on the NDJSON stream (#W15-10)', () => {
+  it('escapes a bidi override in an event field without changing what a parser reads', () => {
+    const io = captureIo();
+    const event = ev({ type: 'node:started', nodeId: 'deploy\u202eprod', nodeType: 'agent' });
+    createJsonRenderer(io.io).onEvent(event);
+    const line = io.out();
+    expect(line).not.toContain('\u202e');
+    expect(line).toContain('\\u202e');
+    expect(JSON.parse(line)).toEqual(event); // the envelope contract survives the escape
   });
 });

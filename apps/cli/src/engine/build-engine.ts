@@ -16,6 +16,7 @@ import { effortTiersFor, type PricingOverlay } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
 
 import { effortWithheldNote, reasoningWithheldByCapFor } from '../chat/effort-notice.js';
+import { hostSleep } from '../process/sleep.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv } from './tool-host/assemble.js';
@@ -74,6 +75,8 @@ export interface BuildEngineOptions {
    * never stdout (`--json`). The governor already dedups per model. Absent ⇒ silent.
    */
   readonly onUnpriced?: (model: string, capMicrocents: number) => void;
+  /** ADR-0074 §3 — new egress is held while a resumed legacy media job's cost basis is unknown. Routed to stderr. */
+  readonly onLegacyMediaJobHold?: (nodeIds: readonly string[]) => void;
 }
 
 /**
@@ -141,7 +144,7 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
         }),
     registry,
     tools,
-    sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
+    sleep: hostSleep,
     now: () => Date.now(),
     // Keep the dispatch-context `fsScope` consistent with the tier the fs host jails to (ADR-0055's
     // "three concepts, three channels"); absent ⇒ the engine default `sandboxed`.
@@ -181,5 +184,8 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     // apply to it. `run.ts` routes this to stderr (never stdout — `--json`); `budget.strict_cost_cap` is the
     // block-instead option for a run that must not proceed unpriced.
     ...(options.onUnpriced === undefined ? {} : { onUnpriced: options.onUnpriced }),
+    ...(options.onLegacyMediaJobHold === undefined
+      ? {}
+      : { onLegacyMediaJobHold: options.onLegacyMediaJobHold }),
   });
 }

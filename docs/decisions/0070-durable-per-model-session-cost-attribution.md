@@ -8,6 +8,8 @@
   FK target and the `BEGIN IMMEDIATE`/`SQLITE_BUSY` write convention this obeys · [ADR-0028](0028-workflow-resource-governance.md) —
   the budget governor that *reads* the session total this ADR gives a single writer.
 - **Related (secondary)**: [ADR-0005](0005-sqlite-drizzle-local-postgres-cloud.md) (one schema, two dialects) ·
+
+> **Amended 2026-07-30 by [ADR-0074](0074-durable-conservative-budget-commitments.md) — a refinement, not a reversal.** ADR-0074 keeps this ADR's realized-cost invariant intact — `SUM(session_costs) == agent_sessions.total_cost_microcents` stays realized-only — and adds a **separate** conservative aggregate beside it rather than mixing an estimate into the actual total. `recordSessionCost` remains the single writer of the realized total. ADR-0074 is **Accepted** as of 2026-07-30; its implementation is staged, so the behaviour described below is what ships until §2–§5 land.
   [ADR-0024](0024-agent-first-entry-point-agentsession.md) (one model per `AgentSession` *instance*, not per billed
   egress) · [ADR-0065](0065-provider-economics-and-extensibility.md) · [ADR-0067](0067-node-supported-floor-22-reaffirm-better-sqlite3.md) ·
   [ADR-0050](0050-cli-history-db-at-rest-posture.md) · [ADR-0056](0056-cli-in-app-slash-command-system-and-manifest.md)
@@ -15,6 +17,12 @@
   the event → [run-event.ts](../../packages/shared/src/run-event.ts) · the command → [chat-session.md](../reference/cli/chat-session.md)
 - **Forward**: 2.6.Q's pricing-enrichment decision (the models.dev tier + the strict cost cap, F5) will be **ADR-0071**;
   §6 is written so it needs no schema re-open, and §3 files exceptions 1–2 against it.
+
+> **Amended 2026-08-09 by [ADR-0076](0076-durable-per-attempt-realized-cost-ledger.md) — an addition, not a
+> change.** `run_costs` gains a second writer: a durable per-ATTEMPT realized-cost row, beside the per-node
+> delta this ADR established. The `SUM(run_costs) == runs.total_cost_microcents` invariant is unchanged and
+> continues to hold by arithmetic — the node terminal's delta is `max(0, cumulative − sum so far)`, so once the
+> attempt rows have advanced that sum the terminal contributes zero. No reconciliation step, no second key.
 
 ## Context
 

@@ -46,6 +46,8 @@ import {
   unpricedModelNote,
 } from './effort-notice.js';
 import { resolveChatAgent } from './agent-source.js';
+import { sanitizeUntrustedInline } from '../render/sanitize.js';
+import { hostSleep } from '../process/sleep.js';
 
 /**
  * Assemble a ready-to-run `relavium chat` session over `@relavium/core`'s {@link AgentSession} (2.M — the
@@ -129,6 +131,18 @@ export interface BuildChatSessionOptions {
    */
   readonly onEffortWithheld?: (note: string) => void;
   /**
+   * Sink for a **passive subscriber** that threw while handling a session event (#228) — in practice the chat
+   * persister failing a durable `history.db` write after its bounded retry was exhausted. Same channel shape as
+   * {@link BuildChatSessionOptions.onBudgetWarning}: the surface puts the sentence in the transcript's notice
+   * channel so the user learns the turn was not saved, while the session itself continues (the reply is already
+   * on screen and the in-memory transcript is intact).
+   *
+   * Absent ⇒ **not** a no-op, unlike the sinks above. A dropped durable write must never be silent
+   * (`docs/standards/error-handling.md`), so the runtime still surfaces it out-of-band, where the process-level
+   * `unhandledRejection` net in `index.ts` reports it and keeps the process alive.
+   */
+  readonly onListenerError?: (note: string) => void;
+  /**
    * The ADR-0065 §2 user-pricing overlay (2.5.G S10) — a `ReadonlyMap<modelId, ModelPricing>` the command projects
    * from the `model_catalog` `source='user'` rows (via `buildUserPricing`). It flows into BOTH the pre-egress
    * governor (so a user-priced model is enforced by `[chat].max_cost_microcents`) AND `SessionDeps.resolvePrice`
@@ -177,6 +191,18 @@ export interface BuiltChatSession {
    */
   readonly closeMcp?: () => Promise<void>;
   /**
+   * The budget wiring, when the chat config declares a cap — surfaced so the caller can attach the durable
+   * conservative-commitment writer once the persister exists (ADR-0074 §4), and so a surface can offer §1's
+   * release. Absent when there is no cap: with nothing to enforce there is nothing to commit either.
+   */
+  readonly governor?: GovernorWiring;
+  /**
+   * Late-bind the session's durability probe (#W15-4) — the persister is created by the CALLER, after this,
+   * so `preEgress`'s gate cannot take it as an argument. Same shape as `attachConservativeWriter`, and the
+   * persister self-attaches through it exactly as it does for the commitment writer.
+   */
+  readonly attachDurabilityProbe: (probe: () => Error | undefined) => void;
+  /**
    * Tools dropped at MCP discovery (allowlist / unsupported schema / collision / unsafe id) — a non-fatal
    * diagnostic the command surfaces to the user (stderr). Empty when no MCP server is declared.
    */
@@ -196,6 +222,7 @@ type SessionRuntimeOptions = Pick<
   | 'onBudgetWarning'
   | 'onUnpriced'
   | 'onEffortWithheld'
+  | 'onListenerError'
   | 'resolvePrice'
 >;
 
@@ -216,8 +243,48 @@ function buildSessionRuntime(
   sessionId: string,
   mcp: McpClient | undefined,
   context: SessionContext,
-): { bus: RunEventBus; deps: SessionDeps; emit: SessionEventSink; host: ToolHost } {
-  const bus = new RunEventBus({ now: () => new Date(opts.now()).toISOString() });
+): {
+  bus: RunEventBus;
+  deps: SessionDeps;
+  emit: SessionEventSink;
+  host: ToolHost;
+  governor: GovernorWiring | undefined;
+  /**
+   * Late-bind the session's durability probe (#W15-4). The persister is created by the CALLER, after this
+   * runtime exists, so the gate inside `preEgress` cannot take it as an argument — the same reason
+   * `attachConservativeWriter` is late-bound. Until it is attached the probe reports healthy, which is
+   * correct: nothing has been persisted yet either.
+   */
+  attachDurabilityProbe: (probe: () => Error | undefined) => void;
+} {
+  let durabilityProbe: () => Error | undefined = () => undefined;
+  // #228: a passive subscriber that throws — the chat persister failing a durable `history.db` write — is
+  // isolated by `deliver()` either way, so the turn itself is never broken. What was missing is where the
+  // failure GOES: with no sink the bus re-throws it out-of-band, and Node kills the process on the resulting
+  // unhandled rejection, asynchronously, after the reply was already on screen. Wiring the sink turns that into
+  // a reported, survivable event. When the surface supplied no `onListenerError` the sink deliberately re-throws
+  // rather than swallowing (no silent catch) — the process-level net in `index.ts` is the floor beneath it.
+  const bus = new RunEventBus({
+    now: () => new Date(opts.now()).toISOString(),
+    onListenerError: (error, event) => {
+      const report = opts.onListenerError;
+      if (report === undefined) {
+        // Rethrowing from the sink is not a shrug — `RunEventBus.#reportListenerError` catches a throwing sink
+        // and routes it to `#surfaceOutOfBand`, i.e. exactly the no-sink path, which is the fallback we want.
+        // Stated explicitly because "throw to fall through" reads as a bug otherwise.
+        throw error;
+      }
+      // Bus-WIDE, not persister-specific: the renderer, the Home store and the NDJSON printer all subscribe
+      // here too, so a render fault must not be reported as a database problem.
+      // Redacted, not merely control-stripped: a listener fault here can be a persister write error carrying a
+      // path, or an MCP/provider error carrying a key or a `Bearer` header. The surface's own writer strips
+      // terminal bytes; nothing else strips secrets.
+      const reason = sanitizeUntrustedInline(
+        error instanceof Error ? error.message : String(error),
+      );
+      report(`a background handler failed while processing the ${event.type} event: ${reason}`);
+    },
+  });
   const providers = opts.providers ?? createProviderResolver();
   const tools = mcp === undefined ? BUILTIN_TOOLS : [...BUILTIN_TOOLS, ...mcp.toolDefs];
   // 2.5.E (ADR-0057): the shared factory wires the FULL-CAPABILITY chat host (fs read+WRITE, process, egress,
@@ -282,7 +349,7 @@ function buildSessionRuntime(
         }),
     registry,
     tools,
-    sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)),
+    sleep: hostSleep,
     now: opts.now,
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
     newAbortController: () => new AbortController(),
@@ -307,15 +374,51 @@ function buildSessionRuntime(
       ? {}
       : { compactThreshold: opts.chat.compactThreshold }),
     ...(opts.chat.maxMessages === undefined ? {} : { maxMessages: opts.chat.maxMessages }),
+    // ALWAYS present, cap or no cap (#W15-4). `RunEventBus` isolates listener errors, so a persister that
+    // cannot write still let the turn report success — the durable transcript and the cost columns silently
+    // fell behind a conversation that carried on above them. This is the gate that stops it: once the
+    // persister latches a write failure, no further egress is admitted. It composes with the governor rather
+    // than replacing it, and it runs FIRST — a session whose record is already lost must not spend more.
+    preEgress: (info) => {
+      const failure = durabilityProbe();
+      if (failure !== undefined) {
+        // A plain Error, deliberately: the chain classifies a `preAttempt` throw as a fatal (non-retryable)
+        // turn failure and carries this MESSAGE onto the terminal, which is all this needs. Exporting the
+        // turn-error class from `@relavium/core` to type it would widen a package's public API for a string.
+        // The message names the state without echoing the store's own text, which can carry a path.
+        throw new Error(
+          'this session could not be saved, so it will not send anything further — the transcript and cost on disk are behind what you see',
+          { cause: failure },
+        );
+      }
+      return governor?.preEgress(info);
+    },
     ...(governor === undefined
       ? {}
-      : { preEgress: governor.preEgress, updateCost: governor.updateCost }),
+      : {
+          updateCost: governor.updateCost,
+          // ADR-0074 §4: resume restores BOTH totals into the same governor a fresh session uses.
+          restoreConservativeCost: governor.restoreConservativeCost,
+          // ADR-0074 §2's turn-boundary half — the session's equivalent of the engine's node-boundary flush.
+          flushBudgetCommitments: governor.flushBudgetCommitments,
+        }),
     // The realized-cost overlay (2.5.G S10, ADR-0065 §2) — so the CostTracker prices a user-priced (otherwise
     // unknown) model instead of throwing UnknownModelError. Same map the governor uses; both fill an UNKNOWN id
     // only (static MODEL_PRICING wins). Absent ⇒ unchanged (an unknown model's realized cost degrades loudly).
     ...(opts.resolvePrice === undefined ? {} : { resolvePrice: opts.resolvePrice }),
   };
-  return { bus, deps, emit, host };
+  // `governor` rides out so the CALLER can attach the durable conservative-commitment writer once the persister
+  // exists (ADR-0074 §4) and expose §1's release. Undefined when the chat declares no cap.
+  return {
+    bus,
+    deps,
+    emit,
+    host,
+    governor,
+    attachDurabilityProbe: (probe) => {
+      durabilityProbe = probe;
+    },
+  };
 }
 
 export async function buildChatSession(opts: BuildChatSessionOptions): Promise<BuiltChatSession> {
@@ -362,7 +465,12 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       });
 
   try {
-    const { bus, deps, emit, host } = buildSessionRuntime(opts, sessionId, mcp, context);
+    const { bus, deps, emit, host, governor, attachDurabilityProbe } = buildSessionRuntime(
+      opts,
+      sessionId,
+      mcp,
+      context,
+    );
     // The session runs against the EFFECTIVE agent: its grant unioned with the discovered MCP tool ids (2.R)
     // and then narrowed by the 2.5.A advertise-filter to the tools whose ToolHost arm is actually wired (an
     // unwired tool is never offered). The ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
@@ -384,6 +492,8 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       emitSessionEvent: emit,
       mcpSkipped: mcp?.skipped ?? [],
       ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
+      attachDurabilityProbe,
+      ...(governor === undefined ? {} : { governor }),
     };
   } catch (err) {
     // Self-clean: a post-connect construction fault (e.g. a duplicate-id `createToolRegistry` build) must not
@@ -474,6 +584,12 @@ export interface BuildResumedChatSessionOptions {
   readonly onEffortWithheld?: (note: string) => void;
   /** Unpriced-model notice (ADR-0071 §K7) — see {@link BuildChatSessionOptions.onUnpriced}. */
   readonly onUnpriced?: (note: string) => void;
+  /**
+   * Sink for a throwing passive subscriber (#228) — see {@link BuildChatSessionOptions.onListenerError}.
+   * A RESUMED session is the HIGHEST-contention surface for it: two `chat-resume` processes on one session
+   * write the same `history.db` rows concurrently (#227).
+   */
+  readonly onListenerError?: (note: string) => void;
   /** The loaded session record (its frozen `agentSnapshot` + `context` rebind the session). */
   readonly record: AgentSessionRecord;
   /** The session's persisted transcript, in any order ({@link reconstructSessionState} sorts it). */
@@ -541,7 +657,12 @@ export async function buildResumedChatSession(
   });
 
   try {
-    const { bus, deps, emit, host } = buildSessionRuntime(opts, record.id, mcp, context);
+    const { bus, deps, emit, host, governor, attachDurabilityProbe } = buildSessionRuntime(
+      opts,
+      record.id,
+      mcp,
+      context,
+    );
     const session = AgentSession.resume(
       {
         sessionId: record.id,
@@ -571,6 +692,8 @@ export async function buildResumedChatSession(
       nextSequenceNumber,
       mcpSkipped: mcp?.skipped ?? [],
       ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
+      attachDurabilityProbe,
+      ...(governor === undefined ? {} : { governor }),
     };
   } catch (err) {
     // Self-clean: a post-connect fault must not leak the just-spawned MCP children (see {@link buildChatSession}).
@@ -580,9 +703,49 @@ export async function buildResumedChatSession(
   }
 }
 
+/** One conservative budget commitment to persist for this session (ADR-0074 §2/§4). */
+export interface SessionConservativeCommitment {
+  /** The RAW provider model string — the per-model attribution key `session_costs` is keyed on. */
+  readonly model: string;
+  /** THIS commitment's amount, never a running cumulative. The store adds it to the row AND the aggregate. */
+  readonly estimateMicrocents: number;
+}
+
 export interface GovernorWiring {
   readonly preEgress: NonNullable<SessionDeps['preEgress']>;
   readonly updateCost: NonNullable<SessionDeps['updateCost']>;
+  /** Seed the conservative total on `chat-resume` (ADR-0074 §4) — see `AgentSession.resume`. */
+  readonly restoreConservativeCost: NonNullable<SessionDeps['restoreConservativeCost']>;
+  /** Await the conservative-commitment durability barrier at a turn boundary (ADR-0074 §2). */
+  readonly flushBudgetCommitments: NonNullable<SessionDeps['flushBudgetCommitments']>;
+  /**
+   * Late-bind the durable writer for conservative commitments (ADR-0074 §4).
+   *
+   * Late because it cannot be otherwise: the persister needs the session's handle, id, agent and context, all of
+   * which only exist AFTER `buildChatSession` returns — and the governor is built inside it. Rather than reorder
+   * a construction sequence whose teardown-on-failure ordering is load-bearing, the caller attaches the writer
+   * the moment the persister exists.
+   *
+   * A commitment made before attachment is NOT silently dropped: the governor's emit rejects, which its own
+   * barrier turns into a `CommitmentDurabilityError` and a sticky `conservativeDurabilityBroken`. It should never
+   * happen — no turn can run before the persister is built — and if it ever does we learn, rather than losing
+   * money quietly.
+   */
+  readonly attachConservativeWriter: (
+    write: (commitment: SessionConservativeCommitment) => Promise<void>,
+  ) => void;
+  /**
+   * ADR-0074 §1's escape hatch, now that the total is persisted: clear the conservative commitments by an
+   * explicit user decision. Returns what was released.
+   *
+   * A chat is the long-lived owner §1's harm sentence names — "a single usage-less response would permanently
+   * shrink a long-lived chat's cap with no way out" — so persisting the total WITHOUT this would create exactly
+   * the failure §1 rejects. It is only ever called from a surface acting on the user's choice, never from a
+   * heuristic: "what is forbidden is the system silently deciding the estimate was wrong."
+   */
+  readonly releaseConservativeCommitments: () => number;
+  /** The session's conservative total, and whether its durability is known-broken — what a surface renders. */
+  readonly conservativeState: () => { microcents: number; durabilityBroken: boolean };
 }
 
 /**
@@ -609,6 +772,8 @@ export function buildGovernorWiring(
     // ADR-0071 §K7: refuse a turn on a model we cannot price, instead of the silent degrade-to-allow. Default off.
     ...(chat.strictCostCap ? { strict_cost_cap: true } : {}),
   };
+  // Late-bound by `attachConservativeWriter` — see its doc for why it cannot be a constructor argument.
+  let writeCommitment: ((c: SessionConservativeCommitment) => Promise<void>) | undefined;
   const governor = new BudgetGovernor({
     budget,
     // The ADR-0065 §2 user-pricing overlay — so the PRE-EGRESS estimate can price a user-priced (otherwise
@@ -629,6 +794,24 @@ export function buildGovernorWiring(
             onUnpriced(unpricedModelNote(model, capMicrocents, '[chat] strict_cost_cap')),
         }),
     emit: (event) => {
+      if (event.type === 'budget:estimate_committed') {
+        // ADR-0074 §2 on the SESSION surface, and the promise this returns IS the durability the governor's
+        // barrier awaits — which is why the write is called directly rather than pushed onto the bus. A bus
+        // delivery would resolve whether or not anything reached disk, turning the barrier into theatre.
+        if (writeCommitment === undefined) {
+          // Unreachable in practice (no turn runs before the persister is built), and deliberately loud rather
+          // than a silent `Promise.resolve()`: a dropped commitment is money the cap will forget across a resume.
+          return Promise.reject(
+            new Error(
+              'a conservative commitment was made before the session persister was attached',
+            ),
+          );
+        }
+        return writeCommitment({
+          model: event.model,
+          estimateMicrocents: event.estimateMicrocents,
+        });
+      }
       // `warn` is non-blocking BY CONTRACT. A misbehaving warn surface must never reject this emit — a
       // rejection would propagate as an `internal` turn error and break sendMessage — so swallow a sync throw.
       try {
@@ -647,5 +830,17 @@ export function buildGovernorWiring(
     preEgress: (info) =>
       governor.checkPreEgress(info.model, info.maxTokens, info.mediaUnitsEstimate, info.provider),
     updateCost: (cumulative) => governor.updateCost(cumulative),
+    restoreConservativeCost: (microcents) => governor.restoreConservativeCost(microcents),
+    flushBudgetCommitments: () => governor.flushCommitments(),
+    attachConservativeWriter: (write) => {
+      writeCommitment = write;
+    },
+    // ADR-0074 §1's escape hatch, shipped in the SAME change that persists the total — deliberately, because
+    // persisting without it is the indefinite block §1 explicitly rejects on exactly this surface.
+    releaseConservativeCommitments: () => governor.releaseConservativeCommitments(),
+    conservativeState: () => ({
+      microcents: governor.conservativeCostMicrocents,
+      durabilityBroken: governor.conservativeDurabilityBroken,
+    }),
   };
 }

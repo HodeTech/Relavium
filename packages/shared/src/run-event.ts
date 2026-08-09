@@ -38,10 +38,12 @@ const runBase = { runId: nonEmptyString, ...timestampSeq };
 const sessionBase = { sessionId: nonEmptyString, ...timestampSeq };
 
 /**
- * The dual envelope for the events that may carry EITHER correlation key: the five reused across both
- * streams (`agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` / `cost:updated`)
- * plus `agent:approval_requested` (dual at the schema level, but session-only-emitted in Phase 2.5 — the
- * chat approval regime). They carry `runId` on a run and `sessionId` on a session. A `discriminatedUnion`
+ * The dual envelope for the events that may carry EITHER correlation key: the reused conversational ones
+ * (`agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` / `cost:updated`), plus
+ * `agent:approval_requested` (dual at the schema level, but session-only-emitted in Phase 2.5 — the chat
+ * approval regime) and `budget:estimate_committed` (ADR-0074 §2). **This spread is the definition of the set** —
+ * every member is a `...dualBase` spread and nothing else, so grep it rather than trusting a hand-kept count.
+ * They carry `runId` on a run and `sessionId` on a session. A `discriminatedUnion`
  * *member* can't carry a cross-field refinement, so the "exactly one of runId / sessionId" invariant is
  * enforced at the **union** level (see `RunEventSchema`). Run-only / session-only events satisfy it by
  * construction (the other key isn't declared, so it is stripped on parse), so the check only constrains
@@ -370,6 +372,32 @@ export const MediaJobSubmittedEventSchema = z.object({
   // deadlineAt = startedAt + [defaults].media_job_deadline_ms; on resume `now > deadlineAt` short-circuits a
   // doomed re-poll. An offset is allowed, so a consumer MUST compare via Date.parse, never lexicographically.
   deadlineAt: z.string().datetime({ offset: true }),
+  /**
+   * The exact authored billed volume at SUBMIT time (count for image, `duration_seconds` for audio/video) —
+   * frozen here by [ADR-0074](../../docs/decisions/0074-durable-conservative-budget-commitments.md) §3.
+   *
+   * Resume used to recompute this from the workflow definition, so editing the node between processes silently
+   * changed the basis of a job the provider had already accepted. Optional because rows written before §3 do not
+   * carry it; absent means LEGACY, and a resumed legacy job is handled fail-closed rather than re-derived.
+   */
+  // NOT `positiveInt`: this is a VOLUME, not micro-cents. `duration_seconds` is `z.number().positive()` —
+  // fractional by contract — and `units = duration × count`, so a 12.5-second video job would fail validation at
+  // the bus, the `media_job:submitted` row would never be written, and a job the provider had already ACCEPTED
+  // AND BILLED would be unpollable and unresumable. Rounding at the freeze site is equally wrong: `units` also
+  // drives the one terminal cost addend, so rounding would move the realized charge away from what was priced.
+  units: z.number().positive().optional(),
+  /**
+   * The priced amount actually reserved for this job's admission at submit time — the number a resume restores
+   * WITHOUT a pricing lookup (ADR-0074 §3).
+   *
+   * `nonNegativeInt`, not `positiveInt`: `0` is meaningful and distinct from absent. It says the submission was
+   * priced and reserved nothing — an unpriced model under a non-strict cap takes the documented allow-degrade
+   * path and holds no admission. Absent says the row predates §3 and the basis is simply unknown.
+   *
+   * A user-price or catalog change after submission cannot move an already accepted commitment, and cannot
+   * rewrite the job's historical cost.
+   */
+  acceptedCostMicrocents: nonNegativeInt.optional(),
 });
 export type MediaJobSubmittedEvent = z.infer<typeof MediaJobSubmittedEventSchema>;
 
@@ -491,6 +519,77 @@ export const BudgetPausedEventSchema = z.object({
   gateId: nonEmptyString, // stable id of the budget gate; required by engine.resume(runId, gateId, decision)
 });
 
+/**
+ * A **conservative budget commitment** made durable ([ADR-0074](../../../docs/decisions/0074-durable-conservative-budget-commitments.md) §2).
+ *
+ * Emitted when a provider may already have accepted or billed a call but the response supplies no trustworthy
+ * usage — a clean EOF with no terminal usage, a partial-stream failure, a cost-tracker failure. The reservation
+ * is retained at its bounded estimate instead of being released, because releasing it would reopen a strict cap
+ * against money that may already be owed. Persisting it is what makes that survive a crash or a resume: keeping
+ * the amount only in memory means the cap reopens the moment the process dies.
+ *
+ * **This is an estimate, never realized spend, and the split is the whole point of the ADR.** It is deliberately
+ * a new `type` rather than a field on `cost:updated`, because folding it into actual-cost reporting would present
+ * an upper bound as an invoice — ADR-0074's first rejected alternative. `cost:updated`, the per-model actual-cost
+ * attribution, `runs.total_cost_microcents` and `agent_sessions.total_cost_microcents` all stay realized-only
+ * ([ADR-0070](../../../docs/decisions/0070-durable-per-model-session-cost-attribution.md)'s
+ * `SUM(session_costs) == total_cost_microcents` invariant is therefore untouched). A surface renders this amount
+ * as *estimated, possibly billed*.
+ *
+ * **Dual-envelope** (`runId` on a run, `sessionId` on a session): the governor is shared by workflows and
+ * resumable chat, and a safety guarantee that vanished after `chat-resume` would not be a first-class cost cap.
+ */
+export const BudgetEstimateCommittedEventSchema = z.object({
+  type: z.literal('budget:estimate_committed'),
+  ...dualBase,
+  /**
+   * The agent node that owned the attempt. On a SESSION turn this is the agent ref — the same thing
+   * `cost:updated` carries there — so realized and conservative money are attributable the same way on both
+   * surfaces. Optional so a future emitter with no owning node stays legal.
+   */
+  nodeId: nonEmptyString.optional(),
+  /**
+   * 1-based WITHIN-CHAIN (`FallbackChain`) attempt — matches `cost:updated`. Without it, two commitments from
+   * the SAME callback and the same failover chain are byte-identical apart from the cumulative, and on the
+   * session path (no `nodeId`, no `node:retrying` boundary to partition on) the attempt identity is simply
+   * unrecoverable. Realized money from a failover attempt is attributable; conservative money must be too.
+   */
+  attemptNumber: positiveInt.optional(),
+  /** The canonical model id the uncertain attempt ran on — the per-model conservative attribution key (§4). */
+  model: nonEmptyString,
+  /**
+   * THIS commitment's bounded amount: the reservation that was retained rather than released. **This is the
+   * field checkpoint reconstruction adds up** — see {@link cumulativeConservativeMicrocents}.
+   *
+   * `positiveInt`, not `nonNegativeInt`: a zero commitment is meaningless and unreachable by construction
+   * (`BudgetGovernor`'s `#admit` refuses `estimateMicrocents <= 0`, so every admission holds at least 1). The
+   * bound has to be right on the first version — loosening later is additive, but TIGHTENING later would turn
+   * every historical zero row into a known type with an invalid body, which {@link parseStoredRunEvent} is
+   * required to THROW on. That is a one-way door.
+   */
+  estimateMicrocents: positiveInt,
+  /**
+   * The owner-local running total of conservative commitments after this one — a producer-side snapshot for
+   * DISPLAY and cross-checking. **Not the restore source.**
+   *
+   * Reconstruction sums `estimateMicrocents` (less any release) instead, because a last-wins read of this
+   * snapshot is order-dependent and the engine explicitly refuses to guarantee the order it would need:
+   * `#emitDurable` awaits the media de-inline BEFORE `#bus.next` assigns the `sequenceNumber`, and its own
+   * comment says "concurrent events have no canonical order". Under a `fan_out`, two branches committing 100
+   * and 150 can land with the LOWER seq carrying the HIGHER cumulative; restoring from the last one then hands
+   * already-owed money back to the cap as headroom — the exact bypass ADR-0074 exists to close.
+   *
+   * `Math.max` over the snapshots (the trick `node:completed.cumulativeCostMicrocents` uses) is genuinely
+   * order-independent and would be correct today — each snapshot is read right after its own increment, so the
+   * largest is the true total. It is not chosen because it stops being correct the moment §1's deliberate release
+   * DECREASES the total. A sum of signed deltas is correct in both worlds. (`cost:updated` gets away with
+   * last-wins only because it is streamed, never persisted — `checkpoint.ts` says so — so it is not the
+   * precedent for a durable event.)
+   */
+  cumulativeConservativeMicrocents: nonNegativeInt,
+});
+export type BudgetEstimateCommittedEvent = z.infer<typeof BudgetEstimateCommittedEventSchema>;
+
 /** The run-event variants, discriminated on `type` (exposed via `RunEventSchema.innerType()`). */
 const RunEventUnionSchema = z.discriminatedUnion('type', [
   RunStartedEventSchema,
@@ -516,6 +615,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   RunTimeoutEventSchema,
   BudgetWarningEventSchema,
   BudgetPausedEventSchema,
+  BudgetEstimateCommittedEventSchema,
 ]);
 
 /** The pre-refinement union value — the input every cross-field refinement helper below receives. */
@@ -525,7 +625,7 @@ type RunEventUnion = z.infer<typeof RunEventUnionSchema>;
  * The **exactly one of `runId` / `sessionId`** correlation-key invariant (sse-event-schema.md §"Correlation
  * key"). Run-only / session-only events satisfy it by construction — a stray opposite key is stripped by their
  * `z.object` before this refine runs (the deliberate non-strict, forward-compatible posture). The `dualBase`
- * events (the five reused agent/cost events plus `agent:approval_requested`) declare both keys as optional, so
+ * events (every `...dualBase` member — see its definition above) declare both keys as optional, so
  * this is where neither/both is rejected.
  */
 function refineCorrelationKey(event: RunEventUnion, ctx: z.RefinementCtx): void {
@@ -536,6 +636,29 @@ function refineCorrelationKey(event: RunEventUnion, ctx: z.RefinementCtx): void 
       code: z.ZodIssueCode.custom,
       message: 'exactly one of runId / sessionId must be present',
       path: [hasRunId ? 'sessionId' : 'runId'],
+    });
+  }
+}
+
+/**
+ * A conservative commitment's cumulative total must already INCLUDE it (ADR-0074 §2).
+ *
+ * It holds by construction — the producer reads the counter after adding this commitment to it — and that is
+ * precisely why it is worth pinning: the single most likely bug at the emit site is reading the counter BEFORE
+ * the `+=`. That mistake emits a first commitment as `{ estimate: 500, cumulative: 0 }`, restores 0 on resume,
+ * hands 500 micro-cents of already-owed money back to the cap as headroom, and nothing else anywhere complains.
+ * A structural cross-field check a `discriminatedUnion` member cannot carry — the `refineRunPaused` precedent.
+ */
+function refineBudgetEstimateCommitted(event: RunEventUnion, ctx: z.RefinementCtx): void {
+  if (
+    event.type === 'budget:estimate_committed' &&
+    event.cumulativeConservativeMicrocents < event.estimateMicrocents
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        'cumulativeConservativeMicrocents must already include estimateMicrocents (read the counter AFTER adding this commitment)',
+      path: ['cumulativeConservativeMicrocents'],
     });
   }
 }
@@ -598,6 +721,32 @@ function refineMediaJobDeadline(event: RunEventUnion, ctx: z.RefinementCtx): voi
 }
 
 /**
+ * A frozen media-job cost must sit on a frozen basis (#W15-7). ADR-0074 §3 freezes both `units` and
+ * `acceptedCostMicrocents` at SUBMIT time, but they were independently optional, so a row could carry a frozen
+ * cost with no frozen volume — and a resume would then restore the old reservation while RE-DERIVING the volume
+ * from a workflow definition the user may have edited in between. That is the exact drift §3 exists to prevent,
+ * reintroduced through the half-populated case.
+ *
+ * The invariant is NOT "both or neither". `units` alone is legitimate: the approved-bypass path (H3) freezes the
+ * volume and deliberately omits the cost, because no pricing hook ran and `0` would freeze "priced at zero" for
+ * a job that was never priced. The one-way implication is what holds — a cost implies a basis.
+ */
+function refineMediaJobFrozenBasis(event: RunEventUnion, ctx: z.RefinementCtx): void {
+  if (
+    event.type === 'media_job:submitted' &&
+    event.acceptedCostMicrocents !== undefined &&
+    event.units === undefined
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        'acceptedCostMicrocents requires units — a frozen cost with an unfrozen basis resumes against a re-derived volume (ADR-0074 §3)',
+      path: ['units'],
+    });
+  }
+}
+
+/**
  * Bind an approval preview to its action class (ADR-0057 EA5). Two rules:
  *  1. DRIFT — a preview may carry ONLY the field its action produces (see {@link APPROVAL_PREVIEW_FIELD}); an
  *     `egress` approval must never surface a `path`, etc. (`.strict()` on the preview already bars an UNKNOWN
@@ -643,7 +792,9 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
   refineHumanGateTimeout(event, ctx);
   refineRunPaused(event, ctx);
   refineMediaJobDeadline(event, ctx);
+  refineMediaJobFrozenBasis(event, ctx);
   refineApprovalPreview(event, ctx);
+  refineBudgetEstimateCommitted(event, ctx);
 });
 export type RunEvent = z.infer<typeof RunEventSchema>;
 
@@ -738,7 +889,7 @@ export const SessionTrimmedEventSchema = z.object({
 });
 
 /**
- * The `session:*` lifecycle events. Within a turn a session also reuses the five dual-envelope events
+ * The `session:*` lifecycle events. Within a turn a session also reuses the dual-envelope events
  * above (`agent:token` / `agent:reasoning` / `agent:tool_call` / `agent:tool_result` / `cost:updated`) plus,
  * on the chat approval path, `agent:approval_requested` (ADR-0057) — all carried with `sessionId` — so the
  * complete session stream is this union plus those. Adding an arm is additive; a consumer with a `default` arm
@@ -764,8 +915,9 @@ export type SessionTrimmedEvent = z.infer<typeof SessionTrimmedEventSchema>;
  * The combined event the shared `RunEventBus` carries — the `run:*`/`node:*` family **and** the
  * `session:*` family on **one** bus (ADR-0036 "one bus, two namespaces"). A `z.union` (not a flat
  * discriminated union) so each family keeps its own refinements — notably `RunEventSchema`'s correlation-key
- * cross-check and its six `dualBase` members (the five `agent:*`/`cost:updated` events plus
- * `agent:approval_requested`, which carry `sessionId` when session-emitted and `runId` on a run); a
+ * cross-check and its `dualBase` members (the reused `agent:*`/`cost:updated` events plus
+ * `agent:approval_requested` and `budget:estimate_committed`, which carry `sessionId` when session-emitted and
+ * `runId` on a run); a
  * `session:*` lifecycle event matches the `SessionEventSchema` arm. This is the single validation gate the
  * bus parses against; the per-correlation-key `sequenceNumber` is assigned there.
  */
@@ -806,3 +958,75 @@ export const GateDecisionSchema = z.object({
   comment: z.string().optional(),
 });
 export type GateDecision = z.infer<typeof GateDecisionSchema>;
+
+/**
+ * The forward-compatible READ of a stored run event (ADR-0074 §5).
+ *
+ * `RunEventSchema` is a `z.discriminatedUnion('type', …)`, so it **throws** on a `type` it does not know —
+ * and `SessionEventSchema` and the `RunOrSessionEventSchema` union over both behave the same way. That
+ * contradicts this contract's own promise: [sse-event-schema.md](../../../docs/reference/contracts/sse-event-schema.md)
+ * §Forward-compatibility states that adding a new event `type` — or a new optional field on an existing one — is
+ * "always v1.0-legal and never a breaking change, **provided consumers ignore unknown `type`s and unknown
+ * fields**". Until ADR-0074, no consumer did the first half — so one row written by a newer binary made an entire
+ * run unreadable to an older one, rather than partially understood. (The second half already held: Zod object
+ * schemas strip unknown keys by default, which is what lets a newer binary add a field like ADR-0074 §3's
+ * `media_job:submitted.units` without breaking this reader.)
+ *
+ * The rule is one distinction, and it is the whole of §5:
+ *
+ * - an **unknown discriminator** is a newer writer ⇒ `undefined`, and the caller drops the row;
+ * - a **known `type` with an unparseable body** is corruption ⇒ **throws**, because
+ *   [ADR-0050](../../../docs/decisions/0050-cli-history-db-at-rest-posture.md)'s durability-first posture must
+ *   never silently swallow a damaged row.
+ *
+ * Deliberately READ-only. Every WRITE-side parse (the bus's producer gate, `persistEvent`'s validate-on-the-way-in,
+ * the engine's own construction) stays strict: a producer emitting a `type` the schema does not know is our bug,
+ * not forward evolution, and tolerating it there would hide exactly the drift the gate exists to catch.
+ *
+ * There is no `parseStoredSessionEvent` twin because there is nothing for it to read: `run_events` is the only
+ * table that stores serialized events, and a session's history persists as message rows, not as `SessionEvent`s.
+ * `RunOrSessionEventSchema` is parsed in exactly one place — the bus's producer gate — which is a write. Should a
+ * stored-session-event or dual-envelope read ever appear, it needs this same treatment before it ships, for the
+ * same reason: the tolerant read has to precede the first new `type` on the wire, or the log becomes a one-way door.
+ */
+export function parseStoredRunEvent(candidate: unknown): RunEvent | undefined {
+  const parsed = RunEventSchema.safeParse(candidate);
+  if (parsed.success) {
+    return parsed.data;
+  }
+  if (isUnknownDiscriminator(parsed.error, candidate)) {
+    return undefined;
+  }
+  throw parsed.error;
+}
+
+/**
+ * Whether `error` says exactly one thing: "`type` is a value I do not recognize".
+ *
+ * **Only the last condition is currently falsifiable, and it is the one that matters.** Zod raises the same
+ * `invalid_union_discriminator` for `type: undefined` as it does for `type: 'some:future_event'` — but those are
+ * opposites. No writer of ours has ever omitted `type`, so a row missing it is damaged and must throw; only a
+ * non-empty string can be a newer writer's event name. That check is what separates the two.
+ *
+ * The first three are defensive. A `z.discriminatedUnion` aborts on the discriminator, so today an unrecognized
+ * `type` *always* yields exactly one issue, coded `invalid_union_discriminator`, anchored at `['type']` — there is
+ * no input that reaches this function and fails one of them. They are kept because each pins an assumption that a
+ * future edit could break silently: a nested discriminated union inside a variant's body would report the same code
+ * at a *deeper* path, and a Zod upgrade could start reporting body issues alongside the discriminator. Losing an
+ * assumption there means silently dropping a damaged row, so they are cheap insurance — not live guards.
+ *
+ * **This helper does NOT generalize to `RunOrSessionEventSchema`.** That is a `z.union` of two discriminated
+ * unions, and a `z.union` reports an unknown `type` as a single `invalid_union` issue at the ROOT — not
+ * `invalid_union_discriminator` at `['type']`. Pointing this function at it would reject every forward-written row
+ * while looking correct. A dual-envelope read needs its own arm-level distinction.
+ */
+function isUnknownDiscriminator(error: z.ZodError, candidate: unknown): boolean {
+  const [issue, ...rest] = error.issues;
+  if (issue === undefined || rest.length > 0) return false;
+  if (issue.code !== z.ZodIssueCode.invalid_union_discriminator) return false;
+  if (issue.path.length !== 1 || issue.path[0] !== 'type') return false;
+  // Cast-free narrowing (the shape `content.ts` and `media-deinline.ts` use), so no `as` sits at this boundary.
+  if (typeof candidate !== 'object' || candidate === null || !('type' in candidate)) return false;
+  const type: unknown = candidate.type;
+  return typeof type === 'string' && type.length > 0;
+}

@@ -1,3 +1,5 @@
+import { isCorruptRunEventError, isUnreadableRunEventLogError } from '@relavium/db';
+
 import { EXIT_CODES, type ExitCode } from './exit-codes.js';
 
 /**
@@ -60,6 +62,39 @@ export interface UserFacingError {
 export function toUserFacing(value: unknown): UserFacingError {
   if (isCliError(value)) {
     return { code: value.code, message: value.message, exitCode: value.exitCode };
+  }
+  // A damaged `run_events` row (ADR-0074 §5 / ADR-0050). The generic fallback below would report a corrupt row
+  // out of a 4,000-event log as `An unexpected internal error occurred.` — no run, no row, no next step. The
+  // store's typed error already carries the run id, the `seq`, and the `event_type`, none of which is user
+  // content or a secret, so promote them and name the recovery. Still exit 1: the read genuinely failed.
+  // No remedy is prescribed because the CLI genuinely has none for a single bad row: there is no run-delete
+  // command, and upgrading does not repair corruption (that is the OTHER half of §5 — a skipped row, which is
+  // reported as a note, not an error). Naming the run and the row is the actionable part; it is what makes the
+  // failure diagnosable at all, and what lets a user restore just that history DB from a backup.
+  // ADR-0075: this binary is too OLD to replay the run, which is a different thing from the data being
+  // damaged — and the difference is the whole value of the message. The remedy is real and the user can
+  // perform it, so it is named. Exit 1: the resume genuinely did not happen.
+  if (isUnreadableRunEventLogError(value)) {
+    return {
+      code: 'internal',
+      // The store's message already carries the run, the count and the leading `seq` values, and none of it
+      // is user content or a secret. Adding what is still POSSIBLE matters as much as the refusal: the run is
+      // not lost, and every read-only surface still shows it.
+      message: `${value.message} Its history is still readable — \`relavium logs\` and \`status\` are unaffected.`,
+      exitCode: EXIT_CODES.workflowFailed,
+    };
+  }
+  if (isCorruptRunEventError(value)) {
+    return {
+      code: 'internal',
+      // Says only what is true. It claimed "the rest of your history is unaffected", which held for the DATA but
+      // not for AVAILABILITY: the Home / `status` / `gate list` fan a per-run read over many runs, and one throw
+      // used to take the whole listing down with it. `readPerRunOrDegrade` now bounds that to the one run, so
+      // those surfaces stay usable — but this message is reached by the per-run commands, where the read really
+      // did fail, so it promises nothing about them.
+      message: `${value.message}. Other runs are still listable.`,
+      exitCode: EXIT_CODES.workflowFailed,
+    };
   }
   return {
     code: 'internal',

@@ -93,6 +93,16 @@ export const AgentSessionSchema = z.object({
   totalInputTokens: nonNegativeInt,
   totalOutputTokens: nonNegativeInt,
   totalCostMicrocents: nonNegativeInt,
+  /**
+   * The session's durable CONSERVATIVE total (ADR-0074 §1/§4) — money a provider may already have billed for an
+   * attempt that returned no trustworthy usage.
+   *
+   * Strictly apart from {@link totalCostMicrocents}: an ESTIMATE, never realized spend. It consumes cap capacity
+   * when a session resumes, so a crash cannot reopen a cap against money that may already be owed, but it never
+   * inflates a reported cost. `.default(0)` because every session written before §4 has none, and a resumed
+   * pre-§4 session must read as "nothing committed" rather than fail to parse.
+   */
+  totalConservativeMicrocents: nonNegativeInt.default(0),
   /** Set when the session is exported to a `.relavium.yaml` (ADR-0026). */
   exportedWorkflowPath: nonEmptyString.optional(),
   createdAt: isoTimestamp,

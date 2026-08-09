@@ -91,7 +91,14 @@ import {
   type TranscriptBound,
 } from '../render/tui/session-view-model.js';
 import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
-import { createSuspendPort, type SuspendPort } from '../render/suspend.js';
+import {
+  createSuspendPort,
+  defaultJobControlLifecycle,
+  suspendFullScreen,
+  wireJobControl,
+  type JobControlLifecycle,
+  type SuspendPort,
+} from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import {
   errorRecoveryHint,
@@ -291,6 +298,8 @@ export interface ChatDriveContext {
    * a plain / `--json` driver — the hatches then surface an honest "needs an interactive terminal" notice.
    */
   readonly suspendPort?: SuspendPort | undefined;
+  /** Raw-mode Ctrl-Z / external SIGTSTP converge here. Absent for a plain driver, where no Ink terminal is owned. */
+  readonly onSuspend?: (() => void) | undefined;
   /**
    * Write the mouse selection to the system clipboard over OSC 52 (2.6.F Step 6). Only an INK driver has a terminal
    * to write to; a plain / `--json` driver never mounts the viewport, so nothing can be selected there.
@@ -336,6 +345,8 @@ export interface ChatCommandDeps {
    *  `writeControl` + `lifecycle` so the hoist never touches the REAL terminal / process signals; default = real. */
   readonly writeControl?: (sequence: string) => void;
   readonly lifecycle?: ReplLifecycle;
+  /** Injectable POSIX SIGTSTP/SIGCONT seam; kept separate from irreversible termination handling. */
+  readonly jobControlLifecycle?: JobControlLifecycle;
   /** Wall-clock (ms) + id sources (injectable for tests). */
   readonly now?: () => number;
   readonly uuid?: () => string;
@@ -367,6 +378,8 @@ export interface ChatResumeCommandDeps {
    *  never touches the real terminal / process signals (default = real). */
   readonly writeControl?: (sequence: string) => void;
   readonly lifecycle?: ReplLifecycle;
+  /** Injectable POSIX SIGTSTP/SIGCONT seam; kept separate from irreversible termination handling. */
+  readonly jobControlLifecycle?: JobControlLifecycle;
   /** Wall-clock (ms) + id sources (injectable for tests). */
   readonly now?: () => number;
   readonly uuid?: () => string;
@@ -383,6 +396,10 @@ interface ChatReplDeps {
   /** The process lifecycle seam for the alt-buffer exit-safety net (Step 4b-3) — `process.on('exit')`, SIGTERM/SIGHUP,
    *  raw-mode, and exit. Default {@link defaultReplLifecycle}; a test injects fakes to drive the exit paths. */
   readonly lifecycle?: ReplLifecycle;
+  /** Injectable POSIX SIGTSTP/SIGCONT seam; active only for an interactive Ink chat. */
+  readonly jobControlLifecycle?: JobControlLifecycle;
+  /** The current loop's raw Ctrl-Z request. Constructed beside the hoisted terminal state, not by a plain driver. */
+  readonly onSuspend?: (() => void) | undefined;
   /**
    * `[preferences].copy_on_select`, ALREADY resolved against the mouse decision (`resolveCopyOnSelect`). `false` (or
    * absent, on a non-interactive path) means the ink tree gets no `clipboard` prop: a released drag still highlights,
@@ -530,6 +547,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
     // why the knob they set did nothing.
     onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+    onListenerError: (note: string) => emitLiveNotice(deps.io, note),
     onUnpriced: (note) => emitLiveNotice(deps.io, note),
   });
   // The session now OWNS the live MCP connections (built.closeMcp). `runReplLoop`'s finally is the steady-state
@@ -548,6 +566,8 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
   let persister: SessionPersister;
   try {
     persister = createSessionPersister({
+      governor: built.governor,
+      attachDurabilityProbe: built.attachDurabilityProbe,
       store: opened.store,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -694,6 +714,7 @@ export async function chatResumeCommand(
       // turn runs, the field is gone, and the user is billed at the provider's default tier with nothing to explain
       // why the knob they set did nothing.
       onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(deps.io, note)),
+      onListenerError: (note: string) => emitLiveNotice(deps.io, note),
       onUnpriced: (note) => emitLiveNotice(deps.io, note),
     });
     closeMcp = resumed.closeMcp;
@@ -1139,14 +1160,29 @@ export function createChatLineHandler(
     // covers the whole session, while memory knows only the models used in THIS process — so an in-memory breakdown
     // would visibly fail to sum to the total on the first `/cost` after a resume, breaking the one guarantee the
     // panel makes. The total comes from the same row the rows reconcile against.
-    showCost: () => {
+    showCost: (release = false) => {
       try {
+        // `--release` FIRST, so the panel below renders the post-release state rather than the amount the user
+        // just cleared (#W15-3). Both halves, in this order: the durable columns (which is what a resumed
+        // session seeds its cap from — clearing only the live governor let a released commitment come straight
+        // back on the next `chat-resume`), then the in-memory governor.
+        const released = release
+          ? opened.store.releaseSessionConservativeCommitments(built.sessionId, Date.now())
+          : undefined;
+        if (release) built.governor?.releaseConservativeCommitments();
         // ONE snapshot: the rows and the total they are printed under must come from the same read, or a concurrent
         // process's cost write can land between them and the panel prints rows summing to MORE than its own total.
         const { totalCostMicrocents, rows } = opened.store.loadSessionCostBreakdown(
           built.sessionId,
         );
-        emitOutput(costNotice(totalCostMicrocents, rows));
+        emitOutput(
+          costNotice(totalCostMicrocents, rows, {
+            ...(released === undefined ? {} : { released }),
+            ...(built.governor === undefined
+              ? {}
+              : { durabilityBroken: built.governor.conservativeState().durabilityBroken }),
+          }),
+        );
       } catch (err) {
         // A read-only info command must never end the conversation. `handleSlashCommand` awaits `run` unguarded, and
         // on the ink driver a rejection routes to `onError` → teardown; every sibling info handler is guarded for
@@ -1429,6 +1465,7 @@ interface FreshChatWiringDeps {
   /** Withheld-tier sink (ADR-0071 §6) — threaded exactly like {@link FreshChatWiringDeps.onBudgetWarning}, because a
    *  `/clear` rebuild binds a NEW session and a session with no sink withholds a tier in silence. */
   readonly onEffortWithheld: NonNullable<BuildChatSessionOptions['onEffortWithheld']>;
+  readonly onListenerError: NonNullable<BuildChatSessionOptions['onListenerError']>;
   readonly onUnpriced: NonNullable<BuildChatSessionOptions['onUnpriced']>;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — carried into the rebuilt `ReplWiring` so a `/clear` re-drive
    *  keeps the full-screen render mode (else the mode reverts to the phase default mid-conversation). */
@@ -1455,6 +1492,7 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
     onEffortWithheld: deps.onEffortWithheld,
+    onListenerError: deps.onListenerError,
     onUnpriced: deps.onUnpriced,
   });
   // The SAME signals `runReplLoop` used for the hoist (`deps.altScreen` is `[preferences].alt_screen`, carried here
@@ -1477,6 +1515,8 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
   let persister: SessionPersister;
   try {
     persister = createSessionPersister({
+      governor: built.governor,
+      attachDurabilityProbe: built.attachDurabilityProbe,
       store: deps.opened.store,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -1564,6 +1604,7 @@ function createClearRebuild(params: {
     altScreen: params.altScreen,
     onBudgetWarning: (warning) => emitLiveNotice(params.io, budgetWarningText(warning)),
     onEffortWithheld: onceEffortNotice((note) => emitLiveNotice(params.io, note)),
+    onListenerError: (note: string) => emitLiveNotice(params.io, note),
     onUnpriced: (note) => emitLiveNotice(params.io, note),
   };
   return (oldSessionId) => buildFreshChatWiring(wiringDeps, clearedNotice(oldSessionId));
@@ -1606,6 +1647,8 @@ function seedResumedWiring(
     transcriptBound,
   );
   const persister = createSessionPersister({
+    governor: resumed.governor,
+    attachDurabilityProbe: resumed.attachDurabilityProbe,
     store: opened.store,
     handle: resumed.handle,
     sessionId: resumed.sessionId,
@@ -1640,6 +1683,7 @@ interface ReseatWiringDeps {
   /** Withheld-tier sink (ADR-0071 §6) — a `/models` reseat binds a DIFFERENT model, which is precisely when a tier
    *  that was fine a moment ago stops being accepted. Threaded like {@link ReseatWiringDeps.onBudgetWarning}. */
   readonly onEffortWithheld: NonNullable<BuildChatSessionOptions['onEffortWithheld']>;
+  readonly onListenerError: NonNullable<BuildChatSessionOptions['onListenerError']>;
   readonly onUnpriced: NonNullable<BuildChatSessionOptions['onUnpriced']>;
   /** `[preferences].alt_screen` (2.6.F, ADR-0068 §e) — carried into the rebuilt `ReplWiring` so a `/models` reseat
    *  keeps the full-screen render mode (else it reverts to the phase default after a mid-session model switch). */
@@ -1699,6 +1743,7 @@ async function buildReseatWiring(
     ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     onBudgetWarning: deps.onBudgetWarning,
     onEffortWithheld: deps.onEffortWithheld,
+    onListenerError: deps.onListenerError,
     onUnpriced: deps.onUnpriced,
   });
   let seeded: { store: ChatStoreController; persister: SessionPersister };
@@ -1777,6 +1822,7 @@ function createReseatRebuild(params: {
 ) => Promise<ReplWiring> {
   const wiringDeps: ReseatWiringDeps = {
     chat: params.chat,
+    onListenerError: (note: string) => emitLiveNotice(params.io, note),
     now: params.now,
     uuid: params.uuid,
     providers: params.providers,
@@ -1919,6 +1965,7 @@ async function driveOneSession(wiring: ReplWiring, deps: ChatReplDeps): Promise<
       ...(deps.hatchPorts?.suspendPort === undefined
         ? {}
         : { suspendPort: deps.hatchPorts.suspendPort }),
+      ...(deps.onSuspend === undefined ? {} : { onSuspend: deps.onSuspend }),
       // The clipboard rides the SAME control-write sink as the alt-buffer toggles (Step 6). OSC 52 prints nothing and
       // moves no cursor, so writing it mid-frame cannot corrupt ink's line accounting.
       // ABSENT when `[preferences].copy_on_select = false` (or `--no-mouse`, which resolves it false): the selection
@@ -2017,6 +2064,12 @@ export async function withHoistedAltScreen(
     readonly lifecycle: ReplLifecycle;
     readonly writeOut: (text: string) => void;
     readonly writeErr: (text: string) => void;
+    /**
+     * Permanently disarm a reversible terminal handoff before this wrapper restores its final terminal state. The
+     * job-control coordinator intentionally leaves a pending SIGCONT waiter unresolved on an external termination:
+     * allowing it to reclaim afterward could re-enter 1049 / re-enable mouse reporting behind this final restore.
+     */
+    readonly beforeTerminalRestore?: () => void;
     /** The ONE suspend port for the loop. `current() === undefined` means NO ink tree is mounted — the only window in
      *  which SIGINT is unowned. Absent ⇒ no SIGINT net (a caller with no ink, e.g. a unit test). */
     readonly suspendPort?: SuspendPort;
@@ -2039,7 +2092,12 @@ export async function withHoistedAltScreen(
   let result: HoistedLoopResult = {};
   try {
     alt.enter();
-    removeExitNet = opts.active ? opts.lifecycle.onProcessExit(() => alt.restore()) : noop;
+    removeExitNet = opts.active
+      ? opts.lifecycle.onProcessExit(() => {
+          opts.beforeTerminalRestore?.();
+          alt.restore();
+        })
+      : noop;
     // SIGINT belongs to ink: while a tree is mounted, `driveInk`'s `onSigintGated` runs the cooperative `/cancel`, and
     // during a `/scrollback` or `/edit` hatch it deliberately DROPS the signal so the suspension can reclaim. But a
     // `/clear` or `/models` rebuild unmounts ink and mounts a fresh tree, and in that window NOTHING listens for
@@ -2050,6 +2108,7 @@ export async function withHoistedAltScreen(
       opts.active && suspendPortForSigint !== undefined
         ? opts.lifecycle.onInterrupt(() => {
             if (suspendPortForSigint.current() !== undefined) return; // ink owns it (mounted, or suspended)
+            opts.beforeTerminalRestore?.();
             alt.restore();
             opts.write(DISABLE_BRACKETED_PASTE);
             try {
@@ -2062,6 +2121,7 @@ export async function withHoistedAltScreen(
         : noop;
     removeSignalNet = opts.active
       ? opts.lifecycle.onTerminationSignal((signo) => {
+          opts.beforeTerminalRestore?.();
           alt.restore();
           opts.write(DISABLE_BRACKETED_PASTE);
           try {
@@ -2079,6 +2139,7 @@ export async function withHoistedAltScreen(
     // DECRST-1049 restore (the Step-4b-3 Opus-review regression: the rebuild-failure `chat-resume <id>` hint vanished
     // once alt became the default). `restore()` is idempotent — the `onProcessExit` net may also have fired. Remove
     // the nets so they cannot outlive the loop.
+    opts.beforeTerminalRestore?.();
     alt.restore();
     removeExitNet();
     removeSignalNet();
@@ -2182,6 +2243,10 @@ export async function runReplLoop(
   // The hoisted controller, captured so `hatchPorts.terminal()` can read the LIVE buffer state (it is created inside
   // `withHoistedAltScreen` below, after `hatchPorts` is built — hence the mutable binding read lazily).
   let altScreenController: AltScreenController | undefined;
+  // The hoist owns the irreversible restore nets, while the job-control binding is created only after its live
+  // controller exists. Keep a tiny indirection so those nets can disarm a pending reversible reclaim BEFORE they
+  // restore 1049/mouse permanently (a SIGCONT must never re-enter the terminal after a TERM/HUP/QUIT path).
+  let disposeJobControl = (): void => undefined;
   // Copy-on-select (2.6.F Step 6e): a durable preference, resolved from the ALREADY-RESOLVED mouse decision, so
   // `--no-mouse` structurally turns it off too. `/copy` is unaffected: it binds the clipboard through `hatchPorts`.
   const copyOnSelect = resolveCopyOnSelect({
@@ -2199,49 +2264,82 @@ export async function runReplLoop(
         lifecycle: deps.lifecycle ?? defaultReplLifecycle,
         writeOut: (text) => deps.io.writeOut(text),
         writeErr: (text) => deps.io.writeErr(text),
+        beforeTerminalRestore: () => disposeJobControl(),
         suspendPort,
       },
       async (alt): Promise<HoistedLoopResult> => {
         altScreenController = alt; // so `hatchPorts.terminal()` reads the LIVE buffer state, not the startup decision
-        let current = wiring;
-        let summaryText: string | undefined; // the final `/exit` summary, printed after the single alt-exit
-        for (;;) {
-          const outcome = await driveOneSession(current, replDeps);
-          // The end-of-session summary is LIFTED out of driveInk (ADR-0068 §c): the wrapper prints it after the single
-          // alt-exit, on the PRIMARY buffer. Only a final `'exit'` carries one; a `/clear` / reseat swap carries none.
-          if (outcome.kind === 'exit') summaryText = outcome.summaryText;
-          // The old session is ALREADY torn down (driveOneSession's finally fired its terminal → the row is 'ended' +
-          // resumable). Resolve the rebuild for this swap kind, or `undefined` to END the REPL (see resolveSwapRebuild).
-          const oldSessionId = current.built.sessionId;
-          // The old session is torn down but its view STORE is still live (teardown closes the persister + MCP, never
-          // the store), so this is the rendered conversation the reseated session must open with (2.6.C / F1).
-          const next = resolveSwapRebuild(
-            outcome,
-            oldSessionId,
-            rebuild,
-            reseatRebuild,
-            current.store.getSnapshot().state.transcript,
-          );
-          if (next === undefined) return { summaryText };
-          // Clear the persistent alt buffer between the just-unmounted session and the next mount, so a `/clear` swap
-          // never briefly shows two stacked transcripts (ink's non-fullscreen unmount does not erase). No-op inactive.
-          alt.clearBetween();
-          // Build the swap session over the same db and re-drive; a build failure is surfaced actionably (the prior
-          // conversation is still resumable) and ends the REPL rather than looping on a broken build. The message is
-          // RETURNED (not written here) so the wrapper emits it AFTER the alt-exit — writing it inside the still-entered
-          // alt buffer would discard it (the recovery hint with the resumable session id — Step-4b-3 Opus review).
-          try {
-            current = await next();
-          } catch (err) {
-            const errorText =
-              // Sanitize the error text too (not just the id beside it) — a rebuild fault can rethrow an unclassified
-              // message verbatim (session-host.ts), which could carry an ANSI/OSC escape from a spawned MCP server's
-              // error text; strip it exactly as the id + every other display string on this surface is stripped.
-              `could not start a new session after ${outcome.kind === 'reseat' ? 'a model switch' : '/clear'}: ` +
-              `${sanitizeInline(err instanceof Error ? err.message : String(err))}. ` +
-              `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`;
-            return { summaryText, errorText };
+        // The raw-mode Ink surface needs job control even in inline render mode; only plain/non-TTY drivers omit
+        // these listeners. During a `/clear`/reseat gap there is no Ink tree, so the hoisted controller supplies its
+        // reversible 1049/mouse release instead of calling its FINAL `restore()`.
+        const jobControl = chatIsInteractive(deps.io, deps.global)
+          ? wireJobControl({
+              suspendPort,
+              lifecycle: deps.jobControlLifecycle ?? defaultJobControlLifecycle,
+              run: (suspendTerminal, waitForContinue) =>
+                suspendFullScreen(
+                  {
+                    suspendTerminal,
+                    writeControl,
+                    inkOwnsAltScreen: false,
+                    altActive: alt.isEntered(),
+                    mouseActive: alt.isMouseEnabled(),
+                  },
+                  waitForContinue,
+                ),
+              releaseWithoutInk: () => alt.releaseForSuspend(),
+              reclaimWithoutInk: () => alt.reclaimAfterSuspend(),
+            })
+          : undefined;
+        disposeJobControl = jobControl?.dispose ?? (() => undefined);
+        const sessionDeps =
+          jobControl === undefined
+            ? replDeps
+            : { ...replDeps, onSuspend: jobControl.requestSuspend };
+        try {
+          let current = wiring;
+          let summaryText: string | undefined; // the final `/exit` summary, printed after the single alt-exit
+          for (;;) {
+            const outcome = await driveOneSession(current, sessionDeps);
+            // The end-of-session summary is LIFTED out of driveInk (ADR-0068 §c): the wrapper prints it after the single
+            // alt-exit, on the PRIMARY buffer. Only a final `'exit'` carries one; a `/clear` / reseat swap carries none.
+            if (outcome.kind === 'exit') summaryText = outcome.summaryText;
+            // The old session is ALREADY torn down (driveOneSession's finally fired its terminal → the row is 'ended' +
+            // resumable). Resolve the rebuild for this swap kind, or `undefined` to END the REPL (see resolveSwapRebuild).
+            const oldSessionId = current.built.sessionId;
+            // The old session is torn down but its view STORE is still live (teardown closes the persister + MCP, never
+            // the store), so this is the rendered conversation the reseated session must open with (2.6.C / F1).
+            const next = resolveSwapRebuild(
+              outcome,
+              oldSessionId,
+              rebuild,
+              reseatRebuild,
+              current.store.getSnapshot().state.transcript,
+            );
+            if (next === undefined) return { summaryText };
+            // Clear the persistent alt buffer between the just-unmounted session and the next mount, so a `/clear` swap
+            // never briefly shows two stacked transcripts (ink's non-fullscreen unmount does not erase). No-op inactive.
+            alt.clearBetween();
+            // Build the swap session over the same db and re-drive; a build failure is surfaced actionably (the prior
+            // conversation is still resumable) and ends the REPL rather than looping on a broken build. The message is
+            // RETURNED (not written here) so the wrapper emits it AFTER the alt-exit — writing it inside the still-entered
+            // alt buffer would discard it (the recovery hint with the resumable session id — Step-4b-3 Opus review).
+            try {
+              current = await next();
+            } catch (err) {
+              const errorText =
+                // Sanitize the error text too (not just the id beside it) — a rebuild fault can rethrow an unclassified
+                // message verbatim (session-host.ts), which could carry an ANSI/OSC escape from a spawned MCP server's
+                // error text; strip it exactly as the id + every other display string on this surface is stripped.
+                `could not start a new session after ${outcome.kind === 'reseat' ? 'a model switch' : '/clear'}: ` +
+                `${sanitizeInline(err instanceof Error ? err.message : String(err))}. ` +
+                `Your previous conversation is saved — resume it with \`relavium chat-resume ${sanitizeInline(oldSessionId)}\`.\n`;
+              return { summaryText, errorText };
+            }
           }
+        } finally {
+          jobControl?.dispose();
+          disposeJobControl = (): void => undefined;
         }
       },
     );

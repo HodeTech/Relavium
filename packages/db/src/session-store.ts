@@ -74,6 +74,7 @@ export function toAgentSessionRow(record: AgentSessionRecord): NewAgentSessionRo
     totalInputTokens: s.totalInputTokens,
     totalOutputTokens: s.totalOutputTokens,
     totalCostMicrocents: s.totalCostMicrocents,
+    totalConservativeMicrocents: s.totalConservativeMicrocents,
     exportedWorkflowPath: s.exportedWorkflowPath ?? null,
     deletedAt: s.deletedAt === undefined ? null : isoToEpochMs(s.deletedAt),
     createdAt: isoToEpochMs(s.createdAt),
@@ -104,6 +105,7 @@ export function fromAgentSessionRow(row: AgentSessionRow): AgentSessionRecord {
     totalInputTokens: row.totalInputTokens,
     totalOutputTokens: row.totalOutputTokens,
     totalCostMicrocents: row.totalCostMicrocents,
+    totalConservativeMicrocents: row.totalConservativeMicrocents,
     ...(row.exportedWorkflowPath === null
       ? {}
       : { exportedWorkflowPath: row.exportedWorkflowPath }),
@@ -112,6 +114,34 @@ export function fromAgentSessionRow(row: AgentSessionRow): AgentSessionRecord {
     ...(row.deletedAt === null ? {} : { deletedAt: epochMsToIso(row.deletedAt) }),
   };
   return AgentSessionSchema.parse(candidate);
+}
+
+/**
+ * The MUTABLE `agent_sessions` columns of a record — what an update may SET. Shared by `updateSession` and the
+ * atomic `writeTurn` so the two can never disagree about what a flush is allowed to touch.
+ *
+ * `created_at` is frozen at creation, so it (and the `id` WHERE-key) are dropped from the SET payload —
+ * an update overwrites only the mutable columns (status, title, context, exportedWorkflowPath, deletedAt,
+ * updatedAt, …), never the creation timestamp, regardless of what the caller passes.
+ *
+ * `total_cost_microcents` is ALSO dropped (ADR-0070 §2): it has exactly ONE writer, `recordSessionCost`, which
+ * bumps it ADDITIVELY in the same transaction as the `session_costs` row. It used to be SET blindly here from
+ * whatever cumulative the caller happened to hold — from four persister call sites and from `chat-export` — so
+ * any writer with a stale in-memory total (two `chat-resume` processes on one sessionId; a late flush landing
+ * after a cost write) would permanently break `SUM(session_costs) == total_cost_microcents`. A single owner is
+ * what makes the invariant a property of the code rather than a hope about call ordering.
+ */
+function mutableSessionColumns(record: AgentSessionRecord): Partial<NewAgentSessionRow> {
+  const mutable: Partial<NewAgentSessionRow> = { ...toAgentSessionRow(record) };
+  delete mutable.id;
+  delete mutable.createdAt;
+  delete mutable.totalCostMicrocents;
+  // ADR-0074 §4: the conservative total has exactly ONE writer too — `recordSessionConservativeCommitment`,
+  // which bumps it additively in the same transaction as its `session_costs` row. Letting a session flush SET it
+  // from an in-memory record would clobber a concurrent commitment, which is precisely the race the realized
+  // total's single-writer rule already defends against.
+  delete mutable.totalConservativeMicrocents;
+  return mutable;
 }
 
 /** Map a validated {@link SessionMessage} (+ optional denormalized {@link SessionMessageMeta}) to a row. */
@@ -200,6 +230,26 @@ export interface SessionCostEntry {
   readonly ts: number;
 }
 
+/**
+ * One conservative budget commitment to persist for a session (ADR-0074 §2/§4).
+ *
+ * Deliberately a SEPARATE entry type from {@link SessionCostEntry}, not a flag on it: a commitment carries no
+ * tokens, no call, and no realized charge. It is money the provider MAY already have billed for an attempt that
+ * returned no trustworthy usage — an estimate that must consume cap capacity across a resume without ever
+ * inflating a reported cost.
+ */
+export interface SessionConservativeEntry {
+  /** A fresh `uuid()`; DISCARDED on the common path — the conflict target is the `(session, model)` unique index. */
+  readonly id: string;
+  readonly sessionId: string;
+  /** The RAW provider model string — the SAME attribution key the realized row uses, so the two stay joinable. */
+  readonly model: string;
+  readonly modelCatalogId?: string | undefined;
+  /** The PER-COMMITMENT increment, never a running cumulative — the store adds it to both the row and the total. */
+  readonly estimateMicrocents: number;
+  readonly ts: number;
+}
+
 /** A per-`(session, model)` row of the durable money attribution. */
 export interface SessionCostRow {
   readonly model: string;
@@ -207,6 +257,12 @@ export interface SessionCostRow {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly costMicrocents: number;
+  /**
+   * ADR-0074 §4's per-model CONSERVATIVE attribution — an estimate the provider may already have billed, kept
+   * strictly apart from {@link costMicrocents}. A surface renders it as *estimated, possibly billed*, never as
+   * spend, and never adds the two together into one figure.
+   */
+  readonly conservativeMicrocents: number;
   /** Every `cost:updated` folded into this row — priced or not. {@link unpricedCalls} is a SUBSET of it. */
   readonly callCount: number;
   /** Of `callCount`, how many could not be priced. `> 0` ⇒ a free-LOOKING row is not a free model. */
@@ -220,6 +276,17 @@ export interface SessionCostRow {
    * egress structurally unable to fold into this row.
    */
   readonly isLegacy: boolean;
+}
+
+/** One atomic turn write: the messages to append (in order) plus the session row to flush. */
+export interface SessionTurnWrite {
+  /** Transcript rows to append, in ascending `sequenceNumber` order. May be empty (a row-less flush). */
+  readonly messages: readonly {
+    readonly message: SessionMessage;
+    readonly meta?: SessionMessageMeta;
+  }[];
+  /** The session row to flush in the SAME transaction — `undefined` to append without touching it. */
+  readonly session?: AgentSessionRecord;
 }
 
 export interface SessionStore {
@@ -251,6 +318,24 @@ export interface SessionStore {
    * accumulators start at zero, so an absolute write would zero every model row the prior process had committed.
    */
   recordSessionCost: (entry: SessionCostEntry) => void;
+  /**
+   * Persist one conservative commitment (ADR-0074 §4) — the estimate twin of {@link recordSessionCost}, and the
+   * durable half §2 requires on the session surface.
+   *
+   * The SAME single-writer, one-transaction, two-additive-writes discipline: `session_costs.conservative_microcents`
+   * and `agent_sessions.total_conservative_microcents` move together under `BEGIN IMMEDIATE`, so a crash between
+   * them is impossible and the per-model breakdown can never disagree with the aggregate. It touches NEITHER
+   * realized column, so ADR-0070's `SUM(cost_microcents) == total_cost_microcents` is untouched by construction.
+   */
+  recordSessionConservativeCommitment: (entry: SessionConservativeEntry) => void;
+  /**
+   * Clear every conservative commitment this session holds — the durable half of ADR-0074 §1's escape hatch
+   * (#W15-3), called only from a surface acting on an explicit user decision, never from a heuristic.
+   *
+   * Zeroes the per-model `session_costs` holds AND the `agent_sessions` aggregate in one transaction, and
+   * returns the amount released (0 when nothing was held).
+   */
+  releaseSessionConservativeCommitments: (sessionId: string, ts: number) => number;
   /** The per-model money attribution of a session, ordered by spend (descending). Empty — never `null` — when the
    *  session has not spent. The `/cost` breakdown reads THIS, never an in-memory counter: a resumed session's total
    *  is seeded from the row and covers the whole session, while memory knows only this process's models. */
@@ -270,6 +355,22 @@ export interface SessionStore {
   };
   /** Append a transcript message (the caller assigns the next monotonic `sequenceNumber`). */
   appendMessage: (message: SessionMessage, meta?: SessionMessageMeta) => void;
+  /**
+   * Append a turn's messages AND flush the session row in **one** `BEGIN IMMEDIATE` transaction — all of it,
+   * or none of it (#228).
+   *
+   * The three-statement, auto-committed alternative is not merely slower, it is unsound: a failure between
+   * the `user` append and the `assistant` append leaves an unanswered `user` row in the durable transcript.
+   * `resumableMessageSequences` rolls back only a TRAILING one, so once the session survives the failure and
+   * keeps going, that orphan is buried mid-transcript — and a resume then replays two consecutive `user`
+   * messages, which a provider rejects. Atomicity is what makes "the durable transcript mirrors the engine's"
+   * true rather than probable.
+   *
+   * This also discharges the per-turn transaction follow-up named in `database-schema.md`
+   * §"Concurrency & transaction behavior", and cuts the worst-case contended block roughly threefold by
+   * collapsing three retryable statements into one.
+   */
+  writeTurn: (turn: SessionTurnWrite) => void;
   /** Load a session's full transcript in `sequenceNumber` order. */
   loadMessages: (sessionId: string) => SessionMessage[];
   /** Load a session and its ordered transcript — the resume entry point (`undefined` if the session is absent). */
@@ -348,31 +449,52 @@ export function createSessionStore(db: Db): SessionStore {
         inputTokens: r.inputTokens,
         outputTokens: r.outputTokens,
         costMicrocents: r.costMicrocents,
+        conservativeMicrocents: r.conservativeMicrocents,
         callCount: r.callCount,
         unpricedCalls: r.unpricedCalls,
         isLegacy: r.isLegacy,
       }));
 
   return {
+    // The three single-statement session writers below go through `withBusyRetry` (#228). They are NOT wrapped
+    // in a transaction — a lone INSERT/UPDATE already takes the write lock immediately, so `BEGIN IMMEDIATE`
+    // would buy nothing, which is why `database-schema.md` exempts single-statement writes from it. The retry
+    // is the orthogonal half: `busy_timeout` waits 5 s and then *fails*, and for these three writers a failure
+    // is a lost chat turn plus — before this — a dead process, because the chat persister calls them from
+    // inside a `RunEventBus` subscriber whose throw became an unhandled rejection.
     createSession: (record) => {
-      db.insert(agentSessions).values(toAgentSessionRow(record)).run();
+      withBusyRetry(() => db.insert(agentSessions).values(toAgentSessionRow(record)).run());
     },
+    writeTurn: ({ messages, session }) => {
+      // ONE IMMEDIATE transaction for the whole turn. `BEGIN IMMEDIATE` takes the write lock up front (never
+      // a DEFERRED read→write upgrade race) and `withBusyRetry` waits out residual cross-process contention —
+      // the ADR-0064 §2.5.I convention, now covering the transcript the way it already covered the cost row.
+      withBusyRetry(() =>
+        db.transaction(
+          (tx) => {
+            for (const { message, meta } of messages) {
+              tx.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run();
+            }
+            if (session !== undefined) {
+              tx.update(agentSessions)
+                .set(mutableSessionColumns(session))
+                .where(eq(agentSessions.id, session.id))
+                .run();
+            }
+          },
+          { behavior: 'immediate' },
+        ),
+      );
+    },
+
     updateSession: (record) => {
-      // `created_at` is frozen at creation, so it (and the `id` WHERE-key) are dropped from the SET payload —
-      // an update overwrites only the mutable columns (status, title, context, exportedWorkflowPath, deletedAt,
-      // updatedAt, …), never the creation timestamp, regardless of what the caller passes.
-      //
-      // `total_cost_microcents` is ALSO dropped (ADR-0070 §2): it has exactly ONE writer, `recordSessionCost`, which
-      // bumps it ADDITIVELY in the same transaction as the `session_costs` row. It used to be SET blindly here from
-      // whatever cumulative the caller happened to hold — from four persister call sites and from `chat-export` — so
-      // any writer with a stale in-memory total (two `chat-resume` processes on one sessionId; a late flush landing
-      // after a cost write) would permanently break `SUM(session_costs) == total_cost_microcents`. A single owner is
-      // what makes the invariant a property of the code rather than a hope about call ordering.
-      const mutable: Partial<NewAgentSessionRow> = { ...toAgentSessionRow(record) };
-      delete mutable.id;
-      delete mutable.createdAt;
-      delete mutable.totalCostMicrocents;
-      db.update(agentSessions).set(mutable).where(eq(agentSessions.id, record.id)).run();
+      withBusyRetry(() =>
+        db
+          .update(agentSessions)
+          .set(mutableSessionColumns(record))
+          .where(eq(agentSessions.id, record.id))
+          .run(),
+      );
     },
 
     recordSessionCost: (entry) => {
@@ -427,6 +549,99 @@ export function createSessionStore(db: Db): SessionStore {
       );
     },
 
+    recordSessionConservativeCommitment: (entry) => {
+      // ONE transaction, TWO additive writes — the exact discipline `recordSessionCost` uses above, and for the
+      // same reason: a crash between the per-model row and the aggregate would leave the breakdown disagreeing
+      // with the total forever. `BEGIN IMMEDIATE` takes the write lock up front rather than upgrading a DEFERRED
+      // one mid-transaction, which is where SQLITE_BUSY comes from.
+      //
+      // Note what it does NOT touch: `cost_microcents`, `total_cost_microcents`, `call_count`, `input_tokens`,
+      // `output_tokens`. A conservative commitment is an ESTIMATE, not a call and not spend, so ADR-0070's
+      // `SUM(cost_microcents) == total_cost_microcents` holds by construction rather than by care.
+      withBusyRetry(() =>
+        db.transaction(
+          (tx) => {
+            tx.insert(sessionCosts)
+              .values({
+                id: entry.id, // discarded on conflict — the target is the unique index, never the PK
+                sessionId: entry.sessionId,
+                model: entry.model,
+                modelCatalogId: entry.modelCatalogId ?? null,
+                inputTokens: 0,
+                outputTokens: 0,
+                costMicrocents: 0,
+                conservativeMicrocents: entry.estimateMicrocents,
+                // NOT a call: `callCount` stays 0 so `/cost`'s "N of M calls" arithmetic is unaffected by an
+                // estimate. A commitment describes an attempt whose usage we could not trust, and counting it
+                // would inflate the denominator with something that produced no attributable usage at all.
+                callCount: 0,
+                unpricedCalls: 0,
+                // Never legacy, for the same reason a real cost row never is: it rides the conflict target, so a
+                // live commitment cannot fold into the 0009 backfill's un-attributable aggregate row.
+                isLegacy: false,
+                createdAt: entry.ts,
+                updatedAt: entry.ts,
+              })
+              .onConflictDoUpdate({
+                target: [sessionCosts.sessionId, sessionCosts.model, sessionCosts.isLegacy],
+                set: {
+                  conservativeMicrocents: sql`${sessionCosts.conservativeMicrocents} + ${entry.estimateMicrocents}`,
+                  // Fill the catalog id in when THIS write resolved one and the row has none — a model can be
+                  // catalogued mid-session (2.6.Q). Never overwrite an existing value with NULL: an unresolved
+                  // lookup is "we don't know", not "there is none".
+                  ...(entry.modelCatalogId === undefined
+                    ? {}
+                    : {
+                        modelCatalogId: sql`coalesce(${sessionCosts.modelCatalogId}, ${entry.modelCatalogId})`,
+                      }),
+                  updatedAt: entry.ts,
+                },
+              })
+              .run();
+            tx.update(agentSessions)
+              .set({
+                totalConservativeMicrocents: sql`${agentSessions.totalConservativeMicrocents} + ${entry.estimateMicrocents}`,
+                updatedAt: entry.ts,
+              })
+              .where(eq(agentSessions.id, entry.sessionId))
+              .run();
+          },
+          { behavior: 'immediate' },
+        ),
+      );
+    },
+
+    releaseSessionConservativeCommitments: (sessionId, ts) =>
+      // ADR-0074 §1's escape hatch, made DURABLE (#W15-3). Clearing only the in-memory governor meant a
+      // released commitment came straight back on the next `chat-resume`, because §4 seeds the resumed
+      // governor from these columns — so the "deliberate user decision" survived exactly as long as the
+      // process did.
+      //
+      // ONE `BEGIN IMMEDIATE`, both writes: the per-model rows AND the session aggregate. Zeroing one without
+      // the other would leave `/cost` printing per-model holds that no longer sum to the session's total, or
+      // a total holding against models that show nothing — and the aggregate is what the resumed cap reads.
+      //
+      // Returns the amount released, read INSIDE the transaction, so the number reported to the user is the
+      // number that was actually cleared rather than a re-read that a concurrent commitment could have moved.
+      withBusyRetry(() =>
+        db.transaction(
+          (tx) => {
+            const released = loadSession(sessionId, tx)?.totalConservativeMicrocents ?? 0;
+            if (released === 0) return 0; // nothing held — do not touch `updated_at` for a no-op
+            tx.update(sessionCosts)
+              .set({ conservativeMicrocents: 0, updatedAt: ts })
+              .where(eq(sessionCosts.sessionId, sessionId))
+              .run();
+            tx.update(agentSessions)
+              .set({ totalConservativeMicrocents: 0, updatedAt: ts })
+              .where(eq(agentSessions.id, sessionId))
+              .run();
+            return released;
+          },
+          { behavior: 'immediate' },
+        ),
+      ),
+
     loadSessionCosts: (sessionId) => readCostRows(sessionId),
 
     loadSessionCostBreakdown: (sessionId) =>
@@ -443,7 +658,9 @@ export function createSessionStore(db: Db): SessionStore {
     loadSession,
     listSessions,
     appendMessage: (message, meta) => {
-      db.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run();
+      withBusyRetry(() =>
+        db.insert(sessionMessages).values(toSessionMessageRow(message, meta)).run(),
+      );
     },
     loadMessages,
     loadFull: (sessionId) =>

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +8,7 @@ import { EXECUTION_MODES, RunStatusSchema } from '@relavium/shared';
 import { eq, sql } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { createClient, runMigrations, type DbClient } from './client.js';
+import { createClient, DbOpenError, runMigrations, type DbClient } from './client.js';
 import {
   mediaObjects,
   mediaReferences,
@@ -452,6 +452,48 @@ describe('@relavium/db migration + constraint invariants', () => {
     expect(() => createClient('file::memory:?cache=shared')).toThrow(
       /URI paths are not supported/i,
     );
+  });
+
+  /* --- #104: a typed, code-discriminated open failure with the path as a FIELD, not in the message --- */
+
+  it('throws a typed DbOpenError with code uri_unsupported, carrying the path off-message', () => {
+    let caught: unknown;
+    try {
+      createClient('file::memory:?cache=shared');
+    } catch (err) {
+      caught = err;
+    }
+    if (!(caught instanceof DbOpenError)) throw new Error('expected a DbOpenError');
+    const error = caught;
+    expect(error.code).toBe('uri_unsupported'); // callers narrow on this, never on the message
+    expect(error.name).toBe('DbOpenError');
+    expect(error.path).toBe('file::memory:?cache=shared');
+    // The path is a structured field, NOT interpolated — this message is surfaced verbatim to the user by
+    // the CLI's history openers, and an absolute db path carries the OS username.
+    expect(error.message).not.toContain('file::memory:');
+  });
+
+  it('throws a typed DbOpenError with code open_failed and the original cause when the driver fails', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'relavium-open-fail-'));
+    try {
+      // A DIRECTORY where the database file should be: mkdir succeeds, `new Database()` then fails.
+      const path = join(dir, 'history.db');
+      mkdirSync(path);
+      let caught: unknown;
+      try {
+        createClient(path);
+      } catch (err) {
+        caught = err;
+      }
+      if (!(caught instanceof DbOpenError)) throw new Error('expected a DbOpenError');
+      const error = caught;
+      expect(error.code).toBe('open_failed');
+      expect(error.path).toBe(path);
+      expect(error.cause).toBeDefined(); // wrap-and-rethrow preserves the root cause
+      expect(error.message).not.toContain(path);
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   });
 
   it('rejects a duplicate (run_id, seq) in run_events (the unique gap-detection invariant)', () => {

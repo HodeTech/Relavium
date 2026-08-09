@@ -2,6 +2,7 @@ import {
   createClient,
   createRunHistoryReader,
   createSessionStore,
+  runEvents,
   runMigrations,
   workflows,
   type DbClient,
@@ -43,6 +44,7 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
     totalInputTokens: 0,
     totalOutputTokens: 0,
     totalCostMicrocents: 0,
+    totalConservativeMicrocents: 0,
     createdAt: ISO(T0),
     updatedAt: ISO(T0),
     ...overrides,
@@ -407,5 +409,29 @@ describe('buildHomeSnapshot (2.5.B Home aggregation)', () => {
       );
     }
     expect(buildHomeSnapshot(deps).recentSessions).toHaveLength(DEFAULT_HOME_LIMIT);
+  });
+
+  it('names a run whose event log cannot be read instead of showing it as ordinary (#W15-15)', async () => {
+    // Degrading silently made a damaged run render exactly like a paused run with nothing pending — and the
+    // Home is where a user would come to find out WHICH run is broken.
+    await seedRun(client.db, { slug: 'demo', runId: 'bad-01', state: 'paused' });
+    client.db
+      .insert(runEvents)
+      .values({
+        id: '00000000-0000-4000-8000-0000000000f1',
+        runId: 'bad-01',
+        seq: 900,
+        eventType: 'node:started',
+        payloadJson: JSON.stringify({ type: 'node:started', nodeId: 42 }),
+        ts: 0,
+      })
+      .run();
+
+    const snapshot = buildHomeSnapshot(deps);
+
+    expect(snapshot.unreadableRunIds).toEqual(['bad-01']);
+    // …and NOT the fresh-install welcome: a Home whose only content is a damaged run must not answer "you
+    // have nothing", which is this finding in its most misleading form.
+    expect(snapshot.isEmpty).toBe(false);
   });
 });

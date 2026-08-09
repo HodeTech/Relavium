@@ -1,3 +1,4 @@
+import { CorruptRunEventError, UnreadableRunEventLogError } from '@relavium/db';
 import { describe, expect, it } from 'vitest';
 
 import { CliError, isCliError, toUserFacing } from './errors.js';
@@ -45,6 +46,36 @@ describe('toUserFacing', () => {
       message: 'name it',
       exitCode: EXIT_CODES.invalidInvocation,
     });
+  });
+
+  it('names the run and row for a damaged event row instead of the generic fault (ADR-0074 §5 / ADR-0050)', () => {
+    // The generic branch below would report one corrupt row out of a 4,000-event log as
+    // `An unexpected internal error occurred.` — no run, no row, no next step. The store's typed error already
+    // carries the run id, the `seq` and the `event_type`, none of which is user content or a secret.
+    const projected = toUserFacing(
+      new CorruptRunEventError('run-7', 42, 'node:started', new Error('bad body')),
+    );
+    expect(projected.code).toBe('internal');
+    expect(projected.exitCode).toBe(EXIT_CODES.workflowFailed); // the read genuinely failed — still exit 1
+    expect(projected.message).toContain('run-7');
+    expect(projected.message).toContain('42');
+    expect(projected.message).toContain('node:started');
+    expect(projected.message).not.toContain('bad body'); // the cause stays out of primary output
+  });
+
+  it('distinguishes "your binary is too old" from "the data is damaged" (ADR-0075)', () => {
+    // The two errors deserve different sentences because they have different remedies: corruption is not
+    // repaired by upgrading, and a version gap is not repaired by restoring a backup. Projecting both as one
+    // generic fault is what made the refusal indistinguishable from data loss.
+    const projected = toUserFacing(new UnreadableRunEventLogError('run-9', [3, 4]));
+    expect(projected.code).toBe('internal');
+    // Exit 1: the resume genuinely did not happen. NOT exit 2 — the invocation was valid.
+    expect(projected.exitCode).toBe(EXIT_CODES.workflowFailed);
+    // ORDERED, not four independent substrings: the reading order is the point — what is wrong, then the
+    // remedy, then what is NOT lost. Four `toContain`s pass on any shuffle of the same words.
+    expect(projected.message).toMatch(
+      /^run run-9 contains 2 events.*seq 3, 4.*Upgrade.*still readable/,
+    );
   });
 
   it('maps an unknown throw to a generic internal error without leaking detail', () => {

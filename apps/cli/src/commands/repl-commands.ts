@@ -36,7 +36,8 @@ export interface ReplCommandContext {
   /** List the project's discovered workflows + agents (the disk catalog) as a notice (2.5.C S4). */
   readonly showWorkflows: () => void | Promise<void>;
   /** Show the session's cumulative cost as a notice (2.5.C S4; the per-model breakdown is 2.6.C). */
-  readonly showCost: () => void | Promise<void>;
+  /** `/cost`, and `/cost --release` — ADR-0074 §1's escape hatch, on the surface that renders the amount. */
+  readonly showCost: (release?: boolean) => void | Promise<void>;
   /** Run the `/doctor` health check (2.5.C S5); `deep` adds the network/process tier (key + MCP validation). */
   readonly runDoctor: (deep: boolean) => void | Promise<void>;
   /** Set the reasoning-effort tier (ADR-0066). Receives the raw tier token (empty ⇒ show the current tier + options).
@@ -176,9 +177,18 @@ const RAW_REPL_COMMANDS: readonly ReplCommand[] = [
   {
     name: 'cost',
     label: 'Cost',
-    description: "Show this session's cumulative cost.",
+    description: "Show this session's cumulative cost; --release clears held estimates.",
+    // `read` for the bare form. `--release` MUTATES (ADR-0074 §1's deliberate user decision), but the flag is
+    // opt-in by typing it — the palette submits the bare form, exactly like `/doctor --deep`.
     effect: 'read',
-    run: (ctx) => ctx.showCost(),
+    args: [
+      {
+        flag: '--release',
+        description:
+          'Clear conservative commitments — estimates held against the cap for calls that returned no usage.',
+      },
+    ],
+    run: (ctx, args) => ctx.showCost(args.includes('--release')),
     availableIn: ['chat'],
   },
   {

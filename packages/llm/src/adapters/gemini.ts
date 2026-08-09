@@ -715,6 +715,19 @@ export function buildGeminiRequest(req: LlmRequest): GeminiRequest {
 // --- The default transport (the only place the SDK is used) -----------------------------------
 
 /* v8 ignore start -- the live-only real-SDK transport; the fold it feeds is fully covered offline via an injected GeminiTransport */
+
+/**
+ * **Gemini needs no `maxRetries: 0` (#276) — verified, not assumed.** `@google/genai`'s `ApiClient.apiCall`
+ * issues a bare `fetch` unless `clientOptions.httpOptions.retryOptions` is supplied at construction, and this
+ * adapter never supplies `httpOptions`. So `FallbackChain` is already the sole retry authority on every path
+ * used here (`generateContent`, `generateContentStream`, `models.list`, `generateImages`, `generateVideos`,
+ * `operations.getVideosOperation`).
+ *
+ * Two traps for whoever edits this next. **Never pass `httpOptions.retryOptions`** — the SDK's defaults behind
+ * it are 5 attempts over 408/429/500/502/503/504. And `client.interactions` / `.webhooks` / `.agents` route
+ * through a different, Stainless-style client that DOES default to `maxRetries: 2`; moving any call to those
+ * surfaces silently reopens #276 and would need an explicit 0.
+ */
 const sdkTransport: GeminiTransport = {
   async generate(request: GeminiRequest, key: string): Promise<GeminiResponse> {
     const client = new GoogleGenAI({ apiKey: key });

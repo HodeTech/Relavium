@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Buffer } from 'node:buffer';
 
 import { createProviderStore, createRunHistoryReader } from '@relavium/db';
 import type { AgentSessionRecord, ReasoningEffort } from '@relavium/shared';
@@ -55,12 +56,18 @@ import {
   type HomeController,
   type HomeModelsPort,
 } from '../render/tui/home-controller.js';
-import { DISABLE_MOUSE, ENABLE_MOUSE } from '../render/alt-screen.js';
+import { DISABLE_MOUSE, ENABLE_MOUSE, HIDE_CURSOR, SHOW_CURSOR } from '../render/alt-screen.js';
 import { nodeCreateTempDocument, nodeSpawnEditor } from '../render/editor.js';
 import { inkOwnedTerminal, type HatchDeps } from '../render/hatches.js';
 import { nodeWaitForContinue, nodeWriteOut } from '../render/scrollback.js';
 import { copyToClipboard, type ClipboardOutcome } from '../render/clipboard.js';
-import { createSuspendPort } from '../render/suspend.js';
+import {
+  createSuspendPort,
+  defaultJobControlLifecycle,
+  suspendFullScreen,
+  wireJobControl,
+  type JobControlLifecycle,
+} from '../render/suspend.js';
 import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
@@ -111,6 +118,14 @@ export interface HomeDeps {
   readonly subscribeResize?: (onResize: () => void) => () => void;
   /** Subscribe to SIGINT(2)/SIGTERM(15)/SIGHUP(1)/SIGQUIT(3); returns an unsubscribe. Default registers on `process`. */
   readonly subscribeSignals?: (onSignal: (signo: number) => void) => () => void;
+  /** POSIX SIGTSTP/SIGCONT seam. Separate from termination signals: a job stop is reversible and MUST NOT exit. */
+  readonly jobControlLifecycle?: JobControlLifecycle;
+  /**
+   * The short pre-Ink terminal custody window owned by `@clack/prompts` during first-run onboarding. Clack enables
+   * raw input and hides the cursor, so it needs the same reversible release/reclaim discipline as Ink before a
+   * SIGTSTP can stop the process. Injectable to keep the signal path testable without touching the real TTY.
+   */
+  readonly onboardingTerminalLifecycle?: OnboardingTerminalLifecycle;
   /** Register a synchronous `process.on('exit')` net; returns a remover. Default registers on `process`. The LAST
    *  chance to restore the terminal when something calls `process.exit()` past the `finally` (2.6.F Step 6f). */
   readonly subscribeProcessExit?: (onExit: () => void) => () => void;
@@ -153,6 +168,33 @@ export function defaultSubscribeProcessExit(onExit: () => void): () => void {
   return () => process.removeListener('exit', onExit);
 }
 
+/** The narrow `@clack/prompts` terminal custody seam needed only before Ink mounts. */
+export interface OnboardingTerminalLifecycle {
+  /** Observe raw input bytes while Clack owns stdin; callers remove the exact listener after the wizard settles. */
+  readonly onInput: (listener: (input: string) => void) => () => void;
+  /** Whether Clack currently owns raw input (and, by its contract, its hidden cursor). */
+  readonly isRawMode: () => boolean;
+  /** Transfer raw-mode ownership between Clack and the user's shell. */
+  readonly setRawMode: (enabled: boolean) => void;
+}
+
+/** Production terminal bridge for the real Clack prompt, intentionally kept out of the generic `CliIo` seam. */
+export const defaultOnboardingTerminalLifecycle: OnboardingTerminalLifecycle = {
+  onInput: (listener) => {
+    const onData = (chunk: Buffer | string): void => {
+      listener(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+    };
+    process.stdin.on('data', onData);
+    return () => process.stdin.removeListener('data', onData);
+  },
+  isRawMode: () => process.stdin.isRaw === true,
+  setRawMode: (enabled) => {
+    // The bare Home is TTY-gated, but retain this guard so a future direct caller never invokes an unsupported
+    // `setRawMode` on a redirected stream.
+    if (process.stdin.isTTY) process.stdin.setRawMode(enabled);
+  },
+};
+
 export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   const now = deps.now ?? Date.now;
   const uuid = deps.uuid ?? randomUUID;
@@ -182,6 +224,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   let controller: HomeController | undefined;
   let unsubscribeSignals: (() => void) | undefined;
   let unsubscribeProcessExit: (() => void) | undefined;
+  let unsubscribeOnboardingInput: (() => void) | undefined;
+  let disposeJobControl: (() => void) | undefined;
   let dbClosed = false;
   const closeDb = (): void => {
     if (dbClosed) return;
@@ -193,6 +237,88 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     ((sequence: string) => {
       process.stdout.write(sequence);
     });
+
+  // Before Ink mounts, the first-run wizard owns raw input and cursor visibility through `@clack/prompts`. It is a
+  // real full-screen-adjacent terminal owner: a raw Ctrl-Z becomes a SUB byte (not a kernel SIGTSTP), while an
+  // external SIGTSTP would otherwise stop the process with Clack's raw mode and hidden cursor still live. Keep its
+  // state separate from Ink's SuspendPort, then hand it off reversibly through the same job-control coordinator.
+  const onboardingTerminal = deps.onboardingTerminalLifecycle ?? defaultOnboardingTerminalLifecycle;
+  let onboardingActive = false;
+  let onboardingFinalized = false;
+  let onboardingRawReleased = false;
+  let onboardingCursorReleased = false;
+
+  const reclaimOnboardingTerminal = (): void => {
+    if (!onboardingActive || onboardingFinalized) return;
+    // Restore raw input before Clack redraws/reads again. Each latch is independent: a transient cursor-write fault
+    // must remain retryable and cannot make us incorrectly claim that the terminal is wholly reclaimed.
+    if (onboardingRawReleased) {
+      try {
+        onboardingTerminal.setRawMode(true);
+        onboardingRawReleased = false;
+      } catch {
+        // A future recovery opportunity gets another exact retry.
+      }
+    }
+    if (onboardingCursorReleased) {
+      try {
+        writeControl(HIDE_CURSOR);
+        onboardingCursorReleased = false;
+      } catch {
+        // A future recovery opportunity gets another exact retry.
+      }
+    }
+  };
+
+  const releaseOnboardingTerminal = (): boolean => {
+    if (!onboardingActive) return true; // no Ink and no Clack ownership (the tiny pre-mount handoff window)
+    if (onboardingFinalized) return false;
+    // A prior partial release may have restored raw input but failed while hiding the cursor. Retry that exact
+    // reclaim before refusing a later stop request: terminal writes are fallible and retaining the latches without a
+    // recovery attempt would turn one transient stdout fault into a permanently unsuspendable Clack prompt.
+    if (onboardingRawReleased || onboardingCursorReleased) {
+      reclaimOnboardingTerminal();
+      if (onboardingRawReleased || onboardingCursorReleased) return false;
+    }
+    // `runOnboardingWizard` also awaits keychain/config work after Clack has stopped its spinner. Do not manufacture
+    // raw mode + a hidden cursor when a stop lands in that ordinary cooked-input interval: Clack has nothing to
+    // hand over there, so a default SIGTSTP is already terminal-safe.
+    if (!onboardingTerminal.isRawMode()) return true;
+    try {
+      onboardingTerminal.setRawMode(false);
+      onboardingRawReleased = true;
+      // Mark before the write: a TTY write can throw after emitting a partial escape sequence. The rollback must
+      // conservatively re-hide the cursor in that case; a harmless extra HIDE is far safer than returning Clack to a
+      // live prompt with its cursor visible.
+      onboardingCursorReleased = true;
+      writeControl(SHOW_CURSOR);
+      return true;
+    } catch {
+      // We did not stop the process, so put any partial release back immediately rather than leaving Clack half-owned.
+      reclaimOnboardingTerminal();
+      return false;
+    }
+  };
+
+  const restoreOnboardingTerminal = (): void => {
+    // On a normal wizard handoff Clack restores itself before `onboardingActive` is cleared. This path is only for a
+    // signal/process-exit net while the wizard still owns the terminal; it deliberately leaves cooked input + a
+    // visible cursor, never a reversible Clack reclaim behind a terminal teardown.
+    if (!onboardingActive && !onboardingRawReleased && !onboardingCursorReleased) return;
+    onboardingFinalized = true;
+    try {
+      onboardingTerminal.setRawMode(false);
+      onboardingRawReleased = false;
+    } catch {
+      // The overlapping exit net/finally retries the exact operation.
+    }
+    try {
+      writeControl(SHOW_CURSOR);
+      onboardingCursorReleased = false;
+    } catch {
+      // The overlapping exit net/finally retries the exact operation.
+    }
+  };
 
   /**
    * Undo every terminal mode this command turned on, in reverse order: unmount ink FIRST (leaving raw mode and the
@@ -214,6 +340,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
   let pasteDisabled = false;
   let mouseDisabled = false;
   const restoreTerminalControls = (): void => {
+    restoreOnboardingTerminal();
     if (!unmounted) {
       try {
         instance?.unmount(); // restore the terminal from raw mode BEFORE anything else
@@ -387,6 +514,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       let persister: SessionPersister | undefined;
       try {
         persister = createSessionPersister({
+          governor: built.governor,
           store: opened.store,
           handle: built.handle,
           sessionId: built.sessionId,
@@ -529,6 +657,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // saying so on raw stderr would land on the alt buffer for one frame. `onceEffortNotice` keeps a standing
         // condition — a stale `off` on a model that cannot disable thinking — from repeating every single turn.
         onEffortWithheld: onceEffortNotice((note) => store.notice(note)),
+        onListenerError: (note) => store.notice(note),
         onUnpriced: (note) => store.notice(note),
       });
       return wireHomeChatSession(built, store, { open: true });
@@ -586,6 +715,7 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         // A RESEAT binds a different model — precisely when a tier that was fine a moment ago stops being accepted.
         // Through `noteToStore`, like every sink here, so none can TDZ on the store declared below.
         onEffortWithheld: onceEffortNotice(noteToStore),
+        onListenerError: noteToStore,
         onUnpriced: noteToStore,
       });
       // Seed the view store with the carried model + cost/turns — a resumed session never re-emits session:started,
@@ -629,33 +759,11 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
       });
     const exitProcess = deps.exit ?? ((code: number) => process.exit(code));
 
-    // First-run onboarding (2.5.G S8): a truly KEY-LESS bare Home offers a `@clack` wizard to connect a provider
-    // BEFORE mounting ink — clack + ink both take the terminal's raw mode, so the wizard must fully settle (and
-    // clack restore the terminal) before `render()`. Already behind `shouldOpenHome`'s TTY/CI gate; a cancel or a
-    // keychain-write failure ends the wizard cleanly and the Home mounts key-less (retry, or add a key manually).
-    if (isProviderKeyless(providers)) {
-      await runOnboardingWizard({
-        store: providerStore,
-        keychain,
-        resolver: providers,
-        io: deps.io,
-        // Reuse the SAME config-write target as the `/models` port (honors `--config`) so the wizard's starter
-        // model + a later `/models` pick + the started session all agree on one file (2.5.G S7/S8).
-        writeDefaultModel: (modelId, provider) =>
-          writeGlobalPreferences(
-            { defaultModel: modelId, defaultProvider: provider },
-            homeDir,
-            deps.global.configPath,
-          ),
-        ...(deps.onboardingPrompter === undefined ? {} : { prompter: deps.onboardingPrompter }),
-      });
-    }
-
-    // Bracketed paste (DECSET 2004) is enabled by ink 7's `usePaste` on mount (home-app.tsx). The defensive
-    // `DISABLE_BRACKETED_PASTE` writes in `restoreTerminalControls` are belt-and-suspenders (usePaste also
-    // disables on unmount) so an external signal can never leave the terminal in bracketed-paste mode.
-
     // One external-signal lifecycle covering the Home, the in-Home chat, and MCP teardown.
+    //
+    // This is deliberately established BEFORE first-run onboarding. Its key-validation probe is network-bound; a
+    // signal arriving while that promise is pending must still restore the terminal / close the db, rather than
+    // falling through a listener-free window (#50). `controller` is optional below, so the pre-mount path is safe.
     let signaled = false;
     const onSignal = (signo: number): void => {
       // A KEYBOARD Ctrl-C during a `/scrollback` or `/edit` hatch arrives here as a REAL SIGINT: the suspension turns
@@ -671,6 +779,10 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         return;
       }
       signaled = true;
+      // Disarm the reversible handoff BEFORE the permanent teardown writes terminal state. In particular, a late
+      // SIGCONT must not resolve an old suspension and re-enable mouse/raw/1049 after this path has restored shell
+      // custody (TERM/HUP/QUIT while stopped is the adversarial case).
+      disposeJobControl?.();
       // Best-effort terminal restore — it swallows its own throw, so it can NOT skip scheduling the bounded
       // teardown + exit below (else an external signal could neither close the db nor exit).
       restoreTerminalControls();
@@ -697,9 +809,77 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     // The LAST net. `onSignal` covers the catchable kills; this covers everything that reaches Node's `'exit'` without
     // unwinding our `finally` — a `process.exit()` from a nested command, an uncaught throw, an unhandled rejection.
     // It must be synchronous, which `restoreTerminalControls` is; the latch makes the overlap with the other nets free.
-    unsubscribeProcessExit = (deps.subscribeProcessExit ?? defaultSubscribeProcessExit)(
-      restoreTerminalControls,
-    );
+    unsubscribeProcessExit = (deps.subscribeProcessExit ?? defaultSubscribeProcessExit)(() => {
+      disposeJobControl?.();
+      restoreTerminalControls();
+    });
+
+    // SIGTSTP/SIGCONT are a SEPARATE, reversible lifecycle. `suspendFullScreen` gives Ink ownership of raw mode and
+    // Home's alt buffer while it temporarily releases our live mouse capture; on SIGCONT Ink restores both and forces
+    // a redraw. It never reaches the termination handler above, so it cannot close the db or end a live chat.
+    const jobControl = wireJobControl({
+      suspendPort,
+      lifecycle: deps.jobControlLifecycle ?? defaultJobControlLifecycle,
+      run: (suspendTerminal, waitForContinue) =>
+        suspendFullScreen(
+          {
+            suspendTerminal,
+            writeControl,
+            // Home mounts Ink with its OWN alternate-screen render option. `suspendFullScreen` must never double
+            // toggle 1049 here, even on an inline Home where `altActive` is false.
+            inkOwnsAltScreen: true,
+            altActive: altScreenActive,
+            mouseActive: mouseCaptured,
+          },
+          waitForContinue,
+        ),
+      releaseWithoutInk: releaseOnboardingTerminal,
+      reclaimWithoutInk: reclaimOnboardingTerminal,
+    });
+    disposeJobControl = jobControl.dispose;
+
+    // First-run onboarding (2.5.G S8): a truly KEY-LESS bare Home offers a `@clack` wizard to connect a provider
+    // BEFORE mounting ink — clack + ink both take the terminal's raw mode, so the wizard must fully settle (and
+    // clack restore the terminal) before `render()`. The signal and job-control nets above are already live before
+    // the wizard can reach its network-bound key-validation request.
+    if (isProviderKeyless(providers)) {
+      onboardingActive = true;
+      onboardingFinalized = false;
+      // Clack's raw-mode listener is registered after this one, so this sees SUB first. Clack itself treats Ctrl-Z as
+      // neither submit nor cancel, but consuming the byte here makes the intended POSIX handoff explicit and keeps it
+      // out of every wizard prompt/secret field.
+      unsubscribeOnboardingInput = onboardingTerminal.onInput((input) => {
+        if (input.includes('\x1a')) jobControl.requestSuspend();
+      });
+      try {
+        await runOnboardingWizard({
+          store: providerStore,
+          keychain,
+          resolver: providers,
+          io: deps.io,
+          // Reuse the SAME config-write target as the `/models` port (honors `--config`) so the wizard's starter
+          // model + a later `/models` pick + the started session all agree on one file (2.5.G S7/S8).
+          writeDefaultModel: (modelId, provider) =>
+            writeGlobalPreferences(
+              { defaultModel: modelId, defaultProvider: provider },
+              homeDir,
+              deps.global.configPath,
+            ),
+          ...(deps.onboardingPrompter === undefined ? {} : { prompter: deps.onboardingPrompter }),
+        });
+      } finally {
+        unsubscribeOnboardingInput?.();
+        unsubscribeOnboardingInput = undefined;
+        // A real process cannot execute this while stopped. It makes an injected/failing lifecycle safe, and is a
+        // no-op after a normal continue where the reversible coordinator already reclaimed Clack's state.
+        reclaimOnboardingTerminal();
+        onboardingActive = false;
+      }
+    }
+
+    // Bracketed paste (DECSET 2004) is enabled by ink 7's `usePaste` on mount (home-app.tsx). The defensive
+    // `DISABLE_BRACKETED_PASTE` writes in `restoreTerminalControls` are belt-and-suspenders (usePaste also
+    // disables on unmount) so an external signal can never leave the terminal in bracketed-paste mode.
 
     // Resolve the effective render mode (2.6.F, ADR-0068 §e). driveHome only runs on a TTY interactive path
     // (shouldOpenHome-gated), so the output mode is 'tui'; the resolver still short-circuits a 'plain' path to
@@ -751,6 +931,9 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
         alternateScreen,
         // `RootApp` attaches ink's `suspendTerminal` here while mounted (2.6.F Step 5d, ADR-0068 §e).
         suspendPort,
+        // Raw Ink mode delivers Ctrl-Z as a key event, not a process SIGTSTP. Route it into the same coordinator as
+        // an external `kill -TSTP`, so both paths release/reclaim terminal state identically.
+        onSuspend: jobControl.requestSuspend,
         // The branded banner's durable switch (Step 5g); `HomeView` owns the empty-Home rule when it is absent.
         showBanner: config.showBanner,
         // Armed only while the in-Home chat owns the screen (Step 6g). `mouseActive` is the RESOLVED mode
@@ -791,6 +974,8 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
     // terminal can never leak the session or the db handle.
     unsubscribeSignals?.();
     unsubscribeProcessExit?.();
+    unsubscribeOnboardingInput?.();
+    disposeJobControl?.();
     restoreTerminalControls();
     await controller?.teardownActive().catch(() => undefined); // always reclaim a live session
     closeDb(); // always close the shared db

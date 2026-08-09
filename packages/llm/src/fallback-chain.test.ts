@@ -1,3 +1,4 @@
+import type { AbortSignalLike } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { CostTracker } from './cost-tracker.js';
@@ -10,6 +11,7 @@ import {
   type FallbackChainOptions,
   type FallbackPlanEntry,
 } from './fallback-chain.js';
+import { UnknownModelError } from './errors.js';
 import { LlmProviderError, makeLlmError } from './llm-error.js';
 import type {
   CapabilityFlags,
@@ -108,6 +110,15 @@ const rejects =
   (provider: ProviderId, kind: LlmErrorKind, message?: string) => (): Promise<LlmResult> =>
     Promise.reject(providerError(provider, kind, message));
 
+/** A rejecting stub whose `LlmError` carries the provider's own requested wait (#279). */
+const rejectsWithRetryAfter =
+  (provider: ProviderId, retryAfterMs: number) => (): Promise<LlmResult> =>
+    Promise.reject(
+      new LlmProviderError(
+        makeLlmError({ provider, kind: 'rate_limit', message: 'rl', retryAfterMs }),
+      ),
+    );
+
 async function* streamFrom(chunks: StreamChunk[]): AsyncIterable<StreamChunk> {
   await Promise.resolve(); // a real stream awaits I/O; this keeps the fake a true async iterable
   for (const chunk of chunks) {
@@ -140,13 +151,16 @@ function makeOptions(overrides?: Partial<FallbackChainOptions>): {
   options: FallbackChainOptions;
   trace: AttemptRecord[];
   sleeps: number[];
+  sleepSignals: (AbortSignalLike | undefined)[];
 } {
   const trace: AttemptRecord[] = [];
   const sleeps: number[] = [];
+  const sleepSignals: (AbortSignalLike | undefined)[] = [];
   const options: FallbackChainOptions = {
     keyFor: () => 'test-key',
-    sleep: (ms) => {
+    sleep: (ms, signal) => {
       sleeps.push(ms);
+      sleepSignals.push(signal);
       return Promise.resolve();
     },
     onAttempt: (record) => {
@@ -154,7 +168,7 @@ function makeOptions(overrides?: Partial<FallbackChainOptions>): {
     },
     ...overrides,
   };
-  return { options, trace, sleeps };
+  return { options, trace, sleeps, sleepSignals };
 }
 
 /** Run a promise that should reject with an `LlmProviderError`, returning the carried `LlmError`. */
@@ -832,6 +846,98 @@ describe('FallbackChain — backoff and cooldown', () => {
     expect(sleeps).toEqual([100, 200]); // backoff before attempts 2 and 3, exponential, no inter-entry delay
   });
 
+  it('records an unpriced model as priced:false rather than silently as no cost (#194, 2.6.Q)', async () => {
+    // "No cost" used to be ambiguous between *could not price* and *genuinely free*. A strict cap cannot be
+    // enforced over spend it cannot see, so the surface has to be able to say which one happened.
+    const provider = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options, trace } = makeOptions({
+      costTracker: {
+        record: () => {
+          throw new UnknownModelError('self-hosted-model', ['claude-opus-4-8']);
+        },
+      } as unknown as CostTracker,
+    });
+    const chain = new FallbackChain([entry(provider, 'self-hosted-model')], options);
+
+    await chain.generate(userReq);
+
+    const succeeded = trace.find((r) => r.outcome === 'succeeded');
+    expect(succeeded?.priced).toBe(false);
+    expect(succeeded?.cost).toBeUndefined();
+  });
+
+  it('does NOT swallow a non-pricing failure from the cost tracker (#194)', async () => {
+    // The catch used to be bare, so a genuine defect in the money path — a bad Usage, a broken overlay, a
+    // throwing custom tracker — produced "no cost" and looked exactly like an unpriced model.
+    const provider = makeProvider({ id: 'anthropic', generate: resolves('ok') });
+    const { options } = makeOptions({
+      costTracker: {
+        record: () => {
+          throw new TypeError('cumulative overflowed');
+        },
+      } as unknown as CostTracker,
+    });
+    const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+
+    await expect(chain.generate(userReq)).rejects.toThrow('cumulative overflowed');
+  });
+
+  it("threads the request's signal into the host timer, so a cancel can break the wait (#W15-14)", async () => {
+    // The honoured Retry-After is clamped to a 60 s ceiling, not dropped — long enough that a cancel arriving
+    // mid-wait has to be honoured. The chain passed the delay to a bare timer with no signal, so it could not.
+    const primary = makeProvider({
+      id: 'anthropic',
+      generate: rejectsWithRetryAfter('anthropic', 1_500),
+    });
+    const { options, sleeps, sleepSignals } = makeOptions();
+    const chain = new FallbackChain(
+      [{ ...entry(primary, 'claude-opus-4-8'), maxAttempts: 2 }],
+      options,
+    );
+    const controller = new AbortController();
+
+    await rejectedError(chain.generate({ ...userReq, signal: controller.signal }));
+
+    expect(sleeps).toEqual([1_500]);
+    expect(sleepSignals).toEqual([controller.signal]);
+  });
+
+  it("honours the provider's Retry-After over its own computed backoff (#279)", async () => {
+    // A rate limit is the one case where the provider knows better than we do: it says when its window
+    // reopens. Computing our own delay either hammered it early or waited longer than needed.
+    const primary = makeProvider({
+      id: 'anthropic',
+      generate: rejectsWithRetryAfter('anthropic', 1_500),
+    });
+    const fallback = makeProvider({ id: 'openai', generate: resolves('ok') });
+    const { options, sleeps } = makeOptions({ backoffBaseMs: 100, backoffMaxMs: 1000 });
+    const chain = new FallbackChain(
+      [{ ...entry(primary, 'claude-opus-4-8'), maxAttempts: 3 }, entry(fallback, 'gpt-5.5')],
+      options,
+    );
+
+    await chain.generate(userReq);
+
+    // 1500 twice — the header, NOT the 100/200 exponential curve this config would otherwise produce.
+    expect(sleeps).toEqual([1_500, 1_500]);
+  });
+
+  it('falls back to its own curve when the provider requested nothing (#279)', async () => {
+    // `undefined` must mean "no instruction", never "wait zero" — otherwise a provider that omits the
+    // header would turn the backoff into a tight retry loop.
+    const primary = makeProvider({ id: 'anthropic', generate: rejects('anthropic', 'rate_limit') });
+    const fallback = makeProvider({ id: 'openai', generate: resolves('ok') });
+    const { options, sleeps } = makeOptions({ backoffBaseMs: 100, backoffMaxMs: 1000 });
+    const chain = new FallbackChain(
+      [{ ...entry(primary, 'claude-opus-4-8'), maxAttempts: 3 }, entry(fallback, 'gpt-5.5')],
+      options,
+    );
+
+    await chain.generate(userReq);
+
+    expect(sleeps).toEqual([100, 200]);
+  });
+
   it('respects the linear backoff curve and the ceiling', async () => {
     const provider = makeProvider({ id: 'anthropic', generate: rejects('anthropic', 'timeout') });
     const { options, sleeps } = makeOptions({ backoffBaseMs: 100, backoffMaxMs: 250 });
@@ -979,6 +1085,58 @@ describe('FallbackChain.stream', () => {
     expect(trace[0]).toMatchObject({ outcome: 'succeeded' });
     // claude-haiku-4-5: 1000 in @ $1/MTok = 100_000µ¢; 500 out @ $5/MTok = 250_000µ¢ → 350_000.
     expect(trace[0]?.cost?.costMicrocents).toBe(350_000);
+  });
+
+  it('surfaces an accounting throw as an error chunk instead of throwing out of the generator (#W15-9)', async () => {
+    // `#emitSuccess` re-throws anything that is not `UnknownModelError` so a money bug is loud (#194) — a
+    // provider returning non-integer usage trips `assertAccountableUsage`, a broken overlay or a custom
+    // tracker throws. On the `generate()` path that call sits inside the attempt's try, so the throw arrives
+    // classified. On this path it sat OUTSIDE, and escaped raw — breaking `stream`'s own contract ("a terminal
+    // failure is surfaced as an `error` chunk, not a throw") and crashing the turn unclassified AFTER the
+    // content had been produced and the provider had billed for it.
+    const provider = makeProvider({
+      id: 'anthropic',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'hello' }, STOP_CHUNK]),
+    });
+    const fallback = makeProvider({
+      id: 'openai',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'never' }, STOP_CHUNK]),
+    });
+    const thrown = new TypeError('cumulative overflowed');
+    const { options, trace } = makeOptions({
+      costTracker: {
+        record: () => {
+          throw thrown;
+        },
+      } as unknown as CostTracker,
+    });
+    const chain = new FallbackChain(
+      [entry(provider, 'claude-haiku-4-5'), entry(fallback, 'gpt-5.5')],
+      options,
+    );
+
+    // Does not reject: `collect` would propagate a raw throw.
+    const chunks = await collect(chain.stream(userReq));
+
+    const last = chunks.at(-1);
+    expect(last?.type).toBe('error');
+    // A FIXED message: the raw text is arbitrary (a custom tracker's throw) and this message is serialized
+    // into the turn/node terminal, so it must not echo it. The original survives as `cause`, which no sink
+    // serializes.
+    expect(last?.type === 'error' && last.error.message).toBe(
+      'cost accounting failed after a successful streamed attempt',
+    );
+    expect(JSON.stringify(last)).not.toContain('cumulative overflowed');
+    expect(last?.type === 'error' && last.error.cause).toBe(thrown);
+    expect(last?.type === 'error' && last.error.retryable).toBe(false); // never re-run a billed call
+    // Still LOUD: the content chunks were forwarded before it, so the consumer sees both.
+    expect(chunks[0]).toEqual({ type: 'text_delta', text: 'hello' });
+    // Surfaced, NOT failed over — the provider already billed for this call.
+    expect(fallback.calls).toHaveLength(0);
+    // Exactly one attempt record, and it is the failure — `#emitSuccess` folds usage before it emits, so no
+    // success record was written first.
+    expect(trace).toHaveLength(1);
+    expect(trace[0]).toMatchObject({ outcome: 'failed' });
   });
 
   it('records a content-free success with no usage when the stream omits a stop chunk', async () => {

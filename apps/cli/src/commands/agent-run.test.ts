@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -279,6 +279,30 @@ describe('agentRunCommand (2.Q)', () => {
     expect(types).toContain('session:turn_completed'); // the classified error rides the stream as an event
     expect(types.at(-1)).toBe('session:cancelled'); // the terminal is the last line, not dropped
     expect(err()).not.toContain('turn failed:'); // under --json the human stderr detail stays suppressed
+  });
+
+  it('attaches a no-op conservative writer, so a capped one-shot is not failed by its own barrier (#W15-21)', async () => {
+    // ADR-0074 §4: `agent run` opens no session store, so a conservative commitment has nowhere durable to go.
+    // Without the explicit no-op writer, every commitment REJECTS — the governor marks the session
+    // durability-broken and §2's barrier fails the turn, for a session nobody was ever going to resume.
+    // Deleting that one line silently broke every capped `agent run` and left the whole suite green.
+    //
+    // The cap is large enough that nothing legitimately trips it, so the ONLY way this turn can fail is the
+    // durability barrier — which is exactly what the break-verify below confirms.
+    // The cap is a PROJECT-layer `[chat]` key (`resolve.ts` reads it from project.toml/workspace.toml).
+    mkdirSync(join(cwd, '.relavium'), { recursive: true });
+    writeFileSync(
+      join(cwd, '.relavium', 'project.toml'),
+      '[chat]\nmax_cost_microcents = 1000000000\n',
+    );
+    // A stream that ends WITHOUT a stop chunk carries no usage — the "provider may already have billed but
+    // returned nothing accountable" case that makes the governor hold a conservative commitment. A plain
+    // `textTurn` carries usage, makes no commitment, and leaves this test vacuous (verified, not assumed).
+    const noUsageTurn: StreamChunk[] = [{ type: 'text_delta', text: 'done' }];
+    const { d, out } = deps('go', { providers: scriptedResolver([noUsageTurn]) });
+
+    expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(EXIT_CODES.success);
+    expect(out()).toContain('done');
   });
 
   it('rejects --input as not-yet-supported (session prompt interpolation is a pending engine change)', async () => {
