@@ -30,10 +30,26 @@ describe('sanitizeUntrusted — the failure paths carry arbitrary text (#W15-8)'
   });
 
   it('redacts a credential even when a control byte splits it', () => {
-    // NOT a proof that redact-before-strip matters: swapping the order leaves this green, because
-    // `scrubSecrets` matches the surviving prefix either way. It pins the outcome, not the ordering.
     const split = join('sk-', 'ant-', 'api03-AbCdEf', '\u001b', '[0m', '0123456789xyz');
     expect(sanitizeUntrusted(split)).not.toContain('AbCdEf0123456789xyz');
+  });
+
+  it('redacts a credential split by a byte the STRIP removes — the case that pins the order', () => {
+    // The leak the old redact-first order actually had, and that this file previously said it could not
+    // construct. `U+0001` defeats the key pattern while it is present; the strip then REJOINS the halves, so
+    // redacting first printed the whole key. Normalizing first sees the contiguous key and replaces it.
+    const key = join('sk-', 'ant-', 'api03-', 'AbCdEf0123456789xyz');
+    const split = `${key.slice(0, 12)}${String.fromCharCode(1)}${key.slice(12)}`;
+    expect(sanitizeUntrusted(split)).not.toContain('0123456789xyz');
+    expect(sanitizeUntrusted(split)).toContain('[REDACTED]');
+  });
+
+  it('does not leak when a NEWLINE splits it either — the near-miss that made the old order look safe', () => {
+    // Recorded because it is the case that misled the earlier reasoning: a newline is COLLAPSED to a space,
+    // not removed, so the halves never become contiguous and neither order redacts a usable key. That is why
+    // "I could not construct a case" was not evidence — only the REMOVED bytes rejoin.
+    const key = join('sk-', 'ant-', 'api03-', 'AbCdEf0123456789xyz');
+    expect(sanitizeUntrustedInline(`${key.slice(0, 12)}\n${key.slice(12)}`)).not.toContain(key);
   });
 
   it('still removes terminal control bytes, so it is a superset of the old behaviour', () => {

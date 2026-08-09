@@ -8,6 +8,8 @@
 
 > **Status follow-up, 2026-08-07 (appended, not rewritten — ADRs are append-only).** The line above has been true and is no longer: ADR-0074 §2–§5 landed in PR #81, and §1's escape hatch became reachable with it (`/cost --release`, with the release written durably to the session's conservative columns so it survives a `chat-resume`). What ADR-0074 describes is now what ships on the session path. The reserved `budget:estimate_released` event stays reserved and unemitted — the session path restores its conservative total from COLUMNS rather than by replaying events, so zeroing them is what makes the release durable there; the event is needed only by a WORKFLOW-run release surface, which does not exist yet. Two ADR-0074-adjacent gaps remain open under their own ADRs: a durable per-attempt REALIZED-cost ledger, and whether §5's tolerant read should fail closed on the resume path.
 
+<!-- -->
+
 > **Amended 2026-06-18 by [ADR-0044](0044-media-access-governance-read-media-save-to-cost.md).** A refinement, not a reversal: ADR-0044 adds a **disjoint per-modality media cost class** to this ADR's pre-egress governor — it widens the pre-egress hook to carry `outputModalities`/a media-unit estimate and folds the media estimate into the **existing** `max_cost_microcents` cap (no new cap dimension, no new event/error class). This ADR's budget / timeout / concurrency decisions are unchanged.
 
 ## Context

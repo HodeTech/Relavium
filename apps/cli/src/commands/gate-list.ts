@@ -35,6 +35,11 @@ export interface GateListCommandDeps {
  * multi-gate discovery surface the 2.G `gate` command's `--gate` requirement points at). It rests on the SAME
  * `pendingHumanGates` reconstruction the resume path uses, so the two cannot disagree on the FOLD (they deliberately differ on the READ — ADR-0075 makes the resume refuse a log a display still shows, so a discovery surface may list a gate `relavium gate` will decline); budget gates are
  * excluded (that is `relavium budget resume`). An unknown `runId` is an invalid invocation (exit `2`).
+ *
+ * `--json` is one record per line (ADR-0049). Two shapes share that stream: a pending-gate row
+ * (`{ runId, gateId, nodeId, gateType, message, expiresAt? }`) and, for a run whose event log could not be
+ * read, a marker (`{ runId, unavailable: 'corrupt_event_log' }`) — no `gateId`, so a consumer selecting gates
+ * is unaffected while a careful one can tell "damaged" from "none" (#W15-15).
  */
 export function gateListCommand(args: GateListCommandArgs, deps: GateListCommandDeps): ExitCode {
   const { homeDir } = loadResolvedConfig({
@@ -89,7 +94,9 @@ export function gateListCommand(args: GateListCommandArgs, deps: GateListCommand
  */
 function renderUnreadableRuns(io: CliIo, runIds: readonly string[]): void {
   if (runIds.length === 0) return;
-  const shown = runIds.slice(0, MAX_REPORTED_UNREADABLE);
+  // SANITIZED like `legacyMediaJobHoldNotice`: a run id is a DB value with no CHECK behind it, and this is a
+  // terminal write.
+  const shown = runIds.slice(0, MAX_REPORTED_UNREADABLE).map((id) => sanitizeInline(id));
   const ids = runIds.length > shown.length ? `${shown.join(', ')}, …` : shown.join(', ');
   const one = runIds.length === 1;
   io.writeErr(

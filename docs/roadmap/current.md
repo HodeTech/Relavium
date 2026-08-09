@@ -143,8 +143,13 @@ checklists before ~30 security-gated PRs are reviewed against them.
 All three CRITICALs, plus the states where `max_cost_microcents` is silently not a cap. Four file-disjoint
 lanes, any order between them, plus the money hole they left open.
 
-**🔶 Wave 1 lanes (a)–(d) are COMPLETE (2026-07-30, PR #81); lane (e) is NOT.**
+**✅ Wave 1 is COMPLETE — lanes (a)–(d) on 2026-07-30 (PR #81), lane (e) on 2026-08-09 (`#W15-3`).**
 
+> **Superseded 2026-08-09 — kept because the correction is the record.** Lane (e) closed with `#W15-3`:
+> `/cost --release` makes §1's escape hatch reachable, and `/cost` renders the durability state. The
+> retraction below was accurate when written and is no longer; it stays so the history of the false
+> completion claim is not quietly erased.
+>
 > **Retraction (2026-07-30).** This section previously said Wave 1 was complete and ADR-0074 fully implemented.
 > That was wrong on lane (e) and I am correcting it rather than leaving it: **§1's release escape hatch is
 > exposed on `GovernorWiring` but reachable from no command, REPL action or Home affordance**, and `/cost` never

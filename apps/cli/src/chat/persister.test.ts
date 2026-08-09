@@ -257,22 +257,23 @@ describe('createSessionPersister', () => {
     const { built, persister } = await setup(scriptedResolver([textTurn('hi')]));
     built.session.start();
     persister.start();
-    vi.spyOn(store, 'recordSessionCost').mockImplementation(() => {
+    const record = vi.spyOn(store, 'recordSessionCost').mockImplementation(() => {
       throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
     });
 
     persister.beginUserTurn('first');
     await built.session.sendMessage('first');
-    vi.restoreAllMocks();
 
-    // Whether this turn produced a `cost:updated` at all depends on the default agent's model being priced,
-    // so assert the INVARIANT rather than a specific figure: the durable total and what this process believes
-    // must not have diverged.
+    // The spy is asserted BEFORE the restore, because without it this test passes when no `cost:updated` was
+    // emitted at all — which is the vacuous reading its earlier comment settled for rather than closed.
+    expect(record).toHaveBeenCalled();
+    expect(persister.durabilityFailure?.message).toContain('database is locked');
+    vi.restoreAllMocks();
     expect(store.loadSession('sess-1')?.totalCostMicrocents).toBe(0);
     persister.close();
   });
 
-  it('a FAILED turn contributes NO tokens to the session totals', async () => {
+  it('a FAILED turn contributes NO tokens to the session totals (the write LANDED; only the turn failed)', async () => {
     // The bug this pins was real and mine: the totals were assigned BEFORE `writeTurn`, so a failed write left
     // them advanced and the next turn's row claimed two turns' tokens for one visible exchange. No magic
     // numbers — a control run of ONE clean turn establishes what a turn is worth, and failed-then-clean must

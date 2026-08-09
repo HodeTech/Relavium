@@ -360,8 +360,11 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           // only by ACCIDENT, and the next `beginUserTurn` overwrote it anyway, losing an exchange the
           // in-memory session still showed (#W15-4). The failure is now latched as well, which is what makes
           // `beginUserTurn` refuse the overwrite and the host refuse further egress.
+          // The guard above already narrowed it; capture it so the callback closes over a `string` rather
+          // than re-asserting one (CLAUDE.md rule 1 — no unsafe `as`).
+          const userText = pendingUserText;
           persistDurably(() => {
-            commitTurn(pendingUserText as string, event.tokensUsed);
+            commitTurn(userText, event.tokensUsed);
           });
         } else {
           // An errored or aborted turn persists no messages and accumulates no TOKENS, but the row is still
@@ -382,9 +385,11 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
           const marker = stageMarker(event.summary, event.keptMessageCount);
           const nextInput = totalInputTokens + event.tokensUsed.input;
           const nextOutput = totalOutputTokens + event.tokensUsed.output;
-          deps.store.writeTurn({
-            messages: marker === undefined ? [] : [{ message: marker }],
-            session: record('active', { input: nextInput, output: nextOutput }),
+          persistDurably(() => {
+            deps.store.writeTurn({
+              messages: marker === undefined ? [] : [{ message: marker }],
+              session: record('active', { input: nextInput, output: nextOutput }),
+            });
           });
           if (marker !== undefined) sequenceNumber += 1; // the marker's seq is NOT a real-message seq
           totalInputTokens = nextInput;
@@ -395,9 +400,11 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         // A deterministic /trim — a summary-less boundary marker, no cost. Flush the row (updatedAt) after.
         {
           const marker = stageMarker('', event.keptMessageCount);
-          deps.store.writeTurn({
-            messages: marker === undefined ? [] : [{ message: marker }],
-            session: record('active'),
+          persistDurably(() => {
+            deps.store.writeTurn({
+              messages: marker === undefined ? [] : [{ message: marker }],
+              session: record('active'),
+            });
           });
           if (marker !== undefined) sequenceNumber += 1;
         }
@@ -457,10 +464,13 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       assistantText = '';
       turnModelCatalogId = undefined; // a fresh turn: attribute the assistant row to THIS turn's egress, never a prior one
     },
-    recordConservativeCommitment(commitment: {
+    async recordConservativeCommitment(commitment: {
       readonly model: string;
       readonly estimateMicrocents: number;
     }): Promise<void> {
+      // `async`, so a SYNCHRONOUS store throw reaches the governor's barrier as a REJECTION. The store write
+      // is synchronous under `better-sqlite3`, and the comment below already says the barrier "needs a real
+      // rejection to classify" — which a sync throw is not. Same class as `checkpointer.load`.
       // ADR-0074 §4. The store's own transaction is what makes this durable: the per-model row and the session
       // aggregate move together under `BEGIN IMMEDIATE`, so a crash between them is impossible. Nothing here
       // touches a realized figure — that separation is the ADR's central negative guarantee, and it lives in the
@@ -481,7 +491,7 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
         estimateMicrocents: commitment.estimateMicrocents,
         ts: deps.now(),
       });
-      return Promise.resolve();
+      await Promise.resolve();
     },
     close(): void {
       unsubscribe?.();

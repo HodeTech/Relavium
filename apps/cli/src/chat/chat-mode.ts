@@ -195,10 +195,14 @@ function advertiseFor(
 }
 
 /**
- * Whether an approval preview carries NO concrete target to review — no `path` (fs_write), `command` (process),
- * or `host` (egress http). True for `mcp_call` / `web_search` (`previewFor` returns `{}`), whose action class is
- * "enough" to gate but shows the user no specific server/tool/args. Such a grant must be once-only (never an
- * `always`-cached blank check).
+ * Whether an approval preview carries NO concrete target to review — no INFORMATIVE `path` (fs_write),
+ * `command` (process), or `host` (egress http).
+ *
+ * "Informative", not merely "present" (#W15-12): a field reduced entirely to redaction markers and separators
+ * shows the user nothing, and treating it as concrete let a blank check be cached. True for `mcp_call` /
+ * `web_search` (`previewFor` returns `{}`), whose action class is "enough" to gate but names no specific
+ * server/tool/args, AND for a fully-scrubbed target. Such a grant must be once-only (never an `always`-cached
+ * blank check). See {@link isInformative} for where the line falls.
  */
 function isBlankPreview(preview: ToolActionPreview): boolean {
   // Keyed by `keyof ToolActionPreview` so a NEW reviewable field breaks the build HERE (it must be added below)

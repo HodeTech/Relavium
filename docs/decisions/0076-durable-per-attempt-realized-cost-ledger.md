@@ -26,7 +26,7 @@ There is also an accounting consequence independent of the cap. `run_costs` is p
 
 The name pairs with its estimate twin: `budget:estimate_committed` records an amount that MIGHT have been billed, `cost:attempt_settled` records one that WAS, per attempt. It reuses the admission vocabulary (`settle`, `settleAtReservedEstimate`) deliberately, because a settled admission is exactly the moment it is emitted.
 
-The event carries the attempt's identity (node, model, the within-chain attempt index), its realized `costMicrocents` and token counts, the run-wide cumulative *after* it, and whether it could be priced. Its exact Zod shape and envelope rules have one canonical home in [sse-event-schema.md](../reference/contracts/sse-event-schema.md) and [run-event.ts](../../packages/shared/src/run-event.ts); this ADR decides that it exists, when it is written, and what it means.
+The event carries the attempt's identity (node, model, the within-chain attempt index), its realized `costMicrocents` and token counts, the run-wide cumulative *after* it, and whether it could be priced. Its exact shape and envelope rules have ONE canonical home — [sse-event-schema.md](../reference/contracts/sse-event-schema.md); [run-event.ts](../../packages/shared/src/run-event.ts) is the Zod validation that implements it, not a second specification. This ADR decides that the event exists, when it is written, and what it means.
 
 Three properties make it a ledger rather than another observation:
 

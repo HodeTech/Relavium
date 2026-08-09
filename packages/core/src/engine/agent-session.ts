@@ -634,9 +634,6 @@ export class AgentSession {
       // otherwise carry a fallback-provider signature into the next turn's primary request. Faithful
       // cross-turn tool/reasoning history is the 1.X/1.Z deferral (it needs the turn core to expose the
       // intermediate messages, which the concurrent 1.AC work currently owns in agent-turn.ts).
-      if (result.text.length > 0) {
-        this.#messages.push({ role: 'assistant', content: [{ type: 'text', text: result.text }] });
-      }
       // ADR-0074 §2: the enclosing turn completion WAITS for the commitment's durability acknowledgement.
       // Before this, a chat reported a turn complete — `sendMessage` returned, the process could exit — while
       // the commitment for a possibly-billed call had not reached the database. A failure here fails THIS turn,
@@ -646,7 +643,15 @@ export class AgentSession {
       // Only the SUCCESS path awaits it this way. An abort or a classified turn error already carries its own
       // terminal, and replacing a `provider_auth` failure with a durability failure would hide the cause the
       // user needs; the governor keeps the debit and its sticky `conservativeDurabilityBroken` regardless.
+      //
+      // It runs BEFORE the assistant append below, not after. The catch's rollback pops exactly ONE message
+      // and its comment relies on "nothing is pushed after the user message on a throw" — which stopped being
+      // true when this await landed between them: a flush rejection popped the ASSISTANT message and left the
+      // user turn dangling, the exact shape that rollback exists to prevent. Awaiting first restores it.
       await this.#deps.flushBudgetCommitments?.();
+      if (result.text.length > 0) {
+        this.#messages.push({ role: 'assistant', content: [{ type: 'text', text: result.text }] });
+      }
       this.#emitTurnCompleted(result.stopReason, {
         input: result.usage.input,
         output: result.usage.output,

@@ -199,7 +199,14 @@ export function buildHomeSnapshot(deps: HomeStoreDeps): HomeSnapshot {
 
   const failedRuns = failedRunRecords.map((run) => toRunRow(run, slugOf(run)));
   const recentRuns = recentRunRecords
-    .filter((run) => run.status !== 'failed' && !humanGatedRunIds.has(run.id)) // never repeat an attention run
+    // Never repeat an attention row. A run whose log could not be read is an attention row too (#W15-15) —
+    // without this it rendered in BOTH strips, once as "event log unreadable" and once as an ordinary run.
+    .filter(
+      (run) =>
+        run.status !== 'failed' &&
+        !humanGatedRunIds.has(run.id) &&
+        !unreadableRunIds.includes(run.id),
+    )
     .slice(0, limit) // trim the over-fetch back to the top-N survivors
     .map((run) => toRunRow(run, slugOf(run)));
 

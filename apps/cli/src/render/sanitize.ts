@@ -67,10 +67,18 @@ export function sanitizeInline(text: string): string {
  * The sanitizer for text this process did NOT author — a rejection message, a provider response body, an MCP
  * error, a tool result, a stack trace.
  *
- * Two passes: redact secrets, then strip terminal controls. Redaction runs first on the theory that a credential
- * split by a control byte would rejoin once that byte is removed — but I could NOT construct a case where the
- * order changes the outcome (`scrubSecrets` matches the surviving prefix either way), so treat that as the
- * reason it is written this way, not as a proven property. What IS proven is that both passes run.
+ * Two passes, and the ORDER is load-bearing: **normalize first, redact second.**
+ *
+ * This was the other way round, on the theory that a credential split by a control byte would rejoin once that
+ * byte was removed — and the docblock admitted it could not construct a case where the order mattered. There
+ * is one, and it is a real leak: a key split by a byte `stripTerminalControls` REMOVES (say `U+0001`) defeats
+ * the pattern while the byte is still there, and then the strip rejoins the halves — printing the whole key.
+ * Redacting after the strip sees the contiguous key and replaces it.
+ *
+ * The near-miss worth recording, because it is the case that made the old order look safe: a split by a
+ * NEWLINE does not leak either way, since `sanitizeInline` collapses it to a SPACE rather than removing it, so
+ * the halves never become contiguous. Only the REMOVED bytes rejoin — which is exactly why normalization has
+ * to run first, and why "I could not construct a case" was not evidence.
  *
  * `scrubSecrets` rather than the tool-input detector `redactSecretShapedText`: the two catch different things,
  * and this path needs the KEY-PREFIX patterns (`sk-*`, `AIza*`, `Bearer`/`Basic` headers, URL userinfo, secret
@@ -82,12 +90,13 @@ export function sanitizeInline(text: string): string {
  * is arbitrary and the cost of a false positive is a `[redacted]` in a diagnostic rather than a leaked key.
  */
 export function sanitizeUntrusted(text: string): string {
-  return stripTerminalControls(scrubSecrets(text));
+  return scrubSecrets(stripTerminalControls(text));
 }
 
-/** {@link sanitizeUntrusted}, collapsed to one row — for a one-line notice. */
+/** {@link sanitizeUntrusted}, collapsed to one row — for a one-line notice. Same normalize-then-redact order:
+ *  `sanitizeInline` is the normalization (strip + collapse), so the scrub sees the final text. */
 export function sanitizeUntrustedInline(text: string): string {
-  return sanitizeInline(scrubSecrets(text));
+  return scrubSecrets(sanitizeInline(text));
 }
 
 /**
@@ -130,5 +139,7 @@ export function stringifyJsonLine(value: unknown): string {
 /** One BMP code point as its `\uXXXX` JSON escape. Every member of {@link JSON_DISPLAY_UNSAFE} is a
  *  non-surrogate BMP code point, so one UTF-16 unit is the whole character. */
 function escapeAsJsonUnicode(char: string): string {
-  return `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`;
+  // `codePointAt` over `charCodeAt`: every member of the class is a non-surrogate BMP code point so the two
+  // agree, but the former is the one that stays correct if the class ever gains an astral member.
+  return String.raw`\u` + (char.codePointAt(0) ?? 0).toString(16).padStart(4, '0');
 }
