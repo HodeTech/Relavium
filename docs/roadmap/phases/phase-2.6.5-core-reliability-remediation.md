@@ -829,23 +829,49 @@ It pins that the live stream reported success; it does not prove durable truth a
 terminal type and payload. **This is the instrument `CR-10`, `CR-11`, `CR-12` and `CR-92` are proven with**, so
 it lands before them: a spine asserted with the harness the reviews already found insufficient is not asserted.
 
-**Closed by `packages/core/src/engine/durable-truth.ts`** — `checkDurableTruth` compares four views (live
-terminal, durable history, the history a FRESH engine leaves after `reconcile()`, and the status the
-checkpoint fold derives) and returns a structured verdict rather than throwing, so callers can assert on the
-specific disagreement and the oracle can have its own tests. `formatDurableTruth` renders the diff.
+**Closed by `packages/core/src/engine/durable-truth.ts`** (exported from the package index — the surfaces that
+most need it, notably `apps/cli`'s harness against the real `history.db`, are outside this package).
+`checkDurableTruth` compares the live terminal, the durable history, the history a FRESH engine leaves after
+`reconcile()`, the checkpoint status, and the log's own order, returning a structured verdict rather than
+throwing so callers can assert on the specific disagreement and the oracle can have its own tests.
 
-Two design points worth carrying into the spine work:
+**What it instruments, corrected — the first version of this note claimed all four spine items and that was
+false:**
+
+| item | expressible | why |
+|---|---|---|
+| `CR-92` | yes | terminal agreement across live / history / restart is exactly what it compares |
+| `CR-10` | **partly** | see the limitation below |
+| `CR-11` | **no** | it has no concept of run ownership or a fencing token |
+| `CR-12` | **no** | external effects need an effect-journal view and a side-effect counter it does not model |
+
+`CR-11` and `CR-12` need their own predicates. Budget for that rather than assuming this covers them.
+
+**`CR-10`'s property is only half-checkable from the log, and finding that out cost a wrong assertion.** The
+durable log's sequence numbers are a strictly increasing SUBSEQUENCE of the run's, never `0..n-1` — streamed
+events (`agent:token`, `cost:updated`, …) take numbers and are deliberately never persisted. A real completed
+run reads `[0,1,2,3,5,10,11,12,13,14]`, and asserting `0..n-1` failed a perfectly healthy engine. So "no
+persisted event is missing from the middle" is **not** expressible from the log alone: a streamed event's
+absence is indistinguishable from a lost one. **`CR-10`'s acceptance needs a store harness that records which
+events it was ASKED to persist.** What the log proves unaided is that it starts at seq 0 and only moves
+forward — which does catch out-of-order commit, the thing `#emitDurable` currently permits.
+
+Three design points worth carrying into the spine work:
 
 - **Envelope fields are excluded from the comparison on purpose.** `timestamp` and `sequenceNumber` move on
-  every restart; comparing them would make every run look like a disagreement while catching nothing. What
-  must agree is the terminal's TYPE and the payload a consumer acts on — outputs, error code, cost.
-- **The checkpoint view is not decoration.** A resume seeds itself from the fold, so a fold that disagrees
-  with the durable terminal means a resumed run does the wrong work even when every event on disk is intact.
-  That is the `CR-92` shape the live stream cannot see.
+  every restart; comparing them would make every run look like a disagreement while catching nothing.
+- **`expect: 'repaired'` exists because a CORRECT crash repair was a false failure.** A run that died without
+  a terminal and was reconciled on restart verdicted `a restart CHANGED the terminal: before=none
+  after=run:failed` — so no crash test could use the oracle at all, which is most of what it is for.
+- **The resume view the acceptance criterion names is still not the checkpoint fold.** A real resume goes
+  through the host's `Checkpointer`, and the CLI's uses ADR-0075's STRICT read that REFUSES a log with an
+  uninterpretable row; a local fold reads it happily. `loadCheckpoint` takes the real port, and the verdict
+  reports `checkpointSource` so a reader can tell which was used. Supplying it is `CR-92`'s job.
 
-Ten unit tests cover the detection logic (including the headline case: live says `completed`, history says
-`failed`), and three e2e tests apply the oracle to real engine runs on all three terminals. Break-verified:
-stopping the engine from persisting terminals reddens all three e2e tests with a readable four-view diff.
+Twenty unit tests cover the detection logic (the headline live-`completed`/history-`failed` case, a
+same-type terminal whose payload differs, a cross-run log, out-of-order and headless logs, a correct repair,
+key-order and circular payloads), and three e2e tests apply the oracle to real engine runs on all three
+terminals. Break-verified: stopping the engine from persisting terminals reddens all three e2e tests.
 
 ### CR-92 — Terminal persistence failure lets live and durable truth diverge · High · in the durability spine
 The engine can complete the delivery chain for a terminal event even when its persistence failed, and

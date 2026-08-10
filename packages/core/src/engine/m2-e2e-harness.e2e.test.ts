@@ -1144,7 +1144,11 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     const events: RunEvent[] = [];
     for await (const event of handle.events) {
       events.push(event);
-      if (event.type === 'node:started' && event.nodeId === 'work') engine.cancel(handle.runId);
+      // `handle.cancel()`, not `engine.cancel(runId)`: the latter THROWS `run_already_terminal` once the run
+      // settled, and this stream is a buffered push/pull adapter — the consumer's position relative to engine
+      // progress is a microtask-interleaving property, not a guarantee. `work` is a real node that finishes on
+      // its own, so a lagging consumer would throw inside this `for await` instead of failing an assertion.
+      if (event.type === 'node:started' && event.nodeId === 'work') handle.cancel();
     }
 
     expect(events.at(-1)?.type).toBe('run:cancelled');
