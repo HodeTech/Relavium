@@ -1,158 +1,213 @@
 # Relavium
 
-> **Start as an agent. Ship the workflow. Own every run.**
-> A multi-surface, local-first AI agent workflow platform — a product of [HodeTech](https://github.com/HodeTech).
+<p align="center">
+  <img src="assets/readme/relavium-hero.svg" alt="Relavium — start as an agent, ship the workflow, own every run" width="100%">
+</p>
 
-Relavium meets you where you already work — in conversation — and gives that
-conversation somewhere to go. You **start as an agent**: a multi-turn session in your
-terminal, in VS Code, or in a desktop chat panel. When a flow proves itself, you **ship
-the workflow**: export the session to a git-committable, multi-agent, multi-model
-`.relavium.yaml` pipeline that runs identically in your editor, your terminal, and your
-CI. Or author workflows directly. Either way you **own every run** — every step
-debuggable, every token and dollar tracked, every artifact yours, nothing leaving your
-machine unless you choose it.
+<p align="center">
+  <strong>Start as an agent. Ship the workflow. Own every run.</strong>
+</p>
 
-## Why Relavium?
+<p align="center">
+  A local-first AI agent platform that turns productive conversations into<br>
+  version-controlled, multi-agent workflows — on one pure-TypeScript engine.<br>
+  A product of <a href="https://github.com/HodeTech">HodeTech</a>.
+</p>
 
-- **Four surfaces, one engine.** Desktop (Tauri), CLI, VS Code, and (planned) the web
-  portal run the _identical_ pure-TypeScript engine. No Python sidecar, no single-tool
-  lock-in — every surface is a first-class execution target.
-- **A chat-to-workflow continuum.** Other tools make every session ephemeral. Relavium
-  sessions are persistent, resumable, and one-click exportable into a reviewed,
-  committed workflow.
-- **You own your LLM seam.** Multi-provider routing with fallback chains
-  (`[claude → gpt-4o → gemini]`) is first-class through Relavium's own `@relavium/llm`
-  abstraction over the official provider SDKs — no Vercel AI SDK, no LangChain.
-- **Local-first by design.** Zero cloud, no account required. Your API keys live in your
-  OS keychain — never in plaintext, never in logs. Optional managed inference and cloud
-  execution are planned extensions on the same engine.
-- **Workflows are git objects.** `.relavium.yaml` files are diffable, reviewable,
-  PR-able, and shareable — team infrastructure, not a proprietary JSON blob or buried
-  Python.
-- **Multimodal, end-to-end.** Image / audio / video as input and output — including
-  rule-driven media generation — flow through the same seam and engine.
+<p align="center">
+  <a href="https://www.npmjs.com/package/relavium"><img src="https://img.shields.io/npm/v/relavium?style=flat-square&color=7c3aed" alt="npm version"></a>
+  <a href="https://github.com/HodeTech/Relavium/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/HodeTech/Relavium/ci.yml?branch=main&style=flat-square&label=CI" alt="CI status"></a>
+  <img src="https://img.shields.io/badge/Node-%E2%89%A5%2022-339933?style=flat-square&logo=nodedotjs&logoColor=white" alt="Node.js 22 or newer">
+  <img src="https://img.shields.io/badge/TypeScript-strict-3178c6?style=flat-square&logo=typescript&logoColor=white" alt="Strict TypeScript">
+  <img src="https://img.shields.io/badge/local--first-BYOK-0891b2?style=flat-square" alt="Local-first BYOK">
+  <img src="https://img.shields.io/badge/license-proprietary-475569?style=flat-square" alt="Proprietary license">
+</p>
 
-## Highlights
+<p align="center">
+  <a href="#get-started">Get started</a> ·
+  <a href="#why-relavium">Why Relavium</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#project-status">Status</a> ·
+  <a href="docs/README.md">Documentation</a>
+</p>
 
-- **Chat-to-workflow export** — turn a proven session into a reusable `.relavium.yaml`.
-- **Persistent, resumable agent sessions** — no run is ever ephemeral.
-- **Live execution** — tokens stream as the run progresses; parallel branches run together.
-- **Multi-model fallback chains** — runs survive provider outages and rate limits.
-- **Checkpoint & resume** — pause and resume at any node boundary, even across processes.
-- **Human gates with timeout policy** — pause for an approve / reject / input decision.
-- **Per-node cost waterfall** — token and dollar attribution per node, per model.
-- **Interactive Home** — a bare `relavium` invocation opens a management center: start agents,
-  monitor runs, browse history, manage providers.
-- **MCP client** — agents consume tools from external MCP servers over stdio, HTTP, SSE, and
-  WebSocket, with secrets in the keychain.
-- **Live model catalog** — browse and switch models mid-session; per-model cost tracking.
-- **Local-first, zero-install posture** — BYOK, OS keychain, no sign-up.
+Relavium begins where agent work naturally begins: in conversation. Explore a task in a
+persistent session, keep the flow that proves useful, and graduate it into a reviewable
+`.relavium.yaml` workflow. The conversation and the workflow are not separate products —
+they are two entry points into the same engine, tool registry, model seam, and event stream.
 
-## Getting started
+## From conversation to infrastructure
 
-The CLI is the first usable surface. It ships as a single npm binary — `npm install -g relavium`
-(the public npm publish is the final maintainer step of the **v0.1.1** release; until it lands, build from
-source per [local dev setup](docs/runbooks/local-dev-setup.md)). Then **start as an agent → ship the workflow
-→ own every run**:
+<p align="center">
+  <img src="assets/readme/agent-to-workflow.svg" alt="A Relavium agent session becoming a committed workflow and observable runs" width="100%">
+</p>
+
+Most agent tools make you choose between a flexible chat and an operable workflow. Relavium
+treats them as a continuum:
+
+1. **Explore in an agent session.** Work conversationally with streaming output, tools,
+   model controls, persistent history, and human approval.
+2. **Promote what works.** Export the proven flow into git-native YAML that can be reviewed,
+   changed in a PR, and shared without embedding provider keys.
+3. **Run it deliberately.** Execute locally or in CI with typed events, durable history,
+   human gates, checkpoints, and cost controls.
+
+You can also author the workflow directly; conversation is an on-ramp, not a requirement.
+
+## Get started
+
+The published CLI is the fastest way to use Relavium. It requires **Node.js 22 or newer**.
 
 ```bash
-# 1. Point Relavium at a provider — your key goes to the OS keychain, never a file
+npm install -g relavium
+```
+
+1. Connect a provider. The key is read from stdin and stored in the OS keychain —
+   never passed through argv.
+
+```bash
 relavium provider add anthropic
-echo "$ANTHROPIC_API_KEY" | relavium provider set-key anthropic   # the key is read from stdin, never argv
+printf '%s\n' "$ANTHROPIC_API_KEY" | relavium provider set-key anthropic
+```
 
-# 2. Start as an agent — a multi-turn session in your terminal
+2. Start as an agent.
+
+```bash
 relavium chat
-#    …converse until a flow proves itself, then run /export inside the REPL
-#    to ship the session to a git-committable .relavium.yaml
+```
 
-# 3. Own every run — execute the workflow and stream every event (CI-friendly with --json)
+3. Run `/export` inside the session to create a git-committable workflow. Execute it
+   interactively, or stream NDJSON for CI with `--json`.
+
+```bash
 relavium run ./my-workflow.relavium.yaml --json
 ```
 
-Prefer to author directly? `relavium create` scaffolds an agent or a minimal single-agent workflow, and
-`relavium import` / `relavium export` move them between projects. The full surface is the
-[CLI command reference](docs/reference/cli/commands.md).
+Prefer to author first? `relavium create` scaffolds an agent or a minimal workflow;
+`relavium import` and `relavium export` move validated artifacts between projects. See the
+[CLI command reference](docs/reference/cli/commands.md) for the complete surface and the
+[local development runbook](docs/runbooks/local-dev-setup.md) to build from source.
+
+## Why Relavium
+
+| | |
+|---|---|
+| **Conversation becomes infrastructure** | A useful session can graduate into a durable workflow instead of disappearing into chat history. |
+| **Git-native by construction** | Workflows are diffable `.relavium.yaml` files — reviewable in pull requests and owned by the team that runs them. |
+| **Multi-model without framework lock-in** | Relavium owns its `LLMProvider` seam and routes across Anthropic, OpenAI-compatible providers, and Gemini without LangChain or the Vercel AI SDK. |
+| **Local-first control** | Local BYOK is the default, no Relavium account is required, and provider keys are stored in the OS keychain rather than workflow files. |
+| **Execution you can inspect** | Typed event streams, local run history, human gates, checkpoints, retries, fallback chains, and cost controls make a run observable. |
+| **One engine, multiple surfaces** | `AgentSession` and `WorkflowEngine` share one platform-pure core designed for the CLI, desktop, VS Code, and future cloud workers. |
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    subgraph Surfaces
-        D[Desktop · Tauri]
-        C[CLI]
-        V[VS Code extension]
-        P[Web portal · planned]
-    end
-    subgraph Engine["@relavium/core — one pure-TypeScript engine"]
-        WE[WorkflowEngine]
-        AS[AgentSession]
-        BUS[(RunEventBus · ToolRegistry)]
-        WE --- BUS
-        AS --- BUS
-    end
-    SEAM["@relavium/llm seam"]
-    PROV[Anthropic · OpenAI/DeepSeek · Gemini]
-    D --> Engine
-    C --> Engine
-    V --> Engine
-    P --> Engine
-    Engine --> SEAM --> PROV
+<p align="center">
+  <img src="assets/readme/relavium-architecture.svg" alt="Relavium architecture: multiple surfaces over one engine with AgentSession, WorkflowEngine, the LLM seam, MCP, and durable storage" width="100%">
+</p>
+
+The center of Relavium is `@relavium/core`, a strict TypeScript engine with **zero
+platform-specific imports**. It exposes two co-equal entry points:
+
+- **`AgentSession`** for conversational, multi-turn work.
+- **`WorkflowEngine`** for declarative `.relavium.yaml` execution.
+
+Both reuse the same `ToolRegistry`, typed event substrate, and Relavium-owned
+`@relavium/llm` abstraction. Official provider SDKs are confined to thin adapters; no
+vendor SDK type crosses the seam. Host packages supply persistence, MCP connections,
+keychain access, files, processes, and network I/O without making the engine
+platform-specific. Read the [architecture overview](docs/architecture/) or the
+[decision records](docs/decisions/) for the reasoning behind those boundaries.
+
+> The CLI is the currently published product surface. Desktop and VS Code integrations,
+> plus managed inference and cloud execution, are under development or planned. The
+> diagram shows the shared-engine topology, not equal release availability.
+
+## What ships today
+
+| Capability | Available in `relavium@0.1.1` |
+|---|---|
+| Conversational agents | Streaming multi-turn chat, persisted sessions, resume, model reseat, context compaction, and workflow export |
+| Workflow runtime | YAML parse and validation, DAG execution, parallel branches, retries, model fallback, checkpoints, and typed live events |
+| Human control | Per-tool approval modes plus durable workflow gates that can pause and resume out of process |
+| Operations | Interactive Home, run status and history, event-log replay, deterministic exit codes, and NDJSON output for CI |
+| Providers and tools | Anthropic, OpenAI-compatible, Gemini, an inbound MCP client, built-in tools, and a live/offline model catalog |
+| Local ownership | BYOK, OS-keychain storage, project-local git artifacts, and local run/session history |
+
+For exact command behavior and contracts, use the [reference documentation](docs/reference/)
+rather than this overview.
+
+## Local-first, precisely
+
+- **No account is required for local BYOK.** The CLI runs the engine and stores history on
+  your machine.
+- **Provider keys do not belong in workflows or committed configuration.** Interactive
+  setup stores them in the OS keychain; a documented environment fallback exists for
+  automation.
+- **Workflows remain ordinary files.** They can be reviewed, branched, reverted, and moved
+  without exporting from a proprietary database.
+- **Network use is explicit.** LLM requests go to the provider you configure; optional
+  catalog refreshes and future managed/cloud modes are not hidden prerequisites for local
+  execution.
+
+The binding guarantees live in the [product constraints](docs/product-constraints.md) and
+[security standard](docs/standards/security-review.md).
+
+## Project status
+
+Relavium is under active development. The **CLI is published as v0.1.1**; the pure engine,
+agent-session entry point, workflow runtime, inbound MCP client, and CLI management surface
+are implemented. The current engineering focus is **Phase 2.6.5 — Core Reliability
+Remediation**, which hardens the execution core before the next product wave opens.
+
+Status changes quickly, so this README intentionally stays high-level. The canonical source
+for the exact active wave, completed work, and open reliability obligations is
+[docs/roadmap/current.md](docs/roadmap/current.md).
+
+## Repository map
+
+| Path | Responsibility |
+|---|---|
+| [`packages/core`](packages/core/) | Platform-pure agent-session and workflow engine |
+| [`packages/llm`](packages/llm/) | Relavium model seam, adapters, fallback, usage, and cost logic |
+| [`packages/shared`](packages/shared/) | Zod schemas and inferred types — the contract source of truth |
+| [`packages/db`](packages/db/) | Local SQLite persistence with a Postgres-compatible schema and migrations |
+| [`packages/mcp`](packages/mcp/) | SDK-confined inbound MCP client and schema validation |
+| [`apps/cli`](apps/cli/) | Published terminal product and integration harness |
+| [`apps/desktop`](apps/desktop/) | Tauri desktop surface under development |
+| [`apps/vscode-extension`](apps/vscode-extension/) | VS Code surface under development |
+
+The full dependency graph and ownership rules live in
+[docs/project-structure.md](docs/project-structure.md).
+
+## Development
+
+Relavium is a pnpm + Turborepo monorepo. For a first local verification:
+
+```bash
+corepack enable
+pnpm install --frozen-lockfile
+pnpm run ci
 ```
 
-One engine, **two co-equal entry points** — `WorkflowEngine` (runs YAML pipelines) and
-`AgentSession` (runs conversational chat) — sharing the same tool registry, the same
-`@relavium/llm` multi-provider seam, and the same event bus. The engine has **zero
-platform-specific imports**, so the same source runs in the Tauri WebView, the VS Code
-host, the Node CLI, and (planned) a Bun server. Supporting packages: `@relavium/shared`
-(Zod contracts), `@relavium/db` (Drizzle — SQLite locally, PostgreSQL planned), and
-`@relavium/ui` (ReactFlow canvas + shadcn). See [docs/architecture/](docs/architecture/).
-
-## Execution modes
-
-One engine, three modes behind the one `LLMProvider` seam:
-
-- **Local (BYOK)** — the default. Your keys, your machine, zero Relavium data.
-- **Managed inference** — planned. Relavium's metered keys; the engine still runs locally.
-- **Cloud execution** — planned. Run workflows on cloud workers for 24/7 automation and
-  team sharing.
-
-## Status
-
-The engine is complete and the CLI is feature-complete (cut as **v0.1.1**, npm publish pending).
-What's shipped:
-
-- **Agent sessions** — `relavium chat` with persistent, resumable, exportable multi-turn sessions.
-- **Workflow engine** — `relavium run` executes `.relavium.yaml` pipelines with live streaming,
-  checkpoint/resume, multi-model fallback, cost governance, and human gates.
-- **Interactive Home** — the bare `relavium` invocation opens a management center with a
-  slash-command system, per-tool approval modes (ask/plan/accept-edits/auto), and context compaction.
-- **MCP client** — agents consume tools from external MCP servers over stdio + network
-  transports, with secrets in the OS keychain.
-- **Live model catalog** — onboard with a wizard, browse models, switch mid-session, track
-  per-model cost.
-- **YAML authoring** — `relavium create` (wizard), `import`, and share-safe `export`.
-
-**Next: Phase 2.6 (Conversational Authoring and the First-Class CLI)** — a full-screen
-Home-managed CLI with conversational workflow authoring, management browsers, competitor-breadth
-tools, settings/theming, and `en`/`tr` localization. For live status and the full roadmap, see
-[docs/roadmap/current.md](docs/roadmap/current.md) and the [roadmap](docs/roadmap/README.md).
+Use pnpm only — never npm or yarn for workspace development. Start with the
+[local development setup](docs/runbooks/local-dev-setup.md), then read
+[`CLAUDE.md`](CLAUDE.md) or [`AGENTS.md`](AGENTS.md) before making changes.
 
 ## Documentation
 
-The canonical documentation lives in [`docs/`](docs/) — start at
-[docs/README.md](docs/README.md), which is organized by _the kind of question each
-section answers_.
+The canonical documentation is organized by the question you are trying to answer:
 
-| Start here | |
-|------------|---|
-| [Vision](docs/vision.md) · [Product constraints](docs/product-constraints.md) · [UVP](docs/uvp.md) | What and why |
-| [Tech stack](docs/tech-stack.md) · [Project structure](docs/project-structure.md) | What it's built with |
-| [Architecture](docs/architecture/) · [Decisions (ADRs)](docs/decisions/) · [Reference](docs/reference/) | How it works |
-| [Roadmap](docs/roadmap/README.md) · [Standards](docs/standards/) | Where it's going, and the rules |
+| Start here | Answers |
+|---|---|
+| [Vision](docs/vision.md) · [Product constraints](docs/product-constraints.md) · [UVP](docs/uvp.md) | What is Relavium, and why does it exist? |
+| [Architecture](docs/architecture/) · [ADRs](docs/decisions/) | How is it built, and why these boundaries? |
+| [Reference](docs/reference/) | What are the exact YAML, event, CLI, database, and integration contracts? |
+| [Roadmap](docs/roadmap/README.md) · [Current state](docs/roadmap/current.md) | What is shipped, active, and next? |
+| [Standards](docs/standards/) · [Runbooks](docs/runbooks/) | How should the project be changed and operated? |
 
 ## License
 
 Relavium is **proprietary software** — © 2026 HodeTech, all rights reserved. It is
-**not** open source and grants no rights except as expressly stated. See
-[LICENSE](LICENSE) for the full terms. For licensing inquiries, written permission, or
-commercial-use agreements, contact [HodeTech](https://github.com/HodeTech).
+not open source and grants no rights except as expressly stated. See [LICENSE](LICENSE)
+for the full terms. For licensing inquiries or commercial-use agreements, contact
+[HodeTech](https://github.com/HodeTech).
