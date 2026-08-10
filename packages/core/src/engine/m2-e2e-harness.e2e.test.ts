@@ -50,6 +50,7 @@ import type { ToolDef as CoreToolDef, ToolRegistry, ToolResultPart } from '../to
 import { markUntrusted } from '../tools/untrusted.js';
 import { reconstructCheckpointState } from './checkpoint.js';
 import { WorkflowEngine } from './engine.js';
+import { checkDurableTruth, formatDurableTruth } from './durable-truth.js';
 import { createInMemoryHost, InMemoryRunStore } from './execution-host.js';
 import { createStandardNodeExecutor } from './node-handlers/dispatcher.js';
 import type { RunHandle } from './run-handle.js';
@@ -1061,6 +1062,93 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(persistOrder.indexOf('budget:estimate_committed')).toBeLessThan(
       persistOrder.indexOf('node:completed'),
     );
+  });
+
+  // --- The durable-truth oracle (CR-91) --------------------------------------------------------------
+  //
+  // Everything above this point asserts on the LIVE stream. That is one view, taken in-process while the
+  // engine that produced it is still alive, and it cannot see the failure class this phase exists for: a
+  // caller told `completed` while the log says `failed`, a restart reconciling to a different terminal, or a
+  // checkpoint fold that disagrees with the terminal and would make a resume do the wrong work.
+  //
+  // `checkDurableTruth` compares four views. These tests apply it to the three terminals a run can reach, on
+  // real engine runs rather than synthetic logs — `durable-truth.test.ts` covers the oracle's own detection
+  // logic, this covers the engine actually satisfying it.
+
+  /** Run the oracle over a finished run, restarting a FRESH engine over the same store to reconcile. */
+  async function assertDurableTruth(
+    host: Host,
+    store: InMemoryRunStore,
+    events: readonly RunEvent[],
+    resolveProvider: (id: ProviderId) => LlmProvider | undefined,
+  ) {
+    const runId = events[0]?.runId;
+    if (runId === undefined) expect.unreachable('no run:started');
+    const verdict = await checkDurableTruth({
+      runId,
+      live: events.at(-1),
+      eventsFor: (id) => store.eventsFor(id),
+      // A fresh engine over the SAME store, which is what a restarted process is.
+      reconcile: () => buildEngine(host, resolveProvider).reconcile(),
+    });
+    expect(verdict.agrees, formatDurableTruth(verdict)).toBe(true);
+    return verdict;
+  }
+
+  it('durable truth: a COMPLETED run survives a restart unchanged (CR-91)', async () => {
+    const store = new InMemoryRunStore();
+    const host = createInMemoryHost({ store });
+    const provider = scriptedProvider([toolUseTurn('c1'), textTurn('a summary')]);
+    const { events } = await drive(
+      buildEngine(host, () => provider).start({ workflow: HAPPY_PATH, inputs: INPUTS }),
+      host,
+    );
+
+    expect(events.at(-1)?.type).toBe('run:completed');
+    const verdict = await assertDurableTruth(host, store, events, () => provider);
+    // A run that already closed must give reconcile() nothing to do — repairing a run that DIED without a
+    // terminal is its job; touching one that landed is the defect.
+    expect(verdict.reconciledCount).toBe(0);
+    expect(verdict.durableTerminalCount).toBe(1);
+  });
+
+  it('durable truth: a FAILED run agrees across all four views (CR-91)', async () => {
+    const store = new InMemoryRunStore();
+    const host = createInMemoryHost({ store });
+    // A fatal provider error — no retry budget on HAPPY_PATH, so the node fails and the run follows.
+    const provider = scriptedProvider([
+      [
+        {
+          type: 'error',
+          error: { kind: 'auth', retryable: false, provider: 'anthropic', message: 'nope' },
+        },
+      ],
+    ]);
+    const { events } = await drive(
+      buildEngine(host, () => provider).start({ workflow: HAPPY_PATH, inputs: INPUTS }),
+      host,
+    );
+
+    expect(events.at(-1)?.type).toBe('run:failed');
+    const verdict = await assertDurableTruth(host, store, events, () => provider);
+    expect(verdict.checkpointStatus).toBe('failed');
+    expect(verdict.history?.errorCode).toBe(verdict.live?.errorCode);
+  });
+
+  it('durable truth: a CANCELLED run agrees across all four views (CR-91)', async () => {
+    const store = new InMemoryRunStore();
+    const host = createInMemoryHost({ store });
+    const provider = scriptedProvider([toolUseTurn('c1'), textTurn('a summary')]);
+    const engine = buildEngine(host, () => provider);
+    const handle = engine.start({ workflow: HAPPY_PATH, inputs: INPUTS });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'node:started' && event.nodeId === 'work') engine.cancel(handle.runId);
+    }
+
+    expect(events.at(-1)?.type).toBe('run:cancelled');
+    await assertDurableTruth(host, store, events, () => provider);
   });
 
   // --- The realized-cost ledger's barriers (ADR-0076 / ADR-0077) ------------------------------------

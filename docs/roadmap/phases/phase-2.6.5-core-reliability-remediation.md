@@ -823,11 +823,29 @@ nothing in its ancestry to detect, and the primary assertion would pass in silen
 list-based checks. Nothing in this repo produces one today; if that changes, the predicate needs a second
 marker. Stated here and in the guard's own docblock because the first version asserted it as an absolute.
 
-### CR-91 — The workflow E2E harness is not a crash or durability oracle · Medium
+### CR-91 — The workflow E2E harness is not a crash or durability oracle · Medium · ✅ CLOSED 2026-08-10
 It pins that the live stream reported success; it does not prove durable truth after a restart.
 **Fix + acceptance.** An oracle that asserts live result, DB history, resume and reconcile agree on the same
 terminal type and payload. **This is the instrument `CR-10`, `CR-11`, `CR-12` and `CR-92` are proven with**, so
 it lands before them: a spine asserted with the harness the reviews already found insufficient is not asserted.
+
+**Closed by `packages/core/src/engine/durable-truth.ts`** — `checkDurableTruth` compares four views (live
+terminal, durable history, the history a FRESH engine leaves after `reconcile()`, and the status the
+checkpoint fold derives) and returns a structured verdict rather than throwing, so callers can assert on the
+specific disagreement and the oracle can have its own tests. `formatDurableTruth` renders the diff.
+
+Two design points worth carrying into the spine work:
+
+- **Envelope fields are excluded from the comparison on purpose.** `timestamp` and `sequenceNumber` move on
+  every restart; comparing them would make every run look like a disagreement while catching nothing. What
+  must agree is the terminal's TYPE and the payload a consumer acts on — outputs, error code, cost.
+- **The checkpoint view is not decoration.** A resume seeds itself from the fold, so a fold that disagrees
+  with the durable terminal means a resumed run does the wrong work even when every event on disk is intact.
+  That is the `CR-92` shape the live stream cannot see.
+
+Ten unit tests cover the detection logic (including the headline case: live says `completed`, history says
+`failed`), and three e2e tests apply the oracle to real engine runs on all three terminals. Break-verified:
+stopping the engine from persisting terminals reddens all three e2e tests with a readable four-view diff.
 
 ### CR-92 — Terminal persistence failure lets live and durable truth diverge · High · in the durability spine
 The engine can complete the delivery chain for a terminal event even when its persistence failed, and
