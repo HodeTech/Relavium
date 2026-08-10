@@ -58,10 +58,15 @@ Concretely, five things:
    owner is not** — see §5.
 2. **Join at three barriers, not two.** §2 joins at the pre-egress check and at the turn/node boundary.
    ADR-0076's guarantee names a third thing to precede — the next **tool side effect** — so the ledger's
-   barrier set is: before the next egress admission, **before tool dispatch**, and at the turn/node terminal.
-   The tool-dispatch barrier is the one this ADR adds to the §2 shape; without it the ledger would repeat
-   §2's coverage rather than extend it, and the duplicate-effect window ADR-0076 exists to narrow would stay
-   open on the path that mutates the world.
+   barrier set is, and these three names are used throughout this ADR:
+
+   - **B1** — before the next egress admission (§2 has this one);
+   - **B2** — **before tool dispatch** (new here);
+   - **B3** — at the turn/node terminal (§2 has this one).
+
+   **B2** is what this ADR adds to the §2 shape; without it the ledger would repeat §2's coverage rather than
+   extend it, and the duplicate-effect window ADR-0076 exists to narrow would stay open on the path that
+   mutates the world.
 3. **Every barrier awaits AND observes.** Because `#emitDurable` is total, a barrier that only awaits proceeds
    on a run whose ledger write did not land. Each barrier must therefore also read the failure state and refuse
    to continue, and §2's retained-failure pattern (`#commitmentFailure`, re-thrown at the next barrier) is the

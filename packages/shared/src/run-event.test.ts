@@ -277,6 +277,56 @@ const reject: Record<string, Record<string, unknown>> = {
     // caught it. Every fixture below carries a complete payload for the same reason: exactly one thing wrong.
     priced: true,
   },
+  // `nodeId` and `model` are required too, and the file's own convention is to defend a required field with
+  // a fixture — `budget:estimate_committed` has `(no model)`, `budget:paused` has `(missing/empty nodeId)`.
+  // Without these, loosening either to `.optional()` reddens nothing, which is the same silent one-way door
+  // the `attemptNumber`/`priced` fixtures exist to hold shut.
+  'cost:attempt_settled (no nodeId)': {
+    type: 'cost:attempt_settled',
+    ...env,
+    model: 'm',
+    attemptNumber: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: 400,
+    cumulativeCostMicrocents: 400,
+    priced: true,
+  },
+  'cost:attempt_settled (empty nodeId)': {
+    type: 'cost:attempt_settled',
+    ...env,
+    nodeId: '',
+    model: 'm',
+    attemptNumber: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: 400,
+    cumulativeCostMicrocents: 400,
+    priced: true,
+  },
+  'cost:attempt_settled (no model)': {
+    type: 'cost:attempt_settled',
+    ...env,
+    nodeId: 'n',
+    attemptNumber: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: 400,
+    cumulativeCostMicrocents: 400,
+    priced: true,
+  },
+  'cost:attempt_settled (empty model)': {
+    type: 'cost:attempt_settled',
+    ...env,
+    nodeId: 'n',
+    model: '',
+    attemptNumber: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: 400,
+    cumulativeCostMicrocents: 400,
+    priced: true,
+  },
   'cost:attempt_settled (attemptNumber 0)': {
     type: 'cost:attempt_settled',
     ...env,
