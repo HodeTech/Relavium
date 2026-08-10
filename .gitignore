@@ -53,6 +53,14 @@ coverage-tmp/
 # Claude Code transient state (skills/agents ARE committed; runtime locks are not)
 .claude/scheduled_tasks.lock
 .claude/**/*.lock
+# A repo-local SECOND checkout (CR-90). `.claude/worktrees/` was only ever hidden by `.git/info/exclude`,
+# which is local and untracked — so a fresh clone did not carry the rule and nobody could see the reason.
+# Tracked here so it travels. The vitest side of this is `REPO_LOCAL_CHECKOUTS` in vitest.config.ts; the two
+# lists are kept in step by tools/test-isolation, which fails on any collected file that turns out to live in
+# a directory carrying its own pnpm-workspace.yaml.
+.claude/worktrees/
+.worktrees/
+/worktrees/
 
 # Private analysis — never commit, never reference from tracked files
 docs/analysis/private/

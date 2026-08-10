@@ -3,53 +3,138 @@
  *
  * The defect this closes was live, not theoretical. Measured 2026-08-10: a root `vitest list` discovered
  * **472** test files, **234** of them under `.claude/worktrees/<id>/packages/...` — a full agent-tooling
- * checkout of this same repo. A repo-wide run was therefore executing a foreign tree's tests, and
- * `pnpm coverage` was counting that tree's sources as 0%-covered files against the engine floor. It hid well:
- * `.claude/worktrees/` is excluded through `.git/info/exclude`, which is LOCAL and untracked, so `git status`
- * stayed clean and a fresh clone never even carried the rule.
+ * checkout of this same repo. A repo-wide run was therefore executing a foreign tree's tests, and the coverage
+ * report was counting its sources: 48.85% lines against 96.95% once excluded.
  *
- * The fix is `REPO_LOCAL_CHECKOUTS` in `vitest.config.ts`. This is its regression, and it exists as a tools
- * check rather than a `*.test.ts` for a reason worth stating: a test running INSIDE Vitest cannot observe
- * which files Vitest chose to collect. Only a subprocess can.
+ * It hid well: `.claude/worktrees/` is excluded through `.git/info/exclude`, which is LOCAL and untracked, so
+ * `git status` stayed clean and a fresh clone never even carried the rule. That is also why CI never saw it —
+ * CI checks out clean. The `vitest.config.ts` exclusions defend a developer's tree; **this guard is what
+ * defends CI**, by failing if those exclusions are ever weakened or removed.
  *
- * **Two assertions, and the second is the one that keeps the fix honest.** A fixture placed in an excluded
- * location must NOT be collected — and every real test file must still BE collected. Without the second, the
- * cheapest way to pass is an over-broad exclude that quietly drops the repo's own suites, which is a far worse
- * failure than the one being prevented.
+ * It is a tools check rather than a `*.test.ts` for a structural reason: a test running INSIDE Vitest cannot
+ * observe which files Vitest chose to collect. Only a subprocess can.
  *
- * Exits non-zero so CI fails loudly. Run from the repo root:
+ * ## What it asserts, and why each one is load-bearing
+ *
+ * 1. **PRIMARY — no collected file lives in a second checkout, listed or not.** Consults no list: it walks the
+ *    collected paths and fails on any whose ancestor carries its own `pnpm-workspace.yaml`. This is the only
+ *    assertion that stays true when the exclusion list is itself the thing that is wrong, and it is here
+ *    because assertion 2 alone was not enough — see below.
+ * 2. **One fixture per `REPO_LOCAL_CHECKOUTS` entry, none collected.** The list is read out of
+ *    `vitest.config.ts` (as text — this file is `.mjs` and the config is TypeScript, so it cannot be
+ *    imported), so a new entry is probed the moment it is added. **But it proves only that every LISTED
+ *    location is excluded, never that the list is COMPLETE**: because the fixtures are derived from the list,
+ *    deleting `'**\/.claude\/**'` also deletes its probe, and the guard re-collects all 234 foreign suites
+ *    while printing a green line. Measured, on the first version of this file. Hence assertion 1.
+ * 3. **Every workspace still yields tests.** A single canary is not enough: the structural rule this repo
+ *    rejected (`'**\/*\/{packages,apps,tools}\/**'`) drops exactly four real files under
+ *    `packages/core/src/tools/`, and a canary in `packages/shared` never notices. Passing by not running is a
+ *    worse failure than the leak.
+ * 4. **The list reaches BOTH excludes.** `vitest list` observes `test.exclude` only, so every assertion above
+ *    is blind to `coverage.exclude` — the half that keeps a foreign tree out of the coverage denominator. The
+ *    phase doc's acceptance criterion names both, so the config text is checked directly.
+ *
+ * Exits non-zero so CI fails loudly. Run from anywhere:
  *   node tools/test-isolation/check.mjs
  */
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const require = createRequire(join(repoRoot, 'package.json'));
+
+const CONFIG_PATH = join(repoRoot, 'vitest.config.ts');
+const FIXTURE_DIR = '__test_isolation_fixture__';
+
+/** Every workspace that must still yield at least one test file — see assertion 2. */
+const WORKSPACES = [
+  'packages/core',
+  'packages/llm',
+  'packages/mcp',
+  'packages/shared',
+  'packages/db',
+  'apps/cli',
+];
+
+function fail(message) {
+  console.error(`✖ ${message}`);
+  process.exit(1);
+}
 
 /**
- * Where the synthetic checkout is planted. A SYNTHETIC fixture, deliberately, not a real `git worktree`:
- * a real one depends on git state and on the working directory being a repo at all, which is exactly the
- * non-determinism this check is about. What matters is the SHAPE — a nested directory holding a workspace
- * layout with its own test and source file — and that is reproducible anywhere.
- *
- * `.worktrees/` is one of the excluded names; the fixture goes there so the check exercises a pattern that is
- * NOT the one that actually bit us (`.claude/`), which keeps the list honest rather than tautological.
+ * The plantable directory for one exclusion pattern: `**\/.claude\/**` → `.claude`, `worktrees/**` →
+ * `worktrees`. A pattern that does not reduce to a plain path is rejected rather than skipped — silently
+ * dropping an entry is exactly how this guard went blind the first time.
  */
-const FIXTURE_ROOT = '.worktrees/__test_isolation_fixture__';
-const FIXTURE_PKG = join(FIXTURE_ROOT, 'packages', 'probe', 'src');
+function plantableDir(pattern) {
+  const stripped = pattern.replace(/^\*\*\//, '').replace(/\/\*\*$/, '');
+  if (/[*?[\]{}]/.test(stripped) || stripped.length === 0) {
+    fail(
+      `REPO_LOCAL_CHECKOUTS entry ${JSON.stringify(pattern)} is not a plantable directory path, so this ` +
+        `guard cannot prove it works.\n  Use a form like '**/<dir>/**' or '<dir>/**', or add an explicit ` +
+        `fixture location here.`,
+    );
+  }
+  return stripped;
+}
 
-/** A file every real run must find, so an over-broad exclude cannot pass this check. */
-const CANARY = 'packages/shared/src/run-event.test.ts';
+// --- 1. Read the list from the config itself, so the two cannot drift -----------------------------
 
-function plantFixture() {
-  mkdirSync(FIXTURE_PKG, { recursive: true });
-  writeFileSync(join(FIXTURE_PKG, 'probe.ts'), 'export const probe = 1;\n');
+const configText = readFileSync(CONFIG_PATH, 'utf8');
+const listMatch = /export const REPO_LOCAL_CHECKOUTS = \[([^\]]*)\]/.exec(configText);
+if (listMatch === null) {
+  fail(`cannot find \`export const REPO_LOCAL_CHECKOUTS\` in ${relative(repoRoot, CONFIG_PATH)}`);
+}
+const patterns = [...listMatch[1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+if (patterns.length === 0) {
+  fail(
+    `REPO_LOCAL_CHECKOUTS is EMPTY in ${relative(repoRoot, CONFIG_PATH)}.\n` +
+      `  A repo-local second checkout would be collected by every root run and counted in coverage.`,
+  );
+}
+
+// --- 2. The list must reach BOTH excludes (assertion 3) --------------------------------------------
+
+const spreadCount = (configText.match(/\.\.\.REPO_LOCAL_CHECKOUTS/g) ?? []).length;
+if (spreadCount < 2) {
+  fail(
+    `REPO_LOCAL_CHECKOUTS is spread ${spreadCount} time(s) in ${relative(repoRoot, CONFIG_PATH)}; both ` +
+      `\`test.exclude\` and \`coverage.exclude\` need it.\n` +
+      `  \`test.exclude\` stops a foreign tree's TESTS from running; \`coverage.exclude\` stops its SOURCES ` +
+      `from entering the coverage denominator.\n  \`vitest list\` cannot see the second one, which is why it ` +
+      `is checked here as text.`,
+  );
+}
+
+// --- 3. Plant one fixture per entry, collect, assert ------------------------------------------------
+
+const fixtures = patterns.map((pattern) => ({
+  pattern,
+  root: join(repoRoot, plantableDir(pattern), FIXTURE_DIR),
+  parent: join(repoRoot, plantableDir(pattern)),
+  parentExisted: existsSync(join(repoRoot, plantableDir(pattern))),
+}));
+
+/**
+ * A SYNTHETIC checkout, deliberately, not a real `git worktree`: a real one depends on git state and on the
+ * working directory being a repo at all, which is the exact non-determinism `CR-90` is about. What matters is
+ * the SHAPE — a nested workspace layout with its own test and source file — and that is reproducible anywhere.
+ */
+function plant(fixture) {
+  rmSync(fixture.root, { recursive: true, force: true }); // self-healing after a Ctrl-C'd earlier run
+  const src = join(fixture.root, 'packages', 'probe', 'src');
+  mkdirSync(src, { recursive: true });
+  writeFileSync(join(src, 'probe.ts'), 'export const probe = 1;\n');
   writeFileSync(
-    join(FIXTURE_PKG, 'probe.test.ts'),
+    join(src, 'probe.test.ts'),
     [
       "import { describe, expect, it } from 'vitest';",
       "import { probe } from './probe.js';",
       '',
-      // If the exclusion regresses, this runs in the root suite and its message says why.
-      "describe('__test_isolation_fixture__', () => {",
+      `describe('${FIXTURE_DIR}', () => {`,
       "  it('MUST NOT be collected by a root run — see tools/test-isolation', () => {",
       '    expect(probe).toBe(1);',
       '  });',
@@ -59,50 +144,122 @@ function plantFixture() {
   );
 }
 
+function clear(fixture) {
+  rmSync(fixture.root, { recursive: true, force: true });
+  // Do not leave an empty `worktrees/` or `.worktrees/` behind that this guard itself created.
+  if (
+    !fixture.parentExisted &&
+    existsSync(fixture.parent) &&
+    readdirSync(fixture.parent).length === 0
+  ) {
+    rmSync(fixture.parent, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Resolve vitest through the module graph and spawn it with `process.execPath`, never a bare `npx`. Spawning
+ * `npx` would search a writeable `PATH`, need `shell: true` for the Windows `.cmd` shim, and can reach for the
+ * registry when it cannot resolve locally — the convention `tools/coverage-gate/run.mjs` documents.
+ */
 function collectedFiles() {
-  // `--filesOnly` keeps this cheap: Vitest resolves the file set without importing a single test module.
-  const out = execFileSync('npx', ['vitest', 'list', '--filesOnly'], {
+  let vitestEntry;
+  try {
+    const pkgPath = require.resolve('vitest/package.json');
+    vitestEntry = join(dirname(pkgPath), require('vitest/package.json').bin.vitest);
+  } catch (error) {
+    fail(`cannot resolve the vitest entry point: ${error.message}`);
+  }
+  // `--json` returns absolute `file` paths, so nothing depends on the reporter's text layout (a `projects`
+  // config prefixes `[name] `) or on the platform separator. `--filesOnly` keeps it cheap: the file set is
+  // resolved without importing a single test module.
+  const result = spawnSync(process.execPath, [vitestEntry, 'list', '--filesOnly', '--json'], {
+    cwd: repoRoot,
     encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: false,
   });
-  return out
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.endsWith('.test.ts') || line.endsWith('.test.tsx'));
+  if (result.status !== 0) {
+    fail(`\`vitest list\` failed (exit ${result.status}):\n${result.stderr ?? ''}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    fail(`\`vitest list --json\` did not return JSON:\n${result.stdout.slice(0, 400)}`);
+  }
+  return parsed.map((entry) => relative(repoRoot, entry.file).split(sep).join('/'));
 }
 
 let files;
 try {
-  plantFixture();
+  for (const fixture of fixtures) plant(fixture);
   files = collectedFiles();
 } finally {
-  // Always, even on a throw — a lingering fixture would be collected by the NEXT run and turn a clean tree
-  // into a confusing red.
-  rmSync(FIXTURE_ROOT, { recursive: true, force: true });
+  for (const fixture of fixtures) clear(fixture);
 }
 
-const leaked = files.filter((f) => f.includes('__test_isolation_fixture__'));
+// --- 4. The PRIMARY assertion: no collected file may live in a second checkout, listed or not ------
+//
+// The fixture probes above prove that every LISTED location is excluded. They cannot prove the list is
+// COMPLETE — and that distinction is not academic. Because the fixtures are derived from the list, deleting
+// `'**/.claude/**'` also deletes its probe: the guard then re-collects all 234 foreign suites and reports
+// green. Measured, on the first version of this file.
+//
+// So the real test is structural and runs against the filesystem rather than a glob (which is what makes it
+// safe here — `vitest.config.ts` cannot express this, a script can): a second checkout of a pnpm monorepo
+// carries its own `pnpm-workspace.yaml`. Any collected file with such an ancestor below the repo root is in a
+// tree that is not ours, whatever the exclusion list happens to say.
+function nestedCheckoutOf(fileRel) {
+  const parts = fileRel.split('/');
+  for (let i = 1; i < parts.length; i += 1) {
+    const candidate = parts.slice(0, i).join('/');
+    if (existsSync(join(repoRoot, candidate, 'pnpm-workspace.yaml'))) return candidate;
+  }
+  return undefined;
+}
+
+const foreign = new Map();
+for (const file of files) {
+  const root = nestedCheckoutOf(file);
+  if (root !== undefined) foreign.set(root, (foreign.get(root) ?? 0) + 1);
+}
+if (foreign.size > 0) {
+  fail(
+    `${[...foreign.values()].reduce((a, b) => a + b, 0)} collected file(s) belong to a SECOND checkout of ` +
+      `this repo:\n` +
+      [...foreign]
+        .map(([root, n]) => `    ${root}/  (${n} file(s), has its own pnpm-workspace.yaml)`)
+        .join('\n') +
+      `\n  Add it to REPO_LOCAL_CHECKOUTS in vitest.config.ts.` +
+      `\n  This check does not consult that list — it walks the collected paths — so it stays true even when` +
+      `\n  the list is the thing that is wrong.`,
+  );
+}
+
+const leaked = files.filter((f) => f.includes(FIXTURE_DIR));
 if (leaked.length > 0) {
-  console.error(
-    `✖ a repo-local checkout leaked into the root test run (${leaked.length} file(s)):\n` +
+  const missed = fixtures
+    .filter((fx) => leaked.some((f) => f.startsWith(`${plantableDir(fx.pattern)}/`)))
+    .map((fx) => fx.pattern);
+  fail(
+    `a repo-local checkout leaked into the root test run (${leaked.length} file(s)):\n` +
       leaked.map((f) => `    ${f}`).join('\n') +
-      `\n  Add its directory to REPO_LOCAL_CHECKOUTS in vitest.config.ts.` +
+      `\n  Not excluded despite being listed: ${missed.map((p) => JSON.stringify(p)).join(', ')}` +
       `\n  A root run must see this repo's tests and nothing else — a second checkout's suites are not ours` +
       `\n  to run, and its sources are not ours to count against the coverage floor.`,
   );
-  process.exit(1);
 }
 
-if (!files.includes(CANARY)) {
-  console.error(
-    `✖ the canary test file was NOT collected: ${CANARY}` +
+const silent = WORKSPACES.filter((ws) => !files.some((f) => f.startsWith(`${ws}/`)));
+if (silent.length > 0) {
+  fail(
+    `these workspaces yielded NO test files: ${silent.join(', ')}` +
       `\n  REPO_LOCAL_CHECKOUTS (vitest.config.ts) is excluding real tests. That is worse than the leak it` +
       `\n  prevents: the suite goes green by not running. Narrow the pattern.` +
-      `\n  Collected ${files.length} file(s).`,
+      `\n  Collected ${files.length} file(s) in total.`,
   );
-  process.exit(1);
 }
 
 console.log(
-  `✓ test isolation holds: ${files.length} file(s) collected, none from a repo-local checkout.`,
+  `✓ test isolation holds: ${files.length} file(s) collected, none from a repo-local checkout ` +
+    `(${patterns.length} location(s) probed, ${WORKSPACES.length} workspaces verified non-empty).`,
 );

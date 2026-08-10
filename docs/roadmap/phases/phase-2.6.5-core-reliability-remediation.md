@@ -783,7 +783,7 @@ Carried from our own backlog and re-confirmed by the reviews.
 `CR-90` and `CR-91` execute **first** (see [Execution order](#execution-order)); `CR-92` executes inside the
 durability spine. They are grouped here by theme only.
 
-### CR-90 — Root coverage collects in-repo worktrees · Medium
+### CR-90 — Root coverage collects in-repo worktrees · Medium · ✅ CLOSED 2026-08-10
 The root Vitest include patterns have no exclude for repo-local checkout directories, so a stale worktree adds
 test files and 0%-covered sources to the run. In one working tree this produced 471 discovered test files and 23
 suite failures; excluding the worktree path produced 237 files and a clean run.
@@ -791,6 +791,30 @@ suite failures; excluding the worktree path produced 237 files and a clean run.
 self-test uses a **synthetic repo-local checkout fixture** — a directory tree containing a test file and a
 source file — not a real `git worktree`; a real worktree makes the test depend on git state and the working
 directory, which is exactly the non-determinism this item is about.
+
+**Closed by `5f69ddc` + its review fold.** `REPO_LOCAL_CHECKOUTS` in `vitest.config.ts` (spread into both
+excludes), the guard at `tools/test-isolation/check.mjs`, wired into `pnpm run ci` and `.github/workflows/ci.yml`,
+plus the tracked `.gitignore` entries the local `.git/info/exclude` was standing in for.
+
+Three corrections to the record above, all measured rather than recalled:
+
+- **Re-measured 2026-08-10: 472 → 238**, not 471 → 237; the tree grew one test file. The foreign 234 were a
+  full agent-tooling checkout under `.claude/worktrees/<id>/`.
+- **It did NOT threaten the coverage floor**, which the original evidence implied and an earlier version of
+  this fix asserted. Vitest matches threshold globs ROOT-RELATIVE with no implicit leading `**`, so the foreign
+  sources match none of the three per-package globs and land in the unset `global` group. The counterfactual
+  exits 0 at 48.85% lines. What the leak destroys is the reported number and the lcov/html artifact — and it
+  becomes floor-load-bearing the moment a global threshold is added.
+- **CI never saw any of it.** `.claude/worktrees/` was hidden by a LOCAL `.git/info/exclude` entry and CI checks
+  out clean, so both excludes are no-ops there. The exclusions defend a developer's tree; the guard is the part
+  that defends CI, by failing if they are ever weakened.
+
+The acceptance criterion above names a fixture, and a fixture alone is not sufficient — recorded because the
+first attempt shipped exactly that gap. Deriving fixtures from the exclusion list proves every LISTED location
+is excluded, and cannot prove the list is COMPLETE: removing the one entry that mattered also removes its
+probe, and the guard reports green while re-collecting all 234 foreign suites. The guard's primary assertion is
+therefore structural and consults no list — any collected file whose ancestor carries its own
+`pnpm-workspace.yaml` is in a second checkout.
 
 ### CR-91 — The workflow E2E harness is not a crash or durability oracle · Medium
 It pins that the live stream reported success; it does not prove durable truth after a restart.
