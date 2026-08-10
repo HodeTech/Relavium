@@ -389,6 +389,16 @@ security invariants** a review must confirm are:
   [tool-registry.md §error taxonomy](../reference/shared-core/tool-registry.md#error-taxonomy) — not
   restated here.
 
+**Machine output has its own arm of that floor, and it is the opposite choice.** Every `--json` record is
+serialized with `stringifyJsonLine` (`apps/cli/src/render/sanitize.ts`), never a bare `JSON.stringify`:
+`JSON.stringify` escapes `ESC` and stops, leaving `DEL`, the whole C1 block — including `U+009B`, a working
+escape-sequence introducer on real terminals — and the Trojan-Source bidi family RAW in content the model, a
+tool, or an imported artifact controls. It **escapes** where the human-display path **strips**, because
+`--json` is a machine contract and must reproduce its data byte for byte. The rule is enforced by an ESLint
+`no-restricted-syntax` selector rather than by review, because the gap reopened twice when it was not
+(`#W15-10`, then `CR-03`). `apps/cli/src/process/render-error.ts` is the single allowlisted exception: it
+pre-sanitizes with the stripping sanitizer, so the `--json` ERROR envelope is deliberately lossy.
+
 ## Never hand-roll crypto
 
 - We **never implement cryptography, TLS, or keychain primitives ourselves**. We use vetted
@@ -409,16 +419,6 @@ security invariants** a review must confirm are:
 No secrets, no full prompts/responses, and no raw keys in logs — ever, **including a secret that was
 *echoed back* in a provider response or error body, which must be redacted before it is logged.** Logging
 redaction rules live in [logging-and-observability.md](logging-and-observability.md).
-
-**Machine output has its own arm of that floor, and it is the opposite choice.** Every `--json` record is
-serialized with `stringifyJsonLine` (`apps/cli/src/render/sanitize.ts`), never a bare `JSON.stringify`:
-`JSON.stringify` escapes `ESC` and stops, leaving `DEL`, the whole C1 block — including `U+009B`, a working
-escape-sequence introducer on real terminals — and the Trojan-Source bidi family RAW in content the model, a
-tool, or an imported artifact controls. It **escapes** where the human-display path **strips**, because
-`--json` is a machine contract and must reproduce its data byte for byte. The rule is enforced by an ESLint
-`no-restricted-syntax` selector rather than by review, because the gap reopened twice when it was not
-(`#W15-10`, then `CR-03`). `apps/cli/src/process/render-error.ts` is the single allowlisted exception: it
-pre-sanitizes with the stripping sanitizer, so the `--json` ERROR envelope is deliberately lossy.
 
 ## When a review is mandatory
 

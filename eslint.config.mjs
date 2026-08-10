@@ -78,6 +78,14 @@ const seamSyntaxRules = /** @type {const} */ ([
  * reproduce its data, so `JSON.parse` round-trips to the identical string. That is the opposite choice from
  * the human-display floor (`stripTerminalControls`), and `process/render-error.ts` is the one deliberate
  * exception — it pre-sanitizes its fields with the STRIPPING sanitizer and is therefore lossy on purpose.
+ *
+ * **Three residual blind spots, named so the guarantee is not over-trusted.** The selector is syntactic, so it
+ * sees a `JSON.stringify` anywhere inside a `writeOut`/`writeErr` argument — through a template literal, a
+ * ternary, an object literal, a callback — but NOT: (1) a destructured writer, `const { writeOut } = io`,
+ * whose callee is an `Identifier` rather than a `MemberExpression`; (2) indirection through a helper that
+ * stringifies and returns, which no syntactic rule can follow; (3) a writer under a different name. None of
+ * the three exists in the tree today, and each is caught by review the same way the pre-rule call sites were —
+ * but "caught the first time it is written" is true of the inline shape only.
  */
 const JSON_LINE_MESSAGE =
   'A --json record must be serialized with stringifyJsonLine (apps/cli/src/render/sanitize.ts), not a bare ' +
@@ -238,7 +246,13 @@ export default tseslint.config(
   {
     // The machine-output fence (CR-03). Scoped to the CLI, which is the only surface emitting NDJSON to a
     // terminal today; `render-error.ts` is the documented exception (it pre-strips, and is lossy on purpose).
-    files: ['apps/cli/src/**/*.ts'],
+    // `.tsx` too: the TUI is where a debug/export affordance is most likely to grow one, and a `.ts`-only
+    // glob would leave nineteen files outside the fence.
+    files: ['apps/cli/src/**/*.{ts,tsx}'],
+    // Only `render-error.ts` is load-bearing — verified: removing it produces a real diagnostic. It is the
+    // documented exception (it pre-strips, so the error envelope is lossy on purpose). `sanitize.ts` is
+    // listed defensively: it DEFINES `stringifyJsonLine` and today has no writer call of its own, so the
+    // entry is currently inert rather than wrong.
     ignores: ['apps/cli/src/process/render-error.ts', 'apps/cli/src/render/sanitize.ts'],
     rules: {
       'no-restricted-syntax': [...seamSyntaxRules, jsonLineSyntaxRule],
