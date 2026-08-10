@@ -279,9 +279,16 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 >    transaction as its event. The `node:completed` delta then telescopes to zero on its own; a test must pin
 >    that `SUM(run_costs) == runs.total_cost_microcents` still holds, since that is the invariant carrying the
 >    no-double-count claim.
-> 4. `packages/core/src/engine/engine.ts` — emit through `#emitDurable` at the attempt boundary, AWAITED before
->    the next tool side effect, the next egress and the node terminal. This is the barrier; without the await
->    the event is just another observation.
+> 4. The attempt boundary and its barriers — **corrected by
+>    [ADR-0077](../decisions/0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md)**. ADR-0076
+>    §1 asked for an `await` at the settle point; there is no `await` to be had there. The seam's observer is
+>    `onAttempt?: (record) => void` — synchronous, void — and BOTH money events are emitted from that one
+>    callback a few lines apart, which `budget-governor.ts` already states outright ("which cannot await"). So
+>    the ledger takes ADR-0074 §2's shape: **start** the write at the settle instant on a chained in-flight
+>    promise, **join** it at three barriers — before the next egress admission, **before tool dispatch**
+>    (`agent-turn.ts`'s `await dispatchToolCalls(...)`, the barrier this adds beyond §2), and at the turn/node
+>    terminal. Every barrier awaits AND observes the failure, because `#emitDurable` is total for store faults
+>    and resolves.
 > 5. `packages/core/src/engine/checkpoint.ts` — fold it as a SUM of deltas, never a last-wins snapshot (ADR-0074
 >    §2's reasoning: concurrent events under a `fan_out` have no canonical `seq` order).
 >
