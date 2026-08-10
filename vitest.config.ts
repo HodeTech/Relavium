@@ -1,4 +1,25 @@
-import { defineConfig } from 'vitest/config';
+import { defaultExclude, defineConfig } from 'vitest/config';
+
+/**
+ * Directories that hold a SECOND checkout of this repo inside the working tree, and must never be collected
+ * by a root run (`CR-90`).
+ *
+ * This is not hypothetical housekeeping. Measured on 2026-08-10: a root `vitest list` found **472** test
+ * files, **234** of them under `.claude/worktrees/<id>/packages/...` — a full agent-tooling checkout,
+ * complete with its own sources. So a repo-wide run was executing a foreign tree's tests, and `pnpm coverage`
+ * was measuring its sources as 0%-covered files against the engine floor.
+ *
+ * It hides well: `.claude/worktrees/` is excluded through `.git/info/exclude`, which is LOCAL and untracked,
+ * so `git status` stays clean, a fresh clone does not even carry the rule, and Vitest never consulted git in
+ * the first place.
+ *
+ * **A list of named locations, deliberately, not a structural predicate.** The obvious general rule — "a
+ * workspace root nested inside another one", `'**\/*\/{packages,apps,tools}\/**'` — is wrong: it also matches
+ * this repo's own `packages/core/src/tools/*.test.ts`, because `**` happily eats `packages/core` and leaves
+ * `src` for the `*`. A rule that silently drops real tests is worse than the leak it closes. `tools/test-isolation`
+ * is the regression that proves this list actually works.
+ */
+const REPO_LOCAL_CHECKOUTS = ['**/.claude/**', '**/.worktrees/**', '**/worktrees/**'];
 
 /**
  * Root, workspace-aware Vitest config. Per-package `test` scripts run `vitest run`
@@ -26,6 +47,9 @@ export default defineConfig({
     // SAME `.test.` prefix — an additive extension, not the rejected `.spec.` suffix — and stays confined to
     // apps/cli's renderer layer (the coverage `exclude` below drops it, and apps are coverage-excluded anyway).
     include: ['**/*.test.ts', '**/*.test.tsx'],
+    // `defaultExclude` is SPREAD, not replaced — setting `exclude` overrides Vitest's own list, and dropping
+    // `**/node_modules/**` from it would be a far bigger collection bug than the one being fixed.
+    exclude: [...defaultExclude, ...REPO_LOCAL_CHECKOUTS],
     passWithNoTests: true,
     coverage: {
       provider: 'v8',
@@ -34,7 +58,11 @@ export default defineConfig({
       // cwd-tolerant: `**/src/**` matches whether the run is rooted at the repo or a package, so a
       // package-scoped `--coverage` run no longer reports a false 0%. Apps stay smoke-only (excluded).
       include: ['**/src/**/*.ts'],
-      exclude: ['**/*.test.ts', '**/*.test.tsx', '**/apps/**'],
+      // Both halves matter and they fail differently: `test.exclude` stops a foreign tree's TESTS from
+      // running, this stops its SOURCES from being counted. Without it a nested checkout's `packages/*/src/**`
+      // matches the `include` above and lands in the report as 0%-covered files, dragging the per-package
+      // threshold below its floor for a reason no one can see in the diff.
+      exclude: ['**/*.test.ts', '**/*.test.tsx', '**/apps/**', ...REPO_LOCAL_CHECKOUTS],
       // The enforced Phase-1 engine floor, scoped per-glob so it targets only the built engine
       // package(s) and never the not-yet-90% shared/db or the unbuilt core.
       //
