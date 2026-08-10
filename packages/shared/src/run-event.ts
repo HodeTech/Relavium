@@ -654,15 +654,27 @@ export const CostAttemptSettledEventSchema = z.object({
    */
   costMicrocents: nonNegativeInt,
   /**
-   * The run-wide realized running total after this attempt — a producer-side snapshot for DISPLAY and
-   * cross-checking. **Not the restore source**, for the same reason ADR-0074 §2 gave for its twin: under a
-   * `fan_out` concurrent events have no canonical `seq` order, so a last-wins read of this field can restore a
-   * LOWER total and hand already-spent money back to the cap as headroom. Reconstruction sums
-   * {@link costMicrocents} instead, and takes the greater of that sum and the durable node-boundary snapshots
-   * — a sum within one family, a max across families, neither of which can over-count.
+   * The run-wide realized running total after this attempt — an ABSOLUTE total, read immediately after this
+   * attempt was folded into the counter, and **this is the field reconstruction restores from**, via
+   * `Math.max` against every other absolute total in the log (the node-boundary snapshots and
+   * `budget:paused.spentMicrocents`).
    *
-   * (`cost:updated` gets away with a last-wins cumulative only because it is streamed and never persisted, so
-   * it is not the precedent for a durable event.)
+   * `Math.max`, never LAST-WINS: under a `fan_out` concurrent events have no canonical `seq` order, so the
+   * lower `seq` can carry the higher total and a last-wins read would hand already-spent money back to the cap
+   * as headroom. Maxing over absolutes is order-independent because realized spend is monotonic — which is
+   * exactly the property `budget:estimate_committed` lacks, and the whole reason its fold sums signed deltas
+   * instead.
+   *
+   * **Do not restore by summing {@link costMicrocents}.** Into this same total it double-counts, because a
+   * node terminal's snapshot already contains the attempts it covers. Into a separate accumulator maxed
+   * against the snapshots it UNDER-counts, which is the subtler failure: the two sources cover different
+   * money — a media node writes a snapshot and emits no attempt row at all — so every attempt after the last
+   * node boundary disappears whenever earlier media spend is the larger figure, which is precisely the
+   * crash-mid-agent-loop case this event exists for. `costMicrocents` remains the exact per-attempt record for
+   * accounting and for the derived `run_costs` row; it is not the restore path.
+   *
+   * (`cost:updated` carries the same figure but is streamed and never persisted, so it is not a restore source
+   * at all.)
    */
   cumulativeCostMicrocents: nonNegativeInt,
   /**
