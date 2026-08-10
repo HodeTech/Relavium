@@ -98,13 +98,18 @@ export interface CheckpointState {
    * The run-wide realized cost (integer micro-cents), restored on resume so post-resume spend keeps
    * accumulating against a cap that remembers what already went out.
    *
-   * **The fold is `Math.max` over every durable ABSOLUTE total**, and there are now three carriers of one:
-   * the node-boundary snapshots (`node:completed` / `node:failed` / `run:*` `cumulativeCostMicrocents`),
-   * `budget:paused.spentMicrocents`, and — since
+   * **The fold is `Math.max` over every durable ABSOLUTE total that is folded here**, and there are exactly
+   * three: `node:completed.cumulativeCostMicrocents`, `node:failed.cumulativeCostMicrocents`, and — since
    * [ADR-0076](../../../../docs/decisions/0076-durable-per-attempt-realized-cost-ledger.md) —
-   * `cost:attempt_settled.cumulativeCostMicrocents`. Each is read immediately after its own increment, so
-   * each is a true run-wide total at that instant and the largest is the engine's real total, whatever order
-   * the rows landed in.
+   * `cost:attempt_settled.cumulativeCostMicrocents`. Plus `budget:paused.spentMicrocents` in
+   * `applyGateEvent`, maxed the same way. Each is read immediately after its own increment, so each is a true
+   * run-wide total at that instant and the largest is the engine's real total, whatever order the rows landed
+   * in.
+   *
+   * **`run:failed` / `run:cancelled` carry the field but are NOT folded here**, and that is deliberate rather
+   * than an oversight — the engine states it at the emit site. A run terminal is the last event of the run, so
+   * a restored total that omitted it would only ever be read by a resume that cannot happen. Named because the
+   * field list above reads like it should include them.
    *
    * **Neither obvious alternative works, and one of them under-counts silently:**
    *
@@ -314,8 +319,16 @@ function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
     // keeps its spend and the re-seeded governor blocks correctly (H2). A plain-human-gate / crash resume now
     // recovers the same total from the durable `node:completed.cumulativeCostMicrocents` (applyNodeEvent above) —
     // the two durable sources reconcile via that `Math.max` fold (cost-event persistence is no longer deferred).
+    //
+    // `Math.max`, not an ASSIGN — which is what this was, while the comment above already claimed otherwise.
+    // `spentMicrocents` is captured at `checkPreEgress` and the event is emitted much later, after the
+    // outcome propagates through `#onOutcome`/`#settlePaused`. Under a `fan_out` a sibling attempt can settle
+    // a HIGHER cumulative in that window, and an assign then clobbers it — handing the resumed cap headroom
+    // for money already spent, which is the exact bypass ADR-0074/ADR-0076 exist to close. Latent before the
+    // realized ledger, because `node:completed` was the only other writer and node boundaries are rarer;
+    // `cost:attempt_settled` multiplies the high-water marks available to clobber.
     if (event.type === 'budget:paused') {
-      acc.cumulativeCostMicrocents = event.spentMicrocents;
+      acc.cumulativeCostMicrocents = Math.max(acc.cumulativeCostMicrocents, event.spentMicrocents);
     }
     return;
   }

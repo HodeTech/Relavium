@@ -289,11 +289,20 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 >    (`agent-turn.ts`'s `await dispatchToolCalls(...)`, the barrier this adds beyond §2), and at the turn/node
 >    terminal. Every barrier awaits AND observes the failure, because `#emitDurable` is total for store faults
 >    and resolves.
-> 5. `packages/core/src/engine/checkpoint.ts` — fold it as a SUM of deltas, never a last-wins snapshot (ADR-0074
->    §2's reasoning: concurrent events under a `fan_out` have no canonical `seq` order).
+> 5. `packages/core/src/engine/checkpoint.ts` — **corrected during implementation**. The instruction here was
+>    "fold it as a SUM of deltas", borrowing ADR-0074 §2's reasoning, and the wrong half of that cost two
+>    rewrites. Summing into the realized total double-counts (a node terminal's snapshot already contains its
+>    attempts); summing into a separate accumulator and maxing the two families UNDER-counts (a media node
+>    writes a snapshot and emits no attempt row, so every attempt after the last boundary vanishes). What is
+>    correct is the fold already two arms above it: `Math.max` over every durable ABSOLUTE total. §2's
+>    rejection of `Math.max` does not carry — it was rejected there only because a release can DECREASE a
+>    conservative total, and realized spend is monotonic.
 >
-> The break-verify that matters most is step 4's ordering: deleting the `await` must redden a test, or the
-> ledger records the charge without the guarantee that makes it one.
+> **STATUS: all five steps are landed** (`8d7ffcf` … `50c60bd`), each with an Opus and a Sonnet round folded.
+> The break-verify that matters most was step 4's ordering, and it now holds: with the tests draining to
+> quiescence before asserting, deleting B2 reddens the tool-dispatch test and deleting B3 reddens the node-
+> terminal test. B1 is masked by B2 on the current fixture (the second egress only comes after the tool), so
+> it is covered by construction rather than by a red — named rather than implied.
 >
 > **This is now the prerequisite of Phase 2.6.5, not a parallel track.** Its five steps touch the same four
 > files `CR-10` (ordered append tail) and `CR-12` (effect journal) restructure, so it lands first — see the

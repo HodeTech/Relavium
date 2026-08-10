@@ -643,8 +643,10 @@ export const CostAttemptSettledEventSchema = z.object({
   inputTokens: nonNegativeInt,
   outputTokens: nonNegativeInt,
   /**
-   * THIS attempt's realized charge — **the field checkpoint reconstruction adds up** (see
-   * {@link cumulativeCostMicrocents}).
+   * THIS attempt's realized charge — the exact per-attempt record, and what the derived `run_costs` row and
+   * any "why did this run cost that" answer are built from. **It is NOT the restore path**: reconstruction
+   * maxes {@link cumulativeCostMicrocents} instead, and that field's doc explains why summing this one both
+   * double-counts and under-counts depending on which route you take.
    *
    * `nonNegativeInt`, NOT the `positiveInt` its estimate twin uses, and the asymmetry is real rather than an
    * oversight. A conservative commitment of zero is unreachable by construction (`BudgetGovernor#admit`

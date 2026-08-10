@@ -700,6 +700,26 @@ describe('reconstructCheckpointState', () => {
       expect(state?.cumulativeCostMicrocents).toBe(1_800);
     });
 
+    it('a stale budget:paused cannot CLOBBER a higher ledger total', () => {
+      // `budget:paused.spentMicrocents` is captured at the pre-egress check and the event is emitted much
+      // later, after the outcome propagates. Under a `fan_out` a sibling attempt settles a HIGHER cumulative
+      // in that window — and this arm used to ASSIGN, handing the resumed cap headroom for money already
+      // spent. Latent before the ledger, because node boundaries are rare; the ledger writes per attempt.
+      const state = reconstructCheckpointState([
+        started,
+        settled(1, 'a', 5_000, 5_000),
+        {
+          type: 'budget:paused',
+          ...base(2),
+          nodeId: 'b',
+          spentMicrocents: 3_000,
+          limitMicrocents: 10_000,
+          gateId: 'g1',
+        },
+      ]);
+      expect(state?.cumulativeCostMicrocents).toBe(5_000);
+    });
+
     it('keeps realized and conservative money apart', () => {
       const state = reconstructCheckpointState([
         started,

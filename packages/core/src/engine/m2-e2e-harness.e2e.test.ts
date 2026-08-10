@@ -1085,6 +1085,21 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     };
   }
 
+  /**
+   * Drain the queue to QUIESCENCE — microtasks and a macrotask turn, repeatedly.
+   *
+   * Load-bearing, and its absence made the first version of every test below hollow. `ledger.blocked()` flips
+   * INSIDE `persistEvent`, several turns before the run would have reached the action a barrier guards. Assert
+   * at that instant and the dispatch is still sitting in the queue, so the assertion passes whether or not the
+   * barrier exists. Draining first is what makes deleting a join go red.
+   */
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 50; i += 1) {
+      for (let j = 0; j < 200; j += 1) await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
   /** A store that blocks `cost:attempt_settled`'s write until released, recording persist order. */
   function blockingLedgerStore() {
     const inner = new InMemoryRunStore();
@@ -1134,6 +1149,7 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     // whose commitment fires on a usage-less stream almost immediately.
     for (let i = 0; i < 500 && !ledger.blocked(); i += 1) await Promise.resolve();
     expect(ledger.blocked()).toBe(true);
+    await settle(); // give the guarded action every chance to run before asserting it did not
     // THE assertion: the model asked for a tool, the charge is not durable, so nothing ran.
     expect(calls).toEqual([]);
 
@@ -1156,6 +1172,7 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     // whose commitment fires on a usage-less stream almost immediately.
     for (let i = 0; i < 500 && !ledger.blocked(); i += 1) await Promise.resolve();
     expect(ledger.blocked()).toBe(true);
+    await settle(); // give the guarded action every chance to run before asserting it did not
     // The AGENT node's own terminal must not be durable — a crash here records progress the money log lacks.
     // (`in`'s terminal is legitimately already there; it spent nothing.)
     expect(ledger.persistOrder).not.toContain('node:completed:work');
@@ -1169,10 +1186,16 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
   });
 
   it('ledger: a REJECTED write dispatches no tool — the observe half, not just the await (ADR-0077)', async () => {
-    // The mutation that matters most. `#emitDurable` is TOTAL for store faults: it absorbs a `persistEvent`
-    // rejection into the run's failure state and RESOLVES. So a barrier that only awaits passes both ordering
-    // tests above while observing nothing, and the run would mutate the world on a charge it never recorded.
-    // `MoneyDurability.join()` re-throws the retained failure, which is what stops the dispatch here.
+    // **What stops the dispatch here is the ENGINE'S ABORT, not the barrier — stated because the obvious
+    // reading of this test is wrong.** `#emitDurable` absorbs the rejection, sets `#failure` and calls
+    // `#abort.abort()`, and `dispatchToolUseTurn`'s `throwIfAborted` ends the turn. Deleting the observe half
+    // OR B2 leaves this test green, so it does NOT pin either.
+    //
+    // What it does pin is still worth having: a rejected ledger write ends the run without mutating the
+    // world, and the terminal message stays secret-free. ADR-0077's stated required regression — the barrier
+    // itself refusing — needs a case that DEFEATS the abort: reject the ledger write while a concurrent
+    // sibling has already set `#failure`, so `#emitDurable`'s `this.#failure === undefined` guard skips the
+    // abort and only the barrier is left to stop the dispatch. Not built; named so it is not lost.
     const { registry, calls } = spyingRegistry();
     const inner = new InMemoryRunStore();
     const store = {
