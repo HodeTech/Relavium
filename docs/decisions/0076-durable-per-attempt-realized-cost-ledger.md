@@ -30,9 +30,15 @@ The event carries the attempt's identity (node, model, the within-chain attempt 
 
 Three properties make it a ledger rather than another observation:
 
-1. **Written before the next thing that can spend or mutate.** It goes through the engine's `#emitDurable` choke point, and the attempt boundary AWAITS that call — before the next tool side effect, before the next egress, and before the node/turn terminal. A durability failure fails the active owner loudly, exactly as ADR-0074 §2 decided for its estimate twin; surfacing it on a later unrelated node is the misattribution that barrier exists to prevent.
+1. **Written before the next thing that can spend or mutate.** *(The MECHANISM below is **amended by
+   [ADR-0077](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md)** — the guarantee stands,
+   the "awaited emit" shape does not: `onAttempt` is synchronous, so there is no `await` to place there.)* It
+   goes through the engine's `#emitDurable` choke point, and the attempt boundary AWAITS that call — before the
+   next tool side effect, before the next egress, and before the node/turn terminal. A durability failure fails the active owner loudly, exactly as ADR-0074 §2 decided for its estimate twin; surfacing it on a later unrelated node is the misattribution that barrier exists to prevent.
 
-   **The mechanism is the awaited emit plus an explicit check, NOT a §2-style queue-and-flush.** §2 needs
+   **The mechanism is the awaited emit plus an explicit check, NOT a §2-style queue-and-flush.**
+   **← AMENDED BY [ADR-0077](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md); the
+   paragraph below is superseded and kept only because the corpus is append-only.** §2 needs
    `flushBudgetCommitments` because a conservative commitment is emitted fire-and-forget from inside the
    governor, so something has to join the outstanding writes at the turn boundary. A settled attempt is
    emitted by the engine at the point it settles, on the path that is about to continue, so no queue is

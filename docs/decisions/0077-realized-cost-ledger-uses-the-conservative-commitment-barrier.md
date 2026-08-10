@@ -50,11 +50,12 @@ section:
 synchronously at the settle point onto a chained in-flight promise, and JOINED at every barrier that precedes
 spending or mutating. It is not a bare awaited emit.**
 
-Concretely, three things:
+Concretely, five things:
 
 1. **Start the write at the settle instant.** `onAttempt` cannot await, but it can *begin*. The emit is chained
-   onto a per-owner in-flight promise exactly as §2's `#commitmentsInFlight` is — which also serializes the
-   writes, so two settles in the same tick cannot interleave their persists.
+   onto a per-owner in-flight promise, copying the shape of §2's `#commitmentsInFlight` — which also serializes
+   the writes, so two settles in the same tick cannot interleave their persists. **The shape is copied; the
+   owner is not** — see §5.
 2. **Join at three barriers, not two.** §2 joins at the pre-egress check and at the turn/node boundary.
    ADR-0076's guarantee names a third thing to precede — the next **tool side effect** — so the ledger's
    barrier set is: before the next egress admission, **before tool dispatch**, and at the turn/node terminal.
@@ -71,6 +72,47 @@ Concretely, three things:
    chains and both retained failures; there is no supported way to await half the money. This is what turns
    the "a future barrier joins only one chain" hazard from a review item into something a caller cannot
    express.
+5. **The ledger and its join are owned by the ENGINE, unconditionally — never by `BudgetGovernor`.** Reading
+   §1's "as §2's `#commitmentsInFlight`" as "put it on the governor" would silently omit most runs, and every
+   signpost in the codebase points that way (`node-executor.ts`'s comment even says "add it to the governor's
+   emit type instead"). It is wrong here, because the governor is **conditional and the ledger is not**:
+
+   - `engine.ts` constructs a `BudgetGovernor` only `if (params.plan.budget !== undefined)`, and `budget` is
+     optional in the workflow schema. An unbudgeted run spends real money and would get no ledger at all.
+   - `#flushBudgetCommitments` returns immediately when there is no governor, so **barrier B3 becomes a
+     no-op**.
+   - `#makePreEgressHook()` returns `undefined` without a governor, so the turn core never installs the
+     `preAttempt` wrapper and **barrier B1 does not exist**.
+   - Even on a BUDGETED run, `const preEgress = budgetApproved ? undefined : this.#makePreEgressHook()` drops
+     the hook for an approved `pause_for_approval` re-dispatch — so B1 disappears on the exact path the user
+     just authorised more money on.
+
+   Implemented literally, an unbudgeted run would get one barrier of three, and an unbudgeted run with no tool
+   calls would get none — the fire-and-forget state this ADR exists to remove, passing every test written
+   against a budgeted fixture.
+
+   **The correct shape already exists one surface over.** `session-host.ts` installs an `preEgress` hook that
+   is *"ALWAYS present, cap or no cap"*, reads the durability probe FIRST, and only then delegates to
+   `governor?.preEgress(info)` — *"It composes with the governor rather than replacing it, and it runs
+   FIRST."* The run path never got that. So this ADR's own "the session path is stronger here" section had the
+   answer to this flaw in it; the run path adopts the same composition.
+
+### Two implementation traps this decision creates
+
+Named because both are silent, and both would look correct in review:
+
+- **The ledger emit must follow the cumulative fold, not precede it.** The engine advances its run-wide total
+  in `#nodeEmit`'s `cost:updated` arm. Emitting the ledger draft *before* that leaves the cumulative stale, and
+  `refineCostAttemptSettled` rejects `cumulative < cost` at the producer gate — which runs in `#bus.next`,
+  **outside** `#emitDurable`'s `try`. So the wrong order does not degrade: `#emitDurable` **rejects** instead
+  of resolving, in the one place the whole design assumes it cannot. Nothing pins that order today.
+- **The durable emit must not be routed through `#nodeEmit`.** It returns `void`, so the promise would be
+  unawaitable — the exact unbarriered shape this ADR exists to prevent, reached through the door
+  `node-executor.ts`'s in-node-event-union comment already warns about.
+
+The hook that carries the emit into the turn core is an OPTIONAL `AgentTurnParams` field, modelled on
+`preEgress`, because `agent-turn.ts` is the boundary `AgentSession` shares. Leaving it unset on the session
+path is what makes this event run-only as a runtime fact rather than a comment.
 
 ### Why the tool-dispatch barrier matters beyond this ADR
 
@@ -149,6 +191,11 @@ no arm, the four rejected alternatives, and the reason it lands after
   advisory — Decision §4: the barriers join through a single entry point that owns both chains and both
   retained failures, so "await the wrong one" is not an expressible mistake. What a reviewer still has to
   catch is a new barrier that calls neither.
+- **Three barrier holes have to close for this to be true at all**, and each is a line that reads as correct
+  today: the governor-conditional `#flushBudgetCommitments` early return, the `undefined` from
+  `#makePreEgressHook`, and `budgetApproved ? undefined`. Mitigation: Decision §5 names all three, and the
+  regression that proves them is an **unbudgeted** run — a fixture with a budget passes even when every
+  barrier is missing.
 - **The tool-dispatch barrier is new engine surface**, on the hottest path a run has, and it lands before the
   effect journal that will build on it. If it is placed wrong, both this ledger and `CR-12` inherit the same
   crash window. Mitigation: it goes in at `agent-turn.ts`'s single `await dispatchToolCalls(...)` — one call
