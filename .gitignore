@@ -61,6 +61,11 @@ coverage-tmp/
 .claude/worktrees/
 .worktrees/
 /worktrees/
+# The guard's own scratch directories. It clears them explicitly on every exit path, including a failure —
+# but `.claude/__test_isolation_fixture__/` is a SIBLING of `.claude/worktrees/`, so the entry above would not
+# have covered it if a crash ever did leak one, and a leaked fixture is CR-90's defect self-inflicted.
+__test_isolation_fixture__/
+__test_isolation_detector_probe__/
 
 # Private analysis — never commit, never reference from tracked files
 docs/analysis/private/

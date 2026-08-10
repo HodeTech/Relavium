@@ -816,6 +816,13 @@ probe, and the guard reports green while re-collecting all 234 foreign suites. T
 therefore structural and consults no list — any collected file whose ancestor carries its own
 `pnpm-workspace.yaml` is in a second checkout.
 
+**One recorded limitation, not a property.** "A second checkout always carries its own `pnpm-workspace.yaml`"
+holds for `git worktree add`, `git clone` and a full copy — every case seen here — but not for a sparse
+checkout, a `--no-checkout` worktree, or a partial rsync of `packages/**`. Such a tree would be collected with
+nothing in its ancestry to detect, and the primary assertion would pass in silence, leaving only the
+list-based checks. Nothing in this repo produces one today; if that changes, the predicate needs a second
+marker. Stated here and in the guard's own docblock because the first version asserted it as an absolute.
+
 ### CR-91 — The workflow E2E harness is not a crash or durability oracle · Medium
 It pins that the live stream reported success; it does not prove durable truth after a restart.
 **Fix + acceptance.** An oracle that asserts live result, DB history, resume and reconcile agree on the same
