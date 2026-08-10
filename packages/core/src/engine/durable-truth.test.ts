@@ -310,27 +310,68 @@ describe('checkDurableTruth', () => {
     expect(verdict.disagreements.some((d) => d.includes('NO durable terminal'))).toBe(true);
   });
 
-  it('catches a failure whose retryable / nodeId differ while the CODE matches', async () => {
-    // Dropped from the first TerminalView, and a flipped `retryable` changes whether a surface offers a retry.
-    const durable: RunEvent = {
-      type: 'run:failed',
-      ...base(1),
-      error: { code: 'tool_failed', message: 'boom', retryable: true, nodeId: 'B' },
-      partialOutputs: {},
-    };
-    const liveEvent: RunEvent = {
-      type: 'run:failed',
-      ...base(1),
-      error: { code: 'tool_failed', message: 'boom', retryable: false, nodeId: 'A' },
-      partialOutputs: {},
-    };
+  /** A `run:failed` differing from the baseline in exactly one error field. */
+  const failedWith = (error: Partial<Record<string, unknown>>): RunEvent => ({
+    type: 'run:failed',
+    ...base(1),
+    error: { code: 'tool_failed', message: 'boom', retryable: false, ...error } as never,
+    partialOutputs: {},
+  });
+
+  // One test per field, each flipping exactly ONE. A single fixture flipping two proved only "at least one
+  // of them is compared" — dropping either from `sameView` left it green.
+  it.each([
+    ['retryable', failedWith({ nodeId: 'A', correlationId: 'c-1', retryable: true })],
+    ['nodeId', failedWith({ nodeId: 'B', correlationId: 'c-1' })],
+    ['correlationId', failedWith({ nodeId: 'A', correlationId: 'c-2' })],
+  ])('catches a failure whose %s differs while the CODE matches', async (_field, durable) => {
+    const liveEvent = failedWith({ nodeId: 'A', correlationId: 'c-1' });
     const verdict = await checkDurableTruth({
       runId: 'r1',
       live: liveEvent,
       eventsFor: () => [started, durable],
     });
 
+    expect(verdict.agrees, formatDurableTruth(verdict)).toBe(false);
+  });
+
+  it('catches a completed run whose TOKEN totals differ', async () => {
+    const durable: RunEvent = {
+      type: 'run:completed',
+      ...base(1),
+      outputs: { a: 1 },
+      totalTokensUsed: { input: 9, output: 9 },
+      totalCostMicrocents: 500,
+      durationMs: 10,
+    };
+    const verdict = await checkDurableTruth({
+      runId: 'r1',
+      live: completed(1),
+      eventsFor: () => [started, durable],
+    });
+
     expect(verdict.agrees).toBe(false);
+  });
+
+  it('RENDERS every compared field, so a DISAGREES verdict shows why', async () => {
+    // The rendered diff used to print type/code/cost/outputs only — so a pair differing solely in
+    // `retryable` or `correlationId` printed byte-identically on both sides and told the reader nothing.
+    const verdict = await checkDurableTruth({
+      runId: 'r1',
+      live: failedWith({ retryable: false, nodeId: 'A', correlationId: 'c-1' }),
+      eventsFor: () => [
+        started,
+        failedWith({ retryable: true, nodeId: 'B', correlationId: 'c-2' }),
+      ],
+    });
+
+    const rendered = formatDurableTruth(verdict);
+    expect(rendered).toContain('retryable=false');
+    expect(rendered).toContain('retryable=true');
+    expect(rendered).toContain('correlationId=c-1');
+    expect(rendered).toContain('correlationId=c-2');
+    expect(rendered).toContain('node=A');
+    expect(rendered).toContain('node=B');
   });
 
   it('compares outputs key-order-insensitively, and never throws on an uncomparable payload', async () => {
@@ -350,6 +391,22 @@ describe('checkDurableTruth', () => {
       eventsFor: () => [started, completed(1, circular)],
     });
     expect(verdict.agrees).toBe(true);
+  });
+
+  it('treats a SHARED reference as shared, not circular — a repeated object is not a cycle', async () => {
+    // The first cycle guard was a flat `WeakSet` that was never un-marked on the way back up, so it flagged
+    // every REPEATED reference. `{ a: shared, b: shared }` serialized as `{"a":{…},"b":"[circular]"}` while a
+    // structurally identical payload built from two separate objects serialized normally — two equal outputs
+    // disagreeing, which is the exact false failure `canonical` exists to prevent. A `fan_in` echoing one
+    // value into two keys is enough to hit it.
+    const shared = { x: 1 };
+    const verdict = await checkDurableTruth({
+      runId: 'r1',
+      live: completed(1, { a: shared, b: shared }),
+      eventsFor: () => [started, completed(1, { a: { x: 1 }, b: { x: 1 } })],
+    });
+
+    expect(verdict.agrees, formatDurableTruth(verdict)).toBe(true);
   });
 
   it('reports WHERE the checkpoint status came from — a local fold is not the resume path', async () => {

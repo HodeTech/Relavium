@@ -167,8 +167,10 @@ flowchart TD
 
 `CR-92` sits inside the spine, not in `W9`: an API that returns `completed` while durable history says `failed`
 is a runtime correctness defect, not a harness concern. `CR-90`/`CR-91` come before the spine because a crash
-and durable-truth oracle is what proves `CR-10`/`CR-11`/`CR-12`/`CR-92` landed — building it last would mean
-asserting the spine with the harness the reviews already found insufficient.
+and durable-truth oracle is what proves `CR-92` landed, and half of `CR-10` — building it last would mean
+asserting the spine with the harness the reviews already found insufficient. It does **not** instrument
+`CR-11` or `CR-12`; that was an early overclaim, corrected once the oracle was built and measured (see
+`CR-91`). Budget those two their own predicates.
 
 - **W0 — finish the halves.** Cheap, already half-done. Leaving them half-done is the exact failure this phase
   is correcting.
@@ -826,8 +828,10 @@ marker. Stated here and in the guard's own docblock because the first version as
 ### CR-91 — The workflow E2E harness is not a crash or durability oracle · Medium · ✅ CLOSED 2026-08-10
 It pins that the live stream reported success; it does not prove durable truth after a restart.
 **Fix + acceptance.** An oracle that asserts live result, DB history, resume and reconcile agree on the same
-terminal type and payload. **This is the instrument `CR-10`, `CR-11`, `CR-12` and `CR-92` are proven with**, so
-it lands before them: a spine asserted with the harness the reviews already found insufficient is not asserted.
+terminal type and payload. It lands before the spine because a spine asserted with the harness the reviews
+already found insufficient is not asserted. *(The original wording here called it "the instrument `CR-10`,
+`CR-11`, `CR-12` and `CR-92` are proven with". That was written before the oracle existed and it is not true
+of `CR-11` or `CR-12` — see the table below.)*
 
 **Closed by `packages/core/src/engine/durable-truth.ts`** (exported from the package index — the surfaces that
 most need it, notably `apps/cli`'s harness against the real `history.db`, are outside this package).
@@ -868,10 +872,22 @@ Three design points worth carrying into the spine work:
   uninterpretable row; a local fold reads it happily. `loadCheckpoint` takes the real port, and the verdict
   reports `checkpointSource` so a reader can tell which was used. Supplying it is `CR-92`'s job.
 
-Twenty unit tests cover the detection logic (the headline live-`completed`/history-`failed` case, a
-same-type terminal whose payload differs, a cross-run log, out-of-order and headless logs, a correct repair,
-key-order and circular payloads), and three e2e tests apply the oracle to real engine runs on all three
-terminals. Break-verified: stopping the engine from persisting terminals reddens all three e2e tests.
+Twenty-seven unit tests cover the detection logic (the headline live-`completed`/history-`failed` case, a
+same-type terminal whose payload differs, each compared field pinned independently, a cross-run log,
+out-of-order and headless logs, a correct repair, key-order / circular / shared-reference payloads), and three
+e2e tests apply the oracle to real engine runs on all three terminals. Break-verified: stopping the engine
+from persisting terminals reddens all three e2e tests.
+
+**Three things `CR-92` must still add before it can certify itself with this** — measured, not guessed:
+
+1. `DurableTruthInput.live` is `RunEvent | undefined`, so it structurally cannot carry "a distinct typed
+   result that is not a `RunEvent`" — which is exactly what `CR-92`'s acceptance says the API must return when
+   durability is uncertain. That input has to widen before the test can express its own scenario.
+2. Even with the real `loadCheckpoint` wired, the resume leg can only compare `RunStatus` — a four-value enum.
+   `CheckpointState` carries no outputs, error code, `correlationId` or tokens, so `CR-92`'s "agree on the same
+   terminal type **and payload**" is only checkable for the type half on that leg.
+3. `expect` has `'settled' | 'repaired'` and no mode for "durability uncertain, outbox retry pending", which
+   is `CR-92`'s own state and fits neither.
 
 ### CR-92 — Terminal persistence failure lets live and durable truth diverge · High · in the durability spine
 The engine can complete the delivery chain for a terminal event even when its persistence failed, and

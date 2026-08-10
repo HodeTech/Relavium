@@ -116,16 +116,20 @@ export interface DurableTruthVerdict {
  */
 function canonical(value: unknown): string {
   try {
-    const seen = new WeakSet<object>();
-    return JSON.stringify(value, function replace(_key, val: unknown): unknown {
+    return JSON.stringify(value, (_key, val: unknown): unknown => {
       if (typeof val === 'bigint') return `${val.toString()}n`;
-      if (typeof val !== 'object' || val === null) return val;
-      if (seen.has(val)) return '[circular]';
-      seen.add(val);
-      if (Array.isArray(val)) return val;
+      if (typeof val !== 'object' || val === null || Array.isArray(val)) return val;
       return Object.fromEntries(Object.entries(val).sort(([a], [b]) => a.localeCompare(b)));
     });
   } catch (error) {
+    // A true cycle (or any other unserializable payload) becomes a single marker rather than escaping. The
+    // first version tried to be cleverer, with a `WeakSet` marking objects it had already visited — and got
+    // it WRONG in a way that caused the very failure this function exists to prevent: the set was never
+    // un-marked on the way back up, so it flagged every REPEATED reference, not every circular one.
+    // `{ a: shared, b: shared }` serialized as `{"a":{…},"b":"[circular]"}` while a structurally identical
+    // payload built from two separate objects serialized normally — so two equal outputs disagreed. A
+    // `fan_in` echoing one value into two keys is enough to hit it. Native `JSON.stringify` already tracks
+    // the ANCESTRY correctly; letting it throw and catching here is both simpler and right.
     return `[uncomparable: ${error instanceof Error ? error.name : 'unknown'}]`;
   }
 }
@@ -179,9 +183,16 @@ function terminalIn(events: readonly RunEvent[]): RunEvent | undefined {
 
 function describe(view: TerminalView | undefined): string {
   if (view === undefined) return 'none';
+  // EVERY compared field, not a subset. The first version rendered only type/code/cost/outputs — so a pair
+  // differing solely in `errorRetryable` or `correlationId` printed BYTE-IDENTICALLY on both sides of a
+  // `DISAGREES` verdict, leaving a reader with no visible reason for exactly the fields that matter most.
   const parts: string[] = [view.type];
   if (view.errorCode !== undefined) parts.push(`code=${view.errorCode}`);
+  if (view.errorRetryable !== undefined) parts.push(`retryable=${String(view.errorRetryable)}`);
+  if (view.errorNodeId !== undefined) parts.push(`node=${view.errorNodeId}`);
+  if (view.correlationId !== undefined) parts.push(`correlationId=${view.correlationId}`);
   if (view.costMicrocents !== undefined) parts.push(`cost=${view.costMicrocents}`);
+  if (view.tokens !== undefined) parts.push(`tokens=${view.tokens}`);
   if (view.outputs !== undefined) parts.push(`outputs=${view.outputs}`);
   return parts.join(' ');
 }
@@ -311,8 +322,6 @@ export async function checkDurableTruth(input: DurableTruthInput): Promise<Durab
         );
       }
     }
-  } else {
-    finalEvents = before;
   }
 
   const terminalCount = finalEvents.filter((event) => TERMINALS.has(event.type)).length;
