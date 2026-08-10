@@ -251,10 +251,21 @@ cancel path report success. The durability latch never sets, so nothing gates th
 **Acceptance.** A failing `writeTurn` on cancel sets `durabilityFailure`, and the next egress is refused.
 Break-verify by removing the wrapper.
 
-**Closed.** One correction to the finding: the arm writes through `updateSession`, not `writeTurn` — the
-terminal marks the session `ended` rather than appending a turn. The self-detach stays OUTSIDE the wrapper, in
-a `finally`: `persistDurably` re-throws, and a failed write is exactly when a leaked bus listener is worst,
-since every later event would re-enter a persister that cannot write.
+**Closed — but the acceptance above is half unsatisfiable, and the real defect was the other half.**
+
+- The arm writes through `updateSession`, not `writeTurn`: the terminal marks the session `ended` rather than
+  appending a turn.
+- **"the next egress is refused" cannot hold for a terminal event.** `session:cancelled` is emitted only by
+  `AgentSession.cancel()`, which sets `#status = 'cancelled'`, and every later egress entry point is already
+  refused by `#assertSendable()` with `not_active`. Nothing reads `durabilityFailure` again, and each
+  construction site builds a fresh persister with a fresh latch. The latch half is wrapped for SYMMETRY —
+  one arm reaching the store bare is how the next reader concludes the wrapper is optional.
+- **The load-bearing half is the `finally`.** A throwing write jumped straight over the two unsubscribe lines
+  and left the persister attached to the bus, so every later event re-entered one that could not write. (The
+  user was told either way — the throw always escaped into `deliver`'s listener-error sink, so "let the cancel
+  path report success" was also not quite right.) Pinned by wrapping the handle's unsubscribe and asserting it
+  ran; the first two attempts at that assertion were vacuous — `close()` calls the same idempotent
+  unsubscribe, and a second `cancel()` emits no event — and both passed with the `finally` deleted.
 
 ### CR-02 — A failed turn flush leaves the turn counter incremented · Medium · ✅ CLOSED 2026-08-11
 
@@ -283,6 +294,13 @@ never happened — moving the increment below the flush hands back a turn the pr
 recording for the test: the rejection SURFACES out of `sendMessage` (ADR-0074 §2 fails the active owner
 loudly), so the regression awaits a rejection and then drives the cap.
 
+**And the decision had a mirror-image hole one line further on.** A flush rejection settles through the
+unclassified branch, which emitted its terminal with a hardcoded `{0,0}` — so the turn the decision insists
+the provider billed consumed its cap slot AND silently dropped its real tokens from every total. That is the
+opposite of the error the counter decision refuses to make, and it contradicts EA2/ADR-0055's rule to report
+real usage whenever a provider engaged. The success path now captures the usage just before the flush and the
+unclassified terminal reports it, falling back to zero when nothing engaged.
+
 ### CR-03 — Three `--json` paths still bypass the safe serializer · High · ✅ CLOSED 2026-08-11
 
 **Evidence.** Wave 1 introduced `stringifyJsonLine` (`apps/cli/src/render/sanitize.ts`), which losslessly
@@ -300,15 +318,28 @@ propagation gap — the fix landed, the siblings did not get it.
 **Acceptance.** One shared adversarial test drives a C1 + bidi payload through all three surfaces and asserts
 the raw code points do not survive while `JSON.parse` round-trips to the identical string.
 
-**Closed — and it was FOUR paths, not three.** `apps/cli/src/commands/import.ts` writes the same shape and was
-not in the finding; its payload carries `parsed.slug`, which comes straight out of an imported artifact, so it
-is if anything the most attacker-reachable of the set. All four now go through `stringifyJsonLine`.
+**Closed — and it was FIVE paths, not three.** The finding named three; `import.ts` and `export.ts` write the
+same record shape and were not in it. `docs/reference/cli/commands.md` pairs the last two by that shape in one
+sentence, which is how the miss was findable at all.
 
-The regression (`apps/cli/src/render/json-line-surfaces.test.ts`) asserts at the SOURCE, not through four
-command harnesses: what the finding is about is a call site, and a call site is what a future edit
-reintroduces — driving four harnesses would mostly test the harnesses. The escaping behaviour itself stays
-covered in `sanitize.test.ts`. Its hostile payload is built from code points at runtime rather than typed into
-the file, because a raw C1/bidi byte in source is a Trojan-Source hazard in its own right.
+Two corrections to my own reasoning while closing it, both recorded because they were stated as fact first:
+
+- **`import --json` is the LEAST attacker-reachable of the set, not the most.** I justified adding it by
+  saying `parsed.slug` "comes straight out of an imported artifact". It does — and `kebabIdSchema` rejects the
+  document before that value exists, so it cannot carry a C1 or bidi code point at all. The genuinely
+  reachable ones are the session-event streams the original finding already named, plus `export --json`, whose
+  `path` derives from the user-typed `--out`. Fixing `import` is cheap hygiene; the ranking was wrong.
+- **A source-scanning test is the wrong mechanism, and it proved so immediately.** The first regression
+  matched `writeOut(\`${JSON.stringify(` and missed `export.ts` purely because prettier had wrapped the
+  argument onto its own line. A guard that only checks the places someone remembered catches nothing new by
+  construction — which is how this propagation gap reopened twice already. The call-site half is now an
+  ESLint `no-restricted-syntax` selector (`eslint.config.mjs`) that fires on the SHAPE anywhere in
+  `apps/cli/src`, so a sixth surface is caught the first time it is written rather than at review.
+  `json-line-surfaces.test.ts` keeps only the behavioural assertion, with its hostile payload built from code
+  points at runtime — a raw C1/bidi byte in source is a Trojan-Source hazard in its own right.
+
+`process/render-error.ts` is the one deliberate exception and is allowlisted: it pre-sanitizes with the
+STRIPPING sanitizer, so the `--json` error envelope is lossy on purpose where the NDJSON stream is lossless.
 
 ---
 

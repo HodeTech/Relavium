@@ -247,7 +247,7 @@ function toModelJson(m: ModelCatalogListing, providerSlug: (uuid: string) => str
   return {
     // The SLUG (e.g. `anthropic`), not the internal `llm_providers` UUID the catalog row carries — matching the
     // `models refresh` report + the documented `{ provider }` contract. `--json` is unchanged otherwise
-    // (JSON.stringify escapes any control byte on its own, so the slug is not terminal-sanitized here).
+    // (the record goes out through `writeRecordLines` → `stringifyJsonLine`, which is what escapes the C1/bidi bytes `JSON.stringify` leaves raw — see security-review.md).
     provider: providerSlug(m.providerId),
     modelId: m.modelId,
     displayName: m.displayName,

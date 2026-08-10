@@ -267,21 +267,40 @@ describe('createSessionPersister', () => {
       now: () => Date.parse('2026-06-25T00:00:00.000Z'),
       uuid: () => 'msg-x',
     });
+    // Observe the DETACH directly by wrapping the unsubscribe the handle hands back. Nothing else can see
+    // it: a second `cancel()` emits no event on an already-cancelled session, and `close()` calls the same
+    // idempotent unsubscribe, so both of those pass whether or not the listener leaked.
+    let unsubscribed = 0;
+    const realSubscribe = built.handle.subscribe.bind(built.handle);
+    vi.spyOn(built.handle, 'subscribe').mockImplementation((listener) => {
+      const off = realSubscribe(listener);
+      return () => {
+        unsubscribed += 1;
+        off();
+      };
+    });
     built.session.start();
     persister.start();
-    vi.spyOn(store, 'updateSession').mockImplementation(() => {
+    const updateSpy = vi.spyOn(store, 'updateSession').mockImplementation(() => {
       throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
     });
 
     built.session.cancel();
-    vi.restoreAllMocks();
 
     expect(persister.durabilityFailure?.message).toContain('database is locked');
-    // The self-detach is in a `finally`, so a failed write cannot leave the bus listener attached — which is
-    // exactly when a leak is worst, since every later event would re-enter a persister that cannot write.
-    expect(() => {
-      persister.close();
-    }).not.toThrow();
+    // …and the user was still told: latching must not remove the listener-error notice.
+    expect(listenerNotes.join('\n')).toMatch(/database is locked/);
+
+    // **The half that actually matters, asserted directly.** The self-detach is in a `finally`, so a throwing
+    // write cannot jump over it and leave this persister attached to the bus. An earlier version of this test
+    // asserted `close()` does not throw — which is true whether or not the listener leaked, because `close()`
+    // calls the same idempotent unsubscribe. The real evidence is that a SUBSEQUENT event does not re-enter a
+    // persister that cannot write, so `updateSession` is never called again. Deliberately WITHOUT `close()`.
+    expect(updateSpy.mock.calls.length).toBe(1); // the failing write happened exactly once
+    // THE assertion: the throw did not jump over the unsubscribe. Without the `finally` this is 0, and the
+    // persister stays on the bus — so every later event re-enters one that cannot write.
+    expect(unsubscribed).toBe(1);
+    vi.restoreAllMocks();
   });
 
   it('does not let a failed cost write advance the in-memory total (#W15-4)', async () => {

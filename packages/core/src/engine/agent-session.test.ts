@@ -384,8 +384,22 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     // Turn 1 engages a provider and then fails on the flush. The rejection surfaces (ADR-0074 §2: a
     // durability failure fails the ACTIVE owner loudly) — and the turn still counts.
     await expect(s.sendMessage('first')).rejects.toThrow('disk full');
+
+    // The failed turn's terminal reports the REAL usage, not a hardcoded zero (`CR-02`). Consuming the cap
+    // slot while dropping the tokens is the mirror of the error the counter decision refuses to make: the
+    // provider engaged and billed either way.
+    const failedTurn = events.find(
+      (e) => e.type === 'session:turn_completed' && e.error?.code === 'internal',
+    );
+    expect(failedTurn, `saw: ${JSON.stringify(events.map((e) => e.type))}`).toBeDefined();
+    expect(
+      failedTurn?.type === 'session:turn_completed' ? failedTurn.tokensUsed : undefined,
+    ).not.toEqual({ input: 0, output: 0 });
+
     events.length = 0;
-    await s.sendMessage('second — must be over the cap');
+    // Resolves — the cap refusal is a settled terminal, not a throw. Asserted so the mutation that moves the
+    // increment below the flush dies on the CAP assertion below rather than on a stray 'disk full' rejection.
+    await expect(s.sendMessage('second — must be over the cap')).resolves.toBeUndefined();
 
     const completed = events.find((e) => e.type === 'session:turn_completed');
     expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
