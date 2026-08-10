@@ -770,9 +770,13 @@ function refineBudgetEstimateCommitted(event: RunEventUnion, ctx: z.RefinementCt
  *
  * The same invariant, and the same single most likely emit-site bug, as {@link refineBudgetEstimateCommitted}:
  * reading the run-wide counter BEFORE folding this attempt into it. That mistake emits
- * `{ cost: 500, cumulative: 0 }`, and while reconstruction sums the deltas (so the RESTORE survives it), every
- * display and cross-check that reads the snapshot silently under-reports. Pinned here because nothing else
- * anywhere would complain.
+ * `{ cost: 500, cumulative: 0 }` — and since the cumulative IS the restore path here (reconstruction maxes it;
+ * see the field's own doc), such a row would restore a total missing this charge and hand the cap headroom for
+ * money already spent. Pinned here because nothing else anywhere would complain.
+ *
+ * (An earlier revision of this comment said reconstruction "sums the deltas, so the RESTORE survives it".
+ * That described the design ADR-0076 originally staged and step 5 retracted — summing double-counts against a
+ * node terminal's snapshot. The restore has never summed since the code landed.)
  */
 function refineCostAttemptSettled(event: RunEventUnion, ctx: z.RefinementCtx): void {
   if (

@@ -261,8 +261,8 @@ const reject: Record<string, Record<string, unknown>> = {
   },
   'cost:attempt_settled (cumulative below this attempt)': {
     // The same producer bug the conservative twin pins: reading the run-wide counter BEFORE folding this
-    // attempt into it. Reconstruction sums the deltas so the RESTORE survives it, which is precisely why
-    // nothing else would complain — every display reading the snapshot just under-reports.
+    // attempt into it. The cumulative IS the restore path (reconstruction maxes it), so such a row restores a
+    // total missing this charge — nothing else anywhere would complain, which is why this fixture exists.
     type: 'cost:attempt_settled',
     ...env,
     nodeId: 'n',

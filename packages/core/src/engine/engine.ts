@@ -68,7 +68,11 @@ import {
   type BudgetAdmission,
 } from './budget-governor.js';
 import type { CheckpointPendingMediaJob, CheckpointState } from './checkpoint.js';
-import { MoneyDurability, isLedgerDurabilityError } from './money-durability.js';
+import {
+  LedgerDurabilityError,
+  MoneyDurability,
+  isLedgerDurabilityError,
+} from './money-durability.js';
 import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
 import type {
   GateRequest,
@@ -437,7 +441,14 @@ class RunExecution {
           cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
         });
         if (this.#failure !== failureBefore) {
-          throw new Error('the run failed while this realized charge was being made durable');
+          // Typed, not a bare `Error` (error-handling.md). `#emitDurable` discards the store error in its own
+          // catch, so there is no `cause` left to preserve — the run's `#failure` carries the user-facing
+          // reason instead, and this class exists to keep the node attribution that would otherwise be lost
+          // when the chain flattens a `preAttempt` throw.
+          throw new LedgerDurabilityError(
+            new Error('the run failed while this realized charge was being made durable'),
+            draft.nodeId,
+          );
         }
       },
       ...(params.plan.budget === undefined

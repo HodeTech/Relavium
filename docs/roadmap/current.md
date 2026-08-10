@@ -245,7 +245,8 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 
 **Every item names the check that would close it, not just the defect.**
 
-> **Status, 2026-08-09 — 23 of 24 closed.** Everything marked ✅ below is fixed,
+> **Status, 2026-08-10 — 24 of 24 closed.** `#W15-1`, the last one, landed 2026-08-10 behind ADR-0076 +
+> ADR-0077 (see §A). Everything marked ✅ below is fixed,
 > break-verified with the mutation confirmed applied, and **merged to `main` via PR #81** (2026-08-09). §E's six coverage gaps
 > are all closed — `#W15-16`'s composition test fails by TIMING OUT when the abort listener is removed, which
 > is the unkillable run reproduced exactly rather than an assertion standing in for it.
@@ -323,7 +324,10 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 
 #### A. Needs an ADR first — the only part that is NOT PR #81's to close
 
-- **`#W15-1` (blocker) — a workflow's REALIZED cost is not durable at the provider-attempt boundary.**
+- ✅ **`#W15-1` (blocker) — a workflow's REALIZED cost is not durable at the provider-attempt boundary.**
+  *Closed 2026-08-10 by ADR-0076 + ADR-0077 and the five staged steps; the barrier is a chain-and-join, not
+  the inline await ADR-0076 §1 first specified. See the staged plan below for what each step landed and the
+  three carried-forward gaps.*
   `engine.ts` folds `cost:updated` into memory and streams it; the store documents that it is never persisted,
   and the checkpoint can only recover cost from a LATER `node:completed`/gate snapshot. So: a paid call
   succeeds → the model asks for a tool → the process dies during the tool → the realized cost is gone and the

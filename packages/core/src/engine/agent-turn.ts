@@ -62,7 +62,7 @@ import {
   CommitmentDurabilityError,
   type BudgetAdmission,
 } from './budget-governor.js';
-import type { TurnMoneyPort } from './money-durability.js';
+import { LedgerDurabilityError, type TurnMoneyPort } from './money-durability.js';
 import type { NodeStreamEvent } from './node-executor.js';
 
 /**
@@ -458,6 +458,14 @@ function throwMappedChainError(error: LlmError): never {
   // `fan_out` both branches await the same chain link, so the observer is not necessarily the owner) and would
   // report a money-durability failure as an ordinary provider fault. Rethrown intact, like `BudgetPauseError`.
   if (error.cause instanceof CommitmentDurabilityError) {
+    throw error.cause;
+  }
+  // ADR-0076/ADR-0077's realized twin, for the SAME two reasons — barrier B1 joins the money chain inside
+  // `preAttempt`, so a ledger failure arrives here wrapped exactly like a commitment failure. Without this
+  // arm the class is flattened away: `isLedgerDurabilityError` stops narrowing at the engine's B3 catch, and
+  // the `nodeId` identifying WHOSE write broke is replaced by whichever node's turn happened to observe the
+  // barrier — the fan-out misattribution `CommitmentDurabilityError` got this arm to prevent.
+  if (error.cause instanceof LedgerDurabilityError) {
     throw error.cause;
   }
   throw new AgentTurnError(codeForLlmError(error), error.message, error.retryable);
@@ -925,6 +933,16 @@ async function driveAgentTurn(
             // run whose ledger write did not land admits nothing further. It awaits AND observes: `join()`
             // throws the retained failure rather than returning, which is the only way a caller here can see
             // it (`#emitDurable` absorbs a store fault and resolves).
+            //
+            // **UNTESTED, and the reason is worth knowing rather than guessing.** Deleting this line leaves
+            // the entire core suite green, and no fixture reddens it because on today's engine every path
+            // that reaches a SECOND egress after a settled attempt passes through B2 or B3 first: within one
+            // chain, a settled attempt ends it (a post-content failure surfaces rather than failing over), so
+            // a second egress means either another tool round (B2) or another node dispatch (B3). B1 is
+            // therefore defence in depth against a future path that reaches egress without crossing either —
+            // a chain that continues past a settled attempt, or a turn core that stops routing tools through
+            // `dispatchToolUseTurn`. Kept deliberately; if a later reader finds it genuinely unreachable, the
+            // honest move is to delete it and say so, not to leave an untestable line with a hopeful comment.
             await params.money?.join();
             if (preEgress === undefined) return;
             // This is the only admitting boundary. Check cancellation on BOTH sides of the awaited governor call:

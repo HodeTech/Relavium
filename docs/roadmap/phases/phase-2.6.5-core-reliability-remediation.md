@@ -3,7 +3,7 @@
 - **Status**: planned
 - **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
-  ledger implementation (an accepted ADR with a staged implementation — see [Prerequisite](#prerequisite))
+  ledger implementation (**complete 2026-08-10**, ADR-0076 + ADR-0077 — see [Prerequisite](#prerequisite))
 - **Successor**: Wave 2 of the 2.5.5 remediation, **reduced** — this phase absorbs Wave 2's hostile-MCP
   threat class (see [Phase boundary](#phase-boundary)); Wave 2 keeps the filesystem jail, the secrets
   layer, persistence-security and the 2.5.5 certification
@@ -74,11 +74,26 @@ rejected: a phase whose exit criteria cannot be evaluated until a later phase is
 
 ## Prerequisite
 
-**`#W15-1` — the durable per-attempt realized-cost ledger — lands before `W1` starts.** It is not part of this
-phase, but it is not independent of it either.
+**`#W15-1` — the durable per-attempt realized-cost ledger — lands before `W1` starts. ✅ SATISFIED
+(2026-08-10).** All five steps are merged, each with an Opus and a Sonnet round folded, and the decision
+acquired a correction on the way:
+[ADR-0077](../../decisions/0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md) amends
+ADR-0076 §1, whose stated mechanism (an inline `await` at the attempt boundary) is unimplementable — the
+seam's attempt observer is synchronous. The ledger uses ADR-0074 §2's chain-and-join shape instead, with a
+third barrier before tool dispatch that `CR-12`'s effect journal is expected to extend rather than re-thread.
+
+Two things `W1` inherits from it. **`CR-10` gains a concrete adversary:** the ledger's derived `run_costs` row
+had to be written as a telescoping delta rather than the event's raw charge, precisely because
+`#emitDurable` starts every persist immediately and serializes only delivery — out-of-order commit is real
+today, not a cloud-store hypothetical. And **`CR-11`/`CR-92` gain a known-open seam:** the ledger's observe
+half reads the run's `#failure` because `#emitDurable` discards the store error, which under-triggers during
+a cancel and on an already-failing run. A per-event durable outcome would close it, and that is a change to
+the same choke point `CR-10` restructures.
+
+The original reasoning for the ordering, kept because it is what made it right:
 
 [ADR-0076](../../decisions/0076-durable-per-attempt-realized-cost-ledger.md) is Accepted and its implementation
-is staged in five steps in [current.md](../current.md). Those five steps touch
+was staged in five steps in [current.md](../current.md). Those five steps touch
 `packages/shared/src/run-event.ts`, `packages/core/src/engine/engine.ts`,
 `packages/core/src/engine/checkpoint.ts` and `packages/db/src/run-history-store.ts` — the same four files
 `CR-10` and `CR-12` restructure. Landing it after the durability spine means writing its barrier against a
