@@ -109,6 +109,7 @@ import {
 import { createChatStore, type ChatStoreController } from '../render/tui/chat-store.js';
 import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
+import { stringifyJsonLine } from '../render/sanitize.js';
 
 /**
  * `relavium chat` (2.M) — the agent-first interactive REPL over `@relavium/core`'s `AgentSession`. It binds
@@ -2389,7 +2390,7 @@ export async function drivePlain(ctx: ChatDriveContext): Promise<ChatDriveOutcom
  */
 export async function driveJson(ctx: ChatDriveContext): Promise<ChatDriveOutcome> {
   const unsubscribe = ctx.handle.subscribe((event) =>
-    ctx.io.writeOut(`${JSON.stringify(event)}\n`),
+    ctx.io.writeOut(`${stringifyJsonLine(event)}\n`),
   );
   const rl = createInterface({ input: ctx.io.stdin, terminal: false });
   const onSigint = (): void => rl.close();

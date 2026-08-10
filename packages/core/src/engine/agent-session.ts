@@ -625,6 +625,12 @@ export class AgentSession {
       // (the reply is kept, the turn is counted). `abort()` interrupts an IN-FLIGHT turn only; a turn the
       // model already finished is not discarded. This success path **never reads `#abortingTurn`** — that is
       // precisely what makes a late abort structurally invisible here; the `finally` still clears the marker.
+      // Counted HERE, BEFORE the durability flush below, and that ordering is a decision rather than an
+      // accident (`CR-02`). The rule both catch paths already apply is *count a turn against the hard cap
+      // only when a provider actually ENGAGED* — and by this line `#runTurn` has resolved, so one did. A
+      // `flushBudgetCommitments` rejection past this point is a durability failure, not evidence the turn
+      // never happened; moving the increment below the flush would hand back a turn the provider billed.
+      // Pinned by "a turn whose durability flush REJECTS still consumes its slot against the cap".
       this.#turnCount += 1;
       // Append the assistant reply to the cross-turn transcript as TEXT-ONLY. The turn core keeps the
       // within-turn tool_use/tool_result pairs internal (they never leave runAgentTurn — it returns only the

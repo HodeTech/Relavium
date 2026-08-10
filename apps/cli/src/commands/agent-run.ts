@@ -18,6 +18,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { makePlainPrinter } from './chat.js';
+import { stringifyJsonLine } from '../render/sanitize.js';
 
 /**
  * `relavium agent run <agent>` (2.Q) — invoke a single agent **one-shot** (non-interactive) on the same
@@ -158,7 +159,7 @@ async function runOneShotTurn(
 ): Promise<string | undefined> {
   let turnErrorCode: string | undefined;
   const renderer: (event: SessionStreamHandleEvent) => void = deps.global.json
-    ? (event) => deps.io.writeOut(`${JSON.stringify(event)}\n`)
+    ? (event) => deps.io.writeOut(`${stringifyJsonLine(event)}\n`)
     : // A ONE-SHOT: the session is cancelled in `finally` right after, so suppress the session-continuity recovery
       // hint (2.5.H) — "the session is still active / resend / `/compact`" would be false with no live REPL.
       makePlainPrinter(deps.io, false);

@@ -250,6 +250,40 @@ describe('createSessionPersister', () => {
     persister.close();
   });
 
+  it('LATCHES a failed session:cancelled write, and still detaches the listener (CR-01)', async () => {
+    // The one arm that still called the store bare. `RunEventBus` isolates a listener throw from the
+    // producer, so a failing terminal write let the cancel path report success while the latch never set —
+    // and the latch is what refuses the next egress. A session whose terminal row never landed would resume
+    // believing it had ended cleanly.
+    const { built } = await setup(scriptedResolver([textTurn('hi')]));
+    const persister = createSessionPersister({
+      governor: undefined,
+      attachDurabilityProbe: built.attachDurabilityProbe,
+      store,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now: () => Date.parse('2026-06-25T00:00:00.000Z'),
+      uuid: () => 'msg-x',
+    });
+    built.session.start();
+    persister.start();
+    vi.spyOn(store, 'updateSession').mockImplementation(() => {
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    });
+
+    built.session.cancel();
+    vi.restoreAllMocks();
+
+    expect(persister.durabilityFailure?.message).toContain('database is locked');
+    // The self-detach is in a `finally`, so a failed write cannot leave the bus listener attached — which is
+    // exactly when a leak is worst, since every later event would re-enter a persister that cannot write.
+    expect(() => {
+      persister.close();
+    }).not.toThrow();
+  });
+
   it('does not let a failed cost write advance the in-memory total (#W15-4)', async () => {
     // `mutableSessionColumns` makes `recordSessionCost` the SINGLE writer of the durable total, so a total
     // advanced past a write that did not land can never be repaired by a later flush — and a resume then

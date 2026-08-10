@@ -237,7 +237,7 @@ to correct.
 
 These are partially closed. Each has a verified open half.
 
-### CR-01 — `session:cancelled` bypasses the session durability latch · High
+### CR-01 — `session:cancelled` bypasses the session durability latch · High · ✅ CLOSED 2026-08-11
 
 **Evidence.** The CLI chat persister wraps its cost and turn writes in the `persistDurably` failure latch, and
 since Wave 1 the `session:compacted` and `session:trimmed` arms go through it too. The `session:cancelled` arm
@@ -251,7 +251,12 @@ cancel path report success. The durability latch never sets, so nothing gates th
 **Acceptance.** A failing `writeTurn` on cancel sets `durabilityFailure`, and the next egress is refused.
 Break-verify by removing the wrapper.
 
-### CR-02 — A failed turn flush leaves the turn counter incremented · Medium
+**Closed.** One correction to the finding: the arm writes through `updateSession`, not `writeTurn` — the
+terminal marks the session `ended` rather than appending a turn. The self-detach stays OUTSIDE the wrapper, in
+a `finally`: `persistDurably` re-throws, and a failed write is exactly when a leaked bus listener is worst,
+since every later event would re-enter a persister that cannot write.
+
+### CR-02 — A failed turn flush leaves the turn counter incremented · Medium · ✅ CLOSED 2026-08-11
 
 **Evidence.** `packages/core/src/engine/agent-session.ts` increments `#turnCount` on the success path *before*
 it awaits `flushBudgetCommitments()`. Wave 1 fixed the transcript half of this (the flush now precedes the
@@ -271,7 +276,14 @@ against the cap. `#turnCount` is a JS private field and **must not** be given a 
 assert through the observable turn-cap behaviour (`maxTurns: 1`, one flushing-failing turn, the next
 `sendMessage` refused by the cap). Break-verify by moving the increment below the flush.
 
-### CR-03 — Three `--json` paths still bypass the safe serializer · High
+**Closed — the counter stays, and the code now says why.** The decision was made from the code rather than
+chosen: both catch paths already apply *count a turn only when a provider ENGAGED*, and by the increment
+`#runTurn` has resolved. A flush rejection past that point is a durability failure, not evidence the turn
+never happened — moving the increment below the flush hands back a turn the provider billed. One detail worth
+recording for the test: the rejection SURFACES out of `sendMessage` (ADR-0074 §2 fails the active owner
+loudly), so the regression awaits a rejection and then drives the cap.
+
+### CR-03 — Three `--json` paths still bypass the safe serializer · High · ✅ CLOSED 2026-08-11
 
 **Evidence.** Wave 1 introduced `stringifyJsonLine` (`apps/cli/src/render/sanitize.ts`), which losslessly
 escapes C1 controls and Trojan-Source bidi characters, and routed the workflow renderer and the record writer
@@ -287,6 +299,16 @@ propagation gap — the fix landed, the siblings did not get it.
 
 **Acceptance.** One shared adversarial test drives a C1 + bidi payload through all three surfaces and asserts
 the raw code points do not survive while `JSON.parse` round-trips to the identical string.
+
+**Closed — and it was FOUR paths, not three.** `apps/cli/src/commands/import.ts` writes the same shape and was
+not in the finding; its payload carries `parsed.slug`, which comes straight out of an imported artifact, so it
+is if anything the most attacker-reachable of the set. All four now go through `stringifyJsonLine`.
+
+The regression (`apps/cli/src/render/json-line-surfaces.test.ts`) asserts at the SOURCE, not through four
+command harnesses: what the finding is about is a call site, and a call site is what a future edit
+reintroduces — driving four harnesses would mostly test the harnesses. The escaping behaviour itself stays
+covered in `sanitize.test.ts`. Its hostile payload is built from code points at runtime rather than typed into
+the file, because a raw C1/bidi byte in source is a Trojan-Source hazard in its own right.
 
 ---
 

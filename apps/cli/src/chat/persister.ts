@@ -412,9 +412,23 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       case 'session:cancelled':
         // The session's sole terminal — mark it ended (still resumable from the persisted transcript), then
         // self-detach so the bus listener does not leak if the REPL's close() is skipped on an early exit.
-        deps.store.updateSession(record('ended'));
-        unsubscribe?.();
-        unsubscribe = undefined;
+        //
+        // Through `persistDurably`, like every other write here (`CR-01`). It was the one arm still calling
+        // the store bare, and the gap is not cosmetic: `RunEventBus` isolates a listener throw from the
+        // producer, so a failing write let the cancel path report success while the latch never set — and the
+        // latch is what refuses the next egress. A session whose terminal row never landed would resume
+        // believing it had ended cleanly.
+        //
+        // The self-detach stays OUTSIDE the wrapper on purpose: `persistDurably` re-throws, and unsubscribing
+        // is cleanup that must happen either way — a failed write is exactly when a leaked listener is worst.
+        try {
+          persistDurably(() => {
+            deps.store.updateSession(record('ended'));
+          });
+        } finally {
+          unsubscribe?.();
+          unsubscribe = undefined;
+        }
         return;
       default:
         return;
