@@ -68,6 +68,7 @@ import {
   type BudgetAdmission,
 } from './budget-governor.js';
 import type { CheckpointPendingMediaJob, CheckpointState } from './checkpoint.js';
+import { MoneyDurability, isLedgerDurabilityError } from './money-durability.js';
 import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
 import type {
   GateRequest,
@@ -347,6 +348,8 @@ class RunExecution {
   #runTimeoutDisarm: (() => void) | undefined;
   /** The pre-egress budget governor, when a workflow `budget` is configured (ADR-0028, 1.AC). */
   readonly #budgetGovernor: BudgetGovernor | undefined;
+  /** The money-durability barrier for BOTH chains — always present, cap or no cap (ADR-0077 §5). */
+  readonly #money: MoneyDurability;
   /** Vertices whose budget gate was APPROVED — their next re-dispatch (and all its node-retry attempts) skips
    *  the pre-egress check so the deferred LLM call actually issues (H3). Consumed once per dispatch in
    *  `#dispatch` and cleared on `#settle`. */
@@ -409,6 +412,26 @@ class RunExecution {
     this.#maskedInputs = maskInputs(params.inputs, secretNames);
     this.#maxTokensEstimate = params.maxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
     this.#resolvePrice = params.resolvePrice;
+    // UNCONDITIONAL, unlike the governor below (ADR-0077 §5). The conservative half is inherently
+    // budget-scoped — no cap, nothing to reserve — but a run without a budget still spends real money, so a
+    // ledger that only existed alongside a governor would silently skip every unbudgeted run. It fronts the
+    // join for BOTH chains, so `flushConservative` is wired to the governor once that exists.
+    this.#money = new MoneyDurability({
+      emit: (draft) =>
+        this.#emitDurable({
+          ...draft,
+          type: 'cost:attempt_settled',
+          runId: this.runId,
+          // Stamped HERE because the engine owns the run-wide counter — `#nodeEmit`'s `cost:updated` arm has
+          // already folded this attempt into it (the turn core records strictly after that emit), so reading
+          // it now satisfies `refineCostAttemptSettled`'s "cumulative already includes this charge" by
+          // construction, the same way the governor reads its counter after `+=`.
+          cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
+        }),
+      ...(params.plan.budget === undefined
+        ? {}
+        : { flushConservative: async () => this.#budgetGovernor?.flushCommitments() }),
+    });
     if (params.plan.budget !== undefined) {
       this.#budgetGovernor = new BudgetGovernor({
         budget: params.plan.budget,
@@ -1225,6 +1248,10 @@ class RunExecution {
         signal: this.#abort.signal,
         attemptNumber,
         ...(preEgress === undefined ? {} : { preEgress }),
+        // Unconditional, unlike `preEgress` above — which `budgetApproved` deliberately drops for an approved
+        // re-dispatch. The ledger must not be dropped with it: an approved node is the one the user just
+        // authorised MORE money on, so it is the last place to stop recording what that money was.
+        money: this.#money.turnPort(),
       };
       // After the executor completes, an `output` node with `save_to` writes its produced media to the
       // host (1.AF/D16). A write failure FAILS the node (→ run:failed) — save_to is a real deliverable.
@@ -2107,23 +2134,32 @@ class RunExecution {
    * reservation, always a loud failure.
    */
   async #flushBudgetCommitments(nodeId: string): Promise<void> {
-    const governor = this.#budgetGovernor;
-    if (governor === undefined) return;
+    // **Barrier B3 (ADR-0077)** — and it is now the SINGLE join for both money chains. The old
+    // `if (governor === undefined) return;` is gone: it was one of §5's three barrier holes, because a run
+    // without a budget has no conservative commitments but does have a realized ledger, and returning early
+    // left that ledger started and never joined — exactly the fire-and-forget state ADR-0076 exists to remove.
+    // `MoneyDurability.join()` fronts both, so there is no supported way to await half the money.
     try {
-      await governor.flushCommitments();
+      await this.#money.join();
     } catch (error) {
-      // Attribute it to the node whose commitment actually failed, not to whichever node reached this barrier
+      // Attribute it to the node whose write actually failed, not to whichever node reached this barrier
       // first — under a `fan_out` both branches await the same chain link, so the first to flush may have made no
       // commitment at all. Falls back to this node when the error carries no owner.
-      const owner = error instanceof CommitmentDurabilityError ? (error.nodeId ?? nodeId) : nodeId;
+      const ledger = isLedgerDurabilityError(error);
+      const owner =
+        error instanceof CommitmentDurabilityError || ledger ? (error.nodeId ?? nodeId) : nodeId;
       this.#failure ??= {
         nodeId: owner,
         error: {
           code: 'internal',
           // The cause is deliberately NOT in the message: a durable-write failure can carry a filesystem path, and
-          // a user-facing `run:failed` message must not. It survives on `CommitmentDurabilityError.cause` for a
-          // host that narrows on the class — which is the only carrier, since this path has no store to log it.
-          message: 'a conservative budget commitment could not be made durable',
+          // a user-facing `run:failed` message must not. It survives on the error's `cause` for a host that
+          // narrows on the class — which is the only carrier, since this path has no store to log it. The two
+          // messages are distinct because the remedies differ: an estimate that could not be recorded leaves the
+          // cap conservative, while a realized charge that could not be recorded leaves it UNDERSTATED.
+          message: ledger
+            ? 'a realized provider charge could not be made durable'
+            : 'a conservative budget commitment could not be made durable',
           retryable: false,
         },
       };

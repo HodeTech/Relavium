@@ -62,6 +62,7 @@ import {
   CommitmentDurabilityError,
   type BudgetAdmission,
 } from './budget-governor.js';
+import type { TurnMoneyPort } from './money-durability.js';
 import type { NodeStreamEvent } from './node-executor.js';
 
 /**
@@ -163,6 +164,16 @@ export interface AgentTurnParams {
   readonly limits: AgentTurnLimits;
   /** Pre-egress budget hook (default no-op; 1.AC fills it). */
   readonly preEgress?: PreEgressHook;
+  /**
+   * The run's money-durability port (ADR-0076 / ADR-0077) — RUN-PATH ONLY, and that is what makes
+   * `cost:attempt_settled` a run-only event as a runtime fact rather than a comment: `AgentSession` never sets
+   * this, so nothing is recorded on the session path and there is nothing for a sink to drop. (The session's
+   * realized spend is already recorded synchronously into `session_costs`, ADR-0070 + `#W15-4`.)
+   *
+   * Optional exactly like {@link preEgress}, and threaded the same way, because this is the boundary the
+   * session shares.
+   */
+  readonly money?: TurnMoneyPort;
   /**
    * The non-text output the node requested (1.AF/D17) — forwarded to {@link PreEgressHook} so the budget
    * governor knows this is a media-output turn. The AgentRunner lowers it from the node's `output_modalities`.
@@ -654,6 +665,13 @@ async function dispatchToolUseTurn(
       false,
     );
   }
+  // **Barrier B2 (ADR-0077)** — the one this ADR adds beyond ADR-0074 §2's pair, and the reason the ledger
+  // extends the guarantee rather than repeating it: realized spend must be durable before the run MUTATES THE
+  // WORLD, not merely before it spends again. Before the loop, not per call — one join per tool turn.
+  //
+  // It awaits AND observes: `join()` throws the retained failure, which propagates as a turn failure. Awaiting
+  // alone would not be a barrier, since `#emitDurable` absorbs a store fault and resolves.
+  await params.money?.join();
   // A reached `tool_use` stop always followed a successful (non-skipped) attempt, so `nonSkippedAttempts >= 1`.
   const dispatched = await dispatchToolCalls(toolCalls, params, activeModel, nonSkippedAttempts);
   let next = corrections;
@@ -844,6 +862,24 @@ async function driveAgentTurn(
       // between "unpriced" and "genuinely free" — and a free-LOOKING row in the /cost breakdown would be a lie.
       priced: record.cost !== undefined,
     });
+    // ADR-0076's durable ledger row, STARTED here and joined at the next barrier (ADR-0077) — this callback
+    // cannot await, which is the whole reason the mechanism is a chain plus barriers rather than an inline
+    // await.
+    //
+    // **Strictly AFTER `params.emit` above, and the order is load-bearing.** The engine advances its run-wide
+    // `#cumulativeCostMicrocents` inside `#nodeEmit`'s `cost:updated` arm, and stamps that counter onto this
+    // draft. Recording FIRST would stamp a stale total, which `refineCostAttemptSettled` rejects at the
+    // producer gate — and that gate runs in `#bus.next`, OUTSIDE `#emitDurable`'s try, so the wrong order does
+    // not degrade quietly: it makes `#emitDurable` REJECT in the one place the design assumes it cannot.
+    params.money?.record({
+      nodeId: params.nodeId,
+      model: record.model,
+      attemptNumber: nonSkippedAttempts,
+      inputTokens: record.usage.inputTokens,
+      outputTokens: record.usage.outputTokens,
+      costMicrocents: record.cost?.costMicrocents ?? 0,
+      priced: record.cost !== undefined,
+    });
   };
 
   const chainCapabilities: ChainCapabilities =
@@ -873,7 +909,11 @@ async function driveAgentTurn(
     // maxTokens }` — `provider` is THIS attempt's routing provider (review M2) — so wrap the hook to also carry
     // the turn-static media estimate (1.AF/D17); otherwise the failover-attempt check would silently drop the
     // media addend (ADR-0044 §3). `...info` forwards `provider` to the governor's endpoint estimate unchanged.
-    ...(preEgress === undefined
+    // Installed when EITHER a budget hook or the money port is present. Gating it on `preEgress` alone — as it
+    // was — is one of the three barrier holes ADR-0077 §5 names: `#makePreEgressHook()` returns `undefined`
+    // without a governor, and `budgetApproved` drops it even WITH one, so an unbudgeted run (or an approved
+    // re-dispatch) would have got no B1 at all while still spending real money.
+    ...(preEgress === undefined && params.money === undefined
       ? {}
       : {
           preAttempt: async (info: {
@@ -881,6 +921,12 @@ async function driveAgentTurn(
             readonly provider: ProviderId;
             readonly maxTokens?: number;
           }) => {
+            // **Barrier B1 (ADR-0077)** — before the next egress admission, and before the governor call, so a
+            // run whose ledger write did not land admits nothing further. It awaits AND observes: `join()`
+            // throws the retained failure rather than returning, which is the only way a caller here can see
+            // it (`#emitDurable` absorbs a store fault and resolves).
+            await params.money?.join();
+            if (preEgress === undefined) return;
             // This is the only admitting boundary. Check cancellation on BOTH sides of the awaited governor call:
             // a cancellation landing while warning durability/admission is pending must not reach key resolution
             // or provider egress, and any just-acquired lease is released before the cancellation propagates.
