@@ -417,8 +417,16 @@ class RunExecution {
     // ledger that only existed alongside a governor would silently skip every unbudgeted run. It fronts the
     // join for BOTH chains, so `flushConservative` is wired to the governor once that exists.
     this.#money = new MoneyDurability({
-      emit: (draft) =>
-        this.#emitDurable({
+      emit: async (draft) => {
+        // **The observe half, and it has to be here rather than in `MoneyDurability`.** `#emitDurable` is
+        // TOTAL for store faults: it absorbs a `persistEvent` rejection into `#failure` and RESOLVES. So the
+        // ledger's own `.catch` never fires for the failure mode it exists to catch, and a barrier that only
+        // awaited would sail straight past a run whose money write did not land — exactly the trap ADR-0076
+        // §1 named and ADR-0077 kept. Comparing `#failure` across the await is what turns the absorbed fault
+        // back into something the barrier can throw. It can over-trigger when a SIBLING fails in the same
+        // window; that direction is fail-closed and correct at a money barrier.
+        const failureBefore = this.#failure;
+        await this.#emitDurable({
           ...draft,
           type: 'cost:attempt_settled',
           runId: this.runId,
@@ -427,7 +435,11 @@ class RunExecution {
           // it now satisfies `refineCostAttemptSettled`'s "cumulative already includes this charge" by
           // construction, the same way the governor reads its counter after `+=`.
           cumulativeCostMicrocents: this.#cumulativeCostMicrocents,
-        }),
+        });
+        if (this.#failure !== failureBefore) {
+          throw new Error('the run failed while this realized charge was being made durable');
+        }
+      },
       ...(params.plan.budget === undefined
         ? {}
         : { flushConservative: async () => this.#budgetGovernor?.flushCommitments() }),
