@@ -2,7 +2,7 @@
 
 > Status: Living
 >
-> Last updated: 2026-07-29
+> Last updated: 2026-08-10
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -89,7 +89,9 @@ any order"* — never as headcount.
 flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
-    W2["Wave 2 — Shut the doors<br/>MCP · fs jail · secrets<br/>certifies 2.5.5 EXIT 1–3"]
+    LEDGER["#W15-1 — realized-cost ledger<br/>ADR-0076 implementation"]
+    P265["Phase 2.6.5 — Core reliability<br/>45 CR items · 8 P0 ADRs<br/>absorbs the hostile-MCP class"]
+    W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
     W4b["Wave 4b — Money floor & close-out<br/>2.5.5.B/C/F/H drain · v0.2.0"]
@@ -97,7 +99,7 @@ flowchart TD
     W5b["Wave 5b — Home becomes the product<br/>2.6.G/I/J · then i18n sweep"]
     W6["Wave 6 — Hands, voice, lineage<br/>2.6.M/B/E + 2.6.N foundation"]
     W7["Wave 7 — Orchestration & the gate<br/>2.6.O/P · go/no-go → Phase 3"]
-    W0 --> W1 --> W2 --> W3 --> W4a --> W5a --> W5b --> W6 --> W7
+    W0 --> W1 --> LEDGER --> P265 --> W2 --> W3 --> W4a --> W5a --> W5b --> W6 --> W7
     W3 --> W4b
     W4b -.->|v0.2.0 release| W7
     W4a -.->|file-disjoint lanes| W4b
@@ -286,6 +288,10 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 > The break-verify that matters most is step 4's ordering: deleting the `await` must redden a test, or the
 > ledger records the charge without the guarantee that makes it one.
 >
+> **This is now the prerequisite of Phase 2.6.5, not a parallel track.** Its five steps touch the same four
+> files `CR-10` (ordered append tail) and `CR-12` (effect journal) restructure, so it lands first — see the
+> 2.6.5 section below.
+>
 > **What ADR-0076 explicitly does NOT close**, so it is not read as more than it is: the cost of a TOOL EFFECT.
 > A resumed run can still re-execute an `http_request` POST, a `run_command` or an MCP mutation — the
 > duplicate EFFECT is the harm, and no cost bookkeeping prevents it. That needs a durable effect journal with
@@ -425,26 +431,47 @@ the review of `#W15-16`, fixed with it, and now the signal that test drives.
   `llm-provider-seam.md` still claims model-discovery/media-poll keep a small SDK retry; ADR-0028's amendment
   note still says ADR-0074 §2–§5 have not landed. Each could send a future reader back toward a #91-class hole.
 
-### Phase 2.6.5 — Core reliability remediation (before Wave 2)
+### Phase 2.6.5 — Core reliability remediation (between Wave 1 and Wave 2)
 
 Three independent core reviews of the post-Wave-1 tree converged — independently — on the **same seven blocking
 gaps**: effect journal, stdio MCP consent-before-spawn, run lease, compaction trust elevation, stream grammar,
 input admission, event-log ordering. Three separate reviews landing on the same seven points is not opinion.
 
 The full, self-contained work list is
-[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — 40 items
-(`CR-01`…`CR-95`) with evidence, fix and acceptance criteria for each, written so the work can be done from that
-document alone.
+[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — **45 items**
+(`CR-01`…`CR-95`) with evidence, fix, acceptance criteria and a decision/ADR/gate register, written so the work
+can be done from that document alone. An adversarial plan review on 2026-08-10 corrected the phase boundary,
+the exit rule and the execution order, and added two items (`CR-17` resume identity, `CR-63` `input_schema`
+docs-only).
 
-Two things it changes about the plan below:
+**This is the corrected execution order, and it is what the graph above shows:**
 
-- **Wave 2 is amended, not replaced.** Its MCP timeout/SSRF/ingress cluster stays; `CR-16`
-  (consent before a stdio MCP spawn) is added to it as a P0 in the same code area.
-- **Its seven P0 items are ADR-first**, in dependency order — an effect journal is meaningless while two
-  processes can own one run, and run ownership rests on the log being an ordered prefix.
+1. **`#W15-1` first.** Its five staged steps touch `run-event.ts`, `engine.ts`, `checkpoint.ts` and
+   `run-history-store.ts` — the same four files `CR-10` and `CR-12` restructure. Landing it after the durability
+   spine means writing its barrier against a persistence path that is about to change.
+2. **Then Phase 2.6.5, closing before Wave 2 opens.** Which is only true if the work Wave 2 would block on
+   lives there — so **the hostile-MCP threat class moves into 2.6.5**: `CR-16` (consent before a stdio spawn)
+   plus `CR-40`–`CR-42` (transport cancellation, DNS/redirect SSRF, ingress bounds). Wave 2's queue item 2 is
+   **executed as 2.6.5's `W4`**; the 2.5.5 finding ids keep their home in the 2.5.5 phase doc and certify from
+   there. Wave 2 keeps the MCP name-collision/tool-poisoning trust items, the fs jail, the secrets layer,
+   persistence-security and the certification.
+3. **Within 2.6.5, the oracle comes before the spine.** `CR-90`/`CR-91` (crash + durable-truth harness) land
+   first because they are the instrument `CR-10 → CR-11 → CR-92 → CR-12` is proven with; `CR-92` moved out of
+   the harness group into the spine, since an API returning `completed` while history says `failed` is a
+   runtime defect, not a test concern.
 
-Three items are already half-closed by Wave 1 and finish first (`CR-01`–`CR-03`); `CR-03` is a propagation gap
-from `#W15-10`'s own fix — three `--json` paths never got the safe serializer.
+Two rules that changed with the plan review:
+
+- **Fourteen items are non-deferrable** — every W0/W1 item plus `CR-50`, `CR-55`, `CR-73`, `CR-80`, `CR-92` and
+  `CR-95`'s short-term fix. Each has a cheap fail-closed option (refuse, remove, narrow the claim), so "too big
+  to fix now" argues for the cheap option, never for deferral. The previous exit criterion permitted deferring
+  all 43 items and declaring the phase complete.
+- **The gate is `pnpm run ci` AND `pnpm coverage`.** `coverage` is a separate required CI check and is not
+  inside the `ci` script; this phase edits `packages/core` heavily, and the CI coverage job does not block on
+  `core`.
+
+Three items are already half-closed by Wave 1 and finish right after the oracle (`CR-01`–`CR-03`); `CR-03` is a
+propagation gap from `#W15-10`'s own fix — three `--json` paths never got the safe serializer.
 
 ### Wave 2 — Shut the doors
 
@@ -453,10 +480,14 @@ certify while the reviews are still booked.
 
 1. 2.5.5.D · **project-layer MCP name collision redirecting a global secret** (G19), then **MCP tool-definition
    poisoning** (#202).
-2. **MCP queue, strict** — connect-phase timeouts on every transport (#35, G32, #205) → transport/discovery/result
-   size bounds against a hostile server (G33, #201, #209, #288) → structured `serverId`/`reason` discriminants
-   (#203, #204) → the two fail-loud violations (#206, #207) → per-file transport-adapter tests (#297) →
-   `CLIENT_INFO.version` (#208).
+2. **MCP queue, strict — EXECUTED AS PHASE 2.6.5 `W4`, not here.** Connect-phase timeouts on every transport
+   (#35, G32, #205) → transport/discovery/result size bounds against a hostile server (G33, #201, #209, #288) →
+   structured `serverId`/`reason` discriminants (#203, #204) → the two fail-loud violations (#206, #207) →
+   per-file transport-adapter tests (#297) → `CLIENT_INFO.version` (#208). These finding ids keep their home in
+   [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md) and
+   certify from there in step 6 below; the *work* happens in 2.6.5 alongside `CR-16` (consent before a stdio
+   spawn) and `CR-41` (the DNS/redirect SSRF hole), because they are the same code and the same security
+   sitting. Splitting them across two phases would book the hostile-MCP reviewer twice.
 3. **The fs jail, ONE reviewed change set** — 2.5.5.D · sensitive-credential floor for `.kube`/`.azure`/gcloud
    (#36, #39) → extract `deepestExistingReal` to `packages/shared` (#235) → **2.6.M's `project`-tier
    `extraRoots`** and **2.6.N's fs-floor home-anchoring**, both *pulled forward*. `~/.relavium/tmp/` (G21)
@@ -470,9 +501,9 @@ certify while the reviews are still booked.
    context sites (G22). 2.5.5.D · `default_headers` (G20, after D13).
 6. **Certify 2.5.5 exit criteria 1, 2 and 3** + the sub-stream D acceptance sign-off. **Closes M2.5.5-2 (D half).**
 
-> Book **five security-review sittings by threat class** (hostile-MCP · fs/path-jail · secrets-at-rest ·
-> secrets-input · config-trust), not ~30 per-PR passes. Reviewer availability, not code, is this wave's
-> critical path.
+> Book **four security-review sittings by threat class** (fs/path-jail · secrets-at-rest · secrets-input ·
+> config-trust), not ~30 per-PR passes. The **hostile-MCP** sitting moved to Phase 2.6.5 with the queue-2 work;
+> it covers `CR-16` and `CR-40`–`CR-42` there. Reviewer availability, not code, is this wave's critical path.
 
 ### Wave 3 — Clear the ground
 
