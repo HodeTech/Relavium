@@ -2066,10 +2066,16 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
   });
 
   it('append audit: reconcile() carries the guard too — the SECOND write path (ADR-0078 §3)', async () => {
-    // `reconcile()` bypasses `#emitDurable` entirely and calls the store directly, so every property
-    // established at that choke point has to be re-established here or it holds for one of two writers. Had
-    // no test at all. The scenario: another process appends after `listInterruptedRuns` read the log, so the
-    // repair's belief is stale — it must be REFUSED rather than write a terminal past the newer event.
+    // `reconcile()` bypasses `#emitDurable` and calls the store directly, so every property established at
+    // that choke point has to be re-established here or it holds for one of two writers.
+    //
+    // **This test was HOLLOW when first written, and the shape of the mistake is worth keeping.** It called
+    // `reconcile()` twice and asserted the second produced nothing — which it does, but for the wrong
+    // reason: `listInterruptedRuns` already excludes a run that carries a terminal, so the second call never
+    // reaches the guarded write at all. Measured: removing the guard entirely from `reconcile()` left all
+    // 1165 `packages/core` tests green, including this one. Two concurrent reconciles against ONE still-
+    // interrupted run is the scenario that actually forces the refusal — both read the same belief, only one
+    // can be right.
     const store = new InMemoryRunStore();
     const host = createInMemoryHost({ store });
     const engine = buildEngine(host, () => scriptedProvider([textTurn('x')]));
@@ -2091,25 +2097,18 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
       nodeId: 'n',
       nodeType: 'agent',
     });
-    // `listInterruptedRuns` will report lastSequenceNumber = 2 once this lands; reconcile then believes 2.
-    await store.persistEvent({
-      type: 'node:skipped',
-      ...base,
-      sequenceNumber: 2,
-      nodeId: 'm',
-      reason: 'branch_not_taken',
-    });
 
-    const first = await engine.reconcile();
-    expect(first.map((e) => e.type)).toEqual(['run:failed']); // the ordinary repair lands
+    // Both reconciles read the same `lastSequenceNumber`; the loser's belief is stale by the time it writes.
+    const [a, b] = await Promise.all([engine.reconcile(), engine.reconcile()]);
+    const repaired = [...a, ...b];
 
-    // Now the run already has a terminal, so a SECOND reconcile's belief is stale by construction.
-    const second = await engine.reconcile();
-    expect(second).toEqual([]); // refused (or skipped) — never a second terminal
+    // THE assertion: exactly one repair landed. Without the guard both commit and the run carries two
+    // terminals, breaking ADR-0036's exactly-one-terminal from the path that exists to restore it.
+    expect(repaired).toHaveLength(1);
     const terminals = store
       .eventsFor(runId)
       .filter((e) => e.type === 'run:failed' || e.type === 'run:completed');
-    expect(terminals).toHaveLength(1); // exactly-one-terminal survives the second writer
+    expect(terminals).toHaveLength(1);
   });
 
   it('append audit: the engine PASSES the guard, with the right belief, and exempts the terminal', async () => {
@@ -2181,12 +2180,28 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
 
     expect(dropped).toBe(1); // the fault really fired — without this the rest is vacuous
     expect(events.at(-1)?.type).toBe('run:failed');
-    const verdict = audit.verdict(audit.runIds()[0] ?? '');
-    // The sibling append after the loss was REFUSED, not committed past the gap. `committed` is therefore a
-    // strict prefix of `asked` for the non-terminal segment, which is CR-10's property.
-    const rejected = audit.records().filter((r) => r.outcome === 'rejected');
-    expect(rejected.length).toBeGreaterThanOrEqual(1);
-    expect(verdict.overlapViolations).toEqual([]);
+    const records = audit.records();
+
+    // **The property, asserted directly.** An earlier version of this test checked only
+    // `rejected.length >= 1` — which the INJECTED loss already satisfies on its own, so it passed whether or
+    // not the guard refused anything. At least two rejections are required: the loss, and the guarded ask
+    // that would otherwise have committed past it.
+    const rejected = records.filter((r) => r.outcome === 'rejected');
+    expect(rejected.length).toBeGreaterThanOrEqual(2);
+
+    // And the log itself: every NON-TERMINAL event committed before the first miss, and none after it. That
+    // is CR-10's prefix property, stated over the segment CR-10 actually covers.
+    const nonTerminal = records.filter((r) => !r.type.startsWith('run:'));
+    const firstMiss = nonTerminal.findIndex((r) => r.outcome !== 'committed');
+    expect(firstMiss).toBeGreaterThan(-1);
+    expect(nonTerminal.slice(0, firstMiss).every((r) => r.outcome === 'committed')).toBe(true);
+    expect(nonTerminal.slice(firstMiss).some((r) => r.outcome === 'committed')).toBe(false);
+
+    // The TERMINAL is the one thing that does land past the miss, because it is exempt — recorded here
+    // rather than hidden, since it is exactly the residual CR-92's outbox closes.
+    expect(records.at(-1)?.type).toBe('run:failed');
+    expect(records.at(-1)?.outcome).toBe('committed');
+    expect(audit.verdict(audit.runIds()[0] ?? '').overlapViolations).toEqual([]);
   });
 
   it('append audit: a FAN-OUT run no longer overlaps its appends (CR-10 — the assertion that flipped)', async () => {

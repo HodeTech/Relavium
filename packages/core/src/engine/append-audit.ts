@@ -160,11 +160,16 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
   const store: RunStore = {
     resolveWorkflowId: (slug) => inner.resolveWorkflowId(slug),
     listInterruptedRuns: (): Promise<readonly InterruptedRun[]> => inner.listInterruptedRuns(),
-    // Typed as the port's own member rather than re-spelled, so `CR-11`'s fencing token and `CR-12`'s
-    // journal correlation cannot be dropped here the way `CR-10`'s guard was: a decorator that names the
-    // signature by hand silently keeps compiling when the signature grows, and this one did — it forwarded
-    // only the event, so ADR-0078 §2's compare-and-append was OFF for every store the harness wrapped.
-    // Found by review; the harness built to certify CR-10 was disabling the thing it certifies.
+    // Contextually typed from the port rather than re-spelled by hand. This one DID drop `CR-10`'s guard:
+    // the decorator named `(event: RunEvent)` explicitly, kept compiling when ADR-0078 §2 added `ctx`, and
+    // forwarded only the event — so the compare-and-append was OFF for every store the harness wrapped, in
+    // the instrument built to certify it.
+    //
+    // **What actually stops that recurring is the test below it, not this annotation** — corrected, because
+    // a first version of this comment claimed the type does it. TypeScript's structural assignability lets a
+    // FEWER-parameter function satisfy a wider signature, so a decorator that ignores `CR-11`'s fencing
+    // token or `CR-12`'s journal correlation would still compile, contextually typed or not. The guarantee
+    // is `append-audit.test.ts`'s forwarding regression, which asserts on what the inner store RECEIVED.
     persistEvent: async (event, ctx): Promise<void> => {
       // A dual event with no runId is out of the run store's scope, exactly as `InMemoryRunStore` treats it.
       // What this guard actually buys — corrected, because the first version of this comment claimed the
