@@ -136,6 +136,19 @@ export type {
   DurableTruthVerdict,
   TerminalView,
 } from './engine/durable-truth.js';
+// The append-audit harness (CR-10, ADR-0078) — exported for the same reason and on the same terms as the
+// oracle above. It answers the one question the durable log CANNOT: whether the committed events are a prefix
+// of what the engine asked to persist. Streamed events take sequence numbers and are never persisted, so a
+// healthy log reads [0,1,2,3,5,10,…] and a lost event is indistinguishable from one that was never meant to
+// land — the witness has to come from the ask side, which only a store decorator holds.
+export { createAppendAudit, formatAppendAudit } from './engine/append-audit.js';
+export type {
+  AppendAskRecord,
+  AppendAudit,
+  AppendAuditOptions,
+  AppendAuditVerdict,
+  AppendFault,
+} from './engine/append-audit.js';
 export type {
   ExecutionHost,
   RunStore,
