@@ -1367,4 +1367,244 @@ describe('createRunHistoryReader', () => {
       expect(reader.loadRun('run-z')?.totalCostMicrocents).toBe(0);
     });
   });
+
+  describe('the realized-cost ledger (ADR-0076 / #W15-1)', () => {
+    const ts = TS;
+
+    const sumRunCosts = (runId: string): number =>
+      client.db
+        .select({ c: runCosts.costMicrocents })
+        .from(runCosts)
+        .where(eq(runCosts.runId, runId))
+        .all()
+        .reduce((total, row) => total + row.c, 0);
+
+    /** One settled attempt. `cumulative` is the run-wide total AFTER it (the schema refinement pins that). */
+    const settled = (
+      runId: string,
+      seq: number,
+      nodeId: string,
+      cost: number,
+      cumulative: number,
+      attemptNumber = 1,
+      tokens = { input: 10, output: 5 },
+    ): RunEvent =>
+      evRun(
+        runId,
+        'cost:attempt_settled',
+        seq,
+        {
+          nodeId,
+          model: 'claude-opus-4-8',
+          attemptNumber,
+          inputTokens: tokens.input,
+          outputTokens: tokens.output,
+          costMicrocents: cost,
+          cumulativeCostMicrocents: cumulative,
+          priced: true,
+        },
+        ts,
+      );
+
+    const startRun = async (runId: string): Promise<ReturnType<typeof storeFor>> => {
+      const store = storeFor('wf');
+      const workflowId = await store.resolveWorkflowId('wf');
+      await store.persistEvent(
+        evRun(runId, 'run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }, ts),
+      );
+      await store.persistEvent(
+        evRun(runId, 'node:started', 1, { nodeId: 'n1', nodeType: 'agent' }, ts),
+      );
+      return store;
+    };
+
+    it('writes a run_costs row AND advances the run total — the pair the invariant rests on', async () => {
+      const store = await startRun('run-l1');
+      await store.persistEvent(settled('run-l1', 2, 'n1', 400, 400));
+
+      expect(reader.loadRun('run-l1')?.totalCostMicrocents).toBe(400);
+      expect(sumRunCosts('run-l1')).toBe(400);
+      const rows = client.db.select().from(runCosts).where(eq(runCosts.runId, 'run-l1')).all();
+      expect(rows).toHaveLength(1);
+      // The REAL per-attempt tokens, unlike `foldCumulative`'s money-only addend.
+      expect(rows[0]).toMatchObject({ nodeId: 'n1', inputTokens: 10, outputTokens: 5 });
+    });
+
+    it('is the INVERSE of budget:estimate_committed — the realized twin DOES touch the money of record', async () => {
+      // The estimate falls through `applyDerived`'s default and must never reach `runs`/`run_costs`
+      // (ADR-0074's central negative guarantee). Its realized twin must, or the ledger records nothing.
+      const store = await startRun('run-l2');
+      await store.persistEvent(
+        evRun(
+          'run-l2',
+          'budget:estimate_committed',
+          2,
+          {
+            nodeId: 'n1',
+            attemptNumber: 1,
+            model: 'claude-opus-4-8',
+            estimateMicrocents: 999,
+            cumulativeConservativeMicrocents: 999,
+          },
+          ts,
+        ),
+      );
+      expect(reader.loadRun('run-l2')?.totalCostMicrocents).toBe(0);
+
+      await store.persistEvent(settled('run-l2', 3, 'n1', 400, 400));
+      expect(reader.loadRun('run-l2')?.totalCostMicrocents).toBe(400);
+      expect(sumRunCosts('run-l2')).toBe(400);
+    });
+
+    it('telescopes: attempt rows advance the total, so node:completed contributes ZERO', async () => {
+      // ADR-0076 property 3, the load-bearing one. The terminal row is still written (it carries the node's
+      // token totals); its COST is zero by arithmetic, and the SUM invariant holds with no special case.
+      const store = await startRun('run-l3');
+      await store.persistEvent(settled('run-l3', 2, 'n1', 400, 400, 1));
+      await store.persistEvent(settled('run-l3', 3, 'n1', 600, 1_000, 2));
+      await store.persistEvent(
+        evRun(
+          'run-l3',
+          'node:completed',
+          4,
+          {
+            nodeId: 'n1',
+            output: { ok: true },
+            tokensUsed: { input: 20, output: 10 },
+            durationMs: 5,
+            cumulativeCostMicrocents: 1_000,
+          },
+          ts,
+        ),
+      );
+
+      const rows = client.db.select().from(runCosts).where(eq(runCosts.runId, 'run-l3')).all();
+      expect(rows).toHaveLength(3); // two attempts + the terminal
+      expect(rows[2]?.costMicrocents).toBe(0); // the terminal's delta telescoped away
+      expect(reader.loadRun('run-l3')?.totalCostMicrocents).toBe(1_000);
+      expect(sumRunCosts('run-l3')).toBe(1_000); // ADR-0070's invariant, unchanged
+    });
+
+    it('does NOT double-count when a higher cumulative committed first (persists are concurrent)', async () => {
+      // `#emitDurable` starts every `persistEvent` immediately and serializes only DELIVERY — "persists stay
+      // concurrent", in its own words. So a sibling's terminal can land BEFORE an attempt row whose charge it
+      // already includes. Writing the event's raw `costMicrocents` would add that money twice; the telescoping
+      // fold cannot, because every money event carries an ABSOLUTE cumulative.
+      const store = await startRun('run-l7');
+      await store.persistEvent(
+        evRun('run-l7', 'node:started', 2, { nodeId: 'n2', nodeType: 'agent' }, ts),
+      );
+      // The sibling commits first with a cumulative that ALREADY contains n1's 400.
+      await store.persistEvent(
+        evRun(
+          'run-l7',
+          'node:completed',
+          3,
+          {
+            nodeId: 'n2',
+            output: {},
+            tokensUsed: { input: 1, output: 1 },
+            durationMs: 1,
+            cumulativeCostMicrocents: 1_000,
+          },
+          ts,
+        ),
+      );
+      expect(reader.loadRun('run-l7')?.totalCostMicrocents).toBe(1_000);
+
+      // n1's attempt row lands late, carrying its own true charge of 400 and a cumulative of 400.
+      await store.persistEvent(settled('run-l7', 4, 'n1', 400, 400));
+
+      // 1_000, not 1_400. The money was already banked; this row contributes nothing and says so.
+      expect(reader.loadRun('run-l7')?.totalCostMicrocents).toBe(1_000);
+      expect(sumRunCosts('run-l7')).toBe(1_000);
+    });
+
+    it('keeps the step row at the node TRUE cost after telescoping, not the zeroed delta', async () => {
+      // The regression the telescoping would otherwise ship silently: `node:completed` used its own delta for
+      // `step_executions.costMicrocents`, and that delta is now routinely 0. The column is user-visible
+      // (`relavium status --json`), and nothing pinned it before this test.
+      const store = await startRun('run-l4');
+      await store.persistEvent(settled('run-l4', 2, 'n1', 400, 400, 1));
+      await store.persistEvent(settled('run-l4', 3, 'n1', 600, 1_000, 2));
+      await store.persistEvent(
+        evRun(
+          'run-l4',
+          'node:completed',
+          4,
+          {
+            nodeId: 'n1',
+            output: { ok: true },
+            tokensUsed: { input: 20, output: 10 },
+            durationMs: 5,
+            cumulativeCostMicrocents: 1_000,
+          },
+          ts,
+        ),
+      );
+
+      const step = client.db
+        .select()
+        .from(stepExecutions)
+        .where(and(eq(stepExecutions.runId, 'run-l4'), eq(stepExecutions.nodeId, 'n1')))
+        .get();
+      expect(step?.costMicrocents).toBe(1_000);
+    });
+
+    it('keeps the step row at the node TRUE cost on a FAILED node too', async () => {
+      // `node:failed` shared the same `nodeCost`-for-two-purposes bug, plus an `if (nodeCost > 0)` guard that
+      // would have skipped the write entirely on exactly the failures whose cost matters most.
+      const store = await startRun('run-l5');
+      await store.persistEvent(settled('run-l5', 2, 'n1', 700, 700, 1));
+      await store.persistEvent(
+        evRun(
+          'run-l5',
+          'node:failed',
+          3,
+          {
+            nodeId: 'n1',
+            error: { code: 'provider_unavailable', message: 'boom', retryable: false },
+            cumulativeCostMicrocents: 700,
+          },
+          ts,
+        ),
+      );
+
+      const step = client.db
+        .select()
+        .from(stepExecutions)
+        .where(and(eq(stepExecutions.runId, 'run-l5'), eq(stepExecutions.nodeId, 'n1')))
+        .get();
+      expect(step?.costMicrocents).toBe(700);
+      expect(reader.loadRun('run-l5')?.totalCostMicrocents).toBe(700);
+      expect(sumRunCosts('run-l5')).toBe(700);
+    });
+
+    it('counts run-level TOKENS once — the attempt row must not bump the run totals', async () => {
+      // `node:completed.tokensUsed` is already the sum across this node's attempts, so an attempt arm that
+      // also bumped `runs.total_*_tokens` would double them. The `run_costs` row still carries per-attempt
+      // tokens for attribution; nothing sums that column.
+      const store = await startRun('run-l6');
+      await store.persistEvent(settled('run-l6', 2, 'n1', 400, 400, 1, { input: 12, output: 6 }));
+      await store.persistEvent(
+        evRun(
+          'run-l6',
+          'node:completed',
+          3,
+          {
+            nodeId: 'n1',
+            output: {},
+            tokensUsed: { input: 12, output: 6 },
+            durationMs: 5,
+            cumulativeCostMicrocents: 400,
+          },
+          ts,
+        ),
+      );
+
+      const run = reader.loadRun('run-l6');
+      expect(run?.totalInputTokens).toBe(12);
+      expect(run?.totalOutputTokens).toBe(6);
+    });
+  });
 });

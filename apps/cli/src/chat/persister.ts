@@ -412,9 +412,27 @@ export function createSessionPersister(deps: SessionPersisterDeps): SessionPersi
       case 'session:cancelled':
         // The session's sole terminal — mark it ended (still resumable from the persisted transcript), then
         // self-detach so the bus listener does not leak if the REPL's close() is skipped on an early exit.
-        deps.store.updateSession(record('ended'));
-        unsubscribe?.();
-        unsubscribe = undefined;
+        //
+        // Through `persistDurably`, like every other write here (`CR-01`) — but be precise about WHAT that
+        // buys, because the obvious reading is wrong. The latch half is inert on this arm: `session:cancelled`
+        // is emitted only by `AgentSession.cancel()`, which sets `#status = 'cancelled'`, and every later
+        // egress entry point is already refused by `#assertSendable()` with `not_active`. Nothing reads
+        // `durabilityFailure` again. It is wrapped for SYMMETRY with its siblings — one arm reaching the store
+        // bare is how the next reader concludes the wrapper is optional.
+        //
+        // **The `finally` is the load-bearing half.** Before it, a throwing write jumped straight over the two
+        // unsubscribe lines and left this persister attached to the bus — so every later event re-entered a
+        // persister that could not write. (The user was told either way: the throw always escaped `onEvent`
+        // into `deliver`'s listener-error sink.) Cleanup must happen on both paths, and a failed write is
+        // exactly when a leak is worst.
+        try {
+          persistDurably(() => {
+            deps.store.updateSession(record('ended'));
+          });
+        } finally {
+          unsubscribe?.();
+          unsubscribe = undefined;
+        }
         return;
       default:
         return;

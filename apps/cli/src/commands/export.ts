@@ -12,6 +12,7 @@ import {
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import { stringifyJsonLine, stripTerminalControls } from '../render/sanitize.js';
 
 export interface ExportCommandArgs {
   /** The in-file `id` of the workflow/agent to export (resolved across both project catalogs). */
@@ -59,11 +60,18 @@ export function exportCommand(args: ExportCommandArgs, deps: ExportCommandDeps):
   // Emit the cwd-relative path in both modes — the same contract `import` uses, so a script consuming either
   // command's `--json` gets the same path shape (and no absolute filesystem tree leaks into the output).
   if (deps.global.json) {
+    // `stringifyJsonLine`, not a bare `JSON.stringify` (CR-03). `targetDisplay` derives from the user-typed
+    // `--out`, so unlike `import --json`'s payload — whose `slug` is kebab-schema-validated and cannot carry
+    // one — it really can hold a C1 control or a bidi override, which `JSON.stringify` leaves raw.
     deps.io.writeOut(
-      `${JSON.stringify({ id: parsed.slug, kind: parsed.kind, path: targetDisplay })}\n`,
+      `${stringifyJsonLine({ id: parsed.slug, kind: parsed.kind, path: targetDisplay })}\n`,
     );
   } else {
-    deps.io.writeOut(`Exported ${parsed.kind} '${parsed.slug}' to ${targetDisplay}\n`);
+    // The human line needs the terminal floor for the same reason: every dynamic string written to a terminal
+    // passes `stripTerminalControls` (security-review.md), and this one is user-supplied.
+    deps.io.writeOut(
+      `Exported ${parsed.kind} '${parsed.slug}' to ${stripTerminalControls(targetDisplay)}\n`,
+    );
   }
   return EXIT_CODES.success;
 }

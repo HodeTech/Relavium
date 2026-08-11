@@ -94,10 +94,39 @@ export interface CheckpointState {
   /** Running token totals (summed from `node:completed`), restored so a resumed run's `run:completed` totals stay correct. */
   readonly totalInputTokens: number;
   readonly totalOutputTokens: number;
-  /** The run-wide cumulative cost (integer micro-cents), restored on resume from the durable
-   *  `node:completed.cumulativeCostMicrocents` snapshot and/or `budget:paused.spentMicrocents` — the higher
-   *  wins (`Math.max`, order-independent). (`cost:updated` is also folded when present, but it is streamed,
-   *  not persisted, so it never appears in a real durable log.) Keeps post-resume cost cumulative. */
+  /**
+   * The run-wide realized cost (integer micro-cents), restored on resume so post-resume spend keeps
+   * accumulating against a cap that remembers what already went out.
+   *
+   * **The fold is `Math.max` over every durable ABSOLUTE total that is folded here**, and there are exactly
+   * three: `node:completed.cumulativeCostMicrocents`, `node:failed.cumulativeCostMicrocents`, and — since
+   * [ADR-0076](../../../../docs/decisions/0076-durable-per-attempt-realized-cost-ledger.md) —
+   * `cost:attempt_settled.cumulativeCostMicrocents`. Plus `budget:paused.spentMicrocents` in
+   * `applyGateEvent`, maxed the same way. Each is read immediately after its own increment, so each is a true
+   * run-wide total at that instant and the largest is the engine's real total, whatever order the rows landed
+   * in.
+   *
+   * **`run:failed` / `run:cancelled` carry the field but are NOT folded here**, and that is deliberate rather
+   * than an oversight — the engine states it at the emit site. A run terminal is the last event of the run, so
+   * a restored total that omitted it would only ever be read by a resume that cannot happen. Named because the
+   * field list above reads like it should include them.
+   *
+   * **Neither obvious alternative works, and one of them under-counts silently:**
+   *
+   * - SUMMING `cost:attempt_settled.costMicrocents` into this field double-counts, because a node terminal's
+   *   snapshot already contains the attempts it covers.
+   * - Summing the attempts into a SEPARATE accumulator and taking the max of the two families under-counts.
+   *   The families cover different money — a media node writes a snapshot and emits no attempt row at all —
+   *   so whenever earlier media spend is the larger figure, every attempt made after the last node boundary
+   *   is silently dropped. That is exactly the crash-mid-agent-loop case the ledger exists for.
+   *
+   * The `Math.max` reasoning {@link conservativeCostMicrocents} rejects does not carry here: it was rejected
+   * there only because a future deliberate release would DECREASE the conservative total. Realized spend has
+   * no release and is monotonic by construction.
+   *
+   * (`cost:updated` is also folded when present, but it is streamed, not persisted, so it never appears in a
+   * real durable log.)
+   */
   readonly cumulativeCostMicrocents: number;
   /**
    * The run-wide durable **conservative** total (integer micro-cents) — money a provider may already have billed
@@ -290,8 +319,16 @@ function applyGateEvent(acc: ReconAccumulator, event: RunEvent): void {
     // keeps its spend and the re-seeded governor blocks correctly (H2). A plain-human-gate / crash resume now
     // recovers the same total from the durable `node:completed.cumulativeCostMicrocents` (applyNodeEvent above) —
     // the two durable sources reconcile via that `Math.max` fold (cost-event persistence is no longer deferred).
+    //
+    // `Math.max`, not an ASSIGN — which is what this was, while the comment above already claimed otherwise.
+    // `spentMicrocents` is captured at `checkPreEgress` and the event is emitted much later, after the
+    // outcome propagates through `#onOutcome`/`#settlePaused`. Under a `fan_out` a sibling attempt can settle
+    // a HIGHER cumulative in that window, and an assign then clobbers it — handing the resumed cap headroom
+    // for money already spent, which is the exact bypass ADR-0074/ADR-0076 exist to close. Latent before the
+    // realized ledger, because `node:completed` was the only other writer and node boundaries are rarer;
+    // `cost:attempt_settled` multiplies the high-water marks available to clobber.
     if (event.type === 'budget:paused') {
-      acc.cumulativeCostMicrocents = event.spentMicrocents;
+      acc.cumulativeCostMicrocents = Math.max(acc.cumulativeCostMicrocents, event.spentMicrocents);
     }
     return;
   }
@@ -349,6 +386,30 @@ export function reconstructCheckpointState(
       // a LOWER total. (`Math.max` over those snapshots would also be correct today; the sum is what survives
       // §1's future release. See the field's doc for the full comparison.)
       acc.conservativeCostMicrocents += event.estimateMicrocents;
+    }
+    if (event.type === 'cost:attempt_settled') {
+      // `Math.max` over the event's ABSOLUTE cumulative — the same fold `node:completed` / `node:failed` use
+      // two arms above, and deliberately NOT the sum-of-deltas its conservative sibling uses. Three things
+      // make that the right choice, and two plausible alternatives are wrong:
+      //
+      // - SUMMING `costMicrocents` into this field DOUBLE-COUNTS: a node terminal's snapshot already contains
+      //   the attempts it covers, and both write here.
+      // - Summing into a SEPARATE accumulator and taking the max at the end UNDER-counts, which is subtler.
+      //   The two families cover different money: a media node writes a snapshot and emits no attempt row at
+      //   all, so `max(snapshots, sum(attempts))` silently drops every attempt made after the last boundary
+      //   whenever earlier media spend is the larger number.
+      // - `Math.max` over absolute totals has neither failure. The producer reads this counter AFTER folding
+      //   this attempt into it, so the value is a true run-wide total at that instant, exactly like a node
+      //   boundary's — and the largest one seen is the engine's real total no matter what order the rows land
+      //   in.
+      //
+      // ADR-0074 §2 rejected `Math.max` for the CONSERVATIVE total, and that reasoning does not carry: it was
+      // rejected only because a future deliberate release would DECREASE that total. Realized spend has no
+      // release and is monotonic by construction.
+      acc.cumulativeCostMicrocents = Math.max(
+        acc.cumulativeCostMicrocents,
+        event.cumulativeCostMicrocents,
+      );
     }
     applyRunEvent(acc, event);
     applyNodeEvent(acc, event);

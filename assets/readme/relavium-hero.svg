@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
+  <title id="title">Relavium</title>
+  <desc id="desc">A local-first agent platform: start as an agent, ship the workflow, own every run.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#070a14"/>
+      <stop offset="0.55" stop-color="#10152a"/>
+      <stop offset="1" stop-color="#071827"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#a78bfa"/>
+      <stop offset="0.52" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e2440" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#111b2d" stop-opacity="0.96"/>
+    </linearGradient>
+    <radialGradient id="violet-glow">
+      <stop offset="0" stop-color="#7c3aed" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#7c3aed" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="cyan-glow">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#93c5fd" stroke-opacity="0.055"/>
+    </pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000" flood-opacity="0.36"/>
+    </filter>
+    <filter id="soft-glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0 0L6 3L0 6Z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="500" rx="28" fill="url(#bg)"/>
+  <rect width="1200" height="500" rx="28" fill="url(#grid)"/>
+  <circle cx="370" cy="175" r="300" fill="url(#violet-glow)"/>
+  <circle cx="1020" cy="310" r="300" fill="url(#cyan-glow)"/>
+  <path d="M0 446C230 405 376 470 602 432C805 398 977 414 1200 358V500H0Z" fill="#0b1220" fill-opacity="0.64"/>
+
+  <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+    <g transform="translate(70 62)">
+      <rect width="375" height="34" rx="17" fill="#172036" stroke="#334155"/>
+      <circle cx="19" cy="17" r="4" fill="#22d3ee" filter="url(#soft-glow)"/>
+      <text x="34" y="22" fill="#cbd5e1" font-size="12" font-weight="700" letter-spacing="2.2">LOCAL-FIRST · MULTI-MODEL · GIT-NATIVE</text>
+    </g>
+
+    <text x="70" y="176" fill="#f8fafc" font-size="58" font-weight="750" letter-spacing="-2.2">Start as an agent.</text>
+    <text x="70" y="243" fill="url(#accent)" font-size="58" font-weight="750" letter-spacing="-2.2">Ship the workflow.</text>
+    <text x="70" y="310" fill="#f8fafc" font-size="58" font-weight="750" letter-spacing="-2.2">Own every run.</text>
+    <text x="72" y="362" fill="#94a3b8" font-size="18">Conversation becomes version-controlled automation</text>
+    <text x="72" y="390" fill="#94a3b8" font-size="18">on one pure-TypeScript engine.</text>
+
+    <g filter="url(#shadow)">
+      <rect x="766" y="61" width="330" height="92" rx="22" fill="url(#card)" stroke="#8b5cf6" stroke-opacity="0.6"/>
+      <circle cx="812" cy="107" r="22" fill="#7c3aed"/>
+      <path d="M802 103h20M802 111h13" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+      <text x="850" y="99" fill="#f8fafc" font-size="15" font-weight="750" letter-spacing="1.4">AGENT SESSION</text>
+      <text x="850" y="124" fill="#a5b4fc" font-size="14">explore · refine · persist</text>
+    </g>
+
+    <path d="M931 158V199" stroke="#64748b" stroke-width="2" stroke-dasharray="5 6" marker-end="url(#arrow)"/>
+
+    <g filter="url(#shadow)">
+      <rect x="735" y="205" width="392" height="105" rx="22" fill="url(#card)" stroke="#22d3ee" stroke-opacity="0.58"/>
+      <path d="M777 230l22 13v26l-22 13-22-13v-26Z" fill="#0e7490" stroke="#67e8f9"/>
+      <path d="M768 247h18M768 255h18M768 263h12" stroke="#ecfeff" stroke-width="2.3" stroke-linecap="round"/>
+      <text x="827" y="247" fill="#f8fafc" font-size="15" font-weight="750" letter-spacing="1.4">.RELAVIUM.YAML</text>
+      <text x="827" y="273" fill="#67e8f9" font-size="14">diff · review · commit</text>
+      <rect x="1012" y="235" width="82" height="28" rx="14" fill="#0f2934" stroke="#155e75"/>
+      <text x="1053" y="254" text-anchor="middle" fill="#a5f3fc" font-size="11" font-weight="700">GIT-NATIVE</text>
+    </g>
+
+    <path d="M931 315V349" stroke="#64748b" stroke-width="2" stroke-dasharray="5 6" marker-end="url(#arrow)"/>
+    <path d="M931 345C847 345 812 365 812 386" fill="none" stroke="#64748b" stroke-width="2"/>
+    <path d="M931 345C1015 345 1050 365 1050 386" fill="none" stroke="#64748b" stroke-width="2"/>
+
+    <g filter="url(#shadow)">
+      <rect x="724" y="385" width="176" height="62" rx="18" fill="#101d2a" stroke="#334155"/>
+      <circle cx="754" cy="416" r="8" fill="#34d399" filter="url(#soft-glow)"/>
+      <text x="775" y="412" fill="#e2e8f0" font-size="12" font-weight="750">RUN 01</text>
+      <text x="775" y="430" fill="#64748b" font-size="11">local · completed</text>
+
+      <rect x="962" y="385" width="176" height="62" rx="18" fill="#101d2a" stroke="#334155"/>
+      <circle cx="992" cy="416" r="8" fill="#22d3ee" filter="url(#soft-glow)"/>
+      <text x="1013" y="412" fill="#e2e8f0" font-size="12" font-weight="750">RUN 02</text>
+      <text x="1013" y="430" fill="#64748b" font-size="11">CI · streaming</text>
+    </g>
+
+    <text x="70" y="457" fill="#64748b" font-size="12" font-weight="700" letter-spacing="2.3">RELAVIUM · A HODETECH PRODUCT</text>
+  </g>
+</svg>

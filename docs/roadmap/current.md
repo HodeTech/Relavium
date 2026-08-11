@@ -2,7 +2,7 @@
 
 > Status: Living
 >
-> Last updated: 2026-07-29
+> Last updated: 2026-08-11
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -89,7 +89,9 @@ any order"* — never as headcount.
 flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
-    W2["Wave 2 — Shut the doors<br/>MCP · fs jail · secrets<br/>certifies 2.5.5 EXIT 1–3"]
+    LEDGER["#W15-1 — realized-cost ledger<br/>ADR-0076 implementation"]
+    P265["Phase 2.6.5 — Core reliability<br/>46 CR items · 8 P0 ADRs<br/>absorbs the hostile-MCP class"]
+    W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
     W4b["Wave 4b — Money floor & close-out<br/>2.5.5.B/C/F/H drain · v0.2.0"]
@@ -97,7 +99,7 @@ flowchart TD
     W5b["Wave 5b — Home becomes the product<br/>2.6.G/I/J · then i18n sweep"]
     W6["Wave 6 — Hands, voice, lineage<br/>2.6.M/B/E + 2.6.N foundation"]
     W7["Wave 7 — Orchestration & the gate<br/>2.6.O/P · go/no-go → Phase 3"]
-    W0 --> W1 --> W2 --> W3 --> W4a --> W5a --> W5b --> W6 --> W7
+    W0 --> W1 --> LEDGER --> P265 --> W2 --> W3 --> W4a --> W5a --> W5b --> W6 --> W7
     W3 --> W4b
     W4b -.->|v0.2.0 release| W7
     W4a -.->|file-disjoint lanes| W4b
@@ -243,10 +245,17 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 
 **Every item names the check that would close it, not just the defect.**
 
-> **Status, 2026-08-09 — 23 of 24 closed.** Everything marked ✅ below is fixed,
-> break-verified with the mutation confirmed applied, and committed on `development`. §E's six coverage gaps
-> are all closed — `#W15-16`'s composition test fails by TIMING OUT when the abort listener is removed, which
-> is the unkillable run reproduced exactly rather than an assertion standing in for it.
+> **Status, 2026-08-10 — 24 of 24 closed, across TWO PRs.** Everything marked ✅ below is fixed and
+> break-verified with the mutation confirmed applied; the two PRs are recorded separately because the closure
+> dates and the merge states differ:
+>
+> - **23 items merged to `main` via PR #81** (2026-08-09).
+> - **`#W15-1`, the last one, landed 2026-08-10** behind ADR-0076 + ADR-0077 (see §A) and rides **PR #82**
+>   (`development` → `main`), which is open at the time of writing. It is closed as work, not yet merged.
+>
+> §E's six coverage gaps are all closed — `#W15-16`'s composition test fails by TIMING OUT when the abort
+> listener is removed, which is the unkillable run reproduced exactly rather than an assertion standing in
+> for it.
 >
 > **`#W15-2` closed 2026-08-09** as [ADR-0075](../decisions/0075-fail-closed-resume-on-an-unreadable-event-log.md),
 > amending ADR-0074 §5: a read that feeds a REPLAY refuses when any row was skipped, a read that feeds a
@@ -277,14 +286,34 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 >    transaction as its event. The `node:completed` delta then telescopes to zero on its own; a test must pin
 >    that `SUM(run_costs) == runs.total_cost_microcents` still holds, since that is the invariant carrying the
 >    no-double-count claim.
-> 4. `packages/core/src/engine/engine.ts` — emit through `#emitDurable` at the attempt boundary, AWAITED before
->    the next tool side effect, the next egress and the node terminal. This is the barrier; without the await
->    the event is just another observation.
-> 5. `packages/core/src/engine/checkpoint.ts` — fold it as a SUM of deltas, never a last-wins snapshot (ADR-0074
->    §2's reasoning: concurrent events under a `fan_out` have no canonical `seq` order).
+> 4. The attempt boundary and its barriers — **corrected by
+>    [ADR-0077](../decisions/0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md)**. ADR-0076
+>    §1 asked for an `await` at the settle point; there is no `await` to be had there. The seam's observer is
+>    `onAttempt?: (record) => void` — synchronous, void — and BOTH money events are emitted from that one
+>    callback a few lines apart, which `budget-governor.ts` already states outright ("which cannot await"). So
+>    the ledger takes ADR-0074 §2's shape: **start** the write at the settle instant on a chained in-flight
+>    promise, **join** it at three barriers — before the next egress admission, **before tool dispatch**
+>    (`agent-turn.ts`'s `await dispatchToolCalls(...)`, the barrier this adds beyond §2), and at the turn/node
+>    terminal. Every barrier awaits AND observes the failure, because `#emitDurable` is total for store faults
+>    and resolves.
+> 5. `packages/core/src/engine/checkpoint.ts` — **corrected during implementation**. The instruction here was
+>    "fold it as a SUM of deltas", borrowing ADR-0074 §2's reasoning, and the wrong half of that cost two
+>    rewrites. Summing into the realized total double-counts (a node terminal's snapshot already contains its
+>    attempts); summing into a separate accumulator and maxing the two families UNDER-counts (a media node
+>    writes a snapshot and emits no attempt row, so every attempt after the last boundary vanishes). What is
+>    correct is the fold already two arms above it: `Math.max` over every durable ABSOLUTE total. §2's
+>    rejection of `Math.max` does not carry — it was rejected there only because a release can DECREASE a
+>    conservative total, and realized spend is monotonic.
 >
-> The break-verify that matters most is step 4's ordering: deleting the `await` must redden a test, or the
-> ledger records the charge without the guarantee that makes it one.
+> **STATUS: all five steps are landed** (`8d7ffcf` … `50c60bd`), each with an Opus and a Sonnet round folded.
+> The break-verify that matters most was step 4's ordering, and it now holds: with the tests draining to
+> quiescence before asserting, deleting B2 reddens the tool-dispatch test and deleting B3 reddens the node-
+> terminal test. B1 is masked by B2 on the current fixture (the second egress only comes after the tool), so
+> it is covered by construction rather than by a red — named rather than implied.
+>
+> **This is now the prerequisite of Phase 2.6.5, not a parallel track.** Its five steps touch the same four
+> files `CR-10` (ordered append tail) and `CR-12` (effect journal) restructure, so it lands first — see the
+> 2.6.5 section below.
 >
 > **What ADR-0076 explicitly does NOT close**, so it is not read as more than it is: the cost of a TOOL EFFECT.
 > A resumed run can still re-execute an `http_request` POST, a `run_command` or an MCP mutation — the
@@ -301,7 +330,10 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 
 #### A. Needs an ADR first — the only part that is NOT PR #81's to close
 
-- **`#W15-1` (blocker) — a workflow's REALIZED cost is not durable at the provider-attempt boundary.**
+- ✅ **`#W15-1` (blocker) — a workflow's REALIZED cost is not durable at the provider-attempt boundary.**
+  *Closed 2026-08-10 by ADR-0076 + ADR-0077 and the five staged steps; the barrier is a chain-and-join, not
+  the inline await ADR-0076 §1 first specified. See the staged plan below for what each step landed and the
+  three carried-forward gaps.*
   `engine.ts` folds `cost:updated` into memory and streams it; the store documents that it is never persisted,
   and the checkpoint can only recover cost from a LATER `node:completed`/gate snapshot. So: a paid call
   succeeds → the model asks for a tool → the process dies during the tool → the realized cost is gone and the
@@ -425,6 +457,50 @@ the review of `#W15-16`, fixed with it, and now the signal that test drives.
   `llm-provider-seam.md` still claims model-discovery/media-poll keep a small SDK retry; ADR-0028's amendment
   note still says ADR-0074 §2–§5 have not landed. Each could send a future reader back toward a #91-class hole.
 
+### Phase 2.6.5 — Core reliability remediation (between Wave 1 and Wave 2)
+
+Three independent core reviews of the post-Wave-1 tree converged — independently — on the **same seven blocking
+gaps**: effect journal, stdio MCP consent-before-spawn, run lease, compaction trust elevation, stream grammar,
+input admission, event-log ordering. Three separate reviews landing on the same seven points is not opinion.
+
+The full, self-contained work list is
+[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — **46 items**
+(`CR-01`…`CR-95`) with evidence, fix, acceptance criteria and a decision/ADR/gate register, written so the work
+can be done from that document alone. An adversarial plan review on 2026-08-10 corrected the phase boundary,
+the exit rule and the execution order, and added two items (`CR-17` resume identity, `CR-63` `input_schema`
+docs-only).
+
+**This is the corrected execution order, and it is what the graph above shows:**
+
+1. **`#W15-1` first.** Its five staged steps touch `run-event.ts`, `engine.ts`, `checkpoint.ts` and
+   `run-history-store.ts` — the same four files `CR-10` and `CR-12` restructure. Landing it after the durability
+   spine means writing its barrier against a persistence path that is about to change.
+2. **Then Phase 2.6.5, closing before Wave 2 opens.** Which is only true if the work Wave 2 would block on
+   lives there — so **the hostile-MCP threat class moves into 2.6.5**: `CR-16` (consent before a stdio spawn)
+   plus `CR-40`–`CR-42` (transport cancellation, DNS/redirect SSRF, ingress bounds). Wave 2's queue item 2 is
+   **executed as 2.6.5's `W4`**; the 2.5.5 finding ids keep their home in the 2.5.5 phase doc and certify from
+   there. Wave 2 keeps the MCP name-collision/tool-poisoning trust items, the fs jail, the secrets layer,
+   persistence-security and the certification.
+3. **Within 2.6.5, the oracle comes before the spine.** `CR-90`/`CR-91` (crash + durable-truth harness) land
+   first because they are the instrument `CR-10 → CR-11 → CR-92 → CR-12` is proven with; `CR-92` moved out of
+   the harness group into the spine, since an API returning `completed` while history says `failed` is a
+   runtime defect, not a test concern.
+
+Two rules that changed with the plan review:
+
+- **Fourteen items are non-deferrable** — every W0/W1 item plus `CR-50`, `CR-55`, `CR-73`, `CR-80`, `CR-92` and
+  `CR-95`'s short-term fix. Each has a cheap fail-closed option (refuse, remove, narrow the claim), so "too big
+  to fix now" argues for the cheap option, never for deferral. The previous exit criterion permitted deferring
+  all 43 items and declaring the phase complete.
+- **The gate is `pnpm run ci` AND `pnpm coverage`.** `coverage` is a separate required CI check and is not
+  inside the `ci` script; this phase edits `packages/core` heavily, and the CI coverage job does not block on
+  `core`.
+
+`CR-01`–`CR-03` were half-closed by Wave 1 and finished right after the oracle — **all three are closed as of
+2026-08-11** (PR #82). `CR-03` was a propagation gap from `#W15-10`'s own fix: the finding named three `--json`
+paths that never got the safe serializer, and closing it found **five**, which is why the call-site half is now
+an ESLint selector rather than a list.
+
 ### Wave 2 — Shut the doors
 
 The two named live security holes, one unified filesystem jail, the secrets layer under test — then
@@ -432,10 +508,14 @@ certify while the reviews are still booked.
 
 1. 2.5.5.D · **project-layer MCP name collision redirecting a global secret** (G19), then **MCP tool-definition
    poisoning** (#202).
-2. **MCP queue, strict** — connect-phase timeouts on every transport (#35, G32, #205) → transport/discovery/result
-   size bounds against a hostile server (G33, #201, #209, #288) → structured `serverId`/`reason` discriminants
-   (#203, #204) → the two fail-loud violations (#206, #207) → per-file transport-adapter tests (#297) →
-   `CLIENT_INFO.version` (#208).
+2. **MCP queue, strict — EXECUTED AS PHASE 2.6.5 `W4`, not here.** Connect-phase timeouts on every transport
+   (#35, G32, #205) → transport/discovery/result size bounds against a hostile server (G33, #201, #209, #288) →
+   structured `serverId`/`reason` discriminants (#203, #204) → the two fail-loud violations (#206, #207) →
+   per-file transport-adapter tests (#297) → `CLIENT_INFO.version` (#208). These finding ids keep their home in
+   [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md) and
+   certify from there in step 6 below; the *work* happens in 2.6.5 alongside `CR-16` (consent before a stdio
+   spawn) and `CR-41` (the DNS/redirect SSRF hole), because they are the same code and the same security
+   sitting. Splitting them across two phases would book the hostile-MCP reviewer twice.
 3. **The fs jail, ONE reviewed change set** — 2.5.5.D · sensitive-credential floor for `.kube`/`.azure`/gcloud
    (#36, #39) → extract `deepestExistingReal` to `packages/shared` (#235) → **2.6.M's `project`-tier
    `extraRoots`** and **2.6.N's fs-floor home-anchoring**, both *pulled forward*. `~/.relavium/tmp/` (G21)
@@ -449,9 +529,9 @@ certify while the reviews are still booked.
    context sites (G22). 2.5.5.D · `default_headers` (G20, after D13).
 6. **Certify 2.5.5 exit criteria 1, 2 and 3** + the sub-stream D acceptance sign-off. **Closes M2.5.5-2 (D half).**
 
-> Book **five security-review sittings by threat class** (hostile-MCP · fs/path-jail · secrets-at-rest ·
-> secrets-input · config-trust), not ~30 per-PR passes. Reviewer availability, not code, is this wave's
-> critical path.
+> Book **four security-review sittings by threat class** (fs/path-jail · secrets-at-rest · secrets-input ·
+> config-trust), not ~30 per-PR passes. The **hostile-MCP** sitting moved to Phase 2.6.5 with the queue-2 work;
+> it covers `CR-16` and `CR-40`–`CR-42` there. Reviewer availability, not code, is this wave's critical path.
 
 ### Wave 3 — Clear the ground
 

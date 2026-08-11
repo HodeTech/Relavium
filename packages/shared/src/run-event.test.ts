@@ -175,6 +175,18 @@ const valid: Record<string, Record<string, unknown>> = {
     estimateMicrocents: 400,
     cumulativeConservativeMicrocents: 400,
   },
+  'cost:attempt_settled': {
+    type: 'cost:attempt_settled',
+    ...env,
+    nodeId: 'n',
+    model: 'claude-opus-4-8',
+    attemptNumber: 1,
+    inputTokens: 10,
+    outputTokens: 5,
+    costMicrocents: 400,
+    cumulativeCostMicrocents: 400,
+    priced: true,
+  },
 };
 
 /** One targeted invalid payload per variant (a missing/invalid required field). */
@@ -218,6 +230,140 @@ const reject: Record<string, Record<string, unknown>> = {
     attemptNumber: 0,
     estimateMicrocents: 400,
     cumulativeConservativeMicrocents: 400,
+  },
+  // ADR-0076. The first two pin the DIVERGENCES from this event's two siblings: `attemptNumber` and `priced` are
+  // optional on `cost:updated` / `budget:estimate_committed` (they had historical rows) and REQUIRED here (it has
+  // none). Loosening later stays additive; tightening later would be the one-way door `parseStoredRunEvent`
+  // describes — so a test that lets either slip through optional is what makes the door close silently.
+  'cost:attempt_settled (no attemptNumber)': {
+    type: 'cost:attempt_settled',
+    ...env,
+    nodeId: 'n',
+    model: 'm',
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: 400,
+    cumulativeCostMicrocents: 400,
+    priced: true,
+  },
+  'cost:attempt_settled (no priced)': {
+    // Without the flag, `costMicrocents: 0` with real tokens is ambiguous between "unpriced" and "free" — the
+    // exact ambiguity a ledger row exists to resolve.
+    type: 'cost:attempt_settled',
+    ...env,
+    nodeId: 'n',
+    model: 'm',
+    attemptNumber: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: 400,
+    cumulativeCostMicrocents: 400,
+  },
+  'cost:attempt_settled (cumulative below this attempt)': {
+    // The same producer bug the conservative twin pins: reading the run-wide counter BEFORE folding this
+    // attempt into it. The cumulative IS the restore path (reconstruction maxes it), so such a row restores a
+    // total missing this charge — nothing else anywhere would complain, which is why this fixture exists.
+    type: 'cost:attempt_settled',
+    ...env,
+    nodeId: 'n',
+    model: 'm',
+    attemptNumber: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: 500,
+    cumulativeCostMicrocents: 0,
+    // `priced` is REQUIRED on this event, so omitting it here would reject the fixture on the MISSING FIELD and
+    // never reach the refinement — a test that passes with the refinement deleted. It did, until a break-verify
+    // caught it. Every fixture below carries a complete payload for the same reason: exactly one thing wrong.
+    priced: true,
+  },
+  // `nodeId` and `model` are required too, and the file's own convention is to defend a required field with
+  // a fixture — `budget:estimate_committed` has `(no model)`, `budget:paused` has `(missing/empty nodeId)`.
+  // Without these, loosening either to `.optional()` reddens nothing, which is the same silent one-way door
+  // the `attemptNumber`/`priced` fixtures exist to hold shut.
+  'cost:attempt_settled (no nodeId)': {
+    type: 'cost:attempt_settled',
+    ...env,
+    model: 'm',
+    attemptNumber: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: 400,
+    cumulativeCostMicrocents: 400,
+    priced: true,
+  },
+  'cost:attempt_settled (empty nodeId)': {
+    type: 'cost:attempt_settled',
+    ...env,
+    nodeId: '',
+    model: 'm',
+    attemptNumber: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: 400,
+    cumulativeCostMicrocents: 400,
+    priced: true,
+  },
+  'cost:attempt_settled (no model)': {
+    type: 'cost:attempt_settled',
+    ...env,
+    nodeId: 'n',
+    attemptNumber: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: 400,
+    cumulativeCostMicrocents: 400,
+    priced: true,
+  },
+  'cost:attempt_settled (empty model)': {
+    type: 'cost:attempt_settled',
+    ...env,
+    nodeId: 'n',
+    model: '',
+    attemptNumber: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: 400,
+    cumulativeCostMicrocents: 400,
+    priced: true,
+  },
+  'cost:attempt_settled (attemptNumber 0)': {
+    type: 'cost:attempt_settled',
+    ...env,
+    nodeId: 'n',
+    model: 'm',
+    attemptNumber: 0,
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: 400,
+    cumulativeCostMicrocents: 400,
+    priced: true,
+  },
+  'cost:attempt_settled (fractional cost)': {
+    type: 'cost:attempt_settled',
+    ...env,
+    nodeId: 'n',
+    model: 'm',
+    attemptNumber: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: 12.5,
+    // 13, not 12.5 — a fractional cumulative would reject this fixture on the CUMULATIVE field and leave
+    // `costMicrocents`'s integer bound untested. One thing wrong per fixture, and it has to be the named one.
+    cumulativeCostMicrocents: 13,
+    priced: true,
+  },
+  'cost:attempt_settled (negative cost)': {
+    type: 'cost:attempt_settled',
+    ...env,
+    nodeId: 'n',
+    model: 'm',
+    attemptNumber: 1,
+    inputTokens: 1,
+    outputTokens: 1,
+    costMicrocents: -1,
+    cumulativeCostMicrocents: 0,
+    priced: true,
   },
   'run:started (bad executionMode)': {
     type: 'run:started',
@@ -556,7 +702,7 @@ describe('RunEvent union — every variant', () => {
     }
   });
 
-  it('covers exactly the 24 canonical colon-namespaced names, pinned to a literal list', () => {
+  it('covers exactly the 25 canonical colon-namespaced names, pinned to a literal list', () => {
     // A hardcoded contract list — independent of RUN_EVENT_TYPES — so the union and the
     // constant cannot silently drift together.
     const CONTRACT_NAMES = [
@@ -584,6 +730,7 @@ describe('RunEvent union — every variant', () => {
       'budget:warning',
       'budget:paused',
       'budget:estimate_committed', // ADR-0074 §2 — a durable conservative commitment; an ESTIMATE, not spend
+      'cost:attempt_settled', // ADR-0076 — the realized twin of the line above; the only DURABLE cost: event
     ];
     // The matrix above proves each canonical name's valid payload parses (so a
     // renamed/missing variant fails there); the union member count catches an *extra*
@@ -591,7 +738,7 @@ describe('RunEvent union — every variant', () => {
     // RunEventSchema wraps the union in the correlation-key refinement; reach the raw union.
     expect(RunEventSchema.innerType().options).toHaveLength(CONTRACT_NAMES.length);
     expect(new Set(RUN_EVENT_TYPES)).toEqual(new Set(CONTRACT_NAMES));
-    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 24
+    expect(Object.keys(valid)).toEqual(CONTRACT_NAMES); // the matrix covers all 25
     // STRUCTURAL, not a comment: the §5 forward-compat fixtures stand in for "a type a newer binary wrote" using
     // the `test:` prefix. Step B first used `budget:estimate_committed` for that and ADR-0074 §2 then made it
     // real, silently inverting three fixtures. A `test:`-prefixed name must never become a canonical event.

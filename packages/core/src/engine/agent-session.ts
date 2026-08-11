@@ -422,6 +422,15 @@ export class AgentSession {
    * entries, a budget refusal, a pre-flight cancel) never burns a turn the model never took.
    */
   #turnCount = 0;
+
+  /**
+   * The last turn's real accumulated usage, captured on the success path just before the durability flush.
+   *
+   * Exists so an unclassified failure AFTER a provider engaged — in practice a `flushBudgetCommitments`
+   * rejection — can report what was actually billed instead of `{0,0}` (`CR-02`). Cleared at the top of each
+   * turn so a later failure can never inherit an earlier turn's numbers.
+   */
+  #lastEngagedUsage: { input: number; output: number } | undefined;
   /** Session-wide running cost total, authoritatively stamped onto every `cost:updated`. */
   #cumulativeCostMicrocents = 0;
   #status: SessionStatus = 'created';
@@ -612,6 +621,7 @@ export class AgentSession {
     // only on the NEXT turn, so the advertise-filter + approval regime stay consistent within this turn.
     const turnPolicy = this.#turnPolicy;
     try {
+      this.#lastEngagedUsage = undefined; // never inherit an earlier turn's numbers
       const result = await this.#runTurn(abort.signal, turnPolicy);
       // A cancel landed mid-turn — the cancel path owns the terminal session:cancelled; stay quiet, but
       // roll the user message back so a cancelled turn leaves no dangling user turn in the transcript
@@ -625,6 +635,12 @@ export class AgentSession {
       // (the reply is kept, the turn is counted). `abort()` interrupts an IN-FLIGHT turn only; a turn the
       // model already finished is not discarded. This success path **never reads `#abortingTurn`** — that is
       // precisely what makes a late abort structurally invisible here; the `finally` still clears the marker.
+      // Counted HERE, BEFORE the durability flush below, and that ordering is a decision rather than an
+      // accident (`CR-02`). The rule both catch paths already apply is *count a turn against the hard cap
+      // only when a provider actually ENGAGED* — and by this line `#runTurn` has resolved, so one did. A
+      // `flushBudgetCommitments` rejection past this point is a durability failure, not evidence the turn
+      // never happened; moving the increment below the flush would hand back a turn the provider billed.
+      // Pinned by "a turn whose durability flush REJECTS still consumes its slot against the cap".
       this.#turnCount += 1;
       // Append the assistant reply to the cross-turn transcript as TEXT-ONLY. The turn core keeps the
       // within-turn tool_use/tool_result pairs internal (they never leave runAgentTurn — it returns only the
@@ -648,6 +664,8 @@ export class AgentSession {
       // and its comment relies on "nothing is pushed after the user message on a throw" — which stopped being
       // true when this await landed between them: a flush rejection popped the ASSISTANT message and left the
       // user turn dangling, the exact shape that rollback exists to prevent. Awaiting first restores it.
+      // Captured BEFORE the flush, so a rejection below still knows what the provider billed (`CR-02`).
+      this.#lastEngagedUsage = { input: result.usage.input, output: result.usage.output };
       await this.#deps.flushBudgetCommitments?.();
       if (result.text.length > 0) {
         this.#messages.push({ role: 'assistant', content: [{ type: 'text', text: result.text }] });
@@ -756,15 +774,18 @@ export class AgentSession {
     }
     // An unexpected (non-classified) error — settle the turn LOUDLY first so the stream stays balanced (every
     // session:turn_started gets a terminal), then re-raise so the caller still sees the bug.
-    this.#emitTurnCompleted(
-      'error',
-      { input: 0, output: 0 },
-      {
-        code: 'internal',
-        message: 'the session turn failed with an unexpected error',
-        retryable: false,
-      },
-    );
+    //
+    // `#lastEngagedUsage`, not a hardcoded zero (`CR-02`). The only unclassified error that reaches here in
+    // practice is a `flushBudgetCommitments` rejection — a turn whose provider ALREADY engaged and billed,
+    // which is exactly why the same decision counts it against the cap. Reporting `{0,0}` here consumed the
+    // cap slot and silently dropped the turn's real tokens from every total, which is the mirror of the error
+    // the counter decision refuses to make, and contradicts EA2/ADR-0055's rule to report real usage whenever
+    // a provider engaged. Falls back to zero when nothing engaged, which stays truthful.
+    this.#emitTurnCompleted('error', this.#lastEngagedUsage ?? { input: 0, output: 0 }, {
+      code: 'internal',
+      message: 'the session turn failed with an unexpected error',
+      retryable: false,
+    });
     throw err;
   }
 

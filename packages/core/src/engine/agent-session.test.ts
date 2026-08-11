@@ -366,6 +366,47 @@ describe('AgentSession (1.V) — multi-turn entry point over the shared turn cor
     expect(completed.tokensUsed).toEqual({ input: 4, output: 2 });
   });
 
+  it('a turn whose durability flush REJECTS still consumes its slot against the cap (CR-02)', async () => {
+    // `CR-02`'s decision, pinned. The counter is incremented BEFORE `flushBudgetCommitments` is awaited, and
+    // that ordering is deliberate: the rule both catch paths apply is "count a turn only when a provider
+    // ENGAGED", and by the increment `#runTurn` has resolved. A flush rejection past that point is a
+    // durability failure, not evidence the turn never happened — moving the increment below the flush would
+    // hand back a turn the provider billed.
+    //
+    // Asserted through the CAP, not through `#turnCount`. It is a JS private field, and giving it a
+    // production accessor to satisfy a test would weaken the encapsulation to observe it.
+    const { deps, events } = harness([textTurn('billed, then unrecordable')], {
+      maxTurns: 1,
+      flushBudgetCommitments: () => Promise.reject(new Error('disk full')),
+    });
+    const s = session(deps);
+    s.start();
+    // Turn 1 engages a provider and then fails on the flush. The rejection surfaces (ADR-0074 §2: a
+    // durability failure fails the ACTIVE owner loudly) — and the turn still counts.
+    await expect(s.sendMessage('first')).rejects.toThrow('disk full');
+
+    // The failed turn's terminal reports the REAL usage, not a hardcoded zero (`CR-02`). Consuming the cap
+    // slot while dropping the tokens is the mirror of the error the counter decision refuses to make: the
+    // provider engaged and billed either way.
+    const failedTurn = events.find(
+      (e) => e.type === 'session:turn_completed' && e.error?.code === 'internal',
+    );
+    expect(failedTurn, `saw: ${JSON.stringify(events.map((e) => e.type))}`).toBeDefined();
+    expect(
+      failedTurn?.type === 'session:turn_completed' ? failedTurn.tokensUsed : undefined,
+    ).not.toEqual({ input: 0, output: 0 });
+
+    events.length = 0;
+    // Resolves — the cap refusal is a settled terminal, not a throw. Asserted so the mutation that moves the
+    // increment below the flush dies on the CAP assertion below rather than on a stray 'disk full' rejection.
+    await expect(s.sendMessage('second — must be over the cap')).resolves.toBeUndefined();
+
+    const completed = events.find((e) => e.type === 'session:turn_completed');
+    expect(completed?.type === 'session:turn_completed' ? completed.error?.code : undefined).toBe(
+      'turn_limit',
+    );
+  });
+
   it('emits session:turn_completed{turn_limit} — loudly, no egress — when driven past the hard cap', async () => {
     // MANDATORY regression: a turn-loop refactor must not be able to silently drop the cap signal.
     // maxTurns 1: turn 1 runs; turn 2 is blocked with turn_limit and never reaches the provider.

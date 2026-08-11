@@ -126,6 +126,16 @@ export type {
   CheckpointPendingGate,
   CheckpointPendingMediaJob,
 } from './engine/checkpoint.js';
+// The durable-truth oracle (CR-91) — a SUPPORTED testing API, exported deliberately. It is engine-pure and
+// ships in `dist` either way (the build excludes only `*.test.ts`), and the surfaces that most need it are
+// outside this package: `apps/cli`'s regression harness runs against the real `history.db` store, which is
+// where CR-92's acceptance ("live, history, resume and reconcile agree") actually has to be certified.
+export { checkDurableTruth, formatDurableTruth } from './engine/durable-truth.js';
+export type {
+  DurableTruthInput,
+  DurableTruthVerdict,
+  TerminalView,
+} from './engine/durable-truth.js';
 export type {
   ExecutionHost,
   RunStore,

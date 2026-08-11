@@ -616,6 +616,127 @@ describe('reconstructCheckpointState', () => {
       error: { code: 'tool_failed', message: 'boom', retryable: false },
     });
   });
+
+  describe('the realized-cost ledger (ADR-0076)', () => {
+    /** One settled attempt. `cost` is THIS attempt's delta; `cumulative` is the producer's snapshot after it. */
+    const settled = (seq: number, nodeId: string, cost: number, cumulative: number): RunEvent => ({
+      type: 'cost:attempt_settled',
+      ...base(seq),
+      nodeId,
+      model: 'claude-opus-4-8',
+      attemptNumber: 1,
+      inputTokens: 10,
+      outputTokens: 5,
+      costMicrocents: cost,
+      cumulativeCostMicrocents: cumulative,
+      priced: true,
+    });
+
+    /** A node terminal carrying the durable run-wide snapshot — the OTHER family feeding the same field. */
+    const completedAt = (seq: number, nodeId: string, cumulative: number): RunEvent => ({
+      type: 'node:completed',
+      ...base(seq),
+      nodeId,
+      output: null,
+      tokensUsed: { input: 0, output: 0 },
+      durationMs: 1,
+      cumulativeCostMicrocents: cumulative,
+    });
+
+    it('restores from the attempt events, taking the highest absolute cumulative', () => {
+      const state = reconstructCheckpointState([
+        started,
+        settled(1, 'a', 400, 400),
+        settled(2, 'a', 600, 1_000),
+      ]);
+      expect(state?.cumulativeCostMicrocents).toBe(1_000);
+    });
+
+    it('does NOT double-count a node snapshot against the attempts it already covers', () => {
+      // A completed node's snapshot ALREADY contains its attempts. This pins that the snapshot is MAXED in,
+      // never added: `acc.cumulativeCostMicrocents += event.cumulativeCostMicrocents` on the `node:completed`
+      // arm restores 2_000 for a run that spent 1_000, and this test reddens on it.
+      //
+      // **What it does NOT pin, stated rather than implied.** Replacing the attempt arm's `Math.max` with
+      // `+= event.costMicrocents` leaves this — and every other test here — green, because on a WELL-FORMED
+      // log the two folds are equivalent: a node's attempts always carry a lower `sequenceNumber` than its
+      // own terminal, so the delta is summed exactly once before the snapshot maxes over it. `Math.max` is
+      // chosen for robustness (it needs no assumption about ordering or about an event being folded once) and
+      // for matching the sibling arms, not because a fixture can tell them apart. No honest test can, so none
+      // is written; the mutation that WOULD close the gap is a log with a node terminal ordered before the
+      // attempts it covers, which the engine does not produce.
+      const state = reconstructCheckpointState([
+        started,
+        settled(1, 'a', 400, 400),
+        settled(2, 'a', 600, 1_000),
+        completedAt(3, 'a', 1_000),
+      ]);
+      expect(state?.cumulativeCostMicrocents).toBe(1_000);
+    });
+
+    it('is ORDER-INDEPENDENT, which a last-wins read of the event snapshot is not', () => {
+      // Concurrent events under a `fan_out` have no canonical `seq` order, so the LOWER seq can carry the
+      // HIGHER cumulative. Last-wins would restore 400 here and hand 600 back to the cap as headroom.
+      const state = reconstructCheckpointState([
+        started,
+        settled(1, 'a', 600, 1_000),
+        settled(2, 'b', 400, 400),
+      ]);
+      expect(state?.cumulativeCostMicrocents).toBe(1_000);
+    });
+
+    it('restores the HIGHER total when a crash landed mid-loop, past the last node terminal', () => {
+      // The motivating scenario, and the one that killed the max-of-two-families design. Node `a` is a MEDIA
+      // node: it writes a 1_000 snapshot and emits no attempt row at all. Node `b` then makes two paid calls
+      // and the process dies before its terminal. Summing attempts into a separate accumulator gives 800,
+      // `max(1_000, 800)` gives 1_000, and node b's 800 vanishes — a resume would spend it again, which is
+      // the exact bug the ledger exists to close. Maxing over ABSOLUTE cumulatives gives 1_800.
+      const state = reconstructCheckpointState([
+        started,
+        completedAt(1, 'a', 1_000),
+        settled(2, 'b', 500, 1_500),
+        settled(3, 'b', 300, 1_800),
+      ]);
+      expect(state?.cumulativeCostMicrocents).toBe(1_800);
+    });
+
+    it('a stale budget:paused cannot CLOBBER a higher ledger total', () => {
+      // `budget:paused.spentMicrocents` is captured at the pre-egress check and the event is emitted much
+      // later, after the outcome propagates. Under a `fan_out` a sibling attempt settles a HIGHER cumulative
+      // in that window — and this arm used to ASSIGN, handing the resumed cap headroom for money already
+      // spent. Latent before the ledger, because node boundaries are rare; the ledger writes per attempt.
+      const state = reconstructCheckpointState([
+        started,
+        settled(1, 'a', 5_000, 5_000),
+        {
+          type: 'budget:paused',
+          ...base(2),
+          nodeId: 'b',
+          spentMicrocents: 3_000,
+          limitMicrocents: 10_000,
+          gateId: 'g1',
+        },
+      ]);
+      expect(state?.cumulativeCostMicrocents).toBe(5_000);
+    });
+
+    it('keeps realized and conservative money apart', () => {
+      const state = reconstructCheckpointState([
+        started,
+        settled(1, 'a', 400, 400),
+        {
+          type: 'budget:estimate_committed',
+          ...base(2),
+          nodeId: 'a',
+          model: 'claude-opus-4-8',
+          estimateMicrocents: 900,
+          cumulativeConservativeMicrocents: 900,
+        },
+      ]);
+      expect(state?.cumulativeCostMicrocents).toBe(400);
+      expect(state?.conservativeCostMicrocents).toBe(900);
+    });
+  });
 });
 
 describe('createInMemoryCheckpointer', () => {

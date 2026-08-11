@@ -120,6 +120,7 @@ flowchart TD
 | 0074 | [Durable conservative budget commitments across run and session resume (amends ADR-0028, ADR-0036, ADR-0045, ADR-0070)](0074-durable-conservative-budget-commitments.md) | Accepted | 2026-07-30 |
 | 0075 | [A resume fails closed on an unreadable event log (amends ADR-0074 §5)](0075-fail-closed-resume-on-an-unreadable-event-log.md) | Accepted | 2026-08-09 |
 | 0076 | [A durable per-attempt realized-cost ledger (amends ADR-0070, extends ADR-0074)](0076-durable-per-attempt-realized-cost-ledger.md) | Accepted | 2026-08-09 |
+| 0077 | [The realized-cost ledger uses ADR-0074 §2's barrier mechanism (amends ADR-0076 §1)](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md) | Accepted | 2026-08-10 |
 
 ## Creating a new ADR
 

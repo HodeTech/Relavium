@@ -48,6 +48,11 @@ describe('createSessionPersister', () => {
   });
   afterEach(() => {
     client.sqlite.close();
+    // Suite-level, not per-test. Several tests below spy `updateSession`/`recordSessionCost` into a throwing
+    // SQLITE_BUSY stub; a test-local `vi.restoreAllMocks()` at the END of the test is skipped the moment an
+    // assertion above it fails, and the stub then leaks into every later test in the file — turning one real
+    // failure into a cascade whose reported causes are all fictional.
+    vi.restoreAllMocks();
   });
 
   /**
@@ -248,6 +253,58 @@ describe('createSessionPersister', () => {
     expect(terminals.join('\n')).toMatch(/could not be saved/);
     expect(store.loadMessages('sess-1')).toHaveLength(0); // and nothing new was written
     persister.close();
+  });
+
+  it('LATCHES a failed session:cancelled write, and still detaches the listener (CR-01)', async () => {
+    // The one arm that still called the store bare. `RunEventBus` isolates a listener throw from the
+    // producer, so a failing terminal write let the cancel path report success while the latch never set —
+    // and the latch is what refuses the next egress. A session whose terminal row never landed would resume
+    // believing it had ended cleanly.
+    const { built } = await setup(scriptedResolver([textTurn('hi')]));
+    const persister = createSessionPersister({
+      governor: undefined,
+      attachDurabilityProbe: built.attachDurabilityProbe,
+      store,
+      handle: built.handle,
+      sessionId: built.sessionId,
+      agent: built.agent,
+      context: built.context,
+      now: () => Date.parse('2026-06-25T00:00:00.000Z'),
+      uuid: () => 'msg-x',
+    });
+    // Observe the DETACH directly by wrapping the unsubscribe the handle hands back. Nothing else can see
+    // it: a second `cancel()` emits no event on an already-cancelled session, and `close()` calls the same
+    // idempotent unsubscribe, so both of those pass whether or not the listener leaked.
+    let unsubscribed = 0;
+    const realSubscribe = built.handle.subscribe.bind(built.handle);
+    vi.spyOn(built.handle, 'subscribe').mockImplementation((listener) => {
+      const off = realSubscribe(listener);
+      return () => {
+        unsubscribed += 1;
+        off();
+      };
+    });
+    built.session.start();
+    persister.start();
+    const updateSpy = vi.spyOn(store, 'updateSession').mockImplementation(() => {
+      throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+    });
+
+    built.session.cancel();
+
+    expect(persister.durabilityFailure?.message).toContain('database is locked');
+    // …and the user was still told: latching must not remove the listener-error notice.
+    expect(listenerNotes.join('\n')).toMatch(/database is locked/);
+
+    // **The half that actually matters, asserted directly.** The self-detach is in a `finally`, so a throwing
+    // write cannot jump over it and leave this persister attached to the bus. An earlier version of this test
+    // asserted `close()` does not throw — which is true whether or not the listener leaked, because `close()`
+    // calls the same idempotent unsubscribe. The real evidence is that a SUBSEQUENT event does not re-enter a
+    // persister that cannot write, so `updateSession` is never called again. Deliberately WITHOUT `close()`.
+    expect(updateSpy).toHaveBeenCalledTimes(1); // the failing write happened exactly once
+    // THE assertion: the throw did not jump over the unsubscribe. Without the `finally` this is 0, and the
+    // persister stays on the bus — so every later event re-enters one that cannot write.
+    expect(unsubscribed).toBe(1);
   });
 
   it('does not let a failed cost write advance the in-memory total (#W15-4)', async () => {

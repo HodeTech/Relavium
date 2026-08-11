@@ -50,6 +50,14 @@ who opts out of color wins over a tool/CI that opts in. (A `--json`/CI/no-TTY st
 
 ### The `--json` machine-output contract
 
+**Every record is serialized with `stringifyJsonLine`, not a bare `JSON.stringify`.** The wire contract is
+unchanged — `JSON.parse` round-trips to the identical string, which is exactly why the escape was chosen over
+a strip — but what reaches a terminal differs: `JSON.stringify` escapes `ESC` and leaves `DEL`, the C1 block
+(including `U+009B`, a working escape-sequence introducer) and the Trojan-Source bidi family RAW in content
+the model, a tool, or an imported artifact controls. Enforced by lint rather than review; the reasoning and
+the one allowlisted exception live in
+[security-review.md](../../standards/security-review.md#cli-terminal-render-safety--interactive-approval).
+
 Under `relavium run --json`, the CLI emits a stable machine contract a CI job can pipe and assert
 on ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)). The contract covers a workflow
 **run**; `--help`, `--version`, and a bare no-command invocation are exit-`0` meta-operations that

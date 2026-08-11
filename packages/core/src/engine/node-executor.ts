@@ -191,6 +191,15 @@ export interface NodeExecContext {
    * attempt is gated before egress.
    */
   readonly preEgress?: import('./agent-turn.js').PreEgressHook;
+  /**
+   * The run's money-durability port (ADR-0076 / ADR-0077) — the realized-cost ledger's START hook and the
+   * single barrier the turn core joins at.
+   *
+   * Optional on this seam so a stub executor and the session path stay unchanged, but the run loop supplies it
+   * UNCONDITIONALLY — unlike {@link preEgress}, which is budget-scoped and is deliberately dropped for an
+   * approved re-dispatch. A run with no `budget` still spends real money.
+   */
+  readonly money?: import('./money-durability.js').TurnMoneyPort;
 }
 
 /** The injected per-vertex executor. 1.O (`AgentRunner`) and 1.P (node handlers) implement it. */

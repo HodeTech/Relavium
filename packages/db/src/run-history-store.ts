@@ -525,6 +525,29 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
     return delta;
   };
 
+  /**
+   * Every micro-cent `run_costs` holds for one node — the step row's TRUE cost once a node's money can arrive
+   * in more than one row (ADR-0076).
+   *
+   * Before the realized-cost ledger, a node's whole charge landed in exactly one `run_costs` row written at its
+   * terminal, so the terminal's telescoping delta and the node's cost were the same number and the terminal arms
+   * used one variable for both. They are no longer the same number: `cost:attempt_settled` rows advance
+   * `runs.total_cost_microcents` as each attempt settles, so by the time the terminal folds its snapshot the
+   * delta is **zero by arithmetic** — which is correct for the run total and wrong for `step_executions`, a
+   * user-visible column (`relavium status --json`). Read the node's rows instead.
+   *
+   * **Attribution caveat, stated rather than discovered.** Under a node-RETRY there are several
+   * `step_executions` rows for one `nodeId` (keyed by attempt), while `run_costs` has no attempt column — so an
+   * earlier attempt's money lands on the final step row. That is the same class of approximation the per-node
+   * fan-out delta already carries (see the `node:completed` arm); the run-level SUM stays exact either way.
+   */
+  const nodeSettledCost = (tx: TxDb, runId: string, nodeId: string): number =>
+    tx
+      .select({ c: sql<number>`coalesce(sum(${runCosts.costMicrocents}), 0)` })
+      .from(runCosts)
+      .where(and(eq(runCosts.runId, runId), eq(runCosts.nodeId, nodeId)))
+      .get()?.c ?? 0;
+
   /** Apply an event's derived `runs`/`step_executions`/`run_costs` writes (`run:started` inserts the runs row). */
   const applyDerived = (tx: TxDb, event: RunEvent, runId: string, ts: number): void => {
     switch (event.type) {
@@ -588,7 +611,11 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
             outputJson: JSON.stringify(event.output),
             inputTokens: event.tokensUsed.input,
             outputTokens: event.tokensUsed.output,
-            costMicrocents: nodeCost,
+            // The node's TRUE cost, NOT `nodeCost` (ADR-0076). `nodeCost` is the terminal's telescoping delta,
+            // and once `cost:attempt_settled` rows have advanced the run total it is zero by arithmetic —
+            // correct for `runs`, and a silent regression here, because this column is user-visible. Read after
+            // the insert above so this node's terminal row is included. See `nodeSettledCost`.
+            costMicrocents: nodeSettledCost(tx, runId, event.nodeId),
             durationMs: event.durationMs,
             completedAt: ts,
             updatedAt: ts,
@@ -623,19 +650,74 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         // persisted, so this snapshot is the only durable carrier, and dropping it left the run total (and
         // `sum(run_costs)`) short of money that was really charged.
         failStepRow(tx, event, runId, ts);
-        const nodeCost = foldCumulative(
-          tx,
-          runId,
-          event.cumulativeCostMicrocents,
-          ts,
-          event.nodeId,
-        );
-        if (nodeCost > 0) {
-          tx.update(stepExecutions)
-            .set({ costMicrocents: nodeCost, updatedAt: ts })
-            .where(stepMatch(runId, event.nodeId, event.attemptNumber))
-            .run();
-        }
+        foldCumulative(tx, runId, event.cumulativeCostMicrocents, ts, event.nodeId);
+        // Same correction as `node:completed` (ADR-0076): the step row carries the node's TRUE cost, not the
+        // terminal's telescoping delta. The old `if (nodeCost > 0)` guard went with it — with attempt rows in
+        // play the delta is routinely zero on a node that really spent, so the guard would skip the write on
+        // exactly the failures whose cost matters most. `nodeSettledCost` returns 0 for a node that spent
+        // nothing, which writes a truthful 0 rather than leaving a stale value.
+        tx.update(stepExecutions)
+          .set({ costMicrocents: nodeSettledCost(tx, runId, event.nodeId), updatedAt: ts })
+          .where(stepMatch(runId, event.nodeId, event.attemptNumber))
+          .run();
+        return;
+      }
+      case 'cost:attempt_settled': {
+        // ADR-0076: one settled provider attempt's REALIZED charge becomes a `run_costs` row in the SAME
+        // transaction as its event, which is what makes the ledger idempotent without a second uniqueness key —
+        // `UNIQUE(run_id, seq)` already bars a duplicate event, and the derived row cannot outlive it.
+        //
+        // **The row is a TELESCOPING delta off the event's cumulative — NOT the raw `costMicrocents`.** The
+        // raw value is this attempt's true charge and the event keeps carrying it (that is what a reader and
+        // the checkpoint fold sum); what goes in `run_costs` is `max(0, cumulative - currentRunCost)`, the same
+        // arithmetic every other money arm here uses. The reason is ordering, and it is not hypothetical:
+        // `#emitDurable` starts each `persistEvent` immediately and only serializes DELIVERY — its own comment
+        // says "persists stay concurrent". So a later event's write can commit FIRST. Writing the raw delta
+        // then DOUBLE-COUNTS: a sibling's `node:completed` lands with a cumulative that already includes this
+        // attempt, and this row adds it a second time. Telescoping cannot — every money event carries an
+        // ABSOLUTE cumulative, so the running total converges on the largest one seen regardless of the order
+        // the rows commit in, and `SUM(run_costs) == runs.total_cost_microcents` holds by construction.
+        //
+        // In the ordered case (the normal one) the two are identical: `cumulative - prev == costMicrocents`
+        // exactly. The divergence is a `fan_out`/out-of-order case, where per-ATTEMPT attribution degrades to
+        // an approximation — precisely the caveat `node:completed`'s per-node delta already carries and
+        // documents. The event remains the exact per-attempt record; this row is the money of record.
+        //
+        // **The two writes are a pair.** ADR-0076 property 3 says the terminal's fold telescopes to zero
+        // because the attempt rows advanced `sum(run_costs)`. What the fold actually subtracts is
+        // `runs.total_cost_microcents` (`currentRunCost`), and the two are equal only because every writer
+        // bumps `runs` alongside its `run_costs` insert. Dropping either write here would keep compiling, keep
+        // a test that checks only one table green, and corrupt every later delta.
+        const prev = currentRunCost(tx, runId);
+        const attemptCost = Math.max(0, event.cumulativeCostMicrocents - prev);
+        tx.insert(runCosts)
+          .values({
+            id: deps.uuid(),
+            runId,
+            nodeId: event.nodeId,
+            // The REAL per-attempt tokens, unlike `foldCumulative`'s money-only addend — per-attempt token
+            // attribution is half of why this ledger exists. The row is written even when `attemptCost` is 0
+            // (an unpriced or free attempt, or one whose money a concurrent sibling already banked), because
+            // the tokens are still real; `foldCumulative` skips a zero row only because it has none to carry.
+            // Only the COST column carries ADR-0070's `SUM(run_costs) == runs.total_cost_microcents`
+            // invariant; nothing sums these token columns, and `node:completed` remains the single writer of
+            // the run-level token totals (see below).
+            inputTokens: event.inputTokens,
+            outputTokens: event.outputTokens,
+            costMicrocents: attemptCost,
+            createdAt: ts,
+            // `modelId` is deliberately NOT written. It is an FK to `model_catalog` (a UUID) and `schema.ts`
+            // documents it as a dead column; `event.model` is a raw provider string this store cannot resolve.
+            // Per-model attribution on the run path comes from the durable EVENT, not from this row.
+          } satisfies NewRunCostRow)
+          .run();
+        tx.update(runs)
+          // Money only. `runs.total_input_tokens` / `total_output_tokens` are NOT bumped here: `node:completed`
+          // already adds the turn's full `tokensUsed`, which is the sum across these attempts, so adding them
+          // here would double the run's token totals.
+          .set({ totalCostMicrocents: prev + attemptCost, updatedAt: ts })
+          .where(eq(runs.id, runId))
+          .run();
         return;
       }
       case 'human_gate:paused':
@@ -702,6 +784,12 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         // must never reach `runs.total_cost_microcents` or `run_costs`. Folding it into either would present an
         // upper bound as an invoice and break ADR-0070's `SUM(run_costs) == runs.total_cost_microcents`. Falling
         // through here is what keeps that true — asserted, not assumed, in this package's tests.
+        //
+        // Its realized twin `cost:attempt_settled` (ADR-0076) does the OPPOSITE and has its own arm above. Note
+        // what that means for anyone adding the next durable type: this `default` is not an exhaustiveness
+        // guard. `RunEvent` has no `assertNever` anywhere in the repo, so a new money event added without an
+        // arm lands here silently — a `run_events` row, no derived write, no compile error, no failing test.
+        // Decide deliberately which side of this line a new type belongs on.
         return;
     }
   };

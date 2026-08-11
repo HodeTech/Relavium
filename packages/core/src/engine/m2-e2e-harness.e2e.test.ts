@@ -50,6 +50,7 @@ import type { ToolDef as CoreToolDef, ToolRegistry, ToolResultPart } from '../to
 import { markUntrusted } from '../tools/untrusted.js';
 import { reconstructCheckpointState } from './checkpoint.js';
 import { WorkflowEngine } from './engine.js';
+import { checkDurableTruth, formatDurableTruth } from './durable-truth.js';
 import { createInMemoryHost, InMemoryRunStore } from './execution-host.js';
 import { createStandardNodeExecutor } from './node-handlers/dispatcher.js';
 import type { RunHandle } from './run-handle.js';
@@ -653,6 +654,10 @@ function buildEngine(
   resolveProvider: (id: ProviderId) => LlmProvider | undefined,
   resolveMediaSurface?: (model: string) => 'chat' | 'generative' | undefined,
   resolvePrice?: PricingOverlay,
+  // Overridable ONLY so the ADR-0077 barrier tests can observe tool dispatch directly. B2's whole claim is
+  // "the ledger write lands before the run mutates the world", and the only honest witness to that is the
+  // dispatch itself — not an event, which would just be re-reading the thing under test.
+  registry: ToolRegistry = echoRegistry,
 ): WorkflowEngine {
   return new WorkflowEngine({
     host,
@@ -663,7 +668,7 @@ function buildEngine(
         resolveProvider,
         ...(resolveMediaSurface === undefined ? {} : { resolveMediaSurface }),
         ...(resolvePrice === undefined ? {} : { resolvePrice }),
-        registry: echoRegistry,
+        registry,
         tools: [echoToolDef],
         keyFor: () => 'k',
         sleep: () => Promise.resolve(),
@@ -1057,6 +1062,309 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(persistOrder.indexOf('budget:estimate_committed')).toBeLessThan(
       persistOrder.indexOf('node:completed'),
     );
+  });
+
+  // --- The durable-truth oracle (CR-91) --------------------------------------------------------------
+  //
+  // Everything above this point asserts on the LIVE stream. That is one view, taken in-process while the
+  // engine that produced it is still alive, and it cannot see the failure class this phase exists for: a
+  // caller told `completed` while the log says `failed`, a restart reconciling to a different terminal, or a
+  // checkpoint fold that disagrees with the terminal and would make a resume do the wrong work.
+  //
+  // `checkDurableTruth` compares four views. These tests apply it to the three terminals a run can reach, on
+  // real engine runs rather than synthetic logs — `durable-truth.test.ts` covers the oracle's own detection
+  // logic, this covers the engine actually satisfying it.
+
+  /** Run the oracle over a finished run, restarting a FRESH engine over the same store to reconcile. */
+  async function assertDurableTruth(
+    host: Host,
+    store: InMemoryRunStore,
+    events: readonly RunEvent[],
+    resolveProvider: (id: ProviderId) => LlmProvider | undefined,
+  ) {
+    const runId = events[0]?.runId;
+    if (runId === undefined) expect.unreachable('no run:started');
+    const verdict = await checkDurableTruth({
+      runId,
+      live: events.at(-1),
+      eventsFor: (id) => store.eventsFor(id),
+      // A fresh engine over the SAME store, which is what a restarted process is.
+      reconcile: () => buildEngine(host, resolveProvider).reconcile(),
+    });
+    expect(verdict.agrees, formatDurableTruth(verdict)).toBe(true);
+    return verdict;
+  }
+
+  it('durable truth: a COMPLETED run survives a restart unchanged (CR-91)', async () => {
+    const store = new InMemoryRunStore();
+    const host = createInMemoryHost({ store });
+    const provider = scriptedProvider([toolUseTurn('c1'), textTurn('a summary')]);
+    const { events } = await drive(
+      buildEngine(host, () => provider).start({ workflow: HAPPY_PATH, inputs: INPUTS }),
+      host,
+    );
+
+    expect(events.at(-1)?.type).toBe('run:completed');
+    const verdict = await assertDurableTruth(host, store, events, () => provider);
+    // A run that already closed must give reconcile() nothing to do — repairing a run that DIED without a
+    // terminal is its job; touching one that landed is the defect.
+    expect(verdict.reconciledCount).toBe(0);
+    expect(verdict.durableTerminalCount).toBe(1);
+  });
+
+  it('durable truth: a FAILED run agrees across all four views (CR-91)', async () => {
+    const store = new InMemoryRunStore();
+    const host = createInMemoryHost({ store });
+    // A fatal provider error — no retry budget on HAPPY_PATH, so the node fails and the run follows.
+    const provider = scriptedProvider([
+      [
+        {
+          type: 'error',
+          error: { kind: 'auth', retryable: false, provider: 'anthropic', message: 'nope' },
+        },
+      ],
+    ]);
+    const { events } = await drive(
+      buildEngine(host, () => provider).start({ workflow: HAPPY_PATH, inputs: INPUTS }),
+      host,
+    );
+
+    expect(events.at(-1)?.type).toBe('run:failed');
+    const verdict = await assertDurableTruth(host, store, events, () => provider);
+    expect(verdict.checkpointStatus).toBe('failed');
+    // The concrete code FIRST. `history === live` alone is satisfied by `undefined === undefined`, so it holds
+    // just as well for a verdict that read no error at all from either side — including one where a refactor
+    // stopped populating `errorCode`. Pinning the value is what makes the equality mean something.
+    expect(verdict.history?.errorCode).toBe('provider_auth');
+    expect(verdict.history?.errorCode).toBe(verdict.live?.errorCode);
+  });
+
+  it('durable truth: a CANCELLED run agrees across all four views (CR-91)', async () => {
+    const store = new InMemoryRunStore();
+    const host = createInMemoryHost({ store });
+    const provider = scriptedProvider([toolUseTurn('c1'), textTurn('a summary')]);
+    const engine = buildEngine(host, () => provider);
+    const handle = engine.start({ workflow: HAPPY_PATH, inputs: INPUTS });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      // `handle.cancel()`, not `engine.cancel(runId)`: the latter THROWS `run_already_terminal` once the run
+      // settled, and this stream is a buffered push/pull adapter — the consumer's position relative to engine
+      // progress is a microtask-interleaving property, not a guarantee. `work` is a real node that finishes on
+      // its own, so a lagging consumer would throw inside this `for await` instead of failing an assertion.
+      if (event.type === 'node:started' && event.nodeId === 'work') handle.cancel();
+    }
+
+    expect(events.at(-1)?.type).toBe('run:cancelled');
+    await assertDurableTruth(host, store, events, () => provider);
+  });
+
+  // --- The realized-cost ledger's barriers (ADR-0076 / ADR-0077) ------------------------------------
+  //
+  // Every test here runs on HAPPY_PATH, which declares NO `budget` — deliberately. ADR-0077 §5's whole
+  // finding is that the barriers used to live behind a governor that only exists when a workflow declares a
+  // cap, so a budgeted fixture would pass even with all three holes open. An unbudgeted run is the regression.
+
+  /** A registry that records every dispatch, so a barrier can be witnessed by the side effect it gates. */
+  function spyingRegistry(): { registry: ToolRegistry; calls: string[] } {
+    const calls: string[] = [];
+    return {
+      calls,
+      registry: {
+        has: (id) => echoRegistry.has(id),
+        list: () => echoRegistry.list(),
+        dispatch: (call, ctx) => {
+          calls.push(call.name);
+          return echoRegistry.dispatch(call, ctx);
+        },
+      },
+    };
+  }
+
+  /**
+   * Drain the queue to QUIESCENCE — microtasks and a macrotask turn, repeatedly.
+   *
+   * Load-bearing, and its absence made the first version of every test below hollow. `ledger.blocked()` flips
+   * INSIDE `persistEvent`, several turns before the run would have reached the action a barrier guards. Assert
+   * at that instant and the dispatch is still sitting in the queue, so the assertion passes whether or not the
+   * barrier exists. Draining first is what makes deleting a join go red.
+   */
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 50; i += 1) {
+      for (let j = 0; j < 200; j += 1) await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+
+  /** A store that blocks `cost:attempt_settled`'s write until released, recording persist order. */
+  function blockingLedgerStore() {
+    const inner = new InMemoryRunStore();
+    const persistOrder: string[] = [];
+    let resolveWrite: (() => void) | undefined;
+    return {
+      persistOrder,
+      blocked: () => resolveWrite !== undefined,
+      release: () => resolveWrite?.(),
+      store: {
+        resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
+        listInterruptedRuns: () => inner.listInterruptedRuns(),
+        eventsFor: (runId: string) => inner.eventsFor(runId),
+        persistEvent: async (event: RunEvent): Promise<void> => {
+          if (event.type === 'cost:attempt_settled' && resolveWrite === undefined) {
+            await new Promise<void>((resolve) => {
+              resolveWrite = resolve;
+            });
+          }
+          // `type:nodeId`, not just the type. HAPPY_PATH's `input` node completes long before the agent
+          // spends anything, so a bare `node:completed` check would fire on the wrong node and pass for the
+          // wrong reason — which it did, on the first run of this test.
+          persistOrder.push(
+            'nodeId' in event && typeof event.nodeId === 'string'
+              ? `${event.type}:${event.nodeId}`
+              : event.type,
+          );
+          await inner.persistEvent(event);
+        },
+      },
+    };
+  }
+
+  it('ledger B2: a TOOL is not dispatched until the attempt`s charge is durable (ADR-0077)', async () => {
+    // The barrier ADR-0077 adds beyond ADR-0074 §2's pair, and the one that makes this ledger EXTEND the
+    // guarantee rather than repeat it: realized spend must be durable before the run mutates the world, not
+    // merely before it spends again. Witnessed on the dispatch itself.
+    const { registry, calls } = spyingRegistry();
+    const ledger = blockingLedgerStore();
+    const provider = scriptedProvider([toolUseTurn('t1'), textTurn('done')]);
+    const host = createInMemoryHost({ store: ledger.store });
+    const engine = buildEngine(host, () => provider, undefined, undefined, registry);
+    const handle = engine.start({ workflow: HAPPY_PATH, inputs: INPUTS });
+
+    // Spin until the ledger write blocks. HAPPY_PATH runs input → agent → output and the charge only settles
+    // after a full successful attempt, so this needs more turns of the microtask queue than §2's fixture,
+    // whose commitment fires on a usage-less stream almost immediately.
+    for (let i = 0; i < 500 && !ledger.blocked(); i += 1) await Promise.resolve();
+    expect(ledger.blocked()).toBe(true);
+    await settle(); // give the guarded action every chance to run before asserting it did not
+    // THE assertion: the model asked for a tool, the charge is not durable, so nothing ran.
+    expect(calls).toEqual([]);
+
+    ledger.release();
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) events.push(event);
+    expect(calls).toEqual(['echo']); // it did run, once the write landed
+    expect(events.at(-1)?.type).toBe('run:completed');
+  });
+
+  it('ledger B3: the node terminal is not durable until the attempt`s charge is (ADR-0077)', async () => {
+    const ledger = blockingLedgerStore();
+    const provider = scriptedProvider([textTurn('done')]);
+    const host = createInMemoryHost({ store: ledger.store });
+    const engine = buildEngine(host, () => provider);
+    const handle = engine.start({ workflow: HAPPY_PATH, inputs: INPUTS });
+
+    // Spin until the ledger write blocks. HAPPY_PATH runs input → agent → output and the charge only settles
+    // after a full successful attempt, so this needs more turns of the microtask queue than §2's fixture,
+    // whose commitment fires on a usage-less stream almost immediately.
+    for (let i = 0; i < 500 && !ledger.blocked(); i += 1) await Promise.resolve();
+    expect(ledger.blocked()).toBe(true);
+    await settle(); // give the guarded action every chance to run before asserting it did not
+    // The AGENT node's own terminal must not be durable — a crash here records progress the money log lacks.
+    // (`in`'s terminal is legitimately already there; it spent nothing.)
+    expect(ledger.persistOrder).not.toContain('node:completed:work');
+
+    ledger.release();
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) events.push(event);
+    // PRESENCE first, then order. A bare `indexOf(a) < indexOf(b)` passes vacuously when `a` is missing —
+    // `-1` is less than everything — so a run that never settled a charge at all would satisfy the ordering
+    // it is supposed to prove.
+    expect(ledger.persistOrder).toContain('cost:attempt_settled:work');
+    expect(ledger.persistOrder).toContain('node:completed:work');
+    expect(ledger.persistOrder.indexOf('cost:attempt_settled:work')).toBeLessThan(
+      ledger.persistOrder.indexOf('node:completed:work'),
+    );
+  });
+
+  it('ledger: a REJECTED write dispatches no tool — the observe half, not just the await (ADR-0077)', async () => {
+    // **What stops the dispatch here is the ENGINE'S ABORT, not the barrier — stated because the obvious
+    // reading of this test is wrong.** `#emitDurable` absorbs the rejection, sets `#failure` and calls
+    // `#abort.abort()`, and `dispatchToolUseTurn`'s `throwIfAborted` ends the turn. Deleting the observe half
+    // OR B2 leaves this test green, so it does NOT pin either.
+    //
+    // What it does pin is still worth having: a rejected ledger write ends the run without mutating the
+    // world, and the terminal message stays secret-free. ADR-0077's stated required regression — the barrier
+    // itself refusing — needs a case that DEFEATS the abort: reject the ledger write while a concurrent
+    // sibling has already set `#failure`, so `#emitDurable`'s `this.#failure === undefined` guard skips the
+    // abort and only the barrier is left to stop the dispatch. Not built; named so it is not lost.
+    const { registry, calls } = spyingRegistry();
+    const inner = new InMemoryRunStore();
+    const store = {
+      resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
+      listInterruptedRuns: () => inner.listInterruptedRuns(),
+      eventsFor: (runId: string) => inner.eventsFor(runId),
+      persistEvent: async (event: RunEvent): Promise<void> => {
+        // Reject ASYNCHRONOUSLY, after a tick — a synchronous throw would let the engine's own abort win the
+        // race and make this pass without any barrier at all.
+        if (event.type === 'cost:attempt_settled') {
+          await Promise.resolve();
+          throw new Error('ledger write failed');
+        }
+        await inner.persistEvent(event);
+      },
+    };
+    const provider = scriptedProvider([toolUseTurn('t1'), textTurn('done')]);
+    const host = createInMemoryHost({ store });
+    const engine = buildEngine(host, () => provider, undefined, undefined, registry);
+    const handle = engine.start({ workflow: HAPPY_PATH, inputs: INPUTS });
+
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) events.push(event);
+
+    expect(calls).toEqual([]); // the world was not mutated on an unrecorded charge
+    const terminal = events.at(-1);
+    expect(terminal?.type).toBe('run:failed');
+    if (terminal?.type === 'run:failed') {
+      // `#emitDurable`'s own message, not the barrier's — and that is correct, not a miss. It absorbs the
+      // rejection and sets `#failure` FIRST, and `#failure ??=` keeps the first cause. The barrier's job here
+      // is to stop the dispatch, not to rename the failure; its own message reaches the terminal only when a
+      // ledger write fails somewhere `#emitDurable` does not already absorb.
+      expect(terminal.error.message).toBe('a durable run-event write failed');
+      // Secret-free either way: a store error can carry a filesystem path and must never reach the user.
+      expect(terminal.error.message).not.toContain('ledger write failed');
+    }
+    // And the NODE terminal says `the run was cancelled`, NOT the barrier's diagnosis — measured, after an
+    // assertion here claimed otherwise. It is the same fact as the paragraph above: the abort wins, the turn
+    // ends at `throwIfAborted`, and B2's `LedgerDurabilityError` is never the error that classifies this node.
+    // `#runAttempt` DOES have an arm that keeps that class intact (it used to flatten it to `the node handler
+    // threw an unexpected error`), but reaching it needs the same abort-defeating fixture named above.
+    const nodeFailed = events.find((e) => e.type === 'node:failed');
+    expect(nodeFailed?.type === 'node:failed' ? nodeFailed.error.message : undefined).toBe(
+      'the run was cancelled',
+    );
+  });
+
+  it('ledger: an UNBUDGETED run records its realized spend at all (ADR-0077 §5)', async () => {
+    // The plainest regression for §5's finding. Before it, the ledger's barriers hung off `BudgetGovernor`,
+    // which the engine builds only when a workflow declares a `budget` — so this run, which spends real
+    // money, would have started a write nobody ever joined.
+    const inner = new InMemoryRunStore();
+    const provider = scriptedProvider([textTurn('done')]);
+    const host = createInMemoryHost({ store: inner });
+    const engine = buildEngine(host, () => provider);
+    const handle = engine.start({ workflow: HAPPY_PATH, inputs: INPUTS });
+    const { events } = await drive(handle, host);
+
+    expect(events.at(-1)?.type).toBe('run:completed');
+    const persisted = inner.eventsFor(events[0]?.runId ?? '');
+    const ledgerRows = persisted.filter((e) => e.type === 'cost:attempt_settled');
+    expect(ledgerRows).toHaveLength(1);
+    const row = ledgerRows[0];
+    if (row?.type !== 'cost:attempt_settled') expect.unreachable('missing ledger row');
+    expect(row.attemptNumber).toBe(1);
+    expect(row.priced).toBe(true); // the built-in pricing table knows this model, so the charge is real
+    // The cumulative must already include this charge, which is what the schema refinement pins.
+    expect(row.cumulativeCostMicrocents).toBeGreaterThanOrEqual(row.costMicrocents);
   });
 
   it('conservative commitment: a RESUMED run still cannot spend past the cap it committed against (ADR-0074 §2)', async () => {

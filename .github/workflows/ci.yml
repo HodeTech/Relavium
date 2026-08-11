@@ -138,6 +138,14 @@ jobs:
       - name: Lint the tooling scripts
         run: pnpm lint:tools
 
+      # A repo-local SECOND checkout must never be collected by a root run (CR-90). This is the one check
+      # whose defect CI could not have caught on its own: the leak lives in `.claude/worktrees/`, hidden by a
+      # LOCAL `.git/info/exclude` entry, so a clean CI checkout never has it. The vitest exclusions defend a
+      # developer's tree; this step is what stops them being weakened — without it the guard would be the only
+      # root-`ci` check missing here, which is the #312 divergence the two steps above exist to close.
+      - name: Test isolation (no repo-local checkout in the run)
+        run: pnpm lint:test-isolation
+
       # RUN the artifact this job just built, through the SAME `pnpm smoke:cli` script the root `ci` script
       # calls — a check that exists in only one of the two is exactly the #312 divergence this change closes.
       # Until now nothing in the required gate executed

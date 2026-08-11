@@ -217,9 +217,10 @@ export function modelsPricingCommand(
       ? ''
       : `\n  Overrides the catalog price for this model: input $${microcentsToUsd(shipped.inputPerMtokMicrocents)}/Mtok, output $${microcentsToUsd(shipped.outputPerMtokMicrocents)}/Mtok. Yours wins. Run \`relavium models pricing ${stripTerminalControls(args.model)} --clear\` to go back to the catalog's.`;
   // Strip any terminal-control byte from the (user-typed) model id before echo — parity with `renderModelList`'s
-  // FIX 2. `ModelListingSchema` only requires min(1), so an id can carry a control byte; the JSON path is safe on
-  // its own (JSON.stringify escapes them). The provider is a validated (kebab) ProviderId, and the prices are
-  // numbers — both already safe.
+  // FIX 2. `ModelListingSchema` only requires min(1), so an id can carry a control byte; the JSON path is safe
+  // because it goes through `stringifyJsonLine` — NOT because `JSON.stringify` escapes them, which it does not
+  // (see security-review.md). The provider is a validated (kebab) ProviderId, and the prices are numbers —
+  // both already safe.
   deps.io.writeOut(
     `Set user pricing for ${stripTerminalControls(args.model)} (${args.provider}): input $${args.inputUsdPerMtok}/Mtok, output $${args.outputUsdPerMtok}/Mtok${cachedNote}. It applies to your next run/chat and survives \`models refresh\`.${divergence}\n`,
   );

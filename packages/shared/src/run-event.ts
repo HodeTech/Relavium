@@ -590,6 +590,107 @@ export const BudgetEstimateCommittedEventSchema = z.object({
 });
 export type BudgetEstimateCommittedEvent = z.infer<typeof BudgetEstimateCommittedEventSchema>;
 
+/**
+ * One SETTLED provider attempt's REALIZED charge, made durable
+ * ([ADR-0076](../../../docs/decisions/0076-durable-per-attempt-realized-cost-ledger.md)).
+ *
+ * The realized twin of {@link BudgetEstimateCommittedEventSchema}, and the pairing is the point:
+ * `budget:estimate_committed` records money that MIGHT have been billed, this records money that WAS. Both are
+ * emitted from the SAME synchronous `onAttempt` callback a few lines apart (`agent-turn.ts`), which is why
+ * [ADR-0077](../../../docs/decisions/0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md)
+ * gives them the same barrier mechanism rather than two.
+ *
+ * **Why it exists at all.** `cost:updated` is the only other carrier of a realized per-attempt charge, and it
+ * is streamed, never persisted. The durable record is otherwise reconstructed from a LATER boundary —
+ * `node:completed.cumulativeCostMicrocents`. An agent turn is a loop, so a node can make many paid calls
+ * before it completes, and a crash mid-loop discarded every one of them. Worse than forgetting: the resumed
+ * run SPENT IT AGAIN, because the cap it re-evaluated against was understated by exactly the amount already
+ * charged.
+ *
+ * **RUN PATH ONLY — `...runBase`, deliberately not `...dualBase`.** `cost:updated` is dual-envelope, so the
+ * absence of a session arm is a choice, not an oversight: the session path ALREADY has this ledger.
+ * `persister.ts` writes `recordSessionCost` on every `cost:updated`, carrying the PER-ATTEMPT increment (not a
+ * cumulative snapshot) into `session_costs`, and since `#W15-4` that write is latched so a failure gates
+ * further egress. This event closes the RUN path's equivalent gap.
+ *
+ * **Scope, so the omission is not read as a gap.** This covers the provider attempts of an AGENT TURN. A media
+ * job's realized cost (ADR-0045 §5) does NOT emit one and does not need to: it is already durable through the
+ * `node:completed` / `node:failed` / `run:*` cumulative snapshots `#W15-6` added for exactly that reason. And
+ * no cost event of any kind makes a TOOL EFFECT idempotent — that is the durable effect journal, a different
+ * decision about a different failure (ADR-0076 scopes it out by name).
+ */
+export const CostAttemptSettledEventSchema = z.object({
+  type: z.literal('cost:attempt_settled'),
+  ...runBase,
+  /** The agent node that owned the attempt. Required — on the run path every attempt has an owning vertex. */
+  nodeId: nonEmptyString,
+  /** The canonical model id this attempt actually ran on — the per-model attribution key. */
+  model: nonEmptyString,
+  /**
+   * 1-based WITHIN-CHAIN (`FallbackChain`) attempt, matching `cost:updated` — it resets to 1 on each node-retry
+   * re-dispatch, and does NOT join `node:*.attemptNumber` (the node-retry dispatch index). To attribute a
+   * charge to a node-retry attempt, partition the `sequenceNumber`-ordered stream at the
+   * `node:started` / `node:retrying` boundaries.
+   *
+   * **REQUIRED here, unlike on `cost:updated` and `budget:estimate_committed`, and the divergence is
+   * deliberate.** Those two carry it optionally because they predate this event and their historical rows may
+   * lack it. This type is new, so it has no historical rows — and a per-ATTEMPT ledger whose row cannot say
+   * which attempt it belongs to is not a ledger. The emitter always has it (`onAttempt`'s `nonSkippedAttempts`).
+   * Requiring it now is free; requiring it LATER would be the one-way door {@link parseStoredRunEvent}
+   * describes — every historical row without it becomes a known type with an invalid body, which must throw.
+   */
+  attemptNumber: positiveInt,
+  inputTokens: nonNegativeInt,
+  outputTokens: nonNegativeInt,
+  /**
+   * THIS attempt's realized charge — the exact per-attempt record, and what the derived `run_costs` row and
+   * any "why did this run cost that" answer are built from. **It is NOT the restore path**: reconstruction
+   * maxes {@link cumulativeCostMicrocents} instead, and that field's doc explains why summing this one both
+   * double-counts and under-counts depending on which route you take.
+   *
+   * `nonNegativeInt`, NOT the `positiveInt` its estimate twin uses, and the asymmetry is real rather than an
+   * oversight. A conservative commitment of zero is unreachable by construction (`BudgetGovernor#admit`
+   * refuses `estimateMicrocents <= 0`). A realized charge of zero is routinely reachable: an UNPRICED model
+   * (the chain swallows the cost tracker's `UnknownModelError`) and a genuinely FREE one both settle here at
+   * zero with real tokens. {@link priced} is what separates those two — which is precisely why it is required.
+   */
+  costMicrocents: nonNegativeInt,
+  /**
+   * The run-wide realized running total after this attempt — an ABSOLUTE total, read immediately after this
+   * attempt was folded into the counter, and **this is the field reconstruction restores from**, via
+   * `Math.max` against every other absolute total in the log (the node-boundary snapshots and
+   * `budget:paused.spentMicrocents`).
+   *
+   * `Math.max`, never LAST-WINS: under a `fan_out` concurrent events have no canonical `seq` order, so the
+   * lower `seq` can carry the higher total and a last-wins read would hand already-spent money back to the cap
+   * as headroom. Maxing over absolutes is order-independent because realized spend is monotonic — which is
+   * exactly the property `budget:estimate_committed` lacks, and the whole reason its fold sums signed deltas
+   * instead.
+   *
+   * **Do not restore by summing {@link costMicrocents}.** Into this same total it double-counts, because a
+   * node terminal's snapshot already contains the attempts it covers. Into a separate accumulator maxed
+   * against the snapshots it UNDER-counts, which is the subtler failure: the two sources cover different
+   * money — a media node writes a snapshot and emits no attempt row at all — so every attempt after the last
+   * node boundary disappears whenever earlier media spend is the larger figure, which is precisely the
+   * crash-mid-agent-loop case this event exists for. `costMicrocents` remains the exact per-attempt record for
+   * accounting and for the derived `run_costs` row; it is not the restore path.
+   *
+   * (`cost:updated` carries the same figure but is streamed and never persisted, so it is not a restore source
+   * at all.)
+   */
+  cumulativeCostMicrocents: nonNegativeInt,
+  /**
+   * Whether this egress could be PRICED (ADR-0070 §6). **REQUIRED here, unlike on `cost:updated`.**
+   *
+   * On `cost:updated` the flag is additive-and-optional because it was added to an event that already had
+   * historical rows. This type has none. And without it `costMicrocents: 0` with real tokens is ambiguous
+   * between "we could not price this" and "this model is genuinely free" — an ambiguity a LEDGER must not
+   * carry, since the whole reason to write the row is to answer "what did this run cost, and do we know".
+   */
+  priced: z.boolean(),
+});
+export type CostAttemptSettledEvent = z.infer<typeof CostAttemptSettledEventSchema>;
+
 /** The run-event variants, discriminated on `type` (exposed via `RunEventSchema.innerType()`). */
 const RunEventUnionSchema = z.discriminatedUnion('type', [
   RunStartedEventSchema,
@@ -616,6 +717,7 @@ const RunEventUnionSchema = z.discriminatedUnion('type', [
   BudgetWarningEventSchema,
   BudgetPausedEventSchema,
   BudgetEstimateCommittedEventSchema,
+  CostAttemptSettledEventSchema,
 ]);
 
 /** The pre-refinement union value — the input every cross-field refinement helper below receives. */
@@ -659,6 +761,33 @@ function refineBudgetEstimateCommitted(event: RunEventUnion, ctx: z.RefinementCt
       message:
         'cumulativeConservativeMicrocents must already include estimateMicrocents (read the counter AFTER adding this commitment)',
       path: ['cumulativeConservativeMicrocents'],
+    });
+  }
+}
+
+/**
+ * A settled attempt's cumulative total must already INCLUDE its own charge (ADR-0076).
+ *
+ * The same invariant, and the same single most likely emit-site bug, as {@link refineBudgetEstimateCommitted}:
+ * reading the run-wide counter BEFORE folding this attempt into it. That mistake emits
+ * `{ cost: 500, cumulative: 0 }` — and since the cumulative IS the restore path here (reconstruction maxes it;
+ * see the field's own doc), such a row would restore a total missing this charge and hand the cap headroom for
+ * money already spent. Pinned here because nothing else anywhere would complain.
+ *
+ * (An earlier revision of this comment said reconstruction "sums the deltas, so the RESTORE survives it".
+ * That described the design ADR-0076 originally staged and step 5 retracted — summing double-counts against a
+ * node terminal's snapshot. The restore has never summed since the code landed.)
+ */
+function refineCostAttemptSettled(event: RunEventUnion, ctx: z.RefinementCtx): void {
+  if (
+    event.type === 'cost:attempt_settled' &&
+    event.cumulativeCostMicrocents < event.costMicrocents
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        'cumulativeCostMicrocents must already include costMicrocents (read the counter AFTER folding this attempt)',
+      path: ['cumulativeCostMicrocents'],
     });
   }
 }
@@ -795,6 +924,7 @@ export const RunEventSchema = RunEventUnionSchema.superRefine((event, ctx) => {
   refineMediaJobFrozenBasis(event, ctx);
   refineApprovalPreview(event, ctx);
   refineBudgetEstimateCommitted(event, ctx);
+  refineCostAttemptSettled(event, ctx);
 });
 export type RunEvent = z.infer<typeof RunEventSchema>;
 

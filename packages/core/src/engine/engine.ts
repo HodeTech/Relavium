@@ -68,6 +68,11 @@ import {
   type BudgetAdmission,
 } from './budget-governor.js';
 import type { CheckpointPendingMediaJob, CheckpointState } from './checkpoint.js';
+import {
+  LedgerDurabilityError,
+  MoneyDurability,
+  isLedgerDurabilityError,
+} from './money-durability.js';
 import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
 import type {
   GateRequest,
@@ -347,6 +352,8 @@ class RunExecution {
   #runTimeoutDisarm: (() => void) | undefined;
   /** The pre-egress budget governor, when a workflow `budget` is configured (ADR-0028, 1.AC). */
   readonly #budgetGovernor: BudgetGovernor | undefined;
+  /** The money-durability barrier for BOTH chains — always present, cap or no cap (ADR-0077 §5). */
+  readonly #money: MoneyDurability;
   /** Vertices whose budget gate was APPROVED — their next re-dispatch (and all its node-retry attempts) skips
    *  the pre-egress check so the deferred LLM call actually issues (H3). Consumed once per dispatch in
    *  `#dispatch` and cleared on `#settle`. */
@@ -409,6 +416,48 @@ class RunExecution {
     this.#maskedInputs = maskInputs(params.inputs, secretNames);
     this.#maxTokensEstimate = params.maxTokensEstimate ?? DEFAULT_MAX_TOKENS_ESTIMATE;
     this.#resolvePrice = params.resolvePrice;
+    // UNCONDITIONAL, unlike the governor below (ADR-0077 §5). The conservative half is inherently
+    // budget-scoped — no cap, nothing to reserve — but a run without a budget still spends real money, so a
+    // ledger that only existed alongside a governor would silently skip every unbudgeted run. It fronts the
+    // join for BOTH chains, so `flushConservative` is wired to the governor once that exists.
+    this.#money = new MoneyDurability({
+      emit: async (draft, cumulativeCostMicrocents) => {
+        // **The observe half, and it has to be here rather than in `MoneyDurability`.** `#emitDurable` is
+        // TOTAL for store faults: it absorbs a `persistEvent` rejection into `#failure` and RESOLVES. So the
+        // ledger's own `.catch` never fires for the failure mode it exists to catch, and a barrier that only
+        // awaited would sail straight past a run whose money write did not land — exactly the trap ADR-0076
+        // §1 named and ADR-0077 kept. Comparing `#failure` across the await is what turns the absorbed fault
+        // back into something the barrier can throw. It can over-trigger when a SIBLING fails in the same
+        // window; that direction is fail-closed and correct at a money barrier.
+        const failureBefore = this.#failure;
+        await this.#emitDurable({
+          ...draft,
+          type: 'cost:attempt_settled',
+          runId: this.runId,
+          // The total CAPTURED AT `record()` TIME, passed in — deliberately not a fresh read of
+          // `#cumulativeCostMicrocents` here. `#nodeEmit`'s `cost:updated` arm folds the charge into the
+          // counter and the turn core records strictly after that, so the captured value satisfies
+          // `refineCostAttemptSettled`'s "cumulative already includes this charge" by construction. Reading it
+          // HERE would not: this callback is chained behind the previous write's `persistEvent`, so under a
+          // `fan_out` — concurrent nodes sharing one chain — it can run after several more attempts have
+          // settled and report their money as this attempt's running total.
+          cumulativeCostMicrocents,
+        });
+        if (this.#failure !== failureBefore) {
+          // Typed, not a bare `Error` (error-handling.md). `#emitDurable` discards the store error in its own
+          // catch, so there is no `cause` left to preserve — the run's `#failure` carries the user-facing
+          // reason instead, and this class exists to keep the node attribution that would otherwise be lost
+          // when the chain flattens a `preAttempt` throw.
+          throw new LedgerDurabilityError(
+            new Error('the run failed while this realized charge was being made durable'),
+            draft.nodeId,
+          );
+        }
+      },
+      ...(params.plan.budget === undefined
+        ? {}
+        : { flushConservative: async () => this.#budgetGovernor?.flushCommitments() }),
+    });
     if (params.plan.budget !== undefined) {
       this.#budgetGovernor = new BudgetGovernor({
         budget: params.plan.budget,
@@ -1125,7 +1174,7 @@ class RunExecution {
       // the next pre-egress check; this covers the node boundary, which a crash could otherwise land inside with
       // a possibly-billed call recorded nowhere. Awaited (not fire-and-forget) so a failed write fails the node
       // loudly; the conservative amount keeps consuming capacity either way.
-      await this.#flushBudgetCommitments(vertex.id);
+      await this.#joinMoneyDurability(vertex.id);
       const willRetry =
         outcome.kind === 'failed' &&
         !this.#settled &&
@@ -1225,11 +1274,41 @@ class RunExecution {
         signal: this.#abort.signal,
         attemptNumber,
         ...(preEgress === undefined ? {} : { preEgress }),
+        // Unconditional, unlike `preEgress` above — which `budgetApproved` deliberately drops for an approved
+        // re-dispatch. The ledger must not be dropped with it: an approved node is the one the user just
+        // authorised MORE money on, so it is the last place to stop recording what that money was.
+        money: this.#money.turnPort(() => this.#cumulativeCostMicrocents),
       };
       // After the executor completes, an `output` node with `save_to` writes its produced media to the
       // host (1.AF/D16). A write failure FAILS the node (→ run:failed) — save_to is a real deliverable.
       return await this.#applySaveTo(vertex, await this.#executor.execute(ctx));
-    } catch {
+    } catch (error) {
+      // A money-durability failure is NOT an anonymous handler throw. Barriers B1 and B2 (ADR-0077) both sit
+      // INSIDE the turn, and `throwMappedChainError` has two arms whose only job is to keep the class and its
+      // owning `nodeId` intact on the way out — under a `fan_out` the broken write may be a sibling's, and
+      // the message that names the remedy differs between the estimate and realized halves. Then
+      // `turnOutcomeForError` re-throws anything it cannot classify and the generic arm below reported `the
+      // node handler threw an unexpected error`: preserved for exactly one frame, then discarded. B3 two
+      // lines later cannot repair it either — `join()` surfaces a retained failure exactly ONCE, and the
+      // in-turn barrier already consumed it.
+      //
+      // **When this arm is actually reached, stated because measuring it corrected a claim.** On the ordinary
+      // path it is NOT: `#emitDurable` absorbs the store fault, sets `#failure` and aborts, so the turn ends
+      // at `throwIfAborted` and the node classifies as cancelled before any barrier throws. It is reached
+      // where the abort does not fire — `#emitDurable` skips it when `#failure` is already set by a sibling —
+      // which is precisely ADR-0077's stated required regression, still unbuilt. The arm is here because the
+      // flattening is wrong whenever it does happen, not because a test drives it today.
+      if (isLedgerDurabilityError(error) || error instanceof CommitmentDurabilityError) {
+        this.#failMoneyDurability(error, vertex.id);
+        return {
+          kind: 'failed',
+          error: {
+            code: 'internal',
+            message: this.#failure?.error.message ?? 'a money write could not be made durable',
+            retryable: false,
+          },
+        };
+      }
       // The catch-all: any uncaught throw from a node handler maps to a single internal failure
       // (a tool handler classifies its own failures as tool_failed; a sandbox throw as sandbox_error).
       return {
@@ -2093,7 +2172,12 @@ class RunExecution {
   }
 
   /**
-   * Await the budget governor's conservative-commitment barrier at a node boundary (ADR-0074 §2).
+   * Await BOTH money chains at a node boundary — the conservative commitments (ADR-0074 §2) and the realized
+   * ledger (ADR-0077 §4). Named for the join rather than for the commitments it once awaited alone: since
+   * ADR-0077 this is the single barrier fronting `MoneyDurability`, and `#flushBudgetCommitments` read as
+   * though the ledger were still someone else's to await. (The host-supplied
+   * `AgentSessionDeps.flushBudgetCommitments` keeps that name and is correct — the SESSION path has no
+   * realized ledger to join, because its per-attempt increment is already written synchronously.)
    *
    * **The await is the substance.** `#emitDurable` resolves only after `persistEvent` has settled (its `await
    * settled` at the end), so waiting here means a commitment made inside the attempt is on disk — or has already
@@ -2106,29 +2190,53 @@ class RunExecution {
    * write. Kept here so the two surfaces cannot diverge in what a durability failure means: never a released
    * reservation, always a loud failure.
    */
-  async #flushBudgetCommitments(nodeId: string): Promise<void> {
-    const governor = this.#budgetGovernor;
-    if (governor === undefined) return;
+  async #joinMoneyDurability(nodeId: string): Promise<void> {
+    // **Barrier B3 (ADR-0077)** — and it is now the SINGLE join for both money chains. The old
+    // `if (governor === undefined) return;` is gone: it was one of §5's three barrier holes, because a run
+    // without a budget has no conservative commitments but does have a realized ledger, and returning early
+    // left that ledger started and never joined — exactly the fire-and-forget state ADR-0076 exists to remove.
+    // `MoneyDurability.join()` fronts both, so there is no supported way to await half the money.
     try {
-      await governor.flushCommitments();
+      await this.#money.join();
     } catch (error) {
-      // Attribute it to the node whose commitment actually failed, not to whichever node reached this barrier
-      // first — under a `fan_out` both branches await the same chain link, so the first to flush may have made no
-      // commitment at all. Falls back to this node when the error carries no owner.
-      const owner = error instanceof CommitmentDurabilityError ? (error.nodeId ?? nodeId) : nodeId;
-      this.#failure ??= {
-        nodeId: owner,
-        error: {
-          code: 'internal',
-          // The cause is deliberately NOT in the message: a durable-write failure can carry a filesystem path, and
-          // a user-facing `run:failed` message must not. It survives on `CommitmentDurabilityError.cause` for a
-          // host that narrows on the class — which is the only carrier, since this path has no store to log it.
-          message: 'a conservative budget commitment could not be made durable',
-          retryable: false,
-        },
-      };
-      this.#abort.abort();
+      this.#failMoneyDurability(error, nodeId);
     }
+  }
+
+  /**
+   * Record a money-durability failure against the node whose write actually broke, and abort.
+   *
+   * Shared by B3's own catch and by `#runAttempt`'s catch-all, and the second caller is why it is a method:
+   * barriers B1 and B2 live INSIDE the turn, so their throw arrives as a bare `LedgerDurabilityError` /
+   * `CommitmentDurabilityError` that the catch-all used to flatten. See the note at that call site for when
+   * that path is actually reached — it is narrower than it looks.
+   *
+   * `??=` throughout: a sibling's already-recorded root cause always wins, which is also why this is usually
+   * a no-op on the ordinary path (`#emitDurable` has already set `#failure` from the same fault).
+   */
+  #failMoneyDurability(error: unknown, nodeId: string): void {
+    // Attribute it to the node whose write actually failed, not to whichever node reached this barrier
+    // first — under a `fan_out` both branches await the same chain link, so the first to flush may have made no
+    // commitment at all. Falls back to this node when the error carries no owner.
+    const ledger = isLedgerDurabilityError(error);
+    const owner =
+      error instanceof CommitmentDurabilityError || ledger ? (error.nodeId ?? nodeId) : nodeId;
+    this.#failure ??= {
+      nodeId: owner,
+      error: {
+        code: 'internal',
+        // The cause is deliberately NOT in the message: a durable-write failure can carry a filesystem path, and
+        // a user-facing `run:failed` message must not. It survives on the error's `cause` for a host that
+        // narrows on the class — which is the only carrier, since this path has no store to log it. The two
+        // messages are distinct because the remedies differ: an estimate that could not be recorded leaves the
+        // cap conservative, while a realized charge that could not be recorded leaves it UNDERSTATED.
+        message: ledger
+          ? 'a realized provider charge could not be made durable'
+          : 'a conservative budget commitment could not be made durable',
+        retryable: false,
+      },
+    };
+    this.#abort.abort();
   }
 
   async #emitDurable(draft: RunEventDraft): Promise<void> {

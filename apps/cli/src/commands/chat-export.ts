@@ -6,6 +6,7 @@ import { openSessionStore, type OpenedSessionStore } from '../history/session-op
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import { stringifyJsonLine } from '../render/sanitize.js';
 
 /**
  * `relavium chat-export <sessionId>` (2.P) — export a persisted session to a `.relavium.yaml` **scaffold** for
@@ -87,7 +88,7 @@ export function chatExportCommand(
         sequenceNumber: result.sequenceNumber,
         workflowPath: result.path,
       });
-      deps.io.writeOut(`${JSON.stringify(event)}\n`);
+      deps.io.writeOut(`${stringifyJsonLine(event)}\n`);
     } else {
       deps.io.writeOut(`Exported session ${args.sessionId} to ${result.path}\n`);
     }

@@ -396,6 +396,10 @@ async function executeAgent(
       dispatchContext,
       limits: deps.limits ?? DEFAULT_AGENT_TURN_LIMITS,
       ...(preEgress === undefined ? {} : { preEgress }),
+      // Straight from the ctx, with no `deps` fallback — the ledger belongs to a RUN and only the run loop can
+      // supply it. A host wiring a runner directly gets no ledger, which is correct: there is no run to
+      // record against (ADR-0076 / ADR-0077).
+      ...(ctx.money === undefined ? {} : { money: ctx.money }),
       ...(deps.resolvePrice === undefined ? {} : { resolvePrice: deps.resolvePrice }), // user-pricing overlay (S10)
       // Media cost governance (1.AF/D17): forward the node's requested output modalities + a per-modality
       // unit estimate so the budget governor prices a media-output turn pre-egress. Both omitted for a

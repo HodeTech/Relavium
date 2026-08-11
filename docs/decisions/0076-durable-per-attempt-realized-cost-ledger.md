@@ -4,6 +4,13 @@
 - **Date**: 2026-08-09
 - **Related**: [ADR-0074](0074-durable-conservative-budget-commitments.md) (the conservative half of the same problem), [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md) (how this event degrades on an older binary), [ADR-0070](0070-durable-per-model-session-cost-attribution.md) (`SUM(run_costs) == runs.total_cost_microcents`), [ADR-0028](0028-workflow-resource-governance.md) (the pre-egress cap), [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) (durable run events), and [sse-event-schema.md](../reference/contracts/sse-event-schema.md) (the canonical event contract).
 
+> **Amended 2026-08-10** by [ADR-0077](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md): §1's
+> MECHANISM only. The guarantee — a realized charge is durable before the run spends or mutates again — stands
+> unchanged; the "awaited inline emit at the attempt boundary" shape does not, because the seam's attempt
+> observer is synchronous and there is no `await` to place there. ADR-0077 substitutes ADR-0074 §2's
+> chain-and-join and adds a third barrier before tool dispatch. Not a reversal, so not a supersession. The
+> in-place markers in §1 below stay where the superseded sentences are.
+
 ## Context
 
 ADR-0074 made the **conservative** commitment durable — money a provider may already have billed for a call that returned no trustworthy usage. It deliberately did not touch the other half. A call that *did* return trustworthy usage has no equivalent barrier, and that gap is larger than it looks.
@@ -30,9 +37,17 @@ The event carries the attempt's identity (node, model, the within-chain attempt 
 
 Three properties make it a ledger rather than another observation:
 
-1. **Written before the next thing that can spend or mutate.** It goes through the engine's `#emitDurable` choke point, and the attempt boundary AWAITS that call — before the next tool side effect, before the next egress, and before the node/turn terminal. A durability failure fails the active owner loudly, exactly as ADR-0074 §2 decided for its estimate twin; surfacing it on a later unrelated node is the misattribution that barrier exists to prevent.
+1. **Written before the next thing that can spend or mutate.** *(The MECHANISM below is **amended by
+   [ADR-0077](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md)** — the guarantee stands,
+   the "awaited emit" shape does not: `onAttempt` is synchronous, so there is no `await` to place there.)* It
+   goes through the engine's `#emitDurable` choke point, and the attempt boundary AWAITS that call *(← the
+   bare inline await is the part ADR-0077 supersedes: the write is STARTED at the settle instant and JOINED at
+   each barrier)* — before the next tool side effect, before the next egress, and before the node/turn
+   terminal. A durability failure fails the active owner loudly, exactly as ADR-0074 §2 decided for its estimate twin; surfacing it on a later unrelated node is the misattribution that barrier exists to prevent.
 
-   **The mechanism is the awaited emit plus an explicit check, NOT a §2-style queue-and-flush.** §2 needs
+   **The mechanism is the awaited emit plus an explicit check, NOT a §2-style queue-and-flush.**
+   **← AMENDED BY [ADR-0077](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md); the
+   paragraph below is superseded and kept only because the corpus is append-only.** §2 needs
    `flushBudgetCommitments` because a conservative commitment is emitted fire-and-forget from inside the
    governor, so something has to join the outstanding writes at the turn boundary. A settled attempt is
    emitted by the engine at the point it settles, on the path that is about to continue, so no queue is
@@ -98,7 +113,8 @@ A new durable event `type` is precisely the input ADR-0075 governs. Before it, a
 
 ### Negative
 
-- **More durable writes on the hot path**, one per settled provider attempt, each awaited. That is the cost of the barrier and it is the same cost ADR-0074 §2 accepted for estimates; the volume is per-attempt, not per-token, so a long run adds rows in the hundreds, not the millions. Mitigation: the write shares the single `BEGIN IMMEDIATE` its event already takes, so it is not an additional transaction.
+- **More durable writes on the hot path**, one per settled provider attempt, each awaited *(→ per ADR-0077:
+  each STARTED at its settle instant and JOINED at the next barrier, not awaited inline)*. That is the cost of the barrier and it is the same cost ADR-0074 §2 accepted for estimates; the volume is per-attempt, not per-token, so a long run adds rows in the hundreds, not the millions. Mitigation: the write shares the single `BEGIN IMMEDIATE` its event already takes, so it is not an additional transaction.
 - **A durability failure now fails a turn that would previously have completed.** Deliberate, and the same posture as §2: a run that cannot record what it spent must not keep spending. Mitigation: the failure is classified and names the attempt, rather than surfacing later as an unexplained cap refusal.
 - **An older binary cannot replay a log containing this event.** Inherited from ADR-0075 and stated there; the remedy is an upgrade, and every read-only surface still shows the run.
 - **`cost:updated` remains, and now has a durable sibling.** Two events describing one charge is a real risk of drift. Mitigation: the streamed one keeps its documented role as the live observation and the durable one is the record; the spec says which is authoritative, and the engine emits both from one place so they cannot disagree about the amount.

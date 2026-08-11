@@ -18,8 +18,10 @@ export type SchemaVersion = typeof SCHEMA_VERSION;
  * and the per-event ordinal is always `sequenceNumber`, never `seqNo`. Order mirrors the
  * `RunEvent` union in the spec: `agent:reasoning` sits immediately after `agent:token` (the reasoning
  * host-emit, EA6/2.5.H amending [ADR-0036]); `agent:approval_requested` + `agent:file_patch_proposed`
- * sit after `agent:tool_result`, and the five governance events close the list: `run:paused`, `run:timeout`,
+ * sit after `agent:tool_result`, then the five governance events: `run:paused`, `run:timeout`,
  * `budget:warning`, `budget:paused` (ADR-0028) and `budget:estimate_committed` ([ADR-0074], dual-envelope).
+ * `cost:attempt_settled` ([ADR-0076]) closes the list — the realized twin of that last one, and the only
+ * durable member of the `cost:` namespace (`cost:updated` is streamed).
  */
 export const RUN_EVENT_TYPES = [
   'run:started',
@@ -56,6 +58,11 @@ export const RUN_EVENT_TYPES = [
   // rides 'runId' on a run and 'sessionId' on a session, so it is listed here (with the run types) and reused
   // on the session envelope rather than duplicated into SESSION_EVENT_TYPES. NEVER realized spend.
   'budget:estimate_committed',
+  // One settled provider attempt's REALIZED charge, made durable (ADR-0076) — the realized twin of the
+  // estimate above, emitted from the same `onAttempt` callback and joined at the same barriers (ADR-0077).
+  // RUN-ONLY, deliberately: the session path already records per-attempt realized spend into `session_costs`
+  // on every 'cost:updated' (ADR-0070), so it needs no session arm and is NOT in SESSION_EVENT_TYPES.
+  'cost:attempt_settled',
 ] as const;
 export type RunEventType = (typeof RUN_EVENT_TYPES)[number];
 

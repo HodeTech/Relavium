@@ -12,6 +12,7 @@ import {
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
+import { stringifyJsonLine } from '../render/sanitize.js';
 
 export interface ImportCommandArgs {
   /** The external workflow/agent YAML to copy into the project (absolute, or relative to cwd). */
@@ -58,7 +59,7 @@ export function importCommand(args: ImportCommandArgs, deps: ImportCommandDeps):
   writeAuthoredFile(target, rel, serializeAuthored(parsed), args.force);
 
   if (deps.global.json) {
-    deps.io.writeOut(`${JSON.stringify({ id: parsed.slug, kind: parsed.kind, path: rel })}\n`);
+    deps.io.writeOut(`${stringifyJsonLine({ id: parsed.slug, kind: parsed.kind, path: rel })}\n`);
   } else {
     deps.io.writeOut(`Imported ${parsed.kind} '${parsed.slug}' to ${rel}\n`);
   }
