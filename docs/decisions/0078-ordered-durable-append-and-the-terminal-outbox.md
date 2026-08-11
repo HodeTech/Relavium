@@ -1,4 +1,4 @@
-# ADR-0078: The durable event log is an ordered append, and a terminal that cannot be made durable says so (amends ADR-0036; establishes the shared durable-write seam)
+# ADR-0078: The durable event log is an ordered append, and a terminal that cannot be made durable says so (amends ADR-0036 and ADR-0042 §4; establishes the shared durable-write seam)
 
 - **Status**: Accepted
 - **Date**: 2026-08-11

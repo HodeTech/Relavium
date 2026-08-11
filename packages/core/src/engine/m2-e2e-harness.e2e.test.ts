@@ -48,6 +48,7 @@ import { createExpressionSandbox, type ExpressionSandbox } from '../expression/s
 import { parseWorkflow } from '../parser.js';
 import type { ToolDef as CoreToolDef, ToolRegistry, ToolResultPart } from '../tools/types.js';
 import { markUntrusted } from '../tools/untrusted.js';
+import { createAppendAudit, formatAppendAudit } from './append-audit.js';
 import { reconstructCheckpointState } from './checkpoint.js';
 import { WorkflowEngine } from './engine.js';
 import { checkDurableTruth, formatDurableTruth } from './durable-truth.js';
@@ -358,6 +359,26 @@ workflow:
   edges:
     - { from: in, to: work }
     - { from: work, to: out }
+`,
+);
+
+/** Two independent agent nodes with no edge between them — genuine engine concurrency under `max_parallel: 2`. */
+const PARALLEL_PAIR = parseWorkflow(
+  `schema_version: '1.0'
+workflow:
+  id: m2-harness-parallel-pair
+  max_parallel: 2
+  inputs:
+    - { name: topic, type: string }
+  agents:
+    - id: writer
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: You summarize.
+  nodes:
+    - { id: a, type: agent, agent_ref: writer, prompt_template: 'One: {{inputs.topic}}' }
+    - { id: b, type: agent, agent_ref: writer, prompt_template: 'Two: {{inputs.topic}}' }
+  edges: []
 `,
 );
 
@@ -2004,5 +2025,56 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     const second = await runOnce();
     expect(second.sig).toBe(first.sig);
     expect(second.output).toEqual(first.output);
+  });
+
+  // --- the append audit, against the REAL engine (CR-10, ADR-0078) -------------------------------
+  //
+  // The harness's unit tests drive `audit.store.persistEvent` directly, which proves the predicates and
+  // nothing about the engine. These two drive a live `WorkflowEngine` over an audited store, and they exist
+  // because a docblock claim about the engine's actual behaviour turned out to be wrong when someone finally
+  // ran it: an ordinary sequential run overlaps NOTHING today, because every `#emitDurable` call site awaits
+  // and `#emitDurable` awaits its own region before returning. The overlap needs genuine concurrency.
+
+  it('append audit: an ordinary SEQUENTIAL run already overlaps nothing (CR-10 baseline)', async () => {
+    const audit = createAppendAudit(new InMemoryRunStore());
+    const host = createInMemoryHost({ store: audit.store });
+    const provider = scriptedProvider([textTurn('a summary')]);
+    const { events } = await drive(
+      buildEngine(host, () => provider).start({ workflow: HAPPY_PATH, inputs: INPUTS }),
+      host,
+    );
+
+    expect(events.at(-1)?.type).toBe('run:completed');
+    const runId = audit.runIds()[0];
+    expect(runId).toBeDefined();
+    const verdict = audit.verdict(runId ?? '');
+    // The whole verdict, not just `holds` — a green here must not be a green produced by an empty ask list.
+    expect(verdict.asked.length).toBeGreaterThan(3);
+    expect(verdict.committed).toEqual(verdict.asked);
+    expect(verdict.overlapViolations, formatAppendAudit(verdict)).toEqual([]);
+    expect(verdict.holds, formatAppendAudit(verdict)).toBe(true);
+  });
+
+  it('append audit: a FAN-OUT run overlaps its appends today — the state CR-10 removes', async () => {
+    // **This assertion is expected to FLIP when CR-10 lands, and flipping it IS the acceptance.** It records
+    // the pre-CR-10 baseline the phase document asks to break-verify against ("restore the concurrent
+    // start"). CR-10's commit changes `toBeGreaterThan(0)` to `toEqual([])` and says so; deleting the test
+    // instead would remove the only end-to-end evidence that the ordered tail changed anything.
+    const audit = createAppendAudit(new InMemoryRunStore());
+    const host = createInMemoryHost({ store: audit.store });
+    const provider = scriptedProvider([textTurn('one'), textTurn('two')]);
+    const { events } = await drive(
+      buildEngine(host, () => provider).start({ workflow: PARALLEL_PAIR, inputs: INPUTS }),
+      host,
+    );
+
+    expect(events.at(-1)?.type).toBe('run:completed');
+    const runId = audit.runIds()[0] ?? '';
+    const verdict = audit.verdict(runId);
+    expect(verdict.overlapViolations.length, formatAppendAudit(verdict)).toBeGreaterThan(0);
+    // …and the other three predicates stay silent, which is exactly why the overlap predicate had to exist.
+    expect(verdict.holes).toEqual([]);
+    expect(verdict.askOrderViolations).toEqual([]);
+    expect(verdict.commitOrderViolations).toEqual([]);
   });
 });

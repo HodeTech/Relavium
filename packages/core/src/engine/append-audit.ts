@@ -30,10 +30,17 @@
  * the concurrent start"*, would go GREEN against the instrument built to prove it.
  *
  * {@link AppendAuditVerdict.overlapViolations} states the property directly: an ask issued for a run while a
- * prior ask for that run is still in flight. That is what the pre-`CR-10` engine does on every event and what
- * the tail removes. {@link AppendAuditVerdict.askOrderViolations} stays as a separate, weaker check — it
- * catches a *differently* broken engine, one that assigns and issues out of sequence — and neither subsumes
- * the other.
+ * prior ask for that run is still in flight. {@link AppendAuditVerdict.askOrderViolations} stays as a
+ * separate, weaker check — it catches a *differently* broken engine, one that assigns and issues out of
+ * sequence — and neither subsumes the other.
+ *
+ * **When it actually fires against today's engine — measured end to end, not inferred.** A single sequential
+ * producer never trips it: every `#emitDurable` call site awaits, and `#emitDurable` awaits its own region
+ * before returning, so an ordinary `input → agent → output` run reports zero overlaps (asked and committed
+ * both `[0,1,2,3,6,7,8,9,10]`). It fires under GENUINE concurrency — a `max_parallel: 2` fan-out produced
+ * exactly one: *"sequence 10 (node:completed) was asked while [9] was still in flight"*. That matches
+ * ADR-0078 §1's own careful phrasing, *"nothing but timing prevents it"*, and an earlier draft of this
+ * paragraph which claimed the engine overlaps on every event was simply wrong.
  *
  * **Scoped per RUN SEGMENT, not per runId for all time.** A resume re-seeds the bus from the durable maximum
  * (`bus.seedSequence(runId, lastSequenceNumber + 1)`), so a resumed leg legitimately begins at a sequence far
@@ -174,12 +181,16 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
       };
       records.push(entry);
 
-      const fault = options.fault?.(event, entry.askIndex) ?? 'commit';
-      if (fault !== 'commit') {
-        entry.outcome = 'rejected';
-        throw fault;
-      }
+      // ONE try/catch over BOTH the fault hook and the inner write, and the hook has to be inside it.
+      // `AppendFault` is typed to RETURN an `Error`, but a caller can throw one instead — a store double
+      // that throws synchronously is the obvious way to write it, and `better-sqlite3` throws synchronously
+      // for real. Left outside, such a throw escaped before `outcome` was set, orphaning the entry at
+      // `pending` FOREVER: every later ask on that run then reads it as still-in-flight and reports a false
+      // overlap, so the predicate this harness exists for would fire on a correctly ordered engine. Found in
+      // the second review round, after a first round of 41 agents did not.
       try {
+        const fault = options.fault?.(event, entry.askIndex) ?? 'commit';
+        if (fault !== 'commit') throw fault;
         await inner.persistEvent(event);
       } catch (error) {
         entry.outcome = 'rejected';
@@ -269,7 +280,7 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
       );
     }
 
-    // 3. COMMIT ORDER. What the store actually did with the asks it accepted.
+    // 4. COMMIT ORDER. What the store actually did with the asks it accepted.
     const commitOrderViolations: string[] = [];
     for (let i = 1; i < committed.length; i += 1) {
       const prev = committed[i - 1];

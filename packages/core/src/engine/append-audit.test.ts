@@ -261,6 +261,27 @@ describe('createAppendAudit', () => {
     expect(audit.records().map((r) => r.overlappedWith)).toEqual([[], []]);
   });
 
+  it('a fault that THROWS instead of returning still settles the record — it must not orphan it', async () => {
+    // `AppendFault` is typed to RETURN an Error, but a store double that throws is the obvious way to write
+    // one and `better-sqlite3` throws synchronously for real. With the hook outside the try/catch the entry
+    // was orphaned at `pending` forever, and every LATER ask on that run then read it as in-flight — so the
+    // overlap predicate reported a false violation on a perfectly ordered engine. The instrument would have
+    // failed the very implementation it exists to certify.
+    const audit = createAppendAudit(new InMemoryRunStore(), {
+      fault: (event) => {
+        if (event.sequenceNumber === 0) throw new Error('sync boom');
+        return 'commit';
+      },
+    });
+    await expect(audit.store.persistEvent(started(0))).rejects.toThrow('sync boom');
+    await audit.store.persistEvent(completedNode(1));
+
+    expect(audit.records().map((r) => r.outcome)).toEqual(['rejected', 'committed']);
+    // THE assertion: the second ask saw nothing in flight. Without the fix this is `[0]`.
+    expect(audit.records()[1]?.overlappedWith).toEqual([]);
+    expect(audit.verdict('r1').overlapViolations).toEqual([]);
+  });
+
   it('does not count ANOTHER run`s in-flight ask as an overlap', async () => {
     // Two runs writing concurrently is legitimate — the ordered append is per RUN. Scoping the overlap check
     // globally would have made every parallel run fail, which is the false-positive direction.
