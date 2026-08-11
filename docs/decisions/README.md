@@ -121,6 +121,7 @@ flowchart TD
 | 0075 | [A resume fails closed on an unreadable event log (amends ADR-0074 §5)](0075-fail-closed-resume-on-an-unreadable-event-log.md) | Accepted | 2026-08-09 |
 | 0076 | [A durable per-attempt realized-cost ledger (amends ADR-0070, extends ADR-0074)](0076-durable-per-attempt-realized-cost-ledger.md) | Accepted | 2026-08-09 |
 | 0077 | [The realized-cost ledger uses ADR-0074 §2's barrier mechanism (amends ADR-0076 §1)](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md) | Accepted | 2026-08-10 |
+| 0078 | [The durable event log is an ordered append, and a terminal that cannot be made durable says so (amends ADR-0036)](0078-ordered-durable-append-and-the-terminal-outbox.md) | Accepted | 2026-08-11 |
 
 ## Creating a new ADR
 
