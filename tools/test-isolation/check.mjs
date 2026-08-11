@@ -140,7 +140,7 @@ if (coverageAt === -1) {
 const excludeArrays = [...configText.matchAll(/\bexclude:\s*\[([^\]]*)\]/g)];
 const spreadsIn = (body) => (body.match(/\.\.\.REPO_LOCAL_CHECKOUTS\b/g) ?? []).length;
 // `test.exclude` is the LAST one before the coverage block, `coverage.exclude` the FIRST one after it.
-const testExclude = excludeArrays.filter((m) => m.index < coverageAt).at(-1);
+const testExclude = excludeArrays.findLast((m) => m.index < coverageAt);
 const coverageExclude = excludeArrays.find((m) => m.index > coverageAt);
 for (const [name, match, why] of [
   ['test.exclude', testExclude, "stops a foreign tree's TESTS from running"],

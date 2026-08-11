@@ -108,6 +108,18 @@ export interface DurableTruthVerdict {
 }
 
 /**
+ * Codepoint order, NOT `localeCompare` — the comparison must be identical on every machine that runs this
+ * oracle. `localeCompare` honours the host locale (and its ICU build), so two runs of the same payload can
+ * canonicalize to different strings under different `LC_ALL`s, which is a disagreement manufactured by the
+ * instrument. The order itself is arbitrary; only its stability matters.
+ */
+function byCodepoint([a]: readonly [string, unknown], [b]: readonly [string, unknown]): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+/**
  * Stringify a payload for comparison, key-order-insensitively and WITHOUT ever throwing out of the oracle.
  *
  * A bare `JSON.stringify` fails twice: `{a:1,b:2}` and `{b:2,a:1}` compare unequal, which is a false failure
@@ -119,13 +131,7 @@ function canonical(value: unknown): string {
     return JSON.stringify(value, (_key, val: unknown): unknown => {
       if (typeof val === 'bigint') return `${val.toString()}n`;
       if (typeof val !== 'object' || val === null || Array.isArray(val)) return val;
-      // Codepoint order, NOT `localeCompare` — the comparison must be identical on every machine that runs
-      // this oracle. `localeCompare` honours the host locale (and its ICU build), so two runs of the same
-      // payload can canonicalize to different strings under different `LC_ALL`s, which is a disagreement
-      // manufactured by the instrument. The order itself is arbitrary; only its stability matters.
-      return Object.fromEntries(
-        Object.entries(val).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
-      );
+      return Object.fromEntries(Object.entries(val).sort(byCodepoint));
     });
   } catch (error) {
     // A true cycle (or any other unserializable payload) becomes a single marker rather than escaping. The
