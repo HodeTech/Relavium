@@ -217,6 +217,7 @@ to correct.
 | `CR-61` | **open** — needs a JSON-Schema validator dependency | new (dependency ADR) | no | — |
 | `CR-62` | **open** — extract dependencies, or fail loudly | — | no | — |
 | `CR-63` | made (verify the docs; no runtime change) | — | no | — |
+| `CR-64` | made (enforce at parse / `$ref` resolution) | — | no | — |
 | `CR-70` | **open** — persist bounded tool pairs, or narrow the spec | — | no | — |
 | `CR-71` | with `CR-70` | with `CR-70`'s | no | — |
 | `CR-72` | **open** — implement, or reject at parse | — | no | — |
@@ -781,6 +782,29 @@ run-time execution"*. Under that spec, the absence of runtime enforcement is **c
 an agent's `input_schema` is validated at run time; if one exists, correct it to match the spec. If none exists,
 close the item with that finding recorded — do not implement enforcement to satisfy a claim nobody made.
 
+### CR-64 — Node-`tools` narrowing is enforced at RUN time, and two ADRs say "parser-enforced" · Medium
+
+**Evidence.** `resolveGrant` in `packages/core/src/engine/agent-runner.ts` is where a node's `tools:` is
+checked against the agent's grant — the node executor, reached only after the run has started.
+[ADR-0038](../../decisions/0038-agentrunner-llm-call-boundary.md) states the opposite in parentheses:
+*"`tools:` **narrows** the agent's grant and never widens ([ADR-0029], parser-enforced — a node listing a tool
+the agent lacks fails validation)"*. Nothing in `parser.ts`, `dag.ts` or `run-plan.ts` touches `tools` at all.
+
+**Why it matters.** The security boundary itself HOLDS — a widening node is refused at dispatch, so no
+ungranted tool ever runs; ADR-0029(b) is not violated. What is wrong is WHERE and WHEN. A workflow that widens
+passes `relavium validate`, looks correct in review, and fails partway through a run — after upstream nodes
+have already spent real money. And a canonical ADR tells the next reader the parser caught it, which is how
+someone later "simplifies" the runtime check as redundant.
+
+**Fix.** Enforce it at parse for an INLINE agent, where both sides are present in one document, and at `$ref`
+resolution for an external one — the point at which the agent registry has been read. The runtime check stays
+as the last line of defence (a host can construct a node executor directly), but it stops being the first.
+
+**Acceptance.** A workflow whose node lists a tool its inline agent lacks fails `relavium validate` with a
+typed error naming the node, the tool and the agent — before any run id exists. The same for a `$ref`'d agent
+once resolved. ADR-0038's parenthetical is corrected in the same change, or the enforcement moves to match it;
+the two must agree.
+
 ---
 
 ## W7 — Agent product correctness
@@ -1000,6 +1024,39 @@ This phase is done when **all** of the following hold:
    the merge gate — `coverage` is a separate required check, and this phase edits `packages/core` heavily.
 7. **A closing register in this file states, per item, the code that closes it** — verified by reading the code,
    not by trusting the mark. Wave 1's completion claim was wrong twice before this discipline was adopted.
+
+## What a later architecture review contributed — and what it did not
+
+Two design reviews of the YAML definition layer and of the git-native posture were read against the tree on
+2026-08-11. **Exactly one item from them belongs in this phase** (`CR-64`), and that outcome is worth recording
+rather than quietly discarding the rest, because the same documents will be read again.
+
+**Two of the reviews' own high-priority findings are NOT REAL, verified against the schema:**
+
+- **"Circular `$ref` has no guard."** It cannot happen. `AgentSchema` is `.strict()` and declares neither
+  `agents:` nor `$ref`, so an `.agent.yaml` cannot reference another agent — the resolution depth is exactly
+  one hop, workflow → agent. A `$ref` inside an agent file is rejected by its own parse.
+- **"A workflow at `schema_version: '1.0'` could `$ref` an agent at `'0.9'`."** It cannot. The field is
+  `z.literal(SCHEMA_VERSION)`, not a free string, so any file carrying another version fails its own parse
+  before cross-file skew is reachable.
+
+**The rest is real but belongs elsewhere**, and putting it here would dilute a phase whose whole scope line is
+"no new product surface, only the invariants an existing surface already claims":
+
+| finding | where it belongs |
+|---|---|
+| Zod → JSON Schema emit for IDE autocomplete/validation | tooling, Phase 2.6 or later — the reviews' own strongest UX point |
+| `expression_type: 'js'` mandatory with no alternative | authoring ergonomics |
+| Edge `condition` vs `condition` node — two mechanisms | authoring; the DANGEROUS half is already `CR-62` |
+| `parallel_of` duplicating edges | authoring ergonomics; adjacent to `CR-60` |
+| "did you mean" on Zod errors, property-based schema tests | DX / test tooling |
+| `merge_strategy` widening (`zip`/`union`/`intersect`) | a feature, not a repair |
+| Session export: linear-only, one node per turn | ADR-0026 scoped this deliberately; Phase 2.6 |
+| `reasoning_effort` unvalidated against provider | no false claim — ADR-0066 has adapters withhold it; a nicety |
+| Auto-commit on save, `.relavium/` discoverability, merge-conflict culture | product/desktop, Phase 3 |
+
+Also confirmed by those reviews and left alone: the QuickJS sandbox as a single point of failure is already
+under "What must NOT change", and MCP command injection is already `CR-16`.
 
 ## Scope note
 

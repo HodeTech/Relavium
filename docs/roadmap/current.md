@@ -458,7 +458,7 @@ gaps**: effect journal, stdio MCP consent-before-spawn, run lease, compaction tr
 input admission, event-log ordering. Three separate reviews landing on the same seven points is not opinion.
 
 The full, self-contained work list is
-[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — **45 items**
+[phase-2.6.5-core-reliability-remediation.md](phases/phase-2.6.5-core-reliability-remediation.md) — **46 items**
 (`CR-01`…`CR-95`) with evidence, fix, acceptance criteria and a decision/ADR/gate register, written so the work
 can be done from that document alone. An adversarial plan review on 2026-08-10 corrected the phase boundary,
 the exit rule and the execution order, and added two items (`CR-17` resume identity, `CR-63` `input_schema`
