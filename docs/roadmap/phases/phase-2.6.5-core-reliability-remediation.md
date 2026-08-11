@@ -394,6 +394,30 @@ still in flight (`packages/core/src/engine/engine.ts`, `packages/db/src/run-hist
 **Failure.** Event `N`'s write is slow; `N+1` commits; the process dies before `N`. The disk holds a pseudo-
 prefix with a hole in its sequence, and the causal predecessor the checkpoint fold depends on is missing.
 
+> **Corrections, verified against the tree 2026-08-11.** Three, and the ADR must carry all of them or it is
+> wrong on the first pass.
+>
+> 1. **The quoted code comment does not exist.** The tree says *"Persists stay concurrent; only delivery is
+>    serialized."* (`engine.ts:2259`), not "persistence concurrent, delivery serialized". Quote the real one.
+> 2. **Out-of-order COMMIT is not reachable on the CLI's own store on the happy path.** `better-sqlite3`'s
+>    `db.transaction(...)` is fully synchronous and `withBusyRetryAsync` calls it before its first real await,
+>    so the commit lands inside the same synchronous block that assigned the seq — measured, commit order was
+>    `1,2` every time. It becomes reachable through (a) a `SQLITE_BUSY` backoff that yields mid-retry — which
+>    `run-history-store.ts:873-878` and `database-schema.md:748` both already describe, and which cross-process
+>    contention makes expected — or (b) a genuinely async store (the port is `Promise`-typed; the Phase-2 cloud
+>    store; the engine's own test double). An ADR claiming "out-of-order commit happens routinely today" is
+>    false. What IS unconditionally true is that the engine *starts* the writes unordered, so nothing but
+>    timing prevents it.
+> 3. **The damage is the MISSING row, not a mis-ordered read.** `reconstructCheckpointState` deliberately does
+>    not re-sort (`checkpoint.ts:356`) because the reader already returns `ORDER BY seq`. A vanished
+>    `node:completed` leaves its vertex absent from `nodeStates`, so a resumed engine seeds it `pending` and
+>    re-runs it — which is how `CR-10` opens `CR-12`'s duplicate-effect door.
+>
+> **And what this item does NOT fix, stated so a later reader does not "simplify" it away.** ADR-0074's
+> sum-vs-last-wins rule and `checkpoint.ts:140-151`'s `Math.max` fold are driven by seq-ASSIGNMENT order among
+> concurrent emitters, not by commit order. An ordered append tail cannot give two concurrent `fan_out`
+> branches a canonical order — nothing can — so those fold rules survive this item completely unchanged.
+
 **Why it is first.** This is the root cause behind the sum-vs-max decision already recorded for conservative
 commitments: concurrent events under a `fan_out` have no canonical `seq` order. Every durability property below
 assumes the log is an ordered prefix.
@@ -456,6 +480,32 @@ remove. The contract is therefore tiered:
 `ToolDispatchContext`. Side-effectful host ports take it as a required argument. A durable state machine in the
 run store: `prepared → dispatched → committed | ambiguous → needs_attention`, with the tier recorded per effect.
 
+> **Corrections, verified against the tree 2026-08-11. The key as written cannot work, and two scope claims
+> are wrong.**
+>
+> 1. **The single key conflates two identities and makes tier 1 unreachable.** With `nodeAttempt` and
+>    `toolCallId` in it, every retry and every resume produces a NEW key — so the journal can never dedup, and
+>    "safe retry under the same key" is unimplementable. It also contradicts two already-canonical sentences:
+>    `action-guard-seam.md:109` ("the node-retry attempt — part of replay correlation, **NOT** the idempotency
+>    key") and `:240`. The ADR needs **two**: a replay-stable `EffectIdentity` (attempt-free, `toolCallId`-free)
+>    carrying the UNIQUE constraint, and an `EffectAttemptId` for the audit row.
+> 2. **Three of the five components are not obtainable today.** `runId` is unreachable — `NodeExecContext`
+>    carries none, and the `AgentSession` path has none by design (ADR-0024; `action-guard-seam.md:100-113`
+>    makes `ActionCorrelation` a discriminated union precisely so a session never fabricates one). And the
+>    `attemptNumber` that reaches `dispatchToolCalls` is `nonSkippedAttempts` — the WITHIN-CHAIN provider
+>    counter, explicitly *not* the node-retry counter (the "Two attemptNumber families" split in
+>    `sse-event-schema.md`). The node-retry attempt is never threaded into the turn at all.
+> 3. **The `tool` NODE TYPE is not implemented** (`dispatcher.ts:58-76` fails loud), so the surface is three
+>    `.dispatch(` call sites in shipping source — `agent-session.ts:904`, `agent-turn.ts:584`, `registry.ts:128`
+>    — not four. Smaller than the finding implies; stated so a reviewer does not hunt for a fourth.
+> 4. **An MCP tool cannot be assigned a tier.** `DiscoveredTool` carries no MCP annotations
+>    (`readOnlyHint`/`destructiveHint`/`idempotentHint` — `annotation` appears zero times in `packages/mcp/src`),
+>    and every discovered tool gets one shared `MCP_TOOL_POLICY`. Even if the annotations were parsed they are
+>    attacker-controlled bytes from the very server the hostile-MCP class (`CR-16`, `W4`) defends against, so
+>    they may never *raise* trust. **Tier 3 is the only safe default for every MCP tool** — and its
+>    consequence (every MCP call becomes `needs_attention` after a crash) is a product decision, not an
+>    implementation detail.
+
 **Canonical docs this must correct, in the ADR's own PR:**
 
 - [architectural-principles.md](../../standards/architectural-principles.md) §11 currently states that a stable
@@ -496,6 +546,23 @@ rejected injecting the summary as a transcript message because *"a summary messa
 a separate **untrusted content part inside the first user-role turn**, which is neither a standalone message nor
 a `system` concatenation; whatever is chosen, the rejected alternative is engaged on its own terms.
 
+> **Correction, verified against the tree 2026-08-11 — half of ADR-0062 §1's rejection ground was ALREADY
+> false when it was written.** The "two consecutive user messages" hazard is closed at the seam:
+> `anthropic.ts:427-443`'s `mergeAdjacentSameRole` folds consecutive same-role messages into one with
+> concatenated content blocks, and its own docblock says it exists so "adjacent user messages the API would
+> 400" are fixed there. `git log -S` dates it to `1abd68c5`, **2026-06-14 — three weeks before ADR-0062**. So
+> the superseding ADR does not merely offer a better alternative; it shows the rejection rested on a hazard
+> that no longer existed. (The `assistant`-first half of the rejection is still genuine, and the chosen shape
+> must not reintroduce it.)
+>
+> **And one guarantee that must NOT be overclaimed:** the OpenAI adapter joins content parts on the wire
+> (`parts.map(...).join('')`), so "the bytes arrive as a separate part" is false there. The guarantee to
+> claim is the **role boundary** plus an explicit in-band separator — never a wire-level part boundary.
+>
+> Two things the finding's reading list gets wrong: **ADR-0024 and ADR-0011 are cited, not amended.** Neither
+> says anything about system-prompt authority (zero `system` hits in either), and the seam SHAPE is unchanged
+> — `LlmRequest.system` stays `z.string().optional()`.
+
 **Fix.** Carry the summary as untrusted. Dynamic summary bytes must never reach the `system` builder. Make
 `AgentTurnParams.system` accept only a branded type the authored builder can produce, so the compiler — not a
 convention — enforces it.
@@ -522,6 +589,26 @@ no-terminal case as success** — so the fix changes that test, deliberately, ra
 **Failure.** A transport, proxy or provider closes after `text_delta: "partial"` with no terminal chunk.
 Relavium treats the partial text as a completed assistant answer and passes it downstream as a successful node
 output.
+
+> **Correction, verified against the tree 2026-08-11 — the Failure paragraph above is FALSE as written, and
+> it inverts where the defect is.** All three shipped adapters ALREADY detect a no-terminal EOF and yield an
+> `error` chunk rather than a `stop`: `anthropic.ts:843` (`sawStop` tracked at `:801`) emits
+> `kind: 'transport', 'stream ended before message_delta (truncated response)'`; `openai.ts:1301`
+> (`state.sawTerminal` at `:1261`) and `gemini.ts:935` (`:910`) emit their equivalents. A real transport cut
+> against a first-party provider is therefore already classified today.
+>
+> The gap is real but sits one layer up, in two places the finding does not name:
+>
+> 1. **The chain has no trust boundary for a FOREIGN provider.** `FallbackChain` accepts any `LLMProvider`;
+>    `cassetteProvider`, `scriptedProvider` and Phase-2's `ManagedGatewayProvider` are not the three audited
+>    adapters. The grammar must be enforced where the seam is crossed, not only inside implementations we
+>    happen to own.
+> 2. **The chain's own `usage === undefined ⇒ succeeded` semantics** — the success path does not require that
+>    a terminal was ever seen.
+>
+> This changes the item's fix, not its severity: the enforcement point is `FallbackChain`, and the adapters'
+> existing detection becomes defence in depth rather than the mechanism. Rules 1–6 must be stated as a seam
+> obligation the chain verifies, so a provider that does not keep them fails classified rather than silently.
 
 **Fix — the grammar, stated in full.** The ADR pins all of it, and names which layer enforces it (adapter vs.
 `FallbackChain`) so the rule has one owner:
@@ -586,6 +673,30 @@ load time.
 fingerprint fails closed. In non-interactive mode, fail closed unless an explicit `--allow-mcp-stdio <digest>`
 is supplied. Replace auto-start with lazy connect on first actual MCP tool need.
 
+> **Corrections, verified against the tree 2026-08-11.**
+>
+> 1. **Lazy connect is structurally blocked and is SPLIT OUT of this item.** MCP `ToolDef`s exist only because
+>    `listTools()` ran at connect (`manager.ts:80`), and `createToolRegistry` returns exactly `{has, list,
+>    dispatch}` with the tools Map captured at construction — no `register()`/`add()`, a deliberate ADR-0052 §3
+>    invariant. Deferring the spawn therefore DELETES the agent's MCP tool grant, and there is no "first actual
+>    MCP tool need" to trigger the connect because the model is never told the tools exist. The unblocker (a
+>    persisted tool-list cache) is itself deferred by ADR-0052 §3. **Consent-before-spawn alone satisfies this
+>    item's entire Acceptance paragraph** and is the security-relevant half; lazy connect becomes a separate
+>    item with its blocker named. Adding a registry mutation API would REVERSE ADR-0052 §3 and needs a
+>    supersession — it must not happen inside an implementation PR.
+> 2. **`cwd` is HOST-supplied, not authored.** `McpServerRefSchema` has no `cwd` field and is `.strict()`; the
+>    cwd comes from `deps.global.cwd` / `context.workingDir`. So a fingerprint that includes it changes when
+>    the user changes directory — decide deliberately whether it is *in* the identity or merely *displayed*.
+> 3. **`relavium import` spawns nothing** — it is synchronous YAML I/O and never connects. The arbitrary
+>    execution happens at the next `chat --agent` / `agent run` / `run`, which is what the Acceptance already
+>    says ("importing **and opening**"). Also: `import` re-serializes through `serializeAuthored`, so the
+>    on-disk bytes differ from the downloaded bytes — a hash over the imported file does not identify the
+>    artifact the user reviewed.
+> 4. **`CR-41` is not implementable for the websocket transport at the pinned SDK version.**
+>    `WebSocketClientTransport`'s constructor is `constructor(url)` — no fetch, no agent, no dialer hook — while
+>    `http` and `sse` both accept an injectable `fetch`. ADR-0053 §2 asserts otherwise and is wrong. The
+>    websocket transport needs an explicit stated posture, not an implied one.
+
 **Acceptance.** Importing and opening an artifact with a stdio MCP server spawns nothing until consent — proven
 with a **real spawn counter** injected at the process boundary, asserted at zero, not by inspecting a state
 flag. A non-interactive run without the digest flag fails closed with an actionable message. A changed
@@ -613,6 +724,24 @@ perfect log and a single owner, the resumed run can be a different run.
 - **Do not persist secret-typed values.** A `secret` input is carried as a key reference plus version, with a
   defined re-supply contract on resume; a mismatch is a typed error, never a silent substitution.
 - A divergence produces a typed error, never a silent continue.
+
+> **Corrections, verified against the tree 2026-08-11.**
+>
+> 1. **"Key reference plus version" is not implementable against any contract in this repo.** `maskInputs`
+>    emits `{ secret: true, ref: \`inputs.${key}\` }` — a SELF-reference to the input name, not a keychain or
+>    env reference. ADR-0006 defines no version concept, and there is no secret-store resolution for workflow
+>    inputs at all. `sse-event-schema.md:247` already states the false version of this ("the keychain/env
+>    reference"); that sentence is a doc correction this item owes. The versioned re-supply contract belongs
+>    with the already-deferred secrets workstream, not invented here — **scope it out and name the blocker.**
+>    What this item CAN do, and must: exclude `secret`-typed values from the digest and prove no secret value
+>    reaches any persisted row.
+> 2. **The engine's own docblock is wrong in the other direction.** `engine.ts:196` says the checkpoint "does
+>    not yet persist inputs / executionMode" — `run-history-store.ts:558-562` writes all three columns. The
+>    engine simply has no READER: `RunStore` exposes only `resolveWorkflowId` / `persistEvent` /
+>    `listInterruptedRuns`. The gap is a read port, not a write.
+> 3. **A workflow content digest would refuse every MCP-bearing gate resume today.** `run.ts:252` starts the
+>    AUGMENTED workflow while `history/open.ts:41` persists the UN-augmented definition. Resolve which one the
+>    digest covers, or this ships a regression on the first gate resume.
 
 **Acceptance.** Resuming with a changed input, a changed `executionMode`, or a changed plan each fails with a
 distinct typed error. Resuming with a `secret` input re-supplied at the same version succeeds; at a different
@@ -1004,6 +1133,24 @@ terminal is durable. A caller can receive a success result and outputs while his
 identity. If durability is uncertain the API must not say `completed` — it returns a distinct typed result.
 Terminal asset cleanup and handle resolution happen only after the terminal is durable. The test proves live,
 history, resume and reconcile agree.
+
+> **Corrections, verified against the tree 2026-08-11.**
+>
+> 1. **"Handle resolution" does not locate on the terminal path.** `#recordProducedMedia` (`engine.ts:2483`)
+>    only RECORDS handles; re-materialization is a media-EGRESS concern (ADR-0043), not a settle step. Only
+>    the cleanup half is real — `#reclaimRunMedia` (`engine.ts:2300`), which must move after a successful
+>    terminal persist so a terminal whose write failed has not already released the run's media references.
+>    Note this is a DIFFERENT call from the media de-inline twenty lines earlier, which must stay OUTSIDE the
+>    new serialized region or an unbounded host stall blocks every later durable write.
+> 2. **`#emitDurable`'s totality must be preserved for NON-terminal events.** ADR-0077's B1/B2/B3 correctness
+>    rests explicitly on it (`money-durability.ts:152-154`, `engine.ts:2188-2190` both say the catch is
+>    "deliberately unreachable" for this reason), and both money events are non-terminal. Scope every
+>    disposition change to the TERMINAL arm, and re-derive both of those comments in the same change — a
+>    reviewer reading only `#emitDurable` will not find them.
+> 3. **`reconcile()` is a SECOND write path and bypasses `#emitDurable` entirely** (`engine.ts:2775` calls the
+>    store directly). Its repair must become conditional on no terminal being present, or the outbox retry and
+>    the repair can both append one — breaking ADR-0036's exactly-one-terminal. Fixing it is nearly free today
+>    (no shipping caller) and becomes a data-loss bug the moment any surface wires it.
 
 ### CR-93 — Process-global catalog and parameter-learning state is not tenant-safe · Medium now, High for cloud
 Process-global mutable state is fine for a single local user and wrong for the multi-tenant cloud surface.
