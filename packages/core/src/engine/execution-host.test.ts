@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { RunEvent } from '@relavium/shared';
+import { isAppendConflictError, type RunEvent } from '@relavium/shared';
 
 import {
   createAbortController,
@@ -245,5 +245,76 @@ describe('createManualTimerController — deterministic one-shot timer', () => {
     timers.fireTimers();
     expect(() => disarm()).not.toThrow();
     expect(timers.armedCount()).toBe(0);
+  });
+});
+
+describe('InMemoryRunStore — the compare-and-append guard (CR-10, ADR-0078 §2)', () => {
+  const TS = '2026-01-01T00:00:00.000Z';
+  const started = (seq: number): RunEvent => ({
+    type: 'run:started',
+    runId: 'r1',
+    sequenceNumber: seq,
+    timestamp: TS,
+    workflowId: '00000000-0000-4000-8000-000000000001',
+    inputs: {},
+    executionMode: 'local',
+  });
+  const skipped = (seq: number): RunEvent => ({
+    type: 'node:skipped',
+    runId: 'r1',
+    sequenceNumber: seq,
+    timestamp: TS,
+    nodeId: 'n',
+    reason: 'branch_not_taken',
+  });
+
+  it('applies the SAME guard as the SQLite store — a reference that does not proves nothing', async () => {
+    // The whole reason this is here: every `packages/core` test runs against this store. If it accepted what
+    // `run-history-store` rejects, the divergence would surface only in `apps/cli`, which is the one place
+    // these tests exist to keep it out of.
+    const store = new InMemoryRunStore();
+    await store.persistEvent(started(0), { expectedLastSequenceNumber: -1 });
+    await expect(
+      store.persistEvent(skipped(2), { expectedLastSequenceNumber: 1 }),
+    ).rejects.toSatisfy(isAppendConflictError);
+    expect(store.eventsFor('r1').map((e) => e.sequenceNumber)).toEqual([0]);
+  });
+
+  it('accepts the FIRST append of a run only against `-1`', async () => {
+    const store = new InMemoryRunStore();
+    await expect(
+      store.persistEvent(started(0), { expectedLastSequenceNumber: 0 }),
+    ).rejects.toSatisfy(isAppendConflictError);
+    await expect(
+      store.persistEvent(started(0), { expectedLastSequenceNumber: -1 }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('accepts a NON-CONTIGUOUS sequence — streamed events legitimately consume numbers', async () => {
+    // The guard compares the log's MAXIMUM to the caller's belief; it must not require `seq === max + 1`.
+    // A healthy run reads [0,1,2,3,5,10,…] because `agent:token` and friends take numbers and never persist,
+    // so a contiguity check here would refuse every real run.
+    const store = new InMemoryRunStore();
+    await store.persistEvent(started(0), { expectedLastSequenceNumber: -1 });
+    await expect(
+      store.persistEvent(skipped(9), { expectedLastSequenceNumber: 0 }),
+    ).resolves.toBeUndefined();
+    expect(store.eventsFor('r1').map((e) => e.sequenceNumber)).toEqual([0, 9]);
+  });
+
+  it('leaves an UNGUARDED append alone — no ctx, no belief to check', async () => {
+    const store = new InMemoryRunStore();
+    await store.persistEvent(started(0));
+    await store.persistEvent(skipped(7));
+    expect(store.eventsFor('r1').map((e) => e.sequenceNumber)).toEqual([0, 7]);
+  });
+
+  it('scopes the guard PER RUN — another run`s appends do not move this one`s maximum', async () => {
+    const store = new InMemoryRunStore();
+    await store.persistEvent(started(0), { expectedLastSequenceNumber: -1 });
+    await store.persistEvent({ ...started(5), runId: 'r2' }, { expectedLastSequenceNumber: -1 });
+    await expect(
+      store.persistEvent(skipped(1), { expectedLastSequenceNumber: 0 }),
+    ).resolves.toBeUndefined();
   });
 });

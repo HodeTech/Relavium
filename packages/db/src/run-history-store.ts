@@ -1,6 +1,8 @@
 import {
+  AppendConflictError,
   parseStoredRunEvent,
   RunEventSchema,
+  type DurableWriteContext,
   type ExecutionMode,
   type RunEvent,
   type RunStatus,
@@ -310,7 +312,8 @@ export interface RunHistoryStore extends Pick<
   'listRuns' | 'loadRun' | 'loadRunEvents' | 'loadRunEventLog' | 'loadRunEventLogForReplay'
 > {
   resolveWorkflowId: (slug: string) => Promise<string>;
-  persistEvent: (event: RunEvent) => Promise<void>;
+  /** Structurally the core `RunStore.persistEvent`; `ctx` carries ADR-0078 §2's compare-and-append guard. */
+  persistEvent: (event: RunEvent, ctx?: DurableWriteContext) => Promise<void>;
   listInterruptedRuns: () => Promise<readonly InterruptedRunInfo[]>;
 }
 
@@ -670,17 +673,26 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         // **The row is a TELESCOPING delta off the event's cumulative — NOT the raw `costMicrocents`.** The
         // raw value is this attempt's true charge and the event keeps carrying it (that is what a reader and
         // the checkpoint fold sum); what goes in `run_costs` is `max(0, cumulative - currentRunCost)`, the same
-        // arithmetic every other money arm here uses. The reason is ordering, and it is not hypothetical:
-        // `#emitDurable` starts each `persistEvent` immediately and only serializes DELIVERY — its own comment
-        // says "persists stay concurrent". So a later event's write can commit FIRST. Writing the raw delta
-        // then DOUBLE-COUNTS: a sibling's `node:completed` lands with a cumulative that already includes this
-        // attempt, and this row adds it a second time. Telescoping cannot — every money event carries an
-        // ABSOLUTE cumulative, so the running total converges on the largest one seen regardless of the order
-        // the rows commit in, and `SUM(run_costs) == runs.total_cost_microcents` holds by construction.
+        // arithmetic every other money arm here uses.
         //
-        // In the ordered case (the normal one) the two are identical: `cumulative - prev == costMicrocents`
-        // exactly. The divergence is a `fan_out`/out-of-order case, where per-ATTEMPT attribution degrades to
-        // an approximation — precisely the caveat `node:completed`'s per-node delta already carries and
+        // **The reason, CORRECTED (ADR-0078 §8).** An earlier version of this comment blamed out-of-order
+        // COMMIT — "`#emitDurable` starts each `persistEvent` immediately … so a later event's write can
+        // commit FIRST". ADR-0078 §1 has since made the append ordered per run, so that reason no longer
+        // exists, and leaving it here would invite the next reader to delete the telescoping along with it.
+        //
+        // The real reason survives the ordered tail untouched, because it is about STAMP time, not commit
+        // time. `MoneyDurability` chains its writes and captures the run-wide cumulative at `record()` time
+        // (ADR-0077), while `#bus.next` assigns the sequence number later, after the media de-inline await.
+        // So under a `fan_out` a LATER-sequenced money event can legitimately carry an EARLIER, staler
+        // absolute cumulative — perfectly ordered commits and all. Writing the raw per-attempt delta would
+        // then DOUBLE-COUNT: a sibling's `node:completed` lands with a cumulative that already includes this
+        // attempt, and this row adds it again. Telescoping cannot — every money event carries an ABSOLUTE
+        // cumulative, so the running total converges on the largest one seen whatever order the stamps came
+        // in, and `SUM(run_costs) == runs.total_cost_microcents` holds by construction.
+        //
+        // In the sequential case (the normal one) the two are identical: `cumulative - prev == costMicrocents`
+        // exactly. The divergence is the `fan_out` case, where per-ATTEMPT attribution degrades to an
+        // approximation — precisely the caveat `node:completed`'s per-node delta already carries and
         // documents. The event remains the exact per-attempt record; this row is the money of record.
         //
         // **The two writes are a pair.** ADR-0076 property 3 says the terminal's fold telescopes to zero
@@ -805,7 +817,33 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
    * transaction and survive a rollback — on the run's highest-volume money write. The handle is a parameter
    * rather than a closure so the compiler, not a reviewer, is what keeps this true.
    */
-  const fold = (tx: TxDb, event: RunEvent, runId: string, ts: number): void => {
+  const fold = (
+    tx: TxDb,
+    event: RunEvent,
+    runId: string,
+    ts: number,
+    ctx: DurableWriteContext | undefined,
+  ): void => {
+    // **The compare-and-append (ADR-0078 §2), INSIDE this transaction and through `tx`.** Outside it the
+    // read and the insert would be two statements a concurrent writer could interleave, which is the exact
+    // race the guard exists to close; through the outer `db` it would, on a pooled Postgres driver, be a
+    // different client whose read is not part of the transaction it is guarding. `UNIQUE(run_id, seq)` bars
+    // a duplicate and says nothing about order or holes — this is what says the rest.
+    //
+    // `max(seq)` rather than a denormalized `runs.last_event_seq`: the unique index on (run_id, seq) already
+    // serves it, so there is no migration, no drizzle snapshot regeneration, and no second source of truth
+    // that can drift from the rows it describes.
+    if (ctx !== undefined) {
+      const actual =
+        tx
+          .select({ max: sql<number | null>`max(${runEvents.seq})` })
+          .from(runEvents)
+          .where(eq(runEvents.runId, runId))
+          .get()?.max ?? -1;
+      if (actual !== ctx.expectedLastSequenceNumber) {
+        throw new AppendConflictError(runId, ctx.expectedLastSequenceNumber, actual);
+      }
+    }
     applyDerived(tx, event, runId, ts);
     const eventRow: NewRunEventRow = {
       id: deps.uuid(),
@@ -851,7 +889,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
       return Promise.resolve(find() ?? id);
     },
 
-    persistEvent: async (event) => {
+    persistEvent: async (event, ctx) => {
       // The DB work is synchronous (better-sqlite3) but this honors the async RunStore port — a fault (bad
       // event, UNIQUE(run_id, seq), FK, disk) becomes a REJECTED promise, never a synchronous throw, so the
       // engine's `await persistEvent(...)` (durability-first: ADR-0050 fatal posture) and any `.catch` see it.
@@ -877,7 +915,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         // before we sleep. Within a single branch the engine awaits these sequentially, so no event can
         // overtake its own predecessor.
         await withBusyRetryAsync(() =>
-          db.transaction((tx) => fold(tx, parsed, runId, ts), { behavior: 'immediate' }),
+          db.transaction((tx) => fold(tx, parsed, runId, ts, ctx), { behavior: 'immediate' }),
         );
       } catch (error) {
         // Preserve the root cause (error-handling.md): never swallow it to rethrow a vaguer one.

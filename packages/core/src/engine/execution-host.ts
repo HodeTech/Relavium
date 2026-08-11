@@ -17,11 +17,13 @@
 
 import type {
   AbortSignalLike,
+  DurableWriteContext,
   MediaReferencePort,
   MediaStore,
   MediaWritePort,
   RunEvent,
 } from '@relavium/shared';
+import { AppendConflictError } from '@relavium/shared';
 
 import { type Checkpointer, reconstructCheckpointState } from './checkpoint.js';
 
@@ -117,8 +119,14 @@ export interface RunStore {
    * delivery). Typed on `RunEvent`: the run store persists only run events. The shared bus also carries
    * `session:*` events (ADR-0036), but those are never routed here — session persistence is `history.db` /
    * `session_messages`, workstream 1.X, out of the run store's scope.
+   *
+   * `ctx` is OPTIONAL at the type level and that is a deliberate, bounded compromise (ADR-0078 §2): the
+   * engine always supplies it, and a store must apply the guard whenever it is present. Making it required
+   * would break every direct-seeding test double in the repo for no guarantee — the guard's job is to catch
+   * a writer whose belief is stale, and a caller that holds no belief has none to check. A store that wants
+   * to refuse unguarded writes outright may do so; none does today.
    */
-  persistEvent: (event: RunEvent) => Promise<void>;
+  persistEvent: (event: RunEvent, ctx?: DurableWriteContext) => Promise<void>;
   /** Runs with a `run:started` but no terminal event — for startup crash reconciliation. */
   listInterruptedRuns: () => Promise<readonly InterruptedRun[]>;
 }
@@ -243,11 +251,22 @@ export class InMemoryRunStore implements RunStore {
     return Promise.resolve(id);
   }
 
-  persistEvent(event: RunEvent): Promise<void> {
+  persistEvent(event: RunEvent, ctx?: DurableWriteContext): Promise<void> {
     if (event.runId === undefined) {
       return Promise.resolve(); // a dual event with no runId is out of the run store's scope (1.N)
     }
     const bucket = this.#events.get(event.runId);
+    // The SAME compare-and-append the SQLite store applies (ADR-0078 §2). A reference implementation that
+    // accepts what the real store rejects makes every `packages/core` test prove nothing — the divergence
+    // would surface only in `apps/cli`, which is the one place these tests exist to keep it out of.
+    if (ctx !== undefined) {
+      const actual = (bucket ?? []).reduce((max, e) => Math.max(max, e.sequenceNumber), -1);
+      if (actual !== ctx.expectedLastSequenceNumber) {
+        return Promise.reject(
+          new AppendConflictError(event.runId, ctx.expectedLastSequenceNumber, actual),
+        );
+      }
+    }
     if (bucket === undefined) {
       this.#events.set(event.runId, [event]);
     } else {

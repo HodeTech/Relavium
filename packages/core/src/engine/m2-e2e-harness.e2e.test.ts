@@ -2055,11 +2055,16 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(verdict.holds, formatAppendAudit(verdict)).toBe(true);
   });
 
-  it('append audit: a FAN-OUT run overlaps its appends today — the state CR-10 removes', async () => {
-    // **This assertion is expected to FLIP when CR-10 lands, and flipping it IS the acceptance.** It records
-    // the pre-CR-10 baseline the phase document asks to break-verify against ("restore the concurrent
-    // start"). CR-10's commit changes `toBeGreaterThan(0)` to `toEqual([])` and says so; deleting the test
-    // instead would remove the only end-to-end evidence that the ordered tail changed anything.
+  it('append audit: a FAN-OUT run no longer overlaps its appends (CR-10 — the assertion that flipped)', async () => {
+    // **This assertion is the acceptance, and it FLIPPED here.** It was written one commit earlier as
+    // `expect(overlapViolations.length).toBeGreaterThan(0)` — the measured pre-CR-10 baseline, in which a
+    // `max_parallel: 2` fan-out produced exactly one overlap ("sequence 10 (node:completed) was asked while
+    // [9] was still in flight"). Landing ADR-0078 §1's ordered tail turned that test red, and this is the
+    // same test with the expectation inverted, which is what the phase document means by "break-verify by
+    // restoring the concurrent start": put `await prior` back below the persist and this goes red again.
+    //
+    // Nothing else in `packages/core` moved — 1154 other tests stayed green through the change, which is the
+    // evidence that serializing the append did not perturb any interleaving a test legitimately pins.
     const audit = createAppendAudit(new InMemoryRunStore());
     const host = createInMemoryHost({ store: audit.store });
     const provider = scriptedProvider([textTurn('one'), textTurn('two')]);
@@ -2071,10 +2076,13 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(events.at(-1)?.type).toBe('run:completed');
     const runId = audit.runIds()[0] ?? '';
     const verdict = audit.verdict(runId);
-    expect(verdict.overlapViolations.length, formatAppendAudit(verdict)).toBeGreaterThan(0);
-    // …and the other three predicates stay silent, which is exactly why the overlap predicate had to exist.
+    expect(verdict.overlapViolations, formatAppendAudit(verdict)).toEqual([]);
     expect(verdict.holes).toEqual([]);
     expect(verdict.askOrderViolations).toEqual([]);
     expect(verdict.commitOrderViolations).toEqual([]);
+    // Not vacuous: the run really did fan out and really did append. A green above with an empty ask list
+    // would be the obvious way for this test to lie.
+    expect(verdict.asked.length).toBeGreaterThan(4);
+    expect(verdict.committed).toEqual(verdict.asked);
   });
 });

@@ -366,8 +366,22 @@ class RunExecution {
   #scheduling = false;
   #rerun = false;
   #pauseEpisode = false;
-  /** Serializes event DELIVERY by sequenceNumber so an async store can't deliver events out of order. */
+  /**
+   * Serializes the run's durable APPEND, its write and its DELIVERY, in that order (ADR-0078 §1).
+   *
+   * It began as a delivery-only tail — the persist was started before `await prior` — which left two events
+   * for one run overlapping in flight. Moving the await above the write made the one tail carry all three,
+   * which is what makes {@link #lastAskedSequenceNumber} well-defined at the call site.
+   */
   #deliveryTail: Promise<void> = Promise.resolve();
+  /**
+   * The sequence number last ASKED of the store for this run, or `-1` before the first append.
+   *
+   * Advanced for a guarded (non-terminal) event whether or not its write lands — see
+   * `DurableWriteContext.expectedLastSequenceNumber` for why "asked" rather than "committed" is the value
+   * that makes the next append fail closed after a lost write.
+   */
+  #lastAskedSequenceNumber = -1;
   #startEpochMs = 0;
   #cumulativeCostMicrocents = 0;
   #totalInputTokens = 0;
@@ -749,6 +763,10 @@ class RunExecution {
     }
     // Post-resume events continue gap-free from the last persisted sequence number.
     bus.seedSequence(runId, cp.lastSequenceNumber + 1);
+    // …and so does the append guard. Left at `-1` a resumed leg's first append would claim the log is empty
+    // and the store would refuse it, so ADR-0078 §2's guard would break resume outright. The checkpoint's
+    // `lastSequenceNumber` is read from the durable rows, which is exactly the belief the store will check.
+    this.#lastAskedSequenceNumber = cp.lastSequenceNumber;
     // Keep measuring durationMs from the ORIGINAL start, so a resumed run's terminal reports total
     // wall-clock (pre- + post-resume), not just the post-resume segment. NO `run:started` is re-emitted —
     // it is already in the persisted log.
@@ -2300,9 +2318,27 @@ class RunExecution {
       this.#reclaimRunMedia();
     }
     const prior = this.#deliveryTail;
+    // **The ordered append (ADR-0078 §1), and it is one line.** `expectedLastSequenceNumber` is read HERE,
+    // synchronously, before the region is entered — reading it inside would race with a concurrent emitter
+    // that has already advanced it, which is the very interleaving the tail exists to remove. The terminal
+    // is exempt: exactly-one-terminal (ADR-0036) outranks the guard, and a terminal the store will not take
+    // is CR-92's outbox to own, not this guard's to refuse. Stated because the exemption is a real hole
+    // until CR-92 lands, not an oversight.
+    const expectedLastSequenceNumber = this.#lastAskedSequenceNumber;
+    const guarded = !TERMINAL_TYPES.has(event.type);
+    if (guarded) {
+      this.#lastAskedSequenceNumber = event.sequenceNumber;
+    }
     const settled = (async (): Promise<void> => {
+      // `await prior` moved ABOVE the persist. Below it, the previous event's write had already been
+      // STARTED but not joined, so two events for one run overlapped — nothing but the store's timing kept
+      // the log a prefix. The same single tail now serializes the ask, the write and the delivery.
+      await prior;
       try {
-        await this.#host.store.persistEvent(event);
+        await this.#host.store.persistEvent(
+          event,
+          guarded ? { expectedLastSequenceNumber } : undefined,
+        );
       } catch {
         if (!TERMINAL_TYPES.has(event.type) && this.#failure === undefined && !this.#cancelling) {
           this.#failure = {
@@ -2328,8 +2364,7 @@ class RunExecution {
           this.#schedule();
         }
       }
-      await prior; // deliver in seq order: the lower-seq event's deliver must land first
-      this.#bus.deliver(event);
+      this.#bus.deliver(event); // still in seq order — `prior` is now awaited above, before the write
     })();
     this.#deliveryTail = settled.catch(() => undefined);
     await settled;
@@ -2772,7 +2807,14 @@ export class WorkflowEngine {
         partialOutputs: {},
       });
       try {
-        await this.#host.store.persistEvent(event);
+        // **`reconcile()` is a SECOND durable write path** — it bypasses `#emitDurable` entirely, so every
+        // property established at that choke point has to be re-established here or it holds for one of two
+        // writers (ADR-0078 §3). It passes the guard with the belief it actually has: `listInterruptedRuns`
+        // read `lastSequenceNumber` from the durable rows, so a run another process has since advanced —
+        // or settled — makes this append fail closed instead of appending a second terminal past it.
+        await this.#host.store.persistEvent(event, {
+          expectedLastSequenceNumber: run.lastSequenceNumber,
+        });
         reconciled.push(event);
         // Reclaim the crashed run's media references at this terminal (1.AF/D11, ADR-0042 §4): a
         // non-resumable run never ran its in-process #reclaimRunMedia (the process died), and reconcile()

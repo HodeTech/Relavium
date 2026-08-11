@@ -1,4 +1,4 @@
-import { RunEventSchema, type RunEvent } from '@relavium/shared';
+import { isAppendConflictError, RunEventSchema, type RunEvent } from '@relavium/shared';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -75,6 +75,71 @@ describe('createRunHistoryStore', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     client.sqlite.close();
+  });
+
+  // --- the compare-and-append guard (CR-10, ADR-0078 §2) ----------------------------------------------
+
+  it('REFUSES an append whose expected last sequence does not match the log', async () => {
+    // CR-10's acceptance, driven at the store because it is unreachable through the engine once ADR-0078
+    // §1's ordered tail is in place — the engine can no longer hand the store a holed ask. This is the half
+    // that keeps the guarantee for the OTHER writers: a second process, a replay, a cloud store whose
+    // commits are genuinely concurrent.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+
+    // Sequence 1 was never written, so a writer claiming the log ends at 1 is describing a log that does not
+    // exist — appending 2 here is exactly the hole a reader could not tell from a streamed event.
+    await expect(
+      store.persistEvent(ev('node:skipped', 2, { nodeId: 'n', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 1,
+      }),
+    ).rejects.toSatisfy(isAppendConflictError);
+
+    // …and it is a REFUSAL, not a partial write: the derived rows must not have landed either, which is what
+    // putting the check inside the same IMMEDIATE transaction buys.
+    expect(store.loadRunEvents('run-1').map((e) => e.sequenceNumber)).toEqual([0]);
+  });
+
+  it('the refusal carries what the writer believed and what the log actually holds', async () => {
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+
+    await store.persistEvent(ev('node:skipped', 1, { nodeId: 'n', reason: 'branch_not_taken' }), {
+      expectedLastSequenceNumber: 0,
+    });
+
+    // A stale writer — it still believes the log ends where it did before someone else appended.
+    await store
+      .persistEvent(ev('node:skipped', 2, { nodeId: 'm', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 0,
+      })
+      .then(
+        () => expect.unreachable('the stale append must be refused'),
+        (error: unknown) => {
+          if (!isAppendConflictError(error)) expect.unreachable('wrong error class');
+          expect(error.expectedLastSequenceNumber).toBe(0);
+          expect(error.actualLastSequenceNumber).toBe(1);
+          expect(error.runId).toBe('run-1');
+        },
+      );
+  });
+
+  it('an append with NO context is unguarded — a direct-seeding caller holds no belief to check', async () => {
+    // The compromise ADR-0078 §2 records: `ctx` is optional so a test double that seeds rows directly does
+    // not have to fabricate a belief. Pinned so the optionality is a decision, not an accident someone
+    // later "tightens" into a broken test suite.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+    );
+    await store.persistEvent(ev('node:skipped', 7, { nodeId: 'n', reason: 'branch_not_taken' }));
+    expect(store.loadRunEvents('run-1').map((e) => e.sequenceNumber)).toEqual([0, 7]);
   });
 
   it('persistEvent YIELDS the event loop between retries — it is on the async twin (#226)', async () => {

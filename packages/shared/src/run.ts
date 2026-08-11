@@ -91,3 +91,66 @@ export const RunSchema = z
     }
   });
 export type Run = z.infer<typeof RunSchema>;
+
+// --- The durable-append contract (ADR-0078) ---------------------------------------------------------
+
+/**
+ * What a caller believes about a run's durable state when it asks for an append
+ * ([ADR-0078](../../../docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §2).
+ *
+ * **It lives in `@relavium/shared`, not beside the port it belongs to.** The port is
+ * `ExecutionHost.RunStore` in `@relavium/core`, but `@relavium/db` implements it and depends only on this
+ * package — the dependency runs one way, and a contract both sides must agree on has to sit where both can
+ * reach it.
+ *
+ * **One extensible object, deliberately, rather than a parameter.** Three phase-2.6.5 items widen this same
+ * write: `CR-10` needs the compare-and-append below, `CR-11` a fencing token, `CR-12` an effect-journal
+ * correlation. Passing each as its own argument would break one exported port three times across four
+ * packages and every test double; extending this object breaks it once.
+ */
+export interface DurableWriteContext {
+  /**
+   * The sequence number this writer last ASKED the store to append for the run — not the last it saw
+   * succeed — or `-1` when it has asked for nothing yet.
+   *
+   * The store rejects the append when its own maximum for the run differs. That is what makes the log a
+   * prefix rather than merely a set: a second process that committed something this writer never saw, an
+   * out-of-order commit, and a replayed append all present as a mismatch here.
+   *
+   * **"Last asked", not "last committed", and the difference is the whole guard.** After a failed write the
+   * engine keeps running — `#emitDurable` is total for non-terminal store faults (ADR-0078 §6) — so it would
+   * otherwise report the last SUCCESSFUL sequence, and an append skipping the failed one would then match,
+   * creating exactly the hole this exists to prevent. Reporting the last *asked* makes the next append fail
+   * closed instead.
+   */
+  readonly expectedLastSequenceNumber: number;
+}
+
+/**
+ * A durable append refused because the store's state is not what the caller believed (ADR-0078 §2).
+ *
+ * Typed rather than a bare `Error` (error-handling.md): the engine has to tell "the write failed" from "the
+ * write was REFUSED because someone else moved the log", and only the second one means another writer exists.
+ */
+export class AppendConflictError extends Error {
+  override readonly name = 'AppendConflictError';
+  readonly runId: string;
+  readonly expectedLastSequenceNumber: number;
+  readonly actualLastSequenceNumber: number;
+
+  constructor(runId: string, expected: number, actual: number) {
+    super(
+      `durable append refused for run ${runId}: expected the log to end at sequence ${String(expected)}, ` +
+        `but it ends at ${String(actual)} — appending here would leave a hole a reader cannot distinguish ` +
+        `from an event that was never meant to persist`,
+    );
+    this.runId = runId;
+    this.expectedLastSequenceNumber = expected;
+    this.actualLastSequenceNumber = actual;
+  }
+}
+
+/** Narrow a thrown value to {@link AppendConflictError} — the class survives a store's promise rejection. */
+export function isAppendConflictError(value: unknown): value is AppendConflictError {
+  return value instanceof AppendConflictError;
+}
