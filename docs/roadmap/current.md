@@ -89,8 +89,8 @@ any order"* — never as headcount.
 flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
-    LEDGER["#W15-1 — realized-cost ledger<br/>ADR-0076 implementation"]
-    P265["Phase 2.6.5 — Core reliability<br/>46 CR items · 8 P0 ADRs<br/>absorbs the hostile-MCP class"]
+    LEDGER["#W15-1 — realized-cost ledger ✅<br/>ADR-0076 + ADR-0077"]
+    P265["Phase 2.6.5 — Core reliability<br/>46 CR items · 8 P0 ADRs · 6 closed<br/>absorbs the hostile-MCP class"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
@@ -245,13 +245,13 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 
 **Every item names the check that would close it, not just the defect.**
 
-> **Status, 2026-08-10 — 24 of 24 closed, across TWO PRs.** Everything marked ✅ below is fixed and
+> **Status — 24 of 24 closed and MERGED, across two PRs.** Everything marked ✅ below is fixed and
 > break-verified with the mutation confirmed applied; the two PRs are recorded separately because the closure
-> dates and the merge states differ:
+> dates differ:
 >
 > - **23 items merged to `main` via PR #81** (2026-08-09).
-> - **`#W15-1`, the last one, landed 2026-08-10** behind ADR-0076 + ADR-0077 (see §A) and rides **PR #82**
->   (`development` → `main`), which is open at the time of writing. It is closed as work, not yet merged.
+> - **`#W15-1`, the last one, closed 2026-08-10** behind ADR-0076 + ADR-0077 (see §A) and **merged to `main`
+>   via PR #82** (2026-08-11), together with the first Phase 2.6.5 batch.
 >
 > §E's six coverage gaps are all closed — `#W15-16`'s composition test fails by TIMING OUT when the abort
 > listener is removed, which is the unkillable run reproduced exactly rather than an assertion standing in
@@ -469,6 +469,11 @@ The full, self-contained work list is
 can be done from that document alone. An adversarial plan review on 2026-08-10 corrected the phase boundary,
 the exit rule and the execution order, and added two items (`CR-17` resume identity, `CR-63` `input_schema`
 docs-only).
+
+> **Live status — 6 of 46 closed, merged 2026-08-11 (PR #82).** The prerequisite (`#W15-1`), the oracle
+> (`CR-90`, `CR-91`) and all of `W0` (`CR-01`–`CR-03`). `CR-64` was added in the same batch and is open.
+> **Next is the durability spine — `CR-10` first**, and it is ADR-first: no code until the decision is
+> recorded. Per-item history and the carried-forward gaps live in the phase document.
 
 **This is the corrected execution order, and it is what the graph above shows:**
 

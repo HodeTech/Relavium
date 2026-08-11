@@ -1,7 +1,7 @@
 # Phase 2.6.5 — Core reliability remediation (interlude)
 
-- **Status**: planned
-- **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10
+- **Status**: in progress — the prerequisite and the oracle are closed; the durability spine is next
+- **Opened**: 2026-08-09 · **Plan corrected**: 2026-08-10 · **First batch merged**: 2026-08-11 (PR #82)
 - **Predecessor**: Wave 1 of the 2.5.5 remediation (complete — PR #81), then the `#W15-1` realized-cost
   ledger implementation (**complete 2026-08-10**, ADR-0076 + ADR-0077 — see [Prerequisite](#prerequisite))
 - **Successor**: Wave 2 of the 2.5.5 remediation, **reduced** — this phase absorbs Wave 2's hostile-MCP
@@ -75,9 +75,8 @@ rejected: a phase whose exit criteria cannot be evaluated until a later phase is
 ## Prerequisite
 
 **`#W15-1` — the durable per-attempt realized-cost ledger — lands before `W1` starts. ✅ SATISFIED
-(2026-08-10).** All five steps are implemented and landed on `development`, each with an Opus and a Sonnet
-round folded; they ride **PR #82** and are **pending merge to `main`**. The decision acquired a correction on
-the way:
+(2026-08-10).** All five steps landed with an Opus and a Sonnet round folded each, and **merged to `main` via
+PR #82 on 2026-08-11**. The decision acquired a correction on the way:
 [ADR-0077](../../decisions/0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md) amends
 ADR-0076 §1, whose stated mechanism (an inline `await` at the attempt boundary) is unimplementable — the
 seam's attempt observer is synchronous. The ledger uses ADR-0074 §2's chain-and-join shape instead, with a
@@ -104,6 +103,32 @@ awaited emit inherits `CR-10`'s ordered tail for free.
 There is a second reason, and it is the one this project keeps re-learning: an accepted ADR with no
 implementation is a decision that reads as shipped. Wave 1's completion claim was wrong twice for exactly that
 shape.
+
+## Progress
+
+> **Batch 1 — merged to `main` 2026-08-11 (PR #82).** Six items, each with an Opus and a Sonnet review round
+> folded before the next one started, plus two review rounds over the PR as a whole.
+>
+> | Item | Closed | What it closed |
+> |------|--------|----------------|
+> | `#W15-1` | 2026-08-10 | The realized-cost ledger — ADR-0076 as amended by ADR-0077 |
+> | `CR-90` | 2026-08-10 | Root runs no longer collect (or count) a repo-local second checkout |
+> | `CR-91` | 2026-08-10 | The durable-truth oracle the spine below is proven with |
+> | `CR-01` | 2026-08-11 | `session:cancelled` now goes through the session durability latch |
+> | `CR-02` | 2026-08-11 | A failed turn flush no longer leaves the turn counter incremented, and the unclassified terminal reports real usage |
+> | `CR-03` | 2026-08-11 | The `--json` machine-output floor — five serializer paths, fenced by an ESLint selector |
+>
+> `CR-64` was **added** in the same batch (from the YAML/git-native review triage); it is open.
+>
+> **Next: the durability spine**, `CR-10` → `CR-11` → `CR-92` → `CR-12`, in that order and ADR-first. The
+> oracle exists specifically to prove it, and `CR-10` is the item everything else assumes.
+>
+> **Carried forward, named rather than implied.** ADR-0077's required regression (a ledger write refused while
+> a sibling's `#failure` already suppressed the abort) is unbuilt, and `#runAttempt`'s money-durability arm is
+> unreached without it. `CR-10`'s actual property is **not expressible from the durable log alone** — a
+> streamed event's absence looks identical to a lost one — so its acceptance needs the store harness named in
+> its own section, not the oracle. The oracle still owes `CR-92` three things: a `live` view that is not a
+> `RunEvent`, resume-leg payload comparison, and a "durability uncertain" mode.
 
 ## Working discipline for this phase
 
