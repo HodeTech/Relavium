@@ -125,23 +125,52 @@ function byCodepoint([a]: readonly [string, unknown], [b]: readonly [string, unk
  * A bare `JSON.stringify` fails twice: `{a:1,b:2}` and `{b:2,a:1}` compare unequal, which is a false failure
  * the moment either side has been through a store round-trip — the whole point of this module; and a circular
  * or `bigint` payload throws, turning the instrument itself into the failure with no verdict at all.
+ *
+ * **Cycles are detected HERE rather than left to `JSON.stringify`, and the reason is measured.** Sorting the
+ * keys means the replacer returns a NEW object at every level, which defeats the native cycle detector — it
+ * compares against the objects it is currently serializing, and it never sees the same one twice. So a cyclic
+ * payload did not raise the `TypeError` the catch below was written for; it recursed until the stack blew, and
+ * BOTH sides came back as `[uncomparable: RangeError]`. Two structurally different cyclic outputs therefore
+ * compared EQUAL and the oracle verdicted `agrees` — the exact false agreement it exists to catch.
+ *
+ * The ancestor stack is popped on the way back up, which is what separates a cycle from a shared reference.
+ * The first attempt at this used a flat `WeakSet` that was never un-marked, so it flagged every REPEATED
+ * reference: `{ a: shared, b: shared }` serialized as `{"a":{…},"b":"[circular]"}` while a structurally
+ * identical payload built from two separate objects serialized normally — two equal outputs disagreeing, and a
+ * `fan_in` echoing one value into two keys is enough to hit it. Ancestry is the correct predicate; the pop is
+ * the whole difference.
  */
 function canonical(value: unknown): string {
+  const ancestors: object[] = [];
+  const walk = (val: unknown): unknown => {
+    if (typeof val === 'bigint') return `${val.toString()}n`;
+    if (typeof val !== 'object' || val === null) return val;
+    // A path-distinguishing marker, not a whole-payload one: the REST of the object still serializes, so two
+    // different cyclic payloads still differ everywhere they actually differ.
+    if (ancestors.includes(val)) return '[circular]';
+    ancestors.push(val);
+    try {
+      // `toJSON` first, or a `Date` canonicalizes to `{}` — and then any two Dates would compare equal, which
+      // is a false agreement introduced by the fix. Native `JSON.stringify` applies it before the replacer;
+      // walking the tree by hand means applying it by hand.
+      const toJson: unknown = (val as { toJSON?: unknown }).toJSON;
+      if (typeof toJson === 'function') return walk((toJson as () => unknown).call(val));
+      if (Array.isArray(val)) return val.map((entry: unknown) => walk(entry));
+      return Object.fromEntries(
+        Object.entries(val)
+          .sort(byCodepoint)
+          .map(([key, entry]: [string, unknown]) => [key, walk(entry)]),
+      );
+    } finally {
+      ancestors.pop();
+    }
+  };
   try {
-    return JSON.stringify(value, (_key, val: unknown): unknown => {
-      if (typeof val === 'bigint') return `${val.toString()}n`;
-      if (typeof val !== 'object' || val === null || Array.isArray(val)) return val;
-      return Object.fromEntries(Object.entries(val).sort(byCodepoint));
-    });
+    // `?? '[undefined]'`: `JSON.stringify(undefined)` returns `undefined`, and the return type says string.
+    return JSON.stringify(walk(value)) ?? '[undefined]';
   } catch (error) {
-    // A true cycle (or any other unserializable payload) becomes a single marker rather than escaping. The
-    // first version tried to be cleverer, with a `WeakSet` marking objects it had already visited — and got
-    // it WRONG in a way that caused the very failure this function exists to prevent: the set was never
-    // un-marked on the way back up, so it flagged every REPEATED reference, not every circular one.
-    // `{ a: shared, b: shared }` serialized as `{"a":{…},"b":"[circular]"}` while a structurally identical
-    // payload built from two separate objects serialized normally — so two equal outputs disagreed. A
-    // `fan_in` echoing one value into two keys is enough to hit it. Native `JSON.stringify` already tracks
-    // the ANCESTRY correctly; letting it throw and catching here is both simpler and right.
+    // The backstop is still here — a hostile getter, a `toJSON` that throws, anything unforeseen — but it is
+    // no longer the cycle path, so it no longer collapses distinct payloads onto one marker.
     return `[uncomparable: ${error instanceof Error ? error.name : 'unknown'}]`;
   }
 }

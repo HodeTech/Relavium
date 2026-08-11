@@ -48,11 +48,21 @@ export interface SettledAttemptDraft {
 
 export interface MoneyDurabilityOptions {
   /**
-   * Start the durable write for one settled attempt. The engine wires this to `#emitDurable`, stamping the
-   * run-wide cumulative it alone owns. **May throw synchronously** — a `better-sqlite3` store does — which is
-   * why {@link MoneyDurability.record} never calls it bare.
+   * Start the durable write for one settled attempt. The engine wires this to `#emitDurable`. **May throw
+   * synchronously** — a `better-sqlite3` store does — which is why {@link MoneyDurability.record} never calls
+   * it bare.
+   *
+   * `cumulativeCostMicrocents` is passed IN rather than read here, and that is the whole point of the
+   * parameter: the writes are chained, so this callback runs an unbounded time after the attempt it describes
+   * — behind the previous write's `persistEvent`, which is real I/O. Reading the engine's live counter at that
+   * moment yields the total including every attempt that settled DURING the wait, which under a `fan_out`
+   * (concurrent nodes sharing one chain) is a different number. The contract says each absolute is "a true
+   * run-wide total at that instant"; only a value captured at `record()` time is.
    */
-  readonly emit: (draft: SettledAttemptDraft) => Promise<void> | void;
+  readonly emit: (
+    draft: SettledAttemptDraft,
+    cumulativeCostMicrocents: number,
+  ) => Promise<void> | void;
   /**
    * Join the CONSERVATIVE chain, when a budget governor exists. Wired to `BudgetGovernor.flushCommitments`,
    * which throws its own retained failure. Absent on an unbudgeted run — the realized half still applies.
@@ -111,7 +121,7 @@ export class MoneyDurability {
    * START one settled attempt's durable write. Synchronous by necessity (the caller is a chain observer that
    * cannot await) and never awaited here, so a rejection is captured and re-thrown at the next barrier.
    */
-  record(draft: SettledAttemptDraft): void {
+  record(draft: SettledAttemptDraft, cumulativeCostMicrocents: number): void {
     this.#pending += 1;
     this.#inFlight = this.#inFlight.then(() =>
       // `Promise.resolve().then(…)`, NOT a bare `emit(draft)`. A sink that throws SYNCHRONOUSLY — which a
@@ -120,7 +130,9 @@ export class MoneyDurability {
       // throws with no way to clear it. The governor's estimate twin documents the same brick at length.
       // The inner chain therefore ALWAYS resolves, which is why there is no onRejected arm here.
       Promise.resolve()
-        .then(() => this.#options.emit(draft))
+        // The captured total, not a fresh read — see `MoneyDurabilityOptions.emit`. It rides the closure so
+        // the write describes the instant it was recorded, not the instant the chain got round to it.
+        .then(() => this.#options.emit(draft, cumulativeCostMicrocents))
         .catch((error: unknown) => {
           // Keep the FIRST failure: it is the one that broke durability, and later writes may well fail for
           // the same reason.
@@ -156,11 +168,17 @@ export class MoneyDurability {
     }
   }
 
-  /** The narrow port handed to the turn core. Bound so a destructured `record` still works. */
-  turnPort(): TurnMoneyPort {
+  /**
+   * The narrow port handed to the turn core. Bound so a destructured `record` still works.
+   *
+   * `snapshotCumulative` is read SYNCHRONOUSLY here, inside `record`, because that is the only moment the
+   * run-wide total is the one this attempt produced: the turn core calls `record` immediately after the
+   * engine folded this charge into its counter, and the chained write runs later.
+   */
+  turnPort(snapshotCumulative: () => number): TurnMoneyPort {
     return {
       record: (draft) => {
-        this.record(draft);
+        this.record(draft, snapshotCumulative());
       },
       join: () => this.join(),
     };

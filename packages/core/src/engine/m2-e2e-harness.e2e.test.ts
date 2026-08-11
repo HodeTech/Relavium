@@ -1132,6 +1132,10 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(events.at(-1)?.type).toBe('run:failed');
     const verdict = await assertDurableTruth(host, store, events, () => provider);
     expect(verdict.checkpointStatus).toBe('failed');
+    // The concrete code FIRST. `history === live` alone is satisfied by `undefined === undefined`, so it holds
+    // just as well for a verdict that read no error at all from either side — including one where a refactor
+    // stopped populating `errorCode`. Pinning the value is what makes the equality mean something.
+    expect(verdict.history?.errorCode).toBe('provider_auth');
     expect(verdict.history?.errorCode).toBe(verdict.live?.errorCode);
   });
 
@@ -1329,6 +1333,15 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
       // Secret-free either way: a store error can carry a filesystem path and must never reach the user.
       expect(terminal.error.message).not.toContain('ledger write failed');
     }
+    // And the NODE terminal says `the run was cancelled`, NOT the barrier's diagnosis — measured, after an
+    // assertion here claimed otherwise. It is the same fact as the paragraph above: the abort wins, the turn
+    // ends at `throwIfAborted`, and B2's `LedgerDurabilityError` is never the error that classifies this node.
+    // `#runAttempt` DOES have an arm that keeps that class intact (it used to flatten it to `the node handler
+    // threw an unexpected error`), but reaching it needs the same abort-defeating fixture named above.
+    const nodeFailed = events.find((e) => e.type === 'node:failed');
+    expect(nodeFailed?.type === 'node:failed' ? nodeFailed.error.message : undefined).toBe(
+      'the run was cancelled',
+    );
   });
 
   it('ledger: an UNBUDGETED run records its realized spend at all (ADR-0077 §5)', async () => {

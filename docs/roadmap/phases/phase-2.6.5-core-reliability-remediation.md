@@ -75,8 +75,9 @@ rejected: a phase whose exit criteria cannot be evaluated until a later phase is
 ## Prerequisite
 
 **`#W15-1` — the durable per-attempt realized-cost ledger — lands before `W1` starts. ✅ SATISFIED
-(2026-08-10).** All five steps are merged, each with an Opus and a Sonnet round folded, and the decision
-acquired a correction on the way:
+(2026-08-10).** All five steps are implemented and landed on `development`, each with an Opus and a Sonnet
+round folded; they ride **PR #82** and are **pending merge to `main`**. The decision acquired a correction on
+the way:
 [ADR-0077](../../decisions/0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md) amends
 ADR-0076 §1, whose stated mechanism (an inline `await` at the attempt boundary) is unimplementable — the
 seam's attempt observer is synchronous. The ledger uses ADR-0074 §2's chain-and-join shape instead, with a

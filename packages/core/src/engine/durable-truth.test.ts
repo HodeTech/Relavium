@@ -436,6 +436,40 @@ describe('checkDurableTruth', () => {
     expect(verdict.agrees).toBe(true);
   });
 
+  it('tells two DIFFERENT circular payloads apart — not one marker for every cycle', async () => {
+    // Comparing a cyclic payload with ITSELF (above) passes under any implementation, including the broken
+    // one. Sorting the keys makes the replacer hand `JSON.stringify` a fresh object at every level, which
+    // defeats its native cycle detector: the walk recursed until the stack blew and BOTH sides came back as
+    // `[uncomparable: RangeError]`. Two structurally different cyclic outputs compared EQUAL and the oracle
+    // verdicted `agrees` — the false agreement it exists to catch, produced by the instrument itself.
+    const live: Record<string, unknown> = { note: 'live' };
+    live['self'] = live;
+    const durable: Record<string, unknown> = { note: 'durable' };
+    durable['self'] = durable;
+
+    const verdict = await checkDurableTruth({
+      runId: 'r1',
+      live: completed(1, live),
+      eventsFor: () => [started, completed(1, durable)],
+    });
+
+    expect(verdict.agrees, formatDurableTruth(verdict)).toBe(false);
+    expect(formatDurableTruth(verdict)).toContain('[circular]');
+  });
+
+  it('canonicalizes a Date through toJSON — walking the tree by hand must not lose it', async () => {
+    // Native `JSON.stringify` applies `toJSON` before the replacer; the hand-rolled cycle-aware walk has to
+    // apply it too. Without that a `Date` reduces to `{}` (it has no own enumerable entries) and ANY two dates
+    // compare equal — a false agreement introduced by the cycle fix rather than one it removes.
+    const verdict = await checkDurableTruth({
+      runId: 'r1',
+      live: completed(1, { at: new Date('2026-01-01T00:00:00.000Z') }),
+      eventsFor: () => [started, completed(1, { at: new Date('2026-09-09T00:00:00.000Z') })],
+    });
+
+    expect(verdict.agrees, formatDurableTruth(verdict)).toBe(false);
+  });
+
   it('treats a SHARED reference as shared, not circular — a repeated object is not a cycle', async () => {
     // The first cycle guard was a flat `WeakSet` that was never un-marked on the way back up, so it flagged
     // every REPEATED reference. `{ a: shared, b: shared }` serialized as `{"a":{…},"b":"[circular]"}` while a

@@ -160,11 +160,31 @@ for (const [name, match, why] of [
 
 // --- 3. Plant one fixture per entry, collect, assert ------------------------------------------------
 
-const fixtures = patterns.map((pattern) => ({
-  pattern,
-  root: join(repoRoot, plantableDir(pattern), FIXTURE_DIR),
-  parent: join(repoRoot, plantableDir(pattern)),
-  parentExisted: existsSync(join(repoRoot, plantableDir(pattern))),
+/**
+ * Locations probed ALWAYS, whatever `REPO_LOCAL_CHECKOUTS` currently says — the three that exist today.
+ *
+ * This is the answer to the hole the header describes: because the pattern-derived fixtures below come FROM
+ * the list, deleting `'**\/.claude\/**'` deletes its probe too, and the guard goes green while re-collecting a
+ * foreign tree. The primary structural assertion covers that on a developer's machine, but only if a second
+ * checkout is actually on disk — and CI checks out clean, so there it covers nothing at all. A planted fixture
+ * at a known location is a positive control that works in an empty tree.
+ *
+ * A hardcoded list is exactly what `workspacesWithTests` was rebuilt to avoid, and the difference matters:
+ * this one may only ever GROW stale in the safe direction. An entry removed from `REPO_LOCAL_CHECKOUTS` still
+ * gets probed here and fails loudly; a NEW location nobody added here is still probed by the derived fixtures.
+ * Neither omission can produce a silent pass.
+ */
+const ALWAYS_PROBED = ['.claude', '.worktrees', 'worktrees'];
+
+const fixtureDirs = [...new Set([...patterns.map(plantableDir), ...ALWAYS_PROBED])];
+const fixtures = fixtureDirs.map((dir) => ({
+  // The pattern that should be excluding it, for the error message. An always-probed location with no entry
+  // gets the pattern it OUGHT to have, which is the fix to paste back into `vitest.config.ts`.
+  pattern: patterns.find((p) => plantableDir(p) === dir) ?? `${dir}/**`,
+  dir,
+  root: join(repoRoot, dir, FIXTURE_DIR),
+  parent: join(repoRoot, dir),
+  parentExisted: existsSync(join(repoRoot, dir)),
 }));
 
 /**
@@ -353,13 +373,26 @@ if (foreign.size > 0) {
 
 const leaked = files.filter((f) => f.includes(FIXTURE_DIR));
 if (leaked.length > 0) {
-  const missed = fixtures
-    .filter((fx) => leaked.some((f) => f.startsWith(`${plantableDir(fx.pattern)}/`)))
-    .map((fx) => fx.pattern);
+  // The two causes read very differently, so the message names which one this is. A LISTED location that
+  // leaked means the pattern does not do what it says; an always-probed one that leaked means the entry that
+  // used to cover it was removed — the failure the `ALWAYS_PROBED` control exists for, and the one the
+  // derived fixtures cannot see because deleting an entry deletes its probe.
+  const missed = fixtures.filter((fx) => leaked.some((f) => f.startsWith(`${fx.dir}/`)));
+  const listed = missed.filter((fx) => patterns.some((p) => plantableDir(p) === fx.dir));
+  const unlisted = missed.filter((fx) => !patterns.some((p) => plantableDir(p) === fx.dir));
   fail(
     `a repo-local checkout leaked into the root test run (${leaked.length} file(s)):\n` +
       leaked.map((f) => `    ${f}`).join('\n') +
-      `\n  Not excluded despite being listed: ${missed.map((p) => JSON.stringify(p)).join(', ')}` +
+      (listed.length === 0
+        ? ''
+        : `\n  Listed in REPO_LOCAL_CHECKOUTS but NOT excluded: ` +
+          listed.map((fx) => JSON.stringify(fx.pattern)).join(', ')) +
+      (unlisted.length === 0
+        ? ''
+        : `\n  MISSING from REPO_LOCAL_CHECKOUTS (vitest.config.ts): ` +
+          unlisted.map((fx) => JSON.stringify(fx.dir)).join(', ') +
+          `\n  These are probed unconditionally precisely because a derived probe disappears with the entry` +
+          `\n  it came from — removing one would otherwise go green on a clean checkout.`) +
       `\n  A root run must see this repo's tests and nothing else — a second checkout's suites are not ours` +
       `\n  to run, and its sources are not ours to count against the coverage floor.`,
   );
@@ -378,5 +411,5 @@ if (silent.length > 0) {
 
 console.log(
   `✓ test isolation holds: ${files.length} file(s) collected, none from a repo-local checkout ` +
-    `(${patterns.length} location(s) probed, ${expected.length} workspaces with tests on disk all collected).`,
+    `(${fixtures.length} location(s) probed, ${expected.length} workspaces with tests on disk all collected).`,
 );

@@ -394,7 +394,8 @@ serialized with `stringifyJsonLine` (`apps/cli/src/render/sanitize.ts`), never a
 `JSON.stringify` escapes `ESC` and stops, leaving `DEL`, the whole C1 block — including `U+009B`, a working
 escape-sequence introducer on real terminals — and the Trojan-Source bidi family RAW in content the model, a
 tool, or an imported artifact controls. It **escapes** where the human-display path **strips**, because
-`--json` is a machine contract and must reproduce its data byte for byte. The rule is enforced by an ESLint
+`--json` is a machine contract: escaping changes the JSON *text* but `JSON.parse` returns the identical value,
+so a consumer loses nothing — while stripping would silently hand it different data. The rule is enforced by an ESLint
 `no-restricted-syntax` selector rather than by review, because the gap reopened twice when it was not
 (`#W15-10`, then `CR-03`). `apps/cli/src/process/render-error.ts` is the single allowlisted exception: it
 pre-sanitizes with the stripping sanitizer, so the `--json` ERROR envelope is deliberately lossy.

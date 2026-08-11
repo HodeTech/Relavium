@@ -4,6 +4,13 @@
 - **Date**: 2026-08-09
 - **Related**: [ADR-0074](0074-durable-conservative-budget-commitments.md) (the conservative half of the same problem), [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md) (how this event degrades on an older binary), [ADR-0070](0070-durable-per-model-session-cost-attribution.md) (`SUM(run_costs) == runs.total_cost_microcents`), [ADR-0028](0028-workflow-resource-governance.md) (the pre-egress cap), [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) (durable run events), and [sse-event-schema.md](../reference/contracts/sse-event-schema.md) (the canonical event contract).
 
+> **Amended 2026-08-10** by [ADR-0077](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md): §1's
+> MECHANISM only. The guarantee — a realized charge is durable before the run spends or mutates again — stands
+> unchanged; the "awaited inline emit at the attempt boundary" shape does not, because the seam's attempt
+> observer is synchronous and there is no `await` to place there. ADR-0077 substitutes ADR-0074 §2's
+> chain-and-join and adds a third barrier before tool dispatch. Not a reversal, so not a supersession. The
+> in-place markers in §1 below stay where the superseded sentences are.
+
 ## Context
 
 ADR-0074 made the **conservative** commitment durable — money a provider may already have billed for a call that returned no trustworthy usage. It deliberately did not touch the other half. A call that *did* return trustworthy usage has no equivalent barrier, and that gap is larger than it looks.

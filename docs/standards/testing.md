@@ -136,10 +136,11 @@ PRs must pass: typecheck, lint ([code-style-typescript.md](code-style-typescript
 unit tests, and the fixture-mode conformance suite. The live conformance suite and the
 desktop e2e suite run nightly and on release branches. A red required check blocks merge.
 
-**Test isolation is part of that gate** (`pnpm lint:test-isolation`, `tools/test-isolation`). A root run must
+**Test isolation is part of that gate** (`pnpm lint:test-isolation`,
+[tools/test-isolation/check.mjs](../../tools/test-isolation/check.mjs)). A root run must
 collect this repo's tests and nothing else. A second checkout of the repo inside the working tree — an agent
 worktree, a scratch clone — is otherwise collected in full: measured once at 234 foreign test files out of 472,
 with its sources in the coverage denominator. The guard fails on any collected file whose ancestor carries its
-own `pnpm-workspace.yaml`, so it stays true even when the exclusion list in `vitest.config.ts` is the thing
-that is wrong. It also asserts every workspace still yields tests, because the cheapest way to pass an
+own `pnpm-workspace.yaml`, so it stays true even when the exclusion list in
+[vitest.config.ts](../../vitest.config.ts) is the thing that is wrong. It also asserts every workspace still yields tests, because the cheapest way to pass an
 isolation check is an over-broad exclude that goes green by not running.
