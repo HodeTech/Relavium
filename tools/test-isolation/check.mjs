@@ -125,15 +125,37 @@ if (patterns.length === 0) {
 
 // --- 2. The list must reach BOTH excludes (assertion 3) --------------------------------------------
 
-const spreadCount = (configText.match(/\.\.\.REPO_LOCAL_CHECKOUTS/g) ?? []).length;
-if (spreadCount < 2) {
+// A GLOBAL count of `...REPO_LOCAL_CHECKOUTS` is the wrong test, and passes the exact defect it is for: two
+// spreads inside `test.exclude` and none inside `coverage.exclude` reads as 2 and goes green, while a foreign
+// tree's sources sit in the coverage denominator. So each property's own array literal is inspected. The
+// arrays here hold no nested brackets, which is what makes the bounded `[^\]]*` match exact rather than
+// approximate; a future nested value would end the match early and fail loudly here rather than silently pass.
+const coverageAt = configText.indexOf('coverage: {');
+if (coverageAt === -1) {
   fail(
-    `REPO_LOCAL_CHECKOUTS is spread ${spreadCount} time(s) in ${relative(repoRoot, CONFIG_PATH)}; both ` +
-      `\`test.exclude\` and \`coverage.exclude\` need it.\n` +
-      `  \`test.exclude\` stops a foreign tree's TESTS from running; \`coverage.exclude\` stops its SOURCES ` +
-      `from entering the coverage denominator.\n  \`vitest list\` cannot see the second one, which is why it ` +
-      `is checked here as text.`,
+    `cannot find the \`coverage: {\` block in ${relative(repoRoot, CONFIG_PATH)}, so \`test.exclude\` and ` +
+      `\`coverage.exclude\` cannot be told apart.`,
   );
+}
+const excludeArrays = [...configText.matchAll(/\bexclude:\s*\[([^\]]*)\]/g)];
+const spreadsIn = (body) => (body.match(/\.\.\.REPO_LOCAL_CHECKOUTS\b/g) ?? []).length;
+// `test.exclude` is the LAST one before the coverage block, `coverage.exclude` the FIRST one after it.
+const testExclude = excludeArrays.filter((m) => m.index < coverageAt).at(-1);
+const coverageExclude = excludeArrays.find((m) => m.index > coverageAt);
+for (const [name, match, why] of [
+  ['test.exclude', testExclude, "stops a foreign tree's TESTS from running"],
+  ['coverage.exclude', coverageExclude, 'stops its SOURCES from entering the coverage denominator'],
+]) {
+  const count = match === undefined ? 0 : spreadsIn(match[1]);
+  if (count !== 1) {
+    fail(
+      `\`${name}\` in ${relative(repoRoot, CONFIG_PATH)} spreads \`...REPO_LOCAL_CHECKOUTS\` ${count} ` +
+        `time(s); it needs exactly 1.\n  ${name} ${why}. Both halves are required and they fail ` +
+        `differently.\n  \`vitest list\` observes \`test.exclude\` only, which is why this is checked here ` +
+        `as text — and why the count is checked PER PROPERTY: a repo-wide total of 2 is also what two ` +
+        `spreads in one array and none in the other looks like.`,
+    );
+  }
 }
 
 // --- 3. Plant one fixture per entry, collect, assert ------------------------------------------------

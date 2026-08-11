@@ -14,10 +14,14 @@ const started: RunEvent = {
   executionMode: 'local',
 };
 
-const completed = (seq: number, outputs: unknown = { a: 1 }, cost = 500): RunEvent => ({
+const completed = (
+  seq: number,
+  outputs: Record<string, unknown> = { a: 1 },
+  cost = 500,
+): RunEvent => ({
   type: 'run:completed',
   ...base(seq),
-  outputs: outputs as Record<string, unknown>,
+  outputs,
   totalTokensUsed: { input: 1, output: 1 },
   totalCostMicrocents: cost,
   durationMs: 10,
@@ -188,6 +192,11 @@ describe('checkDurableTruth', () => {
 
     expect(verdict.agrees).toBe(false);
     expect(verdict.disagreements.some((d) => d.includes('belonging to another run'))).toBe(true);
+    // …and every DOWNSTREAM number describes this run, not the foreign one. Naming the right cause while
+    // counting the other run's terminal was the defect: `history` read `rOTHER`'s `run:completed` and this
+    // came back as 1, so a reader who trusted the counts over the message saw a healthy log.
+    expect(verdict.durableTerminalCount).toBe(0);
+    expect(verdict.history).toBeUndefined();
   });
 
   it('catches a live terminal carrying a different runId', async () => {
@@ -310,11 +319,45 @@ describe('checkDurableTruth', () => {
     expect(verdict.disagreements.some((d) => d.includes('NO durable terminal'))).toBe(true);
   });
 
-  /** A `run:failed` differing from the baseline in exactly one error field. */
-  const failedWith = (error: Partial<Record<string, unknown>>): RunEvent => ({
+  // The other two `expect:'repaired'` arms. Without them the mode was only ever exercised where it PASSES or
+  // where the restart did nothing — so a caller that asked for `'repaired'` on a run that had, in fact,
+  // settled would have been told it agreed, which is the mode's whole failure direction.
+  it('under expect:"repaired", a log that ALREADY holds a terminal is the disagreement', async () => {
+    const { eventsFor } = log(completed(1));
+    const verdict = await checkDurableTruth({
+      runId: 'r1',
+      live: undefined,
+      expect: 'repaired',
+      eventsFor,
+    });
+
+    expect(verdict.agrees).toBe(false);
+    expect(verdict.disagreements.some((d) => d.includes('already holds a terminal'))).toBe(true);
+  });
+
+  it('under expect:"repaired", a LIVE terminal means the run did not die — also a disagreement', async () => {
+    const { eventsFor } = log();
+    const verdict = await checkDurableTruth({
+      runId: 'r1',
+      live: completed(1),
+      expect: 'repaired',
+      eventsFor,
+    });
+
+    expect(verdict.agrees).toBe(false);
+    expect(verdict.disagreements.some((d) => d.includes('the live stream produced'))).toBe(true);
+  });
+
+  /**
+   * A `run:failed` differing from the baseline in exactly one error field. The override type is DERIVED from
+   * the contract rather than asserted with `as never`, so a renamed field or an invalid `code` fails to
+   * compile instead of silently building a fixture the oracle can never disagree about.
+   */
+  type FailureError = Extract<RunEvent, { type: 'run:failed' }>['error'];
+  const failedWith = (error: Partial<FailureError>): RunEvent => ({
     type: 'run:failed',
     ...base(1),
-    error: { code: 'tool_failed', message: 'boom', retryable: false, ...error } as never,
+    error: { code: 'tool_failed', message: 'boom', retryable: false, ...error },
     partialOutputs: {},
   });
 

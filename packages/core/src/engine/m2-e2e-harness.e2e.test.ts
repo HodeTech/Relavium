@@ -1272,6 +1272,11 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     ledger.release();
     const events: RunEvent[] = [];
     for await (const event of handle.events) events.push(event);
+    // PRESENCE first, then order. A bare `indexOf(a) < indexOf(b)` passes vacuously when `a` is missing —
+    // `-1` is less than everything — so a run that never settled a charge at all would satisfy the ordering
+    // it is supposed to prove.
+    expect(ledger.persistOrder).toContain('cost:attempt_settled:work');
+    expect(ledger.persistOrder).toContain('node:completed:work');
     expect(ledger.persistOrder.indexOf('cost:attempt_settled:work')).toBeLessThan(
       ledger.persistOrder.indexOf('node:completed:work'),
     );

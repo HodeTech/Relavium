@@ -314,10 +314,14 @@ through it. Three sibling paths still use bare `JSON.stringify`:
 (8-bit CSI) and the bidi family raw, and these streams carry model-, tool- and persisted content. This is a
 propagation gap — the fix landed, the siblings did not get it.
 
-**Fix.** Route all three through `stringifyJsonLine`. The escape is lossless, so no machine contract changes.
+**Fix.** Route all **five** through `stringifyJsonLine` — the three above plus `commands/import.ts` and
+`commands/export.ts`, which write the same record shape and were not in the finding (see the closing note).
+The escape is lossless, so no machine contract changes.
 
-**Acceptance.** One shared adversarial test drives a C1 + bidi payload through all three surfaces and asserts
-the raw code points do not survive while `JSON.parse` round-trips to the identical string.
+**Acceptance.** One shared adversarial test drives a C1 + bidi payload through the serializer and asserts the
+raw code points do not survive while `JSON.parse` round-trips to the identical string; the CALL-SITE half —
+that all five surfaces, and any sixth written later, actually go through it — is an ESLint
+`no-restricted-syntax` selector, because a list only ever proves the places someone remembered.
 
 **Closed — and it was FIVE paths, not three.** The finding named three; `import.ts` and `export.ts` write the
 same record shape and were not in it. `docs/reference/cli/commands.md` pairs the last two by that shape in one

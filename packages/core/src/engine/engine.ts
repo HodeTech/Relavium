@@ -1171,7 +1171,7 @@ class RunExecution {
       // the next pre-egress check; this covers the node boundary, which a crash could otherwise land inside with
       // a possibly-billed call recorded nowhere. Awaited (not fire-and-forget) so a failed write fails the node
       // loudly; the conservative amount keeps consuming capacity either way.
-      await this.#flushBudgetCommitments(vertex.id);
+      await this.#joinMoneyDurability(vertex.id);
       const willRetry =
         outcome.kind === 'failed' &&
         !this.#settled &&
@@ -2143,7 +2143,12 @@ class RunExecution {
   }
 
   /**
-   * Await the budget governor's conservative-commitment barrier at a node boundary (ADR-0074 §2).
+   * Await BOTH money chains at a node boundary — the conservative commitments (ADR-0074 §2) and the realized
+   * ledger (ADR-0077 §4). Named for the join rather than for the commitments it once awaited alone: since
+   * ADR-0077 this is the single barrier fronting `MoneyDurability`, and `#flushBudgetCommitments` read as
+   * though the ledger were still someone else's to await. (The host-supplied
+   * `AgentSessionDeps.flushBudgetCommitments` keeps that name and is correct — the SESSION path has no
+   * realized ledger to join, because its per-attempt increment is already written synchronously.)
    *
    * **The await is the substance.** `#emitDurable` resolves only after `persistEvent` has settled (its `await
    * settled` at the end), so waiting here means a commitment made inside the attempt is on disk — or has already
@@ -2156,7 +2161,7 @@ class RunExecution {
    * write. Kept here so the two surfaces cannot diverge in what a durability failure means: never a released
    * reservation, always a loud failure.
    */
-  async #flushBudgetCommitments(nodeId: string): Promise<void> {
+  async #joinMoneyDurability(nodeId: string): Promise<void> {
     // **Barrier B3 (ADR-0077)** — and it is now the SINGLE join for both money chains. The old
     // `if (governor === undefined) return;` is gone: it was one of §5's three barrier holes, because a run
     // without a budget has no conservative commitments but does have a realized ledger, and returning early

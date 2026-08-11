@@ -48,6 +48,11 @@ describe('createSessionPersister', () => {
   });
   afterEach(() => {
     client.sqlite.close();
+    // Suite-level, not per-test. Several tests below spy `updateSession`/`recordSessionCost` into a throwing
+    // SQLITE_BUSY stub; a test-local `vi.restoreAllMocks()` at the END of the test is skipped the moment an
+    // assertion above it fails, and the stub then leaks into every later test in the file — turning one real
+    // failure into a cascade whose reported causes are all fictional.
+    vi.restoreAllMocks();
   });
 
   /**
@@ -296,11 +301,10 @@ describe('createSessionPersister', () => {
     // asserted `close()` does not throw — which is true whether or not the listener leaked, because `close()`
     // calls the same idempotent unsubscribe. The real evidence is that a SUBSEQUENT event does not re-enter a
     // persister that cannot write, so `updateSession` is never called again. Deliberately WITHOUT `close()`.
-    expect(updateSpy.mock.calls.length).toBe(1); // the failing write happened exactly once
+    expect(updateSpy).toHaveBeenCalledTimes(1); // the failing write happened exactly once
     // THE assertion: the throw did not jump over the unsubscribe. Without the `finally` this is 0, and the
     // persister stays on the bus — so every later event re-enters one that cannot write.
     expect(unsubscribed).toBe(1);
-    vi.restoreAllMocks();
   });
 
   it('does not let a failed cost write advance the in-memory total (#W15-4)', async () => {

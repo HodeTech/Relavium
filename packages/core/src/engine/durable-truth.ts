@@ -119,7 +119,13 @@ function canonical(value: unknown): string {
     return JSON.stringify(value, (_key, val: unknown): unknown => {
       if (typeof val === 'bigint') return `${val.toString()}n`;
       if (typeof val !== 'object' || val === null || Array.isArray(val)) return val;
-      return Object.fromEntries(Object.entries(val).sort(([a], [b]) => a.localeCompare(b)));
+      // Codepoint order, NOT `localeCompare` — the comparison must be identical on every machine that runs
+      // this oracle. `localeCompare` honours the host locale (and its ICU build), so two runs of the same
+      // payload can canonicalize to different strings under different `LC_ALL`s, which is a disagreement
+      // manufactured by the instrument. The order itself is arbitrary; only its stability matters.
+      return Object.fromEntries(
+        Object.entries(val).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+      );
     });
   } catch (error) {
     // A true cycle (or any other unserializable payload) becomes a single marker rather than escaping. The
@@ -243,6 +249,149 @@ export interface DurableTruthInput {
 }
 
 /**
+ * Bind everything to THIS run before comparing anything. Without it the oracle happily reports agreement on
+ * another run's log — measured — and `durableTerminalCount === 1` does not catch it, because the other run
+ * has a terminal too. A store that ignores its id argument, or a caller that crosses two runs, both land
+ * here; and `CR-11`'s whole scenario is two owners over one store.
+ */
+function checkRunBinding(
+  runId: string,
+  live: RunEvent | undefined,
+  before: readonly RunEvent[],
+): readonly string[] {
+  const out: string[] = [];
+  const foreign = before.filter((event) => event.runId !== runId);
+  if (foreign.length > 0) {
+    out.push(
+      `eventsFor(${runId}) returned ${foreign.length} event(s) belonging to another run ` +
+        `(e.g. ${String(foreign[0]?.runId)}) — every view below would be comparing the wrong log`,
+    );
+  }
+  if (live !== undefined && live.runId !== runId) {
+    out.push(`the live terminal carries runId ${live.runId}, not ${runId}`);
+  }
+  return out;
+}
+
+function checkLiveVsHistory(
+  expectRepaired: boolean,
+  live: TerminalView | undefined,
+  history: TerminalView | undefined,
+): readonly string[] {
+  const out: string[] = [];
+  if (expectRepaired) {
+    // A run that died mid-flight: nothing durable yet, and nothing live either.
+    if (history !== undefined) {
+      out.push(
+        `expected a run needing repair, but the log already holds a terminal (${describe(history)})`,
+      );
+    }
+    if (live !== undefined) {
+      out.push(
+        `expected a run that died without a terminal, but the live stream produced ${describe(live)}`,
+      );
+    }
+  } else if (!sameView(live, history)) {
+    out.push(
+      `live and durable history disagree: live=${describe(live)} history=${describe(history)}`,
+    );
+  }
+  return out;
+}
+
+function checkReconcileOutcome(
+  expectRepaired: boolean,
+  history: TerminalView | undefined,
+  afterReconcile: TerminalView | undefined,
+  reconciledCount: number,
+): readonly string[] {
+  const out: string[] = [];
+  if (expectRepaired) {
+    if (afterReconcile === undefined) {
+      out.push(
+        'a restart left the run with NO durable terminal — a crashed run must reconcile to one',
+      );
+    }
+    if (reconciledCount === 0) {
+      out.push('reconcile() produced no event for this run, so nothing repaired it');
+    }
+    return out;
+  }
+  if (!sameView(history, afterReconcile)) {
+    out.push(
+      `a restart CHANGED the terminal: before=${describe(history)} after=${describe(afterReconcile)}`,
+    );
+  }
+  if (history !== undefined && reconciledCount > 0) {
+    out.push(
+      `reconcile() produced ${reconciledCount} event(s) for a run that already had a durable terminal ` +
+        `(${describe(history)}) — reconciliation repairs a run that died WITHOUT one, never one that landed`,
+    );
+  }
+  return out;
+}
+
+/**
+ * Exactly-one-terminal (ADR-0036) plus the durable ORDER property (`CR-10`). Every view above assumes the
+ * latter and none of them checked it: a log committed out of order, or with an event after its terminal, used
+ * to verdict `agrees`.
+ *
+ * **What is checkable here, and what is NOT** — the distinction cost a wrong assertion, so it is written
+ * down. The durable log's sequence numbers are a strictly increasing SUBSEQUENCE of the run's, never
+ * `0..n-1`: streamed events (`agent:token`, `cost:updated`, …) take numbers and are deliberately never
+ * persisted. A real completed run reads `[0,1,2,3,5,10,11,12,13,14]`, and asserting `0..n-1` failed it.
+ *
+ * So "no persisted event is missing from the middle" — CR-10's actual property — is NOT expressible from
+ * the log alone: a streamed event's absence is indistinguishable from a lost one. CR-10's acceptance needs
+ * a store harness that knows which events it was ASKED to persist. What the log can prove on its own is
+ * that it starts at `run:started` (always seq 0, always durable) and only ever moves forward.
+ */
+function checkLogShape(ours: readonly RunEvent[], terminalCount: number): readonly string[] {
+  const out: string[] = [];
+  if (terminalCount !== 1) {
+    out.push(
+      `the durable log holds ${terminalCount} terminal(s); exactly one closes a run (ADR-0036)`,
+    );
+  }
+
+  const seqs = ours.map((event) => event.sequenceNumber);
+  if (seqs.some((seq, index) => index > 0 && seq <= (seqs[index - 1] ?? -1))) {
+    out.push(
+      `the durable log is not ordered: sequenceNumbers ${JSON.stringify(seqs)} — a higher seq committed ` +
+        `before a lower one, so the checkpoint fold can read a state its causal predecessor never reached`,
+    );
+  }
+  if (seqs.length > 0 && seqs[0] !== 0) {
+    out.push(
+      `the durable log starts at sequenceNumber ${String(seqs[0])}, not 0 — \`run:started\` is always ` +
+        `persisted and always first, so the head of the log is missing`,
+    );
+  }
+  const last = ours.at(-1);
+  if (last !== undefined && terminalCount === 1 && !TERMINALS.has(last.type)) {
+    out.push(
+      `the durable log continues past its terminal (last event is '${last.type}') — exactly one terminal ` +
+        `CLOSES a run, so nothing may follow it`,
+    );
+  }
+  return out;
+}
+
+function checkCheckpoint(
+  viaPort: boolean,
+  checkpointStatus: RunStatus | undefined,
+  afterReconcile: TerminalView | undefined,
+): readonly string[] {
+  const expectedStatus = afterReconcile === undefined ? undefined : STATUS_FOR[afterReconcile.type];
+  if (expectedStatus === undefined || checkpointStatus === expectedStatus) return [];
+  return [
+    `the checkpoint ${viaPort ? 'port' : 'fold'} says ` +
+      `'${String(checkpointStatus)}' while the durable terminal says '${expectedStatus}' — a resume seeds ` +
+      `itself from it, so it would do the wrong work`,
+  ];
+}
+
+/**
  * Compare the four views. Cheap enough to call at the end of every e2e run; it reads the log twice and runs
  * one reconcile.
  */
@@ -251,132 +400,42 @@ export async function checkDurableTruth(input: DurableTruthInput): Promise<Durab
   const expectRepaired = input.expect === 'repaired';
 
   const before = [...(await input.eventsFor(input.runId))];
+  disagreements.push(...checkRunBinding(input.runId, input.live, before));
 
-  // Bind everything to THIS run before comparing anything. Without it the oracle happily reports agreement on
-  // another run's log — measured — and `durableTerminalCount === 1` does not catch it, because the other run
-  // has a terminal too. A store that ignores its id argument, or a caller that crosses two runs, both land
-  // here; and `CR-11`'s whole scenario is two owners over one store.
-  const foreign = before.filter((event) => event.runId !== input.runId);
-  if (foreign.length > 0) {
-    disagreements.push(
-      `eventsFor(${input.runId}) returned ${foreign.length} event(s) belonging to another run ` +
-        `(e.g. ${String(foreign[0]?.runId)}) — every view below would be comparing the wrong log`,
-    );
-  }
-  if (input.live !== undefined && input.live.runId !== input.runId) {
-    disagreements.push(`the live terminal carries runId ${input.live.runId}, not ${input.runId}`);
-  }
+  // EVERY view below reads the filtered log, not the raw one. Reporting the foreign events above and then
+  // comparing against them anyway was the bug in the first version of this binding: a store that ignored its
+  // id argument had `history` read ANOTHER run's terminal, and `durableTerminalCount` counted it — so the
+  // verdict named the right cause while every downstream number described the wrong run.
+  let ours = before.filter((event) => event.runId === input.runId);
 
   const live = viewOf(input.live);
-  const history = viewOf(terminalIn(before));
-
-  if (expectRepaired) {
-    // A run that died mid-flight: nothing durable yet, and nothing live either.
-    if (history !== undefined) {
-      disagreements.push(
-        `expected a run needing repair, but the log already holds a terminal (${describe(history)})`,
-      );
-    }
-    if (live !== undefined) {
-      disagreements.push(
-        `expected a run that died without a terminal, but the live stream produced ${describe(live)}`,
-      );
-    }
-  } else if (!sameView(live, history)) {
-    disagreements.push(
-      `live and durable history disagree: live=${describe(live)} history=${describe(history)}`,
-    );
-  }
+  const history = viewOf(terminalIn(ours));
+  disagreements.push(...checkLiveVsHistory(expectRepaired, live, history));
 
   let reconciledCount = 0;
   let afterReconcile = history;
-  let finalEvents = before;
   if (input.reconcile !== undefined) {
     const reconciled = await input.reconcile();
     // Per-RUN, not the whole array. `reconcile()` repairs every interrupted run in the store and returns all
     // of their events, so attributing the raw count to this run produced a factually wrong message and a
     // false failure the moment a second run existed — which is, again, `CR-11`'s exact shape.
     reconciledCount = reconciled.filter((event) => event.runId === input.runId).length;
-    finalEvents = [...(await input.eventsFor(input.runId))];
-    afterReconcile = viewOf(terminalIn(finalEvents));
-
-    if (expectRepaired) {
-      if (afterReconcile === undefined) {
-        disagreements.push(
-          'a restart left the run with NO durable terminal — a crashed run must reconcile to one',
-        );
-      }
-      if (reconciledCount === 0) {
-        disagreements.push('reconcile() produced no event for this run, so nothing repaired it');
-      }
-    } else {
-      if (!sameView(history, afterReconcile)) {
-        disagreements.push(
-          `a restart CHANGED the terminal: before=${describe(history)} after=${describe(afterReconcile)}`,
-        );
-      }
-      if (history !== undefined && reconciledCount > 0) {
-        disagreements.push(
-          `reconcile() produced ${reconciledCount} event(s) for a run that already had a durable terminal ` +
-            `(${describe(history)}) — reconciliation repairs a run that died WITHOUT one, never one that landed`,
-        );
-      }
-    }
-  }
-
-  const terminalCount = finalEvents.filter((event) => TERMINALS.has(event.type)).length;
-  if (terminalCount !== 1) {
+    ours = [...(await input.eventsFor(input.runId))].filter((event) => event.runId === input.runId);
+    afterReconcile = viewOf(terminalIn(ours));
     disagreements.push(
-      `the durable log holds ${terminalCount} terminal(s); exactly one closes a run (ADR-0036)`,
+      ...checkReconcileOutcome(expectRepaired, history, afterReconcile, reconciledCount),
     );
   }
 
-  // The durable ORDER property (`CR-10`). Every view above assumes it and none of them checked it: a log
-  // committed out of order, or with an event after its terminal, used to verdict `agrees`.
-  //
-  // **What is checkable here, and what is NOT** — the distinction cost a wrong assertion, so it is written
-  // down. The durable log's sequence numbers are a strictly increasing SUBSEQUENCE of the run's, never
-  // `0..n-1`: streamed events (`agent:token`, `cost:updated`, …) take numbers and are deliberately never
-  // persisted. A real completed run reads `[0,1,2,3,5,10,11,12,13,14]`, and asserting `0..n-1` failed it.
-  //
-  // So "no persisted event is missing from the middle" — CR-10's actual property — is NOT expressible from
-  // the log alone: a streamed event's absence is indistinguishable from a lost one. CR-10's acceptance needs
-  // a store harness that knows which events it was ASKED to persist. What the log can prove on its own is
-  // that it starts at `run:started` (always seq 0, always durable) and only ever moves forward.
-  const ours = finalEvents.filter((event) => event.runId === input.runId);
-  const seqs = ours.map((event) => event.sequenceNumber);
-  const outOfOrder = seqs.some((seq, index) => index > 0 && seq <= (seqs[index - 1] ?? -1));
-  if (outOfOrder) {
-    disagreements.push(
-      `the durable log is not ordered: sequenceNumbers ${JSON.stringify(seqs)} — a higher seq committed ` +
-        `before a lower one, so the checkpoint fold can read a state its causal predecessor never reached`,
-    );
-  }
-  if (seqs.length > 0 && seqs[0] !== 0) {
-    disagreements.push(
-      `the durable log starts at sequenceNumber ${String(seqs[0])}, not 0 — \`run:started\` is always ` +
-        `persisted and always first, so the head of the log is missing`,
-    );
-  }
-  const last = ours.at(-1);
-  if (last !== undefined && terminalCount === 1 && !TERMINALS.has(last.type)) {
-    disagreements.push(
-      `the durable log continues past its terminal (last event is '${last.type}') — exactly one terminal ` +
-        `CLOSES a run, so nothing may follow it`,
-    );
-  }
+  const terminalCount = ours.filter((event) => TERMINALS.has(event.type)).length;
+  disagreements.push(...checkLogShape(ours, terminalCount));
 
-  const localFold = reconstructCheckpointState(finalEvents)?.runStatus;
+  const viaPort = input.loadCheckpoint !== undefined;
   const loaded = await input.loadCheckpoint?.(input.runId);
-  const checkpointStatus = input.loadCheckpoint === undefined ? localFold : loaded?.runStatus;
-  const expectedStatus = afterReconcile === undefined ? undefined : STATUS_FOR[afterReconcile.type];
-  if (expectedStatus !== undefined && checkpointStatus !== expectedStatus) {
-    disagreements.push(
-      `the checkpoint ${input.loadCheckpoint === undefined ? 'fold' : 'port'} says ` +
-        `'${String(checkpointStatus)}' while the durable terminal says '${expectedStatus}' — a resume seeds ` +
-        `itself from it, so it would do the wrong work`,
-    );
-  }
+  const checkpointStatus = viaPort
+    ? loaded?.runStatus
+    : reconstructCheckpointState(ours)?.runStatus;
+  disagreements.push(...checkCheckpoint(viaPort, checkpointStatus, afterReconcile));
 
   return {
     agrees: disagreements.length === 0,

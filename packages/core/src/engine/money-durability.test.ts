@@ -82,24 +82,26 @@ describe('MoneyDurability', () => {
     // A `better-sqlite3`-backed store throws synchronously. A bare `emit(draft)` inside the `.then` would
     // escape before `.catch`/`.finally` attach: the pending count leaks at >= 1 forever and the chain is left
     // permanently rejected, so every later join throws with no way to clear it.
+    const seen: string[] = [];
+    let boom = true;
     const money = new MoneyDurability({
-      emit: () => {
-        throw new Error('sync boom');
+      emit: (d) => {
+        if (boom) throw new Error('sync boom');
+        seen.push(d.nodeId);
       },
     });
     money.record(draft('a'));
     await expect(money.join()).rejects.toSatisfy(isLedgerDurabilityError);
 
-    // The chain is still usable: a later successful write joins cleanly rather than re-throwing forever.
-    const seen: string[] = [];
-    const healthy = new MoneyDurability({
-      emit: (d) => {
-        seen.push(d.nodeId);
-      },
-    });
-    healthy.record(draft('b'));
-    await expect(healthy.join()).resolves.toBeUndefined();
+    // The recovery half, on the SAME instance — and it has to be. What a synchronous throw could brick is
+    // THIS chain's tail and THIS pending count; a second, healthy instance shares neither, so asserting on
+    // one proved only that a fresh object works. Here the later write must reach the sink and the join must
+    // resolve, which is false if `#inFlight` was left permanently rejected or `#pending` leaked at >= 1.
+    boom = false;
+    money.record(draft('b'));
+    await expect(money.join()).resolves.toBeUndefined();
     expect(seen).toEqual(['b']);
+    expect(money.durabilityBroken).toBe(true); // sticky, as designed — usable is not the same as healthy
   });
 
   it('joins the CONSERVATIVE chain too — one join, not two (ADR-0077 §4)', async () => {

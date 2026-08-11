@@ -1,9 +1,10 @@
 /**
  * `CR-03` — the behavioural half of the machine-output floor.
  *
- * `#W15-10` built `stringifyJsonLine` and wired two call sites. `CR-03` found three more; the fold of its own
- * review then found a SIXTH (`commands/export.ts`) that a source-scanning regex had missed purely because
- * prettier wrapped the argument onto its own line. A guard that only checks the places someone remembered
+ * `#W15-10` built `stringifyJsonLine` and wired two call sites. `CR-03`'s finding named three more, and
+ * closing it routed FIVE — `commands/import.ts` and `commands/export.ts` write the same record shape and were
+ * not in the finding. `export.ts` was the last one found, and only because a source-scanning regex had missed
+ * it purely because prettier wrapped the argument onto its own line. A guard that only checks the places someone remembered
  * catches nothing new, so the CALL-SITE half is now an ESLint `no-restricted-syntax` selector in
  * `eslint.config.mjs` — it fires on the shape, anywhere in `apps/cli/src`, the first time a new surface is
  * written. That is the mechanism; this file keeps the reason it exists visible as executable behaviour.

@@ -2,7 +2,7 @@
 
 > Status: Living
 >
-> Last updated: 2026-08-10
+> Last updated: 2026-08-11
 
 - **Related**: [README.md](README.md), [phases/phase-2.5-cli-consolidation.md](phases/phase-2.5-cli-consolidation.md), [phases/phase-2.5.5-hardening-and-remediation.md](phases/phase-2.5.5-hardening-and-remediation.md), [phases/phase-2-cli.md](phases/phase-2-cli.md), [deferred-tasks.md](deferred-tasks.md), [../project-structure.md](../project-structure.md), [../tech-stack.md](../tech-stack.md)
 
@@ -90,7 +90,7 @@ flowchart TD
     W0["Wave 0 — One true baseline<br/>baseline ✅ · CI truth · numbers"]
     W1["Wave 1 — Stop the bleeding ✅<br/>3 CRITICALs · cost cap · ADR-0074"]
     LEDGER["#W15-1 — realized-cost ledger<br/>ADR-0076 implementation"]
-    P265["Phase 2.6.5 — Core reliability<br/>45 CR items · 8 P0 ADRs<br/>absorbs the hostile-MCP class"]
+    P265["Phase 2.6.5 — Core reliability<br/>46 CR items · 8 P0 ADRs<br/>absorbs the hostile-MCP class"]
     W2["Wave 2 — Shut the doors<br/>fs jail · secrets · config trust<br/>certifies 2.5.5 EXIT 1–3"]
     W3["Wave 3 — Clear the ground<br/>god-file decomposition · CLI net"]
     W4a["Wave 4a — The spine<br/>2.6.A/D/H/K + 2 ADRs"]
@@ -245,11 +245,17 @@ Ordered by whether the repo currently states something untrue, then by blast rad
 
 **Every item names the check that would close it, not just the defect.**
 
-> **Status, 2026-08-10 — 24 of 24 closed.** `#W15-1`, the last one, landed 2026-08-10 behind ADR-0076 +
-> ADR-0077 (see §A). Everything marked ✅ below is fixed,
-> break-verified with the mutation confirmed applied, and **merged to `main` via PR #81** (2026-08-09). §E's six coverage gaps
-> are all closed — `#W15-16`'s composition test fails by TIMING OUT when the abort listener is removed, which
-> is the unkillable run reproduced exactly rather than an assertion standing in for it.
+> **Status, 2026-08-10 — 24 of 24 closed, across TWO PRs.** Everything marked ✅ below is fixed and
+> break-verified with the mutation confirmed applied; the two PRs are recorded separately because the closure
+> dates and the merge states differ:
+>
+> - **23 items merged to `main` via PR #81** (2026-08-09).
+> - **`#W15-1`, the last one, landed 2026-08-10** behind ADR-0076 + ADR-0077 (see §A) and rides **PR #82**
+>   (`development` → `main`), which is open at the time of writing. It is closed as work, not yet merged.
+>
+> §E's six coverage gaps are all closed — `#W15-16`'s composition test fails by TIMING OUT when the abort
+> listener is removed, which is the unkillable run reproduced exactly rather than an assertion standing in
+> for it.
 >
 > **`#W15-2` closed 2026-08-09** as [ADR-0075](../decisions/0075-fail-closed-resume-on-an-unreadable-event-log.md),
 > amending ADR-0074 §5: a read that feeds a REPLAY refuses when any row was skipped, a read that feeds a
@@ -490,8 +496,10 @@ Two rules that changed with the plan review:
   inside the `ci` script; this phase edits `packages/core` heavily, and the CI coverage job does not block on
   `core`.
 
-Three items are already half-closed by Wave 1 and finish right after the oracle (`CR-01`–`CR-03`); `CR-03` is a
-propagation gap from `#W15-10`'s own fix — three `--json` paths never got the safe serializer.
+`CR-01`–`CR-03` were half-closed by Wave 1 and finished right after the oracle — **all three are closed as of
+2026-08-11** (PR #82). `CR-03` was a propagation gap from `#W15-10`'s own fix: the finding named three `--json`
+paths that never got the safe serializer, and closing it found **five**, which is why the call-site half is now
+an ESLint selector rather than a list.
 
 ### Wave 2 — Shut the doors
 
