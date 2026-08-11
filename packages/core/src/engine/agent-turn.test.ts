@@ -64,8 +64,20 @@ function scriptedProvider(id: ProviderId, scripts: StreamChunk[][]): LlmProvider
       throw new Error('generate not used in these tests');
     },
     stream: (): AsyncIterable<StreamChunk> => {
-      const chunks = scripts[call] ?? [];
+      // Indexed directly, NOT `scripts[call] ?? []` — matching `m2-e2e-harness.e2e.test.ts:102` and
+      // `m5-chat-harness.e2e.test.ts:77`, which already do. The `?? []` gave an unscripted call a SILENT
+      // EMPTY stream, which the chain reads today as a successful zero-usage attempt: a test that overran
+      // its script passed for a reason it never stated. `CR-14` turns that same shape into a classified
+      // error, so leaving the fallback here would have shown a wall of unrelated red in CR-14's own PR
+      // with real regressions hidden inside it. An overrun now yields `undefined` and fails loudly at the
+      // iteration site instead.
+      const chunks = scripts[call];
       call += 1;
+      if (chunks === undefined) {
+        throw new Error(
+          `scriptedProvider: unexpected stream call #${call} (only ${scripts.length} scripted)`,
+        );
+      }
       return streamOf(chunks);
     },
   };
