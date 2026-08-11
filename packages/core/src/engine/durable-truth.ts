@@ -22,10 +22,13 @@
  * in-memory harness views 1 and 2 are literally the same object.
  *
  * **What it CAN and CANNOT instrument, stated because the phase doc once claimed more.** It expresses
- * `CR-92` (terminal durable truth) and `CR-10` (the durable log is an ordered, gap-free prefix). It does NOT
- * express `CR-11` — it has no concept of run ownership or a fencing token — and it does NOT express `CR-12`,
- * which is about external effects and needs an effect-journal view plus a side-effect counter this module
- * does not model. Those two need their own predicates; this one is not the instrument for them.
+ * `CR-92` (terminal durable truth) and the ORDER half of `CR-10` only — the log moves forward and starts at
+ * its head. `CR-10`'s other half, that the committed events are a PREFIX of what the engine asked to persist,
+ * is not expressible here at all (see `checkLogShape` below for why) and belongs to `createAppendAudit` in
+ * `append-audit.ts`, which holds the ask-side witness this module lacks. It does NOT express `CR-11` — it has
+ * no concept of run ownership or a fencing token — and it does NOT express `CR-12`, which is about external
+ * effects and needs an effect-journal view plus a side-effect counter this module does not model. Those need
+ * their own predicates; this one is not the instrument for them.
  *
  * It also does not yet cover the RESUME view that `CR-91`'s acceptance criterion names. View 4 folds the log
  * locally, which is close but not the same thing: a real resume goes through the host's `Checkpointer`, and
@@ -378,8 +381,10 @@ function checkReconcileOutcome(
  *
  * So "no persisted event is missing from the middle" — CR-10's actual property — is NOT expressible from
  * the log alone: a streamed event's absence is indistinguishable from a lost one. CR-10's acceptance needs
- * a store harness that knows which events it was ASKED to persist. What the log can prove on its own is
- * that it starts at `run:started` (always seq 0, always durable) and only ever moves forward.
+ * a store harness that knows which events it was ASKED to persist. That harness now exists —
+ * `createAppendAudit` (`append-audit.ts`), a `RunStore` decorator that records the ask side. What the log can
+ * prove on its own, and all this function claims, is that it starts at `run:started` (always seq 0, always
+ * durable) and only ever moves forward.
  */
 function checkLogShape(ours: readonly RunEvent[], terminalCount: number): readonly string[] {
   const out: string[] = [];

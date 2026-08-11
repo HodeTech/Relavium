@@ -7,7 +7,7 @@
  * which take a number and are deliberately never persisted, so a healthy completed run reads
  * `[0,1,2,3,5,10,11,12,13,14]` and a streamed event's absence is byte-identical to a lost one. Asserting
  * `0..n-1` fails a correct engine — measured, in the durable-truth oracle, which records the same limitation
- * and points here.
+ * and points here (`durable-truth.ts`, `checkLogShape`).
  *
  * So the predicate needs a witness the log does not carry: **what the engine ASKED to persist**. This
  * decorator sits in front of a {@link RunStore} and records, per run, the order of asks, the order of
@@ -20,11 +20,20 @@
  * why a set comparison would pass a holed log and a prefix comparison would not. That distinction is what the
  * harness's own vacuity test mutates.
  *
- * **Ask ORDER is checked separately from the prefix.** A store may commit in order while the engine issued
- * the asks unordered; that is exactly the pre-`CR-10` state and it is a latent defect even when timing hides
- * it. {@link AppendAuditVerdict.askOrderViolations} reports it independently, so an engine change that
- * re-introduces concurrent starts goes red on a synchronous store where the commit order would still look
- * fine.
+ * **OVERLAP is the predicate that expresses the ordered append, and it is not the same as ask ORDER.** This
+ * distinction was measured, after a first version of this file got it wrong and said so in its own docblock.
+ * ADR-0078 §1's property is *"ask `N+1` is not ISSUED until `N` has SETTLED"* — and `askOrderViolations`
+ * cannot express it: the engine assigns the sequence number and starts the persist with **no await between
+ * them**, so its asks go out in sequence order whether or not they overlap. Run the pre-`CR-10` emit shape
+ * (persists started concurrently, in sequence order) against a synchronous store and the prefix, ask-order and
+ * commit-order predicates all verdict HOLDS — so `CR-10`'s own acceptance clause, *"break-verify by restoring
+ * the concurrent start"*, would go GREEN against the instrument built to prove it.
+ *
+ * {@link AppendAuditVerdict.overlapViolations} states the property directly: an ask issued for a run while a
+ * prior ask for that run is still in flight. That is what the pre-`CR-10` engine does on every event and what
+ * the tail removes. {@link AppendAuditVerdict.askOrderViolations} stays as a separate, weaker check — it
+ * catches a *differently* broken engine, one that assigns and issues out of sequence — and neither subsumes
+ * the other.
  *
  * **Scoped per RUN SEGMENT, not per runId for all time.** A resume re-seeds the bus from the durable maximum
  * (`bus.seedSequence(runId, lastSequenceNumber + 1)`), so a resumed leg legitimately begins at a sequence far
@@ -40,17 +49,33 @@ import type { RunEvent } from '@relavium/shared';
 
 import type { InterruptedRun, RunStore } from './execution-host.js';
 
-/** One recorded `persistEvent` call. `committedAt` is the ask index of the commit, so order is comparable. */
+/** One recorded `persistEvent` call. */
 export interface AppendAskRecord {
   readonly runId: string;
   readonly sequenceNumber: number;
   readonly type: RunEvent['type'];
   /** 0-based position in the ASK order — when `persistEvent` was called. */
   readonly askIndex: number;
-  /** 0-based position in the COMMIT order — when it resolved. `undefined` while in flight or if it rejected. */
+  /**
+   * 0-based position in the COMMIT order, from a counter shared across runs — so it orders commits within
+   * any single run even though its absolute value spans them. `undefined` while in flight, or if the ask
+   * rejected.
+   */
   readonly commitIndex: number | undefined;
   readonly outcome: 'pending' | 'committed' | 'rejected';
+  /**
+   * Sequence numbers for the SAME run that were still in flight when this ask was issued. Non-empty means the
+   * engine did not wait — the ordered-append property ADR-0078 §1 establishes, stated as data.
+   */
+  readonly overlappedWith: readonly number[];
 }
+
+/**
+ * The internal writer's view: {@link AppendAskRecord} with its `readonly`s removed, DERIVED rather than
+ * hand-copied. One array holds these and `records()` hands the same objects out under the readonly interface,
+ * so there is no second array to drift and no widening `as` at the construction site.
+ */
+type MutableAskRecord = { -readonly [K in keyof AppendAskRecord]: AppendAskRecord[K] };
 
 export interface AppendAuditVerdict {
   readonly holds: boolean;
@@ -64,7 +89,13 @@ export interface AppendAuditVerdict {
    * Empty when the committed set is a clean prefix (including the empty and fully-committed cases).
    */
   readonly holes: readonly number[];
-  /** Asks issued out of sequence order — the pre-`CR-10` concurrent start, visible even when commits are ordered. */
+  /**
+   * Asks issued while a prior ask for the same run was still in flight — the ordered-append property stated
+   * directly, and the ONE predicate that separates the pre-`CR-10` engine from the post-`CR-10` one. See the
+   * module docblock: the other three all verdict HOLDS against a concurrent start on a synchronous store.
+   */
+  readonly overlapViolations: readonly string[];
+  /** Asks issued out of SEQUENCE order — a differently broken engine, not the concurrent start. */
   readonly askOrderViolations: readonly string[];
   /** Commits that landed out of sequence order. */
   readonly commitOrderViolations: readonly string[];
@@ -88,8 +119,14 @@ export interface AppendAudit {
  *
  * Returning `'commit'` lets the write through. Returning a rejection makes the ask fail, which is how a hole
  * is MANUFACTURED: fail sequence `N` while letting `N+1` through, and a store without an ordered tail commits
- * `N+1` anyway. With the tail in place the engine never issues `N+1`'s ask at all, which is the property
- * under test — so the two halves of `CR-10` are checked by two different assertions on the same fixture.
+ * `N+1` anyway.
+ *
+ * **Which section of ADR-0078 stops that, stated because a first draft of this comment got it backwards.**
+ * §1's tail does NOT stop the later ask from being issued — §6 deliberately preserves `#emitDurable`'s
+ * totality for non-terminal events, so a failed write is absorbed and the run keeps emitting. What stops the
+ * hole is §2's compare-and-append, which REJECTS the later append at the store. The two halves are therefore
+ * checked by two different assertions: {@link AppendAuditVerdict.overlapViolations} for §1's ordering, and
+ * {@link AppendAuditVerdict.holes} for §2's guard.
  */
 export type AppendFault = (event: RunEvent, askIndex: number) => 'commit' | Error;
 
@@ -104,15 +141,7 @@ function isBefore(a: number, b: number): boolean {
 
 /** Wrap a {@link RunStore} so its append behaviour can be audited. The inner store is otherwise untouched. */
 export function createAppendAudit(inner: RunStore, options: AppendAuditOptions = {}): AppendAudit {
-  const records: AppendAskRecord[] = [];
-  const mutable: {
-    runId: string;
-    sequenceNumber: number;
-    type: RunEvent['type'];
-    askIndex: number;
-    commitIndex: number | undefined;
-    outcome: 'pending' | 'committed' | 'rejected';
-  }[] = [];
+  const records: MutableAskRecord[] = [];
   let commitCounter = 0;
 
   const store: RunStore = {
@@ -120,20 +149,29 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
     listInterruptedRuns: (): Promise<readonly InterruptedRun[]> => inner.listInterruptedRuns(),
     persistEvent: async (event: RunEvent): Promise<void> => {
       // A dual event with no runId is out of the run store's scope, exactly as `InMemoryRunStore` treats it.
-      // Recording it would put a `sessionId`-only event into a run's ask list and manufacture a false hole.
+      // What this guard actually buys — corrected, because the first version of this comment claimed the
+      // wrong thing: false-hole protection comes from the per-run filter in `verdict` below, which would drop
+      // a `runId`-less record anyway. The guard keeps such an event out of `records()`, out of `runIds()`,
+      // and out of the `askIndex` numbering the `fault` hook sees — so an auditing caller's indices count the
+      // run's own appends and nothing else.
       if (event.runId === undefined) {
         await inner.persistEvent(event);
         return;
       }
-      const entry = {
+      // THE ordered-append observation, taken at ask time because it cannot be reconstructed afterwards: a
+      // settled record looks identical whether or not something else was in flight beside it.
+      const overlappedWith = records
+        .filter((r) => r.runId === event.runId && r.outcome === 'pending')
+        .map((r) => r.sequenceNumber);
+      const entry: MutableAskRecord = {
         runId: event.runId,
         sequenceNumber: event.sequenceNumber,
         type: event.type,
-        askIndex: mutable.length,
-        commitIndex: undefined as number | undefined,
-        outcome: 'pending' as 'pending' | 'committed' | 'rejected',
+        askIndex: records.length,
+        commitIndex: undefined,
+        outcome: 'pending',
+        overlappedWith,
       };
-      mutable.push(entry);
       records.push(entry);
 
       const fault = options.fault?.(event, entry.askIndex) ?? 'commit';
@@ -154,7 +192,7 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
   };
 
   const verdict = (runId: string): AppendAuditVerdict => {
-    const mine = mutable.filter((r) => r.runId === runId);
+    const mine = records.filter((r) => r.runId === runId);
     const asked = mine.map((r) => r.sequenceNumber);
     const committedRecords = mine
       .filter((r) => r.outcome === 'committed')
@@ -186,8 +224,31 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
       );
     }
 
-    // 2. ASK ORDER, independently. This is the half a synchronous store hides: it can commit in order while
-    //    the engine issued the asks concurrently, which is the pre-CR-10 state and a latent defect.
+    // 2. OVERLAP — the ordered-append property itself, and the only predicate here that separates the
+    //    pre-CR-10 engine from the post-CR-10 one. Measured: with a concurrent start on a synchronous store,
+    //    every OTHER predicate in this function verdicts HOLDS, so CR-10's own "break-verify by restoring the
+    //    concurrent start" would have gone green against the instrument built to prove it.
+    const overlapViolations: string[] = [];
+    for (const record of mine) {
+      if (record.overlappedWith.length > 0) {
+        overlapViolations.push(
+          `sequence ${String(record.sequenceNumber)} (${record.type}) was asked while ` +
+            `${JSON.stringify(record.overlappedWith)} ${record.overlappedWith.length === 1 ? 'was' : 'were'} ` +
+            `still in flight`,
+        );
+      }
+    }
+    if (overlapViolations.length > 0) {
+      problems.push(
+        `the engine did not WAIT for the previous append to settle (${String(overlapViolations.length)}): ` +
+          `${overlapViolations.join('; ')} — the writes overlap, so nothing but the store's timing keeps the ` +
+          `log a prefix`,
+      );
+    }
+
+    // 3. ASK ORDER. A weaker, DIFFERENT check: an engine that assigns and issues out of sequence. Neither
+    //    this nor the overlap predicate subsumes the other — an engine can overlap in perfect sequence order
+    //    (today's) or issue sequentially out of order (a broken seq assignment).
     const askOrderViolations: string[] = [];
     for (let i = 1; i < mine.length; i += 1) {
       const prev = mine[i - 1];
@@ -231,6 +292,7 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
       asked,
       committed,
       holes,
+      overlapViolations,
       askOrderViolations,
       commitOrderViolations,
       problems,
@@ -241,7 +303,7 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
     store,
     records: () => records,
     verdict,
-    runIds: () => [...new Set(mutable.map((r) => r.runId))],
+    runIds: () => [...new Set(records.map((r) => r.runId))],
   };
 }
 
@@ -251,6 +313,7 @@ export function formatAppendAudit(verdict: AppendAuditVerdict): string {
     `append audit for run ${verdict.runId}: ${verdict.holds ? 'HOLDS' : 'VIOLATED'}`,
     `  asked    : ${JSON.stringify(verdict.asked)}`,
     `  committed: ${JSON.stringify(verdict.committed)}`,
+    `  overlaps : ${String(verdict.overlapViolations.length)}`,
     ...verdict.problems.map((p) => `  ✖ ${p}`),
   ].join('\n');
 }

@@ -167,6 +167,10 @@ describe('createAppendAudit', () => {
     const verdict = audit.verdict('r1');
     expect(verdict.holds, formatAppendAudit(verdict)).toBe(true);
     expect(verdict.asked).toEqual([0, 2]);
+    // These two are what observe the GUARD; the two above observe the per-run filter and pass with the guard
+    // deleted. Measured: without them this test survived removing the very branch its title names.
+    expect(audit.records()).toHaveLength(2);
+    expect(audit.runIds()).toEqual(['r1']);
   });
 
   it('is EMPTY-safe — a run with no asks holds vacuously and reports nothing', async () => {
@@ -209,5 +213,80 @@ describe('createAppendAudit', () => {
     const verdict = audit.verdict('r1');
     expect(verdict.holds).toBe(false);
     expect(verdict.holes).toEqual([2]);
+    // THE assertion the title promises, and the one that was missing: `holds`/`holes` above are computed from
+    // the same `outcome === 'committed'` filter and read identically whether the inner rejection was recorded
+    // as `rejected` or dropped on the floor. This is what distinguishes the two.
+    expect(audit.records().map((r) => r.outcome)).toEqual(['committed', 'rejected', 'committed']);
+  });
+
+  // --- the OVERLAP predicate: the ordered append itself ---------------------------------------------
+
+  it('catches OVERLAPPING asks — the pre-CR-10 concurrent start, which no other predicate sees', async () => {
+    // The engine today assigns the sequence number and starts the persist with NO await between them, so its
+    // asks go out in perfect sequence order and commit in order on a synchronous store. Measured: prefix,
+    // ask-order and commit-order ALL verdict HOLDS against that shape. Without this predicate, CR-10's own
+    // acceptance clause — "break-verify by restoring the concurrent start" — would go green.
+    // A SYNCHRONOUS store — `InMemoryRunStore`, and `better-sqlite3` behaves the same way — so the commits
+    // land in ask order and the commit-order predicate stays silent. That is the case that matters: ADR-0078
+    // measured out-of-order commit as unreachable on the CLI's own store, so the ONLY thing left to catch the
+    // concurrent start is the overlap. (Against an ASYNC store an overlap also perturbs commit order, which
+    // is why this fixture is deliberately the harder one.)
+    const audit = createAppendAudit(new InMemoryRunStore());
+
+    // Both asks issued before either settles — exactly what `#emitDurable` does today.
+    const first = audit.store.persistEvent(started(0));
+    const second = audit.store.persistEvent(completedNode(1));
+    await Promise.all([first, second]);
+
+    const verdict = audit.verdict('r1');
+    expect(verdict.holds).toBe(false);
+    expect(verdict.overlapViolations).toHaveLength(1);
+    expect(verdict.problems.some((p) => p.includes('did not WAIT'))).toBe(true);
+    // …and every OTHER predicate is silent, which is the whole point.
+    expect(verdict.holes).toEqual([]);
+    expect(verdict.askOrderViolations).toEqual([]);
+    expect(verdict.commitOrderViolations).toEqual([]);
+    expect(verdict.committed).toEqual([0, 1]);
+  });
+
+  it('an ORDERED append holds — each ask issued only after the previous settled', async () => {
+    // The post-CR-10 shape. Same store, same events; only the engine's waiting changes.
+    const audit = createAppendAudit(new InMemoryRunStore());
+    await audit.store.persistEvent(started(0));
+    await audit.store.persistEvent(completedNode(1));
+
+    const verdict = audit.verdict('r1');
+    expect(verdict.holds, formatAppendAudit(verdict)).toBe(true);
+    expect(verdict.overlapViolations).toEqual([]);
+    expect(audit.records().map((r) => r.overlappedWith)).toEqual([[], []]);
+  });
+
+  it('does not count ANOTHER run`s in-flight ask as an overlap', async () => {
+    // Two runs writing concurrently is legitimate — the ordered append is per RUN. Scoping the overlap check
+    // globally would have made every parallel run fail, which is the false-positive direction.
+    const inner = new InMemoryRunStore();
+    let release: (() => void) | undefined;
+    const slow = {
+      resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
+      listInterruptedRuns: () => inner.listInterruptedRuns(),
+      persistEvent: async (event: RunEvent): Promise<void> => {
+        if (event.runId === 'r1') {
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+        await inner.persistEvent(event);
+      },
+    };
+    const audit = createAppendAudit(slow);
+
+    const held = audit.store.persistEvent(started(0, 'r1'));
+    await Promise.resolve();
+    await audit.store.persistEvent(started(0, 'r2'));
+    release?.();
+    await held;
+
+    expect(audit.verdict('r2').overlapViolations).toEqual([]);
+    expect(audit.verdict('r2').holds).toBe(true);
   });
 });
