@@ -39,6 +39,7 @@ import {
   type AbortSignalLike,
   type ContentPart,
   type MediaReferencePort,
+  type DurableWriteContext,
   type MediaStore,
   type RunEvent,
 } from '@relavium/shared';
@@ -1046,8 +1047,17 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
   it('conservative commitment: the node boundary WAITS for the commitment`s durable write (ADR-0074 §2)', async () => {
     // §2's other barrier: "the enclosing turn completion waits for the commitment's durability acknowledgement".
     // Under a SYNCHRONOUS store the ordering happens by accident, which is why removing the flush went unnoticed;
-    // persists are deliberately concurrent ("Persists stay concurrent; only delivery is serialized"). So the store
-    // here defers the commitment's write, and the node's own terminal must not be persisted until it lands.
+    // so the store here defers the commitment's write, and the node's own terminal must not be persisted until
+    // it lands.
+    //
+    // **What this test does and no longer does, recorded rather than left implied (clause 4).** It was written
+    // when `#emitDurable` started each persist concurrently. ADR-0078 §1's ordered tail now serializes the
+    // appends for a run outright, so the ORDERING half below holds whether or not the money barrier exists —
+    // review measured that deleting the flush leaves this green. The ordering assertion is kept because it is
+    // still the documented behaviour and would catch a regression in the TAIL; what it no longer does is pin
+    // the barrier. The barrier's own half — that `join()` OBSERVES a retained failure rather than merely
+    // awaiting it — is pinned by the ADR-0077 ledger tests further down this file and by
+    // `money-durability.test.ts`, which is where a reader should look for it.
     let releaseCommitWrite: (() => void) | undefined;
     const inner = new InMemoryRunStore();
     const persistOrder: string[] = [];
@@ -2055,6 +2065,130 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(verdict.holds, formatAppendAudit(verdict)).toBe(true);
   });
 
+  it('append audit: reconcile() carries the guard too — the SECOND write path (ADR-0078 §3)', async () => {
+    // `reconcile()` bypasses `#emitDurable` entirely and calls the store directly, so every property
+    // established at that choke point has to be re-established here or it holds for one of two writers. Had
+    // no test at all. The scenario: another process appends after `listInterruptedRuns` read the log, so the
+    // repair's belief is stale — it must be REFUSED rather than write a terminal past the newer event.
+    const store = new InMemoryRunStore();
+    const host = createInMemoryHost({ store });
+    const engine = buildEngine(host, () => scriptedProvider([textTurn('x')]));
+
+    const runId = 'r-interrupted';
+    const base = { runId, timestamp: '2026-01-01T00:00:00.000Z' } as const;
+    await store.persistEvent({
+      type: 'run:started',
+      ...base,
+      sequenceNumber: 0,
+      workflowId: '00000000-0000-4000-8000-000000000001',
+      inputs: {},
+      executionMode: 'local',
+    });
+    await store.persistEvent({
+      type: 'node:started',
+      ...base,
+      sequenceNumber: 1,
+      nodeId: 'n',
+      nodeType: 'agent',
+    });
+    // `listInterruptedRuns` will report lastSequenceNumber = 2 once this lands; reconcile then believes 2.
+    await store.persistEvent({
+      type: 'node:skipped',
+      ...base,
+      sequenceNumber: 2,
+      nodeId: 'm',
+      reason: 'branch_not_taken',
+    });
+
+    const first = await engine.reconcile();
+    expect(first.map((e) => e.type)).toEqual(['run:failed']); // the ordinary repair lands
+
+    // Now the run already has a terminal, so a SECOND reconcile's belief is stale by construction.
+    const second = await engine.reconcile();
+    expect(second).toEqual([]); // refused (or skipped) — never a second terminal
+    const terminals = store
+      .eventsFor(runId)
+      .filter((e) => e.type === 'run:failed' || e.type === 'run:completed');
+    expect(terminals).toHaveLength(1); // exactly-one-terminal survives the second writer
+  });
+
+  it('append audit: the engine PASSES the guard, with the right belief, and exempts the terminal', async () => {
+    // Nothing observed the engine SIDE of ADR-0078 §2 — measured, both mutations pass the whole suite:
+    // dropping the ctx entirely (the guard disconnected from the durable write path) and guarding the
+    // terminal too (ADR-0036's exemption removed) each left all of `packages/core` green. A recording double
+    // rather than the audit decorator, so this test does not depend on the harness being right.
+    const seen: { seq: number; type: string; expected: number | undefined }[] = [];
+    const inner = new InMemoryRunStore();
+    const recording = {
+      resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
+      listInterruptedRuns: () => inner.listInterruptedRuns(),
+      persistEvent: async (event: RunEvent, ctx?: DurableWriteContext): Promise<void> => {
+        seen.push({
+          seq: event.sequenceNumber,
+          type: event.type,
+          expected: ctx?.expectedLastSequenceNumber,
+        });
+        await inner.persistEvent(event, ctx);
+      },
+    };
+    const host = createInMemoryHost({ store: recording });
+    const provider = scriptedProvider([textTurn('a summary')]);
+    const { events } = await drive(
+      buildEngine(host, () => provider).start({ workflow: HAPPY_PATH, inputs: INPUTS }),
+      host,
+    );
+    expect(events.at(-1)?.type).toBe('run:completed');
+
+    // Every NON-terminal ask carries a belief, and it is the previous ask's sequence — not the previous
+    // COMMITTED one, and not `undefined`.
+    const nonTerminal = seen.filter((a) => !a.type.startsWith('run:'));
+    expect(nonTerminal.length).toBeGreaterThan(1);
+    expect(nonTerminal[0]?.expected).toBeDefined();
+    for (let i = 1; i < nonTerminal.length; i += 1) {
+      expect(nonTerminal[i]?.expected).toBe(nonTerminal[i - 1]?.seq);
+    }
+    // The first ask of the run believes the log is empty.
+    expect(seen[0]?.expected).toBe(-1);
+    // And the TERMINAL is unguarded — exactly-one-terminal outranks the guard (ADR-0036; CR-92 owns the
+    // terminal's disposition). Asserted, because guarding it here would break resume in a way no other test
+    // in this file would notice.
+    const terminal = seen.at(-1);
+    expect(terminal?.type).toBe('run:completed');
+    expect(terminal?.expected).toBeUndefined();
+  });
+
+  it('append audit: a LOST non-terminal write makes the engine`s next ask fail closed (CR-10 acceptance)', async () => {
+    // CR-10's acceptance clause — "a crash injected between the two must leave a prefix with no hole" —
+    // driven through the real engine rather than at the store. One `node:completed` write is dropped; the
+    // guard must then REFUSE the sibling's append rather than let it land past the gap, because the engine
+    // keeps emitting (ADR-0078 §6 preserves totality for non-terminals).
+    let dropped = 0;
+    const audit = createAppendAudit(new InMemoryRunStore(), {
+      fault: (event) => {
+        if (event.type === 'node:completed' && dropped === 0) {
+          dropped += 1;
+          return new Error('the write was lost');
+        }
+        return 'commit';
+      },
+    });
+    const host = createInMemoryHost({ store: audit.store });
+    const provider = scriptedProvider([textTurn('one'), textTurn('two')]);
+    const { events } = await drive(
+      buildEngine(host, () => provider).start({ workflow: PARALLEL_PAIR, inputs: INPUTS }),
+      host,
+    );
+
+    expect(dropped).toBe(1); // the fault really fired — without this the rest is vacuous
+    expect(events.at(-1)?.type).toBe('run:failed');
+    const verdict = audit.verdict(audit.runIds()[0] ?? '');
+    // The sibling append after the loss was REFUSED, not committed past the gap. `committed` is therefore a
+    // strict prefix of `asked` for the non-terminal segment, which is CR-10's property.
+    const rejected = audit.records().filter((r) => r.outcome === 'rejected');
+    expect(rejected.length).toBeGreaterThanOrEqual(1);
+    expect(verdict.overlapViolations).toEqual([]);
+  });
+
   it('append audit: a FAN-OUT run no longer overlaps its appends (CR-10 — the assertion that flipped)', async () => {
     // **This assertion is the acceptance, and it FLIPPED here.** It was written one commit earlier as
     // `expect(overlapViolations.length).toBeGreaterThan(0)` — the measured pre-CR-10 baseline, in which a
@@ -2084,5 +2218,13 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     // would be the obvious way for this test to lie.
     expect(verdict.asked.length).toBeGreaterThan(4);
     expect(verdict.committed).toEqual(verdict.asked);
+    // …and the PREMISE is asserted, not assumed: both nodes were genuinely in flight together. Without this
+    // a one-character change to `max_parallel` (or a scheduler change) would turn the assertion above into a
+    // tautology about a sequential run, which is green for a reason that has nothing to do with CR-10.
+    const startedAt = events.findIndex((e) => e.type === 'node:started');
+    const secondStart = events.findIndex((e, i) => i > startedAt && e.type === 'node:started');
+    const firstComplete = events.findIndex((e) => e.type === 'node:completed');
+    expect(secondStart).toBeGreaterThan(-1);
+    expect(secondStart).toBeLessThan(firstComplete);
   });
 });

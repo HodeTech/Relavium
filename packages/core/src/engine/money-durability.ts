@@ -153,6 +153,11 @@ export class MoneyDurability {
    * it absorbs a `persistEvent` rejection into the run's failure state and RESOLVES — so a caller that only
    * awaits proceeds on a run whose write did not land. The throw is how a caller in the turn core, which has
    * no access to the engine's own failure state, observes it.
+   *
+   * **ADR-0078's ordered append does not change this argument** — re-derived rather than left to age. Its
+   * compare-and-append refusal is one more NON-TERMINAL store rejection, absorbed by the same total catch,
+   * and both money events are non-terminal. So the observe half is still the only thing that turns an
+   * absorbed fault into a throw, and the barrier is still not merely an await.
    */
   async join(): Promise<void> {
     if (this.#pending > 0 || this.#failure !== undefined) {

@@ -2203,7 +2203,10 @@ class RunExecution {
    * still in flight, and a crash in that window loses money the provider may have billed.
    *
    * The catch below is a BACKSTOP, and on the run path it is deliberately unreachable: `#emitDurable` is total for
-   * store faults, so a failed non-terminal write sets `#failure` and aborts there rather than rejecting. It
+   * store faults, so a failed non-terminal write sets `#failure` and aborts there rather than rejecting. **That
+   * still holds under ADR-0078's ordered append** — §2's `AppendConflictError` is a non-terminal store
+   * rejection like any other, absorbed by the same catch, so the write path still resolves and this argument
+   * is unchanged rather than merely un-revisited. It
    * matters for a HOST-wired governor whose sink can reject — the chat path, once §4 gives it a real durable
    * write. Kept here so the two surfaces cannot diverge in what a durability failure means: never a released
    * reservation, always a loud failure.
@@ -2274,7 +2277,9 @@ class RunExecution {
     // first (the `await` below), THEN `#bus.next` assigns the seq and the per-run `#deliveryTail` capture
     // happens — with NO `await` between them, so seq-assignment-and-delivery-chaining stays atomic per
     // event; chaining each deliver onto the single tail makes a higher-seq event wait for the lower-seq
-    // event's deliver. Persists stay concurrent; only delivery is serialized. (The de-inline `await`
+    // event's deliver. **The tail now serializes the ASK, the WRITE and the DELIVERY** (ADR-0078 §1) — it
+    // once serialized delivery only, with each `persistEvent` started before the previous was joined, and
+    // "persists stay concurrent" is the sentence ADR-0078's Context quotes as the defect. (The de-inline `await`
     // moves WHEN the seq is assigned relative to other emits — gap-free + monotonic still hold, since the
     // counter only advances on a successful `next`, and concurrent events have no canonical order.)
     // Without the tail, two concurrent leaf nodes under an ASYNC store (1.R SQLite, cloud) could resolve

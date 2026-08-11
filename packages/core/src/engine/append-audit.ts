@@ -75,6 +75,12 @@ export interface AppendAskRecord {
    * engine did not wait — the ordered-append property ADR-0078 §1 establishes, stated as data.
    */
   readonly overlappedWith: readonly number[];
+  /**
+   * The belief the caller carried in its {@link DurableWriteContext}, or `undefined` for an unguarded
+   * append. Recorded so a WRONG belief is visible in the record rather than only as a store rejection —
+   * the harness's whole job is to see the ask side, and the belief is the ask's most load-bearing field.
+   */
+  readonly expectedLastSequenceNumber: number | undefined;
 }
 
 /**
@@ -154,7 +160,12 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
   const store: RunStore = {
     resolveWorkflowId: (slug) => inner.resolveWorkflowId(slug),
     listInterruptedRuns: (): Promise<readonly InterruptedRun[]> => inner.listInterruptedRuns(),
-    persistEvent: async (event: RunEvent): Promise<void> => {
+    // Typed as the port's own member rather than re-spelled, so `CR-11`'s fencing token and `CR-12`'s
+    // journal correlation cannot be dropped here the way `CR-10`'s guard was: a decorator that names the
+    // signature by hand silently keeps compiling when the signature grows, and this one did — it forwarded
+    // only the event, so ADR-0078 §2's compare-and-append was OFF for every store the harness wrapped.
+    // Found by review; the harness built to certify CR-10 was disabling the thing it certifies.
+    persistEvent: async (event, ctx): Promise<void> => {
       // A dual event with no runId is out of the run store's scope, exactly as `InMemoryRunStore` treats it.
       // What this guard actually buys — corrected, because the first version of this comment claimed the
       // wrong thing: false-hole protection comes from the per-run filter in `verdict` below, which would drop
@@ -162,7 +173,7 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
       // and out of the `askIndex` numbering the `fault` hook sees — so an auditing caller's indices count the
       // run's own appends and nothing else.
       if (event.runId === undefined) {
-        await inner.persistEvent(event);
+        await inner.persistEvent(event, ctx);
         return;
       }
       // THE ordered-append observation, taken at ask time because it cannot be reconstructed afterwards: a
@@ -178,6 +189,7 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
         commitIndex: undefined,
         outcome: 'pending',
         overlappedWith,
+        expectedLastSequenceNumber: ctx?.expectedLastSequenceNumber,
       };
       records.push(entry);
 
@@ -191,7 +203,7 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
       try {
         const fault = options.fault?.(event, entry.askIndex) ?? 'commit';
         if (fault !== 'commit') throw fault;
-        await inner.persistEvent(event);
+        await inner.persistEvent(event, ctx);
       } catch (error) {
         entry.outcome = 'rejected';
         throw error;

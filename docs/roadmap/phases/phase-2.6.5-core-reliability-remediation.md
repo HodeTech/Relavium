@@ -384,7 +384,7 @@ truth undermines both. `CR-13`, `CR-14` and `CR-15`+`CR-17` are independent line
 Seven of the eight are the set all three reviews converged on. `CR-17` was added by the plan review of this
 document and verified against the engine's own interface contract.
 
-### CR-10 — The durable event log is not a gap-free ordered prefix · Blocker · needs an ADR
+### CR-10 — The durable event log is not a gap-free ordered prefix · Blocker · ✅ CLOSED 2026-08-11
 
 **Evidence.** The engine assigns sequence numbers centrally but starts each event's persistence independently
 for concurrency; the code comment states the split explicitly ("persistence concurrent, delivery serialized").
@@ -428,6 +428,26 @@ compare-and-append against the expected last sequence.
 **Acceptance.** A store harness that delays event `N` and commits `N+1` must be rejected, not accepted. A crash
 injected between the two must leave a prefix with no hole. Existing gap-free assertions must still pass.
 Break-verify by restoring the concurrent start.
+
+**Closed — the code that closes it, per exit criterion 7.** [ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md)
+§1–§3, implemented across `engine.ts` (`await prior` moved above the persist, so one tail serializes ask →
+write → deliver; `#lastAskedSequenceNumber` seeded from the checkpoint on resume; `reconcile()` carrying the
+same guard), `execution-host.ts` + `packages/shared/src/run.ts` (`DurableWriteContext`, `AppendConflictError`,
+and the reference store enforcing the identical predicate), and `run-history-store.ts` (`max(seq)` inside the
+existing `IMMEDIATE` transaction through `tx`). The canonical policy edit landed in
+[database-schema.md](../../reference/shared-core/database-schema.md) §"Concurrency & transaction behavior".
+
+The acceptance was discharged by **flipping a test rather than adding one**: the fan-out case in
+`m2-e2e-harness.e2e.test.ts` was written one commit earlier asserting `overlapViolations.length > 0` — the
+measured pre-`CR-10` baseline — and inverted here. Break-verified in the phase's own words: putting
+`await prior` back below the persist reddens it again.
+
+**Two things this item does NOT close, named rather than implied.** The run TERMINAL is exempt from the guard,
+because exactly-one-terminal (ADR-0036) outranks it — so a terminal can still land past a hole left by a lost
+non-terminal write. That is `CR-92`'s outbox to own, and until it lands `CR-10`'s prefix property holds for the
+non-terminal segment only. And the guard is proven against the reference store and the SQLite store's own unit
+tests; an end-to-end certification through the real `history.db` in `apps/cli` rides with `CR-92`, whose
+acceptance names that surface explicitly.
 
 ### CR-11 — No cross-process run ownership or fencing · Blocker · needs an ADR
 

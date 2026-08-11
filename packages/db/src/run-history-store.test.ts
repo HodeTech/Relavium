@@ -80,10 +80,12 @@ describe('createRunHistoryStore', () => {
   // --- the compare-and-append guard (CR-10, ADR-0078 §2) ----------------------------------------------
 
   it('REFUSES an append whose expected last sequence does not match the log', async () => {
-    // CR-10's acceptance, driven at the store because it is unreachable through the engine once ADR-0078
-    // §1's ordered tail is in place — the engine can no longer hand the store a holed ask. This is the half
-    // that keeps the guarantee for the OTHER writers: a second process, a replay, a cloud store whose
-    // commits are genuinely concurrent.
+    // Driven at the store because that is where the OTHER writers live — a second process, a replay, a
+    // cloud store whose commits are genuinely concurrent. An earlier version of this comment claimed the
+    // guard was "unreachable through the engine once the ordered tail is in place", and measurement says
+    // otherwise: the engine keeps emitting after a lost non-terminal write (ADR-0078 §6 totality), so its
+    // very next guarded ask is a holed one and the guard refuses it on the run path. That case has its own
+    // end-to-end test in `m2-e2e-harness.e2e.test.ts`.
     const workflowId = await store.resolveWorkflowId('demo');
     await store.persistEvent(
       ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
@@ -140,6 +142,42 @@ describe('createRunHistoryStore', () => {
     );
     await store.persistEvent(ev('node:skipped', 7, { nodeId: 'n', reason: 'branch_not_taken' }));
     expect(store.loadRunEvents('run-1').map((e) => e.sequenceNumber)).toEqual([0, 7]);
+  });
+
+  it('scopes the guard PER RUN — another run`s appends do not move this one`s maximum', async () => {
+    // Measured gap: dropping the `where(eq(runEvents.runId, runId))` from the guard's `max(seq)` passed all
+    // 307 tests in this package, while its in-memory twin had exactly this case. Two concurrent runs sharing
+    // one history.db is the ordinary CLI situation, so an unscoped guard would refuse every second run.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+    await store.persistEvent(ev('node:skipped', 5, { nodeId: 'n', reason: 'branch_not_taken' }), {
+      expectedLastSequenceNumber: 0,
+    });
+
+    const other = createRunHistoryStore(client.db, {
+      uuid: () => counterUuid(++next),
+      now: () => TS_MS,
+      workflow: { ...WORKFLOW, slug: 'other' },
+    });
+    const otherWorkflowId = await other.resolveWorkflowId('other');
+    // `run-2`'s first append believes ITS log is empty. With an unscoped `max(seq)` the store would see 5.
+    await expect(
+      other.persistEvent(
+        {
+          type: 'run:started',
+          runId: 'run-2',
+          timestamp: TS,
+          sequenceNumber: 0,
+          workflowId: otherWorkflowId,
+          inputs: {},
+          executionMode: 'local',
+        },
+        { expectedLastSequenceNumber: -1 },
+      ),
+    ).resolves.toBeUndefined();
   });
 
   it('persistEvent YIELDS the event loop between retries — it is on the async twin (#226)', async () => {

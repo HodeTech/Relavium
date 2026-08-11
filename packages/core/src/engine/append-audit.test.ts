@@ -1,4 +1,4 @@
-import type { RunEvent } from '@relavium/shared';
+import { isAppendConflictError, type RunEvent } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { createAppendAudit, formatAppendAudit } from './append-audit.js';
@@ -280,6 +280,40 @@ describe('createAppendAudit', () => {
     // THE assertion: the second ask saw nothing in flight. Without the fix this is `[0]`.
     expect(audit.records()[1]?.overlappedWith).toEqual([]);
     expect(audit.verdict('r1').overlapViolations).toEqual([]);
+  });
+
+  it('FORWARDS the durable-write context — a decorator that drops it disables the guard it audits', async () => {
+    // The defect this closes was live: the decorator re-spelled `persistEvent`'s signature by hand, so when
+    // ADR-0078 §2 added `ctx` the harness silently kept compiling and forwarded only the event. Every store
+    // driven through the instrument built to certify CR-10 ran with CR-10's guard OFF.
+    const seen: (number | undefined)[] = [];
+    const recording = {
+      resolveWorkflowId: (slug: string) => Promise.resolve(slug),
+      listInterruptedRuns: () => Promise.resolve([]),
+      persistEvent: (_event: RunEvent, ctx?: { readonly expectedLastSequenceNumber: number }) => {
+        seen.push(ctx?.expectedLastSequenceNumber);
+        return Promise.resolve();
+      },
+    };
+    const audit = createAppendAudit(recording);
+    await audit.store.persistEvent(started(0), { expectedLastSequenceNumber: -1 });
+    await audit.store.persistEvent(completedNode(1), { expectedLastSequenceNumber: 0 });
+
+    expect(seen).toEqual([-1, 0]);
+    // …and the belief is on the record too, so a WRONG one is visible from the ask side rather than only as
+    // a store rejection.
+    expect(audit.records().map((r) => r.expectedLastSequenceNumber)).toEqual([-1, 0]);
+  });
+
+  it('forwards the context on the REAL guard — a stale belief still reaches the store', async () => {
+    // The decorator must not absorb a conflict either. Driven against the reference store, which enforces
+    // the identical compare-and-append.
+    const audit = createAppendAudit(new InMemoryRunStore());
+    await audit.store.persistEvent(started(0), { expectedLastSequenceNumber: -1 });
+    await expect(
+      audit.store.persistEvent(completedNode(2), { expectedLastSequenceNumber: 1 }),
+    ).rejects.toSatisfy(isAppendConflictError);
+    expect(audit.records().map((r) => r.outcome)).toEqual(['committed', 'rejected']);
   });
 
   it('does not count ANOTHER run`s in-flight ask as an overlap', async () => {

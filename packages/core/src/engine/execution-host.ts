@@ -120,11 +120,18 @@ export interface RunStore {
    * `session:*` events (ADR-0036), but those are never routed here — session persistence is `history.db` /
    * `session_messages`, workstream 1.X, out of the run store's scope.
    *
-   * `ctx` is OPTIONAL at the type level and that is a deliberate, bounded compromise (ADR-0078 §2): the
-   * engine always supplies it, and a store must apply the guard whenever it is present. Making it required
-   * would break every direct-seeding test double in the repo for no guarantee — the guard's job is to catch
-   * a writer whose belief is stale, and a caller that holds no belief has none to check. A store that wants
-   * to refuse unguarded writes outright may do so; none does today.
+   * **`ctx` is OPTIONAL at the type level, which is NARROWER than ADR-0078 §2's `persistEvent(event, ctx)`.**
+   * Recorded as a deviation rather than presented as the decision, because §4 of the same ADR rejects exactly
+   * this shape for the outbox port — "optional here would mean a host that forgets the port silently has no
+   * guarantee". The two differ in what absence means: a host with no outbox loses a guarantee it was supposed
+   * to provide, while a caller with no `ctx` holds no belief for the guard to check, and the guard's whole job
+   * is to catch a STALE belief. Requiring it would force every direct-seeding fixture in the repo to fabricate
+   * one, which is a worse failure mode: a fabricated belief is a wrong belief.
+   *
+   * The residual risk is real and named: a future production caller that forgets `ctx` writes unguarded and
+   * nothing fails. What closes it is that the engine has exactly two `persistEvent` call sites — `#emitDurable`
+   * and `reconcile()` — both of which pass it, both of which are pinned by tests. A store may refuse an
+   * unguarded write outright; none does today.
    */
   persistEvent: (event: RunEvent, ctx?: DurableWriteContext) => Promise<void>;
   /** Runs with a `run:started` but no terminal event — for startup crash reconciliation. */
