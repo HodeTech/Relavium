@@ -29,6 +29,17 @@ export const EXIT_CODES = {
    * treat the run as done-but-unrecorded and re-check `relavium status` after a subsequent invocation.
    */
   durabilityUncertain: 5,
+  /**
+   * The run is owned by ANOTHER PROCESS — this invocation refused rather than becoming a second producer
+   * ([ADR-0079](../../../../docs/decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §7).
+   *
+   * Distinct from `invalidInvocation` because it is the only engine-state refusal that is **transient**. Every
+   * other one — unknown run, wrong workflow, already terminal — is a mistake in the call and will fail
+   * identically forever; this one resolves on its own when the other process finishes or its lease expires
+   * (at most `RUN_LEASE_TTL_MS`). An automation loop has to be able to tell "try again shortly" from "never
+   * call this again", and a single blanket code cannot express that.
+   */
+  runOwnedElsewhere: 6,
 } as const;
 
 export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];

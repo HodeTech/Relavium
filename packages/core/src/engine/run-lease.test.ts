@@ -10,7 +10,7 @@
  */
 
 import type { RunEvent, RunFence, RunLeasePort } from '@relavium/shared';
-import { LeaseFencedError } from '@relavium/shared';
+import { LeaseFencedError, RUN_LEASE_TTL_MS } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
@@ -210,5 +210,59 @@ describe('ADR-0079 §4 — ownership is given up when the process stops WORKING 
     }
     expect(await leases.read(handle.runId)).toBeUndefined();
     expect(host.livenessCount()).toBe(0); // and the beat stopped with it
+  });
+});
+
+describe('ADR-0079 §7 — reconcile() never terminates a run somebody else is running', () => {
+  /** Seed a run that has a `run:started` and no terminal — what a crashed process leaves behind. */
+  async function seedInterrupted(store: InMemoryRunStore, runId: string): Promise<void> {
+    const workflowId = await store.resolveWorkflowId(LINEAR.workflow.id);
+    await store.persistEvent({
+      type: 'run:started',
+      runId,
+      sequenceNumber: 0,
+      timestamp: '2026-01-01T00:00:00.000Z',
+      workflowId,
+      inputs: {},
+      executionMode: 'local',
+    });
+  }
+
+  it('SKIPS a run holding a live lease, and reconciles one whose lease has expired', async () => {
+    const store = new InMemoryRunStore();
+    let clock = 1_000_000;
+    const leases = createInMemoryRunLeases(() => clock);
+    await seedInterrupted(store, 'run-live');
+    await seedInterrupted(store, 'run-dead');
+    // Two owners, both mid-run when their processes were interrupted. Only one is still alive.
+    await leases.acquire('run-live', 'owner-live', RUN_LEASE_TTL_MS);
+    await leases.acquire('run-dead', 'owner-dead', RUN_LEASE_TTL_MS);
+    clock += RUN_LEASE_TTL_MS + 1; // both TTLs elapse…
+    await leases.heartbeat('run-live', { ownerId: 'owner-live', generation: 1 }, RUN_LEASE_TTL_MS);
+
+    const host = createInMemoryHost({ store, runLeases: leases });
+    const repaired = await new WorkflowEngine({ host, executor: new Stub() }).reconcile();
+
+    // Only the dead one is failed. Terminating `run-live` would kill a run another process is finishing.
+    expect(repaired.map((event) => event.runId)).toEqual(['run-dead']);
+    expect(store.eventsFor('run-live').map((event) => event.type)).toEqual(['run:started']);
+  });
+
+  it('BUMPS the generation on takeover, so the dead owner is fenced if it ever wakes', async () => {
+    const store = new InMemoryRunStore();
+    let clock = 1_000_000;
+    const leases = createInMemoryRunLeases(() => clock);
+    await seedInterrupted(store, 'run-zombie');
+    const stale = await leases.acquire('run-zombie', 'owner-dead', RUN_LEASE_TTL_MS);
+    clock += RUN_LEASE_TTL_MS + 1;
+
+    const host = createInMemoryHost({ store, runLeases: leases });
+    await new WorkflowEngine({ host, executor: new Stub() }).reconcile();
+
+    // The zombie wakes holding its old fence. Its generation is behind, so a heartbeat tells it it lost —
+    // which is the only thing that stops it appending past the terminal reconciliation just wrote.
+    expect(stale).toBeDefined();
+    if (stale === undefined) throw new Error('the seed acquire must succeed');
+    expect(await leases.heartbeat('run-zombie', stale, RUN_LEASE_TTL_MS)).toBe(false);
   });
 });

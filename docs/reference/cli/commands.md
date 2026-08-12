@@ -358,7 +358,10 @@ CI relies on deterministic exit codes:
 | `3` | Run paused at a human gate (CI/non-interactive mode) — resume with `relavium gate` |
 | `4` | A chat session ended — via `/exit`, `/cancel` (or Ctrl-C in TTY mode), or an input-stream EOF — a user-initiated end of a `relavium chat` REPL — see [chat-session.md](chat-session.md) |
 | `5` | The run produced a terminal, but whether it reached the durable log is **not known** ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §5) |
+| `6` | The run is owned by **another process** — this invocation refused rather than becoming a second producer ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §7). The only **transient** code: retry shortly |
 
+> Exit code `6` is the one refusal worth retrying unchanged. Every other invocation fault (`2`) is a mistake in the call and fails identically forever, while `6` means another `relavium` process holds a live lease on the run and resolves on its own when that process finishes or its lease expires. An automation loop should back off and retry on `6`, and never on `2`.
+>
 > Exit code `3` lets CI distinguish a pause-for-approval (a `run:paused` event — the run's aggregate suspension, a human/approval/budget gate — in non-interactive mode) from a hard failure. This is the canonical home for the gate-paused code; other docs reference it as `3`.
 >
 > Under `--json`, a pre-run fault (exit `2`) writes its structured `{ "type": "error", … }` detail to **stderr** while stdout stays empty ([ADR-0049](../../decisions/0049-cli-machine-output-contract.md)) — the exit code is the primary fault signal; read stderr for the detail.

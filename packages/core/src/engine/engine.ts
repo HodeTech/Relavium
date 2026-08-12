@@ -3138,6 +3138,16 @@ export class WorkflowEngine {
         // unknown_run by design — never silently, and never a corrupted half-run.
         continue;
       }
+      // **Never terminate a run another process is working on (ADR-0079 §7).** `reconcile()` writes a
+      // terminal for every non-resumable interrupted run, and it runs from a process that may not own any of
+      // them. A run holding a LIVE lease is mid-execution somewhere else — leaving it interrupted is correct,
+      // because whoever owns it will settle it.
+      //
+      // An EXPIRED lease is taken over rather than ignored, and the takeover is what makes this safe: the
+      // acquire bumps the generation, so if the dead owner ever wakes, its every write is fenced. Reconciling
+      // under the old generation would leave a zombie able to append past the terminal written here.
+      const fence = await this.#claimForReconcile(run.runId);
+      if (fence === undefined) continue;
       const event = RunEventSchema.parse({
         type: 'run:failed',
         runId: run.runId,
@@ -3159,6 +3169,7 @@ export class WorkflowEngine {
         // or settled — makes this append fail closed instead of appending a second terminal past it.
         await this.#host.store.persistEvent(event, {
           expectedLastSequenceNumber: run.lastSequenceNumber,
+          fence,
         });
         reconciled.push(event);
         // Reclaim the crashed run's media references at this terminal (1.AF/D11, ADR-0042 §4): a
@@ -3171,9 +3182,45 @@ export class WorkflowEngine {
       } catch {
         // A store fault reconciling one run must not abandon the rest: skip it (it stays interrupted
         // and is retried on the next reconcile). Reconciliation is best-effort and idempotent.
+      } finally {
+        // Give the takeover claim back either way. The run is settled (nothing left to own) or the write
+        // failed (the next reconcile re-claims, bumping the generation again) — holding it would only block
+        // the retry for a TTL. The generation still only moves forward, so nothing is un-fenced by this.
+        await this.#releaseReconcileClaim(run.runId, fence);
       }
     }
     return reconciled;
+  }
+
+  /**
+   * Take ownership of an interrupted run so it can be reconciled, or decline it (ADR-0079 §7).
+   *
+   * Returns `undefined` — "leave this run alone" — whenever the takeover does not succeed, which is exactly
+   * when another process holds a LIVE lease on the run. That is `acquire`'s own rule ("a different owner
+   * holding a live lease is the only refusal"), so the acquire IS the check; an expired lease is a takeover
+   * that bumps the generation, which is what fences the dead owner if it ever wakes.
+   *
+   * Deliberately not a `read` followed by an `acquire`. The read would be redundant with the refusal and,
+   * worse, not atomic with it — the lease can expire or change hands between the two, so the pair can decide
+   * on a state that no longer holds while the acquire alone decides inside one transaction.
+   */
+  async #claimForReconcile(runId: string): Promise<RunFence | undefined> {
+    try {
+      return await this.#host.runLeases.acquire(runId, this.#ownerId, RUN_LEASE_TTL_MS);
+    } catch {
+      // A lease port that cannot be reached is not licence to reconcile blind — the whole point is to avoid
+      // terminating somebody else's run, and an unreachable lease means we cannot tell. Fail closed.
+      return undefined;
+    }
+  }
+
+  /** Hand back a reconcile takeover claim; a failure only costs a TTL, never correctness. */
+  async #releaseReconcileClaim(runId: string, fence: RunFence): Promise<void> {
+    try {
+      await this.#host.runLeases.release(runId, fence);
+    } catch {
+      // Left to expire on its own TTL — slower, never wrong.
+    }
   }
 
   /**
@@ -3227,9 +3274,17 @@ export class WorkflowEngine {
         await this.#forgetOutbox(runId);
         continue;
       }
+      // **A run another process is actively running must not receive a DEAD process's terminal.** The same
+      // §7 hazard `reconcile()` has, and it is sharper here: the held event is a terminal a crashed process
+      // built from ITS view of the run. If a live owner has since resumed that run — a gate resume, say —
+      // writing this would durably contradict the run it is finishing right now. Left in the outbox and
+      // re-evaluated on the next start, when it will almost always be dropped as already-terminal.
+      const fence = await this.#claimForReconcile(runId);
+      if (fence === undefined) continue;
       try {
         await this.#host.store.persistEvent(event, {
           expectedLastSequenceNumber: open.lastSequenceNumber,
+          fence,
         });
         await this.#forgetOutbox(runId);
         // The D11 terminal sweep, exactly as `reconcile()`'s own repair arm does it (ADR-0042 §4). The
@@ -3240,6 +3295,8 @@ export class WorkflowEngine {
       } catch {
         // Still unwritable, or another process moved the log first. The entry stays for the next start; the
         // run keeps reporting `uncertain`.
+      } finally {
+        await this.#releaseReconcileClaim(runId, fence);
       }
     }
     return written;

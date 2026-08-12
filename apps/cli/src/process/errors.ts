@@ -15,6 +15,12 @@ export type CliErrorCode =
   | 'config_error'
   /** A documented command whose implementing workstream has not landed yet → exit 2. */
   | 'not_implemented'
+  /**
+   * Another process holds a live lease on the run — this invocation refused rather than becoming a second
+   * side-effect producer (ADR-0079 §7) → exit 6. The only TRANSIENT code here: it is worth retrying
+   * unchanged, which is exactly what distinguishes it from `invalid_invocation`.
+   */
+  | 'run_owned_elsewhere'
   /** An unexpected CLI fault → exit 1 (the user-facing message stays generic). */
   | 'internal';
 
@@ -22,6 +28,7 @@ const EXIT_CODE_BY_ERROR: Readonly<Record<CliErrorCode, ExitCode>> = {
   invalid_invocation: EXIT_CODES.invalidInvocation,
   config_error: EXIT_CODES.invalidInvocation,
   not_implemented: EXIT_CODES.invalidInvocation,
+  run_owned_elsewhere: EXIT_CODES.runOwnedElsewhere,
   internal: EXIT_CODES.workflowFailed,
 };
 

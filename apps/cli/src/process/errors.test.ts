@@ -15,6 +15,7 @@ describe('EXIT_CODES', () => {
       // ADR-0078 §5 — the run produced a terminal whose durable write is not known to have landed.
       // Deliberately neither 0 nor 1: reporting success would be as wrong as reporting failure.
       durabilityUncertain: 5,
+      runOwnedElsewhere: 6,
     });
   });
 });
@@ -27,6 +28,10 @@ describe('CliError', () => {
 
   it('maps internal to exit 1', () => {
     expect(new CliError('internal', 'oops').exitCode).toBe(EXIT_CODES.workflowFailed);
+    // The one TRANSIENT refusal gets its own code, distinct from every other invocation fault (ADR-0079 §7):
+    // a caller must be able to tell "retry shortly" from "never call this again", and exit 2 cannot say it.
+    expect(new CliError('run_owned_elsewhere', 'busy').exitCode).toBe(EXIT_CODES.runOwnedElsewhere);
+    expect(EXIT_CODES.runOwnedElsewhere).not.toBe(EXIT_CODES.invalidInvocation);
   });
 
   it('carries the code discriminant and is identifiable', () => {

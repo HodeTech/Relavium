@@ -172,7 +172,7 @@ export type {
 } from './engine/node-executor.js';
 
 // Typed run-loop API-boundary errors (1.N) — narrow on `code`, never on `message`.
-export { EngineStateError } from './engine/errors.js';
+export { EngineStateError, isTransientEngineStateError } from './engine/errors.js';
 export type { EngineStateErrorCode } from './engine/errors.js';
 
 // Typed run-loop substrate INVARIANT breaches (the bus/stream "can never happen" asserts) — surfaced loud

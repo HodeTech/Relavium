@@ -3,6 +3,7 @@ import { statSync } from 'node:fs';
 
 import {
   EngineStateError,
+  isTransientEngineStateError,
   type CheckpointState,
   type RunHandle,
   type WorkflowDefinition,
@@ -136,13 +137,13 @@ async function resumeOrFail(
     return await engine.resumeFromCheckpoint(params);
   } catch (err) {
     if (err instanceof EngineStateError) {
-      throw new CliError(
-        'invalid_invocation',
-        `cannot resume run ${params.runId}: ${err.message}`,
-        {
-          cause: err,
-        },
-      );
+      // A TRANSIENT refusal gets its own code, and therefore its own exit code (ADR-0079 §7). Another
+      // process is running this gate right now; the caller should retry shortly, not conclude the command
+      // was malformed. Every other engine-state refusal is a permanent invocation fault.
+      const code = isTransientEngineStateError(err) ? 'run_owned_elsewhere' : 'invalid_invocation';
+      throw new CliError(code, `cannot resume run ${params.runId}: ${err.message}`, {
+        cause: err,
+      });
     }
     throw err;
   }
