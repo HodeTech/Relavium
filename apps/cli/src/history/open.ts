@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 
 import type { WorkflowDefinition } from '@relavium/core';
 import { createRunHistoryStore, type Db, type RunHistoryStore } from '@relavium/db';
@@ -14,6 +15,12 @@ export interface OpenedHistory {
    * connection with run history, closed once by {@link close}.
    */
   readonly db: Db;
+  /**
+   * Where a terminal the store refused is held (ADR-0078 §4) — `~/.relavium/terminal-outbox.ndjson`, beside
+   * `history.db` and deliberately NOT inside it. The store that must hold a refused terminal is the store
+   * that just refused it, so the outbox has to be a different file to survive the fault class it exists for.
+   */
+  readonly terminalOutboxPath: string;
   readonly close: () => void;
 }
 
@@ -42,5 +49,10 @@ export function openHistoryStore(
       definitionJson: JSON.stringify(workflow),
     },
   });
-  return { store, db, close };
+  return {
+    store,
+    db,
+    terminalOutboxPath: join(homeDir, '.relavium', 'terminal-outbox.ndjson'),
+    close,
+  };
 }

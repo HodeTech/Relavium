@@ -143,6 +143,8 @@ describe('generative media-output — end-to-end on the CLI (2.S acceptance)', (
           },
         }),
         db: client.db,
+        // CR-92's outbox lives beside history.db; a temp path keeps the fixture off ~/.relavium (ADR-0078 §4).
+        terminalOutboxPath: join(tmpdir(), 'relavium-test-outbox.ndjson'),
         close: () => {},
       }),
     };

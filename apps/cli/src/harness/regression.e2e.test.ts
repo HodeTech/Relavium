@@ -363,6 +363,9 @@ describe('engine regression harness (2.K) — offline fixtures over `relavium ru
           },
         }),
         db: runClient.db,
+        // CR-92's outbox lives beside history.db; a fixture points it at a temp path so nothing touches
+        // the developer's ~/.relavium (ADR-0078 §4).
+        terminalOutboxPath: join(tmpdir(), 'relavium-test-outbox.ndjson'),
         close: () => {},
       });
 

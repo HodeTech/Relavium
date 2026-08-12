@@ -79,9 +79,16 @@ export function createFileTerminalOutbox(path: string): TerminalOutbox {
     put: (event) => {
       try {
         if (!existsSync(dirname(path))) return Promise.resolve();
+        // **A LEADING newline, not only a trailing one** — found by this file's own test. A process killed
+        // mid-append leaves a partial last line with no terminator; appending straight onto it CONCATENATES,
+        // producing one corrupt line that swallows the NEW entry as well as the truncated one. So a crash
+        // during the write that this outbox exists to survive would have cost the very next terminal. The
+        // reader skips blank lines, so the extra byte is free, and this needs no read of the existing file —
+        // which matters, because `put` runs on a path that has just seen I/O fail.
+        //
         // `stringifyJsonLine`, not a bare `JSON.stringify` — this line is read back and re-parsed, and the
         // payload carries model output. The escape is lossless, so the round-trip is exact (`CR-03`).
-        appendFileSync(path, `${stringifyJsonLine(event)}\n`, { mode: FILE_MODE });
+        appendFileSync(path, `\n${stringifyJsonLine(event)}\n`, { mode: FILE_MODE });
         ensureMode();
       } catch {
         // Deliberately silent — see the module docblock. The run reports `uncertain` either way.

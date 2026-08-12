@@ -237,7 +237,13 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
         toolEnv,
         onEffortWithheld,
         onUnpriced,
-        host: createCliHost(opened.store, { media: wiring.media }),
+        host: createCliHost(opened.store, {
+          media: wiring.media,
+          // ADR-0078 §4: a terminal the store refuses is held in a SEPARATE FILE beside history.db. Wiring
+          // the real path here is what makes the guarantee exist on the shipping surface — the in-memory
+          // reference the host defaults to survives nothing, which is fatal in a one-shot CLI process.
+          terminalOutboxPath: opened.terminalOutboxPath,
+        }),
         resolveMediaSurface: wiring.resolveMediaSurface,
         ...(wiring.mediaCostEstimate === undefined
           ? {}

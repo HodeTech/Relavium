@@ -18,6 +18,8 @@ import {
 import { MaskedSecretSchema, WorkflowSchema, type RunStatus } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
+import { join } from 'node:path';
+
 import { openLocalDb } from '../db/open.js';
 import {
   buildEngine as defaultBuildEngine,
@@ -278,7 +280,13 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       // tool-using agent node on the FAR side of a human gate reads/writes the ORIGINAL project context
       // (checkpoint/resume parity), not the gate caller's directory, and not `tool_unavailable`.
       toolEnv: { workspaceDir: saveToRoot, fsScopeTier: config.fsScope ?? 'sandboxed' },
-      host: createCliHost(store, { checkpointer, media: wiring.media }),
+      host: createCliHost(store, {
+        checkpointer,
+        media: wiring.media,
+        // Same outbox as the  path, and it must be the SAME FILE: a gate resume settles a run whose
+        // terminal a different process may already have failed to write (ADR-0078 §4).
+        terminalOutboxPath: join(homeDir, '.relavium', 'terminal-outbox.ndjson'),
+      }),
       resolveMediaSurface: wiring.resolveMediaSurface,
       ...(wiring.mediaCostEstimate === undefined
         ? {}

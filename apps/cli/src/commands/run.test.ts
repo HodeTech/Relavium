@@ -252,6 +252,9 @@ function historyOpenRunStore(db: Db): NonNullable<RunCommandDeps['openRunStore']
       },
     }),
     db,
+    // CR-92's outbox lives beside history.db; a fixture points it at a temp path so nothing touches
+    // the developer's ~/.relavium (ADR-0078 §4).
+    terminalOutboxPath: join(tmpdir(), 'relavium-test-outbox.ndjson'),
     close: () => {},
   });
 }
