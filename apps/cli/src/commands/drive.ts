@@ -7,7 +7,12 @@ import {
   type WorkflowEngine,
   type WorkflowModelCatalog,
 } from '@relavium/core';
-import type { HumanGatePausedEvent, RunEvent, RunPausedEvent } from '@relavium/shared';
+import type {
+  HumanGatePausedEvent,
+  RunDurability,
+  RunEvent,
+  RunPausedEvent,
+} from '@relavium/shared';
 
 import type { GatePrompter } from '../gate/prompter.js';
 import { CliError } from '../process/errors.js';
@@ -213,13 +218,25 @@ export function shouldBreakOnPause(
 }
 
 /**
- * Map a {@link RunOutcome} (or `undefined` — the stream ended with no terminal/paused, an abnormal unwind) to
- * its CLI exit code. The single owner of the outcome→exit contract, shared by `run` and `gate` so the two can
+ * Map a {@link RunOutcome} (or `undefined` — the stream ended with no terminal/paused, an abnormal unwind) plus
+ * the handle's durability disposition to a CLI exit code. The single owner of the outcome→exit contract, shared by `run` and `gate` so the two can
  * never drift and a new `RunOutcome` variant has exactly one place to update. (`gate` handles its own
  * `undefined` case — an idempotent closed-handle resume → exit 0 — BEFORE calling this; here `undefined` is the
  * generic abnormal-unwind → failure, which is what `run` wants.)
  */
-export function outcomeToExitCode(outcome: RunOutcome | undefined): ExitCode {
+export function outcomeToExitCode(
+  outcome: RunOutcome | undefined,
+  /**
+   * The handle's durability disposition (ADR-0078 §5). `'uncertain'` OUTRANKS a `completed` outcome: the
+   * terminal was delivered in-process but its durable write did not land, so exiting 0 would tell a script
+   * the run is recorded when it is not — the exact claim `CR-92` exists to stop. Absent ⇒ treated as
+   * durable, which is what every pre-CR-92 caller assumed and what a surface with no handle can honestly say.
+   */
+  durability?: RunDurability,
+): ExitCode {
+  if (durability === 'uncertain') {
+    return EXIT_CODES.durabilityUncertain;
+  }
   switch (outcome) {
     case 'completed':
       return EXIT_CODES.success;

@@ -12,6 +12,9 @@ describe('EXIT_CODES', () => {
       invalidInvocation: 2,
       gatePaused: 3,
       chatEnded: 4,
+      // ADR-0078 §5 — the run produced a terminal whose durable write is not known to have landed.
+      // Deliberately neither 0 nor 1: reporting success would be as wrong as reporting failure.
+      durabilityUncertain: 5,
     });
   });
 });

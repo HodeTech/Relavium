@@ -18,6 +18,17 @@ export const EXIT_CODES = {
    * EOF — from a `relavium chat` (2.M) or `relavium chat-resume` (2.N) REPL (both drive the same loop).
    */
   chatEnded: 4,
+  /**
+   * The run produced a terminal, but whether that terminal reached the durable log is **not known**
+   * ([ADR-0078](../../../../docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §5).
+   *
+   * Distinct from `workflowFailed` on purpose, and the distinction is the whole point of `CR-92`: the run may
+   * well have COMPLETED — the outputs are in the delivered terminal — and only its durable record is missing.
+   * Reporting it as a failure would be as wrong as reporting it as a success. The terminal is held in the
+   * host's terminal outbox and retried on the next `relavium` start; a caller scripting against this should
+   * treat the run as done-but-unrecorded and re-check `relavium status` after a subsequent invocation.
+   */
+  durabilityUncertain: 5,
 } as const;
 
 export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];

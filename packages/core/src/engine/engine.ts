@@ -2333,10 +2333,20 @@ class RunExecution {
     const prior = this.#deliveryTail;
     // **The ordered append (ADR-0078 §1), and it is one line.** `expectedLastSequenceNumber` is read HERE,
     // synchronously, before the region is entered — reading it inside would race with a concurrent emitter
-    // that has already advanced it, which is the very interleaving the tail exists to remove. The terminal
-    // is exempt: exactly-one-terminal (ADR-0036) outranks the guard, and a terminal the store will not take
-    // is CR-92's outbox to own, not this guard's to refuse. Stated because the exemption is a real hole
-    // until CR-92 lands, not an oversight.
+    // that has already advanced it, which is the very interleaving the tail exists to remove.
+    //
+    // **The terminal stays exempt, and CR-92 is where that was DECIDED rather than deferred.** The original
+    // reason — "a terminal the store will not take has nowhere to go" — is gone: §4's outbox now gives it a
+    // home, so a guarded terminal that conflicted would report `uncertain` and be re-appended by the drain
+    // with a fresh belief. It is exempt on a different ground. Guarding it would convert the COMMON case —
+    // a non-terminal write was lost, so `#lastAskedSequenceNumber` no longer matches the log — into a run
+    // whose terminal is refused, reported `uncertain`, and only lands at the next `reconcile()`. That trades
+    // a run that ends correctly-but-with-a-hole for one that does not durably end at all, on the failure
+    // path, which is the wrong direction. Exactly-one-terminal (ADR-0036) also outranks the guard.
+    //
+    // The residual is stated rather than hidden: a terminal can still land past a hole left by a lost
+    // non-terminal write. `checkDurableTruth` reports that log as ordered and `createAppendAudit` reports it
+    // as holed — which is the honest pair, since the run really did end and really did lose an event.
     const expectedLastSequenceNumber = this.#lastAskedSequenceNumber;
     const guarded = !TERMINAL_TYPES.has(event.type);
     if (guarded) {

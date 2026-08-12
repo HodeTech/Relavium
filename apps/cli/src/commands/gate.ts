@@ -329,7 +329,8 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       currentRunId: args.runId,
       graceMs: config.mediaGcGraceMs,
     });
-    return outcomeToExitCode(outcome);
+    // Same rule as  (ADR-0078 §5) — the resumed leg's terminal is durable, or the run says so.
+    return outcomeToExitCode(outcome, handle.durability());
   } finally {
     opened.close();
   }

@@ -7,11 +7,13 @@ import {
 import type { GateDecision, RunEvent, RunPausedEvent } from '@relavium/shared';
 import { describe, expect, it, vi } from 'vitest';
 
+import { EXIT_CODES } from '../process/exit-codes.js';
+
 import { buildEngine } from '../engine/build-engine.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import type { RunRenderer } from '../render/renderer.js';
 import { captureIo } from '../test-support.js';
-import { driveRun, isTerminalOutcome, shouldBreakOnPause } from './drive.js';
+import { driveRun, isTerminalOutcome, outcomeToExitCode, shouldBreakOnPause } from './drive.js';
 
 // gate → out: a single approval gate, then completes. The in-memory host pauses at the fail-closed gate.
 const GATED = `schema_version: '1.0'
@@ -228,5 +230,37 @@ describe('isTerminalOutcome', () => {
     expect(isTerminalOutcome('cancelled')).toBe(true);
     expect(isTerminalOutcome('paused')).toBe(false); // resumable — its media must survive
     expect(isTerminalOutcome(undefined)).toBe(false); // an abnormal no-terminal unwind
+  });
+});
+
+describe('outcomeToExitCode — the durability disposition (CR-92, ADR-0078 §5)', () => {
+  it('UNCERTAIN outranks a completed outcome — a delivered terminal that is not recorded is not success', () => {
+    // THE contract CR-92 exists for. Before this, `relavium run` exited 0 while the durable log had no
+    // terminal at all, so a script was told the run was recorded when it was not.
+    expect(outcomeToExitCode('completed', 'uncertain')).toBe(EXIT_CODES.durabilityUncertain);
+  });
+
+  it('UNCERTAIN outranks failed and cancelled too — it is about the RECORD, not the outcome', () => {
+    // Deliberately neither 0 nor 1: the run may have completed and only its record be missing, so reporting
+    // failure would be as wrong as reporting success.
+    expect(outcomeToExitCode('failed', 'uncertain')).toBe(EXIT_CODES.durabilityUncertain);
+    expect(outcomeToExitCode('cancelled', 'uncertain')).toBe(EXIT_CODES.durabilityUncertain);
+  });
+
+  it('a DURABLE terminal keeps its ordinary code — the negative control', () => {
+    // Without this the assertions above pass for an implementation that returns 5 unconditionally.
+    expect(outcomeToExitCode('completed', 'durable')).toBe(EXIT_CODES.success);
+    expect(outcomeToExitCode('failed', 'durable')).toBe(EXIT_CODES.workflowFailed);
+    expect(outcomeToExitCode('paused', 'durable')).toBe(EXIT_CODES.gatePaused);
+  });
+
+  it('an ABSENT disposition is treated as durable — what a caller with no handle can honestly say', () => {
+    expect(outcomeToExitCode('completed')).toBe(EXIT_CODES.success);
+    expect(outcomeToExitCode('failed')).toBe(EXIT_CODES.workflowFailed);
+  });
+
+  it('a PENDING disposition is not uncertain — a run with no terminal yet is an abnormal unwind, not a lost write', () => {
+    expect(outcomeToExitCode('completed', 'pending')).toBe(EXIT_CODES.success);
+    expect(outcomeToExitCode(undefined, 'pending')).toBe(EXIT_CODES.workflowFailed);
   });
 });

@@ -283,7 +283,9 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       graceMs: config.mediaGcGraceMs,
     });
 
-    return outcomeToExitCode(outcome);
+    // The handle's disposition OUTRANKS the outcome (ADR-0078 §5): a delivered `run:completed` whose
+    // durable write did not land must not exit 0, or a script is told the run is recorded when it is not.
+    return outcomeToExitCode(outcome, handle.durability());
   } finally {
     // Guarantee the MCP teardown runs EVEN IF the db close throws — a nested finally so neither resource leaks.
     // Present only when an inline agent declared a server; idempotent. A teardown error must never mask the run

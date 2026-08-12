@@ -444,10 +444,12 @@ measured pre-`CR-10` baseline — and inverted here. Break-verified in the phase
 
 **Two things this item does NOT close, named rather than implied.** The run TERMINAL is exempt from the guard,
 because exactly-one-terminal (ADR-0036) outranks it — so a terminal can still land past a hole left by a lost
-non-terminal write. That is `CR-92`'s outbox to own, and until it lands `CR-10`'s prefix property holds for the
-non-terminal segment only. And the guard is proven against the reference store and the SQLite store's own unit
-tests; an end-to-end certification through the real `history.db` in `apps/cli` rides with `CR-92`, whose
-acceptance names that surface explicitly.
+non-terminal write, and `CR-10`'s prefix property holds for the non-terminal segment only. `CR-92` **decided**
+that exemption rather than removing it: once §4's outbox exists a guarded terminal *could* be refused, but
+doing so would turn the common "a non-terminal write was lost" case into a run that never durably ends, which
+is the wrong trade on the failure path. The reasoning is recorded at the guard itself. And the guard is proven
+against the reference store and the SQLite store's own unit tests; the end-to-end certification through the
+real `history.db` in `apps/cli` rides with `CR-92`.
 
 ### CR-11 — No cross-process run ownership or fencing · Blocker · needs an ADR
 
