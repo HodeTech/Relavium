@@ -113,6 +113,7 @@ export {
   InMemoryRunStore,
   createInMemoryHost,
   createInMemoryCheckpointer,
+  createInMemoryTerminalOutbox,
   createAbortController,
   createManualTimerController,
 } from './engine/execution-host.js';

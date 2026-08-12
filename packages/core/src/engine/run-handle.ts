@@ -14,7 +14,7 @@
  * persisted `run_events` — 1.R; the in-process replay path is out of 1.N scope and noted here.)
  */
 
-import type { RunEvent, RunOrSessionEvent } from '@relavium/shared';
+import type { RunDurability, RunEvent, RunOrSessionEvent } from '@relavium/shared';
 
 import type { RunEventBus, RunEventListener } from './event-bus.js';
 import { BoundedEventStream, DEFAULT_STREAM_CAPACITY } from './event-stream.js';
@@ -47,6 +47,16 @@ export interface RunHandle {
   cancel: () => void;
   /** Resolves when the primary consumer's buffer has drained below capacity — the engine awaits it to throttle. */
   whenConsumersReady: () => Promise<void>;
+  /**
+   * Whether the run's terminal reached the durable log (ADR-0078 §5). `'pending'` until a terminal is
+   * delivered; then `'durable'`, or `'uncertain'` when the write did not land and the terminal was handed to
+   * the host's {@link TerminalOutbox} instead.
+   *
+   * **Read it after the stream completes**, not during. A caller that only drains `events` and acts on the
+   * terminal type is doing what every surface did before this existed, and is exactly the caller CR-92 is
+   * about: it can be told a run completed while the durable record says otherwise.
+   */
+  durability: () => RunDurability;
 }
 
 /**
@@ -63,6 +73,8 @@ export function createRunHandle(
   runId: string,
   cancel: () => void,
   capacity: number = DEFAULT_STREAM_CAPACITY,
+  /** Read by {@link RunHandle.durability}; the engine sets it as the terminal's write settles (ADR-0078 §5). */
+  readDurability: () => RunDurability = () => 'pending',
 ): RunHandle {
   // `onClose: unsubscribe` detaches the bus subscription on ANY close — the terminal event below OR an early
   // consumer abandon (`break`/`return` → BoundedEventStream.return() → close()) — not only on a terminal.
@@ -87,6 +99,7 @@ export function createRunHandle(
       }),
     cancel,
     whenConsumersReady: () => primary.whenDrained(),
+    durability: readDurability,
   };
 }
 
@@ -106,5 +119,8 @@ export function createClosedRunHandle(runId: string): RunHandle {
     subscribe: () => () => undefined,
     cancel: () => undefined,
     whenConsumersReady: () => Promise.resolve(),
+    // The run terminated in a PRIOR process and its terminal is in the persisted log — that is what makes
+    // this handle closed at all. Reporting anything else would be a guess about a write we did not make.
+    durability: () => 'durable',
   };
 }

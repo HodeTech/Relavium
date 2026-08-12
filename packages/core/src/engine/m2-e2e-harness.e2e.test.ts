@@ -53,7 +53,12 @@ import { createAppendAudit, formatAppendAudit } from './append-audit.js';
 import { reconstructCheckpointState } from './checkpoint.js';
 import { WorkflowEngine } from './engine.js';
 import { checkDurableTruth, formatDurableTruth } from './durable-truth.js';
-import { createInMemoryHost, InMemoryRunStore } from './execution-host.js';
+import {
+  createInMemoryHost,
+  createInMemoryTerminalOutbox,
+  InMemoryRunStore,
+  type RunStore,
+} from './execution-host.js';
 import { createStandardNodeExecutor } from './node-handlers/dispatcher.js';
 import type { RunHandle } from './run-handle.js';
 
@@ -2063,6 +2068,122 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(verdict.committed).toEqual(verdict.asked);
     expect(verdict.overlapViolations, formatAppendAudit(verdict)).toEqual([]);
     expect(verdict.holds, formatAppendAudit(verdict)).toBe(true);
+  });
+
+  // --- CR-92: the terminal outbox and the uncertain disposition (ADR-0078 §4, §5) -------------------
+
+  /** A store whose TERMINAL write always fails; everything else lands. The CR-92 fixture. */
+  function terminalRefusingStore(): RunStore {
+    const inner = new InMemoryRunStore();
+    return {
+      resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
+      listInterruptedRuns: () => inner.listInterruptedRuns(),
+      persistEvent: async (event: RunEvent, ctx?: DurableWriteContext): Promise<void> => {
+        if (event.type === 'run:completed' || event.type === 'run:failed') {
+          throw new Error('the terminal write failed');
+        }
+        await inner.persistEvent(event, ctx);
+      },
+    };
+  }
+
+  it('CR-92: a terminal the store refuses is reported UNCERTAIN, not completed', async () => {
+    // THE defect. Before this the caller drained `run:completed` with outputs while the durable log had no
+    // terminal at all, and nothing in the API could tell the two apart.
+    const outbox = createInMemoryTerminalOutbox();
+    const host = createInMemoryHost({ store: terminalRefusingStore(), terminalOutbox: outbox });
+    const handle = buildEngine(host, () => scriptedProvider([textTurn('a summary')])).start({
+      workflow: HAPPY_PATH,
+      inputs: INPUTS,
+    });
+    const { events } = await drive(handle, host);
+
+    // The terminal is still DELIVERED — exactly-one-terminal is sacred, and a consumer's `for await` must
+    // complete. What changes is that the handle no longer claims it is durable.
+    expect(events.at(-1)?.type).toBe('run:completed');
+    expect(handle.durability()).toBe('uncertain');
+
+    // …and the payload is held OUTSIDE the store, so a later start can retry it under the same identity.
+    const held = await outbox.list();
+    expect(held).toHaveLength(1);
+    expect(held[0]?.type).toBe('run:completed');
+    expect(held[0]?.runId).toBe(handle.runId);
+  });
+
+  it('CR-92: a terminal that LANDS reports durable, and holds nothing', async () => {
+    // The negative control. Without it the assertion above passes for a handle that reports `uncertain`
+    // unconditionally.
+    const outbox = createInMemoryTerminalOutbox();
+    const host = createInMemoryHost({ terminalOutbox: outbox });
+    const handle = buildEngine(host, () => scriptedProvider([textTurn('a summary')])).start({
+      workflow: HAPPY_PATH,
+      inputs: INPUTS,
+    });
+    const { events } = await drive(handle, host);
+
+    expect(events.at(-1)?.type).toBe('run:completed');
+    expect(handle.durability()).toBe('durable');
+    expect(await outbox.list()).toEqual([]);
+  });
+
+  it('CR-92: the outbox is DRAINED before reconciliation — a completed run is not relabelled failed', async () => {
+    // The ordering ADR-0078 §4 calls load-bearing. Reconciliation sees a run with no durable terminal and
+    // concludes it needs repair; if it ran first it would write `run:failed{internal}` for a run that
+    // actually COMPLETED — the divergence the outbox exists to close, reintroduced by ordering.
+    const inner = new InMemoryRunStore();
+    let refuse = true;
+    const store: RunStore = {
+      resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
+      listInterruptedRuns: () => inner.listInterruptedRuns(),
+      persistEvent: async (event: RunEvent, ctx?: DurableWriteContext): Promise<void> => {
+        if (refuse && event.type === 'run:completed') throw new Error('the terminal write failed');
+        await inner.persistEvent(event, ctx);
+      },
+    };
+    const outbox = createInMemoryTerminalOutbox();
+    const host = createInMemoryHost({ store, terminalOutbox: outbox });
+    const handle = buildEngine(host, () => scriptedProvider([textTurn('a summary')])).start({
+      workflow: HAPPY_PATH,
+      inputs: INPUTS,
+    });
+    await drive(handle, host);
+    expect(handle.durability()).toBe('uncertain');
+
+    // A later start: the store is healthy again.
+    refuse = false;
+    const repaired = await buildEngine(host, () => scriptedProvider([])).reconcile();
+
+    // THE assertion: the run's own `run:completed` was retried, NOT replaced by a reconciliation failure.
+    expect(repaired.map((e) => e.type)).toEqual(['run:completed']);
+    const durable = inner.eventsFor(handle.runId);
+    const terminals = durable.filter((e) => e.type === 'run:completed' || e.type === 'run:failed');
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]?.type).toBe('run:completed');
+    expect(await outbox.list()).toEqual([]); // and the entry is forgotten once it lands
+  });
+
+  it('CR-92: a drained entry whose run ALREADY has a terminal is dropped, never appended', async () => {
+    // The other direction: the original write may have committed and only its acknowledgement been lost.
+    // Replaying blindly would break exactly-one-terminal from the path that exists to restore it.
+    const inner = new InMemoryRunStore();
+    const outbox = createInMemoryTerminalOutbox();
+    const host = createInMemoryHost({ store: inner, terminalOutbox: outbox });
+    const handle = buildEngine(host, () => scriptedProvider([textTurn('x')])).start({
+      workflow: HAPPY_PATH,
+      inputs: INPUTS,
+    });
+    await drive(handle, host);
+    expect(handle.durability()).toBe('durable'); // it landed
+
+    // Now plant a stale entry for that same run, as a crashed process would have left behind.
+    const terminal = inner.eventsFor(handle.runId).at(-1);
+    expect(terminal?.type).toBe('run:completed');
+    if (terminal !== undefined) await outbox.put(terminal);
+
+    const repaired = await buildEngine(host, () => scriptedProvider([])).reconcile();
+    expect(repaired).toEqual([]); // dropped, not appended
+    expect(await outbox.list()).toEqual([]); // and forgotten
+    expect(inner.eventsFor(handle.runId).filter((e) => e.type === 'run:completed')).toHaveLength(1);
   });
 
   it('append audit: reconcile() carries the guard too — the SECOND write path (ADR-0078 §3)', async () => {

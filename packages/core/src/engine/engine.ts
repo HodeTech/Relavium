@@ -46,6 +46,7 @@ import {
   type MediaUrlFetch,
   type NodeSkippedReason,
   type Retry,
+  type RunDurability,
   type RunEvent,
   type RunStatus,
   type TokensUsed,
@@ -73,7 +74,7 @@ import {
   MoneyDurability,
   isLedgerDurabilityError,
 } from './money-durability.js';
-import type { AbortControllerLike, ExecutionHost } from './execution-host.js';
+import type { AbortControllerLike, ExecutionHost, InterruptedRun } from './execution-host.js';
 import type {
   GateRequest,
   MediaJobSubmission,
@@ -382,6 +383,13 @@ class RunExecution {
    * that makes the next append fail closed after a lost write.
    */
   #lastAskedSequenceNumber = -1;
+  /**
+   * Whether the run's TERMINAL reached the durable log (ADR-0078 §5), surfaced through
+   * `RunHandle.durability`. `'uncertain'` means the terminal was delivered in-process but its write did not
+   * land and it was handed to the host's `TerminalOutbox` instead — the one state in which a caller must not
+   * be told the run completed.
+   */
+  #terminalDurability: RunDurability = 'pending';
   #startEpochMs = 0;
   #cumulativeCostMicrocents = 0;
   #totalInputTokens = 0;
@@ -526,6 +534,7 @@ class RunExecution {
         }
       },
       params.capacity,
+      () => this.#terminalDurability,
     );
   }
 
@@ -2319,9 +2328,8 @@ class RunExecution {
     // run's references at its terminal event (D11 sweep). Best-effort + synchronous-to-the-stream: a
     // retention failure never touches the I3 / gap-free / exactly-one-terminal guarantees below.
     this.#recordProducedMedia(durable);
-    if (TERMINAL_TYPES.has(event.type)) {
-      this.#reclaimRunMedia();
-    }
+    // NOTE: the terminal media reclaim used to sit here, before the write. It now runs only after the
+    // terminal's persist SUCCEEDS — see the write below (ADR-0078 §1 re-timing ADR-0042 §4).
     const prior = this.#deliveryTail;
     // **The ordered append (ADR-0078 §1), and it is one line.** `expectedLastSequenceNumber` is read HERE,
     // synchronously, before the region is entered — reading it inside would race with a concurrent emitter
@@ -2344,7 +2352,22 @@ class RunExecution {
           event,
           guarded ? { expectedLastSequenceNumber } : undefined,
         );
+        if (TERMINAL_TYPES.has(event.type)) {
+          this.#terminalDurability = 'durable';
+          // **The media reclaim happens HERE, not before the write** (ADR-0078 §1, re-timing ADR-0042 §4).
+          // It used to run at the emit, so a terminal whose write then failed had already released the run's
+          // media references — the outbox could retry the terminal into a log whose media was gone.
+          this.#reclaimRunMedia();
+        }
       } catch {
+        if (TERMINAL_TYPES.has(event.type)) {
+          // **The terminal outbox** (ADR-0078 §4). The run is settling and the caller is about to be handed
+          // this terminal in-process; the durable record does not have it. Hold the intended payload OUTSIDE
+          // the store — the store is the thing that just failed — so a later start can retry it under the
+          // same identity, and report `uncertain` so no surface says `completed` on a record that disagrees.
+          this.#terminalDurability = 'uncertain';
+          await this.#bestEffortOutbox(event);
+        }
         if (!TERMINAL_TYPES.has(event.type) && this.#failure === undefined && !this.#cancelling) {
           this.#failure = {
             // Attribute it when the event names a node. This is the failure a user ACTUALLY sees for a failed
@@ -2533,6 +2556,22 @@ class RunExecution {
     }
     for (const meta of produced) {
       this.#bestEffortMediaRef(() => port.recordRunMedia(meta, this.runId));
+    }
+  }
+
+  /**
+   * Hand a terminal the store refused to the host's outbox (ADR-0078 §4), swallowing its own failure.
+   *
+   * Best-effort by necessity, and the ADR says so: a host whose outbox write ALSO fails has no further
+   * recourse — the run already reports `uncertain`, which is the honest floor. Throwing here would break
+   * exactly-one-terminal on the way out of a path that exists to protect it, and `#emitDurable` must stay
+   * total for the fire-and-forget `#loop`.
+   */
+  async #bestEffortOutbox(event: RunEvent): Promise<void> {
+    try {
+      await this.#host.terminalOutbox.put(event);
+    } catch {
+      // Nothing left to do. `#terminalDurability` is already `'uncertain'`, which is the report.
     }
   }
 
@@ -2787,8 +2826,13 @@ export class WorkflowEngine {
    * Returns the reconciled events. Resumable runs (parked at a gate) are left for `resume`.
    */
   async reconcile(): Promise<readonly RunEvent[]> {
+    // **Drain the outbox FIRST (ADR-0078 §4), and the order is load-bearing.** A crashed process leaves its
+    // terminal here; if reconciliation ran first it would see a run with no durable terminal, conclude it
+    // needs repair, and write `run:failed{internal}` for a run that actually COMPLETED — the exact
+    // divergence the outbox exists to close, reintroduced by ordering. §3's "no terminal present" condition
+    // makes the two writers safe within one process; across processes only this order does.
     const interrupted = await this.#host.store.listInterruptedRuns();
-    const reconciled: RunEvent[] = [];
+    const reconciled: RunEvent[] = [...(await this.#drainTerminalOutbox(interrupted))];
     for (const run of interrupted) {
       if (run.resumable) {
         // A run parked at a gate is intentionally left for the checkpoint/resume path (1.R):
@@ -2834,6 +2878,64 @@ export class WorkflowEngine {
       }
     }
     return reconciled;
+  }
+
+  /**
+   * Retry every terminal a prior process could not write, and forget the ones that no longer need retrying.
+   *
+   * **A drained entry is reconciled against the log, not replayed blindly.** An entry whose run already
+   * carries a durable terminal is DROPPED rather than appended — the original write may have committed and
+   * only its acknowledgement been lost, and appending would break exactly-one-terminal in the other
+   * direction. That check is why this reads the run's events before writing anything.
+   *
+   * Best-effort throughout: a store still refusing, or an outbox that cannot be read, leaves the entry for
+   * the next start. Nothing here may throw, because `reconcile()` must repair every OTHER run even when one
+   * of them cannot be repaired.
+   */
+  async #drainTerminalOutbox(interrupted: readonly InterruptedRun[]): Promise<readonly RunEvent[]> {
+    let held: readonly RunEvent[];
+    try {
+      held = await this.#host.terminalOutbox.list();
+    } catch {
+      return [];
+    }
+    // `listInterruptedRuns` is the port's own answer to "does this run still lack a terminal" — a run that
+    // has one is not in it. Using it rather than adding a read method keeps the drain inside the three
+    // methods `RunStore` already declares, which is what lets a Phase-2 cloud store implement this at all.
+    const stillOpen = new Map(interrupted.map((r) => [r.runId, r]));
+    const written: RunEvent[] = [];
+    for (const event of held) {
+      const runId = event.runId;
+      if (runId === undefined) continue;
+      const open = stillOpen.get(runId);
+      if (open === undefined) {
+        // Either the terminal DID land and only its acknowledgement was lost, or the run has no durable
+        // `run:started` at all. Both mean appending would make things worse — a second terminal in the first
+        // case, a headless log in the second — so the entry is dropped, never replayed.
+        await this.#forgetOutbox(runId);
+        continue;
+      }
+      try {
+        await this.#host.store.persistEvent(event, {
+          expectedLastSequenceNumber: open.lastSequenceNumber,
+        });
+        await this.#forgetOutbox(runId);
+        written.push(event);
+      } catch {
+        // Still unwritable, or another process moved the log first. The entry stays for the next start; the
+        // run keeps reporting `uncertain`.
+      }
+    }
+    return written;
+  }
+
+  /** Drop an outbox entry, swallowing a failure — a stale entry costs one read next start, never a wrong terminal. */
+  async #forgetOutbox(runId: string): Promise<void> {
+    try {
+      await this.#host.terminalOutbox.remove(runId);
+    } catch {
+      // Nothing to do; the next drain re-evaluates it against the log and drops it again.
+    }
   }
 
   /** Best-effort terminal media-ref reclaim for a reconciled run — swallows a sync throw + an async

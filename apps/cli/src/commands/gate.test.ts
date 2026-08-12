@@ -55,6 +55,7 @@ function emptyHandle(runId: string): RunHandle {
     subscribe: () => () => {},
     cancel: () => {},
     whenConsumersReady: () => Promise.resolve(),
+    durability: () => 'durable' as const,
   };
 }
 

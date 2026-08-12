@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 import { nonEmptyString, nonNegativeInt } from './common.js';
 import { EXECUTION_MODES } from './constants.js';
-import { ErrorCodeSchema } from './run-event.js';
+import { ErrorCodeSchema, type RunEvent } from './run-event.js';
 import { TriggerTypeSchema } from './workflow.js';
 
 /**
@@ -154,3 +154,40 @@ export class AppendConflictError extends Error {
 export function isAppendConflictError(value: unknown): value is AppendConflictError {
   return value instanceof AppendConflictError;
 }
+
+/**
+ * A terminal the store would not accept, held OUTSIDE the store so it can be retried
+ * ([ADR-0078](../../../docs/decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §4).
+ *
+ * **Why not a row in the same database.** The store that must hold it is the store that just failed: a full
+ * disk, a corrupt file or an exhausted busy-retry fails the outbox write for exactly the reason it failed the
+ * terminal write. The alternative — no outbox, and let `reconcile()` repair — writes `run:failed{internal}`
+ * for a run that actually COMPLETED, which relabels the divergence rather than closing it and loses the
+ * outputs. So the host owns this, and a host that keeps it in a separate file gets real fault isolation.
+ *
+ * **Required on `ExecutionHost`, not optional.** The optional-port precedent there (`mediaStore?`) is
+ * absent-tolerant because a text-only host legitimately has no media. There is no legitimate host with no
+ * terminal durability, so optional would mean a host that forgets the port silently has no guarantee — a
+ * fail-open default inside a fail-closed item, invisible at every call site.
+ */
+export interface TerminalOutbox {
+  /** Record a terminal whose durable write did not land. Must not throw for a caller that cannot recover. */
+  put: (event: RunEvent) => Promise<void>;
+  /** Every recorded terminal, oldest first. Drained at start BEFORE reconciliation — see ADR-0078 §4. */
+  list: () => Promise<readonly RunEvent[]>;
+  /** Forget the entry for a run, once its terminal is durable (or was found to be already). */
+  remove: (runId: string) => Promise<void>;
+}
+
+/**
+ * Whether a run's terminal is known to have reached the durable log (ADR-0078 §5).
+ *
+ * `'uncertain'` is the disposition that stops a caller being told a run completed when the record disagrees.
+ * It is HANDLE-level and never a field on the terminal `RunEvent`: the store persists the delivered event
+ * verbatim as the lossless canonical record, so a live-only field either lands on disk — self-contradictory,
+ * since the row existing IS the durability — or forces the delivered and persisted forms to diverge.
+ *
+ * `CR-11` reuses this for a fenced-out run and `CR-14` for a grammar violation on already-forwarded content,
+ * rather than each minting a parallel shape.
+ */
+export type RunDurability = 'pending' | 'durable' | 'uncertain';

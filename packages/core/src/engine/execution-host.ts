@@ -22,6 +22,7 @@ import type {
   MediaStore,
   MediaWritePort,
   RunEvent,
+  TerminalOutbox,
 } from '@relavium/shared';
 import { AppendConflictError } from '@relavium/shared';
 
@@ -205,6 +206,16 @@ export interface ExecutionHost {
    * NOT best-effort). The Node reference is `@relavium/db`'s `createFilesystemMediaWrite(scopeRoot)`.
    */
   readonly mediaWrite?: MediaWritePort;
+  /**
+   * Where a terminal the store would not accept is held so a later start can retry it (ADR-0078 §4).
+   *
+   * **Required, unlike the media ports above.** Those are absent-tolerant because a text-only host
+   * legitimately has no media; there is no legitimate host with no terminal durability, so optional here
+   * would mean a host that forgets it silently has no guarantee — a fail-open default inside a fail-closed
+   * item, invisible at every call site. `createInMemoryHost` ships a reference implementation, following the
+   * `newAbortController` precedent.
+   */
+  readonly terminalOutbox: TerminalOutbox;
 }
 
 /** The host media-egress port: a public-HTTPS `url` → its bytes, under an engine-supplied size bound. */
@@ -363,6 +374,29 @@ export function createManualTimerController(): ManualTimerController {
  * {@link InMemoryRunStore}, and a manual timer fired by hand (exposed as {@link fireTimers}/
  * {@link armedCount}). A real surface injects wall-clock/UUID/`setTimeout` sources instead.
  */
+/**
+ * The reference {@link TerminalOutbox} — in memory, so it survives nothing, which is the point of saying so.
+ *
+ * ADR-0078 §4 chose a host-owned outbox precisely so a REAL host can put it somewhere the store's fault
+ * cannot reach (a separate file). This one exists to make the port required without breaking every test
+ * double, and to give the engine's own tests something to assert against. A surface that ships this as its
+ * outbox has the guarantee in name only — the entries die with the process that could not write them.
+ */
+export function createInMemoryTerminalOutbox(): TerminalOutbox {
+  const held = new Map<string, RunEvent>();
+  return {
+    put: (event) => {
+      if (event.runId !== undefined) held.set(event.runId, event);
+      return Promise.resolve();
+    },
+    list: () => Promise.resolve([...held.values()]),
+    remove: (runId) => {
+      held.delete(runId);
+      return Promise.resolve();
+    },
+  };
+}
+
 export function createInMemoryHost(options?: {
   store?: RunStore;
   checkpointer?: Checkpointer;
@@ -375,7 +409,12 @@ export function createInMemoryHost(options?: {
   mediaReferences?: MediaReferencePort;
   /** Inject a media-write port so an `output` node's `save_to` writes its produced media (1.AF/D16). */
   mediaWrite?: MediaWritePort;
-}): ExecutionHost & { store: RunStore } & Pick<ManualTimerController, 'fireTimers' | 'armedCount'> {
+  /** Inject a terminal outbox (ADR-0078 §4); omit for the in-memory reference below. */
+  terminalOutbox?: TerminalOutbox;
+}): ExecutionHost & { store: RunStore; terminalOutbox: TerminalOutbox } & Pick<
+    ManualTimerController,
+    'fireTimers' | 'armedCount'
+  > {
   let tick = options?.baseEpochMs ?? Date.parse('2026-01-01T00:00:00.000Z');
   let idCounter = 0;
   const store = options?.store ?? new InMemoryRunStore();
@@ -391,6 +430,7 @@ export function createInMemoryHost(options?: {
     ...(options?.fetchMedia ? { fetchMedia: options.fetchMedia } : {}),
     ...(options?.mediaReferences ? { mediaReferences: options.mediaReferences } : {}),
     ...(options?.mediaWrite ? { mediaWrite: options.mediaWrite } : {}),
+    terminalOutbox: options?.terminalOutbox ?? createInMemoryTerminalOutbox(),
     fireTimers: timers.fireTimers,
     armedCount: timers.armedCount,
   };

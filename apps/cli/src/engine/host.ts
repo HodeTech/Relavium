@@ -4,6 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import {
   InMemoryRunStore,
   createInMemoryCheckpointer,
+  createInMemoryTerminalOutbox,
   type Checkpointer,
   type ExecutionHost,
   type RunStore,
@@ -16,6 +17,8 @@ import {
   fetchMediaBytes,
   type Db,
 } from '@relavium/db';
+
+import { createFileTerminalOutbox } from './terminal-outbox.js';
 
 /**
  * Host media-port roots the CLI resolves per-invocation and injects into {@link createCliHost} (2.S). Each is
@@ -63,6 +66,15 @@ export interface CliHostOptions {
   readonly checkpointer?: Checkpointer;
   /** The media-port roots (2.S) — see {@link CliMediaOptions}. Absent ⇒ a media-producing run fails loud. */
   readonly media?: CliMediaOptions;
+  /**
+   * Where a terminal the store refused is held (ADR-0078 §4) — conventionally
+   * `~/.relavium/terminal-outbox.ndjson`, beside `history.db` but deliberately NOT inside it.
+   *
+   * Absent ⇒ the in-memory reference, which survives nothing. That is correct for a test double and wrong
+   * for a shipping surface, so every real CLI wiring passes a path; the default exists so a fixture does not
+   * have to touch the filesystem to construct a host.
+   */
+  readonly terminalOutboxPath?: string;
 }
 
 /**
@@ -129,6 +141,10 @@ export function createCliHost(
     ids: { newId: () => randomUUID() },
     store,
     checkpointer: options?.checkpointer ?? createInMemoryCheckpointer(store),
+    terminalOutbox:
+      options?.terminalOutboxPath === undefined
+        ? createInMemoryTerminalOutbox()
+        : createFileTerminalOutbox(options.terminalOutboxPath),
     // A NATIVE AbortController — its `signal` is a real `AbortSignal` that the provider SDKs thread into
     // `fetch`, so a run cancel actually aborts an in-flight LLM stream (→ prompt `run:cancelled`). The
     // engine's in-house `createAbortController` is for TESTS ONLY (its signal is not `instanceof
