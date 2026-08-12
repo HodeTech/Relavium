@@ -53,6 +53,14 @@ All contention is on the resume path, which is already async.
 
 `resumeFromCheckpoint` acquires the lease **first**. A failed acquire throws a new typed `EngineStateError` naming the current holder and the remedy — before the checkpoint is loaded and before any `RunExecution` exists, so a loser never becomes a second producer even briefly.
 
+**The lease is released when the process stops WORKING on the run — which includes a re-pause, not only a
+terminal.** This was under-specified when the section was first written and implementation found it: a
+sequential multi-gate run resumes, re-pauses at the next gate, and the very next `relavium gate` is refused
+for the full TTL by a lease nobody is using. A parked run has no process executing it, and the point of
+ownership is to stop two processes *acting*. Releasing is safe because the next resume re-acquires anyway, and
+the generation still only moves forward — so a stale owner stays fenced. Every refusal path above also
+releases what it just took, or a run that does not exist would lock its own id.
+
 **A typed refusal, not an observer handle.** The acceptance says the loser "degrades to observer with a typed, actionable error" — two deliverables in one phrase. **The typed error is in scope; the observer handle is not.** A real observer — tailing the durable log and synthesising a `RunHandle` stream — is a new engine capability, and `createClosedRunHandle` shows the tree already prefers a degenerate handle to a new streaming mode. The observer is recorded as a named follow-up with its trigger: the first surface that must *watch* another process's run rather than merely be refused by it.
 
 ### 5. A fenced-out IN-FLIGHT run stops without claiming an outcome

@@ -6,6 +6,7 @@ import {
   type DurableWriteContext,
   type ExecutionMode,
   type RunEvent,
+  type RunLeasePort,
   type RunStatus,
 } from '@relavium/shared';
 import { and, asc, desc, eq, getTableColumns, inArray, isNull, notInArray, sql } from 'drizzle-orm';
@@ -56,6 +57,44 @@ import { epochMsToIso, isoToEpochMs } from './time.js';
  * `0600`/`0700` OS permissions ([ADR-0050](../../../docs/decisions/0050-cli-history-db-at-rest-posture.md)).
  * That is the host's open-path concern (`apps/cli/src/history`), not this store's.
  */
+
+/**
+ * Adapt the store's SYNCHRONOUS lease operations to the engine's async `RunLeasePort` (ADR-0079).
+ *
+ * The store is synchronous because `better-sqlite3` is; the port is `Promise`-typed because the seam has to
+ * admit a genuinely async store (the Phase-2 cloud one). Wrapping here rather than making the store async
+ * keeps the two shapes honest: nothing in this file pretends to await.
+ */
+export function createRunLeasePort(store: RunHistoryStore): RunLeasePort {
+  return {
+    acquire: (runId, ownerId, ttlMs) => {
+      const lease = store.leases.acquire(runId, ownerId, ttlMs);
+      return Promise.resolve(
+        lease === undefined ? undefined : { ownerId: lease.ownerId, generation: lease.generation },
+      );
+    },
+    heartbeat: (runId, fence, ttlMs) =>
+      Promise.resolve(store.leases.heartbeat(runId, fence.ownerId, fence.generation, ttlMs)),
+    release: (runId, fence) => {
+      store.leases.release(runId, fence.ownerId, fence.generation);
+      return Promise.resolve();
+    },
+    read: (runId) => {
+      const lease = store.leases.read(runId);
+      return Promise.resolve(
+        lease === undefined
+          ? undefined
+          : {
+              runId: lease.runId,
+              ownerId: lease.ownerId,
+              generation: lease.generation,
+              expiresAt: lease.expiresAt,
+              live: lease.live,
+            },
+      );
+    },
+  };
+}
 
 /** A run with a `run:started` but no terminal event — for startup crash reconciliation (core `InterruptedRun`). */
 export interface InterruptedRunInfo {

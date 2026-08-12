@@ -14,6 +14,8 @@ import {
   type BuildEngineOptions,
 } from '../engine/build-engine.js';
 import { onceEffortNotice, unpricedModelNote } from '../chat/effort-notice.js';
+import { createRunLeasePort } from '@relavium/db';
+
 import { createCliHost } from '../engine/host.js';
 import {
   connectWorkflowMcp,
@@ -243,6 +245,9 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
           // the real path here is what makes the guarantee exist on the shipping surface — the in-memory
           // reference the host defaults to survives nothing, which is fatal in a one-shot CLI process.
           terminalOutboxPath: opened.terminalOutboxPath,
+          // ADR-0079: the DURABLE lease, built from the same store the run persists to — the in-memory
+          // reference the host defaults to guards nothing across processes, which is the whole point here.
+          runLeases: createRunLeasePort(opened.store),
         }),
         resolveMediaSurface: wiring.resolveMediaSurface,
         ...(wiring.mediaCostEstimate === undefined

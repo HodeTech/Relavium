@@ -10,6 +10,7 @@ import {
 } from '@relavium/core';
 import {
   createRunHistoryStore,
+  createRunLeasePort,
   isCorruptRunEventError,
   isUnreadableRunEventLogError,
   loadRunSnapshot,
@@ -285,6 +286,8 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
         // Same outbox as the  path, and it must be the SAME FILE: a gate resume settles a run whose
         // terminal a different process may already have failed to write (ADR-0078 §4).
         terminalOutboxPath: terminalOutboxPath(homeDir),
+        // Same durable lease as the `run` path — a gate resume is exactly where two processes contend.
+        runLeases: createRunLeasePort(store),
       }),
       resolveMediaSurface: wiring.resolveMediaSurface,
       ...(wiring.mediaCostEstimate === undefined

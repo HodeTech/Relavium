@@ -4,6 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import {
   InMemoryRunStore,
   createInMemoryCheckpointer,
+  createInMemoryRunLeases,
   createInMemoryTerminalOutbox,
   type Checkpointer,
   type ExecutionHost,
@@ -17,6 +18,7 @@ import {
   fetchMediaBytes,
   type Db,
 } from '@relavium/db';
+import type { RunLeasePort } from '@relavium/shared';
 
 import { createFileTerminalOutbox } from './terminal-outbox.js';
 
@@ -75,6 +77,12 @@ export interface CliHostOptions {
    * have to touch the filesystem to construct a host.
    */
   readonly terminalOutboxPath?: string;
+  /**
+   * Cross-process run ownership (ADR-0079). Absent ⇒ the in-memory reference, which guards nothing across
+   * processes — correct for a fixture, wrong for a shipping surface, so every real wiring passes the
+   * durable one built from the SAME store the run persists to.
+   */
+  readonly runLeases?: RunLeasePort;
 }
 
 /**
@@ -145,6 +153,7 @@ export function createCliHost(
       options?.terminalOutboxPath === undefined
         ? createInMemoryTerminalOutbox()
         : createFileTerminalOutbox(options.terminalOutboxPath),
+    runLeases: options?.runLeases ?? createInMemoryRunLeases(),
     // A NATIVE AbortController — its `signal` is a real `AbortSignal` that the provider SDKs thread into
     // `fetch`, so a run cancel actually aborts an in-flight LLM stream (→ prompt `run:cancelled`). The
     // engine's in-house `createAbortController` is for TESTS ONLY (its signal is not `instanceof

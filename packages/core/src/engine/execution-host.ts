@@ -22,6 +22,8 @@ import type {
   MediaStore,
   MediaWritePort,
   RunEvent,
+  RunLeaseInfo,
+  RunLeasePort,
   TerminalOutbox,
 } from '@relavium/shared';
 import { AppendConflictError } from '@relavium/shared';
@@ -216,6 +218,12 @@ export interface ExecutionHost {
    * `newAbortController` precedent.
    */
   readonly terminalOutbox: TerminalOutbox;
+  /**
+   * Cross-process run ownership (ADR-0079). **Required**, for the same reason `terminalOutbox` is: there is
+   * no legitimate host with no ownership guarantee, so optional would mean a host that forgets it silently
+   * has none. `createInMemoryHost` ships a reference implementation.
+   */
+  readonly runLeases: RunLeasePort;
 }
 
 /** The host media-egress port: a public-HTTPS `url` → its bytes, under an engine-supplied size bound. */
@@ -397,6 +405,63 @@ export function createInMemoryTerminalOutbox(): TerminalOutbox {
   };
 }
 
+/**
+ * The reference {@link RunLeasePort} — in memory, so it guards nothing across processes, which is the point
+ * of saying so.
+ *
+ * ADR-0079 chose a DURABLE lease precisely so two processes can be told apart; this one exists to make the
+ * port required without breaking every test double, and to give the engine's own tests a deterministic
+ * clock. A surface that ships this has the guarantee in name only.
+ *
+ * `now` is injected rather than read from an ambient clock so a test can drive expiry without waiting.
+ */
+export function createInMemoryRunLeases(now: () => number = () => Date.now()): RunLeasePort {
+  const held = new Map<string, RunLeaseInfo>();
+  const readLive = (runId: string): RunLeaseInfo | undefined => {
+    const lease = held.get(runId);
+    return lease === undefined ? undefined : { ...lease, live: lease.expiresAt > now() };
+  };
+  return {
+    acquire: (runId, ownerId, ttlMs) => {
+      const current = readLive(runId);
+      // A DIFFERENT owner holding a LIVE lease is the only refusal — same owner is a renewal, expired is a
+      // takeover. Identical to the SQLite store's rule; a reference that diverges proves nothing.
+      if (current !== undefined && current.ownerId !== ownerId && current.live) {
+        return Promise.resolve(undefined);
+      }
+      const generation = (current?.generation ?? 0) + 1;
+      held.set(runId, { runId, ownerId, generation, expiresAt: now() + ttlMs, live: true });
+      return Promise.resolve({ ownerId, generation });
+    },
+    heartbeat: (runId, fence, ttlMs) => {
+      const current = held.get(runId);
+      if (
+        current === undefined ||
+        current.ownerId !== fence.ownerId ||
+        current.generation !== fence.generation
+      ) {
+        return Promise.resolve(false); // taken over — the heartbeat is how the loser finds out
+      }
+      held.set(runId, { ...current, expiresAt: now() + ttlMs });
+      return Promise.resolve(true);
+    },
+    release: (runId, fence) => {
+      const current = held.get(runId);
+      // Scoped to (owner, generation) so a fenced-out process cannot free the new holder's lease on the way
+      // down — a release must never steal.
+      if (
+        current !== undefined &&
+        current.ownerId === fence.ownerId &&
+        current.generation === fence.generation
+      ) {
+        held.delete(runId);
+      }
+      return Promise.resolve();
+    },
+    read: (runId) => Promise.resolve(readLive(runId)),
+  };
+}
+
 export function createInMemoryHost(options?: {
   store?: RunStore;
   checkpointer?: Checkpointer;
@@ -411,6 +476,8 @@ export function createInMemoryHost(options?: {
   mediaWrite?: MediaWritePort;
   /** Inject a terminal outbox (ADR-0078 §4); omit for the in-memory reference below. */
   terminalOutbox?: TerminalOutbox;
+  /** Inject a run-lease port (ADR-0079); omit for the in-memory reference, which shares this host's clock. */
+  runLeases?: RunLeasePort;
 }): ExecutionHost & { store: RunStore; terminalOutbox: TerminalOutbox } & Pick<
     ManualTimerController,
     'fireTimers' | 'armedCount'
@@ -431,6 +498,9 @@ export function createInMemoryHost(options?: {
     ...(options?.mediaReferences ? { mediaReferences: options.mediaReferences } : {}),
     ...(options?.mediaWrite ? { mediaWrite: options.mediaWrite } : {}),
     terminalOutbox: options?.terminalOutbox ?? createInMemoryTerminalOutbox(),
+    // The reference lease shares this host's clock, so a test that advances `tick` also ages the lease —
+    // note `createInMemoryHost`'s clock ADVANCES on every read, so a TTL assertion must pin its own.
+    runLeases: options?.runLeases ?? createInMemoryRunLeases(() => tick),
     fireTimers: timers.fireTimers,
     armedCount: timers.armedCount,
   };

@@ -22,7 +22,26 @@ export type EngineStateErrorCode =
   | 'unknown_gate' // the `gateId` does not match any gate currently pending on the run
   | 'invalid_decision' // the supplied `GateDecision` failed schema validation at the boundary
   | 'pending_gate_requires_decision' // a media-only `resumeFromCheckpoint` hit a run also parked on a gate (pass gateId + decision)
-  | 'workflow_mismatch'; // `resumeFromCheckpoint` was handed a workflow that is not the one the run started on
+  | 'workflow_mismatch' // `resumeFromCheckpoint` was handed a workflow that is not the one the run started on
+  | 'run_owned_elsewhere'; // ANOTHER PROCESS holds a live lease on this run (ADR-0079 §4) — transient; retry later
+
+/**
+ * The codes that are TRANSIENT — worth retrying unchanged — as opposed to permanent invocation faults.
+ *
+ * Only one today, and the distinction is the reason it exists: `run_owned_elsewhere` means "somebody else is
+ * running this right now", which resolves on its own when they finish or their lease expires. Every other
+ * code is a mistake in the call itself (an unknown run, the wrong workflow, a run that already settled) and
+ * will fail identically forever. A surface uses this to tell a caller "try again shortly" from "never call
+ * this again" — the CLI maps it to its own exit code (ADR-0079 §7).
+ */
+export const TRANSIENT_ENGINE_STATE_CODES: readonly EngineStateErrorCode[] = [
+  'run_owned_elsewhere',
+];
+
+/** Whether an {@link EngineStateError} is worth retrying unchanged. */
+export function isTransientEngineStateError(error: EngineStateError): boolean {
+  return TRANSIENT_ENGINE_STATE_CODES.includes(error.code);
+}
 
 /**
  * A `WorkflowEngine` API call could not be honoured. Thrown synchronously from `start` / `resume` /

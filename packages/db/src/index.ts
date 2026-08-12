@@ -83,6 +83,7 @@ export {
 // platform-free engine never imports this — a host wires it over history.db (unencrypted on the CLI, ADR-0050).
 export {
   createRunHistoryStore,
+  createRunLeasePort,
   createRunHistoryReader,
   loadRunSnapshot,
   CorruptRunEventError,

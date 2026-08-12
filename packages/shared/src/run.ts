@@ -248,3 +248,50 @@ export interface TerminalOutbox {
  * rather than each minting a parallel shape.
  */
 export type RunDurability = 'pending' | 'durable' | 'uncertain';
+
+/**
+ * Cross-process ownership of a run
+ * ([ADR-0079](../../../docs/decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md)).
+ *
+ * **Required on `ExecutionHost`, not optional** — the same reasoning as `TerminalOutbox`: the optional
+ * media ports are absent-tolerant because a text-only host legitimately has no media, and there is no
+ * legitimate host with no run ownership. Optional here would mean a host that forgets the port silently has
+ * NO ownership guarantee, which is a security-shaped default no reviewer catches at a call site.
+ *
+ * Every method evaluates expiry against the HOST's own clock, never a caller-supplied time, so a caller
+ * cannot widen its own lease and every process on the machine compares against one clock (§6).
+ */
+export interface RunLeasePort {
+  /**
+   * Take or renew ownership, returning the fence to carry on every durable write, or `undefined` when a
+   * DIFFERENT owner holds a live lease. Every success bumps the generation — including a takeover of an
+   * expired lease, which is what fences the previous owner out.
+   */
+  acquire: (runId: string, ownerId: string, ttlMs: number) => Promise<RunFence | undefined>;
+  /**
+   * Push the expiry forward for a lease this owner still holds at this generation. `false` means it has
+   * been taken over — which is how a heartbeat discovers the loss without a second query.
+   */
+  heartbeat: (runId: string, fence: RunFence, ttlMs: number) => Promise<boolean>;
+  /** Drop a lease this owner holds. A no-op when someone else has taken it — a release must never steal. */
+  release: (runId: string, fence: RunFence) => Promise<void>;
+  /** The current holder and whether the lease is live — for `reconcile()`'s skip and for the refusal message. */
+  read: (runId: string) => Promise<RunLeaseInfo | undefined>;
+}
+
+/** A lease as read, with the host's own verdict on liveness — never re-derived by the caller. */
+export interface RunLeaseInfo extends RunFence {
+  readonly runId: string;
+  readonly expiresAt: number;
+  readonly live: boolean;
+}
+
+/**
+ * How long a lease stays live without a heartbeat, and how often the owner renews it (ADR-0079 §6).
+ *
+ * Three missed beats permit a takeover: wide enough that a long provider call or disk pressure is not
+ * mistaken for death, narrow enough that a crashed run is not locked for more than a minute. The numbers are
+ * here rather than inline so they can be changed with evidence rather than by feel.
+ */
+export const RUN_LEASE_TTL_MS = 60_000;
+export const RUN_LEASE_HEARTBEAT_MS = 20_000;

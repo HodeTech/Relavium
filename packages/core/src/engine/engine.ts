@@ -45,9 +45,11 @@ import {
   type MediaBilledModality,
   type MediaUrlFetch,
   type NodeSkippedReason,
+  RUN_LEASE_TTL_MS,
   type Retry,
   type RunDurability,
   type RunEvent,
+  type RunFence,
   type RunStatus,
   type TokensUsed,
 } from '@relavium/shared';
@@ -2643,6 +2645,14 @@ export class WorkflowEngine {
    */
   readonly #onLegacyMediaJobHold: ((nodeIds: readonly string[]) => void) | undefined;
   readonly #runs = new Map<string, RunExecution>();
+  /**
+   * This engine instance's opaque identity as a lease holder (ADR-0079 §1).
+   *
+   * From `host.ids.newId()` rather than a process id: the engine is platform-free and has no notion of a
+   * process, and two engines in ONE process must still be distinguishable — otherwise a second engine would
+   * silently "renew" the first one's lease instead of being refused, which is the whole failure this closes.
+   */
+  readonly #ownerId: string;
 
   constructor(deps: WorkflowEngineDeps) {
     this.#host = deps.host;
@@ -2655,6 +2665,7 @@ export class WorkflowEngine {
     this.#resolveEndpoint = deps.resolveEndpoint;
     this.#onUnpriced = deps.onUnpriced;
     this.#onLegacyMediaJobHold = deps.onLegacyMediaJobHold;
+    this.#ownerId = deps.host.ids.newId();
   }
 
   /**
@@ -2741,8 +2752,26 @@ export class WorkflowEngine {
         { runId: input.runId },
       );
     }
+    // **The lease is acquired BEFORE anything is read (ADR-0079 §4).** Not after the checkpoint, not after
+    // the identity guard: a loser must never become a second producer even briefly, and every line below
+    // this one is work only the owner is entitled to do. The refusal names the current holder, so the
+    // message is actionable rather than "something else has it".
+    const fence = await this.#host.runLeases.acquire(input.runId, this.#ownerId, RUN_LEASE_TTL_MS);
+    if (fence === undefined) {
+      const holder = await this.#host.runLeases.read(input.runId);
+      throw new EngineStateError(
+        'run_owned_elsewhere',
+        holder === undefined
+          ? 'another process owns this run'
+          : `another process owns this run (held by ${holder.ownerId}) — retry once it finishes or its lease expires`,
+        { runId: input.runId },
+      );
+    }
     const checkpoint = await this.#host.checkpointer.load(input.runId);
     if (checkpoint === undefined) {
+      // Release what we just took: the run does not exist, so holding its lease would lock a runId nobody
+      // can use. Every refusal below this point does the same — an acquire that leads nowhere must not leak.
+      await this.#host.runLeases.release(input.runId, fence);
       throw new EngineStateError('unknown_run', 'no checkpoint exists for the supplied runId', {
         runId: input.runId,
       });
@@ -2756,6 +2785,7 @@ export class WorkflowEngine {
     // contract change; checkpoint.ts), so resuming an edited-but-same-slug workflow is the caller's risk.
     const expectedWorkflowId = await this.#host.store.resolveWorkflowId(input.workflow.workflow.id);
     if (expectedWorkflowId !== checkpoint.workflowId) {
+      await this.#host.runLeases.release(input.runId, fence);
       throw new EngineStateError(
         'workflow_mismatch',
         'the supplied workflow is not the one this run started on',
@@ -2815,9 +2845,33 @@ export class WorkflowEngine {
       // provider for a run the caller saw rejected (and a natural retry could double-attach the same jobId).
       execution.abandon();
       this.#runs.delete(input.runId);
+      await this.#host.runLeases.release(input.runId, fence);
       throw error;
     }
+    // **The lease is released when this process STOPS WORKING on the run — which includes a re-pause, not
+    // only a terminal.** Found by implementation, and it is a real gap in ADR-0079 §4 as written: a
+    // sequential multi-gate run resumes, re-pauses at the next gate, and the very next `relavium gate` is
+    // refused for the full TTL by a lease nobody is using. A paused run has no process executing it; the
+    // point of ownership is to stop two processes ACTING, and a parked run is precisely one nobody is acting
+    // on. Releasing is safe because re-acquiring is what the next resume does anyway, and the generation
+    // still moves forward, so a stale owner remains fenced.
+    await this.#releaseIfIdle(input.runId, fence);
     return execution.handle;
+  }
+
+  /**
+   * Release the lease once the resumed leg has stopped executing — settled OR parked at a gate.
+   *
+   * Deliberately NOT tied to the terminal alone. A run parked at a human gate may sit for days; holding its
+   * lease would block every other process for the TTL while nothing is running, and would make the second
+   * decision of a two-gate workflow fail against the first process's own stale claim.
+   */
+  async #releaseIfIdle(runId: string, fence: RunFence): Promise<void> {
+    try {
+      await this.#host.runLeases.release(runId, fence);
+    } catch {
+      // A release that cannot be written leaves a lease to expire on its own TTL — slower, never wrong.
+    }
   }
 
   /** Request cooperative cancellation. Throws {@link EngineStateError} for an unknown/terminal run. */
