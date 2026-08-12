@@ -122,6 +122,7 @@ flowchart TD
 | 0076 | [A durable per-attempt realized-cost ledger (amends ADR-0070, extends ADR-0074)](0076-durable-per-attempt-realized-cost-ledger.md) | Accepted | 2026-08-09 |
 | 0077 | [The realized-cost ledger uses ADR-0074 §2's barrier mechanism (amends ADR-0076 §1)](0077-realized-cost-ledger-uses-the-conservative-commitment-barrier.md) | Accepted | 2026-08-10 |
 | 0078 | [The durable event log is an ordered append, and a terminal that cannot be made durable says so (amends ADR-0036 and ADR-0042 §4)](0078-ordered-durable-append-and-the-terminal-outbox.md) | Accepted | 2026-08-11 |
+| 0079 | [Cross-process run ownership — a durable run lease with a monotonic fencing token (amends ADR-0036)](0079-cross-process-run-ownership-lease-and-fencing-token.md) | Accepted | 2026-08-12 |
 
 ## Creating a new ADR
 
