@@ -733,6 +733,41 @@ export const catalogMeta = sqliteTable(
   (t) => [check('catalog_meta_singleton', sql`${t.id} = 1`)],
 );
 
+// --- 16. run_leases (-> runs CASCADE; cross-process run ownership, ADR-0079) ---
+
+/**
+ * Which process currently OWNS a run, and the monotonic token that makes a stale owner harmless
+ * ([ADR-0079](../../../docs/decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §1).
+ *
+ * **A table, not columns on `runs`.** That row is a DERIVED projection the event fold rewrites
+ * (`applyDerived`), so authoritative, non-derived ownership state in it mixes two lifetimes in one row and
+ * invites a fold to clobber it. A table is also queryable — by a human diagnosing a stuck run, and by the
+ * lease-aware `reconcile()`.
+ *
+ * **`generation` is the fence.** It increments on every successful acquire — including `reconcile()`'s
+ * takeover of an expired lease — and never resets, so a stale owner's token is recognisably OLD rather than
+ * merely different. That is the property a `last_seq` CAS cannot give: a CAS stops two processes writing the
+ * same row, the fence is what stops the loser continuing to act.
+ */
+export const runLeases = sqliteTable('run_leases', {
+  /** The run this lease owns. PK, not a surrogate id: at most one lease row per run, enforced by the PK. */
+  runId: text('run_id')
+    .primaryKey()
+    .references(() => runs.id, { onDelete: 'cascade' }),
+  /** Opaque per-process identity, for the error message a loser shows ("held by …") and for diagnosis. */
+  ownerId: text('owner_id').notNull(),
+  /** Monotonic, per run, never reset. Carried on every durable write and checked in the same transaction. */
+  generation: integer('generation').notNull(),
+  /**
+   * When this lease stops being live, in epoch ms — compared STORE-SIDE against the injected `deps.now`, so
+   * every process on the machine measures against one clock and the platform-free engine gains no second
+   * notion of time (ADR-0079 §6). The heartbeat pushes it forward; a takeover requires it to be in the past.
+   */
+  expiresAt: epochMs('expires_at').notNull(),
+  createdAt: epochMs('created_at').notNull(),
+  updatedAt: epochMs('updated_at').notNull(),
+});
+
 // --- Inferred row types (select + insert) for each table ---
 
 export type LlmProviderRow = typeof llmProviders.$inferSelect;
@@ -765,3 +800,5 @@ export type ModelMetadataRow = typeof modelMetadata.$inferSelect;
 export type NewModelMetadataRow = typeof modelMetadata.$inferInsert;
 export type CatalogMetaRow = typeof catalogMeta.$inferSelect;
 export type NewCatalogMetaRow = typeof catalogMeta.$inferInsert;
+export type RunLeaseRow = typeof runLeases.$inferSelect;
+export type NewRunLeaseRow = typeof runLeases.$inferInsert;

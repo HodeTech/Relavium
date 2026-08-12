@@ -10,15 +10,17 @@ import {
 import { and, asc, desc, eq, getTableColumns, inArray, isNull, notInArray, sql } from 'drizzle-orm';
 
 import type { Db, TxDb } from './client.js';
-import { withBusyRetryAsync } from './retry.js';
+import { withBusyRetry, withBusyRetryAsync } from './retry.js';
 import {
   runCosts,
   runEvents,
+  runLeases,
   runs,
   stepExecutions,
   workflows,
   type NewRunCostRow,
   type NewRunEventRow,
+  type NewRunLeaseRow,
   type NewRunRow,
   type NewStepExecutionRow,
   type RunRow,
@@ -315,6 +317,48 @@ export interface RunHistoryStore extends Pick<
   /** Structurally the core `RunStore.persistEvent`; `ctx` carries ADR-0078 §2's compare-and-append guard. */
   persistEvent: (event: RunEvent, ctx?: DurableWriteContext) => Promise<void>;
   listInterruptedRuns: () => Promise<readonly InterruptedRunInfo[]>;
+  /** Cross-process run ownership (ADR-0079). Structurally the core `RunLeasePort`. */
+  readonly leases: RunLeaseStore;
+}
+
+/**
+ * The run-lease operations (ADR-0079 §1, §6). Every one evaluates expiry against the store's OWN injected
+ * epoch-ms clock, never a caller-supplied time — so every process on the machine compares against one clock
+ * and a caller cannot widen its own lease by lying about `now`.
+ */
+export interface RunLeaseStore {
+  /**
+   * Take or renew ownership of `runId`, returning the fence to carry on every durable write.
+   *
+   * Succeeds when there is no lease, when the existing one has EXPIRED, or when `ownerId` already holds it
+   * (a re-acquire by the same process is a renewal, not a takeover). Fails — returns `undefined` — when a
+   * DIFFERENT owner holds a live lease. Every success bumps `generation`, including a takeover, which is
+   * what fences the previous owner out.
+   */
+  acquire: (runId: string, ownerId: string, ttlMs: number) => RunLease | undefined;
+  /**
+   * Push the expiry forward for a lease this owner still holds at this generation. Returns `false` when the
+   * lease has been taken over — which is how a heartbeat discovers it lost, without a second query.
+   */
+  heartbeat: (runId: string, ownerId: string, generation: number, ttlMs: number) => boolean;
+  /** Drop a lease this owner holds. A no-op when someone else has taken it — never steals it back. */
+  release: (runId: string, ownerId: string, generation: number) => void;
+  /** The current lease and whether it is live, for `reconcile()`'s skip and for diagnosis. */
+  read: (runId: string) => RunLeaseState | undefined;
+}
+
+/** The fence a caller carries after a successful acquire. */
+export interface RunLease {
+  readonly runId: string;
+  readonly ownerId: string;
+  readonly generation: number;
+  readonly expiresAt: number;
+}
+
+/** A lease as READ, with the store's own verdict on whether it is still live. */
+export interface RunLeaseState extends RunLease {
+  /** Evaluated against the store's injected clock at read time — never re-derived by the caller. */
+  readonly live: boolean;
 }
 
 const NON_TERMINAL_STATUSES = ['pending', 'running', 'paused'] as const;
@@ -921,6 +965,109 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         // Preserve the root cause (error-handling.md): never swallow it to rethrow a vaguer one.
         throw error instanceof Error ? error : new Error(String(error), { cause: error });
       }
+    },
+
+    leases: {
+      // Every operation is ONE `BEGIN IMMEDIATE` transaction: acquire reads the current row and writes the
+      // new generation atomically, so two processes racing cannot both read "expired" and both win. A
+      // DEFERRED read-then-write would take a read lock first and lose the upgrade race under exactly the
+      // contention this exists for (database-schema.md §"Concurrency & transaction behavior").
+      acquire: (runId, ownerId, ttlMs) =>
+        withBusyRetry(() =>
+          db.transaction(
+            (tx) => {
+              const now = deps.now();
+              const current = tx.select().from(runLeases).where(eq(runLeases.runId, runId)).get();
+              // A DIFFERENT owner holding a LIVE lease is the only refusal. Same owner ⇒ renewal; expired ⇒
+              // takeover. Expiry is `deps.now()`, the store's clock, never the caller's.
+              if (current !== undefined && current.ownerId !== ownerId && current.expiresAt > now) {
+                return undefined;
+              }
+              const generation = (current?.generation ?? 0) + 1;
+              const row: NewRunLeaseRow = {
+                runId,
+                ownerId,
+                generation,
+                expiresAt: now + ttlMs,
+                createdAt: current?.createdAt ?? now,
+                updatedAt: now,
+              };
+              if (current === undefined) {
+                tx.insert(runLeases).values(row).run();
+              } else {
+                tx.update(runLeases)
+                  .set({ ownerId, generation, expiresAt: row.expiresAt, updatedAt: now })
+                  .where(eq(runLeases.runId, runId))
+                  .run();
+              }
+              return {
+                runId,
+                ownerId,
+                generation,
+                expiresAt: row.expiresAt,
+              } satisfies RunLease;
+            },
+            { behavior: 'immediate' },
+          ),
+        ),
+
+      heartbeat: (runId, ownerId, generation, ttlMs) =>
+        withBusyRetry(() =>
+          db.transaction(
+            (tx) => {
+              const now = deps.now();
+              // Matching on (owner, generation) is what makes this discover a takeover without a second
+              // query: a newer generation means someone fenced us out, and the update matches nothing.
+              const updated = tx
+                .update(runLeases)
+                .set({ expiresAt: now + ttlMs, updatedAt: now })
+                .where(
+                  and(
+                    eq(runLeases.runId, runId),
+                    eq(runLeases.ownerId, ownerId),
+                    eq(runLeases.generation, generation),
+                  ),
+                )
+                .run();
+              return updated.changes > 0;
+            },
+            { behavior: 'immediate' },
+          ),
+        ),
+
+      release: (runId, ownerId, generation) => {
+        withBusyRetry(() =>
+          db.transaction(
+            (tx) => {
+              // Scoped to (owner, generation) so a process that has ALREADY been fenced out cannot delete
+              // the new owner's lease on its way down — a release must never steal.
+              tx.delete(runLeases)
+                .where(
+                  and(
+                    eq(runLeases.runId, runId),
+                    eq(runLeases.ownerId, ownerId),
+                    eq(runLeases.generation, generation),
+                  ),
+                )
+                .run();
+            },
+            { behavior: 'immediate' },
+          ),
+        );
+      },
+
+      read: (runId) => {
+        const row = db.select().from(runLeases).where(eq(runLeases.runId, runId)).get();
+        if (row === undefined) return undefined;
+        return {
+          runId: row.runId,
+          ownerId: row.ownerId,
+          generation: row.generation,
+          expiresAt: row.expiresAt,
+          // The store decides liveness, not the caller — one clock, one verdict.
+          live: row.expiresAt > deps.now(),
+        };
+      },
     },
 
     listInterruptedRuns: () => {

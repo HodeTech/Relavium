@@ -180,6 +180,115 @@ describe('createRunHistoryStore', () => {
     ).resolves.toBeUndefined();
   });
 
+  // --- the run lease (CR-11, ADR-0079 §1/§6) ----------------------------------------------------------
+
+  /** Seed a `runs` row — `run_leases.run_id` is an FK, so a lease needs its run to exist. */
+  async function seedRun(runId: string): Promise<void> {
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent({
+      type: 'run:started',
+      runId,
+      timestamp: TS,
+      sequenceNumber: 0,
+      workflowId,
+      inputs: {},
+      executionMode: 'local',
+    });
+  }
+
+  it('acquires an unheld lease and hands back generation 1', async () => {
+    await seedRun('run-1');
+    const lease = store.leases.acquire('run-1', 'proc-a', 60_000);
+    expect(lease?.generation).toBe(1);
+    expect(lease?.ownerId).toBe('proc-a');
+    expect(store.leases.read('run-1')?.live).toBe(true);
+  });
+
+  it('REFUSES a different owner while the lease is live', async () => {
+    await seedRun('run-1');
+    store.leases.acquire('run-1', 'proc-a', 60_000);
+    expect(store.leases.acquire('run-1', 'proc-b', 60_000)).toBeUndefined();
+    // …and the incumbent is untouched: a refused acquire must not disturb the holder's generation.
+    expect(store.leases.read('run-1')?.ownerId).toBe('proc-a');
+    expect(store.leases.read('run-1')?.generation).toBe(1);
+  });
+
+  it('a re-acquire by the SAME owner is a renewal, not a takeover', async () => {
+    await seedRun('run-1');
+    store.leases.acquire('run-1', 'proc-a', 60_000);
+    const again = store.leases.acquire('run-1', 'proc-a', 60_000);
+    expect(again?.ownerId).toBe('proc-a');
+    // The generation still moves — every successful acquire bumps it (ADR-0079 §1), which keeps the fence
+    // strictly monotonic and means a caller must carry the token it was just handed, not a remembered one.
+    expect(again?.generation).toBe(2);
+  });
+
+  it('allows a TAKEOVER once the lease has expired, and BUMPS the fence', async () => {
+    // The property that makes a stale owner harmless: the new generation is strictly greater, so the old
+    // owner's token is recognisably OLD rather than merely different.
+    await seedRun('run-1');
+    const first = store.leases.acquire('run-1', 'proc-a', 0); // expires immediately
+    const second = store.leases.acquire('run-1', 'proc-b', 60_000);
+    expect(second?.ownerId).toBe('proc-b');
+    expect(second?.generation).toBeGreaterThan(first?.generation ?? 0);
+  });
+
+  it('evaluates expiry against the STORE`s clock, not the caller`s', async () => {
+    // ADR-0079 §6: one clock per machine. A caller cannot widen its own lease by lying about `now`, because
+    // it never supplies one — only a TTL.
+    let clock = 1_000;
+    const clocked = createRunHistoryStore(client.db, {
+      uuid: () => counterUuid(++next),
+      now: () => clock,
+      workflow: WORKFLOW,
+    });
+    await seedRun('run-1');
+    clocked.leases.acquire('run-1', 'proc-a', 500);
+    expect(clocked.leases.read('run-1')?.live).toBe(true);
+    clock = 2_000; // the store's clock moves past the expiry
+    expect(clocked.leases.read('run-1')?.live).toBe(false);
+    expect(clocked.leases.acquire('run-1', 'proc-b', 500)?.ownerId).toBe('proc-b');
+  });
+
+  it('heartbeat pushes the expiry forward for the holder', async () => {
+    let clock = 1_000;
+    const clocked = createRunHistoryStore(client.db, {
+      uuid: () => counterUuid(++next),
+      now: () => clock,
+      workflow: WORKFLOW,
+    });
+    await seedRun('run-1');
+    const lease = clocked.leases.acquire('run-1', 'proc-a', 500);
+    clock = 1_400;
+    expect(clocked.leases.heartbeat('run-1', 'proc-a', lease?.generation ?? 0, 500)).toBe(true);
+    clock = 1_800; // past the ORIGINAL expiry, inside the renewed one
+    expect(clocked.leases.read('run-1')?.live).toBe(true);
+  });
+
+  it('heartbeat REPORTS the takeover — a fenced owner learns it lost without a second query', async () => {
+    await seedRun('run-1');
+    const stale = store.leases.acquire('run-1', 'proc-a', 0);
+    store.leases.acquire('run-1', 'proc-b', 60_000); // takeover bumps the generation
+    expect(store.leases.heartbeat('run-1', 'proc-a', stale?.generation ?? 0, 60_000)).toBe(false);
+  });
+
+  it('release NEVER steals — a fenced owner cannot drop the new holder`s lease on its way down', async () => {
+    // The failure this prevents is quiet and bad: a losing process shutting down would otherwise free a
+    // lease it no longer owns, letting a THIRD process in while the real owner is mid-run.
+    await seedRun('run-1');
+    const stale = store.leases.acquire('run-1', 'proc-a', 0);
+    store.leases.acquire('run-1', 'proc-b', 60_000);
+    store.leases.release('run-1', 'proc-a', stale?.generation ?? 0);
+    expect(store.leases.read('run-1')?.ownerId).toBe('proc-b');
+  });
+
+  it('release drops the holder`s own lease', async () => {
+    await seedRun('run-1');
+    const lease = store.leases.acquire('run-1', 'proc-a', 60_000);
+    store.leases.release('run-1', 'proc-a', lease?.generation ?? 0);
+    expect(store.leases.read('run-1')).toBeUndefined();
+  });
+
   it('persistEvent YIELDS the event loop between retries — it is on the async twin (#226)', async () => {
     // The central behavioural change of #226 had no regression guard: reverting `persistEvent` to the
     // synchronous `withBusyRetry` left the whole packages/db suite green. This is the assertion that dies.
