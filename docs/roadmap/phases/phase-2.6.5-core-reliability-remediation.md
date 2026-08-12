@@ -472,6 +472,14 @@ write carries the token and is rejected if it is stale. The process that loses b
 with a typed, actionable error. A lease that expires mid-run is fenced out of further durable writes — proven
 by driving a write with a stale token and asserting the rejection, not by asserting the lease table's contents.
 
+> **Scoped by [ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §4 —
+> "degrades to observer" is TWO deliverables, and only one is in this item.** The typed, actionable refusal is
+> in scope: the loser is rejected before it reads the checkpoint, so it never becomes a second producer even
+> briefly. An actual OBSERVER handle — tailing another process's durable log and synthesising a `RunHandle`
+> stream — is a new engine capability, deferred with its trigger named (the first surface that must *watch*
+> another process's run rather than merely be refused by it). Read as written, this paragraph could be taken
+> to require the full observer now; it does not.
+
 ### CR-12 — No durable effect/idempotency journal on the hot path · Blocker · needs an ADR
 
 **Evidence.** `NodeExecContext` carries an attempt number but no run/effect idempotency key.

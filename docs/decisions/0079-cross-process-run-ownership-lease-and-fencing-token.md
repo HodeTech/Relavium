@@ -2,7 +2,16 @@
 
 - **Status**: Accepted
 - **Date**: 2026-08-12
-- **Related**: [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) (the `ExecutionHost` seam and exactly-one-terminal — amended here) · [ADR-0078](0078-ordered-durable-append-and-the-terminal-outbox.md) (the `DurableWriteContext` this extends, and the `uncertain` disposition it reuses) · [ADR-0073](0073-history-db-migration-lock.md) (precedent only — see §8) · [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md) (the nearest philosophical precedent: a resume that cannot be trusted refuses) · [ADR-0070](0070-durable-per-model-session-cost-attribution.md) (the session-path drift this deliberately leaves alone) · [ADR-0049](0049-cli-machine-output-contract.md) (the exit-code taxonomy §7 extends) · [ADR-0050](0050-cli-history-db-at-rest-posture.md) (the durability-first store posture this classifies against). Schema and concurrency policy have one canonical home, [database-schema.md](../reference/shared-core/database-schema.md). **Decides** `CR-11` of [phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md); implementation staged behind it.
+- **Related**:
+  - [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) — the `ExecutionHost` seam and exactly-one-terminal. **Amended here.**
+  - [ADR-0078](0078-ordered-durable-append-and-the-terminal-outbox.md) — the `DurableWriteContext` this extends, and the `uncertain` disposition it reuses.
+  - [ADR-0073](0073-history-db-migration-lock.md) — precedent only, not a component (§8).
+  - [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md) — the nearest philosophical precedent: a resume that cannot be trusted refuses. Cited, not changed.
+  - [ADR-0070](0070-durable-per-model-session-cost-attribution.md) — the session-path drift this deliberately leaves alone (§8).
+  - [ADR-0049](0049-cli-machine-output-contract.md) — the exit-code taxonomy §7 extends.
+  - [ADR-0050](0050-cli-history-db-at-rest-posture.md) — the durability-first store posture this classifies against, without changing it.
+  - [database-schema.md](../reference/shared-core/database-schema.md) — the one canonical home for the schema and the concurrency policy.
+- **Closes**: **Decides** `CR-11` of [phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md); implementation staged behind it.
 
 ## Context
 
@@ -24,7 +33,7 @@ Three constraints shape the answer:
 
 A `run_leases` table keyed by `run_id`, holding the owner id, a monotonically increasing `generation`, and an expiry. Not a column on `runs`: that row is a **derived projection** the event fold rewrites (`applyDerived`), so putting authoritative, non-derived ownership state in it mixes two lifetimes in one row and invites a fold to clobber it. A table is also queryable — by `listInterruptedRuns`, and by a human diagnosing a stuck run.
 
-`generation` increments on every successful acquire and never resets. That is the fence: a token that only moves forward, so a stale owner's token is recognisably old rather than merely different.
+`generation` increments on every successful acquire — including the takeover `reconcile()` performs on an expired lease (§7) — and never resets. That is the fence: a token that only moves forward, so a stale owner's token is recognisably old rather than merely different.
 
 ### 2. The fence rides `DurableWriteContext` — the port is not broken again
 
@@ -44,7 +53,7 @@ All contention is on the resume path, which is already async.
 
 `resumeFromCheckpoint` acquires the lease **first**. A failed acquire throws a new typed `EngineStateError` naming the current holder and the remedy — before the checkpoint is loaded and before any `RunExecution` exists, so a loser never becomes a second producer even briefly.
 
-**A typed refusal, not an observer handle.** The acceptance says the loser "degrades to observer with a typed, actionable error"; those are two deliverables and only the second is in scope here. A real observer — tailing the durable log and synthesising a `RunHandle` stream — is a new engine capability, and `createClosedRunHandle` shows the tree already prefers a degenerate handle to a new streaming mode. The observer is recorded as a named follow-up with its trigger: the first surface that must *watch* another process's run rather than merely be refused by it.
+**A typed refusal, not an observer handle.** The acceptance says the loser "degrades to observer with a typed, actionable error" — two deliverables in one phrase. **The typed error is in scope; the observer handle is not.** A real observer — tailing the durable log and synthesising a `RunHandle` stream — is a new engine capability, and `createClosedRunHandle` shows the tree already prefers a degenerate handle to a new streaming mode. The observer is recorded as a named follow-up with its trigger: the first surface that must *watch* another process's run rather than merely be refused by it.
 
 ### 5. A fenced-out IN-FLIGHT run stops without claiming an outcome
 
