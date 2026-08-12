@@ -93,23 +93,48 @@ describe('createFileTerminalOutbox', () => {
     await expect(outbox.list()).resolves.toEqual([]);
   });
 
-  it('COMPACTS on remove, and only the removed run disappears', async () => {
+  it('remove TOMBSTONES rather than rewriting — only that run disappears from the read', async () => {
     const outbox = createFileTerminalOutbox(path);
     await outbox.put(terminal('r1'));
     await outbox.put(terminal('r2'));
     await outbox.remove('r1');
 
     expect((await outbox.list()).map((e) => e.runId)).toEqual(['r2']);
-    // Compaction really happened — the file no longer carries r1's line.
-    expect(readFileSync(path, 'utf8')).not.toContain('r1');
+    // The file was APPENDED to, never truncated — r1's original line is still there, retired by a marker.
+    // Rewriting is what raced a concurrent process's `put` and destroyed it.
+    expect(readFileSync(path, 'utf8')).toContain('"r1"');
   });
 
-  it('removing an ABSENT run is a no-op that does not rewrite the file', async () => {
+  it('never TRUNCATES — a concurrent append cannot be destroyed by a removal', async () => {
+    // The race this replaced, reproduced in the shape that matters: an append that lands "during" a removal
+    // must survive. With the old truncate-then-write compaction the interleaved entry vanished silently.
     const outbox = createFileTerminalOutbox(path);
     await outbox.put(terminal('r1'));
-    const before = readFileSync(path, 'utf8');
+    const removal = outbox.remove('r1');
+    await outbox.put(terminal('r2')); // a second process, mid-removal
+    await removal;
+
+    expect((await outbox.list()).map((e) => e.runId)).toEqual(['r2']);
+  });
+
+  it('a run put AGAIN after its tombstone is held again — a second failed retry must re-enter', async () => {
+    // Order-sensitivity, stated as a property: the reader replays the file, so a later `put` outranks an
+    // earlier tombstone. Without this a run whose retry also failed would be forgotten forever.
+    const outbox = createFileTerminalOutbox(path);
+    await outbox.put(terminal('r1', 5));
+    await outbox.remove('r1');
+    await outbox.put(terminal('r1', 9));
+
+    const held = await outbox.list();
+    expect(held.map((e) => e.runId)).toEqual(['r1']);
+    expect(held[0]?.sequenceNumber).toBe(9);
+  });
+
+  it('removing an ABSENT run is harmless', async () => {
+    const outbox = createFileTerminalOutbox(path);
+    await outbox.put(terminal('r1'));
     await outbox.remove('nobody');
-    expect(readFileSync(path, 'utf8')).toBe(before);
+    expect((await outbox.list()).map((e) => e.runId)).toEqual(['r1']);
   });
 
   it('creates the file 0600, like history.db (ADR-0050)', async () => {

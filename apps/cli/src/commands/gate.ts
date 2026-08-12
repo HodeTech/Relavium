@@ -18,9 +18,8 @@ import {
 import { MaskedSecretSchema, WorkflowSchema, type RunStatus } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
-import { join } from 'node:path';
-
 import { openLocalDb } from '../db/open.js';
+import { terminalOutboxPath } from '../history/open.js';
 import {
   buildEngine as defaultBuildEngine,
   type BuildEngineOptions,
@@ -285,7 +284,7 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
         media: wiring.media,
         // Same outbox as the  path, and it must be the SAME FILE: a gate resume settles a run whose
         // terminal a different process may already have failed to write (ADR-0078 §4).
-        terminalOutboxPath: join(homeDir, '.relavium', 'terminal-outbox.ndjson'),
+        terminalOutboxPath: terminalOutboxPath(homeDir),
       }),
       resolveMediaSurface: wiring.resolveMediaSurface,
       ...(wiring.mediaCostEstimate === undefined
@@ -293,6 +292,9 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
         : { mediaCostEstimate: wiring.mediaCostEstimate }),
       ...(resolvePrice.size === 0 ? {} : { resolvePrice }),
     });
+    // Same drain as the `run` path (ADR-0078 §4/§5) — a gate resume is equally "the next `relavium` start",
+    // and it is the one a user reaches for after seeing the `durabilityUncertain` exit code on a gated run.
+    await engine.drainTerminalOutbox().catch(() => undefined);
     const handle = await resumeOrFail(engine, {
       runId: args.runId,
       workflow,

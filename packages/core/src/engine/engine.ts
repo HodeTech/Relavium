@@ -2902,6 +2902,22 @@ export class WorkflowEngine {
    * the next start. Nothing here may throw, because `reconcile()` must repair every OTHER run even when one
    * of them cannot be repaired.
    */
+  /**
+   * Retry every terminal a prior process could not write — the PUBLIC entry point, and it exists because
+   * without one the mechanism was unreachable.
+   *
+   * `reconcile()` drains as its first step, but `reconcile()` has no shipping caller: it also REPAIRS every
+   * interrupted run, which is a much larger behaviour to switch on, so no surface has ever called it. That
+   * left `CR-92`'s outbox written, tested, certified — and dead. A user who saw the `uncertain` exit code had
+   * no command that would ever move their run to `durable`, while the exit code's own documentation said one
+   * would. Draining is the narrow half a surface can call at start with no other consequence: it writes only
+   * terminals the engine itself already produced, and only for runs whose log still lacks one.
+   */
+  async drainTerminalOutbox(): Promise<readonly RunEvent[]> {
+    const interrupted = await this.#host.store.listInterruptedRuns();
+    return this.#drainTerminalOutbox(interrupted);
+  }
+
   async #drainTerminalOutbox(interrupted: readonly InterruptedRun[]): Promise<readonly RunEvent[]> {
     let held: readonly RunEvent[];
     try {
@@ -2930,6 +2946,10 @@ export class WorkflowEngine {
           expectedLastSequenceNumber: open.lastSequenceNumber,
         });
         await this.#forgetOutbox(runId);
+        // The D11 terminal sweep, exactly as `reconcile()`'s own repair arm does it (ADR-0042 §4). The
+        // crashed process never ran its in-process reclaim — that is why the terminal is here — so without
+        // this the run's media references survive forever and its partial media is never GC-eligible.
+        this.#bestEffortReclaim(runId);
         written.push(event);
       } catch {
         // Still unwritable, or another process moved the log first. The entry stays for the next start; the

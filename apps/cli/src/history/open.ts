@@ -33,6 +33,17 @@ export interface OpenedHistory {
  * `runs.project_root` so a cross-process `relavium gate` resume re-jails `save_to` under the original run's
  * root, not the resumer's cwd.
  */
+/**
+ * Where a terminal the store refused is held (ADR-0078 §4), for one `~/.relavium` home.
+ *
+ * Exported so `run` and `gate` cannot drift onto DIFFERENT files — which they briefly did, because `gate`
+ * opens the database through `openLocalDb` rather than this module and so repeated the literal. Two commands
+ * writing two outboxes would mean a terminal held by one is never retried by the other.
+ */
+export function terminalOutboxPath(homeDir: string): string {
+  return join(homeDir, '.relavium', 'terminal-outbox.ndjson');
+}
+
 export function openHistoryStore(
   workflow: WorkflowDefinition,
   homeDir: string,
@@ -52,7 +63,7 @@ export function openHistoryStore(
   return {
     store,
     db,
-    terminalOutboxPath: join(homeDir, '.relavium', 'terminal-outbox.ndjson'),
+    terminalOutboxPath: terminalOutboxPath(homeDir),
     close,
   };
 }

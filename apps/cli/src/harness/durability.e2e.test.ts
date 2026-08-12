@@ -199,6 +199,43 @@ describe('CR-10 / CR-92 against the real history.db', () => {
     expect(terminals[0]?.type).toBe('run:completed'); // NOT relabelled `failed` by reconciliation
     expect(await createFileTerminalOutbox(outboxPath).list()).toEqual([]); // forgotten once it landed
   });
+
+  it('CR-92: `run` DRAINS at start — the retry path the exit code promises actually exists', async () => {
+    // The defect this closes was severe and was mine: `reconcile()` — the only thing that drained — has no
+    // shipping caller anywhere in the monorepo, so the outbox, the drain and the certification above were
+    // all unreachable from the real binary. A user who saw exit code 5 had no command that would ever move
+    // their run to durable, while that exit code's own documentation said one would.
+    const inner = realStore();
+    let refuse = true;
+    const store = {
+      resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
+      listInterruptedRuns: () => inner.listInterruptedRuns(),
+      persistEvent: async (event: RunEvent, ctx?: Parameters<typeof inner.persistEvent>[1]) => {
+        if (refuse && event.type === 'run:completed') throw new Error('the terminal write failed');
+        await inner.persistEvent(event, ctx);
+      },
+    };
+    const outbox = createFileTerminalOutbox(outboxPath);
+    const first = new WorkflowEngine({
+      host: createInMemoryHost({ store, terminalOutbox: outbox }),
+      executor: passthroughExecutor(),
+    }).start({ workflow: WORKFLOW, inputs: {} });
+    for await (const event of first.events) void event;
+    expect(first.durability()).toBe('uncertain');
+
+    // The next start, through the PUBLIC entry point a surface calls — not `reconcile()`.
+    refuse = false;
+    const drained = await new WorkflowEngine({
+      host: createInMemoryHost({
+        store,
+        terminalOutbox: createFileTerminalOutbox(outboxPath),
+      }),
+      executor: passthroughExecutor(),
+    }).drainTerminalOutbox();
+
+    expect(drained.map((e) => e.type)).toEqual(['run:completed']);
+    expect(inner.loadRunEvents(first.runId).some((e) => e.type === 'run:completed')).toBe(true);
+  });
 });
 
 /** A minimal executor: `input` and `output` vertices settle immediately with no provider involved. */

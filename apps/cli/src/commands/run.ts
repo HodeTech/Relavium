@@ -253,6 +253,13 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       };
     }
     const engine = await build(engineOptions);
+    // **Drain the terminal outbox before starting (ADR-0078 §4/§5).** A prior process may have produced a
+    // terminal its store would not take; it is held in `~/.relavium/terminal-outbox.ndjson` and this is
+    // "the next `relavium` start" that the `durabilityUncertain` exit code tells the user to wait for. Draining
+    // rather than `reconcile()`: this writes only terminals the engine itself already produced, for runs whose
+    // log still lacks one, and switches on nothing else. Best-effort — a run that cannot start because an
+    // unrelated run's terminal could not be retried would be the wrong trade.
+    await engine.drainTerminalOutbox().catch(() => undefined);
     // Run the AUGMENTED workflow (each inline agent's grant unioned with its MCP tool ids); the catalog/store
     // were validated against the original, which is identical except for those `tools` grants.
     const handle = engine.start({ workflow: runWorkflow, inputs });
