@@ -917,7 +917,7 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
     // `max(seq)` rather than a denormalized `runs.last_event_seq`: the unique index on (run_id, seq) already
     // serves it, so there is no migration, no drizzle snapshot regeneration, and no second source of truth
     // that can drift from the rows it describes.
-    if (ctx !== undefined) {
+    if (ctx?.expectedLastSequenceNumber !== undefined) {
       const actual =
         tx
           .select({ max: sql<number | null>`max(${runEvents.seq})` })

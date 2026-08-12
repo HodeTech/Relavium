@@ -1,4 +1,4 @@
-import { isAppendConflictError, type RunEvent } from '@relavium/shared';
+import { isAppendConflictError, type DurableWriteContext, type RunEvent } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { createAppendAudit, formatAppendAudit } from './append-audit.js';
@@ -290,7 +290,7 @@ describe('createAppendAudit', () => {
     const recording = {
       resolveWorkflowId: (slug: string) => Promise.resolve(slug),
       listInterruptedRuns: () => Promise.resolve([]),
-      persistEvent: (_event: RunEvent, ctx?: { readonly expectedLastSequenceNumber: number }) => {
+      persistEvent: (_event: RunEvent, ctx?: DurableWriteContext) => {
         seen.push(ctx?.expectedLastSequenceNumber);
         return Promise.resolve();
       },

@@ -1872,9 +1872,13 @@ describe('WorkflowEngine — resumeFromCheckpoint (cross-process resume, 1.R)', 
     let armCalls = 0;
     const hostB: typeof baseHostB = {
       ...baseHostB,
-      setTimer: (ms, onFire) => {
-        armCalls += 1;
-        return baseHostB.setTimer(ms, onFire);
+      // `kind` is counted and FORWARDED. Counted, because the claim is about the run's *work* timers — the
+      // ADR-0079 lease heartbeat is armed on every resume by design and is not what this test is about.
+      // Forwarded, because dropping it would silently re-label that heartbeat as a work timer in the inner
+      // host, which is the failure this spy exists to detect.
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind === 'work') armCalls += 1;
+        return baseHostB.setTimer(ms, onFire, kind);
       },
     };
     const engineB = engineWith({}, hostB);

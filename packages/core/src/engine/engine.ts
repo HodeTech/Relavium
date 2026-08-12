@@ -45,7 +45,9 @@ import {
   type MediaBilledModality,
   type MediaUrlFetch,
   type NodeSkippedReason,
+  RUN_LEASE_HEARTBEAT_MS,
   RUN_LEASE_TTL_MS,
+  isLeaseFencedError,
   type Retry,
   type RunDurability,
   type RunEvent,
@@ -392,6 +394,27 @@ class RunExecution {
    * be told the run completed.
    */
   #terminalDurability: RunDurability = 'pending';
+  /**
+   * This run's ownership claim (ADR-0079). Carried on every durable write, so the store refuses one from a
+   * process that has been taken over. `undefined` only for a host wired without a lease — see `#acquireLease`.
+   */
+  #fence: RunFence | undefined;
+  /** The owning engine's identity — passed in, never minted here, so one engine is one owner. */
+  readonly #ownerId: string;
+  /**
+   * Set when a durable write was refused by the FENCE rather than by a store fault (ADR-0079 §5).
+   *
+   * It suppresses the terminal entirely. A fenced process knows it lost; it does NOT know what happened to
+   * the run, because the new owner may be completing it right now. Writing `run:failed` would be a durable
+   * lie about somebody else's run — and could not be written anyway, since the fence rejects it too.
+   */
+  #fenced = false;
+  /** Guards {@link RunExecution.#settleFenced} so overlapping discovery points tear down exactly once. */
+  #fencedSettled = false;
+  /** Disarms the lease heartbeat. Cleared at settle, like every other timer this run arms. */
+  #heartbeatDisarm: (() => void) | undefined;
+  /** Ends the handle's iteration without a terminal — the fenced path only (ADR-0079 §5). */
+  #closeStream: (() => void) | undefined;
   #startEpochMs = 0;
   #cumulativeCostMicrocents = 0;
   #totalInputTokens = 0;
@@ -408,6 +431,8 @@ class RunExecution {
     bus: RunEventBus;
     capacity: number;
     onSettled: (runId: string) => void;
+    /** The owning engine's lease identity (ADR-0079 §1). */
+    ownerId: string;
     resolverCapabilities: ResolverCapabilities;
     maxTokensEstimate?: number;
     /** The user-pricing overlay (2.5.G S10, ADR-0065 §2) — into the workflow PRE-EGRESS governor so a user-priced
@@ -429,6 +454,7 @@ class RunExecution {
     this.#resolverCapabilities = params.resolverCapabilities;
     this.#bus = params.bus;
     this.#onSettled = params.onSettled;
+    this.#ownerId = params.ownerId;
     this.#abort = params.host.newAbortController();
 
     const secretNames = new Set(
@@ -537,6 +563,9 @@ class RunExecution {
       },
       params.capacity,
       () => this.#terminalDurability,
+      (close) => {
+        this.#closeStream = close;
+      },
     );
   }
 
@@ -554,6 +583,21 @@ class RunExecution {
         inputs: this.#maskedInputs,
         executionMode: this.#executionMode,
       });
+      // **Ownership is taken right AFTER `run:started`, not before it — a deviation from ADR-0079 §3 that
+      // the FK forced, recorded rather than quietly absorbed.** §3 said the lease row is created inside the
+      // same transaction as the fold; `run_leases.run_id` references `runs.id`, and that row only exists
+      // once `run:started` has folded, so an acquire before the first event fails the foreign key. Doing it
+      // here keeps the store free of any lease coupling.
+      //
+      // The window it opens is a run that is durable and momentarily unowned. It is not reachable in
+      // practice — the `runId` came from `ids.newId()` in the same tick and no other process has yet had a
+      // chance to see it — and it is not harmful even if it were: a racing process would acquire first, our
+      // acquire would be refused, and this run would fail before executing a single node. Refused, never
+      // duplicated.
+      if (!(await this.#acquireLease())) {
+        await this.#settle('run:failed');
+        return;
+      }
     } catch {
       // Could not even start the run (e.g. the store rejected) — close with the single terminal event
       // rather than leaving a started-but-never-finished run. Never swallowed: it becomes run:failed.
@@ -796,6 +840,11 @@ class RunExecution {
    *    double-delivery) → kick the loop WITHOUT re-applying (no second `human_gate:resumed`); otherwise
    *    apply the decision via {@link resume}. The terminal-checkpoint case never reaches here (closed handle).
    */
+  /** Adopt the fence the engine acquired on the resume path, and start heartbeating it (ADR-0079 §4). */
+  adoptLease(fence: RunFence): void {
+    void this.#acquireLease(fence);
+  }
+
   async beginResume(
     gateId: string,
     decision: GateDecision,
@@ -867,6 +916,7 @@ class RunExecution {
     }
     this.#settled = true; // any straggler timer callback now short-circuits on the #settled guard
     this.#abort.abort();
+    this.#stopHeartbeat();
     for (const disarm of this.#gateTimers.values()) {
       disarm();
     }
@@ -938,6 +988,22 @@ class RunExecution {
     this.#pendingGates.delete(gateId);
     this.#disarmTimer(gateId); // a decision arrived before the timeout — cancel the armed timer (1.Q)
     this.#pauseEpisode = false; // a later idle-with-gates re-emits run:paused for the remaining gates
+    // Re-take ownership **only if the pause actually released it** (§4), because a parked run is not being
+    // executed. This is the IN-PROCESS resume, so it is normally uncontended — but if another process
+    // claimed the run while it was parked, that process owns it now and this one must not proceed.
+    //
+    // The `#fence === undefined` test is the precise question "did we give ownership up", and it has to be
+    // asked. A CROSS-process resume arrives here holding the fence `resumeFromCheckpoint` acquired before it
+    // read the checkpoint, and `acquire` treats a same-owner call as a renewal that still BUMPS the
+    // generation — so re-acquiring there would move the fence out from under the engine's own in-flight
+    // claim (stranding the outer release path on a stale generation) and arm a second heartbeat. That is the
+    // hazard `resumeFromCheckpoint`'s own comment names as the subtlest way to get this wrong.
+    if (this.#fence === undefined && !(await this.#acquireLease())) {
+      this.#fenced = true;
+      this.#terminalDurability = 'uncertain';
+      this.#settleFenced();
+      return;
+    }
 
     // A budget gate's two decisions (reject ⇒ a run-level budget failure; approve ⇒ continue the deferred
     // pre-egress call) resolve in #resolveBudgetGate; a `true` return means it owned this gate — then only
@@ -1963,6 +2029,100 @@ class RunExecution {
       gateIds,
       ...(mediaJobNodeIds.length === 0 ? {} : { pendingMediaJobNodeIds: mediaJobNodeIds }),
     });
+    // AFTER the event is durable, not before: `run:paused` is itself a guarded write and must go out under
+    // the fence this process still holds.
+    //
+    // The lease is held while the run EXECUTES. A run waiting on a human gate is not executing and may wait
+    // for days; holding its lease would refuse every other process for the TTL over a run nobody is working
+    // on, and would make the second decision of a two-gate workflow fail against this process's own stale
+    // claim. Whichever process resumes re-acquires (ADR-0079 §4).
+    //
+    // **Only for a GATE park, never a media park** — measured, and getting it wrong hung twenty-two tests.
+    // `run:paused` covers both, but they are opposite situations: a run waiting on a human is not being
+    // executed by anyone, while a run parked on an async media job is still being polled by THIS process on
+    // its own timer. Releasing the latter would hand ownership away mid-work and fence this process out of
+    // its own in-flight job.
+    if (mediaJobNodeIds.length === 0) {
+      await this.#releaseOwnership();
+    }
+  }
+
+  /**
+   * Acquire this run's lease and start its heartbeat (ADR-0079 §3, §6).
+   *
+   * For a FRESH run this is uncontended by construction — the `runId` came from `ids.newId()` moments ago —
+   * so a refusal here means the host's lease port is broken rather than that someone else owns the run. It
+   * still fails the run rather than proceeding unowned: an unfenced run is exactly what CR-11 exists to
+   * prevent, and silently continuing would make the guarantee optional in practice.
+   *
+   * A RESUMED run already holds a fence, acquired before the checkpoint was read, and passes it in.
+   */
+  async #acquireLease(existing?: RunFence): Promise<boolean> {
+    if (existing !== undefined) {
+      this.#fence = existing;
+      this.#startHeartbeat();
+      return true;
+    }
+    const fence = await this.#host.runLeases.acquire(this.runId, this.#ownerId, RUN_LEASE_TTL_MS);
+    if (fence === undefined) return false;
+    this.#fence = fence;
+    this.#startHeartbeat();
+    return true;
+  }
+
+  /**
+   * Re-arm the lease every {@link RUN_LEASE_HEARTBEAT_MS} through the host's timer seam — the ADR-0045
+   * media-poll precedent, so the platform-free engine names no `setInterval`.
+   *
+   * A heartbeat that returns `false` means the lease was taken over. That is the SAME state a fenced write
+   * produces, and it is handled the same way: the run stops without claiming an outcome. Discovering it here
+   * rather than at the next write matters — a run between nodes may not write for a while, and every second
+   * it keeps executing is a second it may call a tool the new owner is also calling.
+   */
+  #startHeartbeat(): void {
+    const fence = this.#fence;
+    if (fence === undefined) return;
+    // Arming is IDEMPOTENT: only one disarm handle is ever held, so arming over a live beat would strand the
+    // previous timer with no way to stop it — a heartbeat that keeps renewing a stale fence for the life of
+    // the process, long after the run it belonged to settled.
+    this.#stopHeartbeat();
+    // **`'liveness'`, not a work timer** — the kind is the whole reason the seam carries one. This beat
+    // advances nothing and re-arms itself for as long as the run lives, so it must not join the set a test
+    // fires to drive a run forward (a drive-to-quiescence loop would never terminate) nor the set that
+    // answers "is this run waiting on something", and it must not be what holds a CLI process open. See
+    // {@link TimerKind}.
+    this.#heartbeatDisarm = this.#host.setTimer(
+      RUN_LEASE_HEARTBEAT_MS,
+      () => void this.#beat(fence),
+      'liveness',
+    );
+  }
+
+  /** One heartbeat: refresh the lease, then either re-arm or stop as a fenced run. */
+  async #beat(fence: RunFence): Promise<void> {
+    if (this.#settled || this.#fenced) return;
+    let alive = false;
+    try {
+      alive = await this.#host.runLeases.heartbeat(this.runId, fence, RUN_LEASE_TTL_MS);
+    } catch {
+      // A heartbeat that cannot be written is NOT a takeover — the lease simply ages toward its TTL and the
+      // next write's fence check is the authority. Treating an I/O blip as a loss would stop a run that
+      // still owns itself.
+      alive = true;
+    }
+    if (this.#settled || this.#fenced) return; // re-checked: the await above is a real suspension point
+    if (!alive) {
+      this.#fenced = true;
+      this.#terminalDurability = 'uncertain';
+      this.#settleFenced();
+      return;
+    }
+    this.#startHeartbeat(); // re-arm; one-shot timers only (ADR-0036 Decision 5)
+  }
+
+  #stopHeartbeat(): void {
+    this.#heartbeatDisarm?.();
+    this.#heartbeatDisarm = undefined;
   }
 
   async #settle(type: 'run:completed' | 'run:failed' | 'run:cancelled'): Promise<void> {
@@ -1970,6 +2130,14 @@ class RunExecution {
       return; // exactly-one-terminal-event: idempotent
     }
     this.#settled = true;
+    // **A fenced run settles LOCALLY and emits nothing (ADR-0079 §5).** It still disarms its timers, closes
+    // its stream and reports `uncertain` — the consumer's `for await` must complete rather than hang — but
+    // the terminal is the new owner's to write. Placed before the timer sweep so the state is identical
+    // either way; the only difference is that no event leaves this process.
+    if (this.#fenced) {
+      this.#settleFenced();
+      return;
+    }
     this.#abort.abort(); // make sure any straggler executor sees cancellation
     // The run is closing — no gate or media-poll timer may fire afterwards (1.Q / ADR-0045 §4). Disarm each,
     // then clear in one shot. The #abort.abort() above also aborts any in-flight pollMediaJob (the signal is
@@ -2039,7 +2207,60 @@ class RunExecution {
       draft = { type, runId: this.runId, cumulativeCostMicrocents: this.#cumulativeCostMicrocents };
     }
     await this.#emitDurable(draft);
+    // **Ownership ends with the run, and only AFTER the terminal is written** (ADR-0079 §4). The order is
+    // forced: the terminal is itself fence-checked, so releasing first would make this run's own last write
+    // fail its own guard.
+    //
+    // Both halves are load-bearing. An un-disarmed beat re-arms itself forever, so a finished run would keep
+    // writing a lease renewal every 20s for the life of the process; an unreleased lease leaves a
+    // `run_leases` row per run, growing without bound in `history.db`. Released even when the terminal write
+    // FAILED (the run is `uncertain` and its terminal is in the outbox): letting another process take the run
+    // over is exactly what should happen next, and the generation only moves forward, so this process stays
+    // fenced if it ever wakes.
+    await this.#releaseOwnership();
     this.#onSettled(this.runId);
+  }
+
+  /**
+   * Tear the run down as a FENCED loser: disarm everything, close the stream, emit nothing (ADR-0079 §5).
+   *
+   * **Called directly at each point the loss is discovered, never left to the scheduler.** Handing the job to
+   * `#schedule()` looked equivalent and is not: `#step()` returns early only on `#settled`, so a fenced run
+   * with nothing runnable — one parked at a gate, or between nodes — simply finds no work, never reaches
+   * `#settle`, and leaves the consumer's `for await` hanging forever. §5 promises the opposite in terms.
+   *
+   * Idempotent, because the two discovery points can overlap: a beat can lose the lease while a write is
+   * already failing its fence check, and `#settle` may reach the fenced branch afterwards.
+   *
+   * The lease is deliberately NOT released here — it belongs to the new owner now, and `release` is scoped to
+   * (owner, generation) precisely so a loser on its way down can never free the winner's claim.
+   */
+  #settleFenced(): void {
+    if (this.#fencedSettled) return;
+    this.#fencedSettled = true;
+    this.#settled = true; // no terminal may be emitted after this point, by any path
+    this.#stopHeartbeat();
+    this.#abort.abort();
+    for (const disarm of this.#gateTimers.values()) disarm();
+    this.#gateTimers.clear();
+    for (const disarm of this.#mediaJobTimers.values()) disarm();
+    this.#mediaJobTimers.clear();
+    this.#disarmRunTimeout();
+    this.#closeStream?.();
+    this.#onSettled(this.runId);
+  }
+
+  /** Stop beating and give the lease back — the run is over, one way or another (ADR-0079 §4). */
+  async #releaseOwnership(): Promise<void> {
+    this.#stopHeartbeat();
+    const fence = this.#fence;
+    if (fence === undefined) return;
+    this.#fence = undefined;
+    try {
+      await this.#host.runLeases.release(this.runId, fence);
+    } catch {
+      // A release that cannot be written leaves the lease to expire on its own TTL — slower, never wrong.
+    }
   }
 
   // --- readiness, skip-propagation, edges -----------------------------------------------------
@@ -2360,10 +2581,13 @@ class RunExecution {
       // the log a prefix. The same single tail now serializes the ask, the write and the delivery.
       await prior;
       try {
-        await this.#host.store.persistEvent(
-          event,
-          guarded ? { expectedLastSequenceNumber } : undefined,
-        );
+        // A terminal is exempt from the APPEND guard (ADR-0078 §2) but NOT from the fence: a process that
+        // has been taken over must not write the run's terminal either — that is the whole of ADR-0079 §5.
+        // The two claims are independent fields precisely so this asymmetry is expressible.
+        await this.#host.store.persistEvent(event, {
+          ...(guarded ? { expectedLastSequenceNumber } : {}),
+          ...(this.#fence === undefined ? {} : { fence: this.#fence }),
+        });
         if (TERMINAL_TYPES.has(event.type)) {
           this.#terminalDurability = 'durable';
           // **The media reclaim happens HERE, not before the write** (ADR-0078 §1, re-timing ADR-0042 §4).
@@ -2371,8 +2595,16 @@ class RunExecution {
           // media references — the outbox could retry the terminal into a log whose media was gone.
           this.#reclaimRunMedia();
         }
-      } catch {
-        if (TERMINAL_TYPES.has(event.type)) {
+      } catch (writeError) {
+        // **A FENCE rejection is not a store fault, and must not be treated as one (ADR-0079 §5).** Another
+        // process owns the run now. This one stops: it does not fail the run, does not write a terminal, and
+        // does not hand the terminal to the outbox — the run's real outcome belongs to the new owner, and
+        // recording anything here would be a durable lie about somebody else's run.
+        if (isLeaseFencedError(writeError)) {
+          this.#fenced = true;
+          this.#terminalDurability = 'uncertain';
+          this.#settleFenced();
+        } else if (TERMINAL_TYPES.has(event.type)) {
           // **The terminal outbox** (ADR-0078 §4). The run is settling and the caller is about to be handed
           // this terminal in-process; the durable record does not have it. Hold the intended payload OUTSIDE
           // the store — the store is the thing that just failed — so a later start can retry it under the
@@ -2380,7 +2612,12 @@ class RunExecution {
           this.#terminalDurability = 'uncertain';
           await this.#bestEffortOutbox(event);
         }
-        if (!TERMINAL_TYPES.has(event.type) && this.#failure === undefined && !this.#cancelling) {
+        if (
+          !this.#fenced &&
+          !TERMINAL_TYPES.has(event.type) &&
+          this.#failure === undefined &&
+          !this.#cancelling
+        ) {
           this.#failure = {
             // Attribute it when the event names a node. This is the failure a user ACTUALLY sees for a failed
             // durable write — including a `budget:estimate_committed`, whose typed
@@ -2692,6 +2929,7 @@ export class WorkflowEngine {
         /* settled runs are retained so resume/cancel can report run_already_terminal; a long-lived
            host may prune them on a TTL — out of 1.N scope. */
       },
+      ownerId: this.#ownerId,
       resolverCapabilities: this.#resolverCapabilities,
       maxTokensEstimate: this.#maxTokensEstimate,
       ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
@@ -2805,6 +3043,7 @@ export class WorkflowEngine {
       workflow: input.workflow,
       inputs: input.inputs ?? {},
       executionMode: input.executionMode ?? 'local',
+      ownerId: this.#ownerId,
       host: this.#host,
       executor: this.#executor,
       bus,
@@ -2827,6 +3066,10 @@ export class WorkflowEngine {
       // beginResume re-resolves the workflow context (not checkpointed) then drives: kick if the gate was
       // already resolved in the prior process (no re-apply), else apply the decision. A media-ONLY resume
       // (no gate) re-attaches + re-polls the parked job(s). The events buffer on the returned handle.
+      // The engine acquired this fence before the checkpoint was read (§4); the execution adopts it rather
+      // than acquiring again — a second acquire would bump the generation and fence the engine's own
+      // in-flight claim, which is the subtlest way to get this wrong.
+      execution.adoptLease(fence);
       if (isGateResume && input.gateId !== undefined && input.decision !== undefined) {
         await execution.beginResume(
           input.gateId,
@@ -2848,30 +3091,19 @@ export class WorkflowEngine {
       await this.#host.runLeases.release(input.runId, fence);
       throw error;
     }
-    // **The lease is released when this process STOPS WORKING on the run — which includes a re-pause, not
-    // only a terminal.** Found by implementation, and it is a real gap in ADR-0079 §4 as written: a
-    // sequential multi-gate run resumes, re-pauses at the next gate, and the very next `relavium gate` is
-    // refused for the full TTL by a lease nobody is using. A paused run has no process executing it; the
-    // point of ownership is to stop two processes ACTING, and a parked run is precisely one nobody is acting
-    // on. Releasing is safe because re-acquiring is what the next resume does anyway, and the generation
-    // still moves forward, so a stale owner remains fenced.
-    await this.#releaseIfIdle(input.runId, fence);
+    // **No release here — the resumed execution owns its own lease lifetime now.**
+    //
+    // This is where a `#releaseIfIdle(input.runId, fence)` used to sit, and it was wrong in a way worth
+    // recording: `beginResume` returns as soon as the resume has been KICKED, not when the run has finished
+    // or re-parked. Releasing on that return handed the lease back while the run was still executing, so the
+    // resumed leg's very next durable write was fenced out by its own release — every cross-process gate
+    // resume stopped dead with no terminal and hung its caller.
+    //
+    // Ownership is given up at the two moments the process actually stops working on the run, both inside
+    // the execution where that is observable: `#emitPausedOnce` releases on a gate park (§4), and `#settle`
+    // releases after the terminal is durable. A run abandoned without reaching either is covered by the TTL,
+    // which is what the TTL is for.
     return execution.handle;
-  }
-
-  /**
-   * Release the lease once the resumed leg has stopped executing — settled OR parked at a gate.
-   *
-   * Deliberately NOT tied to the terminal alone. A run parked at a human gate may sit for days; holding its
-   * lease would block every other process for the TTL while nothing is running, and would make the second
-   * decision of a two-gate workflow fail against the first process's own stale claim.
-   */
-  async #releaseIfIdle(runId: string, fence: RunFence): Promise<void> {
-    try {
-      await this.#host.runLeases.release(runId, fence);
-    } catch {
-      // A release that cannot be written leaves a lease to expire on its own TTL — slower, never wrong.
-    }
   }
 
   /** Request cooperative cancellation. Throws {@link EngineStateError} for an unknown/terminal run. */

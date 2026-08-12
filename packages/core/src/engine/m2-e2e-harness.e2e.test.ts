@@ -1902,12 +1902,16 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     let timerCalls = 0;
     const host: Host = {
       ...baseHost,
-      setTimer: (ms, onFire) => {
+      // Counted and faulted on WORK timers only, and `kind` forwarded. The fault models a failure to re-arm
+      // the media POLL; counting the ADR-0079 lease heartbeat here would shift which arm is the second one,
+      // so the fault would land on the heartbeat and this test would no longer exercise the poll path at all.
+      setTimer: (ms, onFire, kind = 'work') => {
+        if (kind !== 'work') return baseHost.setTimer(ms, onFire, kind);
         timerCalls += 1;
         // The first timer parks the submitted job. Its first pending poll then attempts the second arm, which
         // models a host timer failure outside the normal executor/adapter path.
         if (timerCalls === 2) throw new Error('timer unavailable');
-        return baseHost.setTimer(ms, onFire);
+        return baseHost.setTimer(ms, onFire, kind);
       },
     };
     const job = asyncMediaProvider([{ state: 'pending' }]);

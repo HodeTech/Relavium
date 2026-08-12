@@ -75,6 +75,14 @@ export function createRunHandle(
   capacity: number = DEFAULT_STREAM_CAPACITY,
   /** Read by {@link RunHandle.durability}; the engine sets it as the terminal's write settles (ADR-0078 §5). */
   readDurability: () => RunDurability = () => 'pending',
+  /**
+   * Handed the stream's closer, so the engine can end the iteration WITHOUT a terminal event.
+   *
+   * The one caller is ADR-0079 §5's fenced run: it must not write a terminal (the run belongs to another
+   * process now) but its consumer's `for await` must still complete rather than hang forever. Every other
+   * close is terminal-driven, which is why this is a deliberate escape hatch rather than a general API.
+   */
+  onCloser: (close: () => void) => void = () => undefined,
 ): RunHandle {
   // `onClose: unsubscribe` detaches the bus subscription on ANY close — the terminal event below OR an early
   // consumer abandon (`break`/`return` → BoundedEventStream.return() → close()) — not only on a terminal.
@@ -87,6 +95,9 @@ export function createRunHandle(
     if (TERMINAL_TYPES.has(event.type)) {
       primary.close(); // close() fires onClose -> unsubscribe()
     }
+  });
+  onCloser(() => {
+    primary.close();
   });
   return {
     runId,

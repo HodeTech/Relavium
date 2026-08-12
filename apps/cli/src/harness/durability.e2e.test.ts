@@ -25,7 +25,13 @@ import {
   parseWorkflow,
   type WorkflowDefinition,
 } from '@relavium/core';
-import { createClient, createRunHistoryStore, runMigrations, type DbClient } from '@relavium/db';
+import {
+  createClient,
+  createRunHistoryStore,
+  createRunLeasePort,
+  runMigrations,
+  type DbClient,
+} from '@relavium/db';
 import { isAppendConflictError, type RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -78,8 +84,16 @@ describe('CR-10 / CR-92 against the real history.db', () => {
   it('CR-10: a full run over the REAL store commits a clean prefix with no overlapping asks', async () => {
     // The append audit wrapped around the SQLite store — the same predicate `packages/core` runs against the
     // reference, now measuring the store `relavium run` actually uses.
-    const audit = createAppendAudit(realStore());
-    const host = createInMemoryHost({ store: audit.store });
+    const inner = realStore();
+    const audit = createAppendAudit(inner);
+    const host = createInMemoryHost({
+      store: audit.store,
+      // The DURABLE lease, from the same database the run persists to. Pairing a real store with the
+      // in-memory reference silently fences every run: the engine claims a fence the store has never heard
+      // of, so the very first guarded write is refused (ADR-0079 §2). That is the mechanism working — and
+      // it is why a host must not mix the two backends.
+      runLeases: createRunLeasePort(inner),
+    });
     const engine = new WorkflowEngine({ host, executor: passthroughExecutor() });
     const handle = engine.start({ workflow: WORKFLOW, inputs: {} });
     const events: RunEvent[] = [];
@@ -142,7 +156,11 @@ describe('CR-10 / CR-92 against the real history.db', () => {
       },
     };
     const outbox = createFileTerminalOutbox(outboxPath);
-    const host = createInMemoryHost({ store: refusing, terminalOutbox: outbox });
+    const host = createInMemoryHost({
+      store: refusing,
+      terminalOutbox: outbox,
+      runLeases: createRunLeasePort(inner),
+    });
     const engine = new WorkflowEngine({ host, executor: passthroughExecutor() });
     const handle = engine.start({ workflow: WORKFLOW, inputs: {} });
     // Drain the stream so the run settles; the events themselves are not what this test asserts on.
@@ -171,7 +189,11 @@ describe('CR-10 / CR-92 against the real history.db', () => {
       },
     };
     const outbox = createFileTerminalOutbox(outboxPath);
-    const host = createInMemoryHost({ store, terminalOutbox: outbox });
+    const host = createInMemoryHost({
+      store,
+      terminalOutbox: outbox,
+      runLeases: createRunLeasePort(inner),
+    });
     const handle = new WorkflowEngine({ host, executor: passthroughExecutor() }).start({
       workflow: WORKFLOW,
       inputs: {},
@@ -186,6 +208,7 @@ describe('CR-10 / CR-92 against the real history.db', () => {
     const laterHost = createInMemoryHost({
       store,
       terminalOutbox: createFileTerminalOutbox(outboxPath),
+      runLeases: createRunLeasePort(inner),
     });
     const repaired = await new WorkflowEngine({
       host: laterHost,
@@ -217,7 +240,11 @@ describe('CR-10 / CR-92 against the real history.db', () => {
     };
     const outbox = createFileTerminalOutbox(outboxPath);
     const first = new WorkflowEngine({
-      host: createInMemoryHost({ store, terminalOutbox: outbox }),
+      host: createInMemoryHost({
+        store,
+        terminalOutbox: outbox,
+        runLeases: createRunLeasePort(inner),
+      }),
       executor: passthroughExecutor(),
     }).start({ workflow: WORKFLOW, inputs: {} });
     for await (const event of first.events) void event;
@@ -229,6 +256,7 @@ describe('CR-10 / CR-92 against the real history.db', () => {
       host: createInMemoryHost({
         store,
         terminalOutbox: createFileTerminalOutbox(outboxPath),
+        runLeases: createRunLeasePort(inner),
       }),
       executor: passthroughExecutor(),
     }).drainTerminalOutbox();

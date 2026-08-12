@@ -27,6 +27,8 @@ import type { RunEvent } from '@relavium/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { buildEngine, type BuildEngineOptions } from '../engine/build-engine.js';
+import { createRunLeasePort } from '@relavium/db';
+
 import { createCliHost } from '../engine/host.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { isCliError, toUserFacing } from '../process/errors.js';
@@ -226,7 +228,9 @@ describe('gateCommand', () => {
         definitionJson: JSON.stringify(def),
       },
     });
-    const engine = await buildEngine({ host: createCliHost(store) });
+    const engine = await buildEngine({
+      host: createCliHost(store, { runLeases: createRunLeasePort(store) }),
+    });
     const handle = engine.start({ workflow: def, inputs });
     let runId = '';
     const gateIds: string[] = [];
@@ -860,7 +864,9 @@ describe('gateCommand — a run written by a NEWER binary (ADR-0075)', () => {
         definitionJson: JSON.stringify(def),
       },
     });
-    const engine = await buildEngine({ host: createCliHost(store) });
+    const engine = await buildEngine({
+      host: createCliHost(store, { runLeases: createRunLeasePort(store) }),
+    });
     const handle = engine.start({ workflow: def, inputs: { n: 7 } });
     let runId = '';
     let lastSeq = 0;

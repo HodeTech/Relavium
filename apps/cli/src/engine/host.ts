@@ -133,6 +133,15 @@ export function createCliHost(
       'createCliHost: a checkpointer requires an explicit durable RunStore (the checkpointer must reconstruct from the same store the run persists to)',
     );
   }
+  // A DURABLE store paired with the in-memory lease reference silently FENCES every run: the engine claims
+  // a fence the store has never heard of, so its first guarded write is refused (ADR-0079 §2) and the run
+  // stops without a terminal. The failure is invisible at the call site and looks like a hung run, so it is
+  // rejected at wiring time — the same posture as the checkpointer check above, and the same reason.
+  if (options?.runLeases === undefined && !(store instanceof InMemoryRunStore)) {
+    throw new Error(
+      'createCliHost: a durable RunStore requires an explicit runLeases port built from the same store (createRunLeasePort) — the in-memory reference would fence every run',
+    );
+  }
   // Construct each media port ONCE from its root/handle (a port is absent when its config is). The single
   // `FilesystemMediaStore` instance is THE store `host.mediaStore` exposes and `resolveForEgress` reads — a
   // handle put by the de-inline choke point must resolve in the failover re-materialization (one CAS, ADR-0042).
@@ -159,8 +168,15 @@ export function createCliHost(
     // engine's in-house `createAbortController` is for TESTS ONLY (its signal is not `instanceof
     // AbortSignal`, so adapters drop it and a Ctrl-C can't interrupt a live stream). See execution-host.ts.
     newAbortController: () => new AbortController(),
-    setTimer: (ms, onFire) => {
+    setTimer: (ms, onFire, kind = 'work') => {
       const timer = setTimeout(onFire, ms);
+      // **A liveness timer is `unref`'d; a work timer is not.** A work timer is something the run is parked
+      // ON — a gate deadline, a retry backoff, a media poll — so it SHOULD hold the event loop open, or the
+      // CLI would exit out from under a run that is merely waiting. The ADR-0079 lease heartbeat is the
+      // opposite: it re-arms itself forever and advances nothing, so if it were ever the last handle
+      // standing it would hang the process instead of letting it exit. It is disarmed on settle and on
+      // fence, but `unref` makes a leak impossible rather than merely unlikely.
+      if (kind === 'liveness') timer.unref();
       return () => {
         clearTimeout(timer);
       };

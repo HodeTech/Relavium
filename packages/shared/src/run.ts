@@ -111,7 +111,9 @@ export type Run = z.infer<typeof RunSchema>;
 export interface DurableWriteContext {
   /**
    * The sequence number this writer last ASKED the store to append for the run — not the last it saw
-   * succeed — or `-1` when it has asked for nothing yet.
+   * succeed — or `-1` when it has asked for nothing yet. **Absent means "do not check the ordering"**: the
+   * two claims on this object are independent, and the run TERMINAL carries the fence without the append
+   * guard (ADR-0078 §2 exempts it, ADR-0079 §5 does not).
    *
    * The store rejects the append when its own maximum for the run differs. That is what makes the log a
    * prefix rather than merely a set: a second process that committed something this writer never saw, an
@@ -123,7 +125,7 @@ export interface DurableWriteContext {
    * creating exactly the hole this exists to prevent. Reporting the last *asked* makes the next append fail
    * closed instead.
    */
-  readonly expectedLastSequenceNumber: number;
+  readonly expectedLastSequenceNumber?: number;
   /**
    * The fencing token this writer holds for the run
    * ([ADR-0079](../../../docs/decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §2), or

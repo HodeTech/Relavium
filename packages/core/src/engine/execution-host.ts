@@ -149,7 +149,24 @@ export interface RunStore {
  * Used by the human gate (1.Q) and budget governor (1.AC) for `timeout_ms` deadlines (ADR-0036 Decision 5)
  * — never a sleep/poll loop, so the completion-driven scheduler stays event-driven.
  */
-export type SetTimer = (ms: number, onFire: () => void) => () => void;
+export type SetTimer = (ms: number, onFire: () => void, kind?: TimerKind) => () => void;
+
+/**
+ * What a timer's firing MEANS — a distinction that is load-bearing, not bookkeeping.
+ *
+ * - **`work`** (the default): firing ADVANCES the run. A gate/run `timeout_ms` deadline, a retry backoff
+ *   (ADR-0040), a media poll re-arm (ADR-0045). The run is waiting on it, it fires a bounded number of
+ *   times, and something observable happens when it does.
+ * - **`liveness`**: firing advances NOTHING. Today this is only the ADR-0079 §6 lease heartbeat: it re-arms
+ *   itself for as long as the run lives, and its whole job is to tell another process "still here".
+ *
+ * Conflating the two costs real things in both directions. In a test, `fireTimers()` drives a run forward by
+ * firing what it is waiting on — a self-re-arming beat in that set means a drive-to-quiescence loop never
+ * terminates and `armedCount()` stops answering "is this run waiting on anything?". In production, a work
+ * timer SHOULD hold the event loop open (the run is parked on it) while a perpetual liveness beat must never
+ * be the only reason a process cannot exit — which is why the CLI host `unref()`s exactly this kind.
+ */
+export type TimerKind = 'work' | 'liveness';
 
 /**
  * The injected execution-mode seam: clock + id source + persistence + checkpointer + abort + timer,
@@ -285,12 +302,11 @@ export class InMemoryRunStore implements RunStore {
     // The SAME compare-and-append the SQLite store applies (ADR-0078 §2). A reference implementation that
     // accepts what the real store rejects makes every `packages/core` test prove nothing — the divergence
     // would surface only in `apps/cli`, which is the one place these tests exist to keep it out of.
-    if (ctx !== undefined) {
+    const expected = ctx?.expectedLastSequenceNumber;
+    if (expected !== undefined) {
       const actual = (bucket ?? []).reduce((max, e) => Math.max(max, e.sequenceNumber), -1);
-      if (actual !== ctx.expectedLastSequenceNumber) {
-        return Promise.reject(
-          new AppendConflictError(event.runId, ctx.expectedLastSequenceNumber, actual),
-        );
+      if (actual !== expected) {
+        return Promise.reject(new AppendConflictError(event.runId, expected, actual));
       }
     }
     if (bucket === undefined) {
@@ -338,21 +354,45 @@ export class InMemoryRunStore implements RunStore {
  */
 export interface ManualTimerController {
   readonly setTimer: SetTimer;
-  /** Fire every currently-armed timer once (in arm order), then drop it. A disarmed timer never fires. */
+  /**
+   * Fire every currently-armed **work** timer once (in arm order), then drop it. A disarmed timer never
+   * fires. Liveness timers are deliberately excluded — see {@link TimerKind}: they advance nothing and
+   * re-arm themselves, so a drive-to-quiescence loop that fired them would never terminate.
+   */
   readonly fireTimers: () => void;
-  /** The count of still-armed timers — for a test asserting a gate's timer was disarmed on resume. */
+  /** The count of still-armed **work** timers — for a test asserting a gate's timer was disarmed on resume. */
   readonly armedCount: () => number;
+  /** Fire every currently-armed **liveness** timer once — the ADR-0079 heartbeat, exercised explicitly. */
+  readonly fireLiveness: () => void;
+  /** The count of still-armed **liveness** timers — for a test asserting the heartbeat was disarmed. */
+  readonly livenessCount: () => number;
 }
 
 export function createManualTimerController(): ManualTimerController {
   interface ManualTimer {
     armed: boolean;
+    readonly kind: TimerKind;
     readonly onFire: () => void;
   }
   const timers = new Set<ManualTimer>();
+  // Snapshot the armed set BEFORE firing: a callback may arm a new timer (which must NOT fire in this same
+  // sweep — the heartbeat re-arms itself, so firing live would spin forever) or disarm a sibling; iterating
+  // the live Set would do both. The snapshot is required, not a convenience.
+  const fire = (kind: TimerKind): void => {
+    const due = Array.from(timers).filter((timer) => timer.kind === kind);
+    for (const timer of due) {
+      if (timer.armed) {
+        timer.armed = false;
+        timers.delete(timer);
+        timer.onFire();
+      }
+    }
+  };
+  const count = (kind: TimerKind): number =>
+    Array.from(timers).filter((timer) => timer.kind === kind).length;
   return {
-    setTimer: (_ms, onFire) => {
-      const timer: ManualTimer = { armed: true, onFire };
+    setTimer: (_ms, onFire, kind = 'work') => {
+      const timer: ManualTimer = { armed: true, kind, onFire };
       timers.add(timer);
       return () => {
         timer.armed = false;
@@ -360,19 +400,13 @@ export function createManualTimerController(): ManualTimerController {
       };
     },
     fireTimers: () => {
-      // Snapshot the armed set BEFORE firing: a callback may arm a new timer (which must NOT fire in this
-      // same sweep) or disarm a sibling — iterating the live Set would do both. The snapshot is required,
-      // not a convenience.
-      const due = Array.from(timers);
-      for (const timer of due) {
-        if (timer.armed) {
-          timer.armed = false;
-          timers.delete(timer);
-          timer.onFire();
-        }
-      }
+      fire('work');
     },
-    armedCount: () => timers.size,
+    armedCount: () => count('work'),
+    fireLiveness: () => {
+      fire('liveness');
+    },
+    livenessCount: () => count('liveness'),
   };
 }
 
@@ -480,7 +514,7 @@ export function createInMemoryHost(options?: {
   runLeases?: RunLeasePort;
 }): ExecutionHost & { store: RunStore; terminalOutbox: TerminalOutbox } & Pick<
     ManualTimerController,
-    'fireTimers' | 'armedCount'
+    'fireTimers' | 'armedCount' | 'fireLiveness' | 'livenessCount'
   > {
   let tick = options?.baseEpochMs ?? Date.parse('2026-01-01T00:00:00.000Z');
   let idCounter = 0;
@@ -503,6 +537,8 @@ export function createInMemoryHost(options?: {
     runLeases: options?.runLeases ?? createInMemoryRunLeases(() => tick),
     fireTimers: timers.fireTimers,
     armedCount: timers.armedCount,
+    fireLiveness: timers.fireLiveness,
+    livenessCount: timers.livenessCount,
   };
 }
 
