@@ -124,6 +124,28 @@ export interface DurableWriteContext {
    * closed instead.
    */
   readonly expectedLastSequenceNumber: number;
+  /**
+   * The fencing token this writer holds for the run
+   * ([ADR-0079](../../../docs/decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §2), or
+   * absent when the caller holds no lease.
+   *
+   * **This field is why `DurableWriteContext` is an object.** ADR-0078 §2 introduced it as one extensible
+   * parameter precisely so the items after it would extend rather than re-break `persistEvent`; this is the
+   * first of them, and `CR-12`'s journal correlation is the second.
+   *
+   * The store checks it in the SAME transaction as the append — a check outside would be two statements
+   * another process could interleave, which is the race it exists to close. A token older than the run's
+   * current `generation` means this process has been fenced out: another owner took the run over, and every
+   * write from here on is refused. That is the property a `last_seq` CAS cannot give — a CAS stops two
+   * processes writing the same row, the fence stops the LOSER continuing to act.
+   */
+  readonly fence?: RunFence;
+}
+
+/** A writer's claim on a run: who it believes it is, and at which generation (ADR-0079 §1). */
+export interface RunFence {
+  readonly ownerId: string;
+  readonly generation: number;
 }
 
 /**
@@ -153,6 +175,41 @@ export class AppendConflictError extends Error {
 /** Narrow a thrown value to {@link AppendConflictError} — the class survives a store's promise rejection. */
 export function isAppendConflictError(value: unknown): value is AppendConflictError {
   return value instanceof AppendConflictError;
+}
+
+/**
+ * A durable write refused because the writer no longer owns the run (ADR-0079 §2).
+ *
+ * Distinct from {@link AppendConflictError}, and the distinction is what a caller acts on: an append
+ * conflict means "the log moved under you, your belief is stale"; a fence rejection means "you are not the
+ * owner any more, and you must stop" — including stopping short of the terminal, because the run's real
+ * outcome now belongs to somebody else (ADR-0079 §5).
+ */
+export class LeaseFencedError extends Error {
+  override readonly name = 'LeaseFencedError';
+  readonly runId: string;
+  readonly ownerId: string;
+  readonly generation: number;
+  /** The generation the store actually holds — strictly greater than {@link generation} when fenced. */
+  readonly currentGeneration: number | undefined;
+
+  constructor(runId: string, ownerId: string, generation: number, current: number | undefined) {
+    super(
+      `run ${runId} is no longer owned by ${ownerId} at generation ${String(generation)}` +
+        (current === undefined
+          ? ' — the lease is gone'
+          : ` — it is now at generation ${String(current)}`),
+    );
+    this.runId = runId;
+    this.ownerId = ownerId;
+    this.generation = generation;
+    this.currentGeneration = current;
+  }
+}
+
+/** Narrow a thrown value to {@link LeaseFencedError} — the class survives a store's promise rejection. */
+export function isLeaseFencedError(value: unknown): value is LeaseFencedError {
+  return value instanceof LeaseFencedError;
 }
 
 /**

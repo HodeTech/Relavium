@@ -1,5 +1,6 @@
 import {
   AppendConflictError,
+  LeaseFencedError,
   parseStoredRunEvent,
   RunEventSchema,
   type DurableWriteContext,
@@ -886,6 +887,32 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
           .get()?.max ?? -1;
       if (actual !== ctx.expectedLastSequenceNumber) {
         throw new AppendConflictError(runId, ctx.expectedLastSequenceNumber, actual);
+      }
+    }
+    // **The fence (ADR-0079 §2), beside the append guard and inside the SAME transaction.** Checked here
+    // rather than before it because both are refusals of the same write and both must be atomic with it;
+    // checked AFTER the append guard because a stale belief about the log is the more specific diagnosis
+    // when a writer has both problems, and a fenced writer's belief is stale precisely BECAUSE it was fenced.
+    //
+    // A missing lease row is a rejection too, not a pass: the run was taken over and released, or the row was
+    // never created. Either way this writer cannot prove ownership, and ADR-0079 fails closed.
+    if (ctx?.fence !== undefined) {
+      const lease = tx
+        .select({ ownerId: runLeases.ownerId, generation: runLeases.generation })
+        .from(runLeases)
+        .where(eq(runLeases.runId, runId))
+        .get();
+      if (
+        lease === undefined ||
+        lease.ownerId !== ctx.fence.ownerId ||
+        lease.generation !== ctx.fence.generation
+      ) {
+        throw new LeaseFencedError(
+          runId,
+          ctx.fence.ownerId,
+          ctx.fence.generation,
+          lease?.generation,
+        );
       }
     }
     applyDerived(tx, event, runId, ts);

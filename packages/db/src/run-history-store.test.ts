@@ -1,4 +1,9 @@
-import { isAppendConflictError, RunEventSchema, type RunEvent } from '@relavium/shared';
+import {
+  isAppendConflictError,
+  isLeaseFencedError,
+  RunEventSchema,
+  type RunEvent,
+} from '@relavium/shared';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -177,6 +182,102 @@ describe('createRunHistoryStore', () => {
         },
         { expectedLastSequenceNumber: -1 },
       ),
+    ).resolves.toBeUndefined();
+  });
+
+  // --- the fence on the durable write (CR-11, ADR-0079 §2) --------------------------------------------
+
+  it('ACCEPTS a write carrying the lease the store actually holds', async () => {
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+    const lease = store.leases.acquire('run-1', 'proc-a', 60_000);
+    await expect(
+      store.persistEvent(ev('node:skipped', 1, { nodeId: 'n', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 0,
+        fence: { ownerId: 'proc-a', generation: lease?.generation ?? 0 },
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('REFUSES a write from a FENCED-OUT owner, and writes nothing', async () => {
+    // THE property. The old owner is still running and still trying to record progress; every write from
+    // here on must fail, which is what stops it acting on a run it no longer owns.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+    const stale = store.leases.acquire('run-1', 'proc-a', 0); // expires immediately
+    store.leases.acquire('run-1', 'proc-b', 60_000); // takeover bumps the generation
+
+    await expect(
+      store.persistEvent(ev('node:skipped', 1, { nodeId: 'n', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 0,
+        fence: { ownerId: 'proc-a', generation: stale?.generation ?? 0 },
+      }),
+    ).rejects.toSatisfy(isLeaseFencedError);
+    // The refusal is atomic with the append — no derived row survives it either.
+    expect(store.loadRunEvents('run-1').map((e) => e.sequenceNumber)).toEqual([0]);
+  });
+
+  it('the fence refusal names the generation the store actually holds', async () => {
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+    const stale = store.leases.acquire('run-1', 'proc-a', 0);
+    store.leases.acquire('run-1', 'proc-b', 60_000);
+
+    await store
+      .persistEvent(ev('node:skipped', 1, { nodeId: 'n', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 0,
+        fence: { ownerId: 'proc-a', generation: stale?.generation ?? 0 },
+      })
+      .then(
+        () => expect.unreachable('the fenced write must be refused'),
+        (error: unknown) => {
+          if (!isLeaseFencedError(error)) expect.unreachable('wrong error class');
+          expect(error.ownerId).toBe('proc-a');
+          expect(error.currentGeneration).toBe(2);
+          expect(error.runId).toBe('run-1');
+        },
+      );
+  });
+
+  it('REFUSES when the lease row is GONE — a writer that cannot prove ownership fails closed', async () => {
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+    const lease = store.leases.acquire('run-1', 'proc-a', 60_000);
+    store.leases.release('run-1', 'proc-a', lease?.generation ?? 0);
+
+    await expect(
+      store.persistEvent(ev('node:skipped', 1, { nodeId: 'n', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 0,
+        fence: { ownerId: 'proc-a', generation: lease?.generation ?? 0 },
+      }),
+    ).rejects.toSatisfy(isLeaseFencedError);
+  });
+
+  it('a write with NO fence is unguarded — the two halves of the context are independent', async () => {
+    // ADR-0078's append guard and ADR-0079's fence ride the same object but neither implies the other: a
+    // caller holding no lease still gets its ordering checked, and vice versa.
+    const workflowId = await store.resolveWorkflowId('demo');
+    await store.persistEvent(
+      ev('run:started', 0, { workflowId, inputs: {}, executionMode: 'local' }),
+      { expectedLastSequenceNumber: -1 },
+    );
+    store.leases.acquire('run-1', 'proc-a', 60_000);
+    await expect(
+      store.persistEvent(ev('node:skipped', 1, { nodeId: 'n', reason: 'branch_not_taken' }), {
+        expectedLastSequenceNumber: 0,
+      }),
     ).resolves.toBeUndefined();
   });
 
