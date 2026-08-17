@@ -26,7 +26,7 @@ import type {
   RunLeasePort,
   TerminalOutbox,
 } from '@relavium/shared';
-import { AppendConflictError } from '@relavium/shared';
+import { AppendConflictError, LeaseFencedError } from '@relavium/shared';
 
 import { type Checkpointer, reconstructCheckpointState } from './checkpoint.js';
 
@@ -309,6 +309,35 @@ export class InMemoryRunStore implements RunStore {
         return Promise.reject(new AppendConflictError(event.runId, expected, actual));
       }
     }
+    // The SAME fence check the SQLite store applies (ADR-0079 §2), and it belongs here for the identical
+    // reason the guard above does. Its absence was measured, not theorised: with the fence unenforced here,
+    // DELETING it from the engine's one write choke point left all 3,568 tests in the repo green — the
+    // single mechanism ADR-0079 rests on, provable nowhere.
+    //
+    // Two absences are deliberately NOT rejections, and they are different absences. A write carrying no
+    // `ctx.fence` makes no ownership claim, so there is nothing stale to catch — the real store fails open
+    // on an absent token too. And a store with **no lease table bound** models a fixture that expresses no
+    // ownership at all; the SQLite store has no such state (`run_leases` always exists), so its missing-ROW
+    // arm can only ever mean the lease is gone, which is a refusal. Collapsing the two made an unbound
+    // fixture reject every fence-carrying write.
+    const leases = this.#leases;
+    if (ctx?.fence !== undefined && leases !== undefined) {
+      const held = leases.peek(event.runId);
+      if (
+        held === undefined ||
+        held.ownerId !== ctx.fence.ownerId ||
+        held.generation !== ctx.fence.generation
+      ) {
+        return Promise.reject(
+          new LeaseFencedError(
+            event.runId,
+            ctx.fence.ownerId,
+            ctx.fence.generation,
+            held?.generation,
+          ),
+        );
+      }
+    }
     if (bucket === undefined) {
       this.#events.set(event.runId, [event]);
     } else {
@@ -316,6 +345,26 @@ export class InMemoryRunStore implements RunStore {
     }
     return Promise.resolve();
   }
+
+  /**
+   * The lease port this store's fence rule reads, bound ONCE and then shared (ADR-0079 §2).
+   *
+   * **The binding lives on the STORE, not on the host, and that is the point.** In reality there is one
+   * `run_leases` table per `history.db`, so every process writing that database consults the same leases —
+   * and the tests that model two processes do exactly what reality does: build two hosts over one store.
+   * Minting a lease port per host instead would make the second host's fences unrecognisable to the first's,
+   * which is the in-memory twin of the durable-store-plus-in-memory-leases wiring bug `createCliHost`
+   * rejects out loud. Binding here makes that mistake unrepresentable.
+   *
+   * A store with nothing bound accepts any fence — the pre-CR-11 behaviour, which is what a fixture that
+   * never seeds a lease needs.
+   */
+  bindLeases(port: InMemoryRunLeases): InMemoryRunLeases {
+    this.#leases ??= port;
+    return this.#leases;
+  }
+
+  #leases: InMemoryRunLeases | undefined;
 
   listInterruptedRuns(): Promise<readonly InterruptedRun[]> {
     const interrupted: InterruptedRun[] = [];
@@ -449,7 +498,18 @@ export function createInMemoryTerminalOutbox(): TerminalOutbox {
  *
  * `now` is injected rather than read from an ambient clock so a test can drive expiry without waiting.
  */
-export function createInMemoryRunLeases(now: () => number = () => Date.now()): RunLeasePort {
+/** The in-memory {@link RunLeasePort} plus the synchronous peek {@link InMemoryRunStore} needs. */
+export type InMemoryRunLeases = RunLeasePort & {
+  /**
+   * The held lease, read SYNCHRONOUSLY — for {@link InMemoryRunStore}'s fence rule, which sits inside a
+   * `persistEvent` that must stay synchronous-returning. `read` is the async port method a surface uses;
+   * this is the same state without the microtask, which the store cannot afford to spend without changing
+   * the delivery ordering every engine test depends on.
+   */
+  peek: (runId: string) => { ownerId: string; generation: number } | undefined;
+};
+
+export function createInMemoryRunLeases(now: () => number = () => Date.now()): InMemoryRunLeases {
   const held = new Map<string, RunLeaseInfo>();
   const readLive = (runId: string): RunLeaseInfo | undefined => {
     const lease = held.get(runId);
@@ -493,7 +553,48 @@ export function createInMemoryRunLeases(now: () => number = () => Date.now()): R
       return Promise.resolve();
     },
     read: (runId) => Promise.resolve(readLive(runId)),
+    peek: (runId) => {
+      const lease = held.get(runId);
+      return lease === undefined
+        ? undefined
+        : { ownerId: lease.ownerId, generation: lease.generation };
+    },
   };
+}
+
+/** Whether a port carries the synchronous {@link InMemoryRunLeases.peek} the reference store's fence needs. */
+function isInMemoryRunLeases(port: RunLeasePort | undefined): port is InMemoryRunLeases {
+  return port !== undefined && 'peek' in port && typeof port.peek === 'function';
+}
+
+/**
+ * Pick the lease port for an in-memory-backed host AND bind it to the store, so the fence is really enforced.
+ *
+ * **An INJECTED port is bound too, and that is the point.** Binding only the defaulted one meant a fixture
+ * that passed its own `runLeases` silently ran with fence enforcement OFF — green for exactly the reason
+ * this whole mechanism exists to eliminate. `bindLeases` is `??=`, so two hosts that each mint a port over
+ * one store still share the FIRST table: that is what models reality, where one `history.db` has one
+ * `run_leases` table no matter how many processes write it.
+ *
+ * A port with no `peek` (the real SQLite `createRunLeasePort`) is not bindable and leaves the store
+ * unbound — correct, because such a fixture is pairing the reference store with a durable lease table and
+ * the store cannot consult it synchronously.
+ */
+export function resolveInMemoryLeases(
+  store: RunStore,
+  injected: RunLeasePort | undefined,
+  now: () => number,
+): RunLeasePort {
+  if (!(store instanceof InMemoryRunStore)) return injected ?? createInMemoryRunLeases(now);
+  const candidate = isInMemoryRunLeases(injected) ? injected : undefined;
+  if (injected !== undefined && candidate === undefined) return injected; // durable port, not bindable
+  const bound = store.bindLeases(candidate ?? createInMemoryRunLeases(now));
+  if (candidate !== undefined && bound !== candidate) {
+    throw new Error(
+      "resolveInMemoryLeases: this store is already bound to a DIFFERENT lease port — two hosts over one store must share one lease table, or neither can recognise the other's fences",
+    );
+  }
+  return bound;
 }
 
 export function createInMemoryHost(options?: {
@@ -520,6 +621,9 @@ export function createInMemoryHost(options?: {
   let idCounter = 0;
   const store = options?.store ?? new InMemoryRunStore();
   const timers = createManualTimerController();
+  // The reference lease shares this host's clock, so a test that advances `tick` also ages the lease — note
+  // `createInMemoryHost`'s clock ADVANCES on every read, so a TTL assertion must pin its own.
+  const leases = resolveInMemoryLeases(store, options?.runLeases, () => tick);
   return {
     clock: { now: () => new Date(tick++).toISOString() },
     ids: { newId: () => `id-${++idCounter}` },
@@ -532,9 +636,7 @@ export function createInMemoryHost(options?: {
     ...(options?.mediaReferences ? { mediaReferences: options.mediaReferences } : {}),
     ...(options?.mediaWrite ? { mediaWrite: options.mediaWrite } : {}),
     terminalOutbox: options?.terminalOutbox ?? createInMemoryTerminalOutbox(),
-    // The reference lease shares this host's clock, so a test that advances `tick` also ages the lease —
-    // note `createInMemoryHost`'s clock ADVANCES on every read, so a TTL assertion must pin its own.
-    runLeases: options?.runLeases ?? createInMemoryRunLeases(() => tick),
+    runLeases: leases,
     fireTimers: timers.fireTimers,
     armedCount: timers.armedCount,
     fireLiveness: timers.fireLiveness,

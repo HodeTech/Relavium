@@ -114,6 +114,7 @@ export {
   createInMemoryHost,
   createInMemoryCheckpointer,
   createInMemoryRunLeases,
+  resolveInMemoryLeases,
   createInMemoryTerminalOutbox,
   createAbortController,
   createManualTimerController,

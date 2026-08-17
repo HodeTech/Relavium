@@ -318,6 +318,26 @@ function maskInputs(
  * bus, and the handle. All mutation happens on the single (serialized) drive loop, so there is no
  * cross-vertex data race despite concurrent branch execution.
  */
+/**
+ * A run's ownership of its own lease (ADR-0079). Five states, because two booleans could not tell the cases
+ * apart and the confusion cost a real bug: a parked run fenced ITSELF out against the row it had released.
+ *
+ * - `unclaimed` — before the first acquire. `run:started` is written here, unfenced, because the lease row
+ *   references `runs.id` and so cannot exist until that event is folded.
+ * - `held` — this process owns the run and may write.
+ * - `parked` — a gate park handed the lease back (§4). The run is not being executed, but its gate deadline,
+ *   the run-level `timeout_ms` and cooperative cancel all stay armed, so a write can still arrive: it must
+ *   RE-TAKE the claim first, which is usually uncontended.
+ * - `lost` — another process owns the run. Write nothing, claim nothing (§5).
+ * - `done` — the run settled and the lease was released. Terminal: a later write must not resurrect the row
+ *   (`acquire` computes `(current?.generation ?? 0) + 1`, so a re-acquire over a deleted row would insert a
+ *   `run_leases` row nothing ever releases). **Defence in depth, not a demonstrated path**: no test in the
+ *   suite dies when this arm is made permissive — measured, not assumed — because `#settled` already turns
+ *   every known post-terminal caller away earlier. It is kept because the cost is one switch arm and the
+ *   failure it guards is a silent, unbounded row leak.
+ */
+type RunOwnership = 'unclaimed' | 'held' | 'parked' | 'lost' | 'done';
+
 class RunExecution {
   readonly runId: string;
   readonly handle: RunHandle;
@@ -396,9 +416,25 @@ class RunExecution {
   #terminalDurability: RunDurability = 'pending';
   /**
    * This run's ownership claim (ADR-0079). Carried on every durable write, so the store refuses one from a
-   * process that has been taken over. `undefined` only for a host wired without a lease — see `#acquireLease`.
+   * process that has been taken over.
+   *
+   * `undefined` only before the first acquire — which includes `run:started` itself, because the lease row
+   * references `runs.id` and so cannot exist until that event is folded. **Deliberately RETAINED after a
+   * release**: a released row makes the store's missing-lease arm fire, so a write that somehow escapes the
+   * `#owned` check below is still refused rather than silently accepted unguarded.
    */
   #fence: RunFence | undefined;
+  /**
+   * Whether this process currently HOLDS the lease, as distinct from merely remembering a fence.
+   *
+   * The two came apart when §4 began releasing on a gate park. A parked run is not being executed, but it is
+   * not inert either — its gate deadline, the run-level `timeout_ms` and a cooperative cancel all stay armed
+   * by design, and every one of them ends at `#settle`. Without this flag those paths wrote a terminal while
+   * unowned, and because a terminal is exempt from the append guard (ADR-0078 §2) and an ABSENT fence is a
+   * pass rather than a refusal, the store accepted it — putting a second terminal into a run another process
+   * was finishing. That is precisely the divergence ADR-0079 exists to prevent, reintroduced by §4 itself.
+   */
+  #ownership: RunOwnership = 'unclaimed';
   /** The owning engine's identity — passed in, never minted here, so one engine is one owner. */
   readonly #ownerId: string;
   /**
@@ -408,7 +444,6 @@ class RunExecution {
    * the run, because the new owner may be completing it right now. Writing `run:failed` would be a durable
    * lie about somebody else's run — and could not be written anyway, since the fence rejects it too.
    */
-  #fenced = false;
   /** Guards {@link RunExecution.#settleFenced} so overlapping discovery points tear down exactly once. */
   #fencedSettled = false;
   /** Disarms the lease heartbeat. Cleared at settle, like every other timer this run arms. */
@@ -992,18 +1027,15 @@ class RunExecution {
     // executed. This is the IN-PROCESS resume, so it is normally uncontended — but if another process
     // claimed the run while it was parked, that process owns it now and this one must not proceed.
     //
-    // The `#fence === undefined` test is the precise question "did we give ownership up", and it has to be
-    // asked. A CROSS-process resume arrives here holding the fence `resumeFromCheckpoint` acquired before it
-    // read the checkpoint, and `acquire` treats a same-owner call as a renewal that still BUMPS the
-    // generation — so re-acquiring there would move the fence out from under the engine's own in-flight
+    // `#owned` is the precise question "did we give ownership up", and it has to be asked. A CROSS-process
+    // resume arrives here already holding the lease `resumeFromCheckpoint` acquired before it read the
+    // checkpoint, and `acquire` treats a same-owner call as a renewal that still BUMPS the generation — so re-acquiring there would move the fence out from under the engine's own in-flight
     // claim (stranding the outer release path on a stale generation) and arm a second heartbeat. That is the
-    // hazard `resumeFromCheckpoint`'s own comment names as the subtlest way to get this wrong.
-    if (this.#fence === undefined && !(await this.#acquireLease())) {
-      this.#fenced = true;
-      this.#terminalDurability = 'uncertain';
-      this.#settleFenced();
-      return;
-    }
+    // A resumed execution is born `held` (`adoptLease`), so `parked` is false there and nothing bumps the
+    // generation under the engine's own in-flight claim — the hazard `resumeFromCheckpoint`'s comment names
+    // as the subtlest way to get this wrong. `#emitDurable` is the guarantee; this is the early, cheap check,
+    // kept because `resume()` mutates gate state before its first write.
+    if (this.#ownership === 'parked' && !(await this.#reclaim())) return;
 
     // A budget gate's two decisions (reject ⇒ a run-level budget failure; approve ⇒ continue the deferred
     // pre-egress call) resolve in #resolveBudgetGate; a `true` return means it owned this gate — then only
@@ -2022,29 +2054,39 @@ class RunExecution {
     this.#pauseEpisode = true;
     const gateIds = [...this.#pendingGates.keys()];
     const mediaJobNodeIds = [...this.#pendingMediaJobs.keys()];
-    await this.#emitDurable({
-      type: 'run:paused',
-      runId: this.runId,
-      pendingGateCount: gateIds.length,
-      gateIds,
-      ...(mediaJobNodeIds.length === 0 ? {} : { pendingMediaJobNodeIds: mediaJobNodeIds }),
-    });
-    // AFTER the event is durable, not before: `run:paused` is itself a guarded write and must go out under
-    // the fence this process still holds.
+    // **Only for a GATE park, never a media park** — measured, and getting it wrong hung twenty-two tests.
+    // `run:paused` covers both, but they are opposite situations: a run waiting on a human is not being
+    // executed by anyone, while a run parked on an async media job is still being polled by THIS process on
+    // its own timer. Surrendering the latter would hand ownership away mid-work and fence this process out
+    // of its own in-flight job.
     //
     // The lease is held while the run EXECUTES. A run waiting on a human gate is not executing and may wait
     // for days; holding its lease would refuse every other process for the TTL over a run nobody is working
     // on, and would make the second decision of a two-gate workflow fail against this process's own stale
     // claim. Whichever process resumes re-acquires (ADR-0079 §4).
     //
-    // **Only for a GATE park, never a media park** — measured, and getting it wrong hung twenty-two tests.
-    // `run:paused` covers both, but they are opposite situations: a run waiting on a human is not being
-    // executed by anyone, while a run parked on an async media job is still being polled by THIS process on
-    // its own timer. Releasing the latter would hand ownership away mid-work and fence this process out of
-    // its own in-flight job.
-    if (mediaJobNodeIds.length === 0) {
-      await this.#releaseOwnership();
-    }
+    // **The claim is dropped BEFORE the pause is observable, and the row is deleted after.** Both halves are
+    // forced, in opposite directions. The row must go last because `run:paused` is itself a fence-guarded
+    // write — deleting first would make the run's own pause event fail its own guard. But `#owned` must drop
+    // FIRST, because `#emitDurable` delivers to consumers, and an inline prompter (`relavium gate`'s
+    // interactive re-pause) resumes the instant it sees `run:paused` — synchronously, before this function
+    // continues. Dropping `#owned` after the emit let that resume observe `#owned === true`, skip its
+    // re-acquire, and then have the row deleted out from under it; its very next `node:started` was fenced
+    // and the run died `uncertain` on the happy path. Deleting the row late is safe because `release` is
+    // scoped to `(ownerId, generation)`: if a resume already re-acquired, the generation has moved and this
+    // delete matches nothing.
+    await this.#emitDurable(
+      {
+        type: 'run:paused',
+        runId: this.runId,
+        pendingGateCount: gateIds.length,
+        gateIds,
+        ...(mediaJobNodeIds.length === 0 ? {} : { pendingMediaJobNodeIds: mediaJobNodeIds }),
+      },
+      { handOff: mediaJobNodeIds.length === 0 },
+    );
+    const parked = this.#ownership === 'parked' ? this.#fence : undefined;
+    if (parked !== undefined) await this.#releaseLeaseRow(parked);
   }
 
   /**
@@ -2060,12 +2102,14 @@ class RunExecution {
   async #acquireLease(existing?: RunFence): Promise<boolean> {
     if (existing !== undefined) {
       this.#fence = existing;
+      this.#ownership = 'held';
       this.#startHeartbeat();
       return true;
     }
     const fence = await this.#host.runLeases.acquire(this.runId, this.#ownerId, RUN_LEASE_TTL_MS);
     if (fence === undefined) return false;
     this.#fence = fence;
+    this.#ownership = 'held';
     this.#startHeartbeat();
     return true;
   }
@@ -2100,7 +2144,7 @@ class RunExecution {
 
   /** One heartbeat: refresh the lease, then either re-arm or stop as a fenced run. */
   async #beat(fence: RunFence): Promise<void> {
-    if (this.#settled || this.#fenced) return;
+    if (this.#settled || this.#ownership === 'lost') return;
     let alive = false;
     try {
       alive = await this.#host.runLeases.heartbeat(this.runId, fence, RUN_LEASE_TTL_MS);
@@ -2110,14 +2154,71 @@ class RunExecution {
       // still owns itself.
       alive = true;
     }
-    if (this.#settled || this.#fenced) return; // re-checked: the await above is a real suspension point
+    if (this.#settled || this.#lostOwnership()) return; // re-checked: the await above suspends
     if (!alive) {
-      this.#fenced = true;
-      this.#terminalDurability = 'uncertain';
-      this.#settleFenced();
+      this.#loseOwnership();
       return;
     }
     this.#startHeartbeat(); // re-arm; one-shot timers only (ADR-0036 Decision 5)
+  }
+
+  /**
+   * Whether ownership was lost — read through a METHOD, deliberately.
+   *
+   * `#loseOwnership()` mutates `#ownership` from inside a call TypeScript's control-flow analysis cannot see
+   * through, so a bare `this.#ownership === 'lost'` after an earlier check on the same field narrows to
+   * `never` and is reported as an unintentional comparison. The two sites that need this are the ones asking
+   * "did the await I just finished take my ownership away", which is exactly when the field can have moved.
+   */
+  #lostOwnership(): boolean {
+    return this.#ownership === 'lost';
+  }
+
+  /** The one transition into `lost` (§5) — every discovery point routes here, so the teardown is identical. */
+  #loseOwnership(): void {
+    this.#ownership = 'lost';
+    this.#terminalDurability = 'uncertain';
+    this.#settleFenced();
+  }
+
+  /**
+   * Reconcile the ownership claim before a durable write. **Never rejects** — `#emitDurable` must stay TOTAL
+   * for non-terminal events or ADR-0077's B1/B2/B3 barrier argument rots.
+   *
+   * Returns `false` only when this process must not write at all.
+   */
+  async #authorizeWrite(): Promise<boolean> {
+    switch (this.#ownership) {
+      case 'held':
+      case 'unclaimed':
+        return true;
+      case 'parked':
+        return await this.#reclaim();
+      case 'lost':
+      case 'done':
+        return false;
+    }
+  }
+
+  /**
+   * Re-take the claim a gate park handed back (§4). Uncontended in the common case — nobody took the run
+   * over, and the user is simply cancelling or the gate simply timed out.
+   *
+   * **Fails CLOSED, unlike `#beat`, and the asymmetry is deliberate.** A beat that cannot reach the store
+   * still HOLDS its row, so silence is not evidence of a takeover and treating it as one would kill a healthy
+   * run. A parked run definitely had a row and deleted it, so a claim it cannot prove is a claim it does not
+   * have.
+   */
+  async #reclaim(): Promise<boolean> {
+    let acquired = false;
+    try {
+      acquired = await this.#acquireLease();
+    } catch {
+      acquired = false;
+    }
+    if (acquired) return true;
+    this.#loseOwnership();
+    return false;
   }
 
   #stopHeartbeat(): void {
@@ -2134,7 +2235,7 @@ class RunExecution {
     // its stream and reports `uncertain` — the consumer's `for await` must complete rather than hang — but
     // the terminal is the new owner's to write. Placed before the timer sweep so the state is identical
     // either way; the only difference is that no event leaves this process.
-    if (this.#fenced) {
+    if (this.#ownership === 'lost') {
       this.#settleFenced();
       return;
     }
@@ -2206,7 +2307,16 @@ class RunExecution {
       // is transient). run:completed carries the same figure as totalCostMicrocents.
       draft = { type, runId: this.runId, cumulativeCostMicrocents: this.#cumulativeCostMicrocents };
     }
+    // **Re-take ownership before claiming an outcome, if a park gave it up (ADR-0079 §4/§5).** A gate
+    // deadline, the run-level `timeout_ms` and a cooperative cancel all stay armed across a park and all end
+    // here, so this is the one place a parked process can still speak for the run. Usually nobody took it
+    // over and the re-acquire is uncontended — a user Ctrl-C-ing their own parked run must still record the
+    // cancellation. When somebody DID take it over, the acquire fails and this process stops without
     await this.#emitDurable(draft);
+    // The terminal was REFUSED (§5) — `#emitDurable` reconciled ownership, found it gone, and `#settleFenced`
+    // already tore the run down without writing or delivering anything. Returning stops a loser from freeing
+    // the winner's lease row and from firing `#onSettled` a second time.
+    if (this.#lostOwnership()) return;
     // **Ownership ends with the run, and only AFTER the terminal is written** (ADR-0079 §4). The order is
     // forced: the terminal is itself fence-checked, so releasing first would make this run's own last write
     // fail its own guard.
@@ -2252,10 +2362,32 @@ class RunExecution {
 
   /** Stop beating and give the lease back — the run is over, one way or another (ADR-0079 §4). */
   async #releaseOwnership(): Promise<void> {
+    const fence = this.#ownership === 'held' ? this.#fence : undefined;
     this.#stopHeartbeat();
-    const fence = this.#fence;
-    if (fence === undefined) return;
-    this.#fence = undefined;
+    // `done` is terminal, and it is load-bearing: without it a post-terminal write would re-acquire the row
+    // this just released (`acquire` computes `(current?.generation ?? 0) + 1` over a deleted row), inserting
+    // a `run_leases` row nothing will ever release.
+    this.#ownership = 'done';
+    if (fence !== undefined) await this.#releaseLeaseRow(fence);
+  }
+
+  /**
+   * Drop the ownership CLAIM synchronously, returning the fence whose row still needs deleting.
+   *
+   * Split from the row delete so the two can straddle an await — see `#emitPausedOnce`, where dropping the
+   * claim must happen before the pause is observable while the delete must happen after the pause is
+   * durable. `#fence` is deliberately KEPT: clearing it would make a subsequent write unguarded (an absent
+   * fence is a pass, not a refusal), which is the failure this pair of fields exists to close.
+   */
+  #park(): RunFence | undefined {
+    if (this.#ownership !== 'held') return undefined;
+    this.#stopHeartbeat();
+    this.#ownership = 'parked';
+    return this.#fence; // deliberately retained — see the `#fence` docblock
+  }
+
+  /** Delete the lease row for `fence`. Scoped to `(ownerId, generation)`, so it can never steal a successor. */
+  async #releaseLeaseRow(fence: RunFence): Promise<void> {
     try {
       await this.#host.runLeases.release(this.runId, fence);
     } catch {
@@ -2492,7 +2624,8 @@ class RunExecution {
     this.#abort.abort();
   }
 
-  async #emitDurable(draft: RunEventDraft): Promise<void> {
+  async #emitDurable(draft: RunEventDraft, opts?: { readonly handOff?: boolean }): Promise<void> {
+    const handOff = opts?.handOff === true;
     // Persist the boundary/terminal event, then deliver (ADR-0036 persist-before-deliver, so a crash
     // can never re-run a completed node or lose its output). This method is **total for store faults** (the
     // media de-inline below is the one deliberate exception — a NON-terminal de-inline failure re-throws to
@@ -2581,6 +2714,25 @@ class RunExecution {
       // the log a prefix. The same single tail now serializes the ask, the write and the delivery.
       await prior;
       try {
+        // **Ownership is reconciled HERE, and only here.** `#emitDurable` is the run's single durable
+        // writer, so every path that can write after a gate park — a cooperative cancel, a gate deadline,
+        // the run-level `timeout_ms`, the skip-propagation sweep — is covered by one check instead of a
+        // guard per call site that the next path added would silently miss. It sits after `await prior`
+        // and inside the region deliberately: it must read the state the previous write left, and two
+        // concurrent emits must not both acquire, since a same-owner acquire is a RENEWAL that bumps the
+        // generation and the loser would then persist under a fence the winner had already moved.
+        // The `held`/`unclaimed` fast path is taken WITHOUT awaiting, and that is not a micro-optimisation.
+        // Awaiting unconditionally inserts a microtask between `await prior` and the persist, which reordered
+        // ADR-0077's money-durability barrier: the emit's own catch began winning the race to set `#failure`,
+        // so a rejected ledger write was attributed to "a durable run-event write failed" instead of the
+        // cancellation that actually stopped the run. Only the states that genuinely need I/O suspend.
+        const settledClaim = this.#ownership === 'held' || this.#ownership === 'unclaimed';
+        if (!settledClaim && !(await this.#authorizeWrite())) {
+          // Refused. A TERMINAL is not delivered either: `handle.subscribe` observers outlive the stream
+          // close, and telling them the run ended is §5's "durable lie" in delivered form.
+          if (!TERMINAL_TYPES.has(event.type)) this.#bus.deliver(event);
+          return;
+        }
         // A terminal is exempt from the APPEND guard (ADR-0078 §2) but NOT from the fence: a process that
         // has been taken over must not write the run's terminal either — that is the whole of ADR-0079 §5.
         // The two claims are independent fields precisely so this asymmetry is expressible.
@@ -2588,6 +2740,13 @@ class RunExecution {
           ...(guarded ? { expectedLastSequenceNumber } : {}),
           ...(this.#fence === undefined ? {} : { fence: this.#fence }),
         });
+        if (handOff && !TERMINAL_TYPES.has(event.type)) {
+          // The pause is now durable and was written AS THE OWNER; hand the claim back only after that.
+          // Entering `parked` here rather than before the write means the write that creates the state can
+          // never observe it, and a pause that fails for an ordinary store fault KEEPS ownership instead of
+          // stranding a dropped claim.
+          this.#park();
+        }
         if (TERMINAL_TYPES.has(event.type)) {
           this.#terminalDurability = 'durable';
           // **The media reclaim happens HERE, not before the write** (ADR-0078 §1, re-timing ADR-0042 §4).
@@ -2601,9 +2760,8 @@ class RunExecution {
         // does not hand the terminal to the outbox — the run's real outcome belongs to the new owner, and
         // recording anything here would be a durable lie about somebody else's run.
         if (isLeaseFencedError(writeError)) {
-          this.#fenced = true;
-          this.#terminalDurability = 'uncertain';
-          this.#settleFenced();
+          this.#loseOwnership();
+          if (TERMINAL_TYPES.has(event.type)) return; // §5 again, on the race path: deliver nothing
         } else if (TERMINAL_TYPES.has(event.type)) {
           // **The terminal outbox** (ADR-0078 §4). The run is settling and the caller is about to be handed
           // this terminal in-process; the durable record does not have it. Hold the intended payload OUTSIDE
@@ -2613,7 +2771,7 @@ class RunExecution {
           await this.#bestEffortOutbox(event);
         }
         if (
-          !this.#fenced &&
+          this.#ownership !== 'lost' &&
           !TERMINAL_TYPES.has(event.type) &&
           this.#failure === undefined &&
           !this.#cancelling

@@ -59,7 +59,7 @@ The local schema is the Postgres 13-table design reduced to what a single-user, 
 
 ### Entity relationships
 
-The 16 tables below, trimmed to the columns that define structure (full column lists follow per table). Every edge is a real foreign key in `schema.ts`; two are deliberately absent — see the note beneath the diagram. `model_metadata` and `catalog_meta` ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md)) are **FK-less leaves** (no edges): `model_metadata` is keyed by `model_id`, not the `model_catalog` UUID, on purpose.
+The 17 tables below, trimmed to the columns that define structure (full column lists follow per table). Every edge is a real foreign key in `schema.ts`; two are deliberately absent — see the note beneath the diagram. `model_metadata` and `catalog_meta` ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md)) are **FK-less leaves** (no edges): `model_metadata` is keyed by `model_id`, not the `model_catalog` UUID, on purpose.
 
 ```mermaid
 erDiagram
@@ -121,6 +121,12 @@ erDiagram
         uuid model_id FK
         text node_id
     }
+    run_leases {
+        uuid run_id PK
+        text owner_id
+        integer generation
+        integer expires_at
+    }
     agent_sessions {
         uuid id PK
         uuid agent_id FK
@@ -177,6 +183,7 @@ erDiagram
     runs ||--o{ step_executions : "run_id CASCADE"
     runs ||--o{ run_events : "run_id CASCADE"
     runs ||--o{ run_costs : "run_id CASCADE"
+    runs ||--|| run_leases : "run_id CASCADE"
     step_executions ||--o{ messages : "step_execution_id CASCADE"
     agents |o--o{ step_executions : "agent_id (nullable)"
     agents |o--o{ agent_sessions : "agent_id (nullable)"
@@ -505,6 +512,36 @@ Denormalized per-node cost rows for fast cost-waterfall rendering without re-agg
 CREATE INDEX idx_run_costs_run ON run_costs (run_id);
 ```
 
+#### `run_leases`
+
+Which process currently **owns** a run, and at which fencing generation
+([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md)). Two `relavium`
+processes can otherwise resume one paused run and become two independent side-effect producers for it — both
+dispatching the same nodes and calling the same tools. The compare-and-append guard below stops the second
+one *writing the same row*; it does not stop either of them *doing the work*, because the effect happens
+before anything is written.
+
+Its own table rather than columns on `runs`, because that row is a **derived projection** the event fold
+rewrites (`applyDerived`): mixing authoritative, non-derived ownership state into it invites a fold to
+clobber it. A table is also queryable — by a human diagnosing a stuck run.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `run_id` | TEXT | PRIMARY KEY REFERENCES `runs(id)` ON DELETE CASCADE |
+| `owner_id` | TEXT | NOT NULL — the owning engine's identity, one per `WorkflowEngine` |
+| `generation` | INTEGER | NOT NULL — the fencing token; bumps on every successful acquire |
+| `expires_at` | INTEGER | NOT NULL — epoch ms, compared **store-side** against the store's injected clock |
+| `created_at` | INTEGER | NOT NULL |
+| `updated_at` | INTEGER | NOT NULL |
+
+The FK is why a fresh run's lease is created just **after** its `run:started` is folded rather than in the
+same transaction as ADR-0079 §3 first described: the `runs` row must exist first. The window is uncontended
+by construction — the `runId` came from `ids.newId()` moments earlier and no other process has seen it.
+
+TTL **60 s**, heartbeat every **20 s** (`RUN_LEASE_TTL_MS` / `RUN_LEASE_HEARTBEAT_MS` in
+`@relavium/shared`): three missed beats permit a takeover — wide enough that a long provider call or disk
+pressure is not mistaken for death, narrow enough that a crashed run is not locked for more than a minute.
+
 ### Agent-session tables
 
 These two tables persist **agent sessions** (the agent-first chat entry point —
@@ -749,6 +786,7 @@ CREATE INDEX idx_media_references_handle ON media_references (handle);
 - **Single-statement writes** (e.g. `appendMessage`, `setKeychainRef`) go straight for the write lock and need no explicit transaction — `BEGIN IMMEDIATE` would buy nothing, since a lone INSERT/UPDATE takes the write lock directly and cannot hit a read→write upgrade race. They do still route through `withBusyRetry` where a failure is user-visible data loss: the three `agent_sessions` / `session_messages` writers do (#228), because `busy_timeout` waits 5 s and then *fails*, and the chat persister calls them from inside a `RunEventBus` subscriber.
 - **Reads that must be consistent across statements** use a read transaction: `sessionStore.loadFull` reads the session row and its transcript inside one deferred transaction so **both reads observe a single consistent DB snapshot** (never a two-`SELECT` straddle across a concurrent commit). This now composes with **turn atomicity** on the write side: `sessionStore.writeTurn` appends a turn's messages and flushes the session row in ONE `BEGIN IMMEDIATE` transaction (#228), so a snapshot can no longer observe messages ahead of their totals, and a failed write leaves neither a half-written turn nor an unanswered `user` row that resume cannot roll back. This discharges the per-turn-transaction follow-up this section previously tracked.
 - **The durable append is compare-and-append** ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §2). `persistEvent` takes an optional `DurableWriteContext` carrying `expectedLastSequenceNumber` — the sequence the caller last *asked* to append, not the last it saw succeed. When present, the store reads `max(run_events.seq)` for that run **inside the same `BEGIN IMMEDIATE` transaction, through the transaction handle**, and refuses the append with a typed `AppendConflictError` when the two differ. `UNIQUE(run_id, seq)` bars a duplicate and says nothing about order or holes; this is what makes the committed log a *prefix* of what was asked rather than merely a set. Three properties are deliberate: the read is `max(seq)` rather than a denormalized `runs.last_event_seq` column, so there is no migration and no second source of truth that can drift from the rows; the check runs **before** the derived `runs`/`step_executions`/`run_costs` writes, so a refusal leaves nothing behind; and `AppendConflictError` is **not** in the retryable-code set above — a conflict is a stale belief, not lock contention, and retrying it five times would waste five transactions and report the wrong cause. The engine exempts the run TERMINAL from the guard, because exactly-one-terminal ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) outranks it; a terminal the store will not take is ADR-0078 §4's outbox to own.
+- **The same write is fenced by run ownership** ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §2). `DurableWriteContext` carries a second, **independent** claim beside `expectedLastSequenceNumber`: a `fence` of `{ ownerId, generation }`. When present, the store reads the run's `run_leases` row **inside the same `BEGIN IMMEDIATE` transaction, through the transaction handle** — outside it, the read and the write would be two statements another process could interleave, which is the exact race the check exists to close — and refuses with a typed `LeaseFencedError` when the owner or generation differs, **or when the row is absent**: a writer that cannot prove ownership fails closed. It is checked *after* the append guard, because a stale belief about the log is the more specific diagnosis when a writer has both problems. The two fields are independent because the run TERMINAL carries the fence *without* the append guard — exempt from one, not the other. An **absent** `fence` is a pass rather than a refusal: a caller holding no ownership claim has nothing stale to catch. Like `AppendConflictError`, `LeaseFencedError` is **not** in the retryable set — a stale fence is an expected refusal, not lock contention.
 - **Cross-platform:** `BEGIN IMMEDIATE` + the retry behave identically on every OS. The `0600`/`0700` at-rest guard below is a documented Windows no-op, so the concurrency test lane gates POSIX-permission assertions off Windows only.
 
 This realizes the concurrent-process write requirement recorded in the [ADR-0064](../../decisions/0064-live-model-catalog.md) §5 amendment note (2.5.I).

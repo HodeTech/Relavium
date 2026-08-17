@@ -4,7 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import {
   InMemoryRunStore,
   createInMemoryCheckpointer,
-  createInMemoryRunLeases,
+  resolveInMemoryLeases,
   createInMemoryTerminalOutbox,
   type Checkpointer,
   type ExecutionHost,
@@ -162,7 +162,11 @@ export function createCliHost(
       options?.terminalOutboxPath === undefined
         ? createInMemoryTerminalOutbox()
         : createFileTerminalOutbox(options.terminalOutboxPath),
-    runLeases: options?.runLeases ?? createInMemoryRunLeases(),
+    // Through the shared resolver, not a bare `??`. Minting an UNBOUND in-memory port here left the
+    // sanctioned in-memory `createCliHost` path with a store that consults no lease table, so under the
+    // fence rule every such run was refused at its second write — the precise wiring failure the loud throw
+    // above exists to prevent, reintroduced 25 lines below it. One resolver so the two cannot drift again.
+    runLeases: resolveInMemoryLeases(store, options?.runLeases, () => Date.now()),
     // A NATIVE AbortController — its `signal` is a real `AbortSignal` that the provider SDKs thread into
     // `fetch`, so a run cancel actually aborts an in-flight LLM stream (→ prompt `run:cancelled`). The
     // engine's in-house `createAbortController` is for TESTS ONLY (its signal is not `instanceof

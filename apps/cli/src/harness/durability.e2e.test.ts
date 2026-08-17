@@ -272,3 +272,122 @@ function passthroughExecutor() {
     execute: () => Promise.resolve({ kind: 'completed' as const, output: {} }),
   };
 }
+
+describe('CR-11: a parked process cannot speak for a run it gave up (ADR-0079 §4/§5)', () => {
+  let dir: string;
+  let client: DbClient;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'relavium-park-'));
+    client = createClient(join(dir, 'history.db'));
+    runMigrations(client.db);
+  });
+  afterEach(() => {
+    client.sqlite.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const GATED: WorkflowDefinition = parseWorkflow(
+    `schema_version: '1.0'
+workflow:
+  id: park-e2e
+  nodes:
+    - { id: a, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: b, type: output }
+  edges:
+    - { from: a, to: g }
+    - { from: g, to: b }
+`,
+  );
+
+  function gatedStore() {
+    return createRunHistoryStore(client.db, {
+      uuid: () => randomUUID(),
+      now: () => Date.now(),
+      workflow: {
+        slug: GATED.workflow.id,
+        name: GATED.workflow.id,
+        definitionJson: JSON.stringify(GATED),
+      },
+    });
+  }
+
+  /**
+   * Park a run at its human gate and hand back its id — the lease is released by then (§4).
+   *
+   * The stream is drained on a BACKGROUND promise rather than with a `break`: breaking out of the `for await`
+   * abandons the stream, which tears the execution down and makes a later `cancel()` a no-op — the run would
+   * then record nothing for a reason that has nothing to do with ownership.
+   */
+  async function parkedRun(store: ReturnType<typeof gatedStore>): Promise<{
+    runId: string;
+    cancel: () => void;
+    drained: Promise<void>;
+  }> {
+    const host = createInMemoryHost({ store, runLeases: createRunLeasePort(store) });
+    // NOT `passthroughExecutor` — it completes every vertex, gate included, so the run would finish without
+    // ever pausing and nothing here would be about ownership.
+    const engine = new WorkflowEngine({
+      host,
+      executor: {
+        execute: (ctx) =>
+          Promise.resolve(
+            ctx.vertex.id === 'g'
+              ? { kind: 'paused' as const, gate: { gateType: 'approval' as const, message: 'ok?' } }
+              : { kind: 'completed' as const, output: {} },
+          ),
+      },
+    });
+    const handle = engine.start({ workflow: GATED, inputs: {} });
+    let parked: () => void = () => undefined;
+    const reachedPause = new Promise<void>((resolve) => {
+      parked = resolve;
+    });
+    const drained = (async () => {
+      for await (const event of handle.events) if (event.type === 'run:paused') parked();
+    })();
+    await reachedPause;
+    return { runId: handle.runId, cancel: () => engine.cancel(handle.runId), drained };
+  }
+
+  it('a cancel on a parked run whose lease ANOTHER process took writes NO second terminal', async () => {
+    // The defect this closes: a gate park releases the lease, but the parked process keeps its gate timer,
+    // its run timeout and cooperative cancel armed — and a terminal is exempt from the append guard, while
+    // an ABSENT fence is a pass rather than a refusal. So the parked process could write `run:cancelled`
+    // into a run another process was finishing, putting TWO terminals in one log.
+    const store = gatedStore();
+    const { runId, cancel, drained } = await parkedRun(store);
+    expect(store.leases.read(runId)).toBeUndefined(); // §4: the park really did give ownership up
+
+    // A second process takes the run over — the ordinary `relavium gate` resume.
+    expect(store.leases.acquire(runId, 'another-process', 60_000)).toBeDefined();
+
+    cancel(); // …and the FIRST process is Ctrl-C'd, as a user dismissing a stale prompt would.
+    // Bounded rather than `await drained`: this test's claim is about what is WRITTEN, and a fenced loser
+    // deliberately writes no terminal, so its stream close is a separate property proven in
+    // `packages/core/src/engine/run-lease.test.ts` against the engine source. Waiting unbounded here would
+    // couple this assertion to that one.
+    await Promise.race([drained, new Promise((resolve) => setTimeout(resolve, 1_000))]);
+
+    const terminals = store
+      .loadRunEvents(runId)
+      .filter((event) => event.type === 'run:cancelled' || event.type === 'run:failed');
+    expect(terminals).toEqual([]); // it does NOT claim an outcome for a run it no longer owns
+  });
+
+  it('a cancel on a parked run NOBODY took over still records the cancellation', async () => {
+    // The other half, and the reason the fix re-acquires rather than simply refusing: the common case is a
+    // user cancelling their OWN parked run, and that must still be recorded. A fix that only fenced would
+    // silently drop it.
+    const store = gatedStore();
+    const { runId, cancel, drained } = await parkedRun(store);
+    cancel();
+    await drained;
+
+    const terminals = store
+      .loadRunEvents(runId)
+      .filter((event) => event.type === 'run:cancelled' || event.type === 'run:failed');
+    expect(terminals.map((event) => event.type)).toEqual(['run:cancelled']);
+  });
+});
