@@ -357,9 +357,11 @@ CI relies on deterministic exit codes:
 | `2` | Invalid invocation (bad arguments, workflow not found, schema validation error) |
 | `3` | Run paused at a human gate (CI/non-interactive mode) — resume with `relavium gate` |
 | `4` | A chat session ended — via `/exit`, `/cancel` (or Ctrl-C in TTY mode), or an input-stream EOF — a user-initiated end of a `relavium chat` REPL — see [chat-session.md](chat-session.md) |
-| `5` | The run produced a terminal, but whether it reached the durable log is **not known** ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §5) |
-| `6` | The run is owned by **another process** — this invocation refused rather than becoming a second producer ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §7). The only **transient** code: retry shortly |
+| `5` | The run **produced** a terminal, but whether it reached the durable log is **not known** ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §5). The terminal is held in the outbox and retried on the next start |
+| `6` | The run is owned by **another process** — either refused before starting, or fenced out mid-flight and stopped without claiming an outcome ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §5, §7). The only **transient** code: retry shortly |
 
+> Codes `5` and `6` are both "the run's record is not what you might assume", and they differ in what to do next: `5` means a terminal exists and the CLI will retry writing it for you, so re-check after the next invocation; `6` means another process owns the run and is recording it, so there is nothing local to retry — read `relavium status <runId>` for the truth. A run that produced no terminal at all is always `6`, never `5`.
+>
 > Exit code `6` is the one refusal worth retrying unchanged. Every other invocation fault (`2`) is a mistake in the call and fails identically forever, while `6` means another `relavium` process holds a live lease on the run and resolves on its own when that process finishes or its lease expires. An automation loop should back off and retry on `6`, and never on `2`.
 >
 > Exit code `3` lets CI distinguish a pause-for-approval (a `run:paused` event — the run's aggregate suspension, a human/approval/budget gate — in non-interactive mode) from a hard failure. This is the canonical home for the gate-paused code; other docs reference it as `3`.

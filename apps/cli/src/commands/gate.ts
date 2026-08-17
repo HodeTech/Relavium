@@ -316,10 +316,19 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     });
 
     if (outcome === undefined) {
-      // The resumed handle closed with NO events. The engine returns a closed handle when its own internal
-      // checkpoint re-read already found the run terminal — i.e. a concurrent `relavium gate` settled it in the
-      // window between our selectGate pre-check and the engine's re-read. That is an idempotent no-op (the run
-      // already completed), not a failure: exit 0, mirroring the selectGate terminal path.
+      // **Two very different runs close with no `run:*` event, and telling them apart matters.** A closed
+      // handle (the engine's own checkpoint re-read found the run terminal — a concurrent `relavium gate`
+      // settled it between our pre-check and the engine's) is an idempotent no-op. A run FENCED mid-resume
+      // (ADR-0079 §5) also emits no terminal by design — and reporting that as "already settled … exit 0"
+      // is the worst available answer: the run is executing elsewhere, this process's gate decision was
+      // never made durable, and an automation loop records success. The disposition separates them at no
+      // cost: `createClosedRunHandle` reports `durable`, a fenced handle reports `uncertain`.
+      if (handle.durability() === 'uncertain') {
+        throw new CliError(
+          'run_owned_elsewhere',
+          `run ${args.runId} was taken over by another process during the resume; this decision was not recorded — check \`relavium status ${args.runId}\` for its real outcome, then retry if the gate is still pending`,
+        );
+      }
       deps.io.writeOut(`run ${args.runId} already settled; nothing to resume\n`);
       return EXIT_CODES.success;
     }

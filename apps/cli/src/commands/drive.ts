@@ -235,7 +235,13 @@ export function outcomeToExitCode(
   durability?: RunDurability,
 ): ExitCode {
   if (durability === 'uncertain') {
-    return EXIT_CODES.durabilityUncertain;
+    // **No terminal + `uncertain` is a FENCED run, not an unwritten terminal** (ADR-0079 §5 vs ADR-0078 §5).
+    // The two share the disposition and need opposite advice. A fenced loser deliberately writes nothing to
+    // the outbox — the run belongs to another process and is being recorded by it right now — so exit 5's
+    // documented remedy ("held in the outbox and retried on the next start") is false for it, and a script
+    // following that advice waits for a drain that will never happen. The signal is free: §5 closes the
+    // stream WITHOUT a terminal, while an outbox-uncertain run delivered one.
+    return outcome === undefined ? EXIT_CODES.runOwnedElsewhere : EXIT_CODES.durabilityUncertain;
   }
   switch (outcome) {
     case 'completed':

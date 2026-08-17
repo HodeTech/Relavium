@@ -27,6 +27,11 @@ export const EXIT_CODES = {
    * Reporting it as a failure would be as wrong as reporting it as a success. The terminal is held in the
    * host's terminal outbox and retried on the next `relavium` start; a caller scripting against this should
    * treat the run as done-but-unrecorded and re-check `relavium status` after a subsequent invocation.
+   *
+   * **Scoped to ADR-0078's case: a terminal was PRODUCED and its write did not land.** A run fenced out
+   * mid-flight (ADR-0079 §5) shares the `uncertain` disposition but produces no terminal at all and writes
+   * nothing to the outbox, so the retry promised above would never come — that case is code `6`, and the
+   * discriminator is whether a terminal was delivered.
    */
   durabilityUncertain: 5,
   /**
@@ -38,6 +43,11 @@ export const EXIT_CODES = {
    * identically forever; this one resolves on its own when the other process finishes or its lease expires
    * (at most `RUN_LEASE_TTL_MS`). An automation loop has to be able to tell "try again shortly" from "never
    * call this again", and a single blanket code cannot express that.
+   *
+   * Reached two ways: a resume REFUSED before it started (another process already held the lease), and a run
+   * fenced out MID-FLIGHT, which closes its stream with no terminal and reports `uncertain`. Both mean the
+   * same thing to a caller — this run is somebody else's right now — and neither has anything to retry
+   * locally, which is what separates them from code `5`.
    */
   runOwnedElsewhere: 6,
 } as const;

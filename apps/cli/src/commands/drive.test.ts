@@ -247,6 +247,16 @@ describe('outcomeToExitCode — the durability disposition (CR-92, ADR-0078 §5)
     expect(outcomeToExitCode('cancelled', 'uncertain')).toBe(EXIT_CODES.durabilityUncertain);
   });
 
+  it('NO terminal + uncertain is a FENCED run — exit 6, not 5 (ADR-0079 §5)', () => {
+    // The two dispositions share a value and need opposite advice. Exit 5 promises the terminal is in the
+    // outbox and will be retried on the next start; a fenced loser deliberately writes NOTHING there,
+    // because the run belongs to another process and is being recorded by it right now. A script following
+    // exit 5's documented remedy would wait for a drain that never comes.
+    expect(outcomeToExitCode(undefined, 'uncertain')).toBe(EXIT_CODES.runOwnedElsewhere);
+    // …and the discriminator is the delivered terminal, not the disposition: an outbox-uncertain run has one.
+    expect(outcomeToExitCode('completed', 'uncertain')).toBe(EXIT_CODES.durabilityUncertain);
+  });
+
   it('a DURABLE terminal keeps its ordinary code — the negative control', () => {
     // Without this the assertions above pass for an implementation that returns 5 unconditionally.
     expect(outcomeToExitCode('completed', 'durable')).toBe(EXIT_CODES.success);
