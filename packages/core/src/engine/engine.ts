@@ -3191,9 +3191,20 @@ export class WorkflowEngine {
     if (TERMINAL_RUN_STATUSES.has(checkpoint.runStatus)) {
       // The run already settled in the prior process — re-delivery is a safe no-op (the terminal event
       // is in the persisted log). Returning a closed handle avoids re-emitting/re-persisting a terminal.
+      //
+      // **Release first.** This is a refusal like the ones above, and §4's rule covers it: an acquire that
+      // leads nowhere must not leak. Holding it would convert the documented idempotent no-op into a
+      // transient refusal (exit 6) for a full TTL, over a run that has been over for hours, and leave a
+      // `run_leases` row per re-delivery that nothing ever deletes.
+      await this.#host.runLeases.release(input.runId, fence);
       return createClosedRunHandle(input.runId);
     }
-    const plan = buildRunPlan(input.workflow, input.planOptions);
+    // From here to `adoptLease`, ANY throw must release the claim — `buildRunPlan` on an edited workflow and
+    // the `RunExecution` constructor's checkpoint rehydration both throw outside the try below, and both
+    // used to strand the lease for a TTL.
+    const plan = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+      buildRunPlan(input.workflow, input.planOptions),
+    );
     const bus = new RunEventBus({ now: this.#host.clock.now, validate: this.#validateEvents });
     const execution = new RunExecution({
       runId: input.runId,
@@ -3363,12 +3374,32 @@ export class WorkflowEngine {
    * on a state that no longer holds while the acquire alone decides inside one transaction.
    */
   async #claimForReconcile(runId: string): Promise<RunFence | undefined> {
+    // **Never claim a run THIS engine is executing.** `acquire`'s refusal rule is "a different owner holding
+    // a live lease", so for our OWN runs it is not a refusal at all — it is a renewal that bumps the
+    // generation, which would fence our live execution out at its next write and then delete its row in the
+    // caller's `finally`. The lease cannot express this because the two claimants share an `ownerId`; the
+    // in-memory run table can, and it is the authority on what this process is running.
+    if (this.#runs.has(runId)) return undefined;
     try {
       return await this.#host.runLeases.acquire(runId, this.#ownerId, RUN_LEASE_TTL_MS);
     } catch {
       // A lease port that cannot be reached is not licence to reconcile blind — the whole point is to avoid
       // terminating somebody else's run, and an unreachable lease means we cannot tell. Fail closed.
       return undefined;
+    }
+  }
+
+  /**
+   * Run `body`, releasing the resume-path lease if it throws (ADR-0079 §4: "every refusal path also releases
+   * what it just took"). The claim was taken before the checkpoint was read, so every exit between there and
+   * `adoptLease` owns that obligation — including the ones that throw rather than return.
+   */
+  async #releaseFenceOnThrow<T>(runId: string, fence: RunFence, body: () => T): Promise<T> {
+    try {
+      return body();
+    } catch (error) {
+      await this.#releaseReconcileClaim(runId, fence);
+      throw error;
     }
   }
 

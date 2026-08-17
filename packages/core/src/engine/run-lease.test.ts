@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
 import { WorkflowEngine } from './engine.js';
+import { EngineStateError } from './errors.js';
 import { createInMemoryHost, createInMemoryRunLeases, InMemoryRunStore } from './execution-host.js';
 import type { NodeExecContext, NodeOutcome, NodeExecutor } from './node-executor.js';
 import type { RunHandle } from './run-handle.js';
@@ -365,5 +366,79 @@ describe('ADR-0079 §4/§5 — a parked process cannot speak for a run it gave u
 
     expect(events.at(-1)?.type).toBe('run:completed');
     expect(handle.durability()).toBe('durable');
+  });
+});
+
+describe('ADR-0079 §4/§7 — a claim that leads nowhere is never leaked', () => {
+  async function seedTerminal(store: InMemoryRunStore, runId: string): Promise<void> {
+    const workflowId = await store.resolveWorkflowId(LINEAR.workflow.id);
+    await store.persistEvent({
+      type: 'run:started',
+      runId,
+      sequenceNumber: 0,
+      timestamp: '2026-01-01T00:00:00.000Z',
+      workflowId,
+      inputs: {},
+      executionMode: 'local',
+    });
+    await store.persistEvent({
+      type: 'run:completed',
+      runId,
+      sequenceNumber: 1,
+      timestamp: '2026-01-01T00:00:00.000Z',
+      outputs: {},
+      totalTokensUsed: { input: 0, output: 0 },
+      totalCostMicrocents: 0,
+      durationMs: 1,
+    });
+  }
+
+  it('an already-terminal resume releases the lease it took, so re-delivery stays a no-op', async () => {
+    // `resumeFromCheckpoint` acquires BEFORE it reads the checkpoint, so the idempotent already-settled exit
+    // owns that claim too. Holding it turned the documented no-op into a transient refusal for a full TTL —
+    // over a run that finished hours ago — and left a `run_leases` row per re-delivery.
+    const store = new InMemoryRunStore();
+    const leases = createInMemoryRunLeases();
+    const host = createInMemoryHost({ store, runLeases: leases });
+    await seedTerminal(store, 'run-done');
+
+    const engine = new WorkflowEngine({ host, executor: new Stub() });
+    const handle = await engine.resumeFromCheckpoint({ runId: 'run-done', workflow: LINEAR });
+    for await (const event of handle.events) void event; // a closed handle: completes immediately
+
+    expect(await leases.read('run-done')).toBeUndefined();
+  });
+
+  it('a workflow_mismatch refusal releases too', async () => {
+    const store = new InMemoryRunStore();
+    const leases = createInMemoryRunLeases();
+    const host = createInMemoryHost({ store, runLeases: leases });
+    await seedTerminal(store, 'run-mismatch');
+
+    const engine = new WorkflowEngine({ host, executor: new Stub() });
+    await expect(
+      engine.resumeFromCheckpoint({ runId: 'run-mismatch', workflow: GATED }),
+    ).rejects.toBeInstanceOf(EngineStateError);
+    expect(await leases.read('run-mismatch')).toBeUndefined();
+  });
+
+  it('reconcile() never takes over a run THIS engine is executing', async () => {
+    // `acquire` refuses only a DIFFERENT owner, so for the engine's own run it is a renewal that bumps the
+    // generation — fencing the live execution out at its next write and then deleting its row in the
+    // caller's `finally`. The lease cannot tell the two apart; the in-memory run table can.
+    const store = new InMemoryRunStore();
+    const host = createInMemoryHost({ store });
+    const engine = new WorkflowEngine({
+      host,
+      executor: new Stub({ a: inFlight }),
+    });
+    const handle = engine.start({ workflow: LINEAR });
+    await until(() => store.eventsFor(handle.runId).length > 0, 'the run started');
+
+    const repaired = await engine.reconcile();
+
+    expect(repaired).toEqual([]); // it did NOT fail its own live run
+    expect(store.eventsFor(handle.runId).map((e) => e.type)).not.toContain('run:failed');
+    expect(handle.durability()).not.toBe('uncertain'); // …nor fence it out of its own run
   });
 });
