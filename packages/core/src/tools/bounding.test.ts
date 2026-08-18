@@ -402,6 +402,31 @@ describe('redactSecretShapedText — URL userinfo (ADR-0080 §11)', () => {
     );
   });
 
+  it('does NOT run past a JSON delimiter — over-redaction collapses two calls into one digest', () => {
+    // THE destructive case, and the reason the classes are delimiter-bounded. Compact JSON has no
+    // whitespace, so an unbounded password class swallows `host:port","payee":"…` up to the next `@`. A
+    // review proved the consequence: two payment requests differing only in payee produced the SAME
+    // `args_digest`, so a resumed run's `prepare` returned `replay` and handed the model the OTHER payee's
+    // receipt for a payment that never happened. That is verbatim what §4 says must not occur.
+    const alice = '{"endpoint":"https://api.pay.io:8080","payee":"alice@corp.com","amount":100}';
+    const mallory = '{"endpoint":"https://api.pay.io:8080","payee":"mallory@corp.com","amount":100}';
+
+    expect(redactSecretShapedText(alice)).toBe(alice);
+    expect(redactSecretShapedText(mallory)).toBe(mallory);
+    expect(redactSecretShapedText(alice)).not.toBe(redactSecretShapedText(mallory));
+  });
+
+  it('catches the COLON-LESS form — `scheme://TOKEN@host`', () => {
+    // The shape the first rule structurally cannot see: it requires a `:` with a non-empty right side. A
+    // webhook with an embedded bearer and a Stripe-style key-as-username (empty password) are both this.
+    expect(redactSecretShapedText('https://s3cr3tT0kenABCDEFGH@internal.example/hook')).toBe(
+      'https://[redacted]@internal.example/hook',
+    );
+    expect(redactSecretShapedText('https://sk_live_ABCDEFGHIJKLMNOP:@api.stripe.com/v1/x')).toBe(
+      'https://[redacted]@api.stripe.com/v1/x',
+    );
+  });
+
   it('leaves a credential-free URL untouched — the negative control', () => {
     // Without this the rule above passes for an implementation that mangled every URL, which would destroy
     // the diagnostic value of the row for the overwhelmingly common case.
@@ -412,6 +437,67 @@ describe('redactSecretShapedText — URL userinfo (ADR-0080 §11)', () => {
     ]) {
       expect(redactSecretShapedText(url)).toBe(url);
     }
+  });
+});
+
+describe('redactSecretShapedValue — the KEY decides, whatever the value looks like (ADR-0080 §11)', () => {
+  // Every case here was enumerated by a review that recovered the plaintext from a stored
+  // `run_effects.args_digest`. The digest is permanent and never swept, so each of these was a lasting
+  // offline oracle on a `history.db` the spec itself says may be unencrypted at rest.
+  const SECRET = 'hunter2-l0w-entropy';
+
+  const leaks: readonly { what: string; input: Record<string, unknown> }[] = [
+    { what: 'a NESTED secret key', input: { auth: { api_key: SECRET } } },
+    { what: 'a nested header name', input: { headers: { 'X-Api-Key': SECRET } } },
+    { what: 'a top-level password', input: { password: SECRET } },
+    { what: 'the value FOLLOWING a secret-ish flag in an arg vector', input: { args: ['deploy', '--token', SECRET] } },
+    { what: 'a NUMERIC secret', input: { pin: 493021 } },
+    { what: 'a credential object', input: { credentials: { user: 'u', pass: SECRET } } },
+  ];
+
+  for (const { what, input } of leaks) {
+    it(`redacts ${what}`, () => {
+      expect(JSON.stringify(redactSecretShapedValue(input))).not.toContain(SECRET);
+      expect(JSON.stringify(redactSecretShapedValue(input))).not.toContain('493021');
+    });
+  }
+
+  it('leaves ordinary structured args alone — the negative control', () => {
+    // Without this the rule above is satisfied by redacting everything, which would strip the stored row of
+    // the diagnostic value that is its whole remaining purpose.
+    const benign = {
+      url: 'https://api.example.com/v1/things',
+      method: 'POST',
+      limit: 10,
+      tags: ['alpha', 'beta'],
+      nested: { name: 'report', count: 3 },
+      // …and an ordinary arg vector: a flag that names nothing secret leaves its value alone.
+      argv: ['deploy', '--env', 'staging', '--verbose'],
+    };
+    expect(redactSecretShapedValue(benign)).toEqual(benign);
+  });
+
+  it('keeps the auth SCHEME when the shape scrub already fired', () => {
+    // `Bearer` is not the secret, and which scheme a call used is exactly what a stored row is for. The
+    // wholesale key redaction is the fallback for what the shape scrub structurally cannot see.
+    expect(redactSecretShapedValue({ Authorization: 'Bearer tok_abcdef123456' })).toEqual({
+      Authorization: 'Bearer [redacted]',
+    });
+  });
+
+  it('redacts a long opaque value in a URL query under an unrecognised parameter name', () => {
+    // A pre-signed URL or a webhook `?t=<token>`: the parameter name means nothing to the keyword rule, and
+    // the value has no well-known prefix. The NAME is kept — it is the diagnostic half.
+    const signed = 'https://files.example.com/o/x?X-Amz-Signature=' + 'a'.repeat(64);
+    const out = redactSecretShapedText(signed);
+    expect(out).not.toContain('a'.repeat(64));
+    expect(out).toContain('X-Amz-Signature=');
+  });
+
+  it('leaves a SHORT query value alone — the negative control for the rule above', () => {
+    expect(redactSecretShapedText('https://api.example.com/v1/things?limit=10&q=cats')).toBe(
+      'https://api.example.com/v1/things?limit=10&q=cats',
+    );
   });
 });
 

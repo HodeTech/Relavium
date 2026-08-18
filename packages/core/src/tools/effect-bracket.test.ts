@@ -385,6 +385,42 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     expect(store.rows()).toHaveLength(1); // …with no second row invented for the replay
   });
 
+  it('a replay re-delivers the ORIGINAL output_mapping, even when the result was truncated', async () => {
+    // A review's probe, turned into a regression. Settling only `bounded.value` meant the replay re-ran
+    // `output_mapping` over the TRUNCATION PREVIEW: the first dispatch put `200` into workflow state and the
+    // replay put `undefined` — silently, and only above the bounding ceiling. §4 promises to RE-DELIVER what
+    // the original produced, so the projections are recorded rather than re-derived.
+    const store = createInMemoryEffectJournalStore();
+    const host = hostWith(() =>
+      Promise.resolve({
+        status: 200,
+        headers: {},
+        body: 'x'.repeat(4000), // comfortably past the tiny ceiling below
+        truncated: false,
+        url: 'https://api.example/x',
+      }),
+    );
+    const registry = createToolRegistry({ tools: TOOLS, host });
+    const correlation = { kind: 'run' as const, runId: 'r1', nodeId: 'n1', attempt: 1 };
+    const base: ToolDispatchContext = {
+      ...ctxWith(recordingJournal()),
+      config: { outputMapping: { code: 'status' } },
+      limits: { maxBytes: 200, maxLines: 20 },
+      effects: store.for(correlation),
+    };
+
+    const first = await registry.dispatch(POST, base);
+    const second = await registry.dispatch(POST, {
+      ...base,
+      effects: store.for({ ...correlation, attempt: 2 }),
+    });
+
+    expect(first.output).toEqual({ code: 200 });
+    expect(second.output).toEqual(first.output); // …NOT `{}` re-derived from the preview
+    expect(second.truncated).toBe(first.truncated);
+    expect(second.events.result.outputSummary).toBe(first.events.result.outputSummary);
+  });
+
   it('a replay is refused when the ARGS differ at the same slot', async () => {
     // The same slot with different args is a DIFFERENT call that happens to land in the same ordinal — the
     // model answered differently on the re-run. Re-delivering the old result would silently answer the new

@@ -133,7 +133,16 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
                 held.argsDigest === argsDigest &&
                 held.resultJson !== null
               ) {
-                return { outcome: 'replay', result: JSON.parse(held.resultJson) as unknown };
+                try {
+                  return { outcome: 'replay', result: JSON.parse(held.resultJson) as unknown };
+                } catch {
+                  // An UNPARSABLE retained result is a committed row we cannot re-deliver — §4's refusal,
+                  // reached by a different route. Letting the raw `SyntaxError` escape was worse than
+                  // useless: it is not an `EffectConflictError`, so the registry rethrew it into the generic
+                  // ladder, the node re-dispatched, re-hit the same corrupt row, and burned its whole retry
+                  // budget while reporting a JSON syntax error as a tool failure.
+                  throw new EffectConflictError(identity);
+                }
               }
               throw new EffectConflictError(identity);
             }
@@ -210,7 +219,7 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
             identity: { scope: row.scope, slot: row.slot, toolId: row.toolId },
             state: coerceEffectState(row.state),
             tier: coerceEffectTier(row.tier),
-            ...(row.resultJson === null ? {} : { result: JSON.parse(row.resultJson) as unknown }),
+            ...retainedResult(row.resultJson),
             ...(row.targetIdempotencyKey === null
               ? {}
               : { targetIdempotencyKey: row.targetIdempotencyKey }),
@@ -221,7 +230,8 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
     unresolvedForSession: (sessionId) => {
       // `like` on the scope prefix. The separator is part of the pattern (`session:<id>:`), so a session id
       // that is a prefix of another one cannot bleed into it — `s1` must not match `s10`'s rows.
-      const range = scopeRange(`session:${sessionId}:`);
+      // Encoded to match `effectScope` exactly — the query and the writer must agree byte for byte.
+      const range = scopeRange(`session:${encodeURIComponent(sessionId)}:`);
       return db
         .select()
         .from(runEffects)
@@ -234,7 +244,7 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
           identity: { scope: row.scope, slot: row.slot, toolId: row.toolId },
           state: coerceEffectState(row.state),
           tier: coerceEffectTier(row.tier),
-          ...(row.resultJson === null ? {} : { result: JSON.parse(row.resultJson) as unknown }),
+          ...retainedResult(row.resultJson),
           ...(row.targetIdempotencyKey === null
             ? {}
             : { targetIdempotencyKey: row.targetIdempotencyKey }),
@@ -251,7 +261,7 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
       // `committed` ONLY. Unresolved rows are never swept: they are the record an operator needs, they
       // outlive their run deliberately, and that is why the row carries no foreign key to `runs` — a purge
       // is exactly when the record matters most.
-      const range = scopeRange(`run:${runId}:`);
+      const range = scopeRange(`run:${encodeURIComponent(runId)}:`);
       const result = db
         .delete(runEffects)
         .where(
@@ -347,6 +357,24 @@ export function createEffectResumePort(store: EffectJournalStore): EffectResumeP
       }
     },
   };
+}
+
+/**
+ * The retained result of a row, as a spreadable fragment — absent when there is none, and absent when the
+ * stored JSON does not parse.
+ *
+ * **An unparsable result is NO result, not a crash.** `blocksResume` then reads the row as blocking, which
+ * is the honest answer: a committed row we cannot re-deliver stops the resume exactly as an unresolved one
+ * does. Throwing here instead would take out the whole gate read, and the gate's own catch would report a
+ * JSON syntax error as the reason a run cannot continue.
+ */
+function retainedResult(resultJson: string | null): { result?: unknown } {
+  if (resultJson === null) return {};
+  try {
+    return { result: JSON.parse(resultJson) as unknown };
+  } catch {
+    return {};
+  }
 }
 
 /**

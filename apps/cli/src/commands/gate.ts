@@ -20,12 +20,7 @@ import {
   loadRunSnapshot,
   type Db,
 } from '@relavium/db';
-import {
-  MaskedSecretSchema,
-  WorkflowSchema,
-  type ErrorCode,
-  type RunStatus,
-} from '@relavium/shared';
+import { MaskedSecretSchema, WorkflowSchema, type RunStatus } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
 import { openLocalDb } from '../db/open.js';
@@ -330,13 +325,6 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       decision,
     });
 
-    // The resume gate (effect-journal.md §4) fires on THIS path above all others — a gate resume is the
-    // canonical "the process died mid-node and came back" case — so the terminal's code is captured here
-    // exactly as `run` does.
-    let terminalErrorCode: ErrorCode | undefined;
-    const unsubscribeTerminal = handle.subscribe((event) => {
-      if (event.type === 'run:failed') terminalErrorCode = event.error.code;
-    });
     const outcome = await driveRun({
       engine,
       handle,
@@ -363,7 +351,6 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       // is the worst available answer: the run is executing elsewhere, this process's gate decision was
       // never made durable, and an automation loop records success. The disposition separates them at no
       // cost: `createClosedRunHandle` reports `durable`, a fenced handle reports `uncertain`.
-      unsubscribeTerminal();
       deps.io.writeOut(`run ${args.runId} already settled; nothing to resume\n`);
       return EXIT_CODES.success;
     }
@@ -387,8 +374,12 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       graceMs: config.mediaGcGraceMs,
     });
     // Same rule as  (ADR-0078 §5) — the resumed leg's terminal is durable, or the run says so.
-    unsubscribeTerminal();
-    return outcomeToExitCode(outcome, handle.durability(), terminalErrorCode);
+    // **Read off the HANDLE, never from a `subscribe()` here.** The resume gate settles `run:failed` INSIDE
+    // `resumeFromCheckpoint`'s await, before this code has a handle to subscribe to, and `subscribe` has no
+    // replay — a review measured a late subscriber seeing `undefined` and this surface reporting exit 1 for
+    // a run that had stopped for an unresolved external effect. `terminalError()` is captured on the
+    // handle's own construction-time subscription, which no ordering can outrun.
+    return outcomeToExitCode(outcome, handle.durability(), handle.terminalError());
   } finally {
     opened.close();
   }

@@ -52,6 +52,42 @@ import { journaledTier } from './effect-predicate.js';
  */
 const NOT_REPLAYED: unique symbol = Symbol('not-replayed');
 
+/**
+ * What a `committed` row retains, so a replay can RE-DELIVER the original outcome rather than re-derive it
+ * ([effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md) §4).
+ *
+ * `mapped` is present only when the node configured an `output_mapping`; without one it would be the full
+ * unbounded result, which must never reach `history.db`.
+ */
+interface ReplayEnvelope {
+  readonly value: unknown;
+  readonly truncated: boolean;
+  readonly summary: string;
+  readonly mapped?: unknown;
+}
+
+/**
+ * Read a retained result back as an envelope, tolerating a row written by an older build that stored the
+ * bare bounded value. A stored row crosses a persistence boundary, so it is validated structurally rather
+ * than cast — and the fallback is conservative: an unrecognised shape is treated as an untruncated value
+ * with an empty summary, never as a mapped projection it is not.
+ */
+function asReplayEnvelope(stored: unknown): ReplayEnvelope {
+  if (
+    typeof stored === 'object' &&
+    stored !== null &&
+    'value' in stored &&
+    'truncated' in stored &&
+    'summary' in stored &&
+    typeof (stored as { truncated: unknown }).truncated === 'boolean' &&
+    typeof (stored as { summary: unknown }).summary === 'string'
+  ) {
+    const envelope = stored as ReplayEnvelope;
+    return envelope;
+  }
+  return { value: stored, truncated: false, summary: '' };
+}
+
 /** Build the engine-side tool registry. Performs no I/O and reads no ambient state (engine purity). */
 export function createToolRegistry(options: CreateToolRegistryOptions): {
   dispatch(toolCall: ToolCallPart, ctx: ToolDispatchContext): Promise<ToolDispatchOutcome>;
@@ -163,7 +199,7 @@ async function dispatch(
   let effectDispatched = false;
   // A sentinel rather than `undefined`, because `undefined` is a legitimate retained result: a tool whose
   // result was genuinely nothing would otherwise be re-dispatched on every resume — the duplicate again.
-  let replayed: unknown = NOT_REPLAYED;
+  let replayed: ReplayEnvelope | typeof NOT_REPLAYED = NOT_REPLAYED;
 
   // 4b-7. The per-tool approval gate + the single side effect + output_mapping (FULL result) + model-facing
   // bounding — all under one classification ladder so a spill-time (or prompt-time) abort surfaces as
@@ -222,12 +258,12 @@ async function dispatch(
         //
         // It still flows through mapping and bounding below: those are pure projections, and a replayed
         // result must reach the model in the same shape the original would have.
-        replayed = verdict.result;
+        replayed = asReplayEnvelope(verdict.result);
       }
     }
     let output: unknown;
     try {
-      output = replayed === NOT_REPLAYED ? await def.dispatch(args, host, ctx) : replayed;
+      output = replayed === NOT_REPLAYED ? await def.dispatch(args, host, ctx) : replayed.value;
     } catch (cause) {
       // **`ambiguous` means "we do not know what the target did" — so a demonstrable NON-dispatch is not
       // ambiguous.** A missing host capability throws synchronously inside the dispatch arm before the host
@@ -242,15 +278,27 @@ async function dispatch(
     }
     // Abort that lands AFTER the host resolved must still classify as cancelled, not a success.
     throwIfAborted(ctx, def.id);
-    // 6. output_mapping runs on the FULL result → workflow state keeps the real value.
-    outputMapped = applyOutputMapping(output, ctx.config.outputMapping);
-    // 7. Bound the MODEL-FACING result (the full result is untouched above).
-    bounded = await boundForModel(
-      output,
-      ctx.limits ?? DEFAULT_TOOL_RESULT_LIMITS,
-      host,
-      ctx.signal,
-    );
+    if (replayed === NOT_REPLAYED) {
+      // 6. output_mapping runs on the FULL result → workflow state keeps the real value.
+      outputMapped = applyOutputMapping(output, ctx.config.outputMapping);
+      // 7. Bound the MODEL-FACING result (the full result is untouched above).
+      bounded = await boundForModel(
+        output,
+        ctx.limits ?? DEFAULT_TOOL_RESULT_LIMITS,
+        host,
+        ctx.signal,
+      );
+    } else {
+      // A REPLAY restores the recorded projections verbatim — it does not re-derive them. Re-deriving is
+      // what produced the `output_mapping`-over-a-truncation-preview defect; and re-bounding a value that
+      // is already bounded would summarize a summary.
+      outputMapped = 'mapped' in replayed ? replayed.mapped : replayed.value;
+      bounded = {
+        value: replayed.value,
+        truncated: replayed.truncated,
+        summary: replayed.summary,
+      };
+    }
     // 8. **SETTLE — after bounding, and deliberately so.** ADR-0080 §7 said "immediately"; what ships settles
     //    once the BOUNDED value exists, for two reasons the spec is being corrected to state. First, the
     //    gate's job is to RE-DELIVER the model-facing result, so the bounded value is the one worth keeping —
@@ -259,7 +307,22 @@ async function dispatch(
     //    row `prepared`, which resume reads as unresolved and REFUSES. `prepared` is the safe state.
     if (tier !== undefined && replayed === NOT_REPLAYED) {
       try {
-        await ctx.effects.settle(ctx.effectSlot, def.id, 'committed', bounded.value);
+        await ctx.effects.settle(ctx.effectSlot, def.id, 'committed', {
+          // **All four projections the outcome is built from, not just the bounded value.** A review proved
+          // why: storing only `bounded.value` and re-deriving the rest on replay ran `output_mapping` over
+          // the TRUNCATION PREVIEW. Same tool, same args, `output_mapping: { code: 'status' }` — the first
+          // dispatch put `200` into workflow state and the replayed one put `undefined`, silently, and only
+          // when the result had exceeded the bounding ceiling. §4's promise is to RE-DELIVER what the
+          // original produced, so what the original produced is what is kept.
+          value: bounded.value,
+          truncated: bounded.truncated,
+          summary: bounded.summary,
+          // …and the mapped projection ONLY when a mapping is configured. Without one, `outputMapped` IS
+          // the full result, and persisting that would put unbounded `run_command` stdout into
+          // `history.db` — the very thing settling after bounding exists to avoid. With one, the author
+          // chose an extract, and its size is their call.
+          ...(ctx.config.outputMapping === undefined ? {} : { mapped: outputMapped }),
+        } satisfies ReplayEnvelope);
       } catch (cause) {
         // **The one window where the effect PROVABLY happened and the record does not say so.** Spec §7
         // step 4: the row stays `prepared`, the run stops, and it is never retried. Letting this fall into
@@ -757,6 +820,12 @@ function sanitizeInput(
     delete out[key];
   }
   if (secretArgKeys !== undefined) {
+    // **RECURSIVELY.** A top-level-only deletion misses `{"auth":{"api_key": …}}`, which is the ordinary
+    // shape for an MCP tool whose schema this repo does not own. The shape scrub below is the second line;
+    // this is the first, and it is the one that knows the host's declared secret names.
+    for (const key of Object.keys(out)) {
+      out[key] = dropSecretKeysDeep(out[key], secretArgKeys);
+    }
     for (const key of secretArgKeys) {
       delete out[key];
     }
@@ -770,6 +839,33 @@ function sanitizeInput(
   // already ran on the real args.
   for (const key of Object.keys(out)) {
     out[key] = redactSecretShapedValue(redactInlineMedia(out[key]));
+  }
+  return out;
+}
+
+/**
+ * Drop every declared secret key at ANY depth. Bounded by a `WeakSet` cycle guard, mirroring the shape walk
+ * next to it — a tool's args can be an arbitrary object graph, and an MCP tool's more so.
+ */
+function dropSecretKeysDeep(
+  value: unknown,
+  secretArgKeys: ReadonlySet<string>,
+  seen: WeakSet<object> = new WeakSet<object>(),
+): unknown {
+  if (typeof value !== 'object' || value === null) return value;
+  if (seen.has(value)) return '[cyclic]';
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => dropSecretKeysDeep(item, secretArgKeys, seen));
+  }
+  const proto: unknown = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    return value; // Date/RegExp/Map/… — left for the shape walk, exactly as it leaves them
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (secretArgKeys.has(key)) continue;
+    out[key] = dropSecretKeysDeep(item, secretArgKeys, seen);
   }
   return out;
 }

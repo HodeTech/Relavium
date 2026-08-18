@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { isEffectConflictError, type EffectCorrelation } from '@relavium/shared';
+import { effectScope, isEffectConflictError, type EffectCorrelation } from '@relavium/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
@@ -95,6 +95,60 @@ describe('the effect journal store', () => {
     expect(store.recordsFor(RUN)[0]).toMatchObject({ state: 'committed', result: { ticket: 42 } });
   });
 
+  it('a replay verdict round-trips the retained result, and a DIFFERENT digest is refused', () => {
+    // §4's one forward path, against the store that actually ships. A review neutered the whole replay
+    // branch (`held.state === 'committed' &&` → `false &&`) and every one of the 2,406 CLI + 336 db tests
+    // stayed green — only the in-memory reference proved anything, which is the divergence this file's own
+    // header says the repo has been bitten by before.
+    store.prepare(ID, RUN, ATTEMPT, 3, 'digest-1');
+    store.settle(ID, 'committed', { ok: true });
+
+    expect(store.prepare(ID, RUN, ATTEMPT, 3, 'digest-1')).toEqual({
+      outcome: 'replay',
+      result: { ok: true },
+    });
+    // A different digest at the same slot is a DIFFERENT call that landed in the same ordinal — answering it
+    // with the old answer would be a silent wrong result, so it refuses.
+    expect(() => store.prepare(ID, RUN, ATTEMPT, 3, 'digest-2')).toThrow();
+    try {
+      store.prepare(ID, RUN, ATTEMPT, 3, 'digest-2');
+    } catch (error) {
+      expect(isEffectConflictError(error)).toBe(true);
+    }
+  });
+
+  it('a committed row with NO retained result refuses rather than replaying', () => {
+    // "A committed row is not a green light" at the dispatch site: with nothing to re-deliver, waving the
+    // call through would re-fire the effect to obtain a result we failed to keep.
+    store.prepare(ID, RUN, ATTEMPT, 3, 'd');
+    store.settle(ID, 'committed'); // …no result
+    expect(() => store.prepare(ID, RUN, ATTEMPT, 3, 'd')).toThrow();
+  });
+
+  it('an UNRESOLVED row refuses — it is the live-collision case, not a replay', () => {
+    store.prepare(ID, RUN, ATTEMPT, 3, 'd');
+    expect(() => store.prepare(ID, RUN, ATTEMPT, 3, 'd')).toThrow();
+  });
+
+  it('a CORRUPT retained result refuses instead of throwing a raw SyntaxError', () => {
+    // Reached through `prepare`, an unparsable row escaped the ladder as a plain `SyntaxError`: not an
+    // `EffectConflictError`, so the node re-dispatched, re-hit the same corrupt row, and burned its whole
+    // retry budget while reporting a JSON syntax error as a tool failure. An unparsable retained result IS
+    // a committed row we cannot re-deliver, which is §4's refusal.
+    store.prepare(ID, RUN, ATTEMPT, 3, 'd');
+    store.settle(ID, 'committed', { ok: true });
+    client.sqlite
+      .prepare(`UPDATE run_effects SET result_json = ? WHERE scope = ?`)
+      .run('{not json', ID.scope);
+
+    try {
+      store.prepare(ID, RUN, ATTEMPT, 3, 'd');
+      expect.unreachable('a corrupt retained result must refuse');
+    } catch (error) {
+      expect(isEffectConflictError(error)).toBe(true);
+    }
+  });
+
   it('flagForAttention is terminal and visible to the gate', () => {
     store.prepare(ID, RUN, ATTEMPT, 3, 'd');
     store.flagForAttention(ID);
@@ -134,6 +188,36 @@ describe('the effect journal store', () => {
     expect(store.sweepCommittedForRun('r1')).toBe(1);
     expect(store.recordsFor({ kind: 'run', runId: 'r1', nodeId: 'stuck', attempt: 1 })).toHaveLength(1);
     expect(store.recordsFor(other)).toHaveLength(1); // the prefix neighbour survived
+  });
+
+  it('a `:` inside an id cannot cross into another run’s or session’s rows', () => {
+    // The separator is `:`, so an unencoded id containing one silently extends the prefix. A review proved
+    // both halves against a real SQLite file: `unresolvedForSession('a')` disclosed session `a:9`'s rows,
+    // and `sweepCommittedForRun('b')` DELETED run `b:9`'s committed rows — destroying the replay evidence
+    // §4's gate reads for a run that was still resumable.
+    const nested: EffectCorrelation = { kind: 'run', runId: 'b:9', nodeId: 'n', attempt: 1 };
+    store.prepare(
+      { scope: effectScope(nested), slot: 0, toolId: 'http_request' },
+      nested,
+      ATTEMPT,
+      3,
+      'd',
+    );
+    store.settle({ scope: effectScope(nested), slot: 0, toolId: 'http_request' }, 'committed', 1);
+
+    expect(store.sweepCommittedForRun('b')).toBe(0); // …the neighbour is untouched
+    expect(store.recordsFor(nested)).toHaveLength(1);
+
+    const nestedSession: EffectCorrelation = { kind: 'session', sessionId: 'a:9', turn: 0 };
+    store.prepare(
+      { scope: effectScope(nestedSession), slot: 0, toolId: 'run_command' },
+      nestedSession,
+      ATTEMPT,
+      3,
+      'd',
+    );
+    expect(store.unresolvedForSession('a')).toHaveLength(0);
+    expect(store.unresolvedForSession('a:9')).toHaveLength(1);
   });
 
   it('an id carrying LIKE wildcards cannot widen the match', () => {

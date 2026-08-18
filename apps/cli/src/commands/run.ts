@@ -8,7 +8,6 @@ import {
   type WorkflowEngine,
 } from '@relavium/core';
 import type { McpClient, McpServerConfig } from '@relavium/mcp';
-import type { ErrorCode } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
 import {
@@ -297,12 +296,6 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // commands.md "Output modes": ink TUI on a TTY, NDJSON under --json, plain otherwise), and the inline
     // human-gate prompt when an interactive prompter is present (CI / --json / no-TTY → no prompter → a gate
     // pause exits 3, resumable by `relavium gate`).
-    // The terminal's `ErrorCode`, captured through the handle's passive observer rather than by widening
-    // `driveRun`'s return: `subscribe` exists for exactly this, and the driver's contract stays the outcome.
-    let terminalErrorCode: ErrorCode | undefined;
-    const unsubscribeTerminal = handle.subscribe((event) => {
-      if (event.type === 'run:failed') terminalErrorCode = event.error.code;
-    });
     const outcome = await driveRun({
       engine,
       handle,
@@ -334,8 +327,9 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
 
     // The handle's disposition OUTRANKS the outcome (ADR-0078 §5): a delivered `run:completed` whose
     // durable write did not land must not exit 0, or a script is told the run is recorded when it is not.
-    unsubscribeTerminal();
-    const exitCode = outcomeToExitCode(outcome, handle.durability(), terminalErrorCode);
+    // Off the HANDLE, not a `subscribe()` — see the note in `gate.ts`. `start()`'s ordering happens to be
+    // safe for a subscriber, but the two surfaces must not answer this differently.
+    const exitCode = outcomeToExitCode(outcome, handle.durability(), handle.terminalError());
     // **Say what happened.** A fenced run writes no terminal by design (ADR-0079 §5), so the renderer's
     // final summary falls through to a bare "run ended" and the user is left with an exit code and no
     // explanation of why their run stopped. `relavium gate` already explains this case; `relavium run`

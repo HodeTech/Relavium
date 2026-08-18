@@ -460,11 +460,23 @@ export function isEffectConflictError(value: unknown): value is EffectConflictEr
   return value instanceof EffectConflictError;
 }
 
-/** The correlation's lookup scope — the resume gate's key, with the retry attempt deliberately dropped. */
+/**
+ * The correlation's lookup scope — the resume gate's key, with the retry attempt deliberately dropped.
+ *
+ * **Every component is percent-encoded**, so a component can never introduce the `:` that separates
+ * components. Without it a run id of `r1:x` produces the scope `run:r1:x:n`, which a prefix range for run
+ * `r1` matches — and the host's retention sweep then DELETES another run's committed rows, destroying the
+ * replay evidence the gate reads while that run is still resumable. A review reproduced both halves against
+ * a real SQLite file: a cross-session disclosure and a cross-run delete.
+ *
+ * Ids are UUIDs on every shipping surface, so the encoding is the identity function in practice. It is here
+ * because `history.db` is shared and a session id is only schema-constrained to a non-empty string —
+ * precisely the reasoning that moved the host's scope queries from `LIKE` to a byte range.
+ */
 export function effectScope(correlation: EffectCorrelation): string {
   return correlation.kind === 'run'
-    ? `run:${correlation.runId}:${correlation.nodeId}`
-    : `session:${correlation.sessionId}:${String(correlation.turn)}`;
+    ? `run:${encodeURIComponent(correlation.runId)}:${encodeURIComponent(correlation.nodeId)}`
+    : `session:${encodeURIComponent(correlation.sessionId)}:${String(correlation.turn)}`;
 }
 
 /**

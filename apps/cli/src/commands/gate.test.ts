@@ -67,6 +67,7 @@ function emptyHandle(runId: string): RunHandle {
     cancel: () => {},
     whenConsumersReady: () => Promise.resolve(),
     durability: () => 'durable' as const,
+    terminalError: () => undefined,
   };
 }
 
