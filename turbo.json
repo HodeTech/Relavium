@@ -14,7 +14,13 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**"]
+      // `*.tsbuildinfo` is an output, not a stray file. `incremental: true` makes tsc skip emit when this
+      // says the outputs are current, so a cache restore that brought back `dist/**` WITHOUT it — or left a
+      // stale one written during an interrupted build — produces a `dist` that silently does not match
+      // `src`, and `--force` does not defeat it. Measured: `dist/engine/engine.js` was missing a field that
+      // `src` had, through repeated forced rebuilds. The CLI ships as a bundle of these outputs, so a
+      // desynced one is shipped code that never existed in source.
+      "outputs": ["dist/**", "*.tsbuildinfo"]
     },
     "typecheck": {
       "dependsOn": ["^build"],
@@ -26,6 +32,17 @@
     },
     "test": {
       "dependsOn": ["^build"],
+      "outputs": []
+    },
+    // `@relavium/db`'s two-process regressions (`migrate-lock.e2e`, `run-lease.e2e`) spawn real children that
+    // import the BUILT package — a child cannot use vitest's source resolution. `^build` builds only
+    // UPSTREAM deps, and the required CI lane runs `test` before `build`, so on a clean checkout this
+    // package's own `dist` was absent and both files skipped: visible in the log, green to the job. That made
+    // ADR-0079's headline property — the one the ADR says cannot be proven in a single process — unproven in
+    // the gate that guards it. Depending on its own build is what makes the skip a real fallback rather than
+    // the normal case.
+    "@relavium/db#test": {
+      "dependsOn": ["^build", "@relavium/db#build"],
       "outputs": []
     },
     "//#format:check": {
