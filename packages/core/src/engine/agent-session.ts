@@ -515,10 +515,19 @@ export class AgentSession {
     const session = new AgentSession(params);
     session.#messages.push(...state.messages);
     session.#turnCount = state.turnCount;
-    // Restored with the turn count, and for the same reason: it is part of this session's effect identity
-    // (ADR-0080). Leaving it at 0 made the first `!`-command after a `chat-resume` re-use slot -1 and
-    // collide with the pre-crash one — a false duplicate on the ONE dispatch site whose args are byte-stable.
-    session.#userCommandSeq = state.turnCount;
+    // **`#userCommandSeq` is deliberately NOT restored, and the reason is a limitation rather than a choice.**
+    //
+    // An earlier attempt seeded it from `state.turnCount`, which is wrong: that counts completed ASSISTANT
+    // turns and has no relationship to how many `!`-commands were issued. A review reproduced the resulting
+    // false refusal — two `!`-commands inside one turn window, then a `/models` reseat, and the next command
+    // reuses a slot and is rejected as "already claimed" for something never run before.
+    //
+    // Reconstructing it honestly needs a durable source, and there is none: `!`-commands never enter the
+    // transcript, and the platform-free engine cannot read `run_effects`. So the counter restarts, and the
+    // consequence is recorded in effect-journal.md §14 rather than papered over: a `!`-command issued after a
+    // resume, in a turn window that already had one, can be refused as a false duplicate. It fails CLOSED —
+    // a refusal, never a repeated effect — which is the safe direction, and it is fixed by persisting the
+    // counter with the session row when a surface makes repeated in-window shell commands worth the schema.
     session.#cumulativeCostMicrocents = state.cumulativeCostMicrocents;
     // ADR-0062: restore the compaction preamble so a compacted session stays compacted across resume AND a
     // model reseat (which reuses this same reconstruct→resume path); without it, resume would silently

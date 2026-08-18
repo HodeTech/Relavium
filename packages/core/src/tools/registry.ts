@@ -16,6 +16,7 @@ import {
   redactSecretShapedValue,
 } from './bounding.js';
 import {
+  ToolEffectNeedsAttentionError,
   ToolUnavailableError,
   ToolEffectConflictError,
   ToolArgsInvalidError,
@@ -235,7 +236,16 @@ async function dispatch(
     //    no sweep. Second, the wider window costs nothing but interruptions: a crash before this leaves the
     //    row `prepared`, which resume reads as unresolved and REFUSES. `prepared` is the safe state.
     if (tier !== undefined) {
-      await ctx.effects.settle(ctx.effectSlot, def.id, 'committed', bounded.value);
+      try {
+        await ctx.effects.settle(ctx.effectSlot, def.id, 'committed', bounded.value);
+      } catch (cause) {
+        // **The one window where the effect PROVABLY happened and the record does not say so.** Spec §7
+        // step 4: the row stays `prepared`, the run stops, and it is never retried. Letting this fall into
+        // the generic ladder made it `tool_failed` — indistinguishable from an ordinary tool bug, and on the
+        // chat surface it routed to the "fix the target and resend" hint, which is the one instruction that
+        // could make a human repeat a real external effect.
+        throw new ToolEffectNeedsAttentionError(def.id, cause);
+      }
     }
     // An abort that lands during bounding (its async fast path yields a microtask) must still classify
     // as cancelled, not a success — the symmetric guard to line 109 after the dispatch await.

@@ -313,7 +313,8 @@ echo "review it" | relavium agent run code-reviewer --fixture ./fixtures/review.
 - `--input k=v` is **reserved** — currently **rejected** (exit `2`): a session does not yet interpolate `{{ctx.*}}` into the agent's prompt (the engine passes `system_prompt` verbatim), so the flag is failed loud rather than exposed as an inert no-op. It re-opens when session prompt interpolation lands (a tracked engine follow-up, [deferred-tasks.md](../../roadmap/deferred-tasks.md)).
 - `--fixture <path>` replays a recorded LLM **cassette** so the run is deterministic and fully offline (no key, no network, no keychain) — the format is documented in [agent-run-fixture.md](agent-run-fixture.md). A malformed cassette exits `2`.
 - `--json` emits the [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) NDJSON stream on stdout (the same shape `chat --json` produces); otherwise the assistant reply streams in human form.
-- **Not persisted** — a stateless invoke (no `history.db` row), unlike the REPL. The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code).
+- **The transcript is not persisted** — a stateless invoke (no session/message row), unlike the REPL. It does still **open `history.db`** to attach the effect journal ([effect-journal.md](../shared-core/effect-journal.md)): an external effect is carried forward by the target, not by the run, so an unattached journal would refuse every effectful tool on this surface. The rows it writes are never read back. A `history.db` that cannot be opened fails the invocation.
+- The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code).
 
 ### `relavium provider`
 

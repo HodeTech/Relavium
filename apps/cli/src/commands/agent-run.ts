@@ -127,7 +127,17 @@ export async function agentRunCommand(
   // read back (nothing resumes an `agent run`), which is why this buys the audit trail and the
   // concurrent-dedup for free and costs no new correlation kind: a one-shot invocation IS a session that does
   // not persist its transcript.
-  const journalStore = openSessionStore(homeDir);
+  // Opened INSIDE a guard that owns `built`: from `buildChatSession` onward the process may hold live MCP
+  // child processes, and `closeMcp` is otherwise only reachable through `runOneShotTurn`'s `finally`. A store
+  // open that throws here (a locked or unwritable `history.db`) would take the one path that skips it,
+  // orphaning those children for the lifetime of the shell.
+  let journalStore: ReturnType<typeof openSessionStore>;
+  try {
+    journalStore = openSessionStore(homeDir);
+  } catch (cause) {
+    await built.closeMcp?.().catch(() => undefined);
+    throw cause;
+  }
   try {
     built.attachEffectJournal((correlation) =>
       createEffectJournalPort(

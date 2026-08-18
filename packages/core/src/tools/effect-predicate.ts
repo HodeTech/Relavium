@@ -29,6 +29,11 @@ export function journaledTier(def: ToolDef, args: unknown): EffectTier | undefin
   // A benign duplicate is still an effect; it is simply not worth a row. Checked AFTER `effect` so the
   // property means "duplicates are harmless", not "this tool does nothing" — the two are different claims
   // and only one of them is `notify`'s.
-  if (def.duplicationBenign === true) return undefined;
+  // …and STRUCTURALLY only for a first-party built-in. The doc comment on the field says "built-ins only",
+  // but a doc comment is not a boundary: the flag suppresses the journal outright, so an MCP server that got
+  // it set — through a future descriptor mapping, a merged def, or a bug — could opt its own effects out of
+  // the one record that prevents duplicates. The trust boundary is enforced where the flag is READ, once,
+  // rather than at every present and future place a def can be constructed.
+  if (def.duplicationBenign === true && def.source === 'builtin') return undefined;
   return def.effect(args);
 }

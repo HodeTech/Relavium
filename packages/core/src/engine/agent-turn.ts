@@ -1070,7 +1070,17 @@ async function driveAgentTurn(
         ? streamOneTurn(chain, messages, params, () => activeModel)
         : streamOneTurn(chain, messages, params, () => activeModel).catch((error: unknown) => {
             if (error instanceof BudgetPauseError) {
-              throw new AgentTurnError('budget_exceeded', error.message, false);
+              // NOT `error.message` — it ends "run paused for approval", which is exactly what does not
+              // happen here. Reported verbatim on `relavium run` and both `--json` surfaces it told the
+              // operator to go approve a pause that will never arrive, for a run that had already failed.
+              throw new AgentTurnError(
+                'budget_exceeded',
+                `pre-egress budget check would exceed the cap of ${error.limitMicrocents} micro-cents ` +
+                  `(spent ${error.spentMicrocents}); the node had already run tools this turn, so it failed ` +
+                  `instead of pausing — approving and resuming would re-fire them (ADR-0080 §7). Raise the ` +
+                  `budget cap and start a new run.`,
+                false,
+              );
             }
             throw error;
           }));

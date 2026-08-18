@@ -85,10 +85,34 @@ describe('the effect journal store', () => {
     expect(store.recordsFor(RUN)).toHaveLength(0); // …and does not leak into a run's scope
   });
 
+  it('a settle out of a TERMINAL state is refused — the durable answer is not overwritten', () => {
+    // `committed → ambiguous` is strictly a loss: the row would claim we do not know what the target did
+    // while still carrying the result proving we do, and the resume gate reads exactly that pair.
+    store.prepare(ID, RUN, ATTEMPT, 3, 'd');
+    store.settle(ID, 'committed', { ticket: 42 });
+    store.settle(ID, 'ambiguous');
+
+    expect(store.recordsFor(RUN)[0]).toMatchObject({ state: 'committed', result: { ticket: 42 } });
+  });
+
   it('flagForAttention is terminal and visible to the gate', () => {
     store.prepare(ID, RUN, ATTEMPT, 3, 'd');
     store.flagForAttention(ID);
     expect(store.recordsFor(RUN)[0]?.state).toBe('needs_attention');
+  });
+
+  it('an UNRECOGNISED persisted state and tier degrade toward caution, not toward safety', () => {
+    // The direction is the whole point and it was untested: these rows are read back by a FUTURE build, and
+    // a downgrade schema-migration, a partial write, or a hand-edited `history.db` can put a value here that
+    // this build has no case for. Degrading an unknown state to `committed` would let a resume conclude the
+    // effect is done; degrading an unknown tier to 1 would claim the target deduplicates when nothing knows
+    // that it does. So: `needs_attention` (stop and ask a human) and tier 3 (promise least).
+    store.prepare(ID, RUN, ATTEMPT, 3, 'd');
+    client.sqlite
+      .prepare(`UPDATE run_effects SET state = ?, tier = ? WHERE scope = ?`)
+      .run('quantum_superposition', 7, 'run:r1:n1');
+
+    expect(store.recordsFor(RUN)[0]).toMatchObject({ state: 'needs_attention', tier: 3 });
   });
 
   it('retains the tier and the target idempotency key a tier-1 retry would reuse', () => {

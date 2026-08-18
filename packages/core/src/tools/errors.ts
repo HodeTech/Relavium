@@ -193,6 +193,31 @@ export class ToolEffectConflictError extends ToolDispatchError {
   }
 }
 
+/**
+ * A tool's effect landed but its journal record could not be completed
+ * ([ADR-0080](../../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §7
+ * step 4). The row stays `prepared`, so a resumed run reads it as unresolved and refuses — the conservative
+ * answer, reached by a different route.
+ *
+ * Distinct from `ToolExecutionError` on purpose: here the call SUCCEEDED and only the record failed, so
+ * "fix the target and try again" is the one instruction that could make a human repeat a real effect.
+ */
+export class ToolEffectNeedsAttentionError extends ToolDispatchError {
+  readonly code = 'effect_conflict';
+  readonly runErrorCode: ErrorCode = 'effect_needs_attention';
+  readonly retryable = false;
+
+  constructor(toolId: ToolId, cause?: unknown) {
+    super(
+      `tool \`${toolId}\` completed but its effect record could not be written — the effect may have landed; check the target before repeating it`,
+      toolId,
+      cause,
+      false,
+    );
+    this.name = 'ToolEffectNeedsAttentionError';
+  }
+}
+
 export class ToolExecutionError extends ToolDispatchError {
   readonly code = 'execution_failed';
   readonly runErrorCode: ErrorCode = 'tool_failed';

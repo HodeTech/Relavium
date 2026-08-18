@@ -272,6 +272,82 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     ).toEqual([-2, -1, 0, 1]);
   });
 
+  it('journals the SANITIZED args, never the raw ones', async () => {
+    // ADR-0080 §11. The digest is durable and never swept, so a secret hashed into it is a permanent offline
+    // oracle — strictly worse than the same string in an ephemeral event. A review measured this by swapping
+    // the sanitized projection for the raw `effective` args: 1,209 core tests stayed green.
+    const captured: unknown[] = [];
+    const host = hostWith(() =>
+      Promise.resolve({
+        status: 200,
+        headers: {},
+        body: 'ok',
+        truncated: false,
+        url: 'https://api.example/x',
+      }),
+    );
+    const registry = createToolRegistry({ tools: TOOLS, host });
+    const ctx: ToolDispatchContext = {
+      ...ctxWith(recordingJournal()),
+      secretArgKeys: new Set(['authorization']),
+      effects: {
+        prepare: (_slot, _toolId, _tier, redacted) => {
+          captured.push(redacted);
+          return Promise.resolve();
+        },
+        settle: () => Promise.resolve(),
+      },
+    };
+
+    await registry.dispatch(
+      {
+        ...POST,
+        args: {
+          url: 'https://api.example/x',
+          method: 'POST',
+          // The URL itself cannot carry userinfo — `http_request`'s own guardrail rejects that before
+          // dispatch. A BODY can, and does: this is what registering a webhook or seeding a config looks like.
+          body: '{"dsn":"postgres://admin:hunter2pass@db.internal:5432/app"}',
+          headers: { authorization: 'Bearer sk-live-abcdefghijklmnop' },
+        },
+      },
+      ctx,
+    );
+
+    const serialized = JSON.stringify(captured[0]);
+    expect(serialized).not.toContain('hunter2pass'); // URL userinfo — the shape a connection string takes
+    expect(serialized).not.toContain('sk-live-abcdefghijklmnop'); // a declared secret arg key
+    expect(serialized).toContain('api.example'); // …and the diagnostic half survives
+  });
+
+  it('a settle that FAILS is reported as needing attention, not as an ordinary tool failure', async () => {
+    // §7 step 4: the effect provably landed and the record does not say so. Falling into the generic ladder
+    // made it `tool_failed`, which on the chat surface routes to "fix the target and resend" — the one
+    // instruction that could make a human repeat a real external effect.
+    const host = hostWith(() =>
+      Promise.resolve({
+        status: 200,
+        headers: {},
+        body: 'ok',
+        truncated: false,
+        url: 'https://api.example/x',
+      }),
+    );
+    const registry = createToolRegistry({ tools: TOOLS, host });
+    const ctx: ToolDispatchContext = {
+      ...ctxWith(recordingJournal()),
+      effects: {
+        prepare: () => Promise.resolve(),
+        settle: () => Promise.reject(new Error('history.db went away')),
+      },
+    };
+
+    await expect(registry.dispatch(POST, ctx)).rejects.toMatchObject({
+      runErrorCode: 'effect_needs_attention',
+      retryable: false,
+    });
+  });
+
   it('the in-memory reference refuses a duplicate identity, exactly as the real store does', async () => {
     // The reference exists so a core test proves something. One that accepted what SQLite rejects would make
     // every test above vacuous — this repo has been bitten by exactly that divergence before.

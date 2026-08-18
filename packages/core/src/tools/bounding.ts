@@ -143,6 +143,14 @@ function redactInlineMediaForText(value: unknown, seen: WeakSet<object>): unknow
 export function redactSecretShapedText(text: string): string {
   return (
     text
+      // **URL userinfo — `scheme://user:pass@host`.** The single most common shape a real credential takes in a
+      // tool argument: a database connection string, a Redis URL, a webhook with an embedded token. It has no
+      // `key=value` and no well-known prefix, so every other pattern here misses it — a review REPRODUCED the
+      // gap by recovering a stored `run_effects` digest from guessed plaintext. That matters more since
+      // ADR-0080: the same projection now feeds a durable, never-swept digest, which is a permanent offline
+      // oracle rather than a line in an ephemeral event stream. The host is deliberately KEPT — it is the
+      // diagnostic half, and it is not the secret.
+      .replace(/([a-z][\w+.-]{0,31}:\/\/)[^/@\s:]{0,256}:[^/@\s]{1,256}@/gi, '$1[redacted]@')
       // A PEM private-key block (multi-line, space-separated markers the `private_key` key-pattern can't see).
       // The body span is bounded (`{0,20000}?`, lazy) so an unterminated block can't drive an unbounded scan.
       .replace(

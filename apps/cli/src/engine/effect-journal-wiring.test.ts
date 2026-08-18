@@ -1,0 +1,80 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { describe, expect, it } from 'vitest';
+
+/**
+ * **Every production surface that can dispatch a tool must wire the effect journal** (ADR-0080).
+ *
+ * This is a source-level lock, and it exists because the behavioural alternative does not work. A prior
+ * review deleted the journal wiring from ALL FIVE production sites simultaneously and the entire 2,397-test
+ * CLI suite stayed green — twice: once when three of five were genuinely unwired and shipped that way, and
+ * again after they were fixed. Every surface's own tests inject a session or engine double, so the real
+ * construction path — `createEffectJournalPort(createEffectJournalStore(opened.db, …))` — is never reached.
+ *
+ * The failure it guards is severe and silent: an unwired surface refuses EVERY effectful tool
+ * (`run_command`, `!`-shell, an appending `write_file`, a non-GET `http_request`, every MCP tool) with a
+ * message the user cannot distinguish from a genuine tool failure.
+ *
+ * A grep-shaped test is a blunt instrument and is chosen deliberately over nothing. If a surface later grows
+ * a real integration test that dispatches a tier-3 tool against a temp-file `history.db` and asserts a
+ * `run_effects` row, that test supersedes this entry — delete it here and say so.
+ */
+
+const SRC = join(import.meta.dirname, '..');
+
+/** Each surface, and the call that proves it reached the journal. */
+const SURFACES: readonly { file: string; what: string; needle: RegExp }[] = [
+  {
+    file: 'commands/run.ts',
+    what: '`relavium run` — the workflow engine',
+    needle: /effectJournal:\s*\(correlation/,
+  },
+  {
+    file: 'commands/gate.ts',
+    what: '`relavium gate` — the FAR side of a human gate, where a tool-using node does its work',
+    needle: /effectJournal:\s*\(correlation/,
+  },
+  {
+    file: 'commands/agent-run.ts',
+    what: '`relavium agent run` — the one-shot',
+    needle: /attachEffectJournal\(\(correlation/,
+  },
+  {
+    file: 'commands/chat.ts',
+    what: '`relavium chat` / `chat-resume` / the `/clear` re-drive',
+    needle: /attachEffectJournal\(\(correlation/,
+  },
+  {
+    file: 'home/drive-home.tsx',
+    what: 'the bare-`relavium` Home',
+    needle: /attachEffectJournal\(\(correlation/,
+  },
+];
+
+describe('the effect journal is wired on every production surface (ADR-0080)', () => {
+  for (const surface of SURFACES) {
+    it(`${surface.file} — ${surface.what}`, () => {
+      const source = readFileSync(join(SRC, surface.file), 'utf8');
+      expect(source).toMatch(surface.needle);
+      // …and against the real store, not a stand-in: a surface that wired a no-op would satisfy the regex
+      // above while journaling nothing.
+      expect(source).toContain('createEffectJournalStore(');
+    });
+  }
+
+  it('names every surface that builds a session or an engine — a new one cannot be added silently', () => {
+    // The list above is only a lock if it is complete. This is the completeness half: any file that
+    // constructs a session or an engine is a dispatch surface and must appear above.
+    const builders = SURFACES.map((s) => s.file);
+    // `session-host.ts` and `build-engine.ts` are the CONSTRUCTORS, not surfaces — they forward what a
+    // surface supplies, which is why they are excluded rather than missing.
+    expect(builders).toEqual([
+      'commands/run.ts',
+      'commands/gate.ts',
+      'commands/agent-run.ts',
+      'commands/chat.ts',
+      'home/drive-home.tsx',
+    ]);
+  });
+});

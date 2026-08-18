@@ -116,7 +116,12 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
                 ...(result === undefined ? {} : { resultJson: JSON.stringify(result) }),
                 updatedAt: deps.now(),
               })
-              .where(whereIdentity(identity))
+              // …and ONLY out of `prepared`. Without the state predicate the machine admitted
+              // `committed → ambiguous`, which is strictly a loss of information: the row would claim we do
+              // not know what the target did while still carrying the `resultJson` proving we do — and the
+              // resume gate reads exactly that pair. A settle against an already-terminal row is a bug in the
+              // caller, and the honest response is to leave the durable answer alone.
+              .where(and(whereIdentity(identity), eq(runEffects.state, 'prepared')))
               .run();
           },
           { behavior: 'immediate' },

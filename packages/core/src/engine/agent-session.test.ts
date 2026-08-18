@@ -7,7 +7,7 @@ import type {
   ProviderId,
   StreamChunk,
 } from '@relavium/llm';
-import type { ReasoningEffort } from '@relavium/shared';
+import type { EffectCorrelation, ReasoningEffort } from '@relavium/shared';
 import {
   AgentSchema,
   RunEventSchema,
@@ -40,7 +40,11 @@ import {
 // session never names the ambient `AbortController`. A path drift to the public surface would be a smell.
 import { BudgetPauseError } from './budget-governor.js';
 import { RunEventBus } from './event-bus.js';
-import { createInMemoryEffectJournal, createAbortController } from './execution-host.js';
+import {
+  createInMemoryEffectJournal,
+  createInMemoryEffectJournalStore,
+  createAbortController,
+} from './execution-host.js';
 import {
   createSessionEventSink,
   createSessionHandle,
@@ -186,6 +190,65 @@ async function drainSession(
   }
   return collected;
 }
+
+describe('AgentSession — the effect correlation advances with the turn (ADR-0080 §5)', () => {
+  it('two effectful turns of one session do not collide on the journal', async () => {
+    // The bug this pins shipped and was found by RUNNING it: the correlation froze at `turn: 0` for the
+    // session's whole life while the slot ordinal restarts each turn, so a user's SECOND effectful request
+    // in one chat collided with their first and was refused — permanently, since nothing sweeps the row.
+    // Freezing the turn again leaves every other core test green, which is why this one exists.
+    //
+    // ONE shared store, because that is what a `history.db` is; a fresh journal per turn would make the
+    // collision unreachable and the test vacuous. The registry stub prepares at `ctx.effectSlot` exactly as
+    // the real bracket does, so the identity under test is the production one.
+    const store = createInMemoryEffectJournalStore();
+    const seen: EffectCorrelation[] = [];
+    const effectfulRegistry: ToolRegistry = {
+      has: () => true,
+      list: () => ['echo'],
+      dispatch: async (call, ctx) => {
+        await ctx.effects.prepare(ctx.effectSlot, 'echo', 3, {});
+        const result: ToolResultPart = {
+          type: 'tool_result',
+          toolCallId: call.id,
+          result: 'TOOL-OK',
+        };
+        return {
+          output: 'TOOL-OK',
+          toolResult: markUntrusted(result),
+          truncated: false,
+          events: {
+            call: { toolId: call.name, toolInput: {} },
+            result: { toolId: call.name, success: true, outputSummary: 'TOOL-OK' },
+          },
+        };
+      },
+    };
+    const { deps } = harness(
+      [toolUseTurn('c1'), textTurn('first'), toolUseTurn('c2'), textTurn('second')],
+      {
+        effects: (correlation) => {
+          seen.push(correlation);
+          return store.for(correlation);
+        },
+      },
+      effectfulRegistry,
+    );
+
+    const s = session(deps, TOOL_AGENT);
+    s.start();
+    await s.sendMessage('file the first ticket');
+    await s.sendMessage('file the second ticket'); // …would be REFUSED with a frozen correlation
+
+    // Both effects landed, at the same slot ordinal, under two different turns.
+    expect(store.rows().map((r) => r.slot)).toEqual([0, 0]);
+    expect(new Set(store.rows().map((r) => r.scope)).size).toBe(2);
+    const turns = seen
+      .filter((c): c is Extract<EffectCorrelation, { kind: 'session' }> => c.kind === 'session')
+      .map((c) => c.turn);
+    expect(new Set(turns).size).toBeGreaterThan(1);
+  });
+});
 
 describe('AgentSession (1.V) — multi-turn entry point over the shared turn core', () => {
   it('runs a multi-turn conversation with a tool round-trip through the same turn core', async () => {

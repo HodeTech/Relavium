@@ -273,6 +273,13 @@ Trigger: a user who must resume a partially completed tool loop rather than fail
   flow.
 - **A credential rotation changes the redacted projection**, so an effect whose args reference a rotated
   credential gets a fresh identity and degrades to tier-3 behaviour for that occurrence.
+- **A `!`-shell command after a resume can be refused as a false duplicate.** The shell's slot comes from a
+  per-session counter that restarts on `AgentSession.resume` — which a `/models` reseat also goes through —
+  because there is no durable source to restore it from: `!`-commands never enter the transcript, and the
+  platform-free engine cannot read `run_effects`. Two commands in one turn window followed by a resume can
+  therefore collide. It fails CLOSED (a refusal, never a repeated effect), and the fix is to persist the
+  counter with the session row. Trigger: the first surface where repeated in-window shell commands matter
+  enough to earn the schema change.
 - **`EffectSlot` is not stable across a model replay**, which is why the gate is at node granularity. A design
   that later needs slot-granular resume needs a durable record of the model response, which is CR-95's long-term
   continuation checkpoint, not this.

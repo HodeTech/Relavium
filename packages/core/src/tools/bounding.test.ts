@@ -384,3 +384,34 @@ describe('redactSecretShapedValue', () => {
     expect(() => redactSecretShapedValue(cyclic)).not.toThrow();
   });
 });
+
+describe('redactSecretShapedText — URL userinfo (ADR-0080 §11)', () => {
+  it('strips `user:pass@` from a URL while KEEPING the host', () => {
+    // The shape every other pattern here misses: no `key=value`, no well-known prefix. A review recovered a
+    // stored `run_effects` digest from guessed plaintext through exactly this gap — and since ADR-0080 the
+    // same projection feeds a DURABLE, never-swept digest, so the exposure is a permanent offline oracle
+    // rather than a line in an ephemeral stream. The host is kept deliberately: it is the diagnostic half.
+    expect(redactSecretShapedText('https://admin:S3cr3tPassw0rd@internal.example.com/api')).toBe(
+      'https://[redacted]@internal.example.com/api',
+    );
+    expect(redactSecretShapedText('postgres://user:hunter2@db.example.com:5432/app')).toBe(
+      'postgres://[redacted]@db.example.com:5432/app',
+    );
+    expect(redactSecretShapedText('redis://:onlyapassword@cache.internal:6379')).toBe(
+      'redis://[redacted]@cache.internal:6379',
+    );
+  });
+
+  it('leaves a credential-free URL untouched — the negative control', () => {
+    // Without this the rule above passes for an implementation that mangled every URL, which would destroy
+    // the diagnostic value of the row for the overwhelmingly common case.
+    for (const url of [
+      'https://api.example.com/v1/things?limit=10',
+      'https://example.com/path@fragment',
+      'mailto:someone@example.com',
+    ]) {
+      expect(redactSecretShapedText(url)).toBe(url);
+    }
+  });
+});
+
