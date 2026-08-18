@@ -15,7 +15,7 @@ import { describe, expect, it } from 'vitest';
 
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
 import { WorkflowEngine } from './engine.js';
-import { EngineStateError } from './errors.js';
+import { EngineStateError, isTransientEngineStateError } from './errors.js';
 import { createInMemoryHost, createInMemoryRunLeases, InMemoryRunStore } from './execution-host.js';
 import type { NodeExecContext, NodeOutcome, NodeExecutor } from './node-executor.js';
 import type { RunHandle } from './run-handle.js';
@@ -533,5 +533,75 @@ describe('ADR-0079 §3 — a run that cannot own its own id says so', () => {
     const terminal = events.at(-1);
     expect(terminal?.type).toBe('run:failed');
     expect(terminal?.type === 'run:failed' ? terminal.error.message : '').toMatch(/run-lease port/);
+  });
+});
+
+describe('ADR-0079 §4 — a losing resume is refused with something actionable', () => {
+  it('names the holder AND the bound on the wait', async () => {
+    // "retry shortly" is not actionable; `RunLeaseInfo` already carries `expiresAt`, so the deadline is free.
+    // The holder id is opaque by design (§1 — an owner is a process, not a name), which makes the deadline
+    // the only concrete thing the message can offer a caller deciding how long to back off.
+    const store = new InMemoryRunStore();
+    const leases = createInMemoryRunLeases();
+    const host = createInMemoryHost({ store, runLeases: leases });
+    const workflowId = await store.resolveWorkflowId(LINEAR.workflow.id);
+    await store.persistEvent({
+      type: 'run:started',
+      runId: 'run-held',
+      sequenceNumber: 0,
+      timestamp: '2026-01-01T00:00:00.000Z',
+      workflowId,
+      inputs: {},
+      executionMode: 'local',
+    });
+    await leases.acquire('run-held', 'the-other-process', RUN_LEASE_TTL_MS);
+
+    const engine = new WorkflowEngine({ host, executor: new Stub() });
+    await expect(
+      engine.resumeFromCheckpoint({ runId: 'run-held', workflow: LINEAR }),
+    ).rejects.toMatchObject({ code: 'run_owned_elsewhere' });
+
+    await engine
+      .resumeFromCheckpoint({ runId: 'run-held', workflow: LINEAR })
+      .then(() => expect.unreachable('the resume must be refused'))
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : '';
+        expect(message).toContain('the-other-process'); // who
+        expect(message).toMatch(/in at most \d+s/); // …and for how long
+      });
+  });
+});
+
+describe('ADR-0079 §7 — the transient classification is what earns a distinct exit code', () => {
+  it('run_owned_elsewhere is transient; every other engine-state refusal is permanent', () => {
+    // Without this the whole exit-6 chain rests on a constant that nothing exercises: forcing
+    // `isTransientEngineStateError` to `false` left all 3,580 tests in the repo green, because the CLI's
+    // own tests only prove the CliErrorCode→exit-code table, never that anything PRODUCES the code.
+    expect(
+      isTransientEngineStateError(
+        new EngineStateError('run_owned_elsewhere', 'busy', { runId: 'r' }),
+      ),
+    ).toBe(true);
+    for (const code of ['unknown_run', 'run_already_terminal', 'workflow_mismatch'] as const) {
+      expect(isTransientEngineStateError(new EngineStateError(code, 'nope', { runId: 'r' }))).toBe(
+        false,
+      );
+    }
+  });
+
+  it('a release-then-reacquire by the same owner restarts the generation — §1 as amended', () => {
+    // The one numeric claim §1's 2026-08-17 amendment turns on, asserted directly rather than left implicit.
+    // If a future change makes `release` a tombstone, this test is the one that should fail and be updated
+    // together with the amendment — which is the point of pinning a documented LIMITATION.
+    const leases = createInMemoryRunLeases();
+    return (async () => {
+      const first = await leases.acquire('run-gen', 'owner-a', RUN_LEASE_TTL_MS);
+      expect(first?.generation).toBe(1);
+      const renewed = await leases.acquire('run-gen', 'owner-a', RUN_LEASE_TTL_MS);
+      expect(renewed?.generation).toBe(2); // monotonic WITHIN a lease's lifetime
+      if (renewed !== undefined) await leases.release('run-gen', renewed);
+      const afterRelease = await leases.acquire('run-gen', 'owner-a', RUN_LEASE_TTL_MS);
+      expect(afterRelease?.generation).toBe(1); // …and restarts across one, because release DELETES the row
+    })();
   });
 });

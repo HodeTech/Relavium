@@ -335,6 +335,13 @@ function maskInputs(
  *   suite dies when this arm is made permissive — measured, not assumed — because `#settled` already turns
  *   every known post-terminal caller away earlier. It is kept because the cost is one switch arm and the
  *   failure it guards is a silent, unbounded row leak.
+ *
+ * The same is true of the `lost` arm and of `#settle`'s post-terminal `#lostOwnership()` guard: making either
+ * permissive also leaves the suite green. The reason is the same in all three cases and is deliberate —
+ * `#fence` is RETAINED after ownership ends, so the store's own transactional check refuses the stale token
+ * independently of what this switch decides. Two backstops, and the store's is the one proven across
+ * processes. Do not read the redundancy as dead code; read it as the engine refusing to rely on the store
+ * being reachable to know what it is entitled to write.
  */
 type RunOwnership = 'unclaimed' | 'held' | 'parked' | 'lost' | 'done';
 
@@ -2079,6 +2086,14 @@ class RunExecution {
     // on, and would make the second decision of a two-gate workflow fail against this process's own stale
     // claim. Whichever process resumes re-acquires (ADR-0079 §4).
     //
+    // **Defence in depth, not the sole protection** — measured, and worth stating so a future refactor judges
+    // the risk correctly. Two other mechanisms already cover this: `#emitDurable` re-reads the ownership
+    // state at WRITE time rather than caching it, and `#schedule`'s single-flight guard means a post-gate
+    // dispatch cannot begin until the `#step()` containing this whole function has unwound. A reviewer moved
+    // the hand-off back after the emit AND injected a real delay to force the race, and the suite stayed
+    // green. The ordering is kept because it makes the invariant true by construction rather than by two
+    // coincidences, but it is not load-bearing alone.
+    //
     // **The claim is dropped BEFORE the pause is observable, and the row is deleted after.** Both halves are
     // forced, in opposite directions. The row must go last because `run:paused` is itself a fence-guarded
     // write — deleting first would make the run's own pause event fail its own guard. But `#owned` must drop
@@ -3186,11 +3201,15 @@ export class WorkflowEngine {
     const fence = await this.#host.runLeases.acquire(input.runId, this.#ownerId, RUN_LEASE_TTL_MS);
     if (fence === undefined) {
       const holder = await this.#host.runLeases.read(input.runId);
+      // **Say WHEN, not just "shortly".** `RunLeaseInfo` already carries `expiresAt`, so the bound on the
+      // wait is free — and it is the difference between a caller that can back off intelligently and one
+      // that guesses. The holder id is opaque by design (§1: an owner is a process, not a name), so the
+      // deadline is the only concrete thing this message can offer.
       throw new EngineStateError(
         'run_owned_elsewhere',
         holder === undefined
           ? 'another process owns this run'
-          : `another process owns this run (held by ${holder.ownerId}) — retry once it finishes or its lease expires`,
+          : `another process owns this run (held by ${holder.ownerId}) — retry once it finishes, or in at most ${String(Math.max(0, Math.ceil((holder.expiresAt - this.#nowMs()) / 1000)))}s when its lease expires`,
         { runId: input.runId },
       );
     }
@@ -3404,6 +3423,11 @@ export class WorkflowEngine {
    * worse, not atomic with it — the lease can expire or change hands between the two, so the pair can decide
    * on a state that no longer holds while the acquire alone decides inside one transaction.
    */
+  /** Epoch-ms now, derived from the host's ISO clock — core has no second notion of time (ADR-0079 §6). */
+  #nowMs(): number {
+    return Date.parse(this.#host.clock.now());
+  }
+
   async #claimForReconcile(runId: string): Promise<RunFence | undefined> {
     // **Never claim a run THIS engine is executing.** `acquire`'s refusal rule is "a different owner holding
     // a live lease", so for our OWN runs it is not a refusal at all — it is a renewal that bumps the

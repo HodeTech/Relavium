@@ -10,6 +10,11 @@
  *
  * Everything below drives `createRunHistoryStore` over an on-disk `better-sqlite3` database and
  * `createFileTerminalOutbox` over an on-disk file — the same two objects `relavium run` wires.
+ *
+ * **Run this through turbo, not bare `vitest`.** `apps/cli` resolves `@relavium/core` and `@relavium/db`
+ * from their BUILT `dist`, so a bare `pnpm vitest run` here tests whatever was last compiled — measured:
+ * breaking the engine's fence handling and re-running without a rebuild left these tests green. Both
+ * `pnpm turbo run test` and the documented `pnpm turbo run lint typecheck test` rebuild first.
  */
 
 import { randomUUID } from 'node:crypto';

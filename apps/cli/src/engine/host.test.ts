@@ -48,6 +48,16 @@ describe('createCliHost', () => {
     }
   });
 
+  it('rejects a durable store with no explicit lease port — that pairing fences every run', () => {
+    // The guard's own docblock says this wiring "silently FENCES every run" and "looks like a hung run":
+    // the engine claims a fence the store has never heard of, so its first guarded write is refused. An
+    // untested throw is a guard that can be deleted in silence — and replacing this condition with `false`
+    // left all 2,396 CLI tests green, which is exactly how a wiring regression would ship.
+    expect(() => createCliHost(durableStore, {})).toThrow(/runLeases/);
+    // The negative control: the in-memory store needs no explicit port, and must not be swept up by it.
+    expect(() => createCliHost()).not.toThrow();
+  });
+
   it('rejects a checkpointer over the in-memory store — that split-backend pairing would resume against the wrong store', () => {
     const injected: Checkpointer = { load: () => Promise.resolve(undefined) };
     // Default store (in-memory) + a durable checkpointer = read/write backends diverge → fail loud at wiring.
