@@ -264,6 +264,12 @@ export function codeForLlmError(error: LlmError): ErrorCode {
     case 'overloaded':
     case 'timeout':
     case 'transport':
+    case 'protocol':
+      // `protocol` (ADR-0082 §9): a provider that cannot keep the stream grammar is not usable for this
+      // request, and the remedy is the one this code already names — try another model, or take it up with
+      // whoever runs that endpoint. No new `ErrorCode`, because no surface would act on the distinction
+      // differently; the load-bearing half (do not re-dispatch) rides `retryable: false`, which is where the
+      // engine actually reads it.
       return 'provider_unavailable';
     case 'cancelled':
       return 'cancelled';
@@ -490,7 +496,17 @@ function throwMappedChainError(error: LlmError): never {
   if (error.cause instanceof LedgerDurabilityError) {
     throw error.cause;
   }
-  throw new AgentTurnError(codeForLlmError(error), error.message, error.retryable);
+  // **The one fold site for content-commitment** (ADR-0082 §4). The chain refuses to FAIL OVER past the
+  // first content chunk, and until this line that fact stopped there: a content-committed `timeout` or
+  // `transport` surfaced with `retryable: true` (both are in `RETRYABLE_KINDS`), `#shouldRetry` gates purely
+  // on that boolean, and the node re-dispatched — a second answer and a second charge for a call the user
+  // had already seen output from. `retryable` stays a pure function of `kind`; commitment is a separate fact
+  // about the ATTEMPT, and this is where the two meet.
+  throw new AgentTurnError(
+    codeForLlmError(error),
+    error.message,
+    error.retryable && error.contentCommitted !== true,
+  );
 }
 
 /**

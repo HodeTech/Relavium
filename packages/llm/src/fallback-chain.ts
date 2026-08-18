@@ -271,6 +271,18 @@ function backoffDelayMs(
   return Math.min(raw, maxMs);
 }
 
+/**
+ * Mark a surfaced failure as having happened PAST the first content chunk
+ * ([ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §4).
+ *
+ * A separate field rather than an override of `retryable`, so `makeLlmError`'s invariant — retryability is a
+ * pure function of `kind` — survives. A reader seeing `kind: 'timeout', retryable: false` could not tell a
+ * deliberate suppression from a bug; `contentCommitted: true` says which and why.
+ */
+function committed(error: LlmError): LlmError {
+  return { ...error, contentCommitted: true };
+}
+
 /** A content chunk commits a stream — anything other than the terminal `stop`/`error` arms. */
 function isContentChunk(chunk: StreamChunk): boolean {
   return chunk.type !== 'stop' && chunk.type !== 'error';
@@ -541,7 +553,10 @@ export class FallbackChain {
           const error = this.#abortAware(chunk.error, entryReq, entry.provider.id);
           this.#emit({ ...record, outcome: 'failed', error });
           if (state.committed) {
-            yield { type: 'error', error }; // surface a mid-stream failure; the node-retry layer (1.S) owns it
+            // Stamped on the way OUT, because this is the moment the fact becomes the node layer's problem
+            // (ADR-0082 §4). The chain already refuses to fail over here; without the stamp that refusal
+            // stopped at the chain and `#shouldRetry` re-dispatched a call that had already produced output.
+            yield { type: 'error', error: committed(error) };
             return undefined;
           }
           return error; // pre-content failure → caller decides failover
@@ -560,7 +575,7 @@ export class FallbackChain {
       );
       this.#emit({ ...record, outcome: 'failed', error });
       if (state.committed) {
-        yield { type: 'error', error };
+        yield { type: 'error', error: committed(error) };
         return undefined;
       }
       return error; // pre-content throw → caller decides failover

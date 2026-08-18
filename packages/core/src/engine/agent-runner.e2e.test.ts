@@ -817,3 +817,105 @@ workflow:
     expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('run_timeout');
   });
 });
+
+/**
+ * [ADR-0082](../../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+ * §4 — rule 7's node-retry half, through the REAL engine.
+ *
+ * **Why the real engine and not a unit stub.** The defect lived in the seam between three layers that each
+ * looked correct alone: the chain refuses to fail over past content, `throwMappedChainError` copies
+ * `error.retryable` onto the turn error, and `#shouldRetry` gates on that boolean. `timeout` and `transport`
+ * are both in `RETRYABLE_KINDS`, so a content-committed transient failure was re-dispatched — a second
+ * answer and a second charge for a call the user had already seen output from. Only a test that spans all
+ * three layers can see it.
+ */
+describe('a content-committed failure is never node-retried (ADR-0082 §4)', () => {
+  const RETRY_WORKFLOW = parseWorkflow(
+    `schema_version: '1.0'
+workflow:
+  id: e2e-agent-retry
+  inputs:
+    - name: text
+      type: string
+  agents:
+    - id: summarizer
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: You summarize.
+  nodes:
+    - id: sum
+      type: agent
+      agent_ref: summarizer
+      prompt_template: 'Summarize: {{inputs.text}}'
+      retry: { max: 3, backoff: linear, backoff_ms: 1 }
+  edges: []
+`,
+  );
+
+  const TIMEOUT: StreamChunk = {
+    type: 'error',
+    error: {
+      kind: 'timeout',
+      retryable: true,
+      provider: 'anthropic',
+      message: 'the provider stopped responding',
+    },
+  };
+
+  /** Run the retrying workflow against a provider that counts its stream calls. */
+  async function runCounting(chunks: StreamChunk[]): Promise<{ calls: number; events: RunEvent[] }> {
+    let calls = 0;
+    const host = createInMemoryHost();
+    const engine = new WorkflowEngine({
+      host,
+      executor: agentExecutor(() => ({
+        id: 'anthropic',
+        supports: CAPS,
+        generate: () => {
+          throw new Error('unused');
+        },
+        stream: () => {
+          calls += 1;
+          return streamOf(chunks);
+        },
+      })),
+    });
+    const handle = engine.start({ workflow: RETRY_WORKFLOW, inputs: { text: 'the report' } });
+    const events: RunEvent[] = [];
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'node:retrying') {
+        // The backoff timer is armed asynchronously AFTER the event, so poll rather than fire blind.
+        let waited = 0;
+        while (host.armedCount() === 0) {
+          waited += 1;
+          if (waited > 1000) throw new Error('backoff timer was never armed after node:retrying');
+          await Promise.resolve();
+        }
+        host.fireTimers();
+      }
+    }
+    return { calls, events };
+  }
+
+  it('a timeout AFTER content produces exactly one provider call, despite retry.max = 3', async () => {
+    const { calls, events } = await runCounting([
+      { type: 'text_delta', text: 'the user already saw this' },
+      TIMEOUT,
+    ]);
+
+    expect(calls).toBe(1);
+    expect(events.filter((e) => e.type === 'node:retrying')).toHaveLength(0);
+    expect(events.some((e) => e.type === 'run:failed')).toBe(true);
+  });
+
+  it('…and a timeout BEFORE content IS retried — the negative control', async () => {
+    // Without this the assertion above is satisfied by an implementation that disabled node retry outright,
+    // which would break every transient-failure recovery the budget exists for.
+    const { calls, events } = await runCounting([TIMEOUT]);
+
+    expect(calls).toBe(3); // the full budget
+    expect(events.filter((e) => e.type === 'node:retrying')).toHaveLength(2);
+  });
+});
+

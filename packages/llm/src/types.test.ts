@@ -2,6 +2,8 @@ import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import { INLINE_MEDIA_CEILING, MEDIA_MESSAGE_CAPS, StopReasonSchema } from '@relavium/shared';
 
+import { RETRYABLE_KINDS } from './llm-error.js';
+
 import {
   CapabilityFlagsSchema,
   LlmErrorKindSchema,
@@ -152,7 +154,14 @@ describe('seam result/usage/error/capability schemas', () => {
         message: 'slow down',
       }).success,
     ).toBe(true);
-    expect(LlmErrorKindSchema.options).toHaveLength(9);
+    // Ten since ADR-0082 added `protocol` — a provider that broke the stream grammar. The count is pinned
+    // deliberately: the kind set is a closed seam taxonomy, and a silent addition would slip past every
+    // exhaustive switch that was written before it.
+    expect(LlmErrorKindSchema.options).toHaveLength(10);
+    expect(LlmErrorKindSchema.options).toContain('protocol');
+    // …and it is NOT retryable (ADR-0082 §9): an implementation that cannot keep the grammar will not keep
+    // it on the second call, so a node re-dispatch burns the budget and names the wrong cause.
+    expect(RETRYABLE_KINDS.has('protocol')).toBe(false);
     expect(
       LlmErrorSchema.safeParse({ kind: 'boom', retryable: false, provider: 'openai', message: 'x' })
         .success,

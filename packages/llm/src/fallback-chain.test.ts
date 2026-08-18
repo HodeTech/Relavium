@@ -139,6 +139,21 @@ function errChunk(provider: ProviderId, kind: LlmErrorKind): StreamChunk {
   return { type: 'error', error: makeLlmError({ provider, kind, message: 'boom' }) };
 }
 
+/**
+ * The same chunk as {@link errChunk}, stamped as having happened past the first content chunk
+ * ([ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §4).
+ *
+ * The chain sets this when it SURFACES a failure rather than failing over, so the node-retry budget above it
+ * can refuse to re-dispatch. A separate helper, not a flag on `errChunk`, so a test that means "committed"
+ * has to say so.
+ */
+function committedErrChunk(provider: ProviderId, kind: LlmErrorKind): StreamChunk {
+  return {
+    type: 'error',
+    error: { ...makeLlmError({ provider, kind, message: 'boom' }), contentCommitted: true },
+  };
+}
+
 const STOP_CHUNK: StreamChunk = { type: 'stop', stopReason: 'stop', usage: USAGE };
 
 const userReq: LlmRequest = {
@@ -1295,9 +1310,13 @@ describe('FallbackChain.stream', () => {
 
     const chunks = await collect(chain.stream(userReq));
 
+    // The surfaced error now carries `contentCommitted` (ADR-0082 §4). It was NOT stamped before, and that
+    // omission was the whole defect: the chain refused to fail over — which this test already proved — while
+    // the node-retry budget ABOVE the chain saw a plain `retryable: true` and re-dispatched, producing a
+    // second answer and a second charge for a call the user had already seen output from.
     expect(chunks).toEqual([
       { type: 'text_delta', text: 'partial output' },
-      errChunk('anthropic', 'overloaded'),
+      committedErrChunk('anthropic', 'overloaded'),
     ]);
     expect(fallback.calls).toHaveLength(0); // committed → no failover
     expect(trace).toHaveLength(1);
@@ -1325,9 +1344,12 @@ describe('FallbackChain.stream', () => {
 
     const chunks = await collect(chain.stream(userReq));
 
+    // Stamped too — `tool_call_start` commits the stream exactly as text does, which is what ADR-0082 §1's
+    // "any chunk other than `stop` or `error`" definition records (it is `isContentChunk`'s existing rule,
+    // written down rather than changed).
     expect(chunks).toEqual([
       { type: 'tool_call_start', id: 'tc1', name: 'read_file' },
-      errChunk('anthropic', 'overloaded'),
+      committedErrChunk('anthropic', 'overloaded'),
     ]);
     expect(fallback.calls).toHaveLength(0); // a non-text content chunk commits → no failover
   });
