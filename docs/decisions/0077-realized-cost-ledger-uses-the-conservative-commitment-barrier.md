@@ -4,6 +4,9 @@
 - **Date**: 2026-08-10
 - **Related**: [ADR-0076](0076-durable-per-attempt-realized-cost-ledger.md) §1 (the mechanism this corrects; its decision, event and properties stand), [ADR-0074](0074-durable-conservative-budget-commitments.md) §2 (the mechanism this adopts), [ADR-0038](0038-agentrunner-llm-call-boundary.md) (the one-chain-per-node-execution boundary the barriers sit on), [ADR-0011](0011-internal-llm-abstraction.md) (the `LLMProvider` seam the rejected alternative would have widened), and [sse-event-schema.md](../reference/contracts/sse-event-schema.md) (the canonical event contract).
 
+
+> **Amended 2026-08-17 by [ADR-0080](0080-durable-effect-journal-and-the-tiered-effect-contract.md).** This ADR's §"Why the tool-dispatch barrier matters beyond this ADR" predicted that the effect journal's `prepared → dispatched → committed | ambiguous` state machine *"has to be written at exactly this point in exactly this path"* — at `agent-turn.ts`'s single `await dispatchToolCalls(...)`, deliberately not inside `ToolRegistry.dispatch`. That is wrong for the journal, and right for this ledger. The two barriers are at **different granularities**: the money barrier is per-TURN and stays exactly where this ADR put it, for exactly its reasons; the effect journal is per-EFFECT, and a turn dispatches a loop of tool calls, so a checkpoint that runs once per turn cannot record which individual effect was prepared or settled. This ADR's stated worry — that per-call placement would have to be re-proven for every dispatch path — is answered by there being one dispatch sink with two producers, not a path per producer.
+
 ## Context
 
 [ADR-0076](0076-durable-per-attempt-realized-cost-ledger.md) decided that a settled provider attempt's realized

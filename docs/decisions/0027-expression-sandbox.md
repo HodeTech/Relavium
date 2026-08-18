@@ -4,6 +4,9 @@
 - **Date**: 2026-06-05
 - **Related**: [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0011-internal-llm-abstraction.md](0011-internal-llm-abstraction.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md), [0023-strict-authored-yaml-validation.md](0023-strict-authored-yaml-validation.md), [0029-tool-policy-hardening.md](0029-tool-policy-hardening.md), [../standards/security-review.md](../standards/security-review.md), [../reference/shared-core/node-types.md](../reference/shared-core/node-types.md), [../reference/shared-core/expression-sandbox-spec.md](../reference/shared-core/expression-sandbox-spec.md) (the canonical contract this ADR governs), [../tech-stack.md](../tech-stack.md)
 
+
+> **Amended 2026-08-17 by [ADR-0080](0080-durable-effect-journal-and-the-tiered-effect-contract.md).** Where this ADR names the `runId + nodeId + retryCount` idempotency key, that key is renamed and re-specified as the five identities in [effect-journal.md](../reference/shared-core/effect-journal.md). The determinism reasoning here is unaffected — only the key's name and composition changed.
+
 ## Context
 
 `condition`, `transform`, and a custom `merge_fn` evaluate author-supplied **JavaScript

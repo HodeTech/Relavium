@@ -234,6 +234,8 @@ Read-only tools, `invoke_agent`, and any dispatch with no injected guard **skip 
 
 ## Determinism, idempotency & replay
 
+> **Amended 2026-08-17 by [ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md).** Everything below describes the OPTIONAL `ActionGuard` seam, and remains accurate for a deployment that has one. It is not the engine's baseline: the baseline is the tiered effect contract in [effect-journal.md](effect-journal.md), where the unqualified "a resumed run never double-posts" holds only for tier 1 and tier 2 — and no shipping tool is either. For tier 3, which is everything today, a resumed run **refuses** rather than re-delivering.
+
 Side effects must survive the derived `Checkpointer` ([ADR-0003](../../decisions/0003-pure-ts-engine-not-langgraph-python.md)) + cross-process `resumeFromCheckpoint` ([ADR-0036](../../decisions/0036-run-loop-substrate-event-bus-and-execution-host.md)) **without re-executing**, exactly as an LLM call does ([ADR-0039](../../decisions/0039-same-provider-reasoning-replay.md)):
 
 - The registry **journals the `ActionReceipt`** (and the verdict) as a side-effect record in `run_events`, keyed by `plan.idempotencyKey`; for a `require-approval`, the verdict's `ActionPlan` is journaled at decide-time so the suspend/resume carries it across the checkpoint. On resume, a present receipt is **re-delivered, not re-committed** — a resumed run never double-posts a payment / re-spawns a process.

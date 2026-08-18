@@ -189,7 +189,7 @@ This is what enables:
 - **Retry-from-node** — a user can re-run from any node without replaying the
   whole workflow.
 - **Idempotency** — re-executing a node uses a stable idempotency key derived from
-  `runId + nodeId + retryCount`, so a retry never double-applies side effects.
+  the tiered effect contract ([effect-journal.md](../reference/shared-core/effect-journal.md)): a durable journal brackets every effectful dispatch, and a resumed node refuses rather than re-running an effect it cannot prove is safe to repeat. Every effect that ships today is tier 3 — at-most-once dispatch attempt, never auto-retried.
 
 In Phase 1 there is **no separate checkpoint table**: the checkpoint is **reconstructed** by a
 `Checkpointer` (`load(runId) → CheckpointState`) by folding the ordered, replayable `run_events` log
@@ -210,7 +210,7 @@ layer uses for durable execution — see [cloud-phase-2.md](cloud-phase-2.md).
 **Reconstruction is total and deterministic** (same events → same state — the basis of idempotent
 resume). A node that emitted `node:started` but no terminal event (it was running when the process
 died) is simply **absent** from `nodeStates`, so the rehydrating engine seeds it `pending` and re-runs
-it — bounded by the `runId + nodeId + retryCount` idempotency key, never by silently skipping it. What is
+it — bounded by the effect journal's resume gate ([effect-journal.md](../reference/shared-core/effect-journal.md)), never by silently skipping it. What is
 **not** in the checkpoint: the eager-once resolved `context` (`ctx.*`) is **re-resolved at run start**,
 not reconstructed — and if a later change makes it part of a transported checkpoint it MUST cross that
 boundary via `structuredClone`, never `JSON.stringify`→`parse` (which would re-materialise a `__proto__`

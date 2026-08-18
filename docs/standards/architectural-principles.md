@@ -190,9 +190,16 @@ node completes, the engine writes a checkpoint capturing run status, per-node st
 completed/pending node IDs, and (for an orchestrator) its message history. This is the
 mechanism — not an add-on — behind three guarantees: **resume after crash** (the host
 reconciles in-flight runs from the last checkpoint on startup), **retry-from-node** (a
-user re-runs from any node without replaying completed upstream work), and **idempotency**
-(re-executing a node uses a stable key derived from `runId + nodeId + retryCount`, so a
-retry never double-applies a side effect).
+user re-runs from any node without replaying completed upstream work), and — for external
+side effects — a **tiered effect contract** rather than a blanket idempotency promise
+([ADR-0080](../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md),
+[effect-journal.md](../reference/shared-core/effect-journal.md)). A durable journal brackets
+every effectful dispatch, and what the engine can promise depends on the target: safe retry
+under an idempotency key (tier 1), exactly-once after reconciling a receipt (tier 2), or —
+for every effect that ships today — **at-most-once dispatch attempt, never auto-retried**
+(tier 3). This paragraph previously claimed a stable key derived from
+`runId + nodeId + retryCount` meant "a retry never double-applies a side effect". No such
+key existed, and it could not have worked: the retry count resets on a crash-resume.
 
 **Applied rule:** treat the checkpoint shape as a contract, not an implementation detail.
 The same checkpoint is what Phase-1 local SQLite persistence and the Phase-2 cloud layer's
