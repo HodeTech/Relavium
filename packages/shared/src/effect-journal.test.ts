@@ -8,6 +8,7 @@ import {
   RETRYABLE_ERROR_CODES,
   effectScope,
   isEffectConflictError,
+  unwiredEffectJournal,
   type EffectCorrelation,
 } from './index.js';
 
@@ -55,6 +56,15 @@ describe('the effect journal contract (ADR-0080)', () => {
       'ambiguous',
       'needs_attention',
     ]);
+  });
+
+  it('the unwired journal REJECTS rather than silently doing nothing', async () => {
+    // A no-op default is the fail-open this contract rejects: it would make a production wiring mistake
+    // indistinguishable from a fixture that never had effects. Both arms must reject, and the message must
+    // name the tool, because that is what turns the failure into a diagnosis.
+    const port = unwiredEffectJournal();
+    await expect(port.prepare(0, 'http_request', 3, 'digest')).rejects.toThrow(/http_request/);
+    await expect(port.settle(0, 'http_request', 'committed')).rejects.toThrow(/journal/);
   });
 
   it('the conflict is typed and narrowable, carrying the identity that collided', () => {

@@ -1,3 +1,4 @@
+import { unwiredEffectJournal } from '@relavium/core';
 import type { McpCapability, ToolDispatchContext, ToolHost } from '@relavium/core';
 import { describe, expect, it } from 'vitest';
 
@@ -14,6 +15,10 @@ function ctx(signal?: ToolDispatchContext['signal']): ToolDispatchContext {
     toolPolicy: {},
     fsScope: 'sandboxed',
     gateApproved: false,
+    // The LOUD unwired journal (ADR-0080): an MCP tool is permanently tier 3, so a fixture that did
+    // dispatch one must journal it — a silent no-op here would hide exactly that.
+    effects: unwiredEffectJournal(),
+    effectSlot: 0,
     ...(signal === undefined ? {} : { signal }),
   };
 }

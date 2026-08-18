@@ -174,6 +174,17 @@ export type {
 
 // Typed run-loop API-boundary errors (1.N) — narrow on `code`, never on `message`.
 export { EngineStateError, isTransientEngineStateError } from './engine/errors.js';
+
+// ADR-0080's dispatch-side journal seam, re-exported so a `ToolDispatchContext` consumer can satisfy the
+// required port from this package alone. The loud unwired variant is what a fixture with no effects passes.
+export { unwiredEffectJournal } from '@relavium/shared';
+export type {
+  EffectDispatchPort,
+  EffectSlot,
+  EffectTier,
+  EffectState,
+  EffectCorrelation,
+} from '@relavium/shared';
 export type { EngineStateErrorCode } from './engine/errors.js';
 
 // Typed run-loop substrate INVARIANT breaches (the bus/stream "can never happen" asserts) — surfaced loud
@@ -351,6 +362,9 @@ export type {
   SpawnOpts,
   ToolNodeConfig,
   ToolDispatchContext,
+  // ADR-0080: `ToolDispatchContext` REQUIRES an effect-journal port, so a consumer of that type must be
+  // able to satisfy it without taking a dependency on `@relavium/shared` — `packages/mcp` is exactly such a
+  // consumer. Re-exported here because the requirement originates at this seam.
   MediaReadAccess,
   MediaHandleInfo,
   ToolDispatchOutcome,

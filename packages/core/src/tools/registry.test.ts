@@ -23,6 +23,7 @@ import type {
   ToolDispatchContext,
   ToolHost,
 } from './types.js';
+import { unwiredEffectJournal } from '@relavium/shared';
 
 /* --- helpers --- */
 
@@ -85,6 +86,10 @@ function ctx(overrides?: Partial<ToolDispatchContext>): ToolDispatchContext {
     toolPolicy: {} satisfies ToolPolicy,
     fsScope: 'sandboxed',
     gateApproved: false,
+    // No effects are dispatched here, so the journal is deliberately the LOUD unwired one: a silent
+    // no-op would make a real wiring mistake look exactly like a fixture that never had effects.
+    effects: unwiredEffectJournal(),
+    effectSlot: 0,
     ...overrides,
   };
 }

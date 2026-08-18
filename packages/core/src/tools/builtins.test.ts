@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { BUILTIN_TOOLS, BUILTIN_TOOL_IDS } from './builtins.js';
 import { ToolArgsInvalidError, ToolPolicyError, ToolUnavailableError } from './errors.js';
 import type { MediaReadAccess, ToolDef, ToolDispatchContext, ToolHost } from './types.js';
+import { unwiredEffectJournal } from '@relavium/shared';
 
 function tool(id: string): ToolDef {
   const found = BUILTIN_TOOLS.find((candidate) => candidate.id === id);
@@ -48,6 +49,10 @@ const ctx: ToolDispatchContext = {
   toolPolicy: {},
   fsScope: 'sandboxed',
   gateApproved: true,
+  // No effects are dispatched here, so the journal is deliberately the LOUD unwired one: a silent
+  // no-op would make a real wiring mistake look exactly like a fixture that never had effects.
+  effects: unwiredEffectJournal(),
+  effectSlot: 0,
 };
 
 // `requireX` throws synchronously inside the dispatch arrow (the registry catches it in its

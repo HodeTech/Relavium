@@ -34,6 +34,7 @@ import {
   type ChainCapabilities,
 } from './agent-turn.js';
 import type { NodeStreamEvent } from './node-executor.js';
+import { unwiredEffectJournal } from '@relavium/shared';
 
 const CAPS: CapabilityFlags = {
   tools: true,
@@ -136,6 +137,10 @@ function baseParams(
     toolPolicy: {},
     fsScope: 'sandboxed',
     gateApproved: false,
+    // No effects are dispatched here, so the journal is deliberately the LOUD unwired one: a silent
+    // no-op would make a real wiring mistake look exactly like a fixture that never had effects.
+    effects: unwiredEffectJournal(),
+    effectSlot: 0,
   };
   const params: AgentTurnParams = {
     messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
@@ -467,6 +472,36 @@ describe('runAgentTurn — tool loop', () => {
     });
 
     await expect(runAgentTurn(params)).rejects.toBeInstanceOf(BudgetPauseError);
+  });
+
+  it('gives each tool call of one response its OWN effect slot', async () => {
+    // One model response can contain several tool calls, and the journal's UNIQUE identity is
+    // (scope, slot, toolId). Without an ordinal the second legitimate effect of a turn collides with the
+    // first and is refused as a duplicate — so the loop is indexed and the index IS the slot (ADR-0080).
+    const provider = scriptedProvider('anthropic', [
+      [
+        { type: 'tool_call_start', id: 'a', name: 'echo' },
+        { type: 'tool_call_end', id: 'a' },
+        { type: 'tool_call_start', id: 'b', name: 'echo' },
+        { type: 'tool_call_end', id: 'b' },
+        STOP('tool_use'),
+      ],
+      [{ type: 'text_delta', text: 'done' }, STOP()],
+    ]);
+    const slots: number[] = [];
+    const registry = stubRegistry();
+    const params = baseParams(provider, {
+      registry: {
+        ...registry,
+        dispatch: (call, ctx) => {
+          slots.push(ctx.effectSlot);
+          return registry.dispatch(call, ctx);
+        },
+      },
+    });
+
+    await expect(runAgentTurn(params)).resolves.toMatchObject({ text: 'done' });
+    expect(slots).toEqual([0, 1]); // distinct, and in the provider's return order
   });
 
   it('performs a tool round-trip then completes', async () => {

@@ -33,7 +33,9 @@ import type {
   SessionEvent,
   SessionStopReason,
   ToolPolicy,
+  EffectDispatchPort,
 } from '@relavium/shared';
+import { unwiredEffectJournal } from '@relavium/shared';
 import {
   ToolDefSchema,
   type FallbackPlanEntry,
@@ -231,6 +233,15 @@ export interface SessionDeps {
   readonly newAbortController: () => AbortControllerLike;
   /** The emission port — 1.V emits session/in-turn bodies here; 1.W wires it onto the `RunEventBus`. */
   readonly emit: SessionEventSink;
+  /**
+   * The durable effect journal for this session's dispatches (ADR-0080), with the session correlation closed
+   * over. A host that leaves it unset gets `unwiredEffectJournal()`, which THROWS the moment an effect would
+   * go unrecorded — absence is fail-closed, not fail-open.
+   *
+   * This is where CR-12 EXTENDS `TurnMoneyPort`'s precedent rather than reusing it: the money port is
+   * deliberately run-path-only, while a session's external effects need journaling exactly as a run's do.
+   */
+  readonly effects?: EffectDispatchPort;
   /** The workflow-wide tool policy threaded into dispatch (default `{}` ⇒ deny-all for gated tools). */
   readonly toolPolicy?: ToolPolicy;
   /** Within-turn tool-loop bounds passed to the turn core (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
@@ -836,6 +847,11 @@ export class AgentSession {
     turnPolicy: SessionTurnPolicy | undefined,
   ): Omit<ToolDispatchContext, 'signal'> {
     return {
+      // The SESSION correlation — `{ kind: 'session', sessionId, turn }`, which this path can supply without
+      // fabricating anything. ADR-0024 gives a session no `runId`, and the discriminated union is exactly why
+      // it never has to invent one. The turn count is the session's own durable counter, restored on resume.
+      effects: this.#deps.effects ?? unwiredEffectJournal(),
+      effectSlot: 0, // per-CALL; the dispatch sites override it with the tool call's ordinal
       nodeId: this.#agentRef,
       grantedToolIds,
       config: {}, // an agent-invoked tool carries no per-tool config block in v1.0
@@ -903,6 +919,11 @@ export class AgentSession {
       const grantedToolIds = new Set<ToolId>([...(this.#agent.tools ?? []), 'run_command']);
       const outcome = await this.#deps.registry.dispatch(toolCall, {
         ...this.#buildDispatchContext(grantedToolIds, this.#turnPolicy),
+        // The `!`-command sequence IS the effect slot here (ADR-0080). Slot 0 would be wrong: two `!`
+        // commands within one turn share a correlation, so they would collide on the journal's UNIQUE
+        // identity and the second would be refused as a duplicate of the first. The counter already exists
+        // for the synthetic tool-call id and is exactly the per-command ordinal the slot wants.
+        effectSlot: this.#userCommandSeq,
         signal: abort.signal,
       });
       const result = outcome.output;

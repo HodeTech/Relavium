@@ -28,6 +28,7 @@ import {
   type MediaSurface,
   type OutputModality,
   type ReasoningEffort,
+  unwiredEffectJournal,
 } from '@relavium/shared';
 import {
   LlmConfigError,
@@ -367,6 +368,11 @@ async function executeAgent(
   const responseFormat = lowerOutputSchema(outputSchema);
 
   const dispatchContext: Omit<ToolDispatchContext, 'signal'> = {
+    // The journal, and the run-path correlation only the run loop can supply — the same reasoning that puts
+    // the money ledger here (ADR-0076): `ctx.attemptNumber` is the NODE-RETRY attempt (ADR-0040), which the
+    // turn has never carried and which the correlation needs for its audit arm.
+    effects: ctx.effects ?? unwiredEffectJournal(),
+    effectSlot: 0, // per-CALL; `dispatchToolCalls` overrides it with the tool call's ordinal
     nodeId: node.id,
     grantedToolIds,
     config: {}, // an agent-invoked tool carries no per-tool config block in v1.0

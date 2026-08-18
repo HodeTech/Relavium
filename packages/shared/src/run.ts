@@ -459,3 +459,56 @@ export function effectScope(correlation: EffectCorrelation): string {
     ? `run:${correlation.runId}:${correlation.nodeId}`
     : `session:${correlation.sessionId}:${String(correlation.turn)}`;
 }
+
+/**
+ * The journal as a DISPATCH sees it (ADR-0080 §7) — the correlation is already closed over, so a dispatch
+ * site cannot get it wrong, and the engine stamps it because only the engine knows it.
+ *
+ * This mirrors `TurnMoneyPort` (ADR-0076) and deliberately EXTENDS it: the money port is run-path only, while
+ * this one is supplied by both entry points, because a session's effects need journaling just as a run's do.
+ *
+ * **Required, not optional**, on ADR-0078 §4's reasoning: an optional port would mean a host that forgets it
+ * silently has no guarantee — a fail-open default inside a fail-closed item, invisible at every call site.
+ */
+export interface EffectDispatchPort {
+  /**
+   * Durably record the intent to dispatch, BEFORE the effect leaves the process.
+   *
+   * Rejects with {@link EffectConflictError} when another attempt already holds this slot — which is how two
+   * processes preparing the same effect resolve to one dispatch rather than two.
+   */
+  prepare: (
+    slot: EffectSlot,
+    toolId: string,
+    tier: EffectTier,
+    argsDigest: string,
+    targetIdempotencyKey?: string,
+  ) => Promise<void>;
+  /** Durably record the outcome, immediately after the call returns or fails. */
+  settle: (
+    slot: EffectSlot,
+    toolId: string,
+    state: Extract<EffectState, 'committed' | 'ambiguous'>,
+    result?: unknown,
+  ) => Promise<void>;
+}
+
+/**
+ * A port that fails loudly if anything tries to journal through it — for fixtures that dispatch no effects.
+ *
+ * Deliberately NOT a silent no-op. A no-op default is the fail-open this contract rejects: it would let a
+ * production wiring mistake look exactly like a test that never had effects. This turns "nobody wired the
+ * journal" into a loud failure at the moment an effect would have gone unrecorded.
+ */
+export function unwiredEffectJournal(): EffectDispatchPort {
+  // REJECTS rather than throwing synchronously. The port is Promise-typed, and a synchronous throw out of a
+  // Promise-typed method breaks any caller that uses `.catch()` rather than `await`-in-`try` — the same
+  // defect a review found in an earlier lease port.
+  const fail = (slot: EffectSlot, toolId: string): Promise<never> =>
+    Promise.reject(
+      new Error(
+        `no effect journal is wired, but ${toolId} (slot ${String(slot)}) is an effect that must be journaled (ADR-0080)`,
+      ),
+    );
+  return { prepare: fail, settle: fail };
+}

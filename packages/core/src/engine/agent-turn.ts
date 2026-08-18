@@ -578,11 +578,15 @@ async function dispatchToolCalls(
 ): Promise<{ messages: LlmMessage[]; correctable: boolean }> {
   const results: LlmMessage[] = [];
   let correctable = false;
-  for (const call of toolCalls) {
+  // INDEXED, and the index is the effect slot (ADR-0080). One model response can contain several tool calls,
+  // so the correlation alone cannot tell two effects of one turn apart — the second legitimate effect would
+  // collide with the first on the journal's UNIQUE identity. The provider's return order is the ordinal.
+  for (const [slot, call] of toolCalls.entries()) {
     throwIfAborted(params.signal);
     try {
       const outcome = await params.registry.dispatch(call, {
         ...params.dispatchContext,
+        effectSlot: slot,
         signal: params.signal,
       });
       // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload

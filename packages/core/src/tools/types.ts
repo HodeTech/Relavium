@@ -12,6 +12,8 @@ import type {
   AbortSignalLike,
   ByteRange,
   ContentPart,
+  EffectDispatchPort,
+  EffectSlot,
   FsScopeTier,
   MediaSource,
   Scope,
@@ -381,6 +383,23 @@ export interface ToolDispatchContext {
   readonly mediaRead?: MediaReadAccess;
   /** The model-facing result-bounding ceilings. */
   readonly limits?: ToolResultLimits;
+  /**
+   * The durable effect journal for this dispatch (ADR-0080 §7), with the correlation already closed over.
+   *
+   * Required rather than optional: an optional port would mean a caller that forgets it silently has no
+   * guarantee, which is a fail-open default inside a fail-closed item. A fixture that dispatches no effects
+   * passes `unwiredEffectJournal()`, which THROWS if anything tries to journal through it — so a wiring
+   * mistake is loud at the moment an effect would have gone unrecorded, rather than indistinguishable from a
+   * test that never had one.
+   */
+  readonly effects: EffectDispatchPort;
+  /**
+   * Which effect this dispatch is within its correlation — the ordinal over one model response's tool calls.
+   *
+   * Per-CALL, unlike the port above, which is per-turn. It is what lets two effects in one turn be told
+   * apart; keying on the correlation alone would make the second legitimate effect collide with the first.
+   */
+  readonly effectSlot: EffectSlot;
   readonly signal?: AbortSignalLike;
 }
 
