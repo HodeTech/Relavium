@@ -36,6 +36,7 @@ import {
   captureIo,
 } from '../test-support.js';
 import { runCommand, type RunCommandDeps } from './run.js';
+import { createInMemoryEffectJournal } from '@relavium/core';
 
 // A minimal real workflow: input → transform → output. Runs end-to-end through the standard node
 // executor + the expression sandbox with NO provider (no agent node), so the run reaches run:completed.
@@ -227,7 +228,18 @@ function deps(
   global: GlobalOptions,
   over: Partial<RunCommandDeps> = {},
 ): RunCommandDeps {
-  return { io, global, buildEngine: () => buildEngine({ host: createInMemoryHost() }), ...over };
+  return {
+    io,
+    global,
+    buildEngine: () =>
+      buildEngine({
+        host: createInMemoryHost(),
+        // MCP tools are tier 3, so a fixture that dispatches one must journal it (ADR-0080); the unwired
+        // port correctly refuses, which would test the refusal rather than the routing under test.
+        effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+      }),
+    ...over,
+  };
 }
 
 function writeWorkflow(name: string, yaml: string): string {
@@ -338,7 +350,12 @@ describe('runCommand', () => {
           // Capture what run.ts assembled, then run a real in-memory engine so the HAPPY workflow completes.
           buildEngine: (opts) => {
             captured = opts;
-            return buildEngine({ host: createInMemoryHost() });
+            return buildEngine({
+              host: createInMemoryHost(),
+              // MCP tools are tier 3, so a fixture that dispatches one must journal it (ADR-0080); the unwired
+              // port correctly refuses, which would test the refusal rather than the routing under test.
+              effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+            });
           },
         }),
       );
@@ -387,7 +404,12 @@ describe('runCommand', () => {
           openRunStore: historyOpenRunStore(client.db),
           buildEngine: (opts) => {
             captured = opts;
-            return buildEngine({ host: createInMemoryHost() });
+            return buildEngine({
+              host: createInMemoryHost(),
+              // MCP tools are tier 3, so a fixture that dispatches one must journal it (ADR-0080); the unwired
+              // port correctly refuses, which would test the refusal rather than the routing under test.
+              effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+            });
           },
         }),
       );
@@ -790,7 +812,12 @@ describe('runCommand', () => {
         deps(io, global, {
           buildEngine: () => {
             engineBuilt = true;
-            return buildEngine({ host: createInMemoryHost() });
+            return buildEngine({
+              host: createInMemoryHost(),
+              // MCP tools are tier 3, so a fixture that dispatches one must journal it (ADR-0080); the unwired
+              // port correctly refuses, which would test the refusal rather than the routing under test.
+              effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+            });
           },
         }),
       );
@@ -998,7 +1025,12 @@ describe('runCommand', () => {
           providers: createProviderResolver(io.env),
           buildEngine: () => {
             engineBuilt = true;
-            return buildEngine({ host: createInMemoryHost() });
+            return buildEngine({
+              host: createInMemoryHost(),
+              // MCP tools are tier 3, so a fixture that dispatches one must journal it (ADR-0080); the unwired
+              // port correctly refuses, which would test the refusal rather than the routing under test.
+              effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+            });
           },
         },
       );
@@ -1085,7 +1117,14 @@ describe('runCommand', () => {
         // The agent turn calls the namespaced MCP tool, then replies — driven by the scripted provider.
         providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('done')]),
         // Forward the engine options (incl. the composed `mcp`) but pin the deterministic in-memory host.
-        buildEngine: (opts) => buildEngine({ ...opts, host: createInMemoryHost() }),
+        buildEngine: (opts) =>
+          buildEngine({
+            ...opts,
+            host: createInMemoryHost(),
+            // MCP tools are tier 3, so this fixture genuinely journals (ADR-0080). Spreading `opts` first
+            // would carry the REAL journal built over a `history.db` this in-memory host does not share.
+            effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+          }),
         // The REAL manager over a FAKE connection — no child spawns, but the real namespacing + routing run.
         startMcpClient: () =>
           realStartMcpClient([
@@ -1123,7 +1162,14 @@ describe('runCommand', () => {
         io,
         global: globalOptions(),
         providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('recovered')]),
-        buildEngine: (opts) => buildEngine({ ...opts, host: createInMemoryHost() }),
+        buildEngine: (opts) =>
+          buildEngine({
+            ...opts,
+            host: createInMemoryHost(),
+            // MCP tools are tier 3, so this fixture genuinely journals (ADR-0080). Spreading `opts` first
+            // would carry the REAL journal built over a `history.db` this in-memory host does not share.
+            effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+          }),
         startMcpClient: () =>
           realStartMcpClient([
             { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
@@ -1148,7 +1194,12 @@ describe('runCommand', () => {
           providers: scriptedResolver([textTurn('unused')]),
           buildEngine: () => {
             engineBuilt = true;
-            return buildEngine({ host: createInMemoryHost() });
+            return buildEngine({
+              host: createInMemoryHost(),
+              // MCP tools are tier 3, so a fixture that dispatches one must journal it (ADR-0080); the unwired
+              // port correctly refuses, which would test the refusal rather than the routing under test.
+              effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+            });
           },
           // The connect fails — `connectWorkflowMcp` runs BEFORE the engine is built, so this fails loud first.
           startMcpClient: () => Promise.reject(new McpError('spawn failed for "fs"')),

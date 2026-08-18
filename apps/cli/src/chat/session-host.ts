@@ -48,6 +48,7 @@ import {
 import { resolveChatAgent } from './agent-source.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { hostSleep } from '../process/sleep.js';
+import { unwiredEffectJournal, type EffectDispatchPort } from '@relavium/core';
 
 /**
  * Assemble a ready-to-run `relavium chat` session over `@relavium/core`'s {@link AgentSession} (2.M — the
@@ -201,6 +202,14 @@ export interface BuiltChatSession {
    * so `preEgress`'s gate cannot take it as an argument. Same shape as `attachConservativeWriter`, and the
    * persister self-attaches through it exactly as it does for the commitment writer.
    */
+  /**
+   * Attach the durable effect journal (ADR-0080), late-bound because the journal is owned by the persister,
+   * which is built AFTER the session — the same constraint `attachConservativeWriter` has for money.
+   *
+   * An effect dispatched before attachment is REFUSED loudly rather than going unrecorded, which is the
+   * fail-closed direction: a silently unjournaled effect is exactly what CR-12 exists to prevent.
+   */
+  readonly attachEffectJournal: (port: EffectDispatchPort) => void;
   readonly attachDurabilityProbe: (probe: () => Error | undefined) => void;
   /**
    * Tools dropped at MCP discovery (allowlist / unsupported schema / collision / unsafe id) — a non-fatal
@@ -255,6 +264,14 @@ function buildSessionRuntime(
    * `attachConservativeWriter` is late-bound. Until it is attached the probe reports healthy, which is
    * correct: nothing has been persisted yet either.
    */
+  /**
+   * Attach the durable effect journal (ADR-0080), late-bound because the journal is owned by the persister,
+   * which is built AFTER the session — the same constraint `attachConservativeWriter` has for money.
+   *
+   * An effect dispatched before attachment is REFUSED loudly rather than going unrecorded, which is the
+   * fail-closed direction: a silently unjournaled effect is exactly what CR-12 exists to prevent.
+   */
+  attachEffectJournal: (port: EffectDispatchPort) => void;
   attachDurabilityProbe: (probe: () => Error | undefined) => void;
 } {
   let durabilityProbe: () => Error | undefined = () => undefined;
@@ -326,9 +343,29 @@ function buildSessionRuntime(
   // event (the in-REPL `/export`'s `session:exported`, 2.Q) can ride the same monotonic per-session counter.
   const emit = createSessionEventSink(bus, sessionId);
 
+  // Late-bound by `attachEffectJournal`: the journal is owned by the persister, which is built AFTER the
+  // session — the same constraint the commitment writer has.
+  let effectJournal: EffectDispatchPort | undefined;
+
   const deps: SessionDeps = {
     resolveProvider: providers.resolveProvider,
     keyFor: providers.keyFor,
+    // The durable effect journal (ADR-0080), FORWARDED rather than captured: it is attached later by the
+    // persister, which owns `history.db`, so resolving at call time is what lets the session be built first.
+    // Before attachment the forward hits `unwiredEffectJournal()` and REFUSES — the fail-closed direction,
+    // and the same posture the commitment writer takes for money.
+    effects: {
+      prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey) =>
+        (effectJournal ?? unwiredEffectJournal()).prepare(
+          slot,
+          toolId,
+          tier,
+          redactedArgs,
+          targetIdempotencyKey,
+        ),
+      settle: (slot, toolId, state, result) =>
+        (effectJournal ?? unwiredEffectJournal()).settle(slot, toolId, state, result),
+    },
     // ADR-0071 §6: the host projects WHICH TIERS the model accepts, not merely whether it reasons. `gpt-5.4-pro`
     // reasons and rejects `low`; the boolean this replaced said `true` and let that straight through to a 400.
     // The seam's `effortTiersFor` IS the projection — passed by reference, not re-derived, so this host cannot
@@ -418,6 +455,9 @@ function buildSessionRuntime(
     attachDurabilityProbe: (probe) => {
       durabilityProbe = probe;
     },
+    attachEffectJournal: (port: EffectDispatchPort) => {
+      effectJournal = port;
+    },
   };
 }
 
@@ -465,12 +505,8 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       });
 
   try {
-    const { bus, deps, emit, host, governor, attachDurabilityProbe } = buildSessionRuntime(
-      opts,
-      sessionId,
-      mcp,
-      context,
-    );
+    const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =
+      buildSessionRuntime(opts, sessionId, mcp, context);
     // The session runs against the EFFECTIVE agent: its grant unioned with the discovered MCP tool ids (2.R)
     // and then narrowed by the 2.5.A advertise-filter to the tools whose ToolHost arm is actually wired (an
     // unwired tool is never offered). The ORIGINAL `agent` is what we return + persist (see {@link BuiltChatSession.agent}).
@@ -493,6 +529,7 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
       mcpSkipped: mcp?.skipped ?? [],
       ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
       attachDurabilityProbe,
+      attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),
     };
   } catch (err) {
@@ -657,12 +694,8 @@ export async function buildResumedChatSession(
   });
 
   try {
-    const { bus, deps, emit, host, governor, attachDurabilityProbe } = buildSessionRuntime(
-      opts,
-      record.id,
-      mcp,
-      context,
-    );
+    const { bus, deps, emit, host, governor, attachDurabilityProbe, attachEffectJournal } =
+      buildSessionRuntime(opts, record.id, mcp, context);
     const session = AgentSession.resume(
       {
         sessionId: record.id,
@@ -693,6 +726,7 @@ export async function buildResumedChatSession(
       mcpSkipped: mcp?.skipped ?? [],
       ...(mcp === undefined ? {} : { closeMcp: () => mcp.close() }),
       attachDurabilityProbe,
+      attachEffectJournal,
       ...(governor === undefined ? {} : { governor }),
     };
   } catch (err) {

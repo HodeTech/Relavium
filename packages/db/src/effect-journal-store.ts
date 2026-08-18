@@ -13,6 +13,8 @@
  * so, like `AppendConflictError` and `LeaseFencedError`, it must never be swept into the busy-retry set.
  */
 
+import { createHash } from 'node:crypto';
+
 import { and, asc, eq } from 'drizzle-orm';
 
 import {
@@ -22,6 +24,7 @@ import {
   type EffectCorrelation,
   type EffectIdentity,
   type EffectRecord,
+  type EffectDispatchPort,
   type EffectState,
   type EffectTier,
 } from '@relavium/shared';
@@ -148,4 +151,79 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
         );
     },
   };
+}
+
+/**
+ * Adapt the synchronous store to the engine's dispatch-side port, with the correlation closed over
+ * (ADR-0080 §7) — the shape a host wires, mirroring `createRunLeasePort`.
+ *
+ * **The hashing lives here, and that placement is forced.** `packages/core` is platform-free and cannot
+ * compute SHA-256, but only the engine knows which argument keys are secret-tainted. So the engine redacts
+ * and this hashes: the projection it receives has already had every secret removed, and it is reduced to a
+ * digest before it touches the database.
+ */
+export function createEffectJournalPort(
+  store: EffectJournalStore,
+  correlation: EffectCorrelation,
+  /**
+   * The audit occurrence. **A known gap, recorded rather than hidden**: the provider failover attempt and
+   * the provider's `toolCallId` are not threaded to the dispatch today, so what is stored is what is
+   * reachable at wiring time. Nothing load-bearing depends on it — the dedup key is the identity and the
+   * resume gate reads the scope; this field is the audit trail, and it is currently coarser than
+   * `EffectAttemptId` describes.
+   */
+  attempt: EffectAttemptId,
+): EffectDispatchPort {
+  const identityFor = (slot: number, toolId: string): EffectIdentity => ({
+    scope: effectScope(correlation),
+    slot,
+    toolId,
+  });
+  return {
+    prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey) => {
+      try {
+        store.prepare(
+          identityFor(slot, toolId),
+          correlation,
+          attempt,
+          tier,
+          digestOf(redactedArgs),
+          targetIdempotencyKey,
+        );
+        return Promise.resolve();
+      } catch (error) {
+        // A REJECTION, never a synchronous throw: the port is Promise-typed, and a synchronous throw out of
+        // one breaks any caller using `.catch()` rather than `await`-in-`try`.
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    },
+    settle: (slot, toolId, state, result) => {
+      try {
+        store.settle(identityFor(slot, toolId), state, result);
+        return Promise.resolve();
+      } catch (error) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    },
+  };
+}
+
+/**
+ * SHA-256 over a canonical JSON serialization — sorted keys, no insignificant whitespace — so the same
+ * logical arguments always produce the same fingerprint regardless of key order.
+ *
+ * A vetted implementation (`node:crypto`), never a hand-rolled one: CLAUDE.md rule 3.
+ */
+function digestOf(redactedArgs: unknown): string {
+  return createHash('sha256').update(canonicalJson(redactedArgs)).digest('hex');
+}
+
+/** Deterministic JSON: object keys sorted at every depth, so `{a,b}` and `{b,a}` hash identically. */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
 }

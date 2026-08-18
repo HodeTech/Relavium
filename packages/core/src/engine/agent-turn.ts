@@ -575,6 +575,8 @@ async function dispatchToolCalls(
   params: AgentTurnParams,
   getModel: () => string,
   attemptNumber: number,
+  /** The running effect-slot ordinal for the TURN — see `dispatchToolUseTurn`'s `slotBase`. */
+  slotBase: number,
 ): Promise<{ messages: LlmMessage[]; correctable: boolean }> {
   const results: LlmMessage[] = [];
   let correctable = false;
@@ -586,7 +588,7 @@ async function dispatchToolCalls(
     try {
       const outcome = await params.registry.dispatch(call, {
         ...params.dispatchContext,
-        effectSlot: slot,
+        effectSlot: slotBase + slot,
         signal: params.signal,
       });
       // Emit AFTER dispatch: the registry's `events.call.toolInput` is the SANITIZED payload
@@ -664,7 +666,15 @@ async function dispatchToolUseTurn(
   activeModel: () => string,
   nonSkippedAttempts: number,
   corrections: number,
-): Promise<number> {
+  /**
+   * The running effect-slot ordinal for this TURN (ADR-0080), not for this model response.
+   *
+   * It cannot reset per response, and a test caught why: an `isError` tool result makes the model retry the
+   * SAME tool in the next round, and a per-response index would give that retry slot 0 again — colliding
+   * with its own earlier attempt on the journal's UNIQUE identity and refusing a legitimate second call.
+   */
+  slotBase: number,
+): Promise<{ corrections: number; slotBase: number }> {
   // Append the assistant turn (incl. reasoning — carried for the same-provider replay, ADR-0039).
   messages.push({ role: 'assistant', content: turnContent });
   const toolCalls = turnContent.filter((p): p is ToolCallPart => p.type === 'tool_call');
@@ -685,7 +695,13 @@ async function dispatchToolUseTurn(
   // alone would not be a barrier, since `#emitDurable` absorbs a store fault and resolves.
   await params.money?.join();
   // A reached `tool_use` stop always followed a successful (non-skipped) attempt, so `nonSkippedAttempts >= 1`.
-  const dispatched = await dispatchToolCalls(toolCalls, params, activeModel, nonSkippedAttempts);
+  const dispatched = await dispatchToolCalls(
+    toolCalls,
+    params,
+    activeModel,
+    nonSkippedAttempts,
+    slotBase,
+  );
   let next = corrections;
   if (dispatched.correctable) {
     next += 1;
@@ -698,7 +714,8 @@ async function dispatchToolUseTurn(
     }
   }
   messages.push(...dispatched.messages);
-  return next;
+  // The base advances by THIS response's call count, so the next round's slots continue rather than restart.
+  return { corrections: next, slotBase: slotBase + toolCalls.length };
 }
 
 /**
@@ -1011,6 +1028,8 @@ async function driveAgentTurn(
     }
 
     let corrections = 0;
+    // Runs across the WHOLE turn, not per model response — see `dispatchToolUseTurn`'s `slotBase`.
+    let slotBase = 0;
 
     for (let toolTurn = 0; ; toolTurn += 1) {
       throwIfAborted(params.signal);
@@ -1064,14 +1083,15 @@ async function driveAgentTurn(
       // A tool-use turn: append the assistant turn + dispatch its calls (extracted to keep this loop within
       // the cognitive-complexity budget). Returns the updated correction count; throws on a protocol anomaly
       // or an exhausted correction budget.
-      corrections = await dispatchToolUseTurn(
+      ({ corrections, slotBase } = await dispatchToolUseTurn(
         turn.content,
         messages,
         params,
         () => activeModel,
         nonSkippedAttempts,
         corrections,
-      );
+        slotBase,
+      ));
     }
   } finally {
     // An iterator consumer/fold/event sink can throw before FallbackChain emits its record. The provider may

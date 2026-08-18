@@ -40,6 +40,8 @@ import {
   type ToolId,
   type ToolResultPart,
 } from './types.js';
+import { redactSecretArgs } from '@relavium/shared';
+import { journaledTier } from './effect-predicate.js';
 
 /** Build the engine-side tool registry. Performs no I/O and reads no ambient state (engine purity). */
 export function createToolRegistry(options: CreateToolRegistryOptions): {
@@ -61,6 +63,26 @@ export function createToolRegistry(options: CreateToolRegistryOptions): {
     list: () => [...tools.keys()].sort((a, b) => a.localeCompare(b)),
     dispatch: (toolCall, ctx) => dispatch(tools, host, toolCall, ctx),
   };
+}
+
+/**
+ * Settle a journal row without letting the settle's own failure replace the error that caused it.
+ *
+ * A settle that cannot be written leaves the row `prepared`, which a resumed run reads as unresolved and
+ * refuses — the same conservative answer, reached by a different route. Swallowing here is therefore not a
+ * silent catch: the fail-closed outcome is preserved by the row's state, and rethrowing would discard the
+ * dispatch error that actually explains what happened.
+ */
+async function settleQuietly(
+  ctx: ToolDispatchContext,
+  toolId: ToolId,
+  state: 'committed' | 'ambiguous',
+): Promise<void> {
+  try {
+    await ctx.effects.settle(ctx.effectSlot, toolId, state);
+  } catch {
+    // Left `prepared`; resume treats it as unresolved, which is the honest reading.
+  }
 }
 
 async function dispatch(
@@ -111,6 +133,15 @@ async function dispatch(
   const target = def.policyTarget?.(args) ?? {};
   enforcePolicy(def, target, ctx);
 
+  // Whether THIS call must be journaled, decided once from the validated args (ADR-0080 §3). `undefined` ⇒
+  // it mutates nothing external, or its duplicates are benign, and no row is written for it.
+  const tier = journaledTier(def, args);
+  // Set once the effect has demonstrably left this process. It is what makes every failure BELOW the
+  // dispatch non-retryable: re-running a node whose effect may already have landed is the duplicate this
+  // whole mechanism exists to prevent, and a post-effect mapping or bounding error is no less dangerous
+  // than a dispatch error (ADR-0080 §7 step 5).
+  let effectDispatched = false;
+
   // 4b-7. The per-tool approval gate + the single side effect + output_mapping (FULL result) + model-facing
   // bounding — all under one classification ladder so a spill-time (or prompt-time) abort surfaces as
   // `cancelled` (ADR-0036 precedence) and any other tail failure is a classified tool error, never a raw
@@ -125,7 +156,37 @@ async function dispatch(
     //     dispatch REQUIRES a confirmAction decision before the side effect; the workflow author-trust path
     //     (no `ctx.approval`) skips it. A denial is a fatal `tool_denied`; an abort while prompting is cancelled.
     await confirmDispatch(def, target, ctx);
-    const output = await def.dispatch(args, host, ctx);
+    // 4c. **PREPARE — durable, and BEFORE the effect leaves the process** (ADR-0080 §7 step 2). Everything
+    //     above this line is a refusal that journals nothing; everything below it may have reached a target.
+    //     A `prepare` that cannot be written refuses the dispatch, which is the fail-closed direction: no
+    //     journal row means no way to tell a resumed run whether the effect happened.
+    if (tier !== undefined) {
+      await ctx.effects.prepare(
+        ctx.effectSlot,
+        def.id,
+        tier,
+        // Redacted HERE because only the engine knows which keys are secret-tainted; hashed in the port
+        // because only the host can (core is platform-free). A secret never reaches the digest.
+        redactSecretArgs(args, ctx.secretArgKeys),
+      );
+    }
+    let output: unknown;
+    try {
+      output = await def.dispatch(args, host, ctx);
+    } catch (cause) {
+      // The call left this process and we do not know what the target did — that is the definition of
+      // `ambiguous`. Settling before rethrowing is what turns "we crashed mid-effect" into a record a
+      // resumed run can act on instead of a silent gap.
+      if (tier !== undefined) await settleQuietly(ctx, def.id, 'ambiguous');
+      throw cause;
+    }
+    // 5. **SETTLE immediately** (§7 step 4). Between the call returning and this write there is a window in
+    //    which a crash leaves the row `prepared` — resume then reads that as unresolved and refuses, which
+    //    is the honest answer: the effect may well have landed.
+    if (tier !== undefined) {
+      await ctx.effects.settle(ctx.effectSlot, def.id, 'committed', output);
+      effectDispatched = true;
+    }
     // Abort that lands AFTER the host resolved must still classify as cancelled, not a success.
     throwIfAborted(ctx, def.id);
     // 6. output_mapping runs on the FULL result → workflow state keeps the real value.
@@ -159,6 +220,12 @@ async function dispatch(
     // failure is non-idempotent (a half-run command, a POST that may have landed), so it is NOT recoverable.
     throw new ToolExecutionError(def.id, `tool \`${def.id}\` failed`, cause, {
       recoverable: governedAction(def, target) === undefined,
+      // **Not node-retryable once the effect has left the process** (ADR-0080 §8, amending ADR-0037). This
+      // covers more than a dispatch throw: a post-dispatch abort, an `output_mapping` error, a bounding or
+      // spill failure — all happen AFTER the target acted, and classifying any of them as retryable would
+      // have the node re-run and re-fire the effect. `recoverable` above is a different axis (within-turn
+      // model recovery); this is the one that gates a fresh node dispatch.
+      ...(effectDispatched ? { retryable: false } : {}),
     });
   }
 

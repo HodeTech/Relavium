@@ -168,14 +168,32 @@ export class ToolUnavailableError extends ToolDispatchError {
 export class ToolExecutionError extends ToolDispatchError {
   readonly code = 'execution_failed';
   readonly runErrorCode: ErrorCode = 'tool_failed';
-  readonly retryable = true;
+  /**
+   * Node-retryable by default, and **not** once the effect has left the process
+   * ([ADR-0080](../../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §8,
+   * amending [ADR-0037](../../../../docs/decisions/0037-engine-tool-execution-boundary.md)).
+   *
+   * A retryable failure after a target has acted is the duplicate the effect journal exists to prevent —
+   * and the danger is not limited to a dispatch throw: a post-dispatch abort, an `output_mapping` error and
+   * a bounding failure all occur after the effect. The registry stamps this `false` for every one of them.
+   *
+   * Distinct from the inherited `recoverable`, which is a different axis: that gates WITHIN-TURN model
+   * recovery, this gates a fresh node dispatch.
+   */
+  readonly retryable: boolean;
 
-  constructor(toolId: ToolId, message: string, cause?: unknown, opts?: { recoverable?: boolean }) {
+  constructor(
+    toolId: ToolId,
+    message: string,
+    cause?: unknown,
+    opts?: { recoverable?: boolean; retryable?: boolean },
+  ) {
     // `recoverable` (the inherited base flag) is true ONLY for an IDEMPOTENT tool (a read — no
     // `fs_write`/`egress`/`process`/`os` action), stamped by the registry from `governedAction`; a governed /
     // side-effecting failure (a half-run command, a POST that may have reached the server) stays false so it ends
     // the turn rather than risking a re-execution.
     super(message, toolId, cause, opts?.recoverable ?? false);
+    this.retryable = opts?.retryable ?? true;
     this.name = 'ToolExecutionError';
   }
 }

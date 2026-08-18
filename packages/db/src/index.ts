@@ -105,7 +105,7 @@ export {
 
 // The durable effect journal (ADR-0080) — its own store, following ADR-0079's lease precedent rather than
 // growing `RunStore`, because a journal row is not a run event and has no `runId` on the session path.
-export { createEffectJournalStore } from './effect-journal-store.js';
+export { createEffectJournalStore, createEffectJournalPort } from './effect-journal-store.js';
 export type { EffectJournalStore, EffectJournalStoreDeps } from './effect-journal-store.js';
 
 // Provider registry (2.C) — CRUD over the non-secret `llm_providers` catalog the CLI's `relavium provider`

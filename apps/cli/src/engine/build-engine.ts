@@ -20,8 +20,16 @@ import { hostSleep } from '../process/sleep.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv } from './tool-host/assemble.js';
+import type { EffectCorrelation, EffectDispatchPort } from '@relavium/core';
 
 export interface BuildEngineOptions {
+  /**
+   * The durable effect journal factory (ADR-0080) — built per node from the run correlation the engine
+   * supplies. Absent ⇒ a dispatch gets `unwiredEffectJournal()` and an effect is REFUSED rather than
+   * silently unrecorded, which is the fail-closed direction.
+   */
+  readonly effectJournal?: (correlation: EffectCorrelation) => EffectDispatchPort;
+
   /** Override the execution host (tests use the in-memory reference). */
   readonly host?: ExecutionHost;
   /** Override the provider seam (tests inject a stub provider + dummy key). */
@@ -171,6 +179,9 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
   return new WorkflowEngine({
     host,
     executor: createStandardNodeExecutor({ sandbox, agent, humanGate: {} }),
+    // ADR-0080: forwarded, not defaulted. A caller that omits it gets a run whose effectful dispatches are
+    // REFUSED — loudly — rather than one that silently dispatches unrecorded effects.
+    ...(options.effectJournal === undefined ? {} : { effectJournal: options.effectJournal }),
     // The same overlay for the workflow PRE-EGRESS budget governor (2.5.G S10) — so `budget.max_cost_microcents`
     // is enforced on a user-priced model, closing the ADR-0064 §6 cost-cap gap for the run path.
     ...(options.resolvePrice === undefined ? {} : { resolvePrice: options.resolvePrice }),

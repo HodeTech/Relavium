@@ -40,7 +40,7 @@ import {
 // session never names the ambient `AbortController`. A path drift to the public surface would be a smell.
 import { BudgetPauseError } from './budget-governor.js';
 import { RunEventBus } from './event-bus.js';
-import { createAbortController } from './execution-host.js';
+import { createInMemoryEffectJournal, createAbortController } from './execution-host.js';
 import {
   createSessionEventSink,
   createSessionHandle,
@@ -158,6 +158,10 @@ function harness(
     keyFor: () => 'key',
     sleep: () => Promise.resolve(),
     newAbortController: createAbortController,
+    // A REAL in-memory journal, not the unwired one: `run_command` is tier 3, so the `!`-shell tests below
+    // genuinely dispatch an effect and must journal it. `unwiredEffectJournal()` correctly refuses those —
+    // the loud port doing its job, not a fixture inconvenience.
+    effects: createInMemoryEffectJournal({ kind: 'session', sessionId: 'sess-1', turn: 0 }),
     emit: (event) => {
       events.push(event);
     },

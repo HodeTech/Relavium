@@ -110,6 +110,7 @@ import { createChatStore, type ChatStoreController } from '../render/tui/chat-st
 import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
+import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
 
 /**
  * `relavium chat` (2.M) — the agent-first interactive REPL over `@relavium/core`'s `AgentSession`. It binds
@@ -569,6 +570,7 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     persister = createSessionPersister({
       governor: built.governor,
       attachDurabilityProbe: built.attachDurabilityProbe,
+
       store: opened.store,
       handle: built.handle,
       sessionId: built.sessionId,
@@ -580,6 +582,17 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
       // target) over the SAME db, degrading to NULL when uncataloged. Shared across every persister site.
       resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
     });
+
+    // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is
+    // NOT silent: the forwarding port refuses the first effect loudly, which is exactly why
+    // `unwiredEffectJournal()` rejects instead of no-opping.
+    built.attachEffectJournal(
+      createEffectJournalPort(
+        createEffectJournalStore(opened.db, { uuid, now }),
+        { kind: 'session', sessionId: built.sessionId, turn: 0 },
+        { providerAttempt: 1, toolCallId: 'session' },
+      ),
+    );
   } catch (err) {
     closeQuietly(deps.io, 'session store', () => opened.close());
     await built.closeMcp?.().catch(() => undefined);
@@ -1531,6 +1544,17 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
         now: deps.now,
       }),
     });
+
+    // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is
+    // NOT silent: the forwarding port refuses the first effect loudly, which is exactly why
+    // `unwiredEffectJournal()` rejects instead of no-opping.
+    built.attachEffectJournal(
+      createEffectJournalPort(
+        createEffectJournalStore(deps.opened.db, { uuid: deps.uuid, now: deps.now }),
+        { kind: 'session', sessionId: built.sessionId, turn: 0 },
+        { providerAttempt: 1, toolCallId: 'session' },
+      ),
+    );
   } catch (err) {
     // Acquire-then-guard: the fresh MCP children are already spawned — reclaim them before the failure propagates
     // so a persister-construction throw never orphans a stdio child (best-effort; never mask the primary error).
@@ -1650,6 +1674,7 @@ function seedResumedWiring(
   const persister = createSessionPersister({
     governor: resumed.governor,
     attachDurabilityProbe: resumed.attachDurabilityProbe,
+
     store: opened.store,
     handle: resumed.handle,
     sessionId: resumed.sessionId,
@@ -1662,6 +1687,16 @@ function seedResumedWiring(
     // ADR-0059 attribution — resolved over the SAME db; a reseat's new persister records the switched model.
     resolveModelCatalogId: makeCatalogIdResolver(opened.db, { uuid, now }),
   });
+  // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is NOT
+  // silent: the forwarding port refuses the first effect loudly, which is exactly why
+  // `unwiredEffectJournal()` rejects instead of no-opping.
+  resumed.attachEffectJournal(
+    createEffectJournalPort(
+      createEffectJournalStore(opened.db, { uuid, now }),
+      { kind: 'session', sessionId: resumed.sessionId, turn: 0 },
+      { providerAttempt: 1, toolCallId: 'session' },
+    ),
+  );
   return { store, persister };
 }
 

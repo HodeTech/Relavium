@@ -54,6 +54,8 @@ import {
   type RunFence,
   type RunStatus,
   type TokensUsed,
+  type EffectCorrelation,
+  type EffectDispatchPort,
 } from '@relavium/shared';
 import type { EndpointKind, MediaJobStatus, PricingOverlay, ProviderId } from '@relavium/llm';
 
@@ -246,6 +248,15 @@ function assertValidResumeInput(input: ResumeFromCheckpointInput): void {
 
 /** Construction dependencies for the engine — the injected host and node-executor seams. */
 export interface WorkflowEngineDeps {
+  /**
+   * Builds a per-node effect journal from a run correlation (ADR-0080) — a FACTORY rather than a port,
+   * because the correlation differs per node and per retry attempt and only the run loop knows both.
+   *
+   * Absent ⇒ a dispatch gets `unwiredEffectJournal()` and an EFFECT IS REFUSED. That is the fail-closed
+   * direction: a host with no journal must not silently dispatch unrecorded effects.
+   */
+  readonly effectJournal?: (correlation: EffectCorrelation) => EffectDispatchPort;
+
   readonly host: ExecutionHost;
   readonly executor: NodeExecutor;
   /** Validate every emitted event against `RunEventSchema` (default `true`; off only for a hot path). */
@@ -442,6 +453,11 @@ class RunExecution {
    * was finishing. That is precisely the divergence ADR-0079 exists to prevent, reintroduced by §4 itself.
    */
   #ownership: RunOwnership = 'unclaimed';
+  /**
+   * Builds a per-node effect journal from a run correlation (ADR-0080). Injected as a FACTORY rather than a
+   * port, because the correlation differs per node and per retry attempt and only the run loop knows both.
+   */
+  readonly #effectJournal: ((correlation: EffectCorrelation) => EffectDispatchPort) | undefined;
   /** The owning engine's identity — passed in, never minted here, so one engine is one owner. */
   readonly #ownerId: string;
   /**
@@ -477,6 +493,8 @@ class RunExecution {
     onSettled: (runId: string) => void;
     /** The owning engine's lease identity (ADR-0079 §1). */
     ownerId: string;
+    /** Builds a per-node effect journal from a run correlation (ADR-0080); absent ⇒ effects are refused. */
+    effectJournal?: (correlation: EffectCorrelation) => EffectDispatchPort;
     resolverCapabilities: ResolverCapabilities;
     maxTokensEstimate?: number;
     /** The user-pricing overlay (2.5.G S10, ADR-0065 §2) — into the workflow PRE-EGRESS governor so a user-priced
@@ -499,6 +517,7 @@ class RunExecution {
     this.#bus = params.bus;
     this.#onSettled = params.onSettled;
     this.#ownerId = params.ownerId;
+    this.#effectJournal = params.effectJournal;
     this.#abort = params.host.newAbortController();
 
     const secretNames = new Set(
@@ -1426,6 +1445,20 @@ class RunExecution {
         // re-dispatch. The ledger must not be dropped with it: an approved node is the one the user just
         // authorised MORE money on, so it is the last place to stop recording what that money was.
         money: this.#money.turnPort(() => this.#cumulativeCostMicrocents),
+        // The durable effect journal (ADR-0080), with the RUN correlation closed over. Only the run loop
+        // knows the `runId` and the node-retry attempt — exactly the reasoning that puts the ledger here.
+        // Absent when no host wired a journal, in which case the dispatch gets `unwiredEffectJournal()` and
+        // an effect is REFUSED rather than silently unrecorded.
+        ...(this.#effectJournal === undefined
+          ? {}
+          : {
+              effects: this.#effectJournal({
+                kind: 'run',
+                runId: this.runId,
+                nodeId: vertex.id,
+                attempt: attemptNumber,
+              }),
+            }),
       };
       // After the executor completes, an `output` node with `save_to` writes its produced media to the
       // host (1.AF/D16). A write failure FAILS the node (→ run:failed) — save_to is a real deliverable.
@@ -3094,6 +3127,10 @@ export class WorkflowEngine {
    * silently "renew" the first one's lease instead of being refused, which is the whole failure this closes.
    */
   readonly #ownerId: string;
+  /** ADR-0080's per-node journal factory, threaded into every `RunExecution` this engine builds. */
+  readonly #effectJournalFactory:
+    | ((correlation: EffectCorrelation) => EffectDispatchPort)
+    | undefined;
 
   constructor(deps: WorkflowEngineDeps) {
     this.#host = deps.host;
@@ -3107,6 +3144,7 @@ export class WorkflowEngine {
     this.#onUnpriced = deps.onUnpriced;
     this.#onLegacyMediaJobHold = deps.onLegacyMediaJobHold;
     this.#ownerId = deps.host.ids.newId();
+    this.#effectJournalFactory = deps.effectJournal;
   }
 
   /**
@@ -3134,6 +3172,9 @@ export class WorkflowEngine {
            host may prune them on a TTL — out of 1.N scope. */
       },
       ownerId: this.#ownerId,
+      ...(this.#effectJournalFactory === undefined
+        ? {}
+        : { effectJournal: this.#effectJournalFactory }),
       resolverCapabilities: this.#resolverCapabilities,
       maxTokensEstimate: this.#maxTokensEstimate,
       ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
@@ -3263,6 +3304,9 @@ export class WorkflowEngine {
       inputs: input.inputs ?? {},
       executionMode: input.executionMode ?? 'local',
       ownerId: this.#ownerId,
+      ...(this.#effectJournalFactory === undefined
+        ? {}
+        : { effectJournal: this.#effectJournalFactory }),
       host: this.#host,
       executor: this.#executor,
       bus,

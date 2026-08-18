@@ -481,7 +481,17 @@ export interface EffectDispatchPort {
     slot: EffectSlot,
     toolId: string,
     tier: EffectTier,
-    argsDigest: string,
+    /**
+     * The effective args with every secret-tainted key **already removed** — the port hashes this, it does
+     * not receive a digest.
+     *
+     * The split is forced and worth stating. The engine is platform-free and cannot compute SHA-256, so the
+     * hash has to happen host-side; but only the engine knows which keys are secret-tainted, so the
+     * REDACTION has to happen here. Passing the redacted projection rather than raw args keeps a secret from
+     * reaching the hash at all — a digest is a permanent equality oracle, and a low-entropy secret is
+     * recoverable from one by dictionary attack on a `history.db` that may be unencrypted at rest.
+     */
+    redactedArgs: unknown,
     targetIdempotencyKey?: string,
   ) => Promise<void>;
   /** Durably record the outcome, immediately after the call returns or fails. */
@@ -511,4 +521,21 @@ export function unwiredEffectJournal(): EffectDispatchPort {
       ),
     );
   return { prepare: fail, settle: fail };
+}
+
+/**
+ * Strip every secret-tainted key from an argument object, so what is hashed can never contain a secret.
+ *
+ * A shallow removal by key name, matching how `secretArgKeys` is computed (ADR-0029(c) marks top-level
+ * effective-arg names). Non-object args pass through — the digest of a bare string is still just a
+ * fingerprint of a value the tool was going to send anyway.
+ */
+export function redactSecretArgs(args: unknown, secretArgKeys?: ReadonlySet<string>): unknown {
+  if (secretArgKeys === undefined || secretArgKeys.size === 0) return args;
+  if (typeof args !== 'object' || args === null || Array.isArray(args)) return args;
+  const kept: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (!secretArgKeys.has(key)) kept[key] = value;
+  }
+  return kept;
 }

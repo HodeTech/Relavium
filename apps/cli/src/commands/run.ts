@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { relative } from 'node:path';
 
 import {
@@ -51,6 +52,8 @@ import {
   outcomeToExitCode,
 } from './drive.js';
 import { parseInputArgs, resolveInputs } from './inputs.js';
+import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
+import type { EffectCorrelation } from '@relavium/core';
 
 export interface RunCommandArgs {
   readonly workflow: string;
@@ -239,6 +242,15 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
         toolEnv,
         onEffortWithheld,
         onUnpriced,
+        // The durable effect journal (ADR-0080), built per node from the run correlation the engine supplies.
+        // A FACTORY because the correlation differs per node and per retry attempt, and only the run loop
+        // knows both — the same reason the realized-cost ledger is threaded this way.
+        effectJournal: (correlation: EffectCorrelation) =>
+          createEffectJournalPort(
+            createEffectJournalStore(opened.db, { uuid: randomUUID, now: Date.now }),
+            correlation,
+            { providerAttempt: 1, toolCallId: 'run' },
+          ),
         host: createCliHost(opened.store, {
           media: wiring.media,
           // ADR-0078 §4: a terminal the store refuses is held in a SEPARATE FILE beside history.db. Wiring

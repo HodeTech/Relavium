@@ -17,6 +17,11 @@
 
 import type {
   AbortSignalLike,
+  EffectCorrelation,
+  EffectDispatchPort,
+  EffectSlot,
+  EffectState,
+  EffectTier,
   DurableWriteContext,
   MediaReferencePort,
   MediaStore,
@@ -26,7 +31,12 @@ import type {
   RunLeasePort,
   TerminalOutbox,
 } from '@relavium/shared';
-import { AppendConflictError, LeaseFencedError } from '@relavium/shared';
+import {
+  AppendConflictError,
+  EffectConflictError,
+  LeaseFencedError,
+  effectScope,
+} from '@relavium/shared';
 
 import { type Checkpointer, reconstructCheckpointState } from './checkpoint.js';
 
@@ -595,6 +605,51 @@ export function resolveInMemoryLeases(
     );
   }
   return bound;
+}
+
+/**
+ * The in-memory reference {@link EffectDispatchPort} (ADR-0080) — for a fixture that genuinely DOES dispatch
+ * effects, where `unwiredEffectJournal()` would correctly refuse.
+ *
+ * It enforces the same UNIQUE identity the SQLite journal does, for the reason every reference in this file
+ * enforces its real counterpart's rule: a reference that accepts what the real store rejects makes every
+ * `packages/core` test prove nothing.
+ */
+export function createInMemoryEffectJournal(correlation: EffectCorrelation): EffectDispatchPort & {
+  /** Test/inspection helper — the rows written, in write order. */
+  readonly rows: () => readonly {
+    slot: EffectSlot;
+    toolId: string;
+    tier: EffectTier;
+    state: EffectState;
+    result?: unknown;
+  }[];
+} {
+  const rows = new Map<
+    string,
+    { slot: EffectSlot; toolId: string; tier: EffectTier; state: EffectState; result?: unknown }
+  >();
+  const key = (slot: EffectSlot, toolId: string): string =>
+    `${effectScope(correlation)}|${String(slot)}|${toolId}`;
+  return {
+    prepare: (slot, toolId, tier) => {
+      if (rows.has(key(slot, toolId))) {
+        return Promise.reject(
+          new EffectConflictError({ scope: effectScope(correlation), slot, toolId }),
+        );
+      }
+      rows.set(key(slot, toolId), { slot, toolId, tier, state: 'prepared' });
+      return Promise.resolve();
+    },
+    settle: (slot, toolId, state, result) => {
+      const row = rows.get(key(slot, toolId));
+      if (row !== undefined) {
+        rows.set(key(slot, toolId), { ...row, state, ...(result === undefined ? {} : { result }) });
+      }
+      return Promise.resolve();
+    },
+    rows: () => [...rows.values()],
+  };
 }
 
 export function createInMemoryHost(options?: {
