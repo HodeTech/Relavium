@@ -1,4 +1,4 @@
-import { reconstructSessionState } from '@relavium/core';
+import { reconstructSessionState, unwrapUntrusted } from '@relavium/core';
 import type { StreamChunk } from '@relavium/llm';
 import {
   createClient,
@@ -860,10 +860,15 @@ describe('createSessionPersister', () => {
     // The full transcript is preserved (append-only — nothing deleted): 4 real rows + 1 marker.
     expect(messages).toHaveLength(5);
 
-    // Resume honors the marker: only the kept exchange survives, with the summary as the preamble.
+    // Resume honors the marker: only the kept exchange survives, and the summary comes back RE-MARKED
+    // untrusted (ADR-0081 §2) — persistence stores a raw string, and a value does not become trustworthy by
+    // having been stored, so the reconstruction boundary is where the brand is reapplied.
     const full = store.loadFull('sess-1');
     const state = reconstructSessionState(full!.session, full!.messages);
-    expect(state.contextPreamble).toBe('the summary text');
+    expect(state.compactionSummary).toBeDefined();
+    expect(state.compactionSummary && unwrapUntrusted(state.compactionSummary)).toBe(
+      'the summary text',
+    );
     expect(state.messages).toEqual([
       { role: 'user', content: [{ type: 'text', text: 'q2' }] },
       { role: 'assistant', content: [{ type: 'text', text: 'a2' }] },

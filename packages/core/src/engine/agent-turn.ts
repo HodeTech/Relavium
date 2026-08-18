@@ -63,6 +63,7 @@ import {
   type BudgetAdmission,
 } from './budget-governor.js';
 import { LedgerDurabilityError, type TurnMoneyPort } from './money-durability.js';
+import type { AuthoredSystemPrompt } from './authored-system-prompt.js';
 import type { NodeStreamEvent } from './node-executor.js';
 
 /**
@@ -133,8 +134,15 @@ export type ChainCapabilities = Pick<
 
 /** Everything one agent turn needs — no run/session correlation key, no `NodeExecContext`. */
 export interface AgentTurnParams {
-  /** Authored system text ONLY (agent `system_prompt` + node `system_prompt_append`) — never untrusted data. */
-  readonly system?: string;
+  /**
+   * Authored system text ONLY — and since [ADR-0081](../../../../docs/decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md)
+   * the type says so rather than this comment.
+   *
+   * The comment above used to read "never untrusted data", and ADR-0062 §1 shipped a model-written summary
+   * of untrusted input into this field anyway, behind an XML fence the untrusted text can close. A branded
+   * type built only by {@link authoredSystemPrompt} makes the ordinary typed path unable to do that.
+   */
+  readonly system?: AuthoredSystemPrompt;
   /** The initial conversation. The core appends assistant + tool messages across the loop on a copy. */
   readonly messages: readonly LlmMessage[];
   /** LLM-visible tool defs for the request (already normalized + narrowed to the node's grant). */

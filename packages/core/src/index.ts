@@ -245,7 +245,6 @@ export {
   DEFAULT_SESSION_MAX_TURNS,
   // Context compaction (ADR-0062): the auto-compaction default threshold + the summariser system prompt.
   DEFAULT_COMPACT_THRESHOLD,
-  COMPACTION_SYSTEM_PROMPT,
   SessionStateError,
 } from './engine/agent-session.js';
 export type {

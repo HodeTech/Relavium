@@ -54,6 +54,10 @@ import {
 import { resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import type { AgentPlanConfig } from '../run-plan.js';
+import {
+  authoredSystemPrompt,
+  type AuthoredSystemPrompt,
+} from './authored-system-prompt.js';
 import type { ToolDef, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
 import {
   AgentTurnError,
@@ -388,7 +392,7 @@ async function executeAgent(
   let result: AgentTurnResult;
   try {
     result = await runAgentTurn({
-      ...(messages.system === undefined ? {} : { system: messages.system }),
+      system: messages.system,
       messages: messages.messages,
       ...(llmTools.length > 0 ? { tools: llmTools } : {}),
       planEntries: plan.entries,
@@ -899,20 +903,18 @@ function resolveGrant(
   return { ok: true, ids: nodeTools };
 }
 
-/** System = authored text ONLY (agent.system_prompt + node.system_prompt_append). The prompt → user. */
+/**
+ * System = authored text ONLY, built by the one constructor that can produce the branded type (ADR-0081 §1).
+ * The prompt → user.
+ */
 function assembleMessages(
   agent: Agent,
   node: AgentNode,
   userText: string,
-): { system: string | undefined; messages: LlmMessage[] } {
-  const append = node.system_prompt_append;
-  const system =
-    append === undefined || append.length === 0
-      ? agent.system_prompt
-      : `${agent.system_prompt}\n\n${append}`;
+): { system: AuthoredSystemPrompt; messages: LlmMessage[] } {
   const messages: LlmMessage[] =
     userText.length > 0 ? [{ role: 'user', content: [{ type: 'text', text: userText }] }] : [];
-  return { system, messages };
+  return { system: authoredSystemPrompt({ kind: 'agent', agent, node }), messages };
 }
 
 /** Lower an `output_schema` to the request-side `responseFormat` hint (validation is node-side). */

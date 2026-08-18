@@ -16,6 +16,8 @@
 import type { LlmMessage } from '@relavium/llm';
 import type { AgentSessionRecord, DurableContentPart, SessionMessage } from '@relavium/shared';
 
+import { markUntrusted, type Untrusted } from '../tools/untrusted.js';
+
 /**
  * The reconstructed in-memory state {@link AgentSession.resume} preloads — its `#messages` (in-flight
  * transcript), `#turnCount` (the hard-cap counter), and `#cumulativeCostMicrocents` (the running cost).
@@ -48,7 +50,15 @@ export interface SessionResumeState {
    * has never been compacted. `AgentSession.resume` re-injects it into the per-turn system prompt, so a
    * compacted session stays compacted across resume **and** a model reseat (which reuses this same path).
    */
-  readonly contextPreamble?: string;
+  /**
+   * The compaction summary carried across a resume or a reseat, **re-marked untrusted at this boundary**
+   * ([ADR-0081](../../../../docs/decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) §2).
+   *
+   * Persistence stores the raw string — the durable row shape is unchanged — and a value does not become
+   * trustworthy by having been stored. It was `contextPreamble?: string`; the rename is deliberate, because
+   * "preamble" names the system-prompt placement ADR-0081 removes.
+   */
+  readonly compactionSummary?: Untrusted<string>;
 }
 
 /** The concatenated `text` parts of a durable content array (non-text parts are dropped). */
@@ -130,11 +140,13 @@ export function reconstructSessionState(
   // advances it), while the preamble is the summary of the NEWEST marker that HAS summary text (a `/compact`) —
   // so a later `/trim` advances the boundary but must NOT blank a prior compact's summary.
   const markers = ordered.filter((m) => m.compaction !== undefined);
-  let contextPreamble: string | undefined;
+  let compactionSummary: Untrusted<string> | undefined;
   for (let i = markers.length - 1; i >= 0; i -= 1) {
     const summary = textOf(markers[i]?.content ?? []);
     if (summary.length > 0) {
-      contextPreamble = summary;
+      // Re-marked HERE: this is the reconstruction boundary, and it is the last place the value is a bare
+      // string. Everything downstream carries the brand.
+      compactionSummary = markUntrusted(summary);
       break;
     }
   }
@@ -149,6 +161,6 @@ export function reconstructSessionState(
     turnCount: committed.filter((message) => message.role === 'assistant').length,
     cumulativeCostMicrocents: record.totalCostMicrocents,
     conservativeCostMicrocents: record.totalConservativeMicrocents,
-    ...(contextPreamble === undefined ? {} : { contextPreamble }),
+    ...(compactionSummary === undefined ? {} : { compactionSummary }),
   };
 }
