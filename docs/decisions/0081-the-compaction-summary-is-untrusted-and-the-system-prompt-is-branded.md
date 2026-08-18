@@ -92,8 +92,12 @@ to a deliberate `as` — `dynamicString as AuthoredSystemPrompt` compiles, and a
 claimed the repo's lint rules stop it. They do not: `eslint.config.mjs` bans `any` and restricts seam
 imports, and has no assertion ban. So the mechanism ships WITH its fence: `no-restricted-syntax` selectors
 in the same slot as the existing seam and machine-output fences, covering a `TSAsExpression` or
-`TSTypeAssertion` naming `AuthoredSystemPrompt`, and — because a name-based selector is defeated by one hop
-of indirection — a type-alias declaration naming it, which closes that chain at its root.
+`TSTypeAssertion` naming `AuthoredSystemPrompt`; a type-ALIAS declaration naming it, because a name-based
+selector is otherwise defeated by one hop of indirection; and a type PREDICATE naming it, which needs no
+assertion at all — `value is AuthoredSystemPrompt` narrows a plain string into the brand, type-checks
+cleanly, and reads exactly like the legitimate `isBilledModality` guard already in `agent-runner.ts`. That
+last one was the most important to close precisely because it is the most legible: the other forms keep the
+brand's name beside an assertion, where a reviewer scanning for `as AuthoredSystemPrompt` has a chance.
 
 **What the fence does not catch, stated rather than left to be found.** A generic cast helper
 (`function id<T>(v: unknown): T { return v as T }`, called as `id<AuthoredSystemPrompt>(x)`) launders any
@@ -118,7 +122,11 @@ carry its provenance, not merely for one sink to be guarded. So:
 - the summariser's result is `markUntrusted(...)` at the moment it is read off the model;
 - persistence stores the raw string (the durable row shape does not change), and the RECONSTRUCTION boundary
   re-marks it — a value that comes back off disk has not become trustworthy by being stored;
-- exactly one place unwraps it: the request-assembly helper in §3, which puts it in a user-role part.
+- exactly **two** places unwrap it, and both are `user`-role positions: the request-assembly helper in §3
+  (`buildTurnMessages`), and `renderConversationToSummarise`, which folds a prior summary into the next
+  summarisation call. A draft of this section said "exactly one place" and was wrong about its own audit
+  surface — the second site is equally load-bearing, and an auditor who grepped only the first would have
+  missed it. Two is the number; the guarantee is that both are data positions.
 
 The persisted marker row's `role: 'system'` (ADR-0062 §2) is a **storage encoding and nothing more**. No
 consumer may read it as LLM system authority. That sentence is the one this ADR most needs on the record,
@@ -182,9 +190,11 @@ because this repo treats the ADR as the contract the implementation is verified 
 
 1. A type-level test proves a dynamic `string` cannot be passed as `system`, and that the brand's
    constructors are the closed set in §1.
-2. The lint fence in §1 exists and fires on every direct form — `x as T`, `<T>x`, `x as unknown as T`, a
-   return-position assertion, and a type-alias declaration naming the brand — verified against the shipped
-   config, along with the two indirect forms it does not catch.
+2. The lint fence in §1 is verified against the SHIPPED config, by an exact error count on a quarantined
+   fixture — the mechanism this repo already uses for its seam fence, so a partial regression changes a
+   count instead of passing on the remaining errors. The count is asserted in BOTH directions: fewer means a
+   forging form stopped being policed, more means the fence now catches one of the residuals named above and
+   this ADR's statement of its own bound needs correcting.
 3. Given a summary containing a fence-closing sequence plus instructions, the assembled request has those
    bytes in a **user-role content part** and **zero** occurrences in the `system` field — asserted on the
    built request before any provider call, and again **after a restore from persistence** and **after a

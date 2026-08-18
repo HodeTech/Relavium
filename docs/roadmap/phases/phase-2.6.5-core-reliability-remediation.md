@@ -451,7 +451,7 @@ is the wrong trade on the failure path. The reasoning is recorded at the guard i
 against the reference store and the SQLite store's own unit tests; the end-to-end certification through the
 real `history.db` in `apps/cli` rides with `CR-92`.
 
-### CR-11 — No cross-process run ownership or fencing · Blocker · needs an ADR
+### CR-11 — No cross-process run ownership or fencing · Blocker · ✅ CLOSED 2026-08-17 ([ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md))
 
 **Evidence.** The engine states that its cross-process guarantee rests on store uniqueness, but the only DB
 uniqueness is `(run_id, seq)`. `resumeFromCheckpoint` performs an in-memory check, then loads the checkpoint and
@@ -480,7 +480,7 @@ by driving a write with a stale token and asserting the rejection, not by assert
 > another process's run rather than merely be refused by it). Read as written, this paragraph could be taken
 > to require the full observer now; it does not.
 
-### CR-12 — No durable effect/idempotency journal on the hot path · Blocker · needs an ADR
+### CR-12 — No durable effect/idempotency journal on the hot path · Blocker · ✅ CLOSED 2026-08-18 ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md))
 
 **Evidence.** `NodeExecContext` carries an attempt number but no run/effect idempotency key.
 `ToolDispatchContext` carries a node id but no run correlation or semantic key. The registry calls
@@ -555,7 +555,7 @@ retry path were reachable.
 explicitly scopes effect duplication out and names this as the decision that owns it. That ADR's implementation
 is this phase's [prerequisite](#prerequisite); this item is the larger of the two.
 
-### CR-13 — Compaction summary is elevated to `system` authority · Blocker (untrusted content) · needs an ADR
+### CR-13 — Compaction summary is elevated to `system` authority · Blocker (untrusted content) · ✅ CLOSED 2026-08-18 ([ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md))
 
 **Evidence.** The prior conversation is handed to the summarizer as user-role data; the summarizer's model
 output is taken as a plain string, becomes the context preamble, and is concatenated directly into the authored

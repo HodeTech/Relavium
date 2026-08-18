@@ -32,6 +32,22 @@ export const satisfiesChained = (dynamic satisfies string) as AuthoredSystemProm
 type Alias = AuthoredSystemPrompt;
 export const viaAlias = dynamic as Alias;
 
+/* ---- CAUGHT: a type PREDICATE, which needs no assertion at all. -------------------------------- */
+/* `value is AuthoredSystemPrompt` narrows a plain string into the brand with no `as`, no `<T>`, and no
+   alias — a review verified it type-checks cleanly and produced zero fence hits. It is the worst residual
+   to leave open because it is the most legible: it reads exactly like the legitimate `isBilledModality`
+   guard in `agent-runner.ts`, so a reviewer scanning for `as AuthoredSystemPrompt` has no signal at all.
+   One error, on the return annotation — the one place the name must appear. */
+
+function isAuthored(value: string): value is AuthoredSystemPrompt {
+  void value;
+  return true;
+}
+export function viaTypeGuard(): AuthoredSystemPrompt {
+  if (isAuthored(dynamic)) return dynamic;
+  throw new Error('unreachable');
+}
+
 /* ---- NOT caught, and named in ADR-0081 §1 rather than left to be discovered. ------------------- */
 /* TypeScript has no defence against `as` short of a runtime wrapper, which §1 rejects for changing the
    seam shape. Neither form is reachable by accident — each requires writing a construct whose only

@@ -27,15 +27,16 @@ const EXPECT_STATIC = 5;
 const EXPECT_SYNTAX = 4;
 
 /**
- * The authored-system-prompt fence's exact spec: SIX errors on the fixture — five direct assertion forms
- * plus the one-hop type alias, flagged at its declaration.
+ * The authored-system-prompt fence's exact spec: SEVEN errors on the fixture — five direct assertion
+ * forms, the one-hop type alias flagged at its declaration, and a type predicate flagged at its return
+ * annotation.
  *
  * A count that DROPS means a forgery syntax stopped being policed. A count that RISES means the fence
  * started catching one of the two forms ADR-0081 §1 names as residual (a generic `as T` helper, an
  * interface field plus an object assertion) — in which case the ADR's honesty about its own bound is now
  * out of date and must be corrected. Either direction is a failure worth stopping CI for.
  */
-const EXPECT_AUTHORED = 6;
+const EXPECT_AUTHORED = 7;
 
 const eslint = new ESLint();
 const results = await eslint.lintFiles([MAIN, CONFIG_NAMED, AUTHORED]);

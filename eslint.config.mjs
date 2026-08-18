@@ -98,6 +98,23 @@ const authoredPromptAliasRule = /** @type {const} */ ({
   selector: "TSTypeAliasDeclaration TSTypeReference > Identifier[name='AuthoredSystemPrompt']",
   message: AUTHORED_PROMPT_MESSAGE,
 });
+/**
+ * …and the evasion that needs no assertion at all: a user-defined type predicate.
+ *
+ * `function isAuthored(v: string): v is AuthoredSystemPrompt { return true }` narrows a plain string into the
+ * brand with no `as`, no `<T>`, and no alias anywhere in the file. A review verified it type-checks cleanly
+ * and produced zero fence hits.
+ *
+ * It is the WORST of the residuals precisely because it is the most legible: `value is AuthoredSystemPrompt`
+ * is the same shape as the legitimate `isBilledModality` guard already in `agent-runner.ts`, so a reviewer
+ * scanning for `as AuthoredSystemPrompt` has no differential signal. The other two residuals at least keep
+ * the brand's name next to an assertion. The predicate's return annotation is where the name must appear, so
+ * that is where it is caught.
+ */
+const authoredPromptPredicateRule = /** @type {const} */ ({
+  selector: "TSTypePredicate TSTypeReference > Identifier[name='AuthoredSystemPrompt']",
+  message: AUTHORED_PROMPT_MESSAGE,
+});
 
 /**
  * The machine-output fence (`CR-03`) — every `--json` record leaves through `stringifyJsonLine`.
@@ -279,7 +296,7 @@ export default tseslint.config(
       // The seam fence (0.F): static specifiers (incl. `import type`) + the
       // dynamic/import-type/require forms that evade the first.
       '@typescript-eslint/no-restricted-imports': seamImportEntry,
-      'no-restricted-syntax': [...seamSyntaxRules, authoredPromptSyntaxRule, authoredPromptAliasRule],
+      'no-restricted-syntax': [...seamSyntaxRules, authoredPromptSyntaxRule, authoredPromptAliasRule, authoredPromptPredicateRule],
     },
   },
   {
@@ -303,7 +320,7 @@ export default tseslint.config(
     // entry is currently inert rather than wrong.
     ignores: ['apps/cli/src/process/render-error.ts', 'apps/cli/src/render/sanitize.ts'],
     rules: {
-      'no-restricted-syntax': [...seamSyntaxRules, authoredPromptSyntaxRule, authoredPromptAliasRule, jsonLineSyntaxRule],
+      'no-restricted-syntax': [...seamSyntaxRules, authoredPromptSyntaxRule, authoredPromptAliasRule, authoredPromptPredicateRule, jsonLineSyntaxRule],
     },
   },
   {
