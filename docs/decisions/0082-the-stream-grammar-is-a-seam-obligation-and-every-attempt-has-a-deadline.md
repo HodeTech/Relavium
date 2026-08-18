@@ -1,9 +1,9 @@
 # ADR-0082: The stream grammar is a seam obligation the chain verifies, and every chain attempt has a hard deadline
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-08-18
 - **Related**:
-  - [ADR-0011](0011-internal-llm-abstraction.md) — the `LLMProvider` seam. **Would be amended on acceptance**: the seam gains a stated stream grammar, one new `LlmErrorKind`, and one new optional `LlmError` field. No vendor type crosses it and its shape is otherwise unchanged.
+  - [ADR-0011](0011-internal-llm-abstraction.md) — the `LLMProvider` seam. **Amended here**: the seam gains a stated stream grammar, one new `LlmErrorKind`, and one new optional `LlmError` field. No vendor type crosses it and its shape is otherwise unchanged.
   - [ADR-0030](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) — the last seam-shape amendment, whose form this follows.
   - [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) — exactly-one-terminal for the RUN, and cancel-wins precedence. This is its per-stream analogue and reuses its precedence rule.
   - [ADR-0040](0040-node-retry-budget-above-the-chain.md) — the node-retry budget. §4 exists because that budget currently re-dispatches a call that already produced content.
@@ -13,7 +13,7 @@
   - [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md) — the one canonical home for the seam contract, where the grammar's normative text lands.
   - [error-handling.md](../standards/error-handling.md) — where the `LlmErrorKind` table lives; `protocol` lands there.
   - [security-review.md](../standards/security-review.md) — the outbound-request rule that forbids letting a vendor default become our liveness semantics.
-- **Addresses**: `CR-14` and `CR-21` of [phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md). A Proposed ADR does not close a work item; on acceptance this becomes **Closes/Decides** and the §13 obligations land with the implementation.
+- **Closes**: **Decides** `CR-14` and `CR-21` of [phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md). Accepted 2026-08-18 after two review rounds; the maintainer's two blockers (rule 7's missing node-retry half, and a cooperative signal mistaken for a deadline) and the second round's correction — that the chain ALREADY tracks commitment — are all folded into the text above. The §13 obligations land with the implementation.
 
 ## Context
 
