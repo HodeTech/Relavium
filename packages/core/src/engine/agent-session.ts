@@ -33,6 +33,7 @@ import type {
   SessionEvent,
   SessionStopReason,
   ToolPolicy,
+  EffectCorrelation,
   EffectDispatchPort,
 } from '@relavium/shared';
 import { unwiredEffectJournal } from '@relavium/shared';
@@ -234,14 +235,19 @@ export interface SessionDeps {
   /** The emission port — 1.V emits session/in-turn bodies here; 1.W wires it onto the `RunEventBus`. */
   readonly emit: SessionEventSink;
   /**
-   * The durable effect journal for this session's dispatches (ADR-0080), with the session correlation closed
-   * over. A host that leaves it unset gets `unwiredEffectJournal()`, which THROWS the moment an effect would
-   * go unrecorded — absence is fail-closed, not fail-open.
+   * Builds this session's effect journal from a correlation (ADR-0080) — a FACTORY, not a port, because the
+   * correlation carries the TURN and only the session knows which turn it is on.
+   *
+   * A port with the correlation frozen at construction was the first shape here, and it was wrong in a way a
+   * review had to RUN to find: every turn shared `session:<id>:0` while the slot ordinal restarts each turn,
+   * so a user's SECOND effectful request in one chat collided with their first on the journal's UNIQUE
+   * identity and was refused — permanently, since nothing sweeps the row. A host that leaves this unset gets
+   * `unwiredEffectJournal()`, which rejects: absence is fail-closed, not fail-open.
    *
    * This is where CR-12 EXTENDS `TurnMoneyPort`'s precedent rather than reusing it: the money port is
    * deliberately run-path-only, while a session's external effects need journaling exactly as a run's do.
    */
-  readonly effects?: EffectDispatchPort;
+  readonly effects?: (correlation: EffectCorrelation) => EffectDispatchPort;
   /** The workflow-wide tool policy threaded into dispatch (default `{}` ⇒ deny-all for gated tools). */
   readonly toolPolicy?: ToolPolicy;
   /** Within-turn tool-loop bounds passed to the turn core (default {@link DEFAULT_AGENT_TURN_LIMITS}). */
@@ -850,7 +856,15 @@ export class AgentSession {
       // The SESSION correlation — `{ kind: 'session', sessionId, turn }`, which this path can supply without
       // fabricating anything. ADR-0024 gives a session no `runId`, and the discriminated union is exactly why
       // it never has to invent one. The turn count is the session's own durable counter, restored on resume.
-      effects: this.#deps.effects ?? unwiredEffectJournal(),
+      // The SESSION correlation, stamped with THIS turn. `#turnCount` is the session's own durable counter,
+      // restored on resume, so a resumed session continues its numbering instead of colliding with the turns
+      // it already ran.
+      effects:
+        this.#deps.effects?.({
+          kind: 'session',
+          sessionId: this.sessionId,
+          turn: this.#turnCount,
+        }) ?? unwiredEffectJournal(),
       effectSlot: 0, // per-CALL; the dispatch sites override it with the tool call's ordinal
       nodeId: this.#agentRef,
       grantedToolIds,

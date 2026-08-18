@@ -115,6 +115,7 @@ export {
   createInMemoryCheckpointer,
   createInMemoryRunLeases,
   createInMemoryEffectJournal,
+  createInMemoryEffectJournalStore,
   resolveInMemoryLeases,
   createInMemoryTerminalOutbox,
   createAbortController,

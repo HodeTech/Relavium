@@ -1,0 +1,268 @@
+/**
+ * The prepare/settle bracket at the dispatch chokepoint
+ * ([ADR-0080](../../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §7;
+ * canonical contract in [effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md) §7,
+ * and crash-matrix points 1-3, 6 and 8 of §12).
+ *
+ * **Why this file exists.** A review measured that the ENTIRE bracket could be deleted — `prepare`, both
+ * settles and the retryable stamping — and all 3,594 tests in the repository stayed green. The fixtures that
+ * were handed a journal only satisfied a type requirement; nothing ever looked at a row. Every test here
+ * asserts on what was actually journaled, or on the classification a journaled failure produces.
+ */
+
+import { isEffectConflictError, type EffectState } from '@relavium/shared';
+import { describe, expect, it } from 'vitest';
+
+import {
+  createInMemoryEffectJournal,
+  createInMemoryEffectJournalStore,
+} from '../engine/execution-host.js';
+import { BUILTIN_TOOLS } from './builtins.js';
+import { ToolExecutionError } from './errors.js';
+import { createToolRegistry } from './registry.js';
+import type { ToolDef, ToolDispatchContext, ToolHost } from './types.js';
+
+/** A recording journal that also reports the ORDER of calls relative to the dispatch. */
+function recordingJournal(): {
+  port: ToolDispatchContext['effects'];
+  rows: () => readonly { slot: number; toolId: string; state: EffectState }[];
+  order: string[];
+} {
+  const inner = createInMemoryEffectJournal({ kind: 'run', runId: 'r1', nodeId: 'n1', attempt: 1 });
+  const order: string[] = [];
+  return {
+    port: {
+      prepare: async (slot, toolId, tier, redacted, key) => {
+        order.push('prepare');
+        await inner.prepare(slot, toolId, tier, redacted, key);
+      },
+      settle: async (slot, toolId, state, result) => {
+        order.push(`settle:${state}`);
+        await inner.settle(slot, toolId, state, result);
+      },
+    },
+    rows: () => inner.rows(),
+    order,
+  };
+}
+
+function ctxWith(journal: ReturnType<typeof recordingJournal>): ToolDispatchContext {
+  return {
+    nodeId: 'n1',
+    grantedToolIds: new Set(['http_request', 'read_file']),
+    config: {},
+    toolPolicy: { allowedDomains: ['api.example'] },
+    fsScope: 'sandboxed',
+    gateApproved: false,
+    effects: journal.port,
+    effectSlot: 0,
+  };
+}
+
+/** A host whose egress arm behaves as the test asks — the only capability these tools need. */
+function hostWith(egress: (() => Promise<unknown>) | undefined): ToolHost {
+  return {
+    ...(egress === undefined ? {} : { egress: { fetch: () => egress() } }),
+  } as ToolHost;
+}
+
+const TOOLS: readonly ToolDef[] = BUILTIN_TOOLS;
+const POST = {
+  type: 'tool_call' as const,
+  name: 'http_request',
+  id: 'c1',
+  args: { url: 'https://api.example/x', method: 'POST' },
+};
+
+describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
+  it('prepares BEFORE the call and settles committed after it — in that order', async () => {
+    const journal = recordingJournal();
+    const host = hostWith(() =>
+      Promise.resolve({
+        status: 200,
+        headers: {},
+        body: 'ok',
+        truncated: false,
+        url: 'https://api.example/x',
+      }),
+    );
+    const registry = createToolRegistry({ tools: TOOLS, host });
+
+    await registry.dispatch(POST, ctxWith(journal));
+
+    // The ORDER is the guarantee: a prepare after the call would record an effect that may already have
+    // happened, which is the crash window the journal exists to close.
+    expect(journal.order).toEqual(['prepare', 'settle:committed']);
+    expect(journal.rows()).toEqual([
+      expect.objectContaining({
+        slot: 0,
+        toolId: 'http_request',
+        tier: 3,
+        state: 'committed',
+        result: expect.anything() as unknown,
+      }),
+    ]);
+  });
+
+  it('settles AMBIGUOUS when the call throws — the effect may have landed', async () => {
+    // §12 point 3. "We do not know what the target did" is the honest record, and it is what a resumed run
+    // needs in order to refuse rather than silently re-fire.
+    const journal = recordingJournal();
+    const host = hostWith(() => Promise.reject(new Error('ECONNRESET mid-POST')));
+    const registry = createToolRegistry({ tools: TOOLS, host });
+
+    await expect(registry.dispatch(POST, ctxWith(journal))).rejects.toBeInstanceOf(
+      ToolExecutionError,
+    );
+    expect(journal.order).toEqual(['prepare', 'settle:ambiguous']);
+    expect(journal.rows()[0]?.state).toBe('ambiguous');
+  });
+
+  it('a dispatch throw on a journaled effect is NOT node-retryable', async () => {
+    // THE blocker this file was written for. `tool_failed` is in RETRYABLE_ERROR_CODES, and the engine gates
+    // purely on `error.retryable` — so a `true` here re-dispatches the node after a possibly-landed effect.
+    // A timed-out POST is the canonical case, and it was reported as retryable until this was pinned.
+    const journal = recordingJournal();
+    const host = hostWith(() => Promise.reject(new Error('timeout')));
+    const registry = createToolRegistry({ tools: TOOLS, host });
+
+    await expect(registry.dispatch(POST, ctxWith(journal))).rejects.toMatchObject({
+      retryable: false,
+    });
+  });
+
+  it('a NON-journaled tool keeps its ordinary retryable classification — the negative control', async () => {
+    // Without this the assertion above passes for an implementation that made everything non-retryable,
+    // which would silently disable the node-retry budget for every transient read failure.
+    const journal = recordingJournal();
+    const host = hostWith(() => Promise.reject(new Error('timeout')));
+    const registry = createToolRegistry({ tools: TOOLS, host });
+    const GET = {
+      type: 'tool_call' as const,
+      name: 'http_request',
+      id: 'c2',
+      args: { url: 'https://api.example/x' },
+    };
+
+    await expect(registry.dispatch(GET, ctxWith(journal))).rejects.toMatchObject({
+      retryable: true,
+    });
+    expect(journal.rows()).toEqual([]); // …and a GET is journaled at all
+  });
+
+  it('a prepare CONFLICT refuses the dispatch, and is not retryable either', async () => {
+    // §12 point 7's engine half. A retry would re-collide on the same identity, burn the whole node budget
+    // and report `tool_failed` — the wrong cause for "another attempt owns this effect".
+    const journal = recordingJournal();
+    let dispatched = 0;
+    const host = hostWith(() => {
+      dispatched += 1;
+      return Promise.resolve({
+        status: 200,
+        headers: {},
+        body: 'ok',
+        truncated: false,
+        url: 'https://api.example/x',
+      });
+    });
+    const registry = createToolRegistry({ tools: TOOLS, host });
+
+    await registry.dispatch(POST, ctxWith(journal)); // claims the identity
+    await expect(
+      registry.dispatch(POST, ctxWith(journal)), // …a second attempt at the same slot
+    ).rejects.toMatchObject({ retryable: false, runErrorCode: 'effect_needs_attention' });
+
+    expect(dispatched).toBe(1); // the refused attempt never reached the target
+  });
+
+  it('a prepare that FAILS refuses the dispatch — no journal row means no way to tell resume anything', async () => {
+    // §12 point 1. Fail-closed: if the intent cannot be recorded, the effect must not happen.
+    let dispatched = 0;
+    const host = hostWith(() => {
+      dispatched += 1;
+      return Promise.resolve({
+        status: 200,
+        headers: {},
+        body: 'ok',
+        truncated: false,
+        url: 'https://api.example/x',
+      });
+    });
+    const registry = createToolRegistry({ tools: TOOLS, host });
+    const ctx: ToolDispatchContext = {
+      ...ctxWith(recordingJournal()),
+      effects: {
+        prepare: () => Promise.reject(new Error('history.db is locked')),
+        settle: () => Promise.resolve(),
+      },
+    };
+
+    await expect(registry.dispatch(POST, ctx)).rejects.toBeDefined();
+    expect(dispatched).toBe(0);
+  });
+
+  it('two effects in one node get two rows at two slots', async () => {
+    // §12 point 6, end to end through the registry rather than at the store.
+    const journal = recordingJournal();
+    const host = hostWith(() =>
+      Promise.resolve({
+        status: 200,
+        headers: {},
+        body: 'ok',
+        truncated: false,
+        url: 'https://api.example/x',
+      }),
+    );
+    const registry = createToolRegistry({ tools: TOOLS, host });
+    const ctx = ctxWith(journal);
+
+    await registry.dispatch(POST, ctx);
+    await registry.dispatch({ ...POST, id: 'c2' }, { ...ctx, effectSlot: 1 });
+
+    expect(journal.rows().map((r) => r.slot)).toEqual([0, 1]);
+  });
+
+  it('a MISSING capability is not ambiguous — it demonstrably never left the process', async () => {
+    // Recording a wiring gap as `ambiguous` would leave a permanently unresolved row for a call that
+    // provably never happened, and (once the gate lands) block the node on a human for a config error.
+    const journal = recordingJournal();
+    const registry = createToolRegistry({ tools: TOOLS, host: hostWith(undefined) });
+
+    await expect(registry.dispatch(POST, ctxWith(journal))).rejects.toBeDefined();
+    expect(journal.order).toEqual(['prepare']); // prepared, then NOT settled ambiguous
+    expect(journal.rows()[0]?.state).toBe('prepared');
+  });
+
+  it('two turns of ONE session do not collide — the correlation carries the turn', async () => {
+    // The bug this pins was found by RUNNING it: the CLI froze the session correlation at `turn: 0` for the
+    // session's whole life while the slot ordinal restarts each turn, so a user's second effectful request
+    // in one chat collided with their first and was refused — permanently, since nothing sweeps the row.
+    // One SHARED store, because that is what a `history.db` is; a fresh journal per correlation would make
+    // the collision unreachable and the test vacuous.
+    const store = createInMemoryEffectJournalStore();
+    const turnOne = store.for({ kind: 'session', sessionId: 's1', turn: 0 });
+    const turnTwo = store.for({ kind: 'session', sessionId: 's1', turn: 1 });
+
+    await turnOne.prepare(0, 'run_command', 3, {});
+    await expect(turnTwo.prepare(0, 'run_command', 3, {})).resolves.toBeUndefined();
+    expect(store.rows().map((r) => r.scope)).toEqual(['session:s1:0', 'session:s1:1']);
+
+    // …and the same turn twice at one slot IS a collision — the property that makes the above meaningful.
+    await expect(turnOne.prepare(0, 'run_command', 3, {})).rejects.toSatisfy(isEffectConflictError);
+  });
+
+  it('the in-memory reference refuses a duplicate identity, exactly as the real store does', async () => {
+    // The reference exists so a core test proves something. One that accepted what SQLite rejects would make
+    // every test above vacuous — this repo has been bitten by exactly that divergence before.
+    const journal = createInMemoryEffectJournal({
+      kind: 'run',
+      runId: 'r1',
+      nodeId: 'n1',
+      attempt: 1,
+    });
+    await journal.prepare(0, 'http_request', 3, {});
+    await expect(journal.prepare(0, 'http_request', 3, {})).rejects.toSatisfy(
+      isEffectConflictError,
+    );
+  });
+});

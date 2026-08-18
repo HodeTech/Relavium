@@ -298,8 +298,17 @@ function codeForToolError(err: ToolDispatchError): { code: ErrorCode; retryable:
       // tool + the unwired arm via the error message), never a bare `internal`. The advertise-filter (2.5.A)
       // makes this a backstop — an unwired tool is not offered — but a slipped-through call still classifies clean.
       return { code: 'tool_unavailable', retryable: false };
+    case 'effect_conflict':
+      // ADR-0080 §7: another attempt already holds this effect's identity. A refusal, not a fault — and
+      // never retried, because a retry re-collides, burns the whole node budget, and reports the wrong
+      // cause. It is the first real producer of `effect_needs_attention`.
+      return { code: 'effect_needs_attention', retryable: false };
     case 'execution_failed':
-      return { code: 'tool_failed', retryable: true };
+      // **`err.retryable`, not a hard-coded `true`.** The registry stamps `false` once an effect has left
+      // the process (ADR-0080 §8), and this is the ONE reader that decides whether the node re-dispatches.
+      // Hard-coding it made that stamp unreadable: a review measured that setting it unconditionally
+      // changed nothing anywhere, so a timed-out POST re-ran the node and re-fired the effect.
+      return { code: 'tool_failed', retryable: err.retryable };
     default:
       // unknown_tool / invalid_args reach here only after the correction budget is spent.
       return { code: 'tool_failed', retryable: false };

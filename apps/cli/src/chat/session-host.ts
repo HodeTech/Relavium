@@ -48,7 +48,11 @@ import {
 import { resolveChatAgent } from './agent-source.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { hostSleep } from '../process/sleep.js';
-import { unwiredEffectJournal, type EffectDispatchPort } from '@relavium/core';
+import {
+  unwiredEffectJournal,
+  type EffectCorrelation,
+  type EffectDispatchPort,
+} from '@relavium/core';
 
 /**
  * Assemble a ready-to-run `relavium chat` session over `@relavium/core`'s {@link AgentSession} (2.M — the
@@ -209,7 +213,9 @@ export interface BuiltChatSession {
    * An effect dispatched before attachment is REFUSED loudly rather than going unrecorded, which is the
    * fail-closed direction: a silently unjournaled effect is exactly what CR-12 exists to prevent.
    */
-  readonly attachEffectJournal: (port: EffectDispatchPort) => void;
+  readonly attachEffectJournal: (
+    factory: (correlation: EffectCorrelation) => EffectDispatchPort,
+  ) => void;
   readonly attachDurabilityProbe: (probe: () => Error | undefined) => void;
   /**
    * Tools dropped at MCP discovery (allowlist / unsupported schema / collision / unsafe id) — a non-fatal
@@ -271,7 +277,7 @@ function buildSessionRuntime(
    * An effect dispatched before attachment is REFUSED loudly rather than going unrecorded, which is the
    * fail-closed direction: a silently unjournaled effect is exactly what CR-12 exists to prevent.
    */
-  attachEffectJournal: (port: EffectDispatchPort) => void;
+  attachEffectJournal: (factory: (correlation: EffectCorrelation) => EffectDispatchPort) => void;
   attachDurabilityProbe: (probe: () => Error | undefined) => void;
 } {
   let durabilityProbe: () => Error | undefined = () => undefined;
@@ -345,7 +351,7 @@ function buildSessionRuntime(
 
   // Late-bound by `attachEffectJournal`: the journal is owned by the persister, which is built AFTER the
   // session — the same constraint the commitment writer has.
-  let effectJournal: EffectDispatchPort | undefined;
+  let effectJournal: ((correlation: EffectCorrelation) => EffectDispatchPort) | undefined;
 
   const deps: SessionDeps = {
     resolveProvider: providers.resolveProvider,
@@ -354,17 +360,20 @@ function buildSessionRuntime(
     // persister, which owns `history.db`, so resolving at call time is what lets the session be built first.
     // Before attachment the forward hits `unwiredEffectJournal()` and REFUSES — the fail-closed direction,
     // and the same posture the commitment writer takes for money.
-    effects: {
-      prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey) =>
-        (effectJournal ?? unwiredEffectJournal()).prepare(
-          slot,
-          toolId,
-          tier,
-          redactedArgs,
-          targetIdempotencyKey,
-        ),
-      settle: (slot, toolId, state, result) =>
-        (effectJournal ?? unwiredEffectJournal()).settle(slot, toolId, state, result),
+    effects: (correlation: EffectCorrelation): EffectDispatchPort => {
+      const port = effectJournal?.(correlation);
+      return {
+        prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey) =>
+          (port ?? unwiredEffectJournal()).prepare(
+            slot,
+            toolId,
+            tier,
+            redactedArgs,
+            targetIdempotencyKey,
+          ),
+        settle: (slot, toolId, state, result) =>
+          (port ?? unwiredEffectJournal()).settle(slot, toolId, state, result),
+      };
     },
     // ADR-0071 §6: the host projects WHICH TIERS the model accepts, not merely whether it reasons. `gpt-5.4-pro`
     // reasons and rejects `low`; the boolean this replaced said `true` and let that straight through to a 400.
@@ -455,8 +464,8 @@ function buildSessionRuntime(
     attachDurabilityProbe: (probe) => {
       durabilityProbe = probe;
     },
-    attachEffectJournal: (port: EffectDispatchPort) => {
-      effectJournal = port;
+    attachEffectJournal: (factory: (correlation: EffectCorrelation) => EffectDispatchPort) => {
+      effectJournal = factory;
     },
   };
 }

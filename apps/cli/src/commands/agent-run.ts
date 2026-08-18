@@ -19,6 +19,8 @@ import type { GlobalOptions } from '../process/options.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { makePlainPrinter } from './chat.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
+import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
+import { openSessionStore } from '../history/session-open.js';
 
 /**
  * `relavium agent run <agent>` (2.Q) — invoke a single agent **one-shot** (non-interactive) on the same
@@ -115,9 +117,31 @@ export async function agentRunCommand(
   // in-memory debit still consumes cap capacity for this process, which is the whole of what a one-shot needs.
   built.governor?.attachConservativeWriter(() => Promise.resolve());
 
-  // Render the live stream + run the single turn + tear down — a classified turn failure maps to exit 1.
-  const turnErrorCode = await runOneShotTurn(built, message, deps);
-  return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
+  // **ADR-0074 §4's no-op precedent does NOT transfer to effects, and the difference is the whole point.**
+  // A conservative commitment has nowhere to go because nothing will ever resume this invocation. An external
+  // effect is carried forward by the TARGET, not by the run — a ticket filed here still exists tomorrow — so a
+  // no-op journal would be fail-open on exactly the guarantee CR-12 exists to give, and leaving it unattached
+  // would refuse every effectful tool on this surface.
+  //
+  // So it opens the store it otherwise would not, under an EPHEMERAL session correlation. Its rows are never
+  // read back (nothing resumes an `agent run`), which is why this buys the audit trail and the
+  // concurrent-dedup for free and costs no new correlation kind: a one-shot invocation IS a session that does
+  // not persist its transcript.
+  const journalStore = openSessionStore(homeDir);
+  try {
+    built.attachEffectJournal((correlation) =>
+      createEffectJournalPort(
+        createEffectJournalStore(journalStore.db, { uuid: randomUUID, now: Date.now }),
+        correlation,
+        { providerAttempt: 1, toolCallId: 'agent-run' },
+      ),
+    );
+    // Render the live stream + run the single turn + tear down — a classified turn failure maps to exit 1.
+    const turnErrorCode = await runOneShotTurn(built, message, deps);
+    return turnErrorCode === undefined ? EXIT_CODES.success : EXIT_CODES.workflowFailed;
+  } finally {
+    journalStore.close();
+  }
 }
 
 /** Validate the one-shot invocation and read the prompt from stdin — the two pre-run faults (exit-2 CliError). */

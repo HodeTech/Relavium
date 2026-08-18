@@ -118,9 +118,7 @@ async function build(overrides: Partial<Parameters<typeof buildChatSession>[0]> 
   // here rather than leaving it unwired: MCP tools are tier 3 (ADR-0080), so the MCP tests below genuinely
   // dispatch effects, and the unwired port correctly refuses those — which would test the refusal instead of
   // the routing each test is about.
-  built.attachEffectJournal(
-    createInMemoryEffectJournal({ kind: 'session', sessionId: built.sessionId, turn: 0 }),
-  );
+  built.attachEffectJournal((correlation) => createInMemoryEffectJournal(correlation));
   return built;
 }
 
@@ -838,9 +836,7 @@ describe('buildResumedChatSession (2.N)', () => {
         startMcpClient: () => realStartMcpClient([{ id: 'fs', open: () => Promise.resolve(conn) }]),
       });
       // A resumed session's MCP tools are tier 3 too (ADR-0080) — same reason as `build()` above.
-      built.attachEffectJournal(
-        createInMemoryEffectJournal({ kind: 'session', sessionId: built.sessionId, turn: 0 }),
-      );
+      built.attachEffectJournal((correlation) => createInMemoryEffectJournal(correlation));
 
       // The RETURNED agent is the ORIGINAL snapshot — its grant is not baked with the dynamic id, and it still
       // carries mcp_servers so a FUTURE resume re-discovers again (the persistence contract).

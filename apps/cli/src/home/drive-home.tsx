@@ -72,6 +72,7 @@ import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
 import { createHomeStore } from './home-store.js';
+import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
 
 /**
  * `driveHome` — the imperative entry behind a bare `relavium` in a TTY (2.5.B / [ADR-0054](../../../../docs/decisions/0054-cli-bare-invocation-interactive-home.md)).
@@ -530,6 +531,15 @@ export async function driveHome(deps: HomeDeps): Promise<ExitCode> {
             ? {}
             : { initialSequenceNumber: opts.initialSequenceNumber }),
         });
+        // The durable effect journal (ADR-0080), wired where `history.db` is open. Without it every
+        // effectful tool on the bare-`relavium` Home — `!ls`, an appending `write_file`, a non-GET
+        // `http_request`, every MCP tool — is refused, which is exactly what a review found here.
+        built.attachEffectJournal((correlation) =>
+          createEffectJournalPort(createEffectJournalStore(opened.db, { uuid, now }), correlation, {
+            providerAttempt: 1,
+            toolCallId: 'home',
+          }),
+        );
         // createChatLineHandler owns the mode control (ADR-0057): it applies the initial `ask` mode → the
         // fail-closed approval regime — BEFORE the session opens, so the full-capability host is never live without it.
         const {

@@ -18,6 +18,7 @@ export type ToolErrorCode =
   | 'tool_denied' // a guardrail or grant denial (unlisted command, blocked domain, not granted, missing gate)
   | 'invalid_args' // the effective argument set failed the tool's validator or the secret-taint check
   | 'capability_unavailable' // the required ToolHost capability was not injected (a host/config gap)
+  | 'effect_conflict' // another attempt already holds this effect's journal identity (ADR-0080) — a refusal
   | 'execution_failed' // the host capability threw a non-cancel error
   | 'cancelled'; // the run's AbortSignal fired during the tool — the cooperative-cancel path
 
@@ -165,6 +166,33 @@ export class ToolUnavailableError extends ToolDispatchError {
 }
 
 /** The host capability threw a non-cancel error. The cause is kept for logs, off the user message. */
+/**
+ * Another attempt already holds this effect's journal identity
+ * ([ADR-0080](../../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §7).
+ *
+ * A **refusal, not a fault**: the effect was not dispatched, and it must not be retried — a retry re-collides
+ * on the same identity, burns the whole node budget, and reports the wrong cause. Its siblings
+ * `AppendConflictError` and `LeaseFencedError` are excluded from their retry sets for exactly this reason.
+ *
+ * It carries `effect_needs_attention` rather than `tool_failed` because that is what it is: another attempt
+ * owns this effect and a human, not a retry loop, decides what happened to it.
+ */
+export class ToolEffectConflictError extends ToolDispatchError {
+  readonly code = 'effect_conflict';
+  readonly runErrorCode: ErrorCode = 'effect_needs_attention';
+  readonly retryable = false;
+
+  constructor(toolId: ToolId, cause?: unknown) {
+    super(
+      `effect for tool \`${toolId}\` is already claimed by another attempt — not retried, because a retry could repeat it`,
+      toolId,
+      cause,
+      false,
+    );
+    this.name = 'ToolEffectConflictError';
+  }
+}
+
 export class ToolExecutionError extends ToolDispatchError {
   readonly code = 'execution_failed';
   readonly runErrorCode: ErrorCode = 'tool_failed';

@@ -10,6 +10,8 @@ import {
   type WorkflowEngine,
 } from '@relavium/core';
 import {
+  createEffectJournalPort,
+  createEffectJournalStore,
   createRunHistoryStore,
   createRunLeasePort,
   isCorruptRunEventError,
@@ -255,6 +257,15 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     // far side of the gate — the very ADR-0064 §6 gap this closes. Non-fatal read (an empty map ⇒ no user pricing).
     const resolvePrice = readUserPricingOverlay(opened.db);
     const engine = await (deps.buildEngine ?? defaultBuildEngine)({
+      // The durable effect journal (ADR-0080). A gate resume runs the FAR side of a human gate, which is
+      // precisely where a tool-using agent node does its work — leaving it unwired refused every effectful
+      // tool on exactly the path the gate exists to enable.
+      effectJournal: (correlation) =>
+        createEffectJournalPort(
+          createEffectJournalStore(opened.db, { uuid: randomUUID, now: Date.now }),
+          correlation,
+          { providerAttempt: 1, toolCallId: 'gate' },
+        ),
       providers,
       // ADR-0071 §6: the far side of a gate re-runs agent nodes, so an authored tier the bound model rejects is
       // withheld here too — and this surface has no other safety net (no picker, no footer, no client-side check).

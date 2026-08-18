@@ -586,12 +586,11 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
     // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is
     // NOT silent: the forwarding port refuses the first effect loudly, which is exactly why
     // `unwiredEffectJournal()` rejects instead of no-opping.
-    built.attachEffectJournal(
-      createEffectJournalPort(
-        createEffectJournalStore(opened.db, { uuid, now }),
-        { kind: 'session', sessionId: built.sessionId, turn: 0 },
-        { providerAttempt: 1, toolCallId: 'session' },
-      ),
+    built.attachEffectJournal((correlation) =>
+      createEffectJournalPort(createEffectJournalStore(opened.db, { uuid, now }), correlation, {
+        providerAttempt: 1,
+        toolCallId: 'session',
+      }),
     );
   } catch (err) {
     closeQuietly(deps.io, 'session store', () => opened.close());
@@ -1548,10 +1547,10 @@ async function buildFreshChatWiring(deps: FreshChatWiringDeps, intro: string): P
     // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is
     // NOT silent: the forwarding port refuses the first effect loudly, which is exactly why
     // `unwiredEffectJournal()` rejects instead of no-opping.
-    built.attachEffectJournal(
+    built.attachEffectJournal((correlation) =>
       createEffectJournalPort(
         createEffectJournalStore(deps.opened.db, { uuid: deps.uuid, now: deps.now }),
-        { kind: 'session', sessionId: built.sessionId, turn: 0 },
+        correlation,
         { providerAttempt: 1, toolCallId: 'session' },
       ),
     );
@@ -1690,12 +1689,11 @@ function seedResumedWiring(
   // The durable effect journal (ADR-0080), wired where `history.db` is open. A site that forgets is NOT
   // silent: the forwarding port refuses the first effect loudly, which is exactly why
   // `unwiredEffectJournal()` rejects instead of no-opping.
-  resumed.attachEffectJournal(
-    createEffectJournalPort(
-      createEffectJournalStore(opened.db, { uuid, now }),
-      { kind: 'session', sessionId: resumed.sessionId, turn: 0 },
-      { providerAttempt: 1, toolCallId: 'session' },
-    ),
+  resumed.attachEffectJournal((correlation) =>
+    createEffectJournalPort(createEffectJournalStore(opened.db, { uuid, now }), correlation, {
+      providerAttempt: 1,
+      toolCallId: 'session',
+    }),
   );
   return { store, persister };
 }

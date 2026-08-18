@@ -615,6 +615,59 @@ export function resolveInMemoryLeases(
  * enforces its real counterpart's rule: a reference that accepts what the real store rejects makes every
  * `packages/core` test prove nothing.
  */
+export function createInMemoryEffectJournalStore(): {
+  /** A port for one correlation — every port from this store shares ONE row table, as one `history.db` does. */
+  readonly for: (correlation: EffectCorrelation) => EffectDispatchPort;
+  readonly rows: () => readonly {
+    scope: string;
+    slot: EffectSlot;
+    toolId: string;
+    tier: EffectTier;
+    state: EffectState;
+    result?: unknown;
+  }[];
+} {
+  const rows = new Map<
+    string,
+    {
+      scope: string;
+      slot: EffectSlot;
+      toolId: string;
+      tier: EffectTier;
+      state: EffectState;
+      result?: unknown;
+    }
+  >();
+  const key = (scope: string, slot: EffectSlot, toolId: string): string =>
+    `${scope}|${String(slot)}|${toolId}`;
+  return {
+    for: (correlation) => {
+      const scope = effectScope(correlation);
+      return {
+        prepare: (slot, toolId, tier) => {
+          if (rows.has(key(scope, slot, toolId))) {
+            return Promise.reject(new EffectConflictError({ scope, slot, toolId }));
+          }
+          rows.set(key(scope, slot, toolId), { scope, slot, toolId, tier, state: 'prepared' });
+          return Promise.resolve();
+        },
+        settle: (slot, toolId, state, result) => {
+          const row = rows.get(key(scope, slot, toolId));
+          if (row !== undefined) {
+            rows.set(key(scope, slot, toolId), {
+              ...row,
+              state,
+              ...(result === undefined ? {} : { result }),
+            });
+          }
+          return Promise.resolve();
+        },
+      };
+    },
+    rows: () => [...rows.values()],
+  };
+}
+
 export function createInMemoryEffectJournal(correlation: EffectCorrelation): EffectDispatchPort & {
   /** Test/inspection helper — the rows written, in write order. */
   readonly rows: () => readonly {
@@ -625,31 +678,10 @@ export function createInMemoryEffectJournal(correlation: EffectCorrelation): Eff
     result?: unknown;
   }[];
 } {
-  const rows = new Map<
-    string,
-    { slot: EffectSlot; toolId: string; tier: EffectTier; state: EffectState; result?: unknown }
-  >();
-  const key = (slot: EffectSlot, toolId: string): string =>
-    `${effectScope(correlation)}|${String(slot)}|${toolId}`;
-  return {
-    prepare: (slot, toolId, tier) => {
-      if (rows.has(key(slot, toolId))) {
-        return Promise.reject(
-          new EffectConflictError({ scope: effectScope(correlation), slot, toolId }),
-        );
-      }
-      rows.set(key(slot, toolId), { slot, toolId, tier, state: 'prepared' });
-      return Promise.resolve();
-    },
-    settle: (slot, toolId, state, result) => {
-      const row = rows.get(key(slot, toolId));
-      if (row !== undefined) {
-        rows.set(key(slot, toolId), { ...row, state, ...(result === undefined ? {} : { result }) });
-      }
-      return Promise.resolve();
-    },
-    rows: () => [...rows.values()],
-  };
+  // Built ON the shared store rather than duplicating it, so the one-correlation convenience can never
+  // diverge from the many-correlation reality a `history.db` actually is.
+  const store = createInMemoryEffectJournalStore();
+  return { ...store.for(correlation), rows: () => store.rows() };
 }
 
 export function createInMemoryHost(options?: {

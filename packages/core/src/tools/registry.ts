@@ -16,6 +16,8 @@ import {
   redactSecretShapedValue,
 } from './bounding.js';
 import {
+  ToolUnavailableError,
+  ToolEffectConflictError,
   ToolArgsInvalidError,
   ToolCancelledError,
   ToolDeniedByUserError,
@@ -40,7 +42,7 @@ import {
   type ToolId,
   type ToolResultPart,
 } from './types.js';
-import { redactSecretArgs } from '@relavium/shared';
+import { isEffectConflictError, redactSecretArgs } from '@relavium/shared';
 import { journaledTier } from './effect-predicate.js';
 
 /** Build the engine-side tool registry. Performs no I/O and reads no ambient state (engine purity). */
@@ -73,6 +75,17 @@ export function createToolRegistry(options: CreateToolRegistryOptions): {
  * silent catch: the fail-closed outcome is preserved by the row's state, and rethrowing would discard the
  * dispatch error that actually explains what happened.
  */
+/**
+ * Whether a dispatch throw proves the call never reached a target.
+ *
+ * Only a capability gap qualifies: `requireFs`/`requireProcess`/`requireEgress` throw synchronously inside
+ * the dispatch arm before the host is touched, so the effect demonstrably did not happen. Everything else —
+ * a network error, a timeout, an abort — is genuinely ambiguous and must be recorded as such.
+ */
+function neverLeftTheProcess(cause: unknown): boolean {
+  return cause instanceof ToolUnavailableError;
+}
+
 async function settleQuietly(
   ctx: ToolDispatchContext,
   toolId: ToolId,
@@ -161,31 +174,43 @@ async function dispatch(
     //     A `prepare` that cannot be written refuses the dispatch, which is the fail-closed direction: no
     //     journal row means no way to tell a resumed run whether the effect happened.
     if (tier !== undefined) {
-      await ctx.effects.prepare(
-        ctx.effectSlot,
-        def.id,
-        tier,
-        // Redacted HERE because only the engine knows which keys are secret-tainted; hashed in the port
-        // because only the host can (core is platform-free). A secret never reaches the digest.
-        redactSecretArgs(args, ctx.secretArgKeys),
-      );
+      try {
+        await ctx.effects.prepare(
+          ctx.effectSlot,
+          def.id,
+          tier,
+          // Redacted HERE because only the engine knows which keys are secret-tainted; hashed in the port
+          // because only the host can (core is platform-free). A secret never reaches the digest.
+          redactSecretArgs(args, ctx.secretArgKeys),
+        );
+      } catch (cause) {
+        // A CONFLICT is a refusal, not a fault: another attempt already holds this identity, so the effect
+        // must not be dispatched — and must not be retried either, because a retry re-collides, burns the
+        // whole node budget and reports the wrong cause. Its siblings `AppendConflictError` and
+        // `LeaseFencedError` are excluded from retry sets for the same reason.
+        if (isEffectConflictError(cause)) {
+          throw new ToolEffectConflictError(def.id, cause);
+        }
+        throw cause; // a store fault: the dispatch is refused, nothing reached a target
+      }
+      // **The flag flips HERE, before the call — not after a successful settle.** This is the line ADR-0080
+      // §7 step 3 draws: past the prepare, the effect MAY have reached the target, so every failure below is
+      // non-retryable. Setting it after the settle instead left a dispatch THROW — the canonical timed-out
+      // POST — reported as `retryable: true`, which is the duplicate this whole mechanism exists to prevent.
+      effectDispatched = true;
     }
     let output: unknown;
     try {
       output = await def.dispatch(args, host, ctx);
     } catch (cause) {
-      // The call left this process and we do not know what the target did — that is the definition of
-      // `ambiguous`. Settling before rethrowing is what turns "we crashed mid-effect" into a record a
-      // resumed run can act on instead of a silent gap.
-      if (tier !== undefined) await settleQuietly(ctx, def.id, 'ambiguous');
+      // **`ambiguous` means "we do not know what the target did" — so a demonstrable NON-dispatch is not
+      // ambiguous.** A missing host capability throws synchronously inside the dispatch arm before the host
+      // is ever touched, and recording that as ambiguous would leave a permanently unresolved row for a call
+      // that provably never left, blocking the node on a human for a wiring gap.
+      if (tier !== undefined && !neverLeftTheProcess(cause)) {
+        await settleQuietly(ctx, def.id, 'ambiguous');
+      }
       throw cause;
-    }
-    // 5. **SETTLE immediately** (§7 step 4). Between the call returning and this write there is a window in
-    //    which a crash leaves the row `prepared` — resume then reads that as unresolved and refuses, which
-    //    is the honest answer: the effect may well have landed.
-    if (tier !== undefined) {
-      await ctx.effects.settle(ctx.effectSlot, def.id, 'committed', output);
-      effectDispatched = true;
     }
     // Abort that lands AFTER the host resolved must still classify as cancelled, not a success.
     throwIfAborted(ctx, def.id);
@@ -198,6 +223,15 @@ async function dispatch(
       host,
       ctx.signal,
     );
+    // 8. **SETTLE — after bounding, and deliberately so.** ADR-0080 §7 said "immediately"; what ships settles
+    //    once the BOUNDED value exists, for two reasons the spec is being corrected to state. First, the
+    //    gate's job is to RE-DELIVER the model-facing result, so the bounded value is the one worth keeping —
+    //    persisting the raw result would put unbounded `run_command` stdout into `history.db` with no cap and
+    //    no sweep. Second, the wider window costs nothing but interruptions: a crash before this leaves the
+    //    row `prepared`, which resume reads as unresolved and REFUSES. `prepared` is the safe state.
+    if (tier !== undefined) {
+      await ctx.effects.settle(ctx.effectSlot, def.id, 'committed', bounded.value);
+    }
     // An abort that lands during bounding (its async fast path yields a microtask) must still classify
     // as cancelled, not a success — the symmetric guard to line 109 after the dispatch await.
     throwIfAborted(ctx, def.id);

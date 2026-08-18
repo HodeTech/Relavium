@@ -161,7 +161,7 @@ function harness(
     // A REAL in-memory journal, not the unwired one: `run_command` is tier 3, so the `!`-shell tests below
     // genuinely dispatch an effect and must journal it. `unwiredEffectJournal()` correctly refuses those —
     // the loud port doing its job, not a fixture inconvenience.
-    effects: createInMemoryEffectJournal({ kind: 'session', sessionId: 'sess-1', turn: 0 }),
+    effects: (correlation) => createInMemoryEffectJournal(correlation),
     emit: (event) => {
       events.push(event);
     },
