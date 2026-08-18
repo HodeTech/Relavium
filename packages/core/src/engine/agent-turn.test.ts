@@ -427,6 +427,48 @@ describe('runAgentTurn — tool loop', () => {
     STOP('tool_use'),
   ];
 
+  it('CR-95: a budget pause AFTER a tool round fails closed instead of pausing', async () => {
+    // The replay this refuses: a `paused` outcome resets the node to `pending` and re-dispatches it FROM THE
+    // START on approval, re-firing every tool call this turn already made. Before ADR-0080 that made the
+    // budget path a duplicate-effect generator — the very thing the effect journal exists to prevent.
+    const provider = scriptedProvider('anthropic', [
+      toolUseTurn('t1'),
+      [{ type: 'text_delta', text: 'done' }, STOP()],
+    ]);
+    let egress = 0;
+    const params = baseParams(provider, {
+      preEgress: () => {
+        egress += 1;
+        if (egress === 2) throw new BudgetPauseError(900, 1000, 90); // the SECOND egress — tools have run
+        return undefined;
+      },
+    });
+
+    // `budget_exceeded`, non-retryable — NOT a pause. A pause here would be resumable, and resuming replays.
+    await expect(runAgentTurn(params)).rejects.toMatchObject({
+      code: 'budget_exceeded',
+      retryable: false,
+    });
+    expect(egress).toBe(2); // it really did get past the first round; the guard is the second one
+  });
+
+  it('CR-95: a budget pause BEFORE any tool round still pauses — the negative control', async () => {
+    // Scoped deliberately. On the first egress nothing external has happened, so a replay costs one provider
+    // call and the pause stays useful. Without this control the guard above passes for an implementation that
+    // simply removed budget pauses altogether.
+    const provider = scriptedProvider('anthropic', [
+      toolUseTurn('t1'),
+      [{ type: 'text_delta', text: 'done' }, STOP()],
+    ]);
+    const params = baseParams(provider, {
+      preEgress: () => {
+        throw new BudgetPauseError(900, 1000, 90);
+      },
+    });
+
+    await expect(runAgentTurn(params)).rejects.toBeInstanceOf(BudgetPauseError);
+  });
+
   it('performs a tool round-trip then completes', async () => {
     const provider = scriptedProvider('anthropic', [
       // turn 1: a tool call

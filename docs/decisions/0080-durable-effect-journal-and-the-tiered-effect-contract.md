@@ -228,10 +228,13 @@ provider *and tool* calls — a duplicate-effect amplifier that this ADR's journ
 The short-term fix is non-deferrable and is decided here: **a budget pause is refused while a tool loop is in
 flight, and the run fails closed instead.**
 
-Precisely: a tool loop is "in flight" from the moment the first tool call of a model response is dispatched
-until the last one has settled. A budget verdict that would pause inside that window does not pause — it fails
-the node terminally with the budget error, **without replaying any earlier effect and without a further
-provider egress**. The alternative shapes both lose: completing the loop past the cap spends money the user
+Precisely: a turn's tool loop is "in flight" from the moment its **first** tool call is dispatched until the
+turn ends — not merely until that call settles. The distinction is the whole point, because the pause can only
+arrive at a provider egress, which is *between* tool rounds: by then the earlier round has settled, and it is
+exactly those settled effects that an approval would replay. So from the second provider egress of a turn
+onward, a budget verdict that would pause does not pause — it fails the node terminally with the budget error,
+**without replaying any earlier effect and without a further provider egress**. The first egress still pauses
+normally: nothing external has happened yet, so a replay costs one provider call and the pause stays useful. The alternative shapes both lose: completing the loop past the cap spends money the user
 capped, and pausing-then-resuming is the replay this item exists to remove. Failing closed is the only option
 that neither overspends nor duplicates, and it is deliberately the more disruptive of the honest choices.
 

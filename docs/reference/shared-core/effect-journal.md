@@ -225,7 +225,25 @@ before `node:completed` · 6. two effects in one node · 7. two processes prepar
 8. a settle write that fails · 9. tier 1 retry, tier 2 reconcile, tier 3 attention · 10. session
 disclosure-once and a concurrent `chat-resume` · 11. the committed-retention sweep boundary.
 
-## 13. Known limitations
+## 13. CR-95: the budget path must not become an effect duplicator
+
+A budget pause becomes a `paused` outcome, and an approval resets the node to `pending` and re-dispatches it
+**from the start** — replaying every provider call and every tool call the turn already made. That makes the
+budget path a duplicate-effect generator, independently of any crash.
+
+The rule: **from a turn's second provider egress onward, a budget verdict that would pause instead fails the
+node closed** with the budget error, replaying nothing and issuing no further egress. The first egress still
+pauses normally — nothing external has happened yet, so a replay costs one provider call.
+
+The two alternatives lose for opposite reasons: completing the loop past the cap spends money the user capped,
+and pausing-then-resuming *is* the replay. Failing closed neither overspends nor duplicates, and is deliberately
+the more disruptive of the two honest options.
+
+The long-term answer — checkpointing the continuation (provider messages, tool call/result pairs, round index)
+so an approved pause resumes mid-loop instead of restarting — is a new durable artifact of a different shape.
+Trigger: a user who must resume a partially completed tool loop rather than fail it.
+
+## 14. Known limitations
 
 - **The session path has no ownership guarantee.** ADR-0079 is runs-only, so two `chat-resume` processes on one
   session can both dispatch. The UNIQUE prepare detects the collision but cannot distinguish a live prepare from
