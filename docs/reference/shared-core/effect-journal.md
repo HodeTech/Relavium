@@ -135,8 +135,12 @@ document and being able to find the code.
 
 - **Re-delivery is decided at the dispatch**, inside `prepare` (`@relavium/db`'s `createEffectJournalStore`).
   It returns a verdict: `replay` when the identity, the args digest and a retained result all match, and the
-  registry then skips the call entirely and puts the stored result through the same mapping and bounding the
-  original would have taken. It is host-side because only the host can compute the digest the comparison
+  registry then skips the call entirely and re-delivers the projections the original produced — the
+  model-facing value, its truncation flag, its summary, and its `output_mapping` result. They are RECORDED,
+  not re-derived: re-deriving ran `output_mapping` over the truncation preview, so a node whose result
+  exceeded the bounding ceiling put a different value into workflow state on the replay than on the
+  original. A replay is also refused when the node's `output_mapping` configuration differs from the one the
+  effect ran under — a workflow edited in the crash window is not a call we can answer from the record. It is host-side because only the host can compute the digest the comparison
   needs — the engine is platform-free. A committed row that does **not** match is a refusal, not a replay:
   different args at the same slot means the model asked a different question on the re-run, and answering it
   with the old answer would be a silent wrong result.

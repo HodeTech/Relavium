@@ -462,6 +462,58 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     });
   }
 
+  it('matches a keyword only as a WHOLE WORD — `author` is not `auth`', () => {
+    // The first version reused the text rule's `[\w-]{0,32}<keyword>[\w-]{0,16}` wrapper, which matches a
+    // keyword anywhere inside a name. A review caught `author`, `authors`, `pinned`, `opinion`, `spinner`
+    // and `tokenizer` all being replaced with `[redacted]`. That is worse than losing diagnostics: the
+    // DIGEST is computed over this projection, so two calls differing only in a falsely-redacted field
+    // become byte-identical inputs, and §4's replay then answers one with the other's recorded result.
+    const preserved = {
+      author: 'Jane Doe',
+      authors: ['Jane', 'Sam'],
+      pinned: true,
+      opinion: 'nice',
+      spinner: 'dots',
+      tokenizer: 'bpe',
+      key: 'a-map-key', // bare `key` is far too common to redact — it counts only next to a qualifier
+      keys: ['a', 'b'],
+    };
+    expect(redactSecretShapedValue(preserved)).toEqual(preserved);
+  });
+
+  it('…and still catches every real credential name, in all three casing conventions', () => {
+    for (const name of [
+      'api_key',
+      'apiKey',
+      'X-Api-Key',
+      'password',
+      'auth',
+      'authToken',
+      'client_secret',
+      'access_token',
+      'credentials',
+      'private_key',
+      'sessionKey',
+    ]) {
+      expect(JSON.stringify(redactSecretShapedValue({ [name]: 'hunter2' }))).not.toContain('hunter2');
+    }
+  });
+
+  it('a `-p` VALUE that is a port survives; a password does not', () => {
+    // `-p` is the password flag for `mysql`/`psql` AND the port flag for `ssh` and `docker run`. Dropping it
+    // leaks the first; keeping it blindly destroyed the second — a review caught `ssh -p 2222` and
+    // `docker run -p 8080:80` being replaced. The value's shape is what tells them apart.
+    expect(redactSecretShapedValue({ argv: ['ssh', '-p', '2222', 'user@host'] })).toEqual({
+      argv: ['ssh', '-p', '2222', 'user@host'],
+    });
+    expect(redactSecretShapedValue({ argv: ['docker', 'run', '-p', '8080:80', 'nginx'] })).toEqual({
+      argv: ['docker', 'run', '-p', '8080:80', 'nginx'],
+    });
+    expect(redactSecretShapedValue({ argv: ['mysql', '-p', 'hunter2dragon'] })).toEqual({
+      argv: ['mysql', '-p', '[redacted]'],
+    });
+  });
+
   it('leaves ordinary structured args alone — the negative control', () => {
     // Without this the rule above is satisfied by redacting everything, which would strip the stored row of
     // the diagnostic value that is its whole remaining purpose.

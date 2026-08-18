@@ -20,6 +20,8 @@ import {
 import { BUILTIN_TOOLS } from './builtins.js';
 import { ToolExecutionError } from './errors.js';
 import { createToolRegistry } from './registry.js';
+import { z } from 'zod';
+
 import type { ToolDef, ToolDispatchContext, ToolHost } from './types.js';
 
 /** A recording journal that also reports the ORDER of calls relative to the dispatch. */
@@ -323,6 +325,71 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     expect(serialized).toContain('api.example'); // …and the diagnostic half survives
   });
 
+  it('journals the sanitized args through the REAL call site, not the primitive in isolation', async () => {
+    // **The test this file's first digest assertion should have been.** That one called
+    // `redactSecretShapedValue({password: …})` directly — the primitive, handed a whole object — and passed
+    // while the production path leaked. `sanitizeInput` looped per key and passed each VALUE to the walker,
+    // so a TOP-LEVEL secretish key never reached the key rule at all: only nested members did, because only
+    // there does `Object.entries` still have the key attached. A review measured it end to end through
+    // `createToolRegistry` and recovered `api_key` verbatim from the digest input.
+    //
+    // Both sinks are covered by asserting on the value handed to `prepare`: that same projection is what
+    // `agent:tool_call.toolInput` carries onto the `--json`/event/log stream.
+    const captured: unknown[] = [];
+    const host = hostWith(() =>
+      Promise.resolve({
+        status: 200,
+        headers: {},
+        body: 'ok',
+        truncated: false,
+        url: 'https://api.example/x',
+      }),
+    );
+    const ctx: ToolDispatchContext = {
+      ...ctxWith(recordingJournal()),
+      effects: {
+        prepare: (_slot, _toolId, _tier, redacted) => {
+          captured.push(redacted);
+          return Promise.resolve({ outcome: 'proceed' });
+        },
+        settle: () => Promise.resolve(),
+      },
+    };
+
+    // A tool whose OWN top-level parameter is secretish — the shape an MCP server declares freely, and the
+    // one that leaked. `http_request`'s fixed schema cannot express it, so the def is local to this test.
+    const mcpish = {
+      id: 'vendor_publish',
+      source: 'mcp',
+      description: '',
+      policy: { requiresGateApproval: false },
+      parseArgs: (v: unknown) => z.object({ endpoint: z.string(), api_key: z.string() }).strict().parse(v),
+      llmVisibleParams: { type: 'object' },
+      effect: () => 3,
+      dispatch: () => Promise.resolve({ ok: true }),
+    } as unknown as ToolDef;
+    const withMcp = createToolRegistry({ tools: [...TOOLS, mcpish], host });
+
+    const outcome = await withMcp.dispatch(
+      {
+        type: 'tool_call',
+        name: 'vendor_publish',
+        id: 'c9',
+        args: { endpoint: 'https://api.example/x', api_key: 'hunter2-l0w-entropy' },
+      },
+      {
+        ...ctx,
+        grantedToolIds: new Set(['vendor_publish']),
+        secretArgKeys: new Set<string>(),
+      },
+    );
+
+    for (const projection of [captured[0], outcome.events.call.toolInput]) {
+      expect(JSON.stringify(projection)).not.toContain('hunter2-l0w-entropy');
+      expect(JSON.stringify(projection)).toContain('api.example'); // …the diagnostic half survives
+    }
+  });
+
   it('a settle that FAILS is reported as needing attention, not as an ordinary tool failure', async () => {
     // §7 step 4: the effect provably landed and the record does not say so. Falling into the generic ladder
     // made it `tool_failed`, which on the chat surface routes to "fix the target and resend" — the one
@@ -419,6 +486,38 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     expect(second.output).toEqual(first.output); // …NOT `{}` re-derived from the preview
     expect(second.truncated).toBe(first.truncated);
     expect(second.events.result.outputSummary).toBe(first.events.result.outputSummary);
+  });
+
+  it('a replay is refused when the node’s `output_mapping` CONFIG changed in the crash window', async () => {
+    // The same failure class as replaying a different call's result, reached from the other direction: the
+    // recorded projection is not what the CURRENT config asks for. A review reproduced both — a mapping
+    // configured at write and removed at read (workflow state gets the stale mapped value where the config
+    // now wants the full result), and the reverse (it gets the raw blob where the config wants an extract).
+    const store = createInMemoryEffectJournalStore();
+    const host = hostWith(() =>
+      Promise.resolve({
+        status: 200,
+        headers: {},
+        body: 'ok',
+        truncated: false,
+        url: 'https://api.example/x',
+      }),
+    );
+    const registry = createToolRegistry({ tools: TOOLS, host });
+    const correlation = { kind: 'run' as const, runId: 'r1', nodeId: 'n1', attempt: 1 };
+    const base: ToolDispatchContext = {
+      ...ctxWith(recordingJournal()),
+      effects: store.for(correlation),
+    };
+
+    await registry.dispatch(POST, { ...base, config: { outputMapping: { code: 'status' } } });
+    await expect(
+      registry.dispatch(POST, {
+        ...base,
+        config: {}, // the YAML lost its mapping between the crash and the resume
+        effects: store.for({ ...correlation, attempt: 2 }),
+      }),
+    ).rejects.toMatchObject({ runErrorCode: 'effect_needs_attention', retryable: false });
   });
 
   it('a replay is refused when the ARGS differ at the same slot', async () => {

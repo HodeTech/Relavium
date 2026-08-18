@@ -1016,7 +1016,7 @@ class RunExecution {
     if (gateAlreadyResolved) {
       this.#schedule();
     } else {
-      await this.resume(gateId, decision);
+      await this.resume(gateId, decision, true);
     }
   }
 
@@ -1131,7 +1131,12 @@ class RunExecution {
     return gate;
   }
 
-  async resume(gateId: string, decision: GateDecision): Promise<void> {
+  async resume(
+    gateId: string,
+    decision: GateDecision,
+    /** Set by `beginResume`, which already ran the effect gate — see the note at the claim below. */
+    alreadyGated = false,
+  ): Promise<void> {
     if (this.#resolvedGates.has(gateId)) {
       // Idempotent: this gate's decision was already applied (a re-delivery / reconnect) — never advance
       // the run twice (execution-model.md §gate). Checked BEFORE #settled so a re-delivery after the run
@@ -1144,18 +1149,34 @@ class RunExecution {
         gateId,
       });
     }
-    // **The in-process resume takes the SAME gate**, so the docblock's "every resume" is true of all three
-    // entry points rather than of the two that happen to go through a checkpoint. A budget approval resets
-    // the node's attempt to 1 and re-dispatches it FROM THE START, which is a replay of its tool calls in
-    // this very process — `agent-turn.ts`'s CR-95 guard is what stops that turning into a duplicate today,
-    // and a second, structural check at the same choke point is cheap (one range scan) and does not depend
-    // on that guard staying correct.
-    if (!(await this.#effectResumeGateOrFail())) {
+    // **The gate claim is taken SYNCHRONOUSLY, before any await.** Everything from the `#resolvedGates.has`
+    // check above to this line used to be one synchronous block, and that is what made a duplicate
+    // `resume()` — an IPC double-submit, a retried request, a double-clicked button — absorb into the
+    // documented idempotent no-op. Inserting an `await` above the claim opened a microtask window in which
+    // both callers passed the `has` check, one won, and the loser got an uncaught
+    // `EngineStateError('run_not_paused')` instead. A review reproduced it with two concurrent `resume()`
+    // calls and no journal wired at all: the mere fact that the gate check is `async` was enough.
+    const gate = this.#assertGatePending(gateId);
+    this.#resolvedGates.add(gateId);
+    // …and only now, holding the claim, the effect gate. **`#pendingGates.delete` stays BELOW this await**,
+    // and that ordering is load-bearing in the other direction: with the gate already removed, the idle
+    // check that runs during the await window sees no runnable node AND no pending gate, and settles the
+    // run `internal` — "run stalled with no runnable node". A mutation test caught it. The run must keep
+    // looking parked until it is actually being advanced. **The in-process resume takes the SAME gate**, so
+    // the docblock's "every resume" is true of all three entry points rather than of the two that happen to
+    // go through a checkpoint. A budget approval resets the node's attempt to 1 and re-dispatches it FROM
+    // THE START — a replay of its tool calls in this very process — and `agent-turn.ts`'s CR-95 guard is
+    // what stops that becoming a duplicate today; a second, structural check at the same choke point does
+    // not depend on that guard staying correct.
+    //
+    // `alreadyGated` is set by `beginResume`, which runs the same check before it applies the decision:
+    // without it a checkpoint-based gate resume scanned twice, contradicting the "ONE range scan" the
+    // method's own docblock promises.
+    if (!alreadyGated && !(await this.#effectResumeGateOrFail())) {
+      this.#pendingGates.delete(gateId); // it is not resumable past this refusal; do not leave it pending
       await this.#settle('run:failed');
       return;
     }
-    const gate = this.#assertGatePending(gateId);
-    this.#resolvedGates.add(gateId);
     this.#pendingGates.delete(gateId);
     this.#disarmTimer(gateId); // a decision arrived before the timeout — cancel the armed timer (1.Q)
     this.#pauseEpisode = false; // a later idle-with-gates re-emits run:paused for the remaining gates

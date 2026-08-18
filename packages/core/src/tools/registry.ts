@@ -64,6 +64,8 @@ interface ReplayEnvelope {
   readonly truncated: boolean;
   readonly summary: string;
   readonly mapped?: unknown;
+  /** Whether an `output_mapping` was configured when the effect ran — a config change refuses the replay. */
+  readonly hadMapping: boolean;
 }
 
 /**
@@ -83,9 +85,12 @@ function asReplayEnvelope(stored: unknown): ReplayEnvelope {
     typeof (stored as { summary: unknown }).summary === 'string'
   ) {
     const envelope = stored as ReplayEnvelope;
-    return envelope;
+    // An older row has no `hadMapping`; infer it conservatively from whether a projection was retained.
+    return typeof envelope.hadMapping === 'boolean'
+      ? envelope
+      : { ...envelope, hadMapping: 'mapped' in envelope };
   }
-  return { value: stored, truncated: false, summary: '' };
+  return { value: stored, truncated: false, summary: '', hadMapping: false };
 }
 
 /** Build the engine-side tool registry. Performs no I/O and reads no ambient state (engine purity). */
@@ -294,6 +299,19 @@ async function dispatch(
       // A REPLAY restores the recorded projections verbatim — it does not re-derive them. Re-deriving is
       // what produced the `output_mapping`-over-a-truncation-preview defect; and re-bounding a value that
       // is already bounded would summarize a summary.
+      // **A config change between the crash and the resume is a refusal, not a silent divergence.** The
+      // envelope records whether a mapping was configured when the effect ran. If the node's YAML was edited
+      // in the crash window, the recorded projection is not what the CURRENT config asks for — replaying it
+      // would put the stale answer into workflow state, which is the same failure class as replaying a
+      // different call's result, reached from a different direction. A review reproduced both directions.
+      if (replayed.hadMapping !== (ctx.config.outputMapping !== undefined)) {
+        throw new ToolEffectConflictError(
+          def.id,
+          new Error(
+            `the recorded effect was produced under a different \`output_mapping\` configuration than this node now declares`,
+          ),
+        );
+      }
       outputMapped = 'mapped' in replayed ? replayed.mapped : replayed.value;
       bounded = {
         value: replayed.value,
@@ -324,6 +342,9 @@ async function dispatch(
           // `history.db` — the very thing settling after bounding exists to avoid. With one, the author
           // chose an extract, and its size is their call.
           ...(ctx.config.outputMapping === undefined ? {} : { mapped: outputMapped }),
+          // Recorded rather than inferred from `'mapped' in envelope`: a mapping that legitimately projects
+          // to `undefined` would otherwise be indistinguishable from no mapping at all.
+          hadMapping: ctx.config.outputMapping !== undefined,
         } satisfies ReplayEnvelope);
       } catch (cause) {
         // **The one window where the effect PROVABLY happened and the record does not say so.** Spec §7
@@ -839,10 +860,58 @@ function sanitizeInput(
   // otherwise pass through — `redactSecretShapedValue` scrubs it by shape, keeping the object keys (header
   // names) intact. Symmetric to the `outputSummary` scrub on the result side — display-only, the dispatch
   // already ran on the real args.
-  for (const key of Object.keys(out)) {
-    out[key] = redactSecretShapedValue(redactInlineMedia(out[key]));
+  //
+  // **Walked ONCE over the whole object, not per key.** A per-key loop handed the walker each VALUE with
+  // its key already stripped, so the key-name rule — the one that catches an opaque credential with no
+  // recognisable shape — could only ever fire on NESTED members, where `Object.entries` still has the key.
+  // A tool's own TOP-LEVEL secretish parameter, which is exactly what an MCP server declares freely, went
+  // through untouched into both the durable digest and the event stream. A review recovered `api_key`
+  // verbatim from a real dispatch.
+  const walked = redactSecretShapedValue(redactInlineMedia(boundArgsForScan(out)));
+  // The walk preserves plain-object shape, so this is the same record with scrubbed members; the guard is
+  // a boundary check rather than a cast, and the fallback can only be reached if the walk ever stops
+  // returning an object for an object input.
+  return isPlainRecord(walked) ? walked : out;
+}
+
+/**
+ * The ceiling on how much of a single argument string the scrub will look at.
+ *
+ * The result side already truncates before scrubbing (`makeSummary`); the args side did not, so every
+ * effectful dispatch ran seven full-string passes over an UNCAPPED value — plausibly megabytes, via a
+ * `write_file` `content` sourced from a prior large `read_file`, or an `http_request` `body`. Each pass is
+ * linear (bounded quantifiers, no nesting — measured, not assumed), so this is avoidable synchronous CPU on
+ * the dispatch hot path rather than a ReDoS. The cap is generous: a credential is short, and the tail of a
+ * megabyte payload carries no diagnostic value the head does not.
+ */
+const ARG_SCAN_MAX_CHARS = 16 * 1024;
+
+/**
+ * Truncate over-long STRING leaves before the scrub walks them, so the redaction cost is bounded per
+ * argument. The marker is explicit and carries the true length — a silently shortened value in a durable
+ * digest would be indistinguishable from a genuinely shorter one, and telling two calls apart is the
+ * digest's whole job.
+ */
+function boundArgsForScan(value: unknown, seen: WeakSet<object> = new WeakSet<object>()): unknown {
+  if (typeof value === 'string') {
+    return value.length <= ARG_SCAN_MAX_CHARS
+      ? value
+      : `${value.slice(0, ARG_SCAN_MAX_CHARS)}…[${String(value.length)} chars total]`;
   }
+  if (typeof value !== 'object' || value === null) return value;
+  if (seen.has(value)) return '[cyclic]';
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => boundArgsForScan(item, seen));
+  const proto: unknown = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) out[key] = boundArgsForScan(item, seen);
   return out;
+}
+
+/** Narrow the walk's `unknown` result back to a record, without an unsafe cast. */
+function isPlainRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**

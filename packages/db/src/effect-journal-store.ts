@@ -15,7 +15,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { and, asc, eq, gte, lt } from 'drizzle-orm';
+import { and, asc, eq, gte, inArray, lt } from 'drizzle-orm';
 
 import {
   EFFECT_STATES,
@@ -291,8 +291,13 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
           return Number.isInteger(turn) && turn < beforeTurn;
         })
         .map((row) => row.id);
-      for (const id of doomed) {
-        db.delete(runEffects).where(eq(runEffects.id, id)).run();
+      // ONE statement, not N standalone write transactions on a `chat`/`chat-resume` startup path. Chunked
+      // because SQLite caps bound parameters per statement (999 on the conservative default build).
+      for (let i = 0; i < doomed.length; i += 500) {
+        db
+          .delete(runEffects)
+          .where(inArray(runEffects.id, doomed.slice(i, i + 500)))
+          .run();
       }
       return doomed.length;
     },

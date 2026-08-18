@@ -231,10 +231,63 @@ export function redactSecretShapedValue(value: unknown): unknown {
  * nor their argument names, and `{"auth":{"token": …}}` is their ordinary shape.
  */
 function isSecretishKey(key: string): boolean {
-  return /^[\w-]{0,32}(?:password|passwd|secret|token|api[_-]?key|authorization|auth|access[_-]?key|private[_-]?key|client[_-]?secret|credential|passphrase|pin)[\w-]{0,16}$/i.test(
-    key,
+  const words = keyWords(key);
+  if (words.some((word) => SECRET_WORDS.has(word))) return true;
+  // A `key` that is qualified by what KIND of key it is. `key` alone is far too common to redact — it is
+  // the name of half the map entries in this codebase — so it counts only next to a qualifier.
+  return words.some(
+    (word, index) =>
+      word === 'key' &&
+      (KEY_QUALIFIERS.has(words[index - 1] ?? '') || KEY_QUALIFIERS.has(words[index + 1] ?? '')),
   );
 }
+
+/**
+ * Split an argument name into lowercase WORDS, across the three conventions a tool argument actually uses:
+ * `snake_case`, `kebab-case`/header case, and `camelCase`.
+ *
+ * **Whole words, not substrings, and that is the entire point.** The first version of this test reused the
+ * text rule's `[\w-]{0,32}<keyword>[\w-]{0,16}` wrapper, which matches a keyword ANYWHERE inside a name —
+ * so `author` (contains `auth`), `pinned` and `opinion` (contain `pin`), `spinner`, `tokenizer` and
+ * `authors` were all redacted. That is worse than cosmetic: the digest is computed over this projection, so
+ * two calls differing ONLY in a falsely-redacted field become byte-identical inputs, and §4's replay then
+ * answers one with the other's recorded result — the exact failure the digest exists to prevent.
+ */
+function keyWords(key: string): readonly string[] {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .filter((word) => word.length > 0)
+    .map((word) => word.toLowerCase())
+    .map((word) => (word.endsWith('s') && word.length > 3 ? word.slice(0, -1) : word));
+}
+
+/** Names that mean "this is a credential" on their own. */
+const SECRET_WORDS: ReadonlySet<string> = new Set([
+  'password',
+  'passwd',
+  'pwd',
+  'passphrase',
+  'secret',
+  'token',
+  'apikey',
+  'authorization',
+  'auth',
+  'credential',
+  'pin',
+  'jwt',
+]);
+
+/** What has to sit next to a bare `key` before it counts as a credential. */
+const KEY_QUALIFIERS: ReadonlySet<string> = new Set([
+  'api',
+  'access',
+  'private',
+  'secret',
+  'signing',
+  'encryption',
+  'session',
+]);
 
 /**
  * An array, walked — plus the ARGUMENT-VECTOR shape a plain walk cannot see.
@@ -250,7 +303,8 @@ function redactArgVector(items: readonly unknown[], seen: WeakSet<object>): unkn
   let redactNext = false;
   for (const item of items) {
     if (redactNext && typeof item === 'string') {
-      out.push('[redacted]');
+      // A port is not a credential, however password-shaped its flag was.
+      out.push(looksLikePort(item) ? redactSecretShapedWalk(item, seen) : '[redacted]');
       redactNext = false;
       continue;
     }
@@ -260,11 +314,25 @@ function redactArgVector(items: readonly unknown[], seen: WeakSet<object>): unkn
   return out;
 }
 
-/** A CLI flag that introduces a credential — `--token`, `-p`; `--password=…` is the text rule's job. */
+/**
+ * A CLI flag that introduces a credential — `--token`, `--password`, `-p`. (`--password=…` is the text
+ * rule's job, since flag and value are one string there.)
+ *
+ * `-p` is deliberately kept AND deliberately qualified. It really is the password flag for `mysql` and
+ * `psql`, and dropping it would leak those verbatim — but it is also the port flag for `ssh` and the
+ * port-mapping flag for `docker run`, and a review caught this destroying `ssh -p 2222` and
+ * `docker run -p 8080:80`. The value shape settles it: a port is digits, optionally `host:container`, and a
+ * password never is. See {@link looksLikePort}.
+ */
 function isSecretishFlag(item: string): boolean {
   return /^-{1,2}(?:p|pw|password|passwd|secret|token|api[_-]?key|auth|access[_-]?key|private[_-]?key|client[_-]?secret|credential|passphrase|pin)$/i.test(
     item,
   );
+}
+
+/** `2222`, `8080:80`, `127.0.0.1:8080:80` — a port or a port mapping, never a credential. */
+function looksLikePort(value: string): boolean {
+  return /^(?:[\d.]{1,15}:)?\d{1,5}(?::\d{1,5})?(?:\/(?:tcp|udp))?$/i.test(value);
 }
 
 /**
