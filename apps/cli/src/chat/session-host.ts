@@ -47,7 +47,7 @@ import {
 } from './effort-notice.js';
 import { resolveChatAgent } from './agent-source.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
-import { hostSleep } from '../process/sleep.js';
+import { hostAttemptTimer, hostSleep } from '../process/sleep.js';
 import {
   unwiredEffectJournal,
   type EffectCorrelation,
@@ -396,6 +396,9 @@ function buildSessionRuntime(
     registry,
     tools,
     sleep: hostSleep,
+    // ADR-0082 §6's per-attempt deadline. The controller this host already supplies for the per-turn cancel
+    // doubles as the deadline's merged signal; the TIMER is what arms it.
+    setTimer: hostAttemptTimer,
     now: opts.now,
     // Node's AbortController satisfies the engine's structural AbortControllerLike (abort() + signal).
     newAbortController: () => new AbortController(),

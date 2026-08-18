@@ -169,6 +169,17 @@ export interface AgentRunnerDeps {
    * the adapter only ever sees a resolved source; absent on a text-only host (a handle is then sent as-is).
    */
   readonly resolveForEgress?: ChainCapabilities['resolveForEgress'];
+  /**
+   * ADR-0082 §6's per-attempt deadline primitives. **Both or neither** — a chain given only one keeps the
+   * pre-ADR-0082 unbounded behaviour, and an unbounded wait on a provider that ignores its abort signal is
+   * the hang the deadline exists to remove. Host-supplied for the same reason `sleep` is: the engine is
+   * platform-free and has no ambient `AbortController` or `setTimeout`.
+   */
+  readonly newAbortController?: ChainCapabilities['newAbortController'];
+  readonly setTimer?: ChainCapabilities['setTimer'];
+  /** Override the per-attempt deadline (default 120s). Must be finite and positive. */
+  readonly attemptTimeoutMs?: ChainCapabilities['attemptTimeoutMs'];
+
   /** Host capability for the `read_file` interpolation filter in a prompt (delegated workspace sandbox). */
   readonly resolverCapabilities?: ResolverCapabilities;
   /** The filesystem scope tier for tool dispatch (default `'sandboxed'` — the safe tier). */
@@ -992,6 +1003,11 @@ function chainCapabilities(deps: AgentRunnerDeps): ChainCapabilities {
     ...(deps.now === undefined ? {} : { now: deps.now }),
     ...(deps.onAuthError === undefined ? {} : { onAuthError: deps.onAuthError }),
     ...(deps.resolveForEgress === undefined ? {} : { resolveForEgress: deps.resolveForEgress }),
+    ...(deps.newAbortController === undefined
+      ? {}
+      : { newAbortController: deps.newAbortController }),
+    ...(deps.setTimer === undefined ? {} : { setTimer: deps.setTimer }),
+    ...(deps.attemptTimeoutMs === undefined ? {} : { attemptTimeoutMs: deps.attemptTimeoutMs }),
   };
 }
 

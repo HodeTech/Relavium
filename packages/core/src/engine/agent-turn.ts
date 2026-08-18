@@ -126,10 +126,24 @@ export type PreEgressHook = (info: {
   readonly mediaUnitsEstimate?: readonly MediaUnitsEstimate[];
 }) => void | BudgetAdmission | Promise<void | BudgetAdmission>;
 
-/** The chain capabilities the host supplies (the platform-level subset of {@link FallbackChainOptions}). */
+/**
+ * The chain capabilities the host supplies (the platform-level subset of {@link FallbackChainOptions}).
+ *
+ * `newAbortController` / `setTimer` / `attemptTimeoutMs` carry ADR-0082 §6's per-attempt deadline. They sit
+ * HERE, on the host-supplied subset, for the same reason `sleep` and `now` do: the engine is platform-free
+ * and has no ambient `AbortController` or `setTimeout`. A host that omits them gets the pre-ADR-0082
+ * unbounded behaviour — both or neither, never half.
+ */
 export type ChainCapabilities = Pick<
   FallbackChainOptions,
-  'keyFor' | 'sleep' | 'now' | 'onAuthError' | 'resolveForEgress'
+  | 'keyFor'
+  | 'sleep'
+  | 'now'
+  | 'onAuthError'
+  | 'resolveForEgress'
+  | 'newAbortController'
+  | 'setTimer'
+  | 'attemptTimeoutMs'
 >;
 
 /** Everything one agent turn needs — no run/session correlation key, no `NodeExecContext`. */

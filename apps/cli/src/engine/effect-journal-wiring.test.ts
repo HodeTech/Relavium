@@ -101,3 +101,44 @@ describe('the effect journal is wired on every production surface (ADR-0080)', (
     ]);
   });
 });
+
+/**
+ * The per-attempt deadline is wired on every surface that builds a chain
+ * ([ADR-0082](../../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §6).
+ *
+ * Same shape and same reason as the journal lock above: the deadline is **both or neither**, so a surface
+ * that forgets it does not get a weaker deadline — it gets none, silently, and an unbounded wait on a
+ * provider that ignores its abort signal is the exact hang the item exists to remove. Every surface's own
+ * tests inject a session or engine double, so the real construction path is never reached by them.
+ */
+describe('the per-attempt deadline is wired on every chain-building surface (ADR-0082)', () => {
+  const CHAIN_HOSTS: readonly { file: string; what: string; needle: RegExp }[] = [
+    {
+      file: 'engine/build-engine.ts',
+      what: 'the workflow engine — `relavium run` and `relavium gate`',
+      needle: /setTimer:\s*hostAttemptTimer/,
+    },
+    {
+      file: 'chat/session-host.ts',
+      what: 'every session surface — `chat`, `chat-resume`, `agent run`, the Home',
+      needle: /setTimer:\s*hostAttemptTimer/,
+    },
+  ];
+
+  for (const host of CHAIN_HOSTS) {
+    it(`${host.file} — ${host.what}`, () => {
+      const source = readFileSync(join(SRC, host.file), 'utf8');
+      expect(source).toMatch(host.needle);
+    });
+  }
+
+  it('names every surface that builds a chain — a new one cannot be added silently', () => {
+    // `build-engine.ts` and `session-host.ts` are the only two constructors; every command routes through
+    // one of them. A third would be a third place to forget the deadline.
+    expect(CHAIN_HOSTS.map((h) => h.file)).toEqual([
+      'engine/build-engine.ts',
+      'chat/session-host.ts',
+    ]);
+  });
+});
+

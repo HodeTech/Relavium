@@ -154,7 +154,7 @@ type StreamChunk =
   | { type: 'tool_call_end'; id: string }
   | { type: 'media_start'; id: string; mimeType: string }            // ADR-0031 — media output channel (mirrors the triads); mimeType is bounded bare type/subtype (MediaMimeTypeSchema)
   | { type: 'media_delta'; id: string; progress?: number; partialRef?: string }  // progress is a 0..1 fraction; NO base64 ever; partialRef is a RESERVED preview HANDLE (A3)
-  | { type: 'media_end'; id: string; media: DurableMediaPart }       // terminal — the finished media as a handle-only durable part
+  | { type: 'media_end'; id: string; media: DurableMediaPart }       // closes the media block — the finished media as a handle-only durable part
   | { type: 'tool_result'; id: string; name: string; result: unknown; isError?: boolean; providerExecuted: true;
       media?: DurableMediaPart[] }  // ADR-0030 provider-run tool (engine records, never runs); media: ADR-0031 #7
   | { type: 'stop'; stopReason: StopReason; usage: Usage }
@@ -269,6 +269,71 @@ through the fold above the chain. It exists because *whether to advance to anoth
 re-run the node* are different questions: `retryable` stays a pure function of `kind` (so a miswired adapter
 cannot produce an inconsistent pair), and commitment is carried as the separate fact it is
 ([ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §4).
+
+### The stream grammar
+
+Normative for every `LLMProvider.stream` implementation, and **verified by `FallbackChain`** on every
+provider — the adapters we wrote, a cassette, a test double, and Phase 2's managed gateway alike
+([ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §1-§3).
+
+1. Exactly one terminal per stream: `stop` **xor** `error`.
+2. The terminal is the last chunk.
+3. No chunk of any kind after the terminal.
+4. Two `stop`, `stop` + `error`, or two `error` are violations.
+5. A clean EOF with no terminal is an error, never a success.
+6. An empty stream — EOF with no chunks at all — is an error.
+7. A pre-content failure may fail over; a **content-committed** failure must not fail over and must not be
+   node-retried. It is surfaced.
+
+**Content-committed means any chunk other than `stop` or `error` has been yielded.** Not "text": a
+`reasoning_start`, a `tool_call_start`, a `media_start` and a provider-executed `tool_result` all commit the
+stream, because each has already reached the user or the model.
+
+The rules overlap by design — an empty stream breaks 1, 5 and 6 at once — so classification is a table of
+**disjoint observations**, evaluated in order:
+
+| observed | classification |
+|---|---|
+| a chunk arrives after a terminal | `protocol` |
+| a second terminal arrives | `protocol` |
+| EOF, ≥1 non-terminal chunk seen, no terminal | `transport` |
+| EOF, zero chunks at all | `transport` |
+| EOF, exactly one terminal, last | well-formed — the terminal's own semantics apply |
+
+An empty stream is `transport` rather than a violation because it is indistinguishable from a connection
+that opened and died — and because the adapters' own no-terminal check fires unconditionally, so classifying
+it otherwise would give first-party and foreign providers opposite verdicts for one fault.
+
+The chain **holds the terminal** until one more read confirms it was last, then forwards it; another chunk
+replaces it with a `protocol` failure. If that confirming read THROWS, the terminal is forwarded anyway and
+the teardown error discarded: the terminal was validly received, and an SSE reader failing after `[DONE]` is
+not a failure of the response.
+
+The verifier checks ORDER only. A chunk's SHAPE is a separate obligation the conformance suite enforces —
+parsing every chunk of every token stream would be a real per-chunk cost for a fault that suite already
+finds.
+
+### The per-attempt deadline
+
+Every `generate`/`stream` attempt through `FallbackChain` runs under a deadline, defaulting to **120 s** and
+host-configurable (§5-§7). It cannot be disabled: unbounded is the state it removes.
+
+The deadline is **hard-raced**, not merely signalled. A provider that returns `new Promise(() => {})` ignores
+its abort signal, so the cooperative abort is raised *and* every awaited step is raced against a timer.
+Streaming races the same **absolute** deadline against each `next()` — a per-chunk reset would let a provider
+dribble one token per interval forever. On expiry the iterator's `return()` is called best-effort and not
+awaited without bound, and a late chunk is discarded.
+
+**The guarantee is caller liveness, not resource termination.** An uncooperative provider's work may continue
+in the background; what is bounded is how long Relavium waits.
+
+A deadline abort is `timeout`; a caller abort is `cancelled`, and **a caller abort wins a same-tick tie** —
+resolved at classification time so the answer is a contract rather than a listener ordering. Rule 7 governs
+both: a pre-content timeout may fail over, a content-committed one is surfaced.
+
+The window opens immediately before the seam call — after the pre-egress hook, after media
+re-materialization, after credential resolution. Those are Relavium's own work and must not consume the
+provider's budget.
 
 **`protocol` is fatal but still fails over pre-content.** A provider that cannot keep the grammar will not
 keep it on the second call, so the node-retry budget must not re-dispatch — but a DIFFERENT provider may be

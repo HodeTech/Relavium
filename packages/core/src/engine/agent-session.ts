@@ -237,7 +237,21 @@ export interface SessionDeps {
   readonly now?: ChainCapabilities['now'];
   /** Optional single out-of-band credential refresh (host-owned). */
   readonly onAuthError?: ChainCapabilities['onAuthError'];
-  /** Create a fresh abort controller per turn — injected so core never names the ambient global. */
+  /**
+   * ADR-0082 §6's per-attempt deadline primitives. **Both or neither** — a chain given only one keeps the
+   * pre-ADR-0082 unbounded behaviour, and an unbounded wait on a provider that ignores its abort signal is
+   * the hang the deadline exists to remove.
+   */
+  readonly setTimer?: ChainCapabilities['setTimer'];
+  /** Override the per-attempt deadline (default 120s). Must be finite and positive. */
+  readonly attemptTimeoutMs?: ChainCapabilities['attemptTimeoutMs'];
+  /**
+   * Create a fresh abort controller — injected so core never names the ambient global.
+   *
+   * Serves TWO purposes since ADR-0082: the per-turn cancel it was built for, and the per-attempt
+   * deadline's merged signal. One dep rather than two, because a host that can make one can make both and a
+   * second field would only be a way to wire half of it.
+   */
   readonly newAbortController: () => AbortControllerLike;
   /** The emission port — 1.V emits session/in-turn bodies here; 1.W wires it onto the `RunEventBus`. */
   readonly emit: SessionEventSink;
@@ -1384,6 +1398,12 @@ export class AgentSession {
       sleep: deps.sleep,
       ...(deps.now === undefined ? {} : { now: deps.now }),
       ...(deps.onAuthError === undefined ? {} : { onAuthError: deps.onAuthError }),
+      // The deadline is armed only when the host supplied a TIMER — the controller is always present (it
+      // serves the per-turn cancel too), so `setTimer` is what expresses "both or neither" here.
+      ...(deps.setTimer === undefined
+        ? {}
+        : { newAbortController: deps.newAbortController, setTimer: deps.setTimer }),
+      ...(deps.attemptTimeoutMs === undefined ? {} : { attemptTimeoutMs: deps.attemptTimeoutMs }),
     };
   }
 }

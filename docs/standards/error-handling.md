@@ -54,13 +54,11 @@ knowing which provider produced it:
 
 *Whether to advance to another provider* is not the same question as *whether to re-run the
 node*. `protocol` is fatal in the second sense — an implementation that cannot keep the grammar
-will not keep it on the second call. It is *intended* to still ADVANCE to the next entry when the
-violation happened before any content, because a different provider may be well-behaved and the
-user has been shown nothing — but that arm has not landed, so today a `protocol` failure would
-stop the chain like any other fatal kind. Nothing produces one yet either: the verifier is written
-but not wired
-([ADR-0082](../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §9
-lands both together).
+will not keep it on the second call. But a violation that happened BEFORE any content still advances
+to the next entry, because a different provider may be well-behaved and the user has been shown
+nothing. So `retryable` alone no longer determines failover — the chain's verdict reads the kind
+*and* the commitment state
+([ADR-0082](../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §9).
 
 *Whether the attempt already produced output* is carried separately, by `LlmError.contentCommitted`.
 The chain sets it when it surfaces a failure past the first non-terminal chunk, and the turn layer

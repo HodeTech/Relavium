@@ -11,14 +11,11 @@
 > failure is surfaced past the first content chunk, so the node-retry budget above the chain refuses to
 > re-dispatch a call that already produced output and already billed.
 >
-> **The third has NOT.** A stated **stream grammar** (exactly one terminal, last, nothing after it) that
-> `FallbackChain` will verify on every provider — including the foreign ones this seam exists to admit — is
-> written and tested as a module but is **not yet wired into the chain**; neither is the per-attempt **hard
-> deadline**, nor the `advance` verdict that will let a pre-content grammar violation try the next entry.
-> Until they are wired, the seam's runtime behaviour on those three points is unchanged.
->
-> Spelled out in present tense on each side because this ADR is where a reader looks for what the seam
-> guarantees TODAY, and a sentence that reads as shipped is the drift ADR-0079 already needed correcting for.
+> **And the third:** a stated **stream grammar** (exactly one terminal, last, nothing after it) that
+> `FallbackChain` verifies on every provider — including the foreign ones this seam exists to admit — plus a
+> per-attempt **hard deadline** and the `advance` verdict that lets a pre-content grammar violation try the
+> next entry. All three are wired as of 2026-08-18; the normative text is in
+> [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md).
 >
 > The contract's defining rule is untouched throughout: no vendor SDK type crosses the seam, and
 > `LlmRequest` is unchanged.

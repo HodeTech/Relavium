@@ -34,3 +34,30 @@ export function hostSleep(ms: number, signal?: AbortSignalLike): Promise<void> {
     signal?.addEventListener('abort', onAbort);
   });
 }
+
+/**
+ * The one-shot timer behind the engine's per-attempt DEADLINE seam
+ * ([ADR-0082](../../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §6).
+ *
+ * Distinct from {@link hostSleep} on purpose. That one is a *delay* the caller awaits; this one is a *timer*
+ * the caller arms and disarms, and the difference matters — a deadline has to be cancellable from the
+ * success path, where nothing is awaiting it. `unref()` so an armed deadline never by itself keeps the CLI
+ * alive: the run decides when the process exits, not a timer nobody is waiting on.
+ */
+export function hostAttemptTimer(ms: number, fire: () => void): () => void {
+  const timer = setTimeout(fire, ms);
+  timer.unref?.();
+  return () => {
+    clearTimeout(timer);
+  };
+}
+
+/**
+ * A real `AbortController` for the engine's deadline scope — the seam is platform-free and names no
+ * DOM/Node type, so the host supplies one whose signal a `fetch` in an adapter can also observe.
+ */
+export function hostAbortController(): { signal: AbortSignalLike; abort: (reason?: unknown) => void } {
+  const controller = new AbortController();
+  return { signal: controller.signal, abort: (reason?: unknown) => controller.abort(reason) };
+}
+
