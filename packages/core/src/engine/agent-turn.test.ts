@@ -1358,8 +1358,15 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
   });
 
   it('conservatively settles a clean provider EOF that omits the terminal usage record', async () => {
-    // FallbackChain treats an iterator ending without a `stop` chunk as a successful empty turn. It may still have
-    // reached/billed the provider, so this must not be mistaken for the proven pre-egress release path.
+    // **Rewritten, not deleted** (ADR-0082 §12.17). The reasoning it recorded was: "FallbackChain treats an
+    // iterator ending without a `stop` chunk as a successful empty turn. It may still have reached/billed
+    // the provider, so this must not be mistaken for the proven pre-egress release path." The second
+    // sentence is the money invariant and is UNCHANGED — the first is what ADR-0082 supersedes: the chain
+    // now classifies that EOF as a `transport` failure instead of a success.
+    //
+    // So the turn REJECTS where it used to resolve, and the property that matters survives the change
+    // intact (§12.15-16): the commitment is settled at its reserved estimate, never RELEASED, because we
+    // still cannot prove the provider was not billed.
     const provider = scriptedProvider('anthropic', [[]]);
     let releases = 0;
     let conservativeSettlements = 0;
@@ -1376,7 +1383,7 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     };
 
     const params = baseParams(provider, { preEgress: () => admission });
-    await expect(runAgentTurn(params)).resolves.toMatchObject({ text: '' });
+    await expect(runAgentTurn(params)).rejects.toMatchObject({ code: 'provider_unavailable' });
     expect(conservativeSettlements).toBe(1);
     expect(releases).toBe(0);
     // Here `onAttempt` DID fire, so the commitment carries the within-chain attempt — the same counter the

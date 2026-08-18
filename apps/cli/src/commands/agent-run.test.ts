@@ -287,8 +287,11 @@ describe('agentRunCommand (2.Q)', () => {
     // durability-broken and §2's barrier fails the turn, for a session nobody was ever going to resume.
     // Deleting that one line silently broke every capped `agent run` and left the whole suite green.
     //
-    // The cap is large enough that nothing legitimately trips it, so the ONLY way this turn can fail is the
-    // durability barrier — which is exactly what the break-verify below confirms.
+    // The cap is large enough that nothing legitimately trips it. Since ADR-0082 there are TWO ways this
+    // turn can fail rather than one — the truncated stream is now a classified `provider_unavailable`
+    // failure, where it used to be a usage-less success — so the assertion is on WHICH failure, not on
+    // success. A durability failure surfaces as `internal`; that is the one the no-op writer prevents, and
+    // the one a break-verify (deleting the writer) brings back.
     // The cap is a PROJECT-layer `[chat]` key (`resolve.ts` reads it from project.toml/workspace.toml).
     mkdirSync(join(cwd, '.relavium'), { recursive: true });
     writeFileSync(
@@ -299,10 +302,19 @@ describe('agentRunCommand (2.Q)', () => {
     // returned nothing accountable" case that makes the governor hold a conservative commitment. A plain
     // `textTurn` carries usage, makes no commitment, and leaves this test vacuous (verified, not assumed).
     const noUsageTurn: StreamChunk[] = [{ type: 'text_delta', text: 'done' }];
-    const { d, out } = deps('go', { providers: scriptedResolver([noUsageTurn]) });
+    const { d, out, err } = deps('go', { providers: scriptedResolver([noUsageTurn]) });
 
-    expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(EXIT_CODES.success);
+    // Exit 1: the truncated stream, which is the EXPECTED failure and not the one under test…
+    expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(
+      EXIT_CODES.workflowFailed,
+    );
+    // …and the text the provider did emit before the cut still reached the user.
     expect(out()).toContain('done');
+    // THE assertion: the failure is the provider's, not the commitment's. Without the no-op writer every
+    // commitment rejects, the governor marks the session durability-broken, and the barrier fails the turn
+    // with a durability error instead — for a session nobody was ever going to resume.
+    expect(err()).not.toContain('durab');
+    expect(err()).not.toContain('commitment');
   });
 
   it('rejects --input as not-yet-supported (session prompt interpolation is a pending engine change)', async () => {

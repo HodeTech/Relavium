@@ -1154,7 +1154,16 @@ describe('FallbackChain.stream', () => {
     expect(trace[0]).toMatchObject({ outcome: 'failed' });
   });
 
-  it('records a content-free success with no usage when the stream omits a stop chunk', async () => {
+  it('a stream that omits its terminal FAILS — it is not a content-free success', async () => {
+    // **Rewritten, not deleted** (ADR-0082 §12.17). It used to read "records a content-free success with no
+    // usage when the stream omits a stop chunk", and the reasoning it recorded was real at the time: the
+    // chain folded usage when it had some, and `usage === undefined` simply meant "nothing to fold". What
+    // that framing missed is that the same condition also means "no terminal ever arrived" — so a transport
+    // cut mid-answer was reported as a completed turn whose partial text became the assistant's reply.
+    //
+    // The chain now verifies the grammar on every provider, so this is a classified `transport` failure. The
+    // partial content is still forwarded — the caller decides what a truncated answer is worth — and the
+    // attempt records ONE failure, not a success (§12.2, §12.15).
     const provider = makeProvider({
       id: 'anthropic',
       stream: () => streamFrom([{ type: 'text_delta', text: 'partial' }]),
@@ -1164,8 +1173,12 @@ describe('FallbackChain.stream', () => {
 
     const chunks = await collect(chain.stream(userReq));
 
-    expect(chunks).toEqual([{ type: 'text_delta', text: 'partial' }]);
-    expect(trace[0]).toMatchObject({ outcome: 'succeeded' });
+    expect(chunks[0]).toEqual({ type: 'text_delta', text: 'partial' });
+    const surfaced = chunks.at(-1);
+    expect(surfaced?.type === 'error' && surfaced.error.kind).toBe('transport');
+    expect(trace.filter((r) => r.outcome === 'succeeded')).toHaveLength(0);
+    expect(trace.filter((r) => r.outcome === 'failed')).toHaveLength(1);
+    // No usage was ever folded, so no cost is claimed for an attempt we cannot account for (ADR-0074).
     expect(trace[0]?.usage).toBeUndefined();
     expect(trace[0]?.cost).toBeUndefined();
   });
@@ -2014,3 +2027,149 @@ describe('FallbackChain media egress re-materialization (D7/D8)', () => {
     expect(provider.calls).toHaveLength(0);
   });
 });
+
+/**
+ * The grammar verifier and the deadline, THROUGH the chain (ADR-0082 §3, §5, §9). The module-level tests
+ * prove each mechanism; these prove the chain actually uses them, which is the half a wiring commit can get
+ * wrong without anything noticing.
+ */
+describe('FallbackChain — the grammar and the deadline are wired', () => {
+  it('a PRE-content grammar violation advances to the next entry without re-attempting the broken one', async () => {
+    // §9's `advance` verdict. `retryable` would first burn this entry's whole attempt budget on a provider
+    // we already know cannot keep the grammar, and `fatal` would deny a well-behaved fallback its turn.
+    const broken = makeProvider({
+      id: 'anthropic',
+      stream: () => streamFrom([STOP_CHUNK, { type: 'text_delta', text: 'after the terminal' }]),
+    });
+    const good = makeProvider({
+      id: 'openai',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'the fallback ran' }, STOP_CHUNK]),
+    });
+    const { options, trace } = makeOptions();
+    // Three attempts budgeted on the broken entry — none of which may be spent.
+    const chain = new FallbackChain(
+      [entry(broken, 'claude-opus-4-8', 3), entry(good, 'gpt-5.5')],
+      options,
+    );
+
+    const chunks = await collect(chain.stream(userReq));
+
+    expect(broken.calls).toHaveLength(1); // …exactly one, not three
+    expect(good.calls).toHaveLength(1);
+    expect(chunks.some((c) => c.type === 'text_delta' && c.text === 'the fallback ran')).toBe(true);
+    const failed = trace.filter((r) => r.outcome === 'failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0]?.error?.kind).toBe('protocol');
+    expect(failed[0]?.error?.retryable).toBe(false);
+  });
+
+  it('a POST-content grammar violation is surfaced, not advanced', async () => {
+    // The negative control for the arm above: past the first content chunk there is no failing over, because
+    // the user has already been shown output.
+    const broken = makeProvider({
+      id: 'anthropic',
+      stream: () =>
+        streamFrom([
+          { type: 'text_delta', text: 'partial' },
+          STOP_CHUNK,
+          { type: 'text_delta', text: 'after the terminal' },
+        ]),
+    });
+    const good = makeProvider({ id: 'openai', stream: () => streamFrom([STOP_CHUNK]) });
+    const { options } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(broken, 'claude-opus-4-8'), entry(good, 'gpt-5.5')],
+      options,
+    );
+
+    const chunks = await collect(chain.stream(userReq));
+
+    expect(good.calls).toHaveLength(0);
+    const surfaced = chunks.at(-1);
+    expect(surfaced?.type === 'error' && surfaced.error.kind).toBe('protocol');
+    expect(surfaced?.type === 'error' && surfaced.error.contentCommitted).toBe(true);
+  });
+
+  it('a provider that ignores its signal and never settles hits the DEADLINE', async () => {
+    // The hang the deadline exists to remove. `stream()` returns an iterator whose `next()` never settles
+    // and which never observes the abort — a cooperative signal alone would wait forever here.
+    let disarmed = 0;
+    const pending = new Set<() => void>();
+    const hung = makeProvider({
+      id: 'anthropic',
+      stream: () => ({
+        [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => undefined) }),
+      }),
+    });
+    const { options, trace } = makeOptions();
+    const chain = new FallbackChain([entry(hung, 'claude-opus-4-8')], {
+      ...options,
+      newAbortController: () => {
+        let aborted = false;
+        return {
+          signal: {
+            get aborted() {
+              return aborted;
+            },
+            addEventListener: () => undefined,
+            removeEventListener: () => undefined,
+          },
+          abort: () => {
+            aborted = true;
+          },
+        };
+      },
+      setTimer: (_ms, fire) => {
+        pending.add(fire);
+        return () => {
+          disarmed += 1;
+          pending.delete(fire);
+        };
+      },
+    });
+
+    const streamed = collect(chain.stream(userReq));
+    // Let the attempt reach its first `next()`, then trip the clock.
+    for (let i = 0; i < 200 && pending.size === 0; i += 1) await Promise.resolve();
+    expect(pending.size).toBe(1);
+    for (const fire of [...pending]) fire();
+
+    const chunks = await streamed;
+    const surfaced = chunks.at(-1);
+    expect(surfaced?.type === 'error' && surfaced.error.kind).toBe('timeout');
+    expect(trace.filter((r) => r.outcome === 'failed')).toHaveLength(1);
+    expect(disarmed).toBeGreaterThan(0); // …and the timer was cleaned up
+  });
+
+  it('a chain with NO timer port keeps the old unbounded behaviour — both or neither', async () => {
+    // Half a deadline is not a smaller guarantee. A host that wired no port gets the pre-ADR-0082 path,
+    // and says so by construction rather than half-applying it.
+    const provider = makeProvider({
+      id: 'anthropic',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'ok' }, STOP_CHUNK]),
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain([entry(provider, 'claude-opus-4-8')], options);
+
+    const chunks = await collect(chain.stream(userReq));
+    expect(chunks.some((c) => c.type === 'stop')).toBe(true);
+  });
+
+  it('refuses a non-positive attempt timeout at construction', async () => {
+    // There is no "disabled" value: unbounded is the state this removes, and a config flag restoring it
+    // would restore the defect.
+    const provider = makeProvider({ id: 'anthropic', stream: () => streamFrom([STOP_CHUNK]) });
+    const { options } = makeOptions();
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        () =>
+          new FallbackChain([entry(provider, 'claude-opus-4-8')], {
+            ...options,
+            attemptTimeoutMs: bad,
+          }),
+      ).toThrow('attemptTimeoutMs');
+    }
+    await Promise.resolve();
+  });
+});
+

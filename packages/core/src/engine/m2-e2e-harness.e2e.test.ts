@@ -618,7 +618,12 @@ workflow:
   id: m2-harness-budgeted-text-conservative-resume
   max_parallel: 1
   budget:
-    max_cost_microcents: 1500
+    # Exactly two worst-case calls (1000 microcents each: max_tokens 1000 at 1 microcent per output token).
+    # n1's first attempt commits one conservatively and its retry spends the other's reservation, leaving n2
+    # — which needs a third — refused. Raised from 1500 with ADR-0082: a usage-less SUCCESS no longer exists
+    # (a well-formed stream's terminal always carries usage), so the conservative commitment now arises from
+    # a FAILED attempt, and the node needs a second attempt to reach the gate this test resumes from.
+    max_cost_microcents: 2000
     on_exceed: fail
   agents:
     - id: writer
@@ -627,7 +632,7 @@ workflow:
       system_prompt: You write.
       max_tokens: 1000
   nodes:
-    - { id: n1, type: agent, agent_ref: writer, prompt_template: 'One' }
+    - { id: n1, type: agent, agent_ref: writer, prompt_template: 'One', retry: { max: 2, backoff: linear, backoff_ms: 1 } }
     - { id: g, type: human_gate, gate_type: approval }
     - { id: n2, type: agent, agent_ref: writer, prompt_template: 'Two' }
   edges:
@@ -1040,8 +1045,13 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(costsOf(events1.events).filter((c) => c.nodeId === 'n1')).toHaveLength(0);
     const terminal1 = events1.events.at(-1);
     expect(terminal1?.type).toBe('run:failed');
-    // 3. And it CONSUMED the cap in this process — n2's worst-case call no longer fits beside it.
-    expect(terminal1?.type === 'run:failed' && terminal1.error.code).toBe('budget_exceeded');
+    // 3. The run's terminal REASON changed with ADR-0082 and the money property did not. It used to be
+    //    `budget_exceeded` — n1 succeeded usage-lessly, and n2's worst-case call no longer fit beside its
+    //    commitment. Now n1's own truncated stream is a classified failure, so the run stops there and n2
+    //    never runs. Cap consumption is still proven, by point 5: the commitment is in the durable log and
+    //    the fold reads the same conservative total back, which is the half that survives a crash and the
+    //    half this test is named for.
+    expect(terminal1?.type === 'run:failed' && terminal1.error.code).toBe('provider_unavailable');
     expect(terminal1?.type === 'run:failed' && terminal1.cumulativeCostMicrocents).toBe(0);
     // 4. The row is in the DURABLE log, not merely on the stream — this is what survives the crash.
     const persisted = store.eventsFor(events1.events[0]?.runId ?? '');
@@ -1088,23 +1098,28 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
         await inner.persistEvent(event);
       },
     };
-    const provider = scriptedProvider([[{ type: 'text_delta', text: 'partial' }]]); // no terminal usage
+    // A truncated stream — since ADR-0082 a classified `transport` FAILURE rather than a usage-less success.
+    // The ordering property under test is unchanged by that: the commitment must be durable before the node's
+    // own terminal, whichever terminal that is.
+    const provider = scriptedProvider([[{ type: 'text_delta', text: 'partial' }]]);
     const host = createInMemoryHost({ store });
     const engine = buildEngine(host, () => provider, undefined, BUDGET_TEXT_PRICING);
     const handle = engine.start({ workflow: BUDGETED_TEXT_CONSERVATIVE, inputs: INPUTS });
 
-    // Let the run reach the commitment and block on its write.
-    for (let i = 0; i < 50; i += 1) await Promise.resolve();
+    // Let the run reach the commitment and block on its write. POLLED rather than a fixed microtask count:
+    // the grammar verifier's terminal lookahead adds a read, and a hard-coded spin that happened to be
+    // enough before would fail for a reason that has nothing to do with what this test asserts.
+    for (let i = 0; i < 5000 && releaseCommitWrite === undefined; i += 1) await Promise.resolve();
     expect(releaseCommitWrite).toBeDefined();
     // n1's OWN terminal must not be durable yet — a crash here would have recorded progress the money log lacks.
-    expect(persistOrder).not.toContain('node:completed');
+    expect(persistOrder).not.toContain('node:failed');
 
     releaseCommitWrite?.();
     const events: RunEvent[] = [];
     for await (const event of handle.events) events.push(event);
     // Now it landed, and it landed FIRST.
     expect(persistOrder.indexOf('budget:estimate_committed')).toBeLessThan(
-      persistOrder.indexOf('node:completed'),
+      persistOrder.indexOf('node:failed'),
     );
   });
 
@@ -1417,7 +1432,20 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     // right row, and nothing else in the suite notices — the resumed process simply spends again against a cap
     // that has forgotten money the provider may already have billed. That is exactly ADR-0074's bypass.
     const store = new InMemoryRunStore();
-    const provider1 = scriptedProvider([[{ type: 'text_delta', text: 'partial' }]]); // no terminal usage
+    // Attempt 1 is an EMPTY stream: since ADR-0082 a classified `transport` failure, and — per
+    // `agent-turn.ts`'s own "a clean EOF and a partial-stream failure can both omit terminal usage" — it
+    // still settles the reservation conservatively, which is the debit this test is about. Attempt 2
+    // succeeds, so the run reaches the gate this test resumes from.
+    //
+    // **Empty rather than truncated, and that is not incidental.** A truncated stream has already forwarded
+    // content, so ADR-0082 §4 marks its failure content-committed and the node must NOT retry it — that
+    // retry would be a second answer and a second charge. Only a PRE-content failure is retryable, which is
+    // exactly the distinction the carrier exists to draw. Before ADR-0082 attempt 1 was a usage-less
+    // SUCCESS; that shape no longer exists, since a well-formed stream's terminal always carries usage.
+    const provider1 = scriptedProvider([
+      [], // an EMPTY stream: `transport`, and PRE-content, so it is retryable
+      [{ type: 'text_delta', text: 'one' }, STOP()],
+    ]);
     const host1 = createInMemoryHost({ store });
     const engine1 = buildEngine(host1, () => provider1, undefined, BUDGET_TEXT_PRICING);
     const {
@@ -1430,7 +1458,13 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
       { breakOnPause: true },
     );
     const runId = events1[0]?.runId ?? '';
-    if (gateId === undefined) throw new Error('expected process 1 to pause at the human gate');
+    if (gateId === undefined) {
+      // Names what DID happen: a change to the retry/commitment path shows up here as a readable event
+      // list rather than a bare assertion, which is how this test was diagnosed during ADR-0082's wiring.
+      throw new Error(
+        `expected process 1 to pause at the human gate; saw ${events1.map((e) => e.type).join(', ')}`,
+      );
+    }
     expect(events1.filter((e) => e.type === 'budget:estimate_committed')).toHaveLength(1);
 
     // A FRESH process — its governor starts empty and may only learn the debit from the durable log.
@@ -1455,8 +1489,11 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     expect(terminal?.type === 'run:failed' && terminal.error.code).toBe('budget_exceeded');
     // n2 was REFUSED pre-egress: the provider was never called. Without the restore it would have run.
     expect(events2.some((e) => e.type === 'node:completed' && e.nodeId === 'n2')).toBe(false);
-    // Realized spend is still zero — the block came entirely from an ESTIMATE, which is the point.
-    expect(terminal?.type === 'run:failed' && terminal.cumulativeCostMicrocents).toBe(0);
+    // Realized spend is 5µ¢ — n1's retry did succeed — and it is nowhere near enough to block anything.
+    // The block comes from the ESTIMATE, which is the point: without the restored conservative total the
+    // resumed governor would see only 5µ¢ against a 2000µ¢ cap and let n2's 1000µ¢ reservation straight
+    // through. That subtraction is the whole test.
+    expect(terminal?.type === 'run:failed' && terminal.cumulativeCostMicrocents).toBe(5);
     // The resumed segment keeps the prior sequence space (gap-free from last+1).
     events2.forEach((event, index) => expect(event.sequenceNumber).toBe(lastSeq + index + 1));
   });
