@@ -909,6 +909,88 @@ workflow:
     expect(events.some((e) => e.type === 'run:failed')).toBe(true);
   });
 
+  it('a timeout in a LATER TOOL ROUND is not retried either — commitment is a TURN fact', async () => {
+    // The gap a review measured, and the reason the carrier could not stay per-`stream()`-call. A tool-using
+    // turn calls `chain.stream()` once PER ROUND, so round 1's failure carries no chain-level commitment
+    // however much round 0 already streamed. Before the fix: six provider calls, the same assistant text
+    // pushed to the user three times, and `echo` dispatched three times — verbatim the harm ADR-0082 §4
+    // exists to remove, with only ADR-0080's effect journal between it and a duplicated side effect.
+    const toolWf = parseWorkflow(
+      `schema_version: '1.0'
+workflow:
+  id: e2e-agent-retry-tools
+  agents:
+    - id: a
+      model: claude-opus-4-8
+      provider: anthropic
+      system_prompt: hi
+      tools: [echo]
+  nodes:
+    - id: n
+      type: agent
+      agent_ref: a
+      prompt_template: 'go'
+      retry: { max: 3, backoff: linear, backoff_ms: 1 }
+  edges: []
+`,
+    );
+    let calls = 0;
+    const host = createInMemoryHost();
+    const engine = new WorkflowEngine({
+      host,
+      executor: agentExecutor(
+        () => ({
+          id: 'anthropic',
+          supports: CAPS,
+          generate: () => {
+            throw new Error('unused');
+          },
+          stream: () => {
+            calls += 1;
+            // Round 0 streams text AND a tool call; round 1 times out having produced nothing itself.
+            return streamOf(
+              calls % 2 === 1
+                ? [
+                    { type: 'text_delta', text: 'the user already saw this' },
+                    { type: 'tool_call_start', id: 'c1', name: 'echo' },
+                    { type: 'tool_call_end', id: 'c1' },
+                    {
+                      type: 'stop',
+                      stopReason: 'tool_use',
+                      usage: { inputTokens: 1, outputTokens: 1 },
+                    },
+                  ]
+                : [TIMEOUT],
+            );
+          },
+        }),
+        echoRegistry,
+        [echoToolDef],
+      ),
+    });
+
+    const events: RunEvent[] = [];
+    const handle = engine.start({ workflow: toolWf });
+    for await (const event of handle.events) {
+      events.push(event);
+      if (event.type === 'node:retrying') {
+        let waited = 0;
+        while (host.armedCount() === 0) {
+          waited += 1;
+          if (waited > 1000) throw new Error('backoff timer was never armed after node:retrying');
+          await Promise.resolve();
+        }
+        host.fireTimers();
+      }
+    }
+
+    expect(calls).toBe(2); // round 0 + the failing round 1 — and then it STOPS
+    expect(events.filter((e) => e.type === 'node:retrying')).toHaveLength(0);
+    // The user saw the assistant's text exactly once, and the tool ran exactly once.
+    expect(events.filter((e) => e.type === 'agent:token')).toHaveLength(1);
+    expect(events.filter((e) => e.type === 'agent:tool_call')).toHaveLength(1);
+  });
+
   it('…and a timeout BEFORE content IS retried — the negative control', async () => {
     // Without this the assertion above is satisfied by an implementation that disabled node retry outright,
     // which would break every transient-failure recovery the budget exists for.

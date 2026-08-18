@@ -429,13 +429,22 @@ async function streamOneTurn(
   messages: readonly LlmMessage[],
   params: AgentTurnParams,
   getModel: () => string,
+  /**
+   * Has an EARLIER round of this turn already produced content? (ADR-0082 §4.)
+   *
+   * The chain's own `contentCommitted` is per-`stream()`-call, and a tool-using turn calls `stream()` once
+   * per round — so round 1's failure carries no chain-level commitment however much the user was shown in
+   * round 0. Without this the node re-dispatched the whole turn: a review measured six provider calls, the
+   * same assistant text emitted three times, and a tool dispatched three times.
+   */
+  turnCommitted = false,
 ): Promise<{ content: ContentPart[]; stopReason: StopReason }> {
   const acc = newAccumulator();
   let stopReason: StopReason = 'stop';
   for await (const chunk of chain.stream(buildRequest(messages, params))) {
     foldChunk(chunk, acc, params, getModel);
     if (chunk.type === 'error') {
-      throwMappedChainError(chunk.error);
+      throwMappedChainError(chunk.error, turnCommitted);
     }
     if (chunk.type === 'stop') stopReason = chunk.stopReason;
   }
@@ -468,7 +477,7 @@ async function generateOneTurn(
 }
 
 /** Map a chain failure — a streamed `error` chunk or a thrown `generate()` error — into the turn taxonomy. */
-function throwMappedChainError(error: LlmError): never {
+function throwMappedChainError(error: LlmError, turnCommitted = false): never {
   // A pre-egress budget hook may throw its own AgentTurnError or Budget*Error; preserve it rather than
   // remapping the wrapped LlmError to a generic internal code.
   if (error.cause instanceof AgentTurnError) {
@@ -496,17 +505,28 @@ function throwMappedChainError(error: LlmError): never {
   if (error.cause instanceof LedgerDurabilityError) {
     throw error.cause;
   }
-  // **The one fold site for content-commitment** (ADR-0082 §4). The chain refuses to FAIL OVER past the
-  // first content chunk, and until this line that fact stopped there: a content-committed `timeout` or
-  // `transport` surfaced with `retryable: true` (both are in `RETRYABLE_KINDS`), `#shouldRetry` gates purely
-  // on that boolean, and the node re-dispatched — a second answer and a second charge for a call the user
-  // had already seen output from. `retryable` stays a pure function of `kind`; commitment is a separate fact
-  // about the ATTEMPT, and this is where the two meet.
-  throw new AgentTurnError(
-    codeForLlmError(error),
-    error.message,
-    error.retryable && error.contentCommitted !== true,
-  );
+  throw new AgentTurnError(codeForLlmError(error), error.message, foldRetryable(error, turnCommitted));
+}
+
+/**
+ * Whether a chain failure may be RE-DISPATCHED by the node-retry budget (ADR-0082 §4).
+ *
+ * Exported and used at every site that turns an `LlmError` into a node's retry flag, rather than stated once
+ * in a comment: a review pointed out that "the one fold site" was a global claim the code did not have —
+ * `mapGenerateMediaError` and the media-job poll both carry `retryable` through untouched, and the moment
+ * `generateMedia` is routed through the chain (which §10 anticipates) the fold would be lost silently.
+ *
+ * Two inputs, because commitment is observed at two scopes:
+ *
+ * - `error.contentCommitted` — the CHAIN saw content in this `stream()` call before it failed.
+ * - `turnCommitted` — the TURN has produced content in an EARLIER round. A tool-using turn calls
+ *   `chain.stream()` once per round, so a fresh attempt's error carries no chain-level commitment however
+ *   much the user has already been shown. A review measured the consequence: six provider calls, the same
+ *   assistant text emitted three times, and the `echo` tool dispatched three times — verbatim the harm §4
+ *   exists to remove, with only ADR-0080's effect journal standing between it and a duplicated side effect.
+ */
+export function foldRetryable(error: LlmError, turnCommitted = false): boolean {
+  return error.retryable && error.contentCommitted !== true && !turnCommitted;
 }
 
 /**
@@ -1095,9 +1115,13 @@ async function driveAgentTurn(
       // alternatives both lose: completing the loop past the cap spends money the user capped, and
       // pausing-then-resuming IS the replay. Failing closed neither overspends nor duplicates — deliberately
       // the more disruptive of the two honest options.
+      // Past round 0 the TURN has produced content — the assistant text and the tool calls of the previous
+      // round both reached the user — so a failure here is content-committed even though this `stream()`
+      // call may have produced nothing yet (ADR-0082 §4).
+      const turnCommitted = toolTurn > 0;
       const turn = await (toolTurn === 0
         ? streamOneTurn(chain, messages, params, () => activeModel)
-        : streamOneTurn(chain, messages, params, () => activeModel).catch((error: unknown) => {
+        : streamOneTurn(chain, messages, params, () => activeModel, turnCommitted).catch((error: unknown) => {
             if (error instanceof BudgetPauseError) {
               // NOT `error.message` — it ends "run paused for approval", which is exactly what does not
               // happen here. Reported verbatim on `relavium run` and both `--json` surfaces it told the

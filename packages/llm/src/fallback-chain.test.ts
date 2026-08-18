@@ -1323,6 +1323,67 @@ describe('FallbackChain.stream', () => {
     expect(trace[0]).toMatchObject({ provider: 'anthropic', outcome: 'failed' });
   });
 
+  it('stamps a THROWN mid-stream failure too — the second stamp site', async () => {
+    // A review reverted ONLY this site (leaving the error-chunk site intact) and 4,402 tests across three
+    // packages stayed green. It is the reachable path where a provider's iterator THROWS after content — an
+    // adapter rejecting on a malformed SSE frame, an SDK rejection after deltas — instead of yielding an
+    // `error` chunk. Without the stamp the node re-dispatches a call the user already saw output from.
+    const primary = makeProvider({
+      id: 'anthropic',
+      stream: async function* () {
+        await Promise.resolve();
+        yield { type: 'text_delta', text: 'partial output' } satisfies StreamChunk;
+        throw new LlmProviderError(
+          makeLlmError({ provider: 'anthropic', kind: 'timeout', message: 'boom' }),
+        );
+      },
+    });
+    const fallback = makeProvider({
+      id: 'openai',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'never' }, STOP_CHUNK]),
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(primary, 'claude-opus-4-8'), entry(fallback, 'gpt-5.5')],
+      options,
+    );
+
+    const chunks = await collect(chain.stream(userReq));
+
+    expect(chunks[1]).toEqual(committedErrChunk('anthropic', 'timeout'));
+    expect(fallback.calls).toHaveLength(0);
+  });
+
+  it('a provider CANNOT forge `contentCommitted` and delete the node’s retry budget', async () => {
+    // The field rides `LlmErrorSchema`, which is what providers construct — so a pre-content failure
+    // claiming commitment would, through the fold above the chain, silently remove transient-failure
+    // recovery. Fail-closed, so no money hazard; it just deletes retries. The chain strips the field on
+    // ingress, making `committed()` its only writer — a convention turned into an invariant.
+    const forged: StreamChunk = {
+      type: 'error',
+      error: {
+        ...makeLlmError({ provider: 'anthropic', kind: 'timeout', message: 'boom' }),
+        contentCommitted: true, // …on a stream that produced NO content
+      },
+    };
+    const primary = makeProvider({ id: 'anthropic', stream: () => streamFrom([forged]) });
+    const fallback = makeProvider({
+      id: 'openai',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'the fallback ran' }, STOP_CHUNK]),
+    });
+    const { options } = makeOptions();
+    const chain = new FallbackChain(
+      [entry(primary, 'claude-opus-4-8'), entry(fallback, 'gpt-5.5')],
+      options,
+    );
+
+    const chunks = await collect(chain.stream(userReq));
+
+    // The claim is discarded, so the chain fails over exactly as it would for any pre-content timeout…
+    expect(fallback.calls).toHaveLength(1);
+    expect(chunks.some((c) => c.type === 'text_delta' && c.text === 'the fallback ran')).toBe(true);
+  });
+
   it('commits the stream on a non-text content chunk (tool_call_start), preventing failover', async () => {
     const primary = makeProvider({
       id: 'anthropic',

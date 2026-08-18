@@ -244,6 +244,7 @@ interface LlmError {
   provider: LlmProvider['id']; // which adapter produced it
   message: string;           // human-readable, already redacted of any secret material
   cause?: unknown;           // original error, for debugging/escape hatch only — never re-thrown across the seam
+  contentCommitted?: true;   // the attempt had already yielded a non-terminal chunk when it failed
 }
 
 type LlmErrorKind =
@@ -251,14 +252,29 @@ type LlmErrorKind =
   | 'rate_limit'             // 429
   | 'overloaded'             // provider 5xx / capacity
   | 'timeout'                // request deadline exceeded
-  | 'transport'             // connection reset / DNS / TLS
+  | 'transport'             // connection reset / DNS / TLS, incl. a stream that ended with no terminal
   // retryable === false (fatal)
+  | 'protocol'               // the provider broke the STREAM GRAMMAR below (ADR-0082)
   | 'auth'                   // 401/403 — bad or missing key
   | 'bad_request'            // 400 — malformed request, unsupported model id, rejected tool schema
   | 'content_filter'         // content-policy refusal
   | 'cancelled'              // AbortSignal
   | 'unknown';               // unclassifiable — treated as fatal
 ```
+
+**`contentCommitted` is the CHAIN's field, never an adapter's.** It is set only when `FallbackChain`
+surfaces a failure past the first non-terminal chunk, and the chain strips it from any error a provider
+supplies — otherwise a pre-content failure claiming commitment would delete the node's whole retry budget
+through the fold above the chain. It exists because *whether to advance to another provider* and *whether to
+re-run the node* are different questions: `retryable` stays a pure function of `kind` (so a miswired adapter
+cannot produce an inconsistent pair), and commitment is carried as the separate fact it is
+([ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §4).
+
+**`protocol` is fatal but still fails over pre-content.** A provider that cannot keep the grammar will not
+keep it on the second call, so the node-retry budget must not re-dispatch — but a DIFFERENT provider may be
+well-behaved, and before any content has been shown there is nothing to lose by trying one. It maps to the
+`provider_unavailable` `ErrorCode`; no new code was added, because no surface would act on the distinction
+differently.
 
 > **The internal-diagnostics rule (`cause` and the `raw` passthroughs).** `LlmError.cause`,
 > `LlmResult.raw`, and `MediaGenResult.raw` are internal diagnostics only: **never logged,

@@ -32,6 +32,8 @@ import {
   runAgentTurn,
   type AgentTurnParams,
   type ChainCapabilities,
+  codeForLlmError,
+  foldRetryable,
 } from './agent-turn.js';
 import type { NodeStreamEvent } from './node-executor.js';
 import { unwiredEffectJournal } from '@relavium/shared';
@@ -1453,3 +1455,32 @@ describe('runAgentTurn — failover + cancel + reasoning', () => {
     expect(captured.reasoningOnContinuation).toBe(true);
   });
 });
+
+describe('codeForLlmError — the `protocol` mapping (ADR-0082 §9)', () => {
+  it('maps to `provider_unavailable`, not `internal`', () => {
+    // The compiler guards that AN arm exists — deleting the case fails the exhaustive switch — but not
+    // WHICH code it returns, and the choice is a stated decision with a five-line rationale and no assertion
+    // behind it. `internal` would tell the user our engine broke when in fact their provider did.
+    expect(
+      codeForLlmError({
+        kind: 'protocol',
+        retryable: false,
+        provider: 'anthropic',
+        message: 'the provider emitted a second terminal',
+      }),
+    ).toBe('provider_unavailable');
+  });
+
+  it('…and `foldRetryable` refuses a committed failure at either scope', () => {
+    const timeout = {
+      kind: 'timeout' as const,
+      retryable: true,
+      provider: 'anthropic' as const,
+      message: 'slow',
+    };
+    expect(foldRetryable(timeout)).toBe(true); // neither scope committed
+    expect(foldRetryable({ ...timeout, contentCommitted: true })).toBe(false); // this stream
+    expect(foldRetryable(timeout, true)).toBe(false); // an earlier round of this turn
+  });
+});
+

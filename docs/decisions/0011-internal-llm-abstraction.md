@@ -8,10 +8,15 @@
 > The seam gains three things, none of which changes what crosses it: a stated **stream grammar** (exactly
 > one terminal, last, nothing after it) that `FallbackChain` verifies on every provider — including the
 > foreign ones this seam exists to admit; a new `LlmErrorKind` **`protocol`** for a grammar violation, which
-> is deliberately NOT retryable; and an optional **`LlmError.contentCommitted`**, set when a failure is
-> surfaced past the first content chunk, so the node-retry budget above the chain can refuse to re-dispatch a
-> call that already produced output and already billed. Every attempt also gains a hard deadline. The
-> contract's defining rule is untouched: no vendor SDK type crosses the seam, and `LlmRequest` is unchanged.
+> is deliberately NOT retryable; and an optional **`LlmError.contentCommitted`**, set by the chain (and
+> stripped from anything a provider claims) when a failure is surfaced past the first content chunk, so the
+> node-retry budget above the chain can refuse to re-dispatch a call that already produced output and already
+> billed. Every attempt also gains a hard deadline. The contract's defining rule is untouched: no vendor SDK
+> type crosses the seam, and `LlmRequest` is unchanged.
+>
+> **Landed so far:** `protocol`, `contentCommitted`, and the grammar verifier module. **Not yet:** the
+> verifier's wiring into the chain, the `advance` verdict, and the per-attempt deadline. Stated because this
+> ADR is where a reader looks for what the seam guarantees TODAY — the same correction ADR-0079 needed once.
 
 ## Context
 

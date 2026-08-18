@@ -272,6 +272,25 @@ function backoffDelayMs(
 }
 
 /**
+ * Strip `contentCommitted` from an error the CHAIN did not set it on.
+ *
+ * The field rides `LlmErrorSchema`, which is the type PROVIDERS construct and put in an `error` chunk — so
+ * a provider could set it on a PRE-content failure and, through the fold above the chain, delete the node's
+ * entire retry budget. A review measured it: adding the flag to a pre-content timeout dropped provider calls
+ * from three to one. Fail-closed, so no money hazard — it silently removes transient-failure recovery.
+ *
+ * This is the trust-boundary class ADR-0082 §3 is written about: a rule enforced only inside implementations
+ * we happen to own is a coincidence. Stripping on ingress makes {@link committed} the field's only writer,
+ * which turns a convention into an invariant.
+ */
+function disown(error: LlmError): LlmError {
+  if (error.contentCommitted === undefined) return error;
+  const rest = { ...error };
+  delete rest.contentCommitted;
+  return rest;
+}
+
+/**
  * Mark a surfaced failure as having happened PAST the first content chunk
  * ([ADR-0082](../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) §4).
  *
@@ -615,7 +634,12 @@ export class FallbackChain {
       // SURFACED, not returned. `#runEntryStream` checks `state.committed` before it looks at the returned
       // failure, so on the committed path a returned error is dropped on the floor — silence, in the one
       // place the money path was made loud on purpose.
-      yield { type: 'error', error };
+      //
+      // Stamped like the other two surfaced failures. `kind: 'unknown'` already derives `retryable: false`,
+      // so nothing changes today — but leaving this one bare made "every error the chain surfaces past
+      // content carries `contentCommitted`" untrue, and rested this point's no-retry guarantee on a second,
+      // unrelated mechanism that a future kind change would quietly break.
+      yield { type: 'error', error: state.committed ? committed(error) : error };
       return undefined;
     }
     this.#emitFolded(record, usage, folded);
@@ -780,7 +804,7 @@ export class FallbackChain {
    * cancel showing as `cancelled` end-to-end.
    */
   #abortAware(error: LlmError, req: LlmRequest, provider: ProviderId): LlmError {
-    return this.#aborted(req) ? this.#cancelledError(provider) : error;
+    return this.#aborted(req) ? this.#cancelledError(provider) : disown(error);
   }
 
   #exhaustedError(): LlmError {
