@@ -984,8 +984,13 @@ export const SessionCompactingEventSchema = z.object({
 
 /**
  * Context compaction applied ([ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md)) —
- * the engine summarised the earlier working context into `summary` and now feeds it as a system-prompt
- * preamble; the host writes the append-only boundary marker row on this event. `keptMessageCount` is how many
+ * the engine summarised the earlier working context into `summary` and now carries it as UNTRUSTED content
+ * in the first user-role turn ([ADR-0081](../../decisions/0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md),
+ * superseding ADR-0062 §1 — it used to be concatenated into the system prompt, which is the defect that ADR
+ * removes). `summary` is a plain string here because the event crosses to the HOST, which persists it and
+ * renders it; it is re-marked untrusted at the reconstruction boundary on the way back in, and the marker
+ * row's `role: 'system'` is a storage encoding, never model-facing system authority. The host writes the
+ * append-only boundary marker row on this event. `keptMessageCount` is how many
  * trailing in-memory messages the engine RETAINED verbatim (the host maps it to the durable
  * `droppedThroughSequence`). `tokensUsed` is the summarization call's REAL usage — accounted to the session
  * budget (ADR-0028); it is NOT a user turn and does not count against `max_turns`.

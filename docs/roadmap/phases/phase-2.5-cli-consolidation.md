@@ -388,7 +388,7 @@ is sandbox-bounded with protected paths honoured. A security review of the resea
 **deterministic** history trim (`/trim [n]`, default `[chat].max_messages`) that finally consumes the
 dead `max_messages` config field (`packages/shared/src/config.ts` — plumbed but never read); it is also
 the zero-cost fallback if a summarization fails. `/compact` is **model-summarised** compaction: the
-summary becomes a session-level system-prompt preamble, the last exchange stays verbatim, and an
+summary becomes a session-level summary carried in the first user turn (ADR-0081; it was a system-prompt preamble when this was written), the last exchange stays verbatim, and an
 **append-only** boundary marker (no destructive delete; resume-preserving; reseat-safe) records it. The
 same primitive runs **automatically** past `[chat].compact_threshold` of the serving model's context
 window (`[chat].auto_compact`, default on). Every summarization token is accounted to the session budget

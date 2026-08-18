@@ -8,9 +8,10 @@
  * it is a formatting convention the untrusted text can close. So it rides as DATA in the first user-role
  * turn instead.
  *
- * **A text part inside the first user message, never its own message.** That answers the surviving half of
- * ADR-0062 §1's objection directly: no leading `assistant` (which Anthropic rejects), and no second
- * consecutive `user` message is created, because it joins one that already exists. (The other half of that
+ * **A text part inside the leading user message, or its own leading user message when there is none.** That
+ * answers the surviving half of ADR-0062 §1's objection directly, and STRUCTURALLY: the returned array is
+ * user-first for every input, so no leading `assistant` (which Anthropic rejects) is reachable, and no
+ * second consecutive `user` message is created. (The other half of that
  * objection — adjacent user messages — had already been closed at the seam by `mergeAdjacentSameRole` three
  * weeks before ADR-0062 was written.)
  *
@@ -54,15 +55,21 @@ export function buildTurnMessages(
     type: 'text' as const,
     text: `${SUMMARY_OPENING}\n\n${unwrapUntrusted(summary)}\n\n${SUMMARY_CLOSING}`,
   };
-  const at = messages.findIndex((message) => message.role === 'user');
-  const target = at === -1 ? undefined : messages[at];
-  if (target === undefined) {
-    // No user-role message to join — reachable on a resumed session whose next action is not a user turn.
-    // Defined rather than discovered: the block gets its own user message, which is still a `user` role and
-    // still not an `assistant`-first array.
+  // **Joined only when the first message IS the user's**, and otherwise prepended.
+  //
+  // A review caught the earlier form embedding into the first user message WHEREVER it sat: given
+  // `[assistant, user]` it edited the second entry and returned an array still led by `assistant` — which
+  // Anthropic rejects. The property was real but it belonged to the CALLER (`splitFoldable`,
+  // `tailFromUserBoundary`, `commitTurn` and `projectResumableRows` all keep the transcript empty-or-user-
+  // first), while this function's own docs claimed it. A guarantee that holds because of four invariants
+  // maintained elsewhere is one the next caller breaks.
+  //
+  // Prepending rather than throwing: the summary describes the conversation BEFORE these messages, so the
+  // head is where it belongs, and a new `user` message at index 0 is user-first by construction. It also
+  // creates no same-role adjacency — the next message is the `assistant` that was already leading.
+  const target = messages[0];
+  if (target === undefined || target.role !== 'user') {
     return [{ role: 'user', content: [block] }, ...messages];
   }
-  return messages.map((message, index) =>
-    index === at ? { ...target, content: [block, ...target.content] } : message,
-  );
+  return [{ ...target, content: [block, ...target.content] }, ...messages.slice(1)];
 }

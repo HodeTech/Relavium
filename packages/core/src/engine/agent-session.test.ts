@@ -1548,7 +1548,7 @@ function compactHarness(
 }
 
 describe('AgentSession — context compaction + trim (ADR-0062)', () => {
-  it('compact() folds earlier turns into a system-prompt preamble and keeps the last exchange', async () => {
+  it('compact() folds earlier turns into a summary and keeps the last exchange', async () => {
     // Large window ⇒ auto-compaction never fires; we drive compact() manually. 3 turns then a summary.
     const {
       session: s,

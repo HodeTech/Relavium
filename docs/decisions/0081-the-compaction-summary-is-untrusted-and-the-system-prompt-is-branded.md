@@ -126,7 +126,16 @@ carry its provenance, not merely for one sink to be guarded. So:
   (`buildTurnMessages`), and `renderConversationToSummarise`, which folds a prior summary into the next
   summarisation call. A draft of this section said "exactly one place" and was wrong about its own audit
   surface — the second site is equally load-bearing, and an auditor who grepped only the first would have
-  missed it. Two is the number; the guarantee is that both are data positions.
+  missed it.
+
+  **That count is a discipline, not a structural bound, and the asymmetry with §1 is deliberate.**
+  `Untrusted<T>.value` is an ordinary readable property; `unwrapUntrusted()` is sugar for reading it, and
+  nothing stops a future call site from reading `.value` directly — neither a grep for `unwrapUntrusted` nor
+  any lint rule would surface it. The `AuthoredSystemPrompt` SINK is fenced (§1); the untrusted CARRIER is
+  not, because that fence would need type information a syntactic selector does not have, and because the
+  primitive is pre-existing (1.T) and this ADR deliberately introduces no new security primitive. The two
+  halves carry different strengths, and saying so is worth more than a count that reads stronger than it is:
+  the sink is enforced, the carrier is conventional.
 
 The persisted marker row's `role: 'system'` (ADR-0062 §2) is a **storage encoding and nothing more**. No
 consumer may read it as LLM system authority. That sentence is the one this ADR most needs on the record,
@@ -152,9 +161,13 @@ The rules are normative, because the alternatives are real bugs rather than styl
   would write it as user text, and every turn would re-prefix it.
 - **The helper is pure.** It clones the first user-role message rather than editing it, and returns a new
   array.
-- **The summary block is a text content part prepended INSIDE the first user-role message**, never its own
-  message. That answers ADR-0062 §1's surviving objection directly: no leading `assistant`, and no second
-  consecutive `user` message is created — it joins an existing one.
+- **The summary block is a text content part prepended inside the LEADING user message** — or its own
+  leading user message when the transcript does not start with one. That answers ADR-0062 §1's surviving
+  objection STRUCTURALLY rather than by assumption: the returned array is user-first for every input, so no
+  leading `assistant` is reachable and no second consecutive `user` message is created. An earlier form
+  embedded into the first user message wherever it sat, which left `[assistant, user]` still
+  assistant-first — unreachable through any live caller, but a property of four separate caller invariants
+  rather than of this helper, and therefore one the next caller would break.
 - **The separator is in-band and explicit**, because the OpenAI adapter joins parts on the wire and a part
   boundary is invisible there. Its exact text has one canonical home — [chat-session.md](../reference/cli/chat-session.md)
   § Context compaction, where ADR-0062 §7 already put the summariser prompt — and is derived from there,

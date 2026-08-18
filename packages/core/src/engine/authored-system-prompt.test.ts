@@ -119,6 +119,24 @@ describe('§6.4 — the projection is pure', () => {
     expect(buildTurnMessages(undefined, messages)).toEqual(messages);
   });
 
+  it('an assistant-first transcript comes back USER-first — the guarantee is the helper’s own', () => {
+    // A review caught the earlier form embedding into the first user message wherever it sat: given
+    // `[assistant, user]` it edited the second entry and returned an array still led by `assistant`, which
+    // Anthropic rejects. It was unreachable through any live call site — four separate caller invariants
+    // keep the transcript user-first — but the docstring and the ADR both stated it as a property of THIS
+    // function, and a guarantee that rests on invariants maintained elsewhere is one the next caller breaks.
+    const built = buildTurnMessages(markUntrusted('S'), [
+      { role: 'assistant', content: [{ type: 'text', text: 'a' }] },
+      { role: 'user', content: [{ type: 'text', text: 'u' }] },
+    ]);
+
+    expect(built[0]?.role).toBe('user');
+    expect(built[0]?.content.map((p) => (p.type === 'text' ? p.text : '')).join('')).toContain('S');
+    // …and the original messages are all still there, in order, unedited.
+    expect(built.slice(1).map((m) => m.role)).toEqual(['assistant', 'user']);
+    expect(built[2]?.content).toEqual([{ type: 'text', text: 'u' }]);
+  });
+
   it('with no user-role message it makes one, rather than leaving the summary out', () => {
     // Reachable on a resumed session whose next action is not a user turn. Defined rather than discovered —
     // and still a `user` role, so still not an `assistant`-first array.
