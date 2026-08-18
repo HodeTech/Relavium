@@ -90,12 +90,18 @@ can no longer reach the field through ordinary typed code.
 **What the brand does and does not buy, stated precisely.** A brand is nominal to the type-checker but not
 to a deliberate `as` — `dynamicString as AuthoredSystemPrompt` compiles, and a draft of this ADR wrongly
 claimed the repo's lint rules stop it. They do not: `eslint.config.mjs` bans `any` and restricts seam
-imports, and has no assertion ban. So the mechanism ships WITH its fence: a `no-restricted-syntax` selector
-on a `TSAsExpression`/`TSTypeAssertion` whose target is `AuthoredSystemPrompt`, in the same slot as the
-existing seam and machine-output fences. With the fence, forging the brand takes an explicit lint
-suppression that shows up in review; without it the guarantee would rest on the same convention this ADR
-exists to replace. The claim is therefore: **ordinary typed code cannot reach `system` with a dynamic
-string, and a deliberate forgery is visible.** Not "impossible".
+imports, and has no assertion ban. So the mechanism ships WITH its fence: `no-restricted-syntax` selectors
+in the same slot as the existing seam and machine-output fences, covering a `TSAsExpression` or
+`TSTypeAssertion` naming `AuthoredSystemPrompt`, and — because a name-based selector is defeated by one hop
+of indirection — a type-alias declaration naming it, which closes that chain at its root.
+
+**What the fence does not catch, stated rather than left to be found.** A generic cast helper
+(`function id<T>(v: unknown): T { return v as T }`, called as `id<AuthoredSystemPrompt>(x)`) launders any
+brand, as does an interface field typed as the brand plus an object assertion. Both were verified against
+the shipped config. Neither is reachable by accident: each requires writing a construct whose only purpose
+is to defeat the type, and TypeScript offers no defence against `as` short of a runtime wrapper — which §1
+rejects for changing the seam shape. The claim is therefore exactly: **ordinary typed code cannot reach
+`system` with a dynamic string, and a deliberate forgery is visible.** Not "impossible".
 
 The type and its constructors live in `packages/core` beside the message assembly that consumes them, not in
 `packages/shared` — exporting the constructor from the shared barrel would widen the surface that can mint
@@ -176,7 +182,9 @@ because this repo treats the ADR as the contract the implementation is verified 
 
 1. A type-level test proves a dynamic `string` cannot be passed as `system`, and that the brand's
    constructors are the closed set in §1.
-2. The lint fence in §1 exists and fires: a fixture containing `x as AuthoredSystemPrompt` is reported.
+2. The lint fence in §1 exists and fires on every direct form — `x as T`, `<T>x`, `x as unknown as T`, a
+   return-position assertion, and a type-alias declaration naming the brand — verified against the shipped
+   config, along with the two indirect forms it does not catch.
 3. Given a summary containing a fence-closing sequence plus instructions, the assembled request has those
    bytes in a **user-role content part** and **zero** occurrences in the `system` field — asserted on the
    built request before any provider call, and again **after a restore from persistence** and **after a
@@ -229,7 +237,7 @@ and that is the pattern this list exists to prevent:
   influence what the summary *says*. This ADR bounds the summary's authority; it does not
   make the summarizer honest, and no acceptance criterion here asserts model obedience.
 - **A deliberate `as` can still forge the brand.** The lint fence in §1 makes that visible rather than
-  impossible; a contributor who suppresses the rule defeats it. Lived with: the alternative — a runtime
+  impossible; a contributor who suppresses the rule, or routes through a generic cast helper, defeats it. Lived with: the alternative — a runtime
   wrapper the seam would have to unwrap — buys no guarantee a reviewer reading a suppression would miss.
 - **The separator costs its own length in input tokens on every turn**, exactly as ADR-0062's preamble did.
   Same cost, new position; it is named here so the move does not read as free.

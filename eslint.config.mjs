@@ -81,6 +81,23 @@ const authoredPromptSyntaxRule = /** @type {const} */ ({
     "TSTypeAssertion > TSTypeReference > Identifier[name='AuthoredSystemPrompt']",
   message: AUTHORED_PROMPT_MESSAGE,
 });
+/**
+ * …and the one-hop evasion, closed at its root.
+ *
+ * `type Alias = AuthoredSystemPrompt; x as Alias` defeats a NAME-based selector, because by the time the
+ * assertion is written the brand's name is nowhere in it. Flagging the alias DECLARATION closes the chain
+ * where it starts: making the alias requires writing the name. (A local re-export — `export type { … }` — is
+ * an export specifier, not a type alias, so it is unaffected.)
+ *
+ * Two evasions remain and are named rather than papered over: a generic `as T` cast helper launders any
+ * brand, and so does an interface field typed as the brand plus an object assertion. Neither is reachable by
+ * accident — each takes writing a construct whose only purpose is to defeat the type — which is exactly the
+ * bound ADR-0081 claims: **a forgery is visible, not impossible.**
+ */
+const authoredPromptAliasRule = /** @type {const} */ ({
+  selector: "TSTypeAliasDeclaration TSTypeReference > Identifier[name='AuthoredSystemPrompt']",
+  message: AUTHORED_PROMPT_MESSAGE,
+});
 
 /**
  * The machine-output fence (`CR-03`) — every `--json` record leaves through `stringifyJsonLine`.
@@ -262,7 +279,7 @@ export default tseslint.config(
       // The seam fence (0.F): static specifiers (incl. `import type`) + the
       // dynamic/import-type/require forms that evade the first.
       '@typescript-eslint/no-restricted-imports': seamImportEntry,
-      'no-restricted-syntax': [...seamSyntaxRules, authoredPromptSyntaxRule],
+      'no-restricted-syntax': [...seamSyntaxRules, authoredPromptSyntaxRule, authoredPromptAliasRule],
     },
   },
   {
@@ -286,7 +303,7 @@ export default tseslint.config(
     // entry is currently inert rather than wrong.
     ignores: ['apps/cli/src/process/render-error.ts', 'apps/cli/src/render/sanitize.ts'],
     rules: {
-      'no-restricted-syntax': [...seamSyntaxRules, authoredPromptSyntaxRule, jsonLineSyntaxRule],
+      'no-restricted-syntax': [...seamSyntaxRules, authoredPromptSyntaxRule, authoredPromptAliasRule, jsonLineSyntaxRule],
     },
   },
   {
