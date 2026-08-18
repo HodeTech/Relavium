@@ -178,6 +178,7 @@ export { EngineStateError, isTransientEngineStateError } from './engine/errors.j
 // ADR-0080's dispatch-side journal seam, re-exported so a `ToolDispatchContext` consumer can satisfy the
 // required port from this package alone. The loud unwired variant is what a fixture with no effects passes.
 export { unwiredEffectJournal } from '@relavium/shared';
+export { journaledTier } from './tools/effect-predicate.js';
 export type {
   EffectDispatchPort,
   EffectSlot,
