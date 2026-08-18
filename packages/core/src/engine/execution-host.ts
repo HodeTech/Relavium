@@ -35,6 +35,7 @@ import {
   AppendConflictError,
   EffectConflictError,
   blocksResume,
+  nodeIdFromRunScope,
   LeaseFencedError,
   effectScope,
   type EffectResumePort,
@@ -686,15 +687,16 @@ export function createInMemoryEffectJournalStore(): {
       };
     },
     resume: {
-      unresolvedFor: (correlation) => {
-        const scope = effectScope(correlation);
+      unresolvedForRun: (runId) => {
+        const prefix = `run:${encodeURIComponent(runId)}:`;
         return Promise.resolve(
           [...rows.values()]
-            .filter((row) => row.scope === scope && blocksResume(row))
+            .filter((row) => row.scope.startsWith(prefix) && blocksResume(row))
             .map((row) => ({
               identity: { scope: row.scope, slot: row.slot, toolId: row.toolId },
               state: row.state,
               tier: row.tier,
+              nodeId: nodeIdFromRunScope(row.scope) ?? '(unknown node)',
             })),
         );
       },

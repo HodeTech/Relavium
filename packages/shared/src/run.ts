@@ -418,7 +418,16 @@ export interface EffectRecord {
  * attempt-scoped lookup would miss the very row it exists to find.
  */
 export interface EffectResumePort {
-  unresolvedFor: (correlation: EffectCorrelation) => Promise<readonly UnresolvedEffect[]>;
+  /**
+   * Every unresolved effect of one RUN, across all its nodes — one range scan, not one query per node.
+   *
+   * Run-scoped rather than node-scoped for two reasons. It is a single index range instead of N sequential
+   * round-trips on the resume critical path; and a node RENAMED between the crash and the resume (same
+   * workflow surrogate id, edited content — a risk `resumeFromCheckpoint` explicitly leaves to the caller)
+   * leaves rows under a `nodeId` a per-node loop would never think to ask about. An orphaned row should
+   * block, and this shape makes that the default rather than a special case.
+   */
+  unresolvedForRun: (runId: string) => Promise<readonly UnresolvedEffect[]>;
 }
 
 /** One effect a resumed correlation cannot move past, and why — the gate's whole vocabulary. */
@@ -426,6 +435,8 @@ export interface UnresolvedEffect {
   readonly identity: EffectIdentity;
   readonly state: EffectState;
   readonly tier: EffectTier;
+  /** The node this effect belongs to, decoded from the scope — what the refusal message has to name. */
+  readonly nodeId: string;
 }
 
 /**
@@ -458,6 +469,18 @@ export class EffectConflictError extends Error {
 /** Narrow an unknown throw to {@link EffectConflictError} — callers narrow on this, never on `message`. */
 export function isEffectConflictError(value: unknown): value is EffectConflictError {
   return value instanceof EffectConflictError;
+}
+
+/**
+ * The node id back out of a run scope — the inverse of {@link effectScope}'s run arm.
+ *
+ * Lives beside the scope builder so the encoding and its inverse cannot drift; a decoded id that does not
+ * round-trip would put the wrong node in a refusal message an operator acts on.
+ */
+export function nodeIdFromRunScope(scope: string): string | undefined {
+  const parts = scope.split(':');
+  if (parts.length !== 3 || parts[0] !== 'run') return undefined;
+  return decodeURIComponent(parts[2] ?? '');
 }
 
 /**

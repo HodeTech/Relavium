@@ -30,6 +30,8 @@ const SURFACES: readonly {
   needle: RegExp;
   /** The READ half — required only where the surface can RESUME a run (effect-journal.md §4). */
   resumeNeedle?: RegExp;
+  /** §8's disclosure — required on every surface that can RESUME a session. */
+  discloseNeedle?: RegExp;
 }[] = [
   {
     file: 'commands/run.ts',
@@ -52,11 +54,13 @@ const SURFACES: readonly {
     file: 'commands/chat.ts',
     what: '`relavium chat` / `chat-resume` / the `/clear` re-drive',
     needle: /attachEffectJournal\(\(correlation/,
+    discloseNeedle: /unresolvedEffectNotice\(/,
   },
   {
     file: 'home/drive-home.tsx',
     what: 'the bare-`relavium` Home',
     needle: /attachEffectJournal\(\(correlation/,
+    discloseNeedle: /unresolvedEffectNotice\(/,
   },
 ];
 
@@ -73,6 +77,11 @@ describe('the effect journal is wired on every production surface (ADR-0080)', (
       // whole repo was in until the gate landed.
       if (surface.resumeNeedle !== undefined) {
         expect(source).toMatch(surface.resumeNeedle);
+      }
+      // …and §8's disclosure wherever the surface can resume a SESSION. A review found the Home resuming a
+      // persisted session and saying nothing, while `chat-resume` — the same rows, the same user — did.
+      if (surface.discloseNeedle !== undefined) {
+        expect(source).toMatch(surface.discloseNeedle);
       }
     });
   }

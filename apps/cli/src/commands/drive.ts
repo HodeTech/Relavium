@@ -247,9 +247,13 @@ export function outcomeToExitCode(
    */
   terminalErrorCode?: ErrorCode,
 ): ExitCode {
-  if (terminalErrorCode === 'effect_needs_attention') {
-    // OUTRANKS the durability disposition below: a run stopped by an unresolved external effect must not be
-    // reported as a transient "retry shortly", whatever else is true about its terminal's write.
+  if (terminalErrorCode === 'effect_needs_attention' && durability !== 'uncertain') {
+    // Outranks an ordinary `failed`, but NOT an uncertain disposition — and that ordering is the point.
+    // The two describe independent uncertainties: `7` says an external effect may be outstanding, `5`/`6`
+    // say this process does not know whether its terminal was recorded (or that another process owns the
+    // run). When both hold, the terminal itself is in doubt, so the code that describes the RECORD wins —
+    // a caller that cannot trust the record cannot act on what the record says the reason was. A review
+    // caught this as an assertion the code made and did not test; it is now the tested behaviour.
     return EXIT_CODES.effectNeedsAttention;
   }
   if (durability === 'uncertain') {

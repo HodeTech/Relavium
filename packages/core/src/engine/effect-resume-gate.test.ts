@@ -11,7 +11,7 @@
  */
 
 import type { RunEvent } from '@relavium/shared';
-import { blocksResume, type EffectResumePort, type UnresolvedEffect } from '@relavium/shared';
+import { blocksResume, effectScope, nodeIdFromRunScope } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
@@ -41,36 +41,23 @@ describe('blocksResume — §4’s table in one predicate', () => {
   });
 });
 
-/** A resume port that answers from a fixed map, and records which correlations were asked about. */
-function portOver(
-  byNode: Readonly<Record<string, readonly UnresolvedEffect[]>>,
-  asked: string[],
-): EffectResumePort {
-  return {
-    unresolvedFor: (correlation) => {
-      const nodeId = correlation.kind === 'run' ? correlation.nodeId : correlation.sessionId;
-      asked.push(nodeId);
-      return Promise.resolve(byNode[nodeId] ?? []);
-    },
-  };
-}
-
 describe('the gate’s read scope', () => {
-  it('reads with the attempt DROPPED — the scope is the lookup key', async () => {
+  it('reads with the attempt DROPPED — the scope is the lookup key', () => {
     // The node-retry attempt resets to 1 both on a crash-resume and on a budget approval, so an
-    // attempt-scoped lookup would miss the very row it exists to find. `effectScope` drops it, which is why
-    // the gate can pass any attempt at all.
-    const { effectScope } = await import('@relavium/shared');
+    // attempt-scoped lookup would miss the very row it exists to find. `effectScope` drops it.
     expect(effectScope({ kind: 'run', runId: 'r1', nodeId: 'n1', attempt: 1 })).toBe(
       effectScope({ kind: 'run', runId: 'r1', nodeId: 'n1', attempt: 7 }),
     );
   });
 
-  it('asks only about the nodes handed to it', async () => {
-    const asked: string[] = [];
-    const port = portOver({}, asked);
-    await port.unresolvedFor({ kind: 'run', runId: 'r1', nodeId: 'n1', attempt: 1 });
-    expect(asked).toEqual(['n1']);
+  it('the node id round-trips through the scope, encoding and all', () => {
+    // The refusal message names the node, and it derives that from the scope rather than carrying it — so
+    // an encoding without a matching inverse would put the WRONG node in front of an operator.
+    for (const nodeId of ['out', 'a:b', 'node with spaces', '100%']) {
+      const scope = effectScope({ kind: 'run', runId: 'r1', nodeId, attempt: 1 });
+      expect(nodeIdFromRunScope(scope)).toBe(nodeId);
+    }
+    expect(nodeIdFromRunScope('session:s1:0')).toBeUndefined();
   });
 });
 
@@ -191,6 +178,39 @@ workflow:
     expect(events.some((e) => e.type === 'run:completed')).toBe(true);
   });
 
+  it('a PAUSED node’s rows block too — not only a pending one’s', async () => {
+    // The `paused` arm of the gate's node filter was untested: the fixture's blocking row sat on `out`,
+    // which the checkpoint leaves `pending`. A review mutated the filter to `pending` only and all 1,228
+    // core tests stayed green. The arm is load-bearing — a node parked on a budget gate or a media job is
+    // `paused` and has ALREADY dispatched tools, which is precisely when a row exists.
+    const store = new InMemoryRunStore();
+    const { runId, gateId } = await runToGate(store);
+
+    const journal = createInMemoryEffectJournalStore();
+    await journal
+      .for({ kind: 'run', runId, nodeId: 'g', attempt: 1 }) // `g` is the PAUSED gate node
+      .prepare(0, 'http_request', 3, { url: 'https://api.example/x' });
+
+    const engineB = new WorkflowEngine({
+      host: createInMemoryHost({ store }),
+      executor: new Stub(),
+      effectJournal: (correlation) => journal.for(correlation),
+      effectResume: journal.resume,
+    });
+    const events = await drain(
+      await engineB.resumeFromCheckpoint({
+        runId,
+        workflow: GATED,
+        gateId,
+        decision: { decision: 'approved', decidedBy: 'tester' },
+      }),
+    );
+
+    const failure = events.find((e) => e.type === 'run:failed');
+    expect(failure?.type === 'run:failed' && failure.error.code).toBe('effect_needs_attention');
+    expect(failure?.type === 'run:failed' && failure.error.message).toContain('g/http_request');
+  });
+
   it('an UNREADABLE journal refuses too — a failed read is not “nothing is blocking”', async () => {
     // ADR-0075's answer for an unreadable event log, applied here: resuming a run whose external effects are
     // unknown is the one thing this contract exists to prevent.
@@ -200,7 +220,7 @@ workflow:
     const engineB = new WorkflowEngine({
       host: createInMemoryHost({ store }),
       executor: new Stub(),
-      effectResume: { unresolvedFor: () => Promise.reject(new Error('history.db is corrupt')) },
+      effectResume: { unresolvedForRun: () => Promise.reject(new Error('history.db is corrupt')) },
     });
     const events = await drain(
       await engineB.resumeFromCheckpoint({

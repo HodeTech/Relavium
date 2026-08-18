@@ -57,6 +57,7 @@ import {
   type EffectCorrelation,
   type EffectDispatchPort,
   type EffectResumePort,
+  type UnresolvedEffect,
 } from '@relavium/shared';
 import type { EndpointKind, MediaJobStatus, PricingOverlay, ProviderId } from '@relavium/llm';
 
@@ -801,30 +802,12 @@ class RunExecution {
    */
   async #effectResumeGateOrFail(): Promise<boolean> {
     if (this.#effectResume === undefined) return true;
-    const willRerun = [...this.#states.entries()]
-      .filter(([, state]) => state.status === 'pending' || state.status === 'paused')
-      .map(([id]) => id);
-    const blocking: { nodeId: string; toolId: string; state: string; tier: number }[] = [];
+    let blocking: readonly UnresolvedEffect[];
     try {
-      for (const nodeId of willRerun) {
-        const unresolved = await this.#effectResume.unresolvedFor({
-          kind: 'run',
-          runId: this.runId,
-          nodeId,
-          // Any attempt: `effectScope` drops it. Passing 1 rather than the live attempt makes that explicit —
-          // the node-retry attempt resets on both a crash-resume and a budget approval, so an
-          // attempt-scoped lookup would miss the very row it exists to find.
-          attempt: 1,
-        });
-        for (const record of unresolved) {
-          blocking.push({
-            nodeId,
-            toolId: record.identity.toolId,
-            state: record.state,
-            tier: record.tier,
-          });
-        }
-      }
+      // ONE range scan for the whole run, not one query per node. That is faster on the resume critical
+      // path, and it is also more correct: a node RENAMED between the crash and the resume leaves rows
+      // under an id a per-node loop would never think to ask about, and an orphaned row should block.
+      blocking = await this.#effectResume.unresolvedForRun(this.runId);
     } catch (error) {
       // A read that FAILS is not "nothing is blocking" — the same answer ADR-0075 gives for an unreadable
       // event log. Refusing on an unreadable journal is the only honest option: the alternative is resuming
@@ -846,7 +829,7 @@ class RunExecution {
           `${String(blocking.length)} external effect(s) from a prior attempt are unresolved, so this run ` +
           `cannot continue without a human: ` +
           blocking
-            .map((b) => `${b.nodeId}/${b.toolId} (${b.state}, tier ${String(b.tier)})`)
+            .map((b) => `${b.nodeId}/${b.identity.toolId} (${b.state}, tier ${String(b.tier)})`)
             .join(', ') +
           `. Check the target before resolving them — resuming again re-enters this gate and stops here.`,
         retryable: false,
@@ -1160,6 +1143,16 @@ class RunExecution {
         runId: this.runId,
         gateId,
       });
+    }
+    // **The in-process resume takes the SAME gate**, so the docblock's "every resume" is true of all three
+    // entry points rather than of the two that happen to go through a checkpoint. A budget approval resets
+    // the node's attempt to 1 and re-dispatches it FROM THE START, which is a replay of its tool calls in
+    // this very process — `agent-turn.ts`'s CR-95 guard is what stops that turning into a duplicate today,
+    // and a second, structural check at the same choke point is cheap (one range scan) and does not depend
+    // on that guard staying correct.
+    if (!(await this.#effectResumeGateOrFail())) {
+      await this.#settle('run:failed');
+      return;
     }
     const gate = this.#assertGatePending(gateId);
     this.#resolvedGates.add(gateId);

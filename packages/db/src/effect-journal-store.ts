@@ -31,6 +31,7 @@ import {
   type EffectResumePort,
   type UnresolvedEffect,
   blocksResume,
+  nodeIdFromRunScope,
   type EffectState,
   type EffectTier,
 } from '@relavium/shared';
@@ -76,6 +77,16 @@ export interface EffectJournalStore {
    */
   sweepCommittedForRun: (runId: string) => number;
   /**
+   * Sweep the `committed` rows of a SESSION's past turns. `beforeTurn` is exclusive, so the live turn's
+   * rows are never touched.
+   *
+   * The session half of §9, and it was missing: `sweepCommittedForRun` matches only `run:` scopes, so every
+   * row written by `chat`, `chat-resume`, `agent run` and the bare-`relavium` Home was permanent. Combined
+   * with the durable digest that is an ever-growing offline equality oracle on unencrypted disk, for rows
+   * whose correlation — a past conversational turn — can never be resumed.
+   */
+  sweepCommittedForSession: (sessionId: string, beforeTurn: number) => number;
+  /**
    * Every unresolved effect across ALL turns of one session
    * ([effect-journal.md](../../../docs/reference/shared-core/effect-journal.md) §8).
    *
@@ -85,6 +96,8 @@ export interface EffectJournalStore {
    * turn to answer a question about the session.
    */
   unresolvedForSession: (sessionId: string) => readonly EffectRecord[];
+  /** Every unresolved effect of one RUN, across all its nodes — the resume gate's single range scan. */
+  unresolvedForRun: (runId: string) => readonly EffectRecord[];
 }
 
 /**
@@ -112,6 +125,27 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
       eq(runEffects.slot, identity.slot),
       eq(runEffects.toolId, identity.toolId),
     );
+
+  /** Every BLOCKING record under one scope prefix — the shared body of both unresolved-* reads. */
+  const unresolvedInScope = (prefix: string): readonly EffectRecord[] => {
+    const range = scopeRange(prefix);
+    return db
+      .select()
+      .from(runEffects)
+      .where(and(gte(runEffects.scope, range.from), lt(runEffects.scope, range.toExclusive)))
+      .orderBy(asc(runEffects.createdAt))
+      .all()
+      .map((row) => ({
+        identity: { scope: row.scope, slot: row.slot, toolId: row.toolId },
+        state: coerceEffectState(row.state),
+        tier: coerceEffectTier(row.tier),
+        ...retainedResult(row.resultJson),
+        ...(row.targetIdempotencyKey === null
+          ? {}
+          : { targetIdempotencyKey: row.targetIdempotencyKey }),
+      }))
+      .filter((record) => blocksResume(record));
+  };
 
   return {
     prepare: (identity, correlation, attempt, tier, argsDigest, targetIdempotencyKey) =>
@@ -227,29 +261,40 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
         );
     },
 
-    unresolvedForSession: (sessionId) => {
-      // `like` on the scope prefix. The separator is part of the pattern (`session:<id>:`), so a session id
-      // that is a prefix of another one cannot bleed into it — `s1` must not match `s10`'s rows.
-      // Encoded to match `effectScope` exactly — the query and the writer must agree byte for byte.
-      const range = scopeRange(`session:${encodeURIComponent(sessionId)}:`);
-      return db
-        .select()
+
+    // Encoded to match `effectScope` byte for byte — the query and the writer must agree, and the trailing
+    // `:` lives inside the prefix so `s1` can never reach `s10`'s rows.
+    unresolvedForSession: (sessionId) =>
+      unresolvedInScope(`session:${encodeURIComponent(sessionId)}:`),
+
+    unresolvedForRun: (runId) => unresolvedInScope(`run:${encodeURIComponent(runId)}:`),
+
+    sweepCommittedForSession: (sessionId, beforeTurn) => {
+      // Row-scoped rather than range-scoped, because the turn is the LAST scope component and the bound is
+      // numeric: a byte range over `session:<id>:` cannot express "turn < N" (`:9` sorts after `:10`).
+      // Reading the ids first and deleting by id keeps the comparison in TypeScript, where it is correct.
+      const prefix = `session:${encodeURIComponent(sessionId)}:`;
+      const range = scopeRange(prefix);
+      const doomed = db
+        .select({ id: runEffects.id, scope: runEffects.scope })
         .from(runEffects)
         .where(
-          and(gte(runEffects.scope, range.from), lt(runEffects.scope, range.toExclusive)),
+          and(
+            gte(runEffects.scope, range.from),
+            lt(runEffects.scope, range.toExclusive),
+            eq(runEffects.state, 'committed'),
+          ),
         )
-        .orderBy(asc(runEffects.createdAt))
         .all()
-        .map((row) => ({
-          identity: { scope: row.scope, slot: row.slot, toolId: row.toolId },
-          state: coerceEffectState(row.state),
-          tier: coerceEffectTier(row.tier),
-          ...retainedResult(row.resultJson),
-          ...(row.targetIdempotencyKey === null
-            ? {}
-            : { targetIdempotencyKey: row.targetIdempotencyKey }),
-        }))
-        .filter((record) => blocksResume(record));
+        .filter((row) => {
+          const turn = Number.parseInt(row.scope.slice(prefix.length), 10);
+          return Number.isInteger(turn) && turn < beforeTurn;
+        })
+        .map((row) => row.id);
+      for (const id of doomed) {
+        db.delete(runEffects).where(eq(runEffects.id, id)).run();
+      }
+      return doomed.length;
     },
 
     sweepCommittedForRun: (runId) => {
@@ -343,12 +388,16 @@ export function createEffectJournalPort(
  */
 export function createEffectResumePort(store: EffectJournalStore): EffectResumePort {
   return {
-    unresolvedFor: (correlation) => {
+    unresolvedForRun: (runId) => {
       try {
-        const blocking: UnresolvedEffect[] = store
-          .recordsFor(correlation)
-          .filter((record) => blocksResume(record))
-          .map((record) => ({ identity: record.identity, state: record.state, tier: record.tier }));
+        const blocking: UnresolvedEffect[] = store.unresolvedForRun(runId).map((record) => ({
+          identity: record.identity,
+          state: record.state,
+          tier: record.tier,
+          // Decoded from the scope, not carried separately: the scope IS the durable key, so deriving the
+          // node from it cannot drift from what the row actually belongs to.
+          nodeId: nodeIdFromRunScope(record.identity.scope) ?? '(unknown node)',
+        }));
         return Promise.resolve(blocking);
       } catch (error) {
         // A read that FAILS is not "nothing is blocking". Rejecting sends the gate down its fail-closed

@@ -212,7 +212,9 @@ shapes were weighed and two rejected:
   already switches on, and `run:failed` is honest: the run did not complete.
 
 **It does NOT report `durability: 'uncertain'`, and that is a correction to an earlier draft of this
-section.** The disposition means exactly one thing
+section.** (The converse also holds: when a run's terminal write IS uncertain, that disposition outranks
+this code — exit `5` or `6`. A caller who cannot trust the record cannot act on the reason the record
+gives.) The disposition means exactly one thing
 ([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §5): did this run's
 terminal reach the durable log. Here it did — the run recorded its failure correctly, and the only thing in
 doubt is what a target did. Overloading the disposition would route the run to exit `5`, whose documented
@@ -243,6 +245,12 @@ exist before anything can resolve rows.
   key to `runs`, because a purge is exactly when the record matters most.
 - **`committed` rows** are swept only once their correlation can no longer be resumed. Sweeping a committed row
   while its run is still resumable would delete the evidence the gate in §4 reads, reintroducing the duplicate.
+Both sweeps ship: a run's committed rows go when the run reaches a terminal (it can no longer be resumed —
+`resumeFromCheckpoint` returns a closed handle for one), and a session's go for every turn BEFORE the one
+being resumed. The session half is the one that matters most in practice: `chat`, `chat-resume`,
+`agent run` and the bare-`relavium` Home all write session-scoped rows, and leaving them forever would make
+§11's digest a growing permanent oracle rather than a bounded one.
+
 - **Growth is bounded by resolution, not by time.** Unresolved rows accumulate until an operator clears them;
   that is a deliberate trade against silently discarding an ambiguous external effect, and the quota/archive
   mechanism for a neglected queue is a named follow-up.

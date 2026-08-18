@@ -12,7 +12,6 @@ import type { ProviderId } from '@relavium/llm';
 import {
   REASONING_EFFORTS,
   type AgentSessionRecord,
-  type EffectRecord,
   type ReasoningEffort,
 } from '@relavium/shared';
 import { exportSession } from '../chat/export.js';
@@ -67,6 +66,10 @@ import {
   type ChatBudgetWarning,
 } from '../chat/session-host.js';
 import { loadResolvedConfig } from '../config/load.js';
+import {
+  sweepCommittedSessionEffects,
+  unresolvedEffectNotice,
+} from '../engine/effect-retention.js';
 import { createModelCatalogPort, type ModelCatalogPort } from '../engine/model-catalog-port.js';
 import { assembleToolEnv } from '../engine/tool-host/assemble.js';
 import { loadUserPricingOverlay, readUserPricingOverlay } from '../engine/pricing-overlay.js';
@@ -115,7 +118,7 @@ import { createChatStore, type ChatStoreController } from '../render/tui/chat-st
 import { createMentionReader, type MentionReader } from '../render/tui/mention.js';
 import { createMcpSecretResolver, type McpSecretResolver } from '../secrets/mcp-secret.js';
 import { stringifyJsonLine } from '../render/sanitize.js';
-import { createEffectJournalPort, createEffectJournalStore, type Db } from '@relavium/db';
+import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
 
 /**
  * `relavium chat` (2.M) — the agent-first interactive REPL over `@relavium/core`'s `AgentSession`. It binds
@@ -682,37 +685,6 @@ export async function chatCommand(args: ChatCommandArgs, deps: ChatCommandDeps):
  * {@link runReplLoop}. An unknown `sessionId` (or a session with no stored agent snapshot) is a clean exit-2
  * invocation fault. Like `chat`, it ends with **exit code 4**.
  */
-/**
- * Tell the user, once, about external effects from this session's prior turns that nobody resolved
- * ([effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md) §8).
- *
- * Deliberately NON-fatal and NON-blocking, unlike the run path's gate. A run can stop and wait for an
- * operator; a chat cannot — there is nothing to pause and no queue to file into — so the honest action is
- * to put the fact in front of the person who can go check the target, then continue. A journal read that
- * throws is swallowed for the same reason: losing a session over an unreadable audit row would be a worse
- * outcome than the missing disclosure.
- */
-function discloseUnresolvedEffects(io: CliIo, db: Db, sessionId: string): void {
-  let unresolved: readonly EffectRecord[];
-  try {
-    unresolved = createEffectJournalStore(db, {
-      uuid: randomUUID,
-      now: Date.now,
-    }).unresolvedForSession(sessionId);
-  } catch {
-    return; // best-effort: never cost the user their session over an audit read
-  }
-  if (unresolved.length === 0) return;
-  const listed = unresolved
-    .map((record) => `${sanitizeInline(record.identity.toolId)} (${record.state})`)
-    .join(', ');
-  io.writeErr(
-    `note: ${String(unresolved.length)} external effect(s) from earlier turns of this session were never ` +
-      `resolved — ${listed}. They are NOT retried; check the target before assuming they did or did not ` +
-      `happen.\n`,
-  );
-}
-
 export async function chatResumeCommand(
   args: ChatResumeCommandArgs,
   deps: ChatResumeCommandDeps,
@@ -807,7 +779,13 @@ export async function chatResumeCommand(
     // session's prior turns — is unchanged; what changes is that the fact reaches the one person who can go
     // look at the target. Best-effort by design: a journal read that fails must not cost the user their
     // session, which is the opposite of the run path's fail-closed answer and for the opposite reason.
-    discloseUnresolvedEffects(deps.io, opened.db, resumed.sessionId);
+    // §8's disclosure, on stderr so `--json` stdout stays a clean event stream. The sentence is built in
+    // the shared module so the Home surface — which must route it into the transcript instead — cannot drift.
+    const effectNotice = unresolvedEffectNotice(opened.db, resumed.sessionId, sanitizeInline);
+    if (effectNotice !== undefined) deps.io.writeErr(`${effectNotice}\n`);
+    // …and retention (§9): a past turn can never be resumed, so its COMMITTED rows have no reader left.
+    // `turns` is exclusive, so the turn the user is about to take is untouched.
+    sweepCommittedSessionEffects(deps.io, opened.db, resumed.sessionId, turns);
   } catch (err) {
     // A pre-loop fault (not-found, no snapshot, build failure, or a post-build setup throw) must not strand the
     // open db handle NOR the spawned MCP children — tear BOTH down (a reject in one must not skip the other), and

@@ -19,6 +19,7 @@ export type ToolErrorCode =
   | 'invalid_args' // the effective argument set failed the tool's validator or the secret-taint check
   | 'capability_unavailable' // the required ToolHost capability was not injected (a host/config gap)
   | 'effect_conflict' // another attempt already holds this effect's journal identity (ADR-0080) — a refusal
+  | 'effect_unrecorded' // the effect LANDED and its journal record could not be completed (ADR-0080 §7)
   | 'execution_failed' // the host capability threw a non-cancel error
   | 'cancelled'; // the run's AbortSignal fired during the tool — the cooperative-cancel path
 
@@ -203,7 +204,11 @@ export class ToolEffectConflictError extends ToolDispatchError {
  * "fix the target and try again" is the one instruction that could make a human repeat a real effect.
  */
 export class ToolEffectNeedsAttentionError extends ToolDispatchError {
-  readonly code = 'effect_conflict';
+  // Its OWN discriminant, not `effect_conflict`. The two map to the same `ErrorCode` and the same
+  // retryability today, so sharing one read fine — until a future `switch (err.code)` needed to tell "another
+  // attempt owns this identity" (nothing happened; a refusal) from "the effect landed and we failed to record
+  // it" (something happened; the record is wrong). Those want different words in front of a human.
+  readonly code = 'effect_unrecorded';
   readonly runErrorCode: ErrorCode = 'effect_needs_attention';
   readonly retryable = false;
 

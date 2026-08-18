@@ -298,6 +298,11 @@ function codeForToolError(err: ToolDispatchError): { code: ErrorCode; retryable:
       // tool + the unwired arm via the error message), never a bare `internal`. The advertise-filter (2.5.A)
       // makes this a backstop — an unwired tool is not offered — but a slipped-through call still classifies clean.
       return { code: 'tool_unavailable', retryable: false };
+    // Both are "a human must look at this", and neither is ever retried. They are separate discriminants
+    // because they describe opposite facts — nothing happened (another attempt owns the identity) vs
+    // something happened and the record is wrong — which matters to a surface choosing what to say, not to
+    // the retry decision here.
+    case 'effect_unrecorded':
     case 'effect_conflict':
       // ADR-0080 §7: another attempt already holds this effect's identity. A refusal, not a fault — and
       // never retried, because a retry re-collides, burns the whole node budget, and reports the wrong

@@ -269,8 +269,10 @@ async function dispatch(
       // ambiguous.** A missing host capability throws synchronously inside the dispatch arm before the host
       // is ever touched, and recording that as ambiguous would leave a permanently unresolved row for a call
       // that provably never left, blocking the node on a human for a wiring gap.
-      // …and a REPLAY throwing is a mapping/bounding fault over a stored result, not an effect: its row is
-      // already terminal, and settling out of `committed` would lose the very result the replay re-delivered.
+      // The `replayed` test is NOT redundant even though this `try` now wraps only the dispatch: a replay
+      // takes the other arm of the ternary and cannot throw here today, and the guard is what keeps that
+      // true if the arm ever grows. A replay's row is already terminal, and settling out of `committed`
+      // would lose the very result the replay re-delivered.
       if (tier !== undefined && replayed === NOT_REPLAYED && !neverLeftTheProcess(cause)) {
         await settleQuietly(ctx, def.id, 'ambiguous');
       }

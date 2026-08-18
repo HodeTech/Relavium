@@ -295,12 +295,15 @@ describe('outcomeToExitCode — an unresolved external effect (ADR-0080 §2b, ef
     );
   });
 
-  it('OUTRANKS the uncertain disposition — exit 5 would give false advice', () => {
-    // Exit 5 documents "held in the outbox and retried on the next start". Nothing is pending here: this
-    // run's terminal landed durably and no drain will ever come, so a script following 5's advice waits
-    // forever instead of looking at the target.
+  it('does NOT mask an uncertain disposition — the record’s doubt outranks the effect’s', () => {
+    // Two independent uncertainties, and when both hold the one about the RECORD wins: a caller that
+    // cannot trust the terminal reached the log cannot act on what that terminal says the reason was.
+    // Reported as 5 (a terminal was produced) or 6 (fenced, none was) exactly as before.
     expect(outcomeToExitCode('failed', 'uncertain', 'effect_needs_attention')).toBe(
-      EXIT_CODES.effectNeedsAttention,
+      EXIT_CODES.durabilityUncertain,
+    );
+    expect(outcomeToExitCode(undefined, 'uncertain', 'effect_needs_attention')).toBe(
+      EXIT_CODES.runOwnedElsewhere,
     );
   });
 
