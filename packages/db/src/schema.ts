@@ -775,6 +775,61 @@ export const runLeases = sqliteTable('run_leases', {
   updatedAt: epochMs('updated_at').notNull(),
 });
 
+/**
+ * The durable effect journal ([ADR-0080](../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md),
+ * canonical contract in [effect-journal.md](../../../docs/reference/shared-core/effect-journal.md)).
+ *
+ * One row per effect OCCURRENCE. Its purpose is to make a resumed run or session refuse to re-fire an
+ * external effect it cannot prove is safe to repeat — a duplicate ticket, deploy, payment or commit.
+ *
+ * **No foreign key to `runs`, deliberately.** An `ambiguous` / `needs_attention` row is precisely the record
+ * an operator needs *after* the run is gone, and `run_leases`' `ON DELETE cascade` would take it with the
+ * purge. The correlation is carried as an opaque `scope` string instead, which also lets a SESSION effect —
+ * which has no run at all — live in the same table.
+ */
+export const runEffects = sqliteTable(
+  'run_effects',
+  {
+    id: text('id').primaryKey(),
+    /**
+     * The correlation with the retry attempt DROPPED — `run:<runId>:<nodeId>` or `session:<sessionId>:<turn>`.
+     *
+     * The exclusion is the property the resume gate turns on: the node-retry attempt resets to 1 on both a
+     * crash-resume and a budget approval, so a scope containing it would miss the very row the gate looks for.
+     */
+    scope: text('scope').notNull(),
+    /** Which effect within the correlation — an ordinal over one model response's tool calls. */
+    slot: integer('slot').notNull(),
+    toolId: text('tool_id').notNull(),
+    /** `1` | `2` | `3` — what the engine can honestly promise for this target. Everything ships as `3` today. */
+    tier: integer('tier').notNull(),
+    /** `prepared` | `dispatched` | `committed` | `ambiguous` | `needs_attention`. */
+    state: text('state').notNull(),
+    /**
+     * A SHA-256 digest of a canonical JSON serialization of the effective args with every secret-tainted key
+     * REMOVED before hashing — not hashed and hidden. A digest is a permanent equality oracle, and a
+     * low-entropy secret is recoverable from one by dictionary attack on a `history.db` that may be
+     * unencrypted at rest. A collision guard and audit fingerprint, never a replay key.
+     */
+    argsDigest: text('args_digest').notNull(),
+    /** Tier 1 only: what was handed to the target, so a retry reuses it verbatim rather than minting a new one. */
+    targetIdempotencyKey: text('target_idempotency_key'),
+    /** The tool's result, retained only when re-delivery is possible — its absence is what forces a refusal. */
+    resultJson: text('result_json'),
+    /** The audit occurrence: node attempt, provider attempt, tool-call id, owning fence. Never used for dedup. */
+    attemptJson: text('attempt_json').notNull(),
+    createdAt: epochMs('created_at').notNull(),
+    updatedAt: epochMs('updated_at').notNull(),
+  },
+  (table) => [
+    // THE dedup constraint. Two processes preparing the same effect collide here, so one loses and learns
+    // another attempt exists — which is what makes `prepare` the concurrency boundary rather than a log line.
+    uniqueIndex('idx_run_effects_identity').on(table.scope, table.slot, table.toolId),
+    // The resume gate's read: every prior record for one correlation, in slot order.
+    index('idx_run_effects_scope').on(table.scope),
+  ],
+);
+
 // --- Inferred row types (select + insert) for each table ---
 
 export type LlmProviderRow = typeof llmProviders.$inferSelect;
@@ -809,3 +864,5 @@ export type CatalogMetaRow = typeof catalogMeta.$inferSelect;
 export type NewCatalogMetaRow = typeof catalogMeta.$inferInsert;
 export type RunLeaseRow = typeof runLeases.$inferSelect;
 export type NewRunLeaseRow = typeof runLeases.$inferInsert;
+export type RunEffectRow = typeof runEffects.$inferSelect;
+export type NewRunEffectRow = typeof runEffects.$inferInsert;
