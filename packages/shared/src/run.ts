@@ -297,3 +297,165 @@ export interface RunLeaseInfo extends RunFence {
  */
 export const RUN_LEASE_TTL_MS = 60_000;
 export const RUN_LEASE_HEARTBEAT_MS = 20_000;
+
+// --- The effect journal (ADR-0080) ------------------------------------------------------------
+//
+// Five identities, deliberately separate. Collapsing any two of them is how this design goes wrong: the
+// phase document's original single key did exactly that and became unimplementable. The canonical home for
+// the contract is `docs/reference/shared-core/effect-journal.md`.
+
+/**
+ * Which run/node or session/turn an effect belongs to (ADR-0080 §1).
+ *
+ * A discriminated union rather than optional fields, mirroring the invariant the run-event envelope already
+ * enforces at runtime: exactly one of `runId`/`sessionId`. A session can never fabricate a `runId` — the
+ * property ADR-0024 protects — and a run never borrows a session's.
+ *
+ * `attempt` is the NODE-RETRY attempt (ADR-0040), carried for audit only. It is deliberately excluded from
+ * the resume-gate lookup: the node-retry attempt resets to 1 on both a crash-resume and a budget approval, so
+ * an attempt-scoped lookup would miss the very row it exists to find.
+ */
+export type EffectCorrelation =
+  | {
+      readonly kind: 'run';
+      readonly runId: string;
+      readonly nodeId: string;
+      readonly attempt: number;
+    }
+  | { readonly kind: 'session'; readonly sessionId: string; readonly turn: number };
+
+/**
+ * Which effect WITHIN one correlation — a zero-based ordinal over the tool calls of a single model response,
+ * in the order the provider returned them. It disambiguates two effects in one turn, which the correlation
+ * alone cannot.
+ *
+ * Stable only within one model response: a replay may regenerate a different number of calls in a different
+ * order, so a slot from before a crash is not comparable to one after it. That is precisely why the resume
+ * gate is at NODE granularity and not at slot granularity.
+ */
+export type EffectSlot = number;
+
+/**
+ * The journal's UNIQUE key: the correlation with `attempt` dropped, plus the slot, plus the tool.
+ *
+ * Its job is CONCURRENCY, not replay — two processes preparing the same effect collide on it, so one loses
+ * and learns another attempt exists. It is **not** claimed to be reproducible after a model replay, and no
+ * part of the design depends on it being so.
+ */
+export interface EffectIdentity {
+  /** `run:<runId>:<nodeId>` or `session:<sessionId>:<turn>` — the correlation, minus the retry attempt. */
+  readonly scope: string;
+  readonly slot: EffectSlot;
+  readonly toolId: string;
+}
+
+/**
+ * The audit identity of ONE occurrence. Never used for dedup — it is deliberately unstable, because its
+ * question is "which occurrence was this?" rather than "is this the same effect?".
+ */
+export interface EffectAttemptId {
+  /** The node-retry attempt (ADR-0040), or `undefined` on the session path, which has no node retry. */
+  readonly nodeAttempt?: number;
+  /** The within-chain provider failover attempt — the counter that actually reaches the dispatch. */
+  readonly providerAttempt: number;
+  /** The provider's own id for this tool call. */
+  readonly toolCallId: string;
+  /** The ADR-0079 fence that owned the run when this occurrence happened; absent on the session path. */
+  readonly fence?: RunFence;
+}
+
+/**
+ * What the engine can honestly promise about an effect, decided by what the TARGET supports (ADR-0080 §3).
+ *
+ * Tiers 1 and 2 are reserved and specified; **nothing in the tree claims either today**. Every effect that
+ * ships is tier 3, and only tier 1 may use the words "exactly once".
+ */
+export const EFFECT_TIERS = [
+  /** The target honours a caller-supplied idempotency key — safe retry, effectively exactly-once. */
+  1,
+  /** The target's outcome is queryable — exactly-once after reconciling a receipt. */
+  2 /** Opaque and non-idempotent — at-most-once dispatch ATTEMPT, never auto-retried. */, 3,
+] as const;
+export type EffectTier = (typeof EFFECT_TIERS)[number];
+
+/**
+ * The journal row's state (ADR-0080 §6). `dispatched` is a DERIVED reading of `prepared` when no settle
+ * followed — not a third durable write, because a write between the prepare and the call would be a second
+ * crash window rather than fewer.
+ */
+export const EFFECT_STATES = [
+  'prepared',
+  'dispatched',
+  'committed',
+  'ambiguous',
+  'needs_attention',
+] as const;
+export type EffectState = (typeof EFFECT_STATES)[number];
+
+/** A journal row as the engine reads it back on resume. */
+export interface EffectRecord {
+  readonly identity: EffectIdentity;
+  readonly state: EffectState;
+  readonly tier: EffectTier;
+  /** Present only when the tool's result was retained, which is what buys re-delivery instead of refusal. */
+  readonly result?: unknown;
+  /** Tier 1 only: what was handed to the target, so a retry reuses it verbatim. */
+  readonly targetIdempotencyKey?: string;
+}
+
+/**
+ * The durable effect journal (ADR-0080 §7) — a REQUIRED port wherever effects can be dispatched.
+ *
+ * Not optional, on ADR-0078 §4's reasoning: optional would mean a host that forgets it silently has no
+ * guarantee, which is a fail-open default inside a fail-closed item and invisible at every call site.
+ */
+export interface EffectJournalPort {
+  /**
+   * Durably record the intent to dispatch, BEFORE the effect. Rejects with {@link EffectConflictError} when
+   * another attempt already holds this identity — which is how two processes preparing the same effect
+   * resolve to one dispatch.
+   */
+  prepare: (
+    identity: EffectIdentity,
+    correlation: EffectCorrelation,
+    attempt: EffectAttemptId,
+    tier: EffectTier,
+    argsDigest: string,
+    targetIdempotencyKey?: string,
+  ) => Promise<void>;
+  /** Durably record the outcome, immediately after the call returns or fails. */
+  settle: (
+    identity: EffectIdentity,
+    state: Extract<EffectState, 'committed' | 'ambiguous'>,
+    result?: unknown,
+  ) => Promise<void>;
+  /** Every prior effect record for a correlation — what the resume gate reads (ADR-0080 §2b). */
+  recordsFor: (correlation: EffectCorrelation) => Promise<readonly EffectRecord[]>;
+  /** Mark a record as requiring a human. Terminal until an operator resolves it. */
+  flagForAttention: (identity: EffectIdentity) => Promise<void>;
+}
+
+/** Another attempt already holds this {@link EffectIdentity} — the concurrency collision, not a fault. */
+export class EffectConflictError extends Error {
+  override readonly name = 'EffectConflictError';
+  readonly identity: EffectIdentity;
+
+  constructor(identity: EffectIdentity) {
+    super(
+      `effect ${identity.scope} slot ${String(identity.slot)} (${identity.toolId}) is already claimed by another attempt`,
+    );
+    this.identity = identity;
+  }
+}
+
+/** Narrow an unknown throw to {@link EffectConflictError} — callers narrow on this, never on `message`. */
+export function isEffectConflictError(value: unknown): value is EffectConflictError {
+  return value instanceof EffectConflictError;
+}
+
+/** The correlation's lookup scope — the resume gate's key, with the retry attempt deliberately dropped. */
+export function effectScope(correlation: EffectCorrelation): string {
+  return correlation.kind === 'run'
+    ? `run:${correlation.runId}:${correlation.nodeId}`
+    : `session:${correlation.sessionId}:${String(correlation.turn)}`;
+}

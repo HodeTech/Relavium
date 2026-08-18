@@ -114,6 +114,13 @@ export const ERROR_CODES = [
   // and from `tool_denied` (a policy/grant denial of a *present* capability).
   'tool_unavailable',
   'budget_exceeded',
+  // A durable EXTERNAL side effect whose outcome this process cannot establish, on a tool the engine may not
+  // safely retry ([ADR-0080](../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)).
+  // The run stops and a human decides; it is deliberately NOT in RETRYABLE_ERROR_CODES, because retrying is
+  // the duplicate the effect journal exists to prevent. Distinct from `tool_failed` (the call demonstrably
+  // did not happen) and from `internal` (an engine fault): here the effect may well have SUCCEEDED, and that
+  // ambiguity is the whole content of the code.
+  'effect_needs_attention',
   'run_timeout',
   'turn_limit',
   'cancelled',

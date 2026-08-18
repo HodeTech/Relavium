@@ -198,6 +198,12 @@ export function errorRecoveryHint(code: string | undefined, message?: string): s
       return 'The tool was denied by the current mode/policy — switch with `/mode` if that was intended. The session is still active.';
     case 'budget_exceeded':
       return 'The turn hit the session cost cap — raise `[chat].max_cost_microcents`, or `/clear` to reset the running total. The session is still active.';
+    case 'effect_needs_attention':
+      // An external effect whose outcome this process cannot establish (ADR-0080). The session SURVIVES — a
+      // chat discloses and continues rather than blocking, because there is no operator queue here — but the
+      // hint must not suggest resending: a resend is the duplicate the journal exists to prevent. Point at
+      // the target, which is the only place the truth lives.
+      return 'A tool may have completed its effect before the error — this is not retried automatically, because retrying could repeat it. The session is still active; check the target before asking again.';
     case 'turn_limit':
       // Two producers: the per-turn tool-call ceiling AND the session HARD round cap (agent-session.ts). "Send
       // another message" fixes the first but is re-blocked by the second — so cover both without asserting a cause.
