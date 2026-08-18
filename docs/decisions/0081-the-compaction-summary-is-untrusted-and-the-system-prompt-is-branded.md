@@ -1,15 +1,15 @@
 # ADR-0081: The compaction summary is untrusted content, and the system prompt becomes a branded type (supersedes ADR-0062 §1)
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-08-18
 - **Related**:
-  - [ADR-0062](0062-context-compaction-and-cli-history-commands.md) — **§1 would be superseded on acceptance**, and §3's *placement* of the restored value with it. Its durable half is untouched: §2's append-only marker row, §3's producer/consumer split, and the `/clear` · `/trim` · `/compact` command surface all stand exactly as written. What changes is where a restored summary is PUT on the next turn, and what it is called.
-  - [ADR-0059](0059-cli-mid-session-model-reseat.md) — the reseat that must carry the summary. **Would be amended on acceptance**: what it carries stops being a system-prompt preamble.
+  - [ADR-0062](0062-context-compaction-and-cli-history-commands.md) — **§1 superseded here**, and §3's *placement* of the restored value with it. Its durable half is untouched: §2's append-only marker row, §3's producer/consumer split, and the `/clear` · `/trim` · `/compact` command surface all stand exactly as written. What changes is where a restored summary is PUT on the next turn, and what it is called.
+  - [ADR-0059](0059-cli-mid-session-model-reseat.md) — the reseat that must carry the summary. **Amended here**: what it carries stops being a system-prompt preamble.
   - [ADR-0024](0024-agent-first-entry-point-agentsession.md) — the session engine. **Cited, not amended**: it says nothing about system-prompt authority.
   - [ADR-0011](0011-internal-llm-abstraction.md) + [ADR-0030](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) — the seam. **Cited, not amended**: `LlmRequest.system` stays `z.string().optional()`; no seam shape changes.
   - [docs/standards/security-review.md](../standards/security-review.md) — the binding rule this restores.
   - [chat-session.md](../reference/cli/chat-session.md) § Context compaction — the canonical home for what compaction does to a session, updated alongside. [llm-provider-seam.md](../reference/shared-core/llm-provider-seam.md) is cited, not changed: the seam shape is untouched.
-- **Addresses**: `CR-13` of [phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md). A Proposed ADR neither supersedes an Accepted one nor closes a work item; on acceptance this becomes **Closes/Decides**, ADR-0062 gets a dated `Superseded (§1) by ADR-0081` note, ADR-0059 gets a dated amendment, and the canonical-home updates in §7 land with the implementation.
+- **Closes**: **Decides** `CR-13` of [phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md). Accepted 2026-08-18 with the maintainer's review folded in (the constructor's engine arm, the summary's taint lifecycle, the narrowed enforcement claim, and §3's normative projection all come from it). The §7 obligations land with the implementation, not after it.
 
 ## Context
 

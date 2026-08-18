@@ -4,6 +4,14 @@
 - **Date**: 2026-07-04
 - **Related**: [ADR-0024](0024-agent-first-entry-point-agentsession.md) (the session engine this extends) · [ADR-0011](0011-internal-llm-abstraction.md) + [ADR-0030](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) (the `LLMProvider` seam this amends) · [ADR-0028](0028-workflow-resource-governance.md) (cost governance) · [ADR-0026](0026-session-export-to-workflow.md) (export of a compacted session) · [ADR-0057](0057-cli-chat-modes-and-per-tool-approval.md) (the `Esc`/EA7 abort a summarization call reuses) · [ADR-0059](0059-cli-mid-session-model-reseat.md) (mid-session reseat, which must carry the preamble). The append-only durable-transcript invariant and the row/column shapes cited below live in [database-schema.md](../reference/contracts/database-schema.md) and [session.ts](../../packages/shared/src/session.ts); the at-rest posture (unencrypted, `0600`/keychain, single-user local) is [ADR-0050](0050-cli-history-db-at-rest-posture.md).
 
+> **§1 superseded 2026-08-18 by [ADR-0081](0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md).**
+> The summary is no longer a system-prompt preamble: it rides as untrusted content inside the first
+> user-role turn, and `system` becomes a branded type only the authored-prompt constructor can produce. The
+> rest of this ADR stands — §2's append-only marker row, §3's producer/consumer split, and the `/clear` ·
+> `/trim` · `/compact` command surface are unchanged. Where §3 and §5 describe the restored value as a
+> *preamble prepended to the system prompt*, read ADR-0081 §2-§3 for where it actually goes; the durable
+> half they describe is untouched. **This ADR stays Accepted** — only §1's placement decision was reversed.
+
 ## Context
 
 A long `relavium chat` / Home session grows its transcript every turn. `AgentSession`
