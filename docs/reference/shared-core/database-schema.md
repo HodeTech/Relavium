@@ -529,7 +529,7 @@ clobber it. A table is also queryable — by a human diagnosing a stuck run.
 |--------|------|-------------|
 | `run_id` | TEXT | PRIMARY KEY REFERENCES `runs(id)` ON DELETE CASCADE |
 | `owner_id` | TEXT | NOT NULL — the owning engine's identity, one per `WorkflowEngine` |
-| `generation` | INTEGER | NOT NULL — the fencing token; bumps on every successful acquire |
+| `generation` | INTEGER | NOT NULL — the fencing token; bumps on every successful acquire, but **not** monotonic across a run's life (`release` deletes the row, so the next acquire restarts at 1). The fence is `(owner_id, generation)` pair-equality plus fail-closed on a missing row — [ADR-0079](../../decisions/0079-cross-process-run-ownership-lease-and-fencing-token.md) §1's 2026-08-17 amendment |
 | `expires_at` | INTEGER | NOT NULL — epoch ms, compared **store-side** against the store's injected clock |
 | `created_at` | INTEGER | NOT NULL |
 | `updated_at` | INTEGER | NOT NULL |

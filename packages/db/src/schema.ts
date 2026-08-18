@@ -756,7 +756,14 @@ export const runLeases = sqliteTable('run_leases', {
     .references(() => runs.id, { onDelete: 'cascade' }),
   /** Opaque per-process identity, for the error message a loser shows ("held by …") and for diagnosis. */
   ownerId: text('owner_id').notNull(),
-  /** Monotonic, per run, never reset. Carried on every durable write and checked in the same transaction. */
+  /**
+   * The fencing token, carried on every durable write and checked in the same transaction as the append.
+   *
+   * Bumps on every successful acquire, but **not monotonic across a run's whole life**: `release` deletes the
+   * row, and §4 releases on every gate park, so the next acquire starts at 1 again. What keeps a stale owner
+   * out is `(owner_id, generation)` pair-equality plus fail-closed-on-a-missing-row — see ADR-0079 §1's
+   * 2026-08-17 amendment, which records the residual risk and what a genuinely monotonic token would cost.
+   */
   generation: integer('generation').notNull(),
   /**
    * When this lease stops being live, in epoch ms — compared STORE-SIDE against the injected `deps.now`, so

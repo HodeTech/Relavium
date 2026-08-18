@@ -315,6 +315,16 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       io: deps.io,
     });
 
+    // **The durability decides fenced-ness; the outcome decides everything else.** Keyed on the outcome
+    // alone this is wrong in both directions: `outcome === undefined` misses a fenced run that had a stale
+    // `run:paused` buffered before the loss was discovered, while `!isTerminalOutcome(outcome)` sweeps up a
+    // LEGITIMATE re-pause at a later gate, which must still exit 3.
+    if (handle.durability() === 'uncertain') {
+      throw new CliError(
+        'run_owned_elsewhere',
+        `run ${args.runId} was taken over by another process during the resume; this decision was not recorded — read \`relavium logs ${args.runId}\` for its real outcome, then retry if the gate is still pending`,
+      );
+    }
     if (outcome === undefined) {
       // **Two very different runs close with no `run:*` event, and telling them apart matters.** A closed
       // handle (the engine's own checkpoint re-read found the run terminal — a concurrent `relavium gate`
@@ -323,12 +333,6 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       // is the worst available answer: the run is executing elsewhere, this process's gate decision was
       // never made durable, and an automation loop records success. The disposition separates them at no
       // cost: `createClosedRunHandle` reports `durable`, a fenced handle reports `uncertain`.
-      if (handle.durability() === 'uncertain') {
-        throw new CliError(
-          'run_owned_elsewhere',
-          `run ${args.runId} was taken over by another process during the resume; this decision was not recorded — check \`relavium status ${args.runId}\` for its real outcome, then retry if the gate is still pending`,
-        );
-      }
       deps.io.writeOut(`run ${args.runId} already settled; nothing to resume\n`);
       return EXIT_CODES.success;
     }

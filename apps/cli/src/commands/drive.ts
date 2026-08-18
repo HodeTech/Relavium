@@ -235,13 +235,21 @@ export function outcomeToExitCode(
   durability?: RunDurability,
 ): ExitCode {
   if (durability === 'uncertain') {
-    // **No terminal + `uncertain` is a FENCED run, not an unwritten terminal** (ADR-0079 §5 vs ADR-0078 §5).
+    // **No TERMINAL + `uncertain` is a FENCED run, not an unwritten terminal** (ADR-0079 §5 vs ADR-0078 §5).
     // The two share the disposition and need opposite advice. A fenced loser deliberately writes nothing to
     // the outbox — the run belongs to another process and is being recorded by it right now — so exit 5's
     // documented remedy ("held in the outbox and retried on the next start") is false for it, and a script
-    // following that advice waits for a drain that will never happen. The signal is free: §5 closes the
-    // stream WITHOUT a terminal, while an outbox-uncertain run delivered one.
-    return outcome === undefined ? EXIT_CODES.runOwnedElsewhere : EXIT_CODES.durabilityUncertain;
+    // following that advice waits for a drain that will never happen.
+    //
+    // The discriminator is `isTerminalOutcome`, NOT `outcome === undefined`, and the difference is a real
+    // bug this once had: `run:paused` also sets `outcome`, and the engine buffers that event before it
+    // discovers the fence. An inline gate prompt therefore delivers a stale `run:paused` AFTER the run has
+    // been fenced, leaving `outcome === 'paused'` — so the `undefined` test took the wrong branch and
+    // reported exit 5 for the flagship two-terminal race this code exists to classify. A pause is not a
+    // terminal, which is exactly what `isTerminalOutcome` already says.
+    return isTerminalOutcome(outcome)
+      ? EXIT_CODES.durabilityUncertain
+      : EXIT_CODES.runOwnedElsewhere;
   }
   switch (outcome) {
     case 'completed':

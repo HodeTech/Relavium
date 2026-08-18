@@ -37,7 +37,7 @@ import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
 import type { OpenedHistory } from '../history/open.js';
 import { CliError } from '../process/errors.js';
-import { type ExitCode } from '../process/exit-codes.js';
+import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import type { RunRenderer } from '../render/renderer.js';
@@ -297,7 +297,17 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
 
     // The handle's disposition OUTRANKS the outcome (ADR-0078 §5): a delivered `run:completed` whose
     // durable write did not land must not exit 0, or a script is told the run is recorded when it is not.
-    return outcomeToExitCode(outcome, handle.durability());
+    const exitCode = outcomeToExitCode(outcome, handle.durability());
+    // **Say what happened.** A fenced run writes no terminal by design (ADR-0079 §5), so the renderer's
+    // final summary falls through to a bare "run ended" and the user is left with an exit code and no
+    // explanation of why their run stopped. `relavium gate` already explains this case; `relavium run`
+    // hitting the same takeover deserves the same sentence. stderr, so `--json` stdout stays a clean stream.
+    if (exitCode === EXIT_CODES.runOwnedElsewhere) {
+      deps.io.writeErr(
+        `run ${handle.runId} was taken over by another process; this one stopped without recording an outcome — read \`relavium logs ${handle.runId}\` for what actually happened\n`,
+      );
+    }
+    return exitCode;
   } finally {
     // Guarantee the MCP teardown runs EVEN IF the db close throws — a nested finally so neither resource leaks.
     // Present only when an inline agent declared a server; idempotent. A teardown error must never mask the run

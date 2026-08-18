@@ -257,6 +257,17 @@ describe('outcomeToExitCode — the durability disposition (CR-92, ADR-0078 §5)
     expect(outcomeToExitCode('completed', 'uncertain')).toBe(EXIT_CODES.durabilityUncertain);
   });
 
+  it('a stale buffered run:paused does NOT downgrade a fenced run to exit 5', () => {
+    // The bug this closes was mine and it reopened the one the line above fixes. The discriminator was
+    // `outcome === undefined`, but `run:paused` sets `outcome` too — and the engine BUFFERS that event
+    // before it discovers the fence, so an inline gate prompt delivers a stale pause after the loss. The
+    // flagship two-terminal race therefore reported 5 (with exit 5's false "retried from the outbox"
+    // remedy) instead of 6. A pause is not a terminal; `isTerminalOutcome` already says so.
+    expect(outcomeToExitCode('paused', 'uncertain')).toBe(EXIT_CODES.runOwnedElsewhere);
+    // A legitimate pause is untouched — it never carries `uncertain`, so it still exits 3.
+    expect(outcomeToExitCode('paused', 'pending')).toBe(EXIT_CODES.gatePaused);
+  });
+
   it('a DURABLE terminal keeps its ordinary code — the negative control', () => {
     // Without this the assertions above pass for an implementation that returns 5 unconditionally.
     expect(outcomeToExitCode('completed', 'durable')).toBe(EXIT_CODES.success);
