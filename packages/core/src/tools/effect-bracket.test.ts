@@ -251,6 +251,27 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     await expect(turnOne.prepare(0, 'run_command', 3, {})).rejects.toSatisfy(isEffectConflictError);
   });
 
+  it('a `!`-command and a model tool call never collide, whatever their counters do', async () => {
+    // They share one correlation, so a shared ordinal collides them: `!`-command 1 and the model's second
+    // tool call of that turn would both be slot 1 on the journal's UNIQUE identity, and the second to arrive
+    // would be refused as a duplicate of an unrelated effect. The shell uses NEGATIVE ordinals, which cannot
+    // meet the model's non-negative ones however either counter advances.
+    const store = createInMemoryEffectJournalStore();
+    const port = store.for({ kind: 'session', sessionId: 's1', turn: 0 });
+
+    await port.prepare(0, 'run_command', 3, {}); // the model's first tool call
+    await port.prepare(1, 'run_command', 3, {}); // …its second
+    await expect(port.prepare(-1, 'run_command', 3, {})).resolves.toBeUndefined(); // `!` command 1
+    await expect(port.prepare(-2, 'run_command', 3, {})).resolves.toBeUndefined(); // `!` command 2
+
+    expect(
+      store
+        .rows()
+        .map((r) => r.slot)
+        .sort((a, b) => a - b),
+    ).toEqual([-2, -1, 0, 1]);
+  });
+
   it('the in-memory reference refuses a duplicate identity, exactly as the real store does', async () => {
     // The reference exists so a core test proves something. One that accepted what SQLite rejects would make
     // every test above vacuous — this repo has been bitten by exactly that divergence before.

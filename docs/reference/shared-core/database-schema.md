@@ -59,7 +59,7 @@ The local schema is the Postgres 13-table design reduced to what a single-user, 
 
 ### Entity relationships
 
-The 17 tables below, trimmed to the columns that define structure (full column lists follow per table). Every edge is a real foreign key in `schema.ts`; two are deliberately absent — see the note beneath the diagram. `model_metadata` and `catalog_meta` ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md)) are **FK-less leaves** (no edges): `model_metadata` is keyed by `model_id`, not the `model_catalog` UUID, on purpose.
+The 18 tables below, trimmed to the columns that define structure (full column lists follow per table). Every edge is a real foreign key in `schema.ts`; two are deliberately absent — see the note beneath the diagram. `model_metadata` and `catalog_meta` ([ADR-0072](../../decisions/0072-model-metadata-in-the-db-behind-a-generated-offline-floor.md)) are **FK-less leaves** (no edges): `model_metadata` is keyed by `model_id`, not the `model_catalog` UUID, on purpose. `run_effects` ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md)) is a third, for a different reason: an unresolved effect row is exactly the record an operator needs **after** the run is purged, so a cascade would delete it at the worst moment.
 
 ```mermaid
 erDiagram
@@ -126,6 +126,13 @@ erDiagram
         text owner_id
         integer generation
         integer expires_at
+    }
+    run_effects {
+        uuid id PK
+        text scope
+        integer slot
+        text tool_id
+        text state
     }
     agent_sessions {
         uuid id PK
@@ -541,6 +548,41 @@ by construction — the `runId` came from `ids.newId()` moments earlier and no o
 TTL **60 s**, heartbeat every **20 s** (`RUN_LEASE_TTL_MS` / `RUN_LEASE_HEARTBEAT_MS` in
 `@relavium/shared`): three missed beats permit a takeover — wide enough that a long provider call or disk
 pressure is not mistaken for death, narrow enough that a crashed run is not locked for more than a minute.
+
+#### `run_effects`
+
+The durable **effect journal** ([ADR-0080](../../decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md);
+the contract, identities and state machine live in [effect-journal.md](effect-journal.md)). One row per effect
+OCCURRENCE, written by a `prepare` **before** an effectful tool dispatch leaves the process and updated by a
+`settle` after it returns or fails.
+
+| Column | Type | Constraints |
+|--------|------|-------------|
+| `id` | TEXT | PRIMARY KEY (UUID) |
+| `scope` | TEXT | NOT NULL — `run:<runId>:<nodeId>` or `session:<sessionId>:<turn>`, the correlation with the **retry attempt dropped** |
+| `slot` | INTEGER | NOT NULL — which effect within the correlation (an ordinal across the turn's tool calls) |
+| `tool_id` | TEXT | NOT NULL |
+| `tier` | INTEGER | NOT NULL — `1` \| `2` \| `3`; everything that ships is `3` |
+| `state` | TEXT | NOT NULL — `prepared` \| `dispatched` \| `committed` \| `ambiguous` \| `needs_attention` |
+| `args_digest` | TEXT | NOT NULL — SHA-256 over canonical JSON of the effective args with every secret-tainted key **removed before hashing** |
+| `target_idempotency_key` | TEXT | NULL — tier 1 only; what a safe retry reuses verbatim |
+| `result_json` | TEXT | NULL — the BOUNDED tool result, retained only when re-delivery is possible |
+| `attempt_json` | TEXT | NOT NULL — the audit occurrence (node attempt, provider attempt, tool-call id, owning fence) |
+| `created_at` | INTEGER | NOT NULL |
+| `updated_at` | INTEGER | NOT NULL |
+
+```sql
+-- THE dedup constraint: two processes preparing the same effect collide here, so one loses and learns
+-- another attempt exists. That is what makes `prepare` a concurrency boundary rather than a log line.
+CREATE UNIQUE INDEX idx_run_effects_identity ON run_effects (scope, slot, tool_id);
+CREATE INDEX idx_run_effects_scope ON run_effects (scope);  -- the resume gate reads one correlation
+```
+
+**No foreign key to `runs`, deliberately** — see the ER note above. The `scope` is an opaque string rather than
+a `run_id` column for the same reason it drops the attempt: a SESSION effect has no run at all, and the
+node-retry attempt resets to 1 on both a crash-resume and a budget approval, so a key containing it would miss
+the row the gate looks for. Retention is stated in [effect-journal.md](effect-journal.md) §9 and **is not
+implemented yet** — no sweep touches this table today.
 
 ### Agent-session tables
 

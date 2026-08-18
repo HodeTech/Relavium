@@ -189,7 +189,7 @@ This is what enables:
 - **Retry-from-node** — a user can re-run from any node without replaying the
   whole workflow.
 - **Idempotency** — re-executing a node uses a stable idempotency key derived from
-  the tiered effect contract ([effect-journal.md](../reference/shared-core/effect-journal.md)): a durable journal brackets every effectful dispatch, and a resumed node refuses rather than re-running an effect it cannot prove is safe to repeat. Every effect that ships today is tier 3 — at-most-once dispatch attempt, never auto-retried.
+  the tiered effect contract ([effect-journal.md](../reference/shared-core/effect-journal.md)): a durable journal brackets every effectful dispatch with a `prepare` before the call and a `settle` after it, and a failure past the prepare is never node-retried. Every effect that ships today is tier 3. **The resume GATE that reads those records — the half that makes a resumed node refuse rather than re-run — is not wired yet**; what ships is the record and the retry refusal.
 
 In Phase 1 there is **no separate checkpoint table**: the checkpoint is **reconstructed** by a
 `Checkpointer` (`load(runId) → CheckpointState`) by folding the ordered, replayable `run_events` log
@@ -210,7 +210,7 @@ layer uses for durable execution — see [cloud-phase-2.md](cloud-phase-2.md).
 **Reconstruction is total and deterministic** (same events → same state — the basis of idempotent
 resume). A node that emitted `node:started` but no terminal event (it was running when the process
 died) is simply **absent** from `nodeStates`, so the rehydrating engine seeds it `pending` and re-runs
-it — bounded by the effect journal's resume gate ([effect-journal.md](../reference/shared-core/effect-journal.md)), never by silently skipping it. What is
+it. The effect journal records every effectful dispatch and refuses to retry a node past one ([effect-journal.md](../reference/shared-core/effect-journal.md)); the resume gate that would additionally refuse the RE-RUN is not wired yet. What is
 **not** in the checkpoint: the eager-once resolved `context` (`ctx.*`) is **re-resolved at run start**,
 not reconstructed — and if a later change makes it part of a transported checkpoint it MUST cross that
 boundary via `structuredClone`, never `JSON.stringify`→`parse` (which would re-materialise a `__proto__`

@@ -196,8 +196,9 @@ side effects — a **tiered effect contract** rather than a blanket idempotency 
 [effect-journal.md](../reference/shared-core/effect-journal.md)). A durable journal brackets
 every effectful dispatch, and what the engine can promise depends on the target: safe retry
 under an idempotency key (tier 1), exactly-once after reconciling a receipt (tier 2), or —
-for every effect that ships today — **at-most-once dispatch attempt, never auto-retried**
-(tier 3). This paragraph previously claimed a stable key derived from
+for every effect that ships today — **tier 3**, whose honest guarantee is at-most-once dispatch
+attempt. The durable record and the no-retry-past-a-dispatch rule ship now; the resume gate that
+refuses a re-run after a crash is CR-12's remaining step and is not wired yet. This paragraph previously claimed a stable key derived from
 `runId + nodeId + retryCount` meant "a retry never double-applies a side effect". No such
 key existed, and it could not have worked: the retry count resets on a crash-resume.
 

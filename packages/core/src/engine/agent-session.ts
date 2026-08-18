@@ -515,6 +515,10 @@ export class AgentSession {
     const session = new AgentSession(params);
     session.#messages.push(...state.messages);
     session.#turnCount = state.turnCount;
+    // Restored with the turn count, and for the same reason: it is part of this session's effect identity
+    // (ADR-0080). Leaving it at 0 made the first `!`-command after a `chat-resume` re-use slot -1 and
+    // collide with the pre-crash one — a false duplicate on the ONE dispatch site whose args are byte-stable.
+    session.#userCommandSeq = state.turnCount;
     session.#cumulativeCostMicrocents = state.cumulativeCostMicrocents;
     // ADR-0062: restore the compaction preamble so a compacted session stays compacted across resume AND a
     // model reseat (which reuses this same reconstruct→resume path); without it, resume would silently
@@ -937,7 +941,12 @@ export class AgentSession {
         // commands within one turn share a correlation, so they would collide on the journal's UNIQUE
         // identity and the second would be refused as a duplicate of the first. The counter already exists
         // for the synthetic tool-call id and is exactly the per-command ordinal the slot wants.
-        effectSlot: this.#userCommandSeq,
+        // **A DISJOINT slot space from the model's, and negative for exactly that reason.** A `!`-command and
+        // a model tool call live in the same correlation, so a shared ordinal collides them: `!`-command 1
+        // and the model's second tool call of that turn would both be slot 1 on the journal's UNIQUE
+        // identity, and the second to arrive would be refused as a duplicate of an unrelated effect.
+        // Negative ordinals cannot meet the model's non-negative ones, whatever either counter does.
+        effectSlot: -this.#userCommandSeq,
         signal: abort.signal,
       });
       const result = outcome.output;

@@ -371,10 +371,12 @@ export interface EffectAttemptId {
  * ships is tier 3, and only tier 1 may use the words "exactly once".
  */
 export const EFFECT_TIERS = [
-  /** The target honours a caller-supplied idempotency key — safe retry, effectively exactly-once. */
+  // 1 — the target honours a caller-supplied idempotency key: safe retry, effectively exactly-once.
   1,
-  /** The target's outcome is queryable — exactly-once after reconciling a receipt. */
-  2 /** Opaque and non-idempotent — at-most-once dispatch ATTEMPT, never auto-retried. */, 3,
+  // 2 — the target's outcome is queryable: exactly-once after reconciling a receipt.
+  2,
+  // 3 — opaque and non-idempotent: at-most-once dispatch ATTEMPT, never auto-retried.
+  3,
 ] as const;
 export type EffectTier = (typeof EFFECT_TIERS)[number];
 
@@ -404,36 +406,13 @@ export interface EffectRecord {
 }
 
 /**
- * The durable effect journal (ADR-0080 §7) — a REQUIRED port wherever effects can be dispatched.
+ * The journal's READ side — `recordsFor` / `flagForAttention` — is deliberately NOT declared here yet.
  *
- * Not optional, on ADR-0078 §4's reasoning: optional would mean a host that forgets it silently has no
- * guarantee, which is a fail-open default inside a fail-closed item and invisible at every call site.
+ * An interface that names an authoritative shape while nothing implements it is worse than no interface: it
+ * had already drifted from `@relavium/db`'s synchronous `EffectJournalStore` before a single consumer
+ * existed. The resume gate (ADR-0080 §2b, effect-journal.md §4) is CR-12's remaining step, and it will
+ * declare the shape it actually needs from what it needs, not from a guess made ahead of it.
  */
-export interface EffectJournalPort {
-  /**
-   * Durably record the intent to dispatch, BEFORE the effect. Rejects with {@link EffectConflictError} when
-   * another attempt already holds this identity — which is how two processes preparing the same effect
-   * resolve to one dispatch.
-   */
-  prepare: (
-    identity: EffectIdentity,
-    correlation: EffectCorrelation,
-    attempt: EffectAttemptId,
-    tier: EffectTier,
-    argsDigest: string,
-    targetIdempotencyKey?: string,
-  ) => Promise<void>;
-  /** Durably record the outcome, immediately after the call returns or fails. */
-  settle: (
-    identity: EffectIdentity,
-    state: Extract<EffectState, 'committed' | 'ambiguous'>,
-    result?: unknown,
-  ) => Promise<void>;
-  /** Every prior effect record for a correlation — what the resume gate reads (ADR-0080 §2b). */
-  recordsFor: (correlation: EffectCorrelation) => Promise<readonly EffectRecord[]>;
-  /** Mark a record as requiring a human. Terminal until an operator resolves it. */
-  flagForAttention: (identity: EffectIdentity) => Promise<void>;
-}
 
 /** Another attempt already holds this {@link EffectIdentity} — the concurrency collision, not a fault. */
 export class EffectConflictError extends Error {
@@ -521,21 +500,4 @@ export function unwiredEffectJournal(): EffectDispatchPort {
       ),
     );
   return { prepare: fail, settle: fail };
-}
-
-/**
- * Strip every secret-tainted key from an argument object, so what is hashed can never contain a secret.
- *
- * A shallow removal by key name, matching how `secretArgKeys` is computed (ADR-0029(c) marks top-level
- * effective-arg names). Non-object args pass through — the digest of a bare string is still just a
- * fingerprint of a value the tool was going to send anyway.
- */
-export function redactSecretArgs(args: unknown, secretArgKeys?: ReadonlySet<string>): unknown {
-  if (secretArgKeys === undefined || secretArgKeys.size === 0) return args;
-  if (typeof args !== 'object' || args === null || Array.isArray(args)) return args;
-  const kept: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(args)) {
-    if (!secretArgKeys.has(key)) kept[key] = value;
-  }
-  return kept;
 }

@@ -9,9 +9,11 @@
  * Reconstruction is a **pure replay**: walk the events in order and fold each into per-node state.
  * Crucially, a node that emitted `node:started` but no terminal event (it was running when the process
  * died) is simply ABSENT from {@link CheckpointState.nodeStates} — so the rehydrating engine seeds it
- * `pending` and re-runs it. A half-run EXTERNAL side effect is bounded by the effect journal's resume gate
- * (ADR-0080), not by the re-run itself: a node carrying an unresolved — or unreplayable committed — effect
- * record does not re-run at all. A `condition`'s `selected` branch is restored from
+ * `pending` and re-runs it. A half-run EXTERNAL side effect is RECORDED by the effect journal (ADR-0080) —
+ * every effectful dispatch is bracketed by a durable prepare/settle — but the resume GATE that would read
+ * those records and refuse the re-run is **not wired yet**, so today a crashed effectful node does re-run.
+ * That is the gap CR-12's remaining step closes; it is stated here rather than described as closed.
+ * A `condition`'s `selected` branch is restored from
  * `node:completed.selected` so a selected branch mid-flight at the crash re-runs rather than being
  * wrongly skip-propagated; the dimmed branches are restored from `node:skipped`.
  */

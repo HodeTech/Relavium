@@ -1282,6 +1282,31 @@ describe('AgentSession.runUserCommand — the `!`-shell escape (2.5.D, ADR-0061)
     expect(calls).toHaveLength(0); // enforcePolicy denied BEFORE the side effect — the process never spawned
   });
 
+  it('journals each `!`-command at a NEGATIVE slot, disjoint from the model ordinals', async () => {
+    // The `!`-shell and the model's tool calls share one correlation, so a shared ordinal collides them on
+    // the journal's UNIQUE identity: `!` #1 and the model's second tool call of that turn would both be
+    // slot 1, and the second to arrive would be refused as a duplicate of an unrelated effect. Asserting on
+    // the SLOT the production path passes, not on a hand-picked one — a port-level test cannot see this.
+    const slots: number[] = [];
+    const { registry } = commandRegistry(() => Promise.resolve(RAN));
+    const { deps } = harness(
+      [],
+      { toolPolicy: { allowedCommands: ['ls -la'] } },
+      {
+        ...registry,
+        dispatch: (call, ctx) => {
+          slots.push(ctx.effectSlot);
+          return registry.dispatch(call, ctx);
+        },
+      },
+    );
+    const started = startedSession(deps);
+    await started.runUserCommand('ls', ['-la']);
+    await started.runUserCommand('ls', ['-la']);
+
+    expect(slots).toEqual([-1, -2]); // negative, and advancing — never meeting a model ordinal
+  });
+
   it('an allowlisted command with no approval regime RUNS and returns the bounded output', async () => {
     const { registry, calls } = commandRegistry(() => Promise.resolve(RAN));
     const { deps } = harness([], { toolPolicy: { allowedCommands: ['ls -la'] } }, registry);

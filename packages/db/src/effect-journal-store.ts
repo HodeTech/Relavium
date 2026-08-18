@@ -18,6 +18,8 @@ import { createHash } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
 
 import {
+  EFFECT_STATES,
+  EFFECT_TIERS,
   EffectConflictError,
   effectScope,
   type EffectAttemptId,
@@ -39,7 +41,11 @@ export interface EffectJournalStoreDeps {
   readonly now: () => number;
 }
 
-/** The synchronous store; `createEffectJournalPort` adapts it to the engine's Promise-typed seam. */
+/**
+ * The synchronous store; `createEffectJournalPort` adapts its WRITE half to the engine's Promise-typed
+ * dispatch seam. `recordsFor` and `flagForAttention` are the read half the resume gate will consume — they
+ * are implemented and exported, and nothing calls them yet (ADR-0080 §2b is CR-12's remaining step).
+ */
 export interface EffectJournalStore {
   prepare: (
     identity: EffectIdentity,
@@ -141,8 +147,8 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
         .map(
           (row): EffectRecord => ({
             identity: { scope: row.scope, slot: row.slot, toolId: row.toolId },
-            state: row.state as EffectState,
-            tier: row.tier as EffectTier,
+            state: coerceEffectState(row.state),
+            tier: coerceEffectTier(row.tier),
             ...(row.resultJson === null ? {} : { result: JSON.parse(row.resultJson) as unknown }),
             ...(row.targetIdempotencyKey === null
               ? {}
@@ -206,6 +212,24 @@ export function createEffectJournalPort(
       }
     },
   };
+}
+
+/**
+ * Read a persisted `state` back, degrading an unrecognised value to the CONSERVATIVE reading.
+ *
+ * An `as` here would be an unsafe cast on data crossing a persistence boundary — and it would fail OPEN in a
+ * fail-closed mechanism: a garbage `state` is not one of the unresolved values, so the gate would read it as
+ * "nothing to worry about" and let the node re-run. `needs_attention` is the answer that cannot be wrong.
+ */
+function coerceEffectState(value: string): EffectState {
+  return (EFFECT_STATES as readonly string[]).includes(value)
+    ? (value as EffectState)
+    : 'needs_attention';
+}
+
+/** Read a persisted `tier` back; an unrecognised value degrades to 3, the tier that promises least. */
+function coerceEffectTier(value: number): EffectTier {
+  return (EFFECT_TIERS as readonly number[]).includes(value) ? (value as EffectTier) : 3;
 }
 
 /**

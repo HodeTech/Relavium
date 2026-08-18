@@ -42,7 +42,7 @@ import {
   type ToolId,
   type ToolResultPart,
 } from './types.js';
-import { isEffectConflictError, redactSecretArgs } from '@relavium/shared';
+import { isEffectConflictError } from '@relavium/shared';
 import { journaledTier } from './effect-predicate.js';
 
 /** Build the engine-side tool registry. Performs no I/O and reads no ambient state (engine purity). */
@@ -179,9 +179,14 @@ async function dispatch(
           ctx.effectSlot,
           def.id,
           tier,
-          // Redacted HERE because only the engine knows which keys are secret-tainted; hashed in the port
-          // because only the host can (core is platform-free). A secret never reaches the digest.
-          redactSecretArgs(args, ctx.secretArgKeys),
+          // **The SAME projection the event stream gets, and for the same reason.** Redacted here because
+          // only the engine knows which args are secret-bearing; hashed in the port because only the host can
+          // (core is platform-free). `sanitizeInput` is used rather than a key-name filter because a
+          // key-name filter misses exactly what §11 names as the threat: a model-placed credential in an
+          // arbitrary position — an `Authorization` header value, a token in a URL query — which
+          // `redactSecretShapedValue` scrubs BY SHAPE. A digest is a permanent equality oracle, and a
+          // low-entropy secret is recoverable from one on a `history.db` that may be unencrypted at rest.
+          sanitizeInput(def, effective, ctx.secretArgKeys),
         );
       } catch (cause) {
         // A CONFLICT is a refusal, not a fault: another attempt already holds this identity, so the effect

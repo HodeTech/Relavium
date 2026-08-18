@@ -9,6 +9,13 @@ uses to say it, the journal's state machine, and what a resumed run or session d
 table's DDL is **not** here — `run_effects` lives in [database-schema.md](database-schema.md) with every other
 table, and this document links to it rather than restating it.
 
+> **What ships today, stated once so no section below has to be read as a promise.** The durable RECORD is
+> live: every effectful dispatch is bracketed by a `prepare` before the call and a `settle` after it, a
+> failure past the prepare is never node-retried, and a duplicate identity is refused. The READ side — the
+> resume gate (§4), the `needs_attention` disposition (§8) and retention (§9) — is CR-12's remaining step and
+> is marked as such in place. §12's crash matrix is the acceptance criterion for the whole; the points that
+> depend on the read side cannot be met until it lands.
+
 ## 1. The contract, in one paragraph
 
 An effectful tool dispatch is bracketed by a durable **prepare** before the effect and a durable **settle**
@@ -95,6 +102,11 @@ Local-filesystem writes are journaled: "external" means outside this process, no
 
 ## 4. The resume gate
 
+> **Not wired yet (2026-08-17).** CR-12 has landed the durable record — the prepare/settle bracket, the
+> predicate, the identities and the no-retry-past-a-dispatch rule. Everything in this section is the READ
+> side, and it is the item's remaining step. It is described here because it is the decided contract, not
+> because it ships today; nothing in the engine calls `recordsFor` or `flagForAttention`.
+
 On resume, for a correlation with **no terminal node record**, the engine reads every prior non-benign effect
 record for that correlation and resolves each by tier before the node may run again.
 
@@ -159,6 +171,11 @@ Step 5 matters as much as step 3: a post-dispatch abort, an output-mapping error
 
 ## 8. `needs_attention`
 
+> **Not wired yet (2026-08-17).** CR-12 has landed the durable record — the prepare/settle bracket, the
+> predicate, the identities and the no-retry-past-a-dispatch rule. Everything in this section is the READ
+> side, and it is the item's remaining step. It is described here because it is the decided contract, not
+> because it ships today; nothing in the engine calls `recordsFor` or `flagForAttention`.
+
 An unresolved tier-3 effect is surfaced, never retried. The two surfaces differ deliberately.
 
 **A run** terminates as `run:failed` carrying a dedicated `ErrorCode` of `effect_needs_attention`, and reports
@@ -187,6 +204,11 @@ command that performs it is a named follow-up, not part of this contract's first
 exist before anything can resolve rows.
 
 ## 9. Retention
+
+> **Not wired yet (2026-08-17).** CR-12 has landed the durable record — the prepare/settle bracket, the
+> predicate, the identities and the no-retry-past-a-dispatch rule. Everything in this section is the READ
+> side, and it is the item's remaining step. It is described here because it is the decided contract, not
+> because it ships today; nothing in the engine calls `recordsFor` or `flagForAttention`.
 
 - **Unresolved rows** (`prepared`, `dispatched`, `ambiguous`, `needs_attention`) are **never** swept by age.
   They are the record an operator needs, and they outlive their run deliberately — the row carries no foreign
