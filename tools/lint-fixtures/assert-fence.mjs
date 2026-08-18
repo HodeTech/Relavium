@@ -1,5 +1,6 @@
 /**
- * Assert the no-vendor-type-across-the-`@relavium/llm`-seam fence (0.F) is AIRTIGHT.
+ * Assert the repo's LINT FENCES are AIRTIGHT — the seam fence (0.F) and the authored-system-prompt fence
+ * (CR-13, ADR-0081 §1).
  *
  * Lints the quarantined fixtures with the repo ESLint config and asserts:
  *  1. `forbidden-vendor-import.ts` fires EXACTLY the expected count per seam rule — the
@@ -18,14 +19,26 @@ import { ESLint } from 'eslint';
 
 const MAIN = 'tools/lint-fixtures/forbidden-vendor-import.ts';
 const CONFIG_NAMED = 'tools/lint-fixtures/forbidden-in-name.config.ts';
+const AUTHORED = 'tools/lint-fixtures/forged-authored-prompt.ts';
 
 const STATIC_RULE = '@typescript-eslint/no-restricted-imports'; // bare, subpath, type-only, 2× re-export
 const SYNTAX_RULE = 'no-restricted-syntax'; // dynamic, non-literal dynamic, import-type query, require
 const EXPECT_STATIC = 5;
 const EXPECT_SYNTAX = 4;
 
+/**
+ * The authored-system-prompt fence's exact spec: SIX errors on the fixture — five direct assertion forms
+ * plus the one-hop type alias, flagged at its declaration.
+ *
+ * A count that DROPS means a forgery syntax stopped being policed. A count that RISES means the fence
+ * started catching one of the two forms ADR-0081 §1 names as residual (a generic `as T` helper, an
+ * interface field plus an object assertion) — in which case the ADR's honesty about its own bound is now
+ * out of date and must be corrected. Either direction is a failure worth stopping CI for.
+ */
+const EXPECT_AUTHORED = 6;
+
 const eslint = new ESLint();
-const results = await eslint.lintFiles([MAIN, CONFIG_NAMED]);
+const results = await eslint.lintFiles([MAIN, CONFIG_NAMED, AUTHORED]);
 // Match by basename (not an `endsWith('/…')` suffix) so it works on Windows, where
 // `filePath` uses `\` separators.
 const resultFor = (name) => results.find((r) => basename(r.filePath) === name);
@@ -63,8 +76,26 @@ if (!cfg || seamErrors(cfg, STATIC_RULE) < 1) {
   );
 }
 
+// 3. The authored-system-prompt fence must fire EXACTLY six times — no more, no fewer (see EXPECT_AUTHORED).
+const authored = resultFor('forged-authored-prompt.ts');
+const authoredHits = (authored?.messages ?? []).filter(
+  (m) => m.ruleId === SYNTAX_RULE && m.severity === 2 && m.message.includes('AuthoredSystemPrompt'),
+).length;
+if (authoredHits !== EXPECT_AUTHORED) {
+  fail(
+    `AuthoredSystemPrompt fence count drift on ${AUTHORED}: ${authoredHits}/${EXPECT_AUTHORED}. ` +
+      'Fewer means a brand-forging syntax stopped being policed (ADR-0081 §1 regression); more means the ' +
+      "fence now catches a form the ADR names as residual, so the ADR's stated bound needs updating.",
+    authored,
+  );
+}
+
 console.log(
   `✓ Seam fence airtight: ${STATIC_RULE} ${staticHits}/${EXPECT_STATIC}, ` +
     `${SYNTAX_RULE} ${syntaxHits}/${EXPECT_SYNTAX} on the fixture; ` +
     'config-named source file still fenced.',
+);
+console.log(
+  `✓ AuthoredSystemPrompt fence airtight: ${authoredHits}/${EXPECT_AUTHORED} forging forms policed; ` +
+    "the two residual forms ADR-0081 §1 names are still uncaught, and legitimate uses of the type aren't.",
 );
