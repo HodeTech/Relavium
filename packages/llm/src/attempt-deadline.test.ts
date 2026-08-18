@@ -86,7 +86,7 @@ describe('openDeadline (ADR-0082 §5-§7)', () => {
     scope.dispose();
   });
 
-  it('raises the cooperative abort too — a provider that DOES honour it stops early', async () => {
+  it('raises the cooperative abort too — a provider that DOES honour it stops early', () => {
     const timer = manualTimer();
     const scope = openDeadline(120_000, controller, timer.set);
 
@@ -96,7 +96,7 @@ describe('openDeadline (ADR-0082 §5-§7)', () => {
     scope.dispose();
   });
 
-  it('a CALLER abort wins a same-tick tie with the deadline', async () => {
+  it('a CALLER abort wins a same-tick tie with the deadline', () => {
     // Precedence resolved at classification time, not by listener order — ADR-0036's cancel-wins rule. A
     // test pinning listener order would be pinning a scheduler detail.
     const caller = controller();
