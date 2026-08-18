@@ -798,6 +798,23 @@ semantics — which our security standard forbids for outbound requests.
 must not. Prove timer cleanup with a fake clock. This is a different timer from `CR-20` — both are needed, and
 the pre/post-content split must agree with `CR-14`'s rule 7, so it lands on that ADR.
 
+### CR-21b — `generateMedia()` submission has no deadline either · Medium
+
+Named by [ADR-0082](../../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+§10 rather than folded into `CR-21`, because it is a different call path and folding it in would have made
+that ADR's title claim more than its mechanism delivers.
+
+`CR-21` bounds every `generate`/`stream` attempt made through `FallbackChain`. The **first**
+`generateMedia()` submission is neither: it is not a poll, so
+[ADR-0045](../../decisions/0045-async-media-job-loop-poll-checkpoint-resume-cancel.md)'s poll deadline does
+not cover it, and it is not a chain attempt, so `CR-21`'s does not either. It is awaited directly and
+unbounded in `agent-runner.ts`, which is the same "the vendor SDK default becomes our liveness semantics"
+that `CR-21` exists to remove.
+
+**Fix + acceptance.** The same hard-race treatment `CR-21` lands, applied to the submission call: a
+deadline abort classifies `timeout`, a caller abort stays `cancelled`, cleanup proven with a fake clock. A
+submission that never settles and ignores its signal fails within the deadline rather than hanging the node.
+
 ### CR-22 — Gate and run deadlines are not preserved across resume · High
 The checkpoint's pending gate carries gate/node/budget data but not an absolute deadline, and the whole-run
 timeout is re-armed for its full duration on every resume — so a crash extends the cap.

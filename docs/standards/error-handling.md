@@ -45,8 +45,31 @@ knowing which provider produced it:
   failures (401/403, a bad or missing key; **402** an account billing / insufficient-balance
   problem — classified `auth` so it surfaces as `provider_auth`, never `internal`), malformed
   requests (400, an unsupported model id, a tool schema a provider rejected), content-policy
-  refusals, and request cancellation (`AbortSignal`). A fatal error does **not** silently fall
-  through the chain to mask a real bug.
+  refusals, request cancellation (`AbortSignal`), and — since
+  [ADR-0082](../decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) —
+  **`protocol`**, a provider that broke the stream grammar. A fatal error does **not** silently
+  fall through the chain to mask a real bug.
+
+**Two things the classification does NOT decide, and the difference matters.**
+
+*Whether to advance to another provider* is not the same question as *whether to re-run the
+node*. `protocol` is fatal in the second sense — an implementation that cannot keep the grammar
+will not keep it on the second call — while a PRE-content grammar violation still advances to
+the next entry, because a different provider may be well-behaved and the user has been shown
+nothing. So `retryable` alone no longer determines failover.
+
+*Whether the attempt already produced output* is carried separately, by `LlmError.contentCommitted`.
+The chain sets it when it surfaces a failure past the first non-terminal chunk, and the turn layer
+folds it into retryability — so a `timeout` that arrives after the user has already seen tokens is
+never re-dispatched, even though `timeout` is a retryable kind. It is a fact about the ATTEMPT, not
+about the error class, which is why it is a field rather than an override of `retryable`
+(`makeLlmError` derives `retryable` from `kind`, and that invariant is what keeps a miswired adapter
+from producing an inconsistent pair).
+
+**An authoring consequence.** Because `protocol` maps to the `provider_unavailable` `ErrorCode` with
+`retryable: false`, an authored `retry_on: [provider_unavailable]`
+([ADR-0040](../decisions/0040-node-retry-budget-above-the-chain.md)) does **not** make a grammar
+violation retryable — the retryability gate runs before `retry_on` is consulted.
 
 The runner — not the adapter — owns the retry/fallback policy
 ([ADR-0011](../decisions/0011-internal-llm-abstraction.md)); adapters stay dumb and only
