@@ -5,18 +5,23 @@
 - **Related**: [0004-vercel-ai-sdk-multi-llm.md](0004-vercel-ai-sdk-multi-llm.md) (supersedes), [0003-pure-ts-engine-not-langgraph-python.md](0003-pure-ts-engine-not-langgraph-python.md), [0006-os-keychain-for-api-keys.md](0006-os-keychain-for-api-keys.md), [0018-desktop-execution-and-rust-egress.md](0018-desktop-execution-and-rust-egress.md) (per-host egress + key handling), [0024-agent-first-entry-point-agentsession.md](0024-agent-first-entry-point-agentsession.md) (seam reused by chat-mode agents), [0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md](0030-llm-seam-shape-amendment-reasoning-response-format-provider-executed.md) (amends the seam shape), [tech-stack.md](../tech-stack.md)
 
 > **Amended 2026-08-18 by [ADR-0082](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md).**
-> The seam gains three things, none of which changes what crosses it: a stated **stream grammar** (exactly
-> one terminal, last, nothing after it) that `FallbackChain` verifies on every provider — including the
-> foreign ones this seam exists to admit; a new `LlmErrorKind` **`protocol`** for a grammar violation, which
-> is deliberately NOT retryable; and an optional **`LlmError.contentCommitted`**, set by the chain (and
-> stripped from anything a provider claims) when a failure is surfaced past the first content chunk, so the
-> node-retry budget above the chain can refuse to re-dispatch a call that already produced output and already
-> billed. Every attempt also gains a hard deadline. The contract's defining rule is untouched: no vendor SDK
-> type crosses the seam, and `LlmRequest` is unchanged.
+> The seam gains three things, none of which changes what crosses it. **Two have landed:** a new
+> `LlmErrorKind` **`protocol`** for a grammar violation, deliberately NOT retryable; and an optional
+> **`LlmError.contentCommitted`**, set by the chain — and stripped from anything a provider claims — when a
+> failure is surfaced past the first content chunk, so the node-retry budget above the chain refuses to
+> re-dispatch a call that already produced output and already billed.
 >
-> **Landed so far:** `protocol`, `contentCommitted`, and the grammar verifier module. **Not yet:** the
-> verifier's wiring into the chain, the `advance` verdict, and the per-attempt deadline. Stated because this
-> ADR is where a reader looks for what the seam guarantees TODAY — the same correction ADR-0079 needed once.
+> **The third has NOT.** A stated **stream grammar** (exactly one terminal, last, nothing after it) that
+> `FallbackChain` will verify on every provider — including the foreign ones this seam exists to admit — is
+> written and tested as a module but is **not yet wired into the chain**; neither is the per-attempt **hard
+> deadline**, nor the `advance` verdict that will let a pre-content grammar violation try the next entry.
+> Until they are wired, the seam's runtime behaviour on those three points is unchanged.
+>
+> Spelled out in present tense on each side because this ADR is where a reader looks for what the seam
+> guarantees TODAY, and a sentence that reads as shipped is the drift ADR-0079 already needed correcting for.
+>
+> The contract's defining rule is untouched throughout: no vendor SDK type crosses the seam, and
+> `LlmRequest` is unchanged.
 
 ## Context
 

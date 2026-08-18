@@ -76,42 +76,60 @@ export async function* verifyStreamGrammar(
   let held: StreamChunk | undefined;
   let sawAnyChunk = false;
 
-  for await (const chunk of source) {
-    if (held !== undefined) {
-      // Something followed the terminal. Both rows collapse to the same verdict, and the message names
-      // which one it was because a provider author needs to know.
-      yield {
-        type: 'error',
-        error: violation(
-          provider,
-          isTerminal(chunk)
-            ? `the provider emitted a second terminal (\`${chunk.type}\` after \`${held.type}\`) — a stream carries exactly one`
-            : `the provider emitted a \`${chunk.type}\` chunk after the terminal \`${held.type}\` — the terminal must be last`,
-        ),
-      };
-      return;
-    }
-    sawAnyChunk = true;
-    if (isTerminal(chunk)) {
-      held = chunk; // …not yielded yet: one more read has to confirm it was last
-      continue;
-    }
-    yield chunk;
-  }
-
-  if (held !== undefined) {
-    yield held; // EOF confirmed it — forward the terminal the source meant
+  try {
+    yield* walk();
+  } catch (cause) {
+    // **A throw during the CONFIRMING read is not a failure of the response.** The terminal was validly
+    // received; the only thing left unconfirmed is whether anything followed it, and an SSE reader erroring
+    // while tearing down after `[DONE]` is a realistic way to reach here. A review reproduced the earlier
+    // behaviour: the held `stop` — and the `usage` that prices the call — was dropped, and a raw unclassified
+    // `Error` escaped, turning a complete, already-billed answer into a total failure with no path back.
+    //
+    // So the terminal is forwarded and the teardown throw is discarded. A throw with NOTHING held is a real
+    // mid-stream failure and still propagates, for the chain's own `#errorOf` to classify.
+    if (held === undefined) throw cause;
+    yield held;
     return;
   }
-  // No terminal. Both remaining rows are `transport`: the bytes stopped arriving, whether after some
-  // content or before any.
-  yield {
-    type: 'error',
-    error: truncated(
-      provider,
-      sawAnyChunk
-        ? 'the stream ended before a terminal chunk — the response was truncated'
-        : 'the stream ended without producing any chunk at all',
-    ),
-  };
+
+  async function* walk(): AsyncGenerator<StreamChunk, void> {
+    for await (const chunk of source) {
+      if (held !== undefined) {
+        // Something followed the terminal. Both rows collapse to the same verdict, and the message names
+        // which one it was because a provider author needs to know.
+        yield {
+          type: 'error',
+          error: violation(
+            provider,
+            isTerminal(chunk)
+              ? `the provider emitted a second terminal (\`${chunk.type}\` after \`${held.type}\`) — a stream carries exactly one`
+              : `the provider emitted a \`${chunk.type}\` chunk after the terminal \`${held.type}\` — the terminal must be last`,
+          ),
+        };
+        return;
+      }
+      sawAnyChunk = true;
+      if (isTerminal(chunk)) {
+        held = chunk; // …not yielded yet: one more read has to confirm it was last
+        continue;
+      }
+      yield chunk;
+    }
+
+    if (held !== undefined) {
+      yield held; // EOF confirmed it — forward the terminal the source meant
+      return;
+    }
+    // No terminal. Both remaining rows are `transport`: the bytes stopped arriving, whether after some
+    // content or before any.
+    yield {
+      type: 'error',
+      error: truncated(
+        provider,
+        sawAnyChunk
+          ? 'the stream ended before a terminal chunk — the response was truncated'
+          : 'the stream ended without producing any chunk at all',
+      ),
+    };
+  }
 }

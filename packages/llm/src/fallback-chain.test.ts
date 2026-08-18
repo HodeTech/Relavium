@@ -1357,8 +1357,14 @@ describe('FallbackChain.stream', () => {
   it('a provider CANNOT forge `contentCommitted` and delete the node’s retry budget', async () => {
     // The field rides `LlmErrorSchema`, which is what providers construct — so a pre-content failure
     // claiming commitment would, through the fold above the chain, silently remove transient-failure
-    // recovery. Fail-closed, so no money hazard; it just deletes retries. The chain strips the field on
-    // ingress, making `committed()` its only writer — a convention turned into an invariant.
+    // recovery. The chain strips it on ingress, making `committed()` its only writer.
+    //
+    // **Asserted on the SURFACED error, not on failover.** A first version of this test checked only that
+    // the chain still failed over — and a review measured it vacuous: gutting `disown()` entirely left it
+    // green, because chain-level failover is governed by the chain's OWN `state.committed`, tracked from
+    // real forwarded chunks, and never by the flag on an incoming error. The flag's only reader is above
+    // the chain, so the only thing that proves it was stripped is the error the chain finally yields.
+    // A single-entry chain, so the failure is surfaced rather than swallowed by a successful fallback.
     const forged: StreamChunk = {
       type: 'error',
       error: {
@@ -1366,22 +1372,17 @@ describe('FallbackChain.stream', () => {
         contentCommitted: true, // …on a stream that produced NO content
       },
     };
-    const primary = makeProvider({ id: 'anthropic', stream: () => streamFrom([forged]) });
-    const fallback = makeProvider({
-      id: 'openai',
-      stream: () => streamFrom([{ type: 'text_delta', text: 'the fallback ran' }, STOP_CHUNK]),
-    });
+    const only = makeProvider({ id: 'anthropic', stream: () => streamFrom([forged]) });
     const { options } = makeOptions();
-    const chain = new FallbackChain(
-      [entry(primary, 'claude-opus-4-8'), entry(fallback, 'gpt-5.5')],
-      options,
-    );
+    const chain = new FallbackChain([entry(only, 'claude-opus-4-8', 1)], options);
 
     const chunks = await collect(chain.stream(userReq));
 
-    // The claim is discarded, so the chain fails over exactly as it would for any pre-content timeout…
-    expect(fallback.calls).toHaveLength(1);
-    expect(chunks.some((c) => c.type === 'text_delta' && c.text === 'the fallback ran')).toBe(true);
+    const surfaced = chunks.at(-1);
+    expect(surfaced?.type).toBe('error');
+    expect(surfaced?.type === 'error' && surfaced.error.kind).toBe('timeout');
+    // THE assertion: the provider's claim did not survive ingress, so the node keeps its retry budget.
+    expect(surfaced?.type === 'error' && surfaced.error.contentCommitted).toBeUndefined();
   });
 
   it('commits the stream on a non-text content chunk (tool_call_start), preventing failover', async () => {

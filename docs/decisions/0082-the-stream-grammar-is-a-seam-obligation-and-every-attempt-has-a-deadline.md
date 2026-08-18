@@ -315,11 +315,20 @@ Driven through fake providers, because the whole item is about not trusting the 
 
 **The superseded tests**
 
-17. Four tests currently rest on no-terminal-as-success —
-    `fallback-chain.test.ts`, `agent-turn.test.ts`, `m2-e2e-harness.e2e.test.ts` and
-    `apps/cli/src/commands/agent-run.test.ts`. Each is **rewritten, not deleted**, and carries a note
-    recording the reasoning it replaces, the way `checkpointer.test.ts` was handled in Wave 1. The phase
-    document's "an existing test" is singular and wrong.
+17. Tests resting on no-terminal-as-success are **rewritten, not deleted**, each carrying a note recording
+    the reasoning it replaces, the way `checkpointer.test.ts` was handled in Wave 1. The phase document's
+    "an existing test" is singular and wrong; the real set, verified against the tree:
+
+    - `packages/llm/src/fallback-chain.test.ts` — done with the carrier.
+    - `packages/core/src/engine/agent-turn.test.ts` — done with the carrier.
+    - `packages/core/src/engine/m2-e2e-harness.e2e.test.ts` — **deferred to the wiring step, by design.**
+      It proves ADR-0074's conservative commitment survives a resume, using a no-terminal stream as its
+      usage-less attempt. Rewriting it before the verifier is wired would leave the money property untested
+      across the transition; rewritten WITH the wiring, §12.15-16's invariants are proven continuously. The
+      file carries this note in place.
+    - `apps/cli/src/commands/agent-run.test.ts` — **not actually affected.** Every scripted stream in it
+      already ends with an explicit `stop`. Listed here in error when this ADR was drafted; the count was
+      four and is three.
 
 **Performance**
 

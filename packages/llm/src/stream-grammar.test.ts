@@ -115,6 +115,36 @@ describe('the classification table (ADR-0082 §2)', () => {
     expect(failureOf(await verified([TEXT, STOP, TEXT]))?.retryable).toBe(false);
   });
 
+  it('a THROW during the confirming read still forwards the terminal', async () => {
+    // A review reproduced the earlier behaviour: the held `stop` — and the `usage` that prices the call —
+    // was dropped and a raw unclassified `Error` escaped, turning a complete, already-billed answer into a
+    // total failure with no path back. An SSE reader erroring while tearing down after `[DONE]` is a
+    // realistic way to reach it. The terminal was validly received; only "was it last" is unconfirmed.
+    async function* tornDown(): AsyncGenerator<StreamChunk> {
+      await Promise.resolve();
+      yield TEXT;
+      yield STOP;
+      throw new Error('the SSE reader failed during teardown');
+    }
+    const out: StreamChunk[] = [];
+    for await (const chunk of verifyStreamGrammar(tornDown(), 'anthropic')) out.push(chunk);
+
+    expect(out).toEqual([TEXT, STOP]);
+  });
+
+  it('…but a throw with NOTHING held still propagates — the negative control', async () => {
+    // A mid-stream failure before any terminal is a real failure, and the chain's own `#errorOf` is what
+    // classifies it. Swallowing it here would hide a genuine fault behind a truncated-looking success.
+    async function* died(): AsyncGenerator<StreamChunk> {
+      await Promise.resolve();
+      yield TEXT;
+      throw new Error('the connection dropped mid-stream');
+    }
+    await expect(async () => {
+      for await (const chunk of verifyStreamGrammar(died(), 'anthropic')) void chunk;
+    }).rejects.toThrow('the connection dropped mid-stream');
+  });
+
   it('the terminal is held until EOF confirms it, and is not emitted early', async () => {
     // The mechanism rule 2 needs: "the terminal is last" is only knowable on the NEXT read. Asserted on
     // ORDER, so a verifier that emitted the terminal eagerly and appended a violation would fail here.

@@ -1007,8 +1007,16 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     // retained estimate lived only in memory, so a crash reset it to zero and the resumed run spent again against
     // a cap that had forgotten money the provider may already have billed.
     const store = new InMemoryRunStore();
-    // `n1`'s stream ends with NO terminal usage — a clean EOF, which FallbackChain treats as a successful empty
-    // turn. The provider may still have billed it, so the reservation must be retained, not released.
+    // `n1`'s stream ends with NO terminal — a clean EOF, which FallbackChain today treats as a successful
+    // empty turn. The provider may still have billed it, so the reservation must be retained, not released.
+    //
+    // **That framing is superseded and this test is deliberately DEFERRED**
+    // ([ADR-0082](../../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
+    // §12.17). Once the grammar verifier is wired into the chain, this stream becomes a classified
+    // `transport` failure rather than a success — and the ADR's money invariants (§12.15-16) require the
+    // SAME conservative-commitment property to hold across that change, re-asserted through a FAILED attempt
+    // instead of a spurious successful one. It is rewritten with the wiring, not before, so the retained
+    // reservation is proven continuously rather than going untested across the transition.
     const provider1 = scriptedProvider([[{ type: 'text_delta', text: 'partial' }]]);
     const host1 = createInMemoryHost({ store });
     const engine1 = buildEngine(host1, () => provider1, undefined, BUDGET_TEXT_PRICING);
