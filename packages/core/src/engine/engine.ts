@@ -446,6 +446,8 @@ class RunExecution {
    */
   /** Guards {@link RunExecution.#settleFenced} so overlapping discovery points tear down exactly once. */
   #fencedSettled = false;
+  /** Consecutive heartbeats that could not be written — bounded tolerance, see `#beat`. */
+  #missedBeats = 0;
   /** Disarms the lease heartbeat. Cleared at settle, like every other timer this run arms. */
   #heartbeatDisarm: (() => void) | undefined;
   /** Ends the handle's iteration without a terminal — the fenced path only (ADR-0079 §5). */
@@ -630,6 +632,18 @@ class RunExecution {
       // acquire would be refused, and this run would fail before executing a single node. Refused, never
       // duplicated.
       if (!(await this.#acquireLease())) {
+        // Name it. Without a `#failure` this settles on the generic default — `internal: "the run failed"` —
+        // so a user whose `history.db` is locked, unmigrated or read-only saw every `relavium run` die with a
+        // message pointing at nothing. The docblock above already diagnoses this case; the event should say
+        // it too. Secret-free: no path, no store detail, just what could not be established.
+        this.#failure = {
+          error: {
+            code: 'internal',
+            message:
+              'the run could not take ownership of its own id — the host run-lease port refused a fresh run',
+            retryable: false,
+          },
+        };
         await this.#settle('run:failed');
         return;
       }
@@ -2144,17 +2158,27 @@ class RunExecution {
 
   /** One heartbeat: refresh the lease, then either re-arm or stop as a fenced run. */
   async #beat(fence: RunFence): Promise<void> {
-    if (this.#settled || this.#ownership === 'lost') return;
+    if (this.#settled || this.#ownership !== 'held') return;
     let alive = false;
     try {
       alive = await this.#host.runLeases.heartbeat(this.runId, fence, RUN_LEASE_TTL_MS);
+      this.#missedBeats = 0;
     } catch {
-      // A heartbeat that cannot be written is NOT a takeover — the lease simply ages toward its TTL and the
-      // next write's fence check is the authority. Treating an I/O blip as a loss would stop a run that
-      // still owns itself.
-      alive = true;
+      // A heartbeat that cannot be WRITTEN is not a takeover — we still hold the row, and the next write's
+      // fence check is the authority. Treating an I/O blip as a loss would stop a run that still owns itself.
+      //
+      // But the tolerance is BOUNDED, because unbounded it hides the one failure §6 names as its reason for
+      // existing. A store that is persistently unwritable means the lease provably expires, somebody takes
+      // the run over, and this process keeps dispatching nodes and calling tools with no beat ever telling
+      // it. Once the misses cover the whole TTL the lease is expired whatever the store says, so the claim
+      // is one this process can no longer prove — and §5's rule is that an unprovable claim stops.
+      this.#missedBeats += 1;
+      alive = this.#missedBeats * RUN_LEASE_HEARTBEAT_MS < RUN_LEASE_TTL_MS;
     }
-    if (this.#settled || this.#lostOwnership()) return; // re-checked: the await above suspends
+    // Re-checked, and against `held` rather than `lost`: the await above suspends, and a gate park during it
+    // hands the claim back without setting `lost`. A beat that then acted would either re-arm a timer for a
+    // parked run or read a deliberate release as a takeover.
+    if (this.#settled || this.#ownership !== 'held') return;
     if (!alive) {
       this.#loseOwnership();
       return;
@@ -2355,6 +2379,13 @@ class RunExecution {
     this.#gateTimers.clear();
     for (const disarm of this.#mediaJobTimers.values()) disarm();
     this.#mediaJobTimers.clear();
+    // The same ADR-0074 §3 obligation `#settle` discharges: a `checkPreEgress` awaiting a job that will now
+    // never settle would hang forever. This teardown exists to leave nothing behind, and a fenced run is
+    // exactly as final as a settled one for anything waiting on it.
+    for (const nodeId of this.#pendingMediaJobs.keys()) {
+      this.#budgetGovernor?.clearLegacyMediaJob(nodeId);
+    }
+    this.#pendingMediaJobs.clear();
     this.#disarmRunTimeout();
     this.#closeStream?.();
     this.#onSettled(this.runId);

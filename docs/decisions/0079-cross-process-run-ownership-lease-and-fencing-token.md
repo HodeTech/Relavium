@@ -35,6 +35,23 @@ A `run_leases` table keyed by `run_id`, holding the owner id, a monotonically in
 
 `generation` increments on every successful acquire — including the takeover `reconcile()` performs on an expired lease (§7) — and never resets. That is the fence: a token that only moves forward, so a stale owner's token is recognisably old rather than merely different.
 
+> **Amended 2026-08-17 (CR-11 implementation).** "Never resets" is not what shipped, and the sentence above
+> is left standing so the correction is legible rather than silently rewritten. `release` **deletes** the row,
+> so the next acquire starts at generation 1 again — and because §4 (below) releases on every gate park, that
+> is the normal lifecycle, not an edge case. What actually keeps a stale owner out is therefore
+> `(ownerId, generation)` **pair-equality plus fail-closed-on-a-missing-row**, not monotonicity: a writer that
+> cannot produce the exact pair the row holds — or finds no row — is refused. Monotonicity holds within a
+> single lease's lifetime, which is what the takeover in §7 relies on.
+>
+> The residual risk is named rather than left to be discovered: two claims from the same `ownerId` separated
+> by a park are indistinguishable (`{E,1}` then `{E,1}`), so a long-lived host that keeps one `WorkflowEngine`
+> across many park/resume cycles — the desktop app, the VS Code extension host — cannot use the token alone to
+> tell a straggler from the current leg. In-process that gap is closed by the engine's own `#runs` map, which
+> is the authority on what this process is running; across processes the `ownerId` differs and the pair is
+> decisive. Making the token genuinely monotonic needs a tombstone (`owner_id = NULL, expires_at = 0`) rather
+> than a delete, and therefore a migration, a drizzle snapshot regeneration and a permanent row per run — a
+> trade worth taking only if that long-lived-host case becomes real. That is the trigger for revisiting it.
+
 ### 2. The fence rides `DurableWriteContext` — the port is not broken again
 
 `ADR-0078` §2 introduced `DurableWriteContext` as one extensible object precisely so the two items after it would extend rather than re-break `persistEvent`. This is the first of them: the context gains `fence`, and nothing else about the port changes.
@@ -49,17 +66,43 @@ Considered instead: binding the store to a lease at construction (rejected — c
 
 All contention is on the resume path, which is already async.
 
+> **Amended 2026-08-17 (CR-11 implementation).** "In the same transaction" is not what shipped: the lease is
+> acquired immediately **after** `run:started` is folded, because `run_leases.run_id` references `runs.id` and
+> that row is created by the fold — creating the lease inside the same transaction fails the foreign key. The
+> window this opens is uncontended for the reason the section already gives (the `runId` came from
+> `ids.newId()` moments earlier and no other process has seen it), so a run can have `run:started` without a
+> lease only for the duration of one `await`, and only its own process can be in it. The consequence that
+> matters is elsewhere and is now explicit: `run:started` is therefore written **unfenced**, because no lease
+> row can exist yet — the sole exemption in §2's rule, and the reason the engine models "before the first
+> acquire" as a state of its own rather than as "not owned".
+
 ### 4. A losing resume refuses before it reads anything
 
 `resumeFromCheckpoint` acquires the lease **first**. A failed acquire throws a new typed `EngineStateError` naming the current holder and the remedy — before the checkpoint is loaded and before any `RunExecution` exists, so a loser never becomes a second producer even briefly.
+
+> **Amended 2026-08-17 (CR-11 implementation).** The paragraph below was added to this section after it was
+> Accepted, and is marked rather than left to read as original text. It also proved incomplete twice over,
+> and both corrections are recorded at the end of it.
 
 **The lease is released when the process stops WORKING on the run — which includes a re-pause, not only a
 terminal.** This was under-specified when the section was first written and implementation found it: a
 sequential multi-gate run resumes, re-pauses at the next gate, and the very next `relavium gate` is refused
 for the full TTL by a lease nobody is using. A parked run has no process executing it, and the point of
 ownership is to stop two processes *acting*. Releasing is safe because the next resume re-acquires anyway, and
-the generation still only moves forward — so a stale owner stays fenced. Every refusal path above also
-releases what it just took, or a run that does not exist would lock its own id.
+the pair-equality fence of §1 still refuses a claim that does not match the row — so a stale owner stays
+fenced. Every refusal path above also releases what it just took, or a run that does not exist would lock its
+own id.
+
+**Two corrections implementation forced, both recorded here because §4's rule is what opened them.** First, a
+parked run is *not* inert: its gate deadline, the run-level `timeout_ms` and cooperative cancel all stay armed
+by design, and all of them end in durable writes. Releasing without accounting for that let a parked process
+write a terminal into a run another process was finishing — since a terminal is exempt from the append guard
+(ADR-0078 §2) and an **absent** fence is a pass rather than a refusal, the store took it. The rule is
+therefore not "release and forget" but *hand the claim back and re-take it before writing again*, enforced at
+the single durable-write choke point rather than at each of those callers. Second, the claim must be handed
+back as part of the write that publishes the pause, not after it: `#emitDurable` delivers to consumers, and an
+inline prompter resumes synchronously on `run:paused`, so a claim dropped afterwards let that resume believe
+it still owned the run and then had the row deleted out from under it.
 
 **A typed refusal, not an observer handle.** The acceptance says the loser "degrades to observer with a typed, actionable error" — two deliverables in one phrase. **The typed error is in scope; the observer handle is not.** A real observer — tailing the durable log and synthesising a `RunHandle` stream — is a new engine capability, and `createClosedRunHandle` shows the tree already prefers a degenerate handle to a new streaming mode. The observer is recorded as a named follow-up with its trigger: the first surface that must *watch* another process's run rather than merely be refused by it.
 

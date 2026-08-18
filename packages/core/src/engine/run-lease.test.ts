@@ -10,7 +10,7 @@
  */
 
 import type { RunEvent, RunFence, RunLeasePort } from '@relavium/shared';
-import { LeaseFencedError, RUN_LEASE_TTL_MS } from '@relavium/shared';
+import { LeaseFencedError, RUN_LEASE_HEARTBEAT_MS, RUN_LEASE_TTL_MS } from '@relavium/shared';
 import { describe, expect, it } from 'vitest';
 
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
@@ -440,5 +440,98 @@ describe('ADR-0079 §4/§7 — a claim that leads nowhere is never leaked', () =
     expect(repaired).toEqual([]); // it did NOT fail its own live run
     expect(store.eventsFor(handle.runId).map((e) => e.type)).not.toContain('run:failed');
     expect(handle.durability()).not.toBe('uncertain'); // …nor fence it out of its own run
+  });
+});
+
+describe('ADR-0079 §6 — the heartbeat tolerates a blip but not a blackout', () => {
+  it('survives isolated write failures, then gives up once the misses cover the whole TTL', async () => {
+    // Unbounded tolerance hid the one failure §6 names as its reason for existing: a store that is
+    // persistently unwritable means the lease provably expires, somebody takes the run over, and this
+    // process keeps dispatching nodes and calling tools with no beat ever telling it.
+    const inner = createInMemoryRunLeases();
+    let failing = false;
+    const leases: RunLeasePort = {
+      ...inner,
+      heartbeat: (runId, fence, ttlMs) =>
+        failing
+          ? Promise.reject(new Error('store unwritable'))
+          : inner.heartbeat(runId, fence, ttlMs),
+    };
+    const host = createInMemoryHost({ runLeases: leases });
+    const handle = new WorkflowEngine({ host, executor: new Stub({ a: inFlight }) }).start({
+      workflow: LINEAR,
+    });
+    await until(() => host.livenessCount() === 1, 'the heartbeat was armed');
+
+    failing = true;
+    const misses = Math.ceil(RUN_LEASE_TTL_MS / RUN_LEASE_HEARTBEAT_MS);
+    for (let beat = 0; beat < misses - 1; beat += 1) {
+      host.fireLiveness();
+      await until(() => host.livenessCount() === 1, `beat ${String(beat)} re-armed`);
+      expect(handle.durability()).not.toBe('uncertain'); // still ours — a blip is not a takeover
+    }
+
+    host.fireLiveness(); // the miss that covers the TTL
+    await drain(handle);
+    expect(handle.durability()).toBe('uncertain'); // an unprovable claim stops (§5)
+  });
+
+  it('a gate park during a beat is not read as a takeover', async () => {
+    // The await inside `#beat` suspends, and a park during it hands the claim back WITHOUT setting `lost`.
+    // A beat that then acted would read this process's own deliberate release as somebody else's takeover.
+    const inner = createInMemoryRunLeases();
+    let release: (() => void) | undefined;
+    let beatFinished = false;
+    const leases: RunLeasePort = {
+      ...inner,
+      heartbeat: async (runId, fence, ttlMs) => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const answer = await inner.heartbeat(runId, fence, ttlMs);
+        beatFinished = true;
+        return answer;
+      },
+    };
+    const host = createInMemoryHost({ runLeases: leases });
+    const engine = new WorkflowEngine({
+      host,
+      executor: new Stub({
+        g: () => ({ kind: 'paused', gate: { gateType: 'approval', message: 'ok?' } }),
+      }),
+    });
+    const handle = engine.start({ workflow: GATED });
+    await until(() => host.livenessCount() === 1, 'the heartbeat was armed');
+
+    host.fireLiveness(); // the beat suspends inside the port…
+    await until(() => release !== undefined, 'the beat is in flight');
+    for await (const event of handle.events) if (event.type === 'run:paused') break; // …and the run parks
+    release?.(); // now let the beat finish
+    await until(() => beatFinished, 'the beat answered');
+    await until(() => host.livenessCount() === 0, 'the beat did not re-arm on a parked run');
+
+    // The port ANSWERED `false` — the park deleted the row — and that must not be read as a takeover, because
+    // this process is the one that released it. Without the `held` re-check the beat treats its own park as
+    // somebody else's claim and kills a healthy parked run.
+    expect(handle.durability()).not.toBe('uncertain');
+    expect(await inner.read(handle.runId)).toBeUndefined(); // still parked, still resumable
+  });
+});
+
+describe('ADR-0079 §3 — a run that cannot own its own id says so', () => {
+  it('names the lease port rather than failing with an unattributed "the run failed"', async () => {
+    // A fresh run's acquire is uncontended by construction, so a refusal here means the host is misconfigured
+    // — a locked, unmigrated or read-only `history.db`. Settling with the generic default pointed at nothing.
+    const leases: RunLeasePort = {
+      ...createInMemoryRunLeases(),
+      acquire: () => Promise.resolve(undefined),
+    };
+    const host = createInMemoryHost({ runLeases: leases });
+    const handle = new WorkflowEngine({ host, executor: new Stub() }).start({ workflow: LINEAR });
+    const events = await drain(handle);
+
+    const terminal = events.at(-1);
+    expect(terminal?.type).toBe('run:failed');
+    expect(terminal?.type === 'run:failed' ? terminal.error.message : '').toMatch(/run-lease port/);
   });
 });
