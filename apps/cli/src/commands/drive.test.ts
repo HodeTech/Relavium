@@ -285,3 +285,31 @@ describe('outcomeToExitCode — the durability disposition (CR-92, ADR-0078 §5)
     expect(outcomeToExitCode(undefined, 'pending')).toBe(EXIT_CODES.workflowFailed);
   });
 });
+
+describe('outcomeToExitCode — an unresolved external effect (ADR-0080 §2b, effect-journal.md §8)', () => {
+  it('a failed run carrying `effect_needs_attention` exits 7, not 1', () => {
+    // The remedy is unlike every other failure's: do NOT retry — a ticket may already be filed. Exit 1 would
+    // put it in the same bucket as "a node errored and exhausted retries", which an automation loop re-runs.
+    expect(outcomeToExitCode('failed', 'durable', 'effect_needs_attention')).toBe(
+      EXIT_CODES.effectNeedsAttention,
+    );
+  });
+
+  it('OUTRANKS the uncertain disposition — exit 5 would give false advice', () => {
+    // Exit 5 documents "held in the outbox and retried on the next start". Nothing is pending here: this
+    // run's terminal landed durably and no drain will ever come, so a script following 5's advice waits
+    // forever instead of looking at the target.
+    expect(outcomeToExitCode('failed', 'uncertain', 'effect_needs_attention')).toBe(
+      EXIT_CODES.effectNeedsAttention,
+    );
+  });
+
+  it('any OTHER terminal error code keeps its ordinary classification — the negative control', () => {
+    // Without this the assertions above pass for an implementation that routed every failure to 7, which
+    // would tell users never to retry an ordinary transient failure.
+    expect(outcomeToExitCode('failed', 'durable', 'tool_failed')).toBe(EXIT_CODES.workflowFailed);
+    expect(outcomeToExitCode('failed', 'durable', undefined)).toBe(EXIT_CODES.workflowFailed);
+    expect(outcomeToExitCode('completed', 'durable', undefined)).toBe(EXIT_CODES.success);
+  });
+});
+

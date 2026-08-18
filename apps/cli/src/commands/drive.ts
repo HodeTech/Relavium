@@ -8,6 +8,7 @@ import {
   type WorkflowModelCatalog,
 } from '@relavium/core';
 import type {
+  ErrorCode,
   HumanGatePausedEvent,
   RunDurability,
   RunEvent,
@@ -233,7 +234,24 @@ export function outcomeToExitCode(
    * durable, which is what every pre-CR-92 caller assumed and what a surface with no handle can honestly say.
    */
   durability?: RunDurability,
+  /**
+   * The `ErrorCode` on the run's terminal, when it failed
+   * ([effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md) §8). Read for exactly one
+   * code today: `effect_needs_attention`, whose remedy is unlike every other failure's — do NOT retry, go
+   * look at the target, then resolve the row.
+   *
+   * Read from the TERMINAL rather than from `durability()`, deliberately. The disposition means one thing
+   * (ADR-0078 §5: did the terminal's write land) and it is `'durable'` here — the run recorded its failure
+   * correctly. Overloading `'uncertain'` would send this to exit 5, whose documented remedy ("held in the
+   * outbox and retried on the next start") is false: nothing will drain, because nothing is pending.
+   */
+  terminalErrorCode?: ErrorCode,
 ): ExitCode {
+  if (terminalErrorCode === 'effect_needs_attention') {
+    // OUTRANKS the durability disposition below: a run stopped by an unresolved external effect must not be
+    // reported as a transient "retry shortly", whatever else is true about its terminal's write.
+    return EXIT_CODES.effectNeedsAttention;
+  }
   if (durability === 'uncertain') {
     // **No TERMINAL + `uncertain` is a FENCED run, not an unwritten terminal** (ADR-0079 §5 vs ADR-0078 §5).
     // The two share the disposition and need opposite advice. A fenced loser deliberately writes nothing to

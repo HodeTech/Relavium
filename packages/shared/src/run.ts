@@ -406,13 +406,41 @@ export interface EffectRecord {
 }
 
 /**
- * The journal's READ side — `recordsFor` / `flagForAttention` — is deliberately NOT declared here yet.
+ * The journal's READ side, as the RESUME GATE sees it (ADR-0080 §2b,
+ * [effect-journal.md](../../../docs/reference/shared-core/effect-journal.md) §4).
  *
- * An interface that names an authoritative shape while nothing implements it is worse than no interface: it
- * had already drifted from `@relavium/db`'s synchronous `EffectJournalStore` before a single consumer
- * existed. The resume gate (ADR-0080 §2b, effect-journal.md §4) is CR-12's remaining step, and it will
- * declare the shape it actually needs from what it needs, not from a guess made ahead of it.
+ * Deliberately narrower than `@relavium/db`'s `EffectJournalStore`: the gate needs to know what is
+ * UNRESOLVED for a correlation and nothing else, so that is all this names. The full record set, the
+ * digests and the sweep stay host-side, where they are actually used.
+ *
+ * `unresolvedFor` takes the correlation with **`attempt` already dropped** — {@link effectScope} drops it —
+ * because the node-retry attempt resets to 1 both on a crash-resume and on a budget approval, so an
+ * attempt-scoped lookup would miss the very row it exists to find.
  */
+export interface EffectResumePort {
+  unresolvedFor: (correlation: EffectCorrelation) => Promise<readonly UnresolvedEffect[]>;
+}
+
+/** One effect a resumed correlation cannot move past, and why — the gate's whole vocabulary. */
+export interface UnresolvedEffect {
+  readonly identity: EffectIdentity;
+  readonly state: EffectState;
+  readonly tier: EffectTier;
+}
+
+/**
+ * Is this record blocking on resume? §4's table in one predicate, and the bold line under it:
+ * **a `committed` row is not a green light.** If the journal did not retain enough to re-deliver the result,
+ * it blocks exactly as an unresolved row does — that is the window where settle succeeded, the process died
+ * before `node:completed` persisted, and a gate examining only unresolved rows would wave the re-run through.
+ */
+export function blocksResume(record: {
+  readonly state: EffectState;
+  readonly result?: unknown;
+}): boolean {
+  return record.state !== 'committed' || record.result === undefined;
+}
+
 
 /** Another attempt already holds this {@link EffectIdentity} — the concurrency collision, not a fault. */
 export class EffectConflictError extends Error {
@@ -438,6 +466,23 @@ export function effectScope(correlation: EffectCorrelation): string {
     ? `run:${correlation.runId}:${correlation.nodeId}`
     : `session:${correlation.sessionId}:${String(correlation.turn)}`;
 }
+
+/**
+ * What a `prepare` decided — [effect-journal.md](../../../docs/reference/shared-core/effect-journal.md) §4.
+ *
+ * `'proceed'` claimed the identity and the dispatch may run. `'replay'` found this exact effect already
+ * `committed` — same identity, same args digest — with its result retained, so the call must NOT be made
+ * again and the stored result stands in for it. That is the one row in §4's table that lets a resumed node
+ * move forward instead of stopping, and it is decided host-side because only the host can compute the digest
+ * the comparison needs (the engine is platform-free).
+ *
+ * A committed row that does NOT match — a different digest at the same slot, or no retained result — is not
+ * a verdict; it rejects with {@link EffectConflictError}, because "an effect already happened here and we
+ * cannot reproduce its result" is exactly what a human has to look at.
+ */
+export type EffectPrepareVerdict =
+  | { readonly outcome: 'proceed' }
+  | { readonly outcome: 'replay'; readonly result: unknown };
 
 /**
  * The journal as a DISPATCH sees it (ADR-0080 §7) — the correlation is already closed over, so a dispatch
@@ -472,7 +517,7 @@ export interface EffectDispatchPort {
      */
     redactedArgs: unknown,
     targetIdempotencyKey?: string,
-  ) => Promise<void>;
+  ) => Promise<EffectPrepareVerdict>;
   /** Durably record the outcome, immediately after the call returns or fails. */
   settle: (
     slot: EffectSlot,

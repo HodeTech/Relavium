@@ -34,8 +34,10 @@ import type {
 import {
   AppendConflictError,
   EffectConflictError,
+  blocksResume,
   LeaseFencedError,
   effectScope,
+  type EffectResumePort,
 } from '@relavium/shared';
 
 import { type Checkpointer, reconstructCheckpointState } from './checkpoint.js';
@@ -618,6 +620,8 @@ export function resolveInMemoryLeases(
 export function createInMemoryEffectJournalStore(): {
   /** A port for one correlation — every port from this store shares ONE row table, as one `history.db` does. */
   readonly for: (correlation: EffectCorrelation) => EffectDispatchPort;
+  /** The READ half the resume gate consumes, over the same rows (effect-journal.md §4). */
+  readonly resume: EffectResumePort;
   readonly rows: () => readonly {
     scope: string;
     slot: EffectSlot;
@@ -627,33 +631,50 @@ export function createInMemoryEffectJournalStore(): {
     result?: unknown;
   }[];
 } {
-  const rows = new Map<
-    string,
-    {
-      scope: string;
-      slot: EffectSlot;
-      toolId: string;
-      tier: EffectTier;
-      state: EffectState;
-      result?: unknown;
-    }
-  >();
+  interface Row {
+    scope: string;
+    slot: EffectSlot;
+    toolId: string;
+    tier: EffectTier;
+    state: EffectState;
+    /** A stand-in for the host's SHA-256: only EQUALITY matters, and core cannot hash (engine purity). */
+    argsKey: string;
+    result?: unknown;
+  }
+  const rows = new Map<string, Row>();
   const key = (scope: string, slot: EffectSlot, toolId: string): string =>
     `${scope}|${String(slot)}|${toolId}`;
   return {
     for: (correlation) => {
       const scope = effectScope(correlation);
       return {
-        prepare: (slot, toolId, tier) => {
-          if (rows.has(key(scope, slot, toolId))) {
+        prepare: (slot, toolId, tier, redactedArgs) => {
+          const held = rows.get(key(scope, slot, toolId));
+          const argsKey = JSON.stringify(redactedArgs) ?? 'undefined';
+          if (held !== undefined) {
+            // The SAME three-part test the real store applies (§4's replay row). A reference that accepted
+            // what SQLite refuses — or refused what it replays — would make every core test over the gate
+            // vacuous; this repo has been bitten by exactly that divergence before.
+            if (held.state === 'committed' && held.argsKey === argsKey && 'result' in held) {
+              return Promise.resolve({ outcome: 'replay', result: held.result });
+            }
             return Promise.reject(new EffectConflictError({ scope, slot, toolId }));
           }
-          rows.set(key(scope, slot, toolId), { scope, slot, toolId, tier, state: 'prepared' });
-          return Promise.resolve();
+          rows.set(key(scope, slot, toolId), {
+            scope,
+            slot,
+            toolId,
+            tier,
+            state: 'prepared',
+            argsKey,
+          });
+          return Promise.resolve({ outcome: 'proceed' });
         },
         settle: (slot, toolId, state, result) => {
           const row = rows.get(key(scope, slot, toolId));
-          if (row !== undefined) {
+          // Only out of `prepared`, mirroring the store: `committed → ambiguous` would claim we do not know
+          // what the target did while retaining the result proving we do.
+          if (row !== undefined && row.state === 'prepared') {
             rows.set(key(scope, slot, toolId), {
               ...row,
               state,
@@ -664,7 +685,28 @@ export function createInMemoryEffectJournalStore(): {
         },
       };
     },
-    rows: () => [...rows.values()],
+    resume: {
+      unresolvedFor: (correlation) => {
+        const scope = effectScope(correlation);
+        return Promise.resolve(
+          [...rows.values()]
+            .filter((row) => row.scope === scope && blocksResume(row))
+            .map((row) => ({
+              identity: { scope: row.scope, slot: row.slot, toolId: row.toolId },
+              state: row.state,
+              tier: row.tier,
+            })),
+        );
+      },
+    },
+    // `argsKey` is the reference's stand-in for the host's digest and is deliberately NOT exposed: a test
+    // asserting on it would be asserting on a fixture detail the real store does not share.
+    rows: () =>
+      [...rows.values()].map((row) => {
+        const { argsKey, ...rest } = row;
+        void argsKey;
+        return rest;
+      }),
   };
 }
 

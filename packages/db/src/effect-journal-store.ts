@@ -15,7 +15,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, gte, lt } from 'drizzle-orm';
 
 import {
   EFFECT_STATES,
@@ -27,6 +27,10 @@ import {
   type EffectIdentity,
   type EffectRecord,
   type EffectDispatchPort,
+  type EffectPrepareVerdict,
+  type EffectResumePort,
+  type UnresolvedEffect,
+  blocksResume,
   type EffectState,
   type EffectTier,
 } from '@relavium/shared';
@@ -43,8 +47,10 @@ export interface EffectJournalStoreDeps {
 
 /**
  * The synchronous store; `createEffectJournalPort` adapts its WRITE half to the engine's Promise-typed
- * dispatch seam. `recordsFor` and `flagForAttention` are the read half the resume gate will consume — they
- * are implemented and exported, and nothing calls them yet (ADR-0080 §2b is CR-12's remaining step).
+ * dispatch seam, and `createEffectResumePort` adapts its READ half to the engine's resume gate (ADR-0080
+ * §2b, effect-journal.md §4) — `recordsFor` feeds that gate and `unresolvedForSession` feeds `chat-resume`'s
+ * disclosure. `flagForAttention` has no caller yet: it is the primitive the operator-resolution command will
+ * use, which effect-journal.md §8 names as a follow-up.
  */
 export interface EffectJournalStore {
   prepare: (
@@ -54,7 +60,7 @@ export interface EffectJournalStore {
     tier: EffectTier,
     argsDigest: string,
     targetIdempotencyKey?: string,
-  ) => void;
+  ) => EffectPrepareVerdict;
   settle: (
     identity: EffectIdentity,
     state: Extract<EffectState, 'committed' | 'ambiguous'>,
@@ -62,6 +68,41 @@ export interface EffectJournalStore {
   ) => void;
   flagForAttention: (identity: EffectIdentity) => void;
   recordsFor: (correlation: EffectCorrelation) => readonly EffectRecord[];
+  /**
+   * Sweep `committed` rows for a correlation that can no longer be resumed
+   * ([effect-journal.md](../../../docs/reference/shared-core/effect-journal.md) §9). Returns how many rows
+   * went. UNRESOLVED rows are never swept by age — they are the record an operator needs, and they outlive
+   * their run deliberately, which is why the row carries no foreign key to `runs`.
+   */
+  sweepCommittedForRun: (runId: string) => number;
+  /**
+   * Every unresolved effect across ALL turns of one session
+   * ([effect-journal.md](../../../docs/reference/shared-core/effect-journal.md) §8).
+   *
+   * A session-scoped query rather than `recordsFor` per turn, because a session's correlation carries the
+   * turn and its rows are therefore spread across as many scopes as it has turns. A resumed chat needs the
+   * whole set to disclose it once, and looping `recordsFor` over every prior turn would be one query per
+   * turn to answer a question about the session.
+   */
+  unresolvedForSession: (sessionId: string) => readonly EffectRecord[];
+}
+
+/**
+ * A half-open RANGE over one scope prefix — `[prefix, prefix')`, where `prefix'` is the prefix with its final
+ * `:` bumped to `;` (0x3A → 0x3B, the next byte).
+ *
+ * **A range, deliberately, and not `LIKE`.** SQLite's `LIKE` treats `%` and `_` as wildcards and honours a
+ * backslash escape ONLY when the statement carries an explicit `ESCAPE` clause — which drizzle's `like()`
+ * does not emit. A session id is only schema-constrained to a non-empty string and `history.db` is shared
+ * with other surfaces, so an id containing `%` would silently widen the match and an id containing a
+ * backslash would be mangled by an escaping pass that the engine then ignores. A range has no such
+ * semantics: under SQLite's default BINARY collation it is an exact byte-order prefix match, and it uses the
+ * `scope` index rather than scanning.
+ *
+ * The separator lives INSIDE the prefix, so `s1` can never match `s10`'s rows.
+ */
+function scopeRange(prefix: string): { readonly from: string; readonly toExclusive: string } {
+  return { from: prefix, toExclusive: `${prefix.slice(0, -1)};` };
 }
 
 export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): EffectJournalStore {
@@ -81,7 +122,21 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
             // the same reasoning ADR-0078 §2's compare-and-append uses. The UNIQUE index is the backstop; this
             // read is what turns a driver constraint error into the typed refusal callers narrow on.
             const held = tx.select().from(runEffects).where(whereIdentity(identity)).get();
-            if (held !== undefined) throw new EffectConflictError(identity);
+            if (held !== undefined) {
+              // §4's replay row, decided HERE because only the host can compute the digest the comparison
+              // needs. Same identity + same args digest + a retained result means this exact effect already
+              // committed, so the stored result stands in for the call rather than the call happening twice.
+              // Everything else — a different digest at the same slot, an unresolved row, a committed row we
+              // cannot re-deliver — is the refusal, and a human has to look at it.
+              if (
+                held.state === 'committed' &&
+                held.argsDigest === argsDigest &&
+                held.resultJson !== null
+              ) {
+                return { outcome: 'replay', result: JSON.parse(held.resultJson) as unknown };
+              }
+              throw new EffectConflictError(identity);
+            }
             const now = deps.now();
             const row: NewRunEffectRow = {
               id: deps.uuid(),
@@ -99,6 +154,7 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
             };
             void correlation; // the scope already encodes it; kept in the signature for the port's shape
             tx.insert(runEffects).values(row).run();
+            return { outcome: 'proceed' };
           },
           { behavior: 'immediate' },
         ),
@@ -161,6 +217,53 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
           }),
         );
     },
+
+    unresolvedForSession: (sessionId) => {
+      // `like` on the scope prefix. The separator is part of the pattern (`session:<id>:`), so a session id
+      // that is a prefix of another one cannot bleed into it — `s1` must not match `s10`'s rows.
+      const range = scopeRange(`session:${sessionId}:`);
+      return db
+        .select()
+        .from(runEffects)
+        .where(
+          and(gte(runEffects.scope, range.from), lt(runEffects.scope, range.toExclusive)),
+        )
+        .orderBy(asc(runEffects.createdAt))
+        .all()
+        .map((row) => ({
+          identity: { scope: row.scope, slot: row.slot, toolId: row.toolId },
+          state: coerceEffectState(row.state),
+          tier: coerceEffectTier(row.tier),
+          ...(row.resultJson === null ? {} : { result: JSON.parse(row.resultJson) as unknown }),
+          ...(row.targetIdempotencyKey === null
+            ? {}
+            : { targetIdempotencyKey: row.targetIdempotencyKey }),
+        }))
+        .filter((record) => blocksResume(record));
+    },
+
+    sweepCommittedForRun: (runId) => {
+      // Scoped to ONE run that can no longer be resumed, never "everything older than N days". Sweeping by
+      // age would delete the evidence §4's gate reads while the run is still resumable, reintroducing the
+      // duplicate this whole mechanism prevents — so the caller must be able to say "this run is over", and
+      // only the caller knows that.
+      //
+      // `committed` ONLY. Unresolved rows are never swept: they are the record an operator needs, they
+      // outlive their run deliberately, and that is why the row carries no foreign key to `runs` — a purge
+      // is exactly when the record matters most.
+      const range = scopeRange(`run:${runId}:`);
+      const result = db
+        .delete(runEffects)
+        .where(
+          and(
+            gte(runEffects.scope, range.from),
+            lt(runEffects.scope, range.toExclusive),
+            eq(runEffects.state, 'committed'),
+          ),
+        )
+        .run();
+      return Number(result.changes);
+    },
   };
 }
 
@@ -193,15 +296,16 @@ export function createEffectJournalPort(
   return {
     prepare: (slot, toolId, tier, redactedArgs, targetIdempotencyKey) => {
       try {
-        store.prepare(
-          identityFor(slot, toolId),
-          correlation,
-          attempt,
-          tier,
-          digestOf(redactedArgs),
-          targetIdempotencyKey,
+        return Promise.resolve(
+          store.prepare(
+            identityFor(slot, toolId),
+            correlation,
+            attempt,
+            tier,
+            digestOf(redactedArgs),
+            targetIdempotencyKey,
+          ),
         );
-        return Promise.resolve();
       } catch (error) {
         // A REJECTION, never a synchronous throw: the port is Promise-typed, and a synchronous throw out of
         // one breaks any caller using `.catch()` rather than `await`-in-`try`.
@@ -213,6 +317,32 @@ export function createEffectJournalPort(
         store.settle(identityFor(slot, toolId), state, result);
         return Promise.resolve();
       } catch (error) {
+        return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+    },
+  };
+}
+
+/**
+ * Adapt the store's read half to the engine's {@link EffectResumePort} — the resume gate's whole seam
+ * ([effect-journal.md](../../../docs/reference/shared-core/effect-journal.md) §4).
+ *
+ * The filtering happens HERE rather than in the engine because `blocksResume` needs the retained result, and
+ * a result is host data: shipping every record across the seam so the engine could re-derive the same
+ * predicate would move payloads it has no use for and no way to bound.
+ */
+export function createEffectResumePort(store: EffectJournalStore): EffectResumePort {
+  return {
+    unresolvedFor: (correlation) => {
+      try {
+        const blocking: UnresolvedEffect[] = store
+          .recordsFor(correlation)
+          .filter((record) => blocksResume(record))
+          .map((record) => ({ identity: record.identity, state: record.state, tier: record.tier }));
+        return Promise.resolve(blocking);
+      } catch (error) {
+        // A read that FAILS is not "nothing is blocking". Rejecting sends the gate down its fail-closed
+        // path, which is the same answer ADR-0075 gives for an unreadable event log.
         return Promise.reject(error instanceof Error ? error : new Error(String(error)));
       }
     },

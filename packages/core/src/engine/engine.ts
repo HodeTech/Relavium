@@ -56,6 +56,7 @@ import {
   type TokensUsed,
   type EffectCorrelation,
   type EffectDispatchPort,
+  type EffectResumePort,
 } from '@relavium/shared';
 import type { EndpointKind, MediaJobStatus, PricingOverlay, ProviderId } from '@relavium/llm';
 
@@ -256,6 +257,13 @@ export interface WorkflowEngineDeps {
    * direction: a host with no journal must not silently dispatch unrecorded effects.
    */
   readonly effectJournal?: (correlation: EffectCorrelation) => EffectDispatchPort;
+  /**
+   * The journal's READ half, consumed by the resume gate
+   * ([effect-journal.md](../../../docs/reference/shared-core/effect-journal.md) §4). Optional for the same
+   * reason `effectJournal` is: a host with no journal has no rows to gate on. A host that wires the WRITE
+   * half and forgets this one is the dangerous combination, and `resumeFromCheckpoint` says so out loud.
+   */
+  readonly effectResume?: EffectResumePort;
 
   readonly host: ExecutionHost;
   readonly executor: NodeExecutor;
@@ -458,6 +466,8 @@ class RunExecution {
    * port, because the correlation differs per node and per retry attempt and only the run loop knows both.
    */
   readonly #effectJournal: ((correlation: EffectCorrelation) => EffectDispatchPort) | undefined;
+  /** The journal's READ half — the resume gate (effect-journal.md §4). Absent when no host wired one. */
+  readonly #effectResume: EffectResumePort | undefined;
   /** The owning engine's identity — passed in, never minted here, so one engine is one owner. */
   readonly #ownerId: string;
   /**
@@ -495,6 +505,7 @@ class RunExecution {
     ownerId: string;
     /** Builds a per-node effect journal from a run correlation (ADR-0080); absent ⇒ effects are refused. */
     effectJournal?: (correlation: EffectCorrelation) => EffectDispatchPort;
+    effectResume?: EffectResumePort;
     resolverCapabilities: ResolverCapabilities;
     maxTokensEstimate?: number;
     /** The user-pricing overlay (2.5.G S10, ADR-0065 §2) — into the workflow PRE-EGRESS governor so a user-priced
@@ -518,6 +529,7 @@ class RunExecution {
     this.#onSettled = params.onSettled;
     this.#ownerId = params.ownerId;
     this.#effectJournal = params.effectJournal;
+    this.#effectResume = params.effectResume;
     this.#abort = params.host.newAbortController();
 
     const secretNames = new Set(
@@ -767,6 +779,83 @@ class RunExecution {
   }
 
   /**
+   * **The resume gate** ([ADR-0080](../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §2b,
+   * [effect-journal.md](../../../docs/reference/shared-core/effect-journal.md) §4). Returns `true` when the
+   * run may proceed; on `false` the caller settles it, and `#failure` already carries the reason.
+   *
+   * Runs on EVERY resume, before anything is scheduled — which is the point. A crashed effectful node has a
+   * durable row saying an external effect may have landed; re-running it is the duplicate this whole item
+   * exists to prevent. The registry's own `prepare` would refuse the colliding call a second time, but only
+   * if the re-run happens to reach the same tool at the same slot with the same args: a model that answers
+   * differently sails past it, and the run would complete "successfully" with an ambiguous real-world effect
+   * left unresolved. The gate is what makes that impossible.
+   *
+   * **Only nodes that will actually re-run are read.** A node the checkpoint records as `completed`,
+   * `failed` or `skipped` is never re-dispatched (`#seedFromCheckpoint`), so its rows are history, not a
+   * blocker. Everything else — `pending`, and the `paused` node this resume is here to advance — is queried.
+   *
+   * **Tier 1 and 2 fall through to the same refusal as tier 3, deliberately.** §4's table says those
+   * reconcile from an idempotency key or a receipt lookup, and no reconciler exists yet. Treating "we have
+   * not built the reconciler" as "proceed" would be the fail-open this contract rejects; the refusal is
+   * conservative and names the tier, so the follow-up is visible rather than silently assumed.
+   */
+  async #effectResumeGateOrFail(): Promise<boolean> {
+    if (this.#effectResume === undefined) return true;
+    const willRerun = [...this.#states.entries()]
+      .filter(([, state]) => state.status === 'pending' || state.status === 'paused')
+      .map(([id]) => id);
+    const blocking: { nodeId: string; toolId: string; state: string; tier: number }[] = [];
+    try {
+      for (const nodeId of willRerun) {
+        const unresolved = await this.#effectResume.unresolvedFor({
+          kind: 'run',
+          runId: this.runId,
+          nodeId,
+          // Any attempt: `effectScope` drops it. Passing 1 rather than the live attempt makes that explicit —
+          // the node-retry attempt resets on both a crash-resume and a budget approval, so an
+          // attempt-scoped lookup would miss the very row it exists to find.
+          attempt: 1,
+        });
+        for (const record of unresolved) {
+          blocking.push({
+            nodeId,
+            toolId: record.identity.toolId,
+            state: record.state,
+            tier: record.tier,
+          });
+        }
+      }
+    } catch (error) {
+      // A read that FAILS is not "nothing is blocking" — the same answer ADR-0075 gives for an unreadable
+      // event log. Refusing on an unreadable journal is the only honest option: the alternative is resuming
+      // a run whose external effects are unknown.
+      this.#failure = {
+        error: {
+          code: 'effect_needs_attention',
+          message: `the effect journal could not be read, so this run cannot be resumed safely: ${error instanceof Error ? error.message : String(error)}`,
+          retryable: false,
+        },
+      };
+      return false;
+    }
+    if (blocking.length === 0) return true;
+    this.#failure = {
+      error: {
+        code: 'effect_needs_attention',
+        message:
+          `${String(blocking.length)} external effect(s) from a prior attempt are unresolved, so this run ` +
+          `cannot continue without a human: ` +
+          blocking
+            .map((b) => `${b.nodeId}/${b.toolId} (${b.state}, tier ${String(b.tier)})`)
+            .join(', ') +
+          `. Check the target before resolving them — resuming again re-enters this gate and stops here.`,
+        retryable: false,
+      },
+    };
+    return false;
+  }
+
+  /**
    * Rehydrate ONE parked media job (ADR-0045 §2-3, ADR-0074 §3) — extracted from `#seedFromCheckpoint` so that
    * method stays inside its complexity budget. The whole of §3's frozen-vs-legacy branch lives here.
    */
@@ -934,6 +1023,13 @@ class RunExecution {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
       return;
     }
+    // AFTER context resolution and BEFORE the gate decision is applied. Applying a decision first would let
+    // an approval spend money on a run the next line refuses anyway; refusing first would report a journal
+    // problem for a run whose inputs do not even resolve.
+    if (!(await this.#effectResumeGateOrFail())) {
+      await this.#settle('run:failed');
+      return;
+    }
     if (gateAlreadyResolved) {
       this.#schedule();
     } else {
@@ -972,6 +1068,13 @@ class RunExecution {
     }
     if (!(await this.#resolveContextOrFail())) {
       await this.#settle(this.#cancelling ? 'run:cancelled' : 'run:failed');
+      return;
+    }
+    // The media-only resume takes the SAME gate. A run parked on a media job can still have a crashed
+    // effectful node elsewhere in the graph, and this path used to be the untested twin that skipped
+    // every guard the gate form got.
+    if (!(await this.#effectResumeGateOrFail())) {
+      await this.#settle('run:failed');
       return;
     }
     this.#schedule();
@@ -3128,6 +3231,7 @@ export class WorkflowEngine {
    */
   readonly #ownerId: string;
   /** ADR-0080's per-node journal factory, threaded into every `RunExecution` this engine builds. */
+  readonly #effectResume: EffectResumePort | undefined;
   readonly #effectJournalFactory:
     | ((correlation: EffectCorrelation) => EffectDispatchPort)
     | undefined;
@@ -3145,6 +3249,7 @@ export class WorkflowEngine {
     this.#onLegacyMediaJobHold = deps.onLegacyMediaJobHold;
     this.#ownerId = deps.host.ids.newId();
     this.#effectJournalFactory = deps.effectJournal;
+    this.#effectResume = deps.effectResume;
   }
 
   /**
@@ -3175,6 +3280,7 @@ export class WorkflowEngine {
       ...(this.#effectJournalFactory === undefined
         ? {}
         : { effectJournal: this.#effectJournalFactory }),
+      ...(this.#effectResume === undefined ? {} : { effectResume: this.#effectResume }),
       resolverCapabilities: this.#resolverCapabilities,
       maxTokensEstimate: this.#maxTokensEstimate,
       ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
@@ -3307,6 +3413,7 @@ export class WorkflowEngine {
       ...(this.#effectJournalFactory === undefined
         ? {}
         : { effectJournal: this.#effectJournalFactory }),
+      ...(this.#effectResume === undefined ? {} : { effectResume: this.#effectResume }),
       host: this.#host,
       executor: this.#executor,
       bus,

@@ -34,7 +34,7 @@ function recordingJournal(): {
     port: {
       prepare: async (slot, toolId, tier, redacted, key) => {
         order.push('prepare');
-        await inner.prepare(slot, toolId, tier, redacted, key);
+        return inner.prepare(slot, toolId, tier, redacted, key);
       },
       settle: async (slot, toolId, state, result) => {
         order.push(`settle:${state}`);
@@ -153,7 +153,6 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
   it('a prepare CONFLICT refuses the dispatch, and is not retryable either', async () => {
     // §12 point 7's engine half. A retry would re-collide on the same identity, burn the whole node budget
     // and report `tool_failed` — the wrong cause for "another attempt owns this effect".
-    const journal = recordingJournal();
     let dispatched = 0;
     const host = hostWith(() => {
       dispatched += 1;
@@ -166,13 +165,17 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
       });
     });
     const registry = createToolRegistry({ tools: TOOLS, host });
+    // An UNRESOLVED prior row is the true collision: a live attempt holds the identity and has not said what
+    // the target did. (A *committed* row with the same args is the REPLAY case, tested separately — that one
+    // deliberately does NOT refuse.)
+    const journalWithHeldRow = recordingJournal();
+    await journalWithHeldRow.port.prepare(0, 'http_request', 3, {});
 
-    await registry.dispatch(POST, ctxWith(journal)); // claims the identity
     await expect(
-      registry.dispatch(POST, ctxWith(journal)), // …a second attempt at the same slot
+      registry.dispatch(POST, ctxWith(journalWithHeldRow)),
     ).rejects.toMatchObject({ retryable: false, runErrorCode: 'effect_needs_attention' });
 
-    expect(dispatched).toBe(1); // the refused attempt never reached the target
+    expect(dispatched).toBe(0); // the refused attempt never reached the target
   });
 
   it('a prepare that FAILS refuses the dispatch — no journal row means no way to tell resume anything', async () => {
@@ -244,7 +247,7 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     const turnTwo = store.for({ kind: 'session', sessionId: 's1', turn: 1 });
 
     await turnOne.prepare(0, 'run_command', 3, {});
-    await expect(turnTwo.prepare(0, 'run_command', 3, {})).resolves.toBeUndefined();
+    await expect(turnTwo.prepare(0, 'run_command', 3, {})).resolves.toEqual({ outcome: 'proceed' });
     expect(store.rows().map((r) => r.scope)).toEqual(['session:s1:0', 'session:s1:1']);
 
     // …and the same turn twice at one slot IS a collision — the property that makes the above meaningful.
@@ -261,8 +264,8 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
 
     await port.prepare(0, 'run_command', 3, {}); // the model's first tool call
     await port.prepare(1, 'run_command', 3, {}); // …its second
-    await expect(port.prepare(-1, 'run_command', 3, {})).resolves.toBeUndefined(); // `!` command 1
-    await expect(port.prepare(-2, 'run_command', 3, {})).resolves.toBeUndefined(); // `!` command 2
+    await expect(port.prepare(-1, 'run_command', 3, {})).resolves.toEqual({ outcome: 'proceed' }); // `!` 1
+    await expect(port.prepare(-2, 'run_command', 3, {})).resolves.toEqual({ outcome: 'proceed' }); // `!` 2
 
     expect(
       store
@@ -293,7 +296,7 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
       effects: {
         prepare: (_slot, _toolId, _tier, redacted) => {
           captured.push(redacted);
-          return Promise.resolve();
+          return Promise.resolve({ outcome: 'proceed' });
         },
         settle: () => Promise.resolve(),
       },
@@ -337,7 +340,7 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     const ctx: ToolDispatchContext = {
       ...ctxWith(recordingJournal()),
       effects: {
-        prepare: () => Promise.resolve(),
+        prepare: () => Promise.resolve({ outcome: 'proceed' }),
         settle: () => Promise.reject(new Error('history.db went away')),
       },
     };
@@ -346,6 +349,85 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
       runErrorCode: 'effect_needs_attention',
       retryable: false,
     });
+  });
+
+  it('a REPLAY re-delivers the stored result and never touches the target (§4)', async () => {
+    // §4's one forward path for a resumed node. Same identity, same args digest, result retained → the
+    // stored result stands in for the call. Re-running it is precisely the duplicate the journal prevents.
+    const store = createInMemoryEffectJournalStore();
+    let dispatched = 0;
+    const host = hostWith(() => {
+      dispatched += 1;
+      return Promise.resolve({
+        status: 200,
+        headers: {},
+        body: 'ok',
+        truncated: false,
+        url: 'https://api.example/x',
+      });
+    });
+    const registry = createToolRegistry({ tools: TOOLS, host });
+    const correlation = { kind: 'run' as const, runId: 'r1', nodeId: 'n1', attempt: 1 };
+    const ctx: ToolDispatchContext = {
+      ...ctxWith(recordingJournal()),
+      effects: store.for(correlation),
+    };
+
+    const first = await registry.dispatch(POST, ctx);
+    // The second dispatch is the RESUME: a new attempt, same scope (the attempt is dropped), same args.
+    const second = await registry.dispatch(POST, {
+      ...ctx,
+      effects: store.for({ ...correlation, attempt: 2 }),
+    });
+
+    expect(dispatched).toBe(1); // …the target was hit exactly once
+    expect(second.output).toEqual(first.output); // …and the model sees the same result
+    expect(store.rows()).toHaveLength(1); // …with no second row invented for the replay
+  });
+
+  it('a replay is refused when the ARGS differ at the same slot', async () => {
+    // The same slot with different args is a DIFFERENT call that happens to land in the same ordinal — the
+    // model answered differently on the re-run. Re-delivering the old result would silently answer the new
+    // question with the old answer, so this is `needs_attention`, not a replay.
+    const store = createInMemoryEffectJournalStore();
+    const host = hostWith(() =>
+      Promise.resolve({
+        status: 200,
+        headers: {},
+        body: 'ok',
+        truncated: false,
+        url: 'https://api.example/x',
+      }),
+    );
+    const registry = createToolRegistry({ tools: TOOLS, host });
+    const correlation = { kind: 'run' as const, runId: 'r1', nodeId: 'n1', attempt: 1 };
+    const ctx: ToolDispatchContext = {
+      ...ctxWith(recordingJournal()),
+      effects: store.for(correlation),
+    };
+
+    await registry.dispatch(POST, ctx);
+    await expect(
+      registry.dispatch(
+        { ...POST, args: { url: 'https://api.example/DIFFERENT', method: 'POST' } },
+        { ...ctx, effects: store.for({ ...correlation, attempt: 2 }) },
+      ),
+    ).rejects.toMatchObject({ runErrorCode: 'effect_needs_attention', retryable: false });
+  });
+
+  it('a committed row with NO retained result is refused, not replayed', async () => {
+    // "A committed row is not a green light" at the dispatch site. Without the result there is nothing to
+    // re-deliver, so waving the call through would re-fire the effect to obtain a result we failed to keep.
+    const store = createInMemoryEffectJournalStore();
+    const port = store.for({ kind: 'run', runId: 'r1', nodeId: 'n1', attempt: 1 });
+    await port.prepare(0, 'http_request', 3, { url: 'https://api.example/x' });
+    await port.settle(0, 'http_request', 'committed'); // …settled with no result
+
+    await expect(
+      store
+        .for({ kind: 'run', runId: 'r1', nodeId: 'n1', attempt: 2 })
+        .prepare(0, 'http_request', 3, { url: 'https://api.example/x' }),
+    ).rejects.toSatisfy(isEffectConflictError);
   });
 
   it('the in-memory reference refuses a duplicate identity, exactly as the real store does', async () => {

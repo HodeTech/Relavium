@@ -183,6 +183,7 @@ export { unwiredEffectJournal } from '@relavium/shared';
 export { journaledTier } from './tools/effect-predicate.js';
 export type {
   EffectDispatchPort,
+  EffectResumePort,
   EffectSlot,
   EffectTier,
   EffectState,

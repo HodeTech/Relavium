@@ -20,7 +20,11 @@ import { hostSleep } from '../process/sleep.js';
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv } from './tool-host/assemble.js';
-import type { EffectCorrelation, EffectDispatchPort } from '@relavium/core';
+import type {
+  EffectCorrelation,
+  EffectDispatchPort,
+  EffectResumePort,
+} from '@relavium/core';
 
 export interface BuildEngineOptions {
   /**
@@ -29,6 +33,13 @@ export interface BuildEngineOptions {
    * silently unrecorded, which is the fail-closed direction.
    */
   readonly effectJournal?: (correlation: EffectCorrelation) => EffectDispatchPort;
+  /**
+   * The journal's READ half — the resume gate
+   * ([effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md) §4). Wired wherever
+   * `effectJournal` is: a surface that records effects and cannot read them back on resume has the write
+   * half of a guarantee and none of the enforcement.
+   */
+  readonly effectResume?: EffectResumePort;
 
   /** Override the execution host (tests use the in-memory reference). */
   readonly host?: ExecutionHost;
@@ -182,6 +193,7 @@ export async function buildEngine(options: BuildEngineOptions = {}): Promise<Wor
     // ADR-0080: forwarded, not defaulted. A caller that omits it gets a run whose effectful dispatches are
     // REFUSED — loudly — rather than one that silently dispatches unrecorded effects.
     ...(options.effectJournal === undefined ? {} : { effectJournal: options.effectJournal }),
+    ...(options.effectResume === undefined ? {} : { effectResume: options.effectResume }),
     // The same overlay for the workflow PRE-EGRESS budget governor (2.5.G S10) — so `budget.max_cost_microcents`
     // is enforced on a user-priced model, closing the ADR-0064 §6 cost-cap gap for the run path.
     ...(options.resolvePrice === undefined ? {} : { resolvePrice: options.resolvePrice }),

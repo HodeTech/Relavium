@@ -9,12 +9,18 @@ uses to say it, the journal's state machine, and what a resumed run or session d
 table's DDL is **not** here — `run_effects` lives in [database-schema.md](database-schema.md) with every other
 table, and this document links to it rather than restating it.
 
-> **What ships today, stated once so no section below has to be read as a promise.** The durable RECORD is
-> live: every effectful dispatch is bracketed by a `prepare` before the call and a `settle` after it, a
-> failure past the prepare is never node-retried, and a duplicate identity is refused. The READ side — the
-> resume gate (§4), the `needs_attention` disposition (§8) and retention (§9) — is CR-12's remaining step and
-> is marked as such in place. §12's crash matrix is the acceptance criterion for the whole; the points that
-> depend on the read side cannot be met until it lands.
+> **What ships today, stated once so no section below has to be read as a promise.** Both halves are live as
+> of 2026-08-18. The durable RECORD: every effectful dispatch is bracketed by a `prepare` before the call and
+> a `settle` after it, a failure past the prepare is never node-retried, and a duplicate identity is refused.
+> The READ side: the resume gate (§4) refuses a run whose prior attempt left an effect unresolved, a session
+> discloses instead of blocking (§8), and retention sweeps only `committed` rows of a run that can no longer
+> be resumed (§9).
+>
+> Two things in this document are still **specified but unoccupied**, and both say so where they appear:
+> tiers 1 and 2 (no shipping capability offers an idempotency key or a receipt lookup — §1), and the operator
+> command that RESOLVES a `needs_attention` row as accepted or discarded (§8). Because no reconciler exists,
+> a tier-1 or tier-2 row currently takes tier 3's refusal — the conservative direction, named here rather
+> than left to be discovered.
 
 ## 1. The contract, in one paragraph
 
@@ -102,11 +108,6 @@ Local-filesystem writes are journaled: "external" means outside this process, no
 
 ## 4. The resume gate
 
-> **Not wired yet (2026-08-17).** CR-12 has landed the durable record — the prepare/settle bracket, the
-> predicate, the identities and the no-retry-past-a-dispatch rule. Everything in this section is the READ
-> side, and it is the item's remaining step. It is described here because it is the decided contract, not
-> because it ships today; nothing in the engine calls `recordsFor` or `flagForAttention`.
-
 On resume, for a correlation with **no terminal node record**, the engine reads every prior non-benign effect
 record for that correlation and resolves each by tier before the node may run again.
 
@@ -126,6 +127,33 @@ crash-resume and on a budget approval, so an attempt-scoped lookup would miss th
 blocks the node exactly as an unresolved row does. This is the window an earlier draft of ADR-0080 left open:
 settle succeeds, the process dies before `node:completed` persists, and a gate that only examined *unresolved*
 rows would wave the re-run through.
+
+### Where each row of that table is decided
+
+The table has two enforcement points, and knowing which is which is the difference between reading this
+document and being able to find the code.
+
+- **Re-delivery is decided at the dispatch**, inside `prepare` (`@relavium/db`'s `createEffectJournalStore`).
+  It returns a verdict: `replay` when the identity, the args digest and a retained result all match, and the
+  registry then skips the call entirely and puts the stored result through the same mapping and bounding the
+  original would have taken. It is host-side because only the host can compute the digest the comparison
+  needs — the engine is platform-free. A committed row that does **not** match is a refusal, not a replay:
+  different args at the same slot means the model asked a different question on the re-run, and answering it
+  with the old answer would be a silent wrong result.
+- **Refusal is decided BEFORE anything is scheduled**, by the engine's pre-flight gate (`RunExecution`), over
+  every node the checkpoint leaves re-runnable. It exists because `prepare` alone is not enough: `prepare`
+  only fires if the re-run happens to reach the same tool at the same slot, and a model that answers
+  differently sails straight past it, letting the run complete "successfully" with an ambiguous real-world
+  effect from its own prior attempt still unresolved.
+
+A gate read that **fails** is a refusal, not a pass — the same answer
+[ADR-0075](../../decisions/0075-fail-closed-resume-on-an-unreadable-event-log.md) gives for an unreadable
+event log, and for the same reason: resuming a run whose external effects are unknown is the one outcome this
+contract exists to prevent.
+
+**Tiers 1 and 2 currently take tier 3's row.** Their reconcilers do not exist, and treating "we have not
+built it" as "proceed" would be the fail-open this contract rejects. The refusal names the tier, so the
+follow-up stays visible.
 
 ## 5. Why MCP is permanently tier 3
 
@@ -171,15 +199,10 @@ Step 5 matters as much as step 3: a post-dispatch abort, an output-mapping error
 
 ## 8. `needs_attention`
 
-> **Not wired yet (2026-08-17).** CR-12 has landed the durable record — the prepare/settle bracket, the
-> predicate, the identities and the no-retry-past-a-dispatch rule. Everything in this section is the READ
-> side, and it is the item's remaining step. It is described here because it is the decided contract, not
-> because it ships today; nothing in the engine calls `recordsFor` or `flagForAttention`.
-
 An unresolved tier-3 effect is surfaced, never retried. The two surfaces differ deliberately.
 
-**A run** terminates as `run:failed` carrying a dedicated `ErrorCode` of `effect_needs_attention`, and reports
-`durability: 'uncertain'` on its handle. Three shapes were weighed and two rejected:
+**A run** terminates as `run:failed` carrying a dedicated `ErrorCode` of `effect_needs_attention`. Three
+shapes were weighed and two rejected:
 
 - a **new terminal event** — rejected for the reason ADR-0079 §5 rejected `run:fenced`: it widens ADR-0036's
   exactly-one-terminal set and forces every surface, schema and checkpoint fold to handle a new variant;
@@ -188,10 +211,20 @@ An unresolved tier-3 effect is surfaced, never retried. The two surfaces differ 
 - a **typed `ErrorCode` on the existing terminal** — chosen. It reuses the closed error taxonomy every surface
   already switches on, and `run:failed` is honest: the run did not complete.
 
-The CLI maps that code to a distinct exit code recorded in [commands.md](../cli/commands.md), for the reason
+**It does NOT report `durability: 'uncertain'`, and that is a correction to an earlier draft of this
+section.** The disposition means exactly one thing
+([ADR-0078](../../decisions/0078-ordered-durable-append-and-the-terminal-outbox.md) §5): did this run's
+terminal reach the durable log. Here it did — the run recorded its failure correctly, and the only thing in
+doubt is what a target did. Overloading the disposition would route the run to exit `5`, whose documented
+remedy is "held in the outbox and retried on the next start"; nothing is pending, nothing will drain, and a
+script following that advice waits forever instead of looking at the target. The discriminator is the
+terminal's `ErrorCode`.
+
+The CLI maps that code to exit **`7`**, recorded in [commands.md](../cli/commands.md), for the reason
 ADR-0079 took one — a caller must be able to tell "a human must look at this" from an ordinary failure, and
-from the transient "another process owns this" of exit 6. The run is **not** resumable past the unresolved
-effect; resuming it re-enters the gate in §4 and stops again.
+from the transient "another process owns this" of exit 6. It is the one code whose remedy is *do not retry*.
+The run is **not** resumable past the unresolved effect; resuming it re-enters the gate in §4 and stops
+again.
 
 **A session discloses once and does not block.** A chat has no operator queue and no run to pause, so
 `chat-resume` reads its unresolved rows, renders them, and continues. Tier 3's actual guarantee — never
@@ -204,11 +237,6 @@ command that performs it is a named follow-up, not part of this contract's first
 exist before anything can resolve rows.
 
 ## 9. Retention
-
-> **Not wired yet (2026-08-17).** CR-12 has landed the durable record — the prepare/settle bracket, the
-> predicate, the identities and the no-retry-past-a-dispatch rule. Everything in this section is the READ
-> side, and it is the item's remaining step. It is described here because it is the decided contract, not
-> because it ships today; nothing in the engine calls `recordsFor` or `flagForAttention`.
 
 - **Unresolved rows** (`prepared`, `dispatched`, `ambiguous`, `needs_attention`) are **never** swept by age.
   They are the record an operator needs, and they outlive their run deliberately — the row carries no foreign

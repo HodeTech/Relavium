@@ -8,6 +8,7 @@ import {
   type WorkflowEngine,
 } from '@relavium/core';
 import type { McpClient, McpServerConfig } from '@relavium/mcp';
+import type { ErrorCode } from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
 import {
@@ -17,6 +18,7 @@ import {
 import { onceEffortNotice, unpricedModelNote } from '../chat/effort-notice.js';
 import { createRunLeasePort } from '@relavium/db';
 
+import { sweepCommittedEffects } from '../engine/effect-retention.js';
 import { createCliHost } from '../engine/host.js';
 import {
   connectWorkflowMcp,
@@ -52,7 +54,11 @@ import {
   outcomeToExitCode,
 } from './drive.js';
 import { parseInputArgs, resolveInputs } from './inputs.js';
-import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
+import {
+  createEffectJournalPort,
+  createEffectResumePort,
+  createEffectJournalStore,
+} from '@relavium/db';
 import type { EffectCorrelation } from '@relavium/core';
 
 export interface RunCommandArgs {
@@ -251,6 +257,11 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
             correlation,
             { providerAttempt: 1, toolCallId: 'run' },
           ),
+        // …and its READ half. `relavium run` reaches the gate through its own budget-approval resume, so a
+        // write-only wiring here would record effects it could never enforce.
+        effectResume: createEffectResumePort(
+          createEffectJournalStore(opened.db, { uuid: randomUUID, now: Date.now }),
+        ),
         host: createCliHost(opened.store, {
           media: wiring.media,
           // ADR-0078 §4: a terminal the store refuses is held in a SEPARATE FILE beside history.db. Wiring
@@ -286,6 +297,12 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // commands.md "Output modes": ink TUI on a TTY, NDJSON under --json, plain otherwise), and the inline
     // human-gate prompt when an interactive prompter is present (CI / --json / no-TTY → no prompter → a gate
     // pause exits 3, resumable by `relavium gate`).
+    // The terminal's `ErrorCode`, captured through the handle's passive observer rather than by widening
+    // `driveRun`'s return: `subscribe` exists for exactly this, and the driver's contract stays the outcome.
+    let terminalErrorCode: ErrorCode | undefined;
+    const unsubscribeTerminal = handle.subscribe((event) => {
+      if (event.type === 'run:failed') terminalErrorCode = event.error.code;
+    });
     const outcome = await driveRun({
       engine,
       handle,
@@ -298,6 +315,14 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
     // retry + the grace-window byte reclaim + the CAS-orphan sweep, over the same durable `history.db`. Skipped on
     // a `paused` outcome (resumable — its media must survive) and the in-memory path (no CAS). See
     // sweepMediaAtTerminal for the guard + the never-fail-the-run swallow.
+    // Retention (effect-journal.md §9). A terminal run can no longer be resumed — `resumeFromCheckpoint`
+    // returns a closed handle for one — so its COMMITTED rows have no reader left and go. Unresolved rows
+    // are untouched by construction: they are the record an operator needs, and an exit-7 run's rows must
+    // survive precisely because its run is over.
+    // `opened` is undefined on the in-memory path (`--no-history`), which has no journal to sweep.
+    if (isTerminalOutcome(outcome) && opened !== undefined) {
+      sweepCommittedEffects(deps.io, opened.db, handle.runId);
+    }
     await sweepMediaAtTerminal({
       sweep: deps.sweepMedia ?? defaultSweepMedia,
       isTerminal: isTerminalOutcome(outcome),
@@ -309,7 +334,8 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
 
     // The handle's disposition OUTRANKS the outcome (ADR-0078 §5): a delivered `run:completed` whose
     // durable write did not land must not exit 0, or a script is told the run is recorded when it is not.
-    const exitCode = outcomeToExitCode(outcome, handle.durability());
+    unsubscribeTerminal();
+    const exitCode = outcomeToExitCode(outcome, handle.durability(), terminalErrorCode);
     // **Say what happened.** A fenced run writes no terminal by design (ADR-0079 §5), so the renderer's
     // final summary falls through to a bare "run ended" and the user is left with an exit code and no
     // explanation of why their run stopped. `relavium gate` already explains this case; `relavium run`

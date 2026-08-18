@@ -43,8 +43,14 @@ import {
   type ToolId,
   type ToolResultPart,
 } from './types.js';
-import { isEffectConflictError } from '@relavium/shared';
+import { isEffectConflictError, type EffectPrepareVerdict } from '@relavium/shared';
 import { journaledTier } from './effect-predicate.js';
+
+/**
+ * The "no replay happened" marker. A unique object, never `undefined`: `undefined` is a legitimate retained
+ * result, and conflating the two would re-dispatch a genuinely-nothing-returning effect on every resume.
+ */
+const NOT_REPLAYED: unique symbol = Symbol('not-replayed');
 
 /** Build the engine-side tool registry. Performs no I/O and reads no ambient state (engine purity). */
 export function createToolRegistry(options: CreateToolRegistryOptions): {
@@ -155,6 +161,9 @@ async function dispatch(
   // whole mechanism exists to prevent, and a post-effect mapping or bounding error is no less dangerous
   // than a dispatch error (ADR-0080 §7 step 5).
   let effectDispatched = false;
+  // A sentinel rather than `undefined`, because `undefined` is a legitimate retained result: a tool whose
+  // result was genuinely nothing would otherwise be re-dispatched on every resume — the duplicate again.
+  let replayed: unknown = NOT_REPLAYED;
 
   // 4b-7. The per-tool approval gate + the single side effect + output_mapping (FULL result) + model-facing
   // bounding — all under one classification ladder so a spill-time (or prompt-time) abort surfaces as
@@ -175,8 +184,9 @@ async function dispatch(
     //     A `prepare` that cannot be written refuses the dispatch, which is the fail-closed direction: no
     //     journal row means no way to tell a resumed run whether the effect happened.
     if (tier !== undefined) {
+      let verdict: EffectPrepareVerdict;
       try {
-        await ctx.effects.prepare(
+        verdict = await ctx.effects.prepare(
           ctx.effectSlot,
           def.id,
           tier,
@@ -204,16 +214,28 @@ async function dispatch(
       // non-retryable. Setting it after the settle instead left a dispatch THROW — the canonical timed-out
       // POST — reported as `retryable: true`, which is the duplicate this whole mechanism exists to prevent.
       effectDispatched = true;
+      if (verdict.outcome === 'replay') {
+        // §4's ONE forward path for a resumed node: this exact effect (same identity, same args digest)
+        // already committed with its result retained, so the stored result stands in for the call. The
+        // dispatch is skipped entirely — re-running it is precisely the duplicate the journal prevents —
+        // and no settle follows, because the row is already terminal.
+        //
+        // It still flows through mapping and bounding below: those are pure projections, and a replayed
+        // result must reach the model in the same shape the original would have.
+        replayed = verdict.result;
+      }
     }
     let output: unknown;
     try {
-      output = await def.dispatch(args, host, ctx);
+      output = replayed === NOT_REPLAYED ? await def.dispatch(args, host, ctx) : replayed;
     } catch (cause) {
       // **`ambiguous` means "we do not know what the target did" — so a demonstrable NON-dispatch is not
       // ambiguous.** A missing host capability throws synchronously inside the dispatch arm before the host
       // is ever touched, and recording that as ambiguous would leave a permanently unresolved row for a call
       // that provably never left, blocking the node on a human for a wiring gap.
-      if (tier !== undefined && !neverLeftTheProcess(cause)) {
+      // …and a REPLAY throwing is a mapping/bounding fault over a stored result, not an effect: its row is
+      // already terminal, and settling out of `committed` would lose the very result the replay re-delivered.
+      if (tier !== undefined && replayed === NOT_REPLAYED && !neverLeftTheProcess(cause)) {
         await settleQuietly(ctx, def.id, 'ambiguous');
       }
       throw cause;
@@ -235,7 +257,7 @@ async function dispatch(
     //    persisting the raw result would put unbounded `run_command` stdout into `history.db` with no cap and
     //    no sweep. Second, the wider window costs nothing but interruptions: a crash before this leaves the
     //    row `prepared`, which resume reads as unresolved and REFUSES. `prepared` is the safe state.
-    if (tier !== undefined) {
+    if (tier !== undefined && replayed === NOT_REPLAYED) {
       try {
         await ctx.effects.settle(ctx.effectSlot, def.id, 'committed', bounded.value);
       } catch (cause) {

@@ -50,6 +50,23 @@ export const EXIT_CODES = {
    * locally, which is what separates them from code `5`.
    */
   runOwnedElsewhere: 6,
+  /**
+   * An external effect from a PRIOR attempt of this run is unresolved, so a human must look at it before the
+   * run can continue ([ADR-0080](../../../../docs/decisions/0080-durable-effect-journal-and-the-tiered-effect-contract.md) §2b;
+   * [effect-journal.md](../../../../docs/reference/shared-core/effect-journal.md) §4, §8).
+   *
+   * Distinct from every code above it because the remedy is different in kind. `1` says the run failed and
+   * can be re-run; `5` says a terminal may not have been recorded and to re-check after the next start; `6`
+   * says wait and retry. This one says **do not retry** — a ticket may already be filed, a payment may
+   * already have gone out — go look at the target, then resolve the row. Resuming again re-enters the same
+   * gate and stops in the same place, by design.
+   *
+   * Deliberately NOT reported through `durability()`. That reads `uncertain` for ADR-0078's case — a
+   * terminal that may not have reached the log — and its documented remedy ("held in the outbox and retried
+   * on the next start") is false here: this run's terminal DID land durably, and nothing will drain. The
+   * discriminator is the terminal's `ErrorCode`, not the durability disposition.
+   */
+  effectNeedsAttention: 7,
 } as const;
 
 export type ExitCode = (typeof EXIT_CODES)[keyof typeof EXIT_CODES];

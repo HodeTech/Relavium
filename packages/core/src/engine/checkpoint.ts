@@ -11,8 +11,8 @@
  * died) is simply ABSENT from {@link CheckpointState.nodeStates} — so the rehydrating engine seeds it
  * `pending` and re-runs it. A half-run EXTERNAL side effect is RECORDED by the effect journal (ADR-0080) —
  * every effectful dispatch is bracketed by a durable prepare/settle — but the resume GATE that would read
- * those records and refuse the re-run is **not wired yet**, so today a crashed effectful node does re-run.
- * That is the gap CR-12's remaining step closes; it is stated here rather than described as closed.
+ * those records and refuses the re-run runs before anything is scheduled (`RunExecution`), so a node whose
+ * prior attempt left an effect unresolved is NOT re-run — the run fails `effect_needs_attention` instead.
  * A `condition`'s `selected` branch is restored from
  * `node:completed.selected` so a selected branch mid-flight at the crash re-runs rather than being
  * wrongly skip-propagated; the dimmed branches are restored from `node:skipped`.

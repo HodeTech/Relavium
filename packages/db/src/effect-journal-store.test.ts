@@ -119,4 +119,45 @@ describe('the effect journal store', () => {
     store.prepare(ID, RUN, ATTEMPT, 1, 'd', 'idem-key-1');
     expect(store.recordsFor(RUN)[0]).toMatchObject({ tier: 1, targetIdempotencyKey: 'idem-key-1' });
   });
+
+  it('retention sweeps COMMITTED rows of one run and leaves everything else standing', () => {
+    // §9. Committed rows have no reader once the run can no longer be resumed. Unresolved rows are never
+    // swept — they are the record an operator needs, which is also why `run_effects` has no FK to `runs`.
+    store.prepare({ scope: 'run:r1:done', slot: 0, toolId: 'http_request' }, RUN, ATTEMPT, 3, 'd');
+    store.settle({ scope: 'run:r1:done', slot: 0, toolId: 'http_request' }, 'committed', { ok: 1 });
+    store.prepare({ scope: 'run:r1:stuck', slot: 0, toolId: 'http_request' }, RUN, ATTEMPT, 3, 'd');
+    // …a DIFFERENT run whose id shares a prefix with this one: `r1` must not sweep `r10`'s rows.
+    const other: EffectCorrelation = { kind: 'run', runId: 'r10', nodeId: 'n', attempt: 1 };
+    store.prepare({ scope: 'run:r10:n', slot: 0, toolId: 'http_request' }, other, ATTEMPT, 3, 'd');
+    store.settle({ scope: 'run:r10:n', slot: 0, toolId: 'http_request' }, 'committed', { ok: 2 });
+
+    expect(store.sweepCommittedForRun('r1')).toBe(1);
+    expect(store.recordsFor({ kind: 'run', runId: 'r1', nodeId: 'stuck', attempt: 1 })).toHaveLength(1);
+    expect(store.recordsFor(other)).toHaveLength(1); // the prefix neighbour survived
+  });
+
+  it('an id carrying LIKE wildcards cannot widen the match', () => {
+    // The scope query is a byte-range, not a `LIKE` — drizzle emits no `ESCAPE` clause, so a `%` in a
+    // caller-supplied id would otherwise match everything under `session:`.
+    const wild: EffectCorrelation = { kind: 'session', sessionId: '%', turn: 0 };
+    const real: EffectCorrelation = { kind: 'session', sessionId: 'real', turn: 0 };
+    store.prepare({ scope: 'session:real:0', slot: 0, toolId: 'run_command' }, real, ATTEMPT, 3, 'd');
+
+    expect(store.unresolvedForSession('%')).toHaveLength(0);
+    expect(store.unresolvedForSession('real')).toHaveLength(1);
+    void wild;
+  });
+
+  it('unresolvedForSession spans every TURN and reports only what blocks', () => {
+    // A session's rows are spread across one scope per turn, and §8's disclosure is about the session.
+    const t0: EffectCorrelation = { kind: 'session', sessionId: 's9', turn: 0 };
+    const t1: EffectCorrelation = { kind: 'session', sessionId: 's9', turn: 1 };
+    store.prepare({ scope: 'session:s9:0', slot: 0, toolId: 'run_command' }, t0, ATTEMPT, 3, 'd');
+    store.settle({ scope: 'session:s9:0', slot: 0, toolId: 'run_command' }, 'committed', 'out');
+    store.prepare({ scope: 'session:s9:1', slot: 0, toolId: 'run_command' }, t1, ATTEMPT, 3, 'd');
+
+    const unresolved = store.unresolvedForSession('s9');
+    expect(unresolved.map((r) => r.identity.scope)).toEqual(['session:s9:1']);
+  });
 });
+

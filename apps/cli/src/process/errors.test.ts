@@ -16,6 +16,9 @@ describe('EXIT_CODES', () => {
       // Deliberately neither 0 nor 1: reporting success would be as wrong as reporting failure.
       durabilityUncertain: 5,
       runOwnedElsewhere: 6,
+      // ADR-0080 §2b / effect-journal.md §4, §8 — an external effect from a prior attempt is unresolved.
+      // The only code whose remedy is "do NOT retry": go look at the target, then resolve the row.
+      effectNeedsAttention: 7,
     });
   });
 });

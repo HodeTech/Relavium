@@ -162,6 +162,28 @@ author to state the claim rather than inherit it.
 On resume, an unresolved row for this correlation means the node is **not re-run**. The row becomes
 `needs_attention` and the run terminates with a distinct disposition. A human decides.
 
+> **Amended 2026-08-18 (CR-12 implementation).** "A distinct disposition" was implemented as a distinct
+> **`ErrorCode` on `run:failed`** and a distinct CLI **exit code 7** — not as `RunHandle.durability()`
+> reporting `'uncertain'`, which is what §6 of the canonical spec said before this landed. The sentence above
+> is left standing so the refinement is legible rather than silently rewritten.
+>
+> The reason is a direct conflict with [ADR-0078](0078-ordered-durable-append-and-the-terminal-outbox.md) §5.
+> `durability()` answers exactly one question — did this run's terminal reach the durable log — and here it
+> did: the run recorded its failure correctly. The CLI derives exit `5` from `'uncertain'`, and exit 5's
+> documented remedy is "held in the outbox and retried on the next start". Nothing is pending and nothing
+> will drain, so a caller following that advice waits forever instead of going to look at the target. Two
+> different uncertainties were being carried on one channel; they now have one each.
+>
+> Two further refinements from the same implementation, recorded here rather than discovered later:
+>
+> - **Tiers 1 and 2 currently take tier 3's refusal.** Their reconcilers do not exist, and treating "we have
+>   not built it" as "proceed" would be the fail-open this ADR rejects. The refusal names the tier.
+> - **The gate is pre-flight, not only at the dispatch.** `prepare` refusing a colliding identity is not
+>   sufficient on its own: it only fires if the re-run reaches the same tool at the same slot, and a model
+>   that answers differently sails past it. The engine therefore reads every re-runnable node's rows before
+>   anything is scheduled. Re-DELIVERY stays at the dispatch, because only the host can compute the args
+>   digest the comparison needs.
+
 The session path departs deliberately, and this is the one place this ADR reads the phase document's
 `needs_attention` less than literally. A chat session has no operator queue and no run to pause; blocking the next
 turn would be an interruption where the honest answer is information. So `chat-resume` **reads its unresolved rows

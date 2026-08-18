@@ -11,6 +11,7 @@ import {
 } from '@relavium/core';
 import {
   createEffectJournalPort,
+  createEffectResumePort,
   createEffectJournalStore,
   createRunHistoryStore,
   createRunLeasePort,
@@ -19,7 +20,12 @@ import {
   loadRunSnapshot,
   type Db,
 } from '@relavium/db';
-import { MaskedSecretSchema, WorkflowSchema, type RunStatus } from '@relavium/shared';
+import {
+  MaskedSecretSchema,
+  WorkflowSchema,
+  type ErrorCode,
+  type RunStatus,
+} from '@relavium/shared';
 
 import { loadResolvedConfig } from '../config/load.js';
 import { openLocalDb } from '../db/open.js';
@@ -30,6 +36,7 @@ import {
 } from '../engine/build-engine.js';
 import { createHistoryCheckpointer } from '../engine/checkpointer.js';
 import { onceEffortNotice, unpricedModelNote } from '../chat/effort-notice.js';
+import { sweepCommittedEffects } from '../engine/effect-retention.js';
 import { createCliHost } from '../engine/host.js';
 import {
   sweepHostMediaBestEffort as defaultSweepMedia,
@@ -266,6 +273,11 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
           correlation,
           { providerAttempt: 1, toolCallId: 'gate' },
         ),
+      // …and its READ half. THIS is the gate's home surface: a gate resume is the canonical "the process
+      // died mid-node and came back" case, which is exactly what effect-journal.md §4 exists to refuse.
+      effectResume: createEffectResumePort(
+        createEffectJournalStore(opened.db, { uuid: randomUUID, now: Date.now }),
+      ),
       providers,
       // ADR-0071 §6: the far side of a gate re-runs agent nodes, so an authored tier the bound model rejects is
       // withheld here too — and this surface has no other safety net (no picker, no footer, no client-side check).
@@ -318,6 +330,13 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       decision,
     });
 
+    // The resume gate (effect-journal.md §4) fires on THIS path above all others — a gate resume is the
+    // canonical "the process died mid-node and came back" case — so the terminal's code is captured here
+    // exactly as `run` does.
+    let terminalErrorCode: ErrorCode | undefined;
+    const unsubscribeTerminal = handle.subscribe((event) => {
+      if (event.type === 'run:failed') terminalErrorCode = event.error.code;
+    });
     const outcome = await driveRun({
       engine,
       handle,
@@ -344,6 +363,7 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       // is the worst available answer: the run is executing elsewhere, this process's gate decision was
       // never made durable, and an automation loop records success. The disposition separates them at no
       // cost: `createClosedRunHandle` reports `durable`, a fenced handle reports `uncertain`.
+      unsubscribeTerminal();
       deps.io.writeOut(`run ${args.runId} already settled; nothing to resume\n`);
       return EXIT_CODES.success;
     }
@@ -351,6 +371,13 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     // Host media GC (2.S/D-GC, ADR-0042 §4) — only when the gate-resumed run reaches a TERMINAL event, exactly as
     // `run` does (the SAME helper). A re-pause (a second gate / budget pause) is NOT terminal, so the still-paused
     // run's media survives for the next resume; a GC failure is swallowed (never a correctness break).
+    // Retention (effect-journal.md §9). A terminal run can no longer be resumed — `resumeFromCheckpoint`
+    // returns a closed handle for one — so its COMMITTED rows have no reader left and go. Unresolved rows
+    // are untouched by construction: they are the record an operator needs, and an exit-7 run's rows must
+    // survive precisely because its run is over.
+    if (isTerminalOutcome(outcome)) {
+      sweepCommittedEffects(deps.io, opened.db, args.runId);
+    }
     await sweepMediaAtTerminal({
       sweep: deps.sweepMedia ?? defaultSweepMedia,
       isTerminal: isTerminalOutcome(outcome),
@@ -360,7 +387,8 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       graceMs: config.mediaGcGraceMs,
     });
     // Same rule as  (ADR-0078 §5) — the resumed leg's terminal is durable, or the run says so.
-    return outcomeToExitCode(outcome, handle.durability());
+    unsubscribeTerminal();
+    return outcomeToExitCode(outcome, handle.durability(), terminalErrorCode);
   } finally {
     opened.close();
   }

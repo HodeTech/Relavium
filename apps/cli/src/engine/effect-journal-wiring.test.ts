@@ -24,16 +24,24 @@ import { describe, expect, it } from 'vitest';
 const SRC = join(import.meta.dirname, '..');
 
 /** Each surface, and the call that proves it reached the journal. */
-const SURFACES: readonly { file: string; what: string; needle: RegExp }[] = [
+const SURFACES: readonly {
+  file: string;
+  what: string;
+  needle: RegExp;
+  /** The READ half — required only where the surface can RESUME a run (effect-journal.md §4). */
+  resumeNeedle?: RegExp;
+}[] = [
   {
     file: 'commands/run.ts',
     what: '`relavium run` — the workflow engine',
     needle: /effectJournal:\s*\(correlation/,
+    resumeNeedle: /effectResume:\s*createEffectResumePort\(/,
   },
   {
     file: 'commands/gate.ts',
     what: '`relavium gate` — the FAR side of a human gate, where a tool-using node does its work',
     needle: /effectJournal:\s*\(correlation/,
+    resumeNeedle: /effectResume:\s*createEffectResumePort\(/,
   },
   {
     file: 'commands/agent-run.ts',
@@ -60,6 +68,12 @@ describe('the effect journal is wired on every production surface (ADR-0080)', (
       // …and against the real store, not a stand-in: a surface that wired a no-op would satisfy the regex
       // above while journaling nothing.
       expect(source).toContain('createEffectJournalStore(');
+      // …and the READ half wherever the surface can resume. A surface that records effects and cannot read
+      // them back has the write half of the guarantee and none of the enforcement — which is the state the
+      // whole repo was in until the gate landed.
+      if (surface.resumeNeedle !== undefined) {
+        expect(source).toMatch(surface.resumeNeedle);
+      }
     });
   }
 
