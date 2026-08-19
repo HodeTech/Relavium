@@ -1,17 +1,17 @@
 # ADR-0083: One input-admission gate in the engine, and a resume that verifies its own identity instead of trusting the caller
 
-- **Status**: Proposed
+- **Status**: Accepted
 - **Date**: 2026-08-19
 - **Related**:
-  - [ADR-0023](0023-strict-authored-yaml-validation.md) — parse-time validation. **Would be amended on acceptance**: §3 tightens `inputs` defaults and §6 forbids a `secret` default.
-  - [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) — the run loop and `run:started`. **Would be amended on acceptance**: `run:started` becomes the authoritative admission record for inputs and execution mode.
+  - [ADR-0023](0023-strict-authored-yaml-validation.md) — parse-time validation. **Amended here**: §3 tightens `inputs` defaults and §6 forbids a `secret` default.
+  - [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) — the run loop and `run:started`. **Amended here**: `run:started` becomes the authoritative admission record for inputs and execution mode.
   - [ADR-0078](0078-ordered-durable-append-and-the-terminal-outbox.md) — the ordered durable log that makes §5 able to name one authority.
   - [ADR-0079](0079-cross-process-run-ownership-lease-and-fencing-token.md) — its §4 deferred "a content hash on `run:started`" for same-slug drift. §5 answers that without one, and §5's refusals must release the lease.
   - [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md) — a resume that cannot be trusted refuses.
   - [ADR-0029](0029-tool-policy-hardening.md) — its secret-interpolation half, which §6's rules extend rather than restate.
   - [ADR-0082](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) — the "quote what already exists" discipline this ADR's Context follows deliberately.
   - [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md) · [database-schema.md](../reference/shared-core/database-schema.md) — the contract and the tables.
-- **Addresses**: `CR-15` and `CR-17` of [phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md). A Proposed ADR does not close a work item; on acceptance this becomes **Closes/Decides** and the §11 obligations land with the implementation.
+- **Closes**: **Decides** `CR-15` and `CR-17` of [phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md). Accepted 2026-08-19 after a review that rejected the first draft on five blockers; three of them changed a decision rather than a sentence, and each is answered in place (§3 templated defaults, §5 the authoritative reader and MCP augmentation, §6 what a secret ref can and cannot prove). The §11 obligations land with the implementation.
 
 ## Context
 
