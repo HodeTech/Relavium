@@ -127,13 +127,16 @@ neighbouring key. `pattern` survives because a *shape* is not a value. Decided b
 [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §4 because a
 contract every surface shares cannot leave them to interpretation.
 
-> **Where each rule is enforced TODAY.** Both halves are wired, by one pure `violatesInputContract` shared
-> between them: an authored `default`, an `enum` member and a `pattern` are checked when the workflow is
-> **read**, and a caller-supplied value is checked by ADR-0083 §1's **admission gate** — which runs before
-> the run id exists, so a refused run leaves no `runId`, no `run:started` and no row. What has not landed is
-> §5's **resume** verification: `resumeFromCheckpoint` does not yet check a caller's inputs against the ones
-> the run was admitted with. Stated because this file is the canonical contract, and a reader must not take
-> a decided rule for a shipped one.
+> **Where each rule is enforced TODAY.** Every half is wired, by one pure `violatesInputContract` shared
+> between them. An authored `default`, an `enum` member and a `pattern` are checked when the workflow is
+> **read**. A caller-supplied value is checked by ADR-0083 §1's **admission gate**, which runs before the run
+> id exists — so a refused run leaves no `runId`, no `run:started` and no row. And a **resume** is checked by
+> §5: `resumeFromCheckpoint` verifies a caller's `inputs` and `executionMode` against the record the run was
+> admitted with, and the supplied workflow's content against the frozen definition, rather than taking either
+> on trust. Resume enforces a value's declared **type** but not its `validation` block — §8's legacy rule, so
+> a run admitted before those rules existed still resumes; value-versus-workflow drift is the content check's
+> to catch. Stated because this file is the canonical contract, and a reader must not take a decided rule for
+> a shipped one — nor a shipped one for a pending one.
 
 
 | key | semantics |

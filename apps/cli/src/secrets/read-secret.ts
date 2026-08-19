@@ -44,9 +44,17 @@ export async function readSecretFromStdin(context: StdinSecretContext = API_KEY)
       chunks.push(Buffer.from(chunk, 'utf8'));
     }
   }
-  const key = Buffer.concat(chunks).toString('utf8').trim();
-  if (key === '') {
+  // **Returned VERBATIM.** This used to `.trim()` the whole payload, which was right for the one-key
+  // `provider set-key` caller and silently wrong for the line-oriented `gate --secret-stdin` one: for the
+  // common single-line pipe it stripped a credential's trailing whitespace BEFORE `parseSecretLines` could
+  // preserve it — so `gate.ts`'s comment claiming that bug was fixed described a fix one layer below where
+  // the damage happened. A reader reads; a caller that wants its value trimmed trims it.
+  //
+  // The EMPTINESS check still uses the trimmed form: a pipe carrying only whitespace is empty in every sense
+  // a caller cares about, and refusing it here keeps both callers from having to.
+  const payload = Buffer.concat(chunks).toString('utf8');
+  if (payload.trim() === '') {
     throw new CliError('invalid_invocation', context.emptyMessage);
   }
-  return key;
+  return payload;
 }

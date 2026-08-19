@@ -10,6 +10,8 @@ import {
 } from '../engine/providers.js';
 import { CliError } from '../process/errors.js';
 import { KeychainUnavailableError, type KeychainStore } from '../secrets/keychain.js';
+import { Readable } from 'node:stream';
+
 import { readSecretFromStdin } from '../secrets/read-secret.js';
 import { captureIo, parseNdjson } from '../test-support.js';
 import { runProviderCommand, type ProviderCommandDeps } from './provider.js';
@@ -540,6 +542,46 @@ describe('readSecretFromStdin', () => {
       } else {
         Object.defineProperty(process.stdin, 'isTTY', original);
       }
+    }
+  });
+
+  it('returns the piped payload VERBATIM — trailing whitespace is the caller\'s to decide about', async () => {
+    // It used to `.trim()` the whole buffer. Right for `provider set-key`, silently wrong for
+    // `gate --secret-stdin`: on the common single-line pipe the trim removed a credential's trailing
+    // whitespace BEFORE `parseSecretLines` could preserve it, so the comment in `gate.ts` claiming that bug
+    // was fixed described a fix one layer below where the damage happened. The user then gets an opaque
+    // provider `401` hours later. `provider set-key` trims at its own call site now.
+    const isTty = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+    const original = Object.getOwnPropertyDescriptor(process, 'stdin');
+    try {
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      Object.defineProperty(process, 'stdin', {
+        value: Readable.from([Buffer.from('api_key=SECRET  \n', 'utf8')]),
+        configurable: true,
+      });
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      await expect(readSecretFromStdin()).resolves.toBe('api_key=SECRET  \n');
+    } finally {
+      if (original !== undefined) Object.defineProperty(process, 'stdin', original);
+      if (isTty === undefined) {
+        delete (process.stdin as { isTTY?: boolean }).isTTY;
+      } else {
+        Object.defineProperty(process.stdin, 'isTTY', isTty);
+      }
+    }
+  });
+
+  it('…but an all-whitespace pipe is still empty, so neither caller has to decide that', async () => {
+    const original = Object.getOwnPropertyDescriptor(process, 'stdin');
+    try {
+      Object.defineProperty(process, 'stdin', {
+        value: Readable.from([Buffer.from('   \n\n', 'utf8')]),
+        configurable: true,
+      });
+      Object.defineProperty(process.stdin, 'isTTY', { value: false, configurable: true });
+      await expect(readSecretFromStdin()).rejects.toMatchObject({ exitCode: 2 });
+    } finally {
+      if (original !== undefined) Object.defineProperty(process, 'stdin', original);
     }
   });
 });

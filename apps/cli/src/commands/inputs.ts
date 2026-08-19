@@ -6,7 +6,14 @@ type InputDecl = NonNullable<WorkflowDefinition['workflow']['inputs']>[number];
 
 /** Parse repeatable `--input key=value` tokens into a raw string map. */
 export function parseInputArgs(rawInputs: readonly string[]): Record<string, string> {
-  const out: Record<string, string> = {};
+  // **A null-prototype accumulator** — the same §7 discipline the engine's admission map, the resume
+  // identity maps and `gate`'s secret merge all use, and the one CLI accumulator that was missed. An input
+  // name may legitimately be `__proto__` (the `[A-Za-z0-9_-]+` grammar permits it), and on a plain `{}` the
+  // assignment below goes through `Object.prototype`'s `__proto__` ACCESSOR: a string value is a silent
+  // no-op, so `--input __proto__=…` vanished with no own property and no error, and the later read returned
+  // `Object.prototype` itself — which a `number`-typed input then handed to `coerce`, throwing an untyped
+  // `TypeError` that escaped as "an unexpected internal error". ADR-0083 §9.7 names the CLI path explicitly.
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const entry of rawInputs) {
     const eq = entry.indexOf('=');
     if (eq <= 0) {
@@ -42,9 +49,12 @@ export function resolveInputs(
     }
   }
 
-  const resolved: Record<string, unknown> = {};
+  const resolved: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const decl of declared) {
-    const provided = raw[decl.name];
+    // `Object.hasOwn` before the read, because `raw` is a caller's object here: a plain literal would answer
+    // `raw['__proto__']` with `Object.prototype` rather than `undefined`, turning an omitted input into a
+    // present one whose value is not a string.
+    const provided = Object.hasOwn(raw, decl.name) ? raw[decl.name] : undefined;
     if (provided === undefined) {
       if (decl.required === true && decl.default === undefined) {
         throw new CliError('invalid_invocation', `missing required input '${decl.name}'.`);
