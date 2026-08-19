@@ -1012,16 +1012,15 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     // retained estimate lived only in memory, so a crash reset it to zero and the resumed run spent again against
     // a cap that had forgotten money the provider may already have billed.
     const store = new InMemoryRunStore();
-    // `n1`'s stream ends with NO terminal — a clean EOF, which FallbackChain today treats as a successful
-    // empty turn. The provider may still have billed it, so the reservation must be retained, not released.
-    //
-    // **That framing is superseded and this test is deliberately DEFERRED**
+    // **Rewritten, not deleted**
     // ([ADR-0082](../../../../docs/decisions/0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md)
-    // §12.17). Once the grammar verifier is wired into the chain, this stream becomes a classified
-    // `transport` failure rather than a success — and the ADR's money invariants (§12.15-16) require the
-    // SAME conservative-commitment property to hold across that change, re-asserted through a FAILED attempt
-    // instead of a spurious successful one. It is rewritten with the wiring, not before, so the retained
-    // reservation is proven continuously rather than going untested across the transition.
+    // §12.17). The reasoning it recorded was: "`n1`'s stream ends with NO terminal usage — a clean EOF,
+    // which FallbackChain treats as a successful empty turn. The provider may still have billed it, so the
+    // reservation must be retained, not released." The second sentence is the money invariant and is
+    // UNCHANGED. The first is what ADR-0082 supersedes: the chain now classifies that EOF as a `transport`
+    // failure, so the conservative commitment arises from a FAILED attempt rather than a spurious
+    // successful one — which is what `agent-turn.ts`'s own "a clean EOF and a partial-stream failure can
+    // both omit terminal usage" already anticipated.
     const provider1 = scriptedProvider([[{ type: 'text_delta', text: 'partial' }]]);
     const host1 = createInMemoryHost({ store });
     const engine1 = buildEngine(host1, () => provider1, undefined, BUDGET_TEXT_PRICING);
@@ -1048,9 +1047,12 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     // 3. The run's terminal REASON changed with ADR-0082 and the money property did not. It used to be
     //    `budget_exceeded` — n1 succeeded usage-lessly, and n2's worst-case call no longer fit beside its
     //    commitment. Now n1's own truncated stream is a classified failure, so the run stops there and n2
-    //    never runs. Cap consumption is still proven, by point 5: the commitment is in the durable log and
-    //    the fold reads the same conservative total back, which is the half that survives a crash and the
-    //    half this test is named for.
+    //    never runs.
+    //
+    //    What this test proves is therefore RECONSTRUCTION (point 5): the commitment is in the durable log
+    //    and the fold reads the same conservative total back. The behavioural half — that the total then
+    //    REFUSES an admission — is proven by the resume test below, which is where it belongs, and is not
+    //    claimed here.
     expect(terminal1?.type === 'run:failed' && terminal1.error.code).toBe('provider_unavailable');
     expect(terminal1?.type === 'run:failed' && terminal1.cumulativeCostMicrocents).toBe(0);
     // 4. The row is in the DURABLE log, not merely on the stream — this is what survives the crash.

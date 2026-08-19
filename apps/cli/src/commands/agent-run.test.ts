@@ -67,7 +67,12 @@ describe('agentRunCommand (2.Q)', () => {
 
   function deps(
     stdin: string,
-    opts: { json?: boolean; providers?: ProviderResolver } = {},
+    opts: {
+      json?: boolean;
+      providers?: ProviderResolver;
+      /** Observe the built session — wraps the REAL builder, so nothing is stubbed out. */
+      onBuilt?: (built: Awaited<ReturnType<typeof buildChatSession>>) => void;
+    } = {},
   ): { d: AgentRunCommandDeps; out: () => string; err: () => string } {
     const { io, out, err } = captureIo();
     return {
@@ -77,6 +82,15 @@ describe('agentRunCommand (2.Q)', () => {
         now: () => 0,
         uuid: () => 'a-0',
         ...(opts.providers === undefined ? {} : { providers: opts.providers }),
+        ...(opts.onBuilt === undefined
+          ? {}
+          : {
+              buildSession: async (args: Parameters<typeof buildChatSession>[0]) => {
+                const built = await buildChatSession(args);
+                opts.onBuilt?.(built);
+                return built;
+              },
+            }),
       },
       out,
       err,
@@ -302,19 +316,31 @@ describe('agentRunCommand (2.Q)', () => {
     // returned nothing accountable" case that makes the governor hold a conservative commitment. A plain
     // `textTurn` carries usage, makes no commitment, and leaves this test vacuous (verified, not assumed).
     const noUsageTurn: StreamChunk[] = [{ type: 'text_delta', text: 'done' }];
-    const { d, out, err } = deps('go', { providers: scriptedResolver([noUsageTurn]) });
+    // **Asserted on the GOVERNOR, not on the surfaced error.** A first rewrite checked that stderr named no
+    // durability failure — and a review measured it vacuous: deleting the writer left the test green,
+    // because the barrier only runs before a NEXT egress admission and a one-shot turn with a single failed
+    // attempt never reaches one. The retained commitment failure is real either way; it simply has nowhere
+    // to surface. So the test reads the state the writer exists to protect.
+    let flush: (() => Promise<void>) | undefined;
+    const { d, out } = deps('go', {
+      providers: scriptedResolver([noUsageTurn]),
+      onBuilt: (built) => {
+        flush = built.governor?.flushBudgetCommitments;
+      },
+    });
 
-    // Exit 1: the truncated stream, which is the EXPECTED failure and not the one under test…
+    // Exit 1 is the truncated stream — the EXPECTED failure since ADR-0082, and not the one under test.
     expect(await agentRunCommand({ agent: agentPath(), input: [] }, d)).toBe(
       EXIT_CODES.workflowFailed,
     );
-    // …and the text the provider did emit before the cut still reached the user.
-    expect(out()).toContain('done');
-    // THE assertion: the failure is the provider's, not the commitment's. Without the no-op writer every
-    // commitment rejects, the governor marks the session durability-broken, and the barrier fails the turn
-    // with a durability error instead — for a session nobody was ever going to resume.
-    expect(err()).not.toContain('durab');
-    expect(err()).not.toContain('commitment');
+    expect(out()).toContain('done'); // the text emitted before the cut still reached the user
+
+    // THE assertion, on the barrier the writer exists to keep passable. Without the no-op writer every
+    // commitment REJECTS, the governor marks the session durability-broken, and this barrier — §2's, the
+    // one a NEXT turn would await — throws the retained failure. The one-shot never reaches a next turn,
+    // which is exactly why the previous rewrite could not see the difference and this one asks directly.
+    expect(flush).toBeDefined();
+    await expect(flush?.()).resolves.toBeUndefined();
   });
 
   it('rejects --input as not-yet-supported (session prompt interpolation is a pending engine change)', async () => {

@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -22,6 +22,23 @@ import { describe, expect, it } from 'vitest';
  */
 
 const SRC = join(import.meta.dirname, '..');
+
+/** Every `.ts`/`.tsx` SOURCE file under `dir` whose text matches `pattern`, as `SRC`-relative paths. */
+function filesMatching(dir: string, pattern: RegExp): string[] {
+  const out: string[] = [];
+  const walk = (at: string): void => {
+    for (const entry of readdirSync(at, { withFileTypes: true })) {
+      const full = join(at, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (/\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name)) {
+        if (pattern.test(readFileSync(full, 'utf8'))) out.push(relative(SRC, full));
+      }
+    }
+  };
+  walk(dir);
+  return out;
+}
 
 /** Each surface, and the call that proves it reached the journal. */
 const SURFACES: readonly {
@@ -112,33 +129,43 @@ describe('the effect journal is wired on every production surface (ADR-0080)', (
  * tests inject a session or engine double, so the real construction path is never reached by them.
  */
 describe('the per-attempt deadline is wired on every chain-building surface (ADR-0082)', () => {
-  const CHAIN_HOSTS: readonly { file: string; what: string; needle: RegExp }[] = [
+  const CHAIN_HOSTS: readonly {
+    file: string;
+    what: string;
+    /** Every needle must match — the port is both-or-neither, so half a check is no check. */
+    needles: readonly RegExp[];
+  }[] = [
     {
       file: 'engine/build-engine.ts',
       what: 'the workflow engine — `relavium run` and `relavium gate`',
-      needle: /setTimer:\s*hostAttemptTimer/,
+      // BOTH halves. `AgentRunnerDeps.newAbortController` is OPTIONAL, so deleting it here typechecks,
+      // lints, and leaves the whole CLI suite green — while `#openDeadline` returns `undefined` and both
+      // commands go back to fully unbounded. A review measured exactly that.
+      needles: [/setTimer:\s*hostAttemptTimer/, /newAbortController:\s*hostAbortController/],
     },
     {
       file: 'chat/session-host.ts',
       what: 'every session surface — `chat`, `chat-resume`, `agent run`, the Home',
-      needle: /setTimer:\s*hostAttemptTimer/,
+      // `SessionDeps.newAbortController` is REQUIRED, so tsc catches its absence here; the timer is the
+      // half that can go missing silently.
+      needles: [/setTimer:\s*hostAttemptTimer/],
     },
   ];
 
   for (const host of CHAIN_HOSTS) {
     it(`${host.file} — ${host.what}`, () => {
       const source = readFileSync(join(SRC, host.file), 'utf8');
-      expect(source).toMatch(host.needle);
+      for (const needle of host.needles) expect(source).toMatch(needle);
     });
   }
 
-  it('names every surface that builds a chain — a new one cannot be added silently', () => {
-    // `build-engine.ts` and `session-host.ts` are the only two constructors; every command routes through
-    // one of them. A third would be a third place to forget the deadline.
-    expect(CHAIN_HOSTS.map((h) => h.file)).toEqual([
-      'engine/build-engine.ts',
-      'chat/session-host.ts',
-    ]);
+  it('names every surface that builds a chain — DERIVED, not restated', () => {
+    // The earlier version compared a hardcoded array to itself, so a third chain-building surface would
+    // have left it green while the test's own name promised otherwise. This reads the tree: every file
+    // that constructs an `AgentSession` or a `WorkflowEngine` is a chain-building surface and must be
+    // listed above. (`FallbackChain` itself is constructed only in `packages/core`.)
+    const found = filesMatching(SRC, /new (?:AgentSession|WorkflowEngine)\(/);
+    expect([...found].sort()).toEqual([...CHAIN_HOSTS.map((h) => h.file)].sort());
   });
 });
 

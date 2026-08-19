@@ -316,7 +316,14 @@ finds.
 ### The per-attempt deadline
 
 Every `generate`/`stream` attempt through `FallbackChain` runs under a deadline, defaulting to **120 s** and
-host-configurable (§5-§7). It cannot be disabled: unbounded is the state it removes.
+host-configurable (§5-§7).
+
+Two halves of "cannot be disabled", stated separately because only one of them is a chain guarantee. The
+**value** cannot be set to something that disables it: a non-finite or non-positive `attemptTimeoutMs` is
+refused at construction, because unbounded is the state this removes. But the **port is optional**, and a
+host that supplies neither `newAbortController` nor `setTimer` gets no deadline at all — both or neither,
+never half. A host reading this section as "I get a deadline for free" would be wrong; wiring the port is
+what buys it.
 
 The deadline is **hard-raced**, not merely signalled. A provider that returns `new Promise(() => {})` ignores
 its abort signal, so the cooperative abort is raised *and* every awaited step is raced against a timer.

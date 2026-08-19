@@ -97,7 +97,18 @@ export function openDeadline(
   return {
     signal: controller.signal,
     race: async <T,>(step: Promise<T>) => {
-      if (expired) return { outcome: 'deadline' };
+      if (expired) {
+        // **Discarded, but discarded HANDLED.** `step` is `iterator.next()`, already invoked by the caller —
+        // argument evaluation happens before the call — so returning without attaching a handler leaves a
+        // live promise nobody owns. The likeliest way to reach here is the well-behaved case: the deadline
+        // trips while the chain is suspended handing a chunk to a slower consumer, the provider honours the
+        // merged abort and REJECTS its in-flight `next()`, and the next pull finds `expired` already true.
+        // Node's default is `--unhandled-rejections=throw`, so that killed the process mid-turn with a stack
+        // trace instead of surfacing the `timeout` error the caller had just computed. A review reproduced
+        // it: `unhandled= 1`.
+        void step.catch(() => undefined);
+        return { outcome: 'deadline' };
+      }
       // The wake-up promise is settled by `trip`/`onCallerAbort` and by `dispose`, so it never outlives the
       // scope — a `race` against a permanently pending promise would itself be the leak this file is about.
       let wake: () => void = () => undefined;

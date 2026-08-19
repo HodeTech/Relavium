@@ -41,12 +41,20 @@ export function hostSleep(ms: number, signal?: AbortSignalLike): Promise<void> {
  *
  * Distinct from {@link hostSleep} on purpose. That one is a *delay* the caller awaits; this one is a *timer*
  * the caller arms and disarms, and the difference matters — a deadline has to be cancellable from the
- * success path, where nothing is awaiting it. `unref()` so an armed deadline never by itself keeps the CLI
- * alive: the run decides when the process exits, not a timer nobody is waiting on.
+ * success path, where nothing is awaiting it.
+ *
+ * **Deliberately NOT `unref`'d.** By the rule this CLI already states in `engine/host.ts` — *"a liveness
+ * timer is `unref`'d; a work timer is not"* — an attempt deadline is a WORK timer: the run is parked on it,
+ * and it is the only thing that will unblock the run. A first version did `unref` it, and a review measured
+ * the consequence against ADR-0082's own motivating provider (`new Promise(() => {})`): the event loop
+ * drained, the process exited with a bare code, and the deadline never fired — no `timeout` error, no
+ * `run:failed`, no conservative settlement, and a run row left non-terminal for the lease to age out.
+ *
+ * The leak this would guard against is already impossible: the chain disposes the scope in a `finally` on
+ * every exit, including success.
  */
 export function hostAttemptTimer(ms: number, fire: () => void): () => void {
   const timer = setTimeout(fire, ms);
-  timer.unref?.();
   return () => {
     clearTimeout(timer);
   };

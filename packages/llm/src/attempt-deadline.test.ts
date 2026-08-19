@@ -147,6 +147,35 @@ describe('openDeadline (ADR-0082 §5-§7)', () => {
     expect(timer.armed()).toBe(0);
   });
 
+  it('an already-expired scope HANDLES the step it discards', async () => {
+    // `step` is `iterator.next()`, already invoked by the caller, so returning without attaching a handler
+    // leaves a live promise nobody owns. The likeliest path there is the WELL-BEHAVED one: the provider
+    // honours the merged abort and rejects its in-flight `next()`. Node's default is
+    // `--unhandled-rejections=throw`, so that killed the process instead of surfacing the timeout.
+    const timer = manualTimer();
+    const scope = openDeadline(120_000, controller, timer.set);
+    timer.fire(); // …the scope is now expired
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      expect(await scope.race(Promise.reject(new Error('provider aborted mid-stream')))).toEqual({
+        outcome: 'deadline',
+      });
+      // Two macrotask turns: an unhandled rejection is reported after the microtask queue drains.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      scope.dispose();
+    }
+
+    expect(unhandled).toEqual([]);
+  });
+
   it('dispose settles anything still racing, so no promise outlives the scope', async () => {
     const timer = manualTimer();
     const scope = openDeadline(120_000, controller, timer.set);

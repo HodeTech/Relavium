@@ -566,8 +566,8 @@ export class FallbackChain {
         return 'done';
       }
       if (verdict === 'advance') {
-        run.lastError = failure; // carried, so an exhausted chain still surfaces the real cause
-        return 'advance'; // …without spending this entry's remaining attempts
+        // `run.lastError` is already set above, so an exhausted chain surfaces the real `protocol` cause.
+        return 'advance'; // …without spending this entry's remaining attempts on a provider we know is broken
       }
       if (verdict === 'auth-refreshed') {
         bonus += 1; // +1 attempt ON TOP of the configured budget; retry now (a fresh credential)
@@ -587,6 +587,12 @@ export class FallbackChain {
     run: ChainRun,
   ): Promise<GenerateAttempt> {
     const record = run.next(entry);
+    // The deadline covers THIS arm too, and a review caught it not doing so. ADR-0082's §5 opens with
+    // `generate(): Promise<LlmResult> { return new Promise(() => {}) }` as its motivating hang, and §12.10
+    // makes it the first acceptance criterion — yet the wiring landed on `stream()` only. The gap was live:
+    // `agent-turn.ts` routes an inline media-out turn (ADR-0046) through `chain.generate()`, so a hung
+    // provider on that path waited forever on every surface.
+    let deadline: DeadlineScope | undefined;
     try {
       const maxTokens = entryReq.maxTokens;
       await this.#options.preAttempt?.({
@@ -595,7 +601,20 @@ export class FallbackChain {
         ...(maxTokens === undefined ? {} : { maxTokens }),
       });
       const key = await this.#resolveKey(entry.provider.id);
-      const result = await entry.provider.generate(entryReq, key);
+      deadline = this.#openDeadline(entryReq);
+      const call = entry.provider.generate(
+        deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal),
+        key,
+      );
+      // A `generate()` has no chunks, so there is nothing to commit: a deadline here is always pre-content
+      // and may fail over, which is rule 7's other half rather than an exception to it.
+      const raced = deadline === undefined ? undefined : await deadline.race(call);
+      if (raced?.outcome === 'deadline') {
+        const error = this.#classifyDeadline(deadline, entry.provider.id);
+        this.#emit({ ...record, outcome: 'failed', error });
+        return { status: 'error', error };
+      }
+      const result = raced === undefined ? await call : raced.value;
       this.#emitSuccess(record, entry.model, result.usage);
       return { status: 'success', result };
     } catch (err) {
@@ -606,6 +625,8 @@ export class FallbackChain {
       );
       this.#emit({ ...record, outcome: 'failed', error });
       return { status: 'error', error };
+    } finally {
+      deadline?.dispose();
     }
   }
 
@@ -626,6 +647,9 @@ export class FallbackChain {
     // which is the one most likely to forget. A leaked timer holds the process awake, which on a CLI is a
     // hang the user cannot explain.
     let deadline: DeadlineScope | undefined;
+    // Declared beside `deadline`, and for the same reason: the `finally` has to be able to close it on
+    // EVERY exit, and a `let` inside the `try` would not be in scope there.
+    let iterator: AsyncIterator<StreamChunk> | undefined;
     try {
       const maxTokens = entryReq.maxTokens;
       await this.#options.preAttempt?.({
@@ -645,9 +669,9 @@ export class FallbackChain {
       );
       // Manual iteration, not `for await`: every `next()` is raced against the ABSOLUTE deadline. A
       // `for await` can only be bounded by a signal, and a signal is a request the provider may ignore.
-      const iterator = verified[Symbol.asyncIterator]();
+      iterator = verified[Symbol.asyncIterator]();
       for (;;) {
-        const step = await this.#raceStep(iterator, deadline, entry.provider.id);
+        const step = await this.#raceStep(iterator, deadline);
         if (step.kind === 'timeout') {
           const error = this.#classifyDeadline(deadline, entry.provider.id);
           this.#emit({ ...record, outcome: 'failed', error });
@@ -694,6 +718,17 @@ export class FallbackChain {
       // calls this generator's `return()`. Idempotent, so the success path below can be reached having
       // already disposed nothing.
       deadline?.dispose();
+      // **And close the source.** Converting `for await` to manual iteration removed the language's own
+      // teardown: `for await` calls `return()` on ANY abrupt completion of the body, while the hand-rolled
+      // loop only did so on the deadline branch. A review measured two live leaks — a grammar VIOLATION
+      // (where the verifier is suspended mid-`yield`, so its own `for await` over the source is still open)
+      // and an early consumer `break` — each leaving the provider's body reader uncancelled, the socket
+      // held, and tokens still arriving on a call we are still billed for.
+      //
+      // In the `finally` rather than per branch so a future exit cannot miss it, and best-effort without an
+      // unbounded await for the same reason `#raceStep`'s teardown is: caller liveness, not resource
+      // termination (ADR-0082 §5). `return()` on an already-completed iterator is a no-op.
+      void Promise.resolve(iterator?.return?.(undefined)).catch(() => undefined);
     }
     // The success emit sits OUTSIDE the try above, deliberately — but the FOLD inside it needs its own guard
     // (#W15-9). `#foldUsage` re-throws anything that is not `UnknownModelError` so a money bug is loud: a
@@ -928,9 +963,7 @@ export class FallbackChain {
   async #raceStep(
     iterator: AsyncIterator<StreamChunk>,
     deadline: DeadlineScope | undefined,
-    provider: ProviderId,
   ): Promise<{ kind: 'chunk'; chunk: StreamChunk } | { kind: 'done' } | { kind: 'timeout' }> {
-    void provider;
     if (deadline === undefined) {
       const plain = await iterator.next();
       return plain.done === true ? { kind: 'done' } : { kind: 'chunk', chunk: plain.value };
