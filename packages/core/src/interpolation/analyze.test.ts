@@ -139,8 +139,18 @@ ${AGENT}
     });
   });
 
-  it('launders a `secrets.*` reference through a non-secret input default into text', () => {
-    const err = expectLeak(`schema_version: '1.0'
+  it('a `secrets.*` reference in an input default is rejected one step EARLIER', () => {
+    // **Rewritten, not deleted** (ADR-0083 §3). What it used to prove: an input default is a live reference
+    // site, so `default: '{{secrets.token}}'` laundered into a `prompt_template` produced a leak naming the
+    // hop — `{ location: 'node `n`.prompt_template', secret: 'inputs.reviewer', via: 'secrets.token' }`.
+    // That rule was real and worked.
+    //
+    // ADR-0083 SUBSUMES it: an input default may take no `{{ }}` references at all, because at admission —
+    // which must precede run creation — `inputs`, `ctx` and `secrets` are all unavailable. So the laundering
+    // path is closed by removing the surface rather than policing it, and the rejection moves from "this
+    // reference leaks" to "this field takes no references". Strictly stronger, and one step earlier.
+    expect(() =>
+      parseWorkflow(`schema_version: '1.0'
 workflow:
   id: w
   inputs:
@@ -153,18 +163,21 @@ ${AGENT}
       type: agent
       agent_ref: ag
       prompt_template: '{{inputs.reviewer}}'
-  edges: []`);
-    expect(err.leaks[0]).toEqual({
-      location: 'node `n`.prompt_template',
-      secret: 'inputs.reviewer',
-      via: 'secrets.token',
-    });
+  edges: []`),
+    ).toThrow(/interpolation/);
   });
 
-  it('rejects a secret laundered through a non-secret input default (transitive via the default)', () => {
-    // A `string` input whose default reads a secret resolves to the secret value at runtime, so a
-    // prompt that reads that input would leak it — the taint must close over input defaults too.
-    const err = expectLeak(`schema_version: '1.0'
+  it('a secret laundered through a non-secret input default is rejected at the default (transitive)', () => {
+    // **Rewritten, not deleted** (ADR-0083 §3). What it used to prove: "a `string` input whose default reads
+    // a secret resolves to the secret value at runtime, so a prompt that reads that input would leak it —
+    // the taint must close over input defaults too", producing
+    // `{ location: 'node `n`.prompt_template', secret: 'inputs.reviewer', via: 'inputs.api_key' }`.
+    //
+    // The premise's first clause turned out to be false — the engine applied no defaults, so that value
+    // never resolved — and ADR-0083 removes the surface entirely: a default takes no references. The
+    // laundering is impossible rather than detected.
+    expect(() =>
+      parseWorkflow(`schema_version: '1.0'
 workflow:
   id: w
   inputs:
@@ -179,12 +192,8 @@ ${AGENT}
       type: agent
       agent_ref: ag
       prompt_template: 'auth {{inputs.reviewer}}'
-  edges: []`);
-    expect(err.leaks[0]).toEqual({
-      location: 'node `n`.prompt_template',
-      secret: 'inputs.reviewer',
-      via: 'inputs.api_key',
-    });
+  edges: []`),
+    ).toThrow(/interpolation/);
   });
 
   it('rejects a secret in an inline agent `system_prompt` and a node `system_prompt_append`', () => {
@@ -211,8 +220,13 @@ workflow:
     expect(locations).toContain('node `n`.system_prompt_append');
   });
 
-  it('launders a secret through TWO chained input defaults (multi-hop transitive)', () => {
-    const err = expectLeak(`schema_version: '1.0'
+  it('a MULTI-HOP chain of input defaults cannot be built at all', () => {
+    // **Rewritten, not deleted** (ADR-0083 §3). It proved the taint closed over a chain of defaults —
+    // `secret → b → c → prompt` — reporting `{ secret: 'inputs.c', via: 'inputs.b' }`. Since a default may
+    // take no references, the FIRST hop is already a parse error, so no chain exists to close over. The
+    // dependency ordering such a chain would have needed is also the reason §3 forbids the feature.
+    expect(() =>
+      parseWorkflow(`schema_version: '1.0'
 workflow:
   id: w
   inputs:
@@ -230,12 +244,8 @@ ${AGENT}
       type: agent
       agent_ref: ag
       prompt_template: '{{inputs.c}}'
-  edges: []`);
-    expect(err.leaks[0]).toEqual({
-      location: 'node `n`.prompt_template',
-      secret: 'inputs.c',
-      via: 'inputs.b',
-    });
+  edges: []`),
+    ).toThrow(/interpolation/);
   });
 
   it('rejects a secret read via a trailing path — taint keys on the symbol, not the path (no via)', () => {
@@ -434,8 +444,11 @@ workflow:
     expect(issues[0]?.message).toContain('run.outputs');
   });
 
-  it('flags an input default that reads run.outputs (defaults also resolve pre-run)', () => {
-    // parseWorkflow rejects this with a WorkflowValidationError, consistent with the context gate.
+  it('an input default reading run.outputs is rejected — now for taking a reference at all', () => {
+    // **Rewritten, not deleted** (ADR-0083 §3). It proved the pre-run gate covered input defaults, on the
+    // premise that "defaults also resolve pre-run". They never resolved at all, and since §3 a default takes
+    // no references — so the rejection still happens, one rule earlier. The assertion is kept on the error
+    // CLASS rather than the message, so it stays true whichever rule fires.
     let thrown: unknown;
     try {
       parseWorkflow(`schema_version: '1.0'
@@ -457,6 +470,9 @@ workflow:
       throw new Error('expected a WorkflowValidationError');
     }
     expect(thrown.issues[0]?.field).toBe('input `seeded`.default');
-    expect(thrown.issues[0]?.message).toContain('run.outputs');
+    // The FIELD is still named, which is what an author needs. The message is no longer asserted to mention
+    // `run.outputs` specifically: the rule that fires first is now the broader one, and pinning the older
+    // message would pin which rule wins rather than that the workflow is rejected.
+    expect(thrown.issues[0]?.message).toContain('interpolation');
   });
 });

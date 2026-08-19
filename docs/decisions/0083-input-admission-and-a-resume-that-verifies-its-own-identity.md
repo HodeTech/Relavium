@@ -104,9 +104,22 @@ exists**:
 - `{{ctx.*}}` is resolved at RUN START, after admission by construction.
 - `{{secrets.*}}` must never enter a default at all (§6).
 
-**This breaks nothing that works.** The engine never applied a declared default, so a templated default is
-dead today: it parses, and its value never reaches a run. Forbidding it at parse converts silent deadness
-into a loud authoring error, which is [ADR-0023](0023-strict-authored-yaml-validation.md)'s own rule.
+**No run behaviour changes, but this is not a no-op — and the difference is worth stating precisely.** The
+engine never applied a declared default, so a templated default's VALUE is dead today: it parses, and it
+never reaches a run. What is NOT dead is the ANALYSIS of those templates. `analyzeSecretTaint` treats an
+input default as a live reference site and rejects `default: '{{secrets.token}}'` laundered into a
+`prompt_template` — transitively, across multiple hops — and `analyzePreRunReferences` flags a default
+reading `run.outputs`.
+
+Forbidding interpolation **subsumes** those rules rather than orphaning them: a default that cannot reference
+anything cannot launder a secret, and the rejection moves one step earlier, from "this reference leaks" to
+"this field takes no references". The security outcome is strictly stronger — an attack surface disappears
+instead of being policed — and the tests that proved the old rule are rewritten to prove the new one, with
+their reasoning recorded.
+
+What a workflow author loses is a feature whose value never arrived. That is
+[ADR-0023](0023-strict-authored-yaml-validation.md)'s own rule: silent deadness becomes a loud authoring
+error.
 
 With interpolation gone, a `default` is a literal, and **an authored default that violates its own
 `validation` block fails at PARSE** — not at run, where it would surface only the first time someone omits
@@ -298,8 +311,10 @@ had. That follows from §5's authority rule and needs no version marker.
 - **An MCP server that changes its tool set breaks resume.** Fail-closed is right — the graph really did
   change — but it makes resume dependent on a remote server's stability, and the error must say so clearly
   enough that an operator knows it is not their workflow that broke.
-- **Templated input defaults are removed from the spec.** Nothing uses them working today, but a workflow
-  that parses now will stop parsing.
+- **Templated input defaults are removed from the spec.** Their value never reached a run, so no run
+  changes — but a workflow that parses today will stop parsing, and three secret-taint rules that policed
+  those templates are subsumed rather than kept. A reader looking for "why was my laundering test deleted"
+  finds the answer in §3 and in the rewritten tests, not in a silence.
 - **A `secret` input must be re-supplied on every resume**, through stdin, which is friction on an unattended
   resume and the honest cost of never persisting a credential — and it still does not prove continuity (§6).
 - **A catastrophic authored `pattern` can still stall a run** whose input has no `max_length`.

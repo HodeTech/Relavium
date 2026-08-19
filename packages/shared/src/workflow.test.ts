@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { WorkflowSchema } from './workflow.js';
+import { INPUT_FORMATS, WorkflowInputSchema, WorkflowSchema } from './workflow.js';
 
 /**
  * The canonical reference workflow example, modeled on the "Complete example" in
@@ -492,3 +492,78 @@ describe('WorkflowSchema', () => {
     ).toBe(true);
   });
 });
+
+/**
+ * ADR-0083's parse-time half (§3, §4, §6) — the authored mistakes that must fail loudly rather than at run
+ * time, which is ADR-0023's own rule applied to the input contract.
+ */
+describe('WorkflowInputSchema — the ADR-0083 tightenings', () => {
+  const input = (over: Record<string, unknown>): ReturnType<typeof WorkflowInputSchema.safeParse> =>
+    WorkflowInputSchema.safeParse({ name: 'thing', type: 'string', ...over });
+
+  it('rejects `{{ }}` interpolation in a default', () => {
+    // At admission — which must precede run creation — none of the three referenceable scopes exists:
+    // `{{inputs.*}}` is what admission resolves, `{{ctx.*}}` is resolved at run start, `{{secrets.*}}` may
+    // never enter a default. It breaks nothing that worked: the engine applied no defaults at all, so a
+    // templated one was already dead, and this turns silent deadness into a loud authoring error.
+    for (const templated of ['{{inputs.other}}', 'prefix {{ctx.k}} suffix', '{{secrets.token}}']) {
+      const parsed = input({ default: templated });
+      expect(parsed.success).toBe(false);
+      expect(!parsed.success && parsed.error.issues[0]?.message).toContain('interpolation');
+    }
+  });
+
+  it('…and accepts a literal default — the negative control', () => {
+    expect(input({ default: 'a plain value' }).success).toBe(true);
+    expect(WorkflowInputSchema.safeParse({ name: 'n', type: 'number', default: 3 }).success).toBe(
+      true,
+    );
+  });
+
+  it('rejects a `default` on a `secret` input', () => {
+    // Such a value is written verbatim into the durable `workflow_definition_snapshot` — a plaintext
+    // credential at rest, in a column nothing masks.
+    const parsed = WorkflowInputSchema.safeParse({ name: 'k', type: 'secret', default: 'hunter2' });
+    expect(parsed.success).toBe(false);
+    expect(!parsed.success && parsed.error.issues[0]?.message).toContain('may not declare a `default`');
+    // …but a `secret` with no default is ordinary.
+    expect(WorkflowInputSchema.safeParse({ name: 'k', type: 'secret' }).success).toBe(true);
+  });
+
+  it('rejects an unknown `format`, and accepts every member of the closed vocabulary', () => {
+    expect(input({ validation: { format: 'phone-number' } }).success).toBe(false);
+    for (const format of INPUT_FORMATS) {
+      expect(input({ validation: { format } }).success).toBe(true);
+    }
+  });
+
+  it('rejects an invalid `pattern` at PARSE, not at run', () => {
+    // An unparseable regex would otherwise throw the first time someone supplied a value for this input —
+    // which may be never, until it is.
+    expect(input({ validation: { pattern: '[' } }).success).toBe(false);
+    expect(input({ validation: { pattern: 'a'.repeat(600) } }).success).toBe(false);
+    expect(input({ validation: { pattern: '^[a-z]+$' } }).success).toBe(true);
+  });
+
+  it('rejects an `enum` member whose type does not match the declared input type', () => {
+    // A member that can never match makes the input silently unsatisfiable, which is an authored mistake
+    // rather than a value that simply never occurs.
+    expect(
+      WorkflowInputSchema.safeParse({ name: 'n', type: 'number', validation: { enum: [1, 'two'] } })
+        .success,
+    ).toBe(false);
+    expect(
+      WorkflowInputSchema.safeParse({ name: 'n', type: 'number', validation: { enum: [1, 2] } })
+        .success,
+    ).toBe(true);
+    // A non-finite number is not a `number` for this contract: `min`/`max` cannot express it.
+    expect(
+      WorkflowInputSchema.safeParse({
+        name: 'n',
+        type: 'number',
+        validation: { enum: [Number.NaN] },
+      }).success,
+    ).toBe(false);
+  });
+});
+

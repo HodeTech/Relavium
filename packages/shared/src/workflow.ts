@@ -109,6 +109,113 @@ const VALIDATION_KEYS_BY_TYPE: Record<
   boolean: [],
 };
 
+/**
+ * The closed `format` vocabulary
+ * ([ADR-0083](../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §4).
+ *
+ * Closed, because an open one means each surface inventing its own semantics for `email` — which is the
+ * "one engine, every surface" failure this whole item is about. An unrecognised format is an authored error.
+ */
+export const INPUT_FORMATS = ['email', 'uri', 'uuid', 'date-time'] as const;
+export type InputFormat = (typeof INPUT_FORMATS)[number];
+
+/**
+ * The ceiling on an authored `pattern`'s SOURCE length (ADR-0083 §4).
+ *
+ * Not a ReDoS defence on its own — that is `max_length` bounding the input a catastrophic pattern can chew
+ * on — but a bound on how baroque an authored regex can get before someone notices they are writing a
+ * parser in a validation field.
+ */
+const PATTERN_MAX_SOURCE = 512;
+
+/** `{{ … }}` — the interpolation delimiters, mirroring `packages/core`'s parser (which shared cannot import). */
+const INTERPOLATION_OPEN = '{{';
+
+/**
+ * The `validation` block's own authored semantics (ADR-0083 §4).
+ *
+ * Separate from `InputValidationSchema`'s bound-ordering refine because these need the declared `type`, and
+ * separate from the per-type KEY table because that says which keys are legal, not whether their VALUES are.
+ */
+function validateValidationBlock(
+  input: {
+    readonly type: z.infer<typeof InputTypeSchema>;
+    readonly validation?: InputValidation | undefined;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const v = input.validation;
+  if (v === undefined) return;
+
+  if (v.format !== undefined && !(INPUT_FORMATS as readonly string[]).includes(v.format)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `unknown format '${v.format}' — the vocabulary is ${INPUT_FORMATS.join(', ')}`,
+      path: ['validation', 'format'],
+    });
+  }
+
+  if (v.pattern !== undefined) {
+    if (v.pattern.length > PATTERN_MAX_SOURCE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `pattern is longer than ${String(PATTERN_MAX_SOURCE)} characters`,
+        path: ['validation', 'pattern'],
+      });
+    } else {
+      // COMPILED at parse, so an invalid regex is an authored error rather than a run-time throw. Anchored
+      // and flagless at admission (§4); compiled bare here only to prove it is well-formed.
+      try {
+        new RegExp(v.pattern);
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `pattern is not a valid regular expression`,
+          path: ['validation', 'pattern'],
+        });
+      }
+    }
+  }
+
+  if (v.enum !== undefined) {
+    // An `enum` member of the wrong type can never match, so it is an authored mistake rather than a value
+    // that simply never occurs — and catching it at parse is what stops a silently unsatisfiable input.
+    v.enum.forEach((member, index) => {
+      if (!matchesDeclaredType(member, input.type)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `enum member does not match the declared type '${input.type}'`,
+          path: ['validation', 'enum', index],
+        });
+      }
+    });
+  }
+}
+
+/**
+ * Does a value satisfy a declared input `type`? The one place the mapping lives, so parse-time enum checking
+ * and run-time admission cannot disagree about what a `number` is.
+ *
+ * A `number` must be FINITE: `min`/`max` cannot express `NaN` or `±Infinity`, so admitting them would mean
+ * a bound that silently does not apply.
+ */
+export function matchesDeclaredType(
+  value: unknown,
+  type: z.infer<typeof InputTypeSchema>,
+): boolean {
+  switch (type) {
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value);
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'string':
+    case 'file_path':
+    case 'code_diff':
+    case 'secret':
+      return typeof value === 'string';
+  }
+}
+
 export const WorkflowInputSchema = z
   .object({
     name: interpolationNameSchema, // must be referenceable as `{{inputs.<name>}}`
@@ -119,6 +226,35 @@ export const WorkflowInputSchema = z
     validation: InputValidationSchema.optional(),
   })
   .strict()
+  // ADR-0083 §3/§6 — the three parse-time tightenings, each an authored mistake failing loudly (ADR-0023).
+  .superRefine((input, ctx) => {
+    // 1. **No interpolation in a `default`.** At admission — which must precede run creation — none of the
+    //    three referenceable scopes exists: `{{inputs.*}}` is what admission is resolving, `{{ctx.*}}` is
+    //    resolved at run start, and `{{secrets.*}}` may never enter a default at all. It breaks nothing that
+    //    works: the engine applied no defaults, so a templated one was already dead.
+    if (typeof input.default === 'string' && input.default.includes(INTERPOLATION_OPEN)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'an input `default` may not use `{{ }}` interpolation — it is resolved before any run exists, ' +
+          'so `inputs`, `ctx` and `secrets` are all unavailable to it',
+        path: ['default'],
+      });
+    }
+    // 2. **No `default` on a `secret`.** Such a value is written verbatim into the durable
+    //    `workflow_definition_snapshot` — a plaintext credential at rest.
+    if (input.type === 'secret' && input.default !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'a `secret` input may not declare a `default` — it would be persisted verbatim in the workflow ' +
+          'snapshot; supply the value at run time instead',
+        path: ['default'],
+      });
+    }
+    // 3. The `validation` block's own semantics (§4), checked here because they need the declared `type`.
+    validateValidationBlock(input, ctx);
+  })
   // Per-type validation-key compatibility (workflow-yaml-spec.md): a numeric bound on a string, or a
   // *_length on a number, is an authored mistake — reject it. (Bound-ordering is on InputValidationSchema.)
   .superRefine((input, ctx) => {

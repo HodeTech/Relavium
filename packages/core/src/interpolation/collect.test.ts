@@ -24,14 +24,18 @@ workflow:
     expect(byLocation.get('node `g`.message_template')).toBe('node-text');
   });
 
-  it('tags context values, input defaults, and inline agent system prompts by category', () => {
+  it('tags context values and inline agent system prompts by category', () => {
+    // **`input-default` is no longer among them** (ADR-0083 §3): a default may take no `{{ }}` references,
+    // so `parseWorkflow` can never produce that site. The category survives in the collector because the
+    // collector is a pure function over a workflow object and its removal is a separate cleanup — noted
+    // there rather than left as silent dead code.
     const wf = parseWorkflow(`schema_version: '1.0'
 workflow:
   id: w
   inputs:
     - name: p
       type: string
-      default: 'fallback {{inputs.p}}'
+      default: 'a literal fallback'
   context:
     - key: c
       value: '{{inputs.p}}'
@@ -47,7 +51,7 @@ workflow:
   edges: []`);
     const byLocation = new Map(collectReferences(wf).map((s) => [s.location, s.category]));
     expect(byLocation.get('context `c`.value')).toBe('context-value');
-    expect(byLocation.get('input `p`.default')).toBe('input-default');
+    expect(byLocation.has('input `p`.default')).toBe(false); // a literal default is not a reference site
     expect(byLocation.get('agent `ag`.system_prompt')).toBe('agent-text');
   });
 });

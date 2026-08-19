@@ -20,6 +20,15 @@ import { parseTemplate, type InterpolationReference, type TemplateSegment } from
  * taint *propagates* (not itself a leak) and `input-default` is a fallback value, neither of which is
  * sent to a model. The DAG builder (1.M) also reads this to know which sites carry run data.
  */
+/**
+ * **`input-default` is unreachable through `parseWorkflow` since
+ * [ADR-0083](../../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
+ * §3**: an input `default` may take no `{{ }}` references, so a parsed workflow never yields that site.
+ *
+ * Kept rather than removed because this collector is a pure function over a workflow OBJECT — a caller that
+ * builds one by hand is not going through the schema — and because deleting an arm of a public union is a
+ * separate, wider change. Stated here so it is a recorded decision rather than silent dead code.
+ */
 export type ReferenceSiteCategory = 'context-value' | 'input-default' | 'agent-text' | 'node-text';
 
 /** One field that carries at least one `{{ … }}` reference. */
