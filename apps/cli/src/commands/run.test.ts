@@ -1199,6 +1199,50 @@ describe('runCommand', () => {
     }
   });
 
+  it('a history-db fault is exit 2, and still tears the MCP children down (the reorder\'s new context)', async () => {
+    // The block that maps a history-open failure to an INVOCATION fault carries an explicit contract — "so a
+    // `--json`/CI consumer can tell 'the history db couldn't open' from 'a node failed mid-run'" — and no
+    // test greped for it: a review measured the whole `CliError` replaceable with a bare rethrow while the
+    // suite stayed green. `630c3b6` moved that branch into a materially different context, where the MCP
+    // children are ALREADY SPAWNED when it fires, so the teardown is asserted with it.
+    const path = writeWorkflow('mcp-dbfault.relavium.yaml', MCP_WF);
+    const { io } = captureIo();
+    let closed = 0;
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: () =>
+        Promise.resolve({ content: [{ type: 'text', text: 'x' }], isError: false }),
+      close: () => {
+        closed += 1;
+        return Promise.resolve();
+      },
+    };
+    let caught: unknown;
+    try {
+      await runCommand(
+        { workflow: path, input: [] },
+        {
+          io,
+          global: globalOptions(),
+          providers: scriptedResolver([textTurn('done')]),
+          startMcpClient: () =>
+            realStartMcpClient([
+              { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+            ]),
+          openRunStore: () => {
+            throw new Error('EACCES: permission denied');
+          },
+        },
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(isCliError(caught) && caught.code).toBe('invalid_invocation');
+    expect(isCliError(caught) && caught.exitCode).toBe(EXIT_CODES.invalidInvocation);
+    expect(isCliError(caught) && caught.message).toContain('run history database');
+    expect(closed).toBe(1); // the spawned connection did not leak past the fault
+  });
+
   it('routes an MCP tool RESULT with isError:true through dispatch → engine as a RECOVERABLE error (run still completes)', async () => {
     // The result contract's recoverable-error arm, end-to-end through the real manager + engine: a server tool that
     // returns `{ isError: true }` is a tool-LEVEL (recoverable) error — the agent receives it and replies, the run

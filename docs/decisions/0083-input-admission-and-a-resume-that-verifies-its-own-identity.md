@@ -199,11 +199,11 @@ that leads nowhere must not leak — covers these exactly as it covers `workflow
 filesystem by the host and are not persisted. An agent file edited between processes is NOT detected. §10
 records it as a limitation rather than implying a completeness the mechanism does not have.
 
-> Amended 2026-08-19 — two things the implementation settled.
+> Amended 2026-08-19 — three things the implementation settled.
 >
 > - **`RunStore.readWorkflowSnapshot` is REQUIRED, and answers `string | undefined`.** Optional would mean a
 >   host that omits the property silently loses the guarantee — the failure mode
->   [ADR-0078](0078-durable-truth-and-the-terminal-outbox.md) §4 names for the outbox port. Required forces a
+>   [ADR-0078](0078-ordered-durable-append-and-the-terminal-outbox.md) §4 names for the outbox port. Required forces a
 >   host author to decide, and a store that genuinely keeps no frozen definition says so by answering
 >   `undefined`, which is an honest fact rather than a fabricated belief. The engine then skips content
 >   verification with that fact stated. The cost is real and was paid: every `RunStore` fixture in the tree

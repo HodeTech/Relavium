@@ -789,8 +789,19 @@ the written rows.
 >    avoiding a regression.
 > 2. **There is no digest.** A hash needs a primitive a platform-free engine does not have, and a hash over raw
 >    YAML reports a mismatch for reindented text that parses identically. The comparison is deep structural
->    equality over normalized parse output — which answers the acceptance's defaults-omitted-vs-written-out
->    case by construction, because both sides are the parsed form.
+>    equality over normalized parse output, which is what
+>    [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §5
+>    promises: "formatting and key order cannot cause a false mismatch".
+>
+>    **The acceptance's defaults-omitted-vs-written-out case is NOT met, and is withdrawn** the way items 3
+>    and 4 are. A first version of this note claimed it was answered "by construction". A review measured
+>    otherwise: `WorkflowSchema` contains no `.default()`, `.transform()`, `.preprocess()` or `.catch()`
+>    anywhere in its chain, so an omitted optional field is simply ABSENT from the parse output while an
+>    explicitly-written one is PRESENT, and the comparison counts keys — two workflows differing only by
+>    `required: false` written out versus omitted compare unequal. Unreachable on the CLI gate path, where
+>    both sides come from one snapshot; real for a host that re-serialises its workflow with optionals
+>    materialised. Closing it needs a canonicalisation step that drops fields equal to their absent meaning,
+>    which is a normalization decision this item did not make and should not make in passing.
 > 3. **The "same version / different version" secret acceptance is WITHDRAWN**, as correction 1 predicted. There
 >    is no key-versioning concept in the tree. §6 verifies the SLOT — that the same named `secret` input was
 >    re-supplied — and states plainly that it cannot prove the value is the same credential. `relavium gate

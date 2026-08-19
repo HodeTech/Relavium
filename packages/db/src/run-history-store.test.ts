@@ -791,6 +791,23 @@ describe('createRunHistoryStore', () => {
       expect(loadRunSnapshot(client.db, 'nope')).toBeUndefined();
     });
 
+    it('is what `RunStore.readWorkflowSnapshot` answers — the engine reads the column through it', async () => {
+      // The ONLY production implementation of ADR-0083 §5's content verification, and a review measured it
+      // replaceable with `() => Promise.resolve(undefined)` while the whole monorepo stayed green. That
+      // answer takes the documented "this store holds no snapshot" branch, so content verification would be
+      // skipped on every `relavium gate` resume — silently, forever. Exactly the failure §5's amendment says
+      // a REQUIRED method was chosen to prevent.
+      const wf = await store.resolveWorkflowId('demo');
+      await store.persistEvent({
+        ...ev('run:started', 0, { workflowId: wf, inputs: {}, executionMode: 'local' }),
+        runId: 'run-readsnap',
+      });
+      await expect(store.readWorkflowSnapshot('run-readsnap')).resolves.toBe(
+        WORKFLOW.definitionJson,
+      );
+      await expect(store.readWorkflowSnapshot('nope')).resolves.toBeUndefined();
+    });
+
     it('returns undefined for a soft-deleted run (a deleted run is not resumable)', async () => {
       const wf = await store.resolveWorkflowId('demo');
       await store.persistEvent({

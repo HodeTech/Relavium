@@ -1218,6 +1218,42 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
   });
 });
 
+describe('run:started.inputs — the admission record, and what it must survive', () => {
+  const started = (inputs: unknown): Record<string, unknown> => ({
+    ...valid['run:started'],
+    inputs,
+  });
+
+  it('keeps an own `__proto__` key, which `z.record` silently dropped', () => {
+    // A workflow input name may legitimately be `__proto__` (`[A-Za-z0-9_-]+` permits it), and the engine
+    // builds its input map with a null prototype specifically so the name survives. `z.record` REBUILDS the
+    // object and loses it — so the durable record differed from what the run executed with, on the one path
+    // ADR-0083 §5 verifies identity against.
+    const parsed = RunEventSchema.safeParse(
+      started(JSON.parse('{"__proto__":"p","constructor":"c","n":3}')),
+    );
+    expect(parsed.success).toBe(true);
+    const inputs = parsed.success && parsed.data.type === 'run:started' ? parsed.data.inputs : {};
+    expect(Object.getOwnPropertyNames(inputs).sort()).toEqual(['__proto__', 'constructor', 'n']);
+    expect(({} as Record<string, unknown>)['p']).toBeUndefined();
+  });
+
+  it('accepts and rejects exactly what `z.record` did — the half the swap must not have changed', () => {
+    // The replacement delegates acceptance to `z.record` rather than re-implementing it, and that claim was
+    // load-bearing and unpinned: loosening the predicate to `() => true` left the whole monorepo green while
+    // `inputs` accepted an array, `null`, a string, a number, and a missing key.
+    expect(RunEventSchema.safeParse(started({ a: 1 })).success).toBe(true);
+    expect(RunEventSchema.safeParse(started({})).success).toBe(true);
+    expect(RunEventSchema.safeParse(started(Object.create(null))).success).toBe(true);
+    for (const bad of [[], null, 'x', 3, true, new Date(), new Map()]) {
+      expect(RunEventSchema.safeParse(started(bad)).success).toBe(false);
+    }
+    const missing = { ...valid['run:started'] };
+    delete missing['inputs'];
+    expect(RunEventSchema.safeParse(missing).success).toBe(false);
+  });
+});
+
 describe('MaskedSecretSchema', () => {
   it('accepts a masked secret ({ secret: true, ref })', () => {
     // The `ref` the engine actually emits: a SELF-reference naming the slot, not a keychain locator. The

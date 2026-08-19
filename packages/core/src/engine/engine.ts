@@ -3408,13 +3408,15 @@ export class WorkflowEngine {
         { runId: input.runId },
       );
     }
-    // Every AWAIT between the acquire and `adoptLease` is wrapped, not just the ones that refuse
-    // deliberately (ADR-0079 §4). A review measured two live leaks here: `checkpointer.load` rejecting with
-    // ADR-0075's `UnreadableRunEventLogError` — which `createHistoryCheckpointer` is `async` precisely to
-    // deliver — and `resolveWorkflowId` failing on any store fault. Both stranded the claim for a full TTL.
-    // Wrapped individually rather than by one span around the whole preparation: the terminal branch below
-    // exits by RETURNING a closed handle, so a single catch would have to model a non-throw exit, and the
-    // four wraps say at each site that this line owns the obligation.
+    // Every CALL between the acquire and `adoptLease` is wrapped — not just the awaits, and not just the ones
+    // that refuse deliberately (ADR-0079 §4). A review measured two live leaks here: `checkpointer.load`
+    // rejecting with ADR-0075's `UnreadableRunEventLogError` — which `createHistoryCheckpointer` is `async`
+    // precisely to deliver — and `resolveWorkflowId` failing on any store fault. A second review then found a
+    // third: a SYNCHRONOUS `RangeError` out of the content check, which the first version of this comment
+    // invited by saying "every await" and counting only the async sites. Wrapped individually rather than by
+    // one span around the whole preparation: the terminal branch below exits by RETURNING a closed handle, so
+    // a single catch would have to model a non-throw exit, and a wrap at each site says that this line owns
+    // the obligation.
     const checkpoint = await this.#releaseFenceOnThrow(input.runId, fence, () =>
       this.#host.checkpointer.load(input.runId),
     );
@@ -3464,7 +3466,13 @@ export class WorkflowEngine {
       this.#host.store.readWorkflowSnapshot(input.runId),
     );
     if (frozenWorkflow !== undefined) {
-      const contentRefusal = verifyFrozenWorkflowContent(frozenWorkflow, input.workflow);
+      // Wrapped like every other call in this region — not because it is async (it is not) but because the
+      // region's obligation is about THROWS, and a synchronous one leaks exactly as thoroughly. This was the
+      // one bare call between `acquire` and `adoptLease`, and it was the one processing untrusted durable
+      // data; the guard inside it is the primary fix and this is the belt.
+      const contentRefusal = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+        verifyFrozenWorkflowContent(frozenWorkflow, input.workflow),
+      );
       if (contentRefusal !== undefined) {
         await this.#host.runLeases.release(input.runId, fence);
         throw new EngineStateError(contentRefusal.code, contentRefusal.message, {

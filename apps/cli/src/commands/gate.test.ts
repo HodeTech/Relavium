@@ -17,6 +17,7 @@ import {
   createRunHistoryStore,
   isCorruptRunEventError,
   isUnreadableRunEventLogError,
+  loadRunSnapshot,
   runEvents,
   runMigrations,
   type Db,
@@ -291,7 +292,7 @@ describe('gateCommand', () => {
       );
       expect(code).toBe(EXIT_CODES.success);
       // The run continued past the gate — `double` ran on the RECORDED `n`, not on anything re-supplied.
-      const events = await reader().loadRunEvents(runId);
+      const events = reader().loadRunEvents(runId);
       expect(events.some((event) => event.type === 'run:completed')).toBe(true);
       // …and the credential is in none of it. The engine never re-emits `run:started` on resume, so the
       // only masked record stays the original one.
@@ -339,11 +340,75 @@ describe('gateCommand', () => {
       expect(read).toBe(0); // never blocked on a pipe nobody attached
     });
 
+    it('reads from the REAL stdin reader when no reader is injected, and names THIS command', async () => {
+      // Every other test here injects `readSecretInput`, so the production wiring was replaceable with a
+      // stub while the suite stayed green — and what a `gate` user actually saw when they forgot the pipe
+      // was an example for `relavium provider set-key`, an unrelated command.
+      //
+      // Driven through the TTY guard rather than through the stream: flipping `isTTY` makes the reader
+      // refuse immediately, which exercises the real function and its message without touching stdin.
+      const { runId } = await seedSecretRun();
+      const { io } = captureIo();
+      const original = process.stdin.isTTY;
+      try {
+        Object.defineProperty(process.stdin, 'isTTY', { value: true, configurable: true });
+        await expect(
+          gateCommand({ runId, approve: true, secretStdin: true }, deps(io)),
+        ).rejects.toThrow(new RegExp(`relavium gate ${runId} --approve --secret-stdin`));
+      } finally {
+        Object.defineProperty(process.stdin, 'isTTY', { value: original, configurable: true });
+      }
+    });
+
+    it('carries an input named `__proto__` through the merge (ADR-0083 §9.7, the CLI path)', async () => {
+      // §9.7 requires `__proto__` / `constructor` / `toString` to round-trip as ordinary inputs "on the CLI
+      // path AND the engine path". The engine half is pinned in `resume-identity.test.ts`; this half was not,
+      // and both of this command's accumulators could be changed to `{}` with the suite green — which would
+      // put the name through the prototype setter and drop the input from the resumed run.
+      const yaml = GATED_SECRET.replace('- { name: api_key, type: secret }', '- { name: __proto__, type: secret }');
+      const { runId } = await setupPausedRun(yaml, { n: 7, ['__proto__']: SECRET });
+      const { io } = captureIo();
+      const code = await gateCommand(
+        { runId, approve: true, secretStdin: true },
+        { ...deps(io), readSecretInput: () => Promise.resolve(`__proto__=${SECRET}\n`) },
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      expect(({} as Record<string, unknown>)[SECRET]).toBeUndefined();
+      const serialised = JSON.stringify(reader().loadRunEvents(runId));
+      expect(serialised).not.toContain(SECRET);
+    });
+
     it('a run with no secrets and no flag is untouched by any of this', async () => {
       const { runId } = await setupPausedRun();
       const { io } = captureIo();
       expect(await gateCommand({ runId, approve: true }, deps(io))).toBe(EXIT_CODES.success);
     });
+  });
+
+  it('hands the engine a store that can READ the frozen definition (ADR-0083 §5)', async () => {
+    // `readWorkflowSnapshot` is the only production implementation of §5's content verification, and a review
+    // measured it replaceable with `() => Promise.resolve(undefined)` while the whole monorepo stayed green:
+    // the engine then takes the documented "this store holds no snapshot" branch and skips content
+    // verification on every resume, silently and forever. The check cannot be pinned by its OUTCOME on this
+    // path — `gate.ts` builds the workflow from the same column the engine reads, so the two agree by
+    // construction — so what is pinned is the wiring: the store this command builds answers with the column.
+    const { runId } = await setupPausedRun();
+    const { io } = captureIo();
+    let captured: BuildEngineOptions | undefined;
+    const code = await gateCommand(
+      { runId, approve: true },
+      {
+        ...deps(io),
+        buildEngine: (opts) => {
+          captured = opts;
+          return buildEngine(opts);
+        },
+      },
+    );
+    expect(code).toBe(EXIT_CODES.success);
+    const frozen = await captured?.host?.store.readWorkflowSnapshot(runId);
+    expect(frozen).toBe(loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot);
+    expect(JSON.parse(frozen ?? '{}')).toMatchObject({ workflow: { id: 'gate-resume' } });
   });
 
   it('wires the same media host + catalog resolveMediaSurface on a gate-resumed run (2.S)', async () => {

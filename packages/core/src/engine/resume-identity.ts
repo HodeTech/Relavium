@@ -295,9 +295,21 @@ export function verifyFrozenWorkflowContent(
   } catch {
     return { code: 'workflow_content_mismatch', message: 'the supplied workflow is not serialisable' };
   }
-  if (
-    !deepStructuralEquals(JSON.parse(JSON.stringify(normalizedFrozen.data)), normalizedSupplied)
-  ) {
+  // The FROZEN side takes the same guarded round trip as the supplied one — and it is the side that needed
+  // it more. `WorkflowSchema` accepts a `metadata` record of `z.unknown()` without recursing into it, so a
+  // snapshot carrying a deeply nested value passes validation and then blows the stack inside
+  // `JSON.stringify`. A review measured that: a ~60,000-deep array under `workflow.metadata` threw a raw
+  // `RangeError` out of `resumeFromCheckpoint`, past the typed seam (the CLI reported "an unexpected internal
+  // error", exit 1, for a run that never started) and past the lease release — stranding the run for a full
+  // TTL. This function's own docblock calls the frozen JSON "durable data of unknown provenance"; the guard
+  // now matches the description.
+  let normalizedFrozenValue: unknown;
+  try {
+    normalizedFrozenValue = JSON.parse(JSON.stringify(normalizedFrozen.data));
+  } catch {
+    return unreadable('the frozen workflow definition for this run could not be normalised');
+  }
+  if (!deepStructuralEquals(normalizedFrozenValue, normalizedSupplied)) {
     return {
       code: 'workflow_content_mismatch',
       // VALUE-FREE, and deliberately so: naming the differing field would mean walking two authored graphs

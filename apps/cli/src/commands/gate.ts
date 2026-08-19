@@ -43,7 +43,7 @@ import { createProviderResolver, type ProviderResolver } from '../engine/provide
 import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
-import { readSecretFromStdin } from '../secrets/read-secret.js';
+import { readSecretFromStdin, type StdinSecretContext } from '../secrets/read-secret.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -345,7 +345,17 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
       engine,
       handle,
       makeRenderer: () => (deps.selectRenderer ?? selectRenderer)(deps.io, deps.global),
-      gatePrompter: (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global),
+      // **`--secret-stdin` makes this invocation non-interactive, and the prompter must know.**
+      // `selectGatePrompter` decides on STDOUT alone, so a `printf … | relavium gate … --secret-stdin` run
+      // from a terminal still selects a `@clack/prompts` prompter — over a stdin that was drained to EOF to
+      // read the credential. If the resumed run hits a SECOND gate, clack is asked to read from a closed
+      // stream: it either resolves its cancel sentinel (the gate goes unresolved, exit 3) or throws on raw
+      // mode. Both are wrong, so the honest answer is the one this invocation actually has — no prompter,
+      // and a later gate exits 3 the way every other non-interactive resume does.
+      gatePrompter:
+        args.secretStdin === true
+          ? undefined
+          : (deps.selectGatePrompter ?? selectGatePrompter)(deps.io, deps.global),
       io: deps.io,
     });
 
@@ -498,6 +508,28 @@ function parseInputs(inputJson: string, runId: string): Record<string, unknown> 
 }
 
 /**
+ * How many names a refusal lists before the rest become a count — the convention this file already uses for
+ * held nodes. A malformed paste on the SECRET channel would otherwise produce a stderr line as long as the
+ * payload, echoing whatever the user pasted.
+ */
+const MAX_REPORTED_SECRET_NAMES = 8;
+
+function nameList(names: readonly string[]): string {
+  return names.length <= MAX_REPORTED_SECRET_NAMES
+    ? names.join(', ')
+    : `${names.slice(0, MAX_REPORTED_SECRET_NAMES).join(', ')}, and ${String(names.length - MAX_REPORTED_SECRET_NAMES)} more`;
+}
+
+/** The two refusals `readSecretFromStdin` prints, written for THIS command rather than `provider set-key`. */
+const SECRET_STDIN_CONTEXT = (runId: string): StdinSecretContext => ({
+  pipeHint:
+    "pipe the run's `secret` inputs on stdin as `name=value` lines — e.g. " +
+    `\`printf 'api_key=%s\\n' "$VALUE" | relavium gate ${runId} --approve --secret-stdin\` ` +
+    '(a credential is never passed as an argument).',
+  emptyMessage: `no \`secret\` inputs were read from stdin for run ${runId} (empty input).`,
+});
+
+/**
  * Re-supply the run's `secret` inputs, or refuse the resume
  * ([ADR-0083](../../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
  * §6).
@@ -542,19 +574,21 @@ async function resolveSecretInputs(
         `(e.g. \`printf '${masked[0] ?? 'name'}=%s\\n' "$VALUE" | relavium gate ${args.runId} --approve --secret-stdin\`).`,
     );
   }
-  const supplied = parseSecretLines(await (deps.readSecretInput ?? readSecretFromStdin)(), args.runId);
+  const read =
+    deps.readSecretInput ?? ((): Promise<string> => readSecretFromStdin(SECRET_STDIN_CONTEXT(args.runId)));
+  const supplied = parseSecretLines(await read(), args.runId);
   const missing = masked.filter((name) => !Object.hasOwn(supplied, name));
   if (missing.length > 0) {
     throw new CliError(
       'invalid_invocation',
-      `stdin did not supply the \`secret\` input(s) [${missing.join(', ')}] this run needs.`,
+      `stdin did not supply the \`secret\` input(s) [${nameList(missing)}] this run needs.`,
     );
   }
   const unexpected = Object.keys(supplied).filter((name) => !masked.includes(name));
   if (unexpected.length > 0) {
     throw new CliError(
       'invalid_invocation',
-      `stdin supplied [${unexpected.join(', ')}], which run ${args.runId} has no \`secret\` slot for.`,
+      `stdin supplied [${nameList(unexpected)}], which run ${args.runId} has no \`secret\` slot for.`,
     );
   }
   // A fresh null-prototype map, filled from the restored inputs and then the re-supplied secrets — never a
@@ -577,12 +611,18 @@ async function resolveSecretInputs(
 function parseSecretLines(raw: string, runId: string): Record<string, string> {
   const out: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const line of raw.split('\n')) {
-    const trimmed = line.trim();
-    if (trimmed === '') continue;
-    const at = trimmed.indexOf('=');
-    const name = at === -1 ? '' : trimmed.slice(0, at).trim();
-    const value = at === -1 ? '' : trimmed.slice(at + 1);
-    if (name === '' || value === '') {
+    // Only the CRLF carriage return is stripped from the line. The NAME is trimmed; the VALUE is taken
+    // VERBATIM after the first `=`. A first version trimmed the whole line, which silently removed a
+    // credential's trailing whitespace while preserving its leading whitespace — an asymmetry that turns a
+    // pasted key into a different key and reports it as an opaque 401 from the provider hours later.
+    const stripped = line.endsWith('\r') ? line.slice(0, -1) : line;
+    if (stripped.trim() === '') continue;
+    const at = stripped.indexOf('=');
+    const name = at === -1 ? '' : stripped.slice(0, at).trim();
+    const value = at === -1 ? '' : stripped.slice(at + 1);
+    // An all-whitespace value is refused with the empty one: it is not a credential, and accepting it would
+    // hand the run a blank secret that fails somewhere far from here.
+    if (name === '' || value.trim() === '') {
       throw new CliError(
         'invalid_invocation',
         `stdin for run ${runId} must be \`name=value\` lines with a non-empty value.`,

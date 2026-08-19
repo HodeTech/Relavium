@@ -443,6 +443,27 @@ describe('verifyFrozenWorkflowContent — the same slug is not the same graph (A
     expect(refusal?.message).not.toContain('sneaked_in');
   });
 
+  it('a snapshot that cannot be NORMALISED is unreadable, not an escaping RangeError', () => {
+    // `WorkflowSchema` accepts `workflow.metadata` as a record of `z.unknown()` and never recurses into it, so
+    // a snapshot carrying a deeply nested value validates and then blows the stack inside `JSON.stringify`.
+    // A review measured that escaping `resumeFromCheckpoint` as a raw `RangeError` — past the typed seam (the
+    // CLI reported "an unexpected internal error", exit 1, for a run that never started) and past the lease
+    // release, stranding the run for a full TTL. The frozen side is durable data of unknown provenance; it
+    // takes the same guarded round trip the supplied side always had.
+    // Built as TEXT, not by stringifying a deep object — the fixture would otherwise hit the same limit it
+    // is testing. Measured: `JSON.parse` handles this nesting, `JSON.stringify` does not.
+    const deep = `${'['.repeat(40_000)}"leaf"${']'.repeat(40_000)}`;
+    const hostile = JSON.stringify(WF).replace(
+      '"workflow":{',
+      `"workflow":{"metadata":{"m":${deep}},`,
+    );
+    let refusal: ReturnType<typeof verifyFrozenWorkflowContent>;
+    expect(() => {
+      refusal = verifyFrozenWorkflowContent(hostile, WF);
+    }).not.toThrow();
+    expect(refusal?.code).toBe('admission_record_unreadable');
+  });
+
   it('distinguishes an UNREADABLE record from a differing one — the remedies differ', () => {
     // "Your workflow changed" and "the stored definition is corrupt" send a user to different places.
     expect(verifyFrozenWorkflowContent('{not json', WF)?.code).toBe('admission_record_unreadable');

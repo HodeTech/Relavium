@@ -165,8 +165,14 @@ export interface RunStore {
    * **REQUIRED, returning `string | undefined`.** Required so a host author has to decide: a store that keeps
    * no frozen definition says so by answering `undefined`, and the engine then skips content verification with
    * that fact stated, rather than a host silently omitting a property and losing the guarantee (the failure
-   * mode ADR-0078 §4 names for the outbox port). `undefined` means "this store holds no snapshot for this
-   * run", never "the snapshot is empty".
+   * mode ADR-0078 §4 names for the outbox port). `undefined` means "this store will not give you a snapshot
+   * for this run", never "the snapshot is empty".
+   *
+   * The SQLite implementation also answers `undefined` for a SOFT-DELETED run. That is a store's decision
+   * about its own rows rather than a second meaning — a deleted run is not resumable, and `relavium gate`
+   * refuses one before the engine is reached — but the wording matters: a host that ever loaded a checkpoint
+   * for a soft-deleted run would otherwise get content verification silently skipped while believing the
+   * store had none to give.
    */
   readWorkflowSnapshot: (runId: string) => Promise<string | undefined>;
 }

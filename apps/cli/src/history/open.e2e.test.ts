@@ -89,6 +89,13 @@ describe('2.H durable run history — real run → history.db (temp home)', () =
       // The run's cwd (FIXTURES, passed as openRunStore's projectRoot) was persisted to runs.project_root —
       // the durable half of the save_to resume re-jail (loadRunSnapshot reads it back on a `relavium gate`).
       expect(loadRunSnapshot(db, runs[0]?.id ?? '')?.projectRoot).toBe(FIXTURES);
+      // …and the FROZEN GRAPH, which is what `relavium gate` rebuilds the run from and what ADR-0083 §5
+      // verifies a resume against. A review measured `openHistoryStore`'s
+      // `definitionJson: JSON.stringify(workflow)` replaceable with a literal while the whole `apps/cli`
+      // suite stayed green — the db package pins the column-write half, and nothing pinned the line that
+      // turns the argument into the value written.
+      const frozen = loadRunSnapshot(db, runs[0]?.id ?? '')?.workflowDefinitionSnapshot ?? '';
+      expect(JSON.parse(frozen)).toMatchObject({ workflow: { id: 'harness-sequential' } });
     } finally {
       close();
     }

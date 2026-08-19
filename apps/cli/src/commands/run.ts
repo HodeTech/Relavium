@@ -251,6 +251,10 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       // D15 load-check (ADR-0044 §2 / ADR-0045 §1): an incapable / malformed-generative authored `output_modalities`
       // fails fast at LOAD (exit 2), not only at the runtime FallbackChain pre-skip. `gate` runs the SAME check
       // (drive.ts), so a fresh run and a resume reject consistently.
+      // Validated against `def`, not `runWorkflow`, and that is still correct: MCP augmentation rewrites only
+      // each inline agent's `tools` grant, which this check does not read — so the verdict is identical
+      // either way. Said here because the sentence that used to carry it covered the store too, and the store
+      // moved to `runWorkflow` a few lines up.
       assertWorkflowCatalogValid(def, wiring.workflowModelCatalog);
       // The ADR-0065 §2 user-pricing overlay (2.5.G S10), read from the SAME durable `history.db` — so a
       // workflow using a user-priced model is enforced by `budget.max_cost_microcents` (pre-egress) + priced in
