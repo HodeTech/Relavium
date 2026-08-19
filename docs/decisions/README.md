@@ -127,6 +127,7 @@ flowchart TD
 | 0081 | [The compaction summary is untrusted content, and the system prompt becomes a branded type (supersedes ADR-0062 §1)](0081-the-compaction-summary-is-untrusted-and-the-system-prompt-is-branded.md) | Accepted | 2026-08-18 |
 | 0082 | [The stream grammar is a seam obligation the chain verifies, and every chain attempt has a hard deadline](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) | Accepted | 2026-08-18 |
 | 0083 | [One input-admission gate in the engine, and a resume that verifies its own identity](0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | Accepted | 2026-08-19 |
+| 0084 | [Consent before a local MCP spawn](0084-consent-before-a-local-mcp-spawn.md) | Accepted | 2026-08-20 |
 
 ## Creating a new ADR
 
