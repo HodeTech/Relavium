@@ -1,10 +1,11 @@
 import { type ChildProcess, spawn } from 'node:child_process';
-import { constants } from 'node:fs';
-import { access, realpath } from 'node:fs/promises';
-import { delimiter, isAbsolute, join, resolve, sep } from 'node:path';
+import { realpath } from 'node:fs/promises';
+import { isAbsolute, resolve, sep } from 'node:path';
 
 import type { ProcessCapability, ProcessResult } from '@relavium/core';
 import { isForbiddenDeclaredEnvKey, type AbortSignalLike } from '@relavium/shared';
+
+import { findOnPath } from '../find-on-path.js';
 
 import {
   HostCapabilityError,
@@ -290,33 +291,14 @@ async function resolveExecutable(command: string): Promise<string> {
   if (isAbsolute(command) || command.includes('/') || command.includes('\\')) {
     return command; // an explicit path — spawn fails cleanly if it is missing / not executable
   }
-  const pathVar = process.env['PATH'] ?? process.env['Path'] ?? '';
-  const dirs = pathVar.split(delimiter).filter((d) => d !== '');
-  let exts: string[];
-  if (process.platform === 'win32') {
-    const pathExts = (process.env['PATHEXT'] ?? '.EXE;.CMD;.BAT;.COM')
-      .split(';')
-      .filter((e) => e !== '');
-    // If the command ALREADY carries a recognized PATHEXT extension (e.g. `node.exe`), try the bare name first —
-    // otherwise every candidate would be `node.exe.EXE` etc. and the real binary would never be found.
-    const upper = command.toUpperCase();
-    const hasExt = pathExts.some((e) => upper.endsWith(e.toUpperCase()));
-    exts = hasExt ? ['', ...pathExts] : pathExts;
-  } else {
-    exts = [''];
+  // The walk itself moved to `find-on-path.ts` when ADR-0084's consent gate became a second caller; the
+  // POLICY around it stays here, because the two callers differ on it. This one returns an explicit path
+  // unresolved (the spawn resolves it inside the jail) and fails closed on a miss with its own typed error.
+  const found = await findOnPath(command);
+  if (found === undefined) {
+    throw new ProcessDeniedError('the command was not found on PATH'); // deterministic — fatal, never retried
   }
-  for (const dir of dirs) {
-    for (const ext of exts) {
-      const candidate = join(dir, command + ext);
-      try {
-        await access(candidate, constants.X_OK);
-        return candidate;
-      } catch {
-        // not here / not executable — keep searching
-      }
-    }
-  }
-  throw new ProcessDeniedError('the command was not found on PATH'); // deterministic — fatal, never retried
+  return found;
 }
 
 /** Reject a declared env var the host forbids (injection / config-steering) — case-insensitive, fail-closed. */
