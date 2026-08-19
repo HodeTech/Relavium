@@ -329,11 +329,17 @@ workflow:
     expect(analyzeSecretTaint(wf)).toEqual([]);
   });
 
-  it('treats a STRUCTURED input default as opaque data — a nested {{secrets.x}} is not a leak', () => {
-    // Boundary pin (deferred from 1.L2): only STRING defaults carry templates. A `{{ … }}` nested in a
-    // structured default is opaque JSON, never interpolated (resolveTemplate is single-pass), so it is
-    // neither taint-scanned nor a leak vector — the typed-input layer keeps structured defaults verbatim.
-    const wf = parseWorkflow(`schema_version: '1.0'
+  it('a STRUCTURED input default carrying a nested {{secrets.x}} is now REJECTED', () => {
+    // **Rewritten, not deleted** (ADR-0083 §3). What it recorded was a permitted boundary: "only STRING
+    // defaults carry templates. A `{{ … }}` nested in a structured default is opaque JSON, never
+    // interpolated (resolveTemplate is single-pass), so it is neither taint-scanned nor a leak vector."
+    //
+    // Every clause of that was true, and it described a HOLE rather than a guarantee: the value was opaque
+    // only because nothing applied a default. §1's admission gate will apply them, on top of a parse gate
+    // that — until a review caught it — never looked inside a structured value. The interpolation ban is now
+    // recursive, so the shape is rejected at parse instead of being tolerated as inert.
+    expect(() =>
+      parseWorkflow(`schema_version: '1.0'
 workflow:
   id: w
   inputs:
@@ -348,10 +354,8 @@ ${AGENT}
       type: agent
       agent_ref: ag
       prompt_template: 'use {{inputs.cfg}}'
-  edges: []`);
-    expect(analyzeSecretTaint(wf)).toEqual([]);
-    // …and the structured default's {{run.outputs[…]}} is likewise opaque — no pre-run violation.
-    expect(analyzePreRunReferences(wf)).toEqual([]);
+  edges: []`),
+    ).toThrow(/interpolation/);
   });
 
   it('returns no leaks for the canonical (secret-free) pipeline', () => {

@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { INPUT_FORMATS, WorkflowInputSchema, WorkflowSchema } from './workflow.js';
+import {
+  anchoredPattern,
+  INPUT_FORMATS,
+  matchesDeclaredType,
+  WorkflowInputSchema,
+  WorkflowSchema,
+} from './workflow.js';
 
 /**
  * The canonical reference workflow example, modeled on the "Complete example" in
@@ -513,6 +519,91 @@ describe('WorkflowInputSchema — the ADR-0083 tightenings', () => {
     }
   });
 
+  it('looks INSIDE a structured default, and allows a literal `{{` with no closer', () => {
+    // Two corrections a review measured. A `default` is `unknown`, so a string-only check never looked
+    // inside `{ token: '{{secrets.token}}' }` — unreachable today, but §1's admission will apply defaults on
+    // top of this gate. And core's lexer treats an unterminated `{{` as ordinary text, so `includes('{{')`
+    // rejected a string core would never read a reference in, with no escape available to express it.
+    expect(input({ default: { token: '{{secrets.token}}' } }).success).toBe(false);
+    expect(input({ default: ['{{secrets.token}}'] }).success).toBe(false);
+    expect(input({ default: 'use {{ to open a mustache' }).success).toBe(true);
+    expect(input({ default: 'closing }} only' }).success).toBe(true);
+  });
+
+  it('rejects a declared default that violates its own contract', () => {
+    // The ADR and the spec both claimed this and the first implementation did not do it. A review measured
+    // a `number` defaulting to `'not a number'` and a `string` default outside its own `enum`, both
+    // accepted — the very value §1's admission will hand to a run.
+    expect(input({ default: 'ccc', validation: { enum: ['a', 'b'] } }).success).toBe(false);
+    expect(input({ default: 'toolong', validation: { max_length: 3 } }).success).toBe(false);
+    expect(input({ default: 'abc', validation: { pattern: '^[0-9]+$' } }).success).toBe(false);
+    expect(input({ default: 'not-an-email', validation: { format: 'email' } }).success).toBe(false);
+    expect(
+      WorkflowInputSchema.safeParse({ name: 'n', type: 'number', default: 'not a number' }).success,
+    ).toBe(false);
+    // …and a conforming default passes, so the rule discriminates.
+    expect(input({ default: 'a@b.co', validation: { format: 'email' } }).success).toBe(true);
+    expect(
+      WorkflowInputSchema.safeParse({
+        name: 'n',
+        type: 'number',
+        default: 3,
+        validation: { min: 0, max: 10 },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('a `secret` may not carry an `enum` either — the same leak through a neighbouring key', () => {
+    // The `default` ban exists because such a value lands verbatim in `workflow_definition_snapshot`. An
+    // `enum` of allowed secret values writes it into the same unmasked column, and "the credential is one
+    // of these three" is not a contract worth expressing.
+    expect(
+      WorkflowInputSchema.safeParse({
+        name: 'k',
+        type: 'secret',
+        validation: { enum: ['hunter2'] },
+      }).success,
+    ).toBe(false);
+    // A SHAPE is not a value, so `pattern` survives.
+    expect(
+      WorkflowInputSchema.safeParse({
+        name: 'k',
+        type: 'secret',
+        validation: { pattern: '^sk-[a-z0-9]+$' },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('an unknown `format` message carries NO authored value', () => {
+    // `parser.ts` documents every shared refine as emitting structural-only messages, and the CLI re-throws
+    // the first one as a `CliError` message. YAML double-quoted escapes decode control characters, so an
+    // echoed authored value is a terminal-escape path into stdout and every log sink.
+    const parsed = input({ validation: { format: '\u001b[2Jboom' } });
+    expect(parsed.success).toBe(false);
+    const message = !parsed.success ? (parsed.error.issues[0]?.message ?? '') : '';
+    expect(message).not.toContain('boom');
+    expect(message).toContain('the vocabulary is');
+  });
+
+  it('`matchesDeclaredType` covers every declared type, not just number', () => {
+    // Four of six arms were untested; the function is exported as the source of truth §1's admission shares.
+    for (const type of ['string', 'file_path', 'code_diff', 'secret'] as const) {
+      expect(matchesDeclaredType('a string', type)).toBe(true);
+      expect(matchesDeclaredType(1, type)).toBe(false);
+    }
+    expect(matchesDeclaredType(true, 'boolean')).toBe(true);
+    expect(matchesDeclaredType('true', 'boolean')).toBe(false);
+    expect(matchesDeclaredType(Number.POSITIVE_INFINITY, 'number')).toBe(false);
+  });
+
+  it('an authored `pattern` is compiled ANCHORED at parse, so its meaning is pinned', () => {
+    // Compiling bare proves well-formedness and nothing else: `a|b` compiles, and under a naive
+    // `'^' + src + '$'` becomes "starts with a OR ends with b" — a silent change of meaning.
+    expect(anchoredPattern('a|b').test('a')).toBe(true);
+    expect(anchoredPattern('a|b').test('xa')).toBe(false); // …not "ends with b" either
+    expect(anchoredPattern('a|b').test('bx')).toBe(false);
+  });
+
   it('…and accepts a literal default — the negative control', () => {
     expect(input({ default: 'a plain value' }).success).toBe(true);
     expect(WorkflowInputSchema.safeParse({ name: 'n', type: 'number', default: 3 }).success).toBe(
@@ -525,7 +616,9 @@ describe('WorkflowInputSchema — the ADR-0083 tightenings', () => {
     // credential at rest, in a column nothing masks.
     const parsed = WorkflowInputSchema.safeParse({ name: 'k', type: 'secret', default: 'hunter2' });
     expect(parsed.success).toBe(false);
-    expect(!parsed.success && parsed.error.issues[0]?.message).toContain('may not declare a `default`');
+    expect(!parsed.success && parsed.error.issues[0]?.message).toContain(
+      'may not declare a `default`',
+    );
     // …but a `secret` with no default is ordinary.
     expect(WorkflowInputSchema.safeParse({ name: 'k', type: 'secret' }).success).toBe(true);
   });
@@ -566,4 +659,3 @@ describe('WorkflowInputSchema — the ADR-0083 tightenings', () => {
     ).toBe(false);
   });
 });
-

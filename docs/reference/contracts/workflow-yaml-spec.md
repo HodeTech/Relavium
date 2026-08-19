@@ -119,7 +119,15 @@ inputs:
 
 **What each key MEANS**, decided by
 [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §4 because a
-contract every surface shares cannot leave them to interpretation:
+contract every surface shares cannot leave them to interpretation.
+
+> **Where each rule is enforced TODAY.** The rules below are decided and the checker is written — one pure
+> `violatesInputContract`, shared by both halves — but only the **parse-time** half is wired: an authored
+> `default`, an `enum` member and a `pattern` are checked when the workflow is read. Applying them to a
+> **caller-supplied value at run time** is ADR-0083 §1/§2's admission gate, which has not landed. Until it
+> does, a surface's own validation is what a supplied value meets. Stated because this file is the canonical
+> contract, and a reader must not take a decided rule for a shipped one.
+
 
 | key | semantics |
 |-----|-----------|

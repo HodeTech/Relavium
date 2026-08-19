@@ -55,3 +55,28 @@ workflow:
     expect(byLocation.get('agent `ag`.system_prompt')).toBe('agent-text');
   });
 });
+
+describe('collectReferences — the sites `parseWorkflow` can no longer produce', () => {
+  it('still yields an `input-default` site for a HAND-BUILT workflow object', () => {
+    // The category is deliberately kept (ADR-0083 §3, and the note on `ReferenceSiteCategory`) for exactly
+    // this caller: a pure function over a `Workflow` object, not everything that reaches it through the
+    // schema. A review pointed out that keeping it was argued for and then pinned by nothing — the rewritten
+    // schema test asserts the site is ABSENT, which holds trivially for a literal default — so the arm could
+    // be deleted later in silence, which is the opposite of a recorded decision.
+    const wf = {
+      schema_version: '1.0',
+      workflow: {
+        id: 'w',
+        inputs: [{ name: 'p', type: 'string', default: 'fallback {{ctx.c}}' }],
+        context: [{ key: 'c', value: 'x' }],
+        nodes: [{ id: 'n', type: 'input' }],
+        edges: [],
+      },
+    } as unknown as Parameters<typeof collectReferences>[0];
+
+    const sites = collectReferences(wf);
+    const site = sites.find((s) => s.location === 'input `p`.default');
+    expect(site?.category).toBe('input-default');
+  });
+});
+

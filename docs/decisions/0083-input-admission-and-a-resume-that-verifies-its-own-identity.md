@@ -318,9 +318,15 @@ had. That follows from §5's authority rule and needs no version marker.
 - **An MCP server that changes its tool set breaks resume.** Fail-closed is right — the graph really did
   change — but it makes resume dependent on a remote server's stability, and the error must say so clearly
   enough that an operator knows it is not their workflow that broke.
-- **Templated input defaults are removed from the spec.** Their value never reached a run, so no run
-  changes — but a workflow that parses today will stop parsing, and three secret-taint rules that policed
-  those templates are subsumed rather than kept. A reader looking for "why was my laundering test deleted"
+- **Templated input defaults are removed from the spec, and the break reaches PERSISTED runs.** Their value
+  never reached a run, so no run behaviour changes — but a workflow that parses today will stop parsing, and
+  `relavium gate` re-validates `runs.workflow_definition_snapshot` with the same schema on every resume. A
+  run created before this landed, from a workflow with a templated default, a `secret` default, an unknown
+  `format` or an invalid `pattern`, becomes **unresumable**, not merely un-reauthorable. No such run exists
+  in this repo — every tracked fixture and doc sample was checked — but a user's paused run is a real
+  possibility, and whether snapshot rehydration should share authoring strictness is a question this ADR
+  leaves open rather than answers. Three secret-taint rules that policed those templates are subsumed
+  rather than kept. A reader looking for "why was my laundering test deleted"
   finds the answer in §3 and in the rewritten tests, not in a silence.
 - **A `secret` input must be re-supplied on every resume**, through stdin, which is friction on an unattended
   resume and the honest cost of never persisting a credential — and it still does not prove continuity (§6).
