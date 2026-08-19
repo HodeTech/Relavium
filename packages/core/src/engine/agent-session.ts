@@ -38,15 +38,8 @@ import type {
 } from '@relavium/shared';
 import { unwiredEffectJournal } from '@relavium/shared';
 
-import {
-  markUntrusted,
-  unwrapUntrusted,
-  type Untrusted,
-} from '../tools/untrusted.js';
-import {
-  authoredSystemPrompt,
-  type AuthoredSystemPrompt,
-} from './authored-system-prompt.js';
+import { markUntrusted, unwrapUntrusted, type Untrusted } from '../tools/untrusted.js';
+import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
 import { buildTurnMessages } from './turn-messages.js';
 import {
   ToolDefSchema,

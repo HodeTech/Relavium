@@ -79,4 +79,3 @@ describe('collectReferences — the sites `parseWorkflow` can no longer produce'
     expect(site?.category).toBe('input-default');
   });
 });
-

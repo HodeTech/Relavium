@@ -9,11 +9,7 @@ import {
   type UserCommandOutcome,
 } from '@relavium/core';
 import type { ProviderId } from '@relavium/llm';
-import {
-  REASONING_EFFORTS,
-  type AgentSessionRecord,
-  type ReasoningEffort,
-} from '@relavium/shared';
+import { REASONING_EFFORTS, type AgentSessionRecord, type ReasoningEffort } from '@relavium/shared';
 import { exportSession } from '../chat/export.js';
 import { formatDoctorReport, runDoctorChecks, type DoctorProbes } from '../chat/doctor.js';
 import { assembleDoctorProbes } from '../chat/doctor-host.js';

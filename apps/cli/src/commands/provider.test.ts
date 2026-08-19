@@ -545,7 +545,7 @@ describe('readSecretFromStdin', () => {
     }
   });
 
-  it('returns the piped payload VERBATIM — trailing whitespace is the caller\'s to decide about', async () => {
+  it("returns the piped payload VERBATIM — trailing whitespace is the caller's to decide about", async () => {
     // It used to `.trim()` the whole buffer. Right for `provider set-key`, silently wrong for
     // `gate --secret-stdin`: on the common single-line pipe the trim removed a credential's trailing
     // whitespace BEFORE `parseSecretLines` could preserve it, so the comment in `gate.ts` claiming that bug

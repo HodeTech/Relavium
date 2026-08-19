@@ -20,11 +20,7 @@ import { hostAbortController, hostAttemptTimer, hostSleep } from '../process/sle
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv } from './tool-host/assemble.js';
-import type {
-  EffectCorrelation,
-  EffectDispatchPort,
-  EffectResumePort,
-} from '@relavium/core';
+import type { EffectCorrelation, EffectDispatchPort, EffectResumePort } from '@relavium/core';
 
 export interface BuildEngineOptions {
   /**

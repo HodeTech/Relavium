@@ -54,10 +54,7 @@ import {
 import { resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import type { AgentPlanConfig } from '../run-plan.js';
-import {
-  authoredSystemPrompt,
-  type AuthoredSystemPrompt,
-} from './authored-system-prompt.js';
+import { authoredSystemPrompt, type AuthoredSystemPrompt } from './authored-system-prompt.js';
 import type { ToolDef, ToolDispatchContext, ToolRegistry } from '../tools/types.js';
 import {
   AgentTurnError,

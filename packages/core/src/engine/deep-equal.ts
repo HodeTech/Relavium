@@ -75,7 +75,5 @@ function equals(a: unknown, b: unknown, depth: number, seen: Map<unknown, Set<un
   if (aKeys.length !== bKeys.length) return false;
   // `Object.hasOwn` rather than `key in b`: an inherited property is not a value `b` carries, and the
   // length check above would otherwise be satisfied by a prototype the two objects merely share.
-  return aKeys.every(
-    (key) => Object.hasOwn(b, key) && equals(a[key], b[key], depth + 1, seen),
-  );
+  return aKeys.every((key) => Object.hasOwn(b, key) && equals(a[key], b[key], depth + 1, seen));
 }

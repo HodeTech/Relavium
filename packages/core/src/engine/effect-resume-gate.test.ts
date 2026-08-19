@@ -16,7 +16,11 @@ import { describe, expect, it } from 'vitest';
 
 import { parseWorkflow, type WorkflowDefinition } from '../parser.js';
 import { WorkflowEngine } from './engine.js';
-import { createInMemoryEffectJournalStore, createInMemoryHost, InMemoryRunStore } from './execution-host.js';
+import {
+  createInMemoryEffectJournalStore,
+  createInMemoryHost,
+  InMemoryRunStore,
+} from './execution-host.js';
 import type { NodeExecContext, NodeExecutor, NodeOutcome } from './node-executor.js';
 import type { RunHandle } from './run-handle.js';
 
@@ -96,7 +100,10 @@ workflow:
   }
 
   async function runToGate(store: InMemoryRunStore): Promise<{ runId: string; gateId: string }> {
-    const engine = new WorkflowEngine({ host: createInMemoryHost({ store }), executor: new Stub() });
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost({ store }),
+      executor: new Stub(),
+    });
     const handle = engine.start({ workflow: GATED });
     let gateId = '';
     for await (const event of handle.events) {
@@ -350,6 +357,4 @@ workflow:
     // call that a success.
     expect(seen.filter((e) => e.type === 'human_gate:resumed')).toHaveLength(1);
   });
-
 });
-

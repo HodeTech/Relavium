@@ -169,7 +169,8 @@ function containsInterpolation(
   if (depth > MAX_DEFAULT_DEPTH) return false;
   if (seen.has(value)) return false;
   seen.add(value);
-  if (Array.isArray(value)) return value.some((item) => containsInterpolation(item, seen, depth + 1));
+  if (Array.isArray(value))
+    return value.some((item) => containsInterpolation(item, seen, depth + 1));
   return Object.values(value).some((item) => containsInterpolation(item, seen, depth + 1));
 }
 
@@ -294,8 +295,10 @@ export function violatesInputContract(
 
   // Length BEFORE pattern — this ordering is what bounds the input a catastrophic authored regex can chew
   // on, and it is the only ReDoS mitigation this contract honestly offers.
-  if (v.min_length !== undefined && value.length < v.min_length) return 'value is shorter than min_length';
-  if (v.max_length !== undefined && value.length > v.max_length) return 'value is longer than max_length';
+  if (v.min_length !== undefined && value.length < v.min_length)
+    return 'value is shorter than min_length';
+  if (v.max_length !== undefined && value.length > v.max_length)
+    return 'value is longer than max_length';
   if (v.format !== undefined) {
     const check = FORMAT_CHECKS.get(v.format);
     if (check !== undefined && !check.test(value)) return `value is not a valid ${v.format}`;

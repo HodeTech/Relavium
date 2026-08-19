@@ -91,7 +91,11 @@ function paramsWith(provider: LlmProvider, registry: ToolRegistry): AgentTurnPar
     chainCapabilities: { keyFor: () => 'k', sleep: () => Promise.resolve(), now: () => 0 },
     nodeId: 'n1',
     emit: () => undefined,
-    signal: { aborted: false, addEventListener: () => undefined, removeEventListener: () => undefined },
+    signal: {
+      aborted: false,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    },
     registry,
     dispatchContext,
     limits: DEFAULT_AGENT_TURN_LIMITS,

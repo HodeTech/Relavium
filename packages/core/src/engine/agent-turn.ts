@@ -519,7 +519,11 @@ function throwMappedChainError(error: LlmError, turnCommitted = false): never {
   if (error.cause instanceof LedgerDurabilityError) {
     throw error.cause;
   }
-  throw new AgentTurnError(codeForLlmError(error), error.message, foldRetryable(error, turnCommitted));
+  throw new AgentTurnError(
+    codeForLlmError(error),
+    error.message,
+    foldRetryable(error, turnCommitted),
+  );
 }
 
 /**
@@ -1135,22 +1139,24 @@ async function driveAgentTurn(
       const turnCommitted = toolTurn > 0;
       const turn = await (toolTurn === 0
         ? streamOneTurn(chain, messages, params, () => activeModel)
-        : streamOneTurn(chain, messages, params, () => activeModel, turnCommitted).catch((error: unknown) => {
-            if (error instanceof BudgetPauseError) {
-              // NOT `error.message` — it ends "run paused for approval", which is exactly what does not
-              // happen here. Reported verbatim on `relavium run` and both `--json` surfaces it told the
-              // operator to go approve a pause that will never arrive, for a run that had already failed.
-              throw new AgentTurnError(
-                'budget_exceeded',
-                `pre-egress budget check would exceed the cap of ${error.limitMicrocents} micro-cents ` +
-                  `(spent ${error.spentMicrocents}); the node had already run tools this turn, so it failed ` +
-                  `instead of pausing — approving and resuming would re-fire them (ADR-0080 §7). Raise the ` +
-                  `budget cap and start a new run.`,
-                false,
-              );
-            }
-            throw error;
-          }));
+        : streamOneTurn(chain, messages, params, () => activeModel, turnCommitted).catch(
+            (error: unknown) => {
+              if (error instanceof BudgetPauseError) {
+                // NOT `error.message` — it ends "run paused for approval", which is exactly what does not
+                // happen here. Reported verbatim on `relavium run` and both `--json` surfaces it told the
+                // operator to go approve a pause that will never arrive, for a run that had already failed.
+                throw new AgentTurnError(
+                  'budget_exceeded',
+                  `pre-egress budget check would exceed the cap of ${error.limitMicrocents} micro-cents ` +
+                    `(spent ${error.spentMicrocents}); the node had already run tools this turn, so it failed ` +
+                    `instead of pausing — approving and resuming would re-fire them (ADR-0080 §7). Raise the ` +
+                    `budget cap and start a new run.`,
+                  false,
+                );
+              }
+              throw error;
+            },
+          ));
       // Cancel-wins independent of adapter cooperation: if the signal fired mid-stream but a
       // non-signal-honoring adapter still settled cleanly, fail `cancelled` rather than return a
       // stray completed result (mirrors the registry's post-await re-check).

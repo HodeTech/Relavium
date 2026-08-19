@@ -97,9 +97,13 @@ describe('toUserFacing', () => {
     // engine's"). Measured before this arm existed: `--input severity=99` against `max: 10` printed
     // `An unexpected internal error occurred.` and exited 1, discarding every issue.
     const projected = toUserFacing(
-      new EngineStateError('input_admission_failed', "inputs do not satisfy: severity — value is above the declared maximum", {
-        issues: [{ name: 'severity', message: 'value is above the declared maximum' }],
-      }),
+      new EngineStateError(
+        'input_admission_failed',
+        'inputs do not satisfy: severity — value is above the declared maximum',
+        {
+          issues: [{ name: 'severity', message: 'value is above the declared maximum' }],
+        },
+      ),
     );
     expect(projected.code).toBe('invalid_invocation');
     expect(projected.exitCode).toBe(EXIT_CODES.invalidInvocation); // exit 2, not 1
@@ -111,7 +115,9 @@ describe('toUserFacing', () => {
     // code is a permanent invocation fault. Collapsing the two would tell a caller to fix a call that was
     // never malformed — the same split `gate.ts` already makes on its own resume path (ADR-0079 §7).
     const projected = toUserFacing(
-      new EngineStateError('run_owned_elsewhere', 'another process holds the lease', { runId: 'run-3' }),
+      new EngineStateError('run_owned_elsewhere', 'another process holds the lease', {
+        runId: 'run-3',
+      }),
     );
     expect(projected.code).toBe('run_owned_elsewhere');
     expect(projected.exitCode).toBe(EXIT_CODES.runOwnedElsewhere);

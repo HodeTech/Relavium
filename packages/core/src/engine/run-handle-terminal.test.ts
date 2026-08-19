@@ -51,7 +51,10 @@ describe('RunHandle.terminalError (effect-journal.md §8)', () => {
     // that has ALREADY failed. A `subscribe()` registered at this point receives nothing — which is the
     // whole bug — so the code has to live on the handle.
     const store = new InMemoryRunStore();
-    const engineA = new WorkflowEngine({ host: createInMemoryHost({ store }), executor: new Stub() });
+    const engineA = new WorkflowEngine({
+      host: createInMemoryHost({ store }),
+      executor: new Stub(),
+    });
     const handleA = engineA.start({ workflow: GATED });
     let gateId = '';
     for await (const event of handleA.events) {
@@ -97,7 +100,10 @@ describe('RunHandle.terminalError (effect-journal.md §8)', () => {
 
   it('is undefined for a run that did not fail — the negative control', async () => {
     const store = new InMemoryRunStore();
-    const engine = new WorkflowEngine({ host: createInMemoryHost({ store }), executor: new Stub() });
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost({ store }),
+      executor: new Stub(),
+    });
     const handle = engine.start({
       workflow: parseWorkflow(
         `schema_version: '1.0'

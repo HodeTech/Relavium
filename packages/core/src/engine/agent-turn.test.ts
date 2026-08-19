@@ -1490,4 +1490,3 @@ describe('codeForLlmError — the `protocol` mapping (ADR-0082 §9)', () => {
     expect(foldRetryable(timeout, true)).toBe(false); // an earlier round of this turn
   });
 });
-

@@ -173,9 +173,10 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
     const journalWithHeldRow = recordingJournal();
     await journalWithHeldRow.port.prepare(0, 'http_request', 3, {});
 
-    await expect(
-      registry.dispatch(POST, ctxWith(journalWithHeldRow)),
-    ).rejects.toMatchObject({ retryable: false, runErrorCode: 'effect_needs_attention' });
+    await expect(registry.dispatch(POST, ctxWith(journalWithHeldRow))).rejects.toMatchObject({
+      retryable: false,
+      runErrorCode: 'effect_needs_attention',
+    });
 
     expect(dispatched).toBe(0); // the refused attempt never reached the target
   });
@@ -363,7 +364,8 @@ describe('the effect journal brackets a dispatch (ADR-0080 §7)', () => {
       source: 'mcp',
       description: '',
       policy: { requiresGateApproval: false },
-      parseArgs: (v: unknown) => z.object({ endpoint: z.string(), api_key: z.string() }).strict().parse(v),
+      parseArgs: (v: unknown) =>
+        z.object({ endpoint: z.string(), api_key: z.string() }).strict().parse(v),
       llmVisibleParams: { type: 'object' },
       effect: () => 3,
       dispatch: () => Promise.resolve({ ok: true }),

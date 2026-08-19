@@ -871,7 +871,9 @@ workflow:
   };
 
   /** Run the retrying workflow against a provider that counts its stream calls. */
-  async function runCounting(chunks: StreamChunk[]): Promise<{ calls: number; events: RunEvent[] }> {
+  async function runCounting(
+    chunks: StreamChunk[],
+  ): Promise<{ calls: number; events: RunEvent[] }> {
     let calls = 0;
     const host = createInMemoryHost();
     const engine = new WorkflowEngine({
@@ -1008,4 +1010,3 @@ workflow:
     expect(events.filter((e) => e.type === 'node:retrying')).toHaveLength(2);
   });
 });
-

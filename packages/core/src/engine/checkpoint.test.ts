@@ -807,4 +807,3 @@ describe('the fold carries what the run was ADMITTED with (ADR-0083 §5)', () =>
     // asserts the persisted log does not contain it.
   });
 });
-

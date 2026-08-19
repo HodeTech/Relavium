@@ -162,7 +162,11 @@ describe('resolveInputs', () => {
     // `constructor` and `toString` are ordinary writable data properties and were never affected — they are
     // here so the acceptance criterion is covered as written.
     const raw = parseInputArgs(['__proto__=p', 'constructor=c', 'toString=t']);
-    expect(Object.getOwnPropertyNames(raw).sort()).toEqual(['__proto__', 'constructor', 'toString']);
+    expect(Object.getOwnPropertyNames(raw).sort()).toEqual([
+      '__proto__',
+      'constructor',
+      'toString',
+    ]);
     expect(raw['__proto__']).toBe('p');
 
     const wf = workflowWithInputs(`  inputs:

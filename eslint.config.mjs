@@ -296,7 +296,12 @@ export default tseslint.config(
       // The seam fence (0.F): static specifiers (incl. `import type`) + the
       // dynamic/import-type/require forms that evade the first.
       '@typescript-eslint/no-restricted-imports': seamImportEntry,
-      'no-restricted-syntax': [...seamSyntaxRules, authoredPromptSyntaxRule, authoredPromptAliasRule, authoredPromptPredicateRule],
+      'no-restricted-syntax': [
+        ...seamSyntaxRules,
+        authoredPromptSyntaxRule,
+        authoredPromptAliasRule,
+        authoredPromptPredicateRule,
+      ],
     },
   },
   {
@@ -320,7 +325,13 @@ export default tseslint.config(
     // entry is currently inert rather than wrong.
     ignores: ['apps/cli/src/process/render-error.ts', 'apps/cli/src/render/sanitize.ts'],
     rules: {
-      'no-restricted-syntax': [...seamSyntaxRules, authoredPromptSyntaxRule, authoredPromptAliasRule, authoredPromptPredicateRule, jsonLineSyntaxRule],
+      'no-restricted-syntax': [
+        ...seamSyntaxRules,
+        authoredPromptSyntaxRule,
+        authoredPromptAliasRule,
+        authoredPromptPredicateRule,
+        jsonLineSyntaxRule,
+      ],
     },
   },
   {

@@ -102,7 +102,9 @@ export async function resolveStdioSpawn(
 ): Promise<ResolvedStdioSpawn> {
   const { command } = declaration;
   if (command.trim() === '') {
-    throw new StdioResolutionError(`MCP server '${declaration.serverId}' declares an empty command`);
+    throw new StdioResolutionError(
+      `MCP server '${declaration.serverId}' declares an empty command`,
+    );
   }
   const canonicalCwd = await canonicalize(cwd);
   const explicit = isAbsolute(command) || command.includes('/') || command.includes('\\');

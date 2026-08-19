@@ -262,7 +262,6 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
         );
     },
 
-
     // Encoded to match `effectScope` byte for byte — the query and the writer must agree, and the trailing
     // `:` lives inside the prefix so `s1` can never reach `s10`'s rows.
     unresolvedForSession: (sessionId) =>
@@ -295,8 +294,7 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
       // ONE statement, not N standalone write transactions on a `chat`/`chat-resume` startup path. Chunked
       // because SQLite caps bound parameters per statement (999 on the conservative default build).
       for (let i = 0; i < doomed.length; i += 500) {
-        db
-          .delete(runEffects)
+        db.delete(runEffects)
           .where(inArray(runEffects.id, doomed.slice(i, i + 500)))
           .run();
       }
@@ -461,5 +459,3 @@ function coerceEffectTier(value: number): EffectTier {
 function digestOf(redactedArgs: unknown): string {
   return createHash('sha256').update(canonicalJson(redactedArgs)).digest('hex');
 }
-
-

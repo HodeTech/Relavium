@@ -409,7 +409,8 @@ describe('redactSecretShapedText — URL userinfo (ADR-0080 §11)', () => {
     // `args_digest`, so a resumed run's `prepare` returned `replay` and handed the model the OTHER payee's
     // receipt for a payment that never happened. That is verbatim what §4 says must not occur.
     const alice = '{"endpoint":"https://api.pay.io:8080","payee":"alice@corp.com","amount":100}';
-    const mallory = '{"endpoint":"https://api.pay.io:8080","payee":"mallory@corp.com","amount":100}';
+    const mallory =
+      '{"endpoint":"https://api.pay.io:8080","payee":"mallory@corp.com","amount":100}';
 
     expect(redactSecretShapedText(alice)).toBe(alice);
     expect(redactSecretShapedText(mallory)).toBe(mallory);
@@ -450,7 +451,10 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     { what: 'a NESTED secret key', input: { auth: { api_key: SECRET } } },
     { what: 'a nested header name', input: { headers: { 'X-Api-Key': SECRET } } },
     { what: 'a top-level password', input: { password: SECRET } },
-    { what: 'the value FOLLOWING a secret-ish flag in an arg vector', input: { args: ['deploy', '--token', SECRET] } },
+    {
+      what: 'the value FOLLOWING a secret-ish flag in an arg vector',
+      input: { args: ['deploy', '--token', SECRET] },
+    },
     { what: 'a NUMERIC secret', input: { pin: 493021 } },
     { what: 'a credential object', input: { credentials: { user: 'u', pass: SECRET } } },
   ];
@@ -495,7 +499,9 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
       'private_key',
       'sessionKey',
     ]) {
-      expect(JSON.stringify(redactSecretShapedValue({ [name]: 'hunter2' }))).not.toContain('hunter2');
+      expect(JSON.stringify(redactSecretShapedValue({ [name]: 'hunter2' }))).not.toContain(
+        'hunter2',
+      );
     }
   });
 
@@ -552,4 +558,3 @@ describe('redactSecretShapedValue — the KEY decides, whatever the value looks 
     );
   });
 });
-

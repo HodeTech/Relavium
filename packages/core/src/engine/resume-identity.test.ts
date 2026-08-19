@@ -137,9 +137,9 @@ describe('verifyResumeIdentity — the record is the authority (ADR-0083 §5)', 
     // never detected — the one key where a mismatch can hide.
     const wf = workflowWith(`    - { name: __proto__, type: string }`);
     const recorded = { ['__proto__']: 'p' };
-    expect(verify({ workflow: wf, recordedInputs: recorded, suppliedInputs: { ['__proto__']: 'p' } }).ok).toBe(
-      true,
-    );
+    expect(
+      verify({ workflow: wf, recordedInputs: recorded, suppliedInputs: { ['__proto__']: 'p' } }).ok,
+    ).toBe(true);
     const mismatched = verify({
       workflow: wf,
       recordedInputs: recorded,
@@ -638,7 +638,11 @@ describe('resumeFromCheckpoint — identity refusals release the lease (acceptan
     - { name: sneaked_in, type: string }`);
     // The graph differs and is NOT refused on content — but the inputs still are, because that record exists.
     await expect(
-      engine.resumeFromCheckpoint({ runId: 'run-nosnap', workflow: edited, inputs: { topic: 'x' } }),
+      engine.resumeFromCheckpoint({
+        runId: 'run-nosnap',
+        workflow: edited,
+        inputs: { topic: 'x' },
+      }),
     ).rejects.toMatchObject({ code: 'input_mismatch' });
   });
 
@@ -731,12 +735,10 @@ describe('resumeFromCheckpoint — identity refusals release the lease (acceptan
     expect(gateId).not.toBe('');
 
     // The DURABLE record — not the in-memory map — must carry all three.
-    const persisted = store
-      .eventsFor(started.runId)
-      .find((event) => event.type === 'run:started');
-    expect(persisted?.type === 'run:started' && Object.getOwnPropertyNames(persisted.inputs)).toEqual(
-      ['__proto__', 'constructor', 'toString'],
-    );
+    const persisted = store.eventsFor(started.runId).find((event) => event.type === 'run:started');
+    expect(
+      persisted?.type === 'run:started' && Object.getOwnPropertyNames(persisted.inputs),
+    ).toEqual(['__proto__', 'constructor', 'toString']);
 
     const seenInputs: Record<string, unknown>[] = [];
     // A FRESH host over the SAME store — a second process, which is what a cross-process resume is. Reusing
@@ -755,7 +757,11 @@ describe('resumeFromCheckpoint — identity refusals release the lease (acceptan
     for await (const event of resumed.events) void event;
 
     const post = seenInputs.at(-1) ?? {};
-    expect(Object.getOwnPropertyNames(post).sort()).toEqual(['__proto__', 'constructor', 'toString']);
+    expect(Object.getOwnPropertyNames(post).sort()).toEqual([
+      '__proto__',
+      'constructor',
+      'toString',
+    ]);
     expect(post['__proto__']).toBe('p');
     // …and nothing leaked onto the global prototype on the way through.
     expect(({} as Record<string, unknown>)['p']).toBeUndefined();

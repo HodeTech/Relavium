@@ -29,8 +29,7 @@ ${inputsYaml}
 const admit = (
   wf: WorkflowDefinition,
   raw: Record<string, unknown> | undefined,
-): ReturnType<typeof resolveAndValidateWorkflowInputs> =>
-  resolveAndValidateWorkflowInputs(wf, raw);
+): ReturnType<typeof resolveAndValidateWorkflowInputs> => resolveAndValidateWorkflowInputs(wf, raw);
 
 describe('resolveAndValidateWorkflowInputs (ADR-0083 §1, §2, §7)', () => {
   it('a missing required input fails; one satisfied by a default does not', () => {
@@ -130,7 +129,7 @@ describe('resolveAndValidateWorkflowInputs (ADR-0083 §1, §2, §7)', () => {
     expect(!typo.ok && typo.issues.map((i) => i.name)).toEqual(['aa']);
   });
 
-  it('caps the unknown-key report — the caller\'s map is bounded by nothing', () => {
+  it("caps the unknown-key report — the caller's map is bounded by nothing", () => {
     // 20,000 unknown keys was 20,000 issues in one error, and the engine joined every one of them into a
     // single 1.4-million-character message.
     const wf = workflowWith(`    - { name: a, type: string }`);
@@ -159,9 +158,9 @@ describe('resolveAndValidateWorkflowInputs (ADR-0083 §1, §2, §7)', () => {
     );
     const result = admit(wf, hostile);
     expect(result.ok).toBe(false);
-    expect(!result.ok && result.issues.some((i) => i.message.includes('could not be enumerated'))).toBe(
-      true,
-    );
+    expect(
+      !result.ok && result.issues.some((i) => i.message.includes('could not be enumerated')),
+    ).toBe(true);
   });
 
   it('a throwing accessor becomes an ISSUE, not a raw throw out of admission', () => {
@@ -261,7 +260,10 @@ describe('WorkflowEngine.start — admission runs before the run exists (ADR-008
 
   it('a rejected admission produces a typed error, no runId, and an UNTOUCHED store', async () => {
     const store = new InMemoryRunStore();
-    const engine = new WorkflowEngine({ host: createInMemoryHost({ store }), executor: new Stub() });
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost({ store }),
+      executor: new Stub(),
+    });
 
     let thrown: unknown;
     try {
@@ -278,7 +280,10 @@ describe('WorkflowEngine.start — admission runs before the run exists (ADR-008
 
   it('mutating the caller’s object after start() does not change the run', async () => {
     const store = new InMemoryRunStore();
-    const engine = new WorkflowEngine({ host: createInMemoryHost({ store }), executor: new Stub() });
+    const engine = new WorkflowEngine({
+      host: createInMemoryHost({ store }),
+      executor: new Stub(),
+    });
     const caller: Record<string, unknown> = { a: 1 };
 
     const handle = engine.start({ workflow: WF, inputs: caller });

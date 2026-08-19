@@ -23,7 +23,7 @@ export const twoStep = dynamic as unknown as AuthoredSystemPrompt;
 export function returnPosition(): AuthoredSystemPrompt {
   return dynamic as AuthoredSystemPrompt;
 }
-export const satisfiesChained = (dynamic satisfies string) as AuthoredSystemPrompt;
+export const satisfiesChained = dynamic satisfies string as AuthoredSystemPrompt;
 
 /* ---- CAUGHT: the one-hop alias, flagged at its DECLARATION. ----------------------------------- */
 /* A name-based selector cannot see `x as Alias`; making the alias requires writing the name, so the

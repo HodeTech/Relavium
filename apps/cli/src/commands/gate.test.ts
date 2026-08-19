@@ -365,7 +365,10 @@ describe('gateCommand', () => {
       // path AND the engine path". The engine half is pinned in `resume-identity.test.ts`; this half was not,
       // and both of this command's accumulators could be changed to `{}` with the suite green — which would
       // put the name through the prototype setter and drop the input from the resumed run.
-      const yaml = GATED_SECRET.replace('- { name: api_key, type: secret }', '- { name: __proto__, type: secret }');
+      const yaml = GATED_SECRET.replace(
+        '- { name: api_key, type: secret }',
+        '- { name: __proto__, type: secret }',
+      );
       const { runId } = await setupPausedRun(yaml, { n: 7, ['__proto__']: SECRET });
       const { io } = captureIo();
       const code = await gateCommand(

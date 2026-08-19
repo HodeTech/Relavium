@@ -162,4 +162,3 @@ describe('every discovered MCP tool is permanently tier 3 (ADR-0080 §5)', () =>
     expect(def?.duplicationBenign).toBeUndefined();
   });
 });
-

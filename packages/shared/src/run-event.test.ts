@@ -1259,7 +1259,9 @@ describe('MaskedSecretSchema', () => {
     // The `ref` the engine actually emits: a SELF-reference naming the slot, not a keychain locator. The
     // fixture said `keychain:openai`, which taught a contract the value never carried — the schema accepts
     // any non-empty string, so nothing failed, and the docblock's "keychain/env ref" wording followed it.
-    expect(MaskedSecretSchema.safeParse({ secret: true, ref: 'inputs.api_key' }).success).toBe(true);
+    expect(MaskedSecretSchema.safeParse({ secret: true, ref: 'inputs.api_key' }).success).toBe(
+      true,
+    );
   });
 
   it('rejects a non-masked or ref-less value', () => {

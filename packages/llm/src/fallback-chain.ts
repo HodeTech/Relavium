@@ -664,7 +664,10 @@ export class FallbackChain {
       // a managed gateway. A rule enforced only inside implementations we happen to own is a coincidence.
       deadline = this.#openDeadline(entryReq);
       const verified = verifyStreamGrammar(
-        entry.provider.stream(deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal), key),
+        entry.provider.stream(
+          deadline === undefined ? entryReq : withSignal(entryReq, deadline.signal),
+          key,
+        ),
         entry.provider.id,
       );
       // Manual iteration, not `for await`: every `next()` is raced against the ABSOLUTE deadline. A
@@ -975,7 +978,9 @@ export class FallbackChain {
       void Promise.resolve(iterator.return?.(undefined)).catch(() => undefined);
       return { kind: 'timeout' };
     }
-    return raced.value.done === true ? { kind: 'done' } : { kind: 'chunk', chunk: raced.value.value };
+    return raced.value.done === true
+      ? { kind: 'done' }
+      : { kind: 'chunk', chunk: raced.value.value };
   }
 
   /** A deadline abort is `timeout`; a caller abort in the same window stays `cancelled` (ADR-0082 §5). */

@@ -32,7 +32,9 @@ describe('journaledTier (ADR-0080 §3)', () => {
   it('an effectful tool is journaled at the tier it declares for THAT call', () => {
     // Two tools answer per call rather than per definition (`http_request` by method, `write_file` by
     // append), which is why the decision takes the validated args.
-    const def = defWith({ effect: (args) => ((args as { post?: boolean }).post === true ? 3 : undefined) });
+    const def = defWith({
+      effect: (args) => ((args as { post?: boolean }).post === true ? 3 : undefined),
+    });
     expect(journaledTier(def, { post: true })).toBe(3);
     expect(journaledTier(def, { post: false })).toBeUndefined();
   });
@@ -50,9 +52,9 @@ describe('journaledTier (ADR-0080 §3)', () => {
     // `source === 'builtin'` clause left all 1,228 core tests green: the boundary was enforced only by a
     // doc comment. The mapper is separately pinned never to SET the flag; this pins the READER.
     for (const source of ['mcp', 'plugin'] as const) {
-      expect(
-        journaledTier(defWith({ effect: () => 3, duplicationBenign: true, source }), {}),
-      ).toBe(3);
+      expect(journaledTier(defWith({ effect: () => 3, duplicationBenign: true, source }), {})).toBe(
+        3,
+      );
     }
   });
 });

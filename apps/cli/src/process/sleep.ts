@@ -64,8 +64,10 @@ export function hostAttemptTimer(ms: number, fire: () => void): () => void {
  * A real `AbortController` for the engine's deadline scope — the seam is platform-free and names no
  * DOM/Node type, so the host supplies one whose signal a `fetch` in an adapter can also observe.
  */
-export function hostAbortController(): { signal: AbortSignalLike; abort: (reason?: unknown) => void } {
+export function hostAbortController(): {
+  signal: AbortSignalLike;
+  abort: (reason?: unknown) => void;
+} {
   const controller = new AbortController();
   return { signal: controller.signal, abort: (reason?: unknown) => controller.abort(reason) };
 }
-

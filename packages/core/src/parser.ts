@@ -83,7 +83,12 @@ export function parseWorkflow(yamlText: string, opts?: ParseWorkflowOptions): Wo
   } catch (err) {
     if (!(err instanceof RangeError)) throw err;
     throw new WorkflowValidationError(
-      [{ field: 'workflow', message: 'the document is too large or too deeply nested to validate' }],
+      [
+        {
+          field: 'workflow',
+          message: 'the document is too large or too deeply nested to validate',
+        },
+      ],
       source === undefined ? undefined : { source },
     );
   }

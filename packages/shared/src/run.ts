@@ -452,7 +452,6 @@ export function blocksResume(record: {
   return record.state !== 'committed' || record.result === undefined;
 }
 
-
 /** Another attempt already holds this {@link EffectIdentity} — the concurrency collision, not a fault. */
 export class EffectConflictError extends Error {
   override readonly name = 'EffectConflictError';

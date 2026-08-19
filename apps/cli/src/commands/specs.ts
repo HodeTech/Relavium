@@ -338,7 +338,7 @@ function registerGate(program: Command, ctx?: CommandContext): void {
     )
     .option(
       '--secret-stdin',
-      'read the run\'s secret inputs from stdin as name=value lines (never passed as arguments)',
+      "read the run's secret inputs from stdin as name=value lines (never passed as arguments)",
     );
   const gateList = gate
     .command('list [runId]')

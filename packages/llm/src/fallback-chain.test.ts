@@ -2384,10 +2384,9 @@ describe('FallbackChain — the grammar and the deadline are wired', () => {
           abandoned,
         ),
     });
-    for await (const chunk of new FallbackChain(
-      [entry(chatty, 'claude-opus-4-8')],
-      options,
-    ).stream(userReq)) {
+    for await (const chunk of new FallbackChain([entry(chatty, 'claude-opus-4-8')], options).stream(
+      userReq,
+    )) {
       if (chunk.type === 'text_delta') break;
     }
     // The `finally` chain runs on the generator's `return()`; give the microtasks a turn to settle.
@@ -2412,4 +2411,3 @@ describe('FallbackChain — the grammar and the deadline are wired', () => {
     await Promise.resolve();
   });
 });
-

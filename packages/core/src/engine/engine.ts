@@ -3301,7 +3301,9 @@ export class WorkflowEngine {
       throw new EngineStateError(
         'input_admission_failed',
         `the supplied inputs do not satisfy this workflow's contract: ${admitted.issues
-          .map((issue) => (issue.name === undefined ? issue.message : `${issue.name} — ${issue.message}`))
+          .map((issue) =>
+            issue.name === undefined ? issue.message : `${issue.name} — ${issue.message}`,
+          )
           .join('; ')}`,
         { issues: admitted.issues },
       );
@@ -3514,43 +3516,50 @@ export class WorkflowEngine {
       buildRunPlan(input.workflow, input.planOptions),
     );
     const bus = new RunEventBus({ now: this.#host.clock.now, validate: this.#validateEvents });
-    const execution = await this.#releaseFenceOnThrow(input.runId, fence, () => new RunExecution({
-      runId: input.runId,
-      plan,
-      workflow: input.workflow,
-      // The VERIFIED record, not the caller's map — built fresh with a null prototype by the same §7
-      // discipline `start()` uses, so a resume and a start hand `RunExecution` the same shape.
-      inputs: identity.inputs,
-      // **Inert on this path today, and said out loud rather than assumed pinned.** `#executionMode` is read
-      // in exactly one place — the `run:started` emit — which a resume does not repeat, so no engine-level
-      // test can distinguish this line from the `?? 'local'` default it replaces; a review measured the whole
-      // suite staying green under that revert. What IS pinned is the DECISION (`verifyResumeIdentity`'s unit
-      // tests) and the REFUSAL (`execution_mode_mismatch`, end to end). The moment anything downstream reads
-      // the mode, this is the line that has to be right, which is why it is the recorded value and not a
-      // default.
-      executionMode: identity.executionMode,
-      ownerId: this.#ownerId,
-      ...(this.#effectJournalFactory === undefined
-        ? {}
-        : { effectJournal: this.#effectJournalFactory }),
-      ...(this.#effectResume === undefined ? {} : { effectResume: this.#effectResume }),
-      host: this.#host,
-      executor: this.#executor,
-      bus,
-      capacity: this.#capacity,
-      onSettled: () => {
-        /* retained like a started run (see start) */
-      },
-      resolverCapabilities: this.#resolverCapabilities,
-      maxTokensEstimate: this.#maxTokensEstimate,
-      ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
-      ...(this.#resolveEndpoint === undefined ? {} : { resolveEndpoint: this.#resolveEndpoint }),
-      ...(this.#onUnpriced === undefined ? {} : { onUnpriced: this.#onUnpriced }),
-      ...(this.#onLegacyMediaJobHold === undefined
-        ? {}
-        : { onLegacyMediaJobHold: this.#onLegacyMediaJobHold }),
-      checkpoint,
-    }));
+    const execution = await this.#releaseFenceOnThrow(
+      input.runId,
+      fence,
+      () =>
+        new RunExecution({
+          runId: input.runId,
+          plan,
+          workflow: input.workflow,
+          // The VERIFIED record, not the caller's map — built fresh with a null prototype by the same §7
+          // discipline `start()` uses, so a resume and a start hand `RunExecution` the same shape.
+          inputs: identity.inputs,
+          // **Inert on this path today, and said out loud rather than assumed pinned.** `#executionMode` is read
+          // in exactly one place — the `run:started` emit — which a resume does not repeat, so no engine-level
+          // test can distinguish this line from the `?? 'local'` default it replaces; a review measured the whole
+          // suite staying green under that revert. What IS pinned is the DECISION (`verifyResumeIdentity`'s unit
+          // tests) and the REFUSAL (`execution_mode_mismatch`, end to end). The moment anything downstream reads
+          // the mode, this is the line that has to be right, which is why it is the recorded value and not a
+          // default.
+          executionMode: identity.executionMode,
+          ownerId: this.#ownerId,
+          ...(this.#effectJournalFactory === undefined
+            ? {}
+            : { effectJournal: this.#effectJournalFactory }),
+          ...(this.#effectResume === undefined ? {} : { effectResume: this.#effectResume }),
+          host: this.#host,
+          executor: this.#executor,
+          bus,
+          capacity: this.#capacity,
+          onSettled: () => {
+            /* retained like a started run (see start) */
+          },
+          resolverCapabilities: this.#resolverCapabilities,
+          maxTokensEstimate: this.#maxTokensEstimate,
+          ...(this.#resolvePrice === undefined ? {} : { resolvePrice: this.#resolvePrice }),
+          ...(this.#resolveEndpoint === undefined
+            ? {}
+            : { resolveEndpoint: this.#resolveEndpoint }),
+          ...(this.#onUnpriced === undefined ? {} : { onUnpriced: this.#onUnpriced }),
+          ...(this.#onLegacyMediaJobHold === undefined
+            ? {}
+            : { onLegacyMediaJobHold: this.#onLegacyMediaJobHold }),
+          checkpoint,
+        }),
+    );
     this.#runs.set(input.runId, execution);
     try {
       // beginResume re-resolves the workflow context (not checkpointed) then drives: kick if the gate was

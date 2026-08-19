@@ -1917,7 +1917,9 @@ describe('AgentSession — a restored compaction summary stays out of `system` (
     expect(request?.system).not.toContain('earlier-conversation-summary');
     const first = request?.messages[0];
     expect(first?.role).toBe('user');
-    expect(first?.content.map((p) => (p.type === 'text' ? p.text : '')).join('')).toContain(HOSTILE);
+    expect(first?.content.map((p) => (p.type === 'text' ? p.text : '')).join('')).toContain(
+      HOSTILE,
+    );
   });
 
   it('the granted tool set is byte-identical however the summary is mutated', async () => {
@@ -1962,4 +1964,3 @@ describe('AgentSession — a restored compaction summary stays out of `system` (
     expect(JSON.stringify(hostile)).toBe(JSON.stringify(benign)); // byte-identical, order included
   });
 });
-

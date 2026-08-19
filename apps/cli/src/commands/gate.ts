@@ -213,7 +213,11 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     }
 
     const workflow = parseSnapshot(snapshot.workflowDefinitionSnapshot, args.runId);
-    const inputs = await resolveSecretInputs(parseInputs(snapshot.inputJson, args.runId), args, deps);
+    const inputs = await resolveSecretInputs(
+      parseInputs(snapshot.inputJson, args.runId),
+      args,
+      deps,
+    );
 
     // The workflow-scoped store records the NEW resume events (persist-before-deliver) and resolves the
     // workflow id for the engine's identity guard; the checkpointer reconstructs the paused state from the log.
@@ -575,7 +579,8 @@ async function resolveSecretInputs(
     );
   }
   const read =
-    deps.readSecretInput ?? ((): Promise<string> => readSecretFromStdin(SECRET_STDIN_CONTEXT(args.runId)));
+    deps.readSecretInput ??
+    ((): Promise<string> => readSecretFromStdin(SECRET_STDIN_CONTEXT(args.runId)));
   const supplied = parseSecretLines(await read(), args.runId);
   const missing = masked.filter((name) => !Object.hasOwn(supplied, name));
   if (missing.length > 0) {
@@ -638,7 +643,6 @@ function parseSecretLines(raw: string, runId: string): Record<string, string> {
   }
   return out;
 }
-
 
 /**
  * Map a checkpoint-read fault to the surface error it deserves, and never return. Extracted from

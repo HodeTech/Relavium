@@ -186,7 +186,9 @@ describe('the effect journal store', () => {
     store.settle({ scope: 'run:r10:n', slot: 0, toolId: 'http_request' }, 'committed', { ok: 2 });
 
     expect(store.sweepCommittedForRun('r1')).toBe(1);
-    expect(store.recordsFor({ kind: 'run', runId: 'r1', nodeId: 'stuck', attempt: 1 })).toHaveLength(1);
+    expect(
+      store.recordsFor({ kind: 'run', runId: 'r1', nodeId: 'stuck', attempt: 1 }),
+    ).toHaveLength(1);
     expect(store.recordsFor(other)).toHaveLength(1); // the prefix neighbour survived
   });
 
@@ -225,7 +227,13 @@ describe('the effect journal store', () => {
     // caller-supplied id would otherwise match everything under `session:`.
     const wild: EffectCorrelation = { kind: 'session', sessionId: '%', turn: 0 };
     const real: EffectCorrelation = { kind: 'session', sessionId: 'real', turn: 0 };
-    store.prepare({ scope: 'session:real:0', slot: 0, toolId: 'run_command' }, real, ATTEMPT, 3, 'd');
+    store.prepare(
+      { scope: 'session:real:0', slot: 0, toolId: 'run_command' },
+      real,
+      ATTEMPT,
+      3,
+      'd',
+    );
 
     expect(store.unresolvedForSession('%')).toHaveLength(0);
     expect(store.unresolvedForSession('real')).toHaveLength(1);
@@ -244,4 +252,3 @@ describe('the effect journal store', () => {
     expect(unresolved.map((r) => r.identity.scope)).toEqual(['session:s9:1']);
   });
 });
-

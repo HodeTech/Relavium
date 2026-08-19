@@ -18,7 +18,14 @@ describe('isForbiddenDeclaredEnvKey', () => {
   it('refuses each category, and says which by naming a member of it', () => {
     // Interpreter / loader option + module-path injection — measured on the pinned MCP SDK: `NODE_OPTIONS`
     // ran a preload before the target script.
-    for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'PERL5OPT', 'RUBYOPT', 'CLASSPATH', 'BASH_ENV']) {
+    for (const key of [
+      'NODE_OPTIONS',
+      'NODE_PATH',
+      'PERL5OPT',
+      'RUBYOPT',
+      'CLASSPATH',
+      'BASH_ENV',
+    ]) {
       expect(isForbiddenDeclaredEnvKey(key), key).toBe(true);
     }
     // The dynamic loaders and the whole git / python configuration namespaces, by PREFIX.

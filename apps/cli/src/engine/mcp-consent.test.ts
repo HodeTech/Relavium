@@ -127,7 +127,11 @@ describe('resolveStdioSpawn (ADR-0084 §3)', () => {
     mkdirSync(b);
     writeFileSync(join(a, 'server.js'), '// a');
     writeFileSync(join(b, 'server.js'), '// b');
-    const decl = { serverId: 'fs', provenance: { kind: 'inline' } as const, command: './server.js' };
+    const decl = {
+      serverId: 'fs',
+      provenance: { kind: 'inline' } as const,
+      command: './server.js',
+    };
     const inA = await resolveStdioSpawn(decl, a);
     const inB = await resolveStdioSpawn(decl, b);
     expect(inA.resolvedCommand).not.toBe(inB.resolvedCommand);
@@ -140,7 +144,11 @@ describe('resolveStdioSpawn (ADR-0084 §3)', () => {
     writeFileSync(join(real, 'server.js'), '// x');
     const link = join(dir, 'link');
     symlinkSync(real, link);
-    const decl = { serverId: 'fs', provenance: { kind: 'inline' } as const, command: './server.js' };
+    const decl = {
+      serverId: 'fs',
+      provenance: { kind: 'inline' } as const,
+      command: './server.js',
+    };
     expect(fingerprint(await resolveStdioSpawn(decl, real))).toBe(
       fingerprint(await resolveStdioSpawn(decl, link)),
     );
@@ -150,7 +158,11 @@ describe('resolveStdioSpawn (ADR-0084 §3)', () => {
     // An unresolvable executable is not a decision a user can meaningfully make.
     await expect(
       resolveStdioSpawn(
-        { serverId: 'fs', provenance: { kind: 'inline' }, command: 'definitely-not-a-real-binary-xyz' },
+        {
+          serverId: 'fs',
+          provenance: { kind: 'inline' },
+          command: 'definitely-not-a-real-binary-xyz',
+        },
         dir,
       ),
     ).rejects.toBeInstanceOf(StdioResolutionError);

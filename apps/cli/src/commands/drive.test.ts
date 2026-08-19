@@ -315,4 +315,3 @@ describe('outcomeToExitCode — an unresolved external effect (ADR-0080 §2b, ef
     expect(outcomeToExitCode('completed', 'durable', undefined)).toBe(EXIT_CODES.success);
   });
 });
-

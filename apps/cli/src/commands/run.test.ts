@@ -1199,7 +1199,7 @@ describe('runCommand', () => {
     }
   });
 
-  it('a history-db fault is exit 2, and still tears the MCP children down (the reorder\'s new context)', async () => {
+  it("a history-db fault is exit 2, and still tears the MCP children down (the reorder's new context)", async () => {
     // The block that maps a history-open failure to an INVOCATION fault carries an explicit contract — "so a
     // `--json`/CI consumer can tell 'the history db couldn't open' from 'a node failed mid-run'" — and no
     // test greped for it: a review measured the whole `CliError` replaceable with a bare rethrow while the
@@ -1210,8 +1210,7 @@ describe('runCommand', () => {
     let closed = 0;
     const conn: McpConnection = {
       listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
-      callTool: () =>
-        Promise.resolve({ content: [{ type: 'text', text: 'x' }], isError: false }),
+      callTool: () => Promise.resolve({ content: [{ type: 'text', text: 'x' }], isError: false }),
       close: () => {
         closed += 1;
         return Promise.resolve();

@@ -50,7 +50,9 @@ export interface DeadlineScope {
    * Race one awaited step against the ABSOLUTE deadline. Used per `next()` on a stream, deliberately: a
    * per-chunk reset would let a provider dribble one token per interval forever.
    */
-  race: <T>(step: Promise<T>) => Promise<{ outcome: 'settled'; value: T } | { outcome: 'deadline' }>;
+  race: <T>(
+    step: Promise<T>,
+  ) => Promise<{ outcome: 'settled'; value: T } | { outcome: 'deadline' }>;
   /** Which side ended it, resolved at CLASSIFICATION time so the answer is a contract, not a race. */
   classify: () => DeadlineOutcome;
   /** Disarm the timer and detach the caller listener. Idempotent; safe on every exit path. */
@@ -96,7 +98,7 @@ export function openDeadline(
 
   return {
     signal: controller.signal,
-    race: async <T,>(step: Promise<T>) => {
+    race: async <T>(step: Promise<T>) => {
       if (expired) {
         // **Discarded, but discarded HANDLED.** `step` is `iterator.next()`, already invoked by the caller —
         // argument evaluation happens before the call — so returning without attaching a handler leaves a

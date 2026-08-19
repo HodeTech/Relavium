@@ -637,9 +637,9 @@ describe('WorkflowInputSchema — the ADR-0083 tightenings', () => {
     // The ordering is what bounds the input a catastrophic authored regex can chew on. A review measured
     // it unpinned: hoisting the `pattern` check above the length checks left every suite green, because
     // no test asserted an issue MESSAGE.
-    expect(violatesInputContract('aaaaaaaaaa', 'string', { max_length: 3, pattern: '(?:a+)+b' })).toBe(
-      'value is longer than max_length',
-    );
+    expect(
+      violatesInputContract('aaaaaaaaaa', 'string', { max_length: 3, pattern: '(?:a+)+b' }),
+    ).toBe('value is longer than max_length');
     expect(violatesInputContract('a', 'string', { min_length: 3, pattern: '(?:a+)+b' })).toBe(
       'value is shorter than min_length',
     );
@@ -648,7 +648,9 @@ describe('WorkflowInputSchema — the ADR-0083 tightenings', () => {
   it('rejects a value below `min` and shorter than `min_length` — both bounds, both directions', () => {
     // Both lower bounds could be deleted with the monorepo green: `min` was only ever exercised through
     // its `max` sibling, and `min_length` only through `max_length`.
-    expect(violatesInputContract(0, 'number', { min: 1 })).toBe('value is below the declared minimum');
+    expect(violatesInputContract(0, 'number', { min: 1 })).toBe(
+      'value is below the declared minimum',
+    );
     expect(violatesInputContract(1, 'number', { min: 1 })).toBeUndefined();
     expect(violatesInputContract('ab', 'string', { min_length: 3 })).toBe(
       'value is shorter than min_length',
@@ -660,17 +662,30 @@ describe('WorkflowInputSchema — the ADR-0083 tightenings', () => {
     // `uri` required `://`, so it rejected `mailto:`, `urn:` and `data:` — URIs by every definition the
     // word has. `date-time` had unbounded `\\d{2}` groups, so `0000-99-99T99:99:99Z` was a valid instant:
     // not a shape check failing gracefully, the check being absent.
-    for (const uri of ['mailto:a@b.com', 'urn:isbn:0451450523', 'data:text/plain,hi', 'https://x.dev/p']) {
+    for (const uri of [
+      'mailto:a@b.com',
+      'urn:isbn:0451450523',
+      'data:text/plain,hi',
+      'https://x.dev/p',
+    ]) {
       expect(violatesInputContract(uri, 'string', { format: 'uri' })).toBeUndefined();
     }
     expect(violatesInputContract('not a uri', 'string', { format: 'uri' })).toBeDefined();
-    for (const bad of ['0000-99-99T99:99:99Z', '2026-13-45T25:61:61+99:99', '2026-01-01T00:00:00']) {
+    for (const bad of [
+      '0000-99-99T99:99:99Z',
+      '2026-13-45T25:61:61+99:99',
+      '2026-01-01T00:00:00',
+    ]) {
       expect(violatesInputContract(bad, 'string', { format: 'date-time' })).toBeDefined();
     }
-    expect(violatesInputContract('2026-07-19T12:30:00Z', 'string', { format: 'date-time' })).toBeUndefined();
+    expect(
+      violatesInputContract('2026-07-19T12:30:00Z', 'string', { format: 'date-time' }),
+    ).toBeUndefined();
     // …and no string-shaped format admits a control character, because these values are echoed by surfaces
     // and written to log sinks.
-    expect(violatesInputContract('https://x.dev/\u001b[2J', 'string', { format: 'uri' })).toBeDefined();
+    expect(
+      violatesInputContract('https://x.dev/\u001b[2J', 'string', { format: 'uri' }),
+    ).toBeDefined();
     expect(violatesInputContract('\u001b[31ma@b.co', 'string', { format: 'email' })).toBeDefined();
   });
 
@@ -694,12 +709,19 @@ describe('WorkflowInputSchema — the ADR-0083 tightenings', () => {
     // whose `.test` is `undefined`: the lookup guard passed and `check.test(value)` threw a raw
     // `TypeError` out of `safeParse` — breaking Zod's own contract, on a path `relavium import` and every
     // `gate` resume (which re-validates the stored snapshot) reach from untrusted YAML.
-    for (const bad of ['constructor', 'toString', '__proto__', 'valueOf', 'hasOwnProperty', 'url']) {
+    for (const bad of [
+      'constructor',
+      'toString',
+      '__proto__',
+      'valueOf',
+      'hasOwnProperty',
+      'url',
+    ]) {
       const parsed = input({ default: 'abc', validation: { format: bad } });
       expect(parsed.success).toBe(false);
-      expect(!parsed.success && parsed.error.issues.some((i) => i.message.includes('unknown format'))).toBe(
-        true,
-      );
+      expect(
+        !parsed.success && parsed.error.issues.some((i) => i.message.includes('unknown format')),
+      ).toBe(true);
     }
   });
 

@@ -111,10 +111,7 @@ function validateRefForm(ref: McpServerRefDraft, ctx: z.RefinementCtx): void {
  * answers "this is actually a different program". Rejected at PARSE, as an authored error, so it cannot
  * reach a consent prompt that would then be deciding about the wrong thing.
  */
-function validateDeclaredEnv(
-  env: Record<string, string> | undefined,
-  ctx: z.RefinementCtx,
-): void {
+function validateDeclaredEnv(env: Record<string, string> | undefined, ctx: z.RefinementCtx): void {
   for (const key of Object.keys(env ?? {})) {
     if (isForbiddenDeclaredEnvKey(key)) {
       ctx.addIssue({

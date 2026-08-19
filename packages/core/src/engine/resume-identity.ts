@@ -97,7 +97,10 @@ function snapshotSupplied(
     } catch {
       return {
         ok: false,
-        refusal: { code: 'input_mismatch', message: named(key, 'reading the supplied value threw') },
+        refusal: {
+          code: 'input_mismatch',
+          message: named(key, 'reading the supplied value threw'),
+        },
       };
     }
   }
@@ -222,7 +225,10 @@ export function verifyResumeIdentity(params: {
             code: 'secret_input_unexpected',
             message: named(key, 'this run holds no `secret` slot by this name'),
           }
-        : { code: 'input_mismatch', message: named(key, 'this run was not admitted with this input') },
+        : {
+            code: 'input_mismatch',
+            message: named(key, 'this run was not admitted with this input'),
+          },
     };
   }
 
@@ -248,7 +254,6 @@ export function verifyResumeIdentity(params: {
 
   return { ok: true, inputs: admitted.inputs, executionMode: recordedExecutionMode };
 }
-
 
 /**
  * Does the supplied workflow have the same CONTENT as the one the run was frozen with (ADR-0083 §5)?
@@ -287,13 +292,18 @@ export function verifyFrozenWorkflowContent(
   const normalizedFrozen = WorkflowSchema.safeParse(frozen);
   if (!normalizedFrozen.success) {
     // Value-free: the reason list would carry authored content from a workflow this process did not write.
-    return unreadable('the frozen workflow definition for this run is not a workflow this engine can read');
+    return unreadable(
+      'the frozen workflow definition for this run is not a workflow this engine can read',
+    );
   }
   let normalizedSupplied: unknown;
   try {
     normalizedSupplied = JSON.parse(JSON.stringify(supplied));
   } catch {
-    return { code: 'workflow_content_mismatch', message: 'the supplied workflow is not serialisable' };
+    return {
+      code: 'workflow_content_mismatch',
+      message: 'the supplied workflow is not serialisable',
+    };
   }
   // The FROZEN side takes the same guarded round trip as the supplied one — and it is the side that needed
   // it more. `WorkflowSchema` accepts a `metadata` record of `z.unknown()` without recursing into it, so a
