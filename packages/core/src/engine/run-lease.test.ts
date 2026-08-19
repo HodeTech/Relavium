@@ -163,6 +163,7 @@ describe('ADR-0079 §5 — a fenced-out process stops without claiming an outcom
     const store = {
       resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
       listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       persistEvent: async (
         event: RunEvent,
         ctx?: Parameters<typeof inner.persistEvent>[1],

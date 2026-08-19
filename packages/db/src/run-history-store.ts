@@ -357,6 +357,16 @@ export interface RunHistoryStore extends Pick<
   /** Structurally the core `RunStore.persistEvent`; `ctx` carries ADR-0078 §2's compare-and-append guard. */
   persistEvent: (event: RunEvent, ctx?: DurableWriteContext) => Promise<void>;
   listInterruptedRuns: () => Promise<readonly InterruptedRunInfo[]>;
+  /**
+   * One run's frozen `runs.workflow_definition_snapshot`, or `undefined` for an unknown / soft-deleted run.
+   * Structurally the core `RunStore.readWorkflowSnapshot` (ADR-0083 §5) — the engine compares it against the
+   * workflow a resume was handed, so a same-slug-but-edited graph is refused instead of silently resumed.
+   *
+   * A thin wrapper over {@link loadRunSnapshot}, which stays standalone because `relavium gate` needs the
+   * snapshot BEFORE it can construct a workflow-scoped store. This method exists so a store that already has
+   * a connection does not have to reach past its own seam for the same row.
+   */
+  readWorkflowSnapshot: (runId: string) => Promise<string | undefined>;
   /** Cross-process run ownership (ADR-0079). Structurally the core `RunLeasePort`. */
   readonly leases: RunLeaseStore;
 }
@@ -1135,6 +1145,9 @@ export function createRunHistoryStore(db: Db, deps: RunHistoryStoreDeps): RunHis
         };
       },
     },
+
+    readWorkflowSnapshot: (runId: string) =>
+      Promise.resolve(loadRunSnapshot(db, runId)?.workflowDefinitionSnapshot),
 
     listInterruptedRuns: () => {
       // One pass: a LEFT JOIN + coalesce(max(seq),0), grouped by the run PK. No second round-trip and no

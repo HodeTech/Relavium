@@ -22,6 +22,7 @@
 import {
   isReferenceableInputName,
   MaskedSecretSchema,
+  WorkflowSchema,
   type ExecutionMode,
   type Workflow,
 } from '@relavium/shared';
@@ -36,6 +37,10 @@ import { resolveAndValidateWorkflowInputs } from './input-admission.js';
 export type ResumeIdentityCode =
   /** A supplied input differs from the one the run was admitted with, or names a slot the run never had. */
   | 'input_mismatch'
+  /** The supplied workflow is the same slug with different CONTENT than the run started on. */
+  | 'workflow_content_mismatch'
+  /** The frozen definition exists but cannot be read as a workflow — nothing can be verified against it. */
+  | 'admission_record_unreadable'
   /** A supplied `executionMode` differs from the one the run started under. */
   | 'execution_mode_mismatch'
   /** A `secret` input the record holds as a masked slot was not re-supplied. */
@@ -225,4 +230,64 @@ export function verifyResumeIdentity(params: {
   }
 
   return { ok: true, inputs: admitted.inputs, executionMode: recordedExecutionMode };
+}
+
+
+/**
+ * Does the supplied workflow have the same CONTENT as the one the run was frozen with (ADR-0083 §5)?
+ *
+ * The surrogate-id guard above this in `resumeFromCheckpoint` catches resuming the wrong workflow entirely.
+ * It cannot catch the same slug with edited content — the "subtler same-slug-edited-content drift" its own
+ * comment named and deferred to a content hash on `run:started`. This answers it without one:
+ * [ADR-0079](0079-cross-process-run-ownership-lease-and-fencing-token.md) §4's deferred hash needed a digest
+ * primitive a platform-free engine does not have, and a digest over raw YAML would report a mismatch for
+ * reindented text that parses identically. Comparing the NORMALIZED parse output asks the question actually
+ * being asked.
+ *
+ * **Each side is normalized according to how much it is trusted.** The frozen JSON is durable data of unknown
+ * provenance, so it goes through `WorkflowSchema` — a value that will not parse as a workflow is
+ * `admission_record_unreadable`, which is a different fact from "it differs" and has a different remedy. The
+ * supplied side is already a parsed `Workflow` by type, so it only takes the JSON round trip the column
+ * imposed on the other side: `JSON.stringify` drops `undefined`-valued keys, and comparing a live object
+ * against a round-tripped one would report a difference the column could never have recorded.
+ *
+ * Returns `undefined` when the two agree.
+ */
+export function verifyFrozenWorkflowContent(
+  frozenJson: string,
+  supplied: Workflow,
+): ResumeIdentityRefusal | undefined {
+  const unreadable = (message: string): ResumeIdentityRefusal => ({
+    code: 'admission_record_unreadable',
+    message,
+  });
+  let frozen: unknown;
+  try {
+    frozen = JSON.parse(frozenJson);
+  } catch {
+    return unreadable('the frozen workflow definition for this run is not valid JSON');
+  }
+  const normalizedFrozen = WorkflowSchema.safeParse(frozen);
+  if (!normalizedFrozen.success) {
+    // Value-free: the reason list would carry authored content from a workflow this process did not write.
+    return unreadable('the frozen workflow definition for this run is not a workflow this engine can read');
+  }
+  let normalizedSupplied: unknown;
+  try {
+    normalizedSupplied = JSON.parse(JSON.stringify(supplied));
+  } catch {
+    return { code: 'workflow_content_mismatch', message: 'the supplied workflow is not serialisable' };
+  }
+  if (
+    !deepStructuralEquals(JSON.parse(JSON.stringify(normalizedFrozen.data)), normalizedSupplied)
+  ) {
+    return {
+      code: 'workflow_content_mismatch',
+      // VALUE-FREE, and deliberately so: naming the differing field would mean walking two authored graphs
+      // and echoing whichever part diverged into an error message and every log sink.
+      message:
+        'the supplied workflow has the same id but different content than the one this run started on',
+    };
+  }
+  return undefined;
 }

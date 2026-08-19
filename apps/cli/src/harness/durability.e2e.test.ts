@@ -155,6 +155,7 @@ describe('CR-10 / CR-92 against the real history.db', () => {
     const refusing = {
       resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
       listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       persistEvent: async (event: RunEvent, ctx?: Parameters<typeof inner.persistEvent>[1]) => {
         if (event.type === 'run:completed') throw new Error('the terminal write failed');
         await inner.persistEvent(event, ctx);
@@ -188,6 +189,7 @@ describe('CR-10 / CR-92 against the real history.db', () => {
     const store = {
       resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
       listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       persistEvent: async (event: RunEvent, ctx?: Parameters<typeof inner.persistEvent>[1]) => {
         if (refuse && event.type === 'run:completed') throw new Error('the terminal write failed');
         await inner.persistEvent(event, ctx);
@@ -238,6 +240,7 @@ describe('CR-10 / CR-92 against the real history.db', () => {
     const store = {
       resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
       listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       persistEvent: async (event: RunEvent, ctx?: Parameters<typeof inner.persistEvent>[1]) => {
         if (refuse && event.type === 'run:completed') throw new Error('the terminal write failed');
         await inner.persistEvent(event, ctx);

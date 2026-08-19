@@ -14,6 +14,7 @@ const durableStore: RunStore = {
   resolveWorkflowId: () => Promise.resolve('wf'),
   persistEvent: () => Promise.resolve(),
   listInterruptedRuns: () => Promise.resolve([]),
+  readWorkflowSnapshot: () => Promise.resolve(undefined),
 };
 
 describe('createCliHost', () => {

@@ -760,6 +760,7 @@ describe('createInMemoryCheckpointer', () => {
       resolveWorkflowId: () => Promise.resolve('x'),
       persistEvent: () => Promise.resolve(),
       listInterruptedRuns: () => Promise.resolve([]),
+      readWorkflowSnapshot: () => Promise.resolve(undefined),
     };
     const cp = createInMemoryCheckpointer(opaque);
     expect(await cp.load('r1')).toBeUndefined();

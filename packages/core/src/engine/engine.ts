@@ -68,7 +68,7 @@ import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
 import { resolveAndValidateWorkflowInputs } from './input-admission.js';
-import { verifyResumeIdentity } from './resume-identity.js';
+import { verifyFrozenWorkflowContent, verifyResumeIdentity } from './resume-identity.js';
 import { EngineStateError } from './errors.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import { RunLoopInvariantError } from './invariant-error.js';
@@ -3444,6 +3444,23 @@ export class WorkflowEngine {
       await this.#host.runLeases.release(input.runId, fence);
       return createClosedRunHandle(input.runId);
     }
+    // **The graph's CONTENT, not just its id (ADR-0083 §5).** The surrogate-id guard above catches resuming
+    // the wrong workflow entirely; it cannot catch the same slug with edited content, which its own comment
+    // named and deferred to a content hash. The frozen definition answers it — it lives in `runs`, not in the
+    // event log, which is why `RunStore` grew one read method for it. A store that holds no snapshot answers
+    // `undefined`, and content verification is skipped with that fact stated rather than silently absent.
+    const frozenWorkflow = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+      this.#host.store.readWorkflowSnapshot(input.runId),
+    );
+    if (frozenWorkflow !== undefined) {
+      const contentRefusal = verifyFrozenWorkflowContent(frozenWorkflow, input.workflow);
+      if (contentRefusal !== undefined) {
+        await this.#host.runLeases.release(input.runId, fence);
+        throw new EngineStateError(contentRefusal.code, contentRefusal.message, {
+          runId: input.runId,
+        });
+      }
+    }
     // **Identity, verified rather than assumed (ADR-0083 §5/§6/§8).** The caller's `inputs` and
     // `executionMode` used to be taken on trust, under an interface note that called it "the caller's
     // responsibility" — so a `relavium gate` in a fresh process that reconstructed either one differently,
@@ -3670,10 +3687,20 @@ export class WorkflowEngine {
    * Run `body`, releasing the resume-path lease if it throws (ADR-0079 §4: "every refusal path also releases
    * what it just took"). The claim was taken before the checkpoint was read, so every exit between there and
    * `adoptLease` owns that obligation — including the ones that throw rather than return.
+   *
+   * **`return await`, not `return`.** The signature already returned a `Promise`, but the body was returned
+   * un-awaited — so a REJECTING async body skipped the catch entirely and stranded the claim for a full TTL.
+   * Latent while the only caller was the synchronous `buildRunPlan`; the store read this now also guards is
+   * genuinely async, and a helper whose whole job is "release on throw" must not have a class of throw it
+   * cannot see.
    */
-  async #releaseFenceOnThrow<T>(runId: string, fence: RunFence, body: () => T): Promise<T> {
+  async #releaseFenceOnThrow<T>(
+    runId: string,
+    fence: RunFence,
+    body: () => T | Promise<T>,
+  ): Promise<T> {
     try {
-      return body();
+      return await body();
     } catch (error) {
       await this.#releaseReconcileClaim(runId, fence);
       throw error;

@@ -160,6 +160,7 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
   const store: RunStore = {
     resolveWorkflowId: (slug) => inner.resolveWorkflowId(slug),
     listInterruptedRuns: (): Promise<readonly InterruptedRun[]> => inner.listInterruptedRuns(),
+    readWorkflowSnapshot: (runId) => inner.readWorkflowSnapshot(runId),
     // Contextually typed from the port rather than re-spelled by hand. This one DID drop `CR-10`'s guard:
     // the decorator named `(event: RunEvent)` explicitly, kept compiling when ADR-0078 §2 added `ctx`, and
     // forwarded only the event — so the compare-and-append was OFF for every store the harness wrapped, in

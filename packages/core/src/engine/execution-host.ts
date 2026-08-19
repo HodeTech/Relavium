@@ -152,6 +152,23 @@ export interface RunStore {
   persistEvent: (event: RunEvent, ctx?: DurableWriteContext) => Promise<void>;
   /** Runs with a `run:started` but no terminal event — for startup crash reconciliation. */
   listInterruptedRuns: () => Promise<readonly InterruptedRun[]>;
+  /**
+   * The FROZEN workflow definition this run started on, as the JSON the store persisted
+   * ([ADR-0083](../../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
+   * §5) — `runs.workflow_definition_snapshot` in the SQLite store.
+   *
+   * **A method on this seam rather than a new port**, because the graph is the one piece of a run's identity
+   * the event log does not carry: `run:started` names a `workflowId` surrogate, not the content. Reading it
+   * here is what lets `resumeFromCheckpoint` refuse a workflow that is the same slug with different content —
+   * the "subtler same-slug-edited-content drift" the identity guard's own comment named and deferred.
+   *
+   * **REQUIRED, returning `string | undefined`.** Required so a host author has to decide: a store that keeps
+   * no frozen definition says so by answering `undefined`, and the engine then skips content verification with
+   * that fact stated, rather than a host silently omitting a property and losing the guarantee (the failure
+   * mode ADR-0078 §4 names for the outbox port). `undefined` means "this store holds no snapshot for this
+   * run", never "the snapshot is empty".
+   */
+  readWorkflowSnapshot: (runId: string) => Promise<string | undefined>;
 }
 
 /**
@@ -297,6 +314,21 @@ export class InMemoryRunStore implements RunStore {
   readonly #events = new Map<string, RunEvent[]>();
   readonly #workflowIds = new Map<string, string>();
   #workflowCounter = 0;
+  readonly #definitionJson: string | undefined;
+
+  /**
+   * @param definitionJson The frozen `WorkflowDefinition` JSON this store records, mirroring the SQLite
+   * store's construction-time `deps.workflow.definitionJson`. Omitted ⇒ this store holds no frozen
+   * definition, so {@link readWorkflowSnapshot} answers `undefined` and a resume skips content verification
+   * — which is the honest answer for a fixture that was never given one, not a silently disabled check.
+   */
+  constructor(definitionJson?: string) {
+    this.#definitionJson = definitionJson;
+  }
+
+  readWorkflowSnapshot(runId: string): Promise<string | undefined> {
+    return Promise.resolve(this.#events.has(runId) ? this.#definitionJson : undefined);
+  }
 
   resolveWorkflowId(slug: string): Promise<string> {
     let id = this.#workflowIds.get(slug);

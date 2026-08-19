@@ -117,6 +117,7 @@ describe('createAppendAudit', () => {
     const gated = {
       resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
       listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       persistEvent: async (event: RunEvent): Promise<void> => {
         if (event.sequenceNumber === 1) {
           await new Promise<void>((resolve) => {
@@ -200,6 +201,7 @@ describe('createAppendAudit', () => {
     const failing = {
       resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
       listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       persistEvent: (event: RunEvent): Promise<void> =>
         event.sequenceNumber === 1
           ? Promise.reject(new Error('disk full'))
@@ -290,6 +292,7 @@ describe('createAppendAudit', () => {
     const recording = {
       resolveWorkflowId: (slug: string) => Promise.resolve(slug),
       listInterruptedRuns: () => Promise.resolve([]),
+      readWorkflowSnapshot: () => Promise.resolve(undefined),
       persistEvent: (_event: RunEvent, ctx?: DurableWriteContext) => {
         seen.push(ctx?.expectedLastSequenceNumber);
         return Promise.resolve();
@@ -324,6 +327,7 @@ describe('createAppendAudit', () => {
     const slow = {
       resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
       listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       persistEvent: async (event: RunEvent): Promise<void> => {
         if (event.runId === 'r1') {
           await new Promise<void>((resolve) => {

@@ -2669,6 +2669,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
         resolveWorkflowId: () => Promise.reject(new Error('store unavailable')),
         persistEvent: () => Promise.resolve(),
         listInterruptedRuns: () => Promise.resolve([]),
+        readWorkflowSnapshot: () => Promise.resolve(undefined),
       },
     };
     const events = await drain(
@@ -2691,6 +2692,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
             ? Promise.reject(new Error('disk full'))
             : inner.persistEvent(event),
         listInterruptedRuns: () => inner.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       },
     };
     const events = await drain(
@@ -2750,6 +2752,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
         resolveWorkflowId: () => Promise.resolve('00000000-0000-4000-8000-000000000001'),
         persistEvent: () => Promise.reject(new Error('store fully unavailable')),
         listInterruptedRuns: () => Promise.resolve([]),
+        readWorkflowSnapshot: () => Promise.resolve(undefined),
       },
     };
     const events = await drain(
@@ -2774,6 +2777,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
             ? Promise.reject(new Error('terminal write failed'))
             : inner.persistEvent(event),
         listInterruptedRuns: () => inner.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       },
     };
     const events = await drain(
@@ -2807,6 +2811,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
             ? Promise.reject(new Error('paused write failed'))
             : inner.persistEvent(event),
         listInterruptedRuns: () => inner.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       },
     };
     const engine = new WorkflowEngine({
@@ -2854,6 +2859,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
           return inner.persistEvent(event);
         },
         listInterruptedRuns: () => inner.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       },
     };
     const events = await drain(
@@ -2940,6 +2946,7 @@ describe('WorkflowEngine — internal failures and handle-side controls', () => 
             ? Promise.reject(new Error('write failed'))
             : store.persistEvent(event),
         listInterruptedRuns: () => store.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId: string) => store.readWorkflowSnapshot(runId),
       },
     };
     const reconciled = await new WorkflowEngine({ host, executor: new StubExecutor() }).reconcile();

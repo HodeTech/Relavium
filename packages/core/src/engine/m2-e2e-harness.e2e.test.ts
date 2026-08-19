@@ -1097,6 +1097,7 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     const store = {
       resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
       listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       eventsFor: (runId: string) => inner.eventsFor(runId),
       persistEvent: async (event: RunEvent): Promise<void> => {
         if (event.type === 'budget:estimate_committed') {
@@ -1277,6 +1278,7 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
       store: {
         resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
         listInterruptedRuns: () => inner.listInterruptedRuns(),
+        readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
         eventsFor: (runId: string) => inner.eventsFor(runId),
         persistEvent: async (event: RunEvent): Promise<void> => {
           if (event.type === 'cost:attempt_settled' && resolveWrite === undefined) {
@@ -1371,6 +1373,7 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     const store = {
       resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
       listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       eventsFor: (runId: string) => inner.eventsFor(runId),
       persistEvent: async (event: RunEvent): Promise<void> => {
         // Reject ASYNCHRONOUSLY, after a tick — a synchronous throw would let the engine's own abort win the
@@ -2137,6 +2140,7 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     return {
       resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
       listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       persistEvent: async (event: RunEvent, ctx?: DurableWriteContext): Promise<void> => {
         if (event.type === 'run:completed' || event.type === 'run:failed') {
           throw new Error('the terminal write failed');
@@ -2194,6 +2198,7 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     const store: RunStore = {
       resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
       listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       persistEvent: async (event: RunEvent, ctx?: DurableWriteContext): Promise<void> => {
         if (refuse && event.type === 'run:completed') throw new Error('the terminal write failed');
         await inner.persistEvent(event, ctx);
@@ -2301,6 +2306,7 @@ describe('M2 — end-to-end Node harness (1.U)', () => {
     const recording = {
       resolveWorkflowId: (slug: string) => inner.resolveWorkflowId(slug),
       listInterruptedRuns: () => inner.listInterruptedRuns(),
+      readWorkflowSnapshot: (runId: string) => inner.readWorkflowSnapshot(runId),
       persistEvent: async (event: RunEvent, ctx?: DurableWriteContext): Promise<void> => {
         seen.push({
           seq: event.sequenceNumber,

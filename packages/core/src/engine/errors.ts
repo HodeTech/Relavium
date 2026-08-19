@@ -37,7 +37,9 @@ export type EngineStateErrorCode =
   | 'input_mismatch' // a supplied input is not the one the run was admitted with, or names a slot it never had
   | 'execution_mode_mismatch' // a supplied `executionMode` is not the one the run started under
   | 'secret_input_missing' // a `secret` the record holds as a masked slot was not re-supplied
-  | 'secret_input_unexpected'; // a `secret` was supplied for a slot the record does not carry
+  | 'secret_input_unexpected' // a `secret` was supplied for a slot the record does not carry
+  | 'workflow_content_mismatch' // the same workflow SLUG, with content the run did not start on
+  | 'admission_record_unreadable'; // the frozen definition exists but cannot be read as a workflow
 
 /**
  * The codes that are TRANSIENT — worth retrying unchanged — as opposed to permanent invocation faults.

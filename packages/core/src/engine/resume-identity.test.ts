@@ -17,7 +17,7 @@ import { WorkflowEngine } from './engine.js';
 import { EngineStateError, isTransientEngineStateError } from './errors.js';
 import { createInMemoryHost, createInMemoryRunLeases, InMemoryRunStore } from './execution-host.js';
 import type { NodeExecContext, NodeExecutor, NodeOutcome } from './node-executor.js';
-import { verifyResumeIdentity } from './resume-identity.js';
+import { verifyFrozenWorkflowContent, verifyResumeIdentity } from './resume-identity.js';
 
 function workflowWith(inputs: string, id = 'identity-fixture'): WorkflowDefinition {
   return parseWorkflow(
@@ -43,6 +43,13 @@ const WF = workflowWith(`    - { name: topic, type: string }
 class Stub implements NodeExecutor {
   execute(ctx: NodeExecContext): Promise<NodeOutcome> {
     return Promise.resolve({ kind: 'completed', output: ctx.vertex.id });
+  }
+}
+
+/** An {@link InMemoryRunStore} whose snapshot READ rejects — the async throw the helper used to miss. */
+class FailingSnapshotStore extends InMemoryRunStore {
+  override readWorkflowSnapshot(): Promise<string | undefined> {
+    return Promise.reject(new Error('the disk went away'));
   }
 }
 
@@ -282,6 +289,39 @@ describe('deepStructuralEquals', () => {
   });
 });
 
+describe('verifyFrozenWorkflowContent — the same slug is not the same graph (ADR-0083 §5)', () => {
+  it('accepts the definition the run was frozen with, however it was formatted', () => {
+    // Structural, not textual: the frozen column holds `JSON.stringify(definition)`, and re-serialising the
+    // same object with different key order or whitespace must not read as a divergence. That is the whole
+    // reason this is not a digest over the stored text.
+    expect(verifyFrozenWorkflowContent(JSON.stringify(WF), WF)).toBeUndefined();
+    expect(verifyFrozenWorkflowContent(JSON.stringify(WF, null, 2), WF)).toBeUndefined();
+  });
+
+  it('refuses the SAME slug with edited content — the drift the id guard cannot see', () => {
+    // `resolveWorkflowId` maps a slug to a surrogate UUID, so an edited-but-same-slug workflow passes the
+    // identity guard untouched. That is the gap ADR-0079 §4 deferred to a content hash and this closes.
+    const edited = workflowWith(`    - { name: topic, type: string }
+    - { name: depth, type: number }
+    - { name: sneaked_in, type: string }`);
+    expect(edited.workflow.id).toBe(WF.workflow.id); // same slug — the id guard is satisfied
+    const refusal = verifyFrozenWorkflowContent(JSON.stringify(WF), edited);
+    expect(refusal?.code).toBe('workflow_content_mismatch');
+    // VALUE-FREE: naming the differing field means echoing authored graph content into every log sink.
+    expect(refusal?.message).not.toContain('sneaked_in');
+  });
+
+  it('distinguishes an UNREADABLE record from a differing one — the remedies differ', () => {
+    // "Your workflow changed" and "the stored definition is corrupt" send a user to different places.
+    expect(verifyFrozenWorkflowContent('{not json', WF)?.code).toBe('admission_record_unreadable');
+    expect(verifyFrozenWorkflowContent('null', WF)?.code).toBe('admission_record_unreadable');
+    const junk = '{"marker_xyz":"a value from a file this process never wrote"}';
+    expect(verifyFrozenWorkflowContent(junk, WF)?.code).toBe('admission_record_unreadable');
+    // …and the unreadable message carries no content from the record it could not read.
+    expect(verifyFrozenWorkflowContent(junk, WF)?.message).not.toContain('marker_xyz');
+  });
+});
+
 // --- the engine acts on it ---------------------------------------------------------------------
 
 describe('resumeFromCheckpoint — identity refusals release the lease (acceptance 9.11)', () => {
@@ -399,6 +439,68 @@ describe('resumeFromCheckpoint — identity refusals release the lease (acceptan
     const persisted = JSON.stringify(store.eventsFor('run-secret'));
     expect(persisted).not.toContain('sk-live-value');
     expect(persisted).toContain('inputs.api_key');
+  });
+
+  it('refuses a content-different workflow, and releases the lease (acceptance 9.11)', async () => {
+    const store = new InMemoryRunStore(JSON.stringify(WF));
+    const leases = createInMemoryRunLeases();
+    const host = createInMemoryHost({ store, runLeases: leases });
+    await seedPaused(store, 'run-content');
+    const edited = workflowWith(`    - { name: topic, type: string }
+    - { name: depth, type: number }
+    - { name: sneaked_in, type: string }`);
+
+    const engine = new WorkflowEngine({ host, executor: new Stub() });
+    await expect(
+      engine.resumeFromCheckpoint({ runId: 'run-content', workflow: edited }),
+    ).rejects.toMatchObject({ code: 'workflow_content_mismatch' });
+    expect(await leases.read('run-content')).toBeUndefined();
+  });
+
+  it('…and accepts the frozen one, so the check discriminates', async () => {
+    const store = new InMemoryRunStore(JSON.stringify(WF));
+    const host = createInMemoryHost({ store });
+    await seedPaused(store, 'run-content-ok');
+    const engine = new WorkflowEngine({ host, executor: new Stub() });
+    const handle = await engine.resumeFromCheckpoint({
+      runId: 'run-content-ok',
+      workflow: WF,
+      gateId: 'gate-1',
+      decision: { decision: 'approved', decidedBy: 'tester' },
+    });
+    const seen: RunEvent[] = [];
+    for await (const event of handle.events) seen.push(event);
+    expect(seen.some((event) => event.type === 'run:completed')).toBe(true);
+  });
+
+  it('skips content verification when the store holds no frozen definition', async () => {
+    // `undefined` means "this store keeps no snapshot for this run", which is the honest answer for a
+    // fixture that was never given one — not a silently disabled check. Every other identity check still runs.
+    const store = new InMemoryRunStore();
+    const host = createInMemoryHost({ store });
+    await seedPaused(store, 'run-nosnap');
+    const engine = new WorkflowEngine({ host, executor: new Stub() });
+    const edited = workflowWith(`    - { name: topic, type: string }
+    - { name: depth, type: number }
+    - { name: sneaked_in, type: string }`);
+    // The graph differs and is NOT refused on content — but the inputs still are, because that record exists.
+    await expect(
+      engine.resumeFromCheckpoint({ runId: 'run-nosnap', workflow: edited, inputs: { topic: 'x' } }),
+    ).rejects.toMatchObject({ code: 'input_mismatch' });
+  });
+
+  it('releases the lease when the snapshot READ itself rejects', async () => {
+    // `#releaseFenceOnThrow` returned its body un-awaited, so a rejecting async body skipped the catch and
+    // stranded the claim for a full TTL. Latent while its only caller was the synchronous `buildRunPlan`.
+    const store = new FailingSnapshotStore();
+    const leases = createInMemoryRunLeases();
+    await seedPaused(store, 'run-readfail');
+    const host = createInMemoryHost({ store, runLeases: leases });
+    const engine = new WorkflowEngine({ host, executor: new Stub() });
+    await expect(
+      engine.resumeFromCheckpoint({ runId: 'run-readfail', workflow: WF }),
+    ).rejects.toThrow('the disk went away');
+    expect(await leases.read('run-readfail')).toBeUndefined();
   });
 
   it('continues with the RECORDED inputs when the caller passes none', async () => {
