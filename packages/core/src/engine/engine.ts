@@ -3408,7 +3408,16 @@ export class WorkflowEngine {
         { runId: input.runId },
       );
     }
-    const checkpoint = await this.#host.checkpointer.load(input.runId);
+    // Every AWAIT between the acquire and `adoptLease` is wrapped, not just the ones that refuse
+    // deliberately (ADR-0079 §4). A review measured two live leaks here: `checkpointer.load` rejecting with
+    // ADR-0075's `UnreadableRunEventLogError` — which `createHistoryCheckpointer` is `async` precisely to
+    // deliver — and `resolveWorkflowId` failing on any store fault. Both stranded the claim for a full TTL.
+    // Wrapped individually rather than by one span around the whole preparation: the terminal branch below
+    // exits by RETURNING a closed handle, so a single catch would have to model a non-throw exit, and the
+    // four wraps say at each site that this line owns the obligation.
+    const checkpoint = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+      this.#host.checkpointer.load(input.runId),
+    );
     if (checkpoint === undefined) {
       // Release what we just took: the run does not exist, so holding its lease would lock a runId nobody
       // can use. Every refusal below this point does the same — an acquire that leads nowhere must not leak.
@@ -3424,7 +3433,9 @@ export class WorkflowEngine {
     // `workflows.id` UUID catches resuming the wrong workflow entirely (a different slug). A subtler
     // same-slug-edited-content drift needs a content hash on `run:started` — deferred (a canonical event
     // contract change; checkpoint.ts), so resuming an edited-but-same-slug workflow is the caller's risk.
-    const expectedWorkflowId = await this.#host.store.resolveWorkflowId(input.workflow.workflow.id);
+    const expectedWorkflowId = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+      this.#host.store.resolveWorkflowId(input.workflow.workflow.id),
+    );
     if (expectedWorkflowId !== checkpoint.workflowId) {
       await this.#host.runLeases.release(input.runId, fence);
       throw new EngineStateError(
@@ -3466,13 +3477,17 @@ export class WorkflowEngine {
     // responsibility" — so a `relavium gate` in a fresh process that reconstructed either one differently,
     // or simply passed `{}`, continued the run under a state its own `run:started` never had. The record
     // folded from that event is the authority; the caller's copy is checked against it and then discarded.
-    const identity = verifyResumeIdentity({
-      workflow: input.workflow,
-      recordedInputs: checkpoint.admittedInputs,
-      recordedExecutionMode: checkpoint.executionMode,
-      suppliedInputs: input.inputs,
-      suppliedExecutionMode: input.executionMode,
-    });
+    // Wrapped too: it is documented to RETURN every refusal, but it walks a caller-supplied map, and an
+    // exotic value's trap can throw out of `deepStructuralEquals` no matter how carefully the entry guards.
+    const identity = await this.#releaseFenceOnThrow(input.runId, fence, () =>
+      verifyResumeIdentity({
+        workflow: input.workflow,
+        recordedInputs: checkpoint.admittedInputs,
+        recordedExecutionMode: checkpoint.executionMode,
+        suppliedInputs: input.inputs,
+        suppliedExecutionMode: input.executionMode,
+      }),
+    );
     if (!identity.ok) {
       // §5: a refusal releases the lease. Every identity check sits after ownership was acquired, and
       // ADR-0079 §4's rule — an acquire that leads nowhere must not leak — covers these exactly as it
@@ -3484,18 +3499,27 @@ export class WorkflowEngine {
     }
     // From here to `adoptLease`, ANY throw must release the claim — `buildRunPlan` on an edited workflow and
     // the `RunExecution` constructor's checkpoint rehydration both throw outside the try below, and both
-    // used to strand the lease for a TTL.
+    // used to strand the lease for a TTL. The claim about the CONSTRUCTOR was false until now: only
+    // `buildRunPlan` was wrapped, while `new RunExecution(...)` — which runs `#seedFromCheckpoint`, including
+    // `#restoreParkedMediaJob` — sat bare. The comment and the code had disagreed since `cf93e32`.
     const plan = await this.#releaseFenceOnThrow(input.runId, fence, () =>
       buildRunPlan(input.workflow, input.planOptions),
     );
     const bus = new RunEventBus({ now: this.#host.clock.now, validate: this.#validateEvents });
-    const execution = new RunExecution({
+    const execution = await this.#releaseFenceOnThrow(input.runId, fence, () => new RunExecution({
       runId: input.runId,
       plan,
       workflow: input.workflow,
       // The VERIFIED record, not the caller's map — built fresh with a null prototype by the same §7
       // discipline `start()` uses, so a resume and a start hand `RunExecution` the same shape.
       inputs: identity.inputs,
+      // **Inert on this path today, and said out loud rather than assumed pinned.** `#executionMode` is read
+      // in exactly one place — the `run:started` emit — which a resume does not repeat, so no engine-level
+      // test can distinguish this line from the `?? 'local'` default it replaces; a review measured the whole
+      // suite staying green under that revert. What IS pinned is the DECISION (`verifyResumeIdentity`'s unit
+      // tests) and the REFUSAL (`execution_mode_mismatch`, end to end). The moment anything downstream reads
+      // the mode, this is the line that has to be right, which is why it is the recorded value and not a
+      // default.
       executionMode: identity.executionMode,
       ownerId: this.#ownerId,
       ...(this.#effectJournalFactory === undefined
@@ -3518,7 +3542,7 @@ export class WorkflowEngine {
         ? {}
         : { onLegacyMediaJobHold: this.#onLegacyMediaJobHold }),
       checkpoint,
-    });
+    }));
     this.#runs.set(input.runId, execution);
     try {
       // beginResume re-resolves the workflow context (not checkpointed) then drives: kick if the gate was

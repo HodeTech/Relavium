@@ -38,6 +38,28 @@ export const interpolationNameSchema = z
     'must be referenceable in {{ … }} (letters, digits, `_` or `-`)',
   );
 
+/**
+ * A `Record<string, unknown>` that comes back as the SAME object it went in as.
+ *
+ * `z.record(z.string(), z.unknown())` REBUILDS the object, and its rebuild drops an own `__proto__` key —
+ * measured on the pinned Zod version:
+ * `z.record(z.string(), z.unknown()).parse(JSON.parse('{"__proto__":"p","n":3}'))` yields own keys `['n']`.
+ *
+ * That matters for `run:started.inputs`. A workflow input name may legitimately be `__proto__` (the
+ * `[A-Za-z0-9_-]+` grammar permits it), the engine builds its input map with a null prototype specifically
+ * so such a name survives (ADR-0083 §7), and the bus then re-parsed the draft through the event schema and
+ * lost it. The run executed with the input; the durable record did not carry it; and §5's resume
+ * verification compared two maps that agreed only because both were missing it. A review measured exactly
+ * that.
+ *
+ * Acceptance is delegated to `z.record` rather than re-implemented, so this differs from it in one respect
+ * only: what it returns. Arrays, `null`, primitives and non-plain objects are rejected identically.
+ */
+export const preservingUnknownRecord = z.custom<Record<string, unknown>>(
+  (value) => z.record(z.string(), z.unknown()).safeParse(value).success,
+  { message: 'expected an object' },
+);
+
 /** A positive integer (>= 1). */
 export const positiveInt = z.number().int().positive();
 

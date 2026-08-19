@@ -800,7 +800,11 @@ describe('the fold carries what the run was ADMITTED with (ADR-0083 §5)', () =>
     ]);
 
     expect(state?.admittedInputs).toEqual({ api_key: { secret: true, ref: 'inputs.api_key' } });
-    expect(JSON.stringify(state?.admittedInputs)).not.toContain('hunter2');
+    // A review removed the assertion that used to sit here — `not.toContain('hunter2')`, where `'hunter2'`
+    // appeared nowhere in the test, the fixture or the event. It could not fail, and the `toEqual` above
+    // already pins the whole value. The honest version of the same worry lives one layer up, where the
+    // engine masks at emit: `resume-identity.test.ts` seeds a real value through `resumeFromCheckpoint` and
+    // asserts the persisted log does not contain it.
   });
 });
 

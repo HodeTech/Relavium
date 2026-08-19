@@ -246,6 +246,21 @@ const FORMAT_CHECKS: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
 ]);
 
 /**
+ * Why a value fails its declared `type` alone, or `undefined` if it satisfies it.
+ *
+ * Exported because ADR-0083 §8's `verify` mode enforces the TYPE and not the `validation` block — a run
+ * admitted before those rules existed must still resume — and a second copy of this message in the engine
+ * would drift from this one the first time either changed.
+ */
+export function violatesDeclaredType(
+  value: unknown,
+  type: z.infer<typeof InputTypeSchema>,
+): string | undefined {
+  if (matchesDeclaredType(value, type)) return undefined;
+  return `expected a ${type === 'number' ? 'finite number' : type === 'boolean' ? 'boolean' : 'string'}`;
+}
+
+/**
  * Why a VALUE fails its declared input contract, or `undefined` if it passes (ADR-0083 §4).
  *
  * **The single source of truth for both halves.** Parse uses it on a declared `default`; §1's admission gate
@@ -260,9 +275,8 @@ export function violatesInputContract(
   type: z.infer<typeof InputTypeSchema>,
   validation: InputValidation | undefined,
 ): string | undefined {
-  if (!matchesDeclaredType(value, type)) {
-    return `expected a ${type === 'number' ? 'finite number' : type === 'boolean' ? 'boolean' : 'string'}`;
-  }
+  const typeReason = violatesDeclaredType(value, type);
+  if (typeReason !== undefined) return typeReason;
   const v = validation;
   if (v === undefined) return undefined;
 

@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-import { nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
+import {
+  nonEmptyString,
+  nonNegativeInt,
+  positiveInt,
+  preservingUnknownRecord,
+} from './common.js';
 import {
   ENGINE_NODE_TYPES,
   ERROR_CODES,
@@ -71,9 +76,15 @@ export const TokensUsedSchema = z.object({
 export type TokensUsed = z.infer<typeof TokensUsedSchema>;
 
 /**
- * A secret-typed `run:started` input, masked at emit time — the raw value is replaced with a
- * keychain/env `ref` (sse-event-schema.md §Security). Never carries the secret itself. The named
- * contract every surface renders for a masked input value.
+ * A secret-typed `run:started` input, masked at emit time (sse-event-schema.md §Security). Never carries the
+ * secret itself. The named contract every surface renders for a masked input value.
+ *
+ * **`ref` is a SELF-reference — `inputs.<name>` — not a keychain or env reference.** This docblock said
+ * "keychain/env", which promised something the value never carried: it names the SLOT the value came from,
+ * and nothing can resolve it back to a credential. The distinction is load-bearing on resume, where
+ * [ADR-0083](../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §6
+ * verifies that the same named `secret` input was re-supplied and states plainly that it cannot prove the
+ * value is the same credential.
  */
 export const MaskedSecretSchema = z
   .object({ secret: z.literal(true), ref: nonEmptyString })
@@ -141,7 +152,11 @@ export const RunStartedEventSchema = z.object({
   type: z.literal('run:started'),
   ...runBase,
   workflowId: z.string().uuid(), // FK to workflows.id (surrogate UUID), matching RunSchema — ADR-0022
-  inputs: z.record(z.string(), z.unknown()), // a secret-typed input is masked at emit time as MaskedSecret ({ secret: true, ref }); a non-secret keeps its raw value
+  // `preservingUnknownRecord`, not `z.record`: an input name may legitimately be `__proto__`, and Zod's
+  // record rebuild drops it — which made the durable ADMISSION RECORD differ from what the run ran with.
+  // A secret-typed input is masked at emit time as MaskedSecret ({ secret: true, ref }); a non-secret
+  // keeps its raw value.
+  inputs: preservingUnknownRecord,
   executionMode: z.enum(EXECUTION_MODES),
 });
 

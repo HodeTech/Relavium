@@ -46,6 +46,19 @@ class Stub implements NodeExecutor {
   }
 }
 
+/** A {@link Stub} that parks at the gate node `g`, so a run can be driven to a real pause. */
+class GatingStub implements NodeExecutor {
+  execute(ctx: NodeExecContext): Promise<NodeOutcome> {
+    if (ctx.vertex.id === 'g') {
+      return Promise.resolve({
+        kind: 'paused',
+        gate: { gateType: 'approval', message: 'approve?' },
+      });
+    }
+    return Promise.resolve({ kind: 'completed', output: ctx.vertex.id });
+  }
+}
+
 /** An {@link InMemoryRunStore} whose snapshot READ rejects — the async throw the helper used to miss. */
 class FailingSnapshotStore extends InMemoryRunStore {
   override readWorkflowSnapshot(): Promise<string | undefined> {
@@ -117,6 +130,35 @@ describe('verifyResumeIdentity — the record is the authority (ADR-0083 §5)', 
     expect(!result.ok && result.refusal.code).toBe('input_mismatch');
   });
 
+  it('compares a caller value under a prototype-shaped NAME — the snapshot map must keep it too', () => {
+    // The snapshot accumulator has the same §7 hazard as the resolved map: with a `{}`,
+    // `out['__proto__'] = value` creates no own property, so `Object.hasOwn(supplied, '__proto__')` is
+    // false, the comparison below is SKIPPED, and a caller supplying a different value for that input is
+    // never detected — the one key where a mismatch can hide.
+    const wf = workflowWith(`    - { name: __proto__, type: string }`);
+    const recorded = { ['__proto__']: 'p' };
+    expect(verify({ workflow: wf, recordedInputs: recorded, suppliedInputs: { ['__proto__']: 'p' } }).ok).toBe(
+      true,
+    );
+    const mismatched = verify({
+      workflow: wf,
+      recordedInputs: recorded,
+      suppliedInputs: { ['__proto__']: 'DIFFERENT' },
+    });
+    expect(!mismatched.ok && mismatched.refusal.code).toBe('input_mismatch');
+  });
+
+  it('tolerates an own `undefined` for a key the record never had', () => {
+    // `{ topic: 'x', maybeExtra: undefined }` is the most ordinary shape a TypeScript host produces, and
+    // dropping the `supplied[key] === undefined` clause turns every one of them into an `input_mismatch`
+    // naming a key the caller never meant to supply. Nothing pinned it.
+    const result = verify({
+      suppliedInputs: { topic: 'the report', depth: 3, maybeExtra: undefined },
+    });
+    expect(result.ok).toBe(true);
+    expect(result.ok && Object.hasOwn(result.inputs, 'maybeExtra')).toBe(false);
+  });
+
   it('a DIFFERENT executionMode is its own code — the fix is not the same fix', () => {
     const result = verify({ suppliedExecutionMode: 'cloud' });
     expect(!result.ok && result.refusal.code).toBe('execution_mode_mismatch');
@@ -157,6 +199,29 @@ describe('verifyResumeIdentity — the record is the authority (ADR-0083 §5)', 
     // The SLOT is verified, not the credential (§6) — so the re-supplied value is what the run continues
     // with. Proving it is the same key would need the value persisted, which is the whole point of not.
     expect(supplied.ok && supplied.inputs).toEqual({ api_key: 'sk-live-value' });
+  });
+
+  it('a NEAR-MISS of the masked shape is not a slot — the guard is the strict schema', () => {
+    // `MaskedSecretSchema` is `.strict()` so "a raw secret value can never ride alongside the masked shape".
+    // Nothing pinned that this is the guard: loosening `isMaskedSecret` to "any object" left every test
+    // green, and under that loosening `{ secret: true, ref, raw_value: 'sk-live' }` would be accepted as a
+    // masked slot — the record carrying a live credential, treated as if it carried none.
+    const wf = workflowWith(`    - { name: api_key, type: secret }`);
+    for (const nearMiss of [
+      { secret: false, ref: 'inputs.api_key' },
+      { secret: true },
+      { secret: true, ref: '' },
+      { secret: true, ref: 'inputs.api_key', raw_value: 'sk-live' },
+    ]) {
+      const result = verify({
+        workflow: wf,
+        recordedInputs: { api_key: nearMiss },
+        suppliedInputs: { api_key: 'sk-live-value' },
+      });
+      // Not a slot ⇒ the workflow says `secret` and the record holds a VALUE ⇒ the disagreement branch.
+      expect(!result.ok && result.refusal.code).toBe('input_mismatch');
+      expect(!result.ok && result.refusal.message).toContain('recorded a value for it');
+    }
   });
 
   it('a `secret` supplied for a slot the record does not carry is its own code', () => {
@@ -200,12 +265,22 @@ describe('verifyResumeIdentity — the record is the authority (ADR-0083 §5)', 
     expect(verify({ workflow: wf, recordedInputs: { topic: 'the report' } }).ok).toBe(true);
   });
 
-  it('but a recorded VALUE is still held to the workflow contract', () => {
-    // The half `verify` mode keeps: presence rules are the record's, the value contract is the workflow's.
-    // A record and a workflow that disagree about what a value may BE is exactly the drift worth catching.
-    const wf = workflowWith(`    - { name: topic, type: string }
+  it('holds a recorded value to its declared TYPE, and not to the `validation` block', () => {
+    // The asymmetry §8's legacy rule forces, and a review measured the alternative: a run paused before
+    // ADR-0083 landed, whose recorded `depth` is `3` against a `max: 2` nothing enforced then, became
+    // PERMANENTLY unresumable — the offending value is the record itself, so no caller input fixes it and
+    // the run's completed work is lost. On the only shipping resume surface the workflow is re-parsed from
+    // the frozen snapshot, so a bound cannot have changed between processes anyway; value-vs-workflow drift
+    // is §5's content check to catch.
+    const bounded = workflowWith(`    - { name: topic, type: string }
     - { name: depth, type: number, validation: { max: 2 } }`);
-    const result = verify({ workflow: wf });
+    expect(verify({ workflow: bounded }).ok).toBe(true);
+
+    // The TYPE is still enforced, because it is what interpolation depends on: a `number` slot holding a
+    // string changes what a downstream expression computes.
+    const retyped = workflowWith(`    - { name: topic, type: string }
+    - { name: depth, type: string }`);
+    const result = verify({ workflow: retyped });
     expect(!result.ok && result.refusal.code).toBe('input_mismatch');
     expect(!result.ok && result.refusal.message).toContain('depth');
   });
@@ -244,9 +319,13 @@ describe('verifyResumeIdentity — the record is the authority (ADR-0083 §5)', 
     expect(!result.ok && result.refusal.message).toContain('threw');
   });
 
-  it('the caller map is read ONCE, so a getter cannot answer differently after the check', () => {
-    // Without the snapshot the comparison and the assignment were two separate reads of the same accessor:
-    // the first could match the record and the second hand the run something else entirely.
+  it('materialises the caller map once, so a shifty getter cannot reach the run', () => {
+    // The claim corrected: for a matching non-secret key the shipped code assigns `recorded`, not
+    // `supplied[key]`, so a second read could never have reached the run through THAT path anyway — a
+    // review measured this test staying green against a pass-through `snapshotSupplied`. What the snapshot
+    // buys is that the map the rest of the function reasons about is fixed at entry, which is what the
+    // OUTCOME assertion below pins: whatever the getter answers on a later read, the resumed inputs are
+    // the record's.
     let reads = 0;
     const shifty: Record<string, unknown> = { depth: 3 };
     Object.defineProperty(shifty, 'topic', {
@@ -259,6 +338,8 @@ describe('verifyResumeIdentity — the record is the authority (ADR-0083 §5)', 
     const result = verify({ suppliedInputs: shifty });
     expect(result.ok).toBe(true);
     expect(reads).toBe(1);
+    // The outcome, which is the part that matters: the run continues on the RECORD, never on a later read.
+    expect(result.ok && result.inputs).toEqual({ topic: 'the report', depth: 3 });
   });
 });
 
@@ -302,6 +383,33 @@ describe('deepStructuralEquals', () => {
     // unequal. For an identity check that is the safe direction — it refuses rather than assuming.
     expect(deepStructuralEquals(new Map([['a', 1]]), new Map([['a', 1]]))).toBe(false);
     expect(deepStructuralEquals({ d: new Date(0) }, { d: new Date(0) })).toBe(false);
+  });
+
+  it('is SYMMETRIC across a sparse array, and length-sensitive', () => {
+    // `Array.prototype.every` skips holes, so the first version compared a sparse array equal to a dense one
+    // in one direction and unequal in the other — measured. An equality relation that is not symmetric is a
+    // defect on its own terms, and this one decides whether a resumed run gets the graph it started on.
+    const sparse: unknown[] = [];
+    sparse[1] = 1;
+    expect(deepStructuralEquals(sparse, [2, 1])).toBe(false);
+    expect(deepStructuralEquals([2, 1], sparse)).toBe(false);
+    expect(deepStructuralEquals(sparse, [undefined, 1])).toBe(true); // a hole reads as `undefined`
+    // …and length is compared, which no test covered.
+    expect(deepStructuralEquals([1], [1, 2])).toBe(false);
+    expect(deepStructuralEquals([1, 2], [1])).toBe(false);
+  });
+
+  it('gives up below its depth ceiling, and the give-up answer is FAIL-CLOSED', () => {
+    // A bound so a pathological structure cannot exhaust the stack. `false` past the ceiling means two
+    // genuinely identical values deeper than it are reported unequal — a refused resume, not an accepted
+    // wrong one, which is the direction an identity check must fail in.
+    const nest = (depth: number): unknown => {
+      let value: unknown = 'leaf';
+      for (let i = 0; i < depth; i += 1) value = { deeper: value };
+      return value;
+    };
+    expect(deepStructuralEquals(nest(60), nest(60))).toBe(true);
+    expect(deepStructuralEquals(nest(200), nest(200))).toBe(false);
   });
 
   it('terminates on a self-referential structure instead of recursing forever', () => {
@@ -513,6 +621,35 @@ describe('resumeFromCheckpoint — identity refusals release the lease (acceptan
     ).rejects.toMatchObject({ code: 'input_mismatch' });
   });
 
+  it('releases the lease when the CHECKPOINT load or the workflow-id read rejects', async () => {
+    // Two leaks a review measured, both pre-dating this work and both live: `checkpointer.load` is `async`
+    // precisely so ADR-0075's `UnreadableRunEventLogError` arrives as a rejection, and `resolveWorkflowId`
+    // fails on any store fault. Each stranded the claim for a full TTL over a run nobody could then resume.
+    for (const failing of ['checkpointer', 'store'] as const) {
+      const store = new InMemoryRunStore(JSON.stringify(WF));
+      const leases = createInMemoryRunLeases();
+      const base = createInMemoryHost({ store, runLeases: leases });
+      await seedPaused(store, 'run-portfail');
+      const host =
+        failing === 'checkpointer'
+          ? {
+              ...base,
+              checkpointer: { load: () => Promise.reject(new Error('the log is unreadable')) },
+            }
+          : {
+              ...base,
+              store: Object.assign(Object.create(Object.getPrototypeOf(store) as object), store, {
+                resolveWorkflowId: () => Promise.reject(new Error('the store is gone')),
+              }) as typeof store,
+            };
+      const engine = new WorkflowEngine({ host, executor: new Stub() });
+      await expect(
+        engine.resumeFromCheckpoint({ runId: 'run-portfail', workflow: WF }),
+      ).rejects.toThrow(failing === 'checkpointer' ? 'the log is unreadable' : 'the store is gone');
+      expect(await leases.read('run-portfail')).toBeUndefined();
+    }
+  });
+
   it('releases the lease when the snapshot READ itself rejects', async () => {
     // `#releaseFenceOnThrow` returned its body un-awaited, so a rejecting async body skipped the catch and
     // stranded the claim for a full TTL. Latent while its only caller was the synchronous `buildRunPlan`.
@@ -545,6 +682,62 @@ describe('resumeFromCheckpoint — identity refusals release the lease (acceptan
     for await (const event of handle.events) void event;
     expect(seenInputs.length).toBeGreaterThan(0);
     expect(seenInputs[0]).toEqual({ topic: 'the report', depth: 3 });
+  });
+
+  it('carries `__proto__` through the DURABLE record and back into the resumed run (§7, 9.7)', async () => {
+    // Two things nothing covered, one of them a live loss. `maskInputs` builds a null-prototype map, and the
+    // bus then re-parsed the draft through the event schema — where Zod's `z.record` REBUILD dropped an own
+    // `__proto__` key. The run executed with the input, the durable record did not carry it, and §5's
+    // verification compared two maps that agreed only because both were missing it. And on the resume side,
+    // `verifyResumeIdentity`'s own accumulators were unpinned: with a `{}` the same name is silently
+    // swallowed on the way back out. This drives the whole loop — start, persist, reconstruct, resume.
+    const wf = workflowWith(`    - { name: __proto__, type: string }
+    - { name: constructor, type: string }
+    - { name: toString, type: string }`);
+    const store = new InMemoryRunStore(JSON.stringify(wf));
+    const host = createInMemoryHost({ store });
+    const supplied = { ['__proto__']: 'p', constructor: 'c', toString: 't' };
+
+    const engineA = new WorkflowEngine({ host, executor: new GatingStub() });
+    const started = engineA.start({ workflow: wf, inputs: supplied });
+    let gateId = '';
+    for await (const event of started.events) {
+      if (event.type === 'run:paused') {
+        gateId = event.gateIds[0] ?? '';
+        break;
+      }
+    }
+    expect(gateId).not.toBe('');
+
+    // The DURABLE record — not the in-memory map — must carry all three.
+    const persisted = store
+      .eventsFor(started.runId)
+      .find((event) => event.type === 'run:started');
+    expect(persisted?.type === 'run:started' && Object.getOwnPropertyNames(persisted.inputs)).toEqual(
+      ['__proto__', 'constructor', 'toString'],
+    );
+
+    const seenInputs: Record<string, unknown>[] = [];
+    // A FRESH host over the SAME store — a second process, which is what a cross-process resume is. Reusing
+    // the first host would also reuse its in-memory lease, which the park releases only after `run:paused`
+    // is delivered.
+    const engineB = new WorkflowEngine({
+      host: createInMemoryHost({ store }),
+      executor: new CapturingStub(seenInputs),
+    });
+    const resumed = await engineB.resumeFromCheckpoint({
+      runId: started.runId,
+      workflow: wf,
+      gateId,
+      decision: { decision: 'approved', decidedBy: 'tester' },
+    });
+    for await (const event of resumed.events) void event;
+
+    const post = seenInputs.at(-1) ?? {};
+    expect(Object.getOwnPropertyNames(post).sort()).toEqual(['__proto__', 'constructor', 'toString']);
+    expect(post['__proto__']).toBe('p');
+    // …and nothing leaked onto the global prototype on the way through.
+    expect(({} as Record<string, unknown>)['p']).toBeUndefined();
   });
 
   it('resumes cleanly when the caller passes the same inputs it started with', async () => {

@@ -17,6 +17,7 @@
 
 import {
   isReferenceableInputName,
+  violatesDeclaredType,
   violatesInputContract,
   type Workflow,
   type WorkflowInput,
@@ -147,7 +148,20 @@ export function resolveAndValidateWorkflowInputs(
       }
       continue;
     }
-    const reason = violatesInputContract(provided, input.type, input.validation);
+    // **In `verify` mode the TYPE is checked and the `validation` block is not**, and the asymmetry is the
+    // whole legacy question rather than an oversight. A review measured the alternative: a run paused before
+    // ADR-0083 landed, whose recorded `severity` is `99` against a `max: 10` the engine never enforced, became
+    // permanently unresumable — the offending value IS the record, so nothing the caller passes can fix it,
+    // and the run's completed work is lost. That is not drift detection: on the only shipping resume surface
+    // the workflow is re-parsed from the FROZEN snapshot, so the bounds cannot have changed between
+    // processes, and value-vs-workflow drift is §5's content check to catch. The declared TYPE stays enforced
+    // because it is what interpolation actually depends on — a `number` slot holding a string changes what a
+    // downstream expression computes, where a violated bound only means the run was admitted under looser
+    // rules than exist today.
+    const reason =
+      mode === 'verify'
+        ? violatesDeclaredType(provided, input.type)
+        : violatesInputContract(provided, input.type, input.validation);
     if (reason === undefined) {
       resolved[input.name] = provided;
     } else {

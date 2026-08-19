@@ -1220,9 +1220,10 @@ describe('event envelope + ErrorCode + attemptNumber invariants', () => {
 
 describe('MaskedSecretSchema', () => {
   it('accepts a masked secret ({ secret: true, ref })', () => {
-    expect(MaskedSecretSchema.safeParse({ secret: true, ref: 'keychain:openai' }).success).toBe(
-      true,
-    );
+    // The `ref` the engine actually emits: a SELF-reference naming the slot, not a keychain locator. The
+    // fixture said `keychain:openai`, which taught a contract the value never carried — the schema accepts
+    // any non-empty string, so nothing failed, and the docblock's "keychain/env ref" wording followed it.
+    expect(MaskedSecretSchema.safeParse({ secret: true, ref: 'inputs.api_key' }).success).toBe(true);
   });
 
   it('rejects a non-masked or ref-less value', () => {
@@ -1233,7 +1234,7 @@ describe('MaskedSecretSchema', () => {
 
   it('rejects an extra field — a raw secret can never ride alongside the masked shape', () => {
     expect(
-      MaskedSecretSchema.safeParse({ secret: true, ref: 'keychain:openai', raw_value: 'sk-leak' })
+      MaskedSecretSchema.safeParse({ secret: true, ref: 'inputs.api_key', raw_value: 'sk-leak' })
         .success,
     ).toBe(false);
   });

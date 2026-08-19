@@ -222,11 +222,19 @@ decision)`; across a restart, `engine.resumeFromCheckpoint({ runId, workflow, ga
 rehydrates a fresh `RunExecution` from the reconstructed state (seeding node states, pending gates,
 tallies, and the `sequenceNumber` so post-resume events continue gap-free — no `run:started` is
 re-emitted) and returns a `RunHandle` for the rest of the run. An **identity guard** refuses a resume
-whose workflow is not the one the run started on: the Phase-1 in-memory reference compares the surrogate
-`workflowId` reconstructed from `run:started` (a different workflow → a typed `workflow_mismatch`). The
-stronger guard that also catches a *same-slug, edited-content* workflow rides on the frozen
-`runs.workflow_definition_snapshot` column ([../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md))
-— a Phase-2 persistence concern wired with the real `RunStore`, not the event-derived in-memory state. **Idempotent re-delivery** never advances a run twice: re-delivering a decision to an
+whose workflow is not the one the run started on: it compares the surrogate `workflowId` reconstructed from
+`run:started` (a different workflow → a typed `workflow_mismatch`), and then the frozen
+`runs.workflow_definition_snapshot` ([../reference/shared-core/database-schema.md](../reference/shared-core/database-schema.md))
+by deep structural equality, which is what catches a *same-slug, edited-content* workflow
+(`workflow_content_mismatch`; an unreadable snapshot is `admission_record_unreadable`). A store that keeps no
+frozen definition answers `undefined` and content verification is skipped.
+
+The guard extends past the graph: `inputs` and `executionMode` are **reconstructed from `run:started`** and
+the caller's copies are verified against them rather than used, so a resume cannot continue the run under a
+state its own start never recorded ([ADR-0083](../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
+§5). A `secret` input is the one thing the record cannot hold — it is persisted as a masked placeholder — so
+the caller re-supplies it by name or the resume is refused; §6 states exactly what that proves. Every one of
+these refusals releases the lease it acquired. **Idempotent re-delivery** never advances a run twice: re-delivering a decision to an
 already-terminal run is a no-op (a closed handle, nothing re-emitted or re-persisted); re-delivering an
 already-resolved gate on a still-running run drives the remaining work without re-applying the decision.
 This holds within a process, and across processes once the prior process's `human_gate:resumed` is

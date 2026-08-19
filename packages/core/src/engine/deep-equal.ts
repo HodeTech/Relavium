@@ -59,7 +59,14 @@ function equals(a: unknown, b: unknown, depth: number, seen: Map<unknown, Set<un
 
   if (Array.isArray(a) || Array.isArray(b)) {
     if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-    return a.every((item, index) => equals(item, b[index], depth + 1, seen));
+    // An INDEX loop, not `every`: `Array.prototype.every` SKIPS holes, so a sparse array compared equal to a
+    // dense one in one direction and unequal in the other — an equality relation that is not symmetric,
+    // measured. Harmless while the only caller compared scalar inputs; the workflow-content comparison walks
+    // `nodes`, `edges` and `enum`, where a false positive means accepting a different graph.
+    for (let index = 0; index < a.length; index += 1) {
+      if (!equals(a[index], b[index], depth + 1, seen)) return false;
+    }
+    return true;
   }
   if (!isPlainObject(a) || !isPlainObject(b)) return false;
 

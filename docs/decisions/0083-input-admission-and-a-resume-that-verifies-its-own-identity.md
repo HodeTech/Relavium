@@ -208,6 +208,12 @@ records it as a limitation rather than implying a completeness the mechanism doe
 >   `undefined`, which is an honest fact rather than a fabricated belief. The engine then skips content
 >   verification with that fact stated. The cost is real and was paid: every `RunStore` fixture in the tree
 >   had to answer the question.
+> - **"Verified by ID" overstates what happens, and the honest phrasing is narrower.** No code performs an
+>   id verification of `planOptions.agents`; `resumeFromCheckpoint` passes `planOptions` straight into
+>   `buildRunPlan`. The effective guarantee is `buildRunPlan`'s dangling-`agent_ref` check against a workflow
+>   whose CONTENT this section now verifies — so an `agent_ref` naming an agent the caller did not supply is
+>   refused, while a caller supplying a different `Agent` BODY under the same id is not detected. §10 already
+>   records the content limitation; this corrects the mechanism named for it.
 > - **`plan_mismatch` was NOT implemented, and should not be.** §11 listed it in the taxonomy, but every case
 >   it could name is already covered: an `agent_ref` that does not resolve against `planOptions.agents` makes
 >   `buildRunPlan` throw on the resume path, and everything else about the plan is derived from the workflow,
