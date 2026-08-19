@@ -179,6 +179,7 @@ export function buildGateArgs(input: CommandInput): GateCommandArgs {
     runId,
     approve: boolFlag(input.options['approve']),
     reject: boolFlag(input.options['reject']),
+    secretStdin: boolFlag(input.options['secretStdin']),
     ...(comment === undefined ? {} : { comment }),
     ...(inputValue === undefined ? {} : { input: inputValue }),
     ...(gate === undefined ? {} : { gate }),

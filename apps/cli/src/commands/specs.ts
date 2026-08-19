@@ -335,6 +335,10 @@ function registerGate(program: Command, ctx?: CommandContext): void {
     .option(
       '--gate <gateId>',
       'which pending gate to resolve (required when more than one is pending)',
+    )
+    .option(
+      '--secret-stdin',
+      'read the run\'s secret inputs from stdin as name=value lines (never passed as arguments)',
     );
   const gateList = gate
     .command('list [runId]')

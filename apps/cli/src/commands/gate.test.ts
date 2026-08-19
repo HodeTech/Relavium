@@ -88,6 +88,26 @@ workflow:
     - { from: double, to: out }
 `;
 
+// A gated run carrying a `secret` input — the durable record holds only its masked slot, so resuming it
+// needs ADR-0083 §6's stdin re-supply. `double` reads `n`, not the secret: the parser forbids interpolating
+// a `secret` into agent/tool text (ADR-0029), and a transform reading it would put it in a node output.
+const GATED_SECRET = `schema_version: '1.0'
+workflow:
+  id: gate-secret
+  inputs:
+    - { name: n, type: number }
+    - { name: api_key, type: secret }
+  nodes:
+    - { id: start, type: input }
+    - { id: g, type: human_gate, gate_type: approval }
+    - { id: double, type: transform, transform: '({ d: inputs.n * 2 })' }
+    - { id: out, type: output }
+  edges:
+    - { from: start, to: g }
+    - { from: g, to: double }
+    - { from: double, to: out }
+`;
+
 // Two gates on parallel branches → a multi-gate pause that requires --gate to disambiguate.
 const TWO_GATES = `schema_version: '1.0'
 workflow:
@@ -242,6 +262,89 @@ describe('gateCommand', () => {
     }
     return { runId, gateIds };
   }
+
+  describe('secret re-supply (ADR-0083 §6)', () => {
+    const SECRET = 'sk-live-not-in-the-log';
+    const seedSecretRun = (): Promise<{ runId: string; gateIds: string[] }> =>
+      setupPausedRun(GATED_SECRET, { n: 7, api_key: SECRET });
+
+    it('refuses without --secret-stdin, and NAMES the remedy', async () => {
+      // The old message said "re-run the workflow instead of resuming", which threw away the run's
+      // completed work for a credential the user still had. There is a way to resume now, so it says so.
+      const { runId } = await seedSecretRun();
+      const { io } = captureIo();
+      await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toMatchObject({
+        code: 'invalid_invocation',
+      });
+      await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toThrow(/api_key/);
+      await expect(gateCommand({ runId, approve: true }, deps(io))).rejects.toThrow(
+        /--secret-stdin/,
+      );
+    });
+
+    it('resumes with the value from stdin, and the value never reaches the log', async () => {
+      const { runId } = await seedSecretRun();
+      const { io } = captureIo();
+      const code = await gateCommand(
+        { runId, approve: true, secretStdin: true },
+        { ...deps(io), readSecretInput: () => Promise.resolve(`api_key=${SECRET}\n`) },
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      // The run continued past the gate — `double` ran on the RECORDED `n`, not on anything re-supplied.
+      const events = await reader().loadRunEvents(runId);
+      expect(events.some((event) => event.type === 'run:completed')).toBe(true);
+      // …and the credential is in none of it. The engine never re-emits `run:started` on resume, so the
+      // only masked record stays the original one.
+      const serialised = JSON.stringify(events);
+      expect(serialised).not.toContain(SECRET);
+      expect(serialised).toContain('inputs.api_key');
+    });
+
+    it('refuses a stdin payload that misses a slot, names one the run does not have, or is malformed', async () => {
+      const { runId } = await seedSecretRun();
+      const cases: readonly (readonly [string, RegExp])[] = [
+        ['n=7\n', /did not supply/], // the slot the run needs is absent
+        [`api_key=${SECRET}\nother=x\n`, /no .?secret.? slot/], // a name the run has no slot for
+        ['api_key=\n', /non-empty value/], // an empty value is refused explicitly, not accepted as ''
+        ['api_key\n', /non-empty value/], // not a pair at all
+        [`api_key=${SECRET}\napi_key=${SECRET}\n`, /twice/], // the same name supplied twice
+      ];
+      for (const [payload, expected] of cases) {
+        const { io } = captureIo();
+        await expect(
+          gateCommand(
+            { runId, approve: true, secretStdin: true },
+            { ...deps(io), readSecretInput: () => Promise.resolve(payload) },
+          ),
+        ).rejects.toThrow(expected);
+      }
+    });
+
+    it('refuses --secret-stdin on a run with no secrets, rather than reading a pipe for nothing', async () => {
+      const { runId } = await setupPausedRun();
+      const { io } = captureIo();
+      let read = 0;
+      await expect(
+        gateCommand(
+          { runId, approve: true, secretStdin: true },
+          {
+            ...deps(io),
+            readSecretInput: () => {
+              read += 1;
+              return Promise.resolve('');
+            },
+          },
+        ),
+      ).rejects.toThrow(/no .?secret.? inputs to re-supply/);
+      expect(read).toBe(0); // never blocked on a pipe nobody attached
+    });
+
+    it('a run with no secrets and no flag is untouched by any of this', async () => {
+      const { runId } = await setupPausedRun();
+      const { io } = captureIo();
+      expect(await gateCommand({ runId, approve: true }, deps(io))).toBe(EXIT_CODES.success);
+    });
+  });
 
   it('wires the same media host + catalog resolveMediaSurface on a gate-resumed run (2.S)', async () => {
     // Seed a generative model into the SHARED db so the gate-path catalog (over opened.db) resolves it.

@@ -246,6 +246,12 @@ const ENTRIES: readonly CommandManifestEntry[] = [
         type: 'string',
         description: 'which pending gate to resolve (required when more than one is pending)',
       },
+      {
+        name: 'secretStdin',
+        type: 'boolean',
+        description:
+          "read the run's secret inputs from stdin as name=value lines (never passed as arguments)",
+      },
     ],
     effect: 'write',
   },

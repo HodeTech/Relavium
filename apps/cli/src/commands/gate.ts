@@ -43,6 +43,7 @@ import { createProviderResolver, type ProviderResolver } from '../engine/provide
 import { decisionFromFlags, type GateFlags } from '../gate/decision.js';
 import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
+import { readSecretFromStdin } from '../secrets/read-secret.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -90,6 +91,17 @@ export interface GateCommandArgs extends GateFlags {
   readonly runId: string;
   /** `--gate <gateId>`: which pending gate to resolve (required only when more than one is pending). */
   readonly gate?: string;
+  /**
+   * `--secret-stdin`: re-supply the run's `secret` inputs from stdin, one `name=value` per line
+   * ([ADR-0083](../../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
+   * §6). A `secret` is never persisted — the durable record holds only a masked slot — so a secret-bearing
+   * run cannot resume without it, and before this flag existed the only advice was "re-run the workflow".
+   *
+   * **Values never travel through argv**, which is why the flag is a boolean and not `--secret name=value`:
+   * a credential on a command line leaks to `ps`, shell history and CI logs. `relavium provider set-key`
+   * takes a key on stdin for exactly this reason.
+   */
+  readonly secretStdin?: boolean;
 }
 
 export interface GateCommandDeps {
@@ -105,6 +117,11 @@ export interface GateCommandDeps {
   readonly selectGatePrompter?: (io: CliIo, global: GlobalOptions) => GatePrompter | undefined;
   /** Injectable run-end host media GC (2.S/D-GC); defaults to {@link defaultSweepMedia}. Tests spy on it. */
   readonly sweepMedia?: typeof defaultSweepMedia;
+  /**
+   * Read the whole of stdin, for `--secret-stdin`. Injected so a test never touches the real stdin — and
+   * never has to put a credential-shaped string anywhere but its own closure.
+   */
+  readonly readSecretInput?: () => Promise<string>;
 }
 
 const TERMINAL_STATUSES: ReadonlySet<RunStatus> = new Set(['completed', 'failed', 'cancelled']);
@@ -196,8 +213,7 @@ export async function gateCommand(args: GateCommandArgs, deps: GateCommandDeps):
     }
 
     const workflow = parseSnapshot(snapshot.workflowDefinitionSnapshot, args.runId);
-    const inputs = parseInputs(snapshot.inputJson, args.runId);
-    assertNoMaskedSecretInputs(inputs, args.runId);
+    const inputs = await resolveSecretInputs(parseInputs(snapshot.inputJson, args.runId), args, deps);
 
     // The workflow-scoped store records the NEW resume events (persist-before-deliver) and resolves the
     // workflow id for the engine's identity guard; the checkpointer reconstructs the paused state from the log.
@@ -482,26 +498,107 @@ function parseInputs(inputJson: string, runId: string): Record<string, unknown> 
 }
 
 /**
- * Fail closed if any restored input is a {@link MaskedSecret} placeholder. The durable `run:started.inputs`
- * the engine persists are **masked** — a `secret`-typed input is stored as `{ secret: true, ref }`, never its
- * plaintext (ADR-0006/0036). So a cross-process resume genuinely cannot restore the real value: resuming with
- * the masked placeholder would let a post-gate `{{ inputs.<secret> }}` silently evaluate to the placeholder
- * object, diverging from the in-process run. We refuse (exit 2) with an actionable message rather than resume
- * a secret-bearing run incorrectly. (Re-providing secret inputs on resume is a tracked follow-up — see
- * [deferred-tasks](../../../../docs/roadmap/deferred-tasks.md).)
+ * Re-supply the run's `secret` inputs, or refuse the resume
+ * ([ADR-0083](../../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md)
+ * §6).
+ *
+ * The durable record holds a `secret` input as `{ secret: true, ref }` and nothing else — there is no
+ * credential in it to restore. Passing the placeholder through would let a post-gate `{{ inputs.<secret> }}`
+ * evaluate to a marker object; the engine refuses that outright (`secret_input_missing`), and this refuses it
+ * earlier with a message that names the remedy.
+ *
+ * **`name=value` lines on stdin, behind an explicit `--secret-stdin`.** The flag is what keeps the command
+ * from blocking on a pipe nobody attached, and the VALUES never appear in argv, where a credential leaks to
+ * `ps`, shell history and CI logs. The name in the line is not itself a secret, and carrying it there rather
+ * than in a repeated flag removes the order dependency that would silently swap two credentials.
+ *
+ * Every masked slot must be supplied and nothing else may be: a name the run has no slot for is a mistake
+ * worth naming rather than ignoring, and an empty value is refused explicitly rather than by omission — the
+ * engine would accept `''` as "re-supplied", and a blank line in a piped heredoc is the likeliest way to
+ * produce one by accident.
  */
-function assertNoMaskedSecretInputs(inputs: Record<string, unknown>, runId: string): void {
+async function resolveSecretInputs(
+  inputs: Record<string, unknown>,
+  args: GateCommandArgs,
+  deps: GateCommandDeps,
+): Promise<Record<string, unknown>> {
   const masked = Object.keys(inputs).filter(
     (key) => MaskedSecretSchema.safeParse(inputs[key]).success,
   );
-  if (masked.length > 0) {
+  if (masked.length === 0) {
+    if (args.secretStdin === true) {
+      throw new CliError(
+        'invalid_invocation',
+        `run ${args.runId} has no \`secret\` inputs to re-supply — drop --secret-stdin.`,
+      );
+    }
+    return inputs;
+  }
+  if (args.secretStdin !== true) {
     throw new CliError(
       'invalid_invocation',
-      `run ${runId} has secret input(s) [${masked.join(', ')}] that are not persisted in plaintext, so a ` +
-        `cross-process resume cannot restore them — re-run the workflow instead of resuming.`,
+      `run ${args.runId} needs its \`secret\` input(s) [${masked.join(', ')}] re-supplied to resume — ` +
+        `they are never persisted. Pipe them on stdin as \`name=value\` lines with --secret-stdin ` +
+        `(e.g. \`printf '${masked[0] ?? 'name'}=%s\\n' "$VALUE" | relavium gate ${args.runId} --approve --secret-stdin\`).`,
     );
   }
+  const supplied = parseSecretLines(await (deps.readSecretInput ?? readSecretFromStdin)(), args.runId);
+  const missing = masked.filter((name) => !Object.hasOwn(supplied, name));
+  if (missing.length > 0) {
+    throw new CliError(
+      'invalid_invocation',
+      `stdin did not supply the \`secret\` input(s) [${missing.join(', ')}] this run needs.`,
+    );
+  }
+  const unexpected = Object.keys(supplied).filter((name) => !masked.includes(name));
+  if (unexpected.length > 0) {
+    throw new CliError(
+      'invalid_invocation',
+      `stdin supplied [${unexpected.join(', ')}], which run ${args.runId} has no \`secret\` slot for.`,
+    );
+  }
+  // A fresh null-prototype map, filled from the restored inputs and then the re-supplied secrets — never a
+  // spread of a `JSON.parse` result into a `{}`, which would put an input named `__proto__` through the
+  // prototype setter (ADR-0083 §7, the same hazard the engine's own accumulators avoid).
+  const merged: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.keys(inputs)) merged[key] = inputs[key];
+  for (const key of Object.keys(supplied)) merged[key] = supplied[key];
+  return merged;
 }
+
+/**
+ * Split stdin into `name=value` pairs. Blank lines are ignored; everything else must be a pair with a
+ * non-empty name and value, so a malformed paste fails loudly instead of resuming with a wrong credential.
+ *
+ * A VALUE may contain `=` (the split is on the first one). It may not contain a newline — a credential that
+ * does is outside what this transport can express, and saying so is better than truncating one silently.
+ * No value is ever echoed, here or in any error below.
+ */
+function parseSecretLines(raw: string, runId: string): Record<string, string> {
+  const out: Record<string, string> = Object.create(null) as Record<string, string>;
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed === '') continue;
+    const at = trimmed.indexOf('=');
+    const name = at === -1 ? '' : trimmed.slice(0, at).trim();
+    const value = at === -1 ? '' : trimmed.slice(at + 1);
+    if (name === '' || value === '') {
+      throw new CliError(
+        'invalid_invocation',
+        `stdin for run ${runId} must be \`name=value\` lines with a non-empty value.`,
+      );
+    }
+    if (Object.hasOwn(out, name)) {
+      throw new CliError(
+        'invalid_invocation',
+        `stdin for run ${runId} supplied the same \`secret\` name twice.`,
+      );
+    }
+    out[name] = value;
+  }
+  return out;
+}
+
 
 /**
  * Map a checkpoint-read fault to the surface error it deserves, and never return. Extracted from
