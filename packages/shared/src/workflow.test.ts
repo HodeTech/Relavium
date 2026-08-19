@@ -531,6 +531,21 @@ describe('WorkflowInputSchema — the ADR-0083 tightenings', () => {
     expect(input({ default: 'closing }} only' }).success).toBe(true);
   });
 
+  it('does not recurse without bound into a nested default', () => {
+    // `containsInterpolation` walks a `default`'s full shape with a cycle guard but had no depth cap, unlike
+    // `pattern`, which is length-capped for exactly this class of concern. A `RangeError` raised inside a
+    // Zod refine is not a validation issue Zod can report — it escapes `safeParse`, past this schema's
+    // promise that an invalid file never yields a definition.
+    //
+    // Giving up at the cap is safe, and that is why the cap can be a plain `false`: a `default` nested this
+    // deep is a non-primitive, and `matchesDeclaredType` refuses a non-primitive default for every declared
+    // type, so the value is rejected by the same refine regardless of what the walk answers.
+    let deep: unknown = '{{secrets.token}}';
+    for (let i = 0; i < 20_000; i += 1) deep = [deep];
+    expect(() => input({ default: deep })).not.toThrow();
+    expect(input({ default: deep }).success).toBe(false);
+  });
+
   it('rejects a declared default that violates its own contract', () => {
     // The ADR and the spec both claimed this and the first implementation did not do it. A review measured
     // a `number` defaulting to `'not a number'` and a `string` default outside its own `enum`, both

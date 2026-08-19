@@ -89,8 +89,20 @@ export function resolveAndValidateWorkflowInputs(
 
   // Unknown keys first — a typo'd name is the most common mistake and the least useful to report as
   // "missing required input" for the one it was meant to be.
+  //
+  // The LISTING can throw, not only the per-key read below: an exotic object's `ownKeys` trap is caller
+  // code, and a review reproduced `Object.keys(new Proxy({}, { ownKeys() { throw … } }))` escaping `start()`
+  // as a raw `Error`. A caller doing exactly what this ADR tells it to — narrowing on `EngineStateError` —
+  // would not catch it. Guarded the same way the value read is, and for the same reason: this function
+  // answers yes or no.
   const declaredNames = new Set(declared.map((input) => input.name));
-  const unknown = Object.keys(supplied).filter((key) => !declaredNames.has(key));
+  let suppliedKeys: readonly string[] = [];
+  try {
+    suppliedKeys = Object.keys(supplied);
+  } catch {
+    issues.push({ message: 'the supplied inputs could not be enumerated' });
+  }
+  const unknown = suppliedKeys.filter((key) => !declaredNames.has(key));
   for (const key of unknown.slice(0, MAX_UNKNOWN_KEY_ISSUES)) {
     const message = 'unknown input — the workflow declares no input by this name';
     issues.push(isReferenceableInputName(key) ? { name: key, message } : { message });

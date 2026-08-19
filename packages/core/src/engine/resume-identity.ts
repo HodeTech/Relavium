@@ -79,7 +79,19 @@ function snapshotSupplied(
   | { readonly ok: false; readonly refusal: ResumeIdentityRefusal } {
   const out: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   if (raw === undefined) return { ok: true, value: out };
-  for (const key of Object.keys(raw)) {
+  let keys: readonly string[];
+  try {
+    // The LISTING is caller code too, on an exotic object — an `ownKeys` trap that throws would escape
+    // `resumeFromCheckpoint` as somebody else's `Error`, past the lease release and past every caller
+    // narrowing on `EngineStateError`.
+    keys = Object.keys(raw);
+  } catch {
+    return {
+      ok: false,
+      refusal: { code: 'input_mismatch', message: 'the supplied inputs could not be enumerated' },
+    };
+  }
+  for (const key of keys) {
     try {
       out[key] = raw[key];
     } catch {

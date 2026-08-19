@@ -143,6 +143,9 @@ const PATTERN_MAX_SOURCE = 512;
  */
 const INTERPOLATION_PAIR = /\{\{[\s\S]*?\}\}/;
 
+/** How deep {@link containsInterpolation} walks a `default` before it stops looking. */
+const MAX_DEFAULT_DEPTH = 32;
+
 /**
  * Does any string ANYWHERE in this value carry an interpolation pair?
  *
@@ -151,13 +154,23 @@ const INTERPOLATION_PAIR = /\{\{[\s\S]*?\}\}/;
  * reachable today — nothing applies a default — but §1's admission gate will, and a parse gate that never
  * looked inside the value it admits is the wrong thing to build under.
  */
-function containsInterpolation(value: unknown, seen: WeakSet<object> = new WeakSet<object>()): boolean {
+function containsInterpolation(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet<object>(),
+  depth = 0,
+): boolean {
   if (typeof value === 'string') return INTERPOLATION_PAIR.test(value);
   if (typeof value !== 'object' || value === null) return false;
+  // **Bounded, and giving up is SAFE here** — the reasoning matters more than the number. A `default`
+  // nested deeper than this is a non-primitive, and `matchesDeclaredType` rejects a non-primitive default
+  // for every declared type, so the value is refused by step 4 of the same refine whatever this answers.
+  // What the cap buys is that a pathological authored document cannot exhaust the stack inside a Zod
+  // refine, where a `RangeError` would escape `safeParse` rather than becoming a typed authoring error.
+  if (depth > MAX_DEFAULT_DEPTH) return false;
   if (seen.has(value)) return false;
   seen.add(value);
-  if (Array.isArray(value)) return value.some((item) => containsInterpolation(item, seen));
-  return Object.values(value).some((item) => containsInterpolation(item, seen));
+  if (Array.isArray(value)) return value.some((item) => containsInterpolation(item, seen, depth + 1));
+  return Object.values(value).some((item) => containsInterpolation(item, seen, depth + 1));
 }
 
 /**

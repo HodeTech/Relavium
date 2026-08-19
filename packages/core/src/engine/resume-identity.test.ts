@@ -217,6 +217,20 @@ describe('verifyResumeIdentity — the record is the authority (ADR-0083 §5)', 
     expect(!result.ok && result.refusal.message).toContain('an input');
   });
 
+  it('a throwing `ownKeys` trap is a refusal too', () => {
+    const hostile = new Proxy(
+      { topic: 'the report' },
+      {
+        ownKeys(): never {
+          throw new Error('ownKeys boom');
+        },
+      },
+    );
+    const result = verify({ suppliedInputs: hostile });
+    expect(!result.ok && result.refusal.code).toBe('input_mismatch');
+    expect(!result.ok && result.refusal.message).toContain('could not be enumerated');
+  });
+
   it('a throwing accessor on the caller map is a refusal, not an escaping error', () => {
     const hostile: Record<string, unknown> = {};
     Object.defineProperty(hostile, 'topic', {

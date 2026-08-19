@@ -144,6 +144,26 @@ describe('resolveAndValidateWorkflowInputs (ADR-0083 §1, §2, §7)', () => {
     expect(!result.ok && result.issues.at(-1)?.name).toBeUndefined();
   });
 
+  it('a throwing `ownKeys` trap becomes an ISSUE too — the LISTING is caller code as well', () => {
+    // The sibling of the throwing accessor below, and a review reproduced it escaping `start()` as a raw
+    // `Error`: only the per-key READ was guarded, not `Object.keys(supplied)`. A caller doing exactly what
+    // ADR-0083 tells it to — narrowing on `EngineStateError` — would not have caught it.
+    const wf = workflowWith(`    - { name: a, type: string }`);
+    const hostile = new Proxy(
+      { a: 'x' },
+      {
+        ownKeys(): never {
+          throw new Error('ownKeys boom');
+        },
+      },
+    );
+    const result = admit(wf, hostile);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.issues.some((i) => i.message.includes('could not be enumerated'))).toBe(
+      true,
+    );
+  });
+
   it('a throwing accessor becomes an ISSUE, not a raw throw out of admission', () => {
     // The docblock says this function "answers yes or no". A caller's object may define an input key as an
     // accessor, and letting it escape means a surface narrowing on `EngineStateError` catches somebody
@@ -186,7 +206,15 @@ describe('resolveAndValidateWorkflowInputs (ADR-0083 §1, §2, §7)', () => {
 
   it('BUILDS a null-prototype map — `__proto__` is an ordinary input name', () => {
     // §7. The hazard was never the clone but the ACCUMULATOR: `out[name] = value` on a `{}` with
-    // `name === '__proto__'` invokes the prototype setter, and the grammar permits that name.
+    // `name === '__proto__'` goes through the `Object.prototype.__proto__` setter, and the grammar permits
+    // that name.
+    //
+    // **What that setter actually does here, stated precisely** — a review corrected the first version of
+    // this comment. For a STRING value it is a silent no-op: no prototype is redirected, and no own property
+    // is created either, so the input is simply SWALLOWED. Chain redirection would need an object value, and
+    // no declared input `type` accepts one (`violatesInputContract` rejects a non-primitive for every type),
+    // so the reachable failure is the input vanishing — asserted below, not the pollution it superficially
+    // resembles.
     const wf = workflowWith(
       `    - { name: __proto__, type: string }
     - { name: constructor, type: string }
@@ -204,6 +232,13 @@ describe('resolveAndValidateWorkflowInputs (ADR-0083 §1, §2, §7)', () => {
     expect(inputs['constructor']).toBe('b');
     // …and nothing leaked onto the global prototype.
     expect(({} as Record<string, unknown>)['a']).toBeUndefined();
+
+    // The control that makes the assertions above mean something: on a plain `{}` accumulator the same
+    // assignment creates no own property at all, so `__proto__` would be dropped from the run's inputs
+    // without a single error anywhere.
+    const plain: Record<string, unknown> = {};
+    plain['__proto__'] = 'a';
+    expect(Object.hasOwn(plain, '__proto__')).toBe(false);
   });
 
   it('never reads through the caller’s prototype chain', () => {

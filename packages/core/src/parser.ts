@@ -73,7 +73,20 @@ export function parseWorkflow(yamlText: string, opts?: ParseWorkflowOptions): Wo
     throw syntaxErrorFrom(err, source, lineCounter);
   }
 
-  const result = WorkflowSchema.safeParse(raw);
+  // `safeParse` is the no-throw form, and it is wrapped anyway: a `RangeError` raised INSIDE a refine walking
+  // a pathologically nested document is not a validation issue Zod can report, so it would escape as a raw
+  // error — past this function's own promise that an invalid file never yields a `WorkflowDefinition`. Only
+  // a `RangeError` is converted; anything else is a bug in this package and must stay loud.
+  let result: ReturnType<typeof WorkflowSchema.safeParse>;
+  try {
+    result = WorkflowSchema.safeParse(raw);
+  } catch (err) {
+    if (!(err instanceof RangeError)) throw err;
+    throw new WorkflowValidationError(
+      [{ field: 'workflow', message: 'the document is too large or too deeply nested to validate' }],
+      source === undefined ? undefined : { source },
+    );
+  }
   if (!result.success) {
     const issues = result.error.issues.map((issue) => describeIssue(issue, raw));
     // No `cause`: the raw ZodError can carry an authored `received` value (an enum/literal/discriminator)
