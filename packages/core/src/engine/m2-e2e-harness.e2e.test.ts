@@ -537,6 +537,8 @@ const BUDGETED_ASYNC_MEDIA_PARALLEL = parseWorkflow(
   `schema_version: '1.0'
 workflow:
   id: m2-harness-budgeted-async-media-parallel
+  inputs:
+    - { name: topic, type: string }
   max_parallel: 1
   budget:
     max_cost_microcents: 1500
@@ -558,6 +560,8 @@ const BUDGETED_ASYNC_MEDIA_RESUME = parseWorkflow(
   `schema_version: '1.0'
 workflow:
   id: m2-harness-budgeted-async-media-resume
+  inputs:
+    - { name: topic, type: string }
   max_parallel: 2
   budget:
     max_cost_microcents: 1500
@@ -589,6 +593,8 @@ const BUDGETED_TEXT_CONSERVATIVE = parseWorkflow(
   `schema_version: '1.0'
 workflow:
   id: m2-harness-budgeted-text-conservative
+  inputs:
+    - { name: topic, type: string }
   max_parallel: 1
   budget:
     max_cost_microcents: 1500
@@ -616,6 +622,8 @@ const BUDGETED_TEXT_CONSERVATIVE_RESUME = parseWorkflow(
   `schema_version: '1.0'
 workflow:
   id: m2-harness-budgeted-text-conservative-resume
+  inputs:
+    - { name: topic, type: string }
   max_parallel: 1
   budget:
     # Exactly two worst-case calls (1000 microcents each: max_tokens 1000 at 1 microcent per output token).

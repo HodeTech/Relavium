@@ -23,7 +23,11 @@ export type EngineStateErrorCode =
   | 'invalid_decision' // the supplied `GateDecision` failed schema validation at the boundary
   | 'pending_gate_requires_decision' // a media-only `resumeFromCheckpoint` hit a run also parked on a gate (pass gateId + decision)
   | 'workflow_mismatch' // `resumeFromCheckpoint` was handed a workflow that is not the one the run started on
-  | 'run_owned_elsewhere'; // ANOTHER PROCESS holds a live lease on this run (ADR-0079 §4) — transient; retry later
+  | 'run_owned_elsewhere' // ANOTHER PROCESS holds a live lease on this run (ADR-0079 §4) — transient; retry later
+  // ADR-0083 §1: the caller's inputs did not satisfy the authored contract. A PERMANENT invocation fault —
+  // the same call will fail identically forever — and it happens before a run exists, so there is no runId
+  // to report, no `run:started`, and nothing in the store.
+  | 'input_admission_failed';
 
 /**
  * The codes that are TRANSIENT — worth retrying unchanged — as opposed to permanent invocation faults.

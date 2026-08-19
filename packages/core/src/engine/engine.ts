@@ -67,6 +67,7 @@ import { resolveContext, resolveTemplate } from '../interpolation/resolve.js';
 import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
+import { resolveAndValidateWorkflowInputs } from './input-admission.js';
 import { EngineStateError } from './errors.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import { RunLoopInvariantError } from './invariant-error.js';
@@ -3274,13 +3275,29 @@ export class WorkflowEngine {
    */
   start(input: StartInput): RunHandle {
     const plan = buildRunPlan(input.workflow, input.planOptions);
+    // **Admission runs BEFORE the run id and before the first event** (ADR-0083 §1). That ordering is the
+    // decision, not an implementation detail: a rejected run must leave no `runId`, no `run:started` and no
+    // row, so a caller retrying with corrected inputs is not reasoning about a half-created run. It sits
+    // after `buildRunPlan` because a graph fault is the more fundamental refusal and already throws here.
+    const admitted = resolveAndValidateWorkflowInputs(input.workflow, input.inputs);
+    if (!admitted.ok) {
+      throw new EngineStateError(
+        'input_admission_failed',
+        `the supplied inputs do not satisfy this workflow's contract: ${admitted.issues
+          .map((issue) => `${issue.name} — ${issue.message}`)
+          .join('; ')}`,
+        {},
+      );
+    }
     const runId = this.#host.ids.newId();
     const bus = new RunEventBus({ now: this.#host.clock.now, validate: this.#validateEvents });
     const execution = new RunExecution({
       runId,
       plan,
       workflow: input.workflow,
-      inputs: input.inputs ?? {},
+      // The ADMITTED map — defaults applied, validated, and built fresh rather than taken from the caller
+      // (§7). Mutating the caller's object after `start()` returns cannot reach the run.
+      inputs: admitted.inputs,
       executionMode: input.executionMode ?? 'local',
       host: this.#host,
       executor: this.#executor,

@@ -401,6 +401,8 @@ function unpricedBudgetWorkflow(strict: boolean): ReturnType<typeof parseWorkflo
     `schema_version: '1.0'
 workflow:
   id: e2e-budget-unpriced
+  inputs:
+    - { name: text, type: string }
   budget:
     max_cost_microcents: 1000000
     on_exceed: warn${strict ? '\n    strict_cost_cap: true' : ''}
@@ -424,6 +426,8 @@ function budgetWorkflow(onExceed: string): ReturnType<typeof parseWorkflow> {
     `schema_version: '1.0'
 workflow:
   id: e2e-budget
+  inputs:
+    - { name: text, type: string }
   budget:
     max_cost_microcents: 1
     on_exceed: ${onExceed}
@@ -729,6 +733,8 @@ describe('AgentRunner resource governance end-to-end (ADR-0028, 1.AC)', () => {
       `schema_version: '1.0'
 workflow:
   id: e2e-budget-retry
+  inputs:
+    - { name: text, type: string }
   budget:
     max_cost_microcents: 1
     on_exceed: pause_for_approval
@@ -796,6 +802,8 @@ workflow:
       `schema_version: '1.0'
 workflow:
   id: e2e-timeout
+  inputs:
+    - { name: text, type: string }
   timeout_ms: 1
   agents:
     - id: a
