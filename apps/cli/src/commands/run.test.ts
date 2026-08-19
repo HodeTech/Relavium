@@ -1138,6 +1138,67 @@ describe('runCommand', () => {
     expect(closed).toBe(1); // the connection was torn down at the run terminal
   });
 
+  it('freezes the AUGMENTED graph — the store is opened with the workflow that RUNS (ADR-0083 §5)', async () => {
+    // `runs.workflow_definition_snapshot` is what a cross-process `relavium gate` rebuilds the run from, and
+    // what ADR-0083 §5 verifies a resume against. The store used to be opened with the PRE-augmentation
+    // workflow — before `connectWorkflowMcp` had even run — while the engine started on the augmented one.
+    // On every workflow with `mcp_servers` the durable record of "the exact graph that ran" recorded a graph
+    // that did not run, missing the MCP tool grants that ARE part of workflow identity.
+    const path = writeWorkflow('mcp-snapshot.relavium.yaml', MCP_WF);
+    const { io } = captureIo();
+    const client = createClient(':memory:');
+    runMigrations(client.db);
+    const calls: string[] = [];
+    const conn: McpConnection = {
+      listTools: () => Promise.resolve([{ name: 'read', inputSchema: { type: 'object' } }]),
+      callTool: (name) => {
+        calls.push(name);
+        return Promise.resolve({ content: [{ type: 'text', text: 'fs result' }], isError: false });
+      },
+      close: () => Promise.resolve(),
+    };
+    const frozen: Parameters<NonNullable<RunCommandDeps['openRunStore']>>[0][] = [];
+    try {
+      const code = await runCommand(
+        { workflow: path, input: [] },
+        {
+          io,
+          global: globalOptions(),
+          // The agent CALLS the namespaced MCP tool, then replies — so the run itself proves the engine was
+          // started on an augmented graph, independently of what the store was handed.
+          providers: scriptedResolver([toolUseTurn('c1', 'mcp_fs_read'), textTurn('done')]),
+          buildEngine: (opts) =>
+            buildEngine({
+              ...opts,
+              host: createInMemoryHost(),
+              effectJournal: (correlation) => createInMemoryEffectJournal(correlation),
+            }),
+          startMcpClient: () =>
+            realStartMcpClient([
+              { id: 'fs', toolsAllowlist: ['read'], open: () => Promise.resolve(conn) },
+            ]),
+          openRunStore: (workflow, home, cwd) => {
+            frozen.push(workflow);
+            return historyOpenRunStore(client.db)(workflow, home, cwd);
+          },
+        },
+      );
+      expect(code).toBe(EXIT_CODES.success);
+      expect(calls).toEqual(['read']); // the ENGINE ran the augmented graph
+
+      // …and the STORE was opened with the same one. `historyOpenRunStore` stringifies exactly this argument
+      // into `definitionJson`, which `createRunHistoryStore` writes to the column on `run:started` (pinned in
+      // `@relavium/db`'s own suite) — so naming the argument here names the durable content.
+      expect(frozen).toHaveLength(1);
+      // Asserted on the SERIALISED form, which is literally what `definitionJson` holds.
+      expect(JSON.stringify(frozen[0])).toContain('mcp_fs_read');
+      // …which can only have come from discovery: the authored file never mentions it.
+      expect(MCP_WF).not.toContain('mcp_fs_read');
+    } finally {
+      client.sqlite.close();
+    }
+  });
+
   it('routes an MCP tool RESULT with isError:true through dispatch → engine as a RECOVERABLE error (run still completes)', async () => {
     // The result contract's recoverable-error arm, end-to-end through the real manager + engine: a server tool that
     // returns `{ isError: true }` is a tool-LEVEL (recoverable) error — the agent receives it and replies, the run
