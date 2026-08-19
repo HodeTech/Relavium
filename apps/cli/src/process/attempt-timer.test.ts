@@ -8,6 +8,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { hostAbortController, hostAttemptTimer } from './sleep.js';
@@ -31,23 +33,32 @@ describe('hostAttemptTimer', () => {
   });
 
   it('HOLDS the event loop — a work timer, not a liveness beat', () => {
-    // The property a unit assertion cannot see. ADR-0082's motivating case is a provider that returns a
-    // promise which never settles; if the deadline is `unref`'d there is nothing referenced, the loop
-    // drains, and the process exits before the timer fires — no classified error, no terminal, nothing.
-    // `engine/host.ts` already states the rule: a liveness timer is `unref`'d, a work timer is not.
-    const script = `
-      const t = setTimeout(() => { console.log('FIRED'); }, 40);
+    // The property a unit assertion cannot see: it needs a real loop to drain. ADR-0082's motivating case is
+    // a provider returning a promise that never settles; if the deadline is `unref`'d there is nothing
+    // referenced, the loop drains, and the process exits before the timer fires — no classified error, no
+    // terminal, nothing. `engine/host.ts` states the rule: a liveness timer is `unref`'d, a work timer is not.
+    //
+    // **The child imports the REAL function.** A first version of this test inlined a hand-written
+    // `setTimeout` and merely restated Node's own semantics — a review put `timer.unref()` back into
+    // `hostAttemptTimer` and all three tests here stayed green. It was measuring the runtime, not the code.
+    const child = (source: string): string =>
+      execFileSync(process.execPath, ['--input-type=module', '-e', source], { encoding: 'utf8' });
+    const importReal = `import { hostAttemptTimer } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, 'sleep.ts')).href)};`;
+
+    const out = child(`
+      ${importReal}
+      hostAttemptTimer(40, () => { console.log('FIRED'); });
       new Promise(() => {});   // an uncooperative provider: awaits forever, references nothing
-    `;
-    const out = execFileSync(process.execPath, ['-e', script], { encoding: 'utf8' });
+    `);
     expect(out).toContain('FIRED');
 
-    const unrefd = execFileSync(
-      process.execPath,
-      ['-e', `const t = setTimeout(() => { console.log('FIRED'); }, 40); t.unref(); new Promise(() => {});`],
-      { encoding: 'utf8' },
-    );
-    // …and the negative control: this is what the first version did.
+    // The negative control — what the first version of `hostAttemptTimer` did — proving the assertion above
+    // discriminates rather than merely observing that timers fire.
+    const unrefd = child(`
+      const t = setTimeout(() => { console.log('FIRED'); }, 40);
+      t.unref();
+      new Promise(() => {});
+    `);
     expect(unrefd).not.toContain('FIRED');
   });
 });

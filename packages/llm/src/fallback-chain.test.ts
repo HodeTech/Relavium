@@ -2142,6 +2142,62 @@ describe('FallbackChain — the grammar and the deadline are wired', () => {
     expect(disarmed).toBeGreaterThan(0); // …and the timer was cleaned up
   });
 
+  it('entry 1 timing out disarms ITS timer before entry 2 arms one', async () => {
+    // A subtle multi-attempt interaction with no direct coverage: the deadline is per ATTEMPT, so a fresh
+    // scope must open for entry 2 and entry 1's must already be disarmed. Correct today by construction —
+    // attempts run strictly sequentially and each disposes in its own `finally` — which is exactly the kind
+    // of property a future refactor (parallelising entries, hoisting the scope) breaks silently.
+    const armed: string[] = [];
+    let fireFirst: (() => void) | undefined;
+    const hung = makeProvider({
+      id: 'anthropic',
+      stream: () => ({
+        [Symbol.asyncIterator]: () => ({ next: () => new Promise<never>(() => undefined) }),
+      }),
+    });
+    const good = makeProvider({
+      id: 'openai',
+      stream: () => streamFrom([{ type: 'text_delta', text: 'the fallback ran' }, STOP_CHUNK]),
+    });
+    const { options } = makeOptions();
+    let nth = 0;
+    const chain = new FallbackChain([entry(hung, 'claude-opus-4-8'), entry(good, 'gpt-5.5')], {
+      ...options,
+      newAbortController: () => {
+        let aborted = false;
+        return {
+          signal: {
+            get aborted() {
+              return aborted;
+            },
+            addEventListener: () => undefined,
+            removeEventListener: () => undefined,
+          },
+          abort: () => {
+            aborted = true;
+          },
+        };
+      },
+      setTimer: (_ms, fire) => {
+        nth += 1;
+        const label = String(nth);
+        armed.push(`arm-${label}`);
+        if (nth === 1) fireFirst = fire;
+        return () => armed.push(`disarm-${label}`);
+      },
+    });
+
+    const streamed = collect(chain.stream(userReq));
+    for (let i = 0; i < 200 && fireFirst === undefined; i += 1) await Promise.resolve();
+    fireFirst?.();
+    const chunks = await streamed;
+
+    expect(chunks.some((c) => c.type === 'text_delta' && c.text === 'the fallback ran')).toBe(true);
+    // Entry 1's scope is disposed BEFORE entry 2 arms — the ordering, not just the counts.
+    expect(armed.indexOf('disarm-1')).toBeLessThan(armed.indexOf('arm-2'));
+    expect(armed.filter((a) => a.startsWith('arm-'))).toHaveLength(2); // one per attempt, not one shared
+  });
+
   it('a HALF-wired timer port arms nothing — both or neither', async () => {
     // The first version built a chain with NEITHER primitive, so `||` and `&&` agreed and a review's
     // mutation of the guard (`||` → `&&`) left all 757 tests green. Under that mutant a host supplying only
