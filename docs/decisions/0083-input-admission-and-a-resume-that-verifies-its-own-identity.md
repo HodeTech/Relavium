@@ -153,6 +153,23 @@ as `unknown`. "Enforce every validation field" is not implementable against that
   type.
 - **`required: true` with a `default` is satisfied by the default.** That is what the CLI already assumes.
 
+> Amended 2026-08-19 — three corrections the implementation forced, each measured before it was written.
+>
+> - **An anchored `pattern` must be a complete regex on its own.** "Anchored" above assumed the wrapping
+>   group defends itself. It does not: a source carrying an unmatched `)` closes it early, so `x)|(?:.*`
+>   anchors to `^(?:x)|(?:.*)$` — a declared `pattern` that matches EVERY string while this ADR promises a
+>   full match. Rejected at parse, by compiling the source BARE: escaping the wrapper requires a `)` that is
+>   unmatched within the source, which is a `SyntaxError` bare in every mode. The check is the regex engine's
+>   own, not a parenthesis scanner we would get wrong.
+> - **`format: uri` means any absolute URI.** The first implementation required `://`, so it rejected
+>   `mailto:`, `urn:` and `data:` — URIs by every definition of the word, under a vocabulary key that says
+>   `uri` and not `url`. Corrected to a scheme-prefixed absolute URI.
+> - **A `date-time` is range-checked per component, and no string format admits a control character.**
+>   Unbounded two-digit groups accepted `0000-99-99T99:99:99Z`, which is not a pragmatic check failing
+>   gracefully but the check being absent. Calendar validity — `2026-02-31` — is still out of scope and now
+>   says so. The control-character exclusion is because these values are echoed by surfaces and written to
+>   log sinks, the same reason §1's issue messages are value-free.
+
 ### 5. Resume reconstructs identity; the caller's copy is VERIFIED, not trusted
 
 **Authority, named once.** `inputs` and `executionMode` come from **`run:started`**, folded into
@@ -204,6 +221,14 @@ is worse than a named gap).
 **A `secret` input may not declare a `default`.** It can today, and such a default is written verbatim into
 `runs.workflow_definition_snapshot` — a plaintext credential in the durable store. Rejected at PARSE, and
 §9's acceptance scans every persisted column, not just the input map.
+
+> Amended 2026-08-19 — **a `secret` also loses `enum`.** The rule shipped with the parse-time half and this
+> section did not carry it, which left the code citing a paragraph that said nothing and the canonical
+> [spec table](../reference/contracts/workflow-yaml-spec.md) contradicting the shipped parser. It is the
+> same reasoning as the `default` ban one paragraph up: an `enum` of allowed secret values writes the
+> credential into the same unmasked `workflow_definition_snapshot` column through a neighbouring key, and
+> "the credential is one of these three" is not a contract worth expressing. `pattern` survives, because a
+> SHAPE is not a value — and an author who writes a literal there has written the secret down either way.
 
 **That closes the DECLARED case and no more, which is worth saying plainly.** The snapshot is the full
 authored YAML, unredacted — [phase 2.5.5](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md) already

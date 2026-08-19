@@ -13,6 +13,8 @@
  * (a UUID / opaque id, never a secret) and never carries run inputs, a node output, or a host stack.
  */
 
+import type { InputAdmissionIssue } from './input-admission.js';
+
 /** Stable discriminant for an engine-API-boundary fault — narrow on this, never on `message`. */
 export type EngineStateErrorCode =
   | 'unknown_run' // `resume`/`cancel` named a `runId` this engine is not tracking, or `resumeFromCheckpoint` found no checkpoint for it
@@ -58,11 +60,25 @@ export class EngineStateError extends Error {
   readonly runId?: string;
   /** The gate this fault concerns, when applicable — a `gateId` (opaque), never a secret. */
   readonly gateId?: string;
+  /**
+   * The per-input refusals behind an `input_admission_failed`, when applicable (ADR-0083 §1).
+   *
+   * STRUCTURED rather than flattened into `message`, because the message is not the place to carry a list
+   * whose length a caller controls — and because a surface that wants to point at the offending field needs
+   * the field, not a sentence. `InputAdmissionIssue` guarantees a `name` is echo-safe; the `message` is one
+   * of a closed set of structural literals.
+   */
+  readonly issues?: readonly InputAdmissionIssue[];
 
   constructor(
     code: EngineStateErrorCode,
     message: string,
-    opts?: { runId?: string; gateId?: string; cause?: unknown },
+    opts?: {
+      runId?: string;
+      gateId?: string;
+      cause?: unknown;
+      issues?: readonly InputAdmissionIssue[];
+    },
   ) {
     super(message, opts?.cause === undefined ? undefined : { cause: opts.cause });
     this.name = 'EngineStateError';
@@ -72,6 +88,9 @@ export class EngineStateError extends Error {
     }
     if (opts?.gateId !== undefined) {
       this.gateId = opts.gateId;
+    }
+    if (opts?.issues !== undefined) {
+      this.issues = opts.issues;
     }
   }
 }

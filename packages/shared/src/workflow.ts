@@ -105,7 +105,7 @@ const VALIDATION_KEYS_BY_TYPE: Record<
   string: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
   file_path: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
   code_diff: ['format', 'pattern', 'enum', 'min_length', 'max_length'],
-  // A `secret` deliberately loses `enum` (ADR-0083 §6). The ban on a `secret` `default` exists because such
+  // A `secret` deliberately loses `enum` (ADR-0083 §6, as amended 2026-08-19). The ban on a `secret` `default` exists because such
   // a value is written verbatim into `runs.workflow_definition_snapshot`; an `enum` of allowed secret values
   // writes it into the same unmasked column through a neighbouring key, and "the credential is one of these
   // three" is not a contract worth expressing. `pattern` survives because a SHAPE is not a value — the spec
@@ -166,9 +166,34 @@ function containsInterpolation(value: unknown, seen: WeakSet<object> = new WeakS
  * A full match, not a search — "does this value match" is the only question the field can honestly answer
  * across surfaces. Wrapped in a non-capturing group so an alternation cannot escape the anchors: `a|b`
  * becomes `^(?:a|b)$`, not `^a|b$`.
+ *
+ * The group is not self-defending: a source carrying an unmatched `)` closes it early, and `x)|(?:.*`
+ * anchors to `^(?:x)|(?:.*)$` — a pattern that matches EVERY string while the spec promises a full match.
+ * {@link patternEscapesItsAnchors} is what rejects that, at parse.
  */
 export function anchoredPattern(source: string): RegExp {
   return new RegExp(`^(?:${source})$`);
+}
+
+/**
+ * Does this authored `pattern` break OUT of the anchors {@link anchoredPattern} wraps it in?
+ *
+ * The test is compiling it BARE. Escaping `^(?:…)$` requires a `)` that closes the wrapper — which is a
+ * `)` unmatched within the source itself, and an unmatched `)` is a `SyntaxError` in a bare regex in every
+ * mode. So a source that compiles bare has balanced parentheses and cannot reach the anchors; one that
+ * compiles only wrapped is escaping them, measured: `a)|(b` and `x)|(?:.*` both throw bare and both compile
+ * wrapped. Checking balance by hand would mean tracking escapes and character classes — a scanner, to answer
+ * a question the engine already answers exactly.
+ */
+function patternEscapesItsAnchors(source: string): boolean {
+  try {
+    new RegExp(source);
+    return false;
+  } catch {
+    // Does not compile bare. That is either a genuinely malformed pattern — which the wrapped compile below
+    // also rejects — or an anchor escape. Either way it is not a pattern this contract can run.
+    return true;
+  }
 }
 
 /**
@@ -176,14 +201,36 @@ export function anchoredPattern(source: string): RegExp {
  *
  * **Pragmatic, and saying so is the point.** These are not RFC-complete — a complete `email` grammar is a
  * parser, and one that disagrees with the mail server's is worse than a shape check. They reject what is
- * obviously not the thing, which is what an authored contract can honestly promise.
+ * obviously not the thing, which is what an authored contract can honestly promise. Two limits are named
+ * rather than fixed: a `date-time` is range-checked per component but not against a calendar, so
+ * `2026-02-31` passes; and an `email` local part is shape-checked, not parsed.
+ *
+ * **A `Map`, not an object literal.** `v.format` is a `string` until it is checked, and a plain literal
+ * answers `FORMAT_CHECKS['constructor']` with a function — whose `.test` is `undefined`, so the lookup
+ * guard passed and `check.test(value)` threw a raw `TypeError` out of `safeParse`, breaking Zod's own
+ * contract on any workflow authored with `format: constructor`. A `Map` has no prototype keys to reach,
+ * and typing it by `string` removes the narrowing `as` that made the hazard invisible.
+ *
+ * **No control characters, in every string-shaped format.** These values are echoed by surfaces and
+ * written to log sinks; a `uri` of `http://x/\u001b[2J` is not a shape this contract should call valid.
  */
-const FORMAT_CHECKS: Readonly<Record<InputFormat, RegExp>> = {
-  email: /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/,
-  uri: /^[a-z][\w+.-]*:\/\/[^\s]+$/i,
-  uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-  'date-time': /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2})$/,
-};
+const NO_CTRL = '[^\\s\\u0000-\\u001f\\u007f]';
+const NO_CTRL_NO_AT = '[^\\s\\u0000-\\u001f\\u007f@]';
+const NO_CTRL_LABEL = '[^\\s\\u0000-\\u001f\\u007f@.]';
+const FORMAT_CHECKS: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
+  ['email', new RegExp(`^${NO_CTRL_NO_AT}+@${NO_CTRL_LABEL}+(?:\\.${NO_CTRL_LABEL}+)+$`)],
+  // Any ABSOLUTE URI, not only a hierarchical one. The vocabulary key is `uri`: the previous `://`
+  // requirement rejected `mailto:`, `urn:` and `data:`, which are URIs by every definition the word has.
+  ['uri', new RegExp(`^[a-z][a-z\\d+.-]*:${NO_CTRL}+$`, 'i')],
+  ['uuid', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i],
+  [
+    'date-time',
+    // Per-component ranges. Unbounded `\\d{2}` groups accepted `0000-99-99T99:99:99Z` as a valid instant,
+    // which is not a shape check failing gracefully — it is the check being absent. `60` seconds is a leap
+    // second (RFC 3339 permits it).
+    /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])[Tt](?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/,
+  ],
+]);
 
 /**
  * Why a VALUE fails its declared input contract, or `undefined` if it passes (ADR-0083 §4).
@@ -223,7 +270,7 @@ export function violatesInputContract(
   if (v.min_length !== undefined && value.length < v.min_length) return 'value is shorter than min_length';
   if (v.max_length !== undefined && value.length > v.max_length) return 'value is longer than max_length';
   if (v.format !== undefined) {
-    const check = FORMAT_CHECKS[v.format as InputFormat];
+    const check = FORMAT_CHECKS.get(v.format);
     if (check !== undefined && !check.test(value)) return `value is not a valid ${v.format}`;
   }
   if (v.pattern !== undefined && !anchoredPattern(v.pattern).test(value)) {
@@ -275,6 +322,13 @@ function validateValidationBlock(
       // means the literal `p{L}` without the `u` flag.
       try {
         anchoredPattern(v.pattern);
+        if (patternEscapesItsAnchors(v.pattern)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `pattern must be a complete regular expression on its own — this one leaves a parenthesis unmatched, which escapes the anchors validation applies`,
+            path: ['validation', 'pattern'],
+          });
+        }
       } catch {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -298,6 +352,19 @@ function validateValidationBlock(
       }
     });
   }
+}
+
+/**
+ * Is this string a name a declared input could legally have?
+ *
+ * Exported because "is this name safe to echo" has one honest answer — the grammar `WorkflowInput.name` is
+ * parsed by — and admission needs it for a key the CALLER supplied, which is constrained by nothing. Stated
+ * as a domain predicate rather than by exporting `interpolationNameSchema`: `index.ts` keeps `common.ts`'s
+ * Zod primitives deliberately private, and a second copy of the character class is exactly the drift this
+ * function exists to prevent.
+ */
+export function isReferenceableInputName(value: string): boolean {
+  return interpolationNameSchema.safeParse(value).success;
 }
 
 /**

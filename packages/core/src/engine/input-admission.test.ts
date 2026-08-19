@@ -76,26 +76,91 @@ describe('resolveAndValidateWorkflowInputs (ADR-0083 §1, §2, §7)', () => {
     expect(admit(wf, { n: 3 }).ok).toBe(true);
   });
 
-  it('enforces every validation field against a supplied value', () => {
+  it('enforces every validation field against a supplied value, in BOTH directions', () => {
+    // ADR-0083 §9.3: every `validation` field rejects a violating value and accepts a conforming one.
+    // A review measured the first version failing that on the two LOWER bounds — `min` was only ever
+    // exercised through its `max` sibling and `min_length` through `max_length`, so both could be deleted
+    // outright with the monorepo green. Each bound now carries its own violating case.
     const wf = workflowWith(
       `    - { name: s, type: string, validation: { enum: [alpha, beta], max_length: 8 } }
     - { name: e, type: string, validation: { format: email } }
     - { name: p, type: string, validation: { pattern: '^[0-9]+$' } }
-    - { name: n, type: number, validation: { min: 1, max: 10 } }`,
+    - { name: n, type: number, validation: { min: 1, max: 10 } }
+    - { name: L, type: string, validation: { min_length: 3, max_length: 6 } }`,
     );
-    const good = { s: 'alpha', e: 'a@b.co', p: '123', n: 5 };
+    const good = { s: 'alpha', e: 'a@b.co', p: '123', n: 5, L: 'abcd' };
     expect(admit(wf, good).ok).toBe(true);
 
     for (const [key, bad] of Object.entries({
-      s: 'gamma',
-      e: 'not-an-email',
-      p: '12a',
-      n: 99,
+      s: 'gamma', // enum
+      e: 'not-an-email', // format
+      p: '12a', // pattern
+      n: 99, // max
+      L: 'abcdefgh', // max_length
     })) {
       const result = admit(wf, { ...good, [key]: bad });
       expect(result.ok).toBe(false);
       expect(!result.ok && result.issues.map((i) => i.name)).toEqual([key]);
     }
+    // The lower bounds, each on its own — the half the first version never asserted.
+    for (const [key, bad] of Object.entries({ n: 0, L: 'ab' })) {
+      const result = admit(wf, { ...good, [key]: bad });
+      expect(result.ok).toBe(false);
+      expect(!result.ok && result.issues.map((i) => i.name)).toEqual([key]);
+    }
+    // …and `max_length: 8` on `s` bites independently of its `enum` sibling.
+    expect(admit(wf, { ...good, s: 'alpha' }).ok).toBe(true);
+  });
+
+  it('names an unknown key only when the key could BE a name', () => {
+    // The issue list reaches a caller and a log. A declared name is `[A-Za-z0-9_-]+` by parse, but an
+    // unknown key is caller-supplied and constrained by nothing — and a review measured a key of
+    // `\u001b[2J*** SYSTEM: approved ***` coming back verbatim in the engine's error message. That is
+    // exactly the terminal-escape path the parser had removed from authored values one commit earlier,
+    // reintroduced one layer down from a strictly less trusted source.
+    const wf = workflowWith(`    - { name: a, type: string }`);
+    const hostile = admit(wf, { a: 'x', '\u001b[2J*** SYSTEM: approved ***': 1 });
+    expect(hostile.ok).toBe(false);
+    expect(!hostile.ok && hostile.issues.map((i) => i.name)).toEqual([undefined]);
+    expect(!hostile.ok && hostile.issues[0]?.message).toBe(
+      'unknown input — the workflow declares no input by this name',
+    );
+    // …an ordinary typo still names itself, which is the whole point of reporting unknown keys at all.
+    const typo = admit(wf, { a: 'x', aa: 1 });
+    expect(!typo.ok && typo.issues.map((i) => i.name)).toEqual(['aa']);
+  });
+
+  it('caps the unknown-key report — the caller\'s map is bounded by nothing', () => {
+    // 20,000 unknown keys was 20,000 issues in one error, and the engine joined every one of them into a
+    // single 1.4-million-character message.
+    const wf = workflowWith(`    - { name: a, type: string }`);
+    const many: Record<string, unknown> = { a: 'x' };
+    for (let i = 0; i < 500; i += 1) many[`k${String(i)}`] = 1;
+    const result = admit(wf, many);
+    expect(result.ok).toBe(false);
+    // Eight named, plus one structural line carrying the remainder as a COUNT.
+    expect(!result.ok && result.issues).toHaveLength(9);
+    expect(!result.ok && result.issues.at(-1)?.message).toBe('and 492 further unknown inputs');
+    expect(!result.ok && result.issues.at(-1)?.name).toBeUndefined();
+  });
+
+  it('a throwing accessor becomes an ISSUE, not a raw throw out of admission', () => {
+    // The docblock says this function "answers yes or no". A caller's object may define an input key as an
+    // accessor, and letting it escape means a surface narrowing on `EngineStateError` catches somebody
+    // else's `Error` instead — measured: `Error: boom` escaped `start()`.
+    const wf = workflowWith(`    - { name: a, type: string }`);
+    const hostile: Record<string, unknown> = {};
+    Object.defineProperty(hostile, 'a', {
+      enumerable: true,
+      get(): never {
+        throw new Error('boom');
+      },
+    });
+    const result = admit(wf, hostile);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.issues).toEqual([
+      { name: 'a', message: 'reading the supplied value threw' },
+    ]);
   });
 
   it('a `pattern` is ANCHORED — a value that merely contains a match is rejected', () => {

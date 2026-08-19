@@ -3281,12 +3281,16 @@ export class WorkflowEngine {
     // after `buildRunPlan` because a graph fault is the more fundamental refusal and already throws here.
     const admitted = resolveAndValidateWorkflowInputs(input.workflow, input.inputs);
     if (!admitted.ok) {
+      // The issues travel STRUCTURED on the error, and the message names only what admission guarantees is
+      // echo-safe. An earlier version joined every `issue.name` into the message — but an unknown key is
+      // caller-supplied and constrained by nothing, so that reintroduced one layer down the terminal-escape
+      // path `workflow.ts` had just removed from the parser, with a strictly less trusted source.
       throw new EngineStateError(
         'input_admission_failed',
         `the supplied inputs do not satisfy this workflow's contract: ${admitted.issues
-          .map((issue) => `${issue.name} — ${issue.message}`)
+          .map((issue) => (issue.name === undefined ? issue.message : `${issue.name} — ${issue.message}`))
           .join('; ')}`,
-        {},
+        { issues: admitted.issues },
       );
     }
     const runId = this.#host.ids.newId();

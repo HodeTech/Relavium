@@ -4,6 +4,7 @@ import {
   anchoredPattern,
   INPUT_FORMATS,
   matchesDeclaredType,
+  violatesInputContract,
   WorkflowInputSchema,
   WorkflowSchema,
 } from './workflow.js';
@@ -599,9 +600,92 @@ describe('WorkflowInputSchema — the ADR-0083 tightenings', () => {
   it('an authored `pattern` is compiled ANCHORED at parse, so its meaning is pinned', () => {
     // Compiling bare proves well-formedness and nothing else: `a|b` compiles, and under a naive
     // `'^' + src + '$'` becomes "starts with a OR ends with b" — a silent change of meaning.
+    //
+    // The strings are chosen to DISCRIMINATE. A review measured the first version of this test — `'a'`,
+    // `'xa'`, `'bx'` — passing identically under `^${src}$`, so it pinned nothing: under the naive form
+    // `^a|b$` still rejects `'xa'` (it does not start with `a`) and `'bx'` (it does not end with `b`).
+    // `'ax'` and `'xb'` are the two the naive form ACCEPTS and the grouped form rejects.
     expect(anchoredPattern('a|b').test('a')).toBe(true);
-    expect(anchoredPattern('a|b').test('xa')).toBe(false); // …not "ends with b" either
-    expect(anchoredPattern('a|b').test('bx')).toBe(false);
+    expect(anchoredPattern('a|b').test('ax')).toBe(false); // naive `^a|b$`: "starts with a" — true
+    expect(anchoredPattern('a|b').test('xb')).toBe(false); // naive `^a|b$`: "ends with b" — true
+  });
+
+  it('`enum` matching is `Object.is`, so `-0` is not `0`', () => {
+    // Decided in the docblock and pinned nowhere: mutating `Object.is(member, value)` to `member === value`
+    // left the whole package green. `NaN` — the other half of the decision — is unreachable, because
+    // `matchesDeclaredType` rejects a non-finite `enum` member at parse; `-0` is the honest case.
+    expect(violatesInputContract(-0, 'number', { enum: [0] })).toBeDefined();
+    expect(violatesInputContract(0, 'number', { enum: [0] })).toBeUndefined();
+  });
+
+  it('checks LENGTH before `pattern` — the only ReDoS mitigation this contract offers', () => {
+    // The ordering is what bounds the input a catastrophic authored regex can chew on. A review measured
+    // it unpinned: hoisting the `pattern` check above the length checks left every suite green, because
+    // no test asserted an issue MESSAGE.
+    expect(violatesInputContract('aaaaaaaaaa', 'string', { max_length: 3, pattern: '(?:a+)+b' })).toBe(
+      'value is longer than max_length',
+    );
+    expect(violatesInputContract('a', 'string', { min_length: 3, pattern: '(?:a+)+b' })).toBe(
+      'value is shorter than min_length',
+    );
+  });
+
+  it('rejects a value below `min` and shorter than `min_length` — both bounds, both directions', () => {
+    // Both lower bounds could be deleted with the monorepo green: `min` was only ever exercised through
+    // its `max` sibling, and `min_length` only through `max_length`.
+    expect(violatesInputContract(0, 'number', { min: 1 })).toBe('value is below the declared minimum');
+    expect(violatesInputContract(1, 'number', { min: 1 })).toBeUndefined();
+    expect(violatesInputContract('ab', 'string', { min_length: 3 })).toBe(
+      'value is shorter than min_length',
+    );
+    expect(violatesInputContract('abc', 'string', { min_length: 3 })).toBeUndefined();
+  });
+
+  it('the `format` vocabulary means what its key says', () => {
+    // `uri` required `://`, so it rejected `mailto:`, `urn:` and `data:` — URIs by every definition the
+    // word has. `date-time` had unbounded `\\d{2}` groups, so `0000-99-99T99:99:99Z` was a valid instant:
+    // not a shape check failing gracefully, the check being absent.
+    for (const uri of ['mailto:a@b.com', 'urn:isbn:0451450523', 'data:text/plain,hi', 'https://x.dev/p']) {
+      expect(violatesInputContract(uri, 'string', { format: 'uri' })).toBeUndefined();
+    }
+    expect(violatesInputContract('not a uri', 'string', { format: 'uri' })).toBeDefined();
+    for (const bad of ['0000-99-99T99:99:99Z', '2026-13-45T25:61:61+99:99', '2026-01-01T00:00:00']) {
+      expect(violatesInputContract(bad, 'string', { format: 'date-time' })).toBeDefined();
+    }
+    expect(violatesInputContract('2026-07-19T12:30:00Z', 'string', { format: 'date-time' })).toBeUndefined();
+    // …and no string-shaped format admits a control character, because these values are echoed by surfaces
+    // and written to log sinks.
+    expect(violatesInputContract('https://x.dev/\u001b[2J', 'string', { format: 'uri' })).toBeDefined();
+    expect(violatesInputContract('\u001b[31ma@b.co', 'string', { format: 'email' })).toBeDefined();
+  });
+
+  it('rejects a `pattern` that ESCAPES the anchors by closing the wrapper early', () => {
+    // The non-capturing group is not self-defending. `x)|(?:.*` anchors to `^(?:x)|(?:.*)$`, which
+    // compiles cleanly and matches EVERY string — a declared `pattern` constraining nothing while the spec
+    // promises a full match. Measured on both halves before the fix: `a)|(b` matched `'aZZZ'`.
+    for (const escaping of ['a)|(b', 'x)|(?:.*']) {
+      const parsed = input({ validation: { pattern: escaping } });
+      expect(parsed.success).toBe(false);
+      expect(!parsed.success && parsed.error.issues[0]?.message).toContain('unmatched');
+    }
+    // …and the balanced patterns an author actually writes still parse, so the rule discriminates.
+    for (const fine of ['a|b', '(?:foo|bar)+', '[0-9]{2,4}', '\\((?:in|out)\\)']) {
+      expect(input({ validation: { pattern: fine } }).success).toBe(true);
+    }
+  });
+
+  it('an unknown `format` is REJECTED, including one that names a prototype member', () => {
+    // The format table was an object literal, so `FORMAT_CHECKS['constructor']` answered with a function
+    // whose `.test` is `undefined`: the lookup guard passed and `check.test(value)` threw a raw
+    // `TypeError` out of `safeParse` — breaking Zod's own contract, on a path `relavium import` and every
+    // `gate` resume (which re-validates the stored snapshot) reach from untrusted YAML.
+    for (const bad of ['constructor', 'toString', '__proto__', 'valueOf', 'hasOwnProperty', 'url']) {
+      const parsed = input({ default: 'abc', validation: { format: bad } });
+      expect(parsed.success).toBe(false);
+      expect(!parsed.success && parsed.error.issues.some((i) => i.message.includes('unknown format'))).toBe(
+        true,
+      );
+    }
   });
 
   it('…and accepts a literal default — the negative control', () => {

@@ -191,6 +191,13 @@ export type {
 } from '@relavium/shared';
 export type { EngineStateErrorCode } from './engine/errors.js';
 
+// ADR-0083 §1's admission gate. The TYPE is the reason this is exported: `EngineStateError.issues` is
+// typed by it, so a surface rendering an `input_admission_failed` cannot name what it is holding without
+// it. The function comes with it because it is pure and synchronous — a surface that wants to validate a
+// form before calling `start()` should run the ENGINE's contract, not a second copy of it.
+export { resolveAndValidateWorkflowInputs } from './engine/input-admission.js';
+export type { InputAdmissionIssue, InputAdmissionResult } from './engine/input-admission.js';
+
 // Typed run-loop substrate INVARIANT breaches (the bus/stream "can never happen" asserts) — surfaced loud
 // so a producer/consumer bug is caught at source rather than silently un-gapping the sequence (ADR-0036).
 export { RunLoopInvariantError } from './engine/invariant-error.js';

@@ -92,7 +92,7 @@ An input `name` must be a **referenceable identifier** — `[A-Za-z0-9_-]+` (let
 the same charset the `{{inputs.<name>}}` head accepts — so a name like `my name` or `a.b` that could never
 be referenced is rejected at parse (ADR-0023).
 
-`secret`-typed inputs are resolved through the secret store, never written into run logs or the workflow file. They are also **masked in event payloads**: a `secret` input's value is redacted from the `run:started.inputs` payload (and any other event that echoes inputs), so a secret never reaches a surface, an IPC channel, or a persisted run log — see the masking rule in [sse-event-schema.md](sse-event-schema.md). See also [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
+A `secret`-typed input is **caller-supplied at run time** — it is not resolved from a secret store, and it may not declare a `default` (see below), so there is nothing for the engine to look up. It is never written into run logs or the workflow file. They are also **masked in event payloads**: a `secret` input's value is redacted from the `run:started.inputs` payload (and any other event that echoes inputs), so a secret never reaches a surface, an IPC channel, or a persisted run log — see the masking rule in [sse-event-schema.md](sse-event-schema.md). See also [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md).
 
 An input may carry an optional **`validation`** object the engine checks before a run starts; a violating input fails fast and the run never begins:
 
@@ -112,8 +112,14 @@ inputs:
 | `type` | allowed `validation` keys |
 |--------|---------------------------|
 | `number` | `min`, `max`, `enum` |
-| `string` / `file_path` / `code_diff` / `secret` | `format`, `pattern`, `enum`, `min_length`, `max_length` |
+| `string` / `file_path` / `code_diff` | `format`, `pattern`, `enum`, `min_length`, `max_length` |
+| `secret` | `format`, `pattern`, `min_length`, `max_length` — **no `enum`** |
 | `boolean` | _(none)_ |
+
+A `secret` loses `enum` for the same reason it may not declare a `default`: an `enum` of allowed secret
+values writes the credential verbatim into the unmasked `workflow_definition_snapshot` through a
+neighbouring key. `pattern` survives because a *shape* is not a value. Decided by
+[ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §6.
 
 (Bound-ordering — `min ≤ max`, `min_length ≤ max_length` — is also enforced at parse.)
 
@@ -121,18 +127,19 @@ inputs:
 [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §4 because a
 contract every surface shares cannot leave them to interpretation.
 
-> **Where each rule is enforced TODAY.** The rules below are decided and the checker is written — one pure
-> `violatesInputContract`, shared by both halves — but only the **parse-time** half is wired: an authored
-> `default`, an `enum` member and a `pattern` are checked when the workflow is read. Applying them to a
-> **caller-supplied value at run time** is ADR-0083 §1/§2's admission gate, which has not landed. Until it
-> does, a surface's own validation is what a supplied value meets. Stated because this file is the canonical
-> contract, and a reader must not take a decided rule for a shipped one.
+> **Where each rule is enforced TODAY.** Both halves are wired, by one pure `violatesInputContract` shared
+> between them: an authored `default`, an `enum` member and a `pattern` are checked when the workflow is
+> **read**, and a caller-supplied value is checked by ADR-0083 §1's **admission gate** — which runs before
+> the run id exists, so a refused run leaves no `runId`, no `run:started` and no row. What has not landed is
+> §5's **resume** verification: `resumeFromCheckpoint` does not yet check a caller's inputs against the ones
+> the run was admitted with. Stated because this file is the canonical contract, and a reader must not take
+> a decided rule for a shipped one.
 
 
 | key | semantics |
 |-----|-----------|
 | `format` | A **closed** vocabulary: `email`, `uri`, `uuid`, `date-time`. An unrecognised format is an authoring error at parse. |
-| `pattern` | Compiled at **parse**, so an invalid regex fails loudly rather than at run. **Anchored** (a full match, not a search) and **flagless**. Its source is length-capped. |
+| `pattern` | Compiled at **parse**, so an invalid regex fails loudly rather than at run. **Anchored** (a full match, not a search) and **flagless**. Its source is length-capped, and must be a complete regex on its own: a source that leaves a parenthesis unmatched would close the anchoring group early (`x)|(?:.*` anchors to a pattern matching *every* string) and is rejected at parse. |
 | `enum` | Every member must satisfy the declared `type` at parse. A supplied value matches by `Object.is` — so `NaN` matches `NaN`, and `0` does not match `-0`. |
 | `min` / `max` | Numeric bounds, inclusive. A `number` must additionally be **finite**: `NaN` and `±Infinity` are rejected, because no bound can express them. |
 | `min_length` / `max_length` | Inclusive string-length bounds, applied **before** `pattern` — which is what bounds the input a catastrophic authored regex can chew on. |
