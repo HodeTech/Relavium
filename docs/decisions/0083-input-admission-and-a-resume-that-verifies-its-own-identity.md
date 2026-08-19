@@ -3,14 +3,15 @@
 - **Status**: Proposed
 - **Date**: 2026-08-19
 - **Related**:
-  - [ADR-0023](0023-strict-authored-yaml-validation.md) — parse-time validation, whose "an authored mistake fails loudly" rule §3 extends to a declared `default`.
-  - [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) — the run loop and `run:started`. **Would be amended on acceptance**: `run:started` becomes the durable record of what the run was admitted with.
-  - [ADR-0079](0079-cross-process-run-ownership-lease-and-fencing-token.md) — its §4 deferred "a content hash on `run:started`" for same-slug workflow drift. §5 here answers that without one.
-  - [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md) — the nearest precedent: a resume that cannot be trusted refuses.
-  - [ADR-0029](0029-tool-policy-hardening.md) — its secret-interpolation half, which a `secret` input rides on; §6's re-supply contract is built from that, not around it.
-  - [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md) — the authored input contract this finally enforces.
-  - [database-schema.md](../reference/shared-core/database-schema.md) — `runs.workflow_definition_snapshot`, `runs.input_json`, `runs.execution_mode`, which already hold most of what §5 needs.
-- **Addresses**: `CR-15` and `CR-17` of [phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md). A Proposed ADR does not close a work item; on acceptance this becomes **Closes/Decides** and the §9 obligations land with the implementation.
+  - [ADR-0023](0023-strict-authored-yaml-validation.md) — parse-time validation. **Would be amended on acceptance**: §3 tightens `inputs` defaults and §6 forbids a `secret` default.
+  - [ADR-0036](0036-run-loop-substrate-event-bus-and-execution-host.md) — the run loop and `run:started`. **Would be amended on acceptance**: `run:started` becomes the authoritative admission record for inputs and execution mode.
+  - [ADR-0078](0078-ordered-durable-append-and-the-terminal-outbox.md) — the ordered durable log that makes §5 able to name one authority.
+  - [ADR-0079](0079-cross-process-run-ownership-lease-and-fencing-token.md) — its §4 deferred "a content hash on `run:started`" for same-slug drift. §5 answers that without one, and §5's refusals must release the lease.
+  - [ADR-0075](0075-fail-closed-resume-on-an-unreadable-event-log.md) — a resume that cannot be trusted refuses.
+  - [ADR-0029](0029-tool-policy-hardening.md) — its secret-interpolation half, which §6's rules extend rather than restate.
+  - [ADR-0082](0082-the-stream-grammar-is-a-seam-obligation-and-every-attempt-has-a-deadline.md) — the "quote what already exists" discipline this ADR's Context follows deliberately.
+  - [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md) · [database-schema.md](../reference/shared-core/database-schema.md) — the contract and the tables.
+- **Addresses**: `CR-15` and `CR-17` of [phase 2.6.5](../roadmap/phases/phase-2.6.5-core-reliability-remediation.md). A Proposed ADR does not close a work item; on acceptance this becomes **Closes/Decides** and the §11 obligations land with the implementation.
 
 ## Context
 
@@ -18,204 +19,287 @@ Two gaps that share one question: **what was this run admitted with?**
 
 ### The authored input contract is validated by nobody
 
-`WorkflowInputSchema` carries `required`, `default`, `type` and a `validation` block with `format`,
-`pattern`, `enum`, `min`, `max`, `min_length` and `max_length` — plus a per-type table saying which keys are
-legal on which type. Parse time enforces the AUTHORING rules: that `min <= max`, that a `*_length` is not put
-on a number. It says nothing about the VALUES a caller supplies.
+`WorkflowInputSchema` carries `required`, `default`, `type` and a `validation` block — `format`, `pattern`,
+`enum`, `min`, `max`, `min_length`, `max_length` — plus a per-type table of which keys are legal on which
+type. Parse time enforces the AUTHORING rules (that `min <= max`, that a `*_length` is not put on a number).
+It says nothing about the VALUES a caller supplies, and neither does anything else.
 
-And nothing else does either. `WorkflowEngine.start()` takes the caller's `inputs` object and hands it to the
-run execution, which stores the reference without cloning, validating, or applying a single declared
-`default`. The input node reads straight out of that map.
-
-The CLI does what a surface can: it rejects unknown keys, rejects a missing required input, and coerces its
-argv strings into declared types. Its own code then says, of an omitted value:
+`WorkflowEngine.start()` takes the caller's `inputs` object and hands it to the run execution, which stores
+the reference without cloning, validating, or applying a single declared `default`. The CLI rejects unknown
+keys, rejects a missing required input, and coerces argv strings — then defers:
 
 > `continue; // omitted — the engine applies the declared default, if any`
 
 The engine does not. A declared default arrives as `undefined`, an out-of-enum value reaches deep execution,
-and every other surface — desktop, extension, the Phase-2 API — gets whatever validation it happens to
-implement. That is the "one engine, every surface" guarantee failing at its first step.
+and every other surface gets whatever validation it happens to implement.
 
 ### A resume trusts identity it never verifies
 
-`ResumeFromCheckpointInput`'s own docblock states the gap and calls the remedy "a future revision":
+`ResumeFromCheckpointInput`'s docblock states the gap and calls the remedy "a future revision": `workflow`,
+`inputs`, `executionMode` and `planOptions` must be what the run started with, and nothing checks.
 
-> `workflow`, `inputs`, `executionMode`, and `planOptions` must be the SAME values the run started with. The
-> checkpoint persists the workflow identity (verified — a mismatch throws `workflow_mismatch`) but does not
-> yet persist `inputs` / `executionMode`, so passing different ones would silently diverge the rehydrated
-> execution from its `run:started` state.
+**Most of the durable record already exists**, and this ADR is written from the tree rather than from the
+phase document's assumption:
 
-**But the durable record is already there, and this ADR is smaller than the phase document assumes.**
-Verified against the tree rather than inferred:
+- `runs.workflow_definition_snapshot` — *"the frozen graph that actually ran"*; `runs.input_json`;
+  `runs.execution_mode`.
+- `run:started` carries `inputs` and `executionMode`, with every `secret`-typed input already masked to
+  `{ secret: true, ref: 'inputs.<name>' }`.
+- `relavium gate` **already** resumes from that snapshot and refuses a masked secret rather than substituting.
 
-- `runs.workflow_definition_snapshot` holds *"the frozen graph that actually ran — for replay/resume after
-  the YAML changes."*
-- `runs.input_json` holds the inputs; `runs.execution_mode` holds the mode.
-- `run:started` carries `inputs` and `executionMode` in the event log too, with every `secret`-typed input
-  already masked to `{ secret: true, ref: 'inputs.<name>' }`.
-- `relavium gate` **already** resumes from that snapshot: it loads the frozen definition, restores
-  `input_json`, and calls `assertNoMaskedSecretInputs` — refusing rather than substituting when a masked
-  secret comes back.
+So one host already does most of what `CR-17` asks. What is missing is that **the engine does not require
+it** — a desktop, an extension or the Phase-2 API can resume the same run with different inputs and a
+different mode, and nothing errors.
 
-So the CLI already does most of what `CR-17` asks. What is missing is that **the engine does not require
-it**. A guarantee kept by one host's convention is not a guarantee; a desktop, an extension or the Phase-2
-API can resume the same run with different inputs and a different mode, and nothing errors. Writing this ADR
-as though the persistence were absent would have produced a second, competing store for data that is already
-durable — the mistake ADR-0082's first draft made about commitment tracking.
+### Three things in the tree that make the naive version of this ADR wrong
+
+A first draft was reviewed and rejected on these. They are stated here because each one changes a decision.
+
+1. **`inputs` defaults are a TEMPLATE field.** The spec lists them alongside `context` values and
+   `prompt_template` as places `{{ }}` interpolation is legal. "Validate the default at parse" is therefore
+   only expressible for a literal one.
+2. **The frozen snapshot is NOT always what ran.** `relavium run` opens the history store with the parsed
+   definition, then augments the workflow with MCP-discovered tools, then starts the engine with the
+   augmented one. The snapshot is the pre-augmentation graph.
+3. **The persisted secret `ref` is `inputs.<name>` — a self-reference, not a credential identity.** It names
+   the slot; it says nothing about which key filled it.
 
 ## Decision
 
 **We will add one pure admission gate in the engine that resolves and validates inputs before a run exists,
 and make resume RECONSTRUCT its identity from the durable record rather than accept the caller's.**
 
-### 1. `resolveAndValidateWorkflowInputs` — pure, in core, before anything exists
+### 1. `resolveAndValidateWorkflowInputs` — pure, synchronous, in core, before anything exists
 
-A pure function in `packages/core`, taking the parsed workflow and the caller's raw inputs and returning
-either the resolved input map or a typed admission error. It runs in `start()` **before the run id is
-generated and before the first event is emitted**.
+A pure synchronous function in `packages/core`, taking the parsed workflow and the caller's raw inputs and
+returning either the resolved input map or a typed admission error. It runs in `start()` **before the run id
+is generated and before the first event is emitted**.
 
-That ordering is the decision, not an implementation detail. An admission failure must leave **no `runId`, no
-`run:started`, no row** — a rejected run is not a run, and a caller that retries with corrected inputs must
-not be reasoning about a half-created one.
+That ordering is the decision. An admission failure must leave **no `runId`, no `run:started`, no row** — a
+rejected run is not a run.
+
+**Synchronous, and §3 is what makes that possible.** An async admission would need a cancellation contract,
+an ordering rule against the lease, and a story for a host capability failing mid-admission. None of that is
+worth carrying for a step whose whole job is to say yes or no to a map.
 
 ### 2. The surface coerces; the engine is strict
 
-Stated normatively because the split is currently implicit and each surface guesses.
-
 - **A surface may COERCE** — turn its transport's representation into the declared type. A CLI has only
-  strings, so `--input count=3` must become the number `3` somewhere, and the surface is the only layer that
-  knows its transport.
-- **The engine is STRICT** about what it receives. Given a `number`-typed input it accepts a number, not
-  `"3"`. It applies defaults, checks `required`, rejects unknown keys, and enforces every `validation` field.
+  strings, so `--input count=3` must become the number `3` somewhere, and only the surface knows its
+  transport.
+- **The engine is STRICT.** Given a `number`-typed input it accepts a number, not `"3"`. It applies defaults,
+  checks `required`, rejects unknown keys, and enforces every `validation` field.
 
-The engine does not coerce because coercion is lossy and surface-specific — `"true"`, `"1"` and `"yes"` are a
-CLI's problem, not a shared contract's — and a strict core is what makes two surfaces behave identically.
+Considered and rejected: coercing in the engine (it would silently accept a form's stringly-typed payload as
+validated, and bury each surface's quirks in shared code); validating only at the surface (the status quo).
 
-Considered and rejected: coercing in the engine (one place, but it would silently accept a desktop form's
-stringly-typed payload as if it were validated, and bury each surface's quirks in shared code); validating
-only at the surface (the status quo — N implementations of one contract).
+### 3. Interpolation is FORBIDDEN in an input `default`
 
-### 3. A declared `default` is validated at PARSE, not at run
+The spec today lists `inputs` defaults as a template field. This removes them from that list, and the reason
+is that at admission time — which must precede run creation — **none of the three referenceable scopes
+exists**:
 
-An authored default that violates its own `validation` block is an authoring mistake, and
-[ADR-0023](0023-strict-authored-yaml-validation.md) already says those fail loudly at parse. Catching it
-at run time would make a workflow that parses cleanly fail only when someone omits that input — which may be
-never, until it is.
+- `{{inputs.*}}` is what admission is resolving. A default referencing another input needs a dependency
+  order, cycle detection and a dangling-reference rule, for a feature nothing uses.
+- `{{ctx.*}}` is resolved at RUN START, after admission by construction.
+- `{{secrets.*}}` must never enter a default at all (§6).
 
-This extends `WorkflowInputSchema`'s existing `superRefine`, which already cross-checks type against
-validation keys. No new mechanism.
+**This breaks nothing that works.** The engine never applied a declared default, so a templated default is
+dead today: it parses, and its value never reaches a run. Forbidding it at parse converts silent deadness
+into a loud authoring error, which is [ADR-0023](0023-strict-authored-yaml-validation.md)'s own rule.
 
-### 4. The engine CLONES the caller's inputs
+With interpolation gone, a `default` is a literal, and **an authored default that violates its own
+`validation` block fails at PARSE** — not at run, where it would surface only the first time someone omits
+that input.
 
-The run holds its own copy. Mutating the caller's object after `start()` returns must not change what the run
-sees — today it can, because the reference is stored directly. A run's inputs are part of its identity, and
-identity that a third party can edit mid-flight is not identity.
+Considered and rejected: **two-phase validation** (literal defaults at parse, templated ones at admission).
+It preserves a feature that has never worked, at the cost of dependency ordering, cycle detection, async
+capability access inside a step this ADR deliberately keeps synchronous, and a second place validation lives.
 
-`structuredClone`, not `JSON.parse(JSON.stringify(...))`: the latter re-materializes a `__proto__` key as a
-prototype, and an input name may legitimately be `__proto__` under the `[A-Za-z0-9_-]+` grammar. The engine
-already null-prototypes its masked-input map for exactly this reason.
+### 4. Validation semantics, decided rather than implied
 
-### 5. Resume reconstructs identity from the durable record; the caller's copy is VERIFIED, not trusted
+The current schema types `format` and `pattern` as any non-empty string, `enum` as `unknown[]`, and `default`
+as `unknown`. "Enforce every validation field" is not implementable against that, so:
 
-On `resumeFromCheckpoint` the engine takes `inputs` and `executionMode` from the run's own durable record and
-ignores the caller's — except to verify them, so a host that passes something different learns it rather than
-being silently overridden. A mismatch is a typed error.
+- **`format` is a CLOSED vocabulary**: `email`, `uri`, `uuid`, `date-time`. An unrecognised format is an
+  authored error at PARSE. An open vocabulary would mean each surface inventing its own semantics — the
+  failure this whole ADR is about.
+- **`pattern` is compiled at PARSE**, so an invalid regex is an authored error rather than a run-time throw.
+  It is **anchored** (a full match, not a search) and carries **no flags** — "does this value match" is the
+  only question the field can honestly answer across surfaces. Its source is length-capped.
+- **ReDoS is bounded, not eliminated.** A pattern is matched only AFTER the length checks, so `max_length`
+  bounds the input a catastrophic pattern can chew on. An author who writes a nested-quantifier pattern and
+  no `max_length` can still stall their own run; that is named here rather than papered over, and the
+  mitigation is the length cap, not a static analysis we would get wrong.
+- **`enum` members must satisfy the declared `type`** at parse. Matching is `Object.is`, so `NaN` matches
+  `NaN` and `0` does not match `-0` — a decision, because `===` and deep equality both answer differently.
+- **A `number` must be finite.** `NaN` and `±Infinity` are rejected regardless of `min`/`max`, which cannot
+  express them.
+- **Absent means absent.** A missing key and an own property whose value is `undefined` are both "omitted"
+  and take the default. **`null` is a VALUE**, not an omission, and fails type validation for every declared
+  type.
+- **`required: true` with a `default` is satisfied by the default.** That is what the CLI already assumes.
 
-**Workflow identity is verified by CONTENT, not by slug — and without a new digest.** The frozen definition
-is already persisted, so the check is a comparison against what actually ran. That answers
-[ADR-0079](0079-cross-process-run-ownership-lease-and-fencing-token.md) §4's deferred *"a content hash on
-`run:started`"* without a canonical event-contract change and without asking a platform-free engine to
-compute SHA-256 (the same constraint that shaped ADR-0080's host-side digest).
+### 5. Resume reconstructs identity; the caller's copy is VERIFIED, not trusted
 
-`planOptions` is the residue and is treated honestly: its `agents` map is host-resolved from the filesystem
-and is NOT persisted, so it cannot be reconstructed. The engine verifies what it can — that the resolved
-agent ids match the plan the run started on — and §8 records the rest as a known limitation rather than
-implying a completeness the mechanism does not have.
+**Authority, named once.** `inputs` and `executionMode` come from **`run:started`**, folded into
+`CheckpointState` — the ordered durable log is the truth ADR-0078 built, and the engine already folds that
+event. No new port. The engine does **not** read `runs.input_json`, so there is no two-source disagreement to
+resolve.
 
-### 6. A `secret` input is a reference, and resume REFUSES rather than substitutes
+**The graph comes from the frozen definition**, which lives in `runs` and is not in the event log. `RunStore`
+gains **one method** to read it — a method on the seam the engine already owns, not a new port. Verification
+is a **deep structural equality** against the caller's parsed workflow, on the normalized parse output rather
+than raw YAML, so formatting and key order cannot cause a false mismatch. That answers
+[ADR-0079](0079-cross-process-run-ownership-lease-and-fencing-token.md) §4's deferred content hash without a
+digest and without asking a platform-free engine to compute SHA-256.
 
-A `secret`-typed value is never persisted. The durable record already carries
-`{ secret: true, ref: 'inputs.<name>' }`, and that is what resume reads.
+**The snapshot must be the ADMITTED definition** — §Context 2's bug. `relavium run` currently freezes the
+pre-augmentation graph and starts the engine with the MCP-augmented one, so the two differ on every run with
+`mcp_servers`. The host must persist what it started the engine with. **MCP-discovered tool grants are part
+of workflow identity**: they are part of the graph that ran, and an MCP server returning a different tool set
+on resume IS a divergence. It fails closed, and the error says so rather than continuing under a graph the
+run never had.
 
-The contract on resume: the caller **re-supplies** the secret by name, the engine matches it against the
-recorded ref, and a missing or unexpected secret is a typed error. It is never silently substituted, never
-defaulted, and never dropped to `undefined` — a run that quietly continues with a different credential than
-it started with is the worst available outcome, and the CLI's existing `assertNoMaskedSecretInputs` already
-takes the refusing side of this. The engine adopts that behaviour as the contract rather than leaving it as
-one host's caution.
+**A refusal releases the lease.** Every identity check sits after `resumeFromCheckpoint` has acquired
+ownership, and [ADR-0079](0079-cross-process-run-ownership-lease-and-fencing-token.md) §4's rule — an acquire
+that leads nowhere must not leak — covers these exactly as it covers `workflow_mismatch`.
 
-**No version field.** `CR-17` proposes "a key reference plus version"; the tree has no key-versioning
-concept, and inventing one here would be a second, unused mechanism. The ref plus a re-supply requirement is
-what the current keychain model can actually enforce; §8 names versioning as out of scope.
+**`planOptions.agents` is verified by ID, not by content**, because the resolved agents are read from the
+filesystem by the host and are not persisted. An agent file edited between processes is NOT detected. §10
+records it as a limitation rather than implying a completeness the mechanism does not have.
 
-### 7. `start` and `resume` apply the SAME admission
+### 6. A `secret` input: what the engine can prove, and what it cannot
+
+A `secret` value is never persisted; the record carries `{ secret: true, ref: 'inputs.<name>' }`.
+
+**The contract:** the caller re-supplies the secret by name; a missing or unexpected secret is a typed error;
+it is never silently substituted, defaulted, or dropped to `undefined`. The CLI's existing
+`assertNoMaskedSecretInputs` already takes the refusing side; the engine adopts it as the contract.
+
+**What that proves, stated exactly.** The engine verifies the SLOT — that the same named secret input is
+supplied, and that the record holds a masked placeholder rather than a value. It does **not** prove the value
+is the same credential, that nothing was rotated, or that the run continues under the key it started with.
+The persisted ref is a self-reference; it names the slot, not the key. A first draft of this ADR claimed
+"same inputs" and "a different credential is prevented"; both are withdrawn.
+
+Considered and rejected: **failing closed on any secret-bearing resume** until a versioned reference exists
+(it would break every secret-bearing `relavium gate` today, to buy a guarantee nothing can yet check);
+**inventing a key version here** (there is no key-versioning concept in the tree; a second unused mechanism
+is worse than a named gap).
+
+**A `secret` input may not declare a `default`.** It can today, and such a default is written verbatim into
+`runs.workflow_definition_snapshot` — a plaintext credential in the durable store. Rejected at PARSE, and
+§9's acceptance scans every persisted column, not just the input map.
+
+**Re-supply must not travel through argv.** A raw secret on a command line leaks to `ps`, shell history and
+CI logs; `relavium provider set-key` already uses stdin for exactly this reason. The CLI's secret-bearing
+resume takes its value the same way, and `relavium gate` gains that option — it has none today.
+
+### 7. The engine BUILDS its input map; it does not clone the caller's
+
+The resolved map is constructed fresh, with a `null` prototype, by iterating the DECLARED inputs and reading
+the caller's object through `Object.hasOwn`. The caller's object is never spread, assigned from, or cloned
+wholesale.
+
+**A first draft said `structuredClone`, for a reason that was wrong twice.** `JSON.parse` makes `__proto__` an
+own property and does not pollute; and `structuredClone` does **not** preserve a null prototype — it returns
+an ordinary object. Both were verified. The real hazard is the ACCUMULATOR: writing `out[name] = value` onto a
+`{}` when `name` is `__proto__` invokes the prototype setter, and an input name may legitimately be
+`__proto__` under the `[A-Za-z0-9_-]+` grammar. Building a null-prototype map from the declared list closes
+that at both ends, and it also gives the "unknown key" check for free.
+
+Mutating the caller's object after `start()` cannot change the run, because the run never holds it.
+
+### 8. `start` and `resume` apply the SAME admission
 
 Both go through §1. A resumed run's inputs are the durable ones, so admission is re-verification rather than
-re-resolution — but running the same function means a rule cannot hold on one path and not the other, which
-is how the two drifted in the first place.
+re-resolution — but running the same function means a rule cannot hold on one path and not the other.
 
-### 8. What is NOT decided here
-
-- **Key versioning for `secret` inputs** (§6). No such concept exists; adding one is its own decision.
-- **`planOptions.agents` reconstruction.** Host-resolved from disk, not persisted. Verified by id, not by
-  content — an agent file edited between processes is not detected, and that is a named limitation, not an
-  oversight.
-- **Coercion rules per surface.** Each surface owns its transport's conversions; this ADR only fixes the
-  boundary.
-- **Retrofitting existing rows.** A run started before this lands has no admission record beyond what is
-  already in `runs`; resume verifies what is there and does not invent what is not.
+**A legacy run keeps its own semantics.** A run admitted before this landed may have no recorded value for an
+input that declares a default. Resume VERIFIES what is recorded; it does not invent a value the run never
+had. That follows from §5's authority rule and needs no version marker.
 
 ### 9. Acceptance
 
-Per the phase's "the whole authored contract, not a sample":
-
-1. A missing `required` input fails admission.
+1. A missing `required` input fails admission; one satisfied by a `default` does not.
 2. An unknown input key fails admission.
-3. **Every** `validation` field — `format`, `pattern`, `enum`, `min`, `max`, `min_length`, `max_length` —
-   rejects a violating value and accepts a conforming one. One case each, both directions.
-4. A declared `default` is applied when the input is omitted, and a default that violates its own rules fails
-   at PARSE, not at run.
-5. The engine is strict: a `number`-typed input rejects `"3"`. The CLI's coercion turning `"3"` into `3`
-   before the engine sees it is pinned separately, so the split is proven from both sides.
-6. The engine clones: mutating the caller's `inputs` object after `start()` does not change the run.
-7. An admission failure produces a typed error and **no `runId`, no `run:started`, and an untouched store** —
-   asserted by inspecting the store, not by the absence of a throw.
-8. `start` and `resume` reject the same violating input.
-9. A resume whose caller passes DIFFERENT inputs, a different `executionMode`, or a content-different
-   workflow is a typed error — one test per axis, each asserting the run did not continue.
-10. A resume that omits a required `secret` is a typed error; one that supplies it proceeds; and the
-    persisted record still contains only the ref, never the value.
-11. **No assertion that a secret's VALUE round-trips** — proving that would require persisting it.
+3. **Every** `validation` field rejects a violating value and accepts a conforming one — one case each, both
+   directions — plus: an unknown `format`, an invalid `pattern`, and an `enum` member of the wrong type each
+   fail at PARSE.
+4. A `pattern` is anchored: a value that merely CONTAINS a match is rejected.
+5. `null` fails; a missing key and an own `undefined` both take the default; a non-finite number fails.
+6. The engine is strict: a `number`-typed input rejects `"3"`. The CLI's coercion of `"3"` into `3` before
+   the engine is pinned separately, so the split is proven from both sides.
+7. Input names `__proto__`, `constructor` and `toString` round-trip as ordinary inputs, on the CLI path and
+   the engine path, with `Object.prototype` unpolluted after.
+8. Interpolation in a `default` fails at PARSE, with the message naming the rule.
+9. An admission failure produces a typed error and **no `runId`, no `run:started`, an untouched store** —
+   asserted by inspecting the store.
+10. `start` and `resume` reject the same violating input.
+11. A resume whose caller passes different inputs, a different `executionMode`, or a content-different
+    workflow is a typed error — one test per axis, each asserting the run did not continue **and that the
+    lease was released**.
+12. An **MCP-augmented** workflow resumes cleanly when the server returns the same tools, and fails closed
+    when it returns a different set.
+13. A resume that omits a required `secret` is a typed error; one that supplies it proceeds; the persisted
+    record still contains only the ref.
+14. A `secret` input declaring a `default` fails at PARSE, and a scan of **every persisted column** —
+    including `workflow_definition_snapshot` — finds no raw secret.
+15. A **pre-0083 legacy fixture**: a durable record missing a key that now declares a default resumes with
+    what it recorded, and the default is not invented.
+16. **No assertion that a secret's VALUE round-trips** — proving that would require persisting it.
 
-### 10. Landing obligations
+### 10. What is NOT decided here
 
-- ADR-0036: a dated amendment noting `run:started` is the admission record a resume verifies against.
-- [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md): where each validation field is
-  enforced, and the surface-coerces/engine-is-strict split.
-- [execution-model.md](../architecture/execution-model.md): admission as a named step before run creation.
+- **Key versioning for `secret` inputs**, and with it credential continuity across a resume (§6).
+- **`planOptions.agents` content verification** (§5). Verified by id only; an edited agent file is not
+  detected.
+- **Per-surface coercion rules.** Each surface owns its transport's conversions.
+- **Static ReDoS analysis** of an authored `pattern` (§4). Bounded by `max_length`, not eliminated.
+- **Retrofitting existing rows.** §8's legacy rule is the whole policy.
+
+### 11. Landing obligations
+
+- A typed admission taxonomy on `EngineStateErrorCode`, which today has only `workflow_mismatch`:
+  `input_admission_failed`, `input_mismatch`, `execution_mode_mismatch`, `workflow_content_mismatch`,
+  `plan_mismatch`, `secret_input_missing`, `secret_input_unexpected`, `admission_record_unreadable`. Each is
+  a permanent invocation fault, not transient.
+- ADR-0023: a dated amendment for §3 and §6's parse-time tightenings.
+- ADR-0036: a dated amendment naming `run:started` the admission record.
+- [workflow-yaml-spec.md](../reference/contracts/workflow-yaml-spec.md): `inputs` defaults removed from the
+  template-field list; §4's validation semantics; the `secret`-default prohibition; the correction that a
+  workflow input `secret` is caller-supplied, not resolved from a store.
+- [database-schema.md](../reference/shared-core/database-schema.md): the "exact graph that ran" claim
+  corrected for MCP augmentation.
+- [sse-event-schema.md](../reference/contracts/sse-event-schema.md) and `run-event.ts`'s docblock: the masked
+  placeholder is a self-reference, not a keychain/env reference.
+- [commands.md](../reference/cli/commands.md): the secret-bearing gate resume, and its stdin contract.
 - The `ResumeFromCheckpointInput` docblock's "a future revision will…" replaced with what shipped.
+- The phase document's `CR-17` correction note updated with the augmented-vs-frozen resolution.
 - This ADR to Accepted, with the index row to match.
 
 ## Consequences
 
 ### Positive
 
-- The authored contract is enforced once, in the layer every surface shares, instead of N times or not at all.
-- A rejected run leaves nothing behind, so a caller's retry is not reasoning about a partial run.
-- A resumed run is provably the run that started: same inputs, same mode, same graph content.
-- No new persisted state and no event-contract change — the record already exists; this reads it.
-- The secret path gets stricter without a new mechanism: refuse, never substitute.
+- The authored contract is enforced once, in the layer every surface shares.
+- A rejected run leaves nothing behind.
+- A resumed run is provably the run that started: same inputs, same mode, same graph — including the tools
+  MCP contributed.
+- No new persisted state, no event-contract change, no new port — one `RunStore` method and a wider fold.
+- The `__proto__` hazard is closed at the accumulator, where it actually lives.
 
 ### Negative
 
-- **Strictness will break callers that were passing stringly-typed values.** A desktop or extension host
-  sending `"3"` for a `number` input works today and stops working. That is the bug being fixed, and it will
-  surface as a regression in those surfaces before it surfaces as correctness. Mitigated only by saying so
-  here and in the spec.
-- **Resume gains failure modes that did not exist.** A host that was quietly resuming with different inputs
-  now gets a typed error. That is the point, and it will look like a new bug to whoever was relying on the
-  old behaviour.
-- **`planOptions.agents` stays unverified by content.** An agent file edited between processes is not
-  detected. Named in §8 rather than left implied, and it is strictly better than today, where nothing is.
-- **A `secret` input must be re-supplied on every resume.** More friction on an unattended resume, and the
-  honest cost of never persisting a credential.
+- **Strictness will break callers passing stringly-typed values.** A host sending `"3"` for a `number` input
+  works today and stops. That is the bug being fixed, and it will look like a regression first.
+- **Resume gains failure modes.** A host quietly resuming with different inputs now gets a typed error.
+- **An MCP server that changes its tool set breaks resume.** Fail-closed is right — the graph really did
+  change — but it makes resume dependent on a remote server's stability, and the error must say so clearly
+  enough that an operator knows it is not their workflow that broke.
+- **Templated input defaults are removed from the spec.** Nothing uses them working today, but a workflow
+  that parses now will stop parsing.
+- **A `secret` input must be re-supplied on every resume**, through stdin, which is friction on an unattended
+  resume and the honest cost of never persisting a credential — and it still does not prove continuity (§6).
+- **A catastrophic authored `pattern` can still stall a run** whose input has no `max_length`.
