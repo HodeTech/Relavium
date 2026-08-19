@@ -18,7 +18,13 @@
  * wrongly skip-propagated; the dimmed branches are restored from `node:skipped`.
  */
 
-import type { LlmProviderId, MediaBilledModality, RunEvent, RunStatus } from '@relavium/shared';
+import type {
+  ExecutionMode,
+  LlmProviderId,
+  MediaBilledModality,
+  RunEvent,
+  RunStatus,
+} from '@relavium/shared';
 
 import type { NodeFailure } from './node-executor.js';
 
@@ -81,6 +87,20 @@ export interface CheckpointState {
   /** `run:started.timestamp` as epoch ms — the resumed run keeps measuring `durationMs` from the ORIGINAL
    *  start, so a terminal event reports total wall-clock across the pre- and post-resume segments. */
   readonly startedAtMs: number;
+  /**
+   * What the run was ADMITTED with
+   * ([ADR-0083](../../../../docs/decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §5).
+   *
+   * `run:started` is the authoritative record — the ordered durable log ADR-0078 built — and the fold
+   * already reads that event, so carrying these needs no new port and no new persisted state. A resume
+   * verifies the caller's copies against them rather than trusting what it was handed; a host that passes
+   * something different learns it instead of being silently overridden.
+   *
+   * `admittedInputs` carries a `secret`-typed value already MASKED to `{ secret: true, ref }` — the event
+   * masks at emit time, so a credential was never in the log to fold.
+   */
+  readonly admittedInputs: Readonly<Record<string, unknown>>;
+  readonly executionMode: ExecutionMode;
   /** Per-vertex settled/paused state; a vertex absent here is `pending` (never started, or running at crash). */
   readonly nodeStates: ReadonlyMap<string, CheckpointNodeState>;
   /** Convenience projection of the `completed` vertices (the engine derives `pending` from the plan). */
@@ -172,6 +192,8 @@ interface ReconAccumulator {
   started: boolean;
   workflowId: string;
   startedAtMs: number;
+  admittedInputs: Readonly<Record<string, unknown>>;
+  executionMode: ExecutionMode;
   runStatus: RunStatus;
   lastSequenceNumber: number;
   totalInputTokens: number;
@@ -198,6 +220,8 @@ function applyRunEvent(acc: ReconAccumulator, event: RunEvent): void {
     acc.started = true;
     acc.workflowId = event.workflowId;
     acc.startedAtMs = Date.parse(event.timestamp);
+    acc.admittedInputs = event.inputs;
+    acc.executionMode = event.executionMode;
     acc.runStatus = 'running';
     return;
   }
@@ -366,6 +390,10 @@ export function reconstructCheckpointState(
     started: false,
     workflowId: '',
     startedAtMs: 0,
+    // A log with no `run:started` yields these defaults, and the caller of `reconstructCheckpointState`
+    // already refuses such a log (`started` is false) — so they are never read, only well-typed.
+    admittedInputs: {},
+    executionMode: 'local',
     runStatus: 'running',
     lastSequenceNumber: -1,
     totalInputTokens: 0,
@@ -431,6 +459,8 @@ export function reconstructCheckpointState(
     runStatus: acc.runStatus,
     workflowId: acc.workflowId,
     startedAtMs: acc.startedAtMs,
+    admittedInputs: acc.admittedInputs,
+    executionMode: acc.executionMode,
     nodeStates: acc.nodeStates,
     completedNodeIds,
     pendingGates: [...acc.pendingGates].map(([gateId, entry]) => ({

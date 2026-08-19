@@ -765,3 +765,41 @@ describe('createInMemoryCheckpointer', () => {
     expect(await cp.load('r1')).toBeUndefined();
   });
 });
+
+describe('the fold carries what the run was ADMITTED with (ADR-0083 §5)', () => {
+  it('reconstructs `admittedInputs` and `executionMode` from run:started', () => {
+    // `run:started` is the authoritative record — the ordered durable log — and the fold already read this
+    // event, so carrying these needs no new port and no new persisted state. A resume verifies the caller's
+    // copies against them rather than trusting what it was handed.
+    const state = reconstructCheckpointState([
+      {
+        type: 'run:started',
+        ...base(0),
+        workflowId: '00000000-0000-4000-8000-000000000001',
+        inputs: { topic: 'the report', count: 3 },
+        executionMode: 'cloud',
+      },
+    ]);
+
+    expect(state?.admittedInputs).toEqual({ topic: 'the report', count: 3 });
+    expect(state?.executionMode).toBe('cloud');
+  });
+
+  it('a `secret` input comes back MASKED, because it was never in the log', () => {
+    // The event masks at emit time, so there is no credential to fold. What survives is the slot's
+    // reference — which is what §6 says a resume can verify, and all it can verify.
+    const state = reconstructCheckpointState([
+      {
+        type: 'run:started',
+        ...base(0),
+        workflowId: '00000000-0000-4000-8000-000000000001',
+        inputs: { api_key: { secret: true, ref: 'inputs.api_key' } },
+        executionMode: 'local',
+      },
+    ]);
+
+    expect(state?.admittedInputs).toEqual({ api_key: { secret: true, ref: 'inputs.api_key' } });
+    expect(JSON.stringify(state?.admittedInputs)).not.toContain('hunter2');
+  });
+});
+

@@ -718,6 +718,8 @@ describe('selectGate', () => {
     runStatus: 'paused',
     workflowId: 'wf',
     startedAtMs: 0,
+    admittedInputs: {},
+    executionMode: 'local',
     nodeStates: new Map(),
     completedNodeIds: [],
     pendingGates: [],
