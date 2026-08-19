@@ -168,7 +168,12 @@ export function verifyResumeIdentity(params: {
       // A secret is not in the record and cannot be: the caller re-supplies it by name, or the resume is
       // refused. It is never silently substituted, defaulted, or dropped to `undefined` (§6).
       const resupplied = Object.hasOwn(supplied, key) ? supplied[key] : undefined;
-      if (resupplied === undefined) {
+      // The PLACEHOLDER is not a value. A caller that rebuilds its input map from the durable record — which
+      // is exactly what `relavium gate` does, reading `runs.input_json` — holds `{ secret: true, ref }` for
+      // this key, and accepting that would let the run continue with the mask as its credential: every
+      // downstream `{{inputs.<name>}}` evaluating to a marker object instead of failing. The CLI's own
+      // `assertNoMaskedSecretInputs` refuses it one layer up; the engine must not depend on that.
+      if (resupplied === undefined || isMaskedSecret(resupplied)) {
         return {
           ok: false,
           refusal: {

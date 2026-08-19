@@ -138,6 +138,16 @@ describe('verifyResumeIdentity — the record is the authority (ADR-0083 §5)', 
     });
     expect(!undef.ok && undef.refusal.code).toBe('secret_input_missing');
 
+    // …and neither does the PLACEHOLDER itself, which is what a caller rebuilding its map from the durable
+    // record holds — `relavium gate` reads `runs.input_json`, where the value is exactly this shape.
+    // Accepting it would continue the run with the mask as its credential.
+    const placeholder = verify({
+      workflow: wf,
+      recordedInputs: recorded,
+      suppliedInputs: { api_key: { secret: true, ref: 'inputs.api_key' } },
+    });
+    expect(!placeholder.ok && placeholder.refusal.code).toBe('secret_input_missing');
+
     const supplied = verify({
       workflow: wf,
       recordedInputs: recorded,
