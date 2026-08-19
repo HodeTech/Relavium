@@ -205,6 +205,13 @@ is worse than a named gap).
 `runs.workflow_definition_snapshot` — a plaintext credential in the durable store. Rejected at PARSE, and
 §9's acceptance scans every persisted column, not just the input map.
 
+**That closes the DECLARED case and no more, which is worth saying plainly.** The snapshot is the full
+authored YAML, unredacted — [phase 2.5.5](../roadmap/phases/phase-2.5.5-hardening-and-remediation.md) already
+records this and names the residue: a hardcoded credential literal sitting in an unrelated field is not a
+declared `secret`, so no taint rule and no rule here sees it. Its own item — a best-effort secret-shaped-
+literal lint at authoring time — stays where it is. This ADR removes one path into that column; it does not
+make the column safe.
+
 **Re-supply must not travel through argv.** A raw secret on a command line leaks to `ps`, shell history and
 CI logs; `relavium provider set-key` already uses stdin for exactly this reason. The CLI's secret-bearing
 resume takes its value the same way, and `relavium gate` gains that option — it has none today.
