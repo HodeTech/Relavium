@@ -219,9 +219,9 @@ to correct.
 | `CR-12` | made (three-tier effect contract) | new, amends [ADR-0041](../../decisions/0041-external-action-governance-seam.md) + [ADR-0037](../../decisions/0037-engine-tool-execution-boundary.md) | yes | — |
 | `CR-13` | made (summary is untrusted, never `system`) | new, supersedes [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) §1 | yes | prompt/trust |
 | `CR-14` | made (exactly one terminal, grammar pinned) | new | yes | — |
-| `CR-15` | made (engine-side admission) | new | yes | — |
+| `CR-15` | made (engine-side admission) | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | yes | — |
 | `CR-16` | made (consent before spawn, lazy connect) | new | yes | hostile MCP |
-| `CR-17` | made (persist and verify resume identity) | with `CR-15`'s | yes | — |
+| `CR-17` | made (persist and verify resume identity) | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | yes | — |
 | `CR-20` | made (honour `timeout_ms`) | — | no | — |
 | `CR-21` | made (per-attempt deadline) | with `CR-14`'s | no | — |
 | `CR-22` | made (absolute deadlines) | — | no | — |
@@ -657,7 +657,7 @@ terminal produces a classified error, not a node success. A content-committed tr
 failover. The superseded test is rewritten to assert the new rule **and keeps a note recording the reasoning for
 the behaviour it replaces**, the same way `checkpointer.test.ts` was handled in Wave 1.
 
-### CR-15 — The engine does not enforce the authored input contract · Blocker · needs an ADR
+### CR-15 — The engine does not enforce the authored input contract · Blocker · ✅ CLOSED 2026-08-19 ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md))
 
 **Evidence.** The shared contract states the engine validates inputs before a run starts. `WorkflowEngine.start()`
 passes the caller's `inputs` object straight to the run execution, which stores it without cloning, applying
@@ -732,7 +732,7 @@ with a **real spawn counter** injected at the process boundary, asserted at zero
 flag. A non-interactive run without the digest flag fails closed with an actionable message. A changed
 fingerprint re-prompts.
 
-### CR-17 — A resume trusts caller-supplied identity it never verifies · Blocker *(plan review)* · ADR with `CR-15`
+### CR-17 — A resume trusts caller-supplied identity it never verifies · Blocker *(plan review)* · ✅ CLOSED 2026-08-19 ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md))
 
 **Evidence.** `ResumeFromCheckpointInput` (`packages/core/src/engine/engine.ts`) documents its own gap: the
 checkpoint verifies workflow identity, but `inputs`, `executionMode` and `planOptions` are **not** checkpoint-
@@ -778,6 +778,26 @@ distinct typed error. Resuming with a `secret` input re-supplied at the same ver
 version it fails. The digest of a run started with defaults omitted equals the digest of the same run started
 with those defaults written out explicitly. No secret value appears in any persisted row — asserted by scanning
 the written rows.
+
+> **What shipped, against the three corrections above and this acceptance.**
+>
+> 1. **Correction 3 was resolved by fixing the SNAPSHOT, not by narrowing the check.** `relavium run` now opens
+>    the history store *after* `connectWorkflowMcp`, with the augmented workflow, so
+>    `runs.workflow_definition_snapshot` freezes the graph the engine is actually started on. MCP-discovered
+>    tool grants are part of workflow identity ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) §5),
+>    so verifying against the un-augmented definition would have been verifying the wrong thing rather than
+>    avoiding a regression.
+> 2. **There is no digest.** A hash needs a primitive a platform-free engine does not have, and a hash over raw
+>    YAML reports a mismatch for reindented text that parses identically. The comparison is deep structural
+>    equality over normalized parse output — which answers the acceptance's defaults-omitted-vs-written-out
+>    case by construction, because both sides are the parsed form.
+> 3. **The "same version / different version" secret acceptance is WITHDRAWN**, as correction 1 predicted. There
+>    is no key-versioning concept in the tree. §6 verifies the SLOT — that the same named `secret` input was
+>    re-supplied — and states plainly that it cannot prove the value is the same credential. `relavium gate
+>    --secret-stdin` is the re-supply contract; the value travels on stdin, never argv.
+> 4. **`plan_mismatch` was not implemented.** Every case it could name is already covered by `buildRunPlan`'s
+>    dangling-`agent_ref` refusal plus the workflow-content check; a code no refusal can reach is dead taxonomy.
+>    Recorded as a dated amendment on ADR-0083 §5 rather than silently skipped.
 
 ---
 
