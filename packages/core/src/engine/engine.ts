@@ -68,6 +68,7 @@ import type { ResolverCapabilities, RunScope } from '../interpolation/scope.js';
 import type { PlanVertex, RunPlan } from '../run-plan.js';
 import type { WorkflowDefinition } from '../parser.js';
 import { resolveAndValidateWorkflowInputs } from './input-admission.js';
+import { verifyResumeIdentity } from './resume-identity.js';
 import { EngineStateError } from './errors.js';
 import { RunEventBus, type RunEventDraft } from './event-bus.js';
 import { RunLoopInvariantError } from './invariant-error.js';
@@ -201,19 +202,31 @@ export interface StartInput {
 /**
  * Inputs to {@link WorkflowEngine.resumeFromCheckpoint} — resume a run from a PRIOR process (1.R).
  *
- * **Invariant (caller's responsibility):** `workflow`, `inputs`, `executionMode`, and `planOptions` must
- * be the SAME values the run started with. The checkpoint persists the workflow identity (verified — a
- * mismatch throws `workflow_mismatch`) but does not yet persist `inputs` / `executionMode`, so passing
- * different ones would silently diverge the rehydrated execution from its `run:started` state. A future
- * revision will reconstruct these from the checkpoint and ignore the caller-supplied values.
+ * **Identity is VERIFIED, not assumed (ADR-0083 §5).** This used to carry an "invariant (caller's
+ * responsibility)" that `inputs` and `executionMode` be the same values the run started with, checked by
+ * nothing — so a caller that reconstructed either differently, or passed neither, silently continued the run
+ * under a state its own `run:started` never had. They are now folded from that event into `CheckpointState`
+ * and the caller's copies are **checked against the record and then discarded**: a difference is a typed
+ * refusal (`input_mismatch` / `execution_mode_mismatch`), and an omission takes the recorded value rather
+ * than a default. `workflow` identity is still verified by surrogate id (`workflow_mismatch`).
+ *
+ * A `secret` input is the one thing the record cannot hold — it is persisted as `{ secret: true, ref }` — so
+ * the caller **re-supplies it by name** or the resume is refused (`secret_input_missing`). §6 states exactly
+ * what that proves: the SLOT, not the credential.
+ *
+ * `planOptions` is verified by agent ID, not by content (§5) — an agent file edited between processes is
+ * not detected, recorded as a limitation in §10.
  */
 export interface ResumeFromCheckpointInput {
   readonly runId: string;
   /** The workflow to resume against — the engine refuses one whose identity differs (workflow_mismatch). */
   readonly workflow: WorkflowDefinition;
-  /** MUST match the run's original inputs (not yet checkpoint-derived — see the interface note). */
+  /**
+   * The caller's copy of the run's inputs, VERIFIED against the admission record rather than used. Omit it
+   * and the record is used unchanged — except for a `secret`, which must be re-supplied here by name.
+   */
   readonly inputs?: Readonly<Record<string, unknown>>;
-  /** MUST match the run's original mode (not yet checkpoint-derived — see the interface note). */
+  /** VERIFIED against the recorded mode; omit to take the recorded one (never a `'local'` default). */
   readonly executionMode?: ExecutionMode;
   readonly planOptions?: BuildRunPlanOptions;
   /**
@@ -3431,6 +3444,27 @@ export class WorkflowEngine {
       await this.#host.runLeases.release(input.runId, fence);
       return createClosedRunHandle(input.runId);
     }
+    // **Identity, verified rather than assumed (ADR-0083 §5/§6/§8).** The caller's `inputs` and
+    // `executionMode` used to be taken on trust, under an interface note that called it "the caller's
+    // responsibility" — so a `relavium gate` in a fresh process that reconstructed either one differently,
+    // or simply passed `{}`, continued the run under a state its own `run:started` never had. The record
+    // folded from that event is the authority; the caller's copy is checked against it and then discarded.
+    const identity = verifyResumeIdentity({
+      workflow: input.workflow,
+      recordedInputs: checkpoint.admittedInputs,
+      recordedExecutionMode: checkpoint.executionMode,
+      suppliedInputs: input.inputs,
+      suppliedExecutionMode: input.executionMode,
+    });
+    if (!identity.ok) {
+      // §5: a refusal releases the lease. Every identity check sits after ownership was acquired, and
+      // ADR-0079 §4's rule — an acquire that leads nowhere must not leak — covers these exactly as it
+      // covers `workflow_mismatch` above.
+      await this.#host.runLeases.release(input.runId, fence);
+      throw new EngineStateError(identity.refusal.code, identity.refusal.message, {
+        runId: input.runId,
+      });
+    }
     // From here to `adoptLease`, ANY throw must release the claim — `buildRunPlan` on an edited workflow and
     // the `RunExecution` constructor's checkpoint rehydration both throw outside the try below, and both
     // used to strand the lease for a TTL.
@@ -3442,8 +3476,10 @@ export class WorkflowEngine {
       runId: input.runId,
       plan,
       workflow: input.workflow,
-      inputs: input.inputs ?? {},
-      executionMode: input.executionMode ?? 'local',
+      // The VERIFIED record, not the caller's map — built fresh with a null prototype by the same §7
+      // discipline `start()` uses, so a resume and a start hand `RunExecution` the same shape.
+      inputs: identity.inputs,
+      executionMode: identity.executionMode,
       ownerId: this.#ownerId,
       ...(this.#effectJournalFactory === undefined
         ? {}

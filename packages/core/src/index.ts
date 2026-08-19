@@ -196,7 +196,11 @@ export type { EngineStateErrorCode } from './engine/errors.js';
 // it. The function comes with it because it is pure and synchronous — a surface that wants to validate a
 // form before calling `start()` should run the ENGINE's contract, not a second copy of it.
 export { resolveAndValidateWorkflowInputs } from './engine/input-admission.js';
-export type { InputAdmissionIssue, InputAdmissionResult } from './engine/input-admission.js';
+export type {
+  InputAdmissionIssue,
+  InputAdmissionMode,
+  InputAdmissionResult,
+} from './engine/input-admission.js';
 
 // Typed run-loop substrate INVARIANT breaches (the bus/stream "can never happen" asserts) — surfaced loud
 // so a producer/consumer bug is caught at source rather than silently un-gapping the sequence (ADR-0036).

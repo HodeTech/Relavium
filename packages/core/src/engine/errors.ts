@@ -29,7 +29,15 @@ export type EngineStateErrorCode =
   // ADR-0083 §1: the caller's inputs did not satisfy the authored contract. A PERMANENT invocation fault —
   // the same call will fail identically forever — and it happens before a run exists, so there is no runId
   // to report, no `run:started`, and nothing in the store.
-  | 'input_admission_failed';
+  | 'input_admission_failed'
+  // ADR-0083 §5/§6/§11 — the resume identity taxonomy. `resumeFromCheckpoint` verifies the caller's copies
+  // against the run's own admission record rather than trusting them, and each way that can fail gets its
+  // own code because each has a different fix: correct the invocation, resume the right run, or re-supply a
+  // credential. All PERMANENT — none is worth retrying unchanged.
+  | 'input_mismatch' // a supplied input is not the one the run was admitted with, or names a slot it never had
+  | 'execution_mode_mismatch' // a supplied `executionMode` is not the one the run started under
+  | 'secret_input_missing' // a `secret` the record holds as a masked slot was not re-supplied
+  | 'secret_input_unexpected'; // a `secret` was supplied for a slot the record does not carry
 
 /**
  * The codes that are TRANSIENT — worth retrying unchanged — as opposed to permanent invocation faults.

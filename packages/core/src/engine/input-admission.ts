@@ -52,6 +52,27 @@ export type InputAdmissionResult =
   | { readonly ok: false; readonly issues: readonly InputAdmissionIssue[] };
 
 /**
+ * Which of the two callers is asking (ADR-0083 §8).
+ *
+ * §8 requires `start` and `resume` to apply the SAME admission, so that a rule cannot hold on one path and
+ * not the other — and one axis genuinely differs, so it is NAMED here rather than left to two divergent
+ * copies of the walk. The value contract (`violatesInputContract`) and the map-building discipline (§7) are
+ * identical in both modes; only presence semantics differ.
+ */
+export type InputAdmissionMode =
+  /** `start()`: the caller's map is the input. Declared defaults are applied and `required` is enforced. */
+  | 'admit'
+  /**
+   * `resumeFromCheckpoint()`: the durable record is the authority, so nothing is invented. A pre-0083 run
+   * may hold no value for an input that now declares a default — §5's rule is that resume VERIFIES what was
+   * recorded, and §8's legacy clause says a run keeps its own semantics. Re-applying the default would hand
+   * the rehydrated execution a value its `run:started` never had; re-enforcing `required` would refuse a run
+   * that already ran. A workflow whose CONTRACT changed between processes is a content divergence, caught
+   * as one, not as a missing input.
+   */
+  | 'verify';
+
+/**
  * Resolve a caller's inputs against the authored contract.
  *
  * Returns EVERY issue, not the first: a caller correcting a five-input invocation should learn all five
@@ -60,6 +81,7 @@ export type InputAdmissionResult =
 export function resolveAndValidateWorkflowInputs(
   workflow: Workflow,
   raw: Readonly<Record<string, unknown>> | undefined,
+  mode: InputAdmissionMode = 'admit',
 ): InputAdmissionResult {
   const declared: readonly WorkflowInput[] = workflow.workflow.inputs ?? [];
   const supplied = raw ?? {};
@@ -101,6 +123,7 @@ export function resolveAndValidateWorkflowInputs(
     // Absent means absent: a missing key and an own `undefined` are both omissions and take the default.
     // `null` is a VALUE and falls through to validation, where it fails every declared type.
     if (provided === undefined) {
+      if (mode === 'verify') continue; // the record is the authority — invent nothing (§5, §8)
       if (input.default !== undefined) {
         // Already validated against this input's own contract at parse, so it needs no re-check — and a
         // `required` input with a default is satisfied by it.
