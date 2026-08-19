@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { URL_HAS_CREDENTIALS, nonEmptyString, nonNegativeInt, positiveInt } from './common.js';
+import { isForbiddenDeclaredEnvKey } from './declared-env.js';
 import {
   FS_SCOPE_TIERS,
   LLM_PROVIDERS,
@@ -38,6 +39,18 @@ interface McpRegistrationDraft {
 /** `stdio` registration: needs a `command`; rejects the network-only `url` / `allow_local_endpoint` so a committed
  *  registration's contract matches the inline `McpServerRefSchema` (a dead flag would also skew `serverFingerprint`). */
 function validateStdioRegistration(server: McpRegistrationDraft, ctx: z.RefinementCtx): void {
+  // The same declared-environment rule the inline `mcp_servers` entry and `run_command` are held to
+  // (ADR-0084 §4). A registration is the other way a stdio server reaches a spawn, so exempting it would
+  // leave the rule true of one entry point and not the other.
+  for (const key of Object.keys(server.env ?? {})) {
+    if (isForbiddenDeclaredEnvKey(key)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `environment variable '${key}' may not be declared — it can redirect the interpreter, the dynamic loader, or a tool's configuration`,
+        path: ['env', key],
+      });
+    }
+  }
   if (!server.command) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

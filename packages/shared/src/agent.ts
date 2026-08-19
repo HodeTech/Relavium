@@ -10,6 +10,7 @@ import {
   temperatureSchema,
 } from './common.js';
 import { LLM_PROVIDERS, REASONING_EFFORTS, RETRYABLE_ERROR_CODES } from './constants.js';
+import { isForbiddenDeclaredEnvKey } from './declared-env.js';
 
 /**
  * Agent schema (agent-yaml-spec.md). An agent is a named, reusable LLM
@@ -101,8 +102,35 @@ function validateRefForm(ref: McpServerRefDraft, ctx: z.RefinementCtx): void {
   }
 }
 
+/**
+ * A declared child environment may not steer the interpreter, the dynamic loader, or a tool's config home
+ * ([ADR-0084](../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §4).
+ *
+ * The same rule `run_command`'s host has always enforced, applied here because this declaration spawns a
+ * program a shared artifact names — and consent answers "do I trust this program", while a loader variable
+ * answers "this is actually a different program". Rejected at PARSE, as an authored error, so it cannot
+ * reach a consent prompt that would then be deciding about the wrong thing.
+ */
+function validateDeclaredEnv(
+  env: Record<string, string> | undefined,
+  ctx: z.RefinementCtx,
+): void {
+  for (const key of Object.keys(env ?? {})) {
+    if (isForbiddenDeclaredEnvKey(key)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        // Value-free, and the KEY is echoed because an author wrote it and needs to know which one — the
+        // same reasoning the sibling `validation key '<k>' is not allowed` message follows.
+        message: `environment variable '${key}' may not be declared — it can redirect the interpreter, the dynamic loader, or a tool's configuration`,
+        path: ['env', key],
+      });
+    }
+  }
+}
+
 /** Inline `stdio`: needs a `command`, and rejects the network-only `url` / `allow_local_endpoint` (secure-by-default). */
 function validateStdioFields(ref: McpServerRefDraft, ctx: z.RefinementCtx): void {
+  validateDeclaredEnv(ref.env, ctx);
   if (!ref.command) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

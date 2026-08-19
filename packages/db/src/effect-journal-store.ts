@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto';
 import { and, asc, eq, gte, inArray, lt } from 'drizzle-orm';
 
 import {
+  canonicalJson,
   EFFECT_STATES,
   EFFECT_TIERS,
   EffectConflictError,
@@ -453,18 +454,12 @@ function coerceEffectTier(value: number): EffectTier {
  * SHA-256 over a canonical JSON serialization — sorted keys, no insignificant whitespace — so the same
  * logical arguments always produce the same fingerprint regardless of key order.
  *
- * A vetted implementation (`node:crypto`), never a hand-rolled one: CLAUDE.md rule 3.
+ * A vetted implementation (`node:crypto`), never a hand-rolled one: CLAUDE.md rule 3. The canonical form
+ * itself moved to `@relavium/shared` when ADR-0084's consent gate became a second caller — a digest defined
+ * by one package's module-private helper is not a contract a second implementation can be held to.
  */
 function digestOf(redactedArgs: unknown): string {
   return createHash('sha256').update(canonicalJson(redactedArgs)).digest('hex');
 }
 
-/** Deterministic JSON: object keys sorted at every depth, so `{a,b}` and `{b,a}` hash identically. */
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0,
-  );
-  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
-}
+
