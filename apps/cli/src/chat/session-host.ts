@@ -45,7 +45,7 @@ import {
   reasoningWithheldByCapFor,
   unpricedModelNote,
 } from './effort-notice.js';
-import { resolveChatAgent } from './agent-source.js';
+import { resolveChatAgentSource } from './agent-source.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { hostAttemptTimer, hostSleep } from '../process/sleep.js';
 import {
@@ -486,23 +486,29 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
   const sessionId = opts.uuid();
   // A `/clear` rebuild (ADR-0062 §7) passes the CURRENT bound agent to rebind verbatim; otherwise resolve `agentRef`
   // from disk / the built-in default. Reusing the agent avoids a disk re-read (and its failure modes) on `/clear`.
-  const agent =
-    opts.agent ??
-    resolveChatAgent(opts.agentRef, {
-      cwd: opts.cwd,
-      projectConfigDir: opts.projectConfigDir,
-      defaultModel: opts.chat.defaultModel,
-      // ADR-0059: the persisted `[chat].default_provider` is used verbatim for the DEFAULT agent so a live-discovered
-      // id whose prefix the inference cannot place still resolves; absent ⇒ inference from the id.
-      ...(opts.chat.defaultProvider === undefined
-        ? {}
-        : { defaultProvider: opts.chat.defaultProvider }),
-      // ADR-0066: the `[chat].reasoning_effort` default is baked onto the DEFAULT agent only (an authored agent
-      // owns its own). Threaded here so a config default lights up a default-agent chat without a picker step.
-      ...(opts.chat.reasoningEffort === undefined
-        ? {}
-        : { reasoningEffort: opts.chat.reasoningEffort }),
-    });
+  // The FILE the agent came from travels with it, for the consent prompt (ADR-0084 §7): `chat --agent
+  // ./downloaded.agent.yaml` is the imported-artifact case the gate exists for, and naming the word the user
+  // typed instead of the path it resolved to answers a different question than the one being asked.
+  const resolved =
+    opts.agent === undefined
+      ? resolveChatAgentSource(opts.agentRef, {
+          cwd: opts.cwd,
+          projectConfigDir: opts.projectConfigDir,
+          defaultModel: opts.chat.defaultModel,
+          // ADR-0059: the persisted `[chat].default_provider` is used verbatim for the DEFAULT agent so a
+          // live-discovered id whose prefix the inference cannot place still resolves; absent ⇒ inference.
+          ...(opts.chat.defaultProvider === undefined
+            ? {}
+            : { defaultProvider: opts.chat.defaultProvider }),
+          // ADR-0066: the `[chat].reasoning_effort` default is baked onto the DEFAULT agent only (an authored
+          // agent owns its own). Threaded here so a config default lights up a default-agent chat.
+          ...(opts.chat.reasoningEffort === undefined
+            ? {}
+            : { reasoningEffort: opts.chat.reasoningEffort }),
+        })
+      : { agent: opts.agent, artifact: undefined };
+  const agent = resolved.agent;
+  const mcpArtifact = opts.mcpArtifact ?? resolved.artifact;
   const context: SessionContext = {
     workingDir: opts.cwd,
     // The EFFECTIVE tier (full→project clamped for the chat surface — a chat READ can exfiltrate) — the SAME value the factory
@@ -521,8 +527,9 @@ export async function buildChatSession(opts: BuildChatSessionOptions): Promise<B
     : await connectAgentMcp(agent.mcp_servers, {
         cwd: opts.cwd,
         ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
-        ...(opts.mcpArtifact === undefined ? {} : { artifact: opts.mcpArtifact }),
-        ...(opts.mcpArtifact === undefined ? {} : { artifact: opts.mcpArtifact }),
+        // The caller's label wins (`agent run` names the ref the user typed); otherwise the path the agent
+        // was actually read from — §7's "declared in <file>" for the imported-artifact case.
+        ...(mcpArtifact === undefined ? {} : { artifact: mcpArtifact }),
         ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
         ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
         ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),
@@ -722,7 +729,10 @@ export async function buildResumedChatSession(
   const mcp = await connectAgentMcp(agent.mcp_servers, {
     cwd: context.workingDir,
     ...(opts.consentGate === undefined ? {} : { consentGate: opts.consentGate }),
-    ...(opts.mcpArtifact === undefined ? {} : { artifact: opts.mcpArtifact }),
+    // The SESSION, not a file. A resume runs the agent SNAPSHOT frozen at session start, so the file the
+    // agent originally came from may have changed or be gone — naming it would tell the user to go review
+    // bytes that are not what is about to run (ADR-0084 §7).
+    artifact: opts.mcpArtifact ?? `resumed session ${record.id}`,
     ...(opts.startMcpClient === undefined ? {} : { startMcpClient: opts.startMcpClient }),
     ...(opts.mcpSecretResolver === undefined ? {} : { resolveSecret: opts.mcpSecretResolver }),
     ...(opts.mcpRegistrations === undefined ? {} : { registrations: opts.mcpRegistrations }),

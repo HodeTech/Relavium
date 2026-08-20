@@ -30,12 +30,39 @@ export function resolveChatAgent(
   agentRef: string | undefined,
   opts: ResolveChatAgentOptions,
 ): AgentDefinition {
+  return resolveChatAgentSource(agentRef, opts).agent;
+}
+
+/** The resolved agent together with the FILE it came from — `undefined` for the built-in default. */
+export interface ResolvedChatAgent {
+  readonly agent: AgentDefinition;
+  /**
+   * The path the agent was read from, for the MCP consent prompt.
+   *
+   * Not folded into `AgentDefinition`: that shape is the parsed artifact, is persisted into a session
+   * snapshot, and is produced by the pure core parser, which has no business carrying a host path. It
+   * travels beside the agent instead —
+   * [ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §7 requires the prompt
+   * to name the declaring file, and `chat --agent ./downloaded.agent.yaml` is precisely the imported-artifact
+   * case the gate exists for, so "the user typed a word" is not a good enough answer there.
+   */
+  readonly artifact: string | undefined;
+}
+
+/** {@link resolveChatAgent}, plus the source path the consent prompt needs. */
+export function resolveChatAgentSource(
+  agentRef: string | undefined,
+  opts: ResolveChatAgentOptions,
+): ResolvedChatAgent {
   if (agentRef === undefined) {
-    return buildDefaultChatAgent(
-      opts.defaultModel ?? DEFAULT_CHAT_MODEL,
-      opts.reasoningEffort,
-      opts.defaultProvider,
-    );
+    return {
+      agent: buildDefaultChatAgent(
+        opts.defaultModel ?? DEFAULT_CHAT_MODEL,
+        opts.reasoningEffort,
+        opts.defaultProvider,
+      ),
+      artifact: undefined,
+    };
   }
   const source = resolveYamlSource(agentRef, {
     cwd: opts.cwd,
@@ -44,5 +71,5 @@ export function resolveChatAgent(
     projectConfigDir: opts.projectConfigDir,
     idSuffixes: ['.agent.yaml', '.relavium.yaml', '.yaml'],
   });
-  return parseAgent(source.yaml, { source: source.path });
+  return { agent: parseAgent(source.yaml, { source: source.path }), artifact: source.path };
 }

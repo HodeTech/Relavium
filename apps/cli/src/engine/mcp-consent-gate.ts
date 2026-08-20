@@ -5,7 +5,7 @@ import type { CliIo } from '../process/io.js';
 import type { GlobalOptions } from '../process/options.js';
 import { isInteractiveTerminal } from '../process/output-mode.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
-import type { ResolvedServerRef } from './mcp-servers.js';
+import type { ResolvedServerRef, StdioConsentGate } from './mcp-servers.js';
 import {
   appendGrant,
   fingerprint,
@@ -38,13 +38,18 @@ import {
  * ADR exists for (an imported agent is opened by `chat --agent`, not by `run`). A helper rather than four
  * inline lambdas so a fifth surface cannot wire a subtly different one.
  */
-export function createConsentGate(
-  deps: ConsentGateDeps,
-): (
-  refs: readonly ResolvedServerRef[],
-  cwd: string,
-) => Promise<ReadonlyMap<string, ResolvedStdioSpawn>> {
-  return (refs, cwd) => assertStdioConsent(refs, cwd, deps);
+export function createConsentGate(deps: ConsentGateDeps): StdioConsentGate {
+  // The `artifact` parameter is FORWARDED, not dropped. It was declared on `StdioConsentGate` and omitted
+  // here, and TypeScript accepts a shorter parameter list wherever a longer one is expected — so both
+  // callers passed a third argument that vanished at runtime, `deps.artifact` was always `undefined`, and
+  // the "declared in <file>" line the ADR requires never rendered on any surface. That is the SECOND time
+  // this exact field died silently between a call site that computes it and the prompt that shows it, one
+  // layer apart; the return type is now the shared alias so a missing parameter is a type error.
+  return (refs, cwd, artifact) =>
+    assertStdioConsent(refs, cwd, {
+      ...deps,
+      ...(artifact === undefined ? {} : { artifact }),
+    });
 }
 
 /** Where the grant log lives, beside `history.db` and the terminal outbox. */

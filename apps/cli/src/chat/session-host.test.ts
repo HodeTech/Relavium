@@ -430,6 +430,34 @@ describe('buildChatSession + MCP host wiring (2.R)', () => {
     expect(closed).toBe(1);
   });
 
+  it('names the RESOLVED agent file at the consent gate (ADR-0084 §7)', async () => {
+    // The prompt's "declared in <file>" line is what turns a consent decision about an opaque program into
+    // one about an artifact the user can go read — and `chat --agent ./downloaded.agent.yaml` is exactly the
+    // imported-artifact case the gate exists for. It has now died silently TWICE, at two different layers,
+    // because every test called the gate directly and none went through the surface that computes the value.
+    const agentPath = writeMcpAgent();
+    let asked = 0;
+    let seen: string | undefined;
+    await build({
+      agentRef: agentPath,
+      consentGate: (_refs, _cwd, artifact) => {
+        asked += 1;
+        seen = artifact;
+        return Promise.resolve(new Map());
+      },
+      startMcpClient: () =>
+        Promise.resolve({
+          capability: { call: () => Promise.resolve({ content: [], isError: false }) },
+          toolDefs: [],
+          toolIdsByServer: new Map(),
+          skipped: [],
+          close: () => Promise.resolve(),
+        }),
+    });
+    expect(asked).toBe(1); // else `seen === undefined` would pass for a gate that never ran
+    expect(seen).toBe(agentPath);
+  });
+
   it('MERGE-not-replace: a session with MCP keeps the fs arm too — read_file AND an MCP tool both dispatch', async () => {
     // The keystone 2.5.A fix (ADR-0055): the inbound-MCP arm is MERGED onto the factory fs+process host, never
     // REPLACING it. Proven end-to-end: in ONE session, read_file routes via host.fs (real file) AND mcp_fs_read

@@ -201,6 +201,30 @@ describe('resolveStdioSpawn (ADR-0084 §3)', () => {
     );
   });
 
+  it('a REPOINTED symlink is a different program — the other half of §10.7', async () => {
+    // The canonicalization above is what makes two routes to one directory one grant; the same property must
+    // cut the other way, or a link the user approved could be repointed at anything and keep the grant. It
+    // holds because `realpath` runs fresh on every resolve and nothing is cached — asserted rather than
+    // inferred, because "nothing is cached" is exactly the kind of thing an optimization quietly changes.
+    const a = join(dir, 'a');
+    const b = join(dir, 'b');
+    for (const at of [a, b]) {
+      mkdirSync(at);
+      writeFileSync(join(at, 'server.js'), '// x', { mode: 0o755 });
+    }
+    const link = join(dir, 'link');
+    symlinkSync(a, link);
+    const decl = {
+      serverId: 'fs',
+      provenance: { kind: 'inline' } as const,
+      command: './server.js',
+    };
+    const approved = fingerprint(await resolveStdioSpawn(decl, link));
+    rmSync(link);
+    symlinkSync(b, link);
+    expect(fingerprint(await resolveStdioSpawn(decl, link))).not.toBe(approved);
+  });
+
   it('refuses a command that resolves nowhere, BEFORE anything is asked', async () => {
     // An unresolvable executable is not a decision a user can meaningfully make.
     await expect(
@@ -451,6 +475,35 @@ describe('the grant log (ADR-0084 §5)', () => {
     const stored = readGrants(path())?.get('v1:long');
     expect(stored?.command.length).toBeLessThan(600);
     expect(stored?.cwd.length).toBeLessThan(600);
+  });
+
+  it('the store never holds an env VALUE — scanned in the written BYTES (§10.12)', async () => {
+    // §10.12 asks for the scan specifically, not for a shape assertion: the property holds today only
+    // because the caller passes `Object.keys(env)`, and a later change that widened the record to carry
+    // values — to show a richer diff at the prompt, say — would leak every declared credential into a file
+    // that outlives the session, with nothing failing.
+    const secret = 'sk-live-DO-NOT-PERSIST-4f2a';
+    const spawn = await resolveStdioSpawn(
+      {
+        serverId: 'fs',
+        provenance: { kind: 'inline' },
+        command: process.execPath,
+        env: { ACME_TOKEN: secret, OTHER: '{{secrets.acme}}' },
+      },
+      dir,
+    );
+    appendGrant(path(), {
+      v: 1,
+      digest: fingerprint(spawn),
+      command: spawn.resolvedCommand,
+      args: [...spawn.args],
+      envNames: Object.keys(spawn.env),
+      cwd: spawn.cwd,
+      grantedAt: '2026-08-20T00:00:00.000Z',
+    });
+    const bytes = readFileSync(path(), 'utf8');
+    expect(bytes).not.toContain(secret);
+    expect(bytes).toContain('ACME_TOKEN'); // the NAME is there — it is the comparison metadata
   });
 
   it('two independent appends both survive — what append-only buys over a rewrite', () => {

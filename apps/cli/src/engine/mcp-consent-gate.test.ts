@@ -7,7 +7,7 @@
  * proves the code believes it did not spawn.
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -17,7 +17,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { isCliError } from '../process/errors.js';
 import type { GlobalOptions } from '../process/options.js';
 import { captureIo } from '../test-support.js';
-import { assertStdioConsent, mcpConsentPath, type ConsentSubject } from './mcp-consent-gate.js';
+import {
+  assertStdioConsent,
+  createConsentGate,
+  mcpConsentPath,
+  type ConsentSubject,
+} from './mcp-consent-gate.js';
 
 let home = '';
 beforeEach(() => {
@@ -59,6 +64,43 @@ function io(
     },
   };
 }
+
+describe('createConsentGate — the adapter the five surfaces actually wire', () => {
+  // Every other case in this file calls `assertStdioConsent` directly, which is how the production adapter
+  // came to DROP its third parameter with nothing noticing: `StdioConsentGate` takes `(refs, cwd, artifact)`,
+  // the adapter returned a two-parameter function, and TypeScript accepts a shorter parameter list wherever a
+  // longer one is expected. Both callers passed an artifact that vanished at runtime.
+  it('FORWARDS the artifact to the prompt, rather than silently dropping it', async () => {
+    const { io: cliIo } = io();
+    let asked = 0;
+    let seen: string | undefined;
+    const gate = createConsentGate({
+      io: cliIo,
+      global: globalOptions(),
+      homeDir: home,
+      prompt: (subject: ConsentSubject) => {
+        asked += 1;
+        seen = subject.artifact;
+        return Promise.resolve(true);
+      },
+    });
+    await gate([ref()], process.cwd(), '/w/downloaded.agent.yaml');
+    expect(asked).toBe(1); // else `seen === undefined` would pass for a prompt that never ran
+    expect(seen).toBe('/w/downloaded.agent.yaml');
+  });
+
+  it('still refuses, records and resolves exactly as the underlying gate does', async () => {
+    const { io: cliIo } = io();
+    const gate = createConsentGate({
+      io: cliIo,
+      global: globalOptions(),
+      homeDir: home,
+      prompt: () => Promise.resolve(false),
+    });
+    await expect(gate([ref()], process.cwd(), undefined)).rejects.toSatisfy(isCliError);
+    expect(existsSync(mcpConsentPath(home))).toBe(false); // a refusal records nothing
+  });
+});
 
 describe('assertStdioConsent — nothing spawns without a decision (ADR-0084 §1)', () => {
   it('REPORTS an unreadable grant store instead of silently re-asking (§5)', async () => {
