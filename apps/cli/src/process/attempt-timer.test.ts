@@ -41,8 +41,16 @@ describe('hostAttemptTimer', () => {
     // **The child imports the REAL function.** A first version of this test inlined a hand-written
     // `setTimeout` and merely restated Node's own semantics — a review put `timer.unref()` back into
     // `hostAttemptTimer` and all three tests here stayed green. It was measuring the runtime, not the code.
+    // `--experimental-strip-types` EXPLICITLY, because the child imports a `.ts` file. Node unflagged type
+    // stripping in 22.18, and this project's floor is 22.13 (ADR-0067) — where the flag exists but is off,
+    // so the child died with `ERR_UNKNOWN_FILE_EXTENSION` on the one CI leg that runs the exact floor. The
+    // flag has been available since 22.6, so passing it works on the floor and on every newer runtime.
     const child = (source: string): string =>
-      execFileSync(process.execPath, ['--input-type=module', '-e', source], { encoding: 'utf8' });
+      execFileSync(
+        process.execPath,
+        ['--experimental-strip-types', '--no-warnings', '--input-type=module', '-e', source],
+        { encoding: 'utf8' },
+      );
     const importReal = `import { hostAttemptTimer } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, 'sleep.ts')).href)};`;
 
     const out = child(`
