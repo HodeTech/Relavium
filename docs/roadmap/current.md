@@ -948,8 +948,12 @@ e2e** are ✅ **Done (PR #57, 2026-06-27)** — behind [ADR-0034](../decisions/0
 [ADR-0052](../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md), and
 [ADR-0053](../decisions/0053-mcp-network-transport-egress-security.md). It was off the M3 critical path and the
 Phase-3 go/no-go (capability without gating). Residual MCP hardening — the connect-by-validated-IP dialer,
-network header-auth, tool-list caching, mid-call abort propagation, and the stdio import-trust gate — is tracked
-in [deferred-tasks.md](deferred-tasks.md).
+network header-auth, tool-list caching, mid-call abort propagation — is tracked in
+[deferred-tasks.md](deferred-tasks.md). The **stdio spawn is gated** as of 2.6.5 `CR-16`
+([ADR-0084](../decisions/0084-consent-before-a-local-mcp-spawn.md)): consent per machine and per resolved
+declaration, on every path that can open an MCP-bearing artifact. The "import-trust" framing is retired — a
+`git pull` changes a committed artifact with no import step — and only the `npx` version/integrity pinning half
+remains deferred.
 **Also landed — 2.J (the YAML-authoring lifecycle), the last in-phase lane:** `relavium create` (a
 `@clack/prompts` wizard scaffolding an agent **or** a minimal single-agent workflow, validated against the
 kind-appropriate `@relavium/shared` schema before write, dual-TTY-gated), `relavium import <path>` (schema-

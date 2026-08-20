@@ -73,7 +73,7 @@ Server **registrations** also live globally in `~/.relavium/config.toml` under r
 
 > **Not yet shipped (2.R):** tool-list **caching** (re-spawn avoidance via a `(command, args)` hash) is a tracked follow-up — 2.R re-runs `tools/list` on each connect. There is no curated catalog of "built-in" servers either; any server is declared explicitly (a `command: npx …` entry is fetched on first spawn by `npx` itself, not by Relavium). Common choices: `@modelcontextprotocol/server-filesystem`, `…-github`, `…-postgres`, `…-brave-search`, `…-puppeteer`.
 
-On the desktop, stdio MCP servers are managed as child processes by the Rust backend, which owns their lifecycle (start on demand, keep alive for the session, restart on crash). In the CLI and VS Code surfaces the same servers are spawned by the Node.js host. The host-side connection-lifecycle narrative (concurrent fail-loud connect, keep-alive, teardown, and the no-pool/no-cache 2.R reality) is in [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md#inbound-mcp-connection-lifecycle).
+On the desktop, stdio MCP servers are managed as child processes by the Rust backend, which owns their lifecycle (start on demand, keep alive for the session, restart on crash) — and therefore owes the [consent contract](#consent-before-a-local-stdio-spawn-cross-surface-contract) below, which the Node hosts implement today and the Rust one must implement against the same file and the same golden vectors. In the CLI and VS Code surfaces the same servers are spawned by the Node.js host. The host-side connection-lifecycle narrative (concurrent fail-loud connect, keep-alive, teardown, and the no-pool/no-cache 2.R reality) is in [../../architecture/shared-core-engine.md](../../architecture/shared-core-engine.md#inbound-mcp-connection-lifecycle).
 
 ## Agents as MCP servers (outbound)
 
@@ -96,9 +96,114 @@ adapter.listen();        // registers each workflow as an MCP tool
 
 This is also how the `mcp_call` workflow **trigger** works: a workflow with `trigger.type: mcp_call` is one made invocable by external MCP clients through the adapter. See the trigger table in [../contracts/workflow-yaml-spec.md](../contracts/workflow-yaml-spec.md#triggers).
 
+## Consent before a local stdio spawn (cross-surface contract)
+
+A `stdio` MCP server is a **local program the artifact chooses**. Before any surface spawns one, the user must
+have consented to that exact program on that machine ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md)).
+Network transports need no consent — there is no local process — and this is a **host** decision at one
+chokepoint, never an engine one: `packages/core` neither knows nor asks.
+
+This section is the contract, not one surface's implementation. The Node hosts (CLI, VS Code) implement it
+today; the line above naming the **desktop Rust backend** as the owner of stdio child processes means that
+backend must implement the same contract against the same file before it spawns — a second reading of this
+page, verified against the golden vectors below, not a second design.
+
+### What identifies "the same server I approved"
+
+The **fingerprint** is `v1:` + lowercase-hex SHA-256 over the UTF-8 bytes of the canonical JSON of exactly
+these five fields, and nothing else:
+
+| Field | Value |
+|-------|-------|
+| `transport` | the literal `"stdio"` |
+| `command` | the **resolved absolute path**, not the authored word (see below) |
+| `args` | the authored array, in order; an absent one is `[]` |
+| `env` | each authored name mapped to a **type-tagged** entry (below); an absent one is `{}` |
+| `cwd` | the absolute directory the child will be spawned in |
+
+Canonicalization is `canonicalJson` from [`@relavium/shared`](llm-provider-seam.md): object keys sorted by
+**UTF-16 code-unit ordinal** comparison (never `localeCompare`, which is locale-dependent), no insignificant
+whitespace, ECMAScript `JSON.stringify` string escaping. A value with no faithful JSON form — a non-finite
+number, an `undefined` property, a `Date`, a class instance — is **refused**, as is a **lone surrogate** in any
+string or key: it has no UTF-8 encoding at all, so a non-JavaScript implementation could not hold it, let alone
+reproduce the bytes.
+
+Each `env` value is tagged rather than digested raw:
+
+- a value that is **solely** a `{{secrets.NAME}}` reference → `{"kind":"secret-ref","name":"NAME"}` — the
+  credential never enters the digest, and swapping `{{secrets.a}}` for `{{secrets.b}}` still re-prompts;
+- anything else → `{"kind":"literal","value":"<the authored text>"}`.
+
+The tag is load-bearing: a flat `secret:NAME` marker collided with the literal string of the same text, so an
+approved literal could later become a real credential reference with no re-prompt.
+
+**The command is resolved before the decision and spawned after it.** An authored `npx` is walked on the
+ambient `PATH` (a declared `PATH` is refused outright, below) to an absolute path that must be a regular file
+with the execute bit; that path is what the digest names and what is later spawned. Otherwise a grant would
+name a *word*, and a `PATH` change between the approval and the spawn would run a different program under an
+approved fingerprint. A relative `command` resolves against `cwd` — which is why `cwd` is in the digest:
+`node server.js` in two directories is two programs.
+
+The `v1:` prefix is what makes a future change to any of the above fail **closed** — a `v2:` reader recognises
+no `v1:` grant, so the machine re-prompts rather than matching under rules it no longer follows.
+
+### Golden vectors
+
+A second implementation is verified against these, not against a second reading of the paragraph above. Each
+row is a resolved declaration and the digest it must produce; they are executed by
+`apps/cli/src/engine/mcp-consent.test.ts`.
+
+| `command` | `args` | `env` | `cwd` | digest |
+|-----------|--------|-------|-------|--------|
+| `/bin/x` | `[]` | `{}` | `/w` | `v1:50264fc33efd1056148d3d6642a98fcb74e03b214ed9c380feddb92f7e1714c2` |
+| `/bin/é☃` | `["ünïcode"]` | `{}` | `/w/é` | `v1:fcf2ed9b8fd9d97d5c948cbddbc105319c78c2e3b486e5c7e9d89d5d8661e220` |
+| `/bin/x` | two args, `a"b` and `c\d` | `{}` | `/w` | `v1:8b7c2b426792b5ca2364dc74e4c8b73c386aada84fb4745513b2a826ab92ed43` |
+| `/bin/x` | `[]` | `{"A":"{{secrets.k}}","B":"secret:k"}` | `/w` | `v1:0a178265ba8310190e1cfe4e6e53e4797a4ffdea6768b8faa8ab70331f58431d` |
+
+The fourth row is the collision case: `A` digests as a `secret-ref` and `B` as a `literal`, so the two entries
+are distinguishable despite naming the same text.
+
+### The grant store
+
+`~/.relavium/mcp-consent.ndjson`, one JSON object per line, **append-only with tombstones** — never rewritten,
+because a rewrite that is interrupted loses grants, and losing a *revocation* is the failure that matters.
+The file is created `0600` inside a `0700` directory, and a **symlink at that path is refused** rather than
+written through.
+
+| Line | Shape |
+|------|-------|
+| grant | `{"v":1,"digest":"v1:…","command":"…","args":[…],"envNames":[…],"cwd":"…","grantedAt":"<ISO-8601>"}` |
+| revocation | `{"v":1,"revokes":"v1:…","revokedAt":"<ISO-8601>"}` |
+
+`command`, `args`, `envNames` and `cwd` are **comparison metadata for the prompt only** — never inputs to the
+digest — and are length-bounded on write. `envNames` carries names, never values: no credential is written.
+
+A reader folds the file in order, a revocation removing an earlier grant. **Any unparseable line fails the
+whole fold closed** — the store reads as *no grants* and every server is asked about again — because a
+truncated final line may be a revocation, and a reader that skipped it would resurrect revoked trust. The fold
+failure is reported, never silent: a user re-approving everything is owed the reason.
+
+### The environment denylist
+
+Both local-process hosts — `run_command` and the MCP stdio spawn — share **one** denylist of declared
+environment names that redirect an interpreter, the dynamic loader, or a tool's configuration
+(`LD_PRELOAD`, `DYLD_*`, `NODE_OPTIONS`, `PATH`, `ZDOTDIR`, `NPM_CONFIG_*`, `BASH_FUNC_*`, and the rest). It
+lives in `@relavium/shared` so neither host can drift from the other, and it is an **authored-error rule**:
+the declaration is refused at parse, not silently dropped at spawn. See
+[../contracts/agent-yaml-spec.md](../contracts/agent-yaml-spec.md) and
+[../contracts/config-spec.md](../contracts/config-spec.md).
+
+### When there is no one to ask
+
+A prompt requires **all four** of: a TTY stdout, a TTY stdin, no `--json`, and no CI environment. Without
+them the invocation **refuses** (exit 2) and prints each unapproved server's digest, which is a hash of the
+declaration and not a secret — so a CI author can pass `--allow-mcp-stdio <digest>` per server after reviewing
+it. See [../cli/commands.md](../cli/commands.md).
+
 ## Security
 
 - **MCP server URLs are SSRF-guarded ([ADR-0029](../../decisions/0029-tool-policy-hardening.md)).** A declared MCP `url` is validated against the **same** vetted range-block as a provider base URL and the `http_request` tool — private/loopback/link-local/metadata ranges (`127.0.0.0/8`, `::1`, `10/8`, `172.16/12`, `192.168/16`, `169.254/16`) are rejected, and remote hosts must use `https`/`wss`, **unless the user explicitly opts into a local endpoint** (the per-server `allow_local_endpoint` flag). A `http://localhost`/loopback `url` is exactly such a local endpoint and requires that explicit opt-in; the opt-in permits exactly the **authored `host:port`** (and plaintext for it). 2.R ships this as a **pre-connect floor** validating the authored host — a hostname that DNS-resolves to a private IP, or a redirect to one, is the residual window the connect-by-validated-IP dialer (per-hop re-validation against the authored `host:port`) closes; tracked in [../../roadmap/deferred-tasks.md](../../roadmap/deferred-tasks.md) ([ADR-0053](../../decisions/0053-mcp-network-transport-egress-security.md) §2). The one SSRF primitive is reused, never re-implemented — see [security-review.md](../../standards/security-review.md).
 - MCP server credentials are injected from the secret store via a **stdio** server's `env` (e.g. `{{secrets.github_token}}`, resolved from the isolated `mcp-secret:*` namespace) and are **never** written into the workflow file or any event payload. See [../desktop/keychain-and-secrets.md](../desktop/keychain-and-secrets.md). `env` applies to the spawned stdio child only — a network (`http`, its deprecated `sse` alias, or `websocket`) transport has no process to inject into, so `env` is **rejected at parse** there (header-based auth for network MCP servers is a tracked follow-up, [../../roadmap/deferred-tasks.md](../../roadmap/deferred-tasks.md)).
+- **A local stdio spawn requires the user's consent on that machine** ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md)) — an artifact chooses the program, so the decision cannot belong to the artifact. The fingerprint, the grant store and the shared environment denylist are specified above as a cross-surface contract; a host that spawns without consulting it is the bypass. No credential enters the digest or the grant line.
 - Outbound (workflow-as-MCP) exposure is opt-in per workflow (only those listed in the adapter config are published).
 - All inbound MCP tool calls are schema-validated before dispatch, and tool inputs in events are sanitized — see [built-in-tools.md](built-in-tools.md) and [../contracts/sse-event-schema.md](../contracts/sse-event-schema.md).

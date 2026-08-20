@@ -220,7 +220,7 @@ to correct.
 | `CR-13` | made (summary is untrusted, never `system`) | new, supersedes [ADR-0062](../../decisions/0062-context-compaction-and-cli-history-commands.md) §1 | yes | prompt/trust |
 | `CR-14` | made (exactly one terminal, grammar pinned) | new | yes | — |
 | `CR-15` | made (engine-side admission) | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | yes | — |
-| `CR-16` | made (consent before spawn, lazy connect) | new | yes | hostile MCP |
+| `CR-16` | made (consent before spawn; **lazy connect split out**, see [deferred-tasks.md](../deferred-tasks.md)) | [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md) | yes | hostile MCP |
 | `CR-17` | made (persist and verify resume identity) | [ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md) | yes | — |
 | `CR-20` | made (honour `timeout_ms`) | — | no | — |
 | `CR-21` | made (per-attempt deadline) | with `CR-14`'s | no | — |
@@ -689,7 +689,7 @@ event.
 - An admission failure produces a typed error and **no `runId`, no `run:started`, no row** — asserted by
   checking the store is untouched.
 
-### CR-16 — Stdio MCP spawns a local process before consent · Blocker · needs an ADR
+### CR-16 — Stdio MCP spawns a local process before consent · Blocker · ✅ CLOSED 2026-08-20 ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md))
 
 **Evidence.** The MCP connection is opened while the chat session is being built, before a mode or turn starts;
 the agent-run path prepares MCP first and applies mode policy afterwards. An agent or workflow declaration
@@ -731,6 +731,28 @@ is supplied. Replace auto-start with lazy connect on first actual MCP tool need.
 with a **real spawn counter** injected at the process boundary, asserted at zero, not by inspecting a state
 flag. A non-interactive run without the digest flag fails closed with an actionable message. A changed
 fingerprint re-prompts.
+
+> **Closed 2026-08-20 by [ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md).** The ADR's §10
+> is a 19-item acceptance list that supersedes the paragraph above; the implementation PR states which test
+> satisfies each item. Four things the item as written did not anticipate, each settled in the ADR:
+>
+> 1. **Provenance is the wrong axis.** "Untrusted-provenance import" cannot be the trigger — a `git pull`
+>    changes a committed artifact with no import step. The gate covers **every** stdio server, on every path.
+> 2. **`cwd` is IN the identity** (correction 2 above asked for a deliberate decision). A `command` may be
+>    relative, so `node server.js` in two directories is two programs; a grant that ignored `cwd` would
+>    approve both.
+> 3. **The environment is in it too, with its values type-tagged.** `NODE_OPTIONS` is a *name*: a digest over
+>    names alone let one grant match every value of it. A sole `{{secrets.NAME}}` reference contributes only
+>    the name, so no credential enters the digest — and the tag is what stops a literal `secret:acme` from
+>    colliding with a real reference.
+> 4. **The command is resolved BEFORE the decision and that path spawned after it**, so a `PATH` change in
+>    between cannot substitute a binary under an approved fingerprint. The declared-environment denylist that
+>    `run_command` already had is now shared with this host — it was a gap, not a decision.
+>
+> Correction 1's split is honoured: lazy connect is its own [deferred item](../deferred-tasks.md) with
+> ADR-0052 §3 named as its blocker and the tool-list cache as its unblocker, and ADR-0084 §8 explicitly
+> declines to decide it. The desktop's Rust spawner is outside this gate and owes the same contract
+> ([mcp-integration.md](../../reference/shared-core/mcp-integration.md#consent-before-a-local-stdio-spawn-cross-surface-contract)).
 
 ### CR-17 — A resume trusts caller-supplied identity it never verifies · Blocker *(plan review)* · ✅ CLOSED 2026-08-19 ([ADR-0083](../../decisions/0083-input-admission-and-a-resume-that-verifies-its-own-identity.md))
 

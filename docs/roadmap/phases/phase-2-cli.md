@@ -518,8 +518,12 @@ is deliberately not in this slot.
 > ([ADR-0053](../../decisions/0053-mcp-network-transport-egress-security.md)), **named secrets** via the isolated
 > `mcp-secret:*` keychain namespace ([ADR-0052](../../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §6),
 > the by-name `ref` registration form, and the deterministic **real-spawn e2e** landed **PR #57**. Residual
-> hardening (connect-by-validated-IP dialer, network header-auth, tool-list caching, mid-call abort propagation,
-> the stdio import-trust gate) is tracked in [deferred-tasks.md](../deferred-tasks.md).
+> hardening (connect-by-validated-IP dialer, network header-auth, tool-list caching, mid-call abort propagation)
+> is tracked in [deferred-tasks.md](../deferred-tasks.md). The stdio spawn is **no longer ungated**: consent
+> before a local spawn landed in 2.6.5 `CR-16`
+> ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md)), which also replaced the
+> "import-trust" framing — the gate covers every stdio server, not an imported one. Only the `npx`
+> version/integrity pinning half remains deferred.
 
 **Tasks:**
 

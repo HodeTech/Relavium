@@ -118,12 +118,12 @@ The command set below is the confirmed surface. Commands ship **per workstream**
 
 | Command | Purpose |
 |---------|---------|
-| `relavium run <workflow> [--input k=v]` | Execute a workflow. Streams progress; resolves with the workflow output. |
+| `relavium run <workflow> [--input k=v] [--allow-mcp-stdio <digest>]` | Execute a workflow. Streams progress; resolves with the workflow output. |
 | `relavium chat [--agent <ref>]` | Start an interactive [agent session](../contracts/agent-session-spec.md) (the agent-first REPL). See [chat-session.md](chat-session.md). |
 | `relavium chat-resume <sessionId>` | Reload a persisted session from `history.db` and continue the conversation. |
 | `relavium chat-list` | List past agent sessions (id, agent, last activity), the way `relavium list` lists workflows. |
 | `relavium chat-export <sessionId>` | Export a session to a `.relavium.yaml` scaffold for review ([ADR-0026](../../decisions/0026-session-export-to-workflow.md)). |
-| `relavium agent run <agent> [--fixture <path>] [--json]` | Run a single agent **one-shot** (non-interactive) on the same AgentSession infra — the prompt is read from stdin, one turn, then exit. See [`relavium agent run`](#relavium-agent-run) and [agent-run-fixture.md](agent-run-fixture.md). |
+| `relavium agent run <agent> [--fixture <path>] [--json] [--allow-mcp-stdio <digest>]` | Run a single agent **one-shot** (non-interactive) on the same AgentSession infra — the prompt is read from stdin, one turn, then exit. See [`relavium agent run`](#relavium-agent-run) and [agent-run-fixture.md](agent-run-fixture.md). |
 | `relavium list` | List discovered workflows (and, with a flag, agents) in the current project. |
 | `relavium create [--force]` | Scaffold a new agent or a minimal single-agent workflow YAML via an interactive wizard (schema-validated before write). |
 | `relavium import <path> [--force]` | Import an external `.relavium.yaml` / `.agent.yaml` into the project, validated + slug-deduplicated. |
@@ -190,6 +190,7 @@ relavium run ./workflows/code-review.relavium.yaml --input file=./src/index.ts -
 - `--json` switches to NDJSON [RunEvent](../contracts/sse-event-schema.md) output.
 - `Ctrl-C` (SIGINT) requests a cooperative cancel; the run drains to `run:cancelled` and exits non-zero (`1`).
 - A missing API key for an inline agent's **primary** provider is caught **pre-flight** as an invalid invocation (exit `2`) naming the `RELAVIUM_<PROVIDER>_API_KEY` to set, before the run starts. The pre-flight is a strict subset of the keys a run may touch, so it never blocks a valid run: a `fallback_chain` provider's key (read only if the chain fails over to it) and a `$ref`-resolved external agent's key (until `$ref` resolution lands, 2.M–2.Q) are conditional and instead surface mid-run as a run failure (exit `1`).
+- `--allow-mcp-stdio <digest>` (repeatable) authorizes a **local MCP program** for this invocation only, when there is no one to prompt. A workflow declaring a `stdio` MCP server that has not been approved on this machine exits `2` before anything spawns — see [Local MCP servers need consent](#local-mcp-servers-need-consent).
 - On a `human_gate` node the run **pauses**: in interactive mode it prompts inline; in CI mode it exits with the gate-paused code (`3`, see [Exit codes](#exit-codes)) and can be resumed with `relavium gate`. The emitted `human_gate:paused` event carries the `runId` + `gateId` needed for the resume (`relavium gate <runId> --gate <gateId>`); with `--json` they are on the NDJSON event line, otherwise the plain/TUI renderer prints them inline (`paused at gate <gateId> (<type>)`, also echoed in the final summary). (`relavium status`, `relavium logs <runId>`, and `relavium gate list` also surface pending `gateId`s, 2.I.)
 
 > **Implementation status (as of workstream 2.G).** `run` is wired to the `@relavium/core` engine: path/id resolution, `--input` coercion, the full lifecycle event stream, exit codes `0`/`1`/`2`/`3`, SIGINT→cancel, and the stable `--json` NDJSON machine contract (stdout = pure RunEvent stream, diagnostics → stderr; see [above](#the---json-machine-output-contract)) are live. The interactive **`ink` TUI** (2.E) renders the live run on a TTY — per-node status + spinners, the active node's streaming tokens, a running cost/duration footer, and a persistent final summary. Under `--no-color` it keeps the TUI but suppresses ANSI color; it falls back to the plain line renderer when no TTY is attached or `CI=true`, and to NDJSON under `--json` (the three renderers are one `onEvent` seam over one bus). Provider keys resolve from the **OS keychain → `RELAVIUM_<PROVIDER>_API_KEY` env var → error** (2.C; manage them with `relavium provider`), and runs persist to durable history (2.H). The **interactive human-gate prompt** + out-of-band [`relavium gate`](#relavium-gate) resume are live (2.G): on a TTY a `human_gate` node renders a `@clack/prompts` card inline (approve / reject + comment / input) and the run continues; under `--json`/CI/no-TTY there is no prompt and the run exits `3`, resumable later by `relavium gate <runId>`. Built-in tools that need a host capability (filesystem, process, egress) are **fail-closed** (unavailable) pending a security-reviewed capability workstream.
@@ -322,6 +323,7 @@ echo "review it" | relavium agent run code-reviewer --fixture ./fixtures/review.
 - `--input k=v` is **reserved** — currently **rejected** (exit `2`): a session does not yet interpolate `{{ctx.*}}` into the agent's prompt (the engine passes `system_prompt` verbatim), so the flag is failed loud rather than exposed as an inert no-op. It re-opens when session prompt interpolation lands (a tracked engine follow-up, [deferred-tasks.md](../../roadmap/deferred-tasks.md)).
 - `--fixture <path>` replays a recorded LLM **cassette** so the run is deterministic and fully offline (no key, no network, no keychain) — the format is documented in [agent-run-fixture.md](agent-run-fixture.md). A malformed cassette exits `2`.
 - `--json` emits the [`SessionEvent`](../contracts/sse-event-schema.md#session-event-namespace) NDJSON stream on stdout (the same shape `chat --json` produces); otherwise the assistant reply streams in human form.
+- `--allow-mcp-stdio <digest>` (repeatable) authorizes a **local MCP program** for this invocation only. `agent run` is the one-shot, pipeline-facing member of the chat family — its stdin carries the prompt, so it can never prompt for consent, and an agent declaring an unapproved `stdio` MCP server exits `2` before anything spawns. See [Local MCP servers need consent](#local-mcp-servers-need-consent).
 - **The transcript is not persisted** — a stateless invoke (no session/message row), unlike the REPL. It does still **open `history.db`** to attach the effect journal ([effect-journal.md](../shared-core/effect-journal.md)): an external effect is carried forward by the target, not by the run, so an unattached journal would refuse every effectful tool on this surface. The rows it writes are never read back. A `history.db` that cannot be opened fails the invocation.
 - The exit code is the **turn's outcome**: `0` on success, `1` on a turn error; an invocation fault is `2`. It is **never** `4` (that is the interactive REPL's session-ended code).
 
@@ -355,6 +357,44 @@ relavium provider list --verify                         # + a live key-verificat
   The env var is the headless/CI source; the `secrets.enc` encrypted-file fallback is deferred past v1.0
   ([keychain-and-secrets.md](../desktop/keychain-and-secrets.md)). An unavailable keychain (locked / no Linux
   Secret Service) surfaces a clean error — never a silent plaintext fallback.
+
+### Local MCP servers need consent
+
+Every command that can open an **MCP-bearing artifact** — `relavium run`, `relavium chat`,
+`relavium chat-resume`, `relavium agent run`, and the bare-invocation Home — passes through the same gate
+before any local program starts ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md)). An
+agent or workflow with a `stdio` MCP server declares a **program on your machine**; the artifact chooses it,
+so the decision is yours. Network transports (`http`, `sse`, `websocket`) need no consent — there is no local
+process — and a server already approved on this machine is not asked about again.
+
+The prompt asks **once per server**, showing the resolved executable, each argument on its own line, the
+environment (a secret shows as a `<secret:NAME>` marker, never its value), the working directory, the artifact
+that declared it, and the fingerprint. It **defaults to No**, and Ctrl-C is a refusal. A refused server means
+the invocation stops before anything spawns.
+
+Approval is recorded per machine in `~/.relavium/mcp-consent.ndjson`. It covers the exact declaration — a
+changed executable, argument, environment value or working directory is a different program and is asked about
+again.
+
+**Asking requires all four of**: a TTY stdout, a TTY stdin, no `--json`, and no CI environment. Missing any of
+them — a pipeline, a piped stdin, a machine-readable stream — the invocation **refuses with exit `2`** rather
+than prompting into a stream nobody reads or hanging a job on a question nobody answers. The refusal prints
+each unapproved server and its digest on stderr:
+
+```
+  fs: /usr/local/bin/npx  v1:9f2c…
+```
+
+The digest is a hash of the declaration, **not a secret**. To authorize those servers for a non-interactive
+invocation, review each one and pass it back:
+
+```bash
+relavium run pipeline.relavium.yaml --allow-mcp-stdio v1:9f2c… --allow-mcp-stdio v1:41ab…
+```
+
+`--allow-mcp-stdio` is repeatable, authorizes **only that invocation**, and **writes no grant** — a CI runner
+does not accumulate standing trust. It exists on `relavium run` and `relavium agent run`, the two commands a
+pipeline invokes; the interactive chat family answers at the prompt instead.
 
 ## Exit codes
 
@@ -395,6 +435,16 @@ The CLI is designed to run inside pipelines. A typical pattern: install globally
 # illustrative CI step
 - run: npm install -g relavium
 - run: relavium run .relavium/code-review.relavium.yaml --input file=src/index.ts --json
+```
+
+A workflow whose agents declare a **`stdio` MCP server** will not spawn one in a pipeline: there is no one to
+ask, so it exits `2` and prints each server's digest. Review each program, then authorize it per invocation —
+see [Local MCP servers need consent](#local-mcp-servers-need-consent).
+
+```yaml
+- run: >
+    relavium run .relavium/code-review.relavium.yaml --input file=src/index.ts --json
+    --allow-mcp-stdio v1:9f2c…
 ```
 
 For a complete walkthrough (key handling, gates, artifacts, exit-code checks), see [run-a-workflow-in-ci.md](../../tutorials/cli/run-a-workflow-in-ci.md).

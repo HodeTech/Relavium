@@ -256,10 +256,11 @@ deferred items.
   to render a typed `AgentParseError` as an exit-2 invocation fault), revise the pinned test deliberately,
   and relativize the echoed source path. The conversational self-correct loop depends on these diagnostics
   being visible.
-- **Import consent gate** *(deferred pull-in, security)*: gate the first spawn of an MCP `stdio` server
-  declared by an **untrusted-provenance** imported artifact behind explicit consent, and pin `npx` package
-  versions for auto-install servers ([ADR-0052](../../decisions/0052-inbound-mcp-client-package-lifecycle-registration.md) §2)
-  — the authoring/import path this phase matures is exactly the surface that makes this live.
+- ~~**Import consent gate**~~ — **moved and re-scoped.** The consent half landed in **2.6.5 `CR-16`**
+  ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md)), and provenance turned out to be the
+  wrong axis: a `git pull` changes a committed artifact with no import step, so the gate covers **every**
+  stdio server on every path, not an imported one. The `npx` version/integrity pinning half stays open with
+  its own scheduling in [deferred-tasks.md](../deferred-tasks.md). Nothing is owed here.
 - **Discoverability of the UVP** (unchanged): the proactive, dismissible, config-opt-out *"turn this
   session into a workflow with `/export`"* hint.
 
@@ -1244,7 +1245,7 @@ workstreams — each stays checked off **only** in the PR that lands it:
 | Node floor: dev/CI bump + supported-floor decision (EOL Node 20) | 2.6.F |
 | CLI render-layer (ink component) test harness | 2.6.F |
 | `AgentParseError` invisible on `chat --agent` / `agent run` | 2.6.B |
-| MCP `stdio` import-trust/consent gate + `npx` pinning (ADR-0052 §2) | 2.6.B |
+| MCP `stdio` consent gate ([ADR-0084](../../decisions/0084-consent-before-a-local-mcp-spawn.md)) — **closed in 2.6.5 `CR-16`**; the `npx` pinning half stays in [deferred-tasks.md](../deferred-tasks.md) | ~~2.6.B~~ → 2.6.5 |
 | Parse-time gate on system-bound fields (trusted `{{ctx}}`) | 2.6.D |
 | `@`-glob / directory expansion (ADR-0061) | 2.6.E |
 | `chat-resume` opens on an empty viewport (`session_messages` → `TranscriptEntry` projection) | 2.6.G |
