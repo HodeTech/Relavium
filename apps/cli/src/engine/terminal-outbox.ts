@@ -25,7 +25,7 @@
  * `uncertain`, which is the honest floor ADR-0078 §4's Consequences records.
  */
 
-import { appendFileSync, chmodSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, lstatSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { RunEventSchema, type RunEvent, type TerminalOutbox } from '@relavium/shared';
@@ -91,6 +91,23 @@ function readEntries(path: string): Map<string, RunEvent> {
  * opener. Creating it here would duplicate that permission logic in a second place.
  */
 export function createFileTerminalOutbox(path: string): TerminalOutbox {
+  /**
+   * Refuse to write through a SYMLINK at the outbox path.
+   *
+   * `appendFileSync` and `chmodSync` both follow links, so a process that replaced this file with one
+   * turned the outbox into a write primitive against any file the CLI can write. Added with the identical
+   * guard on the MCP consent store
+   * ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §5): the two files are
+   * the same shape, and fixing one and not the other would be a coin-flip about which one an attacker used.
+   */
+  const isSymlink = (): boolean => {
+    try {
+      return lstatSync(path).isSymbolicLink();
+    } catch {
+      return false; // absent — the append creates it, and `appendFileSync` does not follow a link it makes
+    }
+  };
+
   const ensureMode = (): void => {
     try {
       chmodSync(path, FILE_MODE);
@@ -112,6 +129,7 @@ export function createFileTerminalOutbox(path: string): TerminalOutbox {
         //
         // `stringifyJsonLine`, not a bare `JSON.stringify` — this line is read back and re-parsed, and the
         // payload carries model output. The escape is lossless, so the round-trip is exact (`CR-03`).
+        if (isSymlink()) return Promise.resolve(); // never write through a link (ADR-0084 §5)
         appendFileSync(path, `\n${stringifyJsonLine(event)}\n`, { mode: FILE_MODE });
         ensureMode();
       } catch {
@@ -134,6 +152,7 @@ export function createFileTerminalOutbox(path: string): TerminalOutbox {
         // claimed. A removal appends one marker line and the reader drops the run when it sees one. The file
         // grows by a line per resolved entry rather than shrinking, which is affordable by construction: an
         // entry exists only for a run whose terminal write failed, which is meant to be approximately never.
+        if (isSymlink()) return Promise.resolve(); // never write through a link (ADR-0084 §5)
         appendFileSync(path, `\n${stringifyJsonLine({ [TOMBSTONE_KEY]: runId })}\n`, {
           mode: FILE_MODE,
         });

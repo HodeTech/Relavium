@@ -4,7 +4,11 @@ import { effectScope, isEffectConflictError, type EffectCorrelation } from '@rel
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createClient, runMigrations, type DbClient } from './client.js';
-import { createEffectJournalStore, type EffectJournalStore } from './effect-journal-store.js';
+import {
+  createEffectJournalPort,
+  createEffectJournalStore,
+  type EffectJournalStore,
+} from './effect-journal-store.js';
 
 /**
  * The journal against a real SQLite database (ADR-0080). What is proven here is the half only the store can
@@ -250,5 +254,30 @@ describe('the effect journal store', () => {
 
     const unresolved = store.unresolvedForSession('s9');
     expect(unresolved.map((r) => r.identity.scope)).toEqual(['session:s9:1']);
+  });
+
+  describe('the port digests its args through the SHARED canonical form (ADR-0084 §3 landing)', () => {
+    const port = (): ReturnType<typeof createEffectJournalPort> =>
+      createEffectJournalPort(store, RUN, ATTEMPT);
+
+    it('a realistic redacted argument shape digests, and key ORDER cannot change it', async () => {
+      // `canonicalJson` moved to `@relavium/shared` and grew refusals it never had. This is the behaviour
+      // that must NOT have changed: a JSON-derived tool-argument shape — which is all a redacted arg ever
+      // is — still produces a digest, and key order still cannot change it, which is what ADR-0080's dedup
+      // rests on. The same arguments in the other order are the SAME effect, so the second prepare is
+      // refused as a duplicate rather than admitted as a new one.
+      const first = await port().prepare(0, 'fs_write', 3, { path: '/tmp/a', body: 'x' });
+      expect(first.outcome).toBe('proceed');
+      await expect(
+        port().prepare(0, 'fs_write', 3, { body: 'x', path: '/tmp/a' }),
+      ).rejects.toBeDefined();
+    });
+
+    it('a shape with no canonical form REJECTS rather than crashing the dispatch', async () => {
+      // The stricter form throws where the old permissive copy silently served `{}`, merging two different
+      // values into one digest. The port already wraps `prepare` in a try/catch, so the throw arrives as a
+      // rejection — pinned here, because an uncaught throw would take down a tool dispatch.
+      await expect(port().prepare(0, 'fs_write', 3, { when: new Date(0) })).rejects.toBeDefined();
+    });
   });
 });

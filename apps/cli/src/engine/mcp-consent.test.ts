@@ -118,10 +118,31 @@ describe('fingerprint (ADR-0084 §3)', () => {
     // The canonical-form vectors in `@relavium/shared` pin `value → string`; §3 asks for `declaration →
     // digest`, which additionally covers the `v1:` prefix, SHA-256, and the field set. A second
     // implementation is verified against these, not against a second reading of the paragraph.
+    // §3 names the cases they must cover: non-ASCII, an embedded quote and backslash, an empty `args`, and
+    // an absent `env`. `canonicalJson`'s own vectors pin `value → string`; these additionally exercise
+    // `fingerprint`'s env type-tagging, which is the piece a second implementation must reproduce and the
+    // piece the ADR calls out as the load-bearing collision fix.
     const vectors: readonly (readonly [ResolvedStdioSpawn, string])[] = [
       [
         spawnOf({ command: 'x', resolvedCommand: '/bin/x', args: [], env: {}, cwd: '/w' }),
         'v1:50264fc33efd1056148d3d6642a98fcb74e03b214ed9c380feddb92f7e1714c2',
+      ],
+      [
+        spawnOf({ resolvedCommand: '/bin/é☃', args: ['ünïcode'], env: {}, cwd: '/w/é' }),
+        'v1:fcf2ed9b8fd9d97d5c948cbddbc105319c78c2e3b486e5c7e9d89d5d8661e220',
+      ],
+      [
+        spawnOf({ resolvedCommand: '/bin/x', args: ['a"b', 'c\\d'], env: {}, cwd: '/w' }),
+        'v1:8b7c2b426792b5ca2364dc74e4c8b73c386aada84fb4745513b2a826ab92ed43',
+      ],
+      [
+        spawnOf({
+          resolvedCommand: '/bin/x',
+          args: [],
+          env: { A: '{{secrets.k}}', B: 'secret:k' },
+          cwd: '/w',
+        }),
+        'v1:0a178265ba8310190e1cfe4e6e53e4797a4ffdea6768b8faa8ab70331f58431d',
       ],
     ];
     for (const [spawn, expected] of vectors) {
@@ -142,8 +163,8 @@ describe('resolveStdioSpawn (ADR-0084 §3)', () => {
     const b = join(dir, 'b');
     mkdirSync(a);
     mkdirSync(b);
-    writeFileSync(join(a, 'server.js'), '// a');
-    writeFileSync(join(b, 'server.js'), '// b');
+    writeFileSync(join(a, 'server.js'), '// a', { mode: 0o755 });
+    writeFileSync(join(b, 'server.js'), '// b', { mode: 0o755 });
     const decl = {
       serverId: 'fs',
       provenance: { kind: 'inline' } as const,
@@ -158,7 +179,7 @@ describe('resolveStdioSpawn (ADR-0084 §3)', () => {
   it('canonicalizes the cwd, so two symlinked routes to one directory are ONE grant', async () => {
     const real = join(dir, 'real');
     mkdirSync(real);
-    writeFileSync(join(real, 'server.js'), '// x');
+    writeFileSync(join(real, 'server.js'), '// x', { mode: 0o755 });
     const link = join(dir, 'link');
     symlinkSync(real, link);
     const decl = {
@@ -183,6 +204,31 @@ describe('resolveStdioSpawn (ADR-0084 §3)', () => {
         dir,
       ),
     ).rejects.toBeInstanceOf(StdioResolutionError);
+  });
+
+  it('refuses an EXPLICIT path that does not exist — resolving is not verifying', async () => {
+    // `path.resolve` is string arithmetic: it never fails and never touches the filesystem, so an absolute
+    // or `./relative` command that does not exist used to sail through, get a fingerprint, and be consented
+    // to. Anything later materialising at that exact path would then spawn under a grant nobody evaluated
+    // against a real program — the TOCTOU §3's "resolve before the gate" exists to close.
+    for (const command of ['/definitely/not/a/real/path/xyz123', './nope/server.js']) {
+      await expect(
+        resolveStdioSpawn({ serverId: 'fs', provenance: { kind: 'inline' }, command }, dir),
+        command,
+      ).rejects.toBeInstanceOf(StdioResolutionError);
+    }
+  });
+
+  it('refuses an explicit path that exists but is a DIRECTORY, or is not executable', async () => {
+    const asDir = join(dir, 'adir');
+    mkdirSync(asDir);
+    writeFileSync(join(dir, 'plain.js'), '// not executable', { mode: 0o644 });
+    for (const command of [asDir, join(dir, 'plain.js')]) {
+      await expect(
+        resolveStdioSpawn({ serverId: 'fs', provenance: { kind: 'inline' }, command }, dir),
+        command,
+      ).rejects.toBeInstanceOf(StdioResolutionError);
+    }
   });
 
   it('refuses an empty command', async () => {
@@ -273,6 +319,64 @@ describe('the grant log (ADR-0084 §5)', () => {
     appendGrant(path(), grantOf('v1:aaa'));
     writeFileSync(path(), '\n{"something":"else"}\n', { flag: 'a' });
     expect(readGrants(path())).toBeUndefined();
+  });
+
+  it('REFUSES to write through a symlink swapped in after the first creation', () => {
+    // `ensureFile`'s exclusive create refuses to follow a link at first creation, but every later append
+    // and chmod follows one — so a process that replaced the file after the first write turned this store
+    // into a write primitive against any file the CLI can write. A review reproduced a grant record landing
+    // in an arbitrary target. ADR-0084 accepts that write access to `~/.relavium` can edit the grant FILE;
+    // using it to write somewhere else is a different thing.
+    appendGrant(path(), grantOf('v1:aaa'));
+    const target = join(dir, 'target.txt');
+    writeFileSync(target, 'untouched');
+    rmSync(path());
+    symlinkSync(target, path());
+    expect(() => {
+      appendGrant(path(), grantOf('v1:bbb'));
+    }).toThrow(/symbolic link/);
+    expect(readFileSync(target, 'utf8')).toBe('untouched');
+  });
+
+  it('an existing grant survives a later append — the exclusive create never truncates', () => {
+    // `ensureFile` attempts the exclusive create unconditionally, so `wx` is the thing that decides. With a
+    // short-circuit on `existsSync`, `wx` and a truncating `w` were indistinguishable in every observable
+    // way — which made the flag that prevents a truncate-on-create race untestable.
+    appendGrant(path(), grantOf('v1:aaa'));
+    appendGrant(path(), grantOf('v1:bbb'));
+    expect(readGrants(path())?.has('v1:aaa')).toBe(true);
+  });
+
+  // Skipped for root and on Windows, where mode 0 does not deny a read — the behaviour under test needs the
+  // OS to actually refuse, and asserting it where it cannot be produced would pin nothing.
+  const canDenyReads = process.platform !== 'win32' && process.getuid?.() !== 0;
+  it.skipIf(!canDenyReads)('an UNREADABLE file folds closed rather than throwing', () => {
+    // The sibling of the unparseable-line case: the whole-file failure. Both must fail closed, because both
+    // mean "this machine's grants cannot be trusted right now".
+    appendGrant(path(), grantOf('v1:aaa'));
+    chmodSync(path(), 0);
+    try {
+      expect(readGrants(path())).toBeUndefined();
+    } finally {
+      chmodSync(path(), 0o600); // so the temp dir can be removed
+    }
+  });
+
+  it('BOUNDS the stored comparison metadata, so one append is one bounded record (§5)', () => {
+    // §5 claims "a single `appendFileSync` of one bounded record" and nothing bounded it: no schema caps an
+    // `args` count or a string length, so a declaration could produce a line of megabytes — past where a
+    // single write is reliably atomic, which is the property the no-lock concurrent-append design leans on.
+    // Only the METADATA is trimmed; the digest is the identity and is fixed-size.
+    appendGrant(path(), {
+      ...grantOf('v1:big'),
+      args: Array.from({ length: 500 }, () => 'x'.repeat(5000)),
+      envNames: Array.from({ length: 500 }, (_unused, index) => `VAR_${String(index)}`),
+    });
+    const line = readFileSync(path(), 'utf8');
+    expect(line.length).toBeLessThan(100_000);
+    const stored = readGrants(path())?.get('v1:big');
+    expect(stored?.args).toHaveLength(64);
+    expect(stored?.digest).toBe('v1:big'); // the identity is untouched
   });
 
   it('two independent appends both survive — what append-only buys over a rewrite', () => {

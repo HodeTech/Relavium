@@ -53,6 +53,30 @@
 >   stop loading. Fail-closed is the right direction — the declaration can redirect the loader, and resuming
 >   it would spawn under exactly that — but it is a consequence, not a footnote, and it was not recorded.
 
+> **Amended 2026-08-20 (second) — four more the implementation forced, each measured.**
+>
+> - **§3's "a command that does not resolve is refused" was only true of a BARE name.** `path.resolve` is
+>   string arithmetic — it never fails and never touches the filesystem — so a declared explicit path that
+>   did not exist produced a fingerprint and could be consented to, and anything later materialising there
+>   would spawn under a grant nobody evaluated against a real program. Both branches verify an existing,
+>   executable regular FILE now; a directory sharing a command's name is skipped rather than "found", which
+>   `access(X_OK)` alone permitted on POSIX and, `X_OK` being a documented no-op there, on Windows for
+>   anything at all.
+> - **The grant store refuses to be written through a SYMLINK.** The exclusive create refuses to follow one
+>   at first creation, but every later append and `chmod` followed it — a review reproduced a grant record
+>   landing in an arbitrary target file. §5's accepted risk is that write access to `~/.relavium` can edit
+>   the grant file; using it as a write primitive against files elsewhere is a different thing and is not
+>   accepted. The sibling terminal outbox has the identical shape and takes the identical guard.
+> - **§5's "one bounded record" was a claim, not a property.** Neither `McpServerRefSchema` nor the grant
+>   record caps an `args` count, an `env` count, or a string length, so a declaration could produce a line of
+>   megabytes — past where a single write is reliably atomic, which is what the no-lock concurrent-append
+>   design leans on. The stored COMPARISON METADATA is bounded now; the digest is fixed-size and untouched.
+>   A schema-level cap remains worth having for the PROMPT rather than for atomicity, and is its own item.
+> - **The §3 golden vectors did not cover what §3 says they cover.** The declaration→digest set had one
+>   vector, exercising only the empty cases; non-ASCII, an embedded quote and a backslash are pinned now, as
+>   is the `literal` / `secret-ref` tagging a second implementation has to reproduce. Each expected digest is
+>   computed independently of the implementation, not read back out of it.
+
 ## Context
 
 A workflow or agent may declare an MCP server with `transport: stdio`, a `command`, and `args`. Opening that

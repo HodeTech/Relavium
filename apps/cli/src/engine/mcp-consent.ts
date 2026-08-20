@@ -1,14 +1,16 @@
 import { createHash } from 'node:crypto';
 import {
+  constants,
   appendFileSync,
   chmodSync,
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
 } from 'node:fs';
-import { realpath } from 'node:fs/promises';
+import { access, realpath, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { canonicalJson } from '@relavium/shared';
@@ -116,10 +118,18 @@ export async function resolveStdioSpawn(
   }
   const canonicalCwd = await canonicalize(cwd);
   const explicit = isAbsolute(command) || command.includes('/') || command.includes('\\');
-  const located = explicit ? resolve(canonicalCwd, command) : await findOnPath(command);
+  // **An explicit path is VERIFIED, not merely resolved.** `path.resolve` is string arithmetic — it never
+  // fails and never touches the filesystem — so a declared `/opt/acme/server` that does not exist used to
+  // sail through, produce a fingerprint, and be consented to. Anything later materialising at that exact
+  // path — a delayed install, a mount, a local write — would then spawn under a grant nobody had evaluated
+  // against a real program. That is the TOCTOU §3's "resolve before the gate" exists to close, and the
+  // bare-name branch already closes it because `findOnPath` checks access; this branch did not.
+  const located = explicit
+    ? await verifyExecutable(resolve(canonicalCwd, command))
+    : await findOnPath(command);
   if (located === undefined) {
     throw new StdioResolutionError(
-      `MCP server '${declaration.serverId}' names a command that is not on PATH`,
+      `MCP server '${declaration.serverId}' names a command that does not resolve to an executable file`,
     );
   }
   return {
@@ -132,6 +142,18 @@ export async function resolveStdioSpawn(
     env: declaration.env ?? {},
     cwd: canonicalCwd,
   };
+}
+
+/** An existing, executable regular file at `path`, or `undefined` — the same bar `findOnPath` applies. */
+async function verifyExecutable(path: string): Promise<string | undefined> {
+  try {
+    const info = await stat(path);
+    if (!info.isFile()) return undefined;
+    await access(path, constants.X_OK);
+    return path;
+  } catch {
+    return undefined;
+  }
 }
 
 /** `realpath`, falling back to the lexical form when the path does not exist yet — never throwing here. */
@@ -250,16 +272,19 @@ export function readGrants(path: string): ReadonlyMap<string, ConsentGrant> | un
  */
 export function appendGrant(path: string, grant: ConsentGrant): void {
   ensureFile(path);
+  refuseSymlink(path);
+  const bounded = boundMetadata(grant);
   // A LEADING newline as well as a trailing one: a process killed mid-append leaves a partial last line with
   // no terminator, and appending straight onto it would concatenate into one corrupt line — which, under
   // this file's fail-closed fold, would cost every grant on the machine rather than one entry.
-  appendFileSync(path, `\n${stringifyJsonLine(grant)}\n`, { mode: FILE_MODE });
+  appendFileSync(path, `\n${stringifyJsonLine(bounded)}\n`, { mode: FILE_MODE });
   healMode(path);
 }
 
 /** Withdraw a grant by appending a tombstone — the fold drops the digest when it sees one. */
 export function appendRevocation(path: string, digest: string, revokedAt: string): void {
   ensureFile(path);
+  refuseSymlink(path);
   appendFileSync(path, `\n${stringifyJsonLine({ v: 1, revoked: digest, revokedAt })}\n`, {
     mode: FILE_MODE,
   });
@@ -267,7 +292,10 @@ export function appendRevocation(path: string, digest: string, revokedAt: string
 }
 
 function ensureFile(path: string): void {
-  if (existsSync(path)) return;
+  // **No `existsSync` short-circuit.** The exclusive create is ALWAYS attempted, so the `wx` flag is the
+  // thing that decides — losing the race to another process is an ordinary `EEXIST` and the append below
+  // lands in the winner's file. With a short-circuit, `wx` and a truncating `w` were indistinguishable in
+  // every observable way, which made the flag that prevents a truncate-on-create race untestable.
   try {
     // **The DIRECTORY too.** The terminal outbox may assume `~/.relavium` exists because `history.db`'s
     // opener created it, but a consent decision happens on a machine that may never have run a workflow —
@@ -278,6 +306,69 @@ function ensureFile(path: string): void {
   } catch {
     // Another process created it between the check and the open — its empty file is the file, and the
     // append below lands in it. `wx` is what makes that race harmless rather than a truncation.
+  }
+}
+
+/**
+ * Bound the record's COMPARISON METADATA so one append is genuinely one bounded record (§5).
+ *
+ * §5 claims "a single `appendFileSync` of one bounded record", and nothing bounded it: neither
+ * `McpServerRefSchema` nor `ConsentGrant` caps an `args` count, an `env` count, or a string length, so a
+ * declaration could produce a line of megabytes — well past where a single write is reliably atomic, which
+ * is the property the no-lock concurrent-append design leans on.
+ *
+ * Only the metadata is trimmed. The `digest` is fixed-size and is the IDENTITY; `command`, `args`, `envNames`
+ * and `cwd` exist so a later prompt can say what changed, and a truncated diff is a smaller loss than a torn
+ * line that folds the whole store closed. The schema-level cap this makes unnecessary for atomicity is still
+ * worth having for the prompt, and is recorded as its own item.
+ */
+function boundMetadata(grant: ConsentGrant): ConsentGrant {
+  const clip = (text: string): string =>
+    text.length <= MAX_METADATA_CHARS ? text : `${text.slice(0, MAX_METADATA_CHARS)}…`;
+  return {
+    ...grant,
+    command: clip(grant.command),
+    args: grant.args.slice(0, MAX_METADATA_ENTRIES).map(clip),
+    envNames: grant.envNames.slice(0, MAX_METADATA_ENTRIES).map(clip),
+    cwd: clip(grant.cwd),
+  };
+}
+
+/** Per-string and per-list ceilings for the stored comparison metadata. */
+const MAX_METADATA_CHARS = 512;
+const MAX_METADATA_ENTRIES = 64;
+
+/**
+ * Refuse to write through a SYMLINK at the grant path.
+ *
+ * `ensureFile`'s exclusive create refuses to follow one at first creation, but every later `appendFileSync`
+ * and `chmodSync` follows links — so a process that replaced the file with a symlink after the first write
+ * turned this store into a write primitive against any file the CLI can write. A review reproduced a grant
+ * record landing in an arbitrary target. ADR-0084 accepts that anything with write access to `~/.relavium`
+ * can edit the grant FILE; using it to write somewhere else is a different thing, and not accepted.
+ *
+ * `lstat` rather than `O_NOFOLLOW` because `appendFileSync` takes no flags — a check-then-write window
+ * remains, and it is narrower than the unbounded one it replaces. The sibling terminal outbox has the
+ * identical shape and gets the identical guard.
+ */
+function refuseSymlink(path: string): void {
+  try {
+    if (lstatSync(path).isSymbolicLink()) {
+      throw new ConsentStoreError(
+        'the MCP consent store is a symbolic link; refusing to write through it',
+      );
+    }
+  } catch (error) {
+    if (error instanceof ConsentStoreError) throw error;
+    // The path vanished between the create and this check — the append below fails on its own terms.
+  }
+}
+
+/** The grant store could not be written safely. A refusal, never a silent skip. */
+export class ConsentStoreError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConsentStoreError';
   }
 }
 
