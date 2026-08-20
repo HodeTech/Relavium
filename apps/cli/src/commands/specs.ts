@@ -75,7 +75,11 @@ function registerRun(program: Command, ctx?: CommandContext): void {
   const run = program
     .command('run <workflow>')
     .description('Execute a workflow (path or id), streaming progress.')
-    .option('--input <key=value...>', 'a workflow input (repeatable)');
+    .option('--input <key=value...>', 'a workflow input (repeatable)')
+    .option(
+      '--allow-mcp-stdio <digest...>',
+      'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
+    );
 
   if (ctx === undefined) {
     // No runtime context (e.g. a bare buildProgram for help rendering) — keep it a clean stub.

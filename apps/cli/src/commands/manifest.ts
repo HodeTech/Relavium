@@ -95,6 +95,12 @@ const ENTRIES: readonly CommandManifestEntry[] = [
     args: [
       { name: 'workflow', type: 'string', required: true, description: 'workflow path or id' },
       { name: 'input', type: 'string', description: 'a workflow input (repeatable)' },
+      {
+        name: 'allowMcpStdio',
+        type: 'string',
+        description:
+          'authorize a stdio MCP server by its consent digest for this invocation (repeatable)',
+      },
     ],
     effect: 'write',
   },

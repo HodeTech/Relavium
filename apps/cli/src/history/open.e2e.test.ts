@@ -60,7 +60,7 @@ describe('2.H durable run history — real run → history.db (temp home)', () =
   it('persists a completed run (migrate-on-first-use) with owner-only perms', async () => {
     const { io } = captureIo();
     const code = await runCommand(
-      { workflow: join(FIXTURES, 'sequential.relavium.yaml'), input: ['n=3'] },
+      { workflow: join(FIXTURES, 'sequential.relavium.yaml'), input: ['n=3'], allowMcpStdio: [] },
       {
         io,
         global: globalOptions(),
@@ -104,7 +104,7 @@ describe('2.H durable run history — real run → history.db (temp home)', () =
   it('persists a gate-paused run sufficient to reconstruct a checkpoint in a fresh connection (2.G substrate)', async () => {
     const { io } = captureIo();
     const code = await runCommand(
-      { workflow: join(FIXTURES, 'human-gate.relavium.yaml'), input: [] },
+      { workflow: join(FIXTURES, 'human-gate.relavium.yaml'), input: [], allowMcpStdio: [] },
       {
         io,
         global: globalOptions(),

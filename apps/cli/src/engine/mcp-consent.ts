@@ -1,7 +1,15 @@
 import { createHash } from 'node:crypto';
-import { appendFileSync, chmodSync, closeSync, existsSync, openSync, readFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+} from 'node:fs';
 import { realpath } from 'node:fs/promises';
-import { isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, resolve } from 'node:path';
 
 import { canonicalJson } from '@relavium/shared';
 import { z } from 'zod';
@@ -261,6 +269,11 @@ export function appendRevocation(path: string, digest: string, revokedAt: string
 function ensureFile(path: string): void {
   if (existsSync(path)) return;
   try {
+    // **The DIRECTORY too.** The terminal outbox may assume `~/.relavium` exists because `history.db`'s
+    // opener created it, but a consent decision happens on a machine that may never have run a workflow —
+    // the very first `relavium run` of a freshly imported artifact is exactly the case this gate is for.
+    // `0700`, matching the posture the history opener establishes.
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     closeSync(openSync(path, 'wx', FILE_MODE));
   } catch {
     // Another process created it between the check and the open — its empty file is the file, and the

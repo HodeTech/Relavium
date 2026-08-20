@@ -155,7 +155,7 @@ describe('generative media-output — end-to-end on the CLI (2.S acceptance)', (
     const wfPath = join(cwd, 'gen.relavium.yaml');
     writeFileSync(wfPath, GENERATIVE_WF);
 
-    const code = await runCommand({ workflow: wfPath, input: [] }, deps(io));
+    const code = await runCommand({ workflow: wfPath, input: [], allowMcpStdio: [] }, deps(io));
     expect(code).toBe(EXIT_CODES.success); // the generative run completes end-to-end
 
     const events = parseNdjson(out());

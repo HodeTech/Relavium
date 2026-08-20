@@ -21,6 +21,7 @@ import { sweepCommittedEffects } from '../engine/effect-retention.js';
 import { createCliHost } from '../engine/host.js';
 import {
   connectWorkflowMcp,
+  type StdioConsentGate,
   surfaceMcpSkipped,
   type WorkflowMcpRuntime,
 } from '../engine/mcp-servers.js';
@@ -38,6 +39,8 @@ import {
 import type { GatePrompter } from '../gate/prompter.js';
 import { selectGatePrompter } from '../gate/select-prompter.js';
 import type { OpenedHistory } from '../history/open.js';
+import { assertStdioConsent } from '../engine/mcp-consent-gate.js';
+import { createConsentPrompter } from '../mcp/consent-prompt.js';
 import { CliError } from '../process/errors.js';
 import { EXIT_CODES, type ExitCode } from '../process/exit-codes.js';
 import type { CliIo } from '../process/io.js';
@@ -63,6 +66,16 @@ import type { EffectCorrelation } from '@relavium/core';
 export interface RunCommandArgs {
   readonly workflow: string;
   readonly input: readonly string[];
+  /**
+   * `--allow-mcp-stdio <digest>`, repeatable
+   * ([ADR-0084](../../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §6).
+   *
+   * Authorizes a stdio MCP server for THIS invocation and writes no grant: a flag is how a CI definition
+   * states its own trust, and a shared runner that silently accumulated grants would slowly agree to
+   * everything anyone ran on it. The digest is a hash of an approved declaration, not a secret — safe in a
+   * pipeline definition, a script, or a log.
+   */
+  readonly allowMcpStdio: readonly string[];
 }
 
 export interface RunCommandDeps {
@@ -102,6 +115,8 @@ export interface RunCommandDeps {
    * real `@relavium/mcp` `startMcpClient`. Threads through to {@link connectWorkflowMcp}.
    */
   readonly startMcpClient?: (servers: readonly McpServerConfig[]) => Promise<McpClient>;
+  /** Injectable consent gate (ADR-0084 §1) — a fixture supplies one that never prompts. */
+  readonly consentGate?: StdioConsentGate;
   /** The MCP named-secret resolver (2.R Step 4) — production injects the keychain-backed one; default env-only. */
   readonly mcpSecretResolver?: McpSecretResolver;
 }
@@ -164,6 +179,18 @@ export async function runCommand(args: RunCommandArgs, deps: RunCommandDeps): Pr
       cwd: deps.global.cwd,
       resolveSecret: deps.mcpSecretResolver ?? createMcpSecretResolver(deps.io.env),
       registrations: config.mcpServers,
+      // **Consent before any spawn** (ADR-0084 §1). Injectable so a fixture drives it without a terminal;
+      // the default is the real gate, so an un-wired test path is a decision rather than an accident.
+      consentGate:
+        deps.consentGate ??
+        ((refs, cwd) =>
+          assertStdioConsent(refs, cwd, {
+            io: deps.io,
+            global: deps.global,
+            homeDir,
+            allowedDigests: args.allowMcpStdio,
+            prompt: createConsentPrompter(),
+          })),
       ...(deps.startMcpClient === undefined ? {} : { startMcpClient: deps.startMcpClient }),
     });
     if (mcpRuntime !== undefined) surfaceMcpSkipped(deps.io, mcpRuntime.client.skipped);

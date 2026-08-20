@@ -125,6 +125,9 @@ export function buildRunArgs(input: CommandInput): RunCommandArgs {
   return {
     workflow: reqPositional(input, 0, 'workflow'),
     input: stringList(input.options['input']),
+    // ADR-0084 §6: authorizes THIS invocation and writes no grant. A definite list like `input`, so a
+    // consumer never distinguishes "not asked for" from "asked for and empty".
+    allowMcpStdio: stringList(input.options['allowMcpStdio']),
   };
 }
 

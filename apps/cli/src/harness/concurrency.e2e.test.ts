@@ -163,7 +163,7 @@ describe('concurrency e2e (2.5.I S3) — a run and a chat share one history.db',
       });
       const runIo = captureIo();
       const runPromise = runCommand(
-        { workflow: join(FIXTURES_DIR, 'sequential.relavium.yaml'), input: [] },
+        { workflow: join(FIXTURES_DIR, 'sequential.relavium.yaml'), input: [], allowMcpStdio: [] },
         { io: runIo.io, global: globalOptions(), openRunStore },
       );
 

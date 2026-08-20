@@ -25,6 +25,7 @@ import {
 } from '@relavium/shared';
 
 import { CliError } from '../process/errors.js';
+import type { ResolvedStdioSpawn } from './mcp-consent.js';
 import type { CliIo } from '../process/io.js';
 import { sanitizeInline } from '../render/tui/chat-projection.js';
 import type { McpSecretResolver } from '../secrets/mcp-secret.js';
@@ -60,7 +61,24 @@ export interface ConnectAgentMcpOptions {
    * `{ ref: <name> }` server entry to its self-contained connection. Absent ⇒ a `ref` entry fails loud.
    */
   readonly registrations?: readonly McpServerRegistration[];
+  /**
+   * The consent gate ([ADR-0084](../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §1) —
+   * called with the RESOLVED inline refs, before any `McpServerConfig` is built, so a refused server's
+   * `open()` is never constructed. Absent ⇒ no gate, which is the shape every existing unit fixture uses;
+   * production wires it.
+   */
+  readonly consentGate?: StdioConsentGate;
 }
+
+/**
+ * Decide whether these declared servers may spawn. Throws to refuse; returns the resolved spawns on approval
+ * so the caller uses the exact absolute executable that was consented to rather than re-resolving the
+ * authored word against a `PATH` that may have changed since.
+ */
+export type StdioConsentGate = (
+  refs: readonly McpServerRef[],
+  cwd: string,
+) => Promise<ReadonlyMap<string, ResolvedStdioSpawn>>;
 
 /**
  * Sanitize a registration `name` into a namespace-safe server segment for `mcp_{server}_{tool}` (ADR-0052 §4/§5
@@ -154,6 +172,14 @@ export function resolveServerConfigs(
   cwd: string,
   resolveSecret?: McpSecretResolver,
   openers: ServerOpeners = {},
+  /**
+   * The consent gate's resolved spawns, keyed by server id
+   * ([ADR-0084](../../../docs/decisions/0084-consent-before-a-local-mcp-spawn.md) §3). Present ⇒ a stdio
+   * server spawns the **exact absolute executable that was consented to**, not the authored word re-resolved
+   * against a `PATH` that may have changed between the decision and the spawn. Absent ⇒ the authored
+   * command, which is the un-gated path every unit fixture uses.
+   */
+  consented?: ReadonlyMap<string, ResolvedStdioSpawn>,
 ): McpServerConfig[] {
   const openStdio = openers.stdio ?? openStdioConnection;
   const network: NetworkOpeners = {
@@ -172,7 +198,7 @@ export function resolveServerConfigs(
     }
     configs.push(
       ref.transport === 'stdio'
-        ? buildStdioConfig(ref.id, ref, cwd, resolveSecret, openStdio)
+        ? buildStdioConfig(ref.id, ref, cwd, resolveSecret, openStdio, consented?.get(ref.id))
         : buildNetworkConfig(ref.id, ref.transport, ref, network),
     );
   }
@@ -193,6 +219,7 @@ function buildStdioConfig(
   cwd: string,
   resolveSecret: McpSecretResolver | undefined,
   openStdio: OpenStdioConnection,
+  consented?: ResolvedStdioSpawn,
 ): McpServerConfig {
   // The schema's `superRefine` already guarantees `command` for a stdio transport; re-assert so the spawn spec
   // is total without a non-null assertion (a defensive, typed failure rather than an undefined spawn).
@@ -202,7 +229,10 @@ function buildStdioConfig(
       `MCP server '${serverId}': a 'stdio' transport requires a 'command'.`,
     );
   }
-  const command = ref.command;
+  // The consented absolute executable when the gate ran, else the authored command (ADR-0084 §3). Spawning
+  // what was decided about is the other half of resolving before the decision: a `PATH` that changed in
+  // between must not select a different binary under an approved fingerprint.
+  const command = consented?.resolvedCommand ?? ref.command;
   // **Re-asserted here, defensively**, exactly as the network sibling re-asserts its own `url`/`env` rules
   // and for the same stated reason: a programmatic caller that bypassed the schema must fail loud rather
   // than reach a spawn. ADR-0084 §1 designates this function's caller as THE chokepoint, and
@@ -328,7 +358,10 @@ export async function connectAgentMcp(
   const inline = (mcpServers ?? []).map((entry) =>
     resolveMcpServerRef(entry, opts.registrations ?? []),
   );
-  const configs = resolveServerConfigs(inline, opts.cwd, opts.resolveSecret);
+  // **The gate, before anything is built** (ADR-0084 §1). On the resolved INLINE refs, because an agent may
+  // declare a server with no `[[mcp_servers]]` registration at all — the imported-artifact case.
+  const consented = await opts.consentGate?.(inline, opts.cwd);
+  const configs = resolveServerConfigs(inline, opts.cwd, opts.resolveSecret, {}, consented);
   if (configs.length === 0) return undefined;
   return startMcpClientFailLoud(configs, opts.startMcpClient);
 }
@@ -419,6 +452,8 @@ export interface ConnectWorkflowMcpOptions {
   readonly resolveSecret?: McpSecretResolver;
   /** The merged config `[[mcp_servers]]` registrations (Step 4b) — resolves a by-name `ref` entry; see {@link ConnectAgentMcpOptions}. */
   readonly registrations?: readonly McpServerRegistration[];
+  /** The consent gate (ADR-0084 §1); see {@link ConnectAgentMcpOptions.consentGate}. */
+  readonly consentGate?: StdioConsentGate;
 }
 
 /**
@@ -463,7 +498,14 @@ export async function connectWorkflowMcp(
   }
   if (byId.size === 0) return undefined;
 
-  const configs = resolveServerConfigs([...byId.values()], opts.cwd, opts.resolveSecret);
+  const consented = await opts.consentGate?.([...byId.values()], opts.cwd);
+  const configs = resolveServerConfigs(
+    [...byId.values()],
+    opts.cwd,
+    opts.resolveSecret,
+    {},
+    consented,
+  );
   const client = await startMcpClientFailLoud(configs, opts.startMcpClient);
 
   try {

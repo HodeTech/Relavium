@@ -81,8 +81,9 @@ describe('build*Args (argv → typed core args)', () => {
     expect(buildRunArgs(input(['wf'], { input: ['a=1', 'b=2'] }))).toEqual({
       workflow: 'wf',
       input: ['a=1', 'b=2'],
+      allowMcpStdio: [],
     });
-    expect(buildRunArgs(input(['wf']))).toEqual({ workflow: 'wf', input: [] });
+    expect(buildRunArgs(input(['wf']))).toEqual({ workflow: 'wf', input: [], allowMcpStdio: [] });
   });
 
   it('chat: agent is undefined when absent (the built-in default)', () => {
