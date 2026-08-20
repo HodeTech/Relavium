@@ -333,6 +333,8 @@ export type EffectCorrelation =
  * order, so a slot from before a crash is not comparable to one after it. That is precisely why the resume
  * gate is at NODE granularity and not at slot granularity.
  */
+// NOSONAR — a DOMAIN alias, not a redundant one: the docblock above is where "what a slot is" lives, and
+// replacing every occurrence with `number` would delete the concept from the type surface along with it.
 export type EffectSlot = number;
 
 /**

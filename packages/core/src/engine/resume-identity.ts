@@ -285,7 +285,9 @@ function reconcileRecorded(
   recordedInputs: Readonly<Record<string, unknown>>,
   supplied: Readonly<Record<string, unknown>>,
   secretNames: ReadonlySet<string>,
-): { ok: true; effective: Record<string, unknown> } | { ok: false; refusal: ResumeIdentityRefusal } {
+):
+  | { ok: true; effective: Record<string, unknown> }
+  | { ok: false; refusal: ResumeIdentityRefusal } {
   const effective: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
   for (const key of Object.keys(recordedInputs)) {
     const recorded = recordedInputs[key];
@@ -376,7 +378,10 @@ function unexpectedSuppliedRefusal(
           code: 'secret_input_unexpected',
           message: named(key, 'this run holds no `secret` slot by this name'),
         }
-      : { code: 'input_mismatch', message: named(key, 'this run was not admitted with this input') };
+      : {
+          code: 'input_mismatch',
+          message: named(key, 'this run was not admitted with this input'),
+        };
   }
   return undefined;
 }

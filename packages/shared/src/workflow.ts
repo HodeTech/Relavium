@@ -259,6 +259,18 @@ const FORMAT_CHECKS: ReadonlyMap<string, RegExp> = new Map<string, RegExp>([
 ]);
 
 /**
+ * What each declared type is CALLED in a refusal message.
+ *
+ * `number` says "finite" because that is the part a caller gets wrong — `NaN` and `Infinity` are numbers to
+ * `typeof` and are not values a run can carry. Every other type falls back to `string`, which is what the
+ * remaining ones (`string`, `secret`) are.
+ */
+const DECLARED_TYPE_NOUN: Partial<Record<z.infer<typeof InputTypeSchema>, string>> = {
+  number: 'finite number',
+  boolean: 'boolean',
+};
+
+/**
  * Why a value fails its declared `type` alone, or `undefined` if it satisfies it.
  *
  * Exported because ADR-0083 §8's `verify` mode enforces the TYPE and not the `validation` block — a run
@@ -270,7 +282,7 @@ export function violatesDeclaredType(
   type: z.infer<typeof InputTypeSchema>,
 ): string | undefined {
   if (matchesDeclaredType(value, type)) return undefined;
-  return `expected a ${type === 'number' ? 'finite number' : type === 'boolean' ? 'boolean' : 'string'}`;
+  return `expected a ${DECLARED_TYPE_NOUN[type] ?? 'string'}`;
 }
 
 /**
@@ -298,15 +310,25 @@ export function violatesInputContract(
     // promise structural comparison for a field whose members must be primitives anyway.
     return 'value is not one of the allowed enum members';
   }
-  if (typeof value === 'number') {
-    if (v.min !== undefined && value < v.min) return 'value is below the declared minimum';
-    if (v.max !== undefined && value > v.max) return 'value is above the declared maximum';
-    return undefined;
-  }
-  if (typeof value !== 'string') return undefined;
+  if (typeof value === 'number') return violatesNumericBounds(value, v);
+  if (typeof value === 'string') return violatesStringRules(value, v);
+  return undefined;
+}
 
-  // Length BEFORE pattern — this ordering is what bounds the input a catastrophic authored regex can chew
-  // on, and it is the only ReDoS mitigation this contract honestly offers.
+/** The declared `min`/`max`, or `undefined` when the value sits inside them. */
+function violatesNumericBounds(value: number, v: InputValidation): string | undefined {
+  if (v.min !== undefined && value < v.min) return 'value is below the declared minimum';
+  if (v.max !== undefined && value > v.max) return 'value is above the declared maximum';
+  return undefined;
+}
+
+/**
+ * The declared length, format and pattern rules, in that ORDER.
+ *
+ * Length BEFORE pattern — the ordering is what bounds the input a catastrophic authored regex can chew on,
+ * and it is the only ReDoS mitigation this contract honestly offers.
+ */
+function violatesStringRules(value: string, v: InputValidation): string | undefined {
   if (v.min_length !== undefined && value.length < v.min_length)
     return 'value is shorter than min_length';
   if (v.max_length !== undefined && value.length > v.max_length)
@@ -319,6 +341,35 @@ export function violatesInputContract(
     return 'value does not match the declared pattern';
   }
   return undefined;
+}
+
+/**
+ * The authored `pattern`: bounded, compilable, and complete on its own.
+ *
+ * COMPILED at parse in the EXACT form admission will run, so this proves the anchored semantics and not
+ * merely bare well-formedness. Compiling `a|b` bare succeeds while `^a|b$` means "starts with a OR ends with
+ * b" — a silent change of meaning the author would never see; and `\p{L}+` compiles bare but means the
+ * literal `p{L}` without the `u` flag.
+ */
+function validatePattern(pattern: string, ctx: z.RefinementCtx): void {
+  const issue = (message: string): void => {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message, path: ['validation', 'pattern'] });
+  };
+  if (pattern.length > PATTERN_MAX_SOURCE) {
+    issue(`pattern is longer than ${String(PATTERN_MAX_SOURCE)} characters`);
+    return;
+  }
+  try {
+    anchoredPattern(pattern);
+  } catch {
+    issue('pattern is not a valid regular expression');
+    return;
+  }
+  if (patternEscapesItsAnchors(pattern)) {
+    issue(
+      'pattern must be a complete regular expression on its own — this one leaves a parenthesis unmatched, which escapes the anchors validation applies',
+    );
+  }
 }
 
 /**
@@ -350,36 +401,7 @@ function validateValidationBlock(
     });
   }
 
-  if (v.pattern !== undefined) {
-    if (v.pattern.length > PATTERN_MAX_SOURCE) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `pattern is longer than ${String(PATTERN_MAX_SOURCE)} characters`,
-        path: ['validation', 'pattern'],
-      });
-    } else {
-      // COMPILED at parse in the EXACT form admission will run, so this proves the anchored semantics and
-      // not merely bare well-formedness. Compiling `a|b` bare succeeds while `^a|b$` means "starts with a OR
-      // ends with b" — a silent change of meaning the author would never see; and `\p{L}+` compiles bare but
-      // means the literal `p{L}` without the `u` flag.
-      try {
-        anchoredPattern(v.pattern);
-        if (patternEscapesItsAnchors(v.pattern)) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: `pattern must be a complete regular expression on its own — this one leaves a parenthesis unmatched, which escapes the anchors validation applies`,
-            path: ['validation', 'pattern'],
-          });
-        }
-      } catch {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: `pattern is not a valid regular expression`,
-          path: ['validation', 'pattern'],
-        });
-      }
-    }
-  }
+  if (v.pattern !== undefined) validatePattern(v.pattern, ctx);
 
   if (v.enum !== undefined) {
     // An `enum` member of the wrong type can never match, so it is an authored mistake rather than a value
