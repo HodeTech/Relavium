@@ -278,18 +278,12 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
     // 3. ASK ORDER. A weaker, DIFFERENT check: an engine that assigns and issues out of sequence. Neither
     //    this nor the overlap predicate subsumes the other — an engine can overlap in perfect sequence order
     //    (today's) or issue sequentially out of order (a broken seq assignment).
-    const askOrderViolations: string[] = [];
-    for (let i = 1; i < mine.length; i += 1) {
-      const prev = mine[i - 1];
-      const cur = mine[i];
-      if (prev === undefined || cur === undefined) continue;
-      if (cur.sequenceNumber < prev.sequenceNumber) {
-        askOrderViolations.push(
-          `ask #${String(i)} is sequence ${String(cur.sequenceNumber)} (${cur.type}) after ` +
-            `#${String(i - 1)}'s ${String(prev.sequenceNumber)} (${prev.type})`,
-        );
-      }
-    }
+    const askOrderViolations = outOfOrderPairs(
+      mine.map((r) => r.sequenceNumber),
+      (index, prev, cur) =>
+        `ask #${String(index)} is sequence ${String(cur)} (${mine[index]?.type ?? '?'}) after ` +
+        `#${String(index - 1)}'s ${String(prev)} (${mine[index - 1]?.type ?? '?'})`,
+    );
     if (askOrderViolations.length > 0) {
       problems.push(
         `the engine ISSUED appends out of sequence order (${String(askOrderViolations.length)}): ` +
@@ -299,15 +293,10 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
     }
 
     // 4. COMMIT ORDER. What the store actually did with the asks it accepted.
-    const commitOrderViolations: string[] = [];
-    for (let i = 1; i < committed.length; i += 1) {
-      const prev = committed[i - 1];
-      const cur = committed[i];
-      if (prev === undefined || cur === undefined) continue;
-      if (cur < prev) {
-        commitOrderViolations.push(`sequence ${String(cur)} committed after ${String(prev)}`);
-      }
-    }
+    const commitOrderViolations = outOfOrderPairs(
+      committed,
+      (_index, prev, cur) => `sequence ${String(cur)} committed after ${String(prev)}`,
+    );
     if (commitOrderViolations.length > 0) {
       problems.push(
         `the store COMMITTED out of sequence order (${String(commitOrderViolations.length)}): ` +
@@ -334,6 +323,28 @@ export function createAppendAudit(inner: RunStore, options: AppendAuditOptions =
     verdict,
     runIds: () => [...new Set(records.map((r) => r.runId))],
   };
+}
+
+/**
+ * Every adjacent pair in `sequences` that goes BACKWARDS, described by `describe`.
+ *
+ * Shared by checks 3 and 4 above, which ask the same question of two different lists — what the engine
+ * ISSUED and what the store COMMITTED. They are genuinely different properties (an engine can overlap in
+ * perfect sequence order, or issue sequentially out of order), but the pair walk is one walk, and two copies
+ * of it drifted on the `undefined`-guard the noUncheckedIndexedAccess build requires.
+ */
+function outOfOrderPairs(
+  sequences: readonly number[],
+  describe: (index: number, prev: number, cur: number) => string,
+): string[] {
+  const violations: string[] = [];
+  for (let index = 1; index < sequences.length; index += 1) {
+    const prev = sequences[index - 1];
+    const cur = sequences[index];
+    if (prev === undefined || cur === undefined) continue;
+    if (cur < prev) violations.push(describe(index, prev, cur));
+  }
+  return violations;
 }
 
 /** Render a verdict for an assertion message — every list on its own line, so the diff reads at a glance. */

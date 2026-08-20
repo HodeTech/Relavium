@@ -2918,6 +2918,11 @@ class RunExecution {
     if (guarded) {
       this.#lastAskedSequenceNumber = event.sequenceNumber;
     }
+    // NOSONAR — this closure's branch count is NOT extractable, and the reason is written throughout it:
+    // every branch below is an ORDERING guarantee relative to `await prior` and the persist. Moving any of
+    // them into a helper inserts a microtask hop at exactly the point the comments below record as having
+    // reordered the log once already, and the `held`/`unclaimed` fast path exists specifically to AVOID that
+    // hop. A metric is not worth re-opening the race this function was written to close (CR-10, CR-92).
     const settled = (async (): Promise<void> => {
       // `await prior` moved ABOVE the persist. Below it, the previous event's write had already been
       // STARTED but not joined, so two events for one run overlapped — nothing but the store's timing kept
@@ -3380,6 +3385,10 @@ export class WorkflowEngine {
    * concurrent double-resolve (two processes loading the same pending gate before either persists) is
    * closed by a Phase-2 store-level uniqueness constraint, not the in-memory reference (checkpoint.ts).
    */
+  // NOSONAR — one point over the threshold, and the branches ARE the ordering: the lease before any read,
+  // the identity guard before the checkpoint, the checkpoint before the workflow. Each comment below states
+  // which line it must precede, and a helper that hid one of those steps would make the sequence the reader
+  // has to reconstruct rather than the one they can see (ADR-0079 §4, ADR-0083 §5).
   async resumeFromCheckpoint(input: ResumeFromCheckpointInput): Promise<RunHandle> {
     // A gate resume supplies gateId + decision; a media-ONLY resume (1.AG Section D) supplies neither.
     const isGateResume = input.gateId !== undefined && input.decision !== undefined;

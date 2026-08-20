@@ -9,6 +9,7 @@
 
 import {
   type EffectPrepareVerdict,
+  type EffectTier,
   extractHttpsHost,
   isEffectConflictError,
   type ToolActionClass,
@@ -150,6 +151,43 @@ async function settleQuietly(
   }
 }
 
+/**
+ * §7 step 2's PREPARE — durable, and BEFORE the effect leaves the process.
+ *
+ * Everything above this in `dispatch` is a refusal that journals nothing; everything below it may have
+ * reached a target. A `prepare` that cannot be written REFUSES the dispatch, which is the fail-closed
+ * direction: no journal row means no way to tell a resumed run whether the effect happened.
+ */
+async function prepareEffect(
+  def: ToolDef,
+  tier: EffectTier,
+  effective: Readonly<Record<string, unknown>>,
+  ctx: ToolDispatchContext,
+): Promise<EffectPrepareVerdict> {
+  try {
+    return await ctx.effects.prepare(
+      ctx.effectSlot,
+      def.id,
+      tier,
+      // **The SAME projection the event stream gets, and for the same reason.** Redacted here because only
+      // the engine knows which args are secret-bearing; hashed in the port because only the host can (core
+      // is platform-free). `sanitizeInput` is used rather than a key-name filter because a key-name filter
+      // misses exactly what §11 names as the threat: a model-placed credential in an arbitrary position — an
+      // `Authorization` header value, a token in a URL query — which `redactSecretShapedValue` scrubs BY
+      // SHAPE. A digest is a permanent equality oracle, and a low-entropy secret is recoverable from one on
+      // a `history.db` that may be unencrypted at rest.
+      sanitizeInput(def, effective, ctx.secretArgKeys),
+    );
+  } catch (cause) {
+    // A CONFLICT is a refusal, not a fault: another attempt already holds this identity, so the effect must
+    // not be dispatched — and must not be retried either, because a retry re-collides, burns the whole node
+    // budget and reports the wrong cause. Its siblings `AppendConflictError` and `LeaseFencedError` are
+    // excluded from retry sets for the same reason.
+    if (isEffectConflictError(cause)) throw new ToolEffectConflictError(def.id, cause);
+    throw cause; // a store fault: the dispatch is refused, nothing reached a target
+  }
+}
+
 async function dispatch(
   tools: ReadonlyMap<ToolId, ToolDef>,
   host: ToolHost,
@@ -229,31 +267,7 @@ async function dispatch(
     //     A `prepare` that cannot be written refuses the dispatch, which is the fail-closed direction: no
     //     journal row means no way to tell a resumed run whether the effect happened.
     if (tier !== undefined) {
-      let verdict: EffectPrepareVerdict;
-      try {
-        verdict = await ctx.effects.prepare(
-          ctx.effectSlot,
-          def.id,
-          tier,
-          // **The SAME projection the event stream gets, and for the same reason.** Redacted here because
-          // only the engine knows which args are secret-bearing; hashed in the port because only the host can
-          // (core is platform-free). `sanitizeInput` is used rather than a key-name filter because a
-          // key-name filter misses exactly what §11 names as the threat: a model-placed credential in an
-          // arbitrary position — an `Authorization` header value, a token in a URL query — which
-          // `redactSecretShapedValue` scrubs BY SHAPE. A digest is a permanent equality oracle, and a
-          // low-entropy secret is recoverable from one on a `history.db` that may be unencrypted at rest.
-          sanitizeInput(def, effective, ctx.secretArgKeys),
-        );
-      } catch (cause) {
-        // A CONFLICT is a refusal, not a fault: another attempt already holds this identity, so the effect
-        // must not be dispatched — and must not be retried either, because a retry re-collides, burns the
-        // whole node budget and reports the wrong cause. Its siblings `AppendConflictError` and
-        // `LeaseFencedError` are excluded from retry sets for the same reason.
-        if (isEffectConflictError(cause)) {
-          throw new ToolEffectConflictError(def.id, cause);
-        }
-        throw cause; // a store fault: the dispatch is refused, nothing reached a target
-      }
+      const verdict = await prepareEffect(def, tier, effective, ctx);
       // **The flag flips HERE, before the call — not after a successful settle.** This is the line ADR-0080
       // §7 step 3 draws: past the prepare, the effect MAY have reached the target, so every failure below is
       // non-retryable. Setting it after the settle instead left a dispatch THROW — the canonical timed-out
