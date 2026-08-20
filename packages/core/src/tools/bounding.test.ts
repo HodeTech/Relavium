@@ -353,27 +353,28 @@ describe('redactSecretShapedText', () => {
     // doubles a linear scan and QUADRUPLES a quadratic one, and that ratio is the same on any hardware.
     const evilOf = (n: number): string =>
       `Authorization: Bearer ${'a'.repeat(n)} my_secret="${'x'.repeat(n / 4)}"`;
-    const medianMs = (input: string): number => {
-      redactSecretShapedText(input); // warm the JIT and the regex caches before measuring
-      const runs = Array.from({ length: 5 }, () => {
-        const started = performance.now();
-        redactSecretShapedText(input);
-        return performance.now() - started;
-      }).sort((a, b) => a - b);
-      return runs[2] ?? 0; // the median, so one descheduled run cannot decide the verdict
+    const small = evilOf(100_000);
+    const large = evilOf(200_000);
+    const once = (input: string): number => {
+      const started = performance.now();
+      redactSecretShapedText(input);
+      return performance.now() - started;
     };
+    redactSecretShapedText(small); // warm the JIT and the regex caches before measuring
+    redactSecretShapedText(large);
 
-    const small = medianMs(evilOf(100_000));
-    const large = medianMs(evilOf(200_000));
-    // A floor on the denominator: at sub-millisecond timings the ratio is measuring clock granularity
-    // rather than the algorithm, and a fast enough machine would make ANY ratio achievable.
-    const ratio = large / Math.max(small, 1);
+    // **Interleaved, one ratio per ROUND.** Measuring all the small runs and then all the large ones was
+    // still a machine assertion in disguise: this suite runs alongside every other package's, so the two
+    // groups landed in different contention windows and a loaded run read `100k=26ms 200k=126ms` — a ratio
+    // of 4.8 out of a provably linear function. Pairing the two sizes inside one round makes them share
+    // whatever the scheduler is doing, and the median across rounds discards the rounds it did worst in.
+    const ratios = Array.from({ length: 7 }, () => once(large) / Math.max(once(small), 1)).sort(
+      (a, b) => a - b,
+    );
+    const ratio = ratios[3] ?? 0;
     // 3, between linear's 2 and quadratic's 4 — wide enough for measurement noise, and a genuine quadratic
     // pattern cannot land under it.
-    expect(
-      ratio,
-      `100k=${small.toFixed(1)}ms 200k=${large.toFixed(1)}ms ratio=${ratio.toFixed(2)}`,
-    ).toBeLessThan(3);
+    expect(ratio, `median of ${ratios.map((r) => r.toFixed(2)).join(', ')}`).toBeLessThan(3);
 
     const out = redactSecretShapedText(evilOf(200_000));
     expect(out).not.toContain('a'.repeat(100)); // the bearer token tail is gone

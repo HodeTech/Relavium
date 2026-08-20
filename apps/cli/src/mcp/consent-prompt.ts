@@ -69,10 +69,15 @@ function render(subject: ConsentSubject): string {
     // because the word is what they wrote and the path is what will run.
     lines.push(`  as written ${subject.authoredCommand}`);
   }
-  for (const arg of subject.args) lines.push(`  argument   ${arg}`);
-  for (const [name, value] of subject.env) lines.push(`  env        ${name}=${value}`);
-  lines.push(`  directory  ${subject.cwd}`);
-  lines.push(`  digest     ${subject.digest}`);
+  // ONE line per argument and per variable — never a joined shell string. An escape sequence or a bidi
+  // override blurs exactly the boundary between two arguments, so the boundary is a line break the terminal
+  // cannot be talked out of (§7).
+  lines.push(
+    ...subject.args.map((arg) => `  argument   ${arg}`),
+    ...subject.env.map(([name, value]) => `  env        ${name}=${value}`),
+    `  directory  ${subject.cwd}`,
+    `  digest     ${subject.digest}`,
+  );
   if (subject.previouslyApprovedIn !== undefined) {
     // Consent is project-scoped (§3), so the same program in a second checkout is asked about again. Saying
     // where it was approved makes that a recognition rather than a fresh decision — which is the mitigation

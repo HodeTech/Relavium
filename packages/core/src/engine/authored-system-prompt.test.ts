@@ -50,7 +50,10 @@ describe('§6.1 — `system` is constructible only from authored sources', () =>
     const dynamic: string = HOSTILE;
     // @ts-expect-error a dynamic string may never be used where an authored system prompt is required
     const forged: AuthoredSystemPrompt = dynamic;
-    expect(typeof forged).toBe('string');
+    // The runtime line asserts the OTHER half: the brand is erased, so a branded value is byte-identical
+    // to the string it came from and costs nothing at run time. (It used to read `typeof forged === 'string'`,
+    // which is true of every string ever written and therefore proved nothing — Sonar was right to flag it.)
+    expect(forged).toBe(HOSTILE);
   });
 });
 

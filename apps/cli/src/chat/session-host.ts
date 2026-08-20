@@ -1,21 +1,24 @@
 import {
+  type AgentDefinition,
   AgentSession,
-  BUILTIN_TOOLS,
   BudgetGovernor,
-  DEFAULT_AGENT_TURN_LIMITS,
-  RunEventBus,
+  BUILTIN_TOOLS,
   createSessionEventSink,
   createSessionHandle,
   createToolRegistry,
+  DEFAULT_AGENT_TURN_LIMITS,
+  type EffectCorrelation,
+  type EffectDispatchPort,
+  type EffortGateResult,
   reconstructSessionState,
-  type AgentDefinition,
+  RunEventBus,
   type SessionDeps,
   type SessionEventSink,
   type SessionHandle,
-  type EffortGateResult,
   type SessionResumeState,
   type ToolDef,
   type ToolHost,
+  unwiredEffectJournal,
 } from '@relavium/core';
 import {
   effortTiersFor,
@@ -48,11 +51,6 @@ import {
 import { resolveChatAgentSource } from './agent-source.js';
 import { sanitizeUntrustedInline } from '../render/sanitize.js';
 import { hostAttemptTimer, hostSleep } from '../process/sleep.js';
-import {
-  unwiredEffectJournal,
-  type EffectCorrelation,
-  type EffectDispatchPort,
-} from '@relavium/core';
 
 /**
  * Assemble a ready-to-run `relavium chat` session over `@relavium/core`'s {@link AgentSession} (2.M — the

@@ -15,30 +15,28 @@
  * and as the local reference.
  */
 
-import type {
-  AbortSignalLike,
-  EffectCorrelation,
-  EffectDispatchPort,
-  EffectSlot,
-  EffectState,
-  EffectTier,
-  DurableWriteContext,
-  MediaReferencePort,
-  MediaStore,
-  MediaWritePort,
-  RunEvent,
-  RunLeaseInfo,
-  RunLeasePort,
-  TerminalOutbox,
-} from '@relavium/shared';
 import {
+  type AbortSignalLike,
   AppendConflictError,
-  EffectConflictError,
   blocksResume,
-  nodeIdFromRunScope,
-  LeaseFencedError,
-  effectScope,
+  type DurableWriteContext,
+  EffectConflictError,
+  type EffectCorrelation,
+  type EffectDispatchPort,
   type EffectResumePort,
+  effectScope,
+  type EffectSlot,
+  type EffectState,
+  type EffectTier,
+  LeaseFencedError,
+  type MediaReferencePort,
+  type MediaStore,
+  type MediaWritePort,
+  nodeIdFromRunScope,
+  type RunEvent,
+  type RunLeaseInfo,
+  type RunLeasePort,
+  type TerminalOutbox,
 } from '@relavium/shared';
 
 import { type Checkpointer, reconstructCheckpointState } from './checkpoint.js';
@@ -742,11 +740,14 @@ export function createInMemoryEffectJournalStore(): {
     // `argsKey` is the reference's stand-in for the host's digest and is deliberately NOT exposed: a test
     // asserting on it would be asserting on a fixture detail the real store does not share.
     rows: () =>
-      [...rows.values()].map((row) => {
-        const { argsKey, ...rest } = row;
-        void argsKey;
-        return rest;
-      }),
+      [...rows.values()].map((row) => ({
+        scope: row.scope,
+        slot: row.slot,
+        toolId: row.toolId,
+        tier: row.tier,
+        state: row.state,
+        ...('result' in row ? { result: row.result } : {}),
+      })),
   };
 }
 

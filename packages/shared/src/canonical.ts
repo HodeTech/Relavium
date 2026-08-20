@@ -77,7 +77,7 @@ export function canonicalJson(value: unknown, depth = 0): string {
     throw new NonCanonicalValueError('only a plain object has a canonical form');
   }
   const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0,
+    compareCodeUnits(a, b),
   );
   return `{${entries
     .map(([k, v]) => {
@@ -95,6 +95,18 @@ export function canonicalJson(value: unknown, depth = 0): string {
 }
 
 /**
+ * Order two keys by **UTF-16 code-unit ordinal**, the comparison the canonical form is defined in terms of.
+ *
+ * Not `localeCompare`, which is locale-dependent and would make the same declaration digest differently on
+ * two machines — and not `String.prototype.<` inline, because a named function is where that reason can be
+ * written down next to the code that depends on it.
+ */
+function compareCodeUnits(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
+}
+
+/**
  * Whether `text` contains a surrogate code unit that is not part of a well-formed pair.
  *
  * Written as an explicit scan rather than `String.prototype.isWellFormed` or a lookbehind regex: this package
@@ -103,10 +115,14 @@ export function canonicalJson(value: unknown, depth = 0): string {
  */
 function hasLoneSurrogate(text: string): boolean {
   for (let index = 0; index < text.length; index += 1) {
-    const unit = text.charCodeAt(index);
+    // `charCodeAt`, NOT `codePointAt`. This function's whole job is to find a surrogate CODE UNIT standing
+    // on its own; `codePointAt` combines a well-formed pair into one code point and returns the lone unit's
+    // value only by accident of the same call, so switching would make the paired/unpaired distinction
+    // unexpressible. Same reasoning as `render/tui/chat-projection.ts`.
+    const unit = text.charCodeAt(index); // NOSONAR — code UNITS are the subject; see above
     if (unit < 0xd800 || unit > 0xdfff) continue;
     if (unit >= 0xdc00) return true; // a trail reached on its own — a paired one is skipped below
-    const next = index + 1 < text.length ? text.charCodeAt(index + 1) : 0;
+    const next = index + 1 < text.length ? text.charCodeAt(index + 1) : 0; // NOSONAR — as above
     if (next < 0xdc00 || next > 0xdfff) return true; // a lead with no trail after it
     index += 1; // a well-formed pair
   }

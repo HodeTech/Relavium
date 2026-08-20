@@ -9,10 +9,11 @@
  */
 
 import {
+  type EffectTier,
   MEDIA_HANDLE_PATTERN,
+  type MediaPart,
   scopeSetIncludes,
   validateByteRange,
-  type MediaPart,
 } from '@relavium/shared';
 import { z } from 'zod';
 
@@ -31,7 +32,6 @@ import {
   type ToolId,
   type ToolPolicyClass,
 } from './types.js';
-import type { EffectTier } from '@relavium/shared';
 
 /* ------------------------------------------------------------------------------------------------ *
  * Helpers.

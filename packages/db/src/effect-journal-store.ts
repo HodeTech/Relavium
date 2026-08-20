@@ -196,7 +196,6 @@ export function createEffectJournalStore(db: Db, deps: EffectJournalStoreDeps): 
               createdAt: now,
               updatedAt: now,
             };
-            void correlation; // the scope already encodes it; kept in the signature for the port's shape
             tx.insert(runEffects).values(row).run();
             return { outcome: 'proceed' };
           },

@@ -237,22 +237,28 @@ export function verifyResumeIdentity(params: {
   // workflow's declared contract, which is what stops a record and a workflow from silently disagreeing.
   const admitted = resolveAndValidateWorkflowInputs(params.workflow, effective, 'verify');
   if (!admitted.ok) {
-    const first = admitted.issues[0];
     return {
       ok: false,
-      refusal: {
-        code: 'input_mismatch',
-        message:
-          first === undefined
-            ? 'the recorded inputs do not satisfy the supplied workflow'
-            : first.name === undefined
-              ? `the recorded inputs do not satisfy the supplied workflow: ${first.message}`
-              : named(first.name, first.message),
-      },
+      refusal: { code: 'input_mismatch', message: inputMismatchMessage(admitted.issues[0]) },
     };
   }
 
   return { ok: true, inputs: admitted.inputs, executionMode: recordedExecutionMode };
+}
+
+/**
+ * The refusal text for a recorded input the supplied workflow no longer accepts.
+ *
+ * Three cases, and the reason each exists: no issue at all (the validator refused without naming one — the
+ * message must still say something true), an issue with no field name (a whole-record problem, so there is
+ * nothing to name), and the ordinary named one. Only the FIRST issue is reported, deliberately: a resume
+ * refusal is a stop sign, not a validation report, and a caller who fixes the first will see the second.
+ */
+function inputMismatchMessage(first: { name?: string; message: string } | undefined): string {
+  const base = 'the recorded inputs do not satisfy the supplied workflow';
+  if (first === undefined) return base;
+  if (first.name === undefined) return `${base}: ${first.message}`;
+  return named(first.name, first.message);
 }
 
 /**
@@ -298,7 +304,12 @@ export function verifyFrozenWorkflowContent(
   }
   let normalizedSupplied: unknown;
   try {
-    normalizedSupplied = JSON.parse(JSON.stringify(supplied));
+    // **NOT `structuredClone`.** This round trip is doing two jobs a clone does not. It NORMALISES to JSON
+    // shape — dropping `undefined` properties, rendering a Date as its ISO string — so two values compare
+    // equal exactly when they would serialise equal, which is the property the comparison below is defined
+    // on. And it THROWS on input JSON cannot represent or cannot walk, which is what the `catch` around it
+    // exists for. `structuredClone` clones a Date, a Map and a cycle happily, so it would delete both.
+    normalizedSupplied = JSON.parse(JSON.stringify(supplied)); // NOSONAR — a normaliser AND a guard; see above
   } catch {
     return {
       code: 'workflow_content_mismatch',
@@ -315,7 +326,7 @@ export function verifyFrozenWorkflowContent(
   // now matches the description.
   let normalizedFrozenValue: unknown;
   try {
-    normalizedFrozenValue = JSON.parse(JSON.stringify(normalizedFrozen.data));
+    normalizedFrozenValue = JSON.parse(JSON.stringify(normalizedFrozen.data)); // NOSONAR — as above: a normaliser AND the guard this `catch` needs
   } catch {
     return unreadable('the frozen workflow definition for this run could not be normalised');
   }

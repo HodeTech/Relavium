@@ -1,9 +1,14 @@
-import type { ToolDef, ToolDispatchContext, ToolHost, ToolPolicyClass } from '@relavium/core';
+import {
+  type EffectTier,
+  type ToolDef,
+  type ToolDispatchContext,
+  type ToolHost,
+  type ToolPolicyClass,
+} from '@relavium/core';
 
 import type { DiscoveredTool } from './connection.js';
 import { McpHostUnavailableError } from './errors.js';
 import { compileJsonSchemaToZod } from './schema-compiler.js';
-import type { EffectTier } from '@relavium/core';
 
 /**
  * Shape discovered MCP tools into namespaced Relavium `ToolDef`s

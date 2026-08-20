@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 
-import { createProviderStore, createRunHistoryReader } from '@relavium/db';
+import {
+  createEffectJournalPort,
+  createEffectJournalStore,
+  createProviderStore,
+  createRunHistoryReader,
+} from '@relavium/db';
 import type { AgentSessionRecord, ReasoningEffort } from '@relavium/shared';
 import { render } from 'ink';
 import { createElement } from 'react';
@@ -76,7 +81,6 @@ import { DISABLE_BRACKETED_PASTE } from '../render/tui/home-input.js';
 import { RootApp, type RootAppProps } from '../render/tui/home-app.js';
 import { FORCE_TEARDOWN_MS, FRAME_MS } from '../render/tui/tui-constants.js';
 import { createHomeStore } from './home-store.js';
-import { createEffectJournalPort, createEffectJournalStore } from '@relavium/db';
 
 /**
  * `driveHome` — the imperative entry behind a bare `relavium` in a TTY (2.5.B / [ADR-0054](../../../../docs/decisions/0054-cli-bare-invocation-interactive-home.md)).

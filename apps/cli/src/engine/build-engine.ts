@@ -1,16 +1,19 @@
 import {
+  type AgentRunnerDeps,
   BUILTIN_TOOLS,
-  WorkflowEngine,
   createExpressionSandbox,
   createStandardNodeExecutor,
   createToolRegistry,
-  type AgentRunnerDeps,
+  type EffectCorrelation,
+  type EffectDispatchPort,
+  type EffectResumePort,
   type EffortGateResult,
   type ExecutionHost,
   type FsScopeTier,
   type McpCapability,
   type ToolDef,
   type ToolHost,
+  WorkflowEngine,
 } from '@relavium/core';
 import { effortTiersFor, type PricingOverlay } from '@relavium/llm';
 import type { MediaCostEstimate, MediaSurface } from '@relavium/shared';
@@ -20,7 +23,6 @@ import { hostAbortController, hostAttemptTimer, hostSleep } from '../process/sle
 import { createCliHost } from './host.js';
 import { createProviderResolver, type ProviderResolver } from './providers.js';
 import { assembleToolEnv } from './tool-host/assemble.js';
-import type { EffectCorrelation, EffectDispatchPort, EffectResumePort } from '@relavium/core';
 
 export interface BuildEngineOptions {
   /**
